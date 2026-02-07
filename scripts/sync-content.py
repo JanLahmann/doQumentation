@@ -313,12 +313,12 @@ def create_index_page():
     print("\n📄 Creating index page...")
     
     index_content = """---
-title: RasQberry Tutorials
+title: doQumentation
 sidebar_position: 1
 slug: /
 ---
 
-# Welcome to RasQberry Tutorials
+# Welcome to doQumentation
 
 This site hosts IBM Quantum tutorials optimized for local execution on RasQberry.
 
@@ -490,7 +490,7 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("RasQberry Tutorials - Content Sync")
+    print("doQumentation - Content Sync")
     print("=" * 60)
     
     if args.sample_only:

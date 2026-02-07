@@ -5,8 +5,8 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 
 const config: Config = {
-  title: 'RasQberry Tutorials',
-  tagline: 'IBM Quantum tutorials with local Jupyter execution',
+  title: 'doQumentation',
+  tagline: 'Interactive IBM Quantum tutorials and courses',
   favicon: 'img/favicon.ico',
 
   url: 'https://doqumentation.org',
@@ -66,9 +66,9 @@ const config: Config = {
     image: 'img/rasqberry-social-card.png',
     
     navbar: {
-      title: 'RasQberry Tutorials',
+      title: 'doQumentation',
       logo: {
-        alt: 'RasQberry Logo',
+        alt: 'doQumentation Logo',
         src: 'img/logo.svg',
       },
       items: [
@@ -130,7 +130,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Tutorial content © IBM Corp. Site built for RasQberry.`,
+      copyright: `Tutorial content © IBM Corp. Built with doQumentation.`,
     },
     
     prism: {

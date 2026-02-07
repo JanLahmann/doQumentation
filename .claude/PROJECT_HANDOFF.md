@@ -1,4 +1,4 @@
-# RasQberry Tutorials - Project Handoff Document
+# doQumentation - Project Handoff Document
 
 ## Executive Summary
 
@@ -448,9 +448,8 @@ cd doQumentation-pi
 2. GitHub Pages enabled (Settings → Pages → Source: GitHub Actions)
 3. First workflow run triggered
 
-**User context:** Jan is accessing from iPad, planning to use GitHub Codespaces to push the code. The upload flow in Codespaces from iPad may require dragging the file to the Explorer panel.
 
 ---
 
 *Document created: February 2025*
-*For: RasQberry Tutorials Project Handoff*
+*For: doQumentation Project Handoff*

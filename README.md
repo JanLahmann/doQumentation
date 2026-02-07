@@ -1,11 +1,11 @@
-# RasQberry Tutorials
+# doQumentation
 
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
 
-IBM Quantum tutorials optimized for local hosting on [RasQberry](https://github.com/JanLahmann/RasQberry-Two), with interactive code execution via Jupyter.
+Interactive IBM Quantum tutorials and courses, with live code execution via Jupyter. Part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
 
-**🌐 Live Demo:** [https://janlahmann.github.io/doQumentation](https://janlahmann.github.io/doQumentation)
+**🌐 Live:** [https://doqumentation.org](https://doqumentation.org)
 
 ## Features
 
@@ -21,7 +21,7 @@ IBM Quantum tutorials optimized for local hosting on [RasQberry](https://github.
 
 ### Option 1: View Online
 
-Visit [https://janlahmann.github.io/doQumentation](https://janlahmann.github.io/doQumentation)
+Visit [https://doqumentation.org](https://doqumentation.org)
 
 ### Option 2: Run Locally (Development)
 
