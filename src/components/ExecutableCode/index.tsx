@@ -55,7 +55,7 @@ function injectThebelabConfig(config: JupyterConfig): void {
     script.textContent = JSON.stringify({
       requestKernel: true,
       binderOptions: {
-        repo: 'JanLahmann/doQumentation',
+        repo: 'JanLahmann/Qiskit-documentation',
         ref: 'main',
         binderUrl: 'https://mybinder.org',
       },

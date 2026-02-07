@@ -61,7 +61,7 @@ export function detectJupyterConfig(): JupyterConfig {
       token: '',
       thebeEnabled: true, // Can use Binder
       labEnabled: false,  // No direct Lab access
-      binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/main',
+      binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/Qiskit-documentation/main',
       environment: 'github-pages',
     };
   }

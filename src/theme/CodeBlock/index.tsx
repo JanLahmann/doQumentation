@@ -12,10 +12,21 @@ import OriginalCodeBlock from '@theme-original/CodeBlock';
 import type { Props } from '@theme/CodeBlock';
 import ExecutableCode from '../../components/ExecutableCode';
 
+// Extract language from either the `language` prop or `className` (e.g. "language-python")
+function getLanguage(props: Props): string | undefined {
+  if (props.language) return props.language;
+  if (props.className) {
+    const match = props.className.match(/language-(\w+)/);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
 // Check if code block should be executable
 function shouldBeExecutable(props: Props): boolean {
-  const { language, metastring } = props;
-  
+  const { metastring } = props;
+  const language = getLanguage(props);
+
   // Only Python code can be executable
   if (language !== 'python') {
     return false;
@@ -55,15 +66,16 @@ function extractTitle(metastring?: string): string | undefined {
 }
 
 export default function CodeBlockWrapper(props: Props): JSX.Element {
-  const { children, language, metastring } = props;
-  
+  const { children, metastring } = props;
+  const language = getLanguage(props);
+
   // Only wrap if it should be executable
   if (shouldBeExecutable(props)) {
     // Extract the code content
-    const code = typeof children === 'string' 
-      ? children 
+    const code = typeof children === 'string'
+      ? children
       : String(children);
-    
+
     return (
       <ExecutableCode
         language={language}

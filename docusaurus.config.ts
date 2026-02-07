@@ -141,7 +141,7 @@ const config: Config = {
         defaultUrl: 'http://localhost:8888',
         defaultToken: 'rasqberry',
         // Binder URL for GitHub Pages fallback
-        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/main',
+        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/Qiskit-documentation/main',
       },
     },
   } satisfies Preset.ThemeConfig,
