@@ -1,52 +1,36 @@
 /**
  * ExecutableCode Component
- * 
+ *
  * A code block wrapper that provides three modes of interaction:
  * 1. Read - Static syntax-highlighted code (default)
- * 2. Run - Execute code via Thebe + Jupyter kernel
+ * 2. Run - Execute code via thebelab + Jupyter/Binder kernel
  * 3. Lab - Open the full notebook in JupyterLab
- * 
- * This component automatically detects the environment and enables
- * appropriate features for GitHub Pages vs RasQberry.
+ *
+ * Uses thebelab 0.4.x which manages its own DOM for the interactive cell.
+ * The component keeps read-mode (React-managed) and run-mode (thebelab-managed)
+ * in separate containers to avoid conflicts.
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import CodeBlock from '@theme-original/CodeBlock';
-import { 
-  detectJupyterConfig, 
-  getLabUrl, 
-  type JupyterConfig 
+import {
+  detectJupyterConfig,
+  getLabUrl,
+  type JupyterConfig,
 } from '../../config/jupyter';
 
-// Extend Window interface for Thebe
+// thebelab 0.4.x global
 declare global {
   interface Window {
-    thebe?: {
-      bootstrap: () => Promise<void>;
-      renderAllElements: () => Promise<void>;
-      events?: {
-        on: (event: string, callback: () => void) => void;
-      };
-    };
-    thebeConfig?: {
-      bootstrap: boolean;
-      requestKernel: boolean;
-      kernelOptions: {
-        name: string;
-        serverSettings: {
-          baseUrl: string;
-          wsUrl: string;
-          token: string;
-        };
-      };
-      binderOptions?: {
-        repo: string;
-      };
+    thebelab?: {
+      bootstrap: (options?: Record<string, unknown>) => void;
     };
   }
 }
 
-type ExecutionMode = 'read' | 'thebe';
+// Track whether thebelab config has been injected globally
+let thebelabConfigured = false;
+
 type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 
 interface ExecutableCodeProps {
@@ -57,6 +41,46 @@ interface ExecutableCodeProps {
   showLineNumbers?: boolean;
 }
 
+function injectThebelabConfig(config: JupyterConfig): void {
+  if (thebelabConfigured) return;
+
+  // Remove any existing config script
+  const existing = document.querySelector('script[type="text/x-thebe-config"]');
+  if (existing) existing.remove();
+
+  const script = document.createElement('script');
+  script.type = 'text/x-thebe-config';
+
+  if (config.environment === 'github-pages') {
+    script.textContent = JSON.stringify({
+      requestKernel: true,
+      binderOptions: {
+        repo: 'Qiskit/qiskit',
+        ref: 'stable',
+        binderUrl: 'https://mybinder.org',
+      },
+      kernelOptions: {
+        name: 'python3',
+      },
+    });
+  } else if (config.baseUrl) {
+    script.textContent = JSON.stringify({
+      requestKernel: true,
+      kernelOptions: {
+        name: 'python3',
+        serverSettings: {
+          baseUrl: config.baseUrl,
+          wsUrl: config.wsUrl,
+          token: config.token,
+        },
+      },
+    });
+  }
+
+  document.head.appendChild(script);
+  thebelabConfigured = true;
+}
+
 export default function ExecutableCode({
   children,
   language = 'python',
@@ -64,153 +88,78 @@ export default function ExecutableCode({
   title,
   showLineNumbers = true,
 }: ExecutableCodeProps): JSX.Element {
-  const [mode, setMode] = useState<ExecutionMode>('read');
+  const [mode, setMode] = useState<'read' | 'run'>('read');
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
-  const [output, setOutput] = useState<string | null>(null);
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
-  const codeRef = useRef<HTMLDivElement>(null);
-  const thebeInitialized = useRef(false);
+  const thebeContainerRef = useRef<HTMLDivElement>(null);
+  const hasBootstrapped = useRef(false);
 
-  // Detect Jupyter configuration on mount
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
   }, []);
 
-  // Only show execution options for Python code
   const isExecutable = language === 'python' && jupyterConfig?.thebeEnabled;
   const canOpenLab = jupyterConfig?.labEnabled && notebookPath;
 
-  // Initialize Thebe configuration
-  const initializeThebe = useCallback(async () => {
-    if (!jupyterConfig || thebeInitialized.current) return;
-    
-    // Configure Thebe based on environment
-    if (jupyterConfig.environment === 'github-pages' && jupyterConfig.binderUrl) {
-      // Use Binder for GitHub Pages
-      window.thebeConfig = {
-        bootstrap: true,
-        requestKernel: true,
-        kernelOptions: {
-          name: 'python3',
-          serverSettings: {
-            baseUrl: '',
-            wsUrl: '',
-            token: '',
-          },
-        },
-        binderOptions: {
-          repo: 'Qiskit/qiskit',
-        },
-      };
-    } else if (jupyterConfig.baseUrl) {
-      // Use local Jupyter server
-      window.thebeConfig = {
-        bootstrap: true,
-        requestKernel: true,
-        kernelOptions: {
-          name: 'python3',
-          serverSettings: {
-            baseUrl: jupyterConfig.baseUrl,
-            wsUrl: jupyterConfig.wsUrl,
-            token: jupyterConfig.token,
-          },
-        },
-      };
-    }
+  const handleRun = () => {
+    if (!jupyterConfig) return;
 
-    thebeInitialized.current = true;
-  }, [jupyterConfig]);
-
-  // Handle Run button click
-  const handleRun = async () => {
-    if (!window.thebe) {
-      console.error('Thebe not loaded');
-      setThebeStatus('error');
-      return;
-    }
-
-    setMode('thebe');
+    // Switch to run mode — shows the thebelab container
+    setMode('run');
     setThebeStatus('connecting');
-    setOutput(null);
 
-    try {
-      await initializeThebe();
-      
-      // Bootstrap Thebe if needed
-      await window.thebe.bootstrap();
-      
-      // Mark code cell as executable
-      if (codeRef.current) {
-        const preElement = codeRef.current.querySelector('pre');
-        if (preElement) {
-          preElement.setAttribute('data-executable', 'true');
-          preElement.setAttribute('data-language', 'python');
-        }
+    // Inject global config if needed
+    injectThebelabConfig(jupyterConfig);
+
+    // Wait for thebelab to be available and the DOM to render
+    const tryBootstrap = () => {
+      if (!window.thebelab) {
+        // thebelab CDN hasn't loaded yet, retry
+        setTimeout(tryBootstrap, 500);
+        return;
       }
 
-      // Render and execute
-      await window.thebe.renderAllElements();
-      
-      setThebeStatus('ready');
-      
-      // Capture output (Thebe will update the DOM)
-      setTimeout(() => {
-        if (codeRef.current) {
-          const outputArea = codeRef.current.querySelector('.jp-OutputArea-output');
-          if (outputArea) {
-            setOutput(outputArea.innerHTML);
-          }
-        }
-      }, 100);
-      
-    } catch (error) {
-      console.error('Thebe execution error:', error);
-      setThebeStatus('error');
-      setOutput(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+      if (hasBootstrapped.current) {
+        setThebeStatus('ready');
+        return;
+      }
+
+      try {
+        // thebelab.bootstrap() finds all [data-executable] elements and activates them
+        window.thebelab.bootstrap();
+        hasBootstrapped.current = true;
+        setThebeStatus('ready');
+      } catch (err) {
+        console.error('thebelab bootstrap error:', err);
+        setThebeStatus('error');
+      }
+    };
+
+    // Give React a tick to render the data-executable pre element
+    setTimeout(tryBootstrap, 100);
   };
 
-  // Handle Open in Lab button click
+  const handleReset = () => {
+    setMode('read');
+    setThebeStatus('idle');
+  };
+
   const handleOpenLab = () => {
     if (!jupyterConfig || !notebookPath) return;
-    
     const labUrl = getLabUrl(jupyterConfig, notebookPath);
     if (labUrl) {
       window.open(labUrl, '_blank', 'noopener,noreferrer');
     }
   };
 
-  // Reset to read mode
-  const handleReset = () => {
-    setMode('read');
-    setThebeStatus('idle');
-    setOutput(null);
+  const statusText: Record<ThebeStatus, string> = {
+    idle: '',
+    connecting: 'Connecting to Binder...',
+    ready: 'Ready',
+    error: 'Connection error',
   };
 
-  // Render status badge
-  const renderStatusBadge = () => {
-    if (thebeStatus === 'idle') return null;
-    
-    const statusClasses: Record<ThebeStatus, string> = {
-      idle: '',
-      connecting: 'thebe-status thebe-status--connecting',
-      ready: 'thebe-status thebe-status--ready',
-      error: 'thebe-status thebe-status--error',
-    };
-    
-    const statusText: Record<ThebeStatus, string> = {
-      idle: '',
-      connecting: '⏳ Connecting...',
-      ready: '✓ Ready',
-      error: '✗ Error',
-    };
-
-    return (
-      <span className={statusClasses[thebeStatus]}>
-        {statusText[thebeStatus]}
-      </span>
-    );
-  };
+  const code = children.replace(/\n$/, '');
 
   return (
     <div className="executable-code">
@@ -218,20 +167,16 @@ export default function ExecutableCode({
       {(isExecutable || canOpenLab) && (
         <div className="executable-code__toolbar">
           <button
-            className={`executable-code__button executable-code__button--read ${
-              mode === 'read' ? 'executable-code__button--active' : ''
-            }`}
+            className={`executable-code__button ${mode === 'read' ? 'executable-code__button--active' : ''}`}
             onClick={handleReset}
             title="View code (read-only)"
           >
-            📖 Read
+            Read
           </button>
 
           {isExecutable && (
             <button
-              className={`executable-code__button executable-code__button--run ${
-                mode === 'thebe' ? 'executable-code__button--active' : ''
-              }`}
+              className={`executable-code__button ${mode === 'run' ? 'executable-code__button--active' : ''}`}
               onClick={handleRun}
               disabled={thebeStatus === 'connecting'}
               title={
@@ -240,55 +185,46 @@ export default function ExecutableCode({
                   : 'Execute on local Jupyter server'
               }
             >
-              {thebeStatus === 'connecting' ? '⏳ Running...' : '▶️ Run'}
+              {thebeStatus === 'connecting' ? 'Connecting...' : 'Run'}
             </button>
           )}
 
           {canOpenLab && (
             <button
-              className="executable-code__button executable-code__button--lab"
+              className="executable-code__button"
               onClick={handleOpenLab}
               title="Open full notebook in JupyterLab"
             >
-              🔬 Open in Lab
+              Open in Lab
             </button>
           )}
 
-          {renderStatusBadge()}
+          {thebeStatus !== 'idle' && (
+            <span className={`thebe-status thebe-status--${thebeStatus}`}>
+              {statusText[thebeStatus]}
+            </span>
+          )}
         </div>
       )}
 
-      {/* Title (optional) */}
-      {title && (
-        <div className="executable-code__title">
-          {title}
-        </div>
-      )}
+      {title && <div className="executable-code__title">{title}</div>}
 
-      {/* Code block */}
+      {/* Read mode: React-managed syntax-highlighted code */}
       <div
-        ref={codeRef}
         className="executable-code__code"
-        data-mode={mode}
+        style={{ display: mode === 'read' ? 'block' : 'none' }}
       >
-        <CodeBlock
-          language={language}
-          showLineNumbers={showLineNumbers}
-        >
+        <CodeBlock language={language} showLineNumbers={showLineNumbers}>
           {children}
         </CodeBlock>
       </div>
 
-      {/* Output area */}
-      {output && (
-        <div className="executable-code__output">
-          <div className="executable-code__output-header">
-            Output
-          </div>
-          <pre 
-            className="executable-code__output-content"
-            dangerouslySetInnerHTML={{ __html: output }}
-          />
+      {/* Run mode: thebelab-managed interactive cell */}
+      {mode === 'run' && (
+        <div ref={thebeContainerRef} className="executable-code__thebe">
+          <pre data-executable="true" data-language="python">
+            {code}
+          </pre>
         </div>
       )}
     </div>

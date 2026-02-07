@@ -27,10 +27,10 @@ const config: Config = {
     locales: ['en'],
   },
 
-  // Enable Thebe for Jupyter execution
+  // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
   scripts: [
     {
-      src: 'https://unpkg.com/thebe@0.9.2/lib/index.js',
+      src: 'https://unpkg.com/thebelab@0.4.15/lib/index.js',
       async: true,
     },
   ],
