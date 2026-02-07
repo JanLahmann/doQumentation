@@ -95,30 +95,16 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Tutorials',
+          title: 'Resources',
           items: [
             {
-              label: 'Get Started',
-              to: '/tutorials/hello-world',
+              label: 'RasQberry',
+              href: 'https://rasqberry.org',
             },
-          ],
-        },
-        {
-          title: 'Community',
-          items: [
             {
               label: 'RasQberry GitHub',
               href: 'https://github.com/JanLahmann/RasQberry-Two',
             },
-            {
-              label: 'Qiskit Slack',
-              href: 'https://qisk.it/join-slack',
-            },
-          ],
-        },
-        {
-          title: 'More',
-          items: [
             {
               label: 'IBM Quantum',
               href: 'https://quantum.ibm.com',
@@ -127,10 +113,18 @@ const config: Config = {
               label: 'Qiskit Documentation',
               href: 'https://docs.quantum.ibm.com',
             },
+            {
+              label: 'Qiskit Docs GitHub',
+              href: 'https://github.com/Qiskit/documentation',
+            },
+            {
+              label: 'Qiskit Slack',
+              href: 'https://qisk.it/join-slack',
+            },
           ],
         },
       ],
-      copyright: `Tutorial content © IBM Corp. Built with doQumentation.<br/>doQumentation is an independent educational project and is not affiliated with, endorsed by, or sponsored by IBM Corporation. IBM®, IBM Quantum®, and Qiskit® are trademarks of International Business Machines Corporation.`,
+      copyright: `Tutorial content © IBM Corp, licensed under CC BY-SA 4.0.<br/>doQumentation is not affiliated with, endorsed by, or sponsored by IBM Corporation.<br/>IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation.<br/>doQumentation is part of the <a href="https://rasqberry.org">RasQberry</a> project.`,
     },
     
     prism: {
