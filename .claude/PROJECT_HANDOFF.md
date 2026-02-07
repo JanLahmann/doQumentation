@@ -6,8 +6,8 @@ This project creates a **local hosting solution for IBM Quantum tutorials** on R
 
 **Key deliverable:** A Docusaurus-based static site that:
 - Hosts IBM Quantum tutorials offline on Raspberry Pi
-- Enables live Python/Qiskit code execution via Jupyter
-- Also deploys to GitHub Pages for online access
+- Enables live Python/Qiskit code execution via Jupyter (thebelab + Binder)
+- Deploys to GitHub Pages at [doqumentation.org](https://doqumentation.org) for online access
 - Uses a single codebase for both deployment targets
 
 ---
@@ -124,11 +124,11 @@ IBM's custom MDX components and their Docusaurus equivalents:
 
 ### ExecutableCode Component
 
-The core interactive component provides three modes:
+The core interactive component wraps Python code blocks:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ [📖 Read] [▶️ Run] [🔬 Open in Lab]  ● Ready    │
+│ [▶️ Run]  [🔬 Open in Lab]  ● Ready              │
 ├─────────────────────────────────────────────────┤
 │ from qiskit import QuantumCircuit               │
 │ qc = QuantumCircuit(2)                          │
@@ -145,10 +145,11 @@ The core interactive component provides three modes:
 └─────────────────────────────────────────────────┘
 ```
 
-**Modes:**
-1. **Read** - Static syntax highlighting (default)
-2. **Run** - Execute via Thebe → Jupyter kernel
-3. **Lab** - Open full notebook in JupyterLab (Pi only)
+**Toolbar:**
+- **Run / Stop** toggle - Execute via thebelab → Jupyter kernel (Binder on GitHub Pages, local on Pi)
+- **Open in Lab** - Open full notebook in JupyterLab (Pi only)
+- Static syntax-highlighted code is the default view (no separate button)
+- On GitHub Pages, shows "Starting Binder (this may take 1-2 minutes on first run)..." status
 
 ### Environment Detection
 
@@ -156,9 +157,9 @@ The `src/config/jupyter.ts` module auto-detects:
 
 | Environment | Detection | Behavior |
 |-------------|-----------|----------|
-| GitHub Pages | `hostname.includes('github.io')` | Thebe → Binder |
-| RasQberry | `localhost`, `rasqberry`, `192.168.*` | Thebe → localhost:8888, Lab enabled |
-| Custom | `localStorage.jupyterUrl` set | User-configured |
+| GitHub Pages | `github.io`, `doqumentation.org` | thebelab → Binder (JanLahmann/Qiskit-documentation) |
+| RasQberry | `localhost`, `rasqberry`, `192.168.*`, `*.local` | thebelab → localhost:8888, Lab enabled |
+| Custom | `localStorage` settings | User-configured |
 
 ### Content Sync Pipeline
 
@@ -210,7 +211,7 @@ doQumentation/
 │
 ├── src/
 │   ├── components/
-│   │   └── ExecutableCode/     # [Read] [Run] [Lab] component
+│   │   └── ExecutableCode/     # [Run/Stop] [Lab] component
 │   │       └── index.tsx
 │   │
 │   ├── config/
@@ -248,25 +249,29 @@ doQumentation/
 ### What's Complete
 
 1. ✅ **Project scaffold** - Full Docusaurus setup with TypeScript
-2. ✅ **ExecutableCode component** - Three modes (Read/Run/Lab)
-3. ✅ **Jupyter configuration** - Auto-detection for GH Pages/Pi/Custom
-4. ✅ **Content sync script** - Transforms Qiskit MDX → Docusaurus
-5. ✅ **GitHub Actions workflow** - Dual deployment pipeline
-6. ✅ **Pi setup script** - Jupyter + nginx configuration
-7. ✅ **Carbon-inspired CSS** - IBM Plex fonts, blue color scheme
-8. ✅ **Sample tutorial** - Hello World with executable code
-9. ✅ **Jupyter settings page** - UI to configure custom server
-10. ✅ **README** - Comprehensive documentation
+2. ✅ **ExecutableCode component** - Run/Stop toggle with thebelab 0.4.x
+3. ✅ **CodeBlock swizzle** - Auto-wraps Python code blocks with ExecutableCode
+4. ✅ **Jupyter configuration** - Auto-detection for GH Pages/doqumentation.org/Pi/Custom
+5. ✅ **Binder integration** - Points to JanLahmann/Qiskit-documentation, startup notice
+6. ✅ **Content sync script** - Transforms Qiskit MDX → Docusaurus
+7. ✅ **GitHub Actions workflow** - Dual deployment pipeline
+8. ✅ **GitHub Pages deployment** - Live at doqumentation.org
+9. ✅ **Custom domain** - doqumentation.org configured (IONOS DNS + GitHub Pages CNAME)
+10. ✅ **Pi setup script** - Jupyter + nginx configuration
+11. ✅ **Carbon-inspired CSS** - IBM Plex fonts, blue color scheme
+12. ✅ **Sample tutorial** - Hello World with executable code
+13. ✅ **Jupyter settings page** - UI to configure custom server
+14. ✅ **Footer** - IBM disclaimer, trademark notice, RasQberry attribution, consolidated Resources links
+15. ✅ **README** - Comprehensive documentation
 
 ### What's NOT Done Yet
 
-1. ❌ **Push to GitHub** - Tarball created but not yet pushed
-2. ❌ **Test full content sync** - Only sample content generated
-3. ❌ **Test Thebe integration** - Needs running Jupyter to verify
-4. ❌ **Test on actual Pi** - Scripts written but untested
-5. ❌ **Pagefind integration** - Config added but not tested
-6. ❌ **More tutorials** - Only hello-world.mdx exists as sample
-7. ❌ **Course support** - Requires work listed below
+1. ❌ **Test full content sync** - Only sample content generated
+2. ❌ **Test Thebe/Binder end-to-end** - Binder integration coded but not verified with live kernel
+3. ❌ **Test on actual Pi** - Scripts written but untested
+4. ❌ **Pagefind integration** - Config added but not tested
+5. ❌ **More tutorials** - Only hello-world.mdx exists as sample
+6. ❌ **Course support** - Requires work listed below
 
 ### What's Needed for Course Support
 
@@ -301,10 +306,10 @@ Site configuration including:
 
 ### 2. `src/components/ExecutableCode/index.tsx`
 The main interactive component. Key features:
-- Three-button toolbar (Read/Run/Lab)
-- Thebe initialization for Jupyter connection
-- Status indicators (connecting/ready/error)
-- Output capture and display
+- Run/Stop toggle button + Open in Lab (Pi only)
+- thebelab 0.4.x initialization for Jupyter/Binder connection
+- Status indicators (connecting/ready/error) with Binder startup notice
+- Separate DOM containers for React-managed (read) and thebelab-managed (run) views
 
 ### 3. `src/config/jupyter.ts`
 Environment detection logic:
@@ -336,15 +341,15 @@ CI/CD pipeline:
 
 ---
 
-## Configuration to Update
+## Configuration (already set)
 
-Before first deployment, update these in `docusaurus.config.ts`:
+Key values in `docusaurus.config.ts`:
 
 ```typescript
-url: 'https://JanLahmann.github.io',      // Your GitHub username
-baseUrl: '/doQumentation/',          // Repo name
-organizationName: 'JanLahmann',            // GitHub username
-projectName: 'doQumentation',        // Repo name
+url: 'https://doqumentation.org',
+baseUrl: '/',
+organizationName: 'JanLahmann',
+projectName: 'doQumentation',
 ```
 
 ---
@@ -379,10 +384,8 @@ npm run typecheck
 
 ## Deployment
 
-### GitHub Pages
-Automatic on push to main. Or manually:
-1. Actions → "Build and Deploy" → Run workflow
-2. Select target: `ghpages`
+### GitHub Pages (live at doqumentation.org)
+Automatic on push to main. Custom domain configured via CNAME + IONOS DNS.
 
 ### Raspberry Pi
 ```bash
@@ -400,10 +403,10 @@ cd doQumentation-pi
 ## Dependencies
 
 ### Runtime
-- Docusaurus 3.7
+- Docusaurus 3.x
 - React 18
 - remark-math + rehype-katex (LaTeX)
-- Thebe 0.9.2 (loaded via CDN)
+- thebelab 0.4.x (loaded via CDN)
 
 ### Development
 - Node.js 18+
@@ -437,19 +440,9 @@ cd doQumentation-pi
 4. **Physical Circuit Composer** - Magnetic tiles → image recognition → quantum circuits?
 5. **Container Deployment** - Third deployment target (alongside GitHub Pages and Raspberry Pi) as a container image, supporting both `arm64` and `x64` architectures.
 6. **Qiskit Courses** - Pull and host Qiskit learning courses from https://github.com/JanLahmann/Qiskit-documentation/tree/main/learning/courses in addition to tutorials.
-7. **Custom Domain** - Make site available at `doQumentation.org`. Domain owned at IONOS. Requires: CNAME file in static/, DNS config at IONOS (CNAME → `janlahmann.github.io`), update `url` in `docusaurus.config.ts` to `https://doQumentation.org`, set `baseUrl` to `/`.
-
----
-
-## Session Continuity
-
-**Tarball location:** A complete project tarball was created and provided to the user. It needs to be:
-1. Uploaded to a new GitHub repository
-2. GitHub Pages enabled (Settings → Pages → Source: GitHub Actions)
-3. First workflow run triggered
-
 
 ---
 
 *Document created: February 2025*
+*Last updated: February 2025*
 *For: doQumentation Project Handoff*
