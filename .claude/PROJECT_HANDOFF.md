@@ -157,8 +157,8 @@ The `src/config/jupyter.ts` module auto-detects:
 
 | Environment | Detection | Behavior |
 |-------------|-----------|----------|
-| GitHub Pages | `github.io`, `doqumentation.org` | thebelab → Binder (JanLahmann/Qiskit-documentation) |
-| RasQberry | `localhost`, `rasqberry`, `192.168.*`, `*.local` | thebelab → localhost:8888, Lab enabled |
+| GitHub Pages | `github.io`, `doqumentation.org` | thebelab → Binder via 2i2c.mybinder.org |
+| RasQberry/Docker | `localhost`, `rasqberry`, `192.168.*`, `*.local` | thebelab → local Jupyter (nginx proxy in Docker, port 8888 direct on Pi) |
 | Custom | `localStorage` settings | User-configured |
 
 ### Content Sync Pipeline
@@ -200,7 +200,12 @@ Pages     Pi (nginx)
 ```
 doQumentation/
 ├── .github/workflows/
-│   └── deploy.yml              # CI/CD: sync, build, deploy
+│   ├── deploy.yml              # CI/CD: sync, build, deploy to GH Pages
+│   └── docker.yml              # Multi-arch Docker build → ghcr.io
+│
+├── binder/
+│   ├── jupyter-requirements.txt      # Full Qiskit deps (cross-platform)
+│   └── jupyter-requirements-amd64.txt # amd64-only extras
 │
 ├── docs/                        # Tutorial content (MDX)
 │   ├── index.mdx               # Home page
@@ -235,6 +240,10 @@ doQumentation/
 │   └── img/
 │       └── logo.svg            # Quantum circuit logo
 │
+├── Dockerfile                  # Static site only (nginx)
+├── Dockerfile.jupyter          # Full stack: site + Jupyter + Qiskit
+├── docker-compose.yml          # web (static) + jupyter (full) services
+├── nginx.conf                  # nginx config (SPA routing + Jupyter proxy)
 ├── docusaurus.config.ts        # Site configuration
 ├── sidebars.ts                 # Navigation structure
 ├── package.json                # Dependencies
@@ -249,10 +258,10 @@ doQumentation/
 ### What's Complete
 
 1. ✅ **Project scaffold** - Full Docusaurus setup with TypeScript
-2. ✅ **ExecutableCode component** - Run/Stop toggle with thebelab 0.4.x
+2. ✅ **ExecutableCode component** - Run/Stop toggle with thebelab 0.4.x, shared kernel across all cells on a page
 3. ✅ **CodeBlock swizzle** - Auto-wraps Python code blocks with ExecutableCode
-4. ✅ **Jupyter configuration** - Auto-detection for GH Pages/doqumentation.org/Pi/Custom
-5. ✅ **Binder integration** - Points to JanLahmann/Qiskit-documentation, startup notice
+4. ✅ **Jupyter configuration** - Auto-detection for GH Pages/doqumentation.org/Pi/Docker/Custom
+5. ✅ **Binder integration** - Points to JanLahmann/Qiskit-documentation via 2i2c.mybinder.org, startup status tracking
 6. ✅ **Content sync script** - Transforms Qiskit MDX → Docusaurus
 7. ✅ **GitHub Actions workflow** - Dual deployment pipeline
 8. ✅ **GitHub Pages deployment** - Live at doqumentation.org
@@ -260,18 +269,23 @@ doQumentation/
 10. ✅ **Pi setup script** - Jupyter + nginx configuration
 11. ✅ **Carbon-inspired CSS** - IBM Plex fonts, blue color scheme
 12. ✅ **Sample tutorial** - Hello World with executable code
-13. ✅ **Jupyter settings page** - UI to configure custom server
+13. ✅ **Jupyter settings page** - UI to configure custom server, Binder packages reference
 14. ✅ **Footer** - IBM disclaimer, trademark notice, RasQberry attribution, consolidated Resources links
 15. ✅ **README** - Comprehensive documentation
+16. ✅ **Docker container** - Multi-stage Dockerfile (Docusaurus + nginx + Jupyter + Qiskit), tested locally with code execution
+17. ✅ **Arch-conditional deps** - Full Qiskit on amd64, trimmed on arm64 (3 packages excluded: gem-suite, kahypar, ai-local-transpiler)
+18. ✅ **GH Actions Docker CI/CD** - Multi-arch build workflow pushing to ghcr.io
+19. ✅ **Requirements synced with upstream** - Validated against Qiskit-documentation/scripts/nb-tester/requirements.txt, exceptions documented
 
 ### What's NOT Done Yet
 
 1. ❌ **Test full content sync** - Only sample content generated
-2. ❌ **Test Thebe/Binder end-to-end** - Binder integration coded but not verified with live kernel
-3. ❌ **Test on actual Pi** - Scripts written but untested
-4. ❌ **Pagefind integration** - Config added but not tested
-5. ❌ **More tutorials** - Only hello-world.mdx exists as sample
-6. ❌ **Course support** - Requires work listed below
+2. ❌ **Test on actual Pi** - Scripts written but untested
+3. ❌ **Pagefind integration** - Config added but not tested
+4. ❌ **More tutorials** - Only hello-world.mdx exists as sample
+5. ❌ **Course support** - Requires work listed below
+6. ❌ **Binder end-to-end on doqumentation.org** - Binder launches (SSE stream works) but kernel connection may not complete; needs browser console debugging
+7. ❌ **Automated deps sync** - Keep requirements in sync with upstream on version bumps (see `.claude/deps-sync.md`)
 
 ### What's Needed for Course Support
 
@@ -387,6 +401,21 @@ npm run typecheck
 ### GitHub Pages (live at doqumentation.org)
 Automatic on push to main. Custom domain configured via CNAME + IONOS DNS.
 
+### Docker Container
+```bash
+# Static site only (~60 MB)
+docker compose up web        # → http://localhost:8080
+
+# Full stack with Jupyter + Qiskit (~3 GB)
+docker compose up jupyter    # → http://localhost:8080 (site + code execution)
+                             #   http://localhost:8888 (JupyterLab direct)
+
+# Or pull pre-built from ghcr.io
+docker pull ghcr.io/janlahmann/doqumentation-jupyter:latest
+```
+
+Architecture: `linux/amd64` gets full Qiskit (all packages), `linux/arm64` excludes gem-suite, kahypar, and ai-local-transpiler (no prebuilt wheels).
+
 ### Raspberry Pi
 ```bash
 # Download release
@@ -438,11 +467,13 @@ cd doQumentation-pi
 2. **Offline AI Tutor** - Granite 4.0 Nano for offline Q&A about tutorials?
 3. **PWA Dashboard** - Integrate with RasQberry's existing FastAPI backend?
 4. **Physical Circuit Composer** - Magnetic tiles → image recognition → quantum circuits?
-5. **Container Deployment** - Third deployment target (alongside GitHub Pages and Raspberry Pi) as a container image, supporting both `arm64` and `x64` architectures.
+5. ~~**Container Deployment**~~ ✅ Done — `Dockerfile.jupyter` with multi-arch CI/CD to ghcr.io
 6. **Qiskit Courses** - Pull and host Qiskit learning courses from https://github.com/JanLahmann/Qiskit-documentation/tree/main/learning/courses in addition to tutorials.
+7. **Automated deps sync** - GitHub Actions workflow to detect upstream requirement changes and open PRs (see `.claude/deps-sync.md`)
+8. **Jupyter auth** - thebelab 0.4.0 doesn't pass tokens, so container runs Jupyter with all auth disabled. Fine for local/demo, needs addressing for any internet-facing deployment.
 
 ---
 
 *Document created: February 2025*
-*Last updated: February 2025*
+*Last updated: February 7, 2025*
 *For: doQumentation Project Handoff*

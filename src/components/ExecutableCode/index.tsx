@@ -28,6 +28,7 @@ declare global {
   interface Window {
     thebelab?: {
       bootstrap: (options?: Record<string, unknown>) => Promise<unknown>;
+      on: (event: string, callback: (...args: unknown[]) => void) => void;
     };
   }
 }
@@ -36,6 +37,7 @@ declare global {
 
 let thebelabConfigured = false;
 let thebelabBootstrapped = false;
+let thebelabEventsHooked = false;
 
 // Custom event name used to coordinate all cells on the page
 const ACTIVATE_EVENT = 'executablecode:activate';
@@ -110,30 +112,48 @@ function bootstrapOnce(): void {
 
   const tryBootstrap = () => {
     if (!window.thebelab) {
+      console.log('[ExecutableCode] waiting for thebelab CDN...');
       setTimeout(tryBootstrap, 500);
       return;
     }
+
+    // Hook into thebelab's internal jQuery events (once)
+    if (!thebelabEventsHooked && window.thebelab.on) {
+      thebelabEventsHooked = true;
+      window.thebelab.on('status', function (_evt: unknown, data: { status: string; message: string }) {
+        console.log(`[thebelab] status: ${data.status} — ${data.message}`);
+      });
+    }
+
+    const cells = document.querySelectorAll('[data-executable]');
+    console.log(`[ExecutableCode] bootstrap: ${cells.length} executable cell(s) found`);
+
     try {
       // bootstrap() returns a Promise<Kernel> that resolves when the
       // kernel is actually connected (after Binder launch on GitHub Pages).
       const kernelPromise = window.thebelab.bootstrap();
       thebelabBootstrapped = true;
+      console.log('[ExecutableCode] bootstrap() called, waiting for kernel promise...');
 
       // Stay in 'connecting' state until the kernel is ready
       if (kernelPromise && typeof kernelPromise.then === 'function') {
         kernelPromise.then(
-          () => broadcastStatus('ready'),
+          (kernel) => {
+            console.log('[ExecutableCode] kernel ready:', kernel);
+            broadcastStatus('ready');
+          },
           (err) => {
-            console.error('thebelab kernel error:', err);
+            console.error('[ExecutableCode] kernel error:', err);
             broadcastStatus('error');
           }
         );
       } else {
+        console.log('[ExecutableCode] bootstrap returned non-promise, assuming ready');
         // Local Jupyter (no Binder) — kernel connects near-instantly
         broadcastStatus('ready');
       }
     } catch (err) {
-      console.error('thebelab bootstrap error:', err);
+      console.error('[ExecutableCode] bootstrap error:', err);
       broadcastStatus('error');
     }
   };
