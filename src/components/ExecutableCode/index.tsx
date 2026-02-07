@@ -154,7 +154,9 @@ export default function ExecutableCode({
 
   const statusText: Record<ThebeStatus, string> = {
     idle: '',
-    connecting: 'Connecting to Binder...',
+    connecting: jupyterConfig?.environment === 'github-pages'
+      ? 'Starting Binder (this may take 1\u20132 minutes on first run)...'
+      : 'Connecting...',
     ready: 'Ready',
     error: 'Connection error',
   };
@@ -166,26 +168,20 @@ export default function ExecutableCode({
       {/* Toolbar */}
       {(isExecutable || canOpenLab) && (
         <div className="executable-code__toolbar">
-          <button
-            className={`executable-code__button ${mode === 'read' ? 'executable-code__button--active' : ''}`}
-            onClick={handleReset}
-            title="View code (read-only)"
-          >
-            Read
-          </button>
-
           {isExecutable && (
             <button
               className={`executable-code__button ${mode === 'run' ? 'executable-code__button--active' : ''}`}
-              onClick={handleRun}
+              onClick={mode === 'run' ? handleReset : handleRun}
               disabled={thebeStatus === 'connecting'}
               title={
-                jupyterConfig?.environment === 'github-pages'
-                  ? 'Execute via Binder (may take a moment to start)'
-                  : 'Execute on local Jupyter server'
+                mode === 'run'
+                  ? 'Back to static view'
+                  : jupyterConfig?.environment === 'github-pages'
+                    ? 'Execute via Binder (may take a moment to start)'
+                    : 'Execute on local Jupyter server'
               }
             >
-              {thebeStatus === 'connecting' ? 'Connecting...' : 'Run'}
+              {thebeStatus === 'connecting' ? 'Connecting...' : mode === 'run' ? 'Stop' : 'Run'}
             </button>
           )}
 
