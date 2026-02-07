@@ -66,7 +66,7 @@ function injectThebelabConfig(config: JupyterConfig): void {
       binderOptions: {
         repo: 'JanLahmann/Qiskit-documentation',
         ref: 'main',
-        binderUrl: 'https://mybinder.org',
+        binderUrl: 'https://2i2c.mybinder.org',
       },
       kernelOptions: {
         name: 'python3',
