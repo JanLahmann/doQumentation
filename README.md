@@ -9,13 +9,13 @@ Interactive IBM Quantum tutorials and courses, with live code execution via Jupy
 
 ## Features
 
-| Feature | GitHub Pages | RasQberry Pi |
-|---------|--------------|--------------|
-| 📖 Browse tutorials | ✅ | ✅ |
-| 🔍 Full-text search | ✅ | ✅ |
-| ▶️ Execute code | ⚠️ Via Binder | ✅ Local Jupyter |
-| 🔬 Open in JupyterLab | ❌ | ✅ |
-| 📴 Offline access | ❌ | ✅ |
+| Feature | GitHub Pages | Docker | RasQberry Pi |
+|---------|--------------|--------|--------------|
+| 📖 Browse tutorials | ✅ | ✅ | ✅ |
+| 🔍 Full-text search | ✅ | ✅ | ✅ |
+| ▶️ Execute code | ⚠️ Via Binder | ⚠️ Via Binder | ✅ Local Jupyter |
+| 🔬 Open in JupyterLab | ❌ | ❌ | ✅ |
+| 📴 Offline access | ❌ | ✅ | ✅ |
 
 ## Quick Start
 
@@ -40,7 +40,22 @@ python scripts/sync-content.py --sample-only  # or without flag for full sync
 npm start
 ```
 
-### Option 3: Deploy to Raspberry Pi
+### Option 3: Run with Docker
+
+```bash
+docker pull ghcr.io/janlahmann/doqumentation:latest
+docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
+```
+
+Access at `http://localhost:8080`.
+
+Or build locally:
+
+```bash
+docker compose up
+```
+
+### Option 4: Deploy to Raspberry Pi
 
 ```bash
 # Download latest release
@@ -74,30 +89,23 @@ Access at `http://rasqberry.local` or your Pi's IP address.
 │              ┌───────────────┼───────────────┐                  │
 │              ▼               ▼               ▼                  │
 │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│   │ GitHub Pages │  │ RasQberry Pi │  │   Custom     │         │
+│   │ GitHub Pages │  │   Docker     │  │ RasQberry Pi │         │
 │   ├──────────────┤  ├──────────────┤  ├──────────────┤         │
-│   │ Static only  │  │ nginx        │  │ Any static   │         │
-│   │ Binder exec  │  │ Jupyter :8888│  │ host         │         │
-│   └──────────────┘  │ JupyterLab   │  └──────────────┘         │
-│                     └──────────────┘                            │
+│   │ Static only  │  │ nginx in     │  │ nginx        │         │
+│   │ Binder exec  │  │ container    │  │ Jupyter :8888│         │
+│   └──────────────┘  │ amd64+arm64  │  │ JupyterLab   │         │
+│                     └──────────────┘  └──────────────┘         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Code Execution Modes
+## Code Execution
 
-The `ExecutableCode` component provides three interaction modes:
-
-### 📖 Read Mode (Default)
-Static syntax-highlighted code display.
-
-### ▶️ Run Mode (Thebe)
-Execute code in a Jupyter kernel:
+Python code blocks include a **Run** button that connects to a Jupyter kernel via thebelab:
 - **RasQberry:** Connects to local Jupyter server (port 8888)
-- **GitHub Pages:** Uses [Binder](https://mybinder.org) (slower startup)
+- **GitHub Pages / Docker:** Uses [Binder](https://mybinder.org) (first launch may take 1–2 minutes)
 - **Custom:** Configure your own server in Settings
 
-### 🔬 Lab Mode
-Open the full notebook in JupyterLab (RasQberry only).
+On RasQberry, an **Open in Lab** button opens the full notebook in JupyterLab.
 
 ## Project Structure
 
@@ -122,7 +130,8 @@ doQumentation/
 │   ├── sync-content.py     # Content sync from upstream
 │   └── setup-pi.sh         # Raspberry Pi setup
 ├── .github/workflows/
-│   └── deploy.yml          # CI/CD pipeline
+│   ├── deploy.yml          # GitHub Pages deployment
+│   └── docker.yml          # Docker build and push to ghcr.io
 ├── docusaurus.config.ts    # Site configuration
 └── sidebars.ts             # Navigation structure
 ```
@@ -231,6 +240,15 @@ Push to `main` branch triggers automatic deployment.
 1. Go to Actions → "Build and Deploy"
 2. Click "Run workflow"
 3. Select target: `ghpages`, `pi-release`, or `both`
+
+### Docker
+
+Push to `main` also builds and pushes a multi-arch image (`linux/amd64` + `linux/arm64`) to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/janlahmann/doqumentation:latest
+docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
+```
 
 ### Raspberry Pi
 
