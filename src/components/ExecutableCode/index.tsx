@@ -35,7 +35,6 @@ declare global {
 
 // ── Global (module-level) state shared across all instances ──
 
-let thebelabConfigured = false;
 let thebelabBootstrapped = false;
 let thebelabEventsHooked = false;
 
@@ -53,18 +52,10 @@ interface ExecutableCodeProps {
   showLineNumbers?: boolean;
 }
 
-function injectThebelabConfig(config: JupyterConfig): void {
-  if (thebelabConfigured) return;
-
-  // Remove any existing config script
-  const existing = document.querySelector('script[type="text/x-thebe-config"]');
-  if (existing) existing.remove();
-
-  const script = document.createElement('script');
-  script.type = 'text/x-thebe-config';
-
+/** Build thebelab bootstrap options for the current environment. */
+function getThebelabOptions(config: JupyterConfig): Record<string, unknown> {
   if (config.environment === 'github-pages') {
-    script.textContent = JSON.stringify({
+    return {
       requestKernel: true,
       binderOptions: {
         repo: 'JanLahmann/Qiskit-documentation',
@@ -74,23 +65,20 @@ function injectThebelabConfig(config: JupyterConfig): void {
       kernelOptions: {
         name: 'python3',
       },
-    });
-  } else if (config.baseUrl) {
-    script.textContent = JSON.stringify({
-      requestKernel: true,
-      kernelOptions: {
-        name: 'python3',
-        serverSettings: {
-          baseUrl: config.baseUrl,
-          wsUrl: config.wsUrl,
-          token: config.token,
-        },
-      },
-    });
+    };
   }
-
-  document.head.appendChild(script);
-  thebelabConfigured = true;
+  // Local / Docker / custom — direct Jupyter connection
+  return {
+    requestKernel: true,
+    kernelOptions: {
+      name: 'python3',
+      serverSettings: {
+        baseUrl: config.baseUrl,
+        wsUrl: config.wsUrl,
+        token: config.token,
+      },
+    },
+  };
 }
 
 /** Broadcast a status change to all cells on the page. */
@@ -104,11 +92,13 @@ function broadcastStatus(status: ThebeStatus): void {
  * The kernel Promise from bootstrap() drives the status updates:
  *   connecting → (Binder launches, kernel starts) → ready | error
  */
-function bootstrapOnce(): void {
+function bootstrapOnce(config: JupyterConfig): void {
   if (thebelabBootstrapped) {
     broadcastStatus('ready');
     return;
   }
+
+  const thebelabOptions = getThebelabOptions(config);
 
   const tryBootstrap = () => {
     if (!window.thebelab) {
@@ -126,12 +116,12 @@ function bootstrapOnce(): void {
     }
 
     const cells = document.querySelectorAll('[data-executable]');
-    console.log(`[ExecutableCode] bootstrap: ${cells.length} executable cell(s) found`);
+    console.log(`[ExecutableCode] bootstrap: ${cells.length} cell(s), options:`, thebelabOptions);
 
     try {
-      // bootstrap() returns a Promise<Kernel> that resolves when the
-      // kernel is actually connected (after Binder launch on GitHub Pages).
-      const kernelPromise = window.thebelab.bootstrap();
+      // Pass options directly to bootstrap() — bypasses the config script
+      // cache which can be empty if getPageConfig() ran before injection.
+      const kernelPromise = window.thebelab.bootstrap(thebelabOptions);
       thebelabBootstrapped = true;
       console.log('[ExecutableCode] bootstrap() called, waiting for kernel promise...');
 
@@ -149,7 +139,6 @@ function bootstrapOnce(): void {
         );
       } else {
         console.log('[ExecutableCode] bootstrap returned non-promise, assuming ready');
-        // Local Jupyter (no Binder) — kernel connects near-instantly
         broadcastStatus('ready');
       }
     } catch (err) {
@@ -204,14 +193,11 @@ export default function ExecutableCode({
   const handleRun = useCallback(() => {
     if (!jupyterConfig) return;
 
-    // Inject global config if needed
-    injectThebelabConfig(jupyterConfig);
-
     // Tell ALL cells on the page to switch to run mode
     window.dispatchEvent(new CustomEvent(ACTIVATE_EVENT));
 
     // After all cells have rendered their <pre data-executable>, bootstrap once
-    bootstrapOnce();
+    bootstrapOnce(jupyterConfig);
   }, [jupyterConfig]);
 
   const handleReset = () => {
