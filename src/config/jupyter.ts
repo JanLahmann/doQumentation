@@ -47,8 +47,13 @@ export function detectJupyterConfig(): JupyterConfig {
     };
   }
 
-  // GitHub Pages detection
-  if (hostname.includes('github.io') || hostname.includes('githubusercontent.com')) {
+  // GitHub Pages / custom domain detection
+  if (
+    hostname.includes('github.io') ||
+    hostname.includes('githubusercontent.com') ||
+    hostname === 'doqumentation.org' ||
+    hostname === 'www.doqumentation.org'
+  ) {
     return {
       enabled: true,
       baseUrl: '',
@@ -56,7 +61,7 @@ export function detectJupyterConfig(): JupyterConfig {
       token: '',
       thebeEnabled: true, // Can use Binder
       labEnabled: false,  // No direct Lab access
-      binderUrl: 'https://mybinder.org/v2/gh/Qiskit/qiskit/stable',
+      binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/main',
       environment: 'github-pages',
     };
   }

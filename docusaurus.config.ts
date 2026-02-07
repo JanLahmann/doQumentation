@@ -130,7 +130,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Tutorial content © IBM Corp. Built with doQumentation.`,
+      copyright: `Tutorial content © IBM Corp. Built with doQumentation.<br/>doQumentation is an independent educational project and is not affiliated with, endorsed by, or sponsored by IBM Corporation. IBM®, IBM Quantum®, and Qiskit® are trademarks of International Business Machines Corporation.`,
     },
     
     prism: {
@@ -147,7 +147,7 @@ const config: Config = {
         defaultUrl: 'http://localhost:8888',
         defaultToken: 'rasqberry',
         // Binder URL for GitHub Pages fallback
-        binderUrl: 'https://mybinder.org/v2/gh/Qiskit/documentation/HEAD',
+        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/main',
       },
     },
   } satisfies Preset.ThemeConfig,
