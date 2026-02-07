@@ -534,27 +534,27 @@ sidebar_position: 1
 slug: /
 ---
 
-# Welcome to doQumentation
+# Qiskit Documentation — Interactive Notebooks
 
-Interactive IBM Quantum tutorials — read, run, and explore on RasQberry or in your browser.
+Built on [Qiskit/documentation](https://github.com/Qiskit/documentation) with interactive execution support.
 
-## How it works
+For reading docs (tutorials, courses, etc), we recommend the official IBM websites — they are more current, better maintained, and have a much better layout and design: [Learning](https://quantum.cloud.ibm.com/learning) · [Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) · [Source repo](https://github.com/Qiskit/documentation)
 
-- **Read** — Browse tutorials with syntax-highlighted code
-- **Run** — Click Run on any tutorial to execute code via Jupyter (Binder on this site, or a local server on RasQberry)
-- **Explore** — Open full notebooks in JupyterLab for deeper experimentation
+Use this site when you want to **execute notebooks interactively** — no local setup required:
+
+[![launch binder](https://mybinder.org/badge_logo.svg)](https://2i2c.mybinder.org/v2/gh/JanLahmann/Qiskit-documentation/main)
+
+Click the badge above, or browse the [Tutorials](/tutorials) to run code directly on this site.
 
 ## Getting started
-
-Head to the [Tutorials](/tutorials) page to browse all available tutorials, or jump straight to:
 
 - [CHSH inequality](/tutorials/chsh-inequality) — Run an experiment on a quantum computer
 - [Grover's algorithm](/tutorials/grovers-algorithm) — Search with quantum speedup
 - [Shor's algorithm](/tutorials/shors-algorithm) — Factor integers with quantum circuits
 
-## Jupyter execution
+## How code execution works
 
-Code blocks can be executed in three ways:
+Code blocks on every tutorial can be executed in three ways:
 
 1. **On this site** — Uses [Binder](https://mybinder.org) for free remote execution (may take 1–2 min to start)
 2. **On RasQberry** — Automatically connects to the local Jupyter server
@@ -562,8 +562,9 @@ Code blocks can be executed in three ways:
 
 ---
 
+[doQumentation.org](https://doqumentation.org) — an open-source documentation platform built on [Qiskit/documentation](https://github.com/Qiskit/documentation), with deployment options for [RasQberry](https://github.com/JanLahmann/RasQberry-Two) (self-hosted, full features), Docker, and [GitHub Pages](https://janlahmann.github.io/doQumentation/) (simplified static deployment).
+
 *Tutorial content © IBM Corp, licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).*
-*Site built for the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.*
 """
 
     index_path = DOCS_OUTPUT / "index.mdx"
