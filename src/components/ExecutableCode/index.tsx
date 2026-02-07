@@ -10,8 +10,8 @@
  * in separate containers to avoid conflicts.
  *
  * All cells on a page share a single kernel session so that variables
- * defined in earlier cells are available in later ones. Clicking "Run"
- * on any cell activates all cells on the page.
+ * defined in earlier cells are available in later ones. The Run/Stop
+ * toolbar appears only on the first cell; clicking it activates all cells.
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -38,9 +38,10 @@ declare global {
 let thebelabBootstrapped = false;
 let thebelabEventsHooked = false;
 
-// Custom event name used to coordinate all cells on the page
+// Custom event names used to coordinate all cells on the page
 const ACTIVATE_EVENT = 'executablecode:activate';
 const STATUS_EVENT = 'executablecode:status';
+const RESET_EVENT = 'executablecode:reset';
 
 type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 
@@ -110,8 +111,9 @@ function bootstrapOnce(config: JupyterConfig): void {
     // Hook into thebelab's internal jQuery events (once)
     if (!thebelabEventsHooked && window.thebelab.on) {
       thebelabEventsHooked = true;
-      window.thebelab.on('status', function (_evt: unknown, data: { status: string; message: string }) {
-        console.log(`[thebelab] status: ${data.status} — ${data.message}`);
+      window.thebelab.on('status', function (...args: unknown[]) {
+        const data = args[1] as { status: string; message: string };
+        if (data) console.log(`[thebelab] status: ${data.status} — ${data.message}`);
       });
     }
 
@@ -161,10 +163,19 @@ export default function ExecutableCode({
   const [mode, setMode] = useState<'read' | 'run'>('read');
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
+  const [isFirstCell, setIsFirstCell] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const thebeContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
+  }, []);
+
+  // Determine if this is the first executable cell on the page (toolbar owner)
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const allCells = document.querySelectorAll('.executable-code');
+    setIsFirstCell(allCells[0] === containerRef.current);
   }, []);
 
   // Listen for the global activate event (fired when ANY cell's Run is clicked)
@@ -175,6 +186,16 @@ export default function ExecutableCode({
     };
     window.addEventListener(ACTIVATE_EVENT, onActivate);
     return () => window.removeEventListener(ACTIVATE_EVENT, onActivate);
+  }, []);
+
+  // Listen for global reset event (Stop clicked on toolbar)
+  useEffect(() => {
+    const onReset = () => {
+      setMode('read');
+      setThebeStatus('idle');
+    };
+    window.addEventListener(RESET_EVENT, onReset);
+    return () => window.removeEventListener(RESET_EVENT, onReset);
   }, []);
 
   // Listen for global status updates from the bootstrap process
@@ -201,8 +222,8 @@ export default function ExecutableCode({
   }, [jupyterConfig]);
 
   const handleReset = () => {
-    setMode('read');
-    setThebeStatus('idle');
+    // Tell ALL cells on the page to switch back to read mode
+    window.dispatchEvent(new CustomEvent(RESET_EVENT));
   };
 
   const handleOpenLab = () => {
@@ -225,9 +246,9 @@ export default function ExecutableCode({
   const code = children.replace(/\n$/, '');
 
   return (
-    <div className="executable-code">
-      {/* Toolbar */}
-      {(isExecutable || canOpenLab) && (
+    <div className="executable-code" ref={containerRef}>
+      {/* Toolbar — only rendered on the first executable cell */}
+      {isFirstCell && (isExecutable || canOpenLab) && (
         <div className="executable-code__toolbar">
           {isExecutable && (
             <button
@@ -264,7 +285,7 @@ export default function ExecutableCode({
         </div>
       )}
 
-      {thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' && (
+      {isFirstCell && thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' && (
         <div className="executable-code__binder-hint">
           Some notebooks need extra packages. Run{' '}
           <code>!pip install -q &lt;package&gt;</code>{' '}

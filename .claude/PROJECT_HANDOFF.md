@@ -276,6 +276,7 @@ doQumentation/
 17. ✅ **Arch-conditional deps** - Full Qiskit on amd64, trimmed on arm64 (3 packages excluded: gem-suite, kahypar, ai-local-transpiler)
 18. ✅ **GH Actions Docker CI/CD** - Multi-arch build workflow pushing to ghcr.io
 19. ✅ **Requirements synced with upstream** - Validated against Qiskit-documentation/scripts/nb-tester/requirements.txt, exceptions documented
+20. ✅ **Binder end-to-end on doqumentation.org** - All 3 cells execute: circuit diagram, AerSimulator measurement, matplotlib histogram. Shared kernel works across cells.
 
 ### What's NOT Done Yet
 
@@ -284,8 +285,7 @@ doQumentation/
 3. ❌ **Pagefind integration** - Config added but not tested
 4. ❌ **More tutorials** - Only hello-world.mdx exists as sample
 5. ❌ **Course support** - Requires work listed below
-6. ❌ **Binder end-to-end on doqumentation.org** - Binder launches (SSE stream works) but kernel connection may not complete; needs browser console debugging
-7. ❌ **Automated deps sync** - Keep requirements in sync with upstream on version bumps (see `.claude/deps-sync.md`)
+6. ❌ **Automated deps sync** - Keep requirements in sync with upstream on version bumps (see `.claude/deps-sync.md`)
 
 ### What's Needed for Course Support
 
