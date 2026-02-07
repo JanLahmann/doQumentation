@@ -3,17 +3,18 @@
 sync-content.py - Sync and transform Qiskit tutorials for Docusaurus
 
 This script:
-1. Clones/updates the Qiskit/documentation repository
-2. Transforms MDX files for Docusaurus compatibility
-3. Converts Jupyter notebooks to MDX
-4. Copies original notebooks for "Open in Lab" feature
-5. Generates sidebar configuration
+1. Clones/updates the JanLahmann/Qiskit-documentation repository
+2. Converts Jupyter notebooks to MDX (code blocks auto-wrapped by CodeBlock swizzle)
+3. Transforms the upstream index.mdx for Docusaurus
+4. Parses _toc.json to generate structured sidebar configuration
+5. Copies original notebooks for "Open in Lab" feature
 
 Usage:
-    python scripts/sync-content.py [--tutorials-only] [--no-clone]
+    python scripts/sync-content.py [--tutorials-only] [--no-clone] [--sample-only]
 """
 
 import argparse
+import base64
 import json
 import re
 import shutil
@@ -28,32 +29,35 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 UPSTREAM_DIR = PROJECT_ROOT / "upstream-docs"
 DOCS_OUTPUT = PROJECT_ROOT / "docs"
 NOTEBOOKS_OUTPUT = PROJECT_ROOT / "notebooks"
+STATIC_DIR = PROJECT_ROOT / "static"
 
-# What to sync
+# What to sync from upstream (content + images)
 CONTENT_PATHS = [
     "docs/tutorials",
     "learning/courses",
+    "public/docs/images/tutorials",
+    "public/learning/images",
 ]
 
-# MDX Transformations
-# Pattern -> Replacement (or callable)
+# MDX Transformations for upstream .mdx files
 MDX_TRANSFORMS = [
-    # Admonition: Convert JSX syntax to Docusaurus directive syntax
-    # <Admonition type="note" title="Title">content</Admonition>
-    # → :::note[Title]\ncontent\n:::
+    # Admonition: <Admonition type="note" title="Title"> → :::note[Title]
     (
         r'<Admonition\s+type="(\w+)"(?:\s+title="([^"]*)")?\s*>',
         lambda m: f':::{m.group(1)}' + (f'[{m.group(2)}]' if m.group(2) else '') + '\n'
     ),
     (r'</Admonition>', '\n:::\n'),
-    
     # Map IBM's "attention" type to Docusaurus "warning"
     (r':::attention', ':::warning'),
-    
-    # Ensure Tabs/TabItem imports are present
-    # (handled separately in transform_mdx)
-    
-    # Clean up any double newlines from transformations
+    # Strip IBM-specific components that we don't implement
+    (r'<CodeCellPlaceholder[^>]*/>', ''),
+    # Fix link paths: /docs/tutorials/foo → /tutorials/foo (local)
+    (r'\(/docs/tutorials/', '(/tutorials/'),
+    # Rewrite other /docs/ and /learning/ links to upstream IBM Quantum docs
+    # (negative lookahead to skip /docs/images/ which are served locally)
+    (r'\(/docs/(?!tutorials/|images/)', '(https://docs.quantum.ibm.com/'),
+    (r'\(/learning/', '(https://docs.quantum.ibm.com/learning/'),
+    # Clean up triple+ newlines
     (r'\n{3,}', '\n\n'),
 ]
 
@@ -65,20 +69,16 @@ def run_command(cmd: list[str], cwd: Optional[Path] = None) -> subprocess.Comple
 
 
 def clone_or_update_upstream():
-    """Clone or update the Qiskit/documentation repository."""
+    """Clone or update the upstream repository."""
     print("\n📥 Syncing upstream repository...")
-    
+
     if UPSTREAM_DIR.exists():
-        # Update existing clone
         print("  Updating existing clone...")
         result = run_command(["git", "pull", "--ff-only"], cwd=UPSTREAM_DIR)
         if result.returncode != 0:
-            print(f"  Warning: git pull failed, continuing with existing content")
+            print("  Warning: git pull failed, continuing with existing content")
     else:
-        # Fresh clone with sparse checkout
         print("  Cloning repository (this may take a moment)...")
-        
-        # Clone with filter for faster download
         result = run_command([
             "git", "clone",
             "--filter=blob:none",
@@ -87,231 +87,447 @@ def clone_or_update_upstream():
             "https://github.com/JanLahmann/Qiskit-documentation.git",
             str(UPSTREAM_DIR)
         ])
-        
         if result.returncode != 0:
             print(f"  Error: Clone failed: {result.stderr}")
             sys.exit(1)
-        
-        # Configure sparse checkout
-        sparse_paths = "\n".join(CONTENT_PATHS)
+
         run_command(
             ["git", "sparse-checkout", "set"] + CONTENT_PATHS,
             cwd=UPSTREAM_DIR
         )
-    
+
     print("  ✓ Upstream sync complete")
 
 
 def transform_mdx(content: str, source_path: Path) -> str:
-    """
-    Transform Qiskit MDX to Docusaurus-compatible format.
-    
-    Args:
-        content: The MDX file content
-        source_path: Path to the source file (for context)
-    
-    Returns:
-        Transformed content
-    """
-    # Apply regex transformations
+    """Transform upstream MDX to Docusaurus-compatible format."""
     for pattern, replacement in MDX_TRANSFORMS:
         if callable(replacement):
             content = re.sub(pattern, replacement, content)
         else:
             content = re.sub(pattern, replacement, content)
-    
+
     # Add Tabs/TabItem imports if used but not imported
     if '<Tabs>' in content or '<TabItem' in content:
         if "import Tabs from" not in content and "import TabItem from" not in content:
-            import_statement = (
+            import_stmt = (
                 "import Tabs from '@theme/Tabs';\n"
                 "import TabItem from '@theme/TabItem';\n\n"
             )
-            
-            # Insert after frontmatter
             if content.startswith('---'):
-                # Find end of frontmatter
-                end_fm_match = re.search(r'^---\s*$', content[3:], re.MULTILINE)
-                if end_fm_match:
-                    insert_pos = 3 + end_fm_match.end()
-                    content = content[:insert_pos] + '\n\n' + import_statement + content[insert_pos:]
+                end_fm = re.search(r'^---\s*$', content[3:], re.MULTILINE)
+                if end_fm:
+                    pos = 3 + end_fm.end()
+                    content = content[:pos] + '\n\n' + import_stmt + content[pos:]
             else:
-                content = import_statement + content
-    
+                content = import_stmt + content
+
     return content
 
 
-def extract_frontmatter(content: str) -> tuple[dict, str]:
-    """Extract YAML frontmatter from content."""
-    if not content.startswith('---'):
-        return {}, content
-    
-    end_match = re.search(r'^---\s*$', content[3:], re.MULTILINE)
-    if not end_match:
-        return {}, content
-    
-    fm_end = 3 + end_match.end()
-    fm_content = content[3:fm_end-3].strip()
-    body = content[fm_end:].strip()
-    
-    # Simple YAML parsing (just key: value pairs)
-    frontmatter = {}
-    for line in fm_content.split('\n'):
-        if ':' in line:
-            key, value = line.split(':', 1)
-            frontmatter[key.strip()] = value.strip().strip('"\'')
-    
-    return frontmatter, body
+def escape_mdx_outside_code(content: str) -> str:
+    """Escape { and } in markdown text that would break MDX parsing.
+
+    Leaves code blocks (``` ... ```) and inline code (` ... `) untouched.
+    """
+    parts = re.split(r'(```[\s\S]*?```|`[^`]+`)', content)
+    for i in range(0, len(parts), 2):  # even indices are outside code
+        # Escape lone { } that aren't JSX expressions
+        # Skip patterns like {' '} which are valid JSX
+        parts[i] = re.sub(r'(?<!\{)\{(?![\'"])', r'\\{', parts[i])
+        parts[i] = re.sub(r'(?<![\'"])\}(?!\})', r'\\}', parts[i])
+    return ''.join(parts)
+
+
+def cell_source(cell: dict) -> str:
+    """Extract source text from a notebook cell (handles list or string)."""
+    src = cell.get('source', '')
+    if isinstance(src, list):
+        return ''.join(src)
+    return src
+
+
+def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str:
+    """Convert notebook cell outputs to markdown text.
+
+    Handles text/plain, image/png (saved as files), and stderr/stdout streams.
+    """
+    parts = []
+    for output in cell.get('outputs', []):
+        output_type = output.get('output_type', '')
+
+        if output_type in ('stream', 'execute_result', 'display_data'):
+            # Text output
+            if 'text' in output:
+                text = output['text']
+                if isinstance(text, list):
+                    text = ''.join(text)
+                if text.strip():
+                    parts.append(f'\n```text\n{text.rstrip()}\n```\n')
+
+            # Check data dict for richer outputs
+            data = output.get('data', {})
+            if 'image/png' in data:
+                img_counter[0] += 1
+                img_name = f'output_{img_counter[0]}.png'
+                img_bytes = base64.b64decode(data['image/png'])
+                img_path = output_dir / img_name
+                img_path.parent.mkdir(parents=True, exist_ok=True)
+                img_path.write_bytes(img_bytes)
+                parts.append(f'\n![output](./{img_name})\n')
+            elif 'text/plain' in data and 'text' not in output:
+                text = data['text/plain']
+                if isinstance(text, list):
+                    text = ''.join(text)
+                if text.strip():
+                    parts.append(f'\n```text\n{text.rstrip()}\n```\n')
+
+        elif output_type == 'error':
+            # Skip traceback noise — users will see errors when they run the code
+            pass
+
+    return ''.join(parts)
 
 
 def convert_notebook(ipynb_path: Path, output_path: Path) -> bool:
     """
-    Convert a Jupyter notebook to MDX format.
-    
-    Args:
-        ipynb_path: Path to the .ipynb file
-        output_path: Path for the output .mdx file
-    
-    Returns:
-        True if successful, False otherwise
+    Convert a Jupyter notebook to MDX by parsing the .ipynb JSON directly.
+
+    No external dependencies needed (no nbconvert). Python code blocks are
+    output as standard ```python fenced blocks — the CodeBlock swizzle
+    auto-wraps them in ExecutableCode at render time.
     """
     try:
-        # Convert to markdown using nbconvert
-        result = subprocess.run([
-            "jupyter", "nbconvert",
-            "--to", "markdown",
-            "--stdout",
-            str(ipynb_path)
-        ], capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(f"    Warning: nbconvert failed for {ipynb_path.name}: {result.stderr[:200]}")
+        nb = json.loads(ipynb_path.read_text())
+        cells = nb.get('cells', [])
+        if not cells:
+            print(f"    Warning: Empty notebook {ipynb_path.name}")
             return False
-        
-        content = result.stdout
-        
-        # Extract title from first heading or filename
-        title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
-        title = title_match.group(1) if title_match else ipynb_path.stem.replace('-', ' ').replace('_', ' ').title()
-        
-        # Calculate notebook path relative to notebooks dir
-        # This will be used for "Open in Lab" feature
-        try:
-            notebook_rel = ipynb_path.relative_to(UPSTREAM_DIR / "docs")
-            notebook_path = f"tutorials/{notebook_rel.name}"
-        except ValueError:
-            notebook_path = ipynb_path.name
-        
+
+        # Directory for extracted output images (beside the .mdx file)
+        img_dir = output_path.parent
+        img_counter = [0]  # mutable counter for image filenames
+
+        title = None
+        description = None
+        body_parts = []
+        first_markdown_seen = False
+
+        for cell in cells:
+            cell_type = cell.get('cell_type', '')
+            source = cell_source(cell)
+
+            if cell_type == 'markdown':
+                # Check first markdown cell for title/metadata
+                if not first_markdown_seen:
+                    first_markdown_seen = True
+                    # Check for YAML frontmatter in first cell
+                    if source.lstrip().startswith('---'):
+                        fm_match = re.match(r'\s*---\n(.*?)\n---\n?', source, re.DOTALL)
+                        if fm_match:
+                            fm_text = fm_match.group(1)
+                            t_match = re.search(r'^title:\s*(.+)$', fm_text, re.MULTILINE)
+                            if t_match:
+                                title = t_match.group(1).strip().strip('"\'')
+                            d_match = re.search(r'^description:\s*(.+)$', fm_text, re.MULTILINE)
+                            if d_match:
+                                description = d_match.group(1).strip().strip('"\'')
+                            source = source[fm_match.end():]
+
+                    # Extract title from first heading if not found in frontmatter
+                    if not title:
+                        h1_match = re.match(r'^#\s+(.+)$', source.lstrip(), re.MULTILINE)
+                        if h1_match:
+                            title = h1_match.group(1).strip()
+
+                body_parts.append(source)
+
+            elif cell_type == 'code':
+                if not source.strip():
+                    continue
+                # Determine language from notebook metadata
+                lang = nb.get('metadata', {}).get('kernelspec', {}).get('language', 'python')
+                body_parts.append(f'\n```{lang}\n{source.rstrip()}\n```\n')
+
+                # Include cell outputs (images, text)
+                output_text = extract_cell_outputs(cell, img_dir, img_counter)
+                if output_text:
+                    body_parts.append(output_text)
+
+            elif cell_type == 'raw':
+                body_parts.append(f'\n```\n{source}\n```\n')
+
+        content = '\n'.join(body_parts)
+
+        # Fallback title from filename
+        if not title:
+            title = ipynb_path.stem.replace('-', ' ').replace('_', ' ').title()
+
+        # Strip duplicate # Title heading if it matches frontmatter title
+        if title:
+            escaped = re.escape(title)
+            content = re.sub(rf'^#\s+{escaped}\s*\n', '', content, count=1, flags=re.MULTILINE)
+
+        # Apply MDX transforms (Admonition → :::, link fixes, strip custom components)
+        content = transform_mdx(content, ipynb_path)
+
+        # Escape characters that break MDX: curly braces in text (not in code blocks)
+        content = escape_mdx_outside_code(content)
+
         # Build frontmatter
-        frontmatter = f"""---
-title: "{title}"
-sidebar_label: "{title}"
----
+        # Escape quotes in title for YAML
+        safe_title = title.replace('"', '\\"')
+        fm_lines = ['---', f'title: "{safe_title}"', f'sidebar_label: "{safe_title}"']
+        if description:
+            safe_desc = description.replace('"', '\\"')
+            fm_lines.append(f'description: "{safe_desc}"')
+        fm_lines.append('---\n')
+        frontmatter = '\n'.join(fm_lines)
 
-import ExecutableCode from '@site/src/components/ExecutableCode';
-
-{{/* Original notebook: {notebook_path} */}}
-
-"""
-        
-        # Transform Python code blocks to use ExecutableCode
-        # Match ```python ... ``` blocks
-        def replace_code_block(match):
-            code = match.group(1)
-            return f'<ExecutableCode language="python" notebookPath="{notebook_path}">\n{code}</ExecutableCode>'
-        
-        content = re.sub(
-            r'```python\n(.*?)```',
-            replace_code_block,
-            content,
-            flags=re.DOTALL
-        )
-        
         # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(frontmatter + content)
-        
+        output_path.write_text(frontmatter + '\n' + content)
+
         return True
-        
+
     except Exception as e:
         print(f"    Error converting {ipynb_path.name}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
+def transform_tutorials_index(tutorials_src: Path, tutorials_dst: Path):
+    """Transform the upstream tutorials index.mdx for Docusaurus."""
+    index_src = tutorials_src / "index.mdx"
+    if not index_src.exists():
+        print("  Warning: No upstream index.mdx found")
+        return
+
+    content = index_src.read_text()
+
+    # Add our site-specific header before the upstream content
+    header = """---
+title: Tutorials
+sidebar_label: Overview
+sidebar_position: 1
+description: Browse IBM Quantum tutorials — executable on RasQberry, via Binder, or on your own Jupyter server.
+---
+
+"""
+
+    # Strip upstream frontmatter (we use our own)
+    if content.startswith('---'):
+        fm_end = re.search(r'^---\s*$', content[3:], re.MULTILINE)
+        if fm_end:
+            content = content[3 + fm_end.end():].lstrip()
+
+    # Apply MDX transforms (fixes link paths, admonitions, etc.)
+    content = transform_mdx(content, index_src)
+
+    index_dst = tutorials_dst / "index.mdx"
+    index_dst.parent.mkdir(parents=True, exist_ok=True)
+    index_dst.write_text(header + content)
+    print("  ✓ index.mdx (transformed)")
+
+
 def process_tutorials():
-    """Process all tutorial files."""
+    """Process all tutorial files from upstream."""
     print("\n📝 Processing tutorials...")
-    
+
     tutorials_src = UPSTREAM_DIR / "docs" / "tutorials"
     tutorials_dst = DOCS_OUTPUT / "tutorials"
     notebooks_dst = NOTEBOOKS_OUTPUT / "tutorials"
-    
+
     if not tutorials_src.exists():
         print(f"  Warning: Tutorials directory not found at {tutorials_src}")
         return
-    
+
     # Clean output directories
     if tutorials_dst.exists():
         shutil.rmtree(tutorials_dst)
     tutorials_dst.mkdir(parents=True)
-    
+
     if notebooks_dst.exists():
         shutil.rmtree(notebooks_dst)
     notebooks_dst.mkdir(parents=True)
-    
+
+    # Transform the tutorials index page separately
+    transform_tutorials_index(tutorials_src, tutorials_dst)
+
     # Track statistics
     stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
-    
-    # Process all files
+
     for src_path in tutorials_src.rglob('*'):
         if src_path.is_dir():
             continue
-        
+
         rel_path = src_path.relative_to(tutorials_src)
-        
+
+        # Skip files handled separately
+        if rel_path.name in ('index.mdx', '_toc.json'):
+            stats["skipped"] += 1
+            continue
+
         if src_path.suffix == '.mdx':
-            # Transform MDX files
             dst_path = tutorials_dst / rel_path
             dst_path.parent.mkdir(parents=True, exist_ok=True)
-            
             content = src_path.read_text()
             transformed = transform_mdx(content, src_path)
             dst_path.write_text(transformed)
-            
             stats["mdx"] += 1
             print(f"  ✓ {rel_path}")
-            
+
         elif src_path.suffix == '.ipynb':
-            # Convert notebook to MDX
             dst_path = tutorials_dst / rel_path.with_suffix('.mdx')
             if convert_notebook(src_path, dst_path):
                 stats["ipynb"] += 1
                 print(f"  ✓ {rel_path} → .mdx")
             else:
                 stats["skipped"] += 1
-            
-            # Also copy original notebook for "Open in Lab"
+
+            # Copy original notebook for "Open in Lab"
             nb_dst = notebooks_dst / rel_path
             nb_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src_path, nb_dst)
-            
-        elif src_path.suffix in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']:
-            # Copy images
+
+        elif src_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
             dst_path = tutorials_dst / rel_path
             dst_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src_path, dst_path)
             stats["images"] += 1
-            
+
         else:
             stats["skipped"] += 1
-    
-    print(f"\n  Summary: {stats['mdx']} MDX, {stats['ipynb']} notebooks, {stats['images']} images, {stats['skipped']} skipped")
+
+    print(f"\n  Summary: {stats['mdx']} MDX, {stats['ipynb']} notebooks, "
+          f"{stats['images']} images, {stats['skipped']} skipped")
+
+
+def url_to_doc_id(url: str) -> str:
+    """Convert upstream URL like /docs/tutorials/foo to Docusaurus doc ID tutorials/foo."""
+    return url.replace('/docs/', '', 1).lstrip('/')
+
+
+def toc_children_to_sidebar(children: list) -> list:
+    """Recursively convert _toc.json children to Docusaurus sidebar items."""
+    items = []
+    for child in children:
+        if 'children' in child and child['children']:
+            # Category with sub-items
+            sub_items = toc_children_to_sidebar(child['children'])
+            if sub_items:
+                cat = {
+                    'type': 'category',
+                    'label': child['title'],
+                    'collapsed': child.get('collapsed', True),
+                    'items': sub_items,
+                }
+                # If this category also has a URL, make it a link
+                if 'url' in child:
+                    cat['link'] = {'type': 'doc', 'id': url_to_doc_id(child['url'])}
+                items.append(cat)
+        elif 'url' in child:
+            doc_id = url_to_doc_id(child['url'])
+            # Skip the overview entry (handled as category link)
+            if doc_id == 'tutorials':
+                continue
+            items.append(doc_id)
+    return items
+
+
+def sync_upstream_images():
+    """Copy upstream images from public/ to static/ for Docusaurus.
+
+    Upstream stores images in public/docs/images/ and public/learning/images/.
+    Docusaurus serves static/ at the site root, so:
+      public/docs/images/tutorials/foo.avif → static/docs/images/tutorials/foo.avif
+      (served at /docs/images/tutorials/foo.avif)
+    """
+    print("\n🖼  Syncing upstream images...")
+
+    image_mappings = [
+        ("public/docs/images/tutorials", "docs/images/tutorials"),
+        ("public/learning/images", "learning/images"),
+    ]
+
+    total = 0
+    for src_rel, dst_rel in image_mappings:
+        src_dir = UPSTREAM_DIR / src_rel
+        dst_dir = STATIC_DIR / dst_rel
+
+        if not src_dir.exists():
+            print(f"  Warning: {src_rel} not found in upstream")
+            continue
+
+        # Clean and recreate
+        if dst_dir.exists():
+            shutil.rmtree(dst_dir)
+        shutil.copytree(src_dir, dst_dir)
+
+        count = sum(1 for _ in dst_dir.rglob('*') if _.is_file())
+        total += count
+        print(f"  ✓ {src_rel} → static/{dst_rel} ({count} files)")
+
+    print(f"  Total: {total} images synced")
+
+
+def generate_sidebar_from_toc():
+    """Parse _toc.json and generate structured sidebar configuration."""
+    print("\n📋 Generating sidebar from _toc.json...")
+
+    toc_path = UPSTREAM_DIR / "docs" / "tutorials" / "_toc.json"
+    if not toc_path.exists():
+        print("  Warning: _toc.json not found, falling back to flat list")
+        generate_sidebar_flat()
+        return
+
+    toc = json.loads(toc_path.read_text())
+    children = toc.get('children', [])
+
+    sidebar_items = toc_children_to_sidebar(children)
+
+    sidebar_json = PROJECT_ROOT / "sidebar-generated.json"
+    sidebar_json.write_text(json.dumps(sidebar_items, indent=2))
+
+    # Count tutorials
+    def count_docs(items):
+        n = 0
+        for item in items:
+            if isinstance(item, str):
+                n += 1
+            elif isinstance(item, dict) and 'items' in item:
+                n += count_docs(item['items'])
+        return n
+
+    print(f"  Found {count_docs(sidebar_items)} tutorials in {len(sidebar_items)} categories")
+    print(f"  ✓ Generated {sidebar_json}")
+
+
+def generate_sidebar_flat():
+    """Fallback: generate a flat sidebar from docs/tutorials/*.mdx files."""
+    tutorials_dir = DOCS_OUTPUT / "tutorials"
+    if not tutorials_dir.exists():
+        print("  Warning: No tutorials directory found")
+        return
+
+    tutorials = []
+    for mdx_file in sorted(tutorials_dir.glob("*.mdx")):
+        if mdx_file.name == 'index.mdx':
+            continue
+        tutorials.append(f"tutorials/{mdx_file.stem}")
+
+    print(f"  Found {len(tutorials)} tutorials (flat)")
+
+    sidebar_json = PROJECT_ROOT / "sidebar-generated.json"
+    sidebar_json.write_text(json.dumps(tutorials, indent=2))
+    print(f"  ✓ Generated {sidebar_json}")
 
 
 def create_index_page():
-    """Create the docs index page."""
-    print("\n📄 Creating index page...")
-    
+    """Create the site home page (docs/index.mdx)."""
+    print("\n📄 Creating home page...")
+
     index_content = """---
 title: doQumentation
 sidebar_position: 1
@@ -320,40 +536,36 @@ slug: /
 
 # Welcome to doQumentation
 
-This site hosts IBM Quantum tutorials optimized for local execution on RasQberry.
+Interactive IBM Quantum tutorials — read, run, and explore on RasQberry or in your browser.
 
-## Features
+## How it works
 
-- **📖 Read** - Browse tutorials with syntax-highlighted code
-- **▶️ Run** - Execute Python code directly via Jupyter
-- **🔬 Lab** - Open full notebooks in JupyterLab
+- **Read** — Browse tutorials with syntax-highlighted code
+- **Run** — Click Run on any tutorial to execute code via Jupyter (Binder on this site, or a local server on RasQberry)
+- **Explore** — Open full notebooks in JupyterLab for deeper experimentation
 
-## Getting Started
+## Getting started
 
-New to quantum computing? Start with [Hello World](/tutorials/hello-world).
+Head to the [Tutorials](/tutorials) page to browse all available tutorials, or jump straight to:
 
-## Jupyter Execution
+- [CHSH inequality](/tutorials/chsh-inequality) — Run an experiment on a quantum computer
+- [Grover's algorithm](/tutorials/grovers-algorithm) — Search with quantum speedup
+- [Shor's algorithm](/tutorials/shors-algorithm) — Factor integers with quantum circuits
+
+## Jupyter execution
 
 Code blocks can be executed in three ways:
 
-1. **On RasQberry** - Automatically connects to local Jupyter server
-2. **On GitHub Pages** - Uses Binder for remote execution
-3. **Custom Server** - Configure your own Jupyter server in [Settings](/jupyter-settings)
-
-## Tutorials
-
-Browse tutorials using the sidebar, or jump to a section:
-
-- [Get Started](/tutorials/hello-world) - Your first quantum circuit
-- [Quantum Algorithms](/tutorials/grovers-algorithm) - Classic algorithms
-- [Advanced Topics](/tutorials/sample-based-quantum-diagonalization) - Cutting-edge techniques
+1. **On this site** — Uses [Binder](https://mybinder.org) for free remote execution (may take 1–2 min to start)
+2. **On RasQberry** — Automatically connects to the local Jupyter server
+3. **Custom server** — Configure your own Jupyter endpoint in [Settings](/jupyter-settings)
 
 ---
 
-*Tutorial content © IBM Corp, licensed under CC BY-SA 4.0.*
+*Tutorial content © IBM Corp, licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).*
 *Site built for the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.*
 """
-    
+
     index_path = DOCS_OUTPUT / "index.mdx"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(index_content)
@@ -363,7 +575,7 @@ Browse tutorials using the sidebar, or jump to a section:
 def create_sample_tutorial():
     """Create a sample tutorial for testing when upstream is not available."""
     print("\n📝 Creating sample tutorial...")
-    
+
     sample_content = """---
 title: Hello World
 sidebar_label: Hello World
@@ -444,76 +656,48 @@ This tutorial uses a local simulator. To run on real quantum hardware,
 you'll need an IBM Quantum account.
 :::
 """
-    
+
     tutorial_path = DOCS_OUTPUT / "tutorials" / "hello-world.mdx"
     tutorial_path.parent.mkdir(parents=True, exist_ok=True)
     tutorial_path.write_text(sample_content)
     print(f"  ✓ Created {tutorial_path}")
 
 
-def generate_sidebar_config():
-    """Generate sidebar configuration from the docs structure."""
-    print("\n📋 Generating sidebar configuration...")
-    
-    # This is a simplified version - the actual sidebars.ts can be more sophisticated
-    tutorials_dir = DOCS_OUTPUT / "tutorials"
-    
-    if not tutorials_dir.exists():
-        print("  Warning: No tutorials directory found")
-        return
-    
-    tutorials = []
-    for mdx_file in sorted(tutorials_dir.glob("*.mdx")):
-        doc_id = f"tutorials/{mdx_file.stem}"
-        tutorials.append(doc_id)
-    
-    print(f"  Found {len(tutorials)} tutorials")
-    
-    # Write a JSON file that can be imported by sidebars.ts
-    sidebar_data = {
-        "tutorials": tutorials
-    }
-    
-    sidebar_json = PROJECT_ROOT / "sidebar-generated.json"
-    sidebar_json.write_text(json.dumps(sidebar_data, indent=2))
-    print(f"  ✓ Generated {sidebar_json}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Sync Qiskit tutorials for Docusaurus")
     parser.add_argument("--tutorials-only", action="store_true",
-                       help="Only sync tutorials (not guides)")
+                        help="Only sync tutorials (not courses)")
     parser.add_argument("--no-clone", action="store_true",
-                       help="Skip cloning/updating upstream (use existing)")
+                        help="Skip cloning/updating upstream (use existing)")
     parser.add_argument("--sample-only", action="store_true",
-                       help="Only create sample content (for testing)")
+                        help="Only create sample content (for testing)")
     args = parser.parse_args()
-    
+
     print("=" * 60)
     print("doQumentation - Content Sync")
     print("=" * 60)
-    
+
     if args.sample_only:
         create_index_page()
         create_sample_tutorial()
-        generate_sidebar_config()
+        generate_sidebar_flat()
         print("\n✅ Sample content created!")
         return
-    
+
     if not args.no_clone:
         clone_or_update_upstream()
-    
-    # Check if upstream exists
+
     if not UPSTREAM_DIR.exists():
         print("\n⚠️  Upstream not found. Creating sample content instead.")
         create_index_page()
         create_sample_tutorial()
+        generate_sidebar_flat()
     else:
         create_index_page()
         process_tutorials()
-    
-    generate_sidebar_config()
-    
+        sync_upstream_images()
+        generate_sidebar_from_toc()
+
     print("\n" + "=" * 60)
     print("✅ Content sync complete!")
     print("=" * 60)
