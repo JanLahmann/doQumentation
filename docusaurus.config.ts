@@ -9,11 +9,8 @@ const config: Config = {
   tagline: 'IBM Quantum tutorials with local Jupyter execution',
   favicon: 'img/favicon.ico',
 
-  // Set the production url of your site here
-  // For GitHub Pages, this would be https://<username>.github.io
-  url: 'https://janlahmann.github.io',
-  // Set the /<baseUrl>/ pathname under which your site is served
-  baseUrl: '/doQumentation/',
+  url: 'https://doqumentation.org',
+  baseUrl: '/',
 
   // GitHub pages deployment config
   organizationName: 'JanLahmann',
