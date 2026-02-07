@@ -22,11 +22,12 @@ import {
   type JupyterConfig,
 } from '../../config/jupyter';
 
-// thebelab 0.4.x global
+// thebelab 0.4.x global — bootstrap() returns a Promise that resolves
+// when the kernel is connected (after Binder launch + kernel start).
 declare global {
   interface Window {
     thebelab?: {
-      bootstrap: (options?: Record<string, unknown>) => void;
+      bootstrap: (options?: Record<string, unknown>) => Promise<unknown>;
     };
   }
 }
@@ -98,6 +99,8 @@ function broadcastStatus(status: ThebeStatus): void {
 /**
  * Wait for thebelab to load, then bootstrap all [data-executable] cells.
  * Called once — subsequent activations are no-ops.
+ * The kernel Promise from bootstrap() drives the status updates:
+ *   connecting → (Binder launches, kernel starts) → ready | error
  */
 function bootstrapOnce(): void {
   if (thebelabBootstrapped) {
@@ -111,9 +114,24 @@ function bootstrapOnce(): void {
       return;
     }
     try {
-      window.thebelab.bootstrap();
+      // bootstrap() returns a Promise<Kernel> that resolves when the
+      // kernel is actually connected (after Binder launch on GitHub Pages).
+      const kernelPromise = window.thebelab.bootstrap();
       thebelabBootstrapped = true;
-      broadcastStatus('ready');
+
+      // Stay in 'connecting' state until the kernel is ready
+      if (kernelPromise && typeof kernelPromise.then === 'function') {
+        kernelPromise.then(
+          () => broadcastStatus('ready'),
+          (err) => {
+            console.error('thebelab kernel error:', err);
+            broadcastStatus('error');
+          }
+        );
+      } else {
+        // Local Jupyter (no Binder) — kernel connects near-instantly
+        broadcastStatus('ready');
+      }
     } catch (err) {
       console.error('thebelab bootstrap error:', err);
       broadcastStatus('error');
