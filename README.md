@@ -1,11 +1,11 @@
 # RasQberry Tutorials
 
-[![Build and Deploy](https://github.com/JanLahmann/rasqberry-tutorials/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/rasqberry-tutorials/actions/workflows/deploy.yml)
+[![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
 
 IBM Quantum tutorials optimized for local hosting on [RasQberry](https://github.com/JanLahmann/RasQberry-Two), with interactive code execution via Jupyter.
 
-**🌐 Live Demo:** [https://janlahmann.github.io/rasqberry-tutorials](https://janlahmann.github.io/rasqberry-tutorials)
+**🌐 Live Demo:** [https://janlahmann.github.io/doQumentation](https://janlahmann.github.io/doQumentation)
 
 ## Features
 
@@ -21,14 +21,14 @@ IBM Quantum tutorials optimized for local hosting on [RasQberry](https://github.
 
 ### Option 1: View Online
 
-Visit [https://janlahmann.github.io/rasqberry-tutorials](https://janlahmann.github.io/rasqberry-tutorials)
+Visit [https://janlahmann.github.io/doQumentation](https://janlahmann.github.io/doQumentation)
 
 ### Option 2: Run Locally (Development)
 
 ```bash
 # Clone the repository
-git clone https://github.com/JanLahmann/rasqberry-tutorials.git
-cd rasqberry-tutorials
+git clone https://github.com/JanLahmann/doQumentation.git
+cd doQumentation
 
 # Install dependencies
 npm install
@@ -44,11 +44,11 @@ npm start
 
 ```bash
 # Download latest release
-wget https://github.com/JanLahmann/rasqberry-tutorials/releases/latest/download/rasqberry-tutorials-pi.tar.gz
+wget https://github.com/JanLahmann/doQumentation/releases/latest/download/doQumentation-pi.tar.gz
 
 # Extract
-tar -xzf rasqberry-tutorials-pi.tar.gz
-cd rasqberry-tutorials-pi
+tar -xzf doQumentation-pi.tar.gz
+cd doQumentation-pi
 
 # Install (requires RQB2 venv with Qiskit)
 ./install.sh
@@ -102,7 +102,7 @@ Open the full notebook in JupyterLab (RasQberry only).
 ## Project Structure
 
 ```
-rasqberry-tutorials/
+doQumentation/
 ├── docs/                    # Tutorial content (MDX)
 │   ├── index.mdx           # Home page
 │   └── tutorials/          # Tutorial pages
@@ -237,9 +237,9 @@ Push to `main` branch triggers automatic deployment.
 Download and run the release package:
 
 ```bash
-wget https://github.com/JanLahmann/rasqberry-tutorials/releases/latest/download/rasqberry-tutorials-pi.tar.gz
-tar -xzf rasqberry-tutorials-pi.tar.gz
-cd rasqberry-tutorials-pi
+wget https://github.com/JanLahmann/doQumentation/releases/latest/download/doQumentation-pi.tar.gz
+tar -xzf doQumentation-pi.tar.gz
+cd doQumentation-pi
 ./install.sh
 ```
 

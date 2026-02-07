@@ -32,8 +32,7 @@ NOTEBOOKS_OUTPUT = PROJECT_ROOT / "notebooks"
 # What to sync
 CONTENT_PATHS = [
     "docs/tutorials",
-    # Add more paths as needed:
-    # "docs/guides",
+    "learning/courses",
 ]
 
 # MDX Transformations
@@ -85,7 +84,7 @@ def clone_or_update_upstream():
             "--filter=blob:none",
             "--sparse",
             "--depth", "1",
-            "https://github.com/Qiskit/documentation.git",
+            "https://github.com/JanLahmann/Qiskit-documentation.git",
             str(UPSTREAM_DIR)
         ])
         

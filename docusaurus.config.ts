@@ -13,15 +13,14 @@ const config: Config = {
   // For GitHub Pages, this would be https://<username>.github.io
   url: 'https://janlahmann.github.io',
   // Set the /<baseUrl>/ pathname under which your site is served
-  baseUrl: '/rasqberry-tutorials/',
+  baseUrl: '/doQumentation/',
 
   // GitHub pages deployment config
   organizationName: 'JanLahmann',
-  projectName: 'rasqberry-tutorials',
+  projectName: 'doQumentation',
   trailingSlash: false,
 
   onBrokenLinks: 'warn',
-  onBrokenMarkdownLinks: 'warn',
 
   i18n: {
     defaultLocale: 'en',
@@ -55,7 +54,7 @@ const config: Config = {
           routeBasePath: '/', // Serve docs at root
           remarkPlugins: [remarkMath],
           rehypePlugins: [rehypeKatex],
-          editUrl: 'https://github.com/JanLahmann/rasqberry-tutorials/tree/main/',
+          editUrl: 'https://github.com/JanLahmann/doQumentation/tree/main/',
         },
         blog: false, // Disable blog
         theme: {
@@ -88,7 +87,7 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://github.com/JanLahmann/rasqberry-tutorials',
+          href: 'https://github.com/JanLahmann/doQumentation',
           label: 'GitHub',
           position: 'right',
         },
