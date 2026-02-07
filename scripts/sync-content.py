@@ -540,11 +540,11 @@ Built on [Qiskit/documentation](https://github.com/Qiskit/documentation) with in
 
 For reading docs (tutorials, courses, etc), we recommend the official IBM websites — they are more current, better maintained, and have a much better layout and design: [Learning](https://quantum.cloud.ibm.com/learning) · [Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) · [Source repo](https://github.com/Qiskit/documentation)
 
-Use this site when you want to **execute notebooks interactively** — no local setup required:
+Use **doQumentation.org** when you want to **run notebook code directly in your browser** — browse any [Tutorial](/tutorials), click **Run** on a code block, and it executes right on the page. Available as:
 
-[![launch binder](https://mybinder.org/badge_logo.svg)](https://2i2c.mybinder.org/v2/gh/JanLahmann/Qiskit-documentation/main)
-
-Click the badge above, or browse the [Tutorials](/tutorials) to run code directly on this site.
+- **[RasQberry](https://github.com/JanLahmann/RasQberry-Two)** — Self-hosted on Raspberry Pi with local Jupyter kernel (full features)
+- **[Docker](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation)** — Run the full stack locally with `docker compose up`
+- **[GitHub Pages](https://janlahmann.github.io/doQumentation/)** — Static site using [Binder](https://mybinder.org) for remote code execution
 
 ## Getting started
 
@@ -554,17 +554,15 @@ Click the badge above, or browse the [Tutorials](/tutorials) to run code directl
 
 ## How code execution works
 
-Code blocks on every tutorial can be executed in three ways:
+Every tutorial has executable code blocks. Click **Run** to execute them using one of three backends:
 
-1. **On this site** — Uses [Binder](https://mybinder.org) for free remote execution (may take 1–2 min to start)
-2. **On RasQberry** — Automatically connects to the local Jupyter server
-3. **Custom server** — Configure your own Jupyter endpoint in [Settings](/jupyter-settings)
+1. **Binder** (default on GitHub Pages) — Free remote Jupyter kernel via [mybinder.org](https://mybinder.org) (first run may take 1–2 min to start)
+2. **RasQberry** — Connects to the local Jupyter server on your [RasQberry](https://github.com/JanLahmann/RasQberry-Two)
+3. **Custom server** — Point to any Jupyter endpoint in [Settings](/jupyter-settings)
 
 ---
 
-[doQumentation.org](https://doqumentation.org) — an open-source documentation platform built on [Qiskit/documentation](https://github.com/Qiskit/documentation), with deployment options for [RasQberry](https://github.com/JanLahmann/RasQberry-Two) (self-hosted, full features), Docker, and [GitHub Pages](https://janlahmann.github.io/doQumentation/) (simplified static deployment).
-
-*Tutorial content © IBM Corp, licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).*
+*Tutorial content © IBM Corp, licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Site built with [Docusaurus](https://docusaurus.io/).*
 """
 
     index_path = DOCS_OUTPUT / "index.mdx"
