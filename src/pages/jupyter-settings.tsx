@@ -203,6 +203,37 @@ export default function JupyterSettings(): JSX.Element {
             </div>
           )}
 
+          {/* Binder Packages */}
+          <h2 id="binder-packages" style={{ marginTop: '2rem' }}>Binder Packages</h2>
+
+          <p>
+            When running on GitHub Pages, code executes via{' '}
+            <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">MyBinder</a>.
+            The Binder environment includes core Qiskit packages pre-installed:
+          </p>
+          <pre>
+            <code>{`qiskit[visualization], qiskit-aer,
+qiskit-ibm-runtime, pylatexenc`}</code>
+          </pre>
+
+          <p>
+            Most notebooks require additional packages. You can install them
+            on demand by running this in a code cell:
+          </p>
+          <pre>
+            <code>{`!pip install -q <package>`}</code>
+          </pre>
+
+          <p>Or install all optional packages at once:</p>
+          <pre>
+            <code>{`!pip install -q scipy scikit-learn qiskit-ibm-transpiler \\
+  qiskit-experiments plotly sympy qiskit-serverless \\
+  qiskit-ibm-catalog qiskit-addon-sqd qiskit-addon-utils \\
+  qiskit-addon-mpf qiskit-addon-aqc-tensor[aer,quimb-jax] \\
+  qiskit-addon-obp qiskit-addon-cutting pyscf ffsim \\
+  gem-suite python-sat`}</code>
+          </pre>
+
           {/* Help Section */}
           <h2 style={{ marginTop: '2rem' }}>Setup Help</h2>
           

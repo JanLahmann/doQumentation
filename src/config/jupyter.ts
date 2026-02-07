@@ -66,7 +66,7 @@ export function detectJupyterConfig(): JupyterConfig {
     };
   }
 
-  // RasQberry / Local Pi detection
+  // RasQberry / Local Pi / Docker detection
   if (
     hostname === 'localhost' ||
     hostname === '127.0.0.1' ||
@@ -76,11 +76,17 @@ export function detectJupyterConfig(): JupyterConfig {
     hostname.startsWith('10.') ||
     hostname.startsWith('172.')
   ) {
+    const port = window.location.port;
+    // Docker container: nginx proxies /api/ to Jupyter on same origin
+    // (site served on a mapped port like 8080, not the default 80/443)
+    const isDocker = port && port !== '80' && port !== '443' && port !== '8888';
+    const origin = window.location.origin;
+
     return {
       enabled: true,
-      baseUrl: `http://${hostname}:8888`,
-      wsUrl: `ws://${hostname}:8888`,
-      token: 'rasqberry',
+      baseUrl: isDocker ? origin : `http://${hostname}:8888`,
+      wsUrl: isDocker ? origin.replace(/^http/, 'ws') : `ws://${hostname}:8888`,
+      token: isDocker ? '' : 'rasqberry',
       thebeEnabled: true,
       labEnabled: true,
       environment: 'rasqberry',

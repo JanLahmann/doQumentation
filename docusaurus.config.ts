@@ -27,7 +27,7 @@ const config: Config = {
   // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
   scripts: [
     {
-      src: 'https://unpkg.com/thebelab@0.4.15/lib/index.js',
+      src: 'https://unpkg.com/thebelab@0.4.0/lib/index.js',
       async: true,
     },
   ],

@@ -203,6 +203,15 @@ export default function ExecutableCode({
         </div>
       )}
 
+      {thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' && (
+        <div className="executable-code__binder-hint">
+          Some notebooks need extra packages. Run{' '}
+          <code>!pip install -q &lt;package&gt;</code>{' '}
+          in a cell, or see{' '}
+          <a href="/jupyter-settings#binder-packages">all available packages</a>.
+        </div>
+      )}
+
       {title && <div className="executable-code__title">{title}</div>}
 
       {/* Read mode: React-managed syntax-highlighted code */}

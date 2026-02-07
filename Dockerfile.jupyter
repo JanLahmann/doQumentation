@@ -1,0 +1,75 @@
+# Stage 1: Build the Docusaurus site
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# Remove GitHub Pages CNAME from build output
+RUN rm -f build/CNAME
+
+# Stage 2: Python + nginx + Jupyter + Qiskit
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nginx \
+        supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Qiskit and Jupyter (matching upstream Binder requirements)
+COPY binder/jupyter-requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir jupyter \
+    && pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
+
+# Configure nginx
+COPY nginx.conf /etc/nginx/sites-enabled/default
+
+# Copy built site
+COPY --from=build /app/build /usr/share/nginx/html
+
+# Configure Jupyter
+RUN mkdir -p /root/.jupyter
+RUN echo '\
+c.ServerApp.token = ""\n\
+c.ServerApp.password = ""\n\
+c.ServerApp.allow_origin = "*"\n\
+c.ServerApp.allow_remote_access = True\n\
+c.ServerApp.allow_unauthenticated_access = True\n\
+c.IdentityProvider.token = ""\n\
+c.ServerApp.ip = "0.0.0.0"\n\
+c.ServerApp.port = 8888\n\
+c.ServerApp.open_browser = False\n\
+c.ServerApp.disable_check_xsrf = True\n\
+' > /root/.jupyter/jupyter_server_config.py
+
+# Configure supervisord to run both nginx and Jupyter
+RUN echo '\
+[supervisord]\n\
+nodaemon=true\n\
+user=root\n\
+logfile=/dev/stdout\n\
+logfile_maxbytes=0\n\
+\n\
+[program:nginx]\n\
+command=nginx -g "daemon off;"\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+stderr_logfile=/dev/stderr\n\
+stderr_logfile_maxbytes=0\n\
+\n\
+[program:jupyter]\n\
+command=jupyter server --allow-root\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+stderr_logfile=/dev/stderr\n\
+stderr_logfile_maxbytes=0\n\
+' > /etc/supervisor/conf.d/services.conf
+
+EXPOSE 80 8888
+
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/services.conf"]

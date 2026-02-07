@@ -9,13 +9,13 @@ Interactive IBM Quantum tutorials and courses, with live code execution via Jupy
 
 ## Features
 
-| Feature | GitHub Pages | Docker | RasQberry Pi |
-|---------|--------------|--------|--------------|
-| 📖 Browse tutorials | ✅ | ✅ | ✅ |
-| 🔍 Full-text search | ✅ | ✅ | ✅ |
-| ▶️ Execute code | ⚠️ Via Binder | ⚠️ Via Binder | ✅ Local Jupyter |
-| 🔬 Open in JupyterLab | ❌ | ❌ | ✅ |
-| 📴 Offline access | ❌ | ✅ | ✅ |
+| Feature | GitHub Pages | Docker (lite) | Docker (jupyter) | RasQberry Pi |
+|---------|--------------|---------------|------------------|--------------|
+| 📖 Browse tutorials | ✅ | ✅ | ✅ | ✅ |
+| 🔍 Full-text search | ✅ | ✅ | ✅ | ✅ |
+| ▶️ Execute code | ⚠️ Via Binder | ⚠️ Via Binder | ✅ Local Jupyter | ✅ Local Jupyter |
+| 🔬 Open in JupyterLab | ❌ | ❌ | ❌ | ✅ |
+| 📴 Offline access | ❌ | ✅ | ✅ | ✅ |
 
 ## Quick Start
 
@@ -42,9 +42,19 @@ npm start
 
 ### Option 3: Run with Docker
 
+Two images are available:
+
+| Image | Tag | Size | Code Execution |
+|-------|-----|------|----------------|
+| Lite | `latest` | ~60 MB | Via Binder |
+| Jupyter | `jupyter` | ~3 GB | Local (Qiskit included) |
+
 ```bash
-docker pull ghcr.io/janlahmann/doqumentation:latest
+# Lite: static site only
 docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
+
+# Jupyter: includes Jupyter + Qiskit for local code execution
+docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 ```
 
 Access at `http://localhost:8080`.
@@ -52,7 +62,8 @@ Access at `http://localhost:8080`.
 Or build locally:
 
 ```bash
-docker compose up
+docker compose up web       # lite
+docker compose up jupyter   # with Jupyter + Qiskit
 ```
 
 ### Option 4: Deploy to Raspberry Pi
@@ -243,11 +254,14 @@ Push to `main` branch triggers automatic deployment.
 
 ### Docker
 
-Push to `main` also builds and pushes a multi-arch image (`linux/amd64` + `linux/arm64`) to GitHub Container Registry:
+Push to `main` builds and pushes two multi-arch images (`linux/amd64` + `linux/arm64`) to GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/janlahmann/doqumentation:latest
+# Lite (nginx only, ~60 MB)
 docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
+
+# Jupyter (nginx + Jupyter + Qiskit, ~3 GB)
+docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 ```
 
 ### Raspberry Pi
