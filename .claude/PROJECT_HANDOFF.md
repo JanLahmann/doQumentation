@@ -443,9 +443,12 @@ cd doQumentation-pi
 
 ---
 
-## Open Questions / Future Considerations
+## Open TODO
 
-- **Jupyter auth** - thebelab 0.4.0 doesn't pass tokens, so container runs Jupyter with all auth disabled. Fine for local/demo, needs addressing for any internet-facing deployment.
+- **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan: nginx injects `JUPYTER_TOKEN` (default: `rasqberry`, configurable via env var) into proxied requests, so thebelab works without code changes. Entrypoint script configures both nginx and Jupyter at startup. See detailed plan: `.claude/plans/jupyter-token-auth.md`
+
+## Future Considerations
+
 - **LED Integration** - Could tutorials trigger LED visualizations on RasQberry?
 - **Offline AI Tutor** - Granite 4.0 Nano for offline Q&A about tutorials?
 
