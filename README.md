@@ -147,4 +147,4 @@ Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arc
 
 ---
 
-[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0. This project is not affiliated with, endorsed by, or sponsored by IBM Corporation. IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
+[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0. IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project and is not affiliated with, endorsed by, or sponsored by IBM Corporation.
