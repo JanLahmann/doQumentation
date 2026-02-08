@@ -438,6 +438,10 @@ def toc_children_to_sidebar(children: list) -> list:
     items = []
     for child in children:
         if 'children' in child and child['children']:
+            # "Lessons" is a wrapper in upstream _toc.json — unwrap its children directly
+            if child.get('title') == 'Lessons':
+                items.extend(toc_children_to_sidebar(child['children']))
+                continue
             # Category with sub-items
             sub_items = toc_children_to_sidebar(child['children'])
             if sub_items:
@@ -724,17 +728,26 @@ sidebar_position: 1
 slug: /
 ---
 
-# Qiskit Documentation — Interactive Notebooks
+# doQumentation — Open-source website for IBM Quantum's tutorials and learning content
 
-Built on [Qiskit/documentation](https://github.com/Qiskit/documentation) with interactive execution support.
+## We recommend IBM's official platform
 
-For reading docs (tutorials, courses, etc), we recommend the official IBM websites — they are more current, better maintained, and have a much better layout and design: [Learning](https://quantum.cloud.ibm.com/learning) · [Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) · [Source repo](https://github.com/Qiskit/documentation)
+For reading and learning, IBM's official [Quantum Platform](https://quantum.ibm.com) and their [Qiskit documentation](https://docs.quantum.ibm.com/) is the best place to start:
 
-Use **doQumentation.org** when you want to **run notebook code directly in your browser** — browse any [Tutorial](/tutorials), click **Run** on a code block, and it executes right on the page. Available as:
+- **[Learning](https://quantum.cloud.ibm.com/learning)** — Structured courses from quantum basics to advanced topics
+- **[Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials)** — 40+ tutorials on transpilation, error mitigation, and more
+- **[Documentation](https://docs.quantum.ibm.com/)** — Guides and API reference for Qiskit
+- **[Source repo](https://github.com/Qiskit/documentation)** — All content is open source (CC BY-SA 4.0)
+
+IBM's platform is always up-to-date, well-designed, and the best place to read the documentation.
+
+## What this project adds
+
+Browse any [tutorial](/tutorials) or course, click **Run** on a code block, and it executes right on the page. Available as:
 
 - **[RasQberry](https://github.com/JanLahmann/RasQberry-Two)** — Self-hosted on Raspberry Pi with local Jupyter kernel (full features)
-- **[Docker](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation)** — Run the full stack locally with `docker compose up`
-- **[GitHub Pages](https://janlahmann.github.io/doQumentation/)** — Static site using [Binder](https://mybinder.org) for remote code execution
+- **[Docker](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation)** — Run the full stack locally (offline capable)
+- **[GitHub Pages](https://doqumentation.org)** — Static site using [Binder](https://mybinder.org) for remote code execution
 
 ## Getting started
 
@@ -747,12 +760,12 @@ Use **doQumentation.org** when you want to **run notebook code directly in your 
 Every tutorial has executable code blocks. Click **Run** to execute them using one of three backends:
 
 1. **Binder** (default on GitHub Pages) — Free remote Jupyter kernel via [mybinder.org](https://mybinder.org) (first run may take 1–2 min to start)
-2. **RasQberry** — Connects to the local Jupyter server on your [RasQberry](https://github.com/JanLahmann/RasQberry-Two)
+2. **Local Jupyter (Docker / RasQberry)** — Connects to the local Jupyter server with Qiskit pre-installed
 3. **Custom server** — Point to any Jupyter endpoint in [Settings](/jupyter-settings)
 
 ---
 
-*Tutorial content © IBM Corp, licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Site built with [Docusaurus](https://docusaurus.io/).*
+*[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0. This project is not affiliated with, endorsed by, or sponsored by IBM Corporation. IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.*
 """
 
     index_path = DOCS_OUTPUT / "index.mdx"
