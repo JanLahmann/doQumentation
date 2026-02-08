@@ -16,13 +16,13 @@ IBM's platform is always up-to-date, well-designed, and the best place to read t
 
 ## What this project adds
 
-IBM's Qiskit tutorials and documentation are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on [RasQberry](https://github.com/JanLahmann/RasQberry-Two).
+IBM's Qiskit tutorials and documentation are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on [RasQberry](https://rasqberry.org/).
 
 **See it live at [doQumentation.org](https://doqumentation.org)** — browse tutorials and courses, execute code via Binder, no install required.
 
 ## Deployment Tiers
 
-| | [GitHub Pages](https://doqumentation.org) | [Docker (lite)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [Docker (jupyter)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [RasQberry Pi](https://github.com/JanLahmann/RasQberry-Two) |
+| | [GitHub Pages](https://doqumentation.org) | [Docker (lite)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [Docker (jupyter)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [RasQberry](https://rasqberry.org/) |
 |---|---|---|---|---|
 | Browse tutorials | Yes | Yes | Yes | Yes |
 | Full-text search | Yes | Yes | Yes | Yes |
@@ -147,4 +147,5 @@ Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arc
 
 ---
 
-[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0. IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project and is not affiliated with, endorsed by, or sponsored by IBM Corporation.
+[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0.
+IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://rasqberry.org/) project and is not affiliated with, endorsed by, or sponsored by IBM Corporation.
