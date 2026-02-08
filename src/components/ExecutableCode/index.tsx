@@ -45,6 +45,97 @@ const RESET_EVENT = 'executablecode:reset';
 
 type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 
+// ── Cell execution feedback ──
+// Tracks which cell is currently executing so we can show "Done" for no-output cells.
+
+let executingCell: Element | null = null;
+let lastKernelBusy = false;
+let feedbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Resolve execution feedback for a cell: show "Done" or remove if output visible. */
+function settleCellFeedback(cell: Element): void {
+  const feedback = cell.querySelector('.exec-feedback') as HTMLElement | null;
+  if (!feedback) return;
+
+  const outputArea = cell.querySelector('.jp-OutputArea, .thebelab-output');
+  const hasOutput = outputArea?.querySelector('.jp-OutputArea-child');
+
+  if (hasOutput && outputArea?.textContent?.trim()) {
+    feedback.remove();
+  } else {
+    feedback.className = 'exec-feedback exec-feedback--done';
+    feedback.textContent = '\u2713 Done';
+    setTimeout(() => {
+      feedback.classList.add('exec-feedback--fade');
+      setTimeout(() => feedback.remove(), 500);
+    }, 2500);
+  }
+}
+
+/** Handle kernel busy/idle transitions to detect execution completion. */
+function handleKernelStatusForFeedback(status: string): void {
+  if (status === 'busy') {
+    lastKernelBusy = true;
+  }
+  if (status === 'idle' && lastKernelBusy && executingCell) {
+    lastKernelBusy = false;
+    const cell = executingCell;
+    executingCell = null;
+    if (feedbackFallbackTimer) {
+      clearTimeout(feedbackFallbackTimer);
+      feedbackFallbackTimer = null;
+    }
+    setTimeout(() => settleCellFeedback(cell), 300);
+  }
+}
+
+/** Mark a cell as executing and show "Running..." indicator. */
+function markCellExecuting(cell: Element): void {
+  cell.querySelector('.exec-feedback')?.remove();
+  executingCell = cell;
+
+  const feedback = document.createElement('div');
+  feedback.className = 'exec-feedback exec-feedback--running';
+  feedback.textContent = 'Running\u2026';
+  cell.appendChild(feedback);
+
+  if (feedbackFallbackTimer) clearTimeout(feedbackFallbackTimer);
+  feedbackFallbackTimer = setTimeout(() => {
+    if (executingCell === cell) {
+      executingCell = null;
+      settleCellFeedback(cell);
+    }
+  }, 5000);
+}
+
+/** After thebelab cells are rendered, attach listeners for execution feedback. */
+function setupCellFeedback(): void {
+  setTimeout(() => {
+    const cells = document.querySelectorAll('.thebelab-cell');
+    console.log(`[ExecutableCode] Setting up feedback for ${cells.length} cell(s)`);
+
+    cells.forEach((cell) => {
+      const buttons = cell.querySelectorAll('button');
+      const runBtn = Array.from(buttons).find(
+        b => b.textContent?.trim().toLowerCase() === 'run'
+      );
+      if (runBtn) {
+        runBtn.addEventListener('click', () => markCellExecuting(cell));
+      }
+      // Also handle Shift+Enter (thebelab's CodeMirror keybinding)
+      const cm = cell.querySelector('.CodeMirror');
+      if (cm) {
+        cm.addEventListener('keydown', (e: Event) => {
+          const ke = e as KeyboardEvent;
+          if (ke.shiftKey && ke.key === 'Enter') {
+            markCellExecuting(cell);
+          }
+        });
+      }
+    });
+  }, 1000);
+}
+
 interface ExecutableCodeProps {
   children: string;
   language?: string;
@@ -113,7 +204,10 @@ function bootstrapOnce(config: JupyterConfig): void {
       thebelabEventsHooked = true;
       window.thebelab.on('status', function (...args: unknown[]) {
         const data = args[1] as { status: string; message: string };
-        if (data) console.log(`[thebelab] status: ${data.status} — ${data.message}`);
+        if (data) {
+          console.log(`[thebelab] status: ${data.status} — ${data.message}`);
+          handleKernelStatusForFeedback(data.status);
+        }
       });
     }
 
@@ -133,6 +227,7 @@ function bootstrapOnce(config: JupyterConfig): void {
           (kernel) => {
             console.log('[ExecutableCode] kernel ready:', kernel);
             broadcastStatus('ready');
+            setupCellFeedback();
           },
           (err) => {
             console.error('[ExecutableCode] kernel error:', err);
