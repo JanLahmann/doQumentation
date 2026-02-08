@@ -3,132 +3,90 @@
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
 
-Interactive IBM Quantum tutorials and courses, with live code execution via Jupyter. Part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
+An open-source website that recreates [IBM Quantum's](https://quantum.ibm.com) tutorials and learning platform from their [open-source content](https://github.com/Qiskit/documentation). Part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
 
-**🌐 Live:** [https://doqumentation.org](https://doqumentation.org)
+**We recommend the official IBM Quantum platform for the best experience:**
+[Learning](https://quantum.cloud.ibm.com/learning) · [Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) · [Documentation](https://docs.quantum.ibm.com/) · [Source repo](https://github.com/Qiskit/documentation)
 
-## Features
+IBM's Qiskit tutorials and documentation are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on devices like the Raspberry Pi.
 
-| Feature | GitHub Pages | Docker (lite) | Docker (jupyter) | RasQberry Pi |
-|---------|--------------|---------------|------------------|--------------|
-| 📖 Browse tutorials | ✅ | ✅ | ✅ | ✅ |
-| 🔍 Full-text search | ✅ | ✅ | ✅ | ✅ |
-| ▶️ Execute code | ⚠️ Via Binder | ⚠️ Via Binder | ✅ Local Jupyter | ✅ Local Jupyter |
-| 🔬 Open in JupyterLab | ❌ | ❌ | ❌ | ✅ |
-| 📴 Offline access | ❌ | ✅ | ✅ | ✅ |
+**Live:** [doqumentation.org](https://doqumentation.org)
+
+## Deployment Tiers
+
+| | [GitHub Pages](https://doqumentation.org) | [Docker](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [RasQberry Pi](https://github.com/JanLahmann/RasQberry-Two) |
+|---|---|---|---|
+| Browse tutorials | Yes | Yes | Yes |
+| Full-text search | Yes | Yes | Yes |
+| Execute code | Via [Binder](https://mybinder.org) | Local Jupyter | Local Jupyter |
+| Open in JupyterLab | — | — | Yes |
+| Offline access | — | Yes | Yes |
 
 ## Quick Start
 
-### Option 1: View Online
+### View Online
 
-Visit [https://doqumentation.org](https://doqumentation.org)
+Visit [doqumentation.org](https://doqumentation.org)
 
-### Option 2: Run Locally (Development)
-
-```bash
-# Clone the repository
-git clone https://github.com/JanLahmann/doQumentation.git
-cd doQumentation
-
-# Install dependencies
-npm install
-
-# Sync content from Qiskit/documentation
-python scripts/sync-content.py --sample-only  # or without flag for full sync
-
-# Start development server
-npm start
-```
-
-### Option 3: Run with Docker
-
-Two images are available:
-
-| Image | Tag | Size | Code Execution |
-|-------|-----|------|----------------|
-| Lite | `latest` | ~60 MB | Via Binder |
-| Jupyter | `jupyter` | ~3 GB | Local (Qiskit included) |
+### Run with Docker
 
 ```bash
-# Lite: static site only
+# Lite: static site only (~60 MB)
 docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
 
-# Jupyter: includes Jupyter + Qiskit for local code execution
+# With Jupyter + Qiskit for local code execution (~3 GB)
 docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 ```
 
-Access at `http://localhost:8080`.
+Access at `http://localhost:8080`. Or build locally with `docker compose up web` (lite) or `docker compose up jupyter` (full).
 
-Or build locally:
-
-```bash
-docker compose up web       # lite
-docker compose up jupyter   # with Jupyter + Qiskit
-```
-
-### Option 4: Deploy to Raspberry Pi
+### Deploy to Raspberry Pi
 
 ```bash
-# Download latest release
 wget https://github.com/JanLahmann/doQumentation/releases/latest/download/doQumentation-pi.tar.gz
-
-# Extract
 tar -xzf doQumentation-pi.tar.gz
-cd doQumentation-pi
-
-# Install (requires RQB2 venv with Qiskit)
-./install.sh
+cd doQumentation-pi && ./install.sh
 ```
 
 Access at `http://rasqberry.local` or your Pi's IP address.
 
-## Architecture
+### Development
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Single Codebase                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │              Docusaurus Static Site                      │   │
-│   │  • MDX tutorials (transformed from Qiskit/documentation) │   │
-│   │  • Carbon-inspired styling                               │   │
-│   │  • Pagefind search                                       │   │
-│   │  • KaTeX math rendering                                  │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│                              │                                   │
-│              ┌───────────────┼───────────────┐                  │
-│              ▼               ▼               ▼                  │
-│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│   │ GitHub Pages │  │   Docker     │  │ RasQberry Pi │         │
-│   ├──────────────┤  ├──────────────┤  ├──────────────┤         │
-│   │ Static only  │  │ nginx in     │  │ nginx        │         │
-│   │ Binder exec  │  │ container    │  │ Jupyter :8888│         │
-│   └──────────────┘  │ amd64+arm64  │  │ JupyterLab   │         │
-│                     └──────────────┘  └──────────────┘         │
-└─────────────────────────────────────────────────────────────────┘
+```bash
+git clone https://github.com/JanLahmann/doQumentation.git
+cd doQumentation
+npm install
+python scripts/sync-content.py --sample-only  # or without flag for full sync
+npm start
 ```
 
-## Code Execution
+## How It Works
 
-Python code blocks include a **Run** button that connects to a Jupyter kernel via thebelab:
-- **RasQberry:** Connects to local Jupyter server (port 8888)
-- **GitHub Pages / Docker:** Uses [Binder](https://mybinder.org) (first launch may take 1–2 minutes)
-- **Custom:** Configure your own server in Settings
+Tutorial content is sourced from [Qiskit/documentation](https://github.com/Qiskit/documentation) and transformed into a [Docusaurus](https://docusaurus.io) site with executable code blocks. Python code connects to a Jupyter kernel via [thebelab](https://github.com/executablebooks/thebelab):
+
+- **GitHub Pages:** Uses [Binder](https://mybinder.org) for remote execution (first run may take 1-2 min)
+- **Docker / RasQberry:** Connects to a local Jupyter server with Qiskit pre-installed
+- **Custom:** Configure any Jupyter endpoint in [Settings](https://doqumentation.org/jupyter-settings)
 
 On RasQberry, an **Open in Lab** button opens the full notebook in JupyterLab.
+
+## Content Synchronization
+
+```bash
+python scripts/sync-content.py                # Full sync (requires git, Python, jupyter)
+python scripts/sync-content.py --sample-only  # Sample only (for testing)
+python scripts/sync-content.py --no-clone     # Use existing upstream clone
+```
 
 ## Project Structure
 
 ```
 doQumentation/
 ├── docs/                    # Tutorial content (MDX)
-│   ├── index.mdx           # Home page
-│   └── tutorials/          # Tutorial pages
 ├── notebooks/              # Original .ipynb files
 ├── src/
 │   ├── components/
-│   │   └── ExecutableCode/ # Interactive code component
+│   │   └── ExecutableCode/ # Interactive code execution
 │   ├── config/
 │   │   └── jupyter.ts      # Jupyter configuration
 │   ├── css/
@@ -138,38 +96,15 @@ doQumentation/
 │   └── theme/
 │       └── CodeBlock/      # Code block override
 ├── scripts/
-│   ├── sync-content.py     # Content sync from upstream
-│   └── setup-pi.sh         # Raspberry Pi setup
+│   └── sync-content.py     # Content sync from upstream
+├── binder/                 # Dependency files for Jupyter
 ├── .github/workflows/
 │   ├── deploy.yml          # GitHub Pages deployment
-│   └── docker.yml          # Docker build and push to ghcr.io
-├── docusaurus.config.ts    # Site configuration
-└── sidebars.ts             # Navigation structure
+│   └── docker.yml          # Docker build → ghcr.io
+├── Dockerfile              # Lite image (nginx)
+├── Dockerfile.jupyter      # Full image (nginx + Jupyter + Qiskit)
+└── docusaurus.config.ts    # Site configuration
 ```
-
-## Content Synchronization
-
-Tutorials are sourced from [Qiskit/documentation](https://github.com/Qiskit/documentation) and transformed for Docusaurus compatibility:
-
-```bash
-# Full sync (requires git, Python, jupyter)
-python scripts/sync-content.py
-
-# Sample content only (for testing)
-python scripts/sync-content.py --sample-only
-
-# Skip git clone (use existing upstream)
-python scripts/sync-content.py --no-clone
-```
-
-### MDX Transformations
-
-| Qiskit Syntax | Docusaurus Equivalent |
-|---------------|----------------------|
-| `<Admonition type="note">` | `:::note` |
-| `<Admonition type="attention">` | `:::warning` |
-| `<Tabs>` / `<TabItem>` | Same (native) |
-| Math: `$...$`, `$$...$$` | Same (KaTeX) |
 
 ## Development
 
@@ -182,20 +117,11 @@ python scripts/sync-content.py --no-clone
 ### Commands
 
 ```bash
-# Start development server
-npm start
-
-# Build for production
-npm run build
-
-# Build search index
-npm run build:search
-
-# Type check
-npm run typecheck
-
-# Sync content
-npm run sync-content
+npm start              # Development server
+npm run build          # Production build
+npm run build:search   # Build search index
+npm run typecheck      # Type check
+npm run sync-content   # Sync content from upstream
 ```
 
 ### Adding Custom Tutorials
@@ -222,7 +148,7 @@ print(qc)
 This code is automatically executable!
 ```
 
-2. Add to `sidebars.ts` for navigation.
+2. The sidebar is auto-generated from the file structure.
 
 ### Code Block Options
 
@@ -246,58 +172,20 @@ This code is automatically executable!
 
 Push to `main` branch triggers automatic deployment.
 
-### Manual Release
-
-1. Go to Actions → "Build and Deploy"
-2. Click "Run workflow"
-3. Select target: `ghpages`, `pi-release`, or `both`
-
 ### Docker
 
 Push to `main` builds and pushes two multi-arch images (`linux/amd64` + `linux/arm64`) to GitHub Container Registry:
 
 ```bash
-# Lite (nginx only, ~60 MB)
-docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
-
-# Jupyter (nginx + Jupyter + Qiskit, ~3 GB)
-docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
+docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest          # Lite (~60 MB)
+docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter  # Full (~3 GB)
 ```
 
-### Raspberry Pi
+### Manual Release
 
-Download and run the release package:
-
-```bash
-wget https://github.com/JanLahmann/doQumentation/releases/latest/download/doQumentation-pi.tar.gz
-tar -xzf doQumentation-pi.tar.gz
-cd doQumentation-pi
-./install.sh
-```
-
-## Configuration
-
-### Jupyter Server (Pi)
-
-Edit `~/.jupyter/jupyter_server_config.py`:
-
-```python
-c.ServerApp.token = 'your-token'
-c.ServerApp.port = 8888
-c.ServerApp.allow_origin = '*'
-```
-
-### Custom Jupyter (Browser)
-
-Visit `/jupyter-settings` to configure a custom Jupyter server URL.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes
-4. Run `npm run build` to verify
-5. Submit a pull request
+1. Go to Actions > "Build and Deploy"
+2. Click "Run workflow"
+3. Select target: `ghpages`, `pi-release`, or `both`
 
 ## License
 
@@ -306,9 +194,9 @@ Visit `/jupyter-settings` to configure a custom Jupyter server URL.
 
 ## Acknowledgments
 
-- [IBM Quantum](https://quantum.ibm.com) for Qiskit and tutorials
+- [IBM Quantum](https://quantum.ibm.com) for Qiskit and the open-source tutorials
 - [Docusaurus](https://docusaurus.io) for the documentation framework
-- [Thebe](https://thebe.readthedocs.io) for Jupyter integration
+- [thebelab](https://github.com/executablebooks/thebelab) for Jupyter integration
 - [qotlabs](https://github.com/qotlabs/qiskit-documentation) for inspiration
 
 ---
