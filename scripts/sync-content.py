@@ -719,59 +719,31 @@ def generate_course_sidebar():
 
 
 def create_index_page():
-    """Create the site home page (docs/index.mdx)."""
-    print("\n📄 Creating home page...")
+    """Ensure the site home page (docs/index.mdx) exists.
 
-    index_content = """---
+    The committed docs/index.mdx is the source of truth.  If it already
+    exists (normal repo checkout), leave it untouched.  Only generate a
+    minimal fallback when the file is missing (e.g. fresh --sample-only).
+    """
+    index_path = DOCS_OUTPUT / "index.mdx"
+    if index_path.exists():
+        print(f"\n📄 Home page already exists: {index_path} (keeping as-is)")
+        return
+
+    print("\n📄 Creating fallback home page...")
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text("""\
+---
 title: doQumentation
 sidebar_position: 1
 slug: /
 ---
 
-# doQumentation — Open-source website for IBM Quantum's tutorials and learning content
+# doQumentation
 
-## We recommend IBM's official platform
-
-For reading and learning, IBM's official [Quantum Platform](https://quantum.ibm.com) and their [Qiskit documentation](https://docs.quantum.ibm.com/) is the best place to start:
-
-- **[Learning](https://quantum.cloud.ibm.com/learning)** — Structured courses from quantum basics to advanced topics
-- **[Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials)** — 40+ tutorials on transpilation, error mitigation, and more
-- **[Documentation](https://docs.quantum.ibm.com/)** — Guides and API reference for Qiskit
-- **[Source repo](https://github.com/Qiskit/documentation)** — All content is open source (CC BY-SA 4.0)
-
-IBM's platform is always up-to-date, well-designed, and the best place to read the documentation.
-
-## What this project adds
-
-Browse any [tutorial](/tutorials) or course, click **Run** on a code block, and it executes right on the page. Available as:
-
-- **[RasQberry](https://github.com/JanLahmann/RasQberry-Two)** — Self-hosted on Raspberry Pi with local Jupyter kernel (full features)
-- **[Docker](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation)** — Run the full stack locally (offline capable)
-- **[GitHub Pages](https://doqumentation.org)** — Static site using [Binder](https://mybinder.org) for remote code execution
-
-## Getting started
-
-- [CHSH inequality](/tutorials/chsh-inequality) — Run an experiment on a quantum computer
-- [Grover's algorithm](/tutorials/grovers-algorithm) — Search with quantum speedup
-- [Shor's algorithm](/tutorials/shors-algorithm) — Factor integers with quantum circuits
-
-## How code execution works
-
-Every tutorial has executable code blocks. Click **Run** to execute them using one of three backends:
-
-1. **Binder** (default on GitHub Pages) — Free remote Jupyter kernel via [mybinder.org](https://mybinder.org) (first run may take 1–2 min to start)
-2. **Local Jupyter (Docker / RasQberry)** — Connects to the local Jupyter server with Qiskit pre-installed
-3. **Custom server** — Point to any Jupyter endpoint in [Settings](/jupyter-settings)
-
----
-
-*[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0. This project is not affiliated with, endorsed by, or sponsored by IBM Corporation. IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.*
-"""
-
-    index_path = DOCS_OUTPUT / "index.mdx"
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(index_content)
-    print(f"  ✓ Created {index_path}")
+Home page placeholder — run a full content sync to populate.
+""")
+    print(f"  ✓ Created fallback {index_path}")
 
 
 def create_sample_tutorial():
