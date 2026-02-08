@@ -14,13 +14,13 @@ IBM's Qiskit tutorials and documentation are open-source, but the web applicatio
 
 ## Deployment Tiers
 
-| | [GitHub Pages](https://doqumentation.org) | [Docker](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [RasQberry Pi](https://github.com/JanLahmann/RasQberry-Two) |
-|---|---|---|---|
-| Browse tutorials | Yes | Yes | Yes |
-| Full-text search | Yes | Yes | Yes |
-| Execute code | Via [Binder](https://mybinder.org) | Local Jupyter | Local Jupyter |
-| Open in JupyterLab | — | — | Yes |
-| Offline access | — | Yes | Yes |
+| | [GitHub Pages](https://doqumentation.org) | [Docker (lite)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [Docker (jupyter)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [RasQberry Pi](https://github.com/JanLahmann/RasQberry-Two) |
+|---|---|---|---|---|
+| Browse tutorials | Yes | Yes | Yes | Yes |
+| Full-text search | Yes | Yes | Yes | Yes |
+| Execute code | Via [Binder](https://mybinder.org) | Via [Binder](https://mybinder.org) | Local Jupyter | Local Jupyter |
+| Open in JupyterLab | — | — | — | Yes |
+| Offline access | — | Yes | Yes | Yes |
 
 ## Quick Start
 
