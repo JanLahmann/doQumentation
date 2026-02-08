@@ -404,10 +404,10 @@ def process_tutorials():
             else:
                 stats["skipped"] += 1
 
-            # Copy original notebook for "Open in Lab"
+            # Copy original notebook for "Open in Lab" (rewrite image paths)
             nb_dst = notebooks_dst / rel_path
-            nb_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(src_path, nb_dst)
+            nb_rel = Path('tutorials') / rel_path
+            copy_notebook_with_rewrite(src_path, nb_dst, nb_rel)
 
         elif src_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
             dst_path = tutorials_dst / rel_path
@@ -468,6 +468,40 @@ def toc_children_to_sidebar(children: list) -> list:
     return items
 
 
+def rewrite_notebook_image_paths(content: str, nb_rel_path: Path) -> str:
+    """Rewrite absolute image paths in a notebook to relative paths.
+
+    Jupyter can't serve absolute paths like /docs/images/... — the images
+    need to be referenced relative to the notebook so JupyterLab resolves
+    them through its contents API.
+
+    Args:
+        content: Raw notebook JSON content
+        nb_rel_path: Notebook path relative to NOTEBOOKS_OUTPUT,
+                     e.g. Path('tutorials/foo.ipynb')
+    """
+    depth = len(nb_rel_path.parent.parts)  # e.g. tutorials/ → 1
+    prefix = '../' * depth
+
+    # Markdown: ![alt](/docs/images/...) → ![alt](../docs/images/...)
+    content = content.replace('(/docs/images/', f'({prefix}docs/images/')
+    content = content.replace('(/learning/images/', f'({prefix}learning/images/')
+
+    # JSX/HTML: src="/docs/images/..." → in JSON: src=\"/docs/images/...\"
+    content = content.replace('\\"/docs/images/', f'\\"{prefix}docs/images/')
+    content = content.replace('\\"/learning/images/', f'\\"{prefix}learning/images/')
+
+    return content
+
+
+def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path):
+    """Copy a notebook, rewriting absolute image paths to relative."""
+    content = src_path.read_text()
+    content = rewrite_notebook_image_paths(content, nb_rel_path)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    dst_path.write_text(content)
+
+
 def sync_upstream_images():
     """Copy upstream images from public/ to static/ for Docusaurus.
 
@@ -502,6 +536,28 @@ def sync_upstream_images():
         print(f"  ✓ {src_rel} → static/{dst_rel} ({count} files)")
 
     print(f"  Total: {total} images synced")
+
+    # Also copy images to notebooks/ so Jupyter can serve them
+    print("\n🖼  Copying images to notebooks/ for Jupyter...")
+    nb_image_mappings = [
+        (STATIC_DIR / "docs/images/tutorials", NOTEBOOKS_OUTPUT / "docs/images/tutorials"),
+        (STATIC_DIR / "learning/images", NOTEBOOKS_OUTPUT / "learning/images"),
+    ]
+
+    nb_total = 0
+    for src_dir, dst_dir in nb_image_mappings:
+        if not src_dir.exists():
+            continue
+
+        if dst_dir.exists():
+            shutil.rmtree(dst_dir)
+        shutil.copytree(src_dir, dst_dir)
+
+        count = sum(1 for _ in dst_dir.rglob('*') if _.is_file())
+        nb_total += count
+        print(f"  ✓ {src_dir.relative_to(STATIC_DIR)} → notebooks/{dst_dir.relative_to(NOTEBOOKS_OUTPUT)} ({count} files)")
+
+    print(f"  Total: {nb_total} images copied for Jupyter")
 
 
 def generate_sidebar_from_toc():
@@ -655,10 +711,10 @@ def process_courses():
                 else:
                     stats["skipped"] += 1
 
-                # Copy original notebook for "Open in Lab"
+                # Copy original notebook for "Open in Lab" (rewrite image paths)
                 nb_dst = notebooks_dst / rel_path
-                nb_dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(src_path, nb_dst)
+                nb_rel = Path('learning/courses') / rel_path
+                copy_notebook_with_rewrite(src_path, nb_dst, nb_rel)
 
             elif src_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif'):
                 dst_path = courses_dst / rel_path
