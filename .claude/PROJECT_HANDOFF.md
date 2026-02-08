@@ -201,7 +201,8 @@ Pages     Pi (nginx)
 doQumentation/
 ├── .github/workflows/
 │   ├── deploy.yml              # CI/CD: sync, build, deploy to GH Pages
-│   └── docker.yml              # Multi-arch Docker build → ghcr.io
+│   ├── docker.yml              # Multi-arch Docker build → ghcr.io
+│   └── sync-deps.yml           # Weekly auto-PR for Jupyter dependency updates
 │
 ├── binder/
 │   ├── jupyter-requirements.txt      # Full Qiskit deps (cross-platform)
@@ -234,6 +235,7 @@ doQumentation/
 │
 ├── scripts/
 │   ├── sync-content.py         # Pull & transform from Qiskit
+│   ├── sync-deps.py            # Sync Jupyter deps from upstream (with arch exceptions)
 │   └── setup-pi.sh             # Raspberry Pi setup script
 │
 ├── static/
@@ -277,35 +279,15 @@ doQumentation/
 18. ✅ **GH Actions Docker CI/CD** - Multi-arch build workflow pushing to ghcr.io
 19. ✅ **Requirements synced with upstream** - Validated against Qiskit-documentation/scripts/nb-tester/requirements.txt, exceptions documented
 20. ✅ **Binder end-to-end on doqumentation.org** - All 3 cells execute: circuit diagram, AerSimulator measurement, matplotlib histogram. Shared kernel works across cells.
+21. ✅ **Full content sync** - 42 tutorials + 13 courses (154 pages) synced from upstream
+22. ✅ **Course support** - 4 stub components (DefinitionTooltip, Figure, IBMVideo, LaunchExamButton), sidebar from _toc.json, "Lessons" wrapper skipped
+23. ✅ **OpenInLabBanner** - Injected on all 162 notebook-derived pages (tutorials + courses)
+24. ✅ **Automated deps sync** - `scripts/sync-deps.py` + `.github/workflows/sync-deps.yml` (weekly auto-PR via peter-evans/create-pull-request)
 
-### What's NOT Done Yet
+### Needs Testing
 
-1. ❌ **Test full content sync** - Only sample content generated
-2. ❌ **Test on actual Pi** - Scripts written but untested
-3. ❌ **Pagefind integration** - Config added but not tested
-4. ❌ **More tutorials** - Only hello-world.mdx exists as sample
-5. ❌ **Course support** - Requires work listed below
-6. ❌ **Automated deps sync** - Keep requirements in sync with upstream on version bumps (see `.claude/deps-sync.md`)
-
-### What's Needed for Course Support
-
-Files to create:
-- `src/components/DefinitionTooltip/index.tsx` — Hover tooltip for terms (183 uses in courses)
-- `src/components/IBMVideo/index.tsx` — Embedded video player or offline placeholder (38 uses)
-- `src/components/Figure/index.tsx` — Titled content wrapper for diagrams/math (36 uses)
-- `src/components/LaunchExamButton/index.tsx` — Link button to IBM Training exams (10 uses)
-
-Files to modify:
-- `scripts/sync-content.py` — Add `process_courses()` mirroring `process_tutorials()`, parse `_toc.json` for sidebar ordering, handle 3-level nesting (course/chapter/lesson), add `learning/images` to sparse checkout paths
-- `sidebars.ts` — Add `coursesSidebar` generated from `_toc.json` files
-- `docusaurus.config.ts` — Add "Courses" navbar item alongside "Tutorials"
-- `src/css/custom.css` — Styles for the 4 new components
-
-Structural differences from tutorials:
-- Courses use `_toc.json` per course for ordering (not flat directory listing)
-- Images live at `/learning/images/courses/` (separate from content)
-- 3-level nesting: `course/chapter/lesson.ipynb` vs flat `tutorials/*.ipynb`
-- Mixed content: some courses are all `.ipynb`, others mix `.mdx` + `.ipynb` subdirs
+- **Raspberry Pi deployment** - `scripts/setup-pi.sh` written but untested on actual hardware
+- **Pagefind search** - Config added but not tested end-to-end
 
 ---
 
@@ -463,17 +445,12 @@ cd doQumentation-pi
 
 ## Open Questions / Future Considerations
 
-1. **LED Integration** - Could tutorials trigger LED visualizations on RasQberry?
-2. **Offline AI Tutor** - Granite 4.0 Nano for offline Q&A about tutorials?
-3. **PWA Dashboard** - Integrate with RasQberry's existing FastAPI backend?
-4. **Physical Circuit Composer** - Magnetic tiles → image recognition → quantum circuits?
-5. ~~**Container Deployment**~~ ✅ Done — `Dockerfile.jupyter` with multi-arch CI/CD to ghcr.io
-6. **Qiskit Courses** - Pull and host Qiskit learning courses from https://github.com/JanLahmann/Qiskit-documentation/tree/main/learning/courses in addition to tutorials.
-7. **Automated deps sync** - GitHub Actions workflow to detect upstream requirement changes and open PRs (see `.claude/deps-sync.md`)
-8. **Jupyter auth** - thebelab 0.4.0 doesn't pass tokens, so container runs Jupyter with all auth disabled. Fine for local/demo, needs addressing for any internet-facing deployment.
+- **Jupyter auth** - thebelab 0.4.0 doesn't pass tokens, so container runs Jupyter with all auth disabled. Fine for local/demo, needs addressing for any internet-facing deployment.
+- **LED Integration** - Could tutorials trigger LED visualizations on RasQberry?
+- **Offline AI Tutor** - Granite 4.0 Nano for offline Q&A about tutorials?
 
 ---
 
 *Document created: February 2025*
-*Last updated: February 7, 2025*
+*Last updated: February 8, 2026*
 *For: doQumentation Project Handoff*
