@@ -3,14 +3,14 @@
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
 
-An open-source website that recreates [IBM Quantum's](https://quantum.ibm.com) tutorials and learning platform from their [open-source content](https://github.com/Qiskit/documentation). Part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
+doQumentation is an open-source website that recreates [IBM Quantum's](https://quantum.ibm.com) tutorials and learning platform from their [open-source content](https://github.com/Qiskit/documentation). It is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
 
 **We recommend the official IBM Quantum platform for the best experience:**
 [Learning](https://quantum.cloud.ibm.com/learning) · [Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) · [Documentation](https://docs.quantum.ibm.com/) · [Source repo](https://github.com/Qiskit/documentation)
 
-IBM's Qiskit tutorials and documentation are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on devices like the Raspberry Pi.
+IBM's Qiskit [tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) and [documentation](https://docs.quantum.ibm.com/) are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on devices like the Raspberry Pi.
 
-**Live:** [doqumentation.org](https://doqumentation.org)
+**Hosted on GitHub Pages:** [doqumentation.org](https://doqumentation.org)
 
 ## Deployment Tiers
 
@@ -19,16 +19,16 @@ IBM's Qiskit tutorials and documentation are open-source, but the web applicatio
 | Browse tutorials | Yes | Yes | Yes | Yes |
 | Full-text search | Yes | Yes | Yes | Yes |
 | Execute code | Via [Binder](https://mybinder.org) | Via [Binder](https://mybinder.org) | Local Jupyter | Local Jupyter |
-| Open in JupyterLab | — | — | — | Yes |
+| Open in JupyterLab | — | — | Planned | Yes |
 | Offline access | — | Yes | Yes | Yes |
 
 ## Quick Start
 
 ### View Online
 
-Visit [doqumentation.org](https://doqumentation.org)
+**[doqumentation.org](https://doqumentation.org)** — browse tutorials, execute code via Binder, no install required.
 
-### Run with Docker
+### Run with Docker / Podman
 
 ```bash
 # Lite: static site only (~60 MB)
@@ -38,10 +38,13 @@ docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
 docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 ```
 
-Access at `http://localhost:8080`. Or build locally with `docker compose up web` (lite) or `docker compose up jupyter` (full).
+Access at `http://localhost:8080`. Or build locally with `docker compose up web` (lite) or `docker compose up jupyter` (full). Works with Docker, Podman, or any OCI-compatible runtime.
 
 ### Deploy to Raspberry Pi
 
+> **Note:** Raspberry Pi deployment is under development. Instructions will be provided soon.
+
+<!--
 ```bash
 wget https://github.com/JanLahmann/doQumentation/releases/latest/download/doQumentation-pi.tar.gz
 tar -xzf doQumentation-pi.tar.gz
@@ -49,6 +52,7 @@ cd doQumentation-pi && ./install.sh
 ```
 
 Access at `http://rasqberry.local` or your Pi's IP address.
+-->
 
 ### Development
 
@@ -124,48 +128,6 @@ npm run typecheck      # Type check
 npm run sync-content   # Sync content from upstream
 ```
 
-### Adding Custom Tutorials
-
-1. Create an MDX file in `docs/tutorials/`:
-
-```mdx
----
-title: My Tutorial
-sidebar_label: My Tutorial
----
-
-# My Tutorial
-
-Some explanation...
-
-```python
-from qiskit import QuantumCircuit
-qc = QuantumCircuit(2)
-qc.h(0)
-print(qc)
-```
-
-This code is automatically executable!
-```
-
-2. The sidebar is auto-generated from the file structure.
-
-### Code Block Options
-
-```mdx
-```python
-# Default: executable
-
-```python noexec
-# Not executable (display only)
-
-```python notebook="tutorials/my-notebook.ipynb"
-# Link to notebook for "Open in Lab"
-
-```bash
-# Non-Python: never executable
-```
-
 ## Deployment
 
 ### GitHub Pages (Automatic)
@@ -197,7 +159,7 @@ docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter  # F
 - [IBM Quantum](https://quantum.ibm.com) for Qiskit and the open-source tutorials
 - [Docusaurus](https://docusaurus.io) for the documentation framework
 - [thebelab](https://github.com/executablebooks/thebelab) for Jupyter integration
-- [qotlabs](https://github.com/qotlabs/qiskit-documentation) for inspiration
+
 
 ---
 
