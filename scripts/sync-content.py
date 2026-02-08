@@ -56,7 +56,8 @@ MDX_TRANSFORMS = [
     # Rewrite other /docs/ and /learning/ links to upstream IBM Quantum docs
     # (negative lookahead to skip /docs/images/ which are served locally)
     (r'\(/docs/(?!tutorials/|images/)', '(https://docs.quantum.ibm.com/'),
-    (r'\(/learning/', '(https://docs.quantum.ibm.com/learning/'),
+    # Exclude /learning/courses/ which are served locally
+    (r'\(/learning/(?!courses/)', '(https://docs.quantum.ibm.com/learning/'),
     # Clean up triple+ newlines
     (r'\n{3,}', '\n\n'),
 ]
@@ -189,13 +190,18 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
     return ''.join(parts)
 
 
-def convert_notebook(ipynb_path: Path, output_path: Path) -> bool:
+def convert_notebook(ipynb_path: Path, output_path: Path,
+                     notebook_path: Optional[str] = None,
+                     slug: Optional[str] = None) -> bool:
     """
     Convert a Jupyter notebook to MDX by parsing the .ipynb JSON directly.
 
     No external dependencies needed (no nbconvert). Python code blocks are
     output as standard ```python fenced blocks — the CodeBlock swizzle
     auto-wraps them in ExecutableCode at render time.
+
+    If notebook_path is provided, an OpenInLabBanner is injected after the
+    frontmatter for the "Open in JupyterLab" feature.
     """
     try:
         nb = json.loads(ipynb_path.read_text())
@@ -281,12 +287,21 @@ def convert_notebook(ipynb_path: Path, output_path: Path) -> bool:
         if description:
             safe_desc = description.replace('"', '\\"')
             fm_lines.append(f'description: "{safe_desc}"')
+        if notebook_path:
+            fm_lines.append(f'notebook_path: "{notebook_path}"')
+        if slug:
+            fm_lines.append(f'slug: "{slug}"')
         fm_lines.append('---\n')
         frontmatter = '\n'.join(fm_lines)
 
+        # Inject OpenInLabBanner after frontmatter if notebook_path is set
+        banner = ''
+        if notebook_path:
+            banner = f'\n<OpenInLabBanner notebookPath="{notebook_path}" />\n'
+
         # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(frontmatter + '\n' + content)
+        output_path.write_text(frontmatter + banner + '\n' + content)
 
         return True
 
@@ -380,7 +395,9 @@ def process_tutorials():
 
         elif src_path.suffix == '.ipynb':
             dst_path = tutorials_dst / rel_path.with_suffix('.mdx')
-            if convert_notebook(src_path, dst_path):
+            # Upstream path for Binder/Lab: docs/tutorials/{name}.ipynb
+            upstream_nb_path = f"docs/tutorials/{rel_path}"
+            if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path):
                 stats["ipynb"] += 1
                 print(f"  ✓ {rel_path} → .mdx")
             else:
@@ -405,8 +422,15 @@ def process_tutorials():
 
 
 def url_to_doc_id(url: str) -> str:
-    """Convert upstream URL like /docs/tutorials/foo to Docusaurus doc ID tutorials/foo."""
-    return url.replace('/docs/', '', 1).lstrip('/')
+    """Convert upstream URL to Docusaurus doc ID.
+
+    /docs/tutorials/foo → tutorials/foo
+    /learning/courses/foo/bar → learning/courses/foo/bar
+    """
+    url = url.lstrip('/')
+    if url.startswith('docs/'):
+        url = url[5:]
+    return url
 
 
 def toc_children_to_sidebar(children: list) -> list:
@@ -429,8 +453,11 @@ def toc_children_to_sidebar(children: list) -> list:
                 items.append(cat)
         elif 'url' in child:
             doc_id = url_to_doc_id(child['url'])
-            # Skip the overview entry (handled as category link)
+            # Skip overview entries (handled as category links)
+            # tutorials overview = 'tutorials', course overviews = 'learning/courses/{name}'
             if doc_id == 'tutorials':
+                continue
+            if doc_id.startswith('learning/courses/') and doc_id.count('/') == 2:
                 continue
             items.append(doc_id)
     return items
@@ -521,6 +548,169 @@ def generate_sidebar_flat():
 
     sidebar_json = PROJECT_ROOT / "sidebar-generated.json"
     sidebar_json.write_text(json.dumps(tutorials, indent=2))
+    print(f"  ✓ Generated {sidebar_json}")
+
+
+def process_courses():
+    """Process all course files from upstream."""
+    print("\n📚 Processing courses...")
+
+    courses_src = UPSTREAM_DIR / "learning" / "courses"
+    courses_dst = DOCS_OUTPUT / "learning" / "courses"
+    notebooks_dst = NOTEBOOKS_OUTPUT / "learning" / "courses"
+
+    if not courses_src.exists():
+        print(f"  Warning: Courses directory not found at {courses_src}")
+        return
+
+    # Clean output directories
+    if courses_dst.exists():
+        shutil.rmtree(courses_dst)
+    courses_dst.mkdir(parents=True)
+
+    if notebooks_dst.exists():
+        shutil.rmtree(notebooks_dst)
+    notebooks_dst.mkdir(parents=True)
+
+    # Track statistics
+    stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
+
+    for course_dir in sorted(courses_src.iterdir()):
+        if not course_dir.is_dir():
+            continue
+
+        course_name = course_dir.name
+        print(f"\n  Course: {course_name}")
+
+        for src_path in course_dir.rglob('*'):
+            if src_path.is_dir():
+                continue
+
+            rel_path = src_path.relative_to(courses_src)
+
+            # Skip _toc.json (used for sidebar generation, not content)
+            if src_path.name == '_toc.json':
+                stats["skipped"] += 1
+                continue
+
+            if src_path.suffix == '.mdx':
+                dst_path = courses_dst / rel_path
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                content = src_path.read_text()
+
+                # Strip upstream frontmatter and replace with ours
+                title = None
+                description = None
+                if content.startswith('---'):
+                    fm_end = re.search(r'^---\s*$', content[3:], re.MULTILINE)
+                    if fm_end:
+                        fm_text = content[3:3 + fm_end.start()]
+                        t_match = re.search(r'^title:\s*(.+)$', fm_text, re.MULTILINE)
+                        if t_match:
+                            title = t_match.group(1).strip().strip('"\'')
+                        d_match = re.search(r'^description:\s*(.+)$', fm_text, re.MULTILINE)
+                        if d_match:
+                            description = d_match.group(1).strip().strip('"\'')
+                        content = content[3 + fm_end.end():].lstrip()
+
+                # Extract title from first heading if not in frontmatter
+                if not title:
+                    h1_match = re.match(r'^#\s+(.+)$', content.lstrip(), re.MULTILINE)
+                    if h1_match:
+                        title = h1_match.group(1).strip()
+                if not title:
+                    title = src_path.stem.replace('-', ' ').replace('_', ' ').title()
+
+                transformed = transform_mdx(content, src_path)
+
+                # Build new frontmatter
+                safe_title = title.replace('"', '\\"')
+                fm = f'---\ntitle: "{safe_title}"'
+                if description:
+                    safe_desc = description.replace('"', '\\"')
+                    fm += f'\ndescription: "{safe_desc}"'
+                fm += '\n---\n\n'
+
+                dst_path.write_text(fm + transformed)
+                stats["mdx"] += 1
+                print(f"    ✓ {rel_path}")
+
+            elif src_path.suffix == '.ipynb':
+                dst_path = courses_dst / rel_path.with_suffix('.mdx')
+                # Upstream path for Binder/Lab
+                upstream_nb_path = f"learning/courses/{rel_path}"
+                # Avoid duplicate route when file stem == parent dir name
+                # (Docusaurus treats foo/foo.mdx as category index, conflicting with foo/index.mdx)
+                nb_slug = None
+                if src_path.stem == src_path.parent.name:
+                    nb_slug = f"./{src_path.stem}"
+                if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path, slug=nb_slug):
+                    stats["ipynb"] += 1
+                    print(f"    ✓ {rel_path} → .mdx")
+                else:
+                    stats["skipped"] += 1
+
+                # Copy original notebook for "Open in Lab"
+                nb_dst = notebooks_dst / rel_path
+                nb_dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(src_path, nb_dst)
+
+            elif src_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif'):
+                dst_path = courses_dst / rel_path
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(src_path, dst_path)
+                stats["images"] += 1
+
+            else:
+                stats["skipped"] += 1
+
+    print(f"\n  Summary: {stats['mdx']} MDX, {stats['ipynb']} notebooks, "
+          f"{stats['images']} images, {stats['skipped']} skipped")
+
+
+def generate_course_sidebar():
+    """Generate sidebar configuration for courses from per-course _toc.json files."""
+    print("\n📋 Generating course sidebar...")
+
+    courses_src = UPSTREAM_DIR / "learning" / "courses"
+    if not courses_src.exists():
+        print("  Warning: No courses directory found")
+        return
+
+    course_items = []
+    for course_dir in sorted(courses_src.iterdir()):
+        if not course_dir.is_dir():
+            continue
+
+        toc_path = course_dir / "_toc.json"
+        if not toc_path.exists():
+            print(f"  Warning: No _toc.json for {course_dir.name}")
+            continue
+
+        toc = json.loads(toc_path.read_text())
+        course_title = toc.get('title', course_dir.name.replace('-', ' ').title())
+        children = toc.get('children', [])
+
+        # Build sidebar items for this course
+        sub_items = toc_children_to_sidebar(children)
+        if not sub_items:
+            continue
+
+        # Find the overview entry to use as category link
+        overview_id = f"learning/courses/{course_dir.name}/index"
+        course_cat = {
+            'type': 'category',
+            'label': course_title,
+            'collapsed': True,
+            'link': {'type': 'doc', 'id': overview_id},
+            'items': sub_items,
+        }
+        course_items.append(course_cat)
+
+    sidebar_json = PROJECT_ROOT / "sidebar-courses.json"
+    sidebar_json.write_text(json.dumps(course_items, indent=2))
+
+    print(f"  Found {len(course_items)} courses")
     print(f"  ✓ Generated {sidebar_json}")
 
 
@@ -694,8 +884,12 @@ def main():
     else:
         create_index_page()
         process_tutorials()
+        if not args.tutorials_only:
+            process_courses()
         sync_upstream_images()
         generate_sidebar_from_toc()
+        if not args.tutorials_only:
+            generate_course_sidebar()
 
     print("\n" + "=" * 60)
     print("✅ Content sync complete!")

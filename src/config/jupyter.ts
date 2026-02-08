@@ -187,6 +187,17 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
 }
 
 /**
+ * Get the Binder JupyterLab URL for a specific notebook (GitHub Pages)
+ */
+export function getBinderLabUrl(config: JupyterConfig, upstreamPath: string): string | null {
+  if (!config.binderUrl) {
+    return null;
+  }
+
+  return `${config.binderUrl}?labpath=${encodeURIComponent(upstreamPath)}`;
+}
+
+/**
  * Get the classic notebook URL for a specific notebook
  */
 export function getNotebookUrl(config: JupyterConfig, notebookPath: string): string | null {

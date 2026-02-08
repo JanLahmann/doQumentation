@@ -79,6 +79,11 @@ const config: Config = {
           label: 'Tutorials',
         },
         {
+          to: '/learning/courses/basics-of-quantum-information',
+          label: 'Courses',
+          position: 'left',
+        },
+        {
           href: '/jupyter-settings',
           label: '⚙️ Jupyter',
           position: 'right',

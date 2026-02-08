@@ -3,14 +3,22 @@
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
 
-doQumentation is an open-source website that recreates [IBM Quantum's](https://quantum.ibm.com) tutorials and learning platform from their [open-source content](https://github.com/Qiskit/documentation). It is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
+## We recommend IBM's official platform
 
-**We recommend the official IBM Quantum platform for the best experience:**
-[Learning](https://quantum.cloud.ibm.com/learning) · [Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) · [Documentation](https://docs.quantum.ibm.com/) · [Source repo](https://github.com/Qiskit/documentation)
+For reading and learning, IBM's official [Quantum Platform](https://quantum.ibm.com) and their [Qiskit documentation](https://docs.quantum.ibm.com/) is the best place to start:
 
-IBM's Qiskit [tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) and [documentation](https://docs.quantum.ibm.com/) are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on devices like the Raspberry Pi.
+- **[Learning](https://quantum.cloud.ibm.com/learning)** — Structured courses from quantum basics to advanced topics
+- **[Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials)** — 40+ tutorials on transpilation, error mitigation, and more
+- **[Documentation](https://docs.quantum.ibm.com/)** — Guides and API reference for Qiskit
+- **[Source repo](https://github.com/Qiskit/documentation)** — All content is open source (CC BY-SA 4.0)
 
-**Hosted on GitHub Pages:** [doqumentation.org](https://doqumentation.org)
+IBM's platform is always up-to-date, well-designed, and the best place to read the documentation.
+
+## What this project adds
+
+IBM's Qiskit tutorials and documentation are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on [RasQberry](https://github.com/JanLahmann/RasQberry-Two).
+
+**See it live at [doQumentation.org](https://doqumentation.org)** — browse tutorials and courses, execute code via Binder, no install required.
 
 ## Deployment Tiers
 
@@ -26,7 +34,7 @@ IBM's Qiskit [tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials) and [d
 
 ### View Online
 
-**[doqumentation.org](https://doqumentation.org)** — browse tutorials, execute code via Binder, no install required.
+**[doqumentation.org](https://doqumentation.org)** — browse tutorials and courses, execute code via Binder, no install required.
 
 ### Run with Docker / Podman
 
@@ -40,9 +48,9 @@ docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 
 Access at `http://localhost:8080`. Or build locally with `docker compose up web` (lite) or `docker compose up jupyter` (full). Works with Docker, Podman, or any OCI-compatible runtime.
 
-### Deploy to Raspberry Pi
+### Deploy to RasQberry
 
-> **Note:** Raspberry Pi deployment is under development. Instructions will be provided soon.
+> **Note:** RasQberry deployment is under development. Instructions will be provided soon.
 
 <!--
 ```bash
@@ -139,4 +147,4 @@ Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arc
 
 ---
 
-Part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
+[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp, licensed under CC BY-SA 4.0. This project is not affiliated with, endorsed by, or sponsored by IBM Corporation. IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://github.com/JanLahmann/RasQberry-Two) project.
