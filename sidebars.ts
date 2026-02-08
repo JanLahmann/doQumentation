@@ -26,7 +26,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Tutorials',
-      collapsed: false,
+      collapsed: true,
       link: {type: 'doc', id: 'tutorials/index'},
       items: tutorialItems as any[],
     },
@@ -35,7 +35,7 @@ const sidebars: SidebarsConfig = {
           {
             type: 'category' as const,
             label: 'Courses',
-            collapsed: false,
+            collapsed: true,
             items: courseItems,
           },
         ]
