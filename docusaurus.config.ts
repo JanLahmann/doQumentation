@@ -129,7 +129,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Tutorial content © IBM Corp, licensed under CC BY-SA 4.0.<br/>doQumentation is not affiliated with, endorsed by, or sponsored by IBM Corporation.<br/>IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation.<br/>doQumentation is part of the <a href="https://rasqberry.org">RasQberry</a> project.`,
+      copyright: `<a href="https://github.com/Qiskit/documentation">Qiskit documentation</a> content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0.<br/>This project is not affiliated with, endorsed by, or sponsored by IBM Corporation. IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation.<br/>doQumentation is part of the <a href="https://github.com/JanLahmann/RasQberry-Two">RasQberry</a> project.`,
     },
     
     prism: {
