@@ -129,9 +129,10 @@ def transform_mdx(content: str, source_path: Path) -> str:
 def escape_mdx_outside_code(content: str) -> str:
     """Escape { and } in markdown text that would break MDX parsing.
 
-    Leaves code blocks (``` ... ```) and inline code (` ... `) untouched.
+    Leaves code blocks (``` ... ```), inline code (` ... `),
+    and math blocks ($$ ... $$ and $ ... $) untouched.
     """
-    parts = re.split(r'(```[\s\S]*?```|`[^`]+`)', content)
+    parts = re.split(r'(\$\$[\s\S]*?\$\$|```[\s\S]*?```|`[^`]+`|\$[^$\n]+\$)', content)
     for i in range(0, len(parts), 2):  # even indices are outside code
         # Escape lone { } that aren't JSX expressions
         # Skip patterns like {' '} which are valid JSX
