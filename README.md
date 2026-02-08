@@ -1,4 +1,4 @@
-# doQumentation
+# doQumentation — Open-source website for IBM Quantum's tutorials and learning content
 
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
@@ -56,12 +56,23 @@ Access at `http://rasqberry.local` or your Pi's IP address.
 
 ### Development
 
+**Prerequisites:** Node.js 18+, Python 3.9+
+
 ```bash
 git clone https://github.com/JanLahmann/doQumentation.git
 cd doQumentation
 npm install
 python scripts/sync-content.py --sample-only  # or without flag for full sync
 npm start
+```
+
+Other commands:
+
+```bash
+npm run build          # Production build
+npm run build:search   # Build search index
+npm run typecheck      # Type check
+npm run sync-content   # Sync content from upstream
 ```
 
 ## How It Works
@@ -110,44 +121,9 @@ doQumentation/
 └── docusaurus.config.ts    # Site configuration
 ```
 
-## Development
-
-### Prerequisites
-
-- Node.js 18+
-- Python 3.9+
-- Jupyter (for notebook conversion)
-
-### Commands
-
-```bash
-npm start              # Development server
-npm run build          # Production build
-npm run build:search   # Build search index
-npm run typecheck      # Type check
-npm run sync-content   # Sync content from upstream
-```
-
 ## Deployment
 
-### GitHub Pages (Automatic)
-
-Push to `main` branch triggers automatic deployment.
-
-### Docker
-
-Push to `main` builds and pushes two multi-arch images (`linux/amd64` + `linux/arm64`) to GitHub Container Registry:
-
-```bash
-docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest          # Lite (~60 MB)
-docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter  # Full (~3 GB)
-```
-
-### Manual Release
-
-1. Go to Actions > "Build and Deploy"
-2. Click "Run workflow"
-3. Select target: `ghpages`, `pi-release`, or `both`
+Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arch Docker images (`linux/amd64` + `linux/arm64`) to [GitHub Container Registry](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation).
 
 ## License
 
