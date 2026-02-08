@@ -79,8 +79,23 @@ const config: Config = {
           label: 'Tutorials',
         },
         {
+          to: '/guides',
+          label: 'Guides',
+          position: 'left',
+        },
+        {
           to: '/learning/courses/basics-of-quantum-information',
           label: 'Courses',
+          position: 'left',
+        },
+        {
+          to: '/learning/modules/computer-science',
+          label: 'Modules',
+          position: 'left',
+        },
+        {
+          href: 'https://docs.quantum.ibm.com/api',
+          label: 'API Reference',
           position: 'left',
         },
         {

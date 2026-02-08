@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-sync-content.py - Sync and transform Qiskit tutorials for Docusaurus
+sync-content.py - Sync and transform Qiskit content for Docusaurus
 
 This script:
 1. Clones/updates the JanLahmann/Qiskit-documentation repository
 2. Converts Jupyter notebooks to MDX (code blocks auto-wrapped by CodeBlock swizzle)
-3. Transforms the upstream index.mdx for Docusaurus
+3. Transforms upstream MDX files for Docusaurus compatibility
 4. Parses _toc.json to generate structured sidebar configuration
 5. Copies original notebooks for "Open in Lab" feature
 
+Content types: tutorials, guides, courses, modules
+
 Usage:
     python scripts/sync-content.py [--tutorials-only] [--no-clone] [--sample-only]
+    python scripts/sync-content.py --skip guides --skip modules
 """
 
 import argparse
@@ -21,7 +24,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
 # Paths
 SCRIPT_DIR = Path(__file__).parent
@@ -34,30 +37,40 @@ STATIC_DIR = PROJECT_ROOT / "static"
 # What to sync from upstream (content + images)
 CONTENT_PATHS = [
     "docs/tutorials",
+    "docs/guides",
     "learning/courses",
+    "learning/modules",
     "public/docs/images/tutorials",
+    "public/docs/images/guides",
     "public/learning/images",
 ]
 
 # MDX Transformations for upstream .mdx files
 MDX_TRANSFORMS = [
-    # Admonition: <Admonition type="note" title="Title"> → :::note[Title]
-    (
-        r'<Admonition\s+type="(\w+)"(?:\s+title="([^"]*)")?\s*>',
-        lambda m: f':::{m.group(1)}' + (f'[{m.group(2)}]' if m.group(2) else '') + '\n'
-    ),
-    (r'</Admonition>', '\n:::\n'),
-    # Map IBM's "attention" type to Docusaurus "warning"
-    (r':::attention', ':::warning'),
+    # Normalize Admonition types to Docusaurus-supported values
+    (r'<Admonition(\s+)type="attention"', r'<Admonition\1type="warning"'),
+    (r'<Admonition(\s+)type="Note"', r'<Admonition\1type="note"'),
+    (r'<Admonition(\s+)type="information"', r'<Admonition\1type="info"'),
+    # Bare <Admonition> without type → default to note
+    (r'<Admonition\s*>', '<Admonition type="note">'),
     # Strip IBM-specific components that we don't implement
     (r'<CodeCellPlaceholder[^>]*/>', ''),
+    # Convert IBM's custom Table components to standard HTML
+    (r'<Table>', '<table>'), (r'</Table>', '</table>'),
+    (r'<Tr>', '<tr>'), (r'</Tr>', '</tr>'),
+    (r'<Th\b', '<th'), (r'</Th>', '</th>'),
+    (r'<Td\b', '<td'), (r'</Td>', '</td>'),
+    # Simplify CodeAssistantAdmonition: strip prompts prop (JSX array breaks MDX escaping)
+    (r'<CodeAssistantAdmonition\s+tagLine="([^"]*)"[\s\S]*?/>', r'<CodeAssistantAdmonition tagLine="\1" />'),
     # Fix link paths: /docs/tutorials/foo → /tutorials/foo (local)
     (r'\(/docs/tutorials/', '(/tutorials/'),
-    # Rewrite other /docs/ and /learning/ links to upstream IBM Quantum docs
-    # (negative lookahead to skip /docs/images/ which are served locally)
-    (r'\(/docs/(?!tutorials/|images/)', '(https://docs.quantum.ibm.com/'),
-    # Exclude /learning/courses/ which are served locally
-    (r'\(/learning/(?!courses/)', '(https://docs.quantum.ibm.com/learning/'),
+    # Fix link paths: /docs/guides/foo → /guides/foo (local)
+    (r'\(/docs/guides/', '(/guides/'),
+    # Rewrite other /docs/ links to upstream IBM Quantum docs
+    # (negative lookahead to skip local paths: tutorials, guides, images)
+    (r'\(/docs/(?!tutorials/|guides/|images/)', '(https://docs.quantum.ibm.com/'),
+    # Fix link paths: /learning/courses/ and /learning/modules/ are local
+    (r'\(/learning/(?!courses/|modules/)', '(https://docs.quantum.ibm.com/learning/'),
     # Clean up triple+ newlines
     (r'\n{3,}', '\n\n'),
 ]
@@ -130,9 +143,9 @@ def escape_mdx_outside_code(content: str) -> str:
     """Escape { and } in markdown text that would break MDX parsing.
 
     Leaves code blocks (``` ... ```), inline code (` ... `),
-    and math blocks ($$ ... $$ and $ ... $) untouched.
+    math blocks ($$ ... $$ and $ ... $), and JSX comments ({/* ... */}) untouched.
     """
-    parts = re.split(r'(\$\$[\s\S]*?\$\$|```[\s\S]*?```|`[^`]+`|\$[^$\n]+\$)', content)
+    parts = re.split(r'(\$\$[\s\S]*?\$\$|```[\s\S]*?```|`[^`]+`|\$[^$\n]+\$|\{/\*[\s\S]*?\*/\})', content)
     for i in range(0, len(parts), 2):  # even indices are outside code
         # Escape lone { } that aren't JSX expressions
         # Skip patterns like {' '} which are valid JSX
@@ -422,6 +435,146 @@ def process_tutorials():
           f"{stats['images']} images, {stats['skipped']} skipped")
 
 
+def transform_guides_index(guides_src: Path, guides_dst: Path):
+    """Transform the upstream guides index.mdx for Docusaurus."""
+    index_src = guides_src / "index.mdx"
+    if not index_src.exists():
+        print("  Warning: No upstream guides index.mdx found")
+        return
+
+    content = index_src.read_text()
+
+    # Add our site-specific header before the upstream content
+    header = """---
+title: Guides
+sidebar_label: Overview
+sidebar_position: 1
+description: How-to guides for Qiskit — circuit building, transpilation, error mitigation, execution, and more.
+---
+
+"""
+
+    # Strip upstream frontmatter (we use our own)
+    if content.startswith('---'):
+        fm_end = re.search(r'^---\s*$', content[3:], re.MULTILINE)
+        if fm_end:
+            content = content[3 + fm_end.end():].lstrip()
+
+    # Apply MDX transforms (fixes link paths, admonitions, etc.)
+    content = transform_mdx(content, index_src)
+
+    index_dst = guides_dst / "index.mdx"
+    index_dst.parent.mkdir(parents=True, exist_ok=True)
+    index_dst.write_text(header + content)
+    print("  ✓ index.mdx (transformed)")
+
+
+def process_guides():
+    """Process all guide files from upstream."""
+    print("\n📖 Processing guides...")
+
+    guides_src = UPSTREAM_DIR / "docs" / "guides"
+    guides_dst = DOCS_OUTPUT / "guides"
+    notebooks_dst = NOTEBOOKS_OUTPUT / "guides"
+
+    if not guides_src.exists():
+        print(f"  Warning: Guides directory not found at {guides_src}")
+        return
+
+    # Clean output directories
+    if guides_dst.exists():
+        shutil.rmtree(guides_dst)
+    guides_dst.mkdir(parents=True)
+
+    if notebooks_dst.exists():
+        shutil.rmtree(notebooks_dst)
+    notebooks_dst.mkdir(parents=True)
+
+    # Transform the guides index page separately
+    transform_guides_index(guides_src, guides_dst)
+
+    # Track statistics
+    stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
+
+    for src_path in guides_src.rglob('*'):
+        if src_path.is_dir():
+            continue
+
+        rel_path = src_path.relative_to(guides_src)
+
+        # Skip files handled separately
+        if rel_path.name in ('index.mdx', '_toc.json'):
+            stats["skipped"] += 1
+            continue
+
+        if src_path.suffix == '.mdx':
+            dst_path = guides_dst / rel_path
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            content = src_path.read_text()
+            transformed = transform_mdx(content, src_path)
+            dst_path.write_text(transformed)
+            stats["mdx"] += 1
+            print(f"  ✓ {rel_path}")
+
+        elif src_path.suffix == '.ipynb':
+            dst_path = guides_dst / rel_path.with_suffix('.mdx')
+            # Upstream path for Binder/Lab: docs/guides/{name}.ipynb
+            upstream_nb_path = f"docs/guides/{rel_path}"
+            if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path):
+                stats["ipynb"] += 1
+                print(f"  ✓ {rel_path} → .mdx")
+            else:
+                stats["skipped"] += 1
+
+            # Copy original notebook for "Open in Lab" (rewrite image paths)
+            nb_dst = notebooks_dst / rel_path
+            nb_rel = Path('guides') / rel_path
+            copy_notebook_with_rewrite(src_path, nb_dst, nb_rel)
+
+        elif src_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif'):
+            dst_path = guides_dst / rel_path
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(src_path, dst_path)
+            stats["images"] += 1
+
+        else:
+            stats["skipped"] += 1
+
+    print(f"\n  Summary: {stats['mdx']} MDX, {stats['ipynb']} notebooks, "
+          f"{stats['images']} images, {stats['skipped']} skipped")
+
+
+def generate_guides_sidebar():
+    """Parse guides _toc.json and generate structured sidebar configuration."""
+    print("\n📋 Generating guides sidebar from _toc.json...")
+
+    toc_path = UPSTREAM_DIR / "docs" / "guides" / "_toc.json"
+    if not toc_path.exists():
+        print("  Warning: guides _toc.json not found")
+        return
+
+    toc = json.loads(toc_path.read_text())
+    children = toc.get('children', [])
+
+    sidebar_items = toc_children_to_sidebar(children)
+
+    sidebar_json = PROJECT_ROOT / "sidebar-guides.json"
+    sidebar_json.write_text(json.dumps(sidebar_items, indent=2))
+
+    # Count guides
+    def count_docs(items):
+        n = 0
+        for item in items:
+            if isinstance(item, str):
+                n += 1
+            elif isinstance(item, dict) and 'items' in item:
+                n += count_docs(item['items'])
+        return n
+
+    print(f"  Found {count_docs(sidebar_items)} guides in {len(sidebar_items)} categories")
+    print(f"  ✓ Generated {sidebar_json}")
+
+
 def url_to_doc_id(url: str) -> str:
     """Convert upstream URL to Docusaurus doc ID.
 
@@ -439,8 +592,8 @@ def toc_children_to_sidebar(children: list) -> list:
     items = []
     for child in children:
         if 'children' in child and child['children']:
-            # "Lessons" is a wrapper in upstream _toc.json — unwrap its children directly
-            if child.get('title') == 'Lessons':
+            # "Lessons"/"Modules" are wrappers in upstream _toc.json — unwrap children directly
+            if child.get('title') in ('Lessons', 'Modules'):
                 items.extend(toc_children_to_sidebar(child['children']))
                 continue
             # Category with sub-items
@@ -457,12 +610,32 @@ def toc_children_to_sidebar(children: list) -> list:
                     cat['link'] = {'type': 'doc', 'id': url_to_doc_id(child['url'])}
                 items.append(cat)
         elif 'url' in child:
-            doc_id = url_to_doc_id(child['url'])
+            url = child['url']
+            # External URLs → Docusaurus link items
+            if url.startswith('http://') or url.startswith('https://'):
+                items.append({
+                    'type': 'link',
+                    'label': child.get('title', url),
+                    'href': url,
+                })
+                continue
+            doc_id = url_to_doc_id(url)
+            # Skip non-doc resources (PDFs, etc.)
+            if '.' in doc_id.split('/')[-1] and not doc_id.endswith('.mdx'):
+                items.append({
+                    'type': 'link',
+                    'label': child.get('title', doc_id),
+                    'href': f'https://docs.quantum.ibm.com/{url.lstrip("/")}',
+                })
+                continue
             # Skip overview entries (handled as category links)
-            # tutorials overview = 'tutorials', course overviews = 'learning/courses/{name}'
-            if doc_id == 'tutorials':
+            # tutorials overview = 'tutorials', course overviews = 'learning/courses/{name}',
+            # guide overview = 'guides', module overviews = 'learning/modules/{name}'
+            if doc_id in ('tutorials', 'guides'):
                 continue
             if doc_id.startswith('learning/courses/') and doc_id.count('/') == 2:
+                continue
+            if doc_id.startswith('learning/modules/') and doc_id.count('/') == 2:
                 continue
             items.append(doc_id)
     return items
@@ -514,6 +687,7 @@ def sync_upstream_images():
 
     image_mappings = [
         ("public/docs/images/tutorials", "docs/images/tutorials"),
+        ("public/docs/images/guides", "docs/images/guides"),
         ("public/learning/images", "learning/images"),
     ]
 
@@ -541,6 +715,7 @@ def sync_upstream_images():
     print("\n🖼  Copying images to notebooks/ for Jupyter...")
     nb_image_mappings = [
         (STATIC_DIR / "docs/images/tutorials", NOTEBOOKS_OUTPUT / "docs/images/tutorials"),
+        (STATIC_DIR / "docs/images/guides", NOTEBOOKS_OUTPUT / "docs/images/guides"),
         (STATIC_DIR / "learning/images", NOTEBOOKS_OUTPUT / "learning/images"),
     ]
 
@@ -775,6 +950,168 @@ def generate_course_sidebar():
     print(f"  ✓ Generated {sidebar_json}")
 
 
+def process_modules():
+    """Process all module files from upstream."""
+    print("\n🎓 Processing modules...")
+
+    modules_src = UPSTREAM_DIR / "learning" / "modules"
+    modules_dst = DOCS_OUTPUT / "learning" / "modules"
+    notebooks_dst = NOTEBOOKS_OUTPUT / "learning" / "modules"
+
+    if not modules_src.exists():
+        print(f"  Warning: Modules directory not found at {modules_src}")
+        return
+
+    # Clean output directories
+    if modules_dst.exists():
+        shutil.rmtree(modules_dst)
+    modules_dst.mkdir(parents=True)
+
+    if notebooks_dst.exists():
+        shutil.rmtree(notebooks_dst)
+    notebooks_dst.mkdir(parents=True)
+
+    # Track statistics
+    stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
+
+    for module_dir in sorted(modules_src.iterdir()):
+        if not module_dir.is_dir():
+            continue
+
+        module_name = module_dir.name
+        print(f"\n  Module: {module_name}")
+
+        for src_path in module_dir.rglob('*'):
+            if src_path.is_dir():
+                continue
+
+            rel_path = src_path.relative_to(modules_src)
+
+            # Skip _toc.json (used for sidebar generation, not content)
+            if src_path.name == '_toc.json':
+                stats["skipped"] += 1
+                continue
+
+            if src_path.suffix == '.mdx':
+                dst_path = modules_dst / rel_path
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                content = src_path.read_text()
+
+                # Strip upstream frontmatter and replace with ours
+                title = None
+                description = None
+                if content.startswith('---'):
+                    fm_end = re.search(r'^---\s*$', content[3:], re.MULTILINE)
+                    if fm_end:
+                        fm_text = content[3:3 + fm_end.start()]
+                        t_match = re.search(r'^title:\s*(.+)$', fm_text, re.MULTILINE)
+                        if t_match:
+                            title = t_match.group(1).strip().strip('"\'')
+                        d_match = re.search(r'^description:\s*(.+)$', fm_text, re.MULTILINE)
+                        if d_match:
+                            description = d_match.group(1).strip().strip('"\'')
+                        content = content[3 + fm_end.end():].lstrip()
+
+                # Extract title from first heading if not in frontmatter
+                if not title:
+                    h1_match = re.match(r'^#\s+(.+)$', content.lstrip(), re.MULTILINE)
+                    if h1_match:
+                        title = h1_match.group(1).strip()
+                if not title:
+                    title = src_path.stem.replace('-', ' ').replace('_', ' ').title()
+
+                transformed = transform_mdx(content, src_path)
+
+                # Build new frontmatter
+                safe_title = title.replace('"', '\\"')
+                fm = f'---\ntitle: "{safe_title}"'
+                if description:
+                    safe_desc = description.replace('"', '\\"')
+                    fm += f'\ndescription: "{safe_desc}"'
+                fm += '\n---\n\n'
+
+                dst_path.write_text(fm + transformed)
+                stats["mdx"] += 1
+                print(f"    ✓ {rel_path}")
+
+            elif src_path.suffix == '.ipynb':
+                dst_path = modules_dst / rel_path.with_suffix('.mdx')
+                # Upstream path for Binder/Lab
+                upstream_nb_path = f"learning/modules/{rel_path}"
+                # Avoid duplicate route when file stem == parent dir name
+                nb_slug = None
+                if src_path.stem == src_path.parent.name:
+                    nb_slug = f"./{src_path.stem}"
+                if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path, slug=nb_slug):
+                    stats["ipynb"] += 1
+                    print(f"    ✓ {rel_path} → .mdx")
+                else:
+                    stats["skipped"] += 1
+
+                # Copy original notebook for "Open in Lab" (rewrite image paths)
+                nb_dst = notebooks_dst / rel_path
+                nb_rel = Path('learning/modules') / rel_path
+                copy_notebook_with_rewrite(src_path, nb_dst, nb_rel)
+
+            elif src_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif'):
+                dst_path = modules_dst / rel_path
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(src_path, dst_path)
+                stats["images"] += 1
+
+            else:
+                stats["skipped"] += 1
+
+    print(f"\n  Summary: {stats['mdx']} MDX, {stats['ipynb']} notebooks, "
+          f"{stats['images']} images, {stats['skipped']} skipped")
+
+
+def generate_module_sidebar():
+    """Generate sidebar configuration for modules from per-module _toc.json files."""
+    print("\n📋 Generating module sidebar...")
+
+    modules_src = UPSTREAM_DIR / "learning" / "modules"
+    if not modules_src.exists():
+        print("  Warning: No modules directory found")
+        return
+
+    module_items = []
+    for module_dir in sorted(modules_src.iterdir()):
+        if not module_dir.is_dir():
+            continue
+
+        toc_path = module_dir / "_toc.json"
+        if not toc_path.exists():
+            print(f"  Warning: No _toc.json for {module_dir.name}")
+            continue
+
+        toc = json.loads(toc_path.read_text())
+        module_title = toc.get('title', module_dir.name.replace('-', ' ').title())
+        children = toc.get('children', [])
+
+        # Build sidebar items for this module
+        sub_items = toc_children_to_sidebar(children)
+        if not sub_items:
+            continue
+
+        # Find the overview entry to use as category link
+        overview_id = f"learning/modules/{module_dir.name}/index"
+        module_cat = {
+            'type': 'category',
+            'label': module_title,
+            'collapsed': True,
+            'link': {'type': 'doc', 'id': overview_id},
+            'items': sub_items,
+        }
+        module_items.append(module_cat)
+
+    sidebar_json = PROJECT_ROOT / "sidebar-modules.json"
+    sidebar_json.write_text(json.dumps(module_items, indent=2))
+
+    print(f"  Found {len(module_items)} modules")
+    print(f"  ✓ Generated {sidebar_json}")
+
+
 def create_index_page():
     """Ensure the site home page (docs/index.mdx) exists.
 
@@ -897,11 +1234,14 @@ you'll need an IBM Quantum account.
 def main():
     parser = argparse.ArgumentParser(description="Sync Qiskit tutorials for Docusaurus")
     parser.add_argument("--tutorials-only", action="store_true",
-                        help="Only sync tutorials (not courses)")
+                        help="Only sync tutorials (skip courses, modules, guides)")
     parser.add_argument("--no-clone", action="store_true",
                         help="Skip cloning/updating upstream (use existing)")
     parser.add_argument("--sample-only", action="store_true",
                         help="Only create sample content (for testing)")
+    parser.add_argument("--skip", action="append", default=[],
+                        choices=["tutorials", "courses", "modules", "guides"],
+                        help="Skip specific content types (can be repeated)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -924,14 +1264,31 @@ def main():
         create_sample_tutorial()
         generate_sidebar_flat()
     else:
+        skip: Set[str] = set(args.skip)
+        if args.tutorials_only:
+            skip.update(["courses", "modules", "guides"])
+
         create_index_page()
-        process_tutorials()
-        if not args.tutorials_only:
+
+        if "tutorials" not in skip:
+            process_tutorials()
+        if "guides" not in skip:
+            process_guides()
+        if "courses" not in skip:
             process_courses()
+        if "modules" not in skip:
+            process_modules()
+
         sync_upstream_images()
-        generate_sidebar_from_toc()
-        if not args.tutorials_only:
+
+        if "tutorials" not in skip:
+            generate_sidebar_from_toc()
+        if "guides" not in skip:
+            generate_guides_sidebar()
+        if "courses" not in skip:
             generate_course_sidebar()
+        if "modules" not in skip:
+            generate_module_sidebar()
 
     print("\n" + "=" * 60)
     print("✅ Content sync complete!")

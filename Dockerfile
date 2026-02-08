@@ -10,7 +10,7 @@ RUN npm ci
 
 COPY . .
 RUN python3 scripts/sync-content.py
-RUN npm run build
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # Remove GitHub Pages CNAME from build output
 RUN rm -f build/CNAME
