@@ -100,7 +100,7 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Resources',
+          title: 'RasQberry',
           items: [
             {
               label: 'RasQberry',
@@ -110,6 +110,11 @@ const config: Config = {
               label: 'RasQberry GitHub',
               href: 'https://github.com/JanLahmann/RasQberry-Two',
             },
+          ],
+        },
+        {
+          title: 'IBM Quantum & Qiskit',
+          items: [
             {
               label: 'IBM Quantum',
               href: 'https://quantum.ibm.com',
