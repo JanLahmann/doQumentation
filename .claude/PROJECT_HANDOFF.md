@@ -301,6 +301,9 @@ doQumentation/
 33. ✅ **IBM Quantum credential store + simulator mode** - Token/CRN storage with 7-day auto-expiry, simulator mode toggle (AerSimulator/FakeBackend with grouped device picker), kernel injection via `requestExecute()` after thebelab bootstrap, dynamic fake backend discovery cached in localStorage, active mode conflict resolution (radio buttons + kernel connect banner). Settings page sections: IBM Quantum Account, Simulator Mode, Active Mode selector. Toolbar: "Simulator" badge + "Settings" link.
 34. ✅ **Settings page reorder + IBM account instructions** - Settings page reordered: IBM Quantum Account (with numbered setup steps + IBM auth guide link) → Simulator Mode → Binder Packages → Advanced (Custom Server + Setup Help). CRN marked as required. Homepage updated to point to our Settings page instead of external q-docs.org.
 35. ✅ **Mobile navigation improvements** - Settings link added to doc sidebar (`sidebars.ts`) so it appears alongside Tutorials/Guides/Courses in mobile sidebar. Hamburger menu button styled with border and padding on mobile for better visibility and larger touch target (`custom.css`).
+36. ✅ **IBM Quantum account instructions** - Settings page setup steps expanded to 5 with direct links: Register (no credit card) → Sign in → Instance (Open Plan) → API Token → CRN. Link to IBM's "Set up authentication" guide.
+37. ✅ **Gitignore cleanup** - Broadened `static/docs/images/` → `static/docs/` to cover all sync-generated content (including CLA PDFs in `open-source/`). Deleted completed plan files.
+38. ✅ **Notebook cell splitting** - Upstream notebooks had Python code blocks embedded in markdown cells (inside numbered lists). Split into separate executable code cells via `split_markdown_code_cells()`. Scope: 84 blocks across 94 notebooks.
 
 ### Needs Testing
 
