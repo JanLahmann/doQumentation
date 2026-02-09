@@ -5,7 +5,7 @@
 
 ## We recommend IBM's official platform
 
-For reading and learning, IBM's official [Quantum Platform](https://quantum.cloud.ibm.com) and their [Qiskit documentation](https://quantum.cloud.ibm.com/docs/en/guides) is the best place to start:
+For reading and learning, IBM's official [Quantum Platform](https://quantum.cloud.ibm.com) and their [Qiskit documentation](https://quantum.cloud.ibm.com/docs/en/guides) is the best place:
 
 - **[Learning](https://quantum.cloud.ibm.com/learning)** — Structured courses from quantum basics to advanced topics
 - **[Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials)** — 40+ tutorials on transpilation, error mitigation, and more
@@ -16,15 +16,17 @@ IBM's platform is always up-to-date, well-designed, and the best place to read t
 
 ## What this project adds
 
-IBM's Qiskit tutorials and documentation are open-source, but the web application serving them is not. doQumentation provides an open-source frontend for this content — independently hostable, runnable offline, and deployable on [RasQberry](https://rasqberry.org/).
+IBM's [Qiskit documentation](https://github.com/Qiskit/documentation) is open source (CC BY-SA 4.0), but their web application is not. doQumentation adds an open-source frontend with live code execution, automatic credential injection, and simulator mode — independently hostable, runnable offline, and deployable on [RasQberry](https://rasqberry.org/).
 
-**See it live at [doQumentation.org](https://doqumentation.org)** — browse tutorials and courses, execute code via Binder, no install required.
+**See it live at [doQumentation.org](https://doqumentation.org)** — browse tutorials, guides, and courses, execute code via Binder, no install required.
+
+**Content:** 42 Tutorials, 171 Guides, 154 Course pages, 14 Modules (~380 pages total).
 
 ## Deployment Tiers
 
 | | [GitHub Pages](https://doqumentation.org) | [Docker (lite)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [Docker (jupyter)](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | [RasQberry](https://rasqberry.org/) |
 |---|---|---|---|---|
-| Browse tutorials | Yes | Yes | Yes | Yes |
+| Browse tutorials, guides, & courses | Yes | Yes | Yes | Yes |
 | Full-text search | Yes | Yes | Yes | Yes |
 | Execute code | Via [Binder](https://mybinder.org) | Via [Binder](https://mybinder.org) | Local Jupyter | Local Jupyter |
 | Open in JupyterLab | — | — | Planned | Yes |
@@ -36,17 +38,17 @@ IBM's Qiskit tutorials and documentation are open-source, but the web applicatio
 
 **[doqumentation.org](https://doqumentation.org)** — browse tutorials and courses, execute code via Binder, no install required.
 
-### Run with Docker / Podman
+### Run with Podman / Docker
 
 ```bash
-# Lite: static site only (~60 MB)
-docker run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
+# Full stack: site + Jupyter + Qiskit (~3 GB)
+podman run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 
-# With Jupyter + Qiskit for local code execution (~3 GB)
-docker run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
+# Lite: static site only (~60 MB) — code execution still works via Binder
+podman run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
 ```
 
-Access at `http://localhost:8080`. Or build locally with `docker compose up web` (lite) or `docker compose up jupyter` (full). Works with Docker, Podman, or any OCI-compatible runtime.
+Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` with `docker` — the commands are identical. Or build locally with `podman compose up jupyter` (full) or `podman compose up web` (lite). Images are multi-arch (`linux/amd64` + `linux/arm64`).
 
 ### Deploy to RasQberry
 
@@ -105,28 +107,41 @@ python scripts/sync-content.py --no-clone     # Use existing upstream clone
 
 ```
 doQumentation/
-├── docs/                    # Tutorial content (MDX)
-├── notebooks/              # Original .ipynb files
+├── docs/                          # Tutorial content (MDX, mostly generated)
+│   └── index.mdx                  # Homepage (source of truth, preserved by sync)
+├── notebooks/                     # Original .ipynb for JupyterLab (generated)
 ├── src/
 │   ├── components/
-│   │   └── ExecutableCode/ # Interactive code execution
+│   │   ├── ExecutableCode/        # Run/Stop toggle, thebelab, kernel injection
+│   │   ├── CourseComponents/      # IBMVideo, DefinitionTooltip, Figure, etc.
+│   │   ├── GuideComponents/       # Card, CardGroup, OperatingSystemTabs, etc.
+│   │   └── OpenInLabBanner/       # "Open in JupyterLab" button
 │   ├── config/
-│   │   └── jupyter.ts      # Jupyter configuration
+│   │   └── jupyter.ts             # Environment detection, credential/simulator storage
 │   ├── css/
-│   │   └── custom.css      # Carbon-inspired styling
+│   │   └── custom.css             # Carbon-inspired styling
 │   ├── pages/
-│   │   └── jupyter-settings.tsx
+│   │   └── jupyter-settings.tsx   # Settings (IBM credentials, simulator, custom server)
 │   └── theme/
-│       └── CodeBlock/      # Code block override
+│       ├── CodeBlock/             # Swizzle: wraps Python blocks with ExecutableCode
+│       └── MDXComponents.tsx      # IBM component stubs (Admonition, Image, etc.)
 ├── scripts/
-│   └── sync-content.py     # Content sync from upstream
-├── binder/                 # Dependency files for Jupyter
+│   ├── sync-content.py            # Pull & transform content from upstream
+│   ├── sync-deps.py               # Sync Jupyter deps with arch exception rules
+│   └── setup-pi.sh                # Raspberry Pi setup
+├── binder/
+│   ├── jupyter-requirements.txt       # Full Qiskit deps (cross-platform)
+│   └── jupyter-requirements-amd64.txt # amd64-only extras
 ├── .github/workflows/
-│   ├── deploy.yml          # GitHub Pages deployment
-│   └── docker.yml          # Docker build → ghcr.io
-├── Dockerfile              # Lite image (nginx)
-├── Dockerfile.jupyter      # Full image (nginx + Jupyter + Qiskit)
-└── docusaurus.config.ts    # Site configuration
+│   ├── deploy.yml                 # Sync → build → deploy to GitHub Pages
+│   ├── docker.yml                 # Multi-arch Docker → ghcr.io
+│   └── sync-deps.yml              # Weekly Jupyter dependency sync auto-PR
+├── Dockerfile                     # Static site only (nginx, ~60 MB)
+├── Dockerfile.jupyter             # Full stack: site + Jupyter + Qiskit (~3 GB)
+├── docker-compose.yml             # web + jupyter services
+├── nginx.conf                     # SPA routing + Jupyter proxy
+├── docusaurus.config.ts           # Site configuration
+└── sidebars.ts                    # Navigation (imports generated sidebar JSONs)
 ```
 
 ## Deployment
