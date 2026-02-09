@@ -52,24 +52,11 @@ let executingCell: Element | null = null;
 let lastKernelBusy = false;
 let feedbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Resolve execution feedback for a cell: show "Done" or remove if output visible. */
+/** Resolve execution feedback for a cell: transition from running → done. */
 function settleCellFeedback(cell: Element): void {
-  const feedback = cell.querySelector('.exec-feedback') as HTMLElement | null;
-  if (!feedback) return;
-
-  const outputArea = cell.querySelector('.jp-OutputArea, .thebelab-output');
-  const hasOutput = outputArea?.querySelector('.jp-OutputArea-child');
-
-  if (hasOutput && outputArea?.textContent?.trim()) {
-    feedback.remove();
-  } else {
-    feedback.className = 'exec-feedback exec-feedback--done';
-    feedback.textContent = '\u2713 Done';
-    setTimeout(() => {
-      feedback.classList.add('exec-feedback--fade');
-      setTimeout(() => feedback.remove(), 500);
-    }, 2500);
-  }
+  cell.querySelector('.exec-feedback')?.remove();
+  cell.classList.remove('thebelab-cell--running');
+  cell.classList.add('thebelab-cell--done');
 }
 
 /** Handle kernel busy/idle transitions to detect execution completion. */
@@ -89,15 +76,12 @@ function handleKernelStatusForFeedback(status: string): void {
   }
 }
 
-/** Mark a cell as executing and show "Running..." indicator. */
+/** Mark a cell as executing via left border state. */
 function markCellExecuting(cell: Element): void {
   cell.querySelector('.exec-feedback')?.remove();
   executingCell = cell;
-
-  const feedback = document.createElement('div');
-  feedback.className = 'exec-feedback exec-feedback--running';
-  feedback.textContent = 'Running\u2026';
-  cell.appendChild(feedback);
+  cell.classList.remove('thebelab-cell--done');
+  cell.classList.add('thebelab-cell--running');
 
   if (feedbackFallbackTimer) clearTimeout(feedbackFallbackTimer);
   feedbackFallbackTimer = setTimeout(() => {
@@ -105,7 +89,7 @@ function markCellExecuting(cell: Element): void {
       executingCell = null;
       settleCellFeedback(cell);
     }
-  }, 5000);
+  }, 15000);
 }
 
 /** After thebelab cells are rendered, attach listeners for execution feedback. */
