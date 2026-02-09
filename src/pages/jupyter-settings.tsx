@@ -253,13 +253,30 @@ export default function JupyterSettings(): JSX.Element {
           </p>
 
           <ol>
-            <li>Sign up or log in at{' '}
-              <a href="https://quantum.ibm.com/" target="_blank" rel="noopener noreferrer">
-                quantum.ibm.com
+            <li><strong>Register</strong> at{' '}
+              <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">
+                quantum.cloud.ibm.com/registration
+              </a>
+              {' '}— no credit card required for the first 30 days
+            </li>
+            <li><strong>Sign in</strong> at{' '}
+              <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer">
+                quantum.cloud.ibm.com
               </a>
             </li>
+            <li><strong>Instance</strong> — Create a free Open Plan instance at{' '}
+              <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer">
+                Instances
+              </a>
+              {' '}if you don't have one yet
+            </li>
             <li><strong>API Token</strong> — Click your profile icon (top right), then "API token". Copy the key.</li>
-            <li><strong>CRN</strong> — Go to "Instances" in the administration section. Copy the CRN string for the instance you want to use.</li>
+            <li><strong>CRN</strong> — Copy the CRN string from your{' '}
+              <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer">
+                Instances
+              </a>
+              {' '}page
+            </li>
           </ol>
 
           <p>
