@@ -62,6 +62,9 @@ MDX_TRANSFORMS = [
     (r'<Td\b', '<td'), (r'</Td>', '</td>'),
     # Simplify CodeAssistantAdmonition: strip prompts prop (JSX array breaks MDX escaping)
     (r'<CodeAssistantAdmonition\s+tagLine="([^"]*)"[\s\S]*?/>', r'<CodeAssistantAdmonition tagLine="\1" />'),
+    # Rewrite upstream IBM image URLs to local paths (images are synced to static/)
+    (r'https://docs\.quantum\.ibm\.com(/learning/images/)', r'\1'),
+    (r'https://docs\.quantum\.ibm\.com(/docs/images/)', r'\1'),
     # Fix link paths: /docs/tutorials/foo → /tutorials/foo (local)
     (r'\(/docs/tutorials/', '(/tutorials/'),
     # Fix link paths: /docs/guides/foo → /guides/foo (local)
@@ -162,6 +165,24 @@ def cell_source(cell: dict) -> str:
     return src
 
 
+def _text_to_output(text: str) -> str:
+    """Convert a text output to markdown.
+
+    Detects <Image> JSX tags (from IBM's pre-extracted notebook outputs) and
+    converts them to standard markdown images instead of wrapping in code blocks.
+    """
+    text = text.strip()
+    if not text:
+        return ''
+    # IBM's build system extracts notebook output images and replaces the output
+    # cell with an <Image src="..." alt="..." /> JSX component.  Convert to markdown.
+    m = re.match(r'^<Image\s+src="([^"]+)"(?:\s+alt="([^"]*)")?\s*/?>$', text)
+    if m:
+        src, alt = m.group(1), m.group(2) or 'output'
+        return f'\n![{alt}]({src})\n'
+    return f'\n```text\n{text}\n```\n'
+
+
 def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str:
     """Convert notebook cell outputs to markdown text.
 
@@ -178,7 +199,7 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
                 if isinstance(text, list):
                     text = ''.join(text)
                 if text.strip():
-                    parts.append(f'\n```text\n{text.rstrip()}\n```\n')
+                    parts.append(_text_to_output(text))
 
             # Check data dict for richer outputs
             data = output.get('data', {})
@@ -195,7 +216,7 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
                 if isinstance(text, list):
                     text = ''.join(text)
                 if text.strip():
-                    parts.append(f'\n```text\n{text.rstrip()}\n```\n')
+                    parts.append(_text_to_output(text))
 
         elif output_type == 'error':
             # Skip traceback noise — users will see errors when they run the code

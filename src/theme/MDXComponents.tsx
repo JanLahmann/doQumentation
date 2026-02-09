@@ -1,3 +1,4 @@
+import React from 'react';
 import MDXComponents from '@theme-original/MDXComponents';
 import Admonition from '@theme/Admonition';
 import DefinitionTooltip from '@site/src/components/CourseComponents/DefinitionTooltip';
@@ -10,11 +11,17 @@ import CardGroup from '@site/src/components/GuideComponents/CardGroup';
 import OperatingSystemTabs from '@site/src/components/GuideComponents/OperatingSystemTabs';
 import CodeAssistantAdmonition from '@site/src/components/GuideComponents/CodeAssistantAdmonition';
 
+// Fallback for any <Image> JSX not converted to markdown during sync
+function Image(props: React.ImgHTMLAttributes<HTMLImageElement>) {
+  return <img {...props} />;
+}
+
 export default {
   ...MDXComponents,
   Admonition,
   DefinitionTooltip,
   Figure,
+  Image,
   IBMVideo,
   LaunchExamButton,
   OpenInLabBanner,
