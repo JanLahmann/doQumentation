@@ -298,6 +298,7 @@ doQumentation/
 30. ✅ **Course/module image paths** - Fixed `/learning/images/` being rewritten to external IBM URLs (regex lookahead fix)
 31. ✅ **Cell execution feedback** - Persistent green left border on executed cells (replaces transient "Done" label)
 32. ✅ **IBMVideo embeds** - YouTube-first (32 videos via `YOUTUBE_MAP`) with IBM Video Streaming fallback (~16 videos via `video.ibm.com/embed/recorded/{id}`). New upstream videos auto-fallback to IBM embed.
+33. ✅ **IBM Quantum credential store + simulator mode** - Token/CRN storage with 7-day auto-expiry, simulator mode toggle (AerSimulator/FakeBackend with grouped device picker), kernel injection via `requestExecute()` after thebelab bootstrap, dynamic fake backend discovery cached in localStorage, active mode conflict resolution (radio buttons + kernel connect banner). Settings page sections: IBM Quantum Account, Simulator Mode, Active Mode selector. Toolbar: "Simulator" badge + "Settings" link.
 
 ### Needs Testing
 
@@ -321,6 +322,9 @@ The main interactive component. Key features:
 - thebelab 0.4.x initialization for Jupyter/Binder connection
 - Status indicators (connecting/ready/error) with Binder startup notice
 - Separate DOM containers for React-managed (read) and thebelab-managed (run) views
+- Kernel injection: `injectKernelSetup()` silently runs `save_account()` or simulator monkey-patch after bootstrap
+- `discoverFakeBackends()`: introspects `fake_provider` at kernel connect, caches in localStorage
+- Toolbar: "Simulator" badge + "Settings" link when simulator mode active
 
 ### 3. `src/config/jupyter.ts`
 Environment detection logic:
@@ -328,6 +332,9 @@ Environment detection logic:
 - `saveJupyterConfig()` / `clearJupyterConfig()` - localStorage persistence
 - `testJupyterConnection()` - Verify server connectivity
 - `getLabUrl()` - Generate JupyterLab URLs
+- IBM Quantum credentials: `saveIBMQuantumCredentials()`, `getIBMQuantumToken()`, `getCredentialDaysRemaining()` (7-day TTL)
+- Simulator mode: `getSimulatorMode()`, `getSimulatorBackend()`, `getFakeDevice()`, `getCachedFakeBackends()`
+- Active mode: `getActiveMode()` / `setActiveMode()` — conflict resolution when both credentials + simulator configured
 
 ### 4. `scripts/sync-content.py`
 Content synchronization:
@@ -461,7 +468,6 @@ cd doQumentation-pi
 ## Open TODO
 
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. See plan: `.claude/plans/jupyter-token-auth.md`
-- ~~**Notebook cell splitting**~~ — DONE. Python code blocks extracted from markdown cells into separate executable code cells. 84 `python` blocks across 94 notebooks.
 - **Auto-discover YouTube mappings for IBMVideo** (idea, low priority) — `YOUTUBE_MAP` in `IBMVideo.tsx` is static (32 entries). Could automate via: (1) `sync-content.py` scanning upstream MDX near `<IBMVideo>` tags for YouTube URLs, or (2) periodic `yt-dlp` search on `@qiskit` channel. Not urgent since IBM embed fallback works for unmapped videos.
 - **Code review fixes** — Full review at `.claude/code-review-2026-02-08.md`. Quick wins: URL encoding in `getLabUrl()`, listener cleanup in `setupCellFeedback()`, docker-compose port conflict, a11y/aria-live, error handling in jupyter-settings, deprecated `onBrokenLinks`.
 

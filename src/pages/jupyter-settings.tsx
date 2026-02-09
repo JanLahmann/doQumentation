@@ -243,98 +243,31 @@ export default function JupyterSettings(): JSX.Element {
             )}
           </div>
 
-          {/* Custom Server Configuration */}
-          <h2>Custom Jupyter Server</h2>
-          
-          <div className="jupyter-settings__field">
-            <label className="jupyter-settings__label" htmlFor="jupyter-url">
-              Jupyter Server URL
-            </label>
-            <input
-              id="jupyter-url"
-              type="url"
-              className="jupyter-settings__input"
-              placeholder="http://localhost:8888"
-              value={customUrl}
-              onChange={(e) => setCustomUrl(e.target.value)}
-            />
-            <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-              The base URL of your Jupyter server (e.g., http://localhost:8888)
-            </small>
-          </div>
-
-          <div className="jupyter-settings__field">
-            <label className="jupyter-settings__label" htmlFor="jupyter-token">
-              Authentication Token
-            </label>
-            <input
-              id="jupyter-token"
-              type="password"
-              className="jupyter-settings__input"
-              placeholder="(optional)"
-              value={customToken}
-              onChange={(e) => setCustomToken(e.target.value)}
-            />
-            <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-              Token from jupyter server --generate-config or displayed at startup
-            </small>
-          </div>
-
-          {/* Action Buttons */}
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
-            <button
-              className="jupyter-settings__button jupyter-settings__button--primary"
-              onClick={handleTest}
-              disabled={!customUrl || isTesting}
-            >
-              {isTesting ? 'Testing...' : '🔌 Test Connection'}
-            </button>
-            
-            <button
-              className="jupyter-settings__button jupyter-settings__button--primary"
-              onClick={handleSave}
-              disabled={!customUrl}
-            >
-              💾 Save Settings
-            </button>
-            
-            <button
-              className="jupyter-settings__button jupyter-settings__button--secondary"
-              onClick={handleUseDefault}
-            >
-              📍 Use Default
-            </button>
-            
-            <button
-              className="jupyter-settings__button jupyter-settings__button--secondary"
-              onClick={handleClear}
-            >
-              🗑️ Clear Custom
-            </button>
-          </div>
-
-          {/* Test Result */}
-          {testResult && (
-            <div
-              className={`alert margin-top--md ${
-                testResult.success ? 'alert--success' : 'alert--danger'
-              }`}
-            >
-              {testResult.message}
-            </div>
-          )}
-
           {/* IBM Quantum Account */}
-          <h2 id="ibm-quantum" style={{ marginTop: '2rem' }}>IBM Quantum Account</h2>
+          <h2 id="ibm-quantum">IBM Quantum Account</h2>
 
           <p>
             Enter your IBM Quantum credentials once here. They will be
             auto-injected via <code>save_account()</code> when the kernel starts,
             so you don't need to enter them in every notebook.
-            Get your API key from the{' '}
-            <a href="https://quantum.ibm.com/" target="_blank" rel="noopener noreferrer">
-              IBM Quantum Platform
-            </a>.
+          </p>
+
+          <ol>
+            <li>Sign up or log in at{' '}
+              <a href="https://quantum.ibm.com/" target="_blank" rel="noopener noreferrer">
+                quantum.ibm.com
+              </a>
+            </li>
+            <li><strong>API Token</strong> — Click your profile icon (top right), then "API token". Copy the key.</li>
+            <li><strong>CRN</strong> — Go to "Instances" in the administration section. Copy the CRN string for the instance you want to use.</li>
+          </ol>
+
+          <p>
+            For detailed steps, see IBM's{' '}
+            <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer">
+              Set up authentication
+            </a>{' '}
+            guide (step 2).
           </p>
 
           {ibmExpiredNotice && (
@@ -377,9 +310,6 @@ export default function JupyterSettings(): JSX.Element {
               value={ibmCrn}
               onChange={(e) => setIbmCrn(e.target.value)}
             />
-            <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-              Optional. Required for specific instance access.
-            </small>
           </div>
 
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
@@ -565,8 +495,86 @@ qiskit-ibm-runtime, pylatexenc`}</code>
   gem-suite python-sat`}</code>
           </pre>
 
-          {/* Help Section */}
-          <h2 style={{ marginTop: '2rem' }}>Setup Help</h2>
+          {/* Advanced: Custom Jupyter Server */}
+          <h2 id="advanced" style={{ marginTop: '2rem' }}>Advanced</h2>
+
+          <h3>Custom Jupyter Server</h3>
+
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__label" htmlFor="jupyter-url">
+              Jupyter Server URL
+            </label>
+            <input
+              id="jupyter-url"
+              type="url"
+              className="jupyter-settings__input"
+              placeholder="http://localhost:8888"
+              value={customUrl}
+              onChange={(e) => setCustomUrl(e.target.value)}
+            />
+            <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+              The base URL of your Jupyter server (e.g., http://localhost:8888)
+            </small>
+          </div>
+
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__label" htmlFor="jupyter-token">
+              Authentication Token
+            </label>
+            <input
+              id="jupyter-token"
+              type="password"
+              className="jupyter-settings__input"
+              placeholder="(optional)"
+              value={customToken}
+              onChange={(e) => setCustomToken(e.target.value)}
+            />
+            <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+              Token from jupyter server --generate-config or displayed at startup
+            </small>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--primary"
+              onClick={handleTest}
+              disabled={!customUrl || isTesting}
+            >
+              {isTesting ? 'Testing...' : 'Test Connection'}
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--primary"
+              onClick={handleSave}
+              disabled={!customUrl}
+            >
+              Save Settings
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={handleUseDefault}
+            >
+              Use Default
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={handleClear}
+            >
+              Clear Custom
+            </button>
+          </div>
+
+          {testResult && (
+            <div
+              className={`alert margin-top--md ${
+                testResult.success ? 'alert--success' : 'alert--danger'
+              }`}
+            >
+              {testResult.message}
+            </div>
+          )}
+
+          {/* Setup Help */}
+          <h3 style={{ marginTop: '2rem' }}>Setup Help</h3>
           
           <h3>RasQberry Setup</h3>
           <p>
