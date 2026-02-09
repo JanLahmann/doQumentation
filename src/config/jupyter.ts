@@ -134,6 +134,130 @@ export function clearJupyterConfig(): void {
   localStorage.removeItem(STORAGE_KEY_TOKEN);
 }
 
+// ── IBM Quantum credential storage ──
+
+const STORAGE_KEY_IBM_TOKEN = 'doqumentation_ibm_token';
+const STORAGE_KEY_IBM_CRN = 'doqumentation_ibm_crn';
+const STORAGE_KEY_IBM_SAVED_AT = 'doqumentation_ibm_saved_at';
+const STORAGE_KEY_SIM_MODE = 'doqumentation_simulator_mode';
+const STORAGE_KEY_SIM_BACKEND = 'doqumentation_simulator_backend';
+const STORAGE_KEY_FAKE_DEVICE = 'doqumentation_fake_device';
+const STORAGE_KEY_FAKE_BACKENDS_CACHE = 'doqumentation_fake_backends';
+const STORAGE_KEY_ACTIVE_MODE = 'doqumentation_active_mode';
+
+const CREDENTIAL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/** Check if credentials have expired (>7 days old). Auto-clears if expired. */
+function checkCredentialExpiry(): boolean {
+  const savedAt = localStorage.getItem(STORAGE_KEY_IBM_SAVED_AT);
+  if (!savedAt) return false;
+  if (Date.now() - Number(savedAt) > CREDENTIAL_TTL_MS) {
+    clearIBMQuantumCredentials();
+    return true;
+  }
+  return false;
+}
+
+export function getIBMQuantumToken(): string {
+  if (typeof window === 'undefined') return '';
+  checkCredentialExpiry();
+  return localStorage.getItem(STORAGE_KEY_IBM_TOKEN) || '';
+}
+
+export function getIBMQuantumCRN(): string {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem(STORAGE_KEY_IBM_CRN) || '';
+}
+
+export function getCredentialDaysRemaining(): number {
+  if (typeof window === 'undefined') return -1;
+  const savedAt = localStorage.getItem(STORAGE_KEY_IBM_SAVED_AT);
+  if (!savedAt) return -1;
+  const remaining = CREDENTIAL_TTL_MS - (Date.now() - Number(savedAt));
+  return Math.max(0, Math.ceil(remaining / (24 * 60 * 60 * 1000)));
+}
+
+export function saveIBMQuantumCredentials(token: string, crn: string): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY_IBM_TOKEN, token);
+  localStorage.setItem(STORAGE_KEY_IBM_CRN, crn);
+  localStorage.setItem(STORAGE_KEY_IBM_SAVED_AT, String(Date.now()));
+}
+
+export function clearIBMQuantumCredentials(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(STORAGE_KEY_IBM_TOKEN);
+  localStorage.removeItem(STORAGE_KEY_IBM_CRN);
+  localStorage.removeItem(STORAGE_KEY_IBM_SAVED_AT);
+}
+
+// ── Simulator mode ──
+
+export type SimulatorBackend = 'aer' | 'fake';
+
+export function getSimulatorMode(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(STORAGE_KEY_SIM_MODE) === 'true';
+}
+
+export function setSimulatorMode(enabled: boolean): void {
+  if (typeof window === 'undefined') return;
+  if (enabled) {
+    localStorage.setItem(STORAGE_KEY_SIM_MODE, 'true');
+  } else {
+    localStorage.removeItem(STORAGE_KEY_SIM_MODE);
+  }
+}
+
+export function getSimulatorBackend(): SimulatorBackend {
+  if (typeof window === 'undefined') return 'aer';
+  return (localStorage.getItem(STORAGE_KEY_SIM_BACKEND) as SimulatorBackend) || 'aer';
+}
+
+export function setSimulatorBackend(backend: SimulatorBackend): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY_SIM_BACKEND, backend);
+}
+
+export function getFakeDevice(): string {
+  if (typeof window === 'undefined') return 'FakeSherbrooke';
+  return localStorage.getItem(STORAGE_KEY_FAKE_DEVICE) || 'FakeSherbrooke';
+}
+
+export function setFakeDevice(name: string): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY_FAKE_DEVICE, name);
+}
+
+export function getCachedFakeBackends(): Array<{name: string; qubits: number}> | null {
+  if (typeof window === 'undefined') return null;
+  const cached = localStorage.getItem(STORAGE_KEY_FAKE_BACKENDS_CACHE);
+  return cached ? JSON.parse(cached) : null;
+}
+
+export function setCachedFakeBackends(backends: Array<{name: string; qubits: number}>): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY_FAKE_BACKENDS_CACHE, JSON.stringify(backends));
+}
+
+// ── Active mode (conflict resolution when both credentials + simulator set) ──
+
+export type ActiveMode = 'credentials' | 'simulator';
+
+export function getActiveMode(): ActiveMode | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(STORAGE_KEY_ACTIVE_MODE) as ActiveMode | null;
+}
+
+export function setActiveMode(mode: ActiveMode | null): void {
+  if (typeof window === 'undefined') return;
+  if (mode) {
+    localStorage.setItem(STORAGE_KEY_ACTIVE_MODE, mode);
+  } else {
+    localStorage.removeItem(STORAGE_KEY_ACTIVE_MODE);
+  }
+}
+
 /**
  * Test connection to a Jupyter server
  */

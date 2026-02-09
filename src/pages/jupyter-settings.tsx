@@ -15,8 +15,35 @@ import {
   saveJupyterConfig,
   clearJupyterConfig,
   testJupyterConnection,
+  getIBMQuantumToken,
+  getIBMQuantumCRN,
+  getCredentialDaysRemaining,
+  saveIBMQuantumCredentials,
+  clearIBMQuantumCredentials,
+  getSimulatorMode,
+  setSimulatorMode,
+  getSimulatorBackend,
+  setSimulatorBackend,
+  getFakeDevice,
+  setFakeDevice,
+  getCachedFakeBackends,
+  getActiveMode,
+  setActiveMode,
   type JupyterConfig,
+  type SimulatorBackend,
+  type ActiveMode,
 } from '../config/jupyter';
+
+const FALLBACK_BACKENDS = [
+  { name: 'FakeManilaV2', qubits: 5 },
+  { name: 'FakeBelemV2', qubits: 5 },
+  { name: 'FakeMelbourneV2', qubits: 14 },
+  { name: 'FakeTorontoV2', qubits: 27 },
+  { name: 'FakeSherbrooke', qubits: 127 },
+  { name: 'FakeBrisbane', qubits: 127 },
+  { name: 'FakeKyoto', qubits: 127 },
+  { name: 'FakeWashingtonV2', qubits: 127 },
+];
 
 export default function JupyterSettings(): JSX.Element {
   const [config, setConfig] = useState<JupyterConfig | null>(null);
@@ -28,14 +55,55 @@ export default function JupyterSettings(): JSX.Element {
   } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
 
+  // IBM Quantum credentials state
+  const [ibmToken, setIbmToken] = useState('');
+  const [ibmCrn, setIbmCrn] = useState('');
+  const [ibmDaysRemaining, setIbmDaysRemaining] = useState(-1);
+  const [ibmExpiredNotice, setIbmExpiredNotice] = useState(false);
+  const [ibmSaveResult, setIbmSaveResult] = useState<string | null>(null);
+
+  // Simulator mode state
+  const [simEnabled, setSimEnabled] = useState(false);
+  const [simBackend, setSimBackend] = useState<SimulatorBackend>('aer');
+  const [fakeDevice, setFakeDeviceState] = useState('FakeSherbrooke');
+  const [fakeBackends, setFakeBackends] = useState(FALLBACK_BACKENDS);
+  const [activeMode, setActiveModeState] = useState<ActiveMode | null>(null);
+
   // Load current config on mount
   useEffect(() => {
     const currentConfig = detectJupyterConfig();
     setConfig(currentConfig);
-    
+
     if (currentConfig.environment === 'custom') {
       setCustomUrl(currentConfig.baseUrl);
       setCustomToken(currentConfig.token);
+    }
+
+    // Load IBM credentials state
+    const days = getCredentialDaysRemaining();
+    if (days === -1 && getIBMQuantumToken() === '') {
+      // Check if credentials were just expired (token gone but we had them)
+      // We detect this by checking if days is -1 but there was a saved_at that got cleared
+      // Actually: if token is empty AND days is -1, it could be expired or never set.
+      // We'll show expired notice only if localStorage still has a stale saved_at
+    }
+    setIbmDaysRemaining(days);
+    const savedToken = getIBMQuantumToken();
+    if (savedToken) {
+      setIbmToken(savedToken);
+      setIbmCrn(getIBMQuantumCRN());
+    }
+
+    // Load simulator mode state
+    setSimEnabled(getSimulatorMode());
+    setSimBackend(getSimulatorBackend());
+    setFakeDeviceState(getFakeDevice());
+    setActiveModeState(getActiveMode());
+
+    // Load cached fake backends
+    const cached = getCachedFakeBackends();
+    if (cached && cached.length > 0) {
+      setFakeBackends(cached);
     }
   }, []);
 
@@ -79,6 +147,59 @@ export default function JupyterSettings(): JSX.Element {
       setCustomToken('rasqberry');
     }
   };
+
+  // IBM Quantum credential handlers
+  const handleIbmSave = () => {
+    if (!ibmToken) return;
+    saveIBMQuantumCredentials(ibmToken, ibmCrn);
+    setIbmDaysRemaining(7);
+    setIbmSaveResult('Credentials saved! They will be auto-injected when the kernel starts.');
+    setIbmExpiredNotice(false);
+  };
+
+  const handleIbmDelete = () => {
+    clearIBMQuantumCredentials();
+    setIbmToken('');
+    setIbmCrn('');
+    setIbmDaysRemaining(-1);
+    setIbmSaveResult('Credentials deleted.');
+    setActiveModeState(null);
+    setActiveMode(null);
+  };
+
+  // Simulator mode handlers
+  const handleSimToggle = () => {
+    const newVal = !simEnabled;
+    setSimEnabled(newVal);
+    setSimulatorMode(newVal);
+  };
+
+  const handleSimBackendChange = (value: SimulatorBackend) => {
+    setSimBackend(value);
+    setSimulatorBackend(value);
+  };
+
+  const handleFakeDeviceChange = (name: string) => {
+    setFakeDeviceState(name);
+    setFakeDevice(name);
+  };
+
+  const handleActiveModeChange = (mode: ActiveMode) => {
+    setActiveModeState(mode);
+    setActiveMode(mode);
+  };
+
+  // Group fake backends by qubit count for <optgroup>
+  const backendsByQubits = new Map<number, Array<{name: string; qubits: number}>>();
+  for (const b of fakeBackends) {
+    if (!backendsByQubits.has(b.qubits)) {
+      backendsByQubits.set(b.qubits, []);
+    }
+    backendsByQubits.get(b.qubits)!.push(b);
+  }
+  const sortedQubitGroups = Array.from(backendsByQubits.entries()).sort((a, b) => a[0] - b[0]);
+
+  const hasBothConfigured = simEnabled && ibmDaysRemaining >= 0;
 
   return (
     <Layout
@@ -201,6 +322,216 @@ export default function JupyterSettings(): JSX.Element {
             >
               {testResult.message}
             </div>
+          )}
+
+          {/* IBM Quantum Account */}
+          <h2 id="ibm-quantum" style={{ marginTop: '2rem' }}>IBM Quantum Account</h2>
+
+          <p>
+            Enter your IBM Quantum credentials once here. They will be
+            auto-injected via <code>save_account()</code> when the kernel starts,
+            so you don't need to enter them in every notebook.
+            Get your API key from the{' '}
+            <a href="https://quantum.ibm.com/" target="_blank" rel="noopener noreferrer">
+              IBM Quantum Platform
+            </a>.
+          </p>
+
+          {ibmExpiredNotice && (
+            <div className="alert alert--warning margin-bottom--md">
+              Your IBM Quantum credentials have expired and were deleted.
+              Please re-enter them below.
+            </div>
+          )}
+
+          {ibmDaysRemaining >= 0 && (
+            <div className="alert alert--info margin-bottom--md">
+              Credentials expire in <strong>{ibmDaysRemaining} day{ibmDaysRemaining !== 1 ? 's' : ''}</strong>.
+              They are stored in your browser only and auto-deleted after 7 days.
+            </div>
+          )}
+
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__label" htmlFor="ibm-token">
+              API Token
+            </label>
+            <input
+              id="ibm-token"
+              type="password"
+              className="jupyter-settings__input"
+              placeholder="44-character API key"
+              value={ibmToken}
+              onChange={(e) => setIbmToken(e.target.value)}
+            />
+          </div>
+
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__label" htmlFor="ibm-crn">
+              Cloud Resource Name (CRN) / Instance
+            </label>
+            <input
+              id="ibm-crn"
+              type="text"
+              className="jupyter-settings__input"
+              placeholder="crn:v1:bluemix:public:quantum-computing:..."
+              value={ibmCrn}
+              onChange={(e) => setIbmCrn(e.target.value)}
+            />
+            <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+              Optional. Required for specific instance access.
+            </small>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--primary"
+              onClick={handleIbmSave}
+              disabled={!ibmToken}
+            >
+              Save Credentials
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={handleIbmDelete}
+            >
+              Delete Credentials
+            </button>
+          </div>
+
+          {ibmSaveResult && (
+            <div className="alert alert--success margin-top--md">
+              {ibmSaveResult}
+            </div>
+          )}
+
+          {/* Simulator Mode */}
+          <h2 id="simulator-mode" style={{ marginTop: '2rem' }}>Simulator Mode</h2>
+
+          <p>
+            Enable to run notebooks without an IBM Quantum account.
+            All <code>QiskitRuntimeService</code> calls are redirected to a local
+            simulator. No cell modifications needed.
+          </p>
+
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__toggle">
+              <input
+                type="checkbox"
+                checked={simEnabled}
+                onChange={handleSimToggle}
+              />
+              <span className="jupyter-settings__toggle-track">
+                <span className="jupyter-settings__toggle-thumb" />
+              </span>
+              <span style={{ marginLeft: '0.5rem' }}>
+                {simEnabled ? 'Simulator mode enabled' : 'Simulator mode disabled'}
+              </span>
+            </label>
+          </div>
+
+          {simEnabled && (
+            <>
+              <div className="jupyter-settings__field">
+                <label className="jupyter-settings__label">Backend</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <input
+                      type="radio"
+                      name="sim-backend"
+                      value="aer"
+                      checked={simBackend === 'aer'}
+                      onChange={() => handleSimBackendChange('aer')}
+                    />
+                    <span>
+                      <strong>AerSimulator</strong> — Ideal simulation, no noise. Fast, works for all circuits.
+                    </span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <input
+                      type="radio"
+                      name="sim-backend"
+                      value="fake"
+                      checked={simBackend === 'fake'}
+                      onChange={() => handleSimBackendChange('fake')}
+                    />
+                    <span>
+                      <strong>FakeBackend</strong> — Simulates real IBM device noise. More realistic but slower.
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {simBackend === 'fake' && (
+                <div className="jupyter-settings__field">
+                  <label className="jupyter-settings__label" htmlFor="fake-device">
+                    Device
+                  </label>
+                  <select
+                    id="fake-device"
+                    className="jupyter-settings__input"
+                    value={fakeDevice}
+                    onChange={(e) => handleFakeDeviceChange(e.target.value)}
+                  >
+                    {sortedQubitGroups.map(([qubits, backends]) => (
+                      <optgroup key={qubits} label={`${qubits} qubits`}>
+                        {backends.map((b) => (
+                          <option key={b.name} value={b.name}>
+                            {b.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                  <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                    Device list is updated automatically when you run code.
+                  </small>
+                </div>
+              )}
+
+              <div className="alert alert--info margin-top--md">
+                Changes take effect on the next kernel session. If code is running,
+                click Stop then Run to apply.
+              </div>
+            </>
+          )}
+
+          {/* Active mode selector when both are configured */}
+          {hasBothConfigured && (
+            <>
+              <h3 style={{ marginTop: '1.5rem' }}>Active Mode</h3>
+              <p>
+                You have both IBM credentials and simulator mode configured.
+                Choose which to use when the kernel starts:
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="radio"
+                    name="active-mode"
+                    value="credentials"
+                    checked={activeMode === 'credentials'}
+                    onChange={() => handleActiveModeChange('credentials')}
+                  />
+                  <span>Use IBM credentials (connect to real hardware)</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="radio"
+                    name="active-mode"
+                    value="simulator"
+                    checked={activeMode === 'simulator'}
+                    onChange={() => handleActiveModeChange('simulator')}
+                  />
+                  <span>Use simulator (no real hardware access)</span>
+                </label>
+              </div>
+              {!activeMode && (
+                <div className="alert alert--warning margin-top--md">
+                  Please select an active mode. Without a selection, simulator
+                  mode will be used by default and a reminder banner will appear.
+                </div>
+              )}
+            </>
           )}
 
           {/* Binder Packages */}

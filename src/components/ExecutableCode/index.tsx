@@ -19,6 +19,13 @@ import CodeBlock from '@theme-original/CodeBlock';
 import {
   detectJupyterConfig,
   getLabUrl,
+  getIBMQuantumToken,
+  getIBMQuantumCRN,
+  getSimulatorMode,
+  getSimulatorBackend,
+  getFakeDevice,
+  getActiveMode,
+  setCachedFakeBackends,
   type JupyterConfig,
 } from '../../config/jupyter';
 
@@ -120,6 +127,142 @@ function setupCellFeedback(): void {
   }, 1000);
 }
 
+// ── Kernel injection for IBM credentials / simulator mode ──
+
+const CONFLICT_EVENT = 'executablecode:conflict';
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolean> {
+  const k = kernelObj as Record<string, any>;
+  const kernel = k?.requestExecute ? k : k?.kernel;
+  if (!kernel?.requestExecute) {
+    console.warn('[ExecutableCode] kernel.requestExecute not available');
+    return false;
+  }
+  try {
+    const future = kernel.requestExecute({ code, silent: true, store_history: false });
+    if (future?.done) await future.done;
+    return true;
+  } catch (err) {
+    console.error('[ExecutableCode] kernel exec error:', err);
+    return false;
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+function getSaveAccountCode(token: string, crn: string): string {
+  const t = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const c = crn.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `from qiskit_ibm_runtime import QiskitRuntimeService
+try:
+    QiskitRuntimeService.save_account(
+        token="${t}",
+        instance="${c}",
+        overwrite=True, set_as_default=True
+    )
+except Exception as e:
+    print(f"[doQumentation] Credential setup: {e}")`;
+}
+
+function getSimulatorPatchCode(): string {
+  const backend = getSimulatorBackend();
+  let backendSetup: string;
+
+  if (backend === 'fake') {
+    const device = getFakeDevice();
+    const safeName = device.replace(/[^a-zA-Z0-9_]/g, '');
+    backendSetup = `from qiskit_ibm_runtime.fake_provider import ${safeName} as _DQ_Cls
+_dq_backend = _DQ_Cls()`;
+  } else {
+    backendSetup = `try:
+    from qiskit_aer import AerSimulator as _DQ_Sim
+except ImportError:
+    from qiskit.providers.basic_provider import BasicSimulator as _DQ_Sim
+_dq_backend = _DQ_Sim()`;
+  }
+
+  return `${backendSetup}
+
+class _DQ_MockService:
+    def __init__(self, *a, **kw): pass
+    @staticmethod
+    def save_account(*a, **kw): pass
+    def least_busy(self, *a, **kw): return _dq_backend
+    def backend(self, *a, **kw): return _dq_backend
+    def backends(self, *a, **kw): return [_dq_backend]
+
+import qiskit_ibm_runtime as _qir
+_qir.QiskitRuntimeService = _DQ_MockService
+import sys
+_m = sys.modules.get('qiskit_ibm_runtime')
+if _m: _m.QiskitRuntimeService = _DQ_MockService
+print(f"[doQumentation] Simulator mode — using {type(_dq_backend).__name__}")`;
+}
+
+function broadcastConflictBanner(usingMode: string): void {
+  window.dispatchEvent(new CustomEvent(CONFLICT_EVENT, { detail: usingMode }));
+}
+
+async function injectKernelSetup(kernelObj: unknown): Promise<void> {
+  const simMode = getSimulatorMode();
+  const token = getIBMQuantumToken();
+  const activeMode = getActiveMode();
+
+  const hasBoth = simMode && !!token;
+  const useSimulator = simMode && (!hasBoth || activeMode === 'simulator');
+  const useCredentials = !!token && (!simMode || activeMode === 'credentials');
+
+  if (hasBoth && !activeMode) {
+    broadcastConflictBanner('simulator');
+  }
+
+  if (useSimulator || (hasBoth && !activeMode)) {
+    const ok = await executeOnKernel(kernelObj, getSimulatorPatchCode());
+    if (ok) console.log('[ExecutableCode] Simulator mode injected');
+  } else if (useCredentials) {
+    const crn = getIBMQuantumCRN();
+    const ok = await executeOnKernel(kernelObj, getSaveAccountCode(token, crn));
+    if (ok) console.log('[ExecutableCode] IBM Quantum credentials injected');
+  }
+
+  discoverFakeBackends(kernelObj);
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function discoverFakeBackends(kernelObj: unknown): void {
+  const k = kernelObj as Record<string, any>;
+  const kernel = k?.requestExecute ? k : k?.kernel;
+  if (!kernel?.requestExecute) return;
+
+  const code = `import json as _j
+from qiskit_ibm_runtime import fake_provider as _fp
+_bs = []
+for _n in sorted(dir(_fp)):
+    _c = getattr(_fp, _n)
+    if isinstance(_c, type) and hasattr(_c, 'num_qubits'):
+        try: _bs.append({"name": _n, "qubits": _c().num_qubits})
+        except: pass
+print("__DQ_BACKENDS__" + _j.dumps(_bs))`;
+
+  try {
+    const future = kernel.requestExecute({ code, silent: false, store_history: false });
+    if (future?.onIOPub) {
+      future.onIOPub = (msg: any) => {
+        const text = msg?.content?.text;
+        if (typeof text === 'string' && text.includes('__DQ_BACKENDS__')) {
+          try {
+            const json = text.substring(text.indexOf('__DQ_BACKENDS__') + 15);
+            const backends = JSON.parse(json);
+            setCachedFakeBackends(backends);
+            console.log(`[ExecutableCode] Discovered ${backends.length} fake backends`);
+          } catch { /* ignore parse errors */ }
+        }
+      };
+    }
+  } catch { /* ignore discovery errors */ }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 interface ExecutableCodeProps {
   children: string;
   language?: string;
@@ -210,8 +353,10 @@ function bootstrapOnce(config: JupyterConfig): void {
         kernelPromise.then(
           (kernel) => {
             console.log('[ExecutableCode] kernel ready:', kernel);
-            broadcastStatus('ready');
-            setupCellFeedback();
+            injectKernelSetup(kernel).then(() => {
+              broadcastStatus('ready');
+              setupCellFeedback();
+            });
           },
           (err) => {
             console.error('[ExecutableCode] kernel error:', err);
@@ -243,6 +388,7 @@ export default function ExecutableCode({
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
   const [isFirstCell, setIsFirstCell] = useState(false);
+  const [conflictBanner, setConflictBanner] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const thebeContainerRef = useRef<HTMLDivElement>(null);
 
@@ -287,8 +433,20 @@ export default function ExecutableCode({
     return () => window.removeEventListener(STATUS_EVENT, onStatus);
   }, []);
 
+  // Listen for conflict banner (both credentials + simulator configured, no explicit choice)
+  useEffect(() => {
+    const onConflict = (e: Event) => {
+      const usingMode = (e as CustomEvent<string>).detail;
+      setConflictBanner(usingMode);
+      setTimeout(() => setConflictBanner(null), 5000);
+    };
+    window.addEventListener(CONFLICT_EVENT, onConflict);
+    return () => window.removeEventListener(CONFLICT_EVENT, onConflict);
+  }, []);
+
   const isExecutable = language === 'python' && jupyterConfig?.thebeEnabled;
   const canOpenLab = jupyterConfig?.labEnabled && notebookPath;
+  const simActive = typeof window !== 'undefined' && getSimulatorMode();
 
   const handleRun = useCallback(() => {
     if (!jupyterConfig) return;
@@ -361,6 +519,26 @@ export default function ExecutableCode({
               {statusText[thebeStatus]}
             </span>
           )}
+
+          {simActive && (
+            <span className="executable-code__sim-badge">Simulator</span>
+          )}
+
+          <a
+            className="executable-code__settings-link"
+            href="/jupyter-settings#ibm-quantum"
+            title="Jupyter & IBM Quantum settings"
+          >
+            Settings
+          </a>
+        </div>
+      )}
+
+      {isFirstCell && conflictBanner && (
+        <div className="executable-code__conflict-banner">
+          Both IBM credentials and simulator mode are configured.
+          Using <strong>{conflictBanner}</strong>.{' '}
+          <a href="/jupyter-settings#ibm-quantum">Change in Settings</a>.
         </div>
       )}
 
