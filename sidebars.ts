@@ -80,6 +80,11 @@ const sidebars: SidebarsConfig = {
       label: 'API Reference',
       href: 'https://quantum.cloud.ibm.com/docs/en/api',
     },
+    {
+      type: 'link' as const,
+      label: 'Settings',
+      href: '/jupyter-settings',
+    },
   ],
 };
 

@@ -299,6 +299,8 @@ doQumentation/
 31. ✅ **Cell execution feedback** - Persistent green left border on executed cells (replaces transient "Done" label)
 32. ✅ **IBMVideo embeds** - YouTube-first (32 videos via `YOUTUBE_MAP`) with IBM Video Streaming fallback (~16 videos via `video.ibm.com/embed/recorded/{id}`). New upstream videos auto-fallback to IBM embed.
 33. ✅ **IBM Quantum credential store + simulator mode** - Token/CRN storage with 7-day auto-expiry, simulator mode toggle (AerSimulator/FakeBackend with grouped device picker), kernel injection via `requestExecute()` after thebelab bootstrap, dynamic fake backend discovery cached in localStorage, active mode conflict resolution (radio buttons + kernel connect banner). Settings page sections: IBM Quantum Account, Simulator Mode, Active Mode selector. Toolbar: "Simulator" badge + "Settings" link.
+34. ✅ **Settings page reorder + IBM account instructions** - Settings page reordered: IBM Quantum Account (with numbered setup steps + IBM auth guide link) → Simulator Mode → Binder Packages → Advanced (Custom Server + Setup Help). CRN marked as required. Homepage updated to point to our Settings page instead of external q-docs.org.
+35. ✅ **Mobile navigation improvements** - Settings link added to doc sidebar (`sidebars.ts`) so it appears alongside Tutorials/Guides/Courses in mobile sidebar. Hamburger menu button styled with border and padding on mobile for better visibility and larger touch target (`custom.css`).
 
 ### Needs Testing
 
