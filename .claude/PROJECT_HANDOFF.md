@@ -88,7 +88,7 @@ IBM's custom components mapped to Docusaurus equivalents:
 - Binder repo has separate daily build workflow to keep 2i2c cache warm
 
 ### Homepage
-Hero banner with CTA buttons, content stats bar, 2x2 tutorial cards, Quick Start 1-2-3 flow, collapsible "How code execution works". Mobile responsive.
+Hero banner with CTA buttons, content stats bar (clickable numbers), featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. Quick Start: step 1 (Run code) then bullet alternatives (IBM Quantum / Simulator Mode). "How code execution works" and "Deployment options" collapsed into `<details>`. RasQberry mentioned after "What this project adds". Links to browse all Guides + CS/QM modules. Mobile responsive.
 
 ### Styling
 Carbon Design-inspired: IBM Plex fonts, `#0f62fe` blue. Mobile hamburger menu with visible border/background. Top-level sidebar categories styled at 1.1rem/semibold.
@@ -221,8 +221,8 @@ docker compose up jupyter          # Full stack → http://localhost:8080 (site)
 - **Code review fixes** — Full review at `.claude/code-review-2026-02-08.md`. Quick wins: URL encoding in `getLabUrl()`, listener cleanup in `setupCellFeedback()`, docker-compose port conflict, a11y/aria-live, error handling in jupyter-settings, deprecated `onBrokenLinks`.
 
 ### Needs Testing
+- **Offline search** — Test search functionality works end-to-end (Pagefind or Docusaurus built-in)
 - **Raspberry Pi deployment** — `scripts/setup-pi.sh` written but untested on actual hardware
-- **Pagefind search** — Config added but not tested end-to-end
 
 ### Future Ideas
 - **Auto-discover YouTube mappings** — `YOUTUBE_MAP` in `IBMVideo.tsx` is static (32 entries). New videos work without this (IBM embed fallback).
