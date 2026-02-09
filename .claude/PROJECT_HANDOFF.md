@@ -110,17 +110,22 @@ IBM's custom MDX components and their Docusaurus equivalents:
 
 | IBM Component | Docusaurus Solution | Status |
 |---------------|---------------------|--------|
-| `<Admonition type="note">` | `:::note` directive | ✅ Native |
-| `<Admonition type="attention">` | `:::warning` | ✅ Transform |
+| `<Admonition type="note">` | `@theme/Admonition` component | ✅ MDXComponents |
+| `<Admonition type="attention">` | Normalized to `type="warning"` | ✅ Transform |
 | `<Tabs>` / `<TabItem>` | Same (native) | ✅ Native |
 | Math `$...$` `$$...$$` | Same (KaTeX plugin) | ✅ Plugin |
 | Code blocks | ExecutableCode wrapper | ✅ Custom |
-| `<DefinitionTooltip>` | Custom component or `<abbr title>` transform | ❌ Courses only (183 uses) |
-| `<IBMVideo>` | Iframe/placeholder component | ❌ Courses only (38 uses) |
-| `<Figure>` | Styled wrapper component | ❌ Courses only (36 uses) |
-| `<LaunchExamButton>` | Link/button component | ❌ Courses only (10 uses) |
+| `<DefinitionTooltip>` | Stub component | ✅ MDXComponents |
+| `<IBMVideo>` | YouTube-first + IBM Video fallback | ✅ Full embed |
+| `<Figure>` | Styled wrapper component | ✅ MDXComponents |
+| `<LaunchExamButton>` | Stub component | ✅ MDXComponents |
+| `<Image>` | Fallback `<img>` component | ✅ MDXComponents |
+| `<Card>` / `<CardGroup>` | Styled link cards | ✅ MDXComponents |
+| `<OperatingSystemTabs>` | Docusaurus `<Tabs>` wrapper | ✅ MDXComponents |
+| `<CodeAssistantAdmonition>` | Tip admonition | ✅ MDXComponents |
+| `<Table>` / `<Tr>` / `<Th>` / `<Td>` | Standard HTML tags | ✅ Transform |
 
-**Key insight:** IBM's MDX is 95% standard Docusaurus-compatible. Main transform is Admonition syntax. Courses introduce 4 additional custom components not found in tutorials.
+**Key insight:** IBM's MDX is 95% standard Docusaurus-compatible. Admonitions use `@theme/Admonition` component (NOT `:::` directives — directives break nesting inside `<details>`). All IBM custom components have stubs registered via `src/theme/MDXComponents.tsx`.
 
 ### ExecutableCode Component
 
@@ -166,31 +171,33 @@ The `src/config/jupyter.ts` module auto-detects:
 ```
 JanLahmann/Qiskit-documentation (GitHub fork)
         │
-        ▼ git sparse-checkout (tutorials + courses + images)
-        │   paths: docs/tutorials, learning/courses, learning/images
+        ▼ git sparse-checkout (all content types + images)
+        │   paths: docs/tutorials, docs/guides, learning/courses,
+        │          learning/modules, public/docs/images, public/learning/images
         │
         ▼ sync-content.py transforms:
-        │   • MDX: Admonition syntax, add imports
-        │   • .ipynb → .mdx via nbconvert
+        │   • MDX: Admonition normalization, IBM component transforms
+        │   • .ipynb → .mdx (custom converter, no nbconvert dependency)
+        │   • <Image> JSX in notebook outputs → markdown images
+        │   • Upstream IBM image URLs → local paths
         │   • Copy original .ipynb for "Open in Lab"
-        │   • Parse _toc.json for course sidebar ordering
-        │   • Transform course-specific components (see below)
+        │   • Parse _toc.json for sidebar ordering (guides, courses, modules)
+        │   • Handle external URLs in _toc.json as link items
         │
         ▼
-   docs/tutorials/*.mdx
-   docs/courses/**/*.mdx  (nested: course/chapter/lesson)
-   notebooks/tutorials/*.ipynb
-   notebooks/courses/**/*.ipynb
+   docs/tutorials/*.mdx          (42 pages)
+   docs/guides/*.mdx             (171 pages)
+   docs/learning/courses/**/*.mdx (154 pages)
+   docs/learning/modules/**/*.mdx (14 pages)
+   notebooks/ (mirror for JupyterLab)
         │
-        ▼ Docusaurus build
-        │
-        ▼ Pagefind search index
+        ▼ Docusaurus build (NODE_OPTIONS="--max-old-space-size=8192")
         │
         ▼
    ┌────┴────┐
    ▼         ▼
-GitHub    Raspberry
-Pages     Pi (nginx)
+GitHub    Docker/
+Pages     RasQberry
 ```
 
 ---
@@ -279,10 +286,18 @@ doQumentation/
 18. ✅ **GH Actions Docker CI/CD** - Multi-arch build workflow pushing to ghcr.io
 19. ✅ **Requirements synced with upstream** - Validated against Qiskit-documentation/scripts/nb-tester/requirements.txt, exceptions documented
 20. ✅ **Binder end-to-end on doqumentation.org** - All 3 cells execute: circuit diagram, AerSimulator measurement, matplotlib histogram. Shared kernel works across cells.
-21. ✅ **Full content sync** - 42 tutorials + 13 courses (154 pages) synced from upstream
+21. ✅ **Full content sync** - 42 tutorials + 171 guides + 154 courses + 14 modules (~380 pages) synced from upstream
 22. ✅ **Course support** - 4 stub components (DefinitionTooltip, Figure, IBMVideo, LaunchExamButton), sidebar from _toc.json, "Lessons" wrapper skipped
-23. ✅ **OpenInLabBanner** - Injected on all 162 notebook-derived pages (tutorials + courses)
-24. ✅ **Automated deps sync** - `scripts/sync-deps.py` + `.github/workflows/sync-deps.yml` (weekly auto-PR via peter-evans/create-pull-request)
+23. ✅ **Guide support** - 4 stub components (Card, CardGroup, OperatingSystemTabs, CodeAssistantAdmonition), hierarchical sidebar from _toc.json
+24. ✅ **Module support** - Same pattern as courses, 2 categories (Computer Science, Quantum Mechanics)
+25. ✅ **API Reference** - External link in sidebar/navbar to docs.quantum.ibm.com/api
+26. ✅ **OpenInLabBanner** - Injected on all notebook-derived pages
+27. ✅ **Image handling** - Notebook `<Image>` JSX → markdown images, upstream IBM URLs → local paths, Image component fallback
+28. ✅ **Automated deps sync** - `scripts/sync-deps.py` + `.github/workflows/sync-deps.yml` (weekly auto-PR via peter-evans/create-pull-request)
+29. ✅ **LaTeX output rendering** - `text/latex` MIME type handled in `extract_cell_outputs()`, 24 instances now render as math via KaTeX
+30. ✅ **Course/module image paths** - Fixed `/learning/images/` being rewritten to external IBM URLs (regex lookahead fix)
+31. ✅ **Cell execution feedback** - Persistent green left border on executed cells (replaces transient "Done" label)
+32. ✅ **IBMVideo embeds** - YouTube-first (32 videos via `YOUTUBE_MAP`) with IBM Video Streaming fallback (~16 videos via `video.ibm.com/embed/recorded/{id}`). New upstream videos auto-fallback to IBM embed.
 
 ### Needs Testing
 
@@ -445,7 +460,10 @@ cd doQumentation-pi
 
 ## Open TODO
 
-- **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan: nginx injects `JUPYTER_TOKEN` (default: `rasqberry`, configurable via env var) into proxied requests, so thebelab works without code changes. Entrypoint script configures both nginx and Jupyter at startup. See detailed plan: `.claude/plans/jupyter-token-auth.md`
+- **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. See plan: `.claude/plans/jupyter-token-auth.md`
+- ~~**Notebook cell splitting**~~ — DONE. Python code blocks extracted from markdown cells into separate executable code cells. 84 `python` blocks across 94 notebooks.
+- **Auto-discover YouTube mappings for IBMVideo** (idea, low priority) — `YOUTUBE_MAP` in `IBMVideo.tsx` is static (32 entries). Could automate via: (1) `sync-content.py` scanning upstream MDX near `<IBMVideo>` tags for YouTube URLs, or (2) periodic `yt-dlp` search on `@qiskit` channel. Not urgent since IBM embed fallback works for unmapped videos.
+- **Code review fixes** — Full review at `.claude/code-review-2026-02-08.md`. Quick wins: URL encoding in `getLabUrl()`, listener cleanup in `setupCellFeedback()`, docker-compose port conflict, a11y/aria-live, error handling in jupyter-settings, deprecated `onBrokenLinks`.
 
 ## Future Considerations
 
@@ -455,5 +473,5 @@ cd doQumentation-pi
 ---
 
 *Document created: February 2025*
-*Last updated: February 8, 2026*
+*Last updated: February 9, 2026*
 *For: doQumentation Project Handoff*

@@ -94,7 +94,7 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://docs.quantum.ibm.com/api',
+          href: 'https://quantum.cloud.ibm.com/docs/en/api',
           label: 'API Reference',
           position: 'left',
         },
@@ -132,11 +132,11 @@ const config: Config = {
           items: [
             {
               label: 'IBM Quantum',
-              href: 'https://quantum.ibm.com',
+              href: 'https://quantum.cloud.ibm.com',
             },
             {
               label: 'Qiskit Documentation',
-              href: 'https://docs.quantum.ibm.com',
+              href: 'https://quantum.cloud.ibm.com/docs/en/guides',
             },
             {
               label: 'Qiskit Docs GitHub',

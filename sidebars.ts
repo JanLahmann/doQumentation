@@ -78,7 +78,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'link' as const,
       label: 'API Reference',
-      href: 'https://docs.quantum.ibm.com/api',
+      href: 'https://quantum.cloud.ibm.com/docs/en/api',
     },
   ],
 };

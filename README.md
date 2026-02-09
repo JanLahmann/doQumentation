@@ -5,11 +5,11 @@
 
 ## We recommend IBM's official platform
 
-For reading and learning, IBM's official [Quantum Platform](https://quantum.ibm.com) and their [Qiskit documentation](https://docs.quantum.ibm.com/) is the best place to start:
+For reading and learning, IBM's official [Quantum Platform](https://quantum.cloud.ibm.com) and their [Qiskit documentation](https://quantum.cloud.ibm.com/docs/en/guides) is the best place to start:
 
 - **[Learning](https://quantum.cloud.ibm.com/learning)** — Structured courses from quantum basics to advanced topics
 - **[Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials)** — 40+ tutorials on transpilation, error mitigation, and more
-- **[Documentation](https://docs.quantum.ibm.com/)** — Guides and API reference for Qiskit
+- **[Documentation](https://quantum.cloud.ibm.com/docs/en/guides)** — Guides and API reference for Qiskit
 - **[Source repo](https://github.com/Qiskit/documentation)** — All content is open source (CC BY-SA 4.0)
 
 IBM's platform is always up-to-date, well-designed, and the best place to read the documentation.
@@ -140,7 +140,7 @@ Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arc
 
 ## Acknowledgments
 
-- [IBM Quantum](https://quantum.ibm.com) for Qiskit and the open-source tutorials
+- [IBM Quantum](https://quantum.cloud.ibm.com) for Qiskit and the open-source tutorials
 - [Docusaurus](https://docusaurus.io) for the documentation framework
 - [thebelab](https://github.com/executablebooks/thebelab) for Jupyter integration
 

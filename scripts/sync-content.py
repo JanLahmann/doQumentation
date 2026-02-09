@@ -42,6 +42,7 @@ CONTENT_PATHS = [
     "learning/modules",
     "public/docs/images/tutorials",
     "public/docs/images/guides",
+    "public/docs/open-source",
     "public/learning/images",
 ]
 
@@ -648,12 +649,15 @@ def toc_children_to_sidebar(children: list) -> list:
                 })
                 continue
             doc_id = url_to_doc_id(url)
-            # Skip non-doc resources (PDFs, etc.)
-            if '.' in doc_id.split('/')[-1] and not doc_id.endswith('.mdx'):
+            # Skip non-doc resources (PDFs, etc.) — but not version numbers like qiskit-2.0
+            last_part = doc_id.split('/')[-1]
+            ext_parts = last_part.rsplit('.', 1)
+            has_file_ext = len(ext_parts) == 2 and ext_parts[1].isalpha() and ext_parts[1] != 'mdx'
+            if has_file_ext:
                 items.append({
                     'type': 'link',
                     'label': child.get('title', doc_id),
-                    'href': f'https://docs.quantum.ibm.com/{url.lstrip("/")}',
+                    'href': f'/{url.lstrip("/")}',
                 })
                 continue
             # Skip overview entries (handled as category links)
@@ -716,6 +720,7 @@ def sync_upstream_images():
     image_mappings = [
         ("public/docs/images/tutorials", "docs/images/tutorials"),
         ("public/docs/images/guides", "docs/images/guides"),
+        ("public/docs/open-source", "docs/open-source"),
         ("public/learning/images", "learning/images"),
     ]
 
