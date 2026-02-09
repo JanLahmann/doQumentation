@@ -73,7 +73,7 @@ MDX_TRANSFORMS = [
     # (negative lookahead to skip local paths: tutorials, guides, images)
     (r'\(/docs/(?!tutorials/|guides/|images/)', '(https://docs.quantum.ibm.com/'),
     # Fix link paths: /learning/courses/ and /learning/modules/ are local
-    (r'\(/learning/(?!courses/|modules/)', '(https://docs.quantum.ibm.com/learning/'),
+    (r'\(/learning/(?!courses/|modules/|images/)', '(https://docs.quantum.ibm.com/learning/'),
     # Clean up triple+ newlines
     (r'\n{3,}', '\n\n'),
 ]
@@ -211,6 +211,13 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
                 img_path.parent.mkdir(parents=True, exist_ok=True)
                 img_path.write_bytes(img_bytes)
                 parts.append(f'\n![output](./{img_name})\n')
+            elif 'text/latex' in data:
+                latex = data['text/latex']
+                if isinstance(latex, list):
+                    latex = ''.join(latex)
+                latex = latex.strip()
+                if latex:
+                    parts.append(f'\n{latex}\n')
             elif 'text/plain' in data and 'text' not in output:
                 text = data['text/plain']
                 if isinstance(text, list):
