@@ -75,6 +75,10 @@ MDX_TRANSFORMS = [
     (r'\(/docs/(?!tutorials/|guides/|images/)', '(https://docs.quantum.ibm.com/'),
     # Fix link paths: /learning/courses/ and /learning/modules/ are local
     (r'\(/learning/(?!courses/|modules/|images/)', '(https://docs.quantum.ibm.com/learning/'),
+    # JSX href equivalents (Card components use href="/docs/..." not markdown links)
+    (r'href="/docs/tutorials', 'href="/tutorials'),
+    (r'href="/docs/guides/', 'href="/guides/'),
+    (r'href="/docs/(?!tutorials|guides/|images/)', 'href="https://docs.quantum.ibm.com/'),
     # Clean up triple+ newlines
     (r'\n{3,}', '\n\n'),
 ]
