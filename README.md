@@ -3,16 +3,16 @@
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
 
-## We recommend IBM's official platform
+## IBM Quantum's open-source content
 
-For reading and learning, IBM's official [Quantum Platform](https://quantum.cloud.ibm.com) and their [Qiskit documentation](https://quantum.cloud.ibm.com/docs/en/guides) is the best place:
+IBM provides a wealth of quantum computing learning material — all open source under CC BY-SA 4.0:
 
 - **[Learning](https://quantum.cloud.ibm.com/learning)** — Structured courses from quantum basics to advanced topics
 - **[Tutorials](https://quantum.cloud.ibm.com/docs/en/tutorials)** — 40+ tutorials on transpilation, error mitigation, and more
 - **[Documentation](https://quantum.cloud.ibm.com/docs/en/guides)** — Guides and API reference for Qiskit
-- **[Source repo](https://github.com/Qiskit/documentation)** — All content is open source (CC BY-SA 4.0)
+- **[Source repo](https://github.com/Qiskit/documentation)** — All content on GitHub
 
-IBM's platform is always up-to-date, well-designed, and the best place to read the documentation.
+Their [Quantum Platform](https://quantum.cloud.ibm.com) is always up-to-date and well-designed — the best place for reading, learning, and reference.
 
 ## What this project adds
 

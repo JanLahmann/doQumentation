@@ -88,7 +88,7 @@ IBM's custom components mapped to Docusaurus equivalents:
 - Binder repo has separate daily build workflow to keep 2i2c cache warm
 
 ### Homepage
-Hero banner with CTA buttons, content stats bar (clickable numbers), featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. Quick Start: step 1 (Run code) then bullet alternatives (IBM Quantum / Simulator Mode). "How code execution works" and "Deployment options" collapsed into `<details>`. RasQberry mentioned after "What this project adds". Links to browse all Guides + CS/QM modules. Mobile responsive.
+Hero banner with 3 outline CTA buttons (Browse Tutorials / Browse Guides / Start a Course). Storyline: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → featured italic blue h3 subtitle ("This combination lets you browse...") → content stats bar (clickable numbers: 42 / 171 / 154 / 14). "Deployable anywhere" line. Featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. "Code execution" section: step 1 (Run code) then bullet alternatives (IBM Quantum / Simulator Mode). Three `<details>` blocks: "Available execution backends", "Deployment options", "Run locally with Podman / Docker" (Podman-first commands). Links to browse all Guides + CS/QM modules. Mobile responsive.
 
 ### Styling
 Carbon Design-inspired: IBM Plex fonts, `#0f62fe` blue. Mobile hamburger menu with visible border/background. Top-level sidebar categories styled at 1.1rem/semibold.
@@ -183,8 +183,8 @@ npm run typecheck                  # Type check
 
 **Docker:**
 ```bash
-docker compose up web              # Static site only → http://localhost:8080
-docker compose up jupyter          # Full stack → http://localhost:8080 (site) + :8888 (JupyterLab)
+podman compose up web              # Static site only → http://localhost:8080
+podman compose up jupyter          # Full stack → http://localhost:8080 (site) + :8888 (JupyterLab)
 ```
 
 **Raspberry Pi** — `scripts/setup-pi.sh` (written but untested on actual hardware).
