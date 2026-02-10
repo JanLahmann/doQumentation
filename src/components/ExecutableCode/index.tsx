@@ -11,7 +11,7 @@
  *
  * All cells on a page share a single kernel session so that variables
  * defined in earlier cells are available in later ones. The Run/Stop
- * toolbar appears only on the first cell; clicking it activates all cells.
+ * toolbar appears only on the first cell; Run activates all cells, Back reverts to static view.
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -153,7 +153,8 @@ async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolea
 function getSaveAccountCode(token: string, crn: string): string {
   const t = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const c = crn.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  return `from qiskit_ibm_runtime import QiskitRuntimeService
+  return `import warnings; warnings.filterwarnings('ignore')
+from qiskit_ibm_runtime import QiskitRuntimeService
 try:
     QiskitRuntimeService.save_account(
         token="${t}",
@@ -389,11 +390,13 @@ export default function ExecutableCode({
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
   const [isFirstCell, setIsFirstCell] = useState(false);
   const [conflictBanner, setConflictBanner] = useState<string | null>(null);
+  const [binderHintDismissed, setBinderHintDismissed] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const thebeContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
+    setBinderHintDismissed(!!localStorage.getItem('dq-binder-hint-dismissed'));
   }, []);
 
   // Determine if this is the first executable cell on the page (toolbar owner)
@@ -500,7 +503,7 @@ export default function ExecutableCode({
                     : 'Execute on local Jupyter server'
               }
             >
-              {thebeStatus === 'connecting' ? 'Connecting...' : mode === 'run' ? 'Stop' : 'Run'}
+              {thebeStatus === 'connecting' ? 'Connecting...' : mode === 'run' ? 'Back' : 'Run'}
             </button>
           )}
 
@@ -517,6 +520,13 @@ export default function ExecutableCode({
           {thebeStatus !== 'idle' && (
             <span className={`thebe-status thebe-status--${thebeStatus}`}>
               {statusText[thebeStatus]}
+            </span>
+          )}
+
+          {thebeStatus === 'ready' && (
+            <span className="executable-code__legend">
+              <span className="executable-code__legend-item executable-code__legend-item--running">running</span>
+              <span className="executable-code__legend-item executable-code__legend-item--done">done</span>
             </span>
           )}
 
@@ -542,12 +552,24 @@ export default function ExecutableCode({
         </div>
       )}
 
-      {isFirstCell && thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' && (
+      {isFirstCell && thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' &&
+        !binderHintDismissed && (
         <div className="executable-code__binder-hint">
-          Some notebooks need extra packages. Run{' '}
+          Need extra packages? Run{' '}
           <code>!pip install -q &lt;package&gt;</code>{' '}
           in a cell, or see{' '}
-          <a href="/jupyter-settings#binder-packages">all available packages</a>.
+          <a href="/jupyter-settings#binder-packages">available packages</a>.
+          <button
+            className="executable-code__binder-hint-dismiss"
+            onClick={() => {
+              localStorage.setItem('dq-binder-hint-dismissed', 'true');
+              setBinderHintDismissed(true);
+            }}
+            title="Dismiss"
+            aria-label="Dismiss hint"
+          >
+            &times;
+          </button>
         </div>
       )}
 

@@ -54,6 +54,7 @@ export default function OpenInLabBanner({ notebookPath }: OpenInLabBannerProps) 
               href={labUrl}
               target="_blank"
               rel="noopener noreferrer"
+              title="Opens the full Jupyter notebook for editing and advanced use"
               style={{
                 marginLeft: 'auto',
                 padding: '0.25rem 0.75rem',

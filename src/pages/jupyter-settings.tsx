@@ -360,6 +360,11 @@ export default function JupyterSettings(): JSX.Element {
             simulator. No cell modifications needed.
           </p>
 
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+            Transpiled circuits and backend-specific results will differ from real hardware
+            when using simulator mode. Static expected outputs shown on pages reflect real IBM backends.
+          </p>
+
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__toggle">
               <input
@@ -437,7 +442,7 @@ export default function JupyterSettings(): JSX.Element {
 
               <div className="alert alert--info margin-top--md">
                 Changes take effect on the next kernel session. If code is running,
-                click Stop then Run to apply.
+                click Back then Run to apply.
               </div>
             </>
           )}
