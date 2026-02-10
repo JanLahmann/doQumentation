@@ -59,11 +59,59 @@ let executingCell: Element | null = null;
 let lastKernelBusy = false;
 let feedbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Resolve execution feedback for a cell: transition from running → done. */
+/** Detect execution errors in a cell's output. */
+function detectCellError(cell: Element): { type: string; name?: string } | null {
+  const output = cell.querySelector('.thebelab-output, .output_area');
+  if (!output) return null;
+  const text = output.textContent || '';
+
+  const modMatch = text.match(/ModuleNotFoundError: No module named '([^']+)'/);
+  if (modMatch) return { type: 'module', name: modMatch[1] };
+
+  const nameMatch = text.match(/NameError: name '([^']+)' is not defined/);
+  if (nameMatch) return { type: 'name', name: nameMatch[1] };
+
+  if (output.querySelector('.output_error, .output_stderr') || text.includes('Traceback')) {
+    return { type: 'generic' };
+  }
+  return null;
+}
+
+/** Show contextual hint for common errors. */
+function showErrorHint(cell: Element, error: { type: string; name?: string }): void {
+  cell.querySelector('.thebelab-cell__error-hint')?.remove();
+
+  let hint = '';
+  if (error.type === 'module' && error.name) {
+    const pkg = error.name.split('.')[0];
+    hint = `Package <code>${pkg}</code> is not installed. Run <code>!pip install -q ${pkg}</code> in a cell to install it.`;
+  } else if (error.type === 'name' && error.name) {
+    hint = `<code>${error.name}</code> is not defined. Run the cells above first &mdash; notebooks must be executed in order.`;
+  }
+
+  if (hint) {
+    const div = document.createElement('div');
+    div.className = 'thebelab-cell__error-hint';
+    div.innerHTML = hint;
+    cell.appendChild(div);
+  }
+}
+
+/** Resolve execution feedback for a cell: transition from running → done or error. */
 function settleCellFeedback(cell: Element): void {
   cell.querySelector('.exec-feedback')?.remove();
+  cell.querySelector('.thebelab-cell__error-hint')?.remove();
   cell.classList.remove('thebelab-cell--running');
-  cell.classList.add('thebelab-cell--done');
+
+  const error = detectCellError(cell);
+  if (error) {
+    cell.classList.remove('thebelab-cell--done');
+    cell.classList.add('thebelab-cell--error');
+    showErrorHint(cell, error);
+  } else {
+    cell.classList.remove('thebelab-cell--error');
+    cell.classList.add('thebelab-cell--done');
+  }
 }
 
 /** Handle kernel busy/idle transitions to detect execution completion. */
@@ -86,8 +134,9 @@ function handleKernelStatusForFeedback(status: string): void {
 /** Mark a cell as executing via left border state. */
 function markCellExecuting(cell: Element): void {
   cell.querySelector('.exec-feedback')?.remove();
+  cell.querySelector('.thebelab-cell__error-hint')?.remove();
   executingCell = cell;
-  cell.classList.remove('thebelab-cell--done');
+  cell.classList.remove('thebelab-cell--done', 'thebelab-cell--error');
   cell.classList.add('thebelab-cell--running');
 
   if (feedbackFallbackTimer) clearTimeout(feedbackFallbackTimer);
@@ -462,6 +511,13 @@ export default function ExecutableCode({
   }, [jupyterConfig]);
 
   const handleReset = () => {
+    // Check if any cells have been executed (have done/error state)
+    const executedCells = document.querySelectorAll('.thebelab-cell--done, .thebelab-cell--error');
+    if (executedCells.length > 0) {
+      if (!window.confirm('This will clear all execution results and return to static view. Continue?')) {
+        return;
+      }
+    }
     // Tell ALL cells on the page to switch back to read mode
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
   };
@@ -527,6 +583,7 @@ export default function ExecutableCode({
             <span className="executable-code__legend">
               <span className="executable-code__legend-item executable-code__legend-item--running">running</span>
               <span className="executable-code__legend-item executable-code__legend-item--done">done</span>
+              <span className="executable-code__legend-item executable-code__legend-item--error">error</span>
             </span>
           )}
 

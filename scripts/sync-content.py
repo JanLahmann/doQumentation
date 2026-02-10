@@ -1173,6 +1173,52 @@ Home page placeholder — run a full content sync to populate.
     print(f"  ✓ Created fallback {index_path}")
 
 
+def create_learning_landing_pages():
+    """Generate landing pages for /learning/ and /learning/modules/.
+
+    These are index pages that list available courses and modules with links.
+    Generated dynamically based on what directories exist after content sync.
+    """
+    learning_dir = DOCS_OUTPUT / "learning"
+    if not learning_dir.exists():
+        return
+
+    # --- /learning/index.mdx ---
+    courses_dir = learning_dir / "courses"
+    modules_dir = learning_dir / "modules"
+
+    course_links = []
+    if courses_dir.exists():
+        for d in sorted(courses_dir.iterdir()):
+            if d.is_dir():
+                title = d.name.replace("-", " ").title()
+                course_links.append(f"- [{title}](/learning/courses/{d.name})")
+
+    module_links = []
+    if modules_dir.exists():
+        for d in sorted(modules_dir.iterdir()):
+            if d.is_dir():
+                title = d.name.replace("-", " ").title()
+                module_links.append(f"- [{title}](/learning/modules/{d.name})")
+
+    learning_index = learning_dir / "index.mdx"
+    parts = ["---", "title: Learning", "---", "", "# Learning", ""]
+    if course_links:
+        parts += ["## Courses", ""] + course_links + [""]
+    if module_links:
+        parts += ["## Modules", ""] + module_links + [""]
+    learning_index.write_text("\n".join(parts))
+    print(f"  ✓ Created {learning_index}")
+
+    # --- /learning/modules/index.mdx ---
+    if modules_dir.exists() and module_links:
+        modules_index = modules_dir / "index.mdx"
+        parts = ["---", "title: Modules", "---", "", "# Modules", ""]
+        parts += module_links + [""]
+        modules_index.write_text("\n".join(parts))
+        print(f"  ✓ Created {modules_index}")
+
+
 def create_sample_tutorial():
     """Create a sample tutorial for testing when upstream is not available."""
     print("\n📝 Creating sample tutorial...")
@@ -1311,6 +1357,8 @@ def main():
             process_courses()
         if "modules" not in skip:
             process_modules()
+
+        create_learning_landing_pages()
 
         sync_upstream_images()
 

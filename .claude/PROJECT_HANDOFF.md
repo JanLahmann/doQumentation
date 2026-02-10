@@ -46,12 +46,16 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - `docs/index.mdx` is preserved (not overwritten) — all other `docs/` content is regenerated
 
 ### Code Execution
-- `ExecutableCode` component wraps Python code blocks with Run/Stop toggle
+- `ExecutableCode` component wraps Python code blocks with Run/Back toggle (Run activates cells, Back reverts to static view)
 - thebelab 0.4.x bootstraps once per page, shared kernel across all cells
 - Environment auto-detection: GitHub Pages → Binder (2i2c.mybinder.org), localhost/rasqberry/Docker → local Jupyter, custom → user-configured
-- Cell execution feedback: persistent left border (amber while running, green when done)
-- "Open in JupyterLab" button on notebook-derived pages (local environments only)
-- Binder package hint shown after kernel ready (GitHub Pages only)
+- Cell execution feedback: persistent left border (amber while running, green when done) + toolbar legend explaining colors
+- Static outputs (from MDX) remain visible alongside live outputs — intentional for comparison
+- Dark mode: circuit/output images auto-inverted via CSS `filter: invert(1) hue-rotate(180deg)`
+- Code blocks scroll horizontally on overflow (mobile-friendly)
+- Warning suppression injected at kernel start (`warnings.filterwarnings('ignore')`)
+- "Open in JupyterLab" button on notebook-derived pages (with descriptive tooltip)
+- Dismissible Binder package hint after kernel ready (GitHub Pages only, localStorage-persisted dismiss)
 
 ### IBM Quantum Integration
 - **Credential store** — API token + CRN saved in localStorage with 7-day auto-expiry. Auto-injected via `save_account()` at kernel start.
@@ -60,7 +64,7 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - **Conflict resolution** — When both credentials and simulator are configured, radio buttons let user choose. Banner shown at kernel connect if no explicit choice (defaults to simulator).
 
 ### Settings Page (`/jupyter-settings`)
-Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode → Binder Packages → Advanced (Custom Server + Setup Help)
+Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode (with hardware-difference note) → Binder Packages → Advanced (Custom Server + Setup Help)
 
 ### MDX Components
 IBM's custom components mapped to Docusaurus equivalents:
@@ -118,7 +122,7 @@ doQumentation/
 │
 ├── src/
 │   ├── components/
-│   │   ├── ExecutableCode/        # Run/Stop toggle, thebelab, kernel injection
+│   │   ├── ExecutableCode/        # Run/Back toggle, thebelab, kernel injection
 │   │   │   └── index.tsx
 │   │   ├── CourseComponents/      # DefinitionTooltip, Figure, IBMVideo, LaunchExamButton
 │   │   ├── GuideComponents/       # Card, CardGroup, OperatingSystemTabs, CodeAssistantAdmonition
@@ -219,6 +223,7 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 ### TODO
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
 - **Code review fixes** — Full review at `.claude/code-review-2026-02-08.md`. Quick wins: URL encoding in `getLabUrl()`, listener cleanup in `setupCellFeedback()`, docker-compose port conflict, a11y/aria-live, error handling in jupyter-settings, deprecated `onBrokenLinks`.
+- **Website review deferred items** — Full review at `.claude/website-review-2026-02-10.md`. Remaining: #10 blank area on Grover's page (upstream?), #18 dark mode toggle prominence, #20 package version mismatch.
 
 ### Needs Testing
 - **Offline search** — Test search functionality works end-to-end (Pagefind or Docusaurus built-in)
@@ -241,4 +246,4 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 
 ---
 
-*Last updated: February 9, 2026*
+*Last updated: February 10, 2026*
