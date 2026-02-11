@@ -46,6 +46,7 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Link path rewriting: both markdown `(/docs/...)` and JSX `href="/docs/..."` patterns → local or upstream IBM URLs
 - Landing page generation: `create_learning_landing_pages()` generates `/learning/` and `/learning/modules/` index pages
 - `docs/index.mdx` is preserved (not overwritten) — all other `docs/` content is regenerated
+- **Custom Hello World tutorial** — `hello-world.ipynb` from fork root (JanLahmann/Qiskit-documentation) imported as first tutorial. sync-content.py adds Settings page tip replacing `save_account()` instruction. Prepended to sidebar.
 - **Notebook dependency scan** — `analyze_notebook_imports()` scans code cells for `import`/`from` statements at build time. Filters Python stdlib (`sys.stdlib_module_names`) + `BINDER_PROVIDED` set (verified against actual Binder `pip list`). Maps import→pip names via `IMPORT_TO_PIP` (e.g. `sklearn`→`scikit-learn`). Deduplicates against existing `!pip install` in notebooks. Injects `%pip install -q <pkgs>` cell before first code block in 46/260 notebooks. `--scan-deps` flag generates report without converting. On Docker tier, install cells are silent no-ops (all deps pre-installed). Runtime fallback (`ModuleNotFoundError` → Install button) catches any false negatives.
 
 ### Code Execution
@@ -80,14 +81,14 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 
 ### Learning Progress
 Automatic tracking of learning progress across all ~380 pages:
-- **Page visit tracking** — `src/clientModules/pageTracker.ts` (Docusaurus client module) auto-records every page visit via `onRouteDidUpdate`. All localStorage access centralized in `src/config/preferences.ts`.
+- **Page visit tracking** — `src/clientModules/pageTracker.ts` (Docusaurus client module) auto-records every page visit via `onRouteDidUpdate`. Title read deferred 100ms to let React flush `<Head>` updates. All localStorage access centralized in `src/config/preferences.ts`.
 - **Sidebar indicators** — Swizzled `DocSidebarItem/Link`: clickable checkmark (✓ visited) or play icon (▶ executed). Swizzled `DocSidebarItem/Category`: aggregate badge ("3/10") showing visited/total leaf pages. Both use custom event `dq:page-visited` for real-time updates across client-side navigation.
 - **Granular clearing** — Per page (click indicator), per section (click category badge uses `commonPrefix()` of leaf hrefs), per category (Settings page), all at once (Settings page).
 - **Resume reading** — `ResumeCard` component on homepage shows "Continue where you left off" with last page title + time ago. Only appears for returning visitors.
 - **Execution tracking** — `markPageExecuted()` called on Run button in ExecutableCode. Visual distinction in sidebar (▶ vs ✓).
 
 ### Bookmarks
-- **Bookmark toggle** — Swizzled `DocItem/Footer` adds a star button (☆/★) below every doc page. Click toggles bookmark state, dispatches `dq:bookmarks-changed` custom event.
+- **Bookmark toggle** — Swizzled `EditThisPage` adds a star button (☆/★) inline with "Edit this page" link. Click toggles bookmark state, dispatches `dq:bookmarks-changed` custom event.
 - **Homepage widget** — `BookmarksList` component renders bookmarked pages with remove buttons. Only shows if bookmarks exist. Listens for `dq:bookmarks-changed` for live updates.
 - **Storage** — `dq-bookmarks` (JSON array of `{path, title, savedAt}`), max 50 bookmarks (FIFO if exceeded).
 - **Settings** — "Bookmarks" subsection shows count + "Clear all bookmarks" button.
@@ -186,7 +187,7 @@ Browser --(no token)--> nginx:80 --(Authorization: token <TOKEN>)--> Jupyter:888
 - Binder repo has separate daily build workflow to keep 2i2c cache warm
 
 ### Homepage
-Hero banner: "doQumentation" title + one-liner subtitle ("adds a feature-rich, user-friendly, open-source frontend to IBM Quantum's complete open-source tutorials, courses, and documentation library") + clickable content stats bar (42 / 171 / 154 / 14) inside hero. Below hero: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → "Deployable anywhere" line + "See all features" link. Simulator callout card in "Getting started" section ("No IBM Quantum account? Enable Simulator Mode..."). Featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. "Code execution" section: step 1 (Run code) then simulator-first bullet alternatives (Simulator Mode / IBM Quantum Hardware). Three `<details>` blocks: "Available execution backends", "Deployment options", "Run locally with Podman / Docker" (Podman-first commands). Links to browse all Guides + CS/QM modules. Mobile responsive.
+Hero banner: "doQumentation" title + one-liner subtitle + clickable content stats bar (42 / 171 / 154 / 14) inside hero. Below hero: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → "Deployable anywhere" + "See all features" link. Simulator callout card ("No IBM Quantum account? Enable Simulator Mode..."). Getting started cards with category tags (Course/Tutorial/Guide): featured "Basics of QI" course, custom "Hello World: Your First Quantum Circuit" tutorial (from fork root), IBM's Hello World guide, CHSH Inequality, Advanced QAOA. Code execution section: Simulator Mode + IBM Quantum Hardware. Three `<details>` blocks: backends, deployment, run locally. Mobile responsive.
 
 ### Features Page
 `src/pages/features.tsx` — standalone React page at `/features` showcasing all implemented features in 5 card-grid sections: Content Library (3 cards), Live Code Execution (6 cards), IBM Quantum Integration (4 cards), Learning & Progress (3 cards), Search/UI/Deployment (6 cards). Responsive grid: 3 columns on desktop, 2 tablet, 1 mobile. Linked from homepage ("See all features") and footer. Not in navbar.
@@ -257,7 +258,9 @@ doQumentation/
 │   └── theme/
 │       ├── CodeBlock/index.tsx    # Swizzle: wraps Python blocks with ExecutableCode
 │       ├── DocItem/
-│       │   └── Footer/index.tsx   # Swizzle: bookmark toggle button (☆/★)
+│       │   └── Footer/index.tsx   # Swizzle: passthrough (bookmark moved to EditThisPage)
+│       ├── EditThisPage/
+│       │   └── index.tsx          # Swizzle: bookmark toggle (☆/★) inline with "Edit this page"
 │       ├── DocSidebarItem/
 │       │   ├── Category/index.tsx # Swizzle: progress badge + sidebar collapse memory
 │       │   └── Link/index.tsx     # Swizzle: visited ✓ / executed ▶ indicators
@@ -353,7 +356,8 @@ Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generat
 - ~~**Jupyter token auth**~~ — DONE. `docker-entrypoint.sh` generates random token at startup, nginx injects `Authorization` header server-side. Jupyter runs as non-root `jupyter` user. Covers code review S1, S2, #1, #9.
 - ~~**Code review**~~ — DONE. Full review at `.claude/code-review-2026-02-08.md` (20 issues + 2 security findings). Fixed: #4 heredoc injection, #5 docker-compose profiles, #7 localStorage `safeSave()`, #10 random token, #11/#12 nginx headers, #15 DEBUG-gated console.log, #18 HEALTHCHECK, #19 restart policies, #20 sidebar types. Previously fixed in website review: #2, #3, #6. Non-issues: #8, #13, #14. Skipped: #16, #17. Remaining S1/S2/#1/#9 deferred to Jupyter token auth plan.
 - ~~**Website review**~~ — DONE. Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). All actionable items fixed in rounds 1-4. Round 4 (133911b): #15 thebelab button overflow CSS, #19 copy button visibility CSS, #24 mobile sidebar tap targets CSS, #28 contextual alt text (sync-content.py + ExecutableCode), #37 H4→H3 heading fix (sync-content.py), #41 Prism languages + untagged code block tagging (docusaurus.config.ts + sync-content.py).
-- **Homepage refinement** — Hero done (775dd83). Getting started cards could better represent each content category.
+- ~~**Homepage refinement**~~ — DONE (fb684ad). Category tags on Getting Started cards, custom Hello World tutorial, QAOA tutorial, simplified code execution section. Bookmark moved to EditThisPage swizzle.
+- **Test checklist** — `.claude/test-checklist.md` with ~100 manual test items across 20 feature areas.
 
 ### Needs Testing
 - **Raspberry Pi deployment** — `scripts/setup-pi.sh` written but untested on actual hardware
