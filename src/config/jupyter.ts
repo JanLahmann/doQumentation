@@ -22,6 +22,15 @@ export interface JupyterConfig {
 const STORAGE_KEY_URL = 'rasqberry_jupyter_url';
 const STORAGE_KEY_TOKEN = 'rasqberry_jupyter_token';
 
+/** Wrapper for localStorage.setItem that silently handles QuotaExceededError. */
+function safeSave(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // QuotaExceededError or SecurityError — silently fail rather than crash
+  }
+}
+
 /**
  * Detect the current environment and return appropriate Jupyter config
  */
@@ -116,8 +125,8 @@ export function saveJupyterConfig(url: string, token: string): void {
   if (typeof window === 'undefined') return;
   
   if (url) {
-    localStorage.setItem(STORAGE_KEY_URL, url);
-    localStorage.setItem(STORAGE_KEY_TOKEN, token);
+    safeSave(STORAGE_KEY_URL, url);
+    safeSave(STORAGE_KEY_TOKEN, token);
   } else {
     localStorage.removeItem(STORAGE_KEY_URL);
     localStorage.removeItem(STORAGE_KEY_TOKEN);
@@ -179,9 +188,9 @@ export function getCredentialDaysRemaining(): number {
 
 export function saveIBMQuantumCredentials(token: string, crn: string): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY_IBM_TOKEN, token);
-  localStorage.setItem(STORAGE_KEY_IBM_CRN, crn);
-  localStorage.setItem(STORAGE_KEY_IBM_SAVED_AT, String(Date.now()));
+  safeSave(STORAGE_KEY_IBM_TOKEN, token);
+  safeSave(STORAGE_KEY_IBM_CRN, crn);
+  safeSave(STORAGE_KEY_IBM_SAVED_AT, String(Date.now()));
 }
 
 export function clearIBMQuantumCredentials(): void {
@@ -203,7 +212,7 @@ export function getSimulatorMode(): boolean {
 export function setSimulatorMode(enabled: boolean): void {
   if (typeof window === 'undefined') return;
   if (enabled) {
-    localStorage.setItem(STORAGE_KEY_SIM_MODE, 'true');
+    safeSave(STORAGE_KEY_SIM_MODE, 'true');
   } else {
     localStorage.removeItem(STORAGE_KEY_SIM_MODE);
   }
@@ -216,7 +225,7 @@ export function getSimulatorBackend(): SimulatorBackend {
 
 export function setSimulatorBackend(backend: SimulatorBackend): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY_SIM_BACKEND, backend);
+  safeSave(STORAGE_KEY_SIM_BACKEND, backend);
 }
 
 export function getFakeDevice(): string {
@@ -226,7 +235,7 @@ export function getFakeDevice(): string {
 
 export function setFakeDevice(name: string): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY_FAKE_DEVICE, name);
+  safeSave(STORAGE_KEY_FAKE_DEVICE, name);
 }
 
 export function getCachedFakeBackends(): Array<{name: string; qubits: number}> | null {
@@ -237,7 +246,7 @@ export function getCachedFakeBackends(): Array<{name: string; qubits: number}> |
 
 export function setCachedFakeBackends(backends: Array<{name: string; qubits: number}>): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY_FAKE_BACKENDS_CACHE, JSON.stringify(backends));
+  safeSave(STORAGE_KEY_FAKE_BACKENDS_CACHE, JSON.stringify(backends));
 }
 
 // ── Active mode (conflict resolution when both credentials + simulator set) ──
@@ -252,7 +261,7 @@ export function getActiveMode(): ActiveMode | null {
 export function setActiveMode(mode: ActiveMode | null): void {
   if (typeof window === 'undefined') return;
   if (mode) {
-    localStorage.setItem(STORAGE_KEY_ACTIVE_MODE, mode);
+    safeSave(STORAGE_KEY_ACTIVE_MODE, mode);
   } else {
     localStorage.removeItem(STORAGE_KEY_ACTIVE_MODE);
   }

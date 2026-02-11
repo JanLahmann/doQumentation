@@ -28,6 +28,15 @@ function isBrowser(): boolean {
   return typeof window !== 'undefined';
 }
 
+/** Wrapper for localStorage.setItem that silently handles QuotaExceededError. */
+function safeSave(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // QuotaExceededError or SecurityError — silently fail rather than crash
+  }
+}
+
 function getJsonSet(key: string): Set<string> {
   if (!isBrowser()) return new Set();
   try {
@@ -40,7 +49,7 @@ function getJsonSet(key: string): Set<string> {
 
 function saveJsonSet(key: string, set: Set<string>): void {
   if (!isBrowser()) return;
-  localStorage.setItem(key, JSON.stringify([...set]));
+  safeSave(key, JSON.stringify([...set]));
 }
 
 // ── Page visit tracking ──
@@ -143,9 +152,9 @@ export function setLastPage(path: string, title: string): void {
   const norm = normalizePath(path);
   // Only track content pages, not the homepage or settings
   if (norm === '/' || norm === '/jupyter-settings') return;
-  localStorage.setItem(KEY_LAST_PAGE, norm);
-  localStorage.setItem(KEY_LAST_PAGE_TITLE, title);
-  localStorage.setItem(KEY_LAST_PAGE_TS, String(Date.now()));
+  safeSave(KEY_LAST_PAGE, norm);
+  safeSave(KEY_LAST_PAGE_TITLE, title);
+  safeSave(KEY_LAST_PAGE_TS, String(Date.now()));
 }
 
 /** Get the last visited page info, or null if none. */
@@ -167,7 +176,7 @@ export function isBinderHintDismissed(): boolean {
 
 export function dismissBinderHint(): void {
   if (!isBrowser()) return;
-  localStorage.setItem(KEY_BINDER_HINT, 'true');
+  safeSave(KEY_BINDER_HINT, 'true');
 }
 
 // ── Onboarding ──
@@ -179,16 +188,16 @@ export function isOnboardingCompleted(): boolean {
 
 export function completeOnboarding(): void {
   if (!isBrowser()) return;
-  localStorage.setItem(KEY_ONBOARDING_COMPLETED, 'true');
+  safeSave(KEY_ONBOARDING_COMPLETED, 'true');
 }
 
 /** Increment visit count and return the new value. Auto-completes after 3 visits. */
 export function incrementOnboardingVisits(): number {
   if (!isBrowser()) return 99;
   const count = Number(localStorage.getItem(KEY_ONBOARDING_VISITS) || '0') + 1;
-  localStorage.setItem(KEY_ONBOARDING_VISITS, String(count));
+  safeSave(KEY_ONBOARDING_VISITS, String(count));
   if (count >= 3) {
-    localStorage.setItem(KEY_ONBOARDING_COMPLETED, 'true');
+    safeSave(KEY_ONBOARDING_COMPLETED, 'true');
   }
   return count;
 }
@@ -221,7 +230,7 @@ function getBookmarksArray(): Bookmark[] {
 
 function saveBookmarksArray(bookmarks: Bookmark[]): void {
   if (!isBrowser()) return;
-  localStorage.setItem(KEY_BOOKMARKS, JSON.stringify(bookmarks));
+  safeSave(KEY_BOOKMARKS, JSON.stringify(bookmarks));
 }
 
 export function addBookmark(path: string, title: string): void {
@@ -265,7 +274,7 @@ export function getCodeFontSize(): number {
 export function setCodeFontSize(size: number): void {
   if (!isBrowser()) return;
   const clamped = Math.max(10, Math.min(22, Math.round(size)));
-  localStorage.setItem(KEY_CODE_FONT_SIZE, String(clamped));
+  safeSave(KEY_CODE_FONT_SIZE, String(clamped));
 }
 
 export function getHideStaticOutputs(): boolean {
@@ -275,7 +284,7 @@ export function getHideStaticOutputs(): boolean {
 
 export function setHideStaticOutputs(hide: boolean): void {
   if (!isBrowser()) return;
-  localStorage.setItem(KEY_HIDE_STATIC_OUTPUTS, String(hide));
+  safeSave(KEY_HIDE_STATIC_OUTPUTS, String(hide));
 }
 
 // ── Sidebar collapse memory ──
@@ -299,7 +308,7 @@ export function setSidebarCollapseState(label: string, collapsed: boolean): void
   if (!isBrowser()) return;
   const map = getCollapseMap();
   map[label] = collapsed;
-  localStorage.setItem(KEY_SIDEBAR_COLLAPSED, JSON.stringify(map));
+  safeSave(KEY_SIDEBAR_COLLAPSED, JSON.stringify(map));
 }
 
 export function clearSidebarCollapseStates(): void {
@@ -329,7 +338,7 @@ export function addRecentPage(path: string, title: string): void {
     const filtered = pages.filter(p => p.path !== norm);
     filtered.unshift({ path: norm, title, ts: Date.now() });
     if (filtered.length > MAX_RECENT_PAGES) filtered.length = MAX_RECENT_PAGES;
-    localStorage.setItem(KEY_RECENT_PAGES, JSON.stringify(filtered));
+    safeSave(KEY_RECENT_PAGES, JSON.stringify(filtered));
   } catch { /* ignore */ }
 }
 

@@ -60,6 +60,9 @@ type InjectionInfo = {
   message: string;  // Toast text for brief feedback
 };
 
+// Gate debug logging — only in development builds
+const DEBUG = typeof process !== 'undefined' && process.env.NODE_ENV === 'development';
+
 // ── Cell execution feedback ──
 // Tracks which cell is currently executing so we can show "Done" for no-output cells.
 
@@ -301,7 +304,7 @@ function setupCellFeedback(): void {
 
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
-    console.log(`[ExecutableCode] Setting up feedback for ${cells.length} cell(s)`);
+    if (DEBUG) console.log(`[ExecutableCode] Setting up feedback for ${cells.length} cell(s)`);
 
     cells.forEach((cell) => {
       const buttons = cell.querySelectorAll('button');
@@ -484,7 +487,7 @@ print("__DQ_BACKENDS__" + _j.dumps(_bs))`;
             const json = text.substring(text.indexOf('__DQ_BACKENDS__') + 15);
             const backends = JSON.parse(json);
             setCachedFakeBackends(backends);
-            console.log(`[ExecutableCode] Discovered ${backends.length} fake backends`);
+            if (DEBUG) console.log(`[ExecutableCode] Discovered ${backends.length} fake backends`);
           } catch { /* ignore parse errors */ }
         }
       };
@@ -551,7 +554,7 @@ function bootstrapOnce(config: JupyterConfig): void {
 
   const tryBootstrap = () => {
     if (!window.thebelab) {
-      console.log('[ExecutableCode] waiting for thebelab CDN...');
+      if (DEBUG) console.log('[ExecutableCode] waiting for thebelab CDN...');
       setTimeout(tryBootstrap, 500);
       return;
     }
@@ -562,27 +565,27 @@ function bootstrapOnce(config: JupyterConfig): void {
       window.thebelab.on('status', function (...args: unknown[]) {
         const data = args[1] as { status: string; message: string };
         if (data) {
-          console.log(`[thebelab] status: ${data.status} — ${data.message}`);
+          if (DEBUG) console.log(`[thebelab] status: ${data.status} — ${data.message}`);
           handleKernelStatusForFeedback(data.status);
         }
       });
     }
 
     const cells = document.querySelectorAll('[data-executable]');
-    console.log(`[ExecutableCode] bootstrap: ${cells.length} cell(s), options:`, thebelabOptions);
+    if (DEBUG) console.log(`[ExecutableCode] bootstrap: ${cells.length} cell(s), options:`, thebelabOptions);
 
     try {
       // Pass options directly to bootstrap() — bypasses the config script
       // cache which can be empty if getPageConfig() ran before injection.
       const kernelPromise = window.thebelab.bootstrap(thebelabOptions);
       thebelabBootstrapped = true;
-      console.log('[ExecutableCode] bootstrap() called, waiting for kernel promise...');
+      if (DEBUG) console.log('[ExecutableCode] bootstrap() called, waiting for kernel promise...');
 
       // Stay in 'connecting' state until the kernel is ready
       if (kernelPromise && typeof kernelPromise.then === 'function') {
         kernelPromise.then(
           (kernel) => {
-            console.log('[ExecutableCode] kernel ready:', kernel);
+            if (DEBUG) console.log('[ExecutableCode] kernel ready:', kernel);
             kernelDead = false;
             activeKernel = kernel;
 
@@ -596,11 +599,11 @@ function bootstrapOnce(config: JupyterConfig): void {
             if (realKernel?.statusChanged?.connect) {
               realKernel.statusChanged.connect(
                 (_sender: unknown, kernelStatus: string) => {
-                  console.log(`[ExecutableCode] kernel.statusChanged: ${kernelStatus}`);
+                  if (DEBUG) console.log(`[ExecutableCode] kernel.statusChanged: ${kernelStatus}`);
                   handleKernelStatusForFeedback(kernelStatus);
                 }
               );
-              console.log('[ExecutableCode] Subscribed to kernel.statusChanged');
+              if (DEBUG) console.log('[ExecutableCode] Subscribed to kernel.statusChanged');
             } else {
               console.warn(
                 '[ExecutableCode] kernel.statusChanged not available — ' +
@@ -620,7 +623,7 @@ function bootstrapOnce(config: JupyterConfig): void {
           }
         );
       } else {
-        console.log('[ExecutableCode] bootstrap returned non-promise, assuming ready');
+        if (DEBUG) console.log('[ExecutableCode] bootstrap returned non-promise, assuming ready');
         broadcastStatus('ready');
       }
     } catch (err) {

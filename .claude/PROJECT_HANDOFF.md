@@ -286,11 +286,12 @@ npm run typecheck                  # Type check
 
 **GitHub Pages** — Automatic on push to main. Custom domain via `static/CNAME` + IONOS DNS.
 
-**Docker:**
+**Docker:** Services use profiles (mutually exclusive — they share port 8080):
 ```bash
-podman compose up web              # Static site only → http://localhost:8080
-podman compose up jupyter          # Full stack → http://localhost:8080 (site) + :8888 (JupyterLab)
+podman compose --profile web up       # Static site only → http://localhost:8080
+podman compose --profile jupyter up   # Full stack → http://localhost:8080 (site) + :8888 (JupyterLab)
 ```
+Both have `restart: unless-stopped` and HEALTHCHECK.
 
 **Raspberry Pi** — `scripts/setup-pi.sh` (written but untested on actual hardware).
 
@@ -327,8 +328,8 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 - **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
 - **Notebook dependency scan** — Scan all notebooks for missing dependencies, document findings in `.claude/` folder, and inject a `pip install` cell at top of each affected notebook as a courtesy for the user.
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
-- **Code review remaining** — docker-compose port conflict, error handling in jupyter-settings, deprecated `onBrokenLinks`. Full review at `.claude/code-review-2026-02-08.md`.
-- **Website review deferred** — Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). Many fixed in rounds 1-3; remaining: #15 button misalignment, ~~#16 simulator discoverability~~ (addressed: simulator-first homepage bullets + callout card + Features page), #19 copy button, #24 mobile sidebar, #28 generic alt text, #37 heading hierarchy (upstream), #41 syntax highlighting gaps (upstream).
+- ~~**Code review**~~ — DONE. Full review at `.claude/code-review-2026-02-08.md` (20 issues + 2 security findings). Fixed: #4 heredoc injection, #5 docker-compose profiles, #7 localStorage `safeSave()`, #10 random token, #11/#12 nginx headers, #15 DEBUG-gated console.log, #18 HEALTHCHECK, #19 restart policies, #20 sidebar types. Previously fixed in website review: #2, #3, #6. Non-issues: #8, #13, #14. Skipped: #16, #17. Remaining S1/S2/#1/#9 deferred to Jupyter token auth plan.
+- ~~**Website review**~~ — DONE. Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). All actionable items fixed in rounds 1-4. Round 4 (133911b): #15 thebelab button overflow CSS, #19 copy button visibility CSS, #24 mobile sidebar tap targets CSS, #28 contextual alt text (sync-content.py + ExecutableCode), #37 H4→H3 heading fix (sync-content.py), #41 Prism languages + untagged code block tagging (docusaurus.config.ts + sync-content.py).
 - **Homepage refinement** — Hero done (775dd83). Getting started cards could better represent each content category.
 
 ### Needs Testing
