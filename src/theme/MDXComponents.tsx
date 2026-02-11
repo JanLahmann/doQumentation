@@ -6,6 +6,7 @@ import Figure from '@site/src/components/CourseComponents/Figure';
 import IBMVideo from '@site/src/components/CourseComponents/IBMVideo';
 import LaunchExamButton from '@site/src/components/CourseComponents/LaunchExamButton';
 import OpenInLabBanner from '@site/src/components/OpenInLabBanner';
+import ResumeCard from '@site/src/components/ResumeCard';
 import Card from '@site/src/components/GuideComponents/Card';
 import CardGroup from '@site/src/components/GuideComponents/CardGroup';
 import OperatingSystemTabs from '@site/src/components/GuideComponents/OperatingSystemTabs';
@@ -29,4 +30,5 @@ export default {
   CardGroup,
   OperatingSystemTabs,
   CodeAssistantAdmonition,
+  ResumeCard,
 };

@@ -33,6 +33,15 @@ import {
   type SimulatorBackend,
   type ActiveMode,
 } from '../config/jupyter';
+import {
+  getProgressStats,
+  clearVisitedByPrefix,
+  clearExecutedByPrefix,
+  clearAllVisited,
+  clearAllExecuted,
+  clearAllPreferences,
+  type ProgressStats,
+} from '../config/preferences';
 
 const FALLBACK_BACKENDS = [
   { name: 'FakeManilaV2', qubits: 5 },
@@ -61,6 +70,9 @@ export default function JupyterSettings(): JSX.Element {
   const [ibmDaysRemaining, setIbmDaysRemaining] = useState(-1);
   const [ibmExpiredNotice, setIbmExpiredNotice] = useState(false);
   const [ibmSaveResult, setIbmSaveResult] = useState<string | null>(null);
+
+  // Learning progress state
+  const [progressStats, setProgressStats] = useState<ProgressStats | null>(null);
 
   // Simulator mode state
   const [simEnabled, setSimEnabled] = useState(false);
@@ -105,6 +117,9 @@ export default function JupyterSettings(): JSX.Element {
     if (cached && cached.length > 0) {
       setFakeBackends(cached);
     }
+
+    // Load learning progress
+    setProgressStats(getProgressStats());
   }, []);
 
   const handleTest = async () => {
@@ -484,6 +499,78 @@ export default function JupyterSettings(): JSX.Element {
                 </div>
               )}
             </>
+          )}
+
+          {/* Learning Progress */}
+          <h2 id="learning-progress" style={{ marginTop: '2rem' }}>Learning Progress</h2>
+
+          <p>
+            Your reading and execution progress is tracked locally in your browser.
+            Visited pages show a <strong>&#10003;</strong> in the sidebar; executed notebooks show a <strong>&#9654;</strong>.
+          </p>
+
+          {progressStats && (progressStats.visitedCount > 0 || progressStats.executedCount > 0) ? (
+            <>
+              <div className="dq-progress-stats">
+                <div className="dq-progress-stat">
+                  <span className="dq-progress-stat__number">{progressStats.visitedCount}</span>
+                  <span className="dq-progress-stat__label">Pages visited</span>
+                </div>
+                <div className="dq-progress-stat">
+                  <span className="dq-progress-stat__number">{progressStats.executedCount}</span>
+                  <span className="dq-progress-stat__label">Notebooks executed</span>
+                </div>
+                {Object.entries(progressStats.visitedByCategory).map(([cat, count]) => (
+                  <div className="dq-progress-stat" key={cat}>
+                    <span className="dq-progress-stat__number">{count}</span>
+                    <span className="dq-progress-stat__label">{cat.charAt(0).toUpperCase() + cat.slice(1)}</span>
+                  </div>
+                ))}
+              </div>
+
+              <h3>Clear Progress</h3>
+              <div className="dq-clear-buttons">
+                {Object.keys(progressStats.visitedByCategory).map((cat) => (
+                  <button
+                    key={cat}
+                    className="jupyter-settings__button jupyter-settings__button--secondary"
+                    onClick={() => {
+                      const prefix = cat === 'courses' ? '/learning/courses'
+                        : cat === 'modules' ? '/learning/modules'
+                        : `/${cat}`;
+                      clearVisitedByPrefix(prefix);
+                      clearExecutedByPrefix(prefix);
+                      setProgressStats(getProgressStats());
+                    }}
+                  >
+                    Clear {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                  </button>
+                ))}
+                <button
+                  className="jupyter-settings__button jupyter-settings__button--secondary"
+                  onClick={() => {
+                    clearAllVisited();
+                    clearAllExecuted();
+                    setProgressStats(getProgressStats());
+                  }}
+                >
+                  Clear All Progress
+                </button>
+                <button
+                  className="jupyter-settings__button jupyter-settings__button--secondary"
+                  onClick={() => {
+                    clearAllPreferences();
+                    setProgressStats(getProgressStats());
+                  }}
+                >
+                  Clear All Preferences
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="alert alert--info margin-bottom--md">
+              No progress tracked yet. Visit tutorials and guides to start tracking.
+            </div>
           )}
 
           {/* Binder Packages */}

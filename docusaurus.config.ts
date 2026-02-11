@@ -42,6 +42,10 @@ const config: Config = {
     },
   ],
 
+  clientModules: [
+    require.resolve('./src/clientModules/pageTracker.ts'),
+  ],
+
   themes: [
     [
       '@easyops-cn/docusaurus-search-local',
@@ -111,13 +115,14 @@ const config: Config = {
         },
         {
           href: '/jupyter-settings',
-          label: '⚙️ Jupyter',
+          label: '⚙ Settings',
           position: 'right',
         },
         {
           href: 'https://github.com/JanLahmann/doQumentation',
-          label: 'GitHub',
           position: 'right',
+          className: 'header-github-link',
+          'aria-label': 'GitHub repository',
         },
       ],
     },

@@ -28,6 +28,7 @@ import {
   setCachedFakeBackends,
   type JupyterConfig,
 } from '../../config/jupyter';
+import { markPageExecuted, isBinderHintDismissed, dismissBinderHint } from '../../config/preferences';
 
 // thebelab 0.4.x global — bootstrap() returns a Promise that resolves
 // when the kernel is connected (after Binder launch + kernel start).
@@ -522,7 +523,7 @@ export default function ExecutableCode({
 
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
-    setBinderHintDismissed(!!localStorage.getItem('dq-binder-hint-dismissed'));
+    setBinderHintDismissed(isBinderHintDismissed());
   }, []);
 
   // Determine if this is the first executable cell on the page (toolbar owner)
@@ -594,6 +595,9 @@ export default function ExecutableCode({
 
   const handleRun = useCallback(() => {
     if (!jupyterConfig) return;
+
+    // Track this page as executed in learning progress
+    markPageExecuted(window.location.pathname);
 
     // Tell ALL cells on the page to switch to run mode
     window.dispatchEvent(new CustomEvent(ACTIVATE_EVENT));
@@ -730,7 +734,7 @@ export default function ExecutableCode({
           <button
             className="executable-code__binder-hint-dismiss"
             onClick={() => {
-              localStorage.setItem('dq-binder-hint-dismissed', 'true');
+              dismissBinderHint();
               setBinderHintDismissed(true);
             }}
             title="Dismiss"
