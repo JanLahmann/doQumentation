@@ -75,7 +75,7 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - **Fake backend discovery** — Introspects `fake_provider` at kernel connect, caches available backends in localStorage. Device picker grouped by qubit count.
 - **Conflict resolution** — When both credentials and simulator are configured, radio buttons let user choose. Banner shown at kernel connect if no explicit choice (defaults to simulator).
 
-### Learning Progress (uncommitted)
+### Learning Progress
 Automatic tracking of learning progress across all ~380 pages:
 - **Page visit tracking** — `src/clientModules/pageTracker.ts` (Docusaurus client module) auto-records every page visit via `onRouteDidUpdate`. All localStorage access centralized in `src/config/preferences.ts`.
 - **Sidebar indicators** — Swizzled `DocSidebarItem/Link`: clickable checkmark (✓ visited) or play icon (▶ executed). Swizzled `DocSidebarItem/Category`: aggregate badge ("3/10") showing visited/total leaf pages. Both use custom event `dq:page-visited` for real-time updates across client-side navigation.
@@ -261,7 +261,7 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 ## Open Items
 
 ### TODO
-- **localStorage settings expansion (Tier 1 done, Tier 2-3 open)** — Tier 1 implemented (uncommitted): learning progress tracker (visited/executed pages), resume reading card on homepage, Binder hint migration to `preferences.ts`. Full tiered plan at `.claude/plans/wild-hopping-beaver.md`. Remaining: onboarding state (Tier 1), bookmarks (Tier 2), display preferences like code font size (Tier 2), sidebar collapse memory (Tier 3), recently viewed pages (Tier 3).
+- **localStorage settings expansion (Tier 1 done, Tier 2-3 open)** — Tier 1 implemented: learning progress tracker (visited/executed pages), resume reading card on homepage, Binder hint migration to `preferences.ts`. Full tiered plan at `.claude/plans/wild-hopping-beaver.md`. Remaining: onboarding state (Tier 1), bookmarks (Tier 2), display preferences like code font size (Tier 2), sidebar collapse memory (Tier 3), recently viewed pages (Tier 3).
 - **Features page** — Create dedicated page showcasing main features (code execution, credential injection, simulator mode, deployment tiers) and secondary features.
 - **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
 - **Pip install injection on dependency failure** — After a cell fails with a missing dependency, inject a cell with the suggested `pip install` command.

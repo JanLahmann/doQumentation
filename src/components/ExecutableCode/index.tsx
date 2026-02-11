@@ -68,6 +68,7 @@ let lastKernelBusy = false;
 let feedbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let kernelDead = false;
 let feedbackCleanupFns: (() => void)[] = [];
+let activeKernel: unknown = null;
 
 /** Detect execution errors in a cell's output. */
 function detectCellError(cell: Element): { type: string; name?: string } | null {
@@ -91,12 +92,36 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
 function showErrorHint(cell: Element, error: { type: string; name?: string }): void {
   cell.querySelector('.thebelab-cell__error-hint')?.remove();
 
+  // Module errors get a clickable Install button when kernel is available
+  if (error.type === 'module' && error.name) {
+    const pkg = error.name.split('.')[0];
+    const div = document.createElement('div');
+    div.className = 'thebelab-cell__error-hint';
+
+    const text = document.createElement('span');
+    text.innerHTML = `Package <code>${pkg}</code> is not installed.`;
+    div.appendChild(text);
+
+    if (activeKernel && !kernelDead) {
+      const btn = document.createElement('button');
+      btn.className = 'thebelab-cell__install-btn';
+      btn.textContent = `Install ${pkg}`;
+      btn.title = `Run !pip install -q ${pkg}`;
+      btn.addEventListener('click', () => handlePipInstall(cell, pkg, btn));
+      div.appendChild(btn);
+    } else {
+      const fallback = document.createElement('span');
+      fallback.innerHTML = ` Run <code>!pip install -q ${pkg}</code> in a cell.`;
+      div.appendChild(fallback);
+    }
+
+    cell.appendChild(div);
+    return;
+  }
+
   let hint = '';
   if (error.type === 'kernel') {
     hint = 'Kernel disconnected. Click <strong>Back</strong> then <strong>Run</strong> to reconnect.';
-  } else if (error.type === 'module' && error.name) {
-    const pkg = error.name.split('.')[0];
-    hint = `Package <code>${pkg}</code> is not installed. Run <code>!pip install -q ${pkg}</code> in a cell to install it.`;
   } else if (error.type === 'name' && error.name) {
     hint = `<code>${error.name}</code> is not defined. Run the cells above first &mdash; notebooks must be executed in order.`;
   }
@@ -106,6 +131,47 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     div.className = 'thebelab-cell__error-hint';
     div.innerHTML = hint;
     cell.appendChild(div);
+  }
+}
+
+/** Run !pip install on the kernel, update button state, and re-run the failed cell. */
+async function handlePipInstall(
+  cell: Element,
+  pkg: string,
+  btn: HTMLButtonElement
+): Promise<void> {
+  btn.disabled = true;
+  btn.textContent = `Installing ${pkg}...`;
+  btn.classList.add('thebelab-cell__install-btn--installing');
+  cell.classList.remove('thebelab-cell--error');
+  cell.classList.add('thebelab-cell--running');
+
+  const ok = await executeOnKernel(activeKernel, `!pip install -q ${pkg}`);
+
+  if (ok) {
+    btn.textContent = 'Installed \u2713';
+    btn.classList.remove('thebelab-cell__install-btn--installing');
+    btn.classList.add('thebelab-cell__install-btn--done');
+
+    // Re-run the failed cell by clicking its thebelab run button
+    setTimeout(() => {
+      const runBtn = Array.from(cell.querySelectorAll('button')).find(
+        b => b.textContent?.trim().toLowerCase() === 'run'
+      );
+      if (runBtn) {
+        runBtn.click();
+      } else {
+        cell.classList.remove('thebelab-cell--running');
+        cell.classList.add('thebelab-cell--done');
+        cell.querySelector('.thebelab-cell__error-hint')?.remove();
+      }
+    }, 500);
+  } else {
+    btn.textContent = 'Install failed';
+    btn.classList.remove('thebelab-cell__install-btn--installing');
+    btn.classList.add('thebelab-cell__install-btn--failed');
+    cell.classList.remove('thebelab-cell--running');
+    cell.classList.add('thebelab-cell--error');
   }
 }
 
@@ -479,6 +545,7 @@ function bootstrapOnce(config: JupyterConfig): void {
           (kernel) => {
             console.log('[ExecutableCode] kernel ready:', kernel);
             kernelDead = false;
+            activeKernel = kernel;
             injectKernelSetup(kernel).then(() => {
               broadcastStatus('ready');
               setupCellFeedback();
@@ -617,6 +684,7 @@ export default function ExecutableCode({
     // Reset module-level state so next Run triggers a fresh bootstrap
     thebelabBootstrapped = false;
     kernelDead = false;
+    activeKernel = null;
     executingCell = null;
     lastKernelBusy = false;
     if (feedbackFallbackTimer) {
