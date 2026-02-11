@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         supervisor \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root jupyter user (S2: don't run Jupyter as root)
+RUN useradd -m -s /bin/bash jupyter
+
 # Install Qiskit and Jupyter
 COPY binder/jupyter-requirements.txt binder/jupyter-requirements-amd64.txt /tmp/
 RUN pip install --no-cache-dir jupyter \
@@ -32,32 +35,22 @@ RUN pip install --no-cache-dir jupyter \
        fi \
     && rm /tmp/jupyter-requirements*.txt
 
-# Configure nginx
+# Configure nginx (entrypoint patches auth placeholder at runtime)
 COPY nginx.conf /etc/nginx/sites-enabled/default
 
 # Copy built site
 COPY --from=build /app/build /usr/share/nginx/html
 
-# Copy notebooks for Jupyter serving (tutorials + courses)
-COPY --from=build /app/notebooks /root/notebooks
-WORKDIR /root/notebooks
+# Copy notebooks for Jupyter serving — owned by jupyter user
+COPY --from=build /app/notebooks /home/jupyter/notebooks
+RUN chown -R jupyter:jupyter /home/jupyter/notebooks
 
-# Configure Jupyter
-RUN mkdir -p /root/.jupyter
-RUN echo '\
-c.ServerApp.token = ""\n\
-c.ServerApp.password = ""\n\
-c.ServerApp.allow_origin = "*"\n\
-c.ServerApp.allow_remote_access = True\n\
-c.ServerApp.allow_unauthenticated_access = True\n\
-c.IdentityProvider.token = ""\n\
-c.ServerApp.ip = "0.0.0.0"\n\
-c.ServerApp.port = 8888\n\
-c.ServerApp.open_browser = False\n\
-c.ServerApp.disable_check_xsrf = True\n\
-' > /root/.jupyter/jupyter_server_config.py
+WORKDIR /home/jupyter/notebooks
 
-# Configure supervisord to run both nginx and Jupyter
+# Jupyter config is generated at runtime by docker-entrypoint.sh
+# (token, auth settings, kernel management)
+
+# Configure supervisord: nginx as root (port 80), Jupyter as jupyter user
 RUN echo '\
 [supervisord]\n\
 nodaemon=true\n\
@@ -73,16 +66,23 @@ stderr_logfile=/dev/stderr\n\
 stderr_logfile_maxbytes=0\n\
 \n\
 [program:jupyter]\n\
-command=jupyter server --allow-root\n\
+command=jupyter server\n\
+user=jupyter\n\
+environment=HOME="/home/jupyter",USER="jupyter"\n\
+directory=/home/jupyter/notebooks\n\
 stdout_logfile=/dev/stdout\n\
 stdout_logfile_maxbytes=0\n\
 stderr_logfile=/dev/stderr\n\
 stderr_logfile_maxbytes=0\n\
 ' > /etc/supervisor/conf.d/services.conf
 
+# Copy entrypoint (generates token, writes Jupyter config, patches nginx)
+COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 EXPOSE 80 8888
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO /dev/null http://localhost:80/ || exit 1
 
-CMD ["supervisord", "-c", "/etc/supervisor/conf.d/services.conf"]
+ENTRYPOINT ["/docker-entrypoint.sh"]

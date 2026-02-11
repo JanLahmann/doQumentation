@@ -48,7 +48,9 @@ podman run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 podman run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
 ```
 
-Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` with `docker` — the commands are identical. Or build locally with `podman compose up jupyter` (full) or `podman compose up web` (lite). Images are multi-arch (`linux/amd64` + `linux/arm64`).
+Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` with `docker` — the commands are identical. Or build locally with `podman compose --profile jupyter up` (full) or `podman compose --profile web up` (lite). Images are multi-arch (`linux/amd64` + `linux/arm64`).
+
+**Jupyter token:** The full-stack container generates a random authentication token at startup (printed in the container logs). Code execution through the website on port 8080 is transparent — no token needed. Direct JupyterLab access on port 8888 requires the token. To set a fixed token: `JUPYTER_TOKEN=mytoken podman run ...`
 
 ### Deploy to RasQberry
 

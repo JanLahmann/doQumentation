@@ -832,6 +832,22 @@ qiskit-ibm-runtime, pylatexenc`}</code>
   --ServerApp.disable_check_xsrf=True`}</code>
           </pre>
 
+          <h3>Docker Setup</h3>
+          <p>
+            The Docker container generates a random Jupyter token at startup.
+            Code execution through the website (port 8080) works automatically
+            &mdash; no token needed. The token is only required for direct
+            JupyterLab access on port 8888.
+          </p>
+          <p>To retrieve the token from container logs:</p>
+          <pre>
+            <code>docker compose --profile jupyter logs | grep &quot;Jupyter token&quot;</code>
+          </pre>
+          <p>To set a fixed token:</p>
+          <pre>
+            <code>JUPYTER_TOKEN=mytoken docker compose --profile jupyter up</code>
+          </pre>
+
           <h3>Remote Server</h3>
           <p>
             For remote servers, ensure CORS is configured to allow connections from this site.
