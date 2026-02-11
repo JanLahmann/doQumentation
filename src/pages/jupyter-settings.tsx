@@ -1,5 +1,5 @@
 /**
- * Jupyter Settings Page
+ * doQumentation Settings Page
  * 
  * Allows users to configure a custom Jupyter server for code execution.
  * Useful for:
@@ -238,12 +238,12 @@ export default function JupyterSettings(): JSX.Element {
 
   return (
     <Layout
-      title="Jupyter Settings"
+      title="doQumentation Settings"
       description="Configure Jupyter server for code execution"
     >
       <main className="container margin-vert--lg">
         <div className="jupyter-settings">
-          <h1>⚙️ Jupyter Settings</h1>
+          <h1>⚙️ doQumentation Settings</h1>
           
           <p>
             Configure the Jupyter server used for executing Python code in tutorials.

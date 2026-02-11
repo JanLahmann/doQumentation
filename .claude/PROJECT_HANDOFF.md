@@ -136,7 +136,7 @@ All user preferences are centralized in `src/config/preferences.ts` with SSR gua
 
 Custom events for cross-component reactivity: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
 
-### Settings Page (`/jupyter-settings`)
+### Settings Page (`/jupyter-settings` — "doQumentation Settings")
 Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode (with hardware-difference note) → Display Preferences (code font size +/– controls with live preview, hide static outputs toggle) → Learning Progress (stats + clear buttons) → Bookmarks (count + clear button) → Binder Packages → Other (reset onboarding, clear recent history, reset sidebar layout) → Advanced (Custom Server + Setup Help)
 
 ### MDX Components
