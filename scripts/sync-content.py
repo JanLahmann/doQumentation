@@ -274,6 +274,126 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
     return ''.join(parts)
 
 
+# ── Notebook dependency scan ─────────────────────────────────────────────────
+# Maps import names to pip package names where they differ.
+IMPORT_TO_PIP = {
+    'sklearn': 'scikit-learn',
+    'PIL': 'Pillow',
+    'cv2': 'opencv-python',
+    'yaml': 'pyyaml',
+    'attr': 'attrs',
+    'bs4': 'beautifulsoup4',
+    'Crypto': 'pycryptodome',
+    'Bio': 'biopython',
+    'gi': 'PyGObject',
+    'serial': 'pyserial',
+    'usb': 'pyusb',
+    'wx': 'wxPython',
+    'skimage': 'scikit-image',
+    'cv': 'opencv-python',
+    'pylatex': 'PyLaTeX',
+    # Quantum / scientific ecosystem
+    'imblearn': 'imbalanced-learn',
+    'pysat': 'python-sat',
+    'github': 'PyGithub',
+    'oqs': 'liboqs-python',
+}
+
+# Packages available in the Binder baseline environment.
+# Verified against actual `pip list` from a running Binder instance (2026-02-11).
+# Binder image: repo2docker from JanLahmann/Qiskit-documentation
+BINDER_PROVIDED = {
+    # --- Direct Binder packages ---
+    'qiskit', 'qiskit_aer', 'qiskit_ibm_runtime', 'pylatexenc',
+    'qiskit_ibm_catalog', 'qiskit_addon_utils', 'pyscf',
+    # --- Transitive deps (verified in Binder pip list) ---
+    'numpy', 'scipy', 'matplotlib', 'rustworkx', 'stevedore',
+    'dill', 'symengine', 'psutil', 'PIL', 'Pillow', 'pillow',
+    'pydot', 'seaborn', 'pandas', 'sympy', 'mpmath',
+    'pydantic', 'pydantic_core', 'cryptography', 'cffi',
+    'contourpy', 'cycler', 'fonttools', 'kiwisolver', 'pyparsing',
+    'jwt', 'requests', 'urllib3', 'idna', 'charset_normalizer',
+    'dateutil', 'six', 'packaging', 'typing_extensions',
+    # --- repo2docker Jupyter environment ---
+    'IPython', 'ipywidgets', 'ipykernel', 'notebook', 'nbformat',
+    'nbconvert', 'traitlets', 'tornado', 'jinja2', 'markupsafe',
+    'pygments', 'certifi', 'setuptools', 'pip', 'wheel',
+    'pytz', 'platformdirs', 'decorator', 'lark',
+    'yaml', 'bs4', 'attrs', 'oauthlib',
+}
+
+
+def analyze_notebook_imports(cells: list[dict]) -> list[str]:
+    """Extract third-party imports from notebook code cells.
+
+    Scans code cells for import statements, filters out:
+    - Python stdlib modules
+    - Packages provided by the Binder baseline
+    - Packages the notebook itself installs (via !pip install / %pip install)
+
+    Returns a sorted list of pip package names not in the Binder baseline.
+    """
+    import_names: set[str] = set()
+    already_installed: set[str] = set()
+
+    for cell in cells:
+        if cell.get('cell_type') != 'code':
+            continue
+        source = cell_source(cell)
+        if not source.strip():
+            continue
+
+        # Detect packages the notebook already installs
+        for m in re.finditer(
+            r'(?:^|\n)\s*[!%]pip\s+install\s+(.+)',
+            source,
+        ):
+            for token in m.group(1).split():
+                # Skip flags like -q, --quiet, --upgrade
+                if token.startswith('-'):
+                    continue
+                # Strip version specifiers: pkg>=1.0 → pkg
+                pkg = re.split(r'[><=!~\[]', token)[0].strip()
+                if pkg:
+                    # Normalize: both hyphens and underscores
+                    already_installed.add(pkg.lower().replace('_', '-'))
+
+        # Extract import statements
+        for line in source.split('\n'):
+            stripped = line.strip()
+            # import X, import X.Y, import X as Z
+            m = re.match(r'^import\s+([\w.]+)', stripped)
+            if m:
+                import_names.add(m.group(1).split('.')[0])
+                continue
+            # from X import ..., from X.Y import ...
+            m = re.match(r'^from\s+([\w.]+)\s+import\b', stripped)
+            if m:
+                import_names.add(m.group(1).split('.')[0])
+
+    # Filter out stdlib
+    stdlib = sys.stdlib_module_names if hasattr(sys, 'stdlib_module_names') else set()
+
+    missing: list[str] = []
+    for name in sorted(import_names):
+        # Skip stdlib
+        if name in stdlib:
+            continue
+        # Skip Binder-provided
+        if name in BINDER_PROVIDED:
+            continue
+        # Map import name → pip name
+        pip_name = IMPORT_TO_PIP.get(name, name)
+        # General rule: underscores → hyphens for pip names (e.g. qiskit_ibm_catalog → qiskit-ibm-catalog)
+        pip_name = pip_name.replace('_', '-')
+        # Skip if notebook already installs it
+        if pip_name.lower() in already_installed or name.lower() in already_installed:
+            continue
+        missing.append(pip_name)
+
+    return missing
+
+
 def convert_notebook(ipynb_path: Path, output_path: Path,
                      notebook_path: Optional[str] = None,
                      slug: Optional[str] = None) -> bool:
@@ -346,6 +466,22 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
 
             elif cell_type == 'raw':
                 body_parts.append(f'\n```\n{source}\n```\n')
+
+        # Inject %pip install cell for missing dependencies
+        missing_pkgs = analyze_notebook_imports(cells)
+        if missing_pkgs:
+            install_line = f'%pip install -q {" ".join(missing_pkgs)}'
+            install_block = f'\n```python\n{install_line}\n```\n'
+            # Insert before the first code block
+            first_code_idx = None
+            for i, part in enumerate(body_parts):
+                if re.search(r'```\w+\n', part):
+                    first_code_idx = i
+                    break
+            if first_code_idx is not None:
+                body_parts.insert(first_code_idx, install_block)
+            else:
+                body_parts.insert(0, install_block)
 
         content = '\n'.join(body_parts)
 
@@ -1351,6 +1487,95 @@ you'll need an IBM Quantum account.
     print(f"  ✓ Created {tutorial_path}")
 
 
+def scan_notebook_deps():
+    """Scan all notebooks for missing dependencies and print a report.
+
+    Does NOT convert notebooks — just reads .ipynb files and analyzes imports.
+    """
+    if not UPSTREAM_DIR.exists():
+        print("Error: upstream-docs not found. Run sync-content.py first (or with --no-clone).")
+        sys.exit(1)
+
+    notebook_dirs = [
+        ("tutorials", UPSTREAM_DIR / "docs" / "tutorials"),
+        ("guides", UPSTREAM_DIR / "docs" / "guides"),
+        ("courses", UPSTREAM_DIR / "learning" / "courses"),
+        ("modules", UPSTREAM_DIR / "learning" / "modules"),
+    ]
+
+    # {notebook_rel_path: [missing_packages]}
+    results: dict[str, list[str]] = {}
+    # {package: count}
+    package_counts: dict[str, int] = {}
+    total_notebooks = 0
+    notebooks_with_deps = 0
+
+    for category, base_dir in notebook_dirs:
+        if not base_dir.exists():
+            continue
+        for ipynb_path in sorted(base_dir.rglob('*.ipynb')):
+            total_notebooks += 1
+            rel_path = ipynb_path.relative_to(UPSTREAM_DIR)
+            try:
+                nb = json.loads(ipynb_path.read_text())
+                cells = nb.get('cells', [])
+                missing = analyze_notebook_imports(cells)
+                if missing:
+                    notebooks_with_deps += 1
+                    results[str(rel_path)] = missing
+                    for pkg in missing:
+                        package_counts[pkg] = package_counts.get(pkg, 0) + 1
+            except Exception as e:
+                print(f"  Warning: Could not parse {rel_path}: {e}")
+
+    # Print report
+    print("=" * 60)
+    print("Notebook Dependency Scan Report")
+    print("=" * 60)
+    print(f"\n{total_notebooks} notebooks scanned")
+    print(f"{total_notebooks - notebooks_with_deps} notebooks: all deps satisfied by Binder baseline")
+    print(f"{notebooks_with_deps} notebooks: need additional packages")
+
+    if package_counts:
+        print(f"\nTop missing packages ({len(package_counts)} unique):")
+        for pkg, count in sorted(package_counts.items(), key=lambda x: -x[1]):
+            # Check if it's in the Docker full deps
+            docker_note = ""
+            print(f"  {pkg:30s} {count:3d} notebooks{docker_note}")
+
+    if results:
+        print(f"\nPer-notebook details:")
+        for nb_path, pkgs in sorted(results.items()):
+            print(f"  {nb_path}: {', '.join(pkgs)}")
+
+    # Save report
+    report_path = PROJECT_ROOT / ".claude" / "notebook-deps-report.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Notebook Dependency Scan Report",
+        "",
+        f"Generated by `sync-content.py --scan-deps`",
+        "",
+        f"- **{total_notebooks}** notebooks scanned",
+        f"- **{total_notebooks - notebooks_with_deps}** all deps satisfied by Binder baseline",
+        f"- **{notebooks_with_deps}** need additional packages",
+        "",
+        "## Top Missing Packages",
+        "",
+        "| Package | Notebooks |",
+        "|---------|-----------|",
+    ]
+    for pkg, count in sorted(package_counts.items(), key=lambda x: -x[1]):
+        lines.append(f"| {pkg} | {count} |")
+
+    lines += ["", "## Per-Notebook Details", ""]
+    for nb_path, pkgs in sorted(results.items()):
+        lines.append(f"- **{nb_path}**: {', '.join(pkgs)}")
+
+    report_path.write_text("\n".join(lines) + "\n")
+    print(f"\nReport saved to: {report_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sync Qiskit tutorials for Docusaurus")
     parser.add_argument("--tutorials-only", action="store_true",
@@ -1362,11 +1587,17 @@ def main():
     parser.add_argument("--skip", action="append", default=[],
                         choices=["tutorials", "courses", "modules", "guides"],
                         help="Skip specific content types (can be repeated)")
+    parser.add_argument("--scan-deps", action="store_true",
+                        help="Scan notebooks for missing deps (report only, no conversion)")
     args = parser.parse_args()
 
     print("=" * 60)
     print("doQumentation - Content Sync")
     print("=" * 60)
+
+    if args.scan_deps:
+        scan_notebook_deps()
+        return
 
     if args.sample_only:
         create_index_page()

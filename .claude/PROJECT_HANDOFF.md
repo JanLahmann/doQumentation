@@ -46,6 +46,7 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Link path rewriting: both markdown `(/docs/...)` and JSX `href="/docs/..."` patterns → local or upstream IBM URLs
 - Landing page generation: `create_learning_landing_pages()` generates `/learning/` and `/learning/modules/` index pages
 - `docs/index.mdx` is preserved (not overwritten) — all other `docs/` content is regenerated
+- **Notebook dependency scan** — `analyze_notebook_imports()` scans code cells for `import`/`from` statements at build time. Filters Python stdlib (`sys.stdlib_module_names`) + `BINDER_PROVIDED` set (verified against actual Binder `pip list`). Maps import→pip names via `IMPORT_TO_PIP` (e.g. `sklearn`→`scikit-learn`). Deduplicates against existing `!pip install` in notebooks. Injects `%pip install -q <pkgs>` cell before first code block in 46/260 notebooks. `--scan-deps` flag generates report without converting. On Docker tier, install cells are silent no-ops (all deps pre-installed). Runtime fallback (`ModuleNotFoundError` → Install button) catches any false negatives.
 
 ### Code Execution
 - `ExecutableCode` component wraps Python code blocks with Run/Back toggle (Run activates cells, Back reverts to static view)
@@ -158,6 +159,26 @@ IBM's custom components mapped to Docusaurus equivalents:
 - Multi-arch: `linux/amd64` gets full Qiskit; `linux/arm64` excludes gem-suite, kahypar, ai-local-transpiler
 - CI pushes to ghcr.io (`:latest` and `:jupyter` tags)
 
+### Jupyter Authentication
+Token-based authentication for Docker and RasQberry tiers. nginx injects the `Authorization` header server-side — the browser never sees or handles the token.
+
+**Architecture:**
+```
+Browser --(no token)--> nginx:80 --(Authorization: token <TOKEN>)--> Jupyter:8888
+```
+
+**Per tier:**
+- **GitHub Pages** — Uses Binder, no token involved
+- **Docker** — `scripts/docker-entrypoint.sh` generates a random token at startup (or accepts `JUPYTER_TOKEN` env var). nginx injects it into `/api/` and `/terminals/` proxy requests via `# __JUPYTER_AUTH__` placeholder replacement. Website on port 8080 works transparently. Direct JupyterLab on port 8888 requires the token.
+- **RasQberry Pi** — `scripts/setup-pi.sh` generates a random token at setup time, printed to the user
+
+**Security model:**
+- Jupyter runs as non-root `jupyter` user (not root)
+- `disable_check_xsrf = True` stays because thebelab 0.4.0 can't send XSRF cookies — the token header is the security boundary (injected server-side, not in a browser cookie, so CSRF attacks can't include it)
+- Token is printed to container stdout only, never stored in image layers or sent to browser
+
+**Customization:** `JUPYTER_TOKEN=mytoken docker compose --profile jupyter up`
+
 ### CI/CD
 - `deploy.yml` — Sync content → build (with `NODE_OPTIONS="--max-old-space-size=8192"`) → deploy to GitHub Pages
 - `docker.yml` — Multi-arch Docker build → ghcr.io
@@ -245,6 +266,7 @@ doQumentation/
 ├── scripts/
 │   ├── sync-content.py            # Pull & transform content from upstream
 │   ├── sync-deps.py               # Sync Jupyter deps with arch exception rules
+│   ├── docker-entrypoint.sh       # Docker runtime: token generation, Jupyter config, nginx patching
 │   └── setup-pi.sh               # Raspberry Pi setup (untested)
 │
 ├── static/
@@ -290,8 +312,9 @@ npm run typecheck                  # Type check
 ```bash
 podman compose --profile web up       # Static site only → http://localhost:8080
 podman compose --profile jupyter up   # Full stack → http://localhost:8080 (site) + :8888 (JupyterLab)
+JUPYTER_TOKEN=mytoken podman compose --profile jupyter up  # Fixed token
 ```
-Both have `restart: unless-stopped` and HEALTHCHECK.
+Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generates a random authentication token at startup (printed in logs). Website access on port 8080 is transparent (nginx injects the token). Direct JupyterLab on port 8888 requires the token.
 
 **Raspberry Pi** — `scripts/setup-pi.sh` (written but untested on actual hardware).
 
@@ -299,7 +322,7 @@ Both have `restart: unless-stopped` and HEALTHCHECK.
 
 - **Runtime:** Docusaurus 3.x, React 18, remark-math + rehype-katex, @easyops-cn/docusaurus-search-local, thebelab 0.4.x (CDN)
 - **Build:** Node.js 18+, Python 3.9+ (sync scripts)
-- **Binder repo:** [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation) — slim deps in `binder/requirements.txt`, daily cache-warming workflow
+- **Binder repo:** [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation) — deps in `binder/requirements.txt` (qiskit[visualization], qiskit-aer, qiskit-ibm-runtime, pylatexenc, qiskit-ibm-catalog, qiskit-addon-utils, pyscf), daily cache-warming workflow
 
 ---
 
@@ -326,8 +349,8 @@ Both have `restart: unless-stopped` and HEALTHCHECK.
 ### TODO
 - ~~**Features page**~~ — DONE. `/features` page with 22 feature cards across 5 sections. Linked from homepage + footer.
 - **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
-- **Notebook dependency scan** — Scan all notebooks for missing dependencies, document findings in `.claude/` folder, and inject a `pip install` cell at top of each affected notebook as a courtesy for the user.
-- **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
+- ~~**Notebook dependency scan**~~ — DONE. `analyze_notebook_imports()` in `sync-content.py` scans 260 notebooks, filters stdlib + Binder baseline (verified from actual `pip list`), injects `%pip install -q` cells into 46 affected notebooks. 28 unique missing packages. Expanded upstream Binder baseline with qiskit-ibm-catalog, qiskit-addon-utils, pyscf (freed 16 notebooks). Report at `.claude/notebook-deps-report.md`.
+- ~~**Jupyter token auth**~~ — DONE. `docker-entrypoint.sh` generates random token at startup, nginx injects `Authorization` header server-side. Jupyter runs as non-root `jupyter` user. Covers code review S1, S2, #1, #9.
 - ~~**Code review**~~ — DONE. Full review at `.claude/code-review-2026-02-08.md` (20 issues + 2 security findings). Fixed: #4 heredoc injection, #5 docker-compose profiles, #7 localStorage `safeSave()`, #10 random token, #11/#12 nginx headers, #15 DEBUG-gated console.log, #18 HEALTHCHECK, #19 restart policies, #20 sidebar types. Previously fixed in website review: #2, #3, #6. Non-issues: #8, #13, #14. Skipped: #16, #17. Remaining S1/S2/#1/#9 deferred to Jupyter token auth plan.
 - ~~**Website review**~~ — DONE. Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). All actionable items fixed in rounds 1-4. Round 4 (133911b): #15 thebelab button overflow CSS, #19 copy button visibility CSS, #24 mobile sidebar tap targets CSS, #28 contextual alt text (sync-content.py + ExecutableCode), #37 H4→H3 heading fix (sync-content.py), #41 Prism languages + untagged code block tagging (docusaurus.config.ts + sync-content.py).
 - **Homepage refinement** — Hero done (775dd83). Getting started cards could better represent each content category.
