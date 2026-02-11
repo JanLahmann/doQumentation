@@ -28,7 +28,7 @@ import {
   setCachedFakeBackends,
   type JupyterConfig,
 } from '../../config/jupyter';
-import { markPageExecuted, isBinderHintDismissed, dismissBinderHint } from '../../config/preferences';
+import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
 
 // thebelab 0.4.x global — bootstrap() returns a Promise that resolves
 // when the kernel is connected (after Binder launch + kernel start).
@@ -585,12 +585,14 @@ export default function ExecutableCode({
   const [injectionInfo, setInjectionInfo] = useState<InjectionInfo | null>(null);
   const [injectionToast, setInjectionToast] = useState<string | null>(null);
   const [binderHintDismissed, setBinderHintDismissed] = useState(false);
+  const [hideStaticOutputs, setHideStaticOutputs] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const thebeContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
     setBinderHintDismissed(isBinderHintDismissed());
+    setHideStaticOutputs(getHideStaticOutputs());
   }, []);
 
   // Determine if this is the first executable cell on the page (toolbar owner)
@@ -666,12 +668,17 @@ export default function ExecutableCode({
     // Track this page as executed in learning progress
     markPageExecuted(window.location.pathname);
 
+    // Hide static outputs if user preference is set
+    if (hideStaticOutputs) {
+      document.body.classList.add('dq-hide-static-outputs');
+    }
+
     // Tell ALL cells on the page to switch to run mode
     window.dispatchEvent(new CustomEvent(ACTIVATE_EVENT));
 
     // After all cells have rendered their <pre data-executable>, bootstrap once
     bootstrapOnce(jupyterConfig);
-  }, [jupyterConfig]);
+  }, [jupyterConfig, hideStaticOutputs]);
 
   const handleReset = () => {
     // Check if any cells have been executed (have done/error state)
@@ -693,6 +700,8 @@ export default function ExecutableCode({
     }
     feedbackCleanupFns.forEach(fn => fn());
     feedbackCleanupFns = [];
+    // Restore static outputs
+    document.body.classList.remove('dq-hide-static-outputs');
     // Tell ALL cells on the page to switch back to read mode
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
   };

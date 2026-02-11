@@ -6,7 +6,7 @@
  * Runs on every client-side route change.
  */
 
-import { markPageVisited, setLastPage } from '../config/preferences';
+import { markPageVisited, setLastPage, addRecentPage } from '../config/preferences';
 
 /** Custom event name broadcast after a page visit is recorded. */
 export const PAGE_VISITED_EVENT = 'dq:page-visited';
@@ -22,6 +22,9 @@ export function onRouteDidUpdate({ location }: { location: Location }): void {
   // Record as last page (setLastPage ignores homepage and settings internally)
   const title = document.title?.replace(/ \| doQumentation$/, '') || path;
   setLastPage(path, title);
+
+  // Add to recent pages list (addRecentPage ignores homepage and settings internally)
+  addRecentPage(path, title);
 
   // Notify sidebar items to re-check their visited state
   window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT, { detail: path }));

@@ -14,6 +14,13 @@ const KEY_LAST_PAGE = 'dq-last-page';
 const KEY_LAST_PAGE_TITLE = 'dq-last-page-title';
 const KEY_LAST_PAGE_TS = 'dq-last-page-ts';
 const KEY_BINDER_HINT = 'dq-binder-hint-dismissed';
+const KEY_ONBOARDING_COMPLETED = 'dq-onboarding-completed';
+const KEY_ONBOARDING_VISITS = 'dq-onboarding-visit-count';
+const KEY_BOOKMARKS = 'dq-bookmarks';
+const KEY_CODE_FONT_SIZE = 'dq-code-font-size';
+const KEY_HIDE_STATIC_OUTPUTS = 'dq-hide-static-outputs';
+const KEY_SIDEBAR_COLLAPSED = 'dq-sidebar-collapsed';
+const KEY_RECENT_PAGES = 'dq-recent-pages';
 
 // ── Helpers ──
 
@@ -163,9 +170,187 @@ export function dismissBinderHint(): void {
   localStorage.setItem(KEY_BINDER_HINT, 'true');
 }
 
+// ── Onboarding ──
+
+export function isOnboardingCompleted(): boolean {
+  if (!isBrowser()) return true; // SSR: treat as completed
+  return localStorage.getItem(KEY_ONBOARDING_COMPLETED) === 'true';
+}
+
+export function completeOnboarding(): void {
+  if (!isBrowser()) return;
+  localStorage.setItem(KEY_ONBOARDING_COMPLETED, 'true');
+}
+
+/** Increment visit count and return the new value. Auto-completes after 3 visits. */
+export function incrementOnboardingVisits(): number {
+  if (!isBrowser()) return 99;
+  const count = Number(localStorage.getItem(KEY_ONBOARDING_VISITS) || '0') + 1;
+  localStorage.setItem(KEY_ONBOARDING_VISITS, String(count));
+  if (count >= 3) {
+    localStorage.setItem(KEY_ONBOARDING_COMPLETED, 'true');
+  }
+  return count;
+}
+
+export function resetOnboarding(): void {
+  if (!isBrowser()) return;
+  localStorage.removeItem(KEY_ONBOARDING_COMPLETED);
+  localStorage.removeItem(KEY_ONBOARDING_VISITS);
+}
+
+// ── Bookmarks ──
+
+export interface Bookmark {
+  path: string;
+  title: string;
+  savedAt: number;
+}
+
+const MAX_BOOKMARKS = 50;
+
+function getBookmarksArray(): Bookmark[] {
+  if (!isBrowser()) return [];
+  try {
+    const raw = localStorage.getItem(KEY_BOOKMARKS);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBookmarksArray(bookmarks: Bookmark[]): void {
+  if (!isBrowser()) return;
+  localStorage.setItem(KEY_BOOKMARKS, JSON.stringify(bookmarks));
+}
+
+export function addBookmark(path: string, title: string): void {
+  if (!isBrowser()) return;
+  const norm = normalizePath(path);
+  const bookmarks = getBookmarksArray().filter(b => b.path !== norm);
+  bookmarks.unshift({ path: norm, title, savedAt: Date.now() });
+  if (bookmarks.length > MAX_BOOKMARKS) bookmarks.length = MAX_BOOKMARKS;
+  saveBookmarksArray(bookmarks);
+}
+
+export function removeBookmark(path: string): void {
+  if (!isBrowser()) return;
+  const norm = normalizePath(path);
+  saveBookmarksArray(getBookmarksArray().filter(b => b.path !== norm));
+}
+
+export function isBookmarked(path: string): boolean {
+  return getBookmarksArray().some(b => b.path === normalizePath(path));
+}
+
+export function getBookmarks(): Bookmark[] {
+  return getBookmarksArray();
+}
+
+export function clearAllBookmarks(): void {
+  if (!isBrowser()) return;
+  localStorage.removeItem(KEY_BOOKMARKS);
+}
+
+// ── Display preferences ──
+
+const DEFAULT_CODE_FONT_SIZE = 14;
+
+export function getCodeFontSize(): number {
+  if (!isBrowser()) return DEFAULT_CODE_FONT_SIZE;
+  const val = Number(localStorage.getItem(KEY_CODE_FONT_SIZE));
+  return val >= 10 && val <= 22 ? val : DEFAULT_CODE_FONT_SIZE;
+}
+
+export function setCodeFontSize(size: number): void {
+  if (!isBrowser()) return;
+  const clamped = Math.max(10, Math.min(22, Math.round(size)));
+  localStorage.setItem(KEY_CODE_FONT_SIZE, String(clamped));
+}
+
+export function getHideStaticOutputs(): boolean {
+  if (!isBrowser()) return false;
+  return localStorage.getItem(KEY_HIDE_STATIC_OUTPUTS) === 'true';
+}
+
+export function setHideStaticOutputs(hide: boolean): void {
+  if (!isBrowser()) return;
+  localStorage.setItem(KEY_HIDE_STATIC_OUTPUTS, String(hide));
+}
+
+// ── Sidebar collapse memory ──
+
+function getCollapseMap(): Record<string, boolean> {
+  if (!isBrowser()) return {};
+  try {
+    const raw = localStorage.getItem(KEY_SIDEBAR_COLLAPSED);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getSidebarCollapseState(label: string): boolean | null {
+  const map = getCollapseMap();
+  return label in map ? map[label] : null;
+}
+
+export function setSidebarCollapseState(label: string, collapsed: boolean): void {
+  if (!isBrowser()) return;
+  const map = getCollapseMap();
+  map[label] = collapsed;
+  localStorage.setItem(KEY_SIDEBAR_COLLAPSED, JSON.stringify(map));
+}
+
+export function clearSidebarCollapseStates(): void {
+  if (!isBrowser()) return;
+  localStorage.removeItem(KEY_SIDEBAR_COLLAPSED);
+}
+
+// ── Recently viewed pages ──
+
+export interface RecentPage {
+  path: string;
+  title: string;
+  ts: number;
+}
+
+const MAX_RECENT_PAGES = 10;
+
+export function addRecentPage(path: string, title: string): void {
+  if (!isBrowser()) return;
+  const norm = normalizePath(path);
+  // Skip homepage and settings
+  if (norm === '/' || norm === '/jupyter-settings') return;
+  try {
+    const raw = localStorage.getItem(KEY_RECENT_PAGES);
+    const pages: RecentPage[] = raw ? JSON.parse(raw) : [];
+    // Remove duplicate, add to front
+    const filtered = pages.filter(p => p.path !== norm);
+    filtered.unshift({ path: norm, title, ts: Date.now() });
+    if (filtered.length > MAX_RECENT_PAGES) filtered.length = MAX_RECENT_PAGES;
+    localStorage.setItem(KEY_RECENT_PAGES, JSON.stringify(filtered));
+  } catch { /* ignore */ }
+}
+
+export function getRecentPages(): RecentPage[] {
+  if (!isBrowser()) return [];
+  try {
+    const raw = localStorage.getItem(KEY_RECENT_PAGES);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function clearRecentPages(): void {
+  if (!isBrowser()) return;
+  localStorage.removeItem(KEY_RECENT_PAGES);
+}
+
 // ── Bulk clear ──
 
-/** Clear all user preferences (visited, executed, last page). Does NOT touch Jupyter/credential settings. */
+/** Clear all user preferences (visited, executed, last page, bookmarks, display, etc.). Does NOT touch Jupyter/credential settings. */
 export function clearAllPreferences(): void {
   if (!isBrowser()) return;
   localStorage.removeItem(KEY_VISITED_PAGES);
@@ -174,6 +359,13 @@ export function clearAllPreferences(): void {
   localStorage.removeItem(KEY_LAST_PAGE_TITLE);
   localStorage.removeItem(KEY_LAST_PAGE_TS);
   localStorage.removeItem(KEY_BINDER_HINT);
+  localStorage.removeItem(KEY_ONBOARDING_COMPLETED);
+  localStorage.removeItem(KEY_ONBOARDING_VISITS);
+  localStorage.removeItem(KEY_BOOKMARKS);
+  localStorage.removeItem(KEY_CODE_FONT_SIZE);
+  localStorage.removeItem(KEY_HIDE_STATIC_OUTPUTS);
+  localStorage.removeItem(KEY_SIDEBAR_COLLAPSED);
+  localStorage.removeItem(KEY_RECENT_PAGES);
 }
 
 // ── Stats ──

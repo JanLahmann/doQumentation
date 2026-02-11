@@ -52,7 +52,8 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - thebelab 0.4.x bootstraps once per page, shared kernel across all cells
 - Environment auto-detection: GitHub Pages → Binder (2i2c.mybinder.org), localhost/rasqberry/Docker → local Jupyter, custom → user-configured
 - Cell execution feedback: persistent left border — amber (running), green (done), red (error) + toolbar legend
-- Error detection: `detectCellError()` inspects output for `ModuleNotFoundError`, `NameError`, tracebacks → red border + contextual error hints (`!pip install` or "run cells above")
+- Error detection: `detectCellError()` inspects output for `ModuleNotFoundError`, `NameError`, tracebacks → red border + contextual error hints
+- Pip install injection: `ModuleNotFoundError` shows clickable "Install {pkg}" button → runs `!pip install -q` on kernel → auto-re-runs cell on success (falls back to static hint if kernel unavailable)
 - Back button shows `window.confirm()` dialog if any cells have been executed (prevents accidental output loss)
 - Static outputs (from MDX) remain visible alongside live outputs — intentional for comparison
 - Dark mode: circuit/output images auto-inverted via CSS `filter: invert(1) hue-rotate(180deg)`
@@ -82,12 +83,60 @@ Automatic tracking of learning progress across all ~380 pages:
 - **Granular clearing** — Per page (click indicator), per section (click category badge uses `commonPrefix()` of leaf hrefs), per category (Settings page), all at once (Settings page).
 - **Resume reading** — `ResumeCard` component on homepage shows "Continue where you left off" with last page title + time ago. Only appears for returning visitors.
 - **Execution tracking** — `markPageExecuted()` called on Run button in ExecutableCode. Visual distinction in sidebar (▶ vs ✓).
-- **Settings integration** — "Learning Progress" section shows stats (total visited, notebooks executed, per-category breakdown) with clear buttons.
-- **Binder hint migration** — Moved from direct `localStorage` in ExecutableCode to `preferences.ts` (`isBinderHintDismissed()`/`dismissBinderHint()`).
-- **localStorage keys** — `dq-visited-pages` (JSON set), `dq-executed-pages` (JSON set), `dq-last-page` (JSON `{path, title, ts}`), `dq-binder-hint-dismissed` (boolean).
+
+### Bookmarks
+- **Bookmark toggle** — Swizzled `DocItem/Footer` adds a star button (☆/★) below every doc page. Click toggles bookmark state, dispatches `dq:bookmarks-changed` custom event.
+- **Homepage widget** — `BookmarksList` component renders bookmarked pages with remove buttons. Only shows if bookmarks exist. Listens for `dq:bookmarks-changed` for live updates.
+- **Storage** — `dq-bookmarks` (JSON array of `{path, title, savedAt}`), max 50 bookmarks (FIFO if exceeded).
+- **Settings** — "Bookmarks" subsection shows count + "Clear all bookmarks" button.
+
+### Display Preferences
+- **Code font size** — Adjustable 10–22px via `--dq-code-font-size` CSS custom property. Applied by `src/clientModules/displayPrefs.ts` on page load. Live-updates via `dq:display-prefs-changed` custom event. Affects both `.prism-code` (static) and `.thebelab-cell .CodeMirror` (live) blocks.
+- **Hide static outputs** — When enabled and in Run mode, `ExecutableCode` adds `dq-hide-static-outputs` class to `<body>`. CSS sibling selectors hide `pre`, `img`, `.output_png` elements that follow `.executable-code` divs. Static outputs reappear on Back.
+- **Storage** — `dq-code-font-size` (number), `dq-hide-static-outputs` (boolean).
+- **Settings** — "Display Preferences" section with +/– font size controls (live preview code block) and hide-outputs toggle.
+
+### Onboarding Tips
+- **Client module** — `src/clientModules/onboarding.ts` injects a contextual tip bar at the top of `.theme-doc-markdown` for first-time visitors.
+- **Contextual messages** — Notebook pages (with `.executable-code`): "Click Run to execute code blocks. First run starts a free Jupyter kernel (1–2 min)." Other content pages: "Track your progress — visited pages show ✓ in the sidebar."
+- **Auto-completion** — Tips auto-dismiss after 3 page visits or manual dismiss (× button).
+- **Storage** — `dq-onboarding-completed` (boolean), `dq-onboarding-visit-count` (number).
+- **Settings** — "Reset onboarding tips" button in Other section.
+
+### Recently Viewed Pages
+- **Tracking** — `pageTracker.ts` calls `addRecentPage(path, title)` on every route change. Last 10 pages stored, deduplicated (move to front on revisit). Excludes homepage and settings.
+- **Homepage widget** — `RecentPages` component shows last 5 pages (skipping current) with relative timestamps ("2 hours ago"). Only renders if recent pages exist.
+- **Storage** — `dq-recent-pages` (JSON array of `{path, title, ts}`, capped at 10).
+- **Settings** — "Clear recent history" button in Other section.
+
+### Sidebar Collapse Memory
+- **Approach** — Extended existing `DocSidebarItem/Category` swizzle with MutationObserver. Watches `.menu__list-item` class changes (Docusaurus toggles `--collapsed` class).
+- **Restore on mount** — Reads saved state from localStorage. If it differs from current DOM state, programmatically clicks the collapsible header to toggle.
+- **Storage** — `dq-sidebar-collapsed` (JSON object `{categoryLabel: boolean}`).
+- **Graceful degradation** — If Docusaurus changes its DOM structure, the observer silently fails and sidebar reverts to default behavior.
+- **Settings** — "Reset sidebar layout" button in Other section.
+
+### User Preferences — localStorage Keys
+All user preferences are centralized in `src/config/preferences.ts` with SSR guards. `clearAllPreferences()` clears all keys.
+
+| Key | Type | Feature |
+|-----|------|---------|
+| `dq-visited-pages` | JSON set | Learning progress |
+| `dq-executed-pages` | JSON set | Learning progress |
+| `dq-last-page` | JSON `{path, title, ts}` | Resume reading |
+| `dq-binder-hint-dismissed` | boolean | Binder hint |
+| `dq-onboarding-completed` | boolean | Onboarding tips |
+| `dq-onboarding-visit-count` | number (0–3) | Onboarding tips |
+| `dq-bookmarks` | JSON array `{path, title, savedAt}` | Bookmarks (max 50) |
+| `dq-code-font-size` | number (10–22) | Display preferences |
+| `dq-hide-static-outputs` | boolean | Display preferences |
+| `dq-sidebar-collapsed` | JSON object `{label: boolean}` | Sidebar collapse |
+| `dq-recent-pages` | JSON array `{path, title, ts}` | Recent pages (max 10) |
+
+Custom events for cross-component reactivity: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
 
 ### Settings Page (`/jupyter-settings`)
-Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode (with hardware-difference note) → Learning Progress (stats + clear buttons) → Binder Packages → Advanced (Custom Server + Setup Help)
+Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode (with hardware-difference note) → Display Preferences (code font size +/– controls with live preview, hide static outputs toggle) → Learning Progress (stats + clear buttons) → Bookmarks (count + clear button) → Binder Packages → Other (reset onboarding, clear recent history, reset sidebar layout) → Advanced (Custom Server + Setup Help)
 
 ### MDX Components
 IBM's custom components mapped to Docusaurus equivalents:
@@ -151,12 +200,18 @@ doQumentation/
 │
 ├── src/
 │   ├── clientModules/
-│   │   └── pageTracker.ts         # Auto-tracks page visits, dispatches dq:page-visited event
+│   │   ├── pageTracker.ts         # Auto-tracks page visits + recent pages, dispatches dq:page-visited
+│   │   ├── displayPrefs.ts        # Applies code font size CSS variable on load, listens for changes
+│   │   └── onboarding.ts          # Injects contextual tip bar for first-time visitors
 │   │
 │   ├── components/
 │   │   ├── ExecutableCode/        # Run/Back toggle, thebelab, kernel injection
 │   │   │   └── index.tsx
 │   │   ├── ResumeCard/            # "Continue where you left off" homepage card
+│   │   │   └── index.tsx
+│   │   ├── RecentPages/           # Recently viewed pages widget for homepage
+│   │   │   └── index.tsx
+│   │   ├── BookmarksList/         # Bookmarked pages list for homepage
 │   │   │   └── index.tsx
 │   │   ├── CourseComponents/      # DefinitionTooltip, Figure, IBMVideo, LaunchExamButton
 │   │   ├── GuideComponents/       # Card, CardGroup, OperatingSystemTabs, CodeAssistantAdmonition
@@ -175,10 +230,12 @@ doQumentation/
 │   │
 │   └── theme/
 │       ├── CodeBlock/index.tsx    # Swizzle: wraps Python blocks with ExecutableCode
+│       ├── DocItem/
+│       │   └── Footer/index.tsx   # Swizzle: bookmark toggle button (☆/★)
 │       ├── DocSidebarItem/
-│       │   ├── Category/index.tsx # Swizzle: aggregate progress badge (e.g. "3/10")
+│       │   ├── Category/index.tsx # Swizzle: progress badge + sidebar collapse memory
 │       │   └── Link/index.tsx     # Swizzle: visited ✓ / executed ▶ indicators
-│       └── MDXComponents.tsx      # IBM component stubs (Admonition, Image, etc.)
+│       └── MDXComponents.tsx      # IBM component stubs + RecentPages, BookmarksList
 │
 ├── scripts/
 │   ├── sync-content.py            # Pull & transform content from upstream
@@ -261,10 +318,8 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 ## Open Items
 
 ### TODO
-- **localStorage settings expansion (Tier 1 done, Tier 2-3 open)** — Tier 1 implemented: learning progress tracker (visited/executed pages), resume reading card on homepage, Binder hint migration to `preferences.ts`. Full tiered plan at `.claude/plans/wild-hopping-beaver.md`. Remaining: onboarding state (Tier 1), bookmarks (Tier 2), display preferences like code font size (Tier 2), sidebar collapse memory (Tier 3), recently viewed pages (Tier 3).
 - **Features page** — Create dedicated page showcasing main features (code execution, credential injection, simulator mode, deployment tiers) and secondary features.
 - **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
-- **Pip install injection on dependency failure** — After a cell fails with a missing dependency, inject a cell with the suggested `pip install` command.
 - **Notebook dependency scan** — Scan all notebooks for missing dependencies, document findings in `.claude/` folder, and inject a `pip install` cell at top of each affected notebook as a courtesy for the user.
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
 - **Code review remaining** — docker-compose port conflict, error handling in jupyter-settings, deprecated `onBrokenLinks`. Full review at `.claude/code-review-2026-02-08.md`.

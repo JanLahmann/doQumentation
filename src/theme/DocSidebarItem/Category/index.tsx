@@ -4,12 +4,14 @@
  * Clicking the badge clears visited + executed status for all pages in the group.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import OriginalCategory from '@theme-original/DocSidebarItem/Category';
 import {
   isPageVisited,
   clearVisitedByPrefix,
   clearExecutedByPrefix,
+  getSidebarCollapseState,
+  setSidebarCollapseState,
 } from '../../../config/preferences';
 import { PAGE_VISITED_EVENT } from '../../../clientModules/pageTracker';
 
@@ -50,9 +52,11 @@ type Props = React.ComponentProps<typeof OriginalCategory>;
 export default function DocSidebarItemCategory(props: Props): JSX.Element {
   const [visitedCount, setVisitedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   const items = (props.item?.items || []) as SidebarItem[];
   const allHrefs = React.useMemo(() => collectHrefs(items), [items]);
+  const categoryLabel = props.item?.label || '';
 
   const refresh = useCallback(() => {
     setTotalCount(allHrefs.length);
@@ -73,6 +77,34 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
     return () => window.removeEventListener(PAGE_VISITED_EVENT, onPageVisited);
   }, [refresh]);
 
+  // Sidebar collapse memory: observe DOM changes and persist state
+  useEffect(() => {
+    if (!wrapperRef.current || !categoryLabel) return;
+
+    const listItem = wrapperRef.current.querySelector('.menu__list-item');
+    if (!listItem) return;
+
+    // Restore saved state on mount
+    const savedState = getSidebarCollapseState(categoryLabel);
+    if (savedState !== null) {
+      const isCurrentlyCollapsed = listItem.classList.contains('menu__list-item--collapsed');
+      if (savedState !== isCurrentlyCollapsed) {
+        // Click the collapsible header to toggle
+        const header = listItem.querySelector('.menu__link--sublist-caret') as HTMLElement;
+        if (header) header.click();
+      }
+    }
+
+    // Observe class changes to detect collapse/expand
+    const observer = new MutationObserver(() => {
+      const collapsed = listItem.classList.contains('menu__list-item--collapsed');
+      setSidebarCollapseState(categoryLabel, collapsed);
+    });
+    observer.observe(listItem, { attributes: true, attributeFilter: ['class'] });
+
+    return () => observer.disconnect();
+  }, [categoryLabel]);
+
   const handleClear = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -85,7 +117,7 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
   };
 
   return (
-    <div className="dq-sidebar-category">
+    <div className="dq-sidebar-category" ref={wrapperRef}>
       <OriginalCategory {...props} />
       {visitedCount > 0 && totalCount > 0 && (
         <button

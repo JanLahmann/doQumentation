@@ -40,8 +40,18 @@ import {
   clearAllVisited,
   clearAllExecuted,
   clearAllPreferences,
+  getCodeFontSize,
+  setCodeFontSize,
+  getHideStaticOutputs,
+  setHideStaticOutputs,
+  getBookmarks,
+  clearAllBookmarks,
+  resetOnboarding,
+  clearRecentPages,
+  clearSidebarCollapseStates,
   type ProgressStats,
 } from '../config/preferences';
+import { DISPLAY_PREFS_EVENT } from '../clientModules/displayPrefs';
 
 const FALLBACK_BACKENDS = [
   { name: 'FakeManilaV2', qubits: 5 },
@@ -73,6 +83,11 @@ export default function JupyterSettings(): JSX.Element {
 
   // Learning progress state
   const [progressStats, setProgressStats] = useState<ProgressStats | null>(null);
+
+  // Display preferences state
+  const [fontSize, setFontSize] = useState(14);
+  const [hideOutputs, setHideOutputs] = useState(false);
+  const [bookmarkCount, setBookmarkCount] = useState(0);
 
   // Simulator mode state
   const [simEnabled, setSimEnabled] = useState(false);
@@ -120,6 +135,11 @@ export default function JupyterSettings(): JSX.Element {
 
     // Load learning progress
     setProgressStats(getProgressStats());
+
+    // Load display preferences
+    setFontSize(getCodeFontSize());
+    setHideOutputs(getHideStaticOutputs());
+    setBookmarkCount(getBookmarks().length);
   }, []);
 
   const handleTest = async () => {
@@ -572,6 +592,116 @@ export default function JupyterSettings(): JSX.Element {
               No progress tracked yet. Visit tutorials and guides to start tracking.
             </div>
           )}
+
+          {/* Display Preferences */}
+          <h2 id="display" style={{ marginTop: '2rem' }}>Display Preferences</h2>
+
+          <h3>Code Font Size</h3>
+          <div className="dq-font-size-control">
+            <button
+              onClick={() => {
+                const next = fontSize - 1;
+                if (next >= 10) {
+                  setFontSize(next);
+                  setCodeFontSize(next);
+                  window.dispatchEvent(new CustomEvent(DISPLAY_PREFS_EVENT));
+                }
+              }}
+              disabled={fontSize <= 10}
+              aria-label="Decrease font size"
+            >
+              &minus;
+            </button>
+            <span className="dq-font-size-control__value">{fontSize}px</span>
+            <button
+              onClick={() => {
+                const next = fontSize + 1;
+                if (next <= 22) {
+                  setFontSize(next);
+                  setCodeFontSize(next);
+                  window.dispatchEvent(new CustomEvent(DISPLAY_PREFS_EVENT));
+                }
+              }}
+              disabled={fontSize >= 22}
+              aria-label="Increase font size"
+            >
+              +
+            </button>
+          </div>
+          <div className="dq-font-size-preview">
+            <code>from qiskit import QuantumCircuit</code>
+          </div>
+
+          <h3>Static Outputs</h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+            Pages show pre-computed outputs below code cells. When running live code,
+            both static and live outputs are visible by default.
+          </p>
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__toggle">
+              <input
+                type="checkbox"
+                checked={hideOutputs}
+                onChange={() => {
+                  const next = !hideOutputs;
+                  setHideOutputs(next);
+                  setHideStaticOutputs(next);
+                }}
+              />
+              <span className="jupyter-settings__toggle-track">
+                <span className="jupyter-settings__toggle-thumb" />
+              </span>
+              <span style={{ marginLeft: '0.5rem' }}>
+                {hideOutputs ? 'Hide static outputs during live execution' : 'Show both static and live outputs'}
+              </span>
+            </label>
+          </div>
+
+          {/* Bookmarks */}
+          {bookmarkCount > 0 && (
+            <>
+              <h3 style={{ marginTop: '1.5rem' }}>Bookmarks</h3>
+              <p>{bookmarkCount} bookmarked page{bookmarkCount !== 1 ? 's' : ''}</p>
+              <button
+                className="jupyter-settings__button jupyter-settings__button--secondary"
+                onClick={() => {
+                  clearAllBookmarks();
+                  setBookmarkCount(0);
+                }}
+              >
+                Clear All Bookmarks
+              </button>
+            </>
+          )}
+
+          {/* Other preferences */}
+          <h3 style={{ marginTop: '1.5rem' }}>Other</h3>
+          <div className="dq-clear-buttons">
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={() => {
+                resetOnboarding();
+              }}
+            >
+              Reset Onboarding Tips
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={() => {
+                clearRecentPages();
+              }}
+            >
+              Clear Recent History
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={() => {
+                clearSidebarCollapseStates();
+              }}
+            >
+              Reset Sidebar Layout
+            </button>
+          </div>
 
           {/* Binder Packages */}
           <h2 id="binder-packages" style={{ marginTop: '2rem' }}>Binder Packages</h2>

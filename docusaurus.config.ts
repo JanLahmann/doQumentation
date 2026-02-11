@@ -44,6 +44,8 @@ const config: Config = {
 
   clientModules: [
     require.resolve('./src/clientModules/pageTracker.ts'),
+    require.resolve('./src/clientModules/displayPrefs.ts'),
+    require.resolve('./src/clientModules/onboarding.ts'),
   ],
 
   themes: [
