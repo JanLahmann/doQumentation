@@ -58,6 +58,8 @@ type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 let executingCell: Element | null = null;
 let lastKernelBusy = false;
 let feedbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+let kernelDead = false;
+let feedbackCleanupFns: (() => void)[] = [];
 
 /** Detect execution errors in a cell's output. */
 function detectCellError(cell: Element): { type: string; name?: string } | null {
@@ -82,7 +84,9 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
   cell.querySelector('.thebelab-cell__error-hint')?.remove();
 
   let hint = '';
-  if (error.type === 'module' && error.name) {
+  if (error.type === 'kernel') {
+    hint = 'Kernel disconnected. Click <strong>Back</strong> then <strong>Run</strong> to reconnect.';
+  } else if (error.type === 'module' && error.name) {
     const pkg = error.name.split('.')[0];
     hint = `Package <code>${pkg}</code> is not installed. Run <code>!pip install -q ${pkg}</code> in a cell to install it.`;
   } else if (error.type === 'name' && error.name) {
@@ -116,6 +120,25 @@ function settleCellFeedback(cell: Element): void {
 
 /** Handle kernel busy/idle transitions to detect execution completion. */
 function handleKernelStatusForFeedback(status: string): void {
+  // Detect kernel death — mark current cell as error and flag for future checks
+  if (status === 'dead' || status === 'failed') {
+    kernelDead = true;
+    thebelabBootstrapped = false; // Allow re-bootstrap on next Run
+    if (executingCell) {
+      const cell = executingCell;
+      executingCell = null;
+      if (feedbackFallbackTimer) {
+        clearTimeout(feedbackFallbackTimer);
+        feedbackFallbackTimer = null;
+      }
+      cell.classList.remove('thebelab-cell--running');
+      cell.classList.add('thebelab-cell--error');
+      showErrorHint(cell, { type: 'kernel' });
+    }
+    broadcastStatus('error');
+    return;
+  }
+
   if (status === 'busy') {
     lastKernelBusy = true;
   }
@@ -135,6 +158,15 @@ function handleKernelStatusForFeedback(status: string): void {
 function markCellExecuting(cell: Element): void {
   cell.querySelector('.exec-feedback')?.remove();
   cell.querySelector('.thebelab-cell__error-hint')?.remove();
+
+  // If kernel is dead, show error immediately instead of misleading "running" state
+  if (kernelDead) {
+    cell.classList.remove('thebelab-cell--done', 'thebelab-cell--running');
+    cell.classList.add('thebelab-cell--error');
+    showErrorHint(cell, { type: 'kernel' });
+    return;
+  }
+
   executingCell = cell;
   cell.classList.remove('thebelab-cell--done', 'thebelab-cell--error');
   cell.classList.add('thebelab-cell--running');
@@ -150,27 +182,44 @@ function markCellExecuting(cell: Element): void {
 
 /** After thebelab cells are rendered, attach listeners for execution feedback. */
 function setupCellFeedback(): void {
+  // Clean up listeners from any previous bootstrap
+  feedbackCleanupFns.forEach(fn => fn());
+  feedbackCleanupFns = [];
+
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
     console.log(`[ExecutableCode] Setting up feedback for ${cells.length} cell(s)`);
 
     cells.forEach((cell) => {
       const buttons = cell.querySelectorAll('button');
+
+      // Hide thebelab's restart buttons — they don't integrate with our feedback system
+      Array.from(buttons).forEach(b => {
+        const text = b.textContent?.trim().toLowerCase() || '';
+        if (text.includes('restart')) {
+          (b as HTMLElement).style.display = 'none';
+        }
+      });
+
       const runBtn = Array.from(buttons).find(
         b => b.textContent?.trim().toLowerCase() === 'run'
       );
       if (runBtn) {
-        runBtn.addEventListener('click', () => markCellExecuting(cell));
+        const handler = () => markCellExecuting(cell);
+        runBtn.addEventListener('click', handler);
+        feedbackCleanupFns.push(() => runBtn.removeEventListener('click', handler));
       }
       // Also handle Shift+Enter (thebelab's CodeMirror keybinding)
       const cm = cell.querySelector('.CodeMirror');
       if (cm) {
-        cm.addEventListener('keydown', (e: Event) => {
+        const handler = (e: Event) => {
           const ke = e as KeyboardEvent;
           if (ke.shiftKey && ke.key === 'Enter') {
             markCellExecuting(cell);
           }
-        });
+        };
+        cm.addEventListener('keydown', handler);
+        feedbackCleanupFns.push(() => cm.removeEventListener('keydown', handler));
       }
     });
   }, 1000);
@@ -403,6 +452,7 @@ function bootstrapOnce(config: JupyterConfig): void {
         kernelPromise.then(
           (kernel) => {
             console.log('[ExecutableCode] kernel ready:', kernel);
+            kernelDead = false;
             injectKernelSetup(kernel).then(() => {
               broadcastStatus('ready');
               setupCellFeedback();
@@ -518,6 +568,17 @@ export default function ExecutableCode({
         return;
       }
     }
+    // Reset module-level state so next Run triggers a fresh bootstrap
+    thebelabBootstrapped = false;
+    kernelDead = false;
+    executingCell = null;
+    lastKernelBusy = false;
+    if (feedbackFallbackTimer) {
+      clearTimeout(feedbackFallbackTimer);
+      feedbackFallbackTimer = null;
+    }
+    feedbackCleanupFns.forEach(fn => fn());
+    feedbackCleanupFns = [];
     // Tell ALL cells on the page to switch back to read mode
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
   };
@@ -535,8 +596,8 @@ export default function ExecutableCode({
     connecting: jupyterConfig?.environment === 'github-pages'
       ? 'Starting Binder (this may take 1\u20132 minutes on first run)...'
       : 'Connecting...',
-    ready: 'Ready',
-    error: 'Connection error',
+    ready: '',
+    error: 'Disconnected \u2014 click Back, then Run to retry',
   };
 
   const code = children.replace(/\n$/, '');
@@ -573,8 +634,8 @@ export default function ExecutableCode({
             </button>
           )}
 
-          {thebeStatus !== 'idle' && (
-            <span className={`thebe-status thebe-status--${thebeStatus}`}>
+          {(thebeStatus === 'connecting' || thebeStatus === 'error') && (
+            <span className={`thebe-status thebe-status--${thebeStatus}`} aria-live="polite">
               {statusText[thebeStatus]}
             </span>
           )}

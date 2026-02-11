@@ -96,7 +96,7 @@ IBM's custom components mapped to Docusaurus equivalents:
 - Binder repo has separate daily build workflow to keep 2i2c cache warm
 
 ### Homepage
-Hero banner with 3 outline CTA buttons (Browse Tutorials / Browse Guides / Start a Course). Storyline: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → featured italic blue h3 subtitle ("This combination lets you browse...") → content stats bar (clickable numbers: 42 / 171 / 154 / 14). "Deployable anywhere" line. Featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. "Code execution" section: step 1 (Run code) then bullet alternatives (IBM Quantum / Simulator Mode). Three `<details>` blocks: "Available execution backends", "Deployment options", "Run locally with Podman / Docker" (Podman-first commands). Links to browse all Guides + CS/QM modules. Mobile responsive.
+Hero banner: "doQumentation" title + one-liner subtitle ("adds a feature-rich, user-friendly, open-source frontend to IBM Quantum's complete open-source tutorials, courses, and documentation library") + clickable content stats bar (42 / 171 / 154 / 14) inside hero. Below hero: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → "Deployable anywhere" line. Featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. "Code execution" section: step 1 (Run code) then bullet alternatives (IBM Quantum / Simulator Mode). Three `<details>` blocks: "Available execution backends", "Deployment options", "Run locally with Podman / Docker" (Podman-first commands). Links to browse all Guides + CS/QM modules. Mobile responsive.
 
 ### Search
 `@easyops-cn/docusaurus-search-local` — client-side search across all ~380 pages. Hashed index, no blog indexing, routes from `/`.
@@ -233,9 +233,9 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 
 ### TODO
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
-- **Code review fixes** — Full review at `.claude/code-review-2026-02-08.md`. Quick wins: URL encoding in `getLabUrl()`, listener cleanup in `setupCellFeedback()`, docker-compose port conflict, a11y/aria-live, error handling in jupyter-settings, deprecated `onBrokenLinks`.
-- **Website review sessions 3-4** — Full review at `.claude/website-review-2026-02-10.md`. Key issues: #26 five broken sidebar links (404s), #27 restart button does nothing, #28 generic alt text on circuit outputs, #37 heading hierarchy violation, **#38 silent kernel failure with misleading UI (CRITICAL)**, #39 no pre-execution kernel check.
-- **Website review deferred (round 1-2)** — #10 blank area on Grover's page, #15 button misalignment, #16 simulator discoverability, #17 Binder loading state, #19 copy button visibility, #23 breadcrumbs, #24 mobile sidebar, #25 keyboard shortcuts docs.
+- **Code review remaining** — docker-compose port conflict, error handling in jupyter-settings, deprecated `onBrokenLinks`. Full review at `.claude/code-review-2026-02-08.md`.
+- **Website review deferred** — Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). Many fixed in rounds 1-3; remaining: #15 button misalignment, #16 simulator discoverability, #19 copy button, #24 mobile sidebar, #28 generic alt text, #37 heading hierarchy (upstream), #41 syntax highlighting gaps (upstream).
+- **Homepage refinement** — Hero done (775dd83). Getting started cards could better represent each content category.
 
 ### Needs Testing
 - **Raspberry Pi deployment** — `scripts/setup-pi.sh` written but untested on actual hardware
@@ -257,4 +257,4 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 
 ---
 
-*Last updated: February 10, 2026*
+*Last updated: February 11, 2026*

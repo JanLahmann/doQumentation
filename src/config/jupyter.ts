@@ -305,9 +305,10 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
   if (!config.labEnabled || !config.baseUrl) {
     return null;
   }
-  
-  const tokenParam = config.token ? `?token=${config.token}` : '';
-  return `${config.baseUrl}/lab/tree/${notebookPath}${tokenParam}`;
+
+  const encodedPath = notebookPath.split('/').map(encodeURIComponent).join('/');
+  const tokenParam = config.token ? `?token=${encodeURIComponent(config.token)}` : '';
+  return `${config.baseUrl}/lab/tree/${encodedPath}${tokenParam}`;
 }
 
 /**
@@ -328,7 +329,8 @@ export function getNotebookUrl(config: JupyterConfig, notebookPath: string): str
   if (!config.enabled || !config.baseUrl) {
     return null;
   }
-  
-  const tokenParam = config.token ? `?token=${config.token}` : '';
-  return `${config.baseUrl}/notebooks/${notebookPath}${tokenParam}`;
+
+  const encodedPath = notebookPath.split('/').map(encodeURIComponent).join('/');
+  const tokenParam = config.token ? `?token=${encodeURIComponent(config.token)}` : '';
+  return `${config.baseUrl}/notebooks/${encodedPath}${tokenParam}`;
 }
