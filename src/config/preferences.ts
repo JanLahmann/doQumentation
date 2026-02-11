@@ -355,6 +355,9 @@ export function getRecentPages(): RecentPage[] {
 export function clearRecentPages(): void {
   if (!isBrowser()) return;
   localStorage.removeItem(KEY_RECENT_PAGES);
+  localStorage.removeItem(KEY_LAST_PAGE);
+  localStorage.removeItem(KEY_LAST_PAGE_TITLE);
+  localStorage.removeItem(KEY_LAST_PAGE_TS);
 }
 
 // ── Bulk clear ──

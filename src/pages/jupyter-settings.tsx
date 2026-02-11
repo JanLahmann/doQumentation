@@ -713,11 +713,12 @@ export default function JupyterSettings(): JSX.Element {
           </p>
           <pre>
             <code>{`qiskit[visualization], qiskit-aer,
-qiskit-ibm-runtime, pylatexenc`}</code>
+qiskit-ibm-runtime, pylatexenc,
+qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
           </pre>
 
           <p>
-            Most notebooks require additional packages. You can install them
+            Some notebooks require additional packages. You can install them
             on demand by running this in a code cell:
           </p>
           <pre>
@@ -728,9 +729,9 @@ qiskit-ibm-runtime, pylatexenc`}</code>
           <pre>
             <code>{`!pip install -q scipy scikit-learn qiskit-ibm-transpiler \\
   qiskit-experiments plotly sympy qiskit-serverless \\
-  qiskit-ibm-catalog qiskit-addon-sqd qiskit-addon-utils \\
-  qiskit-addon-mpf qiskit-addon-aqc-tensor[aer,quimb-jax] \\
-  qiskit-addon-obp qiskit-addon-cutting pyscf ffsim \\
+  qiskit-addon-sqd qiskit-addon-mpf \\
+  qiskit-addon-aqc-tensor[aer,quimb-jax] \\
+  qiskit-addon-obp qiskit-addon-cutting ffsim \\
   gem-suite python-sat`}</code>
           </pre>
 

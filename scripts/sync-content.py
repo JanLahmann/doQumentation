@@ -150,6 +150,14 @@ def transform_mdx(content: str, source_path: Path) -> str:
     # #41: Tag untagged code blocks with language hints based on content
     content = _tag_untagged_code_blocks(content)
 
+    # Hello World tutorial: add Settings page tip before save_account code block
+    content = content.replace(
+        "If you haven't saved your credentials yet in this Binder session, run this first:",
+        "**Tip:** On [doQumentation](https://doqumentation.org), you can save your credentials once in "
+        "[Settings](/jupyter-settings#ibm-quantum) — they'll be auto-injected on every run.\n\n"
+        "On other platforms, run this first to save credentials for the session:"
+    )
+
     return content
 
 
@@ -637,6 +645,17 @@ def process_tutorials():
         else:
             stats["skipped"] += 1
 
+    # Import custom Hello World from fork root (doQumentation's own intro tutorial)
+    custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
+    if custom_hw.exists():
+        hw_dst = tutorials_dst / "hello-world.mdx"
+        if convert_notebook(custom_hw, hw_dst, notebook_path="hello-world.ipynb"):
+            stats["ipynb"] += 1
+            print(f"  ✓ hello-world.ipynb → .mdx (custom)")
+        # Copy notebook for "Open in Lab"
+        hw_nb_dst = notebooks_dst / "hello-world.ipynb"
+        copy_notebook_with_rewrite(custom_hw, hw_nb_dst, Path("tutorials/hello-world.ipynb"))
+
     print(f"\n  Summary: {stats['mdx']} MDX, {stats['ipynb']} notebooks, "
           f"{stats['images']} images, {stats['skipped']} skipped")
 
@@ -959,6 +978,11 @@ def generate_sidebar_from_toc():
     children = toc.get('children', [])
 
     sidebar_items = toc_children_to_sidebar(children)
+
+    # Prepend custom Hello World (doQumentation's own intro, from fork root)
+    custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
+    if custom_hw.exists():
+        sidebar_items.insert(0, "tutorials/hello-world")
 
     sidebar_json = PROJECT_ROOT / "sidebar-generated.json"
     sidebar_json.write_text(json.dumps(sidebar_items, indent=2))

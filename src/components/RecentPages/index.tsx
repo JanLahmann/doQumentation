@@ -21,9 +21,10 @@ export default function RecentPages(): JSX.Element | null {
   const [pages, setPages] = useState<RecentPage[]>([]);
 
   useEffect(() => {
-    // Show at most 5 recent pages, skip the first one (it's the current page)
-    const recent = getRecentPages();
-    setPages(recent.slice(1, 6));
+    // Show at most 5 recent pages, skip the current page and bare-title entries
+    const recent = getRecentPages()
+      .filter(p => p.path !== window.location.pathname && p.title !== 'doQumentation');
+    setPages(recent.slice(0, 5));
   }, []);
 
   if (pages.length === 0) return null;

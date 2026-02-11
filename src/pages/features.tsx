@@ -114,7 +114,7 @@ export default function Features(): JSX.Element {
               />
               <FeatureCard
                 title="Simulator Mode"
-                description="Run all notebooks without an IBM Quantum account. Choose AerSimulator for ideal simulation, or pick from 8 FakeBackends that model real device noise. Zero setup required."
+                description="Run all notebooks without an IBM Quantum account. Choose AerSimulator for ideal simulation, or pick from dozens of FakeBackends that model real device noise. Zero setup required."
                 link="/jupyter-settings#simulator-mode"
                 linkLabel="Enable simulator"
               />

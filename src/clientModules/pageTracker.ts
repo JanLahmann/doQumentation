@@ -19,12 +19,16 @@ export function onRouteDidUpdate({ location }: { location: Location }): void {
   // Track the visit
   markPageVisited(path);
 
-  // Record as last page (setLastPage ignores homepage and settings internally)
-  const title = document.title?.replace(/ \| doQumentation$/, '') || path;
-  setLastPage(path, title);
-
-  // Add to recent pages list (addRecentPage ignores homepage and settings internally)
-  addRecentPage(path, title);
+  // Defer title read — React hasn't updated <Head> yet when this hook fires,
+  // so document.title may still be the previous page's or the site default.
+  // setTimeout(100) gives React enough time to flush the <Head> update.
+  setTimeout(() => {
+    const raw = document.title?.replace(/ \| doQumentation$/, '') || '';
+    // Skip bare site title (means <Head> hasn't resolved a page-specific title)
+    const title = (raw && raw !== 'doQumentation') ? raw : path;
+    setLastPage(path, title);
+    addRecentPage(path, title);
+  }, 100);
 
   // Notify sidebar items to re-check their visited state
   window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT, { detail: path }));
