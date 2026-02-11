@@ -60,6 +60,12 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Warning suppression injected at kernel start (`warnings.filterwarnings('ignore')`)
 - "Open in JupyterLab" button on notebook-derived pages (with descriptive tooltip)
 - Dismissible Binder package hint after kernel ready (GitHub Pages only, localStorage-persisted dismiss)
+- Kernel death detection: `kernelDead` flag set on thebelab `dead`/`failed` status → red border + "Kernel disconnected" hint, prevents misleading green borders
+- Back resets all module-level state (`thebelabBootstrapped`, `kernelDead`, listeners) for clean re-bootstrap
+- Event listener cleanup: `feedbackCleanupFns[]` prevents memory leaks across page navigations
+- thebelab restart buttons hidden (don't integrate with feedback system)
+- Toolbar: status only shows for `connecting`/`error` states; legend (running/done/error) indicates active kernel
+- URL encoding in `getLabUrl()`/`getNotebookUrl()` prevents XSS via notebook paths
 
 ### IBM Quantum Integration
 - **Credential store** — API token + CRN saved in localStorage with 7-day auto-expiry. Auto-injected via `save_account()` at kernel start.
@@ -160,6 +166,7 @@ doQumentation/
 ├── static/
 │   ├── img/logo.svg               # Quantum circuit logo
 │   ├── CNAME                      # GitHub Pages custom domain (excluded from containers)
+│   ├── robots.txt                 # SEO: allow all + sitemap reference
 │   ├── docs/                      # Synced images (gitignored)
 │   └── learning/images/           # Synced course/module images (gitignored)
 │
@@ -232,6 +239,13 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 ## Open Items
 
 ### TODO
+- **localStorage settings expansion** — Explore storing more user preferences in localStorage: preferred execution mode (simulator/real/fake device), complete fake device list (to override the minimal default list), and other user settings. Consolidate with existing localStorage usage (API token/CRN with 7-day expiry, Binder hint dismiss flag, cached fake backends).
+- **Features page** — Create dedicated page showcasing main features (code execution, credential injection, simulator mode, deployment tiers) and secondary features.
+- **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
+- **Pip install injection on dependency failure** — After a cell fails with a missing dependency, inject a cell with the suggested `pip install` command.
+- **Execution mode indicator** — Show in the toolbar/UI whether the user is on a "real device", "simulator", or "fake device (device name)".
+- **Cell injection feedback** — Show visual feedback when cells get auto-injected (e.g. simulator setup code, credential injection).
+- **Notebook dependency scan** — Scan all notebooks for missing dependencies, document findings in `.claude/` folder, and inject a `pip install` cell at top of each affected notebook as a courtesy for the user.
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
 - **Code review remaining** — docker-compose port conflict, error handling in jupyter-settings, deprecated `onBrokenLinks`. Full review at `.claude/code-review-2026-02-08.md`.
 - **Website review deferred** — Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). Many fixed in rounds 1-3; remaining: #15 button misalignment, #16 simulator discoverability, #19 copy button, #24 mobile sidebar, #28 generic alt text, #37 heading hierarchy (upstream), #41 syntax highlighting gaps (upstream).

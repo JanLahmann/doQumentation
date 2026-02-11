@@ -49,8 +49,15 @@ let thebelabEventsHooked = false;
 const ACTIVATE_EVENT = 'executablecode:activate';
 const STATUS_EVENT = 'executablecode:status';
 const RESET_EVENT = 'executablecode:reset';
+const INJECTION_EVENT = 'executablecode:injection';
 
 type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
+
+type InjectionInfo = {
+  mode: 'simulator' | 'credentials' | 'none';
+  label: string;    // Badge text: "AerSimulator", "FakeSherbrooke", "IBM Quantum"
+  message: string;  // Toast text for brief feedback
+};
 
 // ── Cell execution feedback ──
 // Tracks which cell is currently executing so we can show "Done" for no-output cells.
@@ -302,6 +309,10 @@ function broadcastConflictBanner(usingMode: string): void {
   window.dispatchEvent(new CustomEvent(CONFLICT_EVENT, { detail: usingMode }));
 }
 
+function broadcastInjection(info: InjectionInfo): void {
+  window.dispatchEvent(new CustomEvent(INJECTION_EVENT, { detail: info }));
+}
+
 async function injectKernelSetup(kernelObj: unknown): Promise<void> {
   const simMode = getSimulatorMode();
   const token = getIBMQuantumToken();
@@ -317,11 +328,25 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
 
   if (useSimulator || (hasBoth && !activeMode)) {
     const ok = await executeOnKernel(kernelObj, getSimulatorPatchCode());
-    if (ok) console.log('[ExecutableCode] Simulator mode injected');
+    if (ok) {
+      const backend = getSimulatorBackend();
+      const device = backend === 'fake' ? getFakeDevice() : 'AerSimulator';
+      broadcastInjection({
+        mode: 'simulator',
+        label: device,
+        message: `Simulator active \u2014 using ${device}`,
+      });
+    }
   } else if (useCredentials) {
     const crn = getIBMQuantumCRN();
     const ok = await executeOnKernel(kernelObj, getSaveAccountCode(token, crn));
-    if (ok) console.log('[ExecutableCode] IBM Quantum credentials injected');
+    if (ok) {
+      broadcastInjection({
+        mode: 'credentials',
+        label: 'IBM Quantum',
+        message: 'IBM Quantum credentials applied',
+      });
+    }
   }
 
   discoverFakeBackends(kernelObj);
@@ -489,6 +514,8 @@ export default function ExecutableCode({
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
   const [isFirstCell, setIsFirstCell] = useState(false);
   const [conflictBanner, setConflictBanner] = useState<string | null>(null);
+  const [injectionInfo, setInjectionInfo] = useState<InjectionInfo | null>(null);
+  const [injectionToast, setInjectionToast] = useState<string | null>(null);
   const [binderHintDismissed, setBinderHintDismissed] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const thebeContainerRef = useRef<HTMLDivElement>(null);
@@ -520,6 +547,8 @@ export default function ExecutableCode({
     const onReset = () => {
       setMode('read');
       setThebeStatus('idle');
+      setInjectionInfo(null);
+      setInjectionToast(null);
     };
     window.addEventListener(RESET_EVENT, onReset);
     return () => window.removeEventListener(RESET_EVENT, onReset);
@@ -546,9 +575,22 @@ export default function ExecutableCode({
     return () => window.removeEventListener(CONFLICT_EVENT, onConflict);
   }, []);
 
+  // Listen for injection feedback (simulator or credentials applied)
+  useEffect(() => {
+    const onInjection = (e: Event) => {
+      const info = (e as CustomEvent<InjectionInfo>).detail;
+      setInjectionInfo(info);
+      if (info.message) {
+        setInjectionToast(info.message);
+        setTimeout(() => setInjectionToast(null), 4000);
+      }
+    };
+    window.addEventListener(INJECTION_EVENT, onInjection);
+    return () => window.removeEventListener(INJECTION_EVENT, onInjection);
+  }, []);
+
   const isExecutable = language === 'python' && jupyterConfig?.thebeEnabled;
   const canOpenLab = jupyterConfig?.labEnabled && notebookPath;
-  const simActive = typeof window !== 'undefined' && getSimulatorMode();
 
   const handleRun = useCallback(() => {
     if (!jupyterConfig) return;
@@ -648,8 +690,10 @@ export default function ExecutableCode({
             </span>
           )}
 
-          {simActive && (
-            <span className="executable-code__sim-badge">Simulator</span>
+          {thebeStatus === 'ready' && injectionInfo && injectionInfo.mode !== 'none' && (
+            <span className={`executable-code__mode-badge executable-code__mode-badge--${injectionInfo.mode}`}>
+              {injectionInfo.label}
+            </span>
           )}
 
           <a
@@ -667,6 +711,12 @@ export default function ExecutableCode({
           Both IBM credentials and simulator mode are configured.
           Using <strong>{conflictBanner}</strong>.{' '}
           <a href="/jupyter-settings#ibm-quantum">Change in Settings</a>.
+        </div>
+      )}
+
+      {isFirstCell && injectionToast && (
+        <div className="executable-code__injection-toast">
+          {injectionToast}
         </div>
       )}
 
