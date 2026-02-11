@@ -66,6 +66,7 @@ type InjectionInfo = {
 let executingCell: Element | null = null;
 let lastKernelBusy = false;
 let feedbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+let feedbackIdleDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let kernelDead = false;
 let feedbackCleanupFns: (() => void)[] = [];
 let activeKernel: unknown = null;
@@ -192,12 +193,25 @@ function settleCellFeedback(cell: Element): void {
   }
 }
 
-/** Handle kernel busy/idle transitions to detect execution completion. */
+/** Debounce window for idle detection (ms).
+ *  Must survive the brief idle blips between execute_input → execute_result → idle
+ *  transitions that occur during multi-phase executions (e.g., matplotlib inline display).
+ *  800ms is long enough to bridge those gaps, short enough to feel responsive. */
+const IDLE_DEBOUNCE_MS = 800;
+
+/** Handle kernel busy/idle transitions to detect execution completion.
+ *  Called from BOTH:
+ *  - thebelab's on('status') for lifecycle events (dead/failed/ready)
+ *  - kernel.statusChanged signal for actual busy/idle protocol events */
 function handleKernelStatusForFeedback(status: string): void {
   // Detect kernel death — mark current cell as error and flag for future checks
   if (status === 'dead' || status === 'failed') {
     kernelDead = true;
     thebelabBootstrapped = false; // Allow re-bootstrap on next Run
+    if (feedbackIdleDebounceTimer) {
+      clearTimeout(feedbackIdleDebounceTimer);
+      feedbackIdleDebounceTimer = null;
+    }
     if (executingCell) {
       const cell = executingCell;
       executingCell = null;
@@ -213,18 +227,34 @@ function handleKernelStatusForFeedback(status: string): void {
     return;
   }
 
+  // busy: cancel any pending idle debounce — the kernel is still working
   if (status === 'busy') {
     lastKernelBusy = true;
-  }
-  if (status === 'idle' && lastKernelBusy && executingCell) {
-    lastKernelBusy = false;
-    const cell = executingCell;
-    executingCell = null;
-    if (feedbackFallbackTimer) {
-      clearTimeout(feedbackFallbackTimer);
-      feedbackFallbackTimer = null;
+    if (feedbackIdleDebounceTimer) {
+      clearTimeout(feedbackIdleDebounceTimer);
+      feedbackIdleDebounceTimer = null;
     }
-    setTimeout(() => settleCellFeedback(cell), 300);
+    return;
+  }
+
+  // idle: start debounce timer — only settle if we stay idle for IDLE_DEBOUNCE_MS
+  if (status === 'idle' && lastKernelBusy && executingCell) {
+    if (feedbackIdleDebounceTimer) {
+      clearTimeout(feedbackIdleDebounceTimer);
+    }
+    feedbackIdleDebounceTimer = setTimeout(() => {
+      feedbackIdleDebounceTimer = null;
+      if (executingCell) {
+        lastKernelBusy = false;
+        const cell = executingCell;
+        executingCell = null;
+        if (feedbackFallbackTimer) {
+          clearTimeout(feedbackFallbackTimer);
+          feedbackFallbackTimer = null;
+        }
+        settleCellFeedback(cell);
+      }
+    }, IDLE_DEBOUNCE_MS);
   }
 }
 
@@ -249,9 +279,10 @@ function markCellExecuting(cell: Element): void {
   feedbackFallbackTimer = setTimeout(() => {
     if (executingCell === cell) {
       executingCell = null;
+      console.warn('[ExecutableCode] Safety-net timer fired — kernel.statusChanged may not be working');
       settleCellFeedback(cell);
     }
-  }, 15000);
+  }, 60000);
 }
 
 /** After thebelab cells are rendered, attach listeners for execution feedback. */
@@ -546,6 +577,30 @@ function bootstrapOnce(config: JupyterConfig): void {
             console.log('[ExecutableCode] kernel ready:', kernel);
             kernelDead = false;
             activeKernel = kernel;
+
+            // Subscribe to kernel busy/idle for cell execution feedback.
+            // thebelab 0.4.0 only emits lifecycle events (starting/ready/failed),
+            // not busy/idle. The real IKernel from @jupyterlab/services has
+            // a statusChanged signal we can subscribe to directly.
+            /* eslint-disable @typescript-eslint/no-explicit-any */
+            const k = kernel as Record<string, any>;
+            const realKernel = k?.statusChanged ? k : k?.kernel;
+            if (realKernel?.statusChanged?.connect) {
+              realKernel.statusChanged.connect(
+                (_sender: unknown, kernelStatus: string) => {
+                  console.log(`[ExecutableCode] kernel.statusChanged: ${kernelStatus}`);
+                  handleKernelStatusForFeedback(kernelStatus);
+                }
+              );
+              console.log('[ExecutableCode] Subscribed to kernel.statusChanged');
+            } else {
+              console.warn(
+                '[ExecutableCode] kernel.statusChanged not available — ' +
+                'falling back to safety-net timer only'
+              );
+            }
+            /* eslint-enable @typescript-eslint/no-explicit-any */
+
             injectKernelSetup(kernel).then(() => {
               broadcastStatus('ready');
               setupCellFeedback();
@@ -697,6 +752,10 @@ export default function ExecutableCode({
     if (feedbackFallbackTimer) {
       clearTimeout(feedbackFallbackTimer);
       feedbackFallbackTimer = null;
+    }
+    if (feedbackIdleDebounceTimer) {
+      clearTimeout(feedbackIdleDebounceTimer);
+      feedbackIdleDebounceTimer = null;
     }
     feedbackCleanupFns.forEach(fn => fn());
     feedbackCleanupFns = [];
