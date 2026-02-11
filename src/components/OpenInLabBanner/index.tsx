@@ -4,6 +4,7 @@ import { detectJupyterConfig, getLabUrl, getBinderLabUrl } from '../../config/ju
 
 interface OpenInLabBannerProps {
   notebookPath: string;
+  description?: string;
 }
 
 /**
@@ -14,7 +15,7 @@ interface OpenInLabBannerProps {
  * - GitHub Pages: opens in Binder JupyterLab
  * - Custom server: opens configured JupyterLab
  */
-export default function OpenInLabBanner({ notebookPath }: OpenInLabBannerProps) {
+export default function OpenInLabBanner({ notebookPath, description }: OpenInLabBannerProps) {
   return (
     <BrowserOnly>
       {() => {
@@ -49,7 +50,7 @@ export default function OpenInLabBanner({ notebookPath }: OpenInLabBannerProps) 
             }}
           >
             <span>&#128221;</span>
-            <span>This page was generated from a Jupyter notebook.</span>
+            <span>{description || 'This page was generated from a Jupyter notebook.'}</span>
             <a
               href={labUrl}
               target="_blank"

@@ -404,7 +404,8 @@ def analyze_notebook_imports(cells: list[dict]) -> list[str]:
 
 def convert_notebook(ipynb_path: Path, output_path: Path,
                      notebook_path: Optional[str] = None,
-                     slug: Optional[str] = None) -> bool:
+                     slug: Optional[str] = None,
+                     banner_description: Optional[str] = None) -> bool:
     """
     Convert a Jupyter notebook to MDX by parsing the .ipynb JSON directly.
 
@@ -525,7 +526,8 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
         # Inject OpenInLabBanner after frontmatter if notebook_path is set
         banner = ''
         if notebook_path:
-            banner = f'\n<OpenInLabBanner notebookPath="{notebook_path}" />\n'
+            desc_prop = f' description="{banner_description}"' if banner_description else ''
+            banner = f'\n<OpenInLabBanner notebookPath="{notebook_path}"{desc_prop} />\n'
 
         # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -649,7 +651,8 @@ def process_tutorials():
     custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
     if custom_hw.exists():
         hw_dst = tutorials_dst / "hello-world.mdx"
-        if convert_notebook(custom_hw, hw_dst, notebook_path="hello-world.ipynb"):
+        if convert_notebook(custom_hw, hw_dst, notebook_path="hello-world.ipynb",
+                           banner_description="This tutorial was created for doQumentation."):
             stats["ipynb"] += 1
             print(f"  ✓ hello-world.ipynb → .mdx (custom)")
         # Copy notebook for "Open in Lab"
