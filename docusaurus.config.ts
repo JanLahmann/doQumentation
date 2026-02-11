@@ -136,6 +136,10 @@ const config: Config = {
           title: 'RasQberry',
           items: [
             {
+              label: 'Features',
+              to: '/features',
+            },
+            {
               label: 'RasQberry',
               href: 'https://rasqberry.org',
             },

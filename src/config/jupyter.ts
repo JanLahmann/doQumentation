@@ -322,15 +322,4 @@ export function getBinderLabUrl(config: JupyterConfig, upstreamPath: string): st
   return `${config.binderUrl}?labpath=${encodeURIComponent(upstreamPath)}`;
 }
 
-/**
- * Get the classic notebook URL for a specific notebook
- */
-export function getNotebookUrl(config: JupyterConfig, notebookPath: string): string | null {
-  if (!config.enabled || !config.baseUrl) {
-    return null;
-  }
 
-  const encodedPath = notebookPath.split('/').map(encodeURIComponent).join('/');
-  const tokenParam = config.token ? `?token=${encodeURIComponent(config.token)}` : '';
-  return `${config.baseUrl}/notebooks/${encodedPath}${tokenParam}`;
-}

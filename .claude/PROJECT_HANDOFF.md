@@ -66,9 +66,10 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Event listener cleanup: `feedbackCleanupFns[]` prevents memory leaks across page navigations
 - thebelab restart buttons hidden (don't integrate with feedback system)
 - Toolbar: status only shows for `connecting`/`error` states; legend (running/done/error) indicates active kernel
-- URL encoding in `getLabUrl()`/`getNotebookUrl()` prevents XSS via notebook paths
+- URL encoding in `getLabUrl()` prevents XSS via notebook paths
 - Execution mode indicator: dynamic toolbar badge shows "AerSimulator"/"FakeSherbrooke" (blue) or "IBM Quantum" (teal) after injection confirmed
 - Cell injection feedback: brief green toast ("Simulator active — using AerSimulator" / "IBM Quantum credentials applied") auto-fades after 4s
+- Cell completion accuracy: subscribes to `kernel.statusChanged` signal from `@jupyterlab/services` (thebelab 0.4.0 only emits lifecycle events, not busy/idle). Resettable 800ms debounce cancels on each busy transition, preventing premature green borders during multi-phase executions (e.g. matplotlib). Safety-net fallback 60s.
 
 ### IBM Quantum Integration
 - **Credential store** — API token + CRN saved in localStorage with 7-day auto-expiry. Auto-injected via `save_account()` at kernel start.
@@ -164,7 +165,10 @@ IBM's custom components mapped to Docusaurus equivalents:
 - Binder repo has separate daily build workflow to keep 2i2c cache warm
 
 ### Homepage
-Hero banner: "doQumentation" title + one-liner subtitle ("adds a feature-rich, user-friendly, open-source frontend to IBM Quantum's complete open-source tutorials, courses, and documentation library") + clickable content stats bar (42 / 171 / 154 / 14) inside hero. Below hero: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → "Deployable anywhere" line. Featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. "Code execution" section: step 1 (Run code) then bullet alternatives (IBM Quantum / Simulator Mode). Three `<details>` blocks: "Available execution backends", "Deployment options", "Run locally with Podman / Docker" (Podman-first commands). Links to browse all Guides + CS/QM modules. Mobile responsive.
+Hero banner: "doQumentation" title + one-liner subtitle ("adds a feature-rich, user-friendly, open-source frontend to IBM Quantum's complete open-source tutorials, courses, and documentation library") + clickable content stats bar (42 / 171 / 154 / 14) inside hero. Below hero: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → "Deployable anywhere" line + "See all features" link. Simulator callout card in "Getting started" section ("No IBM Quantum account? Enable Simulator Mode..."). Featured full-width "Basics of QI" course card + Hello World guide + 3 tutorial cards. Audience guidance intro sentence. "Code execution" section: step 1 (Run code) then simulator-first bullet alternatives (Simulator Mode / IBM Quantum Hardware). Three `<details>` blocks: "Available execution backends", "Deployment options", "Run locally with Podman / Docker" (Podman-first commands). Links to browse all Guides + CS/QM modules. Mobile responsive.
+
+### Features Page
+`src/pages/features.tsx` — standalone React page at `/features` showcasing all implemented features in 5 card-grid sections: Content Library (3 cards), Live Code Execution (6 cards), IBM Quantum Integration (4 cards), Learning & Progress (3 cards), Search/UI/Deployment (6 cards). Responsive grid: 3 columns on desktop, 2 tablet, 1 mobile. Linked from homepage ("See all features") and footer. Not in navbar.
 
 ### Search
 `@easyops-cn/docusaurus-search-local` — client-side search across all ~380 pages. Hashed index, no blog indexing, routes from `/`.
@@ -226,6 +230,7 @@ doQumentation/
 │   │   └── custom.css             # All styling (Carbon-inspired + homepage + settings)
 │   │
 │   ├── pages/
+│   │   ├── features.tsx           # Features page (card-grid showcase of all features)
 │   │   └── jupyter-settings.tsx   # Settings page (IBM credentials, simulator, custom server)
 │   │
 │   └── theme/
@@ -318,12 +323,12 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 ## Open Items
 
 ### TODO
-- **Features page** — Create dedicated page showcasing main features (code execution, credential injection, simulator mode, deployment tiers) and secondary features.
+- ~~**Features page**~~ — DONE. `/features` page with 22 feature cards across 5 sections. Linked from homepage + footer.
 - **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
 - **Notebook dependency scan** — Scan all notebooks for missing dependencies, document findings in `.claude/` folder, and inject a `pip install` cell at top of each affected notebook as a courtesy for the user.
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
 - **Code review remaining** — docker-compose port conflict, error handling in jupyter-settings, deprecated `onBrokenLinks`. Full review at `.claude/code-review-2026-02-08.md`.
-- **Website review deferred** — Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). Many fixed in rounds 1-3; remaining: #15 button misalignment, #16 simulator discoverability, #19 copy button, #24 mobile sidebar, #28 generic alt text, #37 heading hierarchy (upstream), #41 syntax highlighting gaps (upstream).
+- **Website review deferred** — Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). Many fixed in rounds 1-3; remaining: #15 button misalignment, ~~#16 simulator discoverability~~ (addressed: simulator-first homepage bullets + callout card + Features page), #19 copy button, #24 mobile sidebar, #28 generic alt text, #37 heading hierarchy (upstream), #41 syntax highlighting gaps (upstream).
 - **Homepage refinement** — Hero done (775dd83). Getting started cards could better represent each content category.
 
 ### Needs Testing
