@@ -177,7 +177,7 @@ const config: Config = {
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
-      additionalLanguages: ['python', 'bash', 'json'],
+      additionalLanguages: ['python', 'bash', 'json', 'shell-session', 'yaml', 'toml', 'diff', 'markup'],
     },
 
     // Custom config for Jupyter integration

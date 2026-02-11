@@ -191,6 +191,14 @@ function settleCellFeedback(cell: Element): void {
     cell.classList.remove('thebelab-cell--error');
     cell.classList.add('thebelab-cell--done');
   }
+
+  // #28: Fix generic/missing alt text on live-rendered output images
+  cell.querySelectorAll('.thebelab-output img, .output_area img').forEach((img) => {
+    const htmlImg = img as HTMLImageElement;
+    if (!htmlImg.alt || htmlImg.alt === 'output') {
+      htmlImg.alt = 'Code execution output';
+    }
+  });
 }
 
 /** Debounce window for idle detection (ms).

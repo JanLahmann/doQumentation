@@ -129,6 +129,9 @@ def transform_mdx(content: str, source_path: Path) -> str:
         else:
             content = re.sub(pattern, replacement, content)
 
+    # #37: Fix heading hierarchy — "Check your understanding" should be H3, not H4+
+    content = re.sub(r'^#{4,}\s+(Check your understanding)', r'### \1', content, flags=re.MULTILINE)
+
     # Add Tabs/TabItem imports if used but not imported
     if '<Tabs>' in content or '<TabItem' in content:
         if "import Tabs from" not in content and "import TabItem from" not in content:
@@ -143,6 +146,9 @@ def transform_mdx(content: str, source_path: Path) -> str:
                     content = content[:pos] + '\n\n' + import_stmt + content[pos:]
             else:
                 content = import_stmt + content
+
+    # #41: Tag untagged code blocks with language hints based on content
+    content = _tag_untagged_code_blocks(content)
 
     return content
 
@@ -162,12 +168,41 @@ def escape_mdx_outside_code(content: str) -> str:
     return ''.join(parts)
 
 
+def _tag_untagged_code_blocks(content: str) -> str:
+    """Add language tags to untagged code fences based on content heuristics."""
+    def _replace_block(m):
+        code = m.group(1)
+        first_line = code.strip().split('\n')[0] if code.strip() else ''
+        if first_line.startswith('$') or first_line.startswith('%'):
+            return f'```bash\n{code}```'
+        if any(first_line.startswith(kw) for kw in ('import ', 'from ', 'def ', 'class ', 'print(')):
+            return f'```python\n{code}```'
+        if first_line.startswith('{'):
+            return f'```json\n{code}```'
+        if first_line.startswith('pip ') or first_line.startswith('pip3 '):
+            return f'```bash\n{code}```'
+        return m.group(0)
+    return re.sub(r'```\n(.*?)```', _replace_block, content, flags=re.DOTALL)
+
+
 def cell_source(cell: dict) -> str:
     """Extract source text from a notebook cell (handles list or string)."""
     src = cell.get('source', '')
     if isinstance(src, list):
         return ''.join(src)
     return src
+
+
+def _infer_alt_text(source: str) -> str:
+    """Infer alt text for cell output images based on source code patterns."""
+    s = source.lower()
+    if '.draw(' in s or 'circuit' in s:
+        return 'Quantum circuit diagram'
+    if 'plot(' in s or 'hist(' in s or 'bar(' in s or 'scatter(' in s:
+        return 'Plot output'
+    if 'imshow(' in s:
+        return 'Image output'
+    return 'Code output'
 
 
 def _text_to_output(text: str) -> str:
@@ -193,6 +228,8 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
 
     Handles text/plain, image/png (saved as files), and stderr/stdout streams.
     """
+    source = cell_source(cell)
+    alt = _infer_alt_text(source)
     parts = []
     for output in cell.get('outputs', []):
         output_type = output.get('output_type', '')
@@ -215,7 +252,7 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
                 img_path = output_dir / img_name
                 img_path.parent.mkdir(parents=True, exist_ok=True)
                 img_path.write_bytes(img_bytes)
-                parts.append(f'\n![output](./{img_name})\n')
+                parts.append(f'\n![{alt}](./{img_name})\n')
             elif 'text/latex' in data:
                 latex = data['text/latex']
                 if isinstance(latex, list):
