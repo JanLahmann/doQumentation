@@ -80,6 +80,8 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
     clearVisitedByPrefix(prefix);
     clearExecutedByPrefix(prefix);
     setVisitedCount(0);
+    // Notify all other sidebar components (parent categories, child links/categories)
+    window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
   };
 
   return (

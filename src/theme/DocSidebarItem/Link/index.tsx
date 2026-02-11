@@ -46,6 +46,8 @@ export default function DocSidebarItemLink(props: Props): JSX.Element {
     if (href) {
       unmarkPageVisited(href);
       setVisited(false);
+      // Notify parent category badges to update their counts
+      window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
     }
   };
 

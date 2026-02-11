@@ -75,8 +75,19 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - **Fake backend discovery** — Introspects `fake_provider` at kernel connect, caches available backends in localStorage. Device picker grouped by qubit count.
 - **Conflict resolution** — When both credentials and simulator are configured, radio buttons let user choose. Banner shown at kernel connect if no explicit choice (defaults to simulator).
 
+### Learning Progress (uncommitted)
+Automatic tracking of learning progress across all ~380 pages:
+- **Page visit tracking** — `src/clientModules/pageTracker.ts` (Docusaurus client module) auto-records every page visit via `onRouteDidUpdate`. All localStorage access centralized in `src/config/preferences.ts`.
+- **Sidebar indicators** — Swizzled `DocSidebarItem/Link`: clickable checkmark (✓ visited) or play icon (▶ executed). Swizzled `DocSidebarItem/Category`: aggregate badge ("3/10") showing visited/total leaf pages. Both use custom event `dq:page-visited` for real-time updates across client-side navigation.
+- **Granular clearing** — Per page (click indicator), per section (click category badge uses `commonPrefix()` of leaf hrefs), per category (Settings page), all at once (Settings page).
+- **Resume reading** — `ResumeCard` component on homepage shows "Continue where you left off" with last page title + time ago. Only appears for returning visitors.
+- **Execution tracking** — `markPageExecuted()` called on Run button in ExecutableCode. Visual distinction in sidebar (▶ vs ✓).
+- **Settings integration** — "Learning Progress" section shows stats (total visited, notebooks executed, per-category breakdown) with clear buttons.
+- **Binder hint migration** — Moved from direct `localStorage` in ExecutableCode to `preferences.ts` (`isBinderHintDismissed()`/`dismissBinderHint()`).
+- **localStorage keys** — `dq-visited-pages` (JSON set), `dq-executed-pages` (JSON set), `dq-last-page` (JSON `{path, title, ts}`), `dq-binder-hint-dismissed` (boolean).
+
 ### Settings Page (`/jupyter-settings`)
-Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode (with hardware-difference note) → Binder Packages → Advanced (Custom Server + Setup Help)
+Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode (with hardware-difference note) → Learning Progress (stats + clear buttons) → Binder Packages → Advanced (Custom Server + Setup Help)
 
 ### MDX Components
 IBM's custom components mapped to Docusaurus equivalents:
@@ -139,8 +150,13 @@ doQumentation/
 ├── notebooks/                     # Original .ipynb for JupyterLab (generated)
 │
 ├── src/
+│   ├── clientModules/
+│   │   └── pageTracker.ts         # Auto-tracks page visits, dispatches dq:page-visited event
+│   │
 │   ├── components/
 │   │   ├── ExecutableCode/        # Run/Back toggle, thebelab, kernel injection
+│   │   │   └── index.tsx
+│   │   ├── ResumeCard/            # "Continue where you left off" homepage card
 │   │   │   └── index.tsx
 │   │   ├── CourseComponents/      # DefinitionTooltip, Figure, IBMVideo, LaunchExamButton
 │   │   ├── GuideComponents/       # Card, CardGroup, OperatingSystemTabs, CodeAssistantAdmonition
@@ -148,7 +164,8 @@ doQumentation/
 │   │       └── index.tsx
 │   │
 │   ├── config/
-│   │   └── jupyter.ts             # Environment detection, credential/simulator storage
+│   │   ├── jupyter.ts             # Environment detection, credential/simulator storage
+│   │   └── preferences.ts         # Learning progress, visited/executed pages, user preferences
 │   │
 │   ├── css/
 │   │   └── custom.css             # All styling (Carbon-inspired + homepage + settings)
@@ -158,6 +175,9 @@ doQumentation/
 │   │
 │   └── theme/
 │       ├── CodeBlock/index.tsx    # Swizzle: wraps Python blocks with ExecutableCode
+│       ├── DocSidebarItem/
+│       │   ├── Category/index.tsx # Swizzle: aggregate progress badge (e.g. "3/10")
+│       │   └── Link/index.tsx     # Swizzle: visited ✓ / executed ▶ indicators
 │       └── MDXComponents.tsx      # IBM component stubs (Admonition, Image, etc.)
 │
 ├── scripts/
@@ -241,7 +261,7 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 ## Open Items
 
 ### TODO
-- **localStorage settings expansion** — Explore storing more user preferences in localStorage: preferred execution mode (simulator/real/fake device), complete fake device list (to override the minimal default list), and other user settings. Consolidate with existing localStorage usage (API token/CRN with 7-day expiry, Binder hint dismiss flag, cached fake backends).
+- **localStorage settings expansion (Tier 1 done, Tier 2-3 open)** — Tier 1 implemented (uncommitted): learning progress tracker (visited/executed pages), resume reading card on homepage, Binder hint migration to `preferences.ts`. Full tiered plan at `.claude/plans/wild-hopping-beaver.md`. Remaining: onboarding state (Tier 1), bookmarks (Tier 2), display preferences like code font size (Tier 2), sidebar collapse memory (Tier 3), recently viewed pages (Tier 3).
 - **Features page** — Create dedicated page showcasing main features (code execution, credential injection, simulator mode, deployment tiers) and secondary features.
 - **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
 - **Pip install injection on dependency failure** — After a cell fails with a missing dependency, inject a cell with the suggested `pip install` command.
