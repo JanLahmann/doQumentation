@@ -66,6 +66,8 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - thebelab restart buttons hidden (don't integrate with feedback system)
 - Toolbar: status only shows for `connecting`/`error` states; legend (running/done/error) indicates active kernel
 - URL encoding in `getLabUrl()`/`getNotebookUrl()` prevents XSS via notebook paths
+- Execution mode indicator: dynamic toolbar badge shows "AerSimulator"/"FakeSherbrooke" (blue) or "IBM Quantum" (teal) after injection confirmed
+- Cell injection feedback: brief green toast ("Simulator active — using AerSimulator" / "IBM Quantum credentials applied") auto-fades after 4s
 
 ### IBM Quantum Integration
 - **Credential store** — API token + CRN saved in localStorage with 7-day auto-expiry. Auto-injected via `save_account()` at kernel start.
@@ -243,8 +245,6 @@ podman compose up jupyter          # Full stack → http://localhost:8080 (site)
 - **Features page** — Create dedicated page showcasing main features (code execution, credential injection, simulator mode, deployment tiers) and secondary features.
 - **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
 - **Pip install injection on dependency failure** — After a cell fails with a missing dependency, inject a cell with the suggested `pip install` command.
-- **Execution mode indicator** — Show in the toolbar/UI whether the user is on a "real device", "simulator", or "fake device (device name)".
-- **Cell injection feedback** — Show visual feedback when cells get auto-injected (e.g. simulator setup code, credential injection).
 - **Notebook dependency scan** — Scan all notebooks for missing dependencies, document findings in `.claude/` folder, and inject a `pip install` cell at top of each affected notebook as a courtesy for the user.
 - **Jupyter token auth** — Enable authentication for Docker/RasQberry containers. Plan at `.claude/plans/jupyter-token-auth.md`.
 - **Code review remaining** — docker-compose port conflict, error handling in jupyter-settings, deprecated `onBrokenLinks`. Full review at `.claude/code-review-2026-02-08.md`.
