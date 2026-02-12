@@ -298,6 +298,9 @@ export default function JupyterSettings(): JSX.Element {
             Enter your IBM Quantum credentials once here. They will be
             auto-injected via <code>save_account()</code> when the kernel starts,
             so you don't need to enter them in every notebook.
+            This applies to embedded code execution on this site only
+            &mdash; opening a notebook in JupyterLab requires calling{' '}
+            <code>save_account()</code> manually.
           </p>
 
           <ol>
@@ -445,6 +448,8 @@ QiskitRuntimeService.save_account(
             Enable to run notebooks without an IBM Quantum account.
             All <code>QiskitRuntimeService</code> calls are redirected to a local
             simulator. No cell modifications needed.
+            This applies to embedded code execution on this site only
+            &mdash; opening a notebook in JupyterLab uses the standard Qiskit runtime.
           </p>
 
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
