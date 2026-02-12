@@ -154,13 +154,29 @@ const STORAGE_KEY_FAKE_DEVICE = 'doqumentation_fake_device';
 const STORAGE_KEY_FAKE_BACKENDS_CACHE = 'doqumentation_fake_backends';
 const STORAGE_KEY_ACTIVE_MODE = 'doqumentation_active_mode';
 
-const CREDENTIAL_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const STORAGE_KEY_IBM_TTL_DAYS = 'doqumentation_ibm_ttl_days';
+const DEFAULT_TTL_DAYS = 7;
 
-/** Check if credentials have expired (>7 days old). Auto-clears if expired. */
+export function getCredentialTTLDays(): number {
+  if (typeof window === 'undefined') return DEFAULT_TTL_DAYS;
+  const stored = localStorage.getItem(STORAGE_KEY_IBM_TTL_DAYS);
+  return stored ? Number(stored) : DEFAULT_TTL_DAYS;
+}
+
+export function setCredentialTTLDays(days: number): void {
+  if (typeof window === 'undefined') return;
+  safeSave(STORAGE_KEY_IBM_TTL_DAYS, String(days));
+}
+
+function getCredentialTTLMs(): number {
+  return getCredentialTTLDays() * 24 * 60 * 60 * 1000;
+}
+
+/** Check if credentials have expired. Auto-clears if expired. */
 function checkCredentialExpiry(): boolean {
   const savedAt = localStorage.getItem(STORAGE_KEY_IBM_SAVED_AT);
   if (!savedAt) return false;
-  if (Date.now() - Number(savedAt) > CREDENTIAL_TTL_MS) {
+  if (Date.now() - Number(savedAt) > getCredentialTTLMs()) {
     clearIBMQuantumCredentials();
     return true;
   }
@@ -182,7 +198,7 @@ export function getCredentialDaysRemaining(): number {
   if (typeof window === 'undefined') return -1;
   const savedAt = localStorage.getItem(STORAGE_KEY_IBM_SAVED_AT);
   if (!savedAt) return -1;
-  const remaining = CREDENTIAL_TTL_MS - (Date.now() - Number(savedAt));
+  const remaining = getCredentialTTLMs() - (Date.now() - Number(savedAt));
   return Math.max(0, Math.ceil(remaining / (24 * 60 * 60 * 1000)));
 }
 

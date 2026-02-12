@@ -401,7 +401,8 @@ _dq_backend = _DQ_Sim()`;
 class _DQ_MockService:
     def __init__(self, *a, **kw): pass
     @staticmethod
-    def save_account(*a, **kw): pass
+    def save_account(*a, **kw):
+        print("[doQumentation] Simulator mode active \\u2014 save_account() skipped (no credentials needed)")
     def least_busy(self, *a, **kw): return _dq_backend
     def backend(self, *a, **kw): return _dq_backend
     def backends(self, *a, **kw): return [_dq_backend]

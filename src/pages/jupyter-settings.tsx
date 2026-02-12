@@ -29,6 +29,8 @@ import {
   getCachedFakeBackends,
   getActiveMode,
   setActiveMode,
+  getCredentialTTLDays,
+  setCredentialTTLDays,
   type JupyterConfig,
   type SimulatorBackend,
   type ActiveMode,
@@ -95,6 +97,7 @@ export default function JupyterSettings(): JSX.Element {
   const [fakeDevice, setFakeDeviceState] = useState('FakeSherbrooke');
   const [fakeBackends, setFakeBackends] = useState(FALLBACK_BACKENDS);
   const [activeMode, setActiveModeState] = useState<ActiveMode | null>(null);
+  const [ttlDays, setTtlDaysState] = useState(7);
 
   // Load current config on mount
   useEffect(() => {
@@ -126,6 +129,7 @@ export default function JupyterSettings(): JSX.Element {
     setSimBackend(getSimulatorBackend());
     setFakeDeviceState(getFakeDevice());
     setActiveModeState(getActiveMode());
+    setTtlDaysState(getCredentialTTLDays());
 
     // Load cached fake backends
     const cached = getCachedFakeBackends();
@@ -187,7 +191,7 @@ export default function JupyterSettings(): JSX.Element {
   const handleIbmSave = () => {
     if (!ibmToken) return;
     saveIBMQuantumCredentials(ibmToken, ibmCrn);
-    setIbmDaysRemaining(7);
+    setIbmDaysRemaining(ttlDays);
     setIbmSaveResult('Credentials saved! They will be auto-injected when the kernel starts.');
     setIbmExpiredNotice(false);
   };
@@ -281,6 +285,15 @@ export default function JupyterSettings(): JSX.Element {
           {/* IBM Quantum Account */}
           <h2 id="ibm-quantum">IBM Quantum Account</h2>
 
+          <div className="alert alert--warning margin-bottom--md">
+            <strong>Security note:</strong> Credentials are stored in your browser's
+            localStorage in plain text. They are not encrypted and can be read by
+            browser extensions or anyone with access to this device. Use the expiry
+            setting below to limit exposure, and delete credentials when you're done.
+            For shared or public computers, prefer the manual <code>save_account()</code>{' '}
+            method described below instead.
+          </div>
+
           <p>
             Enter your IBM Quantum credentials once here. They will be
             auto-injected via <code>save_account()</code> when the kernel starts,
@@ -330,9 +343,33 @@ export default function JupyterSettings(): JSX.Element {
           )}
 
           {ibmDaysRemaining >= 0 && (
-            <div className="alert alert--info margin-bottom--md">
-              Credentials expire in <strong>{ibmDaysRemaining} day{ibmDaysRemaining !== 1 ? 's' : ''}</strong>.
-              They are stored in your browser only and auto-deleted after 7 days.
+            <div className="alert alert--info margin-bottom--md" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <span>
+                Credentials expire in <strong>{ibmDaysRemaining} day{ibmDaysRemaining !== 1 ? 's' : ''}</strong>.
+              </span>
+              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                Auto-delete after:{' '}
+                <select
+                  value={ttlDays}
+                  onChange={(e) => {
+                    const days = Number(e.target.value);
+                    setTtlDaysState(days);
+                    setCredentialTTLDays(days);
+                    setIbmDaysRemaining(getCredentialDaysRemaining());
+                  }}
+                  style={{
+                    padding: '0.15rem 0.3rem',
+                    borderRadius: '4px',
+                    border: '1px solid var(--ifm-color-emphasis-300)',
+                    background: 'var(--ifm-background-color)',
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  <option value={1}>1 day</option>
+                  <option value={3}>3 days</option>
+                  <option value={7}>7 days</option>
+                </select>
+              </span>
             </div>
           )}
 
@@ -385,6 +422,21 @@ export default function JupyterSettings(): JSX.Element {
               {ibmSaveResult}
             </div>
           )}
+
+          <details style={{ marginTop: '1rem' }}>
+            <summary><strong>Alternative: Run save_account() manually in a notebook cell</strong></summary>
+            <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+              If you prefer not to store credentials in this browser, paste this into any
+              code cell and run it. Credentials are saved in the Binder kernel's temporary
+              storage and lost when the session ends.
+            </p>
+            <pre><code>{`from qiskit_ibm_runtime import QiskitRuntimeService
+QiskitRuntimeService.save_account(
+    token="YOUR_API_TOKEN",
+    instance="YOUR_CRN",
+    overwrite=True
+)`}</code></pre>
+          </details>
 
           {/* Simulator Mode */}
           <h2 id="simulator-mode" style={{ marginTop: '2rem' }}>Simulator Mode</h2>
@@ -632,10 +684,13 @@ export default function JupyterSettings(): JSX.Element {
             <code>from qiskit import QuantumCircuit</code>
           </div>
 
-          <h3>Static Outputs</h3>
+          <h3>Pre-computed Outputs</h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-            Pages show pre-computed outputs below code cells. When running live code,
-            both static and live outputs are visible by default.
+            Each notebook page shows pre-computed outputs (images, tables, text)
+            from IBM's original runs. When you click <strong>Run</strong> to execute
+            code live, both the original outputs and your new live results are
+            shown side by side. Enable this toggle to hide the original outputs
+            during live execution, keeping only your results visible.
           </p>
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__toggle">
@@ -652,7 +707,7 @@ export default function JupyterSettings(): JSX.Element {
                 <span className="jupyter-settings__toggle-thumb" />
               </span>
               <span style={{ marginLeft: '0.5rem' }}>
-                {hideOutputs ? 'Hide static outputs during live execution' : 'Show both static and live outputs'}
+                {hideOutputs ? 'Hide pre-computed outputs during live execution' : 'Show both pre-computed and live outputs'}
               </span>
             </label>
           </div>
