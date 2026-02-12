@@ -205,10 +205,10 @@ function settleCellFeedback(cell: Element): void {
 }
 
 /** Debounce window for idle detection (ms).
- *  Must survive the brief idle blips between execute_input → execute_result → idle
- *  transitions that occur during multi-phase executions (e.g., matplotlib inline display).
- *  800ms is long enough to bridge those gaps, short enough to feel responsive. */
-const IDLE_DEBOUNCE_MS = 800;
+ *  Must survive brief idle blips between execute_input → execute_result → idle
+ *  transitions during multi-phase executions (e.g., matplotlib, SamplerV2.run).
+ *  1500ms bridges gaps from overlapping thebelab/kernel status signals. */
+const IDLE_DEBOUNCE_MS = 1500;
 
 /** Handle kernel busy/idle transitions to detect execution completion.
  *  Called from BOTH:
@@ -339,6 +339,38 @@ function setupCellFeedback(): void {
       }
     });
   }, 1000);
+}
+
+/** After injection, show a skip-hint on cells that contain save_account().
+ *  Prevents users from overwriting injected credentials with placeholder values. */
+function annotateSaveAccountCells(): void {
+  const simMode = getSimulatorMode();
+  const hasCredentials = !!getIBMQuantumToken();
+  if (!simMode && !hasCredentials) return;
+
+  // Wait for thebelab to render cells (same delay as setupCellFeedback)
+  setTimeout(() => {
+    const cells = document.querySelectorAll('.thebelab-cell');
+    cells.forEach((cell) => {
+      const code = cell.querySelector('.CodeMirror')?.textContent ||
+                   cell.querySelector('pre')?.textContent || '';
+      if (!code.includes('save_account(')) return;
+      if (cell.querySelector('.thebelab-cell__skip-hint')) return;
+
+      const div = document.createElement('div');
+      div.className = 'thebelab-cell__skip-hint';
+      if (simMode) {
+        div.innerHTML =
+          '<strong>Skip this cell</strong> \u2014 Simulator Mode is active. Running it has no effect.';
+      } else {
+        div.innerHTML =
+          '<strong>Skip this cell</strong> \u2014 your credentials are already configured via ' +
+          '<a href="/jupyter-settings#ibm-quantum">Settings</a>. ' +
+          'Running it with placeholder values will overwrite them.';
+      }
+      cell.insertBefore(div, cell.firstChild);
+    });
+  }, 1200);
 }
 
 // ── Kernel injection for IBM credentials / simulator mode ──
@@ -567,6 +599,10 @@ function bootstrapOnce(config: JupyterConfig): void {
         const data = args[1] as { status: string; message: string };
         if (data) {
           if (DEBUG) console.log(`[thebelab] status: ${data.status} — ${data.message}`);
+          // Skip busy/idle — these are handled reliably via kernel.statusChanged.
+          // thebelab lifecycle events (e.g. "ready") can overlap with cell execution
+          // and cause premature green borders if routed through the debounce logic.
+          if (data.status === 'busy' || data.status === 'idle') return;
           handleKernelStatusForFeedback(data.status);
         }
       });
@@ -616,6 +652,7 @@ function bootstrapOnce(config: JupyterConfig): void {
             injectKernelSetup(kernel).then(() => {
               broadcastStatus('ready');
               setupCellFeedback();
+              annotateSaveAccountCells();
             });
           },
           (err) => {

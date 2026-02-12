@@ -150,11 +150,13 @@ def transform_mdx(content: str, source_path: Path) -> str:
     # #41: Tag untagged code blocks with language hints based on content
     content = _tag_untagged_code_blocks(content)
 
-    # Hello World tutorial: add Settings page tip before save_account code block
+    # Hello World tutorial: warn about save_account cell when credentials/simulator active
     content = content.replace(
         "If you haven't saved your credentials yet in this Binder session, run this first:",
-        "**Tip:** On [doQumentation](https://doqumentation.org), you can save your credentials once in "
-        "[Settings](/jupyter-settings#ibm-quantum) — they'll be auto-injected on every run.\n\n"
+        "**Skip this cell** if you've saved credentials in "
+        "[Settings](/jupyter-settings#ibm-quantum) or enabled Simulator Mode "
+        "\u2014 they're auto-injected when you click Run. "
+        "Running this cell with placeholder values will overwrite your configuration.\n\n"
         "On other platforms, run this first to save credentials for the session:"
     )
 
