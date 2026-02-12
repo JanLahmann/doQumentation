@@ -56,14 +56,75 @@ import {
 import { DISPLAY_PREFS_EVENT } from '../clientModules/displayPrefs';
 
 const FALLBACK_BACKENDS = [
-  { name: 'FakeManilaV2', qubits: 5 },
+  // 1 qubit
+  { name: 'FakeArmonkV2', qubits: 1 },
+  // 5 qubits
+  { name: 'FakeAthensV2', qubits: 5 },
   { name: 'FakeBelemV2', qubits: 5 },
+  { name: 'FakeBogotaV2', qubits: 5 },
+  { name: 'FakeBurlingtonV2', qubits: 5 },
+  { name: 'FakeEssexV2', qubits: 5 },
+  { name: 'FakeFractionalBackend', qubits: 5 },
+  { name: 'FakeLimaV2', qubits: 5 },
+  { name: 'FakeLondonV2', qubits: 5 },
+  { name: 'FakeManilaV2', qubits: 5 },
+  { name: 'FakeOurenseV2', qubits: 5 },
+  { name: 'FakeQuitoV2', qubits: 5 },
+  { name: 'FakeRomeV2', qubits: 5 },
+  { name: 'FakeSantiagoV2', qubits: 5 },
+  { name: 'FakeValenciaV2', qubits: 5 },
+  { name: 'FakeVigoV2', qubits: 5 },
+  { name: 'FakeYorktownV2', qubits: 5 },
+  // 7 qubits
+  { name: 'FakeCasablancaV2', qubits: 7 },
+  { name: 'FakeJakartaV2', qubits: 7 },
+  { name: 'FakeLagosV2', qubits: 7 },
+  { name: 'FakeNairobiV2', qubits: 7 },
+  { name: 'FakeOslo', qubits: 7 },
+  { name: 'FakePerth', qubits: 7 },
+  // 14–16 qubits
   { name: 'FakeMelbourneV2', qubits: 14 },
+  { name: 'FakeGuadalupeV2', qubits: 16 },
+  // 20 qubits
+  { name: 'FakeAlmadenV2', qubits: 20 },
+  { name: 'FakeBoeblingenV2', qubits: 20 },
+  { name: 'FakeJohannesburgV2', qubits: 20 },
+  { name: 'FakePoughkeepsieV2', qubits: 20 },
+  { name: 'FakeSingaporeV2', qubits: 20 },
+  // 27 qubits
+  { name: 'FakeAlgiers', qubits: 27 },
+  { name: 'FakeAuckland', qubits: 27 },
+  { name: 'FakeCairoV2', qubits: 27 },
+  { name: 'FakeGeneva', qubits: 27 },
+  { name: 'FakeHanoiV2', qubits: 27 },
+  { name: 'FakeKolkataV2', qubits: 27 },
+  { name: 'FakeMontrealV2', qubits: 27 },
+  { name: 'FakeMumbaiV2', qubits: 27 },
+  { name: 'FakeParisV2', qubits: 27 },
+  { name: 'FakePeekskill', qubits: 27 },
+  { name: 'FakeSydneyV2', qubits: 27 },
   { name: 'FakeTorontoV2', qubits: 27 },
-  { name: 'FakeSherbrooke', qubits: 127 },
+  // 28 qubits
+  { name: 'FakeCambridgeV2', qubits: 28 },
+  // 33 qubits
+  { name: 'FakePrague', qubits: 33 },
+  // 53–65 qubits
+  { name: 'FakeRochesterV2', qubits: 53 },
+  { name: 'FakeBrooklynV2', qubits: 65 },
+  { name: 'FakeManhattanV2', qubits: 65 },
+  // 127 qubits
   { name: 'FakeBrisbane', qubits: 127 },
+  { name: 'FakeCusco', qubits: 127 },
+  { name: 'FakeKawasaki', qubits: 127 },
+  { name: 'FakeKyiv', qubits: 127 },
   { name: 'FakeKyoto', qubits: 127 },
+  { name: 'FakeQuebec', qubits: 127 },
+  { name: 'FakeSherbrooke', qubits: 127 },
   { name: 'FakeWashingtonV2', qubits: 127 },
+  // 133–156 qubits
+  { name: 'FakeTorino', qubits: 133 },
+  { name: 'FakeFez', qubits: 156 },
+  { name: 'FakeMarrakesh', qubits: 156 },
 ];
 
 export default function JupyterSettings(): JSX.Element {

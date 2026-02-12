@@ -74,8 +74,8 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Cell completion accuracy: subscribes to `kernel.statusChanged` signal from `@jupyterlab/services` (thebelab 0.4.0 only emits lifecycle events, not busy/idle). Resettable 800ms debounce cancels on each busy transition, preventing premature green borders during multi-phase executions (e.g. matplotlib). Safety-net fallback 60s.
 
 ### IBM Quantum Integration
-- **Credential store** — API token + CRN saved in localStorage with adjustable auto-expiry (1/3/7 days, default 7). Security disclaimer warns about plain-text localStorage. Copyable `save_account()` snippet available as alternative. Auto-injected via `save_account()` at kernel start.
-- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` that returns AerSimulator or a FakeBackend. No IBM account needed. `save_account()` calls print visible feedback ("[doQumentation] Simulator mode active — save_account() skipped").
+- **Credential store** — API token + CRN saved in localStorage with adjustable auto-expiry (1/3/7 days, default 7). Security disclaimer warns about plain-text localStorage. Copyable `save_account()` snippet available as alternative. Auto-injected via `save_account()` at kernel start. **Embedded execution only** — opening in JupyterLab requires manual `save_account()`.
+- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` that returns AerSimulator or a FakeBackend. No IBM account needed. `save_account()` calls print visible feedback ("[doQumentation] Simulator mode active — save_account() skipped"). **Embedded execution only** — JupyterLab uses standard Qiskit runtime.
 - **Fake backend discovery** — Introspects `fake_provider` at kernel connect, caches available backends in localStorage. Device picker grouped by qubit count.
 - **Conflict resolution** — When both credentials and simulator are configured, radio buttons let user choose. Banner shown at kernel connect if no explicit choice (defaults to simulator).
 
@@ -363,6 +363,7 @@ Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generat
 ### Testing Results
 - **Comprehensive test** (Feb 11, 2026): 180+ tests, ~95% pass. Both "critical" issues were false positives — sidebar progress badge "3/43" misread as "343", course URLs tested at wrong paths. Zero real bugs found.
 - **Binder execution test** (Feb 11, 2026): 19/19 passed. Kernel connects in 30-40s (faster than 60-90s target), cell execution <5s, simulator mode auto-activates, circuit diagrams + histograms render correctly, 45-minute stable session with no crashes.
+- **Smoke test** (Feb 12, 2026): BLOCKED by Binder cache miss — from-scratch builds exceeded 2 minutes without completing (2 attempts). UI behavior correct (status messages, Binder phases, no JS errors). Infrastructure issue, not site defect.
 - **Test plans**: `.claude/BINDER-EXECUTION-TEST-PLAN.md` (183 tests, v2.0) + `.claude/test-checklist.md` (~100 manual items, 20 feature areas)
 
 ### Needs Testing
