@@ -696,7 +696,7 @@ QiskitRuntimeService.save_account(
             <label className="jupyter-settings__toggle">
               <input
                 type="checkbox"
-                checked={hideOutputs}
+                checked={!hideOutputs}
                 onChange={() => {
                   const next = !hideOutputs;
                   setHideOutputs(next);
@@ -707,7 +707,7 @@ QiskitRuntimeService.save_account(
                 <span className="jupyter-settings__toggle-thumb" />
               </span>
               <span style={{ marginLeft: '0.5rem' }}>
-                {hideOutputs ? 'Hide pre-computed outputs during live execution' : 'Show both pre-computed and live outputs'}
+                {hideOutputs ? 'Pre-computed outputs hidden during live execution' : 'Show both pre-computed and live outputs'}
               </span>
             </label>
           </div>

@@ -74,8 +74,8 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Cell completion accuracy: subscribes to `kernel.statusChanged` signal from `@jupyterlab/services` (thebelab 0.4.0 only emits lifecycle events, not busy/idle). Resettable 800ms debounce cancels on each busy transition, preventing premature green borders during multi-phase executions (e.g. matplotlib). Safety-net fallback 60s.
 
 ### IBM Quantum Integration
-- **Credential store** — API token + CRN saved in localStorage with 7-day auto-expiry. Auto-injected via `save_account()` at kernel start.
-- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` that returns AerSimulator or a FakeBackend. No IBM account needed.
+- **Credential store** — API token + CRN saved in localStorage with adjustable auto-expiry (1/3/7 days, default 7). Security disclaimer warns about plain-text localStorage. Copyable `save_account()` snippet available as alternative. Auto-injected via `save_account()` at kernel start.
+- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` that returns AerSimulator or a FakeBackend. No IBM account needed. `save_account()` calls print visible feedback ("[doQumentation] Simulator mode active — save_account() skipped").
 - **Fake backend discovery** — Introspects `fake_provider` at kernel connect, caches available backends in localStorage. Device picker grouped by qubit count.
 - **Conflict resolution** — When both credentials and simulator are configured, radio buttons let user choose. Banner shown at kernel connect if no explicit choice (defaults to simulator).
 
@@ -358,7 +358,7 @@ Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generat
 - ~~**Website review**~~ — DONE. Full review at `.claude/website-review-2026-02-10.md` (41 issues across 6 sessions). All actionable items fixed in rounds 1-4. Round 4 (133911b): #15 thebelab button overflow CSS, #19 copy button visibility CSS, #24 mobile sidebar tap targets CSS, #28 contextual alt text (sync-content.py + ExecutableCode), #37 H4→H3 heading fix (sync-content.py), #41 Prism languages + untagged code block tagging (docusaurus.config.ts + sync-content.py).
 - ~~**Homepage refinement**~~ — DONE (fb684ad). Category tags on Getting Started cards, custom Hello World tutorial, QAOA tutorial, simplified code execution section. Bookmark moved to EditThisPage swizzle.
 - **Test checklist** — `.claude/test-checklist.md` with ~100 manual test items across 20 feature areas.
-- **Settings page UX improvements** — Planned in `.claude/plans/wild-hopping-beaver.md`. 5 items: (1) credential security disclaimer for localStorage, (2) adjustable credential expiry 1/3/7 days, (3) copyable `save_account()` snippet in `<details>`, (4) "Static Outputs" → "Pre-computed Outputs" with clearer description, (5) simulator feedback on `save_account()` calls (mock currently silent).
+- ~~**Settings page UX improvements**~~ — DONE (346c9bc). 5 items: (1) credential security disclaimer for localStorage, (2) adjustable credential expiry 1/3/7 days via `doqumentation_ibm_ttl_days`, (3) copyable `save_account()` snippet in `<details>`, (4) "Static Outputs" → "Pre-computed Outputs" with clearer description, (5) simulator `save_account()` prints feedback instead of silent pass.
 
 ### Testing Results
 - **Comprehensive test** (Feb 11, 2026): 180+ tests, ~95% pass. Both "critical" issues were false positives — sidebar progress badge "3/43" misread as "343", course URLs tested at wrong paths. Zero real bugs found.
