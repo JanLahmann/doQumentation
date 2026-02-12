@@ -46,7 +46,7 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Link path rewriting: both markdown `(/docs/...)` and JSX `href="/docs/..."` patterns → local or upstream IBM URLs
 - Landing page generation: `create_learning_landing_pages()` generates `/learning/` and `/learning/modules/` index pages
 - `docs/index.mdx` is preserved (not overwritten) — all other `docs/` content is regenerated
-- **Custom Hello World tutorial** — `hello-world.ipynb` from fork root (JanLahmann/Qiskit-documentation) imported as first tutorial. sync-content.py adds Settings page tip replacing `save_account()` instruction. Prepended to sidebar. `OpenInLabBanner` shows custom description ("This tutorial was created for doQumentation.") via optional `description` prop.
+- **Custom Hello World tutorial** — `hello-world.ipynb` from fork root (JanLahmann/Qiskit-documentation) imported as first tutorial. sync-content.py replaces `save_account()` instruction with explicit "Skip this cell" warning (credentials auto-injected via Settings/simulator). Prepended to sidebar. `OpenInLabBanner` shows custom description ("This tutorial was created for doQumentation.") via optional `description` prop.
 - **Notebook dependency scan** — `analyze_notebook_imports()` scans code cells for `import`/`from` statements at build time. Filters Python stdlib (`sys.stdlib_module_names`) + `BINDER_PROVIDED` set (verified against actual Binder `pip list`). Maps import→pip names via `IMPORT_TO_PIP` (e.g. `sklearn`→`scikit-learn`). Deduplicates against existing `!pip install` in notebooks. Injects `%pip install -q <pkgs>` cell before first code block in 46/260 notebooks. `--scan-deps` flag generates report without converting. On Docker tier, install cells are silent no-ops (all deps pre-installed). Runtime fallback (`ModuleNotFoundError` → Install button) catches any false negatives.
 
 ### Code Execution
@@ -61,7 +61,7 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - Dark mode: circuit/output images auto-inverted via CSS `filter: invert(1) hue-rotate(180deg)`
 - Code blocks scroll horizontally on overflow (mobile-friendly)
 - Warning suppression injected at kernel start (`warnings.filterwarnings('ignore')`)
-- "Open in JupyterLab" button on notebook-derived pages (with descriptive tooltip)
+- "Open in JupyterLab" button on notebook-derived pages — works on **all tiers** including Binder ("Open in Binder JupyterLab"). Users needing to add cells or do full notebook editing can use this.
 - Dismissible Binder package hint after kernel ready (GitHub Pages only, localStorage-persisted dismiss)
 - Kernel death detection: `kernelDead` flag set on thebelab `dead`/`failed` status → red border + "Kernel disconnected" hint, prevents misleading green borders
 - Back resets all module-level state (`thebelabBootstrapped`, `kernelDead`, listeners) for clean re-bootstrap
@@ -71,7 +71,8 @@ Runtime detection handles environment differences. Only the Jupyter endpoint dif
 - URL encoding in `getLabUrl()` prevents XSS via notebook paths
 - Execution mode indicator: dynamic toolbar badge shows "AerSimulator"/"FakeSherbrooke" (blue) or "IBM Quantum" (teal) after injection confirmed
 - Cell injection feedback: brief green toast ("Simulator active — using AerSimulator" / "IBM Quantum credentials applied") auto-fades after 4s
-- Cell completion accuracy: subscribes to `kernel.statusChanged` signal from `@jupyterlab/services` (thebelab 0.4.0 only emits lifecycle events, not busy/idle). Resettable 800ms debounce cancels on each busy transition, preventing premature green borders during multi-phase executions (e.g. matplotlib). Safety-net fallback 60s.
+- Cell completion accuracy: subscribes to `kernel.statusChanged` signal from `@jupyterlab/services` (thebelab 0.4.0 only emits lifecycle events, not busy/idle). Resettable 1500ms debounce (increased from 800ms) cancels on each busy transition, preventing premature green borders during multi-phase executions (e.g. matplotlib, simulator runs). thebelab jQuery busy/idle events filtered out to prevent conflicts with kernel.statusChanged. Safety-net fallback 60s.
+- **save_account() cell protection** — `annotateSaveAccountCells()` runs after kernel injection. Scans all `.thebelab-cell` elements for `save_account(` in code. If credentials or simulator mode are active, injects a blue info banner ("Skip this cell — ...") above the cell. Prevents users from overwriting valid injected credentials with placeholder values (`<your-api-key>`). Two variants: simulator mode message ("no effect") vs credentials message ("will overwrite"). CSS class `.thebelab-cell__skip-hint` with dark mode support.
 
 ### IBM Quantum Integration
 - **Credential store** — API token + CRN saved in localStorage with adjustable auto-expiry (1/3/7 days, default 7). Security disclaimer warns about plain-text localStorage. Copyable `save_account()` snippet available as alternative. Auto-injected via `save_account()` at kernel start. **Embedded execution only** — opening in JupyterLab requires manual `save_account()`.
@@ -359,6 +360,8 @@ Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generat
 - ~~**Homepage refinement**~~ — DONE (fb684ad). Category tags on Getting Started cards, custom Hello World tutorial, QAOA tutorial, simplified code execution section. Bookmark moved to EditThisPage swizzle.
 - **Test checklist** — `.claude/test-checklist.md` with ~100 manual test items across 20 feature areas.
 - ~~**Settings page UX improvements**~~ — DONE (346c9bc). 5 items: (1) credential security disclaimer for localStorage, (2) adjustable credential expiry 1/3/7 days via `doqumentation_ibm_ttl_days`, (3) copyable `save_account()` snippet in `<details>`, (4) "Static Outputs" → "Pre-computed Outputs" with clearer description, (5) simulator `save_account()` prints feedback instead of silent pass.
+- ~~**save_account() cell protection**~~ — DONE (01e980c). Runtime `annotateSaveAccountCells()` injects blue "Skip this cell" banner on cells containing `save_account(` when credentials or simulator mode are active. Prevents users from overwriting injected credentials with placeholder values. Static tip text in sync-content.py also strengthened. CSS `.thebelab-cell__skip-hint` with dark mode support.
+- ~~**Green border debounce fix**~~ — DONE (01e980c). `IDLE_DEBOUNCE_MS` increased from 800ms to 1500ms. thebelab jQuery busy/idle events filtered out (kernel.statusChanged is the reliable source). Prevents premature green borders on still-executing cells (e.g. simulator runs showing "Running on fake_fez" output).
 
 ### Testing Results
 - **Comprehensive test** (Feb 11, 2026): 180+ tests, ~95% pass. Both "critical" issues were false positives — sidebar progress badge "3/43" misread as "343", course URLs tested at wrong paths. Zero real bugs found.
@@ -374,6 +377,7 @@ Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generat
 - **Auto-discover YouTube mappings** — `YOUTUBE_MAP` in `IBMVideo.tsx` is static (32 entries). New videos work without this (IBM embed fallback).
 - **LED Integration** — Could tutorials trigger LED visualizations on RasQberry?
 - **Offline AI Tutor** — Granite 4.0 Nano for offline Q&A about tutorials?
+- **"Add Cell" scratch pad** — Allow users to create new code cells in the embedded view. Two approaches: "+" buttons between cells (manual CodeMirror + `executeOnKernel()` + IOPub output) or single scratch pad at bottom. Key constraint: can't re-call `bootstrap()`. Not implementing now; full JupyterLab available via OpenInLabBanner on all tiers.
 
 ---
 

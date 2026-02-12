@@ -31,6 +31,8 @@ import {
   setActiveMode,
   getCredentialTTLDays,
   setCredentialTTLDays,
+  getSuppressWarnings,
+  setSuppressWarnings,
   type JupyterConfig,
   type SimulatorBackend,
   type ActiveMode,
@@ -150,6 +152,7 @@ export default function JupyterSettings(): JSX.Element {
   // Display preferences state
   const [fontSize, setFontSize] = useState(14);
   const [hideOutputs, setHideOutputs] = useState(false);
+  const [suppressWarnings, setSuppressWarningsState] = useState(true);
   const [bookmarkCount, setBookmarkCount] = useState(0);
 
   // Simulator mode state
@@ -204,6 +207,7 @@ export default function JupyterSettings(): JSX.Element {
     // Load display preferences
     setFontSize(getCodeFontSize());
     setHideOutputs(getHideStaticOutputs());
+    setSuppressWarningsState(getSuppressWarnings());
     setBookmarkCount(getBookmarks().length);
   }, []);
 
@@ -774,6 +778,32 @@ QiskitRuntimeService.save_account(
               </span>
               <span style={{ marginLeft: '0.5rem' }}>
                 {hideOutputs ? 'Pre-computed outputs hidden during live execution' : 'Show both pre-computed and live outputs'}
+              </span>
+            </label>
+          </div>
+
+          <h3>Python Warnings</h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+            By default, Python warnings (deprecation notices, runtime hints) are
+            suppressed for cleaner notebook output. Disable this to see all warnings
+            &mdash; useful for debugging or learning about API changes.
+          </p>
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__toggle">
+              <input
+                type="checkbox"
+                checked={suppressWarnings}
+                onChange={() => {
+                  const next = !suppressWarnings;
+                  setSuppressWarningsState(next);
+                  setSuppressWarnings(next);
+                }}
+              />
+              <span className="jupyter-settings__toggle-track">
+                <span className="jupyter-settings__toggle-thumb" />
+              </span>
+              <span style={{ marginLeft: '0.5rem' }}>
+                {suppressWarnings ? 'Warnings suppressed for cleaner output' : 'All Python warnings shown'}
               </span>
             </label>
           </div>

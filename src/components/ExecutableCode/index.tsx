@@ -26,6 +26,7 @@ import {
   getFakeDevice,
   getActiveMode,
   setCachedFakeBackends,
+  getSuppressWarnings,
   type JupyterConfig,
 } from '../../config/jupyter';
 import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
@@ -399,7 +400,12 @@ async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolea
 function getSaveAccountCode(token: string, crn: string): string {
   const t = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const c = crn.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  return `import warnings; warnings.filterwarnings('ignore')
+  const suppressWarnings = getSuppressWarnings();
+  const warningLine = suppressWarnings
+    ? `import warnings; warnings.filterwarnings('ignore')
+print("[doQumentation] Python warnings suppressed (can be changed in Settings)")`
+    : '';
+  return `${warningLine}
 from qiskit_ibm_runtime import QiskitRuntimeService
 try:
     QiskitRuntimeService.save_account(
@@ -407,6 +413,7 @@ try:
         instance="${c}",
         overwrite=True, set_as_default=True
     )
+    print("[doQumentation] IBM Quantum credentials injected from Settings")
 except Exception as e:
     print(f"[doQumentation] Credential setup: {e}")`;
 }
@@ -428,16 +435,30 @@ except ImportError:
 _dq_backend = _DQ_Sim()`;
   }
 
-  return `${backendSetup}
+  const suppressWarnings = getSuppressWarnings();
+  const warningLine = suppressWarnings
+    ? `import warnings; warnings.filterwarnings('ignore')
+print("[doQumentation] Python warnings suppressed (can be changed in Settings)")
+`
+    : '';
+
+  return `${warningLine}${backendSetup}
 
 class _DQ_MockService:
-    def __init__(self, *a, **kw): pass
+    def __init__(self, *a, **kw):
+        print("[doQumentation] QiskitRuntimeService() intercepted by Simulator Mode")
     @staticmethod
     def save_account(*a, **kw):
         print("[doQumentation] Simulator mode active \\u2014 save_account() skipped (no credentials needed)")
-    def least_busy(self, *a, **kw): return _dq_backend
-    def backend(self, *a, **kw): return _dq_backend
-    def backends(self, *a, **kw): return [_dq_backend]
+    def least_busy(self, *a, **kw):
+        print(f"[doQumentation] Intercepted by Simulator Mode \\u2014 returning {_dq_backend}")
+        return _dq_backend
+    def backend(self, *a, **kw):
+        print(f"[doQumentation] Intercepted by Simulator Mode \\u2014 returning {_dq_backend}")
+        return _dq_backend
+    def backends(self, *a, **kw):
+        print(f"[doQumentation] Intercepted by Simulator Mode \\u2014 returning [{_dq_backend}]")
+        return [_dq_backend]
 
 import qiskit_ibm_runtime as _qir
 _qir.QiskitRuntimeService = _DQ_MockService

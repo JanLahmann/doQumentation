@@ -155,7 +155,19 @@ const STORAGE_KEY_FAKE_BACKENDS_CACHE = 'doqumentation_fake_backends';
 const STORAGE_KEY_ACTIVE_MODE = 'doqumentation_active_mode';
 
 const STORAGE_KEY_IBM_TTL_DAYS = 'doqumentation_ibm_ttl_days';
+const STORAGE_KEY_SUPPRESS_WARNINGS = 'doqumentation_suppress_warnings';
 const DEFAULT_TTL_DAYS = 7;
+
+export function getSuppressWarnings(): boolean {
+  if (typeof window === 'undefined') return true;
+  const stored = localStorage.getItem(STORAGE_KEY_SUPPRESS_WARNINGS);
+  return stored === null ? true : stored === 'true';
+}
+
+export function setSuppressWarnings(suppress: boolean): void {
+  if (typeof window === 'undefined') return;
+  safeSave(STORAGE_KEY_SUPPRESS_WARNINGS, String(suppress));
+}
 
 export function getCredentialTTLDays(): number {
   if (typeof window === 'undefined') return DEFAULT_TTL_DAYS;
