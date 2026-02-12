@@ -7,7 +7,7 @@ import rehypeKatex from 'rehype-katex';
 const config: Config = {
   title: 'doQumentation',
   tagline: 'Interactive IBM Quantum tutorials and courses',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/logo.svg',
 
   url: 'https://doqumentation.org',
   baseUrl: '/',

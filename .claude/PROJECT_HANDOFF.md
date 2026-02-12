@@ -22,106 +22,45 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 
 ## Architecture Decisions
 
-### Docusaurus 3.x (not Next.js, Hugo)
-Purpose-built for documentation. Native MDX, auto-generated sidebar, static export (works offline). IBM's own frontend is Next.js but closed-source.
-
-### thebelab 0.4.x for code execution (not JupyterLite, Voilà)
-Connects static HTML to any Jupyter kernel. Minimal client-side code, graceful degradation. JupyterLite won't work (Qiskit has Rust extensions that don't compile to WASM). Must pin to `thebelab@0.4.0` — version 0.4.15 never existed on npm.
-
-### Content transformation (not Docker mirroring)
-IBM's Docker preview lacks navigation, search, and is designed for PR reviews. We transform their MDX to Docusaurus MDX (95% compatible) for full control.
-
-### Single codebase, three deployments
-Runtime detection handles environment differences. Only the Jupyter endpoint differs (Binder vs localhost vs custom).
+- **Docusaurus 3.x** (not Next.js, Hugo) — Purpose-built for documentation. Native MDX, auto-generated sidebar, static export. IBM's frontend is Next.js but closed-source.
+- **thebelab 0.4.x** (not JupyterLite, Voilà) — Connects static HTML to any Jupyter kernel. JupyterLite won't work (Qiskit has Rust extensions). Must pin to `thebelab@0.4.0` — 0.4.15 doesn't exist on npm.
+- **Content transformation** (not Docker mirroring) — IBM's Docker preview lacks navigation/search. We transform their MDX to Docusaurus MDX (95% compatible).
+- **Single codebase, three deployments** — Runtime detection handles environment differences. Only the Jupyter endpoint differs.
 
 ---
 
 ## Features
 
-### Content Sync
-- `scripts/sync-content.py` — Sparse-clones [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation), transforms MDX, converts notebooks, generates sidebars
-- Custom notebook converter (no nbconvert dependency) — extracts cell outputs (images, LaTeX, text), handles `<Image>` JSX in `text/plain`, splits embedded code blocks from markdown cells
-- Sidebar generation from upstream `_toc.json` files (guides, courses, modules) — handles external URLs as link items, skips "Lessons"/"Modules" wrapper levels
-- Image path rewriting: upstream IBM URLs and `/docs/images/` paths → local `static/` paths
-- Link path rewriting: both markdown `(/docs/...)` and JSX `href="/docs/..."` patterns → local or upstream IBM URLs
-- Landing page generation: `create_learning_landing_pages()` generates `/learning/` and `/learning/modules/` index pages
-- `docs/index.mdx` is preserved (not overwritten) — all other `docs/` content is regenerated
-- **Custom Hello World tutorial** — `hello-world.ipynb` from fork root (JanLahmann/Qiskit-documentation) imported as first tutorial. sync-content.py replaces `save_account()` instruction with explicit "Skip this cell" warning (credentials auto-injected via Settings/simulator). Prepended to sidebar. `OpenInLabBanner` shows custom description ("This tutorial was created for doQumentation.") via optional `description` prop.
-- **Notebook dependency scan** — `analyze_notebook_imports()` scans code cells for `import`/`from` statements at build time. Filters Python stdlib (`sys.stdlib_module_names`) + `BINDER_PROVIDED` set (verified against actual Binder `pip list`). Maps import→pip names via `IMPORT_TO_PIP` (e.g. `sklearn`→`scikit-learn`). Deduplicates against existing `!pip install` in notebooks. Injects `%pip install -q <pkgs>` cell before first code block in 46/260 notebooks. `--scan-deps` flag generates report without converting. On Docker tier, install cells are silent no-ops (all deps pre-installed). Runtime fallback (`ModuleNotFoundError` → Install button) catches any false negatives.
+### Content Sync (`scripts/sync-content.py`)
+- Sparse-clones [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation), transforms MDX, converts notebooks (custom converter, no nbconvert), generates sidebars from `_toc.json`
+- Rewrites image paths (IBM URLs → local `static/`) and link paths (markdown `(/docs/...)` + JSX `href="/docs/..."` → local or upstream)
+- `docs/index.mdx` is preserved — all other `docs/` content is regenerated on each sync
+- **Dependency scan**: `analyze_notebook_imports()` injects `%pip install -q` cells into 46/260 notebooks missing packages. `--scan-deps` flag for report only.
+- **Custom Hello World**: `hello-world.ipynb` from fork root imported as first tutorial with custom `OpenInLabBanner` description
 
-### Code Execution
-- `ExecutableCode` component wraps Python code blocks with Run/Back toggle (Run activates cells, Back reverts to static view)
-- thebelab 0.4.x bootstraps once per page, shared kernel across all cells
-- Environment auto-detection: GitHub Pages → Binder (2i2c.mybinder.org), localhost/rasqberry/Docker → local Jupyter, custom → user-configured
-- Cell execution feedback: persistent left border — amber (running), green (done), red (error) + toolbar legend
-- Error detection: `detectCellError()` inspects output for `ModuleNotFoundError`, `NameError`, tracebacks → red border + contextual error hints
-- Pip install injection: `ModuleNotFoundError` shows clickable "Install {pkg}" button → runs `!pip install -q` on kernel → auto-re-runs cell on success (falls back to static hint if kernel unavailable)
-- Back button shows `window.confirm()` dialog if any cells have been executed (prevents accidental output loss)
-- Static outputs (from MDX) remain visible alongside live outputs — intentional for comparison
-- Dark mode: circuit/output images auto-inverted via CSS `filter: invert(1) hue-rotate(180deg)`
-- Code blocks scroll horizontally on overflow (mobile-friendly)
-- Warning suppression injected at kernel start (`warnings.filterwarnings('ignore')`)
-- "Open in JupyterLab" button on notebook-derived pages — works on **all tiers** including Binder ("Open in Binder JupyterLab"). Users needing to add cells or do full notebook editing can use this.
-- Dismissible Binder package hint after kernel ready (GitHub Pages only, localStorage-persisted dismiss)
-- Kernel death detection: `kernelDead` flag set on thebelab `dead`/`failed` status → red border + "Kernel disconnected" hint, prevents misleading green borders
-- Back resets all module-level state (`thebelabBootstrapped`, `kernelDead`, listeners) for clean re-bootstrap
-- Event listener cleanup: `feedbackCleanupFns[]` prevents memory leaks across page navigations
-- thebelab restart buttons hidden (don't integrate with feedback system)
-- Toolbar: status only shows for `connecting`/`error` states; legend (running/done/error) indicates active kernel
-- URL encoding in `getLabUrl()` prevents XSS via notebook paths
-- Execution mode indicator: dynamic toolbar badge shows "AerSimulator"/"FakeSherbrooke" (blue) or "IBM Quantum" (teal) after injection confirmed
-- Cell injection feedback: brief green toast ("Simulator active — using AerSimulator" / "IBM Quantum credentials applied") auto-fades after 4s
-- Cell completion accuracy: subscribes to `kernel.statusChanged` signal from `@jupyterlab/services` (thebelab 0.4.0 only emits lifecycle events, not busy/idle). Resettable 1500ms debounce (increased from 800ms) cancels on each busy transition, preventing premature green borders during multi-phase executions (e.g. matplotlib, simulator runs). thebelab jQuery busy/idle events filtered out to prevent conflicts with kernel.statusChanged. Safety-net fallback 60s.
-- **save_account() cell protection** — `annotateSaveAccountCells()` runs after kernel injection. Scans all `.thebelab-cell` elements for `save_account(` in code. If credentials or simulator mode are active, injects a blue info banner ("Skip this cell — ...") above the cell. Prevents users from overwriting valid injected credentials with placeholder values (`<your-api-key>`). Two variants: simulator mode message ("no effect") vs credentials message ("will overwrite"). CSS class `.thebelab-cell__skip-hint` with dark mode support.
+### Code Execution (`src/components/ExecutableCode/index.tsx`)
+- `ExecutableCode` wraps Python code blocks with Run/Back toggle. thebelab bootstraps once per page, shared kernel.
+- Environment auto-detection: GitHub Pages → Binder, localhost/Docker → local Jupyter, custom → user-configured
+- Cell feedback: amber (running), green (done), red (error) left borders. Error detection for `ModuleNotFoundError` (with clickable Install button), `NameError`, tracebacks.
+- Cell completion uses `kernel.statusChanged` signal (not thebelab events) with 1500ms debounce to avoid premature green borders
+- Execution mode indicator badge + injection toast. "Open in JupyterLab" button on all tiers.
+- **Interception transparency**: All kernel modifications print `[doQumentation]` messages (simulator intercepts, credential injection, warning suppression, pip install cells)
+- **save_account() protection**: Blue "Skip this cell" banners when credentials/simulator active, prevents overwriting injected values
 
-### IBM Quantum Integration
-- **Credential store** — API token + CRN saved in localStorage with adjustable auto-expiry (1/3/7 days, default 7). Security disclaimer warns about plain-text localStorage. Copyable `save_account()` snippet available as alternative. Auto-injected via `save_account()` at kernel start. **Embedded execution only** — opening in JupyterLab requires manual `save_account()`.
-- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` that returns AerSimulator or a FakeBackend. No IBM account needed. `save_account()` calls print visible feedback ("[doQumentation] Simulator mode active — save_account() skipped"). **Embedded execution only** — JupyterLab uses standard Qiskit runtime.
-- **Fake backend discovery** — Introspects `fake_provider` at kernel connect, caches available backends in localStorage. Device picker grouped by qubit count. Fallback list (55 backends, 1–156 qubits) used before first Binder connection.
-- **Conflict resolution** — When both credentials and simulator are configured, radio buttons let user choose. Banner shown at kernel connect if no explicit choice (defaults to simulator).
+### IBM Quantum Integration (`src/config/jupyter.ts`)
+- **Credentials** — API token + CRN in localStorage with adjustable auto-expiry (1/3/7 days). Auto-injected at kernel start. Embedded execution only.
+- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` (AerSimulator or FakeBackend). Fake backend discovery cached in localStorage, 55-backend fallback list.
+- **Conflict resolution** — Radio buttons when both configured; defaults to simulator.
 
-### Learning Progress
-Automatic tracking of learning progress across all ~380 pages:
-- **Page visit tracking** — `src/clientModules/pageTracker.ts` (Docusaurus client module) auto-records every page visit via `onRouteDidUpdate`. Title read deferred 100ms to let React flush `<Head>` updates. All localStorage access centralized in `src/config/preferences.ts`.
-- **Sidebar indicators** — Swizzled `DocSidebarItem/Link`: clickable checkmark (✓ visited) or play icon (▶ executed). Swizzled `DocSidebarItem/Category`: aggregate badge ("3/10") showing visited/total leaf pages. Both use custom event `dq:page-visited` for real-time updates across client-side navigation.
-- **Granular clearing** — Per page (click indicator), per section (click category badge uses `commonPrefix()` of leaf hrefs), per category (Settings page), all at once (Settings page).
-- **Resume reading** — `ResumeCard` component on homepage shows "Continue where you left off" with last page title + time ago. Only appears for returning visitors.
-- **Execution tracking** — `markPageExecuted()` called on Run button in ExecutableCode. Visual distinction in sidebar (▶ vs ✓).
+### User Preferences
+All localStorage access centralized in `src/config/preferences.ts` (SSR guards, `clearAllPreferences()`). Cross-component reactivity via custom events: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
 
-### Bookmarks
-- **Bookmark toggle** — Swizzled `EditThisPage` adds a star button (☆/★) inline with "Edit this page" link. Click toggles bookmark state, dispatches `dq:bookmarks-changed` custom event.
-- **Homepage widget** — `BookmarksList` component renders bookmarked pages with remove buttons. Only shows if bookmarks exist. Listens for `dq:bookmarks-changed` for live updates.
-- **Storage** — `dq-bookmarks` (JSON array of `{path, title, savedAt}`), max 50 bookmarks (FIFO if exceeded).
-- **Settings** — "Bookmarks" subsection shows count + "Clear all bookmarks" button.
-
-### Display Preferences
-- **Code font size** — Adjustable 10–22px via `--dq-code-font-size` CSS custom property. Applied by `src/clientModules/displayPrefs.ts` on page load. Live-updates via `dq:display-prefs-changed` custom event. Affects both `.prism-code` (static) and `.thebelab-cell .CodeMirror` (live) blocks.
-- **Hide static outputs** — When enabled and in Run mode, `ExecutableCode` adds `dq-hide-static-outputs` class to `<body>`. CSS sibling selectors hide `pre`, `img`, `.output_png` elements that follow `.executable-code` divs. Static outputs reappear on Back.
-- **Storage** — `dq-code-font-size` (number), `dq-hide-static-outputs` (boolean).
-- **Settings** — "Display Preferences" section with +/– font size controls (live preview code block) and hide-outputs toggle.
-
-### Onboarding Tips
-- **Client module** — `src/clientModules/onboarding.ts` injects a contextual tip bar at the top of `.theme-doc-markdown` for first-time visitors.
-- **Contextual messages** — Notebook pages (with `.executable-code`): "Click Run to execute code blocks. First run starts a free Jupyter kernel (1–2 min)." Other content pages: "Track your progress — visited pages show ✓ in the sidebar."
-- **Auto-completion** — Tips auto-dismiss after 3 page visits or manual dismiss (× button).
-- **Storage** — `dq-onboarding-completed` (boolean), `dq-onboarding-visit-count` (number).
-- **Settings** — "Reset onboarding tips" button in Other section.
-
-### Recently Viewed Pages
-- **Tracking** — `pageTracker.ts` calls `addRecentPage(path, title)` on every route change. Last 10 pages stored, deduplicated (move to front on revisit). Excludes homepage and settings.
-- **Homepage widget** — `RecentPages` component shows last 5 pages (skipping current) with relative timestamps ("2 hours ago"). Only renders if recent pages exist.
-- **Storage** — `dq-recent-pages` (JSON array of `{path, title, ts}`, capped at 10).
-- **Settings** — "Clear recent history" button in Other section.
-
-### Sidebar Collapse Memory
-- **Approach** — Extended existing `DocSidebarItem/Category` swizzle with MutationObserver. Watches `.menu__list-item` class changes (Docusaurus toggles `--collapsed` class).
-- **Restore on mount** — Reads saved state from localStorage. If it differs from current DOM state, programmatically clicks the collapsible header to toggle.
-- **Storage** — `dq-sidebar-collapsed` (JSON object `{categoryLabel: boolean}`).
-- **Graceful degradation** — If Docusaurus changes its DOM structure, the observer silently fails and sidebar reverts to default behavior.
-- **Settings** — "Reset sidebar layout" button in Other section.
-
-### User Preferences — localStorage Keys
-All user preferences are centralized in `src/config/preferences.ts` with SSR guards. `clearAllPreferences()` clears all keys.
+- **Learning progress** — Auto-tracks visits (`pageTracker.ts`). Sidebar indicators: ✓ visited, ▶ executed (swizzled `DocSidebarItem`). Category badges ("3/10"). Resume card on homepage. Granular clearing per page/section/category.
+- **Bookmarks** — ☆/★ toggle in swizzled `EditThisPage`. Homepage widget. Max 50.
+- **Display prefs** — Code font size (10–22px), hide pre-computed outputs during live execution, Python warning suppression toggle
+- **Onboarding** — Contextual tip bar for first 3 visits (`onboarding.ts` client module)
+- **Recent pages** — Last 10 pages tracked, top 5 on homepage (`RecentPages` widget)
+- **Sidebar collapse** — MutationObserver persists expand/collapse state
 
 | Key | Type | Feature |
 |-----|------|---------|
@@ -131,76 +70,40 @@ All user preferences are centralized in `src/config/preferences.ts` with SSR gua
 | `dq-binder-hint-dismissed` | boolean | Binder hint |
 | `dq-onboarding-completed` | boolean | Onboarding tips |
 | `dq-onboarding-visit-count` | number (0–3) | Onboarding tips |
-| `dq-bookmarks` | JSON array `{path, title, savedAt}` | Bookmarks (max 50) |
+| `dq-bookmarks` | JSON array | Bookmarks (max 50) |
 | `dq-code-font-size` | number (10–22) | Display preferences |
 | `dq-hide-static-outputs` | boolean | Display preferences |
-| `dq-sidebar-collapsed` | JSON object `{label: boolean}` | Sidebar collapse |
-| `dq-recent-pages` | JSON array `{path, title, ts}` | Recent pages (max 10) |
-
-Custom events for cross-component reactivity: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
-
-### Settings Page (`/jupyter-settings` — "doQumentation Settings")
-Sections: IBM Quantum Account (5-step setup guide with direct links) → Simulator Mode (with hardware-difference note) → Display Preferences (code font size +/– controls with live preview, hide static outputs toggle) → Learning Progress (stats + clear buttons) → Bookmarks (count + clear button) → Binder Packages → Other (reset onboarding, clear recent history, reset sidebar layout) → Advanced (Custom Server + Setup Help)
+| `doqumentation_suppress_warnings` | boolean | Warning suppression (default: true) |
+| `dq-sidebar-collapsed` | JSON object | Sidebar collapse |
+| `dq-recent-pages` | JSON array | Recent pages (max 10) |
 
 ### MDX Components
-IBM's custom components mapped to Docusaurus equivalents:
 
 | IBM Component | Solution |
 |---------------|----------|
-| `<Admonition>` | `@theme/Admonition` (NOT `:::` directives — breaks nesting in `<details>`) |
+| `<Admonition>` | `@theme/Admonition` (NOT `:::` — breaks in `<details>`) |
 | `<Tabs>` / `<TabItem>` | Native Docusaurus |
-| Math `$...$` `$$...$$` | KaTeX plugin + `text/latex` MIME handling |
-| `<IBMVideo>` | YouTube-first (32 mapped IDs) + IBM Video Streaming fallback |
-| `<DefinitionTooltip>`, `<Figure>`, `<LaunchExamButton>` | Course component stubs |
-| `<Card>`, `<CardGroup>`, `<OperatingSystemTabs>`, `<CodeAssistantAdmonition>` | Guide component stubs |
-| `<Image>` | Fallback `<img>` component |
+| Math `$...$` `$$...$$` | KaTeX plugin |
+| `<IBMVideo>` | YouTube-first (32 mapped IDs) + IBM fallback |
+| `<Card>`, `<CardGroup>`, `<Image>`, etc. | Component stubs |
 
-### Docker
-- `Dockerfile` — Static site only (nginx, ~60 MB)
-- `Dockerfile.jupyter` — Full stack: site + Jupyter + Qiskit (~3 GB)
-- Multi-arch: `linux/amd64` gets full Qiskit; `linux/arm64` excludes gem-suite, kahypar, ai-local-transpiler
-- CI pushes to ghcr.io (`:latest` and `:jupyter` tags)
-
-### Jupyter Authentication
-Token-based authentication for Docker and RasQberry tiers. nginx injects the `Authorization` header server-side — the browser never sees or handles the token.
-
-**Architecture:**
-```
-Browser --(no token)--> nginx:80 --(Authorization: token <TOKEN>)--> Jupyter:8888
-```
-
-**Per tier:**
-- **GitHub Pages** — Uses Binder, no token involved
-- **Docker** — `scripts/docker-entrypoint.sh` generates a random token at startup (or accepts `JUPYTER_TOKEN` env var). nginx injects it into `/api/` and `/terminals/` proxy requests via `# __JUPYTER_AUTH__` placeholder replacement. Website on port 8080 works transparently. Direct JupyterLab on port 8888 requires the token.
-- **RasQberry Pi** — `scripts/setup-pi.sh` generates a random token at setup time, printed to the user
-
-**Security model:**
-- Jupyter runs as non-root `jupyter` user (not root)
-- `disable_check_xsrf = True` stays because thebelab 0.4.0 can't send XSRF cookies — the token header is the security boundary (injected server-side, not in a browser cookie, so CSRF attacks can't include it)
-- Token is printed to container stdout only, never stored in image layers or sent to browser
-
-**Customization:** `JUPYTER_TOKEN=mytoken docker compose --profile jupyter up`
+### Docker & Authentication
+- `Dockerfile` — Static site only (nginx, ~60 MB). `Dockerfile.jupyter` — Full stack (~3 GB).
+- Multi-arch: `linux/amd64` gets full Qiskit; `linux/arm64` excludes some packages
+- **Jupyter auth**: nginx injects `Authorization` header server-side. Browser never sees token. `docker-entrypoint.sh` generates random token (or accepts `JUPYTER_TOKEN` env var). Jupyter runs as non-root `jupyter` user.
 
 ### CI/CD
-- `deploy.yml` — Sync content → build (with `NODE_OPTIONS="--max-old-space-size=8192"`) → deploy to GitHub Pages
-- `docker.yml` — Multi-arch Docker build → ghcr.io
-- `sync-deps.yml` — Weekly auto-PR syncing Jupyter dependencies from upstream (with architecture exception rules)
-- Binder repo has separate daily build workflow to keep 2i2c cache warm
+- `deploy.yml` — Sync → build → GitHub Pages
+- `docker.yml` — Multi-arch Docker → ghcr.io
+- `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies
+- Binder repo: daily cache-warming workflow
 
-### Homepage
-Hero banner: "doQumentation" title + one-liner subtitle + clickable content stats bar (42 / 171 / 154 / 14) inside hero. Below hero: "IBM Quantum's open-source content" (factual) → "What this project adds" (open-source frontend) → "Deployable anywhere" + "See all features" link. Simulator callout card ("No IBM Quantum account? Enable Simulator Mode..."). Getting started cards with category tags (Course/Tutorial/Guide): featured "Basics of QI" course, custom "Hello World: Your First Quantum Circuit" tutorial (from fork root), IBM's Hello World guide, CHSH Inequality, Advanced QAOA. Code execution section: Simulator Mode + IBM Quantum Hardware. Three `<details>` blocks: backends, deployment, run locally. Mobile responsive.
-
-### Features Page
-`src/pages/features.tsx` — standalone React page at `/features` showcasing all implemented features in 5 card-grid sections: Content Library (3 cards), Live Code Execution (6 cards), IBM Quantum Integration (4 cards), Learning & Progress (3 cards), Search/UI/Deployment (6 cards). Responsive grid: 3 columns on desktop, 2 tablet, 1 mobile. Linked from homepage ("See all features") and footer. Not in navbar.
-
-### Search
-`@easyops-cn/docusaurus-search-local` — client-side search across all ~380 pages. Hashed index, no blog indexing, routes from `/`.
-
-### Landing Pages
-`/learning/` and `/learning/modules/` auto-generated by `create_learning_landing_pages()` in `sync-content.py`. Lists all courses and modules with links. Regenerated on each content sync.
-
-### Styling
-Carbon Design-inspired: IBM Plex fonts, `#0f62fe` blue. Mobile hamburger menu with visible border/background. Top-level sidebar categories styled at 1.1rem/semibold. Navbar is always dark (`#161616`) regardless of theme — color mode toggle and GitHub icon forced to light colors via CSS. GitHub link uses octocat SVG icon (`header-github-link` class). Navbar links use `white-space: nowrap` to prevent wrapping at medium widths.
+### Other
+- **Homepage**: Hero with stats bar, Getting Started cards (category-tagged), simulator callout, code execution section
+- **Features page**: `/features` — 22 cards across 5 sections
+- **Search**: `@easyops-cn/docusaurus-search-local` — client-side, hashed index
+- **Settings page** (`/jupyter-settings`): IBM credentials, simulator mode, display prefs, progress, bookmarks, custom server
+- **Styling**: Carbon Design-inspired (IBM Plex, `#0f62fe`). Navbar always dark (`#161616`).
 
 ---
 
@@ -208,90 +111,29 @@ Carbon Design-inspired: IBM Plex fonts, `#0f62fe` blue. Mobile hamburger menu wi
 
 ```
 doQumentation/
-├── .github/workflows/
-│   ├── deploy.yml                # Sync → build → deploy to GitHub Pages
-│   ├── docker.yml                # Multi-arch Docker → ghcr.io
-│   └── sync-deps.yml             # Weekly Jupyter dependency sync auto-PR
-│
-├── binder/
-│   ├── jupyter-requirements.txt       # Full Qiskit deps (cross-platform)
-│   └── jupyter-requirements-amd64.txt # amd64-only extras
-│
-├── docs/                          # Content (gitignored except index.mdx)
-│   ├── index.mdx                  # Homepage (source of truth, preserved by sync)
-│   ├── tutorials/                 # 42 tutorial pages (generated)
-│   ├── guides/                    # 171 guide pages (generated)
-│   └── learning/                  # 154 course + 14 module pages (generated)
-│
-├── notebooks/                     # Original .ipynb for JupyterLab (generated)
-│
+├── .github/workflows/          # deploy, docker, sync-deps
+├── binder/                     # Jupyter requirements (cross-platform + amd64-only)
+├── docs/                       # Content (gitignored except index.mdx)
+├── notebooks/                  # Original .ipynb for JupyterLab (generated)
 ├── src/
-│   ├── clientModules/
-│   │   ├── pageTracker.ts         # Auto-tracks page visits + recent pages, dispatches dq:page-visited
-│   │   ├── displayPrefs.ts        # Applies code font size CSS variable on load, listens for changes
-│   │   └── onboarding.ts          # Injects contextual tip bar for first-time visitors
-│   │
-│   ├── components/
-│   │   ├── ExecutableCode/        # Run/Back toggle, thebelab, kernel injection
-│   │   │   └── index.tsx
-│   │   ├── ResumeCard/            # "Continue where you left off" homepage card
-│   │   │   └── index.tsx
-│   │   ├── RecentPages/           # Recently viewed pages widget for homepage
-│   │   │   └── index.tsx
-│   │   ├── BookmarksList/         # Bookmarked pages list for homepage
-│   │   │   └── index.tsx
-│   │   ├── CourseComponents/      # DefinitionTooltip, Figure, IBMVideo, LaunchExamButton
-│   │   ├── GuideComponents/       # Card, CardGroup, OperatingSystemTabs, CodeAssistantAdmonition
-│   │   └── OpenInLabBanner/       # "Open in JupyterLab" banner
-│   │       └── index.tsx
-│   │
-│   ├── config/
-│   │   ├── jupyter.ts             # Environment detection, credential/simulator storage
-│   │   └── preferences.ts         # Learning progress, visited/executed pages, user preferences
-│   │
-│   ├── css/
-│   │   └── custom.css             # All styling (Carbon-inspired + homepage + settings)
-│   │
-│   ├── pages/
-│   │   ├── features.tsx           # Features page (card-grid showcase of all features)
-│   │   └── jupyter-settings.tsx   # Settings page (IBM credentials, simulator, custom server)
-│   │
-│   └── theme/
-│       ├── CodeBlock/index.tsx    # Swizzle: wraps Python blocks with ExecutableCode
-│       ├── DocItem/
-│       │   └── Footer/index.tsx   # Swizzle: passthrough (bookmark moved to EditThisPage)
-│       ├── EditThisPage/
-│       │   └── index.tsx          # Swizzle: bookmark toggle (☆/★) inline with "Edit this page"
-│       ├── DocSidebarItem/
-│       │   ├── Category/index.tsx # Swizzle: progress badge + sidebar collapse memory
-│       │   └── Link/index.tsx     # Swizzle: visited ✓ / executed ▶ indicators
-│       └── MDXComponents.tsx      # IBM component stubs + RecentPages, BookmarksList
-│
-├── scripts/
-│   ├── sync-content.py            # Pull & transform content from upstream
-│   ├── sync-deps.py               # Sync Jupyter deps with arch exception rules
-│   ├── docker-entrypoint.sh       # Docker runtime: token generation, Jupyter config, nginx patching
-│   └── setup-pi.sh               # Raspberry Pi setup (untested)
-│
-├── static/
-│   ├── img/logo.svg               # Quantum circuit logo
-│   ├── CNAME                      # GitHub Pages custom domain (excluded from containers)
-│   ├── robots.txt                 # SEO: allow all + sitemap reference
-│   ├── docs/                      # Synced images (gitignored)
-│   └── learning/images/           # Synced course/module images (gitignored)
-│
-├── Dockerfile                     # Static site only (nginx)
-├── Dockerfile.jupyter             # Full stack: site + Jupyter + Qiskit
-├── docker-compose.yml             # web + jupyter services
-├── nginx.conf                     # SPA routing + Jupyter proxy
-├── docusaurus.config.ts           # Site config (URLs, thebe script, KaTeX, search, custom fields)
-├── sidebars.ts                    # Navigation (imports generated sidebar JSONs)
-├── package.json
-├── tsconfig.json
+│   ├── clientModules/          # pageTracker, displayPrefs, onboarding
+│   ├── components/             # ExecutableCode, ResumeCard, RecentPages, BookmarksList, OpenInLabBanner, CourseComponents, GuideComponents
+│   ├── config/                 # jupyter.ts (env detection, credentials), preferences.ts (localStorage)
+│   ├── css/custom.css          # All styling
+│   ├── pages/                  # features.tsx, jupyter-settings.tsx
+│   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, MDXComponents
+├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
+├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
+├── Dockerfile                  # Static site only
+├── Dockerfile.jupyter          # Full stack
+├── docker-compose.yml          # web + jupyter profiles
+├── nginx.conf                  # SPA routing + Jupyter proxy
+├── docusaurus.config.ts
+├── sidebars.ts                 # Imports generated sidebar JSONs
 └── README.md
 ```
 
-**Generated at build time (gitignored):** `docs/tutorials/`, `docs/guides/`, `docs/learning/`, `notebooks/`, `static/docs/`, `static/learning/images/`, `sidebar-generated.json`, `sidebar-guides.json`, `sidebar-courses.json`, `sidebar-modules.json`
+**Generated (gitignored):** `docs/tutorials/`, `docs/guides/`, `docs/learning/`, `notebooks/`, `static/docs/`, `static/learning/images/`, `sidebar-*.json`
 
 ---
 
@@ -300,84 +142,51 @@ doQumentation/
 ```bash
 npm install                        # Install dependencies
 npm start                          # Dev server (hot reload)
-npm run build                      # Production build
+npm run build                      # Production build (needs NODE_OPTIONS="--max-old-space-size=8192")
 python scripts/sync-content.py     # Sync all content from upstream
-python scripts/sync-content.py --sample-only  # Sample content only (for testing)
-npm run typecheck                  # Type check
+python scripts/sync-content.py --sample-only  # Sample content only
 ```
 
-**Build requires** `NODE_OPTIONS="--max-old-space-size=8192"` for ~380 pages.
-
-### Deployment
-
-**GitHub Pages** — Automatic on push to main. Custom domain via `static/CNAME` + IONOS DNS.
-
-**Docker:** Services use profiles (mutually exclusive — they share port 8080):
+**Docker:**
 ```bash
-podman compose --profile web up       # Static site only → http://localhost:8080
-podman compose --profile jupyter up   # Full stack → http://localhost:8080 (site) + :8888 (JupyterLab)
-JUPYTER_TOKEN=mytoken podman compose --profile jupyter up  # Fixed token
+podman compose --profile web up       # Static site → http://localhost:8080
+podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (JupyterLab)
 ```
-Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generates a random authentication token at startup (printed in logs). Website access on port 8080 is transparent (nginx injects the token). Direct JupyterLab on port 8888 requires the token.
 
-**Raspberry Pi** — `scripts/setup-pi.sh` (written but untested on actual hardware).
-
-### Dependencies
-
-- **Runtime:** Docusaurus 3.x, React 18, remark-math + rehype-katex, @easyops-cn/docusaurus-search-local, thebelab 0.4.x (CDN)
-- **Build:** Node.js 18+, Python 3.9+ (sync scripts)
-- **Binder repo:** [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation) — deps in `binder/requirements.txt` (qiskit[visualization], qiskit-aer, qiskit-ibm-runtime, pylatexenc, qiskit-ibm-catalog, qiskit-addon-utils, pyscf), daily cache-warming workflow
+**Dependencies:** Docusaurus 3.x, React 18, remark-math + rehype-katex, thebelab 0.4.x (CDN), Node.js 18+, Python 3.9+
 
 ---
 
 ## Gotchas
 
-- **thebelab CDN pin** — Must use `thebelab@0.4.0`. Versions jump 0.4.0 → 0.5.0. Do not "upgrade" to 0.4.15 (doesn't exist).
-- **sync-content.py overwrites docs/** — Only `docs/index.mdx` is preserved. Edit transforms in `sync-content.py`, not the generated MDX.
-- **Admonition JSX vs directives** — Don't convert `<Admonition>` to `:::` directives. Breaks nesting inside `<details>`.
+- **thebelab CDN pin** — Must use `thebelab@0.4.0`. Versions jump 0.4.0 → 0.5.0.
+- **sync-content.py overwrites docs/** — Only `docs/index.mdx` is preserved. Edit transforms in the script, not generated MDX.
+- **Admonition JSX** — Don't convert `<Admonition>` to `:::` directives. Breaks nesting inside `<details>`.
 - **Build memory** — ~380 pages needs `NODE_OPTIONS="--max-old-space-size=8192"`.
-- **Docusaurus `foo/foo.mdx` collision** — If filename matches parent dir, Docusaurus treats it as category index. Fix: add `slug: "./{name}"` in frontmatter.
-- **MDX language prop** — MDX passes language via `className="language-python"` not `language` prop. CodeBlock swizzle must check both.
-- **`static/CNAME`** — GitHub Pages only. Must be excluded from container builds.
-- **thebelab config** — Pass options directly to `bootstrap(options)`. Do NOT inject `<script type="text/x-thebe-config">`.
-- **Binder cache** — Keyed to commit hash. Any push to Binder repo invalidates 2i2c cache. Daily workflow keeps it warm.
-- **Notebook `<Image>` in text/plain** — IBM's build replaces cell outputs with `<Image src="..." />` JSX. Our `_text_to_output()` detects and converts to markdown images.
-- **Guide _toc.json external URLs** — Some entries point to GitHub, PyPI, etc. `toc_children_to_sidebar()` handles as `{type: 'link'}` items.
-- **sidebar-*.json** — Build artifacts, gitignored. Generated by `sync-content.py`.
-- **JSX `href` in upstream MDX** — Card/CardGroup components use `href="/docs/..."` not markdown links. `MDX_TRANSFORMS` has both markdown `(/docs/...)` and JSX `href="/docs/..."` rewrite rules.
+- **thebelab config** — Pass options to `bootstrap(options)`. Do NOT use `<script type="text/x-thebe-config">`.
+- **Binder cache** — Keyed to commit hash. Any push to Binder repo invalidates cache.
+- **JSX href** — Card components use `href="/docs/..."`. `MDX_TRANSFORMS` has rewrite rules for both markdown and JSX patterns.
+- **Kernel busy/idle** — thebelab 0.4.0 only emits lifecycle events. Must subscribe to `kernel.statusChanged` signal from `@jupyterlab/services` for actual busy/idle.
+- **Sidebar items persist** across client-side navigation — must use custom events, not just mount-time checks.
 
 ---
 
 ## Open Items
 
 ### TODO
-- ~~**Features page**~~ — DONE. `/features` page with 22 feature cards across 5 sections. Linked from homepage + footer.
-- **Fork testing** — Verify the repo can be forked with Binder still working. May need a forked upstream repo as well to avoid hitting Binder user limits.
-- ~~**Notebook dependency scan**~~ — DONE. `analyze_notebook_imports()` in `sync-content.py` scans 260 notebooks, filters stdlib + Binder baseline (verified from actual `pip list`), injects `%pip install -q` cells into 46 affected notebooks. 28 unique missing packages. Expanded upstream Binder baseline with qiskit-ibm-catalog, qiskit-addon-utils, pyscf (freed 16 notebooks). Report at `.claude/notebook-deps-report.md`.
-- ~~**Jupyter token auth**~~ — DONE. `docker-entrypoint.sh` generates random token at startup, nginx injects `Authorization` header server-side. Jupyter runs as non-root `jupyter` user. Covers code review S1, S2, #1, #9.
-- ~~**Code review**~~ — DONE (20 issues + 2 security findings, all resolved). Fixed: #4 heredoc injection, #5 docker-compose profiles, #7 localStorage `safeSave()`, #10 random token, #11/#12 nginx headers, #15 DEBUG-gated console.log, #18 HEALTHCHECK, #19 restart policies, #20 sidebar types. Previously fixed in website review: #2, #3, #6. Non-issues: #8, #13, #14. Skipped: #16, #17. S1/S2/#1/#9 resolved via Jupyter token auth.
-- ~~**Website review**~~ — DONE (41 issues across 6 sessions, all resolved). Rounds 1-4: #15 thebelab button overflow CSS, #19 copy button visibility CSS, #24 mobile sidebar tap targets CSS, #28 contextual alt text (sync-content.py + ExecutableCode), #37 H4→H3 heading fix (sync-content.py), #41 Prism languages + untagged code block tagging (docusaurus.config.ts + sync-content.py).
-- ~~**Homepage refinement**~~ — DONE (fb684ad). Category tags on Getting Started cards, custom Hello World tutorial, QAOA tutorial, simplified code execution section. Bookmark moved to EditThisPage swizzle.
-- **Test checklist** — `.claude/test-checklist.md` with ~100 manual test items across 20 feature areas.
-- ~~**Settings page UX improvements**~~ — DONE (346c9bc). 5 items: (1) credential security disclaimer for localStorage, (2) adjustable credential expiry 1/3/7 days via `doqumentation_ibm_ttl_days`, (3) copyable `save_account()` snippet in `<details>`, (4) "Static Outputs" → "Pre-computed Outputs" with clearer description, (5) simulator `save_account()` prints feedback instead of silent pass.
-- ~~**save_account() cell protection**~~ — DONE (01e980c). Runtime `annotateSaveAccountCells()` injects blue "Skip this cell" banner on cells containing `save_account(` when credentials or simulator mode are active. Prevents users from overwriting injected credentials with placeholder values. Static tip text in sync-content.py also strengthened. CSS `.thebelab-cell__skip-hint` with dark mode support.
-- ~~**Green border debounce fix**~~ — DONE (01e980c). `IDLE_DEBOUNCE_MS` increased from 800ms to 1500ms. thebelab jQuery busy/idle events filtered out (kernel.statusChanged is the reliable source). Prevents premature green borders on still-executing cells (e.g. simulator runs showing "Running on fake_fez" output).
+- **Fork testing** — Verify the repo can be forked with Binder still working
+- **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
-### Testing Results
-- **Comprehensive test** (Feb 11, 2026): 180+ tests, ~95% pass. Both "critical" issues were false positives — sidebar progress badge "3/43" misread as "343", course URLs tested at wrong paths. Zero real bugs found.
-- **Binder execution test** (Feb 11, 2026): 19/19 passed. Kernel connects in 30-40s (faster than 60-90s target), cell execution <5s, simulator mode auto-activates, circuit diagrams + histograms render correctly, 45-minute stable session with no crashes.
-- **Smoke test** (Feb 12, 2026): BLOCKED by Binder cache miss — from-scratch builds exceeded 2 minutes without completing (2 attempts). UI behavior correct (status messages, Binder phases, no JS errors). Infrastructure issue, not site defect.
-- **Chrome browser test** (Feb 12, 2026): ~200 tests executed via Chrome browser. 99.5% pass rate. Zero real bugs. 1 flaky Binder stall (infrastructure, not code). All test report files reviewed and deleted.
-- **Test plans**: `.claude/BINDER-EXECUTION-TEST-PLAN.md` (183 tests, v2.0) + `.claude/test-checklist.md` (~100 manual items, 20 feature areas)
-
-### Needs Testing
-- **Raspberry Pi deployment** — `scripts/setup-pi.sh` written but untested on actual hardware
+### Testing (Feb 2026)
+- 180+ comprehensive tests, ~200 Chrome browser tests — 99.5% pass, zero real bugs
+- Binder execution: 19/19 passed, 30-40s kernel connect, 45-min stable session
+- Test plans: `.claude/BINDER-EXECUTION-TEST-PLAN.md` + `.claude/test-checklist.md`
 
 ### Future Ideas
-- **Auto-discover YouTube mappings** — `YOUTUBE_MAP` in `IBMVideo.tsx` is static (32 entries). New videos work without this (IBM embed fallback).
-- **LED Integration** — Could tutorials trigger LED visualizations on RasQberry?
-- **Offline AI Tutor** — Granite 4.0 Nano for offline Q&A about tutorials?
-- **"Add Cell" scratch pad** — Allow users to create new code cells in the embedded view. Two approaches: "+" buttons between cells (manual CodeMirror + `executeOnKernel()` + IOPub output) or single scratch pad at bottom. Key constraint: can't re-call `bootstrap()`. Not implementing now; full JupyterLab available via OpenInLabBanner on all tiers.
+- Auto-discover YouTube mappings (currently 32 static entries)
+- LED integration for RasQberry
+- Offline AI tutor (Granite 4.0 Nano)
+- "Add Cell" scratch pad (full JupyterLab available as alternative)
 
 ---
 
@@ -387,7 +196,6 @@ Both have `restart: unless-stopped` and HEALTHCHECK. The jupyter service generat
 - **Content source (fork):** https://github.com/JanLahmann/Qiskit-documentation
 - **IBM Quantum:** https://quantum.cloud.ibm.com
 - **Docusaurus:** https://docusaurus.io
-- **Thebe:** https://thebe.readthedocs.io
 
 ---
 
