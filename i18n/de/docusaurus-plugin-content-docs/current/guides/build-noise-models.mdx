@@ -1,0 +1,539 @@
+---
+title: "Rauschmodelle erstellen"
+sidebar_label: "Rauschmodelle erstellen"
+description: "Erstellen Sie benutzerdefinierte Rauschmodelle für verrauschte Simulation mit Qiskit Aer"
+notebook_path: "docs/guides/build-noise-models.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/guides/build-noise-models.ipynb" />
+
+
+
+# Rauschmodelle erstellen
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Paketversionen</b></summary>
+
+Der Code auf dieser Seite wurde mit den folgenden Anforderungen entwickelt.
+Wir empfehlen die Verwendung dieser oder neuerer Versionen.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+```
+</details>
+Diese Seite zeigt, wie Sie das Qiskit Aer [`noise`](https://qiskit.org/ecosystem/aer/apidocs/aer_noise.html)-Modul verwenden, um Rauschmodelle zur Simulation von Quantenschaltkreisen in Anwesenheit von Fehlern zu erstellen. Dies ist nützlich für die Emulation verrauschter Quantenprozessoren und für die Untersuchung der Auswirkungen von Rauschen auf die Ausführung von Quantenalgorithmen.
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Kraus, SuperOp
+from qiskit.visualization import plot_histogram
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_aer import AerSimulator
+
+# Import from Qiskit Aer noise module
+from qiskit_aer.noise import (
+    NoiseModel,
+    QuantumError,
+    ReadoutError,
+    depolarizing_error,
+    pauli_error,
+    thermal_relaxation_error,
+)
+```
+
+## Qiskit Aer `noise`-Modul
+
+Das Qiskit Aer `noise`-Modul enthält Python-Klassen zum Erstellen angepasster Rauschmodelle für die Simulation. Es gibt drei Hauptklassen:
+
+1. Die `NoiseModel`-Klasse, die ein Rauschmodell für verrauschte Simulation speichert.
+2. Die `QuantumError`-Klasse, die CPTP-Gate-Fehler beschreibt. Diese können angewendet werden:
+    * Nach *Gate*- oder *Reset*-Anweisungen
+    * Vor *Mess*-Anweisungen.
+
+3. Die `ReadoutError`-Klasse, die klassische Auslese-Fehler beschreibt.
+## Initialisierung eines Rauschmodells von einem Backend
+
+Sie können ein Rauschmodell mit Parametern initialisieren, die aus den neuesten Kalibrierungsdaten für ein physisches Backend festgelegt werden:
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.backend("ibm_fez")
+noise_model = NoiseModel.from_backend(backend)
+```
+
+Dies ergibt ein Rauschmodell, das die Fehler, denen man bei der Verwendung dieses Backends begegnen würde, grob approximiert. Wenn Sie eine detailliertere Kontrolle über die Parameter des Rauschmodells haben möchten, müssen Sie Ihr eigenes Rauschmodell erstellen, wie im Rest dieser Seite beschrieben.
+## Quantenfehler
+
+Anstatt direkt mit dem `QuantumError`-Objekt zu arbeiten, existieren viele Hilfsfunktionen, um automatisch einen bestimmten Typ parametrisierter Quantenfehler zu generieren. Diese sind im `noise`-Modul enthalten und umfassen Funktionen für viele gängige Fehlertypen, die in der Quantencomputing-Forschung verwendet werden. Die Funktionsnamen und der Fehlertyp, den sie zurückgeben, sind:
+
+| Standard-Fehlerfunktion | Details |
+| --- | --- |
+| `kraus_error` | ein allgemeiner n-Qubit-CPTP-Fehlerkanal, gegeben als Liste von Kraus-Matrizen $[K_0, ...]$. |
+| `mixed_unitary_error` | ein n-Qubit-gemischter unitärer Fehler, gegeben als Liste unitärer Matrizen und Wahrscheinlichkeiten $[(U_0, p_0),...]$. |
+| `coherent_unitary_error` | ein n-Qubit-kohärenter unitärer Fehler, gegeben als einzelne unitäre Matrix $U$. |
+| `pauli_error` | ein n-Qubit-Pauli-Fehlerkanal (gemischt unitär), gegeben als Liste von Paulis und Wahrscheinlichkeiten $[(P_0, p_0),...]$ |
+| `depolarizing_error` | ein n-Qubit-Depolarisierungsfehlerkanal, parametrisiert durch eine Depolarisierungswahrscheinlichkeit $p$. |
+| `reset_error` | ein Ein-Qubit-Reset-Fehler, parametrisiert durch Wahrscheinlichkeiten $p_0, p_1$ für das Zurücksetzen auf den $\vert0\rangle$-, $\vert1\rangle$-Zustand.|
+| `thermal_relaxation_error` | ein Ein-Qubit-thermischer-Relaxationskanal, parametrisiert durch Relaxationszeitkonstanten $T_1$, $T_2$, Gate-Zeit $t$ und thermische Population des angeregten Zustands $p_1$. |
+| `phase_amplitude_damping_error` | ein Ein-Qubit-generalisierter kombinierter Phasen- und Amplitudendämpfungsfehlerkanal, gegeben durch einen Amplitudendämpfungsparameter $\lambda$, einen Phasendämpfungsparameter $\gamma$ und eine thermische Population des angeregten Zustands $p_1$. |
+| `amplitude_damping_error` |  ein Ein-Qubit-generalisierter Amplitudendämpfungsfehlerkanal, gegeben durch einen Amplitudendämpfungsparameter $\lambda$ und eine thermische Population des angeregten Zustands $p_1$. |
+| `phase_damping_error` |  ein Ein-Qubit-Phasendämpfungsfehlerkanal, gegeben durch einen Phasendämpfungsparameter $\gamma$. |
+
+### Kombination von Quantenfehlern
+
+`QuantumError`-Instanzen können durch Komposition, Tensorprodukt und Tensorerweiterung (umgekehrtes Tensorprodukt) kombiniert werden, um neue `QuantumErrors` zu erzeugen als:
+
+ * Komposition: $\cal{E}(\rho)=\cal{E_2}(\cal{E_1}(\rho))$ als `error = error1.compose(error2)`
+ * Tensorprodukt: $\cal{E}(\rho) =(\cal{E_1}\otimes\cal{E_2})(\rho)$ als `error = error1.tensor(error2)`
+ * Expand-Produkt: $\cal{E}(\rho) =(\cal{E_2}\otimes\cal{E_1})(\rho)$ als `error = error1.expand(error2)`
+### Beispiel
+
+Um einen 5% Ein-Qubit-Bit-Flip-Fehler zu konstruieren:
+
+```python
+# Construct a 1-qubit bit-flip and phase-flip errors
+p_error = 0.05
+bit_flip = pauli_error([("X", p_error), ("I", 1 - p_error)])
+phase_flip = pauli_error([("Z", p_error), ("I", 1 - p_error)])
+print(bit_flip)
+print(phase_flip)
+```
+
+```text
+ QuantumError on 1 qubits. Noise circuits:
+  P(0) = 0.05, Circuit =
+   ┌───┐
+q: ┤ X ├
+   └───┘
+  P(1) = 0.95, Circuit =
+   ┌───┐
+q: ┤ I ├
+   └───┘
+ QuantumError on 1 qubits. Noise circuits:
+  P(0) = 0.05, Circuit =
+   ┌───┐
+q: ┤ Z ├
+   └───┘
+  P(1) = 0.95, Circuit =
+   ┌───┐
+q: ┤ I ├
+   └───┘
+```
+
+```python
+# Compose two bit-flip and phase-flip errors
+bitphase_flip = bit_flip.compose(phase_flip)
+print(bitphase_flip)
+```
+
+```text
+QuantumError on 1 qubits. Noise circuits:
+  P(0) = 0.0025000000000000005, Circuit =
+   ┌───┐┌───┐
+q: ┤ X ├┤ Z ├
+   └───┘└───┘
+  P(1) = 0.0475, Circuit =
+   ┌───┐┌───┐
+q: ┤ X ├┤ I ├
+   └───┘└───┘
+  P(2) = 0.0475, Circuit =
+   ┌───┐┌───┐
+q: ┤ I ├┤ Z ├
+   └───┘└───┘
+  P(3) = 0.9025, Circuit =
+   ┌───┐┌───┐
+q: ┤ I ├┤ I ├
+   └───┘└───┘
+```
+
+```python
+# Tensor product two bit-flip and phase-flip errors with
+# bit-flip on qubit-0, phase-flip on qubit-1
+error2 = phase_flip.tensor(bit_flip)
+print(error2)
+```
+
+```text
+QuantumError on 2 qubits. Noise circuits:
+  P(0) = 0.0025000000000000005, Circuit =
+     ┌───┐
+q_0: ┤ X ├
+     ├───┤
+q_1: ┤ Z ├
+     └───┘
+  P(1) = 0.0475, Circuit =
+     ┌───┐
+q_0: ┤ I ├
+     ├───┤
+q_1: ┤ Z ├
+     └───┘
+  P(2) = 0.0475, Circuit =
+     ┌───┐
+q_0: ┤ X ├
+     ├───┤
+q_1: ┤ I ├
+     └───┘
+  P(3) = 0.9025, Circuit =
+     ┌───┐
+q_0: ┤ I ├
+     ├───┤
+q_1: ┤ I ├
+     └───┘
+```
+
+### Konvertierung zu und von QuantumChannel-Operatoren
+
+Wir können auch zwischen `QuantumError`-Objekten in Qiskit Aer und `QuantumChannel`-Objekten in Qiskit hin- und herkonvertieren.
+
+```python
+# Convert to Kraus operator
+bit_flip_kraus = Kraus(bit_flip)
+print(bit_flip_kraus)
+```
+
+```text
+Kraus([[[-9.74679434e-01+0.j,  0.00000000e+00+0.j],
+        [ 0.00000000e+00+0.j, -9.74679434e-01+0.j]],
+
+       [[ 0.00000000e+00+0.j,  2.23606798e-01+0.j],
+        [ 2.23606798e-01+0.j, -4.96506831e-17+0.j]]],
+      input_dims=(2,), output_dims=(2,))
+```
+
+```python
+# Convert to Superoperator
+phase_flip_sop = SuperOp(phase_flip)
+print(phase_flip_sop)
+```
+
+```text
+SuperOp([[1. +0.j, 0. +0.j, 0. +0.j, 0. +0.j],
+         [0. +0.j, 0.9+0.j, 0. +0.j, 0. +0.j],
+         [0. +0.j, 0. +0.j, 0.9+0.j, 0. +0.j],
+         [0. +0.j, 0. +0.j, 0. +0.j, 1. +0.j]],
+        input_dims=(2,), output_dims=(2,))
+```
+
+```python
+# Convert back to a quantum error
+print(QuantumError(bit_flip_kraus))
+
+# Check conversion is equivalent to original error
+QuantumError(bit_flip_kraus) == bit_flip
+```
+
+```text
+QuantumError on 1 qubits. Noise circuits:
+  P(0) = 1.0, Circuit =
+   ┌───────┐
+q: ┤ kraus ├
+   └───────┘
+```
+
+```text
+True
+```
+
+### Auslese-Fehler
+
+Klassische Auslese-Fehler werden durch eine Liste von Zuweisungswahrscheinlichkeitsvektoren $P(A|B)$ spezifiziert:
+
+  * $A$ ist der *aufgezeichnete* klassische Bitwert
+  * $B$ ist der *wahre* Bitwert, der von der Messung zurückgegeben wird
+
+Zum Beispiel für ein Qubit: $ P(A|B) = [P(A|0), P(A|1)]$.
+
+```python
+# Measurement misassignment probabilities
+p0given1 = 0.1
+p1given0 = 0.05
+
+ReadoutError([[1 - p1given0, p1given0], [p0given1, 1 - p0given1]])
+```
+
+```text
+ReadoutError([[0.95 0.05]
+ [0.1  0.9 ]])
+```
+
+Auslese-Fehler können auch mit `compose`, `tensor` und `expand` kombiniert werden, wie bei Quantenfehlern.
+## Fehler zu einem Rauschmodell hinzufügen
+
+Beim Hinzufügen eines Quantenfehlers zu einem Rauschmodell müssen wir den Typ der *Anweisung* angeben, auf die er wirkt, und auf welche Qubits er angewendet wird. Es gibt zwei Fälle von Quantenfehlern:
+
+ 1. All-Qubit-Quantenfehler
+ 2. Spezifischer Qubit-Quantenfehler
+
+### 1. All-Qubit-Quantenfehler
+
+Dies wendet denselben Fehler auf jedes Vorkommen einer Anweisung an, unabhängig davon, auf welche Qubits sie wirkt.
+
+Es wird hinzugefügt als `noise_model.add_all_qubit_quantum_error(error, instructions)`:
+
+```python
+# Create an empty noise model
+noise_model = NoiseModel()
+
+# Add depolarizing error to all single qubit u1, u2, u3 gates
+error = depolarizing_error(0.05, 1)
+noise_model.add_all_qubit_quantum_error(error, ["u1", "u2", "u3"])
+
+# Print noise model info
+print(noise_model)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u1', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'u1']
+  All-qubits errors: ['u1', 'u2', 'u3']
+```
+
+### 2. Spezifischer Qubit-Quantenfehler
+
+Dies wendet den Fehler auf jedes Vorkommen einer Anweisung an, die auf eine angegebene Liste von Qubits wirkt. Beachten Sie, dass die Reihenfolge der Qubits wichtig ist: Zum Beispiel ist ein Fehler, der auf Qubits [0, 1] für ein Zwei-Qubit-Gate angewendet wird, anders als einer, der auf Qubits [1, 0] angewendet wird.
+
+Es wird hinzugefügt als `noise_model.add_quantum_error(error, instructions, qubits)`:
+
+```python
+# Create an empty noise model
+noise_model = NoiseModel()
+
+# Add depolarizing error to all single qubit u1, u2, u3 gates on qubit 0 only
+error = depolarizing_error(0.05, 1)
+noise_model.add_quantum_error(error, ["u1", "u2", "u3"], [0])
+
+# Print noise model info
+print(noise_model)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u1', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'u1']
+  Qubits with noise: [0]
+  Specific qubit errors: [('u1', (0,)), ('u2', (0,)), ('u3', (0,))]
+```
+
+### Hinweis zu nicht-lokalen Qubit-Quantenfehlern
+
+`NoiseModel` unterstützt das Hinzufügen von nicht-lokalen Qubit-Quantenfehlern nicht. Diese sollten außerhalb von `NoiseModel` behandelt werden. Das bedeutet, Sie sollten [Ihren eigenen Transpiler-Pass schreiben](./custom-transpiler-pass) (`TransformationPass`) und den Pass ausführen, kurz bevor Sie den Simulator ausführen, wenn Sie Quantenfehler unter Ihren eigenen Bedingungen in Ihren Schaltkreis einfügen müssen.
+### Ausführung einer verrauschten Simulation mit einem Rauschmodell
+
+Der Befehl `AerSimulator(noise_model=noise_model)` gibt einen Simulator zurück, der für das angegebene Rauschmodell konfiguriert ist. Zusätzlich zum Festlegen des Rauschmodells des Simulators überschreibt er auch die Basis-Gates des Simulators gemäß den Gates des Rauschmodells.
+## Rauschmodell-Beispiele
+
+Wir geben nun einige Beispiele für Rauschmodelle. Für unsere Demonstrationen verwenden wir einen einfachen Testschaltkreis, der einen n-Qubit-GHZ-Zustand erzeugt:
+
+```python
+# System Specification
+n_qubits = 4
+circ = QuantumCircuit(n_qubits)
+
+# Test Circuit
+circ.h(0)
+for qubit in range(n_qubits - 1):
+    circ.cx(qubit, qubit + 1)
+circ.measure_all()
+print(circ)
+```
+
+```text
+┌───┐                ░ ┌─┐
+   q_0: ┤ H ├──■─────────────░─┤M├─────────
+        └───┘┌─┴─┐           ░ └╥┘┌─┐
+   q_1: ─────┤ X ├──■────────░──╫─┤M├──────
+             └───┘┌─┴─┐      ░  ║ └╥┘┌─┐
+   q_2: ──────────┤ X ├──■───░──╫──╫─┤M├───
+                  └───┘┌─┴─┐ ░  ║  ║ └╥┘┌─┐
+   q_3: ───────────────┤ X ├─░──╫──╫──╫─┤M├
+                       └───┘ ░  ║  ║  ║ └╥┘
+meas: 4/════════════════════════╩══╩══╩══╩═
+                                0  1  2  3
+```
+
+### Ideale Simulation
+
+```python
+# Ideal simulator and execution
+sim_ideal = AerSimulator()
+result_ideal = sim_ideal.run(circ).result()
+plot_histogram(result_ideal.get_counts(0))
+```
+
+![Output of the previous code cell](/docs/images/guides/build-noise-models/extracted-outputs/6fe5c53d-3536-471f-aceb-b4b48a8a5889-0.svg)
+
+## Rauschbeispiel 1: Einfaches Bit-Flip-Fehler-Rauschmodell
+
+Betrachten wir ein einfaches Spielzeug-Rauschmodell-Beispiel, das in der Quanteninformationstheorie-Forschung üblich ist:
+
+* Beim Anwenden eines Ein-Qubit-Gates wird der Zustand des Qubits mit Wahrscheinlichkeit `p_gate1` umgedreht.
+* Beim Anwenden eines Zwei-Qubit-Gates werden Ein-Qubit-Fehler auf jedes Qubit angewendet.
+* Beim Zurücksetzen eines Qubits wird auf 1 statt auf 0 mit Wahrscheinlichkeit `p_reset` zurückgesetzt.
+* Beim Messen eines Qubits wird der Zustand des Qubits mit Wahrscheinlichkeit `p_meas` umgedreht.
+
+```python
+# Example error probabilities
+p_reset = 0.03
+p_meas = 0.1
+p_gate1 = 0.05
+
+# QuantumError objects
+error_reset = pauli_error([("X", p_reset), ("I", 1 - p_reset)])
+error_meas = pauli_error([("X", p_meas), ("I", 1 - p_meas)])
+error_gate1 = pauli_error([("X", p_gate1), ("I", 1 - p_gate1)])
+error_gate2 = error_gate1.tensor(error_gate1)
+
+# Add errors to noise model
+noise_bit_flip = NoiseModel()
+noise_bit_flip.add_all_qubit_quantum_error(error_reset, "reset")
+noise_bit_flip.add_all_qubit_quantum_error(error_meas, "measure")
+noise_bit_flip.add_all_qubit_quantum_error(error_gate1, ["u1", "u2", "u3"])
+noise_bit_flip.add_all_qubit_quantum_error(error_gate2, ["cx"])
+
+print(noise_bit_flip)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u1', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'measure', 'cx', 'reset', 'u1']
+  All-qubits errors: ['reset', 'measure', 'u1', 'u2', 'u3', 'cx']
+```
+
+### Ausführung der verrauschten Simulation
+
+```python
+# Create noisy simulator backend
+sim_noise = AerSimulator(noise_model=noise_bit_flip)
+
+# Transpile circuit for noisy basis gates
+passmanager = generate_preset_pass_manager(
+    optimization_level=3, backend=sim_noise
+)
+circ_tnoise = passmanager.run(circ)
+
+# Run and get counts
+result_bit_flip = sim_noise.run(circ_tnoise).result()
+counts_bit_flip = result_bit_flip.get_counts(0)
+
+# Plot noisy output
+plot_histogram(counts_bit_flip)
+```
+
+![Output of the previous code cell](/docs/images/guides/build-noise-models/extracted-outputs/e38e4581-7718-4dc0-a550-e6b3168bd400-0.svg)
+
+## Beispiel 2: T1/T2 thermische Relaxation
+
+Betrachten wir nun ein realistischeres Fehlermodell, das auf thermischer Relaxation mit der Qubit-Umgebung basiert:
+* Jedes Qubit wird durch eine thermische Relaxationszeitkonstante $T_1$ und eine Dephasierungszeitkonstante $T_2$ parametrisiert.
+* Beachten Sie, dass wir $T_2 \le 2 T_1$ haben müssen.
+* Fehlerraten bei Anweisungen werden durch Gate-Zeiten und Qubit-$T_1$-, $T_2$-Werte bestimmt.
+
+```python
+# T1 and T2 values for qubits 0-3
+T1s = np.random.normal(
+    50e3, 10e3, 4
+)  # Sampled from normal distribution mean 50 microsec
+T2s = np.random.normal(
+    70e3, 10e3, 4
+)  # Sampled from normal distribution mean 50 microsec
+
+# Truncate random T2s <= T1s
+T2s = np.array([min(T2s[j], 2 * T1s[j]) for j in range(4)])
+
+# Instruction times (in nanoseconds)
+time_u1 = 0  # virtual gate
+time_u2 = 50  # (single X90 pulse)
+time_u3 = 100  # (two X90 pulses)
+time_cx = 300
+time_reset = 1000  # 1 microsecond
+time_measure = 1000  # 1 microsecond
+
+# QuantumError objects
+errors_reset = [
+    thermal_relaxation_error(t1, t2, time_reset) for t1, t2 in zip(T1s, T2s)
+]
+errors_measure = [
+    thermal_relaxation_error(t1, t2, time_measure) for t1, t2 in zip(T1s, T2s)
+]
+errors_u1 = [
+    thermal_relaxation_error(t1, t2, time_u1) for t1, t2 in zip(T1s, T2s)
+]
+errors_u2 = [
+    thermal_relaxation_error(t1, t2, time_u2) for t1, t2 in zip(T1s, T2s)
+]
+errors_u3 = [
+    thermal_relaxation_error(t1, t2, time_u3) for t1, t2 in zip(T1s, T2s)
+]
+errors_cx = [
+    [
+        thermal_relaxation_error(t1a, t2a, time_cx).expand(
+            thermal_relaxation_error(t1b, t2b, time_cx)
+        )
+        for t1a, t2a in zip(T1s, T2s)
+    ]
+    for t1b, t2b in zip(T1s, T2s)
+]
+
+# Add errors to noise model
+noise_thermal = NoiseModel()
+for j in range(4):
+    noise_thermal.add_quantum_error(errors_reset[j], "reset", [j])
+    noise_thermal.add_quantum_error(errors_measure[j], "measure", [j])
+    noise_thermal.add_quantum_error(errors_u1[j], "u1", [j])
+    noise_thermal.add_quantum_error(errors_u2[j], "u2", [j])
+    noise_thermal.add_quantum_error(errors_u3[j], "u3", [j])
+    for k in range(4):
+        noise_thermal.add_quantum_error(errors_cx[j][k], "cx", [j, k])
+
+print(noise_thermal)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'measure', 'cx', 'reset']
+  Qubits with noise: [0, 1, 2, 3]
+  Specific qubit errors: [('reset', (0,)), ('reset', (1,)), ('reset', (2,)), ('reset', (3,)), ('measure', (0,)), ('measure', (1,)), ('measure', (2,)), ('measure', (3,)), ('u2', (0,)), ('u2', (1,)), ('u2', (2,)), ('u2', (3,)), ('u3', (0,)), ('u3', (1,)), ('u3', (2,)), ('u3', (3,)), ('cx', (0, 0)), ('cx', (0, 1)), ('cx', (0, 2)), ('cx', (0, 3)), ('cx', (1, 0)), ('cx', (1, 1)), ('cx', (1, 2)), ('cx', (1, 3)), ('cx', (2, 0)), ('cx', (2, 1)), ('cx', (2, 2)), ('cx', (2, 3)), ('cx', (3, 0)), ('cx', (3, 1)), ('cx', (3, 2)), ('cx', (3, 3))]
+```
+
+### Ausführung der verrauschten Simulation
+
+```python
+# Run the noisy simulation
+sim_thermal = AerSimulator(noise_model=noise_thermal)
+
+# Transpile circuit for noisy basis gates
+passmanager = generate_preset_pass_manager(
+    optimization_level=3, backend=sim_thermal
+)
+circ_tthermal = passmanager.run(circ)
+
+# Run and get counts
+result_thermal = sim_thermal.run(circ_tthermal).result()
+counts_thermal = result_thermal.get_counts(0)
+
+# Plot noisy output
+plot_histogram(counts_thermal)
+```
+
+![Output of the previous code cell](/docs/images/guides/build-noise-models/extracted-outputs/284e4fb1-726e-4ecf-a200-cbfae8baaef7-0.svg)
+
+## Nächste Schritte
+
+<Admonition type="tip" title="Empfehlungen">
+  - Um verrauschte Schaltkreise zu simulieren, siehe [Exakte und verrauschte Simulation mit Qiskit Aer Primitives](./simulate-with-qiskit-sdk-primitives).
+  - Lesen Sie die Referenz zum [Qiskit Aer noise module](https://qiskit.org/ecosystem/aer/apidocs/aer_noise.html).
+</Admonition>
