@@ -26,6 +26,7 @@ const config: Config = {
       en: { label: 'English' },
       de: { label: 'Deutsch' },
       ja: { label: '日本語' },
+      uk: { label: 'Українська' },
     },
   },
 

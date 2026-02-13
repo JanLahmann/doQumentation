@@ -175,23 +175,23 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ## Open Items
 
-### German Translation POC (Feb 2026)
-15-page German translation proof-of-concept using Claude Code (Sonnet) as translator. Content pages only (not UI strings).
+### Translation POC — German + Japanese (Feb 2026)
+15-page German + 15-page Japanese translation using Claude Code (Sonnet) as translator. Content pages only (not UI strings).
 
-- **Status**: POC complete, **currently disabled** — `locales: ['en']` in config. Add `'de'` to re-enable.
-- **Config**: `docusaurus.config.ts` has `localeConfigs` + `localeDropdown` navbar item (both stay, harmless when disabled)
+- **Status**: POC complete, **currently disabled** — `locales: ['en']` in config. Add `'de', 'ja'` to re-enable.
+- **Config**: `docusaurus.config.ts` has `localeConfigs` (en/de/ja) + `localeDropdown` navbar item + search `language` array (all stay, harmless when disabled)
 - **Sidebar fix**: `sidebars.ts` deduplicates category labels across tutorials/guides to prevent i18n key collisions
-- **Script**: `scripts/translate-content.py` — extract translatable segments from MDX, reassemble after translation
-- **Output**: `i18n/de/docusaurus-plugin-content-docs/current/` — 15 translated MDX files
-- **Build**: `NODE_OPTIONS="--max-old-space-size=8192" npm run build -- --locale de`
-- **Removability**: Revert commit + `rm -rf i18n/de/` to fully remove
+- **Script**: `scripts/translate-content.py` — `extract`, `reassemble`, and `populate-locale` subcommands
+- **Fallback system**: `populate-locale` copies all `docs/*.mdx` to locale dir with "untranslated" banner. Genuine translations (no marker) preserved. Gitignored; translations force-added.
+- **Output**: `i18n/de/...` (15 DE) + `i18n/ja/...` (15 JA) translated MDX files (git-tracked)
+- **Build**: `NODE_OPTIONS="--max-old-space-size=12288" npm run build` for 3-locale build (961 MB output)
+- **Scaling**: 3 locales fits GitHub Pages 1 GB limit. 7+ languages → separate repos per language with redirects.
 - **Planned languages**: Spanish, Japanese, German, French, Ukrainian, Italian, Portuguese
 - **Full site**: ~380 pages, ~$19/lang (Haiku) or ~$57/lang (Sonnet) via API; free via Claude Code
 
 ### TODO
 - **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`). Adds Colab button to banner + toolbar on all tiers. Colab has no Qiskit pre-installed — tooltip communicates `!pip install` requirement.
-- **Translation verification** — Test locale switching in dev server, EN↔DE navigation
-- **Translation full site** — Scale from 15 → ~380 pages if POC approved
+- **Translation full site** — Scale from 15 → ~380 pages if POC approved. Plan in `.claude/plans/full-german-translation.md`.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
