@@ -122,7 +122,8 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, MDXComponents
-├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
+├── i18n/de/                    # German translation POC (15 pages)
+├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
 ├── Dockerfile.jupyter          # Full stack
@@ -173,7 +174,22 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ## Open Items
 
+### German Translation POC (Feb 2026)
+15-page German translation proof-of-concept using Claude Code (Sonnet) as translator. Content pages only (not UI strings).
+
+- **Status**: POC complete, **currently disabled** — `locales: ['en']` in config. Add `'de'` to re-enable.
+- **Config**: `docusaurus.config.ts` has `localeConfigs` + `localeDropdown` navbar item (both stay, harmless when disabled)
+- **Sidebar fix**: `sidebars.ts` deduplicates category labels across tutorials/guides to prevent i18n key collisions
+- **Script**: `scripts/translate-content.py` — extract translatable segments from MDX, reassemble after translation
+- **Output**: `i18n/de/docusaurus-plugin-content-docs/current/` — 15 translated MDX files
+- **Build**: `NODE_OPTIONS="--max-old-space-size=8192" npm run build -- --locale de`
+- **Removability**: Revert commit + `rm -rf i18n/de/` to fully remove
+- **Planned languages**: Spanish, Japanese, German, French, Ukrainian, Italian, Portuguese
+- **Full site**: ~380 pages, ~$19/lang (Haiku) or ~$57/lang (Sonnet) via API; free via Claude Code
+
 ### TODO
+- **Translation verification** — Test locale switching in dev server, EN↔DE navigation
+- **Translation full site** — Scale from 15 → ~380 pages if POC approved
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 

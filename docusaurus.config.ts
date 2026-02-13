@@ -21,7 +21,11 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en'],
+    locales: ['en'],  // Add 'de' to enable German translation (15-page POC in i18n/de/)
+    localeConfigs: {
+      en: { label: 'English' },
+      de: { label: 'Deutsch' },
+    },
   },
 
   // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
@@ -118,6 +122,10 @@ const config: Config = {
         {
           href: '/jupyter-settings',
           label: '⚙ Settings',
+          position: 'right',
+        },
+        {
+          type: 'localeDropdown',
           position: 'right',
         },
         {
