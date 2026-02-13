@@ -182,8 +182,13 @@ def _tag_untagged_code_blocks(content: str) -> str:
     """Add language tags to untagged code fences based on content heuristics."""
     def _replace_block(m):
         code = m.group(1)
+        # Skip false matches that span across LaTeX math output boundaries
+        # (regex matches closing fence of one block across bare $$...$$ to
+        # the opening fence of the next block)
+        if '$$' in code:
+            return m.group(0)
         first_line = code.strip().split('\n')[0] if code.strip() else ''
-        if first_line.startswith('$') or first_line.startswith('%'):
+        if (first_line.startswith('$') and not first_line.startswith('$$')) or first_line.startswith('%'):
             return f'```bash\n{code}```'
         if any(first_line.startswith(kw) for kw in ('import ', 'from ', 'def ', 'class ', 'print(')):
             return f'```python\n{code}```'
