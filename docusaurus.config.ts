@@ -21,10 +21,11 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en'],  // Add 'de' to enable German translation (15-page POC in i18n/de/)
+    locales: ['en'],
     localeConfigs: {
       en: { label: 'English' },
       de: { label: 'Deutsch' },
+      ja: { label: '日本語' },
     },
   },
 
@@ -59,6 +60,7 @@ const config: Config = {
         hashed: true,
         indexBlog: false,
         docsRouteBasePath: '/',
+        language: ['en', 'de', 'ja'],
       },
     ],
   ],

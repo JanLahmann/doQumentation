@@ -168,6 +168,7 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 - **Binder cache** — Keyed to commit hash. Any push to Binder repo invalidates cache.
 - **JSX href** — Card components use `href="/docs/..."`. `MDX_TRANSFORMS` has rewrite rules for both markdown and JSX patterns.
 - **Kernel busy/idle** — thebelab 0.4.0 only emits lifecycle events. Must subscribe to `kernel.statusChanged` signal from `@jupyterlab/services` for actual busy/idle.
+- **`_tag_untagged_code_blocks` + LaTeX** — The regex can match across output boundaries (closing fence → bare `$$...$$` → opening fence). Guards in place: skip if `$$` in content, exclude `$$` from `$` shell heuristic.
 - **Sidebar items persist** across client-side navigation — must use custom events, not just mount-time checks.
 
 ---
@@ -188,6 +189,7 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 - **Full site**: ~380 pages, ~$19/lang (Haiku) or ~$57/lang (Sonnet) via API; free via Claude Code
 
 ### TODO
+- **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`). Adds Colab button to banner + toolbar on all tiers. Colab has no Qiskit pre-installed — tooltip communicates `!pip install` requirement.
 - **Translation verification** — Test locale switching in dev server, EN↔DE navigation
 - **Translation full site** — Scale from 15 → ~380 pages if POC approved
 - **Fork testing** — Verify the repo can be forked with Binder still working
@@ -215,4 +217,4 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ---
 
-*Last updated: February 12, 2026*
+*Last updated: February 13, 2026*

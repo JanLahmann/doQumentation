@@ -212,6 +212,84 @@ def cmd_extract(args):
     print("Next: translate the 'translate' segments, then run 'reassemble'.")
 
 
+FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
+
+BANNER_TEMPLATES = {
+    "de": (
+        "\n:::note[Noch nicht übersetzt]\n"
+        "Diese Seite wurde noch nicht übersetzt. "
+        "Sie sehen die englische Originalversion.\n"
+        ":::\n"
+    ),
+    "ja": (
+        "\n:::note[未翻訳]\n"
+        "このページはまだ翻訳されていません。"
+        "英語の原文を表示しています。\n"
+        ":::\n"
+    ),
+}
+
+
+def insert_banner_after_frontmatter(content: str, banner: str) -> str:
+    """Insert fallback marker + banner after frontmatter, before body."""
+    if not content.startswith("---"):
+        return f"{FALLBACK_MARKER}\n{banner}\n{content}"
+    end = content.find("\n---", 3)
+    if end == -1:
+        return f"{FALLBACK_MARKER}\n{banner}\n{content}"
+    fm_end = end + 4  # position after "\n---"
+    frontmatter = content[:fm_end]
+    body = content[fm_end:]
+    return f"{frontmatter}\n{FALLBACK_MARKER}\n{banner}\n{body}"
+
+
+def cmd_populate_locale(args):
+    """Populate i18n locale dir with English fallbacks + untranslated banner.
+
+    Copies all MDX files from docs/ to the locale directory.
+    Files that already have a genuine translation (no fallback marker) are preserved.
+    Files that are old fallbacks (contain the marker) are overwritten with fresh content.
+    """
+    locale = args.locale
+    banner = BANNER_TEMPLATES.get(locale)
+    if not banner:
+        print(f"Error: no banner template for locale '{locale}'. "
+              f"Known locales: {', '.join(BANNER_TEMPLATES)}", file=sys.stderr)
+        sys.exit(1)
+
+    locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+
+    # Identify existing genuine translations (files WITHOUT the fallback marker)
+    existing_translations = set()
+    if locale_dir.exists():
+        for f in locale_dir.rglob("*.mdx"):
+            content = f.read_text(encoding="utf-8")
+            if FALLBACK_MARKER not in content:
+                rel = str(f.relative_to(locale_dir))
+                existing_translations.add(rel)
+
+    # Copy all docs/ MDX files, inserting banner into fallbacks
+    copied = 0
+    skipped = 0
+    for src in sorted(DOCS_DIR.rglob("*.mdx")):
+        rel = str(src.relative_to(DOCS_DIR))
+        dest = locale_dir / rel
+
+        if rel in existing_translations:
+            skipped += 1
+            continue
+
+        content = src.read_text(encoding="utf-8")
+        fallback_content = insert_banner_after_frontmatter(content, banner)
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(fallback_content, encoding="utf-8")
+        copied += 1
+
+    print(f"Locale '{locale}': {copied} fallback files written, "
+          f"{skipped} existing translations preserved.")
+
+
 def cmd_reassemble(args):
     """Reassemble translated batch JSON files into MDX in the i18n directory."""
     if not BATCH_DIR.exists():
@@ -276,11 +354,23 @@ def main():
     # reassemble
     sub.add_parser("reassemble", help="Reassemble translated MDX files")
 
+    # populate-locale
+    p_populate = sub.add_parser(
+        "populate-locale",
+        help="Populate i18n locale dir with English fallbacks + untranslated banner",
+    )
+    p_populate.add_argument(
+        "--locale", required=True,
+        help="Target locale code (e.g., de, ja)",
+    )
+
     args = parser.parse_args()
     if args.command == "extract":
         cmd_extract(args)
     elif args.command == "reassemble":
         cmd_reassemble(args)
+    elif args.command == "populate-locale":
+        cmd_populate_locale(args)
     else:
         parser.print_help()
 
