@@ -58,8 +58,8 @@ Files over ~400 lines should be **split into chunks** of ~400 lines for translat
 4. The first chunk includes the frontmatter; subsequent chunks start at their section heading
 5. After all chunks complete, concatenate them with a **blank line between chunks** (to preserve markdown spacing at boundaries)
 6. **Verify integrity** after concatenation:
+   - **Total line count** of concatenated file vs source (±10%)
    - Compare section headings (count and names)
-   - Line count (±10% of source)
    - Code block count (opening/closing triple backticks)
    - LaTeX block count (`$$` pairs)
    - **Check the last 5 lines of each chunk** — truncation at the tail end is the most common failure mode
@@ -74,7 +74,7 @@ Files to translate (paths relative to docs/):
 {FILE_LIST}
 ```
 
-Process each file one at a time: Read English → Write {LANGUAGE} translation. Do all files. For files >500 lines, use the chunking approach above.
+Process each file one at a time: Read English → Write {LANGUAGE} translation. Do all files. For files >400 lines, use the chunking approach above.
 
 ---
 
