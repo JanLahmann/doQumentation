@@ -48,18 +48,24 @@ Your task: Translate English MDX files to {LANGUAGE}. For EACH file:
 - Use {FORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
 
-### Large File Chunking (>500 lines)
+### Large File Chunking (>400 lines)
 
-Files over ~500 lines should be **split into chunks** for translation to avoid output token limits:
+Files over ~400 lines should be **split into chunks** of ~400 lines for translation to avoid output token limits:
 
 1. Read the source file and identify section boundaries (e.g., `## Part I`, `## Part II`, `## Step 3`)
-2. Split into chunks of ~500 lines each, always at a section heading boundary
+2. Split into chunks of **~400 lines each**, always at a section heading boundary. Prefer smaller chunks — 400 is the target, 500 is the upper limit.
 3. Translate each chunk in a **separate parallel agent** — write to temp files (`/tmp/{filename}-part1.mdx`, `/tmp/{filename}-part2.mdx`, etc.)
 4. The first chunk includes the frontmatter; subsequent chunks start at their section heading
-5. After all chunks complete, concatenate them into the final output file
-6. **Verify integrity**: compare section headings, line count (±10%), code block count, and LaTeX block count between source and translation
+5. After all chunks complete, concatenate them with a **blank line between chunks** (to preserve markdown spacing at boundaries)
+6. **Verify integrity** after concatenation:
+   - Compare section headings (count and names)
+   - Line count (±10% of source)
+   - Code block count (opening/closing triple backticks)
+   - LaTeX block count (`$$` pairs)
+   - **Check the last 5 lines of each chunk** — truncation at the tail end is the most common failure mode
+   - Verify references/footnotes at the end of the file are complete (commonly dropped)
 
-Files under 500 lines can be translated in a single pass.
+Files under 400 lines can be translated in a single pass.
 
 ### When a file list is provided
 
@@ -139,8 +145,8 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 
 ## Batch Size (CLI Task Agents)
 
-- **1 file per agent** for files >500 lines (use chunking — split at section headings, ~500 lines per chunk, parallel agents per chunk)
-- **Up to 7 files per agent** for smaller files (<500 lines)
+- **1 file per agent** for files >400 lines (use chunking — split at section headings, ~400 lines per chunk, parallel agents per chunk)
+- **Up to 7 files per agent** for smaller files (<400 lines)
 - 3 parallel agents per round
 - ~53 rounds for full site (~371 remaining pages per locale)
-- Large files (>1000 lines) that fail as single-pass translations should always be retried with chunking
+- Large files (>500 lines) that fail as single-pass translations should always be retried with chunking
