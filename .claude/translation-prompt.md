@@ -47,6 +47,7 @@ Your task: Translate English MDX files to {LANGUAGE}. For EACH file:
 - Keep technical terms that are standard in {LANGUAGE} quantum computing (e.g., Qubit, Gate, Circuit, Backend, Transpiler)
 - Use {FORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
+- **Use proper Unicode characters** — NEVER use ASCII digraph substitutes. For German: use ä ö ü Ä Ö Ü ß directly, NEVER ae oe ue ss. For other languages: use the native script characters, never romanized approximations. This is the most common translation defect — verify output contains proper characters before writing.
 
 ### Large File Chunking (>400 lines)
 
@@ -64,6 +65,7 @@ Files over ~400 lines should be **split into chunks** of ~400 lines for translat
    - LaTeX block count (`$$` pairs)
    - **Check the last 5 lines of each chunk** — truncation at the tail end is the most common failure mode
    - Verify references/footnotes at the end of the file are complete (commonly dropped)
+   - **Verify proper Unicode characters** — grep for ASCII digraph patterns (e.g., `koennen`, `fuer`, `ueber`, `moeglich` for German) and fix any found. This is the second most common failure mode after truncation.
 
 Files under 400 lines can be translated in a single pass.
 
