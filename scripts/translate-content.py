@@ -192,7 +192,8 @@ def cmd_extract(args):
             "target_locale": locale,
             "locale_label": {"de": "German", "es": "Spanish", "ja": "Japanese",
                              "fr": "French", "uk": "Ukrainian", "it": "Italian",
-                             "pt": "Portuguese"}.get(locale, locale),
+                             "pt": "Portuguese", "tl": "Tagalog/Filipino",
+                             "th": "Thai"}.get(locale, locale),
             "status": "pending",  # pending → translated → assembled
             "files": [],
         }
@@ -237,6 +238,36 @@ BANNER_TEMPLATES = {
         "\n:::note[Aún no traducido]\n"
         "Esta página aún no ha sido traducida. "
         "Está viendo la versión original en inglés.\n"
+        ":::\n"
+    ),
+    "fr": (
+        "\n:::note[Pas encore traduit]\n"
+        "Cette page n'a pas encore été traduite. "
+        "Vous voyez la version originale en anglais.\n"
+        ":::\n"
+    ),
+    "it": (
+        "\n:::note[Non ancora tradotto]\n"
+        "Questa pagina non è stata ancora tradotta. "
+        "Stai visualizzando la versione originale in inglese.\n"
+        ":::\n"
+    ),
+    "pt": (
+        "\n:::note[Ainda não traduzido]\n"
+        "Esta página ainda não foi traduzida. "
+        "Você está vendo a versão original em inglês.\n"
+        ":::\n"
+    ),
+    "tl": (
+        "\n:::note[Hindi pa naisalin]\n"
+        "Ang pahinang ito ay hindi pa naisalin. "
+        "Nakikita mo ang orihinal na bersyon sa Ingles.\n"
+        ":::\n"
+    ),
+    "th": (
+        "\n:::note[ยังไม่ได้แปล]\n"
+        "หน้านี้ยังไม่ได้รับการแปล "
+        "คุณกำลังดูเวอร์ชันต้นฉบับภาษาอังกฤษ\n"
         ":::\n"
     ),
 }

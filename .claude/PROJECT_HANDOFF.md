@@ -93,7 +93,8 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 - **Jupyter auth**: nginx injects `Authorization` header server-side. Browser never sees token. `docker-entrypoint.sh` generates random token (or accepts `JUPYTER_TOKEN` env var). Jupyter runs as non-root `jupyter` user.
 
 ### CI/CD
-- `deploy.yml` — Sync → build → GitHub Pages
+- `deploy.yml` — Sync → build → GitHub Pages (English only)
+- `deploy-locales.yml` — Matrix build per locale → push to satellite repos (DE/ES/UK subdomains)
 - `docker.yml` — Multi-arch Docker → ghcr.io
 - `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies
 - Binder repo: daily cache-warming workflow
@@ -111,7 +112,7 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 
 ```
 doQumentation/
-├── .github/workflows/          # deploy, docker, sync-deps
+├── .github/workflows/          # deploy, deploy-locales, docker, sync-deps
 ├── binder/                     # Jupyter requirements (cross-platform + amd64-only)
 ├── docs/                       # Content (gitignored except index.mdx)
 ├── notebooks/                  # Original .ipynb for JupyterLab (generated)
@@ -122,7 +123,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, MDXComponents
-├── i18n/de/                    # German translation POC (15 pages)
+├── i18n/                       # Translations: de (75 pages), es (15), uk (15), ja (15 disabled)
 ├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
@@ -175,23 +176,28 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ## Open Items
 
-### Translation POC — German + Japanese (Feb 2026)
-15-page German + 15-page Japanese translation using Claude Code (Sonnet) as translator. Content pages only (not UI strings).
+### Multi-Language Subdomain Infrastructure (Feb 2026)
 
-- **Status**: POC complete, **currently disabled** — `locales: ['en']` in config. Add `'de', 'ja'` to re-enable.
-- **Config**: `docusaurus.config.ts` has `localeConfigs` (en/de/ja) + `localeDropdown` navbar item + search `language` array (all stay, harmless when disabled)
-- **Sidebar fix**: `sidebars.ts` deduplicates category labels across tutorials/guides to prevent i18n key collisions
-- **Script**: `scripts/translate-content.py` — `extract`, `reassemble`, and `populate-locale` subcommands
-- **Fallback system**: `populate-locale` copies all `docs/*.mdx` to locale dir with "untranslated" banner. Genuine translations (no marker) preserved. Gitignored; translations force-added.
-- **Output**: `i18n/de/...` (15 DE) + `i18n/ja/...` (15 JA) translated MDX files (git-tracked)
-- **Build**: `NODE_OPTIONS="--max-old-space-size=12288" npm run build` for 3-locale build (961 MB output)
-- **Scaling**: 3 locales fits GitHub Pages 1 GB limit. 7+ languages → separate repos per language with redirects.
-- **Planned languages**: Spanish, Japanese, German, French, Ukrainian, Italian, Portuguese
-- **Full site**: ~380 pages, ~$19/lang (Haiku) or ~$57/lang (Sonnet) via API; free via Claude Code
+**Architecture**: Each language gets its own subdomain (`de.doqumentation.org`, etc.) via satellite GitHub repos. Full plan in `.claude/plans/multi-language-scaling.md`.
+
+- **Status**: Code & CI ready (49ca531). **Awaiting manual setup**: satellite repos, SSH deploy keys, DNS records.
+- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var for canonical URLs. Built-in `LocaleDropdown` handles cross-domain links. hreflang tags auto-generated.
+- **CI**: `deploy-locales.yml` — matrix workflow builds `--locale XX` separately, pushes to satellite repos via SSH deploy keys. Skips gracefully when keys not configured.
+- **Translations**: DE 75 pages + UI, ES 15 pages + UI, UK 15 pages + UI. JA 15 pages (disabled, no UI strings). Planned locales: fr, it, pt, tl, th.
+- **Translation prompt**: `.claude/translation-prompt.md` — reusable instructions for both Claude Code CLI (parallel Task agents) and Claude Code Web (autonomous file discovery). One-liner prompt templates included.
+- **Fallback system**: `populate-locale` fills untranslated pages with English + banner. ~372 fallbacks per locale. Banner templates defined for 9 locales: de, ja, uk, es, fr, it, pt, tl, th.
+- **Sidebar fix**: `sidebars.ts` deduplicates category labels to prevent i18n key collisions
+- **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
+
+**Manual steps for owner:**
+1. Create satellite repos: `JanLahmann/doqumentation-de`, `-es`, `-uk` (empty, public, enable GH Pages)
+2. Generate SSH deploy keys → public key as deploy key on satellite, private key as `DEPLOY_KEY_XX` secret on main repo
+3. DNS at IONOS: CNAME records `de`/`es`/`uk` → `JanLahmann.github.io.`
 
 ### TODO
-- **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`). Adds Colab button to banner + toolbar on all tiers. Colab has no Qiskit pre-installed — tooltip communicates `!pip install` requirement.
-- **Translation full site** — Scale from 15 → ~380 pages if POC approved. Plan in `.claude/plans/full-german-translation.md`.
+- **Subdomain deploy** — Satellite repos + DNS + deploy keys (manual by owner). Code/CI ready.
+- **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
+- **Translation expansion** — DE at 75/387, ES/UK at 15/387. 9 locales supported (de, ja, uk, es, fr, it, pt, tl, th). Use `.claude/translation-prompt.md` with Claude Code CLI or Web.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
@@ -217,4 +223,4 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ---
 
-*Last updated: February 13, 2026*
+*Last updated: February 14, 2026*
