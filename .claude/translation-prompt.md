@@ -58,7 +58,7 @@ Files over ~400 lines should be **split into chunks** of ~400 lines for translat
 4. The first chunk includes the frontmatter; subsequent chunks start at their section heading
 5. After all chunks complete, concatenate them with a **blank line between chunks** (to preserve markdown spacing at boundaries)
 6. **Verify integrity** after concatenation:
-   - **Total line count** of concatenated file vs source (±10%)
+   - **Total line count** of concatenated file vs source — should be within ±2%. Flag for manual review if difference exceeds 2% (likely indicates dropped content or duplicated sections)
    - Compare section headings (count and names)
    - Code block count (opening/closing triple backticks)
    - LaTeX block count (`$$` pairs)
