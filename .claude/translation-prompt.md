@@ -52,6 +52,7 @@ Rules:
 - Preserve ALL frontmatter keys exactly — translate ONLY values of `title`, `description`, `sidebar_label`
 - Preserve ALL code blocks, math/LaTeX, JSX components, imports, HTML tags, URLs, image paths, inline code backticks UNCHANGED
 - Translate ONLY prose: paragraphs, headings, list items, admonition text content
+- **Heading anchors**: When translating headings that are linked to within the same page, pin the original English anchor using Docusaurus syntax: `## Translated Heading {#original-english-anchor}`. This ensures internal `#anchor` links keep working. Example: `## Change ordering in Qiskit` → `## Reihenfolge in Qiskit ändern {#change-ordering-in-qiskit}`
 - Keep standard quantum computing terms (Qubit, Gate, Circuit, Backend, Transpiler)
 - Use {FORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
