@@ -9,7 +9,7 @@ const config: Config = {
   tagline: 'Interactive IBM Quantum tutorials and courses',
   favicon: 'img/logo.svg',
 
-  url: 'https://doqumentation.org',
+  url: process.env.DQ_LOCALE_URL || 'https://doqumentation.org',
   baseUrl: '/',
 
   // GitHub pages deployment config
@@ -21,12 +21,12 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en'],
+    locales: ['en', 'de', 'es', 'uk'],
     localeConfigs: {
-      en: { label: 'English' },
-      de: { label: 'Deutsch' },
-      ja: { label: '日本語' },
-      uk: { label: 'Українська' },
+      en: { label: 'English', url: 'https://doqumentation.org' },
+      de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
+      es: { label: 'Español', url: 'https://es.doqumentation.org' },
+      uk: { label: 'Українська', url: 'https://uk.doqumentation.org' },
     },
   },
 
@@ -61,7 +61,7 @@ const config: Config = {
         hashed: true,
         indexBlog: false,
         docsRouteBasePath: '/',
-        language: ['en', 'de', 'ja'],
+        language: ['en', 'de', 'es'],
       },
     ],
   ],

@@ -233,6 +233,12 @@ BANNER_TEMPLATES = {
         "Ви бачите оригінальну англійську версію.\n"
         ":::\n"
     ),
+    "es": (
+        "\n:::note[Aún no traducido]\n"
+        "Esta página aún no ha sido traducida. "
+        "Está viendo la versión original en inglés.\n"
+        ":::\n"
+    ),
 }
 
 
