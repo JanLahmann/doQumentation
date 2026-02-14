@@ -1,17 +1,19 @@
 # Translation Prompt — doQumentation
 
-Translates English MDX content to other languages. Works with:
-- **Claude Code CLI** — parallel Task agents (Sonnet), 7 files per agent, 3 agents per round
-- **Claude Code Web** (claude.ai/code) — autonomous file discovery, sequential processing
+Translates English MDX content to other languages using Claude Code CLI with parallel Sonnet Task agents.
+
+**Model**: Sonnet (always — via `model: "sonnet"` in Task calls)
+**Batch size**: 2 files per agent (max 3 for short files)
+**Parallelism**: 10+ agents per round (launch as many as possible in a single message)
 
 ---
 
 ## Prompt Templates
 
-Paste one of these into Claude Code (CLI or Web):
+Paste one of these into Claude Code:
 
 ```
-Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr). Use parallel Task agents if available.
+Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).
 ```
 
 ```
@@ -24,78 +26,67 @@ Read .claude/translation-prompt.md. Translate these files to Spanish (es): guide
 
 ---
 
-## Translation Agent Instructions
+## How to Launch Translation Agents
 
-You are a {LANGUAGE} translator for the doQumentation project (Docusaurus site for Qiskit quantum computing tutorials).
+When you have a list of files to translate, split them into groups of 2 and launch **all groups simultaneously** using parallel Task tool calls in a single message. Use `model: "sonnet"` and `subagent_type: "general-purpose"` for each agent.
 
-Your task: Translate English MDX files to {LANGUAGE}. For EACH file:
+Example: 20 files → 10 agents of 2 files each → all 10 launched in one message.
+
+Each agent gets this prompt (with variables filled in):
+
+```
+You are a {LANGUAGE} translator for doQumentation (Docusaurus site for Qiskit quantum computing tutorials).
+
+Translate these English MDX files to {LANGUAGE}:
+
+Files (paths relative to docs/):
+- {file1}
+- {file2}
+
+For EACH file:
 1. Read the English source from `docs/{path}`
-2. Write the {LANGUAGE} translation to `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}`
+2. Translate following the rules below
+3. Write the translation to `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}`
 
-### Critical Rules
-
-- Use the Read tool to read files and the Write tool to write files. Do NOT use Bash for file operations.
-- The target directory may already contain a file with English content and a `{/* doqumentation-untranslated-fallback */}` marker — these are FALLBACKS, not translations. Overwrite them completely.
-- Preserve ALL frontmatter keys exactly — translate ONLY the values of `title`, `description`, and `sidebar_label`
-- Preserve ALL code blocks (` ```python `, ` ```bash `, ` ```text `, etc.) completely unchanged
-- Preserve ALL math/LaTeX (`$...$`, `$$...$$`) completely unchanged
-- Preserve ALL JSX components, imports, and HTML tags unchanged (e.g., `<Admonition>`, `<Tabs>`, `<OpenInLabBanner>`)
-- Preserve ALL URLs/links unchanged
-- Preserve ALL image paths unchanged
-- Preserve ALL inline code backticks unchanged (e.g., `Statevector`, `QuantumCircuit`, `numpy`)
-- Translate ONLY the prose/explanatory text: markdown paragraphs, headings, list items, admonition text content
-- Keep technical terms that are standard in {LANGUAGE} quantum computing (e.g., Qubit, Gate, Circuit, Backend, Transpiler)
+Rules:
+- Preserve ALL frontmatter keys exactly — translate ONLY values of `title`, `description`, `sidebar_label`
+- Preserve ALL code blocks, math/LaTeX, JSX components, imports, HTML tags, URLs, image paths, inline code backticks UNCHANGED
+- Translate ONLY prose: paragraphs, headings, list items, admonition text content
+- Keep standard quantum computing terms (Qubit, Gate, Circuit, Backend, Transpiler)
 - Use {FORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
-
-### When a file list is provided
-
+- If the target file exists and contains `{/* doqumentation-untranslated-fallback */}`, it's a fallback — overwrite it completely
+- If the target file exists WITHOUT that marker, it's already translated — SKIP it
 ```
-Files to translate (paths relative to docs/):
-{FILE_LIST}
-```
-
-Process each file one at a time: Read English → Write {LANGUAGE} translation. Do all files.
 
 ---
 
-## Autonomous Workflow (Claude Code Web)
+## Autonomous Workflow
 
-When running in Claude Code Web with NO explicit file list, follow this workflow:
+When NO explicit file list is given, discover files to translate:
 
 ### Step 1: Discover untranslated files
 
-```
-1. Glob docs/**/*.mdx → all English source files
-2. Glob i18n/{LOCALE}/docusaurus-plugin-content-docs/current/**/*.mdx → existing locale files
-3. For each existing locale file, Read it and check:
-   - If it does NOT contain "{/* doqumentation-untranslated-fallback */}" → genuine translation, SKIP
-   - If it contains the marker OR doesn't exist → needs translation
+1. `Glob docs/**/*.mdx` → all English source files
+2. `Glob i18n/{LOCALE}/docusaurus-plugin-content-docs/current/**/*.mdx` → existing locale files
+3. For each existing locale file, Read and check:
+   - Contains `{/* doqumentation-untranslated-fallback */}` → needs translation
+   - Does NOT contain the marker → genuine translation, SKIP
+   - File doesn't exist → needs translation
 4. Build the list of files needing translation
-```
 
-### Step 2: Translate
+### Step 2: Launch parallel agents
 
-Process files in this order: tutorials → guides → courses → modules
+Split the file list into groups of 2. Launch 10+ Task agents in a **single message** (all parallel). Each agent uses `model: "sonnet"`.
 
-For each file:
-1. Read the English source from `docs/{path}`
-2. Translate following the Critical Rules above
-3. Write to `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}`
-4. Report progress: "Translated X/Y: {path}"
+Process in this order: tutorials → guides → courses → modules
 
-### Step 3: Use parallel agents if available
-
-If Task agents are available (Claude Code CLI), split the file list into groups of 7 and launch 3 parallel agents per round. Each agent gets a subset of files and these same instructions.
-
-If Task agents are NOT available (Claude Code Web), process files sequentially.
-
-### Step 4: After translation
+### Step 3: After all agents complete
 
 Report summary:
 - Total files translated
 - Files skipped (already translated)
-- Any files that could not be translated (errors)
+- Any errors
 
 Remind the user to run:
 ```bash
@@ -115,6 +106,31 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 
 **New locales**: Before using `populate-locale` for a new locale, ensure its banner template exists in `BANNER_TEMPLATES` dict in `scripts/translate-content.py`. Currently defined: de, ja, uk, es, fr, it, pt, tl, th.
 
+## Adding a New Language — Checklist
+
+When adding a new locale (e.g., `fr`), these files need translation beyond the MDX content pages:
+
+### 1. Sidebar categories — `current.json`
+`i18n/{LOCALE}/docusaurus-plugin-content-docs/current.json` — ~60 sidebar category/link labels. Generated with `npm run write-translations -- --locale {LOCALE}`, then translate all `"message"` values. Keep brand names (Qiskit, IBM Quantum, OpenQASM) and abbreviations (SQD, OBP, etc.) unchanged. Use `i18n/de/.../current.json` as reference.
+
+### 2. UI strings — `code.json`
+`i18n/{LOCALE}/code.json` — buttons, search placeholder, "Next"/"Previous", custom component text. Generated with `npm run write-translations -- --locale {LOCALE}`.
+
+### 3. Navbar — `navbar.json`
+`i18n/{LOCALE}/docusaurus-theme-classic/navbar.json` — navbar item labels.
+
+### 4. Footer — `footer.json`
+`i18n/{LOCALE}/docusaurus-theme-classic/footer.json` — footer column headers and links.
+
+### 5. Banner template
+Add a `{LOCALE}` entry to `BANNER_TEMPLATES` in `scripts/translate-content.py` (admonition with "not yet translated" message in the target language).
+
+### 6. Config
+Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add `language` entry in search plugin config (if `lunr-languages` supports it).
+
+### 7. Git tracking
+`current.json` is tracked normally. MDX content translations must be force-added: `git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/`.
+
 ## Current Translation State
 
 | Locale | Pages | Status |
@@ -124,8 +140,12 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 | UK | 15/387 | Same pages as ES + UI strings |
 | JA | 15/387 | Same pages as ES. **Disabled** (no UI strings). Not in `locales` array. |
 
-## Batch Size (CLI Task Agents)
+## Agent Configuration Summary
 
-- 7 files per agent (20 was too large for context window)
-- 3 parallel agents per round
-- ~53 rounds for full site (~371 remaining pages per locale)
+| Setting | Value |
+|---------|-------|
+| Model | `sonnet` |
+| Subagent type | `general-purpose` |
+| Files per agent | 2 (max 3 for short files) |
+| Parallel agents | 10+ per round |
+| Rounds for full locale | ~19 rounds (371 files ÷ 2 per agent ÷ 10 agents) |

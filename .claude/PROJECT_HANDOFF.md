@@ -178,26 +178,26 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ### Multi-Language Subdomain Infrastructure (Feb 2026)
 
-**Architecture**: Each language gets its own subdomain (`de.doqumentation.org`, etc.) via satellite GitHub repos. Full plan in `.claude/plans/multi-language-scaling.md`.
+**Architecture**: Each language gets its own subdomain via satellite GitHub repos. **Fully deployed and live.**
 
-- **Status**: Code & CI ready (49ca531). **Awaiting manual setup**: satellite repos, SSH deploy keys, DNS records.
-- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var for canonical URLs. Built-in `LocaleDropdown` handles cross-domain links. hreflang tags auto-generated.
-- **CI**: `deploy-locales.yml` — matrix workflow builds `--locale XX` separately, pushes to satellite repos via SSH deploy keys. Skips gracefully when keys not configured.
-- **Translations**: DE 75 pages + UI, ES 15 pages + UI, UK 15 pages + UI. JA 15 pages (disabled, no UI strings). Planned locales: fr, it, pt, tl, th.
-- **Translation prompt**: `.claude/translation-prompt.md` — reusable instructions for both Claude Code CLI (parallel Task agents) and Claude Code Web (autonomous file discovery). One-liner prompt templates included.
-- **Fallback system**: `populate-locale` fills untranslated pages with English + banner. ~372 fallbacks per locale. Banner templates defined for 9 locales: de, ja, uk, es, fr, it, pt, tl, th.
-- **Sidebar fix**: `sidebars.ts` deduplicates category labels to prevent i18n key collisions
+| Locale | URL | Pages | Status |
+|--------|-----|-------|--------|
+| DE | [de.doqumentation.org](https://de.doqumentation.org) | 75 + UI | Live |
+| ES | [es.doqumentation.org](https://es.doqumentation.org) | 15 + UI | Live |
+| UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 15 + UI | Live |
+
+- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links. hreflang tags auto-generated.
+- **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds DE/ES/UK separately, pushes to satellite repos via SSH deploy keys.
+- **DNS**: Wildcard CNAME `*` → `janlahmann.github.io` at IONOS. Covers all current and future subdomains.
+- **Satellite repos**: `JanLahmann/doQumentation-de`, `-es`, `-uk` with gh-pages branches, deploy keys, custom domains configured.
+- **Translation prompt**: `.claude/translation-prompt.md` — Sonnet model, 2 files/agent, 10+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Fallback system**: `populate-locale` fills untranslated pages with English + banner. ~372 fallbacks per locale. 9 banner templates: de, ja, uk, es, fr, it, pt, tl, th.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 
-**Manual steps for owner:**
-1. Create satellite repos: `JanLahmann/doqumentation-de`, `-es`, `-uk` (empty, public, enable GH Pages)
-2. Generate SSH deploy keys → public key as deploy key on satellite, private key as `DEPLOY_KEY_XX` secret on main repo
-3. DNS at IONOS: CNAME records `de`/`es`/`uk` → `JanLahmann.github.io.`
-
 ### TODO
-- **Subdomain deploy** — Satellite repos + DNS + deploy keys (manual by owner). Code/CI ready.
+- **Mobile locale switcher** — Language dropdown not visible on mobile devices. Needs CSS/hamburger menu fix.
 - **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
-- **Translation expansion** — DE at 75/387, ES/UK at 15/387. 9 locales supported (de, ja, uk, es, fr, it, pt, tl, th). Use `.claude/translation-prompt.md` with Claude Code CLI or Web.
+- **Translation expansion** — DE at 75/387, ES/UK at 15/387. Use `.claude/translation-prompt.md` (Sonnet, 10+ parallel agents, 2 files each).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
