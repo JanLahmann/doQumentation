@@ -196,6 +196,7 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ### TODO
 - **Mobile locale switcher** — Language dropdown not visible on mobile devices. Needs CSS/hamburger menu fix.
+- **Fix heading anchors in existing translations** — 75 DE + 15 ES/UK pages have translated headings without `{#english-anchor}` pins. Internal `#anchor` links are broken. Batch fix needed.
 - **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
 - **Translation expansion** — DE at 75/387, ES/UK at 15/387. Use `.claude/translation-prompt.md` (Sonnet, 10+ parallel agents, 2 files each).
 - **Fork testing** — Verify the repo can be forked with Binder still working

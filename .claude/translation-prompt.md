@@ -3,7 +3,7 @@
 Translates English MDX content to other languages using Claude Code CLI with parallel Sonnet Task agents.
 
 **Model**: Sonnet (always — via `model: "sonnet"` in Task calls)
-**Batch size**: 2 files per agent (max 3 for short files)
+**Batch size**: 1 file per agent
 **Parallelism**: 10+ agents per round (launch as many as possible in a single message)
 
 ---
@@ -28,22 +28,19 @@ Read .claude/translation-prompt.md. Translate these files to Spanish (es): guide
 
 ## How to Launch Translation Agents
 
-When you have a list of files to translate, split them into groups of 2 and launch **all groups simultaneously** using parallel Task tool calls in a single message. Use `model: "sonnet"` and `subagent_type: "general-purpose"` for each agent.
+Launch **one agent per file**, all simultaneously using parallel Task tool calls in a single message. Use `model: "sonnet"` and `subagent_type: "general-purpose"` for each agent.
 
-Example: 20 files → 10 agents of 2 files each → all 10 launched in one message.
+Example: 20 files → 20 agents → all 20 launched in one message.
 
 Each agent gets this prompt (with variables filled in):
 
 ```
 You are a {LANGUAGE} translator for doQumentation (Docusaurus site for Qiskit quantum computing tutorials).
 
-Translate these English MDX files to {LANGUAGE}:
+Translate this English MDX file to {LANGUAGE}:
 
-Files (paths relative to docs/):
-- {file1}
-- {file2}
+File (path relative to docs/): {file}
 
-For EACH file:
 1. Read the English source from `docs/{path}`
 2. Translate following the rules below
 3. Write the translation to `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}`
@@ -78,7 +75,7 @@ When NO explicit file list is given, discover files to translate:
 
 ### Step 2: Launch parallel agents
 
-Split the file list into groups of 2. Launch 10+ Task agents in a **single message** (all parallel). Each agent uses `model: "sonnet"`.
+Launch one agent per file, all in a **single message** (all parallel). Each agent uses `model: "sonnet"`.
 
 Process in this order: tutorials → guides → courses → modules
 
@@ -147,6 +144,6 @@ Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add
 |---------|-------|
 | Model | `sonnet` |
 | Subagent type | `general-purpose` |
-| Files per agent | 2 (max 3 for short files) |
-| Parallel agents | 10+ per round |
-| Rounds for full locale | ~19 rounds (371 files ÷ 2 per agent ÷ 10 agents) |
+| Files per agent | 1 |
+| Parallel agents | 20+ per round |
+| Rounds for full locale | ~19 rounds (371 files ÷ 20 agents per round) |
