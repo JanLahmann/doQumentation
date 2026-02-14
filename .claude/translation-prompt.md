@@ -48,6 +48,19 @@ Your task: Translate English MDX files to {LANGUAGE}. For EACH file:
 - Use {FORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
 
+### Large File Chunking (>500 lines)
+
+Files over ~500 lines should be **split into chunks** for translation to avoid output token limits:
+
+1. Read the source file and identify section boundaries (e.g., `## Part I`, `## Part II`, `## Step 3`)
+2. Split into chunks of ~500 lines each, always at a section heading boundary
+3. Translate each chunk in a **separate parallel agent** — write to temp files (`/tmp/{filename}-part1.mdx`, `/tmp/{filename}-part2.mdx`, etc.)
+4. The first chunk includes the frontmatter; subsequent chunks start at their section heading
+5. After all chunks complete, concatenate them into the final output file
+6. **Verify integrity**: compare section headings, line count (±10%), code block count, and LaTeX block count between source and translation
+
+Files under 500 lines can be translated in a single pass.
+
 ### When a file list is provided
 
 ```
@@ -55,7 +68,7 @@ Files to translate (paths relative to docs/):
 {FILE_LIST}
 ```
 
-Process each file one at a time: Read English → Write {LANGUAGE} translation. Do all files.
+Process each file one at a time: Read English → Write {LANGUAGE} translation. Do all files. For files >500 lines, use the chunking approach above.
 
 ---
 
@@ -126,6 +139,8 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 
 ## Batch Size (CLI Task Agents)
 
-- 7 files per agent (20 was too large for context window)
+- **1 file per agent** for files >500 lines (use chunking — split at section headings, ~500 lines per chunk, parallel agents per chunk)
+- **Up to 7 files per agent** for smaller files (<500 lines)
 - 3 parallel agents per round
 - ~53 rounds for full site (~371 remaining pages per locale)
+- Large files (>1000 lines) that fail as single-pass translations should always be retried with chunking

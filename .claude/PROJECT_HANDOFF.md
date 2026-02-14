@@ -197,7 +197,7 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 ### TODO
 - **Subdomain deploy** — Satellite repos + DNS + deploy keys (manual by owner). Code/CI ready.
 - **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
-- **Translation expansion** — DE at 75/387, ES/UK at 15/387. 9 locales supported (de, ja, uk, es, fr, it, pt, tl, th). Use `.claude/translation-prompt.md` with Claude Code CLI or Web.
+- **Translation expansion** — DE at 75/387, ES/UK at 15/387. 9 locales supported (de, ja, uk, es, fr, it, pt, tl, th). Use `.claude/translation-prompt.md` with Claude Code CLI or Web. **Large files (>500 lines) must be split into ~500-line chunks** at section boundaries, translated in parallel agents, and concatenated — single-pass translation fails on files >1000 lines due to output token limits.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
