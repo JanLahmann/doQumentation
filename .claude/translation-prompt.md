@@ -141,7 +141,7 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 | Locale | Pages | Status |
 |--------|-------|--------|
 | DE | 75/387 | 54 guides, 14 tutorials, 5 courses/modules, homepage, 2 indexes + UI strings |
-| ES | 15/387 | 4 tutorials, 5 guides, 3 courses, 2 modules, homepage + UI strings |
+| ES | 54/387 | 43 tutorials, 5 guides, 3 courses, 2 modules, homepage + UI strings |
 | UK | 15/387 | Same pages as ES + UI strings |
 | JA | 15/387 | Same pages as ES. **Disabled** (no UI strings). Not in `locales` array. |
 

@@ -1,0 +1,1150 @@
+---
+title: "Detección de errores con bajo costo mediante códigos espacio-temporales"
+sidebar_label: "Detección de errores con bajo costo mediante códigos espacio-temporales"
+description: "Experimente con la detección de errores en un circuito Clifford aleatorio de pequeña escala y luego recorra la tarea de preparación de un estado GHZ."
+notebook_path: "docs/tutorials/ghz-spacetime-codes.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/ghz-spacetime-codes.ipynb" />
+
+
+
+{/* cspell:ignore unflagged Tunables parallelizable uncomputation  */}
+
+*Estimación de uso: 10 segundos en un procesador Heron r3 (NOTA: Esto es solo una estimación. Su tiempo de ejecución puede variar.)*
+
+## Introducción
+
+[Low-overhead error detection with spacetime codes](https://arxiv.org/abs/2504.15725) [[1]](#references) de Simon Martiel y Ali Javadi-Abhari propone sintetizar verificaciones espacio-temporales de bajo peso y conscientes de la conectividad para circuitos dominados por compuertas Clifford, y luego realizar post-selección sobre esas verificaciones para detectar fallas con mucho menos costo que la corrección de errores completa y menos disparos que la mitigación de errores estándar.
+
+Este artículo propone un método novedoso para la detección de errores en circuitos cuánticos (específicamente circuitos Clifford) que logra un equilibrio entre la corrección de errores completa y las técnicas de mitigación más ligeras. La idea clave es utilizar códigos espacio-temporales para generar "verificaciones" a lo largo del circuito que sean capaces de detectar errores, con un costo significativamente menor en qubits y compuertas que la corrección de errores tolerante a fallas completa. Los autores diseñan algoritmos eficientes para seleccionar verificaciones que sean de bajo peso (que involucren pocos qubits), compatibles con la conectividad física del dispositivo y que cubran grandes regiones temporales y espaciales del circuito. Demuestran el enfoque en circuitos de hasta 50 qubits lógicos y aproximadamente 2450 compuertas CZ, logrando ganancias de fidelidad de física a lógica de hasta 236x. También cabe señalar que a medida que los circuitos incluyen más operaciones no Clifford, el número de verificaciones válidas se reduce exponencialmente, lo que indica que el método funciona mejor para circuitos dominados por compuertas Clifford. En general, a corto plazo, la detección de errores mediante códigos espacio-temporales puede ofrecer una ruta práctica y de menor costo para mejorar la confiabilidad en hardware cuántico.
+
+Esta técnica de detección de errores se basa en la noción de verificaciones coherentes de Pauli y está fundamentada en el trabajo [Single-shot error mitigation by coherent Pauli checks](https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.5.033193) [[2]](#references) de van den Berg et al.
+
+Más recientemente, el artículo [Big cats: entanglement in 120 qubits and beyond](https://arxiv.org/abs/2510.09520) [[3]](#references) de Javadi-Abhari et al., reporta la creación de un estado Greenberger-Horne-Zeilinger (GHZ) de 120 qubits, el estado entrelazado multipartito más grande logrado hasta la fecha en una plataforma de qubits superconductores. Utilizando un compilador consciente del hardware, detección de errores de bajo costo y una técnica de "descomputación temporal" para reducir el ruido, los investigadores alcanzaron una fidelidad de 0.56 ± 0.03 con una eficiencia de post-selección de aproximadamente el 28%. El trabajo demuestra entrelazamiento genuino a través de los 120 qubits, validando múltiples métodos de certificación de fidelidad, y representa un hito importante para el hardware cuántico escalable.
+
+Este tutorial se basa en estas ideas, guiándole a través de la implementación del algoritmo de detección de errores primero en un circuito Clifford aleatorio de pequeña escala y luego a través de la tarea de preparación de un estado GHZ, para ayudarle a experimentar con la detección de errores en sus propios circuitos cuánticos.
+### Requisitos
+Antes de comenzar este tutorial, asegúrese de tener instalado lo siguiente:
+
+- Qiskit SDK v2.0 o posterior, con soporte de [visualización](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 o posterior (`pip install qiskit-ibm-runtime`)
+- Qiskit Aer v0.17.2 (`pip install qiskit-aer`)
+- [Qiskit Device Benchmarking](https://github.com/qiskit-community/qiskit-device-benchmarking) (`pip install "qiskit-device-benchmarking @ git+https://github.com/qiskit-community/qiskit-device-benchmarking.git"`)
+- NumPy v2.3.2 (`pip install numpy`)
+- Matplotlib v3.10.7 (`pip install matplotlib`)
+### Configuración
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-device-benchmarking
+```
+
+```python
+# Standard library imports
+from collections import defaultdict, deque
+from functools import partial
+
+# External libraries
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Qiskit
+from qiskit import ClassicalRegister, QuantumCircuit
+from qiskit.circuit import Delay
+from qiskit.circuit.library import RZGate, XGate
+from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit.quantum_info import Pauli, random_clifford
+from qiskit.transpiler import AnalysisPass, PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    CollectAndCollapse,
+    PadDelay,
+    PadDynamicalDecoupling,
+    RemoveBarriers,
+)
+from qiskit.transpiler.passes.optimization.collect_and_collapse import (
+    collect_using_filter_function,
+    collapse_to_operation,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.visualization import plot_histogram
+
+# Qiskit Aer
+from qiskit_aer import AerSimulator
+from qiskit_aer.noise import NoiseModel, ReadoutError, depolarizing_error
+
+# Qiskit IBM Runtime
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# Qiskit Device Benchmarking
+from qiskit_device_benchmarking.utilities.gate_map import plot_gate_map
+```
+
+## Primer ejemplo
+Para demostrar este método, comenzamos construyendo un circuito Clifford sencillo. Nuestro objetivo es poder detectar cuándo ocurren ciertos tipos de error en este circuito, de manera que podamos descartar los resultados de medición erróneos. En terminología de detección de errores, esto también se conoce como nuestro circuito de carga útil (payload).
+
+```python
+circ = random_clifford(num_qubits=2, seed=11).to_circuit()
+circ.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/f8384a7d-0.avif)
+
+Nuestro objetivo es insertar una verificación coherente de Pauli en este circuito de carga útil. Pero antes de hacerlo, separamos este circuito en capas. Esto será útil más adelante al insertar compuertas de Pauli entre ellas.
+
+```python
+# Separate circuit into layers
+dag = circuit_to_dag(circ)
+circ_layers = []
+for layer in dag.layers():
+    layer_as_circuit = dag_to_circuit(layer["graph"])
+    circ_layers.append(layer_as_circuit)
+
+# Create subplots
+fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(1, 5, figsize=(10, 4))
+
+# Draw circuits on respective axes
+circ_layers[0].draw(output="mpl", ax=ax1)
+circ_layers[1].draw(output="mpl", ax=ax2)
+circ_layers[2].draw(output="mpl", ax=ax3)
+circ_layers[3].draw(output="mpl", ax=ax4)
+circ_layers[4].draw(output="mpl", ax=ax5)
+
+# Adjust layout to prevent overlap
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/04bb6ea7-0.avif)
+
+Ahora estamos listos para agregar verificaciones coherentes de Pauli en el circuito de carga útil. Para hacer esto, necesitamos construir una "verificación válida" e insertarla en el circuito. Una "verificación" en este caso es un operador capaz de señalar si ocurrió un error en el circuito mediante una medición en un qubit auxiliar (ancilla). Se considera una verificación válida cuando los operadores adicionales insertados en el circuito cuántico no cambian lógicamente el circuito original.
+
+Esta verificación es capaz de detectar tipos de errores que anticonmutan con ella, y la verificación activará una medición del estado $\ket{1}$ en el qubit auxiliar en lugar de $\ket{0}$ mediante el retroceso de fase (phase kickback). Por lo tanto, podremos descartar las mediciones donde se haya señalado un error.
+
+En general, las verificaciones coherentes de Pauli son operadores de Pauli controlados insertados en "cables" - ubicaciones espacio-temporales entre compuertas. El qubit auxiliar responsable de señalar el error es el qubit de control.
+
+A continuación, construimos una verificación válida para el circuito Clifford que creamos anteriormente. Podemos demostrar que esta verificación no cambia la operación del circuito mostrando que cuando estas verificaciones de Pauli se propagan al frente del circuito, se cancelan entre sí. Esto se demuestra fácilmente porque un operador de Pauli a través de una compuerta Clifford es otro operador de Pauli.
+
+En general, se puede utilizar una heurística de decodificación como se describe en [[1]](https://arxiv.org/abs/2504.15725) para identificar verificaciones válidas. Para los propósitos de nuestro ejemplo inicial, también podemos construir verificaciones válidas utilizando las condiciones analíticas de multiplicación de Pauli y compuertas Clifford.
+
+```python
+# Define a valid check
+pauli_1 = Pauli("ZI")
+pauli_2 = Pauli("XZ")
+```
+
+```python
+circ_1 = circ_layers[0].compose(circ_layers[1])
+circ_1.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/e1c1e16d-0.avif)
+
+```python
+pauli_1_ev = pauli_1.evolve(circ_1, frame="h")
+pauli_1_ev
+```
+
+```text
+Pauli('-ZI')
+```
+
+```python
+circ_2 = circ.copy()
+circ_2.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/246a42b8-0.avif)
+
+```python
+pauli_2_ev = pauli_2.evolve(circ_2, frame="h")
+pauli_2_ev
+```
+
+```text
+Pauli('-ZI')
+```
+
+```python
+pauli_1_ev.dot(pauli_2_ev)
+```
+
+```text
+Pauli('II')
+```
+
+Como podemos ver, tenemos una verificación válida, ya que los operadores de Pauli insertados simplemente tienen el mismo efecto que un operador identidad en el circuito. Ahora podemos insertar estas verificaciones en el circuito con un qubit auxiliar. Este qubit auxiliar, o qubit de verificación, comienza en el estado $\ket{+}$. Incluye las versiones controladas de las operaciones de Pauli descritas anteriormente y finalmente se mide en la base $X$. Este qubit de verificación ahora es capaz de capturar errores en el circuito de carga útil sin alterarlo lógicamente. Esto se debe a que ciertos tipos de ruido en el circuito de carga útil modificarán el estado del qubit de verificación, y este se medirá como "1" en lugar de "0" en caso de que ocurra tal error.
+
+```python
+# New circuit with 3 qubits (2 payload + 1 ancilla for check)
+circ_meas = QuantumCircuit(3)
+circ_meas.h(0)
+circ_meas.compose(circ_layers[0], [1, 2], inplace=True)
+circ_meas.compose(circ_layers[1], [1, 2], inplace=True)
+circ_meas.cz(0, 2)
+circ_meas.compose(circ_layers[2], [1, 2], inplace=True)
+circ_meas.compose(circ_layers[3], [1, 2], inplace=True)
+circ_meas.compose(circ_layers[4], [1, 2], inplace=True)
+circ_meas.cz(0, 1)
+circ_meas.cx(0, 2)
+circ_meas.h(0)
+
+# Add measurement to payload qubits
+c0 = ClassicalRegister(2, name="c0")
+circ_meas.add_register(c0)
+circ_meas.measure(1, c0[0])
+circ_meas.measure(2, c0[1])
+
+# Add measurement to check qubit
+c1 = ClassicalRegister(1, name="c1")
+circ_meas.add_register(c1)
+circ_meas.measure(0, c1[0])
+
+# Visualize the final circuit with the inserted checks
+circ_meas.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/52add690-0.avif)
+
+Si el qubit de verificación se mide como "0", conservamos esa medición. Si se mide como "1", esto significa que ocurrió un error en el circuito de carga útil, y descartamos esa medición.
+
+```python
+# Noiseless simulation using stabilizer method
+sim_stab = AerSimulator(method="stabilizer")
+res = sim_stab.run(circ_meas, shots=1000).result()
+counts_noiseless = res.get_counts()
+print(f"Stabilizer simulation result: {counts_noiseless}")
+```
+
+```text
+Stabilizer simulation result: {'0 11': 523, '0 01': 477}
+```
+
+```python
+# Plot the noiseless results
+# Note that the first bit in the key corresponds to the check qubit
+plot_histogram(counts_noiseless)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/4741910b-0.avif)
+
+Observe que con un simulador ideal, el qubit de verificación no detecta ningún error. Ahora introducimos un modelo de ruido en la simulación y observamos cómo el qubit de verificación captura los errores.
+
+```python
+# Qiskit Aer noise model
+noise = NoiseModel()
+p2 = 0.003  # two-qubit depolarizing per CZ
+p1 = 0.001  # one-qubit depolarizing per 1q Clifford
+pr = 0.01  # readout bit-flip probability
+
+# 1q depolarizing on common 1q gates
+e1 = depolarizing_error(p1, 1)
+for g1 in ["id", "rz", "sx", "x", "h", "s"]:
+    noise.add_all_qubit_quantum_error(e1, g1)
+
+# 2q depolarizing on CZ
+e2 = depolarizing_error(p2, 2)
+noise.add_all_qubit_quantum_error(e2, "cz")
+
+# Readout error on measure
+ro = ReadoutError([[1 - pr, pr], [pr, 1 - pr]])
+noise.add_all_qubit_readout_error(ro)
+
+# Qiskit Aer simulation with noise model
+aer = AerSimulator(method="automatic", seed_simulator=43210)
+job = aer.run(circ_meas, shots=1000, noise_model=noise)
+result = job.result()
+counts_noisy = result.get_counts()
+print(f"Noise model simulation result: {counts_noisy}")
+```
+
+```text
+Noise model simulation result: {'1 01': 5, '0 11': 478, '1 11': 6, '1 00': 2, '1 10': 1, '0 01': 500, '0 00': 5, '0 10': 3}
+```
+
+```python
+plot_histogram(counts_noisy)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/51a8f3d9-0.avif)
+
+Como podemos ver, algunas mediciones capturaron el error al marcar el qubit de verificación como "1", lo cual es visible en las últimas cuatro columnas. Estos disparos se descartan.
+Nota: El qubit auxiliar también puede introducir nuevos errores en el circuito. Para reducir este efecto, podemos insertar verificaciones anidadas con qubits auxiliares adicionales en el circuito cuántico.## Ejemplo del mundo real: Preparar un estado GHZ en hardware real
+### Paso 1: Mapear las entradas clásicas a un problema cuántico
+Ahora demostramos una tarea significativa para los algoritmos de computación cuántica, que es preparar un estado GHZ. Demostraremos cómo hacer esto en un backend real utilizando detección de errores.
+
+```python
+# Set optional seed for reproducibility
+SEED = 1
+
+if SEED:
+    np.random.seed(SEED)
+```
+
+El algoritmo de detección de errores para la preparación del estado GHZ respeta la topología del hardware. Comenzamos seleccionando el hardware deseado.
+
+```python
+# This is used to run on real hardware
+service = QiskitRuntimeService()
+
+# Choose a backend to build GHZ on
+backend_name = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=133
+)
+
+backend = service.backend(backend_name)
+coupling_map = backend.target.build_coupling_map()
+```
+
+Un estado GHZ de $n$ qubits se define como
+$$\lvert \mathrm{GHZ}_n\rangle \;=\; \frac{1}{\sqrt{2}}\Big(\lvert 0\rangle^{\otimes n} \,+\, \lvert 1\rangle^{\otimes n}\Big).$$
+
+Un enfoque muy ingenuo para preparar el estado GHZ sería elegir un qubit raíz con una compuerta Hadamard inicial, que coloca el qubit en un estado de superposición igual, y luego entrelazar este qubit con todos los demás qubits. Este no es un buen enfoque, ya que requiere interacciones CNOT de largo alcance y gran profundidad. En este tutorial, utilizaremos múltiples técnicas junto con la detección de errores para preparar de manera confiable el estado GHZ en hardware real.
+### Paso 2: Optimizar el problema para la ejecución en hardware cuántico
+#### Mapear el estado GHZ al hardware
+Primero, buscamos una raíz para mapear el circuito GHZ en el hardware. Eliminamos aristas/nodos cuyos errores CZ, errores de medición y valores T2 son peores que los umbrales indicados a continuación. Estos no se incluirán en el circuito GHZ.
+
+```python
+def bad_cz(target, threshold=0.01):
+    """Return list of edges whose CZ error is worse than threshold."""
+    undirected_edges = []
+    for edge in backend.target.build_coupling_map().get_edges():
+        if (edge[1], edge[0]) not in undirected_edges:
+            undirected_edges.append(edge)
+    edges = undirected_edges
+    cz_errors = {}
+    for edge in edges:
+        cz_errors[edge] = target["cz"][edge].error
+    worst_edges = sorted(cz_errors.items(), key=lambda x: x[1], reverse=True)
+    return [list(edge) for edge, error in worst_edges if error > threshold]
+
+def bad_readout(target, threshold=0.01):
+    """Return list of nodes whose measurement error is worse than threshold."""
+    meas_errors = {}
+    for node in range(backend.num_qubits):
+        meas_errors[node] = target["measure"][(node,)].error
+    worst_nodes = sorted(
+        meas_errors.items(), key=lambda x: x[1], reverse=True
+    )
+    return [node for node, error in worst_nodes if error > threshold]
+
+def bad_coherence(target, threshold=60):
+    """Return list of nodes whose T2 value is lower than threshold."""
+    t2s = {}
+    for node in range(backend.num_qubits):
+        t2 = target.qubit_properties[node].t2
+        t2s[node] = t2 * 1e6 if t2 else 0
+    worst_nodes = sorted(t2s.items(), key=lambda x: x[1])
+    return [node for node, val in worst_nodes if val < threshold]
+
+THRESH_CZ = 0.025  # exclude from BFS those edges whose CZ error is worse than this threshold
+THRESH_MEAS = 0.15  # exclude from BFS those nodes whose measurement error is worse than this threshold
+THRESH_T2 = 10  # exclude from BFS those nodes whose T2 value is lower than this threshold
+
+bad_edges = bad_cz(backend.target, threshold=THRESH_CZ)
+bad_nodes_readout = bad_readout(backend.target, threshold=THRESH_MEAS)
+dead_qubits = bad_readout(backend.target, threshold=0.4)
+bad_nodes_coherence = bad_coherence(backend.target, threshold=THRESH_T2)
+bad_nodes = list(set(bad_nodes_readout) | set(bad_nodes_coherence))
+print(f"{len(bad_edges)} bad edges: \n{bad_edges}")
+print(f"{len(bad_nodes)} bad nodes: \n{bad_nodes}")
+```
+
+```text
+17 bad edges:
+[[30, 31], [112, 113], [113, 114], [113, 119], [120, 121], [130, 131], [145, 146], [146, 147], [111, 112], [55, 59], [64, 65], [131, 138], [131, 132], [119, 133], [129, 130], [47, 57], [29, 38]]
+5 bad nodes:
+[1, 113, 131, 146, 120]
+```
+
+Utilizando la función a continuación, construimos el circuito GHZ en el hardware elegido comenzando desde la raíz y usando búsqueda en amplitud (BFS).
+
+```python
+def parallel_ghz(root, num_qubits, backend, bad_edges, skip):
+    """
+    Build a GHZ state of size `num_qubits` on the given `backend`,
+    starting from `root`, expanding in BFS order.
+
+    At each BFS layer, every active qubit adds at most one new neighbor
+    (so that two-qubit operations can run in parallel with no qubit conflicts).
+
+    It grows the entanglement tree outward layer-by-layer.
+    """
+
+    # -------------------------------------------------------------
+    # (1) Filter usable connections from the backend coupling map
+    # -------------------------------------------------------------
+    # The coupling map lists all directed hardware connections as (control, target).
+    # We remove edges that are:
+    #   - listed in `bad_edges` (or their reversed form)
+    #   - involve a qubit in the `skip` list
+    cmap = backend.configuration().coupling_map
+    edges = [
+        e
+        for e in cmap
+        if e not in bad_edges
+        and [e[1], e[0]] not in bad_edges
+        and e[0] not in skip
+        and e[1] not in skip
+    ]
+
+    # -------------------------------------------------------------
+    # (2) Build an undirected adjacency list for traversal
+    # -------------------------------------------------------------
+    # Even though coupling_map edges are directed, BFS expansion just needs
+    # connectivity information (so we treat edges as undirected for search).
+    adj = defaultdict(list)
+    for u, v in edges:
+        adj[u].append(v)
+        adj[v].append(u)
+
+    # -------------------------------------------------------------
+    # (3) Initialize the quantum circuit and BFS state
+    # -------------------------------------------------------------
+    n = backend.configuration().num_qubits
+    qc = QuantumCircuit(
+        n
+    )  # create a circuit with same number of qubits as hardware
+    visited = [
+        root
+    ]  # record the order qubits are added to the GHZ chain/tree
+    queue = deque([root])  # BFS queue (start from root)
+    explored = defaultdict(
+        set
+    )  # to track which neighbors each node has already explored
+    layers = []  # list of per-layer (control, target) gate tuples
+    qc.h(root)  # GHZ states start with a Hadamard on the root qubit
+
+    # -------------------------------------------------------------
+    # (4) BFS expansion: build the GHZ tree one layer at a time
+    # -------------------------------------------------------------
+    # Loop until we've added the desired number of qubits to the GHZ
+    while queue and len(visited) < num_qubits:
+        layer = []  # collect new (control, target) pairs for this layer
+        current = list(
+            queue
+        )  # snapshot current frontier (so queue mutations don't affect iteration)
+        busy = (
+            set()
+        )  # track qubits already used in this layer (to avoid conflicts)
+
+        for node in current:
+            queue.popleft()
+
+            # find one unvisited neighbor of this node not already explored
+            unvisited_neighbors = [
+                nb
+                for nb in adj[node]
+                if nb not in visited and nb not in explored[node]
+            ]
+
+            if unvisited_neighbors:
+                nb = unvisited_neighbors[
+                    0
+                ]  # pick the first available neighbor
+                visited.append(nb)  # mark it as part of the GHZ structure
+                queue.append(
+                    node
+                )  # re-enqueue current node (can keep growing)
+                queue.append(nb)  # enqueue the newly added qubit
+                explored[node].add(nb)  # mark that edge as explored
+                layer.append(
+                    (node, nb)
+                )  # schedule a CNOT between node and neighbor
+                busy.update([node, nb])  # reserve both qubits for this layer
+
+                # stop early if we've reached the desired number of qubits
+                if len(visited) == num_qubits:
+                    break
+            # else: node has no unused unvisited neighbors left → skip
+
+        if layer:
+            # add all pairs (node, nb) scheduled this round to layers
+            layers.append(layer)
+        else:
+            # nothing new discovered this pass → done
+            break
+
+    # -------------------------------------------------------------
+    # (5) Emit all layers into the quantum circuit
+    # -------------------------------------------------------------
+    # For each layer:
+    #   - apply a CX gate for every (control, target) pair
+    #   - insert a barrier so transpiler keeps layer structure
+    for layer in layers:
+        for q1, q2 in layer:
+            qc.cx(q1, q2)
+        qc.barrier()
+
+    # -------------------------------------------------------------
+    # (6) Return outputs
+    # -------------------------------------------------------------
+    # qc: the built quantum circuit
+    # visited: order of qubits added
+    # layers: list of parallelizable two-qubit operations per step
+    return qc, visited, layers
+```
+
+Ahora buscamos repetidamente la mejor raíz, desde donde se originará el circuito GHZ.
+
+```python
+ROOT = None  # root for BFS search
+GHZ_SIZE = 100  # number of (data) qubits in the GHZ state
+SKIP = []  # nodes to intentionally skip so that we have a better chance for finding checks
+
+# Search for the best root (yielding the shallowest GHZ)
+if ROOT is None:
+    best_root = -1
+    base_depth = 100
+    for root in range(backend.num_qubits):
+        qc, ghz_qubits, _ = parallel_ghz(
+            root, GHZ_SIZE, backend, bad_edges, SKIP
+        )
+        if len(ghz_qubits) != GHZ_SIZE:
+            continue
+        depth = qc.depth(lambda x: x.operation.num_qubits == 2)
+        if depth < base_depth:
+            best_root = root
+            base_depth = depth
+    ROOT = best_root
+```
+
+Ahora construimos el circuito GHZ comenzando desde un nodo específico - es decir, la mejor raíz - buscando la menor profundidad usando búsqueda en amplitud.
+
+```python
+# Build a GHZ starting at the best root
+qc, ghz_qubits, _ = parallel_ghz(
+    ROOT, GHZ_SIZE, backend, bad_edges, SKIP + bad_nodes
+)
+base_depth = qc.depth(lambda x: x.operation.num_qubits == 2)
+base_count = qc.size(lambda x: x.operation.num_qubits == 2)
+print(f"base depth: {base_depth}, base count: {base_count}")
+print(f"ROOT: {ROOT}")
+if len(ghz_qubits) != GHZ_SIZE:
+    raise Exception("No GHZ found. Relax error thresholds.")
+```
+
+```text
+base depth: 17, base count: 99
+ROOT: 50
+```
+
+Necesitamos una última consideración antes de insertar verificaciones válidas. Esto está relacionado con el concepto de "cobertura", que es una medida de cuántos cables en un circuito cuántico puede cubrir una verificación. Con una mayor cobertura, podemos detectar errores en una parte más amplia del circuito. Con esta medida, podemos seleccionar entre las verificaciones válidas con la mayor cobertura del circuito. En otras palabras, utilizaremos la función `weighted_coverage` para puntuar las diferentes verificaciones del circuito GHZ.
+
+```python
+def weighted_coverage(layers, parities, w_idle=0.2, w_gate=0.8):
+    """
+    Compute weighted fraction (idle + gate) of wires that are
+    covered by at least one parity to all active wires.
+    """
+    wires = active_wires(layers)  # defined below
+    covered_by_any = {n_layer: set() for n_layer in range(len(layers))}
+    for parity in parities:
+        trace = z_trace_backward(layers, parity)  # defined below
+        for n_layer, qs in trace.items():
+            covered_by_any[n_layer] |= qs
+    covered_weight = 0
+    total_weight = 0
+    for n_layer in range(len(layers)):
+        idle = wires[n_layer]["idle"]
+        gate = wires[n_layer]["gate"]
+        total_weight += w_idle * len(idle) + w_gate * len(gate)
+        covered_idle = covered_by_any[n_layer] & idle
+        covered_gate = covered_by_any[n_layer] & gate
+        covered_weight += w_idle * len(covered_idle) + w_gate * len(
+            covered_gate
+        )
+    return covered_weight / total_weight if total_weight > 0 else 0
+
+def active_wires(layers):
+    """
+    Returns per-layer dict with two sets:
+    - 'idle': activated wires that are idle in this layer
+    - 'gate': activated wires that are control/target of a CNOT at this layer
+    """
+    first_activation = {}
+    for n_layer, layer in enumerate(layers):
+        for c, t in layer:
+            first_activation.setdefault(c, n_layer)
+            first_activation.setdefault(t, n_layer)
+    result = {}
+    for n_layer in range(len(layers)):
+        active = {
+            q
+            for q, n_layer0 in first_activation.items()
+            if n_layer >= n_layer0
+        }
+        gate = {q for c, t in layers[n_layer] for q in (c, t)}
+        idle = active - gate
+        result[n_layer] = {"idle": idle, "gate": gate}
+    return result
+
+def z_trace_backward(layers, initial_Zs):
+    """
+    Backward propagate Zs with parity cancellation.
+    Returns {layer: set of qubits with odd parity Z at that layer}.
+    """
+    wires = active_wires(layers)
+    support = set(initial_Zs)
+    trace = {}
+    for n_layer in range(len(layers) - 1, -1, -1):
+        active = wires[n_layer]["idle"] | wires[n_layer]["gate"]
+        trace[n_layer] = support & active
+        # propagate backwards
+        new_support = set()
+        for q in support:
+            hit = False
+            for c, t in layers[n_layer]:
+                if q == t:  # Z on target: copy to control
+                    new_support ^= {t, c}  # toggle both
+                    hit = True
+                    break
+                elif q == c:  # Z on control: passes through
+                    new_support ^= {c}
+                    hit = True
+                    break
+            if not hit:  # unaffected
+                new_support ^= {q}
+        support = new_support
+    return trace
+```
+
+Ahora podemos insertar verificaciones en el circuito GHZ. Encontrar verificaciones válidas es muy conveniente para el estado GHZ, ya que cualquier operador de Pauli $Z$ de dos qubits $Z_i Z_j$ que actúe sobre cualquier par de qubits $i,j$ del circuito GHZ es un soporte y, por lo tanto, una verificación válida.
+
+También observe que las verificaciones en este caso son operadores $Z$ controlados con compuertas Hadamard adyacentes a la izquierda y a la derecha del qubit auxiliar. Esto es equivalente a una compuerta CNOT aplicada al qubit auxiliar. El código a continuación inserta las verificaciones en el circuito.
+
+```python
+# --- Tunables controlling the search space / scoring ---
+MAX_SKIPS = 10  # at most how many qubits to skip (in addition to the bad ones and the ones forced to skip above)
+SHUFFLES = 200  # how many times to try removing nodes for checks
+MAX_DEPTH_INCREASE = 10  # how far from the base GHZ depth to go to include checks (increase this for more checks at expense of depth)
+
+W_IDLE = 0.2  # weight of errors to consider during idle timesteps
+W_GATE = 0.8  # weight of errors to consider during gates
+
+# Remove random nodes from the GHZ and build from the root again to increase checks
+degree_two_nodes = [
+    i
+    for i in ghz_qubits
+    if all(n in ghz_qubits for n in coupling_map.neighbors(i))
+    and len(coupling_map.neighbors(i)) >= 2
+]
+
+# --- Best-so-far tracking for the randomized search ---
+num_checks = 0
+best_covered_fraction = -1
+best_qc = qc
+best_checks = []
+best_parities = []
+best_layers = []
+
+# Outer loop: vary how many GHZ nodes we try skipping (0..MAX_SKIPS-1)
+for num_skips in range(MAX_SKIPS):
+    # Inner loop: try SHUFFLES random choices of 'num_skips' nodes to skip
+    for _ in range(SHUFFLES):
+        # Construct the skip set:
+        #   - pre-existing forced SKIP
+        #   - plus a random sample of 'degree_two_nodes' of size 'num_skips'
+        skip = SKIP + list(np.random.choice(degree_two_nodes, num_skips))
+
+        # Rebuild the GHZ using the current skip set and bad_nodes
+        qc, ghz_qubits, layers = parallel_ghz(
+            ROOT, GHZ_SIZE, backend, bad_edges, skip + bad_nodes
+        )
+
+        # Measure circuit cost as 2-qubit-gate depth only
+        depth = qc.depth(lambda x: x.operation.num_qubits == 2)
+
+        # If we failed to reach the target GHZ size, discard this attempt
+        if len(ghz_qubits) != GHZ_SIZE:
+            continue
+
+        # --- Build "checks" around the GHZ we just constructed ---
+        # A check qubit is a non-GHZ, non-dead qubit that has ≥2 neighbors inside the GHZ
+        # and all those incident edges are usable (i.e., not in bad_edges).
+        checks = []
+        parities = []
+        for i in range(backend.num_qubits):
+            neighbors = [
+                n for n in coupling_map.neighbors(i) if n in ghz_qubits
+            ]
+
+            if (
+                i not in ghz_qubits
+                and i not in dead_qubits
+                and len(neighbors) >= 2
+                and not any(
+                    [
+                        [neighbor, i] in bad_edges
+                        or [i, neighbor] in bad_edges
+                        for neighbor in neighbors
+                    ]
+                )
+            ):
+                # Record this qubit as a check qubit
+                checks.append(i)
+                parities.append((neighbors[0], neighbors[1]))
+                # Physically couple the check qubit 'i' to the two GHZ neighbors via CNOTs
+                # (This is the actual "check" attachment in the circuit.)
+                qc.cx(neighbors[0], i)
+                qc.cx(neighbors[1], i)
+
+        # Score this design using the weighted coverage metric over the GHZ build layers
+        covered_fraction = weighted_coverage(
+            layers=layers, parities=parities, w_idle=W_IDLE, w_gate=W_GATE
+        )
+
+        # Keep it only if:
+        #   - coverage improves over the best so far, AND
+        #   - the 2q depth budget isn't blown by more than MAX_DEPTH_INCREASE
+        if (
+            covered_fraction > best_covered_fraction
+            and depth <= base_depth + MAX_DEPTH_INCREASE
+        ):
+            best_covered_fraction = covered_fraction
+            best_qc = qc
+            best_ghz_qubits = ghz_qubits
+            best_checks = checks
+            best_parities = parities
+            best_layers = layers
+```Ahora podemos imprimir los qubits utilizados en el circuito GHZ y los qubits de verificación.
+
+```python
+# --- After search, report the best design found ---
+qc = best_qc
+checks = best_checks
+parities = best_parities
+layers = best_layers
+ghz_qubits = best_ghz_qubits
+if len(ghz_qubits) != GHZ_SIZE:
+    raise Exception("No GHZ found. Relax error thresholds.")
+
+print(f"GHZ qubits: {ghz_qubits} {len(ghz_qubits)}")
+print(f"Check qubits: {checks} {len(checks)}")
+
+covered_fraction = weighted_coverage(
+    layers=layers, parities=parities, w_idle=W_IDLE, w_gate=W_GATE
+)
+print(
+    "Covered fraction (no idle): ",
+    weighted_coverage(
+        layers=layers, parities=parities, w_idle=0.0, w_gate=1.0
+    ),
+)
+```
+
+```text
+GHZ qubits: [50, 49, 51, 38, 52, 48, 58, 53, 47, 71, 39, 46, 70, 54, 33, 45, 72, 69, 55, 32, 37, 73, 68, 34, 31, 44, 25, 74, 78, 67, 18, 24, 79, 75, 89, 57, 11, 23, 93, 59, 88, 66, 10, 22, 92, 90, 87, 65, 12, 9, 21, 94, 91, 86, 77, 13, 8, 20, 95, 98, 97, 14, 7, 36, 99, 111, 107, 15, 6, 41, 115, 110, 106, 19, 17, 5, 40, 114, 109, 108, 105, 27, 4, 42, 118, 104, 28, 3, 129, 117, 103, 29, 2, 128, 125, 96, 30, 127, 124, 102] 100
+Check qubits: [16, 26, 35, 43, 85, 126] 6
+Covered fraction (no idle):  0.4595959595959596
+```
+
+También podemos imprimir algunas estadísticas de error.
+
+```python
+def circuit_errors(target, circ, error_type="cz"):
+    """
+    Pull per-resource error numbers from a Qiskit Target
+    for ONLY the qubits/edges actually used by `circ`.
+
+    Args:
+        target: qiskit.transpiler.Target (e.g., backend.target)
+        circ:   qiskit.QuantumCircuit
+        error_type: one of {"cz", "meas", "t1", "t2"}:
+            - "cz"   -> 2q CZ gate error on the circuit's used edges
+            - "meas" -> measurement error on the circuit's used qubits
+            - "t1"   -> T1 (converted to microseconds) on used qubits
+            - "t2"   -> T2 (converted to microseconds) on used qubits
+
+    Returns:
+        list[float] of the requested quantity for the active edges/qubits.
+    """
+
+    # Get all 2-qubit edges that appear in the circuit (as undirected pairs).
+    active_edges = active_gates(circ)  # e.g., {(0,1), (2,3), ...}
+
+    # Intersect those with the device coupling map (so we only query valid edges).
+    # Note: target.build_coupling_map().get_edges() yields directed pairs.
+    edges = [
+        edge
+        for edge in target.build_coupling_map().get_edges()
+        if tuple(sorted(edge)) in active_edges
+    ]
+
+    # Deduplicate direction: keep only one orientation of each edge.
+    undirected_edges = []
+    for edge in edges:
+        if (edge[1], edge[0]) not in undirected_edges:
+            undirected_edges.append(edge)
+    edges = undirected_edges  # (not used later—see note below)
+
+    # Accumulators for different error/physics quantities
+    cz_errors, meas_errors, t1_errors, t2_errors = [], [], [], []
+
+    # For every active (undirected) edge in the circuit, fetch its CZ error.
+    # NOTE: Uses active_gates(circ) again (undirected tuples). This assumes
+    # `target['cz']` accepts undirected indexing; many Targets store both directions.
+    for edge in active_gates(circ):
+        cz_errors.append(target["cz"][edge].error)
+
+    # For every active qubit, fetch measure error and T1/T2 (converted to µs).
+    for qubit in active_qubits(circ):
+        meas_errors.append(target["measure"][(qubit,)].error)
+        t1_errors.append(
+            target.qubit_properties[qubit].t1 * 1e6
+        )  # seconds -> microseconds
+        t2_errors.append(
+            target.qubit_properties[qubit].t2 * 1e6
+        )  # seconds -> microseconds
+
+    # Select which set to return.
+    if error_type == "cz":
+        return cz_errors
+    elif error_type == "meas":
+        return meas_errors
+    elif error_type == "t1":
+        return t1_errors
+    else:
+        return t2_errors
+
+def active_qubits(circ):
+    """
+    Return a list of qubit indices that participate in at least one
+    non-delay, non-barrier instruction in `circ`.
+    """
+    active_qubits = set()
+    for inst in circ.data:
+        # Skip scheduling artifacts that don't act on state
+        if (
+            inst.operation.name != "delay"
+            and inst.operation.name != "barrier"
+        ):
+            for qubit in inst.qubits:
+                q = circ.find_bit(
+                    qubit
+                ).index  # map Qubit object -> integer index
+                active_qubits.add(q)
+    return list(active_qubits)
+
+def active_gates(circ):
+    """
+    Return a set of undirected 2-qubit edges (i, j) that appear in `circ`.
+    """
+    used_2q_gates = set()
+    for inst in circ:
+        if inst.operation.num_qubits == 2:
+            qs = inst.qubits
+            # map Qubit objects -> indices, then sort to make the edge undirected
+            qs = sorted([circ.find_bit(q).index for q in qs])
+            used_2q_gates.add(tuple(sorted(qs)))
+    return used_2q_gates
+
+# ---- Print summary statistics ----
+cz_errors = circuit_errors(backend.target, qc, error_type="cz")
+meas_errors = circuit_errors(backend.target, qc, error_type="meas")
+t1_errors = circuit_errors(backend.target, qc, error_type="t1")
+t2_errors = circuit_errors(backend.target, qc, error_type="t2")
+
+np.set_printoptions(linewidth=np.inf)
+print(
+    f"cz errors: \n mean: {np.round(np.mean(cz_errors), 3)}, max: {np.round(np.max(cz_errors), 3)}"
+)
+print(
+    f"meas errors: \n mean: {np.round(np.mean(meas_errors), 3)}, max: {np.round(np.max(meas_errors), 3)}"
+)
+print(
+    f"t1 errors: \n mean: {np.round(np.mean(t1_errors), 1)}, min: {np.round(np.min(t1_errors), 1)}"
+)
+print(
+    f"t2 errors: \n mean: {np.round(np.mean(t2_errors), 1)}, min: {np.round(np.min(t2_errors), 1)}"
+)
+```
+
+```text
+cz errors:
+ mean: 0.002, max: 0.012
+meas errors:
+ mean: 0.014, max: 0.121
+t1 errors:
+ mean: 267.9, min: 23.6
+t2 errors:
+ mean: 155.9, min: 13.9
+```
+
+Como anteriormente, podemos simular el circuito primero en ausencia de ruido para asegurar la corrección del circuito de preparación del estado GHZ.
+
+```python
+# --- Simulate to ensure correctness ---
+
+qc_meas = qc.copy()
+
+# Add measurements to the GHZ qubits
+c1 = ClassicalRegister(len(ghz_qubits), "c1")
+qc_meas.add_register(c1)
+for q, c in zip(ghz_qubits, c1):
+    qc_meas.measure(q, c)
+
+# Add measurements to the check qubits
+if len(checks) > 0:
+    c2 = ClassicalRegister(len(checks), "c2")
+    qc_meas.add_register(c2)
+    for q, c in zip(checks, c2):
+        qc_meas.measure(q, c)
+
+# Simulate the circuit with stabilizer method
+sim_stab = AerSimulator(method="stabilizer")
+res = sim_stab.run(qc_meas, shots=1000).result()
+counts = res.get_counts()
+print("Stabilizer simulation result:")
+print(counts)
+
+# Rename keys to "0 0" and "0 1" for easier plotting
+# First len(checks) bits are check bits, rest are GHZ bits
+keys = list(counts.keys())
+for key in keys:
+    check_bits = key[: len(checks)]
+    ghz_bits = key[(len(checks) + 1) :]
+    if set(check_bits) == {"0"} and set(ghz_bits) == {"0"}:
+        counts["0 0"] = counts.pop(key)
+    elif set(check_bits) == {"0"} and set(ghz_bits) == {"1"}:
+        counts["0 1"] = counts.pop(key)
+    else:
+        continue
+
+plot_histogram(counts)
+```
+
+```text
+Stabilizer simulation result:
+{'000000 1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111': 525, '000000 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000': 475}
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/b905e875-1.avif)
+
+Como era de esperar, los qubits de verificación se miden todos como ceros, y hemos preparado exitosamente el estado GHZ.
+### Paso 3: Ejecutar utilizando las primitivas de Qiskit
+Ahora estamos listos para ejecutar el circuito en hardware real y demostrar cómo el protocolo de detección de errores puede capturar errores en la preparación del estado GHZ.
+
+```python
+BAD_QUBITS = []  # specify any additional bad qubits to avoid (this is specific to the chosen backend)
+SHOTS = 10000  # number of shots
+```
+
+Definimos una función auxiliar para agregar mediciones al circuito GHZ.
+
+```python
+def add_measurements(qc, ghz_qubits, checks):
+    # --- Measure each set of qubits into different classical registers to facilitate post-processing ---
+
+    # Add measurements to the GHZ qubits
+    c1 = ClassicalRegister(len(ghz_qubits), "c1")
+    qc.add_register(c1)
+    for q, c in zip(ghz_qubits, c1):
+        qc.measure(q, c)
+
+    # Add measurements to the check qubits
+    c2 = ClassicalRegister(len(checks), "c2")
+    qc.add_register(c2)
+    for q, c in zip(checks, c2):
+        qc.measure(q, c)
+
+    return qc
+```
+
+Antes de la ejecución, dibujamos la disposición de los qubits GHZ y los qubits de verificación en el hardware seleccionado.
+
+```python
+# Plot the layout of GHZ and check qubits on the device
+plot_gate_map(
+    backend,
+    label_qubits=True,
+    line_width=20,
+    line_color=[
+        "black"
+        if edge[0] in ghz_qubits + checks and edge[1] in ghz_qubits + checks
+        else "lightgrey"
+        for edge in backend.coupling_map.graph.edge_list()
+    ],
+    qubit_color=[
+        "blue"
+        if i in ghz_qubits
+        else "salmon"
+        if i in checks
+        else "lightgrey"
+        for i in range(0, backend.num_qubits)
+    ],
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/d0faf114-0.avif)
+
+```python
+qc.draw("mpl", idle_wires=False, fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/78c8c2b6-0.avif)
+
+Ahora agregamos las mediciones.
+
+```python
+qc = add_measurements(qc, ghz_qubits, checks)
+```
+
+La cadena de programación (scheduling pipeline) a continuación fija la temporización, elimina las barreras, simplifica los retardos e inyecta desacoplamiento dinámico, todo mientras preserva los tiempos de operación originales.
+
+```python
+# The scheduling consists of first inserting delays while barriers are still there
+# Then removing the barriers and consolidating the delays, so that the operations do not move in time
+# Lastly we replace delays with dynamical decoupling
+collect_function = partial(
+    collect_using_filter_function,
+    filter_function=(lambda node: node.op.name == "delay"),
+    split_blocks=True,
+    min_block_size=2,
+    split_layers=False,
+    collect_from_back=False,
+    max_block_width=None,
+)
+
+collapse_function = partial(
+    collapse_to_operation,
+    collapse_function=(
+        lambda circ: Delay(sum(inst.operation.duration for inst in circ))
+    ),
+)
+
+class Unschedule(AnalysisPass):
+    """Removes a property from the passmanager property set so that the circuit looks unscheduled, so we can schedule it again."""
+
+    def run(self, dag):
+        del self.property_set["node_start_time"]
+
+def build_passmanager(backend, dd_qubits=None):
+    pm = generate_preset_pass_manager(
+        target=backend.target,
+        layout_method="trivial",
+        optimization_level=2,
+        routing_method="none",
+    )
+
+    pm.scheduling = PassManager(
+        [
+            ALAPScheduleAnalysis(target=backend.target),
+            PadDelay(target=backend.target),
+            RemoveBarriers(),
+            Unschedule(),
+            CollectAndCollapse(
+                collect_function=collect_function,
+                collapse_function=collapse_function,
+            ),
+            ALAPScheduleAnalysis(target=backend.target),
+            PadDynamicalDecoupling(
+                dd_sequence=[XGate(), RZGate(-np.pi), XGate(), RZGate(np.pi)],
+                spacing=[1 / 4, 1 / 2, 0, 0, 1 / 4],
+                target=backend.target,
+                qubits=dd_qubits,
+            ),
+        ]
+    )
+
+    return pm
+```
+
+Ahora podemos utilizar el gestor de pasadas personalizado para transpilar el circuito para el backend seleccionado.
+
+```python
+# Transpile the circuits for the backend
+pm = build_passmanager(backend, ghz_qubits)
+
+# Instruction set architecture (ISA) level circuit after scheduling and DD insertion
+isa_circuit = pm.run(qc)
+
+# Draw after scheduling and DD insertion
+# timeline_drawer(isa_circuit, show_idle=False, time_range=(0, 1000), target=backend.target)
+```
+
+```python
+isa_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/0c4b279b-0.avif)
+
+Luego enviamos el trabajo utilizando la primitiva Sampler de Qiskit Runtime.
+
+```python
+# Select the sampler options
+sampler = Sampler(mode=backend)
+sampler.options.default_shots = SHOTS
+sampler.options.dynamical_decoupling.enable = False
+sampler.options.execution.rep_delay = 0.00025
+
+# Submit the job
+print("Submitting sampler job")
+ghz_job = sampler.run([isa_circuit])
+
+print(ghz_job.job_id())
+```
+
+```text
+d493f17nmdfs73abf9qg
+```
+
+### Paso 4: Post-procesar y devolver el resultado en el formato clásico deseado
+Ahora podemos recuperar y analizar los resultados del trabajo del Sampler.
+
+```python
+# Retrieve the job results
+job_result = ghz_job.result()
+```
+
+```python
+# Get the counts from GHZ and check qubit measurements
+ghz_counts = job_result[0].data.c1.get_counts()
+checks_counts = job_result[0].data.c2.get_counts()
+```
+
+```python
+# Post-process to get unflagged GHZ counts (i.e., check bits are all '0')
+joined_counts = job_result[0].join_data().get_counts()
+unflagged_counts = {}
+for key, count in joined_counts.items():
+    check_bits = key[: len(checks)]
+    ghz_bits = key[len(checks) :]
+    if set(check_bits) == {"0"}:
+        unflagged_counts[ghz_bits] = count
+```
+
+```python
+# Get top 20 outcomes by frequency from the unflagged counts
+top_counts = dict(
+    sorted(unflagged_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+)
+
+# Rename keys for better visualization
+top_counts_renamed = {}
+i = 0
+for key, count in top_counts.items():
+    if set(key) == {"0"}:
+        top_counts_renamed["all 0s"] = count
+    elif set(key) == {"1"}:
+        top_counts_renamed["all 1s"] = count
+    else:
+        top_counts_renamed[f"other_{i}"] = count
+        i += 1
+
+plot_histogram(top_counts_renamed, figsize=(12, 7))
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-detection/extracted-outputs/d7902975-0.avif)
+
+En el histograma anterior, graficamos 20 mediciones de cadenas de bits de los qubits GHZ que no fueron marcadas por los qubits de verificación. Como era de esperar, las cadenas de bits de todos ceros y todos unos tienen los conteos más altos. Observe que algunas cadenas de bits erróneas con pesos de error bajos no fueron capturadas por la detección de errores. Los conteos más altos se encuentran aún en las cadenas de bits esperadas.
+## Discusión
+
+En este tutorial, mostramos cómo implementar una técnica de detección de errores de bajo costo utilizando códigos espacio-temporales, y demostramos su aplicación en el mundo real para la preparación de estados GHZ en hardware. Consulte [[3]](https://arxiv.org/abs/2510.09520) para explorar más detalles técnicos de la preparación de estados GHZ. Además de la detección de errores, los autores utilizan mitigación de errores de lectura con M3 y TREX y realizan técnicas de descomputación temporal para preparar estados GHZ de alta fidelidad.
+### Referencias
+- [1] Martiel, S., & Javadi-Abhari, A. (2025). Low-overhead error detection with spacetime codes. *arXiv preprint arXiv:2504.15725.*
+- [2] van den Berg, E., Bravyi, S., Gambetta, J. M., Jurcevic, P., Maslov, D., & Temme, K. (2023). Single-shot error mitigation by coherent Pauli checks. *Physical Review Research*, 5(3), 033193.
+- [3] Javadi-Abhari, A., Martiel, S., Seif, A., Takita, M., & Wei, K. X. (2025). Big cats: entanglement in 120 qubits and beyond. arXiv preprint arXiv:2510.09520.
