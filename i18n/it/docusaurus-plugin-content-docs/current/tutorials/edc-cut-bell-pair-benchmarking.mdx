@@ -1,0 +1,497 @@
+---
+title: "Benchmark di circuiti dinamici con coppie di Bell tagliate"
+sidebar_label: "Benchmark di circuiti dinamici con coppie di Bell tagliate"
+description: "Benchmark delle capacità dei circuiti dinamici con il protocollo delle coppie di Bell tagliate"
+notebook_path: "docs/tutorials/edc-cut-bell-pair-benchmarking.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/edc-cut-bell-pair-benchmarking.ipynb" />
+
+
+
+{/* cspell:ignore LOCC */}
+{/* cspell:ignore bitstr */}
+{/* cspell:ignore textcoords */}
+{/* cspell:ignore xytext */}
+{/* cspell:ignore fontsize */}
+{/* cspell:ignore  Carrera */}
+{/* cspell:ignore  Ristè */}
+*Stima di utilizzo: 22 secondi su un processore Heron r2 (NOTA: questa è solo una stima. Il tempo di esecuzione effettivo può variare.)*
+## Contesto
+
+L'hardware quantistico è tipicamente limitato a interazioni locali, ma molti algoritmi richiedono di correlare qubit distanti o persino [qubit su processori separati](#references). I circuiti dinamici - ovvero, circuiti con misurazioni a metà circuito e feedforward - forniscono un modo per superare queste limitazioni utilizzando la comunicazione classica in tempo reale per implementare efficacemente operazioni quantistiche non locali. In questo approccio, i risultati delle misurazioni da una parte di un circuito (o da una QPU) possono attivare condizionalmente porte su un'altra, permettendoci di teletrasportare l'entanglement attraverso lunghe distanze. Questo costituisce la base degli schemi di **operazioni locali e comunicazione classica (LOCC)**, dove consumiamo stati risorsa entangled (coppie di Bell) e comunichiamo i risultati delle misurazioni in modo classico per collegare qubit distanti.
+
+Un uso promettente della LOCC è realizzare porte CNOT virtuali a lungo raggio tramite teletrasporto, come mostrato nel [tutorial sull'entanglement a lungo raggio](/tutorials/long-range-entanglement). Invece di una CNOT diretta a lungo raggio (che la connettività hardware potrebbe non permettere), creiamo coppie di Bell ed eseguiamo un'implementazione di porta basata sul teletrasporto. Tuttavia, la fedeltà di tali operazioni dipende dalle caratteristiche dell'hardware. La decoerenza dei qubit durante il ritardo necessario (in attesa dei risultati delle misurazioni) e la latenza della comunicazione classica possono degradare lo stato entangled. Inoltre, gli errori sulle misurazioni a metà circuito sono più difficili da correggere rispetto agli errori sulle misurazioni finali, poiché si propagano al resto del circuito attraverso le porte condizionali.
+
+Nell'[esperimento di riferimento](#references), gli autori introducono un benchmark di fedeltà delle coppie di Bell per identificare quali parti di un dispositivo sono più adatte per l'entanglement basato su LOCC. L'idea è eseguire un piccolo circuito dinamico su ogni gruppo di quattro qubit connessi nel processore. Questo circuito a quattro qubit crea prima una coppia di Bell su due qubit centrali, quindi li usa come risorsa per correlare i due qubit ai margini utilizzando LOCC. Concretamente, i qubit 1 e 2 vengono preparati in una coppia di Bell non tagliata localmente (usando una Hadamard e una CNOT), e poi una routine di teletrasporto consuma quella coppia di Bell per correlare i qubit 0 e 3. I qubit 1 e 2 vengono misurati durante l'esecuzione del circuito, e in base a quei risultati, vengono applicate correzioni di Pauli (una X sul qubit 3 e Z sul qubit 0). I qubit 0 e 3 rimangono quindi in uno stato di Bell alla fine del circuito.
+
+Per quantificare la qualità di questa coppia entangled finale, misuriamo i suoi stabilizzatori: in particolare, la parità nella base $Z$ ($Z_0Z_3$) e nella base $X$ ($X_0X_3$). Per una coppia di Bell perfetta, entrambe queste aspettative sono uguali a +1. In pratica, il rumore dell'hardware ridurrà questi valori. Pertanto, ripetiamo il circuito due volte per ogni coppia di qubit: un circuito misura i qubit 0 e 3 nella base $Z$, e un altro li misura nella base $X$. Dai risultati, otteniamo una stima di $\langle Z_0Z_3\rangle$ e $\langle X_0X_3\rangle$ per quella coppia di qubit. Utilizziamo l'errore quadratico medio (MSE) di questi stabilizzatori rispetto al valore ideale (1) come metrica semplice della fedeltà dell'entanglement. Un MSE più basso significa che i due qubit hanno raggiunto uno stato di Bell più vicino all'ideale (fedeltà più alta), mentre un MSE più alto indica più errore. Scansionando questo esperimento attraverso il dispositivo, possiamo fare il benchmark della capacità di misurazione e feedforward di diversi gruppi di qubit e identificare le coppie migliori di qubit per le operazioni LOCC.
+
+Questo tutorial dimostra l'esperimento su un dispositivo IBM Quantum&reg; per illustrare come i circuiti dinamici possono essere utilizzati per generare e valutare l'entanglement tra qubit distanti. Mapperemo tutte le catene lineari a quattro qubit sul dispositivo, eseguiremo il circuito di teletrasporto su ciascuna, e poi visualizzeremo la distribuzione dei valori MSE. Questa procedura end-to-end mostra come sfruttare Qiskit Runtime e le funzionalità dei circuiti dinamici per informare scelte consapevoli dell'hardware per tagliare circuiti o distribuire algoritmi quantistici attraverso un sistema modulare.
+## Requisiti
+
+Prima di iniziare questo tutorial, assicuratevi di avere installato quanto segue:
+
+* Qiskit SDK v2.0 o successivo, con supporto per la [visualizzazione](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime v0.40 o successivo (`pip install qiskit-ibm-runtime`)
+## Configurazione
+
+```python
+from qiskit import QuantumCircuit
+
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
+from qiskit.transpiler import generate_preset_pass_manager
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+def create_bell_stab(initial_layouts):
+    """
+    Create a circuit for a 1D chain of qubits (number of qubits must be a multiple of 4),
+    where a middle Bell pair is consumed to create a Bell at the edge.
+    Takes as input a list of lists, where each element of the list is a
+    1D chain of physical qubits that is used as the initial_layout for the transpiled circuit.
+    Returns a list of length-2 tuples, each tuple contains a circuit to measure the ZZ stabilizer and
+    a circuit to measure the XX stabilizer of the edge Bell state.
+    """
+    bell_circuits = []
+    for (
+        initial_layout
+    ) in initial_layouts:  # Iterate over chains of physical qubits
+        assert (
+            len(initial_layout) % 4 == 0
+        ), f"The length of the chain must be a multiple of 4, len(inital_layout)={len(initial_layout)}"
+        num_pairs = len(initial_layout) // 4
+
+        bell_parallel = QuantumCircuit(4 * num_pairs, 4 * num_pairs)
+
+        for pair_idx in range(num_pairs):
+            (q0, q1, q2, q3) = (
+                pair_idx * 4,
+                pair_idx * 4 + 1,
+                pair_idx * 4 + 2,
+                pair_idx * 4 + 3,
+            )
+            (c0, c1) = pair_idx * 4, pair_idx * 4 + 3  # edge qubits
+            (ca0, ca1) = pair_idx * 4 + 1, pair_idx * 4 + 2  # middle qubits
+
+            bell_parallel.h(q0)
+            bell_parallel.h(q1)
+            bell_parallel.cx(q1, q2)
+            bell_parallel.cx(q0, q1)
+            bell_parallel.cx(q2, q3)
+            bell_parallel.h(q2)
+
+        # add barrier BEFORE measurements and add id in conditional
+        bell_parallel.barrier()
+        for pair_idx in range(num_pairs):
+            (q0, q1, q2, q3) = (
+                pair_idx * 4,
+                pair_idx * 4 + 1,
+                pair_idx * 4 + 2,
+                pair_idx * 4 + 3,
+            )
+            (ca0, ca1) = pair_idx * 4 + 1, pair_idx * 4 + 2  # middle qubits
+
+            bell_parallel.measure(q1, ca0)
+            bell_parallel.measure(q2, ca1)
+        # bell_parallel.barrier() #remove barrier after measurement
+
+        for pair_idx in range(num_pairs):
+            (q0, q1, q2, q3) = (
+                pair_idx * 4,
+                pair_idx * 4 + 1,
+                pair_idx * 4 + 2,
+                pair_idx * 4 + 3,
+            )
+            (ca0, ca1) = pair_idx * 4 + 1, pair_idx * 4 + 2  # middle qubits
+            with bell_parallel.if_test((ca0, 1)):
+                bell_parallel.x(q3)
+            with bell_parallel.if_test((ca1, 1)):
+                bell_parallel.z(q0)
+                bell_parallel.id(q0)  # add id here for correct alignment
+
+        bell_zz = bell_parallel.copy()
+        bell_zz.barrier()
+        bell_xx = bell_parallel.copy()
+        bell_xx.barrier()
+        for pair_idx in range(num_pairs):
+            (q0, q1, q2, q3) = (
+                pair_idx * 4,
+                pair_idx * 4 + 1,
+                pair_idx * 4 + 2,
+                pair_idx * 4 + 3,
+            )
+            bell_xx.h(q0)
+            bell_xx.h(q3)
+        bell_xx.barrier()
+        for pair_idx in range(num_pairs):
+            (q0, q1, q2, q3) = (
+                pair_idx * 4,
+                pair_idx * 4 + 1,
+                pair_idx * 4 + 2,
+                pair_idx * 4 + 3,
+            )
+            (c0, c1) = pair_idx * 4, pair_idx * 4 + 3  # edge qubits
+
+            bell_zz.measure(q0, c0)
+            bell_zz.measure(q3, c1)
+
+            bell_xx.measure(q0, c0)
+            bell_xx.measure(q3, c1)
+
+        bell_circuits.append(bell_zz)
+        bell_circuits.append(bell_xx)
+
+    return bell_circuits
+
+def get_mse(result, initial_layouts):
+    """
+    given a result object and the initial layouts, returns a dict of layouts and their mse
+    """
+    layout_mse = {}
+    for layout_idx, initial_layout in enumerate(initial_layouts):
+        layout_mse[tuple(initial_layout)] = {}
+
+        num_pairs = len(initial_layout) // 4
+
+        counts_zz = result[2 * layout_idx].data.c.get_counts()
+        total_shots = sum(counts_zz.values())
+
+        # Get ZZ expectation value
+        exp_zz_list = []
+        for pair_idx in range(num_pairs):
+            exp_zz = 0
+            for bitstr, shots in counts_zz.items():
+                bitstr = bitstr[::-1]  # reverse order to big endian
+                b1, b0 = (
+                    bitstr[pair_idx * 4],
+                    bitstr[pair_idx * 4 + 3],
+                )  # parse bitstring to get edge measurements for each 4-q chain
+                z_val0 = 1 if b0 == "0" else -1
+                z_val1 = 1 if b1 == "0" else -1
+                exp_zz += z_val0 * z_val1 * shots
+            exp_zz /= total_shots
+            exp_zz_list.append(exp_zz)
+
+        counts_xx = result[2 * layout_idx + 1].data.c.get_counts()
+        total_shots = sum(counts_xx.values())
+
+        # Get XX expectation value
+        exp_xx_list = []
+        for pair_idx in range(num_pairs):
+            exp_xx = 0
+            for bitstr, shots in counts_xx.items():
+                bitstr = bitstr[::-1]  # reverse order to big endian
+                b1, b0 = (
+                    bitstr[pair_idx * 4],
+                    bitstr[pair_idx * 4 + 3],
+                )  # parse bitstring to get edge measurements for each 4-q chain
+                x_val0 = 1 if b0 == "0" else -1
+                x_val1 = 1 if b1 == "0" else -1
+                exp_xx += x_val0 * x_val1 * shots
+            exp_xx /= total_shots
+            exp_xx_list.append(exp_xx)
+
+        mse_list = [
+            ((exp_zz - 1) ** 2 + (exp_xx - 1) ** 2) / 2
+            for exp_zz, exp_xx in zip(exp_zz_list, exp_xx_list)
+        ]
+
+        print(f"layout {initial_layout}")
+        for idx in range(num_pairs):
+            layout_mse[tuple(initial_layout)][
+                tuple(initial_layout[4 * idx : 4 * idx + 4])
+            ] = mse_list[idx]
+            print(
+                f"qubits: {initial_layout[4*idx:4*idx+4]}, mse:, {round(mse_list[idx],4)}"
+            )
+            # print(f'exp_zz: {round(exp_zz_list[idx],4)}, exp_xx: {round(exp_xx_list[idx],4)}')
+        print(" ")
+    return layout_mse
+
+def plot_mse_ecdfs(layouts_mse, combine_layouts=False):
+    """
+    Plot CDF of MSE data for multiple layouts. Optionally combine all data in a single CDF
+    """
+
+    if not combine_layouts:
+        for initial_layout, layouts in layouts_mse.items():
+            sorted_layouts = dict(
+                sorted(layouts.items(), key=lambda item: item[1])
+            )  # sort layouts by mse
+
+            # get layouts and mses
+            layout_list = list(sorted_layouts.keys())
+            mse_list = np.asarray(list(sorted_layouts.values()))
+
+            # convert to numpy
+            x = np.array(mse_list)
+            y = np.arange(1, len(x) + 1) / len(x)
+
+            # Prepend (x[0], 0) to start CDF at zero
+            x = np.insert(x, 0, x[0])
+            y = np.insert(y, 0, 0)
+
+            # Create the plot
+            plt.plot(
+                x,
+                y,
+                marker="x",
+                linestyle="-",
+                label=f"qubits: {initial_layout}",
+            )
+
+            # add qubits labels for the edge pairs
+            for xi, yi, q in zip(x[1:], y[1:], layout_list):
+                plt.annotate(
+                    [q[0], q[3]],
+                    (xi, yi),
+                    textcoords="offset points",
+                    xytext=(5, -10),
+                    ha="left",
+                    fontsize=8,
+                )
+
+    elif combine_layouts:
+        all_layouts = {}
+        all_initial_layout = []
+        for (
+            initial_layout,
+            layouts,
+        ) in layouts_mse.items():  # puts together all layout information
+            all_layouts.update(layouts)
+            all_initial_layout += initial_layout
+
+        sorted_layouts = dict(
+            sorted(all_layouts.items(), key=lambda item: item[1])
+        )  # sort layouts by mse
+
+        # get layouts and mses
+        layout_list = list(sorted_layouts.keys())
+        mse_list = np.asarray(list(sorted_layouts.values()))
+
+        # convert to numpy
+        x = np.array(mse_list)
+        y = np.arange(1, len(x) + 1) / len(x)
+
+        # Prepend (x[0], 0) to start CDF at zero
+        x = np.insert(x, 0, x[0])
+        y = np.insert(y, 0, 0)
+
+        # Create the plot
+        plt.plot(
+            x,
+            y,
+            marker="x",
+            linestyle="-",
+            label=f"qubits: {sorted(list(set(all_initial_layout)))}",
+        )
+
+        # add qubit labels for the edge pairs
+        for xi, yi, q in zip(x[1:], y[1:], layout_list):
+            plt.annotate(
+                [q[0], q[3]],
+                (xi, yi),
+                textcoords="offset points",
+                xytext=(5, -10),
+                ha="left",
+                fontsize=8,
+            )
+
+    plt.xscale("log")
+    plt.xlabel("Mean squared error of ⟨ZZ⟩ and ⟨XX⟩")
+    plt.ylabel("Cumulative distribution function")
+    plt.title("CDF for different initial layouts")
+    plt.grid(alpha=0.3)
+    plt.show()
+```
+
+## Passo 1: Mappare gli input classici a un problema quantistico
+
+Il primo passo consiste nel creare un insieme di circuiti quantistici per fare il benchmark di tutti i collegamenti candidati di coppie di Bell adattati alla topologia del dispositivo. Cerchiamo programmaticamente nella mappa di accoppiamento del dispositivo tutte le catene di quattro qubit connesse linearmente. Ogni catena di questo tipo (etichettata con gli indici dei qubit $[q0-q1-q2-q3]$) funge da caso di test per il circuito di scambio di entanglement. Identificando tutti i possibili percorsi di lunghezza 4, garantiamo la massima copertura per il possibile raggruppamento di qubit che potrebbero realizzare il protocollo.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True)
+```
+
+Generiamo queste catene utilizzando una funzione di supporto che esegue una ricerca greedy sul grafo del dispositivo. Restituisce "strisce" di quattro catene a quattro qubit raggruppate in gruppi da 16 qubit (i circuiti dinamici attualmente vincolano la dimensione del registro di misurazione a `16` qubit). Il raggruppamento ci consente di eseguire più esperimenti a quattro qubit in parallelo su parti distinte del chip e di utilizzare in modo efficiente l'intero dispositivo. Ogni striscia da 16 qubit contiene quattro catene disgiunte, il che significa che nessun qubit viene riutilizzato all'interno di quel gruppo. Ad esempio, una striscia potrebbe consistere delle catene $[0-1-2-3]$, $[4-5-6-7]$, $[8-9-10-11]$ e $[12-13-14-15]$ tutte impacchettate insieme. Qualsiasi qubit che non è stato incluso in una striscia viene restituito nella variabile `leftover`.
+
+```python
+from itertools import chain
+from collections import defaultdict
+
+def stripes16_from_backend(backend):
+    """
+    Creates stripes of 16 qubits, four non-overlapping  four-qubit chains, that cover as much of
+    the coupling map as possible. Returns any unused qubits as leftovers.
+    """
+    # get the undirected adjacency list
+    edges = backend.coupling_map.get_edges()
+    graph = defaultdict(set)
+    for u, v in edges:
+        graph[u].add(v)
+        graph[v].add(u)
+
+    qubits = sorted(graph)  # all qubit indices that appear
+
+    # greedy search for 4-long linear chains (blocks) ────────────
+    used = set()  # qubits already placed in a block
+    blocks = []  # each block is a four-qubit list
+
+    for q in qubits:  # deterministic order for reproducibility
+        if q in used:
+            continue  # already consumed by earlier block
+
+        # depth-first "straight" walk of length 3 without revisiting nodes
+        def extend(path):
+            if len(path) == 4:
+                return path
+            tip = path[-1]
+            for nbr in sorted(graph[tip]):  # deterministic
+                if nbr not in path and nbr not in used:
+                    maybe = extend(path + [nbr])
+                    if maybe:
+                        return maybe
+            return None
+
+        block = extend([q])
+        if block:  # found a 4-node path
+            blocks.append(block)
+            used.update(block)
+
+    # bundle four four-qubit blocks into one 16-qubit stripe (max number of measurement compatible with if-else)
+    stripes = [
+        list(chain.from_iterable(blocks[i : i + 4]))
+        for i in range(0, len(blocks) // 4 * 4, 4)  # full groups of four
+    ]
+
+    leftovers = set(qubits) - set(chain.from_iterable(stripes))
+    return stripes, leftovers
+```
+
+```python
+initial_layouts, leftover = stripes16_from_backend(backend)
+```
+
+Successivamente, costruiamo il circuito per ogni striscia da 16 qubit. La routine esegue le seguenti operazioni per ogni catena:
+
+* Preparare una coppia di Bell centrale: applicare una Hadamard sul qubit 1 e una CNOT dal qubit 1 al qubit 2. Questo correla i qubit 1 e 2 (creando uno stato di Bell $|\Phi^+\rangle = (|00\rangle + |11\rangle)/\sqrt{2}$).
+* Correlare i qubit ai margini: applicare una CNOT dal qubit 0 al qubit 1, e una CNOT dal qubit 2 al qubit 3. Questo collega le coppie inizialmente separate in modo che i qubit 0 e 3 diventino correlati dopo i passi successivi. Viene anche applicata una Hadamard sul qubit 2 (questa, combinata con le CNOT precedenti, forma parte di una misurazione di Bell sui qubit 1 e 2). A questo punto, i qubit 0 e 3 non sono ancora correlati, ma i qubit 1 e 2 sono correlati con loro in uno stato più grande a quattro qubit.
+* Misurazioni a metà circuito e feedforward: i qubit 1 e 2 (i qubit centrali) vengono misurati nella base computazionale, producendo due bit classici. In base a quei risultati delle misurazioni, applichiamo operazioni condizionali: se la misurazione del qubit 1 (chiamiamo questo bit $m_{12}$) è 1, applichiamo una porta $X$ sul qubit 3; se la misurazione del qubit 2 ($m_{21}$) è 1, applichiamo una porta $Z$ sul qubit 0. Queste porte condizionali (realizzate utilizzando il costrutto Qiskit `if_test`/`if_else`) implementano le correzioni di teletrasporto standard. "Annullano" le inversioni casuali di Pauli che si verificano a causa della proiezione dei qubit 1 e 2, garantendo che i qubit 0 e 3 finiscano in uno stato di Bell noto, indipendentemente dai risultati delle misurazioni. Dopo questo passo, i qubit 0 e 3 dovrebbero idealmente essere correlati nello stato di Bell $|\Phi^+\rangle$.
+* Misurare gli stabilizzatori della coppia di Bell: dividiamo quindi in due versioni del circuito. Nella prima versione, misuriamo lo stabilizzatore $ZZ$ sui qubit 0 e 3. Nella seconda versione, misuriamo lo stabilizzatore $XX$ su questi qubit.
+
+Per ogni layout iniziale a quattro qubit, la funzione sopra restituisce due circuiti (uno per lo stabilizzatore $ZZ$, uno per lo stabilizzatore $XX$). Alla fine di questo passo, abbiamo un elenco di circuiti che coprono ogni catena a quattro qubit sul dispositivo. Questi circuiti includono misurazioni a metà circuito e operazioni condizionali (if/else), che sono le istruzioni chiave del circuito dinamico.
+
+```python
+circuits = create_bell_stab(initial_layouts)
+circuits[-1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/bd04755f-0.avif)
+
+
+## Step 2: Ottimizzare il problema per l'esecuzione su hardware quantistico
+
+Prima di eseguire i nostri circuiti su hardware reale, dobbiamo traspilarli per adattarli ai vincoli fisici del dispositivo. La transpilazione mapperà il circuito astratto sui qubit fisici e sul set di gate del dispositivo scelto. Poiché abbiamo già scelto qubit fisici specifici per ciascuna catena (fornendo un `initial_layout` al generatore di circuiti), utilizziamo il transpiler con `optimization_level=0` con quel layout fisso. Questo indica a Qiskit di non riassegnare i qubit né eseguire ottimizzazioni pesanti che potrebbero alterare la struttura del circuito. Vogliamo mantenere la sequenza delle operazioni (specialmente i gate condizionali) esattamente come specificato.
+
+```python
+isa_circuits = []
+for ind, init_layout in enumerate(initial_layouts):
+    pm = generate_preset_pass_manager(
+        optimization_level=0, backend=backend, initial_layout=init_layout
+    )
+    isa_circ = pm.run(circuits[ind * 2 : ind * 2 + 2])
+    isa_circuits.extend(isa_circ)
+```
+
+```python
+isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/3ad620f7-0.avif)
+
+## Step 3: Eseguire utilizzando le primitive Qiskit
+
+Ora possiamo eseguire l'esperimento sul dispositivo quantistico. Utilizziamo Qiskit Runtime e la sua primitiva Sampler per eseguire il batch di circuiti in modo efficiente.
+
+```python
+sampler = Sampler(mode=backend)
+sampler.options.environment.job_tags = ["cut-bell-pair-test"]
+job = sampler.run(isa_circuits)
+```
+
+## Step 4: Post-elaborare e restituire il risultato nel formato classico desiderato
+
+Il passaggio finale consiste nel calcolare la metrica dell'errore quadratico medio (MSE) per ciascun gruppo di qubit testato e riassumere i risultati. Per ciascuna catena, ora abbiamo i valori misurati di $\langle Z_0Z_3\rangle$ e $\langle X_0X_3\rangle$. Se i qubit 0 e 3 fossero perfettamente entangled in uno stato di Bell $|\Phi^+\rangle$, ci aspetteremmo che entrambi questi valori fossero +1. Quantifichiamo la deviazione utilizzando l'MSE:
+
+$$\text{MSE} = \frac{( \langle Z_0Z_3\rangle - 1)^2 + (\langle X_0X_3\rangle - 1)^2}{2}.$$
+
+Questo valore è 0 per una coppia di Bell perfetta e aumenta man mano che lo stato entangled diventa più rumoroso (con risultati casuali che danno un valore atteso intorno a 0, l'MSE si avvicinerebbe a 1). Il codice calcola questo MSE per ciascun gruppo di quattro qubit.
+
+I risultati rivelano un'ampia gamma di qualità dell'entanglement attraverso il dispositivo. Questo conferma la scoperta dell'articolo secondo cui può esserci una variazione di oltre un ordine di grandezza nella fedeltà dello stato di Bell a seconda di quali qubit fisici vengono utilizzati. In termini pratici, questo significa che alcune regioni o collegamenti nel chip sono molto migliori nell'eseguire misurazioni a metà circuito e operazioni di feedforward rispetto ad altri. Fattori come l'errore di lettura dei qubit, il tempo di vita dei qubit e il crosstalk probabilmente contribuiscono a queste differenze. Ad esempio, se una catena include un qubit di lettura particolarmente rumoroso, la misurazione a metà circuito potrebbe essere inaffidabile, portando a una scarsa fedeltà per quella coppia entangled (MSE elevato).
+
+```python
+layouts_mse = get_mse(job.result(), initial_layouts)
+```
+
+```text
+layout [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+qubits: [0, 1, 2, 3], mse:, 0.0312
+qubits: [4, 5, 6, 7], mse:, 0.0491
+qubits: [8, 9, 10, 11], mse:, 0.0711
+qubits: [12, 13, 14, 15], mse:, 0.0436
+
+layout [16, 23, 22, 21, 17, 27, 26, 25, 18, 31, 30, 29, 19, 35, 34, 33]
+qubits: [16, 23, 22, 21], mse:, 0.0197
+qubits: [17, 27, 26, 25], mse:, 0.113
+qubits: [18, 31, 30, 29], mse:, 0.0287
+qubits: [19, 35, 34, 33], mse:, 0.0433
+
+layout [36, 41, 42, 43, 37, 45, 46, 47, 38, 49, 50, 51, 39, 53, 54, 55]
+qubits: [36, 41, 42, 43], mse:, 0.1645
+qubits: [37, 45, 46, 47], mse:, 0.0409
+qubits: [38, 49, 50, 51], mse:, 0.0519
+qubits: [39, 53, 54, 55], mse:, 0.0829
+
+layout [56, 63, 62, 61, 57, 67, 66, 65, 58, 71, 70, 69, 59, 75, 74, 73]
+qubits: [56, 63, 62, 61], mse:, 0.8663
+qubits: [57, 67, 66, 65], mse:, 0.0375
+qubits: [58, 71, 70, 69], mse:, 0.0664
+qubits: [59, 75, 74, 73], mse:, 0.0291
+
+layout [76, 81, 82, 83, 77, 85, 86, 87, 78, 89, 90, 91, 79, 93, 94, 95]
+qubits: [76, 81, 82, 83], mse:, 0.0598
+qubits: [77, 85, 86, 87], mse:, 0.313
+qubits: [78, 89, 90, 91], mse:, 0.0679
+qubits: [79, 93, 94, 95], mse:, 0.0505
+
+layout [96, 103, 102, 101, 97, 107, 106, 105, 98, 111, 110, 109, 99, 115, 114, 113]
+qubits: [96, 103, 102, 101], mse:, 0.0302
+qubits: [97, 107, 106, 105], mse:, 0.0384
+qubits: [98, 111, 110, 109], mse:, 0.0375
+qubits: [99, 115, 114, 113], mse:, 0.1051
+
+layout [116, 121, 122, 123, 117, 125, 126, 127, 118, 129, 130, 131, 119, 133, 134, 135]
+qubits: [116, 121, 122, 123], mse:, 0.1624
+qubits: [117, 125, 126, 127], mse:, 0.7246
+qubits: [118, 129, 130, 131], mse:, 0.5919
+qubits: [119, 133, 134, 135], mse:, 0.5277
+
+layout [136, 143, 142, 141, 137, 147, 146, 145, 138, 151, 150, 149, 139, 155, 154, 153]
+qubits: [136, 143, 142, 141], mse:, 0.0383
+qubits: [137, 147, 146, 145], mse:, 1.0187
+qubits: [138, 151, 150, 149], mse:, 0.1531
+qubits: [139, 155, 154, 153], mse:, 0.0471
+```
+
+Infine, visualizziamo le prestazioni complessive tracciando la funzione di distribuzione cumulativa (CDF) dei valori MSE per tutte le catene. Il grafico CDF mostra la soglia MSE sull'asse x e la frazione di coppie di qubit che hanno al massimo quell'MSE sull'asse y. Questa curva inizia da zero e si avvicina a uno man mano che la soglia cresce per comprendere tutti i punti dati. Un aumento ripido vicino a un MSE basso indicherebbe che molte coppie hanno alta fedeltà; un aumento lento significa che molte coppie hanno errori maggiori. Annotiamo la CDF con le identità delle coppie migliori. Nel grafico, ogni punto nella CDF corrisponde all'MSE di una catena di quattro qubit, e etichettiamo il punto con la coppia di indici di qubit $[q0, q3]$ che erano entangled in quell'esperimento. Questo rende facile individuare quali coppie di qubit fisici sono i migliori performer (i punti più a sinistra sulla CDF).
+
+```python
+plot_mse_ecdfs(layouts_mse, combine_layouts=True)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/678ddac9-0.avif)
+
+## References

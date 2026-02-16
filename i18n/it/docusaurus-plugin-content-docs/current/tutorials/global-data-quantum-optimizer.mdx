@@ -1,0 +1,423 @@
+---
+title: "Ottimizzatore di Portfolio Quantistico - Una Funzione Qiskit di Global Data Quantum"
+sidebar_label: "Ottimizzatore di Portfolio Quantistico - Una Funzione Qiskit di Global Data Quantum"
+description: "Risolvete un problema di ottimizzazione dinamica su scala industriale utilizzando l'Ottimizzatore di Portfolio Quantistico di Global Data Quantum."
+notebook_path: "docs/tutorials/global-data-quantum-optimizer.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/global-data-quantum-optimizer.ipynb" />
+
+
+
+{/* cspell:ignore fontsize rebalance patheffects labelsize */}
+
+# Eseguite l'ottimizzazione dinamica di portfolio con l'Ottimizzatore di Portfolio di Global Data Quantum
+<Admonition type="note" title="Note">
+Le Funzioni Qiskit sono una funzionalità sperimentale disponibile solo per gli utenti dei piani IBM Quantum&reg; Premium Plan, Flex Plan e On-Prem (tramite l'API della IBM Quantum Platform). Sono in stato di rilascio in anteprima e soggette a modifiche.
+</Admonition>
+
+*Stima di utilizzo: Circa 55 minuti su un processore Heron r2. (NOTA: Questa è solo una stima. Il tempo di esecuzione effettivo può variare.)*
+## Contesto
+Il problema dell'ottimizzazione dinamica di portfolio mira a trovare la strategia di investimento ottimale su più periodi temporali per massimizzare il rendimento atteso del portfolio e minimizzare i rischi, spesso sotto determinati vincoli come budget, costi di transazione o avversione al rischio. A differenza dell'ottimizzazione di portfolio standard, che considera un singolo momento per ribilanciare il portfolio, la versione dinamica tiene conto della natura evolutiva degli asset e adatta gli investimenti in base ai cambiamenti nelle performance degli asset nel tempo.
+
+Questo tutorial dimostra come eseguire l'ottimizzazione dinamica di portfolio utilizzando la Funzione Qiskit Ottimizzatore di Portfolio Quantistico. Nello specifico, illustriamo come utilizzare questa funzione applicativa per risolvere un problema di allocazione degli investimenti su più passi temporali.
+
+L'approccio prevede la formulazione dell'ottimizzazione di portfolio come un problema multi-obiettivo di Ottimizzazione Binaria Quadratica Non Vincolata (QUBO). Specificamente, formuliamo la funzione QUBO $O$ per ottimizzare simultaneamente quattro diversi obiettivi:
+
+* Massimizzare la funzione di rendimento $F$
+* Minimizzare il rischio dell'investimento $R$
+* Minimizzare i costi di transazione $C$
+* Rispettare le restrizioni sugli investimenti, formulate in un termine aggiuntivo per minimizzare $P$.
+
+In sintesi, per affrontare questi obiettivi formuliamo la funzione QUBO come
+$$O = -F + \frac{\gamma}{2} R + C + \rho P,$$
+dove $\gamma$ è il coefficiente di avversione al rischio e $\rho$ è il coefficiente di rafforzamento delle restrizioni (moltiplicatore di Lagrange). La formulazione esplicita può essere trovata nell'Eq. (15) del nostro manoscritto [\[1\]](#references).
+
+Risolviamo utilizzando un metodo ibrido quantistico-classico basato sul Variational Quantum Eigensolver (VQE). In questa configurazione, il circuito quantistico stima la funzione di costo, mentre l'ottimizzazione classica viene eseguita utilizzando l'algoritmo Differential Evolution, consentendo una navigazione efficiente del panorama delle soluzioni. Il numero di qubit richiesti dipende da tre fattori principali: il numero di asset ``na``, il numero di periodi temporali ``nt`` e la risoluzione in bit utilizzata per rappresentare l'investimento ``nq``. Specificamente, il numero minimo di qubit nel nostro problema è `na*nt*nq`.
+
+Per questo tutorial, ci concentriamo sull'ottimizzazione di un portfolio regionale basato sull'indice spagnolo IBEX 35. Specificamente, utilizziamo un portfolio di sette asset come indicato nella tabella seguente:
+
+| **IBEX 35 Portfolio** | ACS.MC | ITX.MC | FER.MC | ELE.MC | SCYR.MC | AENA.MC | AMS.MC |
+|-----------------------|--------|--------|--------|--------|---------|---------|--------|
+
+Ribilanciamo il nostro portfolio in quattro passi temporali, ciascuno separato da un intervallo di 30 giorni a partire dal 1° novembre 2022. Ogni variabile di investimento è codificata utilizzando due bit. Questo si traduce in un problema che richiede 56 qubit per essere risolto.
+
+Utilizziamo l'ansatz Optimized Real Amplitudes, un adattamento personalizzato ed efficiente dal punto di vista hardware dell'ansatz standard Real Amplitudes, specificamente progettato per migliorare le prestazioni per questo tipo di problema di ottimizzazione finanziaria.
+
+L'esecuzione quantistica viene eseguita sul backend `ibm_torino`. Per una spiegazione dettagliata della formulazione del problema, della metodologia e della valutazione delle prestazioni, fate riferimento al manoscritto pubblicato [\[1\]](#references).
+## Requisiti
+
+```python
+!pip install qiskit-ibm-catalog
+!pip install pandas
+!pip install matplotlib
+!pip install yfinance
+```
+
+## Configurazione
+Per utilizzare l'Ottimizzatore di Portfolio Quantistico, selezionate la funzione tramite il Catalogo delle Funzioni Qiskit. Avete bisogno di un account IBM Quantum Premium Plan o Flex Plan con una licenza di Global Data Quantum per eseguire questa funzione.
+
+Per prima cosa, autenticatevi con la vostra [chiave API.](https://quantum.cloud.ibm.com) Quindi, caricate la funzione desiderata dal Catalogo delle Funzioni Qiskit. Qui, state accedendo alla funzione `quantum_portfolio_optimizer` dal catalogo utilizzando la classe `QiskitFunctionsCatalog`. Questa funzione ci consente di utilizzare il risolutore predefinito di Ottimizzazione di Portfolio Quantistico.
+
+```python
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+catalog = QiskitFunctionsCatalog(
+    channel="ibm_quantum_platform",
+    instance="INSTANCE_CRN",
+    token="YOUR_API_KEY",  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+)
+
+# Access function
+dpo_solver = catalog.load("global-data-quantum/quantum-portfolio-optimizer")
+```
+
+## Passo 1: Leggere il portfolio di input
+
+In questo passo, carichiamo i dati storici per i sette asset selezionati dall'indice IBEX 35, specificamente dal **1° novembre 2022** al **1° aprile 2023**.
+
+Recuperiamo i dati utilizzando l'API di Yahoo Finance, concentrandoci sui prezzi di chiusura. I dati vengono poi elaborati per garantire che tutti gli asset abbiano lo stesso numero di giorni con dati disponibili. Eventuali dati mancanti (giorni non di negoziazione) vengono gestiti in modo appropriato, assicurando che tutti gli asset siano allineati sulle stesse date.
+
+I dati sono strutturati in un DataFrame con formattazione coerente per tutti gli asset.
+
+```python
+import yfinance as yf
+import pandas as pd
+
+# List of IBEX 35 symbols
+symbols = [
+    "ACS.MC",
+    "ITX.MC",
+    "FER.MC",
+    "ELE.MC",
+    "SCYR.MC",
+    "AENA.MC",
+    "AMS.MC",
+]
+
+start_date = "2022-11-01"
+end_date = "2023-4-01"
+
+series_list = []
+symbol_names = [symbol.replace(".", "_") for symbol in symbols]
+
+# Create a full date index including weekends
+full_index = pd.date_range(start=start_date, end=end_date, freq="D")
+
+for symbol, name in zip(symbols, symbol_names):
+    print(f"Downloading data for {symbol}...")
+    data = yf.download(symbol, start=start_date, end=end_date)["Close"]
+    data.name = name
+
+    # Reindex to include weekends
+    data = data.reindex(full_index)
+
+    # Fill missing values (for example, weekends or holidays) by forward/backward fill
+    data.ffill(inplace=True)
+    data.bfill(inplace=True)
+
+    series_list.append(data)
+
+# Combine all series into a single DataFrame
+df = pd.concat(series_list, axis=1)
+
+# Convert index to string for consistency
+df.index = df.index.astype(str)
+
+# Convert DataFrame to dictionary
+assets = df.to_dict()
+```
+
+```text
+[*********************100%***********************]  1 of 1 completed
+```
+
+```text
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+```
+
+```text
+Downloading data for ACS.MC...
+Downloading data for ITX.MC...
+Downloading data for FER.MC...
+Downloading data for ELE.MC...
+Downloading data for SCYR.MC...
+Downloading data for AENA.MC...
+Downloading data for AMS.MC...
+```
+
+## Passo 2: Definire gli input del problema
+I parametri necessari per definire il problema QUBO sono configurati nel dizionario `qubo_settings`. Definiamo il numero di passi temporali (`nt`), il numero di bit per la specificazione dell'investimento (`nq`) e la finestra temporale per ogni passo (`dt`). Inoltre, impostiamo l'investimento massimo per asset, il coefficiente di avversione al rischio, la commissione di transazione e il coefficiente di restrizione (consultate [il nostro articolo](https://arxiv.org/pdf/2412.19150) per i dettagli sulla formulazione del problema). Queste impostazioni ci consentono di adattare il problema QUBO allo scenario di investimento specifico.
+
+```python
+qubo_settings = {
+    "nt": 4,
+    "nq": 2,
+    "dt": 30,
+    "max_investment": 5,  # maximum investment per asset is 2**nq/max_investment = 80%
+    "risk_aversion": 1000.0,
+    "transaction_fee": 0.01,
+    "restriction_coeff": 1.0,
+}
+```
+
+Il dizionario `optimizer_settings` configura il processo di ottimizzazione, includendo parametri come `num_generations` per il numero di iterazioni e `population_size` per il numero di soluzioni candidate per generazione. Altre impostazioni controllano aspetti come il tasso di ricombinazione, i job paralleli, la dimensione del batch e il range di mutazione. Inoltre, le impostazioni primitive, come `estimator_shots`, `estimator_precision` e `sampler_shots`, definiscono le configurazioni dell'estimator quantistico e del sampler per il processo di ottimizzazione.
+
+```python
+optimizer_settings = {
+    "de_optimizer_settings": {
+        "num_generations": 20,
+        "population_size": 40,
+        "recombination": 0.4,
+        "max_parallel_jobs": 5,
+        "max_batchsize": 4,
+        "mutation_range": [0.0, 0.25],
+    },
+    "optimizer": "differential_evolution",
+    "primitive_settings": {
+        "estimator_shots": 25_000,
+        "estimator_precision": None,
+        "sampler_shots": 100_000,
+    },
+}
+```
+
+<Admonition type="note">
+Il numero totale di circuiti dipende dai parametri di `optimizer_settings` ed è calcolato come ``(num_generations + 1) * population_size``.
+</Admonition>
+Il dizionario `ansatz_settings` configura l'ansatz del circuito quantistico. Il parametro `ansatz` specifica l'uso dell'approccio `"optimized_real_amplitudes"`, che è un ansatz efficiente dal punto di vista hardware progettato per problemi di ottimizzazione finanziaria. Inoltre, l'impostazione `multiple_passmanager` è abilitata per consentire più pass manager (incluso il pass manager locale predefinito di Qiskit e il servizio transpiler basato su AI di Qiskit) durante il processo di ottimizzazione, migliorando le prestazioni complessive e l'efficienza dell'esecuzione del circuito.
+
+```python
+ansatz_settings = {
+    "ansatz": "optimized_real_amplitudes",
+    "multiple_passmanager": False,
+}
+```
+
+Infine, eseguiamo l'ottimizzazione lanciando la funzione `dpo_solver.run()`, passando gli input preparati. Questi includono il dizionario dei dati degli asset (`assets`), la configurazione QUBO (`qubo_settings`), i parametri di ottimizzazione (`optimizer_settings`) e le impostazioni dell'ansatz del circuito quantistico (`ansatz_settings`). Inoltre, specifichiamo i dettagli di esecuzione come il backend e se applicare il post-processing ai risultati. Questo avvia il processo di ottimizzazione dinamica di portfolio sul backend quantistico selezionato.
+
+```python
+dpo_job = dpo_solver.run(
+    assets=assets,
+    qubo_settings=qubo_settings,
+    optimizer_settings=optimizer_settings,
+    ansatz_settings=ansatz_settings,
+    backend_name="ibm_torino",
+    previous_session_id=[],
+    apply_postprocess=True,
+)
+```
+
+## Step 3: Analizzare i risultati dell'ottimizzazione
+In questa sezione, estraiamo e visualizziamo la soluzione con il costo obiettivo più basso dai risultati dell'ottimizzazione. Insieme al costo obiettivo minimo, presentiamo anche le metriche chiave associate alla soluzione corrispondente, tra cui la deviazione delle restrizioni, il rapporto di Sharpe e il rendimento dell'investimento.
+
+```python
+# Get the results of the job
+dpo_result = dpo_job.result()
+
+# Show the solution strategy
+dpo_result["result"]
+```
+
+```text
+{'time_step_0': {'ACS.MC': 0.11764705882352941,
+  'ITX.MC': 0.20588235294117646,
+  'FER.MC': 0.38235294117647056,
+  'ELE.MC': 0.058823529411764705,
+  'SCYR.MC': 0.0,
+  'AENA.MC': 0.058823529411764705,
+  'AMS.MC': 0.17647058823529413},
+ 'time_step_1': {'ACS.MC': 0.11428571428571428,
+  'ITX.MC': 0.14285714285714285,
+  'FER.MC': 0.2,
+  'ELE.MC': 0.02857142857142857,
+  'SCYR.MC': 0.42857142857142855,
+  'AENA.MC': 0.0,
+  'AMS.MC': 0.08571428571428572},
+ 'time_step_2': {'ACS.MC': 0.0,
+  'ITX.MC': 0.09375,
+  'FER.MC': 0.3125,
+  'ELE.MC': 0.34375,
+  'SCYR.MC': 0.0,
+  'AENA.MC': 0.0,
+  'AMS.MC': 0.25},
+ 'time_step_3': {'ACS.MC': 0.3939393939393939,
+  'ITX.MC': 0.09090909090909091,
+  'FER.MC': 0.12121212121212122,
+  'ELE.MC': 0.18181818181818182,
+  'SCYR.MC': 0.0,
+  'AENA.MC': 0.0,
+  'AMS.MC': 0.21212121212121213}}
+```
+
+```python
+import pandas as pd
+
+# Get results from the job
+dpo_result = dpo_job.result()
+
+# Convert metadata to a DataFrame, excluding 'session_id'
+df = pd.DataFrame(dpo_result["metadata"]["all_samples_metrics"])
+
+# Find the minimum objective cost
+min_cost = df["objective_costs"].min()
+print(f"Minimum Objective Cost Found: {min_cost:.2f}")
+
+# Extract the row with the lowest cost
+best_row = df[df["objective_costs"] == min_cost].iloc[0]
+
+# Display the results associated with the best solution
+print("Best Solution:")
+print(f"  - Restriction Deviation: {best_row['rest_breaches']}%")
+print(f"  - Sharpe Ratio: {best_row['sharpe_ratios']:.2f}")
+print(f"  - Return: {best_row['returns']:.2f}")
+```
+
+```text
+Minimum Objective Cost Found: -3.67
+Best Solution:
+  - Restriction Deviation: 40.0%
+  - Sharpe Ratio: 14.54
+  - Return: 0.28
+```
+
+Il codice seguente mostra come visualizzare e confrontare la distribuzione dei costi di un algoritmo di ottimizzazione con una distribuzione di campionamento casuale. Allo stesso modo, esploriamo il panorama della funzione obiettivo QUBO (che può essere caricata dall'output della funzione) valutandola con investimenti casuali. Tracciamo entrambe le distribuzioni normalizzate in ampiezza per un confronto più agevole di come il processo di ottimizzazione differisca dal campionamento casuale in termini di costo. Inoltre, il risultato ottenuto utilizzando DOCPlex è incluso come linea di riferimento verticale tratteggiata per fungere da benchmark classico. Utilizziamo la [versione gratuita di DOCPlex](https://ibmdecisionoptimization.github.io/docplex-doc/) — la libreria open-source IBM&reg; per l'ottimizzazione matematica in Python — per risolvere lo stesso problema in modo classico.
+
+```python
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
+import matplotlib.patheffects as patheffects
+
+def plot_normalized(dpo_x, dpo_y_normalized, random_x, random_y_normalized):
+    """
+    Plots normalized results for two sampling results.
+
+    Parameters:
+        dpo_x (array-like): X-values for the VQE Post-processed curve.
+        dpo_y_normalized (array-like): Y-values (normalized) for the VQE Post-processed curve.
+        random_x (array-like): X-values for the Noise (Random) curve.
+        random_y_normalized (array-like): Y-values (normalized) for the Noise (Random) curve.
+    """
+    plt.figure(figsize=(6, 3))
+    plt.tick_params(axis="both", which="major", labelsize=12)
+
+    # Define custom colors
+    colors = ["#4823E8", "#9AA4AD"]
+
+    # Plot DPO results
+    (line1,) = plt.plot(
+        dpo_x, dpo_y_normalized, label="VQE Postprocessed", color=colors[0]
+    )
+    line1.set_path_effects(
+        [patheffects.withStroke(linewidth=3, foreground="white")]
+    )
+
+    # Plot Random results
+    (line2,) = plt.plot(
+        random_x, random_y_normalized, label="Noise (Random)", color=colors[1]
+    )
+    line2.set_path_effects(
+        [patheffects.withStroke(linewidth=3, foreground="white")]
+    )
+
+    # Set X-axis ticks to increment by 5 units
+    plt.gca().xaxis.set_major_locator(MultipleLocator(5))
+
+    # Axis labels and legend
+    plt.xlabel("Objective cost", fontsize=14)
+    plt.ylabel("Normalized Counts", fontsize=14)
+
+    # Add DOCPLEX reference line
+    plt.axvline(
+        x=-4.11, color="black", linestyle="--", linewidth=1, label="DOCPlex"
+    )  # DOCPlex value
+    plt.ylim(bottom=0)
+
+    plt.legend()
+
+    # Adjust layout
+    plt.tight_layout()
+    plt.show()
+```
+
+```python
+import numpy as np
+from collections import defaultdict
+
+# ================================
+# STEP 1: DPO COST DISTRIBUTION
+# ================================
+
+# Extract data from DPO results
+counts_list = dpo_result["metadata"]["all_samples_metrics"][
+    "objective_costs"
+]  # List of how many times each solution occurred
+cost_list = dpo_result["metadata"]["all_samples_metrics"][
+    "counts"
+]  # List of corresponding objective function values (costs)
+
+# Round costs to one decimal and accumulate counts for each unique cost
+dpo_counter = defaultdict(int)
+for cost, count in zip(cost_list, counts_list):
+    rounded_cost = round(cost, 1)
+    dpo_counter[rounded_cost] += count
+
+# Prepare data for plotting
+dpo_x = sorted(dpo_counter.keys())  # Sorted list of cost values
+dpo_y = [dpo_counter[c] for c in dpo_x]  # Corresponding counts
+
+# Normalize the counts to the range [0, 1] for better comparison
+dpo_min = min(dpo_y)
+dpo_max = max(dpo_y)
+dpo_y_normalized = [
+    (count - dpo_min) / (dpo_max - dpo_min) for count in dpo_y
+]
+
+# ================================
+# STEP 2: RANDOM COST DISTRIBUTION
+# ================================
+
+# Read the QUBO matrix
+qubo = np.array(dpo_result["metadata"]["qubo"])
+
+bitstring_length = qubo.shape[0]
+num_random_samples = 100_000  # Number of random samples to generate
+random_cost_counter = defaultdict(int)
+
+# Generate random bitstrings and calculate their cost
+for _ in range(num_random_samples):
+    x = np.random.randint(0, 2, size=bitstring_length)
+    cost = float(x @ qubo @ x.T)
+    rounded_cost = round(cost, 1)
+    random_cost_counter[rounded_cost] += 1
+
+# Prepare random data for plotting
+random_x = sorted(random_cost_counter.keys())
+random_y = [random_cost_counter[c] for c in random_x]
+
+# Normalize the random cost distribution
+random_min = min(random_y)
+random_max = max(random_y)
+random_y_normalized = [
+    (count - random_min) / (random_max - random_min) for count in random_y
+]
+
+# ================================
+# STEP 3: PLOTTING
+# ================================
+
+plot_normalized(dpo_x, dpo_y_normalized, random_x, random_y_normalized)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/global-data-quantum-optimizer/extracted-outputs/6b662682-279b-48b5-bc61-681846cf3c00-0.avif)
+
+Il grafico mostra come l'ottimizzatore quantistico di portafoglio restituisca costantemente strategie di investimento ottimizzate.
+## Riferimenti
+
+[1] [Nodar, Álvaro, Irene De León, Danel Arias, Ernesto Mamedaliev, María Esperanza Molina, Manuel Martín-Cordero, Senaida Hernández-Santana et al. "Scaling the Variational Quantum Eigensolver for Dynamic Portfolio Optimization." arXiv preprint arXiv:2412.19150 (2024).](https://arxiv.org/pdf/2412.19150)
+## Sondaggio sul tutorial

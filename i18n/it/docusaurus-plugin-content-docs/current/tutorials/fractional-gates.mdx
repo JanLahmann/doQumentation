@@ -1,0 +1,594 @@
+---
+title: "Introduzione ai gate frazionari"
+sidebar_label: "Introduzione ai gate frazionari"
+description: "I gate frazionari, gate quantistici parametrizzati che consentono l'esecuzione diretta di rotazioni ad angoli arbitrari, possono ridurre la profondità e la durata dei circuiti quantistici."
+notebook_path: "docs/tutorials/fractional-gates.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/fractional-gates.ipynb" />
+
+
+
+*Stima dell'utilizzo: meno di 30 secondi su un processore Heron r2 (NOTA: Questa è solo una stima. Il vostro tempo di esecuzione può variare.)*
+## Background
+
+### Gate frazionari sui QPU IBM
+
+I gate frazionari sono gate quantistici parametrizzati che consentono l'esecuzione diretta di rotazioni ad angoli arbitrari (entro limiti specifici),
+eliminando la necessità di decomporli in più gate di base.
+Sfruttando le interazioni native tra qubit fisici, gli utenti possono implementare determinati operatori unitari in modo più efficiente sull'hardware.
+
+I QPU IBM Quantum&reg; Heron supportano i seguenti gate frazionari:
+- $R_{ZZ}(\theta)$ per $0 < \theta < \pi / 2$
+- $R_X(\theta)$ per qualsiasi valore reale $\theta$
+
+Questi gate possono ridurre significativamente sia la profondità che la durata dei circuiti quantistici.
+Sono particolarmente vantaggiosi in applicazioni che si basano fortemente su $R_{ZZ}$ e $R_X$,
+come la simulazione hamiltoniana, il Quantum Approximate Optimization Algorithm (QAOA) e i metodi del kernel quantistico.
+In questo tutorial, ci concentriamo sul kernel quantistico come esempio pratico.
+### Limitazioni
+
+I gate frazionari sono attualmente una funzionalità sperimentale e presentano alcuni vincoli:
+- $R_{ZZ}$ è limitato ad angoli nell'intervallo $0 < \theta < \pi / 2$.
+- L'uso dei gate frazionari non è supportato per [circuiti dinamici](/guides/classical-feedforward-and-control-flow), [Pauli twirling](/guides/error-mitigation-and-suppression-techniques#pauli-twirling), [probabilistic error cancellation](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-cancellation-pec) (PEC), e [zero-noise extrapolation](/guides/error-mitigation-and-suppression-techniques#zero-noise-extrapolation-zne) (ZNE) (utilizzando [probabilistic error amplification](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-amplification-pea) (PEA)).
+
+I gate frazionari richiedono un flusso di lavoro diverso rispetto all'approccio standard.
+Questo tutorial spiega come lavorare con i gate frazionari attraverso un'applicazione pratica.
+
+Consultate quanto segue per maggiori dettagli sui gate frazionari.
+- [Gate frazionari](/guides/fractional-gates)
+- [Quando *non* utilizzare i gate frazionari](/guides/fractional-gates#when-not-to-use)
+## Panoramica
+Il flusso di lavoro per l'utilizzo dei gate frazionari segue generalmente il flusso di lavoro dei [pattern Qiskit](/guides/intro-to-patterns).
+La differenza chiave è che tutti gli angoli RZZ devono soddisfare il vincolo $0 < \theta \leq \pi/2$.
+Esistono due approcci per garantire che questa condizione sia soddisfatta.
+Questo tutorial si concentra sul secondo approccio e lo raccomanda.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-basis-constructor
+```
+
+### 1. Generare valori di parametri che soddisfano il vincolo dell'angolo RZZ
+
+Se siete sicuri che tutti gli angoli RZZ rientrino nell'intervallo valido, potete seguire il flusso di lavoro standard dei pattern Qiskit.
+In questo caso, inviate semplicemente i valori dei parametri come parte di un PUB. Il flusso di lavoro procede come segue.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+t_circuit = pm.run(circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit, parameter_values)])
+estimator.run([(t_circuit, t_observable, parameter_values)])
+```
+
+Se tentate di inviare un PUB che include un gate RZZ con un angolo al di fuori dell'intervallo valido, incontrerete un messaggio di errore come:
+```
+'The instruction rzz is supported only for angles in the range [0, pi/2], but an angle (20.0) outside of this range has been requested; via parameter value(s) γ[0]=10.0, substituted in parameter expression 2.0*γ[0].'
+```
+Per evitare questo errore, dovreste considerare il secondo approccio descritto di seguito.
+### 2. Assegnare i valori dei parametri ai circuiti prima della transpilazione
+
+Il pacchetto `qiskit-ibm-runtime` fornisce un pass di transpilazione specializzato chiamato [`FoldRzzAngle`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-fold-rzz-angle).
+Questo pass trasforma i circuiti quantistici in modo che tutti gli angoli RZZ rispettino il vincolo dell'angolo RZZ.
+Se fornite il backend a `generate_preset_pass_manager` o `transpile`, Qiskit applica automaticamente `FoldRzzAngle` ai circuiti quantistici.
+Questo vi richiede di assegnare i valori dei parametri ai circuiti quantistici prima della transpilazione.
+Il flusso di lavoro procede come segue.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+b_circuit = circuit.assign_parameters(parameter_values)
+t_circuit = pm.run(b_circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit,)])
+estimator.run([(t_circuit, t_observable)])
+```
+
+Notate che questo flusso di lavoro comporta un costo computazionale più elevato rispetto al primo approccio, poiché implica l'assegnazione dei valori dei parametri ai circuiti quantistici e la memorizzazione locale dei circuiti con parametri vincolati.
+Inoltre, esiste un problema noto in Qiskit in cui la trasformazione dei gate RZZ può fallire in determinati scenari. Per una soluzione alternativa, fate riferimento alla sezione [Risoluzione dei problemi](#troubleshooting).
+Questo tutorial dimostra come utilizzare i gate frazionari tramite il secondo approccio attraverso un esempio ispirato al metodo del kernel quantistico.
+Per comprendere meglio dove è probabile che i kernel quantistici siano utili, raccomandiamo di leggere [Liu, Arunachalam & Temme (2021).](https://www.nature.com/articles/s41567-021-01287-z)
+
+Potete anche seguire il tutorial [Quantum kernel training](/tutorials/quantum-kernel-training) e la lezione [Quantum kernels](/learning/courses/quantum-machine-learning/quantum-kernel-methods) nel corso di Quantum machine learning su IBM Quantum Learning.
+### Requisiti
+
+Prima di iniziare questo tutorial, assicuratevi di avere installato quanto segue:
+- Qiskit SDK v2.0 o successivo, con supporto per la [visualizzazione](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.37 o successivo (`pip install qiskit-ibm-runtime`)
+- Qiskit Basis Constructor (`pip install qiskit_basis_constructor`)
+### Setup
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+from qiskit import QuantumCircuit, generate_preset_pass_manager
+from qiskit.circuit import ParameterVector
+from qiskit.circuit.library import unitary_overlap
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+### Abilitare i gate frazionari e verificare i gate di base
+
+Per utilizzare i gate frazionari, potete ottenere un backend che li supporti impostando l'opzione `use_fractional_gates=True`.
+Se il backend supporta i gate frazionari, vedrete `rzz` e `rx` elencati tra i suoi gate di base.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=133
+)  # backend should be a heron device or later
+backend_name = backend.name
+backend_c = service.backend(backend_name)  # w/o fractional gates
+backend_f = service.backend(
+    backend_name, use_fractional_gates=True
+)  # w/ fractional gates
+print(f"Backend: {backend_name}")
+print(f"No fractional gates: {backend_c.basis_gates}")
+print(f"With fractional gates: {backend_f.basis_gates}")
+if "rzz" not in backend_f.basis_gates:
+    print(f"Backend {backend_name} does not support fractional gates")
+```
+
+```text
+Backend: ibm_fez
+No fractional gates: ['cz', 'id', 'rz', 'sx', 'x']
+With fractional gates: ['cz', 'id', 'rx', 'rz', 'rzz', 'sx', 'x']
+```
+
+## Flusso di lavoro con i gate frazionari
+### Step 1: Mappare gli input classici al problema quantistico
+
+#### Circuito del kernel quantistico
+In questa sezione, esploriamo il circuito del kernel quantistico utilizzando i gate RZZ per introdurre il flusso di lavoro per i gate frazionari.
+
+Iniziamo costruendo un circuito quantistico per calcolare le singole voci della matrice del kernel.
+Questo viene fatto combinando circuiti di feature map ZZ con un overlap unitario.
+La funzione kernel prende vettori nello spazio mappato delle feature e restituisce il loro prodotto interno come voce della matrice del kernel:
+$$K(x, y) = \langle \Phi(x) | \Phi(y) \rangle,$$
+dove $|\Phi(x)\rangle$ rappresenta lo stato quantistico mappato dalle feature.
+
+Costruiamo manualmente un circuito di feature map ZZ utilizzando gate RZZ.
+Sebbene Qiskit fornisca una `zz_feature_map` integrata, attualmente non supporta i gate RZZ a partire da Qiskit v2.0.2 ([vedere issue](https://github.com/Qiskit/qiskit/issues/14469)).
+
+Successivamente, calcoliamo la funzione kernel per input identici - per esempio, $K(x, x) = 1$.
+Sui computer quantistici rumorosi, questo valore potrebbe essere inferiore a 1 a causa del rumore.
+Un risultato più vicino a 1 indica un rumore più basso nell'esecuzione.
+In questo tutorial, ci riferiamo a questo valore come *fedeltà*, definita come
+$$\text{fidelity} = K(x, x).$$
+
+```python
+optimization_level = 2
+shots = 2000
+reps = 3
+rng = np.random.default_rng(seed=123)
+```
+
+```python
+def my_zz_feature_map(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    x = ParameterVector("x", num_qubits * reps)
+    qc = QuantumCircuit(num_qubits)
+    qc.h(range(num_qubits))
+    for k in range(reps):
+        K = k * num_qubits
+        for i in range(num_qubits):
+            qc.rz(x[i + K], i)
+        pairs = [(i, i + 1) for i in range(num_qubits - 1)]
+        for i, j in pairs[0::2] + pairs[1::2]:
+            qc.rzz((np.pi - x[i + K]) * (np.pi - x[j + K]), i, j)
+    return qc
+
+def quantum_kernel(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    qc = my_zz_feature_map(num_qubits, reps=reps)
+    inner_product = unitary_overlap(qc, qc, "x", "y", insert_barrier=True)
+    inner_product.measure_all()
+    return inner_product
+
+def random_parameters(inner_product: QuantumCircuit) -> np.ndarray:
+    return np.tile(rng.random(inner_product.num_parameters // 2), 2)
+
+def fidelity(result) -> float:
+    ba = result.data.meas
+    return ba.get_int_counts().get(0, 0) / ba.num_shots
+```
+
+I circuiti del kernel quantistico e i corrispondenti valori dei parametri vengono generati per sistemi da 4 a 40 qubit, e le loro fedeltà vengono successivamente valutate.
+
+```python
+qubits = list(range(4, 44, 4))
+circuits = [quantum_kernel(i, reps=reps) for i in qubits]
+params = [random_parameters(circ) for circ in circuits]
+```
+
+Il circuito a quattro qubit è visualizzato di seguito.
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b3d6341a-0.avif)
+
+Nel flusso di lavoro standard dei pattern Qiskit, i valori dei parametri vengono tipicamente passati alla primitiva Sampler o Estimator come parte di un PUB.
+Tuttavia, quando si utilizza un backend che supporta i gate frazionari, questi valori dei parametri devono essere esplicitamente assegnati al circuito quantistico prima della transpilazione.
+
+```python
+b_qc = [
+    circ.assign_parameters(param) for circ, param in zip(circuits, params)
+]
+b_qc[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6c9c1977-0.avif)
+
+### Step 2: Ottimizzare il problema per l'esecuzione sull'hardware quantistico
+Traspiliamo quindi il circuito utilizzando il pass manager seguendo il pattern Qiskit standard.
+Fornendo un backend che supporta i gate frazionari a `generate_preset_pass_manager`, viene incluso automaticamente un pass specializzato chiamato `FoldRzzAngle`.
+Questo pass modifica il circuito per rispettare i vincoli dell'angolo RZZ.
+Di conseguenza, i gate RZZ con valori negativi nella figura precedente vengono trasformati in valori positivi, e vengono aggiunti alcuni gate X aggiuntivi.
+
+```python
+backend_f = service.backend(name=backend_name, use_fractional_gates=True)
+# pm_f includes `FoldRzzAngle` pass
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_f
+)
+```
+
+```python
+t_qc_f = pm_f.run(b_qc)
+print(t_qc_f[0].count_ops())
+t_qc_f[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 35), ('rzz', 18), ('x', 13), ('rx', 9), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a18e5c70-1.avif)
+
+Per valutare l'impatto dei gate frazionari, valutiamo il numero di gate non locali (CZ e RZZ per questo backend),
+insieme alle profondità e alle durate dei circuiti, e confrontiamo successivamente queste metriche con quelle di un flusso di lavoro standard.
+
+```python
+nnl_f = [qc.num_nonlocal_gates() for qc in t_qc_f]
+depth_f = [qc.depth() for qc in t_qc_f]
+duration_f = [
+    qc.estimate_duration(backend_f.target, unit="u") for qc in t_qc_f
+]
+```
+
+### Step 3: Eseguire utilizzando le primitive Qiskit
+Eseguiamo il circuito transpilato con il backend che supporta i gate frazionari.
+
+```python
+sampler_f = SamplerV2(mode=backend_f)
+sampler_f.options.dynamical_decoupling.enable = True
+sampler_f.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_f.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_f.run(t_qc_f, shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bninsi51bc738j97eg
+```
+
+### Step 4: Post-elaborare e restituire il risultato nel formato classico desiderato
+Potete ottenere il valore della funzione kernel $K(x, x)$ misurando la probabilità della stringa di bit tutti zero `00...00` nell'output.
+
+```python
+# job = service.job("d1obougt0npc73flhiag")
+result = job.result()
+fidelity_f = [fidelity(result=res) for res in result]
+print(fidelity_f)
+usage_f = job.usage()
+```
+
+```text
+[0.9005, 0.647, 0.3345, 0.355, 0.3315, 0.174, 0.1875, 0.149, 0.1175, 0.085]
+```
+
+## Confronto del flusso di lavoro e del circuito senza gate frazionari
+
+In questa sezione, presentiamo il flusso di lavoro standard dei pattern Qiskit utilizzando un backend che non supporta i gate frazionari.
+Confrontando i circuiti transpilati, noterete che la versione che utilizza i gate frazionari (della sezione precedente) è più compatta di quella senza gate frazionari.
+
+```python
+# step 1: map classical inputs to quantum problem
+# `circuits` and `params` from the previous section are reused here
+```
+
+```python
+# step 2: optimize circuits
+backend_c = service.backend(backend_name)  # w/o fractional gates
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc_c = pm_c.run(circuits)
+print(t_qc_c[0].count_ops())
+t_qc_c[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 130), ('sx', 80), ('cz', 36), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a10f2d95-1.avif)
+
+```python
+nnl_c = [qc.num_nonlocal_gates() for qc in t_qc_c]
+depth_c = [qc.depth() for qc in t_qc_c]
+duration_c = [
+    qc.estimate_duration(backend_c.target, unit="u") for qc in t_qc_c
+]
+```
+
+```python
+# step 3: execute
+sampler_c = SamplerV2(backend_c)
+sampler_c.options.dynamical_decoupling.enable = True
+sampler_c.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_c.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_c.run(pubs=zip(t_qc_c, params), shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bnirvnmdfs73ae3a2g
+```
+
+```python
+# step 4: post-processing
+# job = service.job("d1obp8j3rr0s73bg4810")
+result = job.result()
+fidelity_c = [fidelity(res) for res in result]
+print(fidelity_c)
+usage_c = job.usage()
+```
+
+```text
+[0.6675, 0.5725, 0.098, 0.102, 0.065, 0.0235, 0.006, 0.0015, 0.0015, 0.002]
+```
+
+## Confronto tra profondità e fedeltà
+
+In questa sezione confrontiamo il numero di porte non locali e le fedeltà tra circuiti con e senza porte frazionarie.
+Questo evidenzia i potenziali vantaggi dell'utilizzo delle porte frazionarie in termini di efficienza di esecuzione e qualità.
+
+```python
+plt.plot(qubits, depth_c, "-o", label="no fractional gates")
+plt.plot(qubits, depth_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("depth")
+plt.title("Comparison of depths")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bcaac50>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/ef343a53-1.avif)
+
+```python
+plt.plot(qubits, duration_c, "-o", label="no fractional gates")
+plt.plot(qubits, duration_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("duration (µs)")
+plt.title("Comparison of durations")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bdef310>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/98bb2cd0-1.avif)
+
+```python
+plt.plot(qubits, nnl_c, "-o", label="no fractional gates")
+plt.plot(qubits, nnl_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("number of non-local gates")
+plt.title("Comparison of numbers of non-local gates")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12be8ac90>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/1383b242-1.avif)
+
+```python
+plt.plot(qubits, fidelity_c, "-o", label="no fractional gates")
+plt.plot(qubits, fidelity_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("fidelity")
+plt.title("Comparison of fidelities")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bea8290>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/8b4594f5-1.avif)
+
+Confrontiamo il tempo di utilizzo della QPU con e senza porte frazionarie. I risultati nella cella seguente mostrano che i tempi di utilizzo della QPU sono pressoché identici.
+
+```python
+print(f"no fractional gates: {usage_c} seconds")
+print(f"fractional gates: {usage_f} seconds")
+```
+
+```text
+no fractional gates: 7 seconds
+fractional gates: 7 seconds
+```
+
+## Argomento avanzato: utilizzo delle sole porte RX frazionarie
+
+La necessità del flusso di lavoro modificato quando si utilizzano porte frazionarie deriva principalmente dalla restrizione sugli angoli delle porte RZZ.
+Tuttavia, se utilizzate solo le porte RX frazionarie ed escludete le porte RZZ frazionarie, potete continuare a seguire il flusso di lavoro standard dei pattern Qiskit.
+Questo approccio può comunque offrire vantaggi significativi, in particolare nei circuiti che coinvolgono un gran numero di porte RX e porte U, riducendo il conteggio complessivo delle porte e potenzialmente migliorando le prestazioni.
+In questa sezione dimostriamo come ottimizzare i vostri circuiti utilizzando solo porte RX frazionarie, omettendo le porte RZZ.
+
+Per supportare questo approccio, forniamo una funzione di utilità che vi consente di disabilitare una specifica porta di base in un oggetto Target.
+Qui la utilizziamo per disabilitare le porte RZZ.
+
+```python
+from qiskit.circuit.library import n_local
+from qiskit.transpiler import Target
+```
+
+```python
+def remove_instruction_from_target(target: Target, gate_name: str) -> Target:
+    new_target = Target(
+        description=target.description,
+        num_qubits=target.num_qubits,
+        dt=target.dt,
+        granularity=target.granularity,
+        min_length=target.min_length,
+        pulse_alignment=target.pulse_alignment,
+        acquire_alignment=target.acquire_alignment,
+        qubit_properties=target.qubit_properties,
+        concurrent_measurements=target.concurrent_measurements,
+    )
+
+    for name, qarg_map in target.items():
+        if name == gate_name:
+            continue
+        instruction = target.operation_from_name(name)
+        if qarg_map == {None: None}:
+            qarg_map = None
+        new_target.add_instruction(instruction, qarg_map, name=name)
+    return new_target
+```
+
+Utilizziamo come esempio un circuito composto da porte U, CZ e RZZ.
+
+```python
+qc = n_local(3, "u", "cz", "linear", reps=1)
+qc.rzz(1.1, 0, 1)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6b812497-0.avif)
+
+Per prima cosa trasfiliamo il circuito per un backend che non supporta le porte frazionarie.
+
+```python
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc = pm_c.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 23), ('sx', 16), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/9e8e0709-1.avif)
+
+Successivamente, trasfiliamo lo stesso circuito utilizzando porte RX frazionarie, escludendo le porte RZZ.
+Questo risulta in una leggera riduzione del conteggio totale delle porte, grazie all'implementazione più efficiente delle porte RX.
+
+```python
+backend_f = service.backend(backend_name, use_fractional_gates=True)
+target = remove_instruction_from_target(backend_f.target, "rzz")
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 22), ('sx', 14), ('cz', 4), ('rx', 1)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/db45feb0-1.avif)
+
+### Ottimizzazione delle porte U con porte RX frazionarie
+
+In questa sezione dimostriamo come ottimizzare le porte U utilizzando porte RX frazionarie, basandoci sullo stesso circuito introdotto nella sezione precedente.
+
+Dovrete installare il [pacchetto](https://github.com/Qiskit/qiskit-basis-constructor) `qiskit-basis-constructor` per questa sezione.
+Si tratta di una versione beta di un nuovo plugin di trasfilazione per Qiskit, che potrebbe essere integrato in Qiskit in futuro.
+
+```python
+# %pip install qiskit-basis-constructor
+```
+
+```python
+from qiskit.circuit.library import UGate
+from qiskit_basis_constructor import DEFAULT_EQUIVALENCE_LIBRARY
+```
+
+Trasfiliamo il circuito utilizzando solo porte RX frazionarie, escludendo le porte RZZ.
+Introducendo una regola di decomposizione personalizzata, come mostrato di seguito,
+possiamo ridurre il numero di porte a singolo qubit necessarie per implementare una porta U.
+
+Questa funzionalità è attualmente in discussione in questa [issue GitHub.](https://github.com/Qiskit/qiskit/issues/13455)
+
+```python
+# special decomposition rule for UGate
+x = ParameterVector("x", 3)
+zxz = QuantumCircuit(1)
+zxz.rz(x[2] - np.pi / 2, 0)
+zxz.rx(x[0], 0)
+zxz.rz(x[1] + np.pi / 2, 0)
+DEFAULT_EQUIVALENCE_LIBRARY.add_equivalence(UGate(x[0], x[1], x[2]), zxz)
+```
+
+Successivamente, applichiamo il trasfiler utilizzando la traduzione `constructor-beta` fornita dal pacchetto `qiskit-basis-constructor`.
+Di conseguenza, il numero totale di porte viene ridotto rispetto alla trasfilazione precedente.
+
+```python
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+    translation_method="constructor-beta",
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 16), ('rx', 9), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b19aae7c-1.avif)
+
+## Risoluzione dei problemi
+### Problema: angoli RZZ non validi potrebbero rimanere dopo la trasfilazione
+
+A partire da Qiskit v2.0.3, sono noti problemi per cui porte RZZ con angoli non validi possono rimanere nei circuiti anche dopo la trasfilazione.
+Il problema si verifica tipicamente nelle seguenti condizioni.
+#### Fallimento quando si utilizza l'opzione `target` con `generate_preset_pass_manager` o `transpiler`
+
+Quando l'opzione `target` viene utilizzata con `generate_preset_pass_manager` o `transpiler`, il passo specializzato del trasfiler `FoldRzzAngle` non viene invocato.
+Per garantire una corretta gestione degli angoli RZZ per le porte frazionarie, raccomandiamo di utilizzare sempre l'opzione `backend` invece.
+Consultate [questa issue](https://github.com/Qiskit/qiskit/issues/14318) per maggiori dettagli.
+#### Fallimento quando i circuiti contengono determinate porte
+
+Se il vostro circuito include determinate porte come `XXPlusYYGate`, il trasfiler Qiskit potrebbe generare porte RZZ con angoli non validi.
+Se riscontrate questo problema, consultate questa [issue GitHub](https://github.com/Qiskit/qiskit-ibm-runtime/issues/2256#issuecomment-2889487152) per una soluzione alternativa.
+## Sondaggio sul tutorial
+
+Vi preghiamo di compilare questo breve sondaggio per fornire feedback su questo tutorial. Le vostre opinioni ci aiuteranno a migliorare i nostri contenuti e l'esperienza utente.

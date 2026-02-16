@@ -1,0 +1,680 @@
+---
+title: "Introduzione al servizio di transpiler AI-powered di Qiskit"
+sidebar_label: "Introduzione al servizio di transpiler AI-powered di Qiskit"
+description: "In questo notebook, esploreremo i principali vantaggi del servizio di transpiler AI-powered di Qiskit e come si confronta con i metodi tradizionali."
+notebook_path: "docs/tutorials/ai-transpiler-introduction.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/ai-transpiler-introduction.ipynb" />
+
+
+
+{/* cspell:ignore fontsize idxmin */}
+
+*Utilizzo stimato di QPU: Nessuno (NOTA: Questo tutorial non esegue job perché è focalizzato sulla transpilazione)*
+
+## Background
+
+Il **servizio di transpiler AI-powered di Qiskit (QTS)** introduce ottimizzazioni basate su machine learning sia nei pass di routing che di sintesi. Queste modalità AI sono state progettate per affrontare le limitazioni della transpilazione tradizionale, in particolare per circuiti su larga scala e topologie hardware complesse.
+
+A partire da **luglio 2025**, il **Transpiler Service** è stato migrato sulla nuova piattaforma IBM Quantum&reg; e non è più disponibile. Per gli ultimi aggiornamenti sullo stato del Transpiler Service, consultate la [documentazione del servizio di transpiler](/guides/qiskit-transpiler-service). Potete comunque utilizzare il transpiler AI localmente, in modo simile alla transpilazione standard di Qiskit. È sufficiente sostituire `generate_preset_pass_manager()` con `generate_ai_pass_manager()`. Questa funzione costruisce un pass manager che integra i pass di routing e sintesi AI-powered direttamente nel vostro flusso di lavoro di transpilazione locale.
+
+### Caratteristiche principali dei pass AI
+
+- Pass di routing: Il routing AI-powered può regolare dinamicamente i percorsi dei qubit in base al circuito specifico e al backend, riducendo la necessità di eccessivi gate SWAP.
+    - `AIRouting`: Selezione del layout e routing del circuito
+
+- Pass di sintesi: Le tecniche AI ottimizzano la decomposizione di gate multi-qubit, minimizzando il numero di gate a due qubit, che sono tipicamente più soggetti a errori.
+    - `AICliffordSynthesis`: Sintesi di gate Clifford
+    - `AILinearFunctionSynthesis`: Sintesi di circuiti di funzioni lineari
+    - `AIPermutationSynthesis`: Sintesi di circuiti di permutazione
+    - `AIPauliNetworkSynthesis`: Sintesi di circuiti di Pauli Network (disponibile solo nel Qiskit Transpiler Service, non nell'ambiente locale)
+
+- Confronto con la transpilazione tradizionale: Il transpiler standard di Qiskit è uno strumento robusto in grado di gestire efficacemente un ampio spettro di circuiti quantistici. Tuttavia, quando i circuiti crescono in scala o le configurazioni hardware diventano più complesse, i pass AI possono fornire ulteriori guadagni di ottimizzazione. Utilizzando modelli appresi per il routing e la sintesi, QTS perfeziona ulteriormente i layout dei circuiti e riduce l'overhead per compiti quantistici complessi o su larga scala.
+
+Questo tutorial valuta le modalità AI utilizzando sia i pass di routing che di sintesi, confrontando i risultati con la transpilazione tradizionale per evidenziare dove l'AI offre guadagni di prestazione.
+
+Per maggiori dettagli sui pass AI disponibili, consultate la [documentazione dei pass AI](/guides/ai-transpiler-passes).
+
+### Perché utilizzare l'AI per la transpilazione dei circuiti quantistici?
+
+Man mano che i circuiti quantistici crescono in dimensione e complessità, i metodi di transpilazione tradizionali faticano a ottimizzare i layout e ridurre efficacemente il numero di gate. I circuiti più grandi, in particolare quelli che coinvolgono centinaia di qubit, pongono sfide significative per il routing e la sintesi a causa dei vincoli del dispositivo, della connettività limitata e dei tassi di errore dei qubit.
+
+È qui che la transpilazione AI-powered offre una soluzione potenziale. Sfruttando tecniche di machine learning, il transpiler AI-powered in Qiskit può prendere decisioni più intelligenti riguardo al routing dei qubit e alla sintesi dei gate, portando a una migliore ottimizzazione dei circuiti quantistici su larga scala.
+
+### Brevi risultati di benchmarking
+![Graph showing AI transpiler performance against Qiskit](/docs/images/tutorials/ai-transpiler-introduction/ai-transpiler-benchmarks.avif)
+
+Nei test di benchmarking, il transpiler AI ha prodotto costantemente circuiti più superficiali e di qualità superiore rispetto al transpiler standard di Qiskit. Per questi test, abbiamo utilizzato la strategia predefinita del pass manager di Qiskit, configurata con [`generate_preset_passmanager`]. Sebbene questa strategia predefinita sia spesso efficace, può avere difficoltà con circuiti più grandi o più complessi. Al contrario, i pass AI-powered hanno ottenuto una riduzione media del 24% nel numero di gate a due qubit e una riduzione del 36% nella profondità del circuito per circuiti grandi (100+ qubit) durante la transpilazione alla topologia heavy-hex dell'hardware IBM Quantum. Per maggiori informazioni su questi benchmark, consultate questo [blog.](https://www.ibm.com/quantum/blog/qiskit-performance)
+
+Questo tutorial esplora i principali vantaggi dei pass AI e come si confrontano con i metodi tradizionali.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-ibm-transpiler
+```
+
+```python
+# This cell is hidden from users;
+# it just disables a linting rule.
+# ruff: noqa: F811
+```
+
+## Requisiti
+
+Prima di iniziare questo tutorial, assicuratevi di avere installato quanto segue:
+
+* Qiskit SDK v1.0 o successivo, con supporto per la [visualizzazione](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime (`pip install qiskit-ibm-runtime`) v0.22 o successivo
+* Qiskit IBM&reg; Transpiler con modalità locale AI (`pip install 'qiskit-ibm-transpiler[ai-local-mode]'`)
+## Configurazione
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import efficient_su2, PermutationGate
+from qiskit.synthesis.qft import synth_qft_full
+from qiskit.circuit.random import random_circuit, random_clifford_circuit
+from qiskit.transpiler import generate_preset_pass_manager, CouplingMap
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_transpiler import generate_ai_pass_manager
+from qiskit.synthesis.permutation import (
+    synth_permutation_depth_lnn_kms,
+    synth_permutation_basic,
+)
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import time
+import logging
+
+seed = 42
+
+# Used for generating permutation circuits in part two for comparison
+def generate_permutation_circuit(width, pattern):
+    circuit = QuantumCircuit(width)
+    circuit.append(
+        PermutationGate(pattern=pattern),
+        qargs=range(width),
+    )
+    return circuit
+
+# Creates a Bernstein-Vazirani circuit given the number of qubits
+def create_bv_circuit(num_qubits):
+    qc = QuantumCircuit(num_qubits, num_qubits - 1)
+    qc.x(num_qubits - 1)
+    qc.h(qc.qubits)
+    for i in range(num_qubits - 1):
+        qc.cx(i, num_qubits - 1)
+    qc.h(qc.qubits[:-1])
+    return qc
+
+# Transpile a circuit with a given pass manager and return metrics
+def transpile_with_metrics(pass_manager, circuit):
+    start = time.time()
+    qc_out = pass_manager.run(circuit)
+    elapsed = time.time() - start
+
+    depth_2q = qc_out.depth(lambda x: x.operation.num_qubits == 2)
+    gate_count = qc_out.size()
+
+    return qc_out, {
+        "depth_2q": depth_2q,
+        "gate_count": gate_count,
+        "time_s": elapsed,
+    }
+
+# Used for collecting metrics for part 3 of synthesis methods
+def synth_transpile_with_metrics(qc, pm, pattern_id, method):
+    start = time.time()
+    qc = pm.run(qc)
+    elapsed = time.time() - start
+
+    return {
+        "Pattern": pattern_id,
+        "Method": method,
+        "Depth (2Q)": qc.depth(lambda x: x.operation.num_qubits == 2),
+        "Gates": qc.size(),
+        "Time (s)": elapsed,
+    }
+
+# Ignore logs like "INFO:qiskit_ibm_transpiler.wrappers.ai_local_synthesis:Running Linear Functions AI synthesis on local mode"
+
+logging.getLogger(
+    "qiskit_ibm_transpiler.wrappers.ai_local_synthesis"
+).setLevel(logging.WARNING)
+```
+
+# Parte I. Pattern di Qiskit
+
+Vediamo ora come utilizzare il servizio di transpiler AI con un semplice circuito quantistico, utilizzando i pattern di Qiskit. La chiave consiste nel creare un `PassManager` con `generate_ai_pass_manager()` invece del `generate_preset_pass_manager()` standard.
+## Passo 1: Mappare gli input classici in un problema quantistico
+
+In questa sezione, testeremo il transpiler AI sul circuito `efficient_su2`, un ansatz hardware-efficient ampiamente utilizzato. Questo circuito è particolarmente rilevante per gli algoritmi quantistici variazionali (ad esempio, VQE) e i compiti di machine learning quantistico, rendendolo un caso di test ideale per valutare le prestazioni di transpilazione.
+
+Il circuito `efficient_su2` consiste in strati alternati di rotazioni a singolo qubit e gate di entanglement come i CNOT. Questi strati consentono un'esplorazione flessibile dello spazio degli stati quantistici mantenendo la profondità del gate gestibile. Ottimizzando questo circuito, miriamo a ridurre il numero di gate, migliorare la fedeltà e minimizzare il rumore. Questo lo rende un candidato forte per testare l'efficienza del transpiler AI.
+
+```python
+# For our transpilation, we will use a large circuit of 101 qubits
+qc = efficient_su2(90, entanglement="circular", reps=1).decompose()
+
+# Draw a smaller version of the circuit to get a visual representation
+qc_small = efficient_su2(5, entanglement="circular", reps=1).decompose()
+qc_small.draw(output="mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/ai-transpiler-introduction/extracted-outputs/c6e9c2c0-e02c-4276-bae8-d5692e60b6b8-0.avif)
+
+## Passo 2: Ottimizzare il problema per l'esecuzione su hardware quantistico
+
+### Scegliere un backend
+
+Per questo esempio, selezioniamo il backend IBM Quantum operativo meno occupato che non sia un simulatore e abbia almeno 100 qubit:
+
+**Nota:** Poiché il backend meno occupato può cambiare nel tempo, dispositivi diversi potrebbero essere selezionati per esecuzioni diverse. Le proprietà specifiche del dispositivo, come le mappe di accoppiamento, possono portare a differenze nei circuiti transpilati.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=100
+)
+cm = backend.coupling_map
+print(f"Using backend: {backend.name}")
+```
+
+```text
+Using backend: ibm_torino
+```
+
+### Creare pass manager AI e tradizionali
+Per valutare l'efficacia del transpiler AI, eseguiremo due esecuzioni di transpilazione. Prima, traspilaremo il circuito utilizzando il transpiler AI. Poi, eseguiremo un confronto transpilando lo stesso circuito senza il transpiler AI, utilizzando metodi tradizionali. Entrambi i processi di transpilazione utilizzeranno la stessa mappa di accoppiamento dal backend scelto e il livello di ottimizzazione impostato a 3 per un confronto equo.
+
+Entrambi questi metodi riflettono l'approccio standard per creare istanze di `PassManager` per transpilare circuiti in Qiskit.
+
+```python
+pm_ai = generate_ai_pass_manager(
+    optimization_level=3,
+    ai_optimization_level=3,
+    coupling_map=cm,
+    include_ai_synthesis=True,  # used for part 3 when comparing synthesis methods
+)
+
+pm_no_ai = generate_preset_pass_manager(
+    optimization_level=3,
+    coupling_map=cm,
+    seed_transpiler=seed,  # note that the AI pass manager does not currently support seeding
+)
+```
+
+Transpilate i circuiti e registrate i tempi.
+
+```python
+# Transpile using standard (non-AI) pass manager
+_, metrics_no_ai = transpile_with_metrics(pm_no_ai, qc)
+print(
+    f"Standard transpilation: Depth (2q) {metrics_no_ai['depth_2q']}, "
+    f"Gate count {metrics_no_ai['gate_count']}, Time {metrics_no_ai['time_s']}"
+)
+
+# Transpile using AI pass manager
+_, metrics_ai = transpile_with_metrics(pm_ai, qc)
+print(
+    f"AI transpilation      : Depth (2q) {metrics_ai['depth_2q']}, "
+    f"Gate count {metrics_ai['gate_count']}, Time {metrics_ai['time_s']}"
+)
+```
+
+```text
+Standard transpilation: Depth (2q) 95, Gate count 458, Time 0.04650712013244629
+AI transpilation      : Depth (2q) 90, Gate count 456, Time 0.9342479705810547
+```
+
+In questo test, confrontiamo le prestazioni del transpiler AI e del metodo di transpilazione standard sul circuito efficient_su2. Il transpiler AI raggiunge una profondità del circuito notevolmente inferiore mantenendo un numero di gate simile.
+
+- **Profondità del circuito:** Il transpiler AI produce un circuito con una profondità a due qubit inferiore. Questo è previsto, poiché i pass AI sono addestrati per ottimizzare la profondità apprendendo i pattern di interazione dei qubit e sfruttando la connettività hardware in modo più efficace rispetto alle euristiche basate su regole.
+
+- **Numero di gate:** Il numero totale di gate rimane simile tra i due metodi. Ciò è in linea con le aspettative poiché la transpilazione standard basata su SABRE minimizza esplicitamente il numero di swap, che domina l'overhead dei gate. Il transpiler AI invece dà priorità alla profondità complessiva e può occasionalmente scambiare alcuni gate aggiuntivi per un percorso di esecuzione più breve.
+
+- **Tempo di transpilazione:** Il transpiler AI richiede più tempo per l'esecuzione rispetto al metodo standard. Ciò è dovuto al costo computazionale aggiuntivo derivante dall'invocazione di modelli appresi durante il routing e la sintesi. Al contrario, il transpiler basato su SABRE è ora significativamente più veloce dopo essere stato riscritto e ottimizzato in Rust, fornendo un routing euristico altamente efficiente su larga scala.
+
+È importante notare che questi risultati si basano su un solo circuito. Per ottenere una comprensione completa di come il transpiler AI si confronta con i metodi tradizionali, è necessario testare una varietà di circuiti. Le prestazioni di QTS possono variare notevolmente a seconda del tipo di circuito che viene ottimizzato. Per un confronto più ampio, consultate i benchmark sopra o visitate il [blog.](https://www.ibm.com/quantum/blog/qiskit-performance)
+## Passo 3: Eseguire utilizzando i primitive di Qiskit
+Poiché questo tutorial si concentra sulla transpilazione, nessun esperimento verrà eseguito sul dispositivo quantistico. L'obiettivo è sfruttare le ottimizzazioni del Passo 2 per ottenere un circuito transpilato con profondità o numero di gate ridotti.
+## Passo 4: Post-elaborare e restituire il risultato nel formato classico desiderato
+Poiché non c'è esecuzione per questo notebook, non ci sono risultati da post-elaborare.
+# Parte II. Analizzare e fare benchmark dei circuiti transpilati
+
+In questa sezione, dimostreremo come analizzare il circuito transpilato e fare il suo benchmark rispetto alla versione originale in modo più dettagliato. Ci concentreremo su metriche come la profondità del circuito, il numero di gate e il tempo di transpilazione per valutare l'efficacia dell'ottimizzazione. Inoltre, discuteremo di come i risultati possano differire tra vari tipi di circuiti, offrendo approfondimenti sulle prestazioni più ampie del transpiler in diversi scenari.
+
+```python
+# Circuits to benchmark
+seed = 42
+circuits = [
+    {
+        "name": "Random",
+        "qc": random_circuit(num_qubits=30, depth=10, seed=seed),
+    },
+    {
+        "name": "Clifford",
+        "qc": random_clifford_circuit(
+            num_qubits=40, num_gates=200, seed=seed
+        ),
+    },
+    {
+        "name": "QFT",
+        "qc": synth_qft_full(num_qubits=20, do_swaps=False).decompose(),
+    },
+    {
+        "name": "BV",
+        "qc": create_bv_circuit(40),
+    },
+]
+
+results = []
+
+# Run the transpilation for each circuit and store the results
+for circuit in circuits:
+    qc_no_ai, metrics_no_ai = transpile_with_metrics(pm_no_ai, circuit["qc"])
+    qc_ai, metrics_ai = transpile_with_metrics(pm_ai, circuit["qc"])
+
+    print("Completed transpilation for", circuit["name"])
+
+    results.append(
+        {
+            "Circuit": circuit["name"],
+            "Depth 2Q (No AI)": metrics_no_ai["depth_2q"],
+            "Gate Count (No AI)": metrics_no_ai["gate_count"],
+            "Time (No AI)": metrics_no_ai["time_s"],
+            "Depth 2Q (AI)": metrics_ai["depth_2q"],
+            "Gate Count (AI)": metrics_ai["gate_count"],
+            "Time (AI)": metrics_ai["time_s"],
+        }
+    )
+
+df = pd.DataFrame(results)
+df
+```
+
+```text
+Completed transpilation for Random
+Completed transpilation for Clifford
+Completed transpilation for QFT
+Completed transpilation for BV
+```
+
+```text
+Circuit  Depth 2Q (No AI)  Gate Count (No AI)  Time (No AI)  \
+0    Random                37                 221      0.039347
+1  Clifford                36                 232      0.036633
+2       QFT               165                 924      0.077458
+3        BV                65                 155      0.024993
+
+   Depth 2Q (AI)  Gate Count (AI)  Time (AI)
+0             24              181   0.773718
+1             43              267   1.097431
+2            130              913   3.660771
+3             70              155   0.345522
+```
+
+Riduzione percentuale media per ciascuna metrica. I valori positivi indicano miglioramenti, quelli negativi peggioramenti.
+
+```python
+# Average reduction from non-AI to AI transpilation as a percentage
+avg_reduction_depth = (
+    (df["Depth 2Q (No AI)"] - df["Depth 2Q (AI)"]).mean()
+    / df["Depth 2Q (No AI)"].mean()
+    * 100
+)
+avg_reduction_gates = (
+    (df["Gate Count (No AI)"] - df["Gate Count (AI)"]).mean()
+    / df["Gate Count (No AI)"].mean()
+    * 100
+)
+avg_reduction_time = (
+    (df["Time (No AI)"] - df["Time (AI)"]).mean()
+    / df["Time (No AI)"].mean()
+    * 100
+)
+
+print(f"Average reduction in depth: {avg_reduction_depth:.2f}%")
+print(f"Average reduction in gate count: {avg_reduction_gates:.2f}%")
+print(f"Average reduction in transpilation time: {avg_reduction_time:.2f}%")
+```
+
+```text
+Average reduction in depth: 11.88%
+Average reduction in gate count: 1.04%
+Average reduction in transpilation time: -3193.95%
+```
+
+```python
+fig, axs = plt.subplots(1, 3, figsize=(21, 6))
+df.plot(
+    x="Circuit",
+    y=["Depth 2Q (No AI)", "Depth 2Q (AI)"],
+    kind="bar",
+    ax=axs[0],
+)
+axs[0].set_title("Circuit Depth Comparison")
+axs[0].set_ylabel("Depth")
+axs[0].set_xlabel("Circuit")
+axs[0].tick_params(axis="x", rotation=45)
+df.plot(
+    x="Circuit",
+    y=["Gate Count (No AI)", "Gate Count (AI)"],
+    kind="bar",
+    ax=axs[1],
+)
+axs[1].set_title("Gate Count Comparison")
+axs[1].set_ylabel("Gate Count")
+axs[1].set_xlabel("Circuit")
+axs[1].tick_params(axis="x", rotation=45)
+df.plot(x="Circuit", y=["Time (No AI)", "Time (AI)"], kind="bar", ax=axs[2])
+axs[2].set_title("Time Comparison")
+axs[2].set_ylabel("Time (seconds)")
+axs[2].set_xlabel("Circuit")
+axs[2].tick_params(axis="x", rotation=45)
+fig.suptitle(
+    "Benchmarking AI transpilation vs Non-AI transpilation for various circuits"
+)
+
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/ai-transpiler-introduction/extracted-outputs/79b8d5d9-0f9d-42ca-9583-8bec17430014-0.avif)
+
+Le prestazioni del transpiler AI variano significativamente in base al tipo di circuito che viene ottimizzato. In alcuni casi, raggiunge riduzioni notevoli nella profondità del circuito e nel numero di gate rispetto al transpiler standard. Tuttavia, questi miglioramenti spesso comportano un aumento sostanziale del tempo di esecuzione.
+
+Per determinati tipi di circuiti, il transpiler AI può produrre risultati leggermente migliori in termini di profondità del circuito, ma può anche portare a un aumento nel numero di gate e una penalità significativa nel tempo di esecuzione. Queste osservazioni suggeriscono che i benefici del transpiler AI non sono uniformi tra tutti i tipi di circuiti. Al contrario, la sua efficacia dipende dalle caratteristiche specifiche del circuito, rendendolo più adatto per alcuni casi d'uso rispetto ad altri.
+
+## Quando gli utenti dovrebbero scegliere la transpilazione basata su AI?
+
+Il transpilatore basato su AI in Qiskit eccelle in scenari in cui i metodi di transpilazione tradizionali incontrano difficoltà, in particolare con circuiti quantistici di grandi dimensioni e complessi. Per circuiti che coinvolgono centinaia di qubit o che hanno come target hardware con mappe di accoppiamento intricate, il transpilatore AI offre un'ottimizzazione superiore in termini di profondità del circuito, conteggio dei gate ed efficienza di runtime. Nei test di benchmarking, ha costantemente superato i metodi tradizionali, fornendo circuiti significativamente più ridotti in profondità e riducendo il conteggio dei gate, aspetti critici per migliorare le prestazioni e mitigare il rumore su hardware quantistico reale.
+
+Gli utenti dovrebbero considerare la transpilazione basata su AI quando lavorano con:
+- Circuiti di grandi dimensioni in cui i metodi tradizionali non riescono a gestire efficacemente la scala.
+- Topologie hardware complesse in cui sorgono sfide di connettività del dispositivo e di routing.
+- Applicazioni sensibili alle prestazioni in cui ridurre la profondità del circuito e migliorare la fedeltà sono di fondamentale importanza.
+# Parte III. Esplorare la sintesi di reti di permutazione basata su AI
+
+Le reti di permutazione sono fondamentali nel calcolo quantistico, in particolare per sistemi vincolati da topologie limitate. Queste reti facilitano interazioni a lungo raggio scambiando dinamicamente i qubit per simulare una connettività all-to-all su hardware con connettività limitata. Tali trasformazioni sono essenziali per implementare algoritmi quantistici complessi su dispositivi a breve termine, dove le interazioni spesso si estendono oltre i vicini più prossimi.
+
+In questa sezione, evidenziamo la sintesi di reti di permutazione come un caso d'uso convincente per il transpilatore basato su AI in Qiskit. Nello specifico, il pass `AIPermutationSynthesis` sfrutta l'ottimizzazione guidata da AI per generare circuiti efficienti per attività di permutazione di qubit. Al contrario, gli approcci di sintesi generica spesso faticano a bilanciare il conteggio dei gate e la profondità del circuito, specialmente in scenari con interazioni dense di qubit o quando si tenta di ottenere una connettività completa.
+
+Vi guideremo attraverso un esempio di pattern Qiskit che mostra la sintesi di una rete di permutazione per ottenere una connettività all-to-all per un insieme di qubit. Confronteremo le prestazioni di `AIPermutationSynthesis` con i metodi di sintesi standard in Qiskit. Questo esempio dimostrerà come il transpilatore AI ottimizzi per una minore profondità del circuito e un minore conteggio dei gate, evidenziando i suoi vantaggi nei flussi di lavoro quantistici pratici. Per attivare il pass di sintesi AI, utilizzeremo la funzione `generate_ai_pass_manager()` con il parametro `include_ai_synthesis` impostato su `True`.
+## Step 1: Mappare gli input classici a un problema quantistico
+
+Per rappresentare un problema di permutazione classico su un computer quantistico, iniziamo definendo la struttura dei circuiti quantistici. Per questo esempio:
+
+1. Inizializzazione del circuito quantistico:
+   Allochiamo 27 qubit per corrispondere al backend che useremo, che ha 27 qubit.
+
+2. Applicare le permutazioni:
+   Generiamo dieci pattern di permutazione casuali (da `pattern_1` a `pattern_10`) utilizzando un seed fisso per la riproducibilità. Ogni pattern di permutazione viene applicato a un circuito quantistico separato (da `qc_1` a `qc_10`).
+
+3. Decomposizione del circuito:
+   Ogni operazione di permutazione viene decomposta in set di gate nativi compatibili con l'hardware quantistico target. Analizziamo la profondità e il numero di gate a due qubit (gate non locali) per ogni circuito decomposto.
+
+I risultati forniscono informazioni sulla complessità della rappresentazione di problemi di permutazione classici su un dispositivo quantistico, dimostrando i requisiti di risorse per diversi pattern di permutazione.
+
+```python
+# Parameters
+width = 27
+num_circuits = 10
+
+# Set random seed
+np.random.seed(seed)
+
+# Generate random patterns and circuits
+patterns = [
+    np.random.permutation(width).tolist() for _ in range(num_circuits)
+]
+circuits = {
+    f"qc_{i}": generate_permutation_circuit(width, pattern)
+    for i, pattern in enumerate(patterns, start=1)
+}
+
+# Display one of the circuits
+circuits["qc_1"].decompose(reps=3).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/ai-transpiler-introduction/extracted-outputs/76a3e847-0808-4413-bd0c-c760cd2df3f4-0.avif)
+
+## Step 2: Ottimizzare il problema per l'esecuzione su hardware quantistico
+In questo step, procediamo con l'ottimizzazione utilizzando i pass di sintesi AI.
+
+Per i pass di sintesi AI, il `PassManager` richiede solo la mappa di accoppiamento del backend. Tuttavia, è importante notare che non tutte le mappe di accoppiamento sono compatibili; funzioneranno solo quelle su cui il pass `AIPermutationSynthesis` è stato addestrato. Attualmente, il pass `AIPermutationSynthesis` supporta blocchi di dimensioni 65, 33 e 27 qubit. Per questo esempio utilizziamo una QPU a 27 qubit.
+
+Per confronto, valuteremo le prestazioni della sintesi AI rispetto ai metodi di sintesi di permutazione generici in Qiskit, inclusi:
+
+- `synth_permutation_depth_lnn_kms`: Questo metodo sintetizza un circuito di permutazione per un'architettura linear nearest-neighbor (LNN) utilizzando l'algoritmo Kutin, Moulton e Smithline (KMS). Garantisce un circuito con una profondità di al massimo $ n $ e una dimensione di al massimo $ n(n-1)/2 $, dove sia la profondità che la dimensione sono misurate in termini di gate SWAP.
+
+- `synth_permutation_basic`: Questa è un'implementazione semplice che sintetizza circuiti di permutazione senza imporre vincoli sulla connettività o sull'ottimizzazione per architetture specifiche. Serve come baseline per confrontare le prestazioni con metodi più avanzati.
+
+Ciascuno di questi metodi rappresenta un approccio distinto alla sintesi di reti di permutazione, fornendo un benchmark completo rispetto ai metodi basati su AI.
+
+Per maggiori dettagli sui metodi di sintesi in Qiskit, consultare la [documentazione API di Qiskit](https://docs.quantum.ibm.com/api/qiskit/synthesis).
+Definire la mappa di accoppiamento che rappresenta la QPU a 27 qubit.
+
+```python
+coupling_map = [
+    [1, 0],
+    [2, 1],
+    [3, 2],
+    [3, 5],
+    [4, 1],
+    [6, 7],
+    [7, 4],
+    [7, 10],
+    [8, 5],
+    [8, 9],
+    [8, 11],
+    [11, 14],
+    [12, 10],
+    [12, 13],
+    [12, 15],
+    [13, 14],
+    [16, 14],
+    [17, 18],
+    [18, 15],
+    [18, 21],
+    [19, 16],
+    [19, 22],
+    [20, 19],
+    [21, 23],
+    [23, 24],
+    [25, 22],
+    [25, 24],
+    [26, 25],
+]
+CouplingMap(coupling_map).draw()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/ai-transpiler-introduction/extracted-outputs/84dff2c2-a496-4828-bb8e-08d373816a36-0.avif)
+
+Transpilare ciascuno dei circuiti di permutazione utilizzando i pass di sintesi AI e i metodi di sintesi generici.
+
+```python
+results = []
+pm_no_ai_synth = generate_preset_pass_manager(
+    coupling_map=cm,
+    optimization_level=1,  # set to 1 since we are using the synthesis methods
+)
+
+# Transpile and analyze all circuits
+for i, (qc_name, qc) in enumerate(circuits.items(), start=1):
+    pattern = patterns[i - 1]  # Get the corresponding pattern
+
+    qc_depth_lnn_kms = synth_permutation_depth_lnn_kms(pattern)
+    qc_basic = synth_permutation_basic(pattern)
+
+    # AI synthesis
+    results.append(
+        synth_transpile_with_metrics(
+            qc.decompose(reps=3),
+            pm_ai,
+            qc_name,
+            "AI",
+        )
+    )
+
+    # Depth-LNN-KMS Method
+    results.append(
+        synth_transpile_with_metrics(
+            qc_depth_lnn_kms.decompose(reps=3),
+            pm_no_ai_synth,
+            qc_name,
+            "Depth-LNN-KMS",
+        )
+    )
+
+    # Basic Method
+    results.append(
+        synth_transpile_with_metrics(
+            qc_basic.decompose(reps=3),
+            pm_no_ai_synth,
+            qc_name,
+            "Basic",
+        )
+    )
+
+results_df = pd.DataFrame(results)
+```
+
+Registrare le metriche (profondità, conteggio dei gate, tempo) per ciascun circuito dopo la transpilazione.
+
+```python
+# Calculate averages for each metric
+average_metrics = results_df.groupby("Method")[
+    ["Depth (2Q)", "Gates", "Time (s)"]
+].mean()
+average_metrics = average_metrics.round(3)  # Round to two decimal places
+print("\n=== Average Metrics ===")
+print(average_metrics)
+
+# Identify the best non-AI method based on least average depth
+non_ai_methods = [
+    method for method in results_df["Method"].unique() if method != "AI"
+]
+best_non_ai_method = average_metrics.loc[non_ai_methods][
+    "Depth (2Q)"
+].idxmin()
+print(
+    f"\nBest Non-AI Method (based on least average depth): {best_non_ai_method}"
+)
+
+# Compare AI to the best non-AI method
+ai_metrics = average_metrics.loc["AI"]
+best_non_ai_metrics = average_metrics.loc[best_non_ai_method]
+
+comparison = {
+    "Metric": ["Depth (2Q)", "Gates", "Time (s)"],
+    "AI": [
+        ai_metrics["Depth (2Q)"],
+        ai_metrics["Gates"],
+        ai_metrics["Time (s)"],
+    ],
+    best_non_ai_method: [
+        best_non_ai_metrics["Depth (2Q)"],
+        best_non_ai_metrics["Gates"],
+        best_non_ai_metrics["Time (s)"],
+    ],
+    "Improvement (AI vs Best Non-AI)": [
+        ai_metrics["Depth (2Q)"] - best_non_ai_metrics["Depth (2Q)"],
+        ai_metrics["Gates"] - best_non_ai_metrics["Gates"],
+        ai_metrics["Time (s)"] - best_non_ai_metrics["Time (s)"],
+    ],
+}
+
+comparison_df = pd.DataFrame(comparison)
+print("\n=== Comparison of AI vs Best Non-AI Method ===")
+comparison_df
+```
+
+```text
+=== Average Metrics ===
+               Depth (2Q)  Gates  Time (s)
+Method
+AI                   23.9   82.8     0.248
+Basic                29.8   91.0     0.012
+Depth-LNN-KMS        70.8  531.6     0.017
+
+Best Non-AI Method (based on least average depth): Basic
+
+=== Comparison of AI vs Best Non-AI Method ===
+```
+
+```text
+Metric      AI   Basic  Improvement (AI vs Best Non-AI)
+0  Depth (2Q)  23.900  29.800                           -5.900
+1       Gates  82.800  91.000                           -8.200
+2    Time (s)   0.248   0.012                            0.236
+```
+
+I risultati dimostrano che il transpilatore AI supera tutti gli altri metodi di sintesi Qiskit per questo insieme di circuiti di permutazione casuali. I risultati chiave includono:
+
+1. Profondità: Il transpilatore AI raggiunge la profondità media più bassa, indicando un'ottimizzazione superiore dei layout dei circuiti.
+2. Conteggio dei gate: Riduce significativamente il numero di gate rispetto ad altri metodi, migliorando la fedeltà e l'efficienza dell'esecuzione.
+3. Tempo di transpilazione: Tutti i metodi funzionano molto rapidamente a questa scala, rendendoli pratici per l'uso. Tuttavia, il transpilatore AI presenta un aumento notevole del tempo di runtime rispetto ai metodi tradizionali a causa della complessità dei modelli AI utilizzati.
+
+Questi risultati stabiliscono il transpilatore AI come l'approccio più efficace per questo benchmark, in particolare per l'ottimizzazione della profondità e del conteggio dei gate.
+Tracciare i risultati per confrontare le prestazioni dei pass di sintesi AI rispetto ai metodi di sintesi generici.
+
+```python
+methods = results_df["Method"].unique()
+
+fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+
+# Pivot the DataFrame and reorder columns to ensure AI is first
+pivot_depth = results_df.pivot(
+    index="Pattern", columns="Method", values="Depth (2Q)"
+)[["AI", "Depth-LNN-KMS", "Basic"]]
+pivot_gates = results_df.pivot(
+    index="Pattern", columns="Method", values="Gates"
+)[["AI", "Depth-LNN-KMS", "Basic"]]
+pivot_time = results_df.pivot(
+    index="Pattern", columns="Method", values="Time (s)"
+)[["AI", "Depth-LNN-KMS", "Basic"]]
+
+pivot_depth.plot(kind="bar", ax=axs[0], legend=False)
+axs[0].set_title("Circuit Depth Comparison")
+axs[0].set_ylabel("Depth")
+axs[0].set_xlabel("Pattern")
+axs[0].tick_params(axis="x", rotation=45)
+pivot_gates.plot(kind="bar", ax=axs[1], legend=False)
+axs[1].set_title("2Q Gate Count Comparison")
+axs[1].set_ylabel("Number of 2Q Gates")
+axs[1].set_xlabel("Pattern")
+axs[1].set_xlabel("Pattern")
+axs[1].tick_params(axis="x", rotation=45)
+pivot_time.plot(
+    kind="bar", ax=axs[2], legend=True, title="Legend"
+)  # Show legend on the last plot
+axs[2].set_title("Time Comparison")
+axs[2].set_ylabel("Time (seconds)")
+axs[2].set_xlabel("Pattern")
+axs[2].tick_params(axis="x", rotation=45)
+fig.suptitle(
+    "Benchmarking AI Synthesis Methods vs Non-AI Synthesis Methods For Random Permutations Circuits",
+    fontsize=16,
+    y=1,
+)
+
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/ai-transpiler-introduction/extracted-outputs/a326f268-0115-442c-8563-968676b66670-0.avif)
+
+Questo grafico evidenzia i risultati individuali per ciascun circuito (da `qc_1` a `qc_10`) attraverso diversi metodi di sintesi:
+
+Sebbene questi risultati sottolineino l'efficacia del transpilatore AI per i circuiti di permutazione, è importante notare le sue limitazioni. Il metodo di sintesi AI è attualmente disponibile solo per determinate mappe di accoppiamento, il che potrebbe limitarne l'applicabilità più ampia. Questo vincolo dovrebbe essere considerato quando si valuta il suo utilizzo in scenari diversi.
+
+Nel complesso, il transpilatore AI dimostra miglioramenti promettenti nell'ottimizzazione della profondità e del conteggio dei gate per questi circuiti specifici, mantenendo tempi di transpilazione comparabili.
+## Step 3: Eseguire utilizzando le primitive di Qiskit
+Poiché questo tutorial si concentra sulla transpilazione, non verranno eseguiti esperimenti sul dispositivo quantistico. L'obiettivo è sfruttare le ottimizzazioni dello Step 2 per ottenere un circuito transpilato con profondità o conteggio dei gate ridotti.
+## Step 4: Post-elaborare e restituire il risultato nel formato classico desiderato
+Poiché non c'è esecuzione per questo notebook, non ci sono risultati da post-elaborare.
+## Sondaggio del tutorial
+
+Vi preghiamo di completare questo breve sondaggio per fornire feedback su questo tutorial. Le vostre considerazioni ci aiuteranno a migliorare i nostri contenuti e l'esperienza utente.
