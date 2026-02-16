@@ -7,7 +7,8 @@ This script:
 2. Converts Jupyter notebooks to MDX (code blocks auto-wrapped by CodeBlock swizzle)
 3. Transforms upstream MDX files for Docusaurus compatibility
 4. Parses _toc.json to generate structured sidebar configuration
-5. Copies original notebooks for "Open in Lab" feature
+5. Copies original notebooks with dependency cells for "Open in Colab/Lab" feature
+6. Publishes notebooks to static/ for GitHub Pages deployment
 
 Content types: tutorials, guides, courses, modules
 
@@ -905,12 +906,87 @@ def rewrite_notebook_image_paths(content: str, nb_rel_path: Path) -> str:
     return content
 
 
+# Base packages always needed for Colab (pre-installed in Binder → no-op there)
+COLAB_BASE_PKGS = ['qiskit', 'qiskit-aer', 'qiskit-ibm-runtime', 'pylatexenc']
+
+
 def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path):
-    """Copy a notebook, rewriting absolute image paths to relative."""
+    """Copy a notebook, rewriting image paths and injecting dependency cells.
+
+    Injects up to two cells at the top of the notebook:
+    - Cell 0 (init): installs the base Qiskit stack. Auto-runs on Colab via
+      cell_execution_strategy metadata; fast no-op on Binder.
+    - Cell 1 (extras, optional): per-notebook dependencies detected by
+      analyze_notebook_imports(). Visible to the user, not auto-run.
+
+    Also sets Colab notebook metadata so the init cell runs on open.
+    """
     content = src_path.read_text()
     content = rewrite_notebook_image_paths(content, nb_rel_path)
+
+    # Parse notebook JSON to inject install cells + Colab metadata
+    nb = json.loads(content)
+    cells = nb.get('cells', [])
+
+    # ── Cell 0: Initialization cell (auto-runs on Colab) ──
+    init_cell = {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# Setup: install Qiskit (runs automatically in Colab, no-op in Binder)\n",
+            f"!pip install -q {' '.join(COLAB_BASE_PKGS)}"
+        ]
+    }
+
+    # ── Cell 1 (optional): Extras cell (user-visible, user-controlled) ──
+    extra_pkgs = analyze_notebook_imports(cells)
+    extra_pkgs = [p for p in extra_pkgs if p not in COLAB_BASE_PKGS]
+
+    injected = [init_cell]
+    if extra_pkgs:
+        extras_cell = {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# Additional dependencies for this notebook\n",
+                f"!pip install -q {' '.join(extra_pkgs)}"
+            ]
+        }
+        injected.append(extras_cell)
+
+    nb['cells'] = injected + cells
+
+    # ── Colab notebook metadata ──
+    # "cell_execution_strategy": "setup" tells Colab to auto-run the
+    # first cell when the notebook is opened.
+    colab_meta = nb.setdefault('metadata', {}).setdefault('colab', {})
+    colab_meta['cell_execution_strategy'] = 'setup'
+
+    content = json.dumps(nb, indent=1, ensure_ascii=False)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     dst_path.write_text(content)
+
+
+def publish_notebooks_to_static():
+    """Copy notebooks/ into static/notebooks/ for GitHub Pages deployment.
+
+    This makes dependency-ready notebook copies available on gh-pages so that
+    "Open in Colab" and "Open in Binder Lab" links can point to them.
+    """
+    print("\n📦 Publishing notebooks to static/notebooks/...")
+    static_nb = STATIC_DIR / "notebooks"
+    if static_nb.exists():
+        shutil.rmtree(static_nb)
+    if NOTEBOOKS_OUTPUT.exists():
+        shutil.copytree(NOTEBOOKS_OUTPUT, static_nb)
+        count = sum(1 for f in static_nb.rglob('*') if f.is_file())
+        print(f"  ✓ {count} files copied to static/notebooks/")
+    else:
+        print("  ⚠️  No notebooks/ directory found, skipping")
 
 
 def sync_upstream_images():
@@ -1667,6 +1743,7 @@ def main():
         create_learning_landing_pages()
 
         sync_upstream_images()
+        publish_notebooks_to_static()
 
         if "tutorials" not in skip:
             generate_sidebar_from_toc()
