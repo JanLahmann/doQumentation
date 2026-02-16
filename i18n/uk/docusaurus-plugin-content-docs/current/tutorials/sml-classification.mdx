@@ -1,0 +1,607 @@
+---
+title: "Гібридна квантово-посилена ансамблева класифікація (робочий процес стабільності мережі)"
+sidebar_label: "Гібридна квантово-посилена ансамблева класифікація (робочий процес стабільності мережі)"
+description: "Побудуйте та проаналізуйте гібридний квантово-класичний ансамбль для класифікації стабільності мережі на IBM QPU за допомогою Singularity Qiskit Function від Multiverse Computing."
+notebook_path: "docs/tutorials/sml-classification.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/sml-classification.ipynb" />
+
+
+
+{/* cspell:ignore QEEC interpretability hyperparameters overfitting sublinear preds prec */}
+
+*Оцінка використання: 20 хвилин часу QPU для кожного завдання на процесорі Eagle r3. (ПРИМІТКА: Це лише оцінка. Ваш час виконання може відрізнятися.)*
+## Передумови
+
+Цей посібник демонструє гібридний квантово-класичний робочий процес, який посилює класичний ансамбль за допомогою кроку квантової оптимізації. Використовуючи "Singularity Machine Learning – Classification" від Multiverse Computing (функцію Qiskit), ми навчаємо пул звичайних учнів (наприклад, дерева рішень, k-NN, логістична регресія), а потім вдосконалюємо цей пул за допомогою квантового шару для покращення різноманітності та узагальнення. Мета є практичною: на реальному завданні прогнозування стабільності мережі ми порівнюємо сильну класичну базову лінію з квантово-оптимізованою альтернативою при однакових розділах даних, щоб Ви могли побачити, де квантовий крок допомагає і що він коштує.
+
+Чому це важливо: вибір хорошої підмножини з багатьох слабких учнів є комбінаторною проблемою, яка швидко зростає з розміром ансамблю. Класичні евристики, такі як бустинг, беггінг та стекінг, добре працюють у помірних масштабах, але можуть мати труднощі з ефективним дослідженням великих, надлишкових бібліотек моделей. Функція інтегрує квантові алгоритми - зокрема QAOA (і додатково VQE в інших конфігураціях) - для більш ефективного пошуку в цьому просторі після того, як класичні учні навчені, збільшуючи шанс знайти компактну, різноманітну підмножину, яка краще узагальнює.
+
+Важливо, що масштаб даних не обмежений кубітами. Важка робота з даними — попередня обробка, навчання пулу учнів та оцінювання — залишається класичною і може обробляти мільйони прикладів. Кубіти визначають лише розмір ансамблю, який використовується на етапі квантового вибору. Це розділення є тим, що робить підхід життєздатним на сучасному обладнанні: Ви зберігаєте знайомі робочі процеси scikit-learn для даних та навчання моделей, викликаючи квантовий крок через чистий інтерфейс дій у Qiskit Functions.
+
+На практиці, хоча різні типи учнів можуть бути надані ансамблю (наприклад, дерева рішень, логістична регресія або k-NN), дерева рішень, як правило, працюють найкраще. Оптимізатор послідовно віддає перевагу сильнішим членам ансамблю — коли надаються гетерогенні учні, слабші моделі, такі як лінійні регресори, зазвичай видаляються на користь більш виразних моделей, таких як дерева рішень.
+
+Що Ви будете робити тут: підготувати та збалансувати набір даних стабільності мережі; встановити класичну базову лінію AdaBoost; запустити кілька квантових конфігурацій, які змінюють ширину ансамблю та регуляризацію; виконати на симуляторах IBM&reg; або QPU через Qiskit Serverless; та порівняти точність, прецизійність, повноту та F1 у всіх запусках. По дорозі Ви будете використовувати шаблон дій функції (`create`, `fit`, `predict`, `fit_predict`, `create_fit_predict`) та ключові елементи управління:
+- Типи регуляризації: `onsite` (λ) для прямої розрідженості та `alpha` для компромісу на основі співвідношення між термінами взаємодії та onsite
+- Авто-регуляризація: встановіть `regularization="auto"` з цільовим коефіцієнтом вибору для автоматичної адаптації розрідженості
+- Опції оптимізатора: симулятор проти QPU, повторення, класичний оптимізатор та його опції, глибина транспіляції та налаштування семплера/оцінювача виконання
+
+Бенчмарки в документації показують, що точність покращується зі збільшенням кількості учнів (кубітів) на складних проблемах, причому квантовий класифікатор відповідає або перевищує порівнянний класичний ансамбль. У цьому посібнику Ви відтворите робочий процес від початку до кінця та дослідите, коли збільшення ширини ансамблю або перемикання на адаптивну регуляризацію дає кращий F1 при розумному використанні ресурсів. Результатом є обґрунтований погляд на те, як крок квантової оптимізації може доповнити, а не замінити, класичне ансамблеве навчання в реальних застосуваннях.
+## Вимоги
+
+Перед початком цього посібника переконайтеся, що у Вашому середовищі Python встановлені наступні пакети:
+
+- `qiskit[visualization]~=2.1.0`
+- `qiskit-serverless~=0.24.0`
+- `qiskit-ibm-runtime v0.40.1`
+- `qiskit-ibm-catalog~=0.8.0`
+- `scikit-learn==1.5.2`
+- `pandas>=2.0.0,<3.0.0`
+- `imbalanced-learn~=0.12.3`
+## Налаштування
+
+У цьому розділі ми ініціалізуємо клієнт Qiskit Serverless та завантажуємо функцію Singularity Machine Learning – Classification, надану Multiverse Computing.
+За допомогою Qiskit Serverless Ви можете виконувати гібридні квантово-класичні робочі процеси на керованій хмарній інфраструктурі IBM, не турбуючись про управління ресурсами.
+Вам знадобиться ключ API IBM Quantum Platform та ім'я ресурсу хмари (CRN) для автентифікації та доступу до Qiskit Functions.
+### Завантаження набору даних
+
+Щоб виконати цей посібник, ми використовуємо попередньо оброблений **набір даних класифікації стабільності мережі**, що містить позначені показання датчиків енергосистеми.
+Наступна комірка автоматично створює необхідну структуру папок та завантажує як навчальні, так і тестові файли безпосередньо у Ваше середовище за допомогою `wget`.
+Якщо у Вас вже є ці файли локально, цей крок безпечно перезапише їх, щоб забезпечити узгодженість версій.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q imbalanced-learn scikit-learn
+```
+
+```python
+## Download dataset for Grid Stability Classification
+
+# Create data directory if it doesn't exist
+!mkdir -p data_tutorial/grid_stability
+
+# Download the training and test sets from the official Qiskit documentation repo
+!wget -q --show-progress -O data_tutorial/grid_stability/train.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/train.csv
+
+!wget -q --show-progress -O data_tutorial/grid_stability/test.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/test.csv
+
+# Check the files have been downloaded
+!echo "Dataset files downloaded:"
+!ls -lh data_tutorial/grid_stability/*.csv
+```
+
+```text
+data_tutorial/grid_ 100%[===================>] 612.94K  --.-KB/s    in 0.01s
+data_tutorial/grid_ 100%[===================>] 108.19K  --.-KB/s    in 0.006s
+Dataset files downloaded:
+-rw-r--r-- 1 coder coder 109K Nov  8 18:50 data_tutorial/grid_stability/test.csv
+-rw-r--r-- 1 coder coder 613K Nov  8 18:50 data_tutorial/grid_stability/train.csv
+```
+
+### Імпорт необхідних пакетів
+
+У цьому розділі ми імпортуємо всі пакети Python та модулі Qiskit, які використовуються в посібнику.
+Вони включають основні наукові бібліотеки для обробки даних та оцінювання моделей - такі як `NumPy`, `pandas` та `scikit-learn` - разом з інструментами візуалізації та компонентами Qiskit для запуску квантово-посиленої моделі.
+Ми також імпортуємо `QiskitRuntimeService` та `QiskitFunctionsCatalog` для підключення до сервісів IBM Quantum&reg; та доступу до функції Singularity Machine Learning.
+
+```python
+from typing import Tuple
+import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from imblearn.over_sampling import RandomOverSampler
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_ibm_runtime import QiskitRuntimeService
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.model_selection import train_test_split
+
+warnings.filterwarnings("ignore")
+```
+
+### Встановлення постійних змінних
+
+```python
+IBM_TOKEN = ""
+IBM_INSTANCE_TEST = ""
+IBM_INSTANCE_QUANTUM = ""
+FUNCTION_NAME = "multiverse/singularity"
+RANDOM_STATE: int = 123
+TRAIN_PATH = "data_tutorial/grid_stability/train.csv"
+TEST_PATH = "data_tutorial/grid_stability/test.csv"
+```
+
+### Підключення до IBM Quantum та завантаження функції Singularity
+
+Далі ми автентифікуємося в сервісах IBM Quantum та завантажуємо функцію Singularity Machine Learning – Classification з каталогу Qiskit Functions Catalog.
+`QiskitRuntimeService` встановлює безпечне з'єднання з IBM Quantum Platform, використовуючи Ваш токен API та CRN екземпляра, дозволяючи доступ до квантових бекендів.
+Потім використовується `QiskitFunctionsCatalog` для отримання функції Singularity за назвою (`"multiverse/singularity"`), що дозволяє нам викликати її пізніше для гібридних квантово-класичних обчислень.
+Якщо налаштування успішне, Ви побачите підтверджувальне повідомлення, що вказує, що функція завантажена правильно.
+
+```python
+service = QiskitRuntimeService(
+    token=IBM_TOKEN,
+    channel="ibm_quantum_platform",
+    instance=IBM_INSTANCE_QUANTUM,
+)
+
+backend = service.least_busy()
+catalog = QiskitFunctionsCatalog(
+    token=IBM_TOKEN,
+    instance=IBM_INSTANCE_TEST,
+    channel="ibm_quantum_platform",
+)
+singularity = catalog.load(FUNCTION_NAME)
+print(
+    "Successfully connected to IBM Qiskit Serverless and loaded the Singularity function."
+)
+print("Catalog:", catalog)
+print("Singularity function:", singularity)
+```
+
+```text
+Successfully connected to IBM Qiskit Serverless and loaded the Singularity function.
+Catalog: <QiskitFunctionsCatalog>
+Singularity function: QiskitFunction(multiverse/singularity)
+```
+
+### Визначення допоміжних функцій
+
+Перед запуском основних експериментів ми визначаємо кілька невеликих допоміжних функцій, які спрощують завантаження даних та оцінювання моделей.
+- `load_data()` зчитує вхідні CSV файли в масиви NumPy, розділяючи ознаки та мітки для сумісності з `scikit-learn` та квантовими робочими процесами.
+- `evaluate_predictions()` обчислює ключові метрики продуктивності - точність, прецизійність, повноту та F1-оцінку - і додатково повідомляє час виконання, якщо надається інформація про хронометраж.
+
+Ці допоміжні функції спрощують повторювані операції пізніше в ноутбуці та забезпечують послідовне звітування метрик як для класичних, так і для квантових класифікаторів.
+
+```python
+def load_data(data_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load data from the given path to X and y arrays."""
+    df: pd.DataFrame = pd.read_csv(data_path)
+    return df.iloc[:, :-1].values, df.iloc[:, -1].values
+
+def evaluate_predictions(predictions, y_true):
+    """Compute and print accuracy, precision, recall, and F1 score."""
+    accuracy = accuracy_score(y_true, predictions)
+    precision = precision_score(y_true, predictions)
+    recall = recall_score(y_true, predictions)
+    f1 = f1_score(y_true, predictions)
+    print("Accuracy:", accuracy)
+    print("Precision:", precision)
+    print("Recall:", recall)
+    print("F1:", f1)
+    return accuracy, precision, recall, f1
+```
+
+## Крок 1: Відображення класичних вхідних даних на квантову проблему
+
+Ми починаємо з підготовки набору даних для гібридного квантово-класичного експериментування. Метою цього кроку є перетворення необроблених даних стабільності мережі в збалансовані навчальні, валідаційні та тестові розділи, які можуть послідовно використовуватися як класичними, так і квантовими робочими процесами. Підтримка ідентичних розділів забезпечує справедливе та відтворюване порівняння продуктивності пізніше.
+### Завантаження та попередня обробка даних
+
+Спочатку ми завантажуємо навчальні та тестові CSV файли, створюємо валідаційний розділ та балансуємо набір даних за допомогою випадкової надвибірки. Балансування запобігає зміщенню до класу більшості та забезпечує більш стабільний навчальний сигнал як для класичних, так і для квантових ансамблевих моделей.
+
+```python
+# Load and upload the data
+X_train, y_train = load_data(TRAIN_PATH)
+X_test, y_test = load_data(TEST_PATH)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train, test_size=0.2, random_state=RANDOM_STATE
+)
+
+# Balance the dataset through over-sampling of the positive class
+ros = RandomOverSampler(random_state=RANDOM_STATE)
+X_train_bal, y_train_bal = ros.fit_resample(X_train, y_train)
+
+print("Shapes:")
+print("  X_train_bal:", X_train_bal.shape)
+print("  y_train_bal:", y_train_bal.shape)
+print("  X_val:", X_val.shape)
+print("  y_val:", y_val.shape)
+print("  X_test:", X_test.shape)
+print("  y_test:", y_test.shape)
+```
+
+```text
+Shapes:
+  X_train_bal: (5104, 12)
+  y_train_bal: (5104,)
+  X_val: (850, 12)
+  y_val: (850,)
+  X_test: (750, 12)
+  y_test: (750,)
+```
+
+### Класична базова лінія: довідка AdaBoost
+
+Перед запуском будь-якої квантової оптимізації ми навчаємо сильну класичну базову лінію - стандартний класифікатор AdaBoost - на тих самих збалансованих даних. Це забезпечує відтворювану точку відліку для подальшого порівняння, допомагаючи визначити, чи покращує квантова оптимізація узагальнення або ефективність порівняно з добре налаштованим класичним ансамблем.
+
+```python
+# ----- Classical baseline: AdaBoost -----
+baseline = AdaBoostClassifier(n_estimators=60, random_state=RANDOM_STATE)
+baseline.fit(X_train_bal, y_train_bal)
+baseline_pred = baseline.predict(X_test)
+print("Classical AdaBoost baseline:")
+_ = evaluate_predictions(baseline_pred, y_test)
+```
+
+```text
+Classical AdaBoost baseline:
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+```
+
+## Крок 2: Оптимізація проблеми для виконання на квантовому обладнанні
+
+Завдання вибору ансамблю формулюється як проблема комбінаторної оптимізації, де кожен слабкий учень є бінарною змінною рішення, а цільова функція балансує точність з розрідженістю через член регуляризації. `QuantumEnhancedEnsembleClassifier` вирішує це за допомогою QAOA на обладнанні IBM, все ще дозволяючи дослідження на основі симулятора. `optimizer_options` контролюють гібридний цикл: `simulator=False` направляє схеми до вибраного QPU, `num_solutions` збільшує широту пошуку, а `classical_optimizer_options` (для внутрішнього класичного оптимізатора) керують збіжністю; значення близько 60 ітерацій є хорошим балансом для якості та часу виконання. Опції виконання - такі як помірна глибина схеми (`reps`) та стандартне зусилля транспіляції - допомагають забезпечити надійну продуктивність на різних пристроях. Конфігурація нижче є профілем "найкращих результатів", який ми будемо використовувати для запусків на обладнанні; Ви також можете створити суто симульований варіант, перемкнувши `simulator=True`, щоб виконати пробний запуск робочого процесу без витрати часу QPU.
+
+```python
+# QAOA / runtime configuration for best results on hardware
+optimizer_options = {
+    "simulator": False,  # set True to test locally without QPU
+    "num_solutions": 100_000,  # broaden search over candidate ensembles
+    "reps": 3,  # QAOA depth (circuit layers)
+    "optimization_level": 3,  # transpilation effort
+    "num_transpiler_runs": 30,  # explore multiple layouts
+    "classical_optimizer": "COBYLA",  # robust default for this landscape
+    "classical_optimizer_options": {
+        "maxiter": 60  # practical convergence budget
+    },
+    # You can pass backend-specific options; leaving None uses least-busy routing
+    "estimator_options": None,
+    "sampler_options": None,
+}
+
+print("Configured hardware optimization profile:")
+for key, value in optimizer_options.items():
+    print(f"  {key}: {value}")
+```
+
+```text
+Configured hardware optimization profile:
+  simulator: False
+  num_solutions: 100000
+  reps: 3
+  optimization_level: 3
+  num_transpiler_runs: 30
+  classical_optimizer: COBYLA
+  classical_optimizer_options: {'maxiter': 60}
+  estimator_options: None
+  sampler_options: None
+```
+## Крок 3: Виконання з використанням примітивів Qiskit
+
+Тепер ми виконуємо повний робочий процес, використовуючи дію `create_fit_predict` функції Singularity для навчання, оптимізації та оцінювання `QuantumEnhancedEnsembleClassifier` наскрізно на інфраструктурі IBM. Функція будує ансамбль, застосовує квантову оптимізацію через примітиви Qiskit і повертає як прогнози, так і метадані завдання (включаючи час виконання та використання ресурсів). Класичний розподіл даних з Кроку 1 повторно використовується для відтворюваності, з валідаційними даними, переданими через `fit_params`, щоб оптимізація могла налаштовувати гіперпараметри внутрішньо, зберігаючи відкладений тестовий набір недоторканим.
+
+На цьому кроці ми досліджуємо кілька конфігурацій квантового ансамблю, щоб зрозуміти, як ключові параметри - зокрема `num_learners` та `regularization` - впливають на якість результатів та використання QPU.
+- `num_learners` визначає ширину ансамблю (і неявно, кількість кубітів), впливаючи на ємність моделі та обчислювальну вартість.
+- `regularization` контролює розрідженість та перенавчання, формуючи, скільки учнів залишаються активними після оптимізації.
+
+Змінюючи ці параметри, ми можемо побачити, як ширина ансамблю та регуляризація взаємодіють: збільшення ширини зазвичай покращує F1, але коштує більше часу QPU, тоді як сильніша або адаптивна регуляризація може покращити узагальнення при приблизно тому ж апаратному сліді. Наступні підрозділи розглядають три репрезентативні конфігурації, щоб проілюструвати ці ефекти.
+### Базова лінія
+
+Ця конфігурація використовує `num_learners = 10` та `regularization = 7`.
+
+- `num_learners` контролює ширину ансамблю — фактично кількість слабких учнів, які комбінуються, і на квантовому обладнанні **кількість необхідних кубітів**. Більше значення розширює комбінаторний простір пошуку та може покращити точність і повноту, але також збільшує ширину схеми, час компіляції та загальне використання QPU.
+- `regularization` встановлює силу штрафу за включення додаткових учнів. При стандартній регуляризації "onsite" вищі значення забезпечують більшу розрідженість (зберігається менше учнів), тоді як нижчі значення дозволяють більш складні ансамблі.
+
+Ця конфігурація забезпечує недорогу базову лінію, показуючи, як поводиться малий ансамбль до масштабування ширини або налаштування розрідженості.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 10
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_1 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_1 = job_1.result()
+print("Action status:", result_1.get("status"))
+print("Action message:", result_1.get("message"))
+print("Metadata:", result_1.get("metadata"))
+qeec_pred_job_1 = np.array(result_1["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_1, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 267.05158376693726}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 3336.8785166740417}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 152.4274561405182}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1550.1889700889587}}}
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+```
+
+```python
+status_1 = job_1.status()
+print("\nQuantum job status:", status_1)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### Збільшення кількості учнів
+
+Тут ми збільшуємо `num_learners` з 10 → 30, зберігаючи `regularization = 7`.
+
+- Більше учнів розширює простір гіпотез, дозволяючи моделі фіксувати більш тонкі закономірності, що може помірно підвищити F1.
+- У більшості випадків різниця в часі виконання між 10 та 30 учнями не є суттєвою, що вказує на те, що додаткова ширина схеми не значно збільшує вартість виконання.
+- Покращення якості все ще слідує *кривій спадної віддачі*: ранні прирости з'являються, коли ансамбль росте, але вони виходять на плато, оскільки додаткові учні вносять менше нової інформації.
+
+Цей експеримент підкреслює компроміс між якістю та ефективністю — збільшення ширини ансамблю може забезпечити невеликі прирости точності без значного штрафу за час виконання, залежно від бекенду та умов транспіляції.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 30
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_2 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_2 = job_2.result()
+print("Action status:", result_2.get("status"))
+print("Action message:", result_2.get("message"))
+print("QPU Time:", result_2.get("metadata"))
+qeec_pred_job_2 = np.array(result_2["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_2, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+QPU Time: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 680.2116754055023}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 80.80395102500916}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 154.4466371536255}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1095.822762966156}}}
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+```
+
+```python
+status_2 = job_2.status()
+print("\nQuantum job status:", status_2)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### Регуляризація
+
+У цій конфігурації ми збільшуємо до `num_learners = 60` і вводимо адаптивну регуляризацію для більш інтуїтивного управління розрідженістю.
+
+- З `regularization = "auto"` оптимізатор автоматично знаходить відповідну силу регуляризації, яка вибирає приблизно `regularization_ratio * num_learners` слабких учнів для фінального ансамблю, замість ручного встановлення штрафу. Це забезпечує більш зручний інтерфейс для управління балансом між розрідженістю та розміром ансамблю.
+- `regularization_type = "alpha"` визначає, як застосовується штраф. На відміну від `onsite`, який є необмеженим `[0, ∞]`, `alpha` обмежений між `[0, 1]`, що робить його легшим для налаштування та інтерпретації. Параметр контролює компроміс між індивідуальними та парними штрафами, пропонуючи більш плавний діапазон конфігурації.
+- `regularization_desired_ratio ≈ 0.82` визначає цільову пропорцію учнів, які залишаються активними після регуляризації — тут зберігається близько 82% учнів, автоматично відсікаючи найслабші 18%.
+
+Хоча адаптивна регуляризація спрощує конфігурацію та допомагає підтримувати збалансований ансамбль, вона не обов'язково гарантує краще або більш стабільне виконання. Фактична якість залежить від вибору відповідного параметра регуляризації, і його точне налаштування через крос-валідацію може бути обчислювально дорогим. Основна перевага полягає в покращеній зручності використання та інтерпретованості, а не в прямих приростах точності.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 60
+REGULARIZATION = "auto"
+REGULARIZATION_TYPE = "alpha"
+REGULARIZATION_RATIO = 0.82
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_3 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    regularization_type=REGULARIZATION_TYPE,
+    regularization_desired_ratio=REGULARIZATION_RATIO,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_3 = job_3.result()
+print("Action status:", result_3.get("status"))
+print("Action message:", result_3.get("message"))
+print("Metadata:", result_3.get("metadata"))
+qeec_pred_job_3 = np.array(result_3["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_3, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 1387.7451872825623}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 95.41597843170166}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 171.78878355026245}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1146.5584812164307}}}
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```python
+status_3 = job_3.status()
+print("\nQuantum job status:", status_3)
+```
+
+```text
+Quantum job status: DONE
+```
+
+## Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+
+Тепер ми постобробляємо виходи як з класичних, так і з квантових запусків, перетворюючи їх у узгоджений формат для подальшої оцінки. Цей крок порівнює якість прогнозування, використовуючи стандартні метрики - точність, прецизійність, повноту та F1 - і аналізує, як ширина ансамблю (`num_learners`) та контроль розрідженості (`regularization`) впливають як на продуктивність, так і на обчислювальну поведінку.
+
+Класична базова лінія AdaBoost забезпечує компактну та стабільну точку відліку для навчання малого масштабу. Вона працює добре з обмеженими ансамблями та незначними обчислювальними витратами, відображаючи силу традиційного бустингу, коли простір гіпотез все ще є керованим. Квантові конфігурації (`qeec_pred_job_1`, `qeec_pred_job_2` та `qeec_pred_job_3`) розширюють цю базову лінію, вбудовуючи процес вибору ансамблю в варіаційний цикл квантової оптимізації. Це дозволяє системі досліджувати експоненційно великі підмножини учнів одночасно в суперпозиції, ефективніше вирішуючи комбінаторну природу вибору ансамблю в міру збільшення масштабу.
+
+Результати показують, що збільшення `num_learners` з 10 до 30 покращує повноту та F1, підтверджуючи, що ширший ансамбль фіксує багатші взаємодії між слабкими учнями. Приріст є сублінійним на поточному обладнанні - кожен додатковий учень дає менші прирости точності - але основна поведінка масштабування залишається сприятливою, оскільки квантовий оптимізатор може шукати більші простори конфігурацій без експоненційного вибуху, типового для класичного вибору підмножин. Регуляризація вносить додаткові нюанси: фіксоване λ=7 забезпечує постійну розрідженість і стабілізує збіжність, тоді як адаптивна α-регуляризація автоматично налаштовує розрідженість на основі кореляцій між учнями. Це динамічне підрізання часто досягає трохи вищого F1 для тієї ж ширини кубіта, балансуючи складність моделі та узагальнення.
+
+При безпосередньому порівнянні з базовою лінією AdaBoost найменша квантова конфігурація (L=10) відтворює подібну точність, підтверджуючи коректність гібридного конвеєра. При більших ширинах квантові варіанти - особливо з авто-регуляризацією - починають помірно перевершувати класичну базову лінію, показуючи покращену повноту та F1 без лінійного зростання обчислювальної вартості. Ці покращення не вказують на негайну "квантову перевагу", а скоріше на **ефективність масштабування**: квантовий оптимізатор підтримує керовану продуктивність у міру розширення ансамблю, де класичний підхід стикався б з експоненційним зростанням складності вибору підмножин.
+
+На практиці:
+- Використовуйте **класичну базову лінію** для швидкої валідації та порівняльного аналізу на малих наборах даних.
+- Застосовуйте **квантові ансамблі**, коли ширина моделі або складність ознак зростає — пошук на основі QAOA масштабується більш витончено в тих режимах.
+- Використовуйте **адаптивну α-регуляризацію** для підтримки розрідженості та узагальнення без збільшення ширини схеми.
+- Відстежуйте час QPU та глибину, щоб збалансувати прирости якості з обмеженнями близькострокового обладнання.
+
+Разом ці експерименти показують, що квантово-оптимізовані ансамблі доповнюють класичні методи: вони відтворюють базову точність у малих масштабах, водночас пропонуючи шлях до ефективного масштабування на більших комбінаторних задачах навчання. У міру покращення обладнання ці переваги масштабування, як очікується, будуть накопичуватися, розширюючи можливий розмір і глибину моделей на основі ансамблів за межі того, що є класично практичним.
+### Оцінювання метрик для кожної конфігурації
+
+Тепер ми оцінюємо всі конфігурації - класичну базову лінію AdaBoost та три квантові ансамблі - використовуючи помічник `evaluate_predictions` для обчислення точності, прецизійності, повноти та F1 на тому ж тестовому наборі. Це порівняння прояснює, як квантова оптимізація масштабується відносно класичного підходу: при малих ширинах обидва працюють подібно; у міру зростання ансамблів квантовий метод може досліджувати більші простори гіпотез більш ефективно. Результуюча таблиця фіксує ці тенденції в узгодженій кількісній формі.
+
+```python
+results = []
+
+# Classical baseline
+acc_b, prec_b, rec_b, f1_b = evaluate_predictions(baseline_pred, y_test)
+results.append(
+    {
+        "Config": "AdaBoost (Classical)",
+        "Accuracy": acc_b,
+        "Precision": prec_b,
+        "Recall": rec_b,
+        "F1": f1_b,
+    }
+)
+
+# Quantum runs
+for label, preds in [
+    ("QEEC L=10, reg=7", qeec_pred_job_1),
+    ("QEEC L=30, reg=7", qeec_pred_job_2),
+    (f"QEEC L=60, reg=auto (α={REGULARIZATION_RATIO})", qeec_pred_job_3),
+]:
+    acc, prec, rec, f1 = evaluate_predictions(preds, y_test)
+    results.append(
+        {
+            "Config": label,
+            "Accuracy": acc,
+            "Precision": prec,
+            "Recall": rec,
+            "F1": f1,
+        }
+    )
+
+df_results = pd.DataFrame(results)
+df_results
+```
+
+```text
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```text
+Config  Accuracy  Precision    Recall        F1
+0          AdaBoost (Classical)  0.789333        1.0  0.789333  0.882265
+1              QEEC L=10, reg=7  0.868000        1.0  0.868000  0.929336
+2              QEEC L=30, reg=7  0.894667        1.0  0.894667  0.944405
+3  QEEC L=60, reg=auto (α=0.82)  0.908000        1.0  0.908000  0.951782
+```
+
+### Візуалізація тенденцій якості за конфігураціями
+
+Згруповану стовпчикову діаграму нижче порівнює **Accuracy** та **F1** за класичною базовою лінією та квантовими ансамблями (`L=10`, `L=30` та `L=60 auto-α`). Вона ілюструє, як точність стабілізується, тоді як F1 поступово покращується в міру збільшення ширини квантового ансамблю, демонструючи, що гібридний метод підтримує масштабування продуктивності без експоненційного зростання вартості, типового для класичного вибору підмножин.
+
+```python
+x = np.arange(len(df_results))
+width = 0.35
+plt.figure(figsize=(7.6, 4.6))
+plt.bar(x - width / 2, df_results["Accuracy"], width=width, label="Accuracy")
+plt.bar(x + width / 2, df_results["F1"], width=width, label="F1")
+plt.xticks(x, df_results["Config"], rotation=10)
+plt.ylabel("Score")
+plt.title("Classical vs Quantum ensemble performance")
+plt.legend()
+plt.ylim(0, 1.0)
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sml-classification/extracted-outputs/0f15c5fb-2450-4671-9bc2-471043414df2-0.avif)
+
+### Інтерпретація
+
+Графік підтверджує очікувану схему масштабування. Класичний AdaBoost працює добре для менших ансамблів, але стає все більш дорогим для масштабування в міру зростання кількості слабких учнів, оскільки його задача вибору підмножин розширюється комбінаторно. Квантово-покращені моделі відтворюють класичну точність при низьких ширинах і починають перевершувати її в міру збільшення розміру ансамблю, особливо при адаптивній α-регуляризації. Це відображає здатність квантового оптимізатора вибирати та оцінювати багато підмножин-кандидатів паралельно через суперпозицію, підтримуючи керований пошук навіть при вищих ширинах. Хоча поточні апаратні витрати компенсують деякі теоретичні прирости, тенденція ілюструє перевагу ефективності масштабування квантової формулювання. У практичних термінах класичний метод залишається кращим для легких порівняльних тестів, тоді як квантово-покращені ансамблі стають вигідними в міру зростання розмірності моделі та розміру ансамблю, пропонуючи кращі компроміси між точністю, узагальненням і обчислювальним зростанням.
+## Додаток: Переваги масштабування та покращення
+
+Перевага масштабованості `QuantumEnhancedEnsembleClassifier` виникає з того, як процес вибору ансамблю відображається на квантову оптимізацію.
+Класичні методи навчання ансамблів, такі як AdaBoost або випадкові ліси, стають обчислювально дорогими в міру збільшення кількості слабких учнів, оскільки вибір оптимальної підмножини є комбінаторною задачею, яка масштабується експоненційно.
+
+На відміну від цього, квантова формулювання — реалізована тут через Quantum Approximate Optimization Algorithm (QAOA) — може досліджувати ці експоненційно великі простори пошуку більш ефективно, оцінюючи кілька конфігурацій у суперпозиції.
+Як результат, час навчання не зростає значно з кількістю учнів, дозволяючи моделі залишатися ефективною навіть при збільшенні ширини ансамблю.
+
+Хоча поточне обладнання вносить певний шум і обмеження глибини, цей робочий процес демонструє близькостроковий гібридний підхід, де класичні та квантові компоненти співпрацюють: квантовий оптимізатор забезпечує кращий ландшафт ініціалізації для класичного циклу, покращуючи збіжність і кінцеву якість моделі.
+У міру розвитку квантових процесорів ці переваги масштабованості, як очікується, поширяться на більші набори даних, ширші ансамблі та більші глибини схем.
+## Посилання
+
+1. [Introduction to Qiskit Functions](/guides/functions)
+2. [Multiverse Computing Singularity Machine Learning](/guides/multiverse-computing-singularity)
+## Опитування щодо навчального посібника
+
+Будь ласка, витратьте хвилину, щоб надати відгук про цей навчальний посібник. Ваші думки допоможуть нам покращити наші пропозиції контенту та користувацький досвід.

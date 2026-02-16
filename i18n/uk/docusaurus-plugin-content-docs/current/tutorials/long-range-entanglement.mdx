@@ -1,0 +1,962 @@
+---
+title: "Дальнє заплутування з динамічними схемами"
+sidebar_label: "Дальнє заплутування з динамічними схемами"
+description: "Цей підручник реалізує дальній CNOT з використанням динамічних схем з парами Белла, вимірюванням та прямим зв'язком, і порівнює його з прямим унітарним підходом."
+notebook_path: "docs/tutorials/long-range-entanglement.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/long-range-entanglement.ipynb" />
+
+
+
+{/* cspell:ignore fontsize hcords, ycords, xcords, ecolor, elinewidth, allcr, braket, frameon */}
+
+*Оцінка використання: 4 хвилини на процесорі Heron r2. (ПРИМІТКА: Це лише оцінка. Ваш час виконання може відрізнятися.)*
+## Передумови
+
+Дальнє заплутування між віддаленими кубітами є складним завданням на пристроях з обмеженою зв'язністю. Цей підручник показує, як динамічні схеми можуть генерувати таке заплутування шляхом реалізації дальнього керованого-X (LRCX) гейта з використанням протоколу на основі вимірювання.
+
+Слідуючи підходу Еліси Боймер та ін. у [1](#ref-1), метод використовує вимірювання в середині схеми та прямий зв'язок для досягнення гейтів постійної глибини незалежно від відстані між кубітами. Він створює проміжні пари Белла, вимірює один кубіт з кожної пари та застосовує класично зумовлені гейти для поширення заплутування через пристрій. Це дозволяє уникнути довгих ланцюжків SWAP, зменшуючи як глибину схеми, так і вплив помилок двокубітних гейтів.
+
+У цьому блокноті ми адаптуємо протокол для обладнання IBM Quantum&reg; та розширюємо його для виконання декількох операцій LRCX паралельно, що дозволяє нам досліджувати, як продуктивність масштабується з кількістю одночасних умовних операцій.
+## Вимоги
+
+Перед початком цього підручника переконайтеся, що у Вас встановлено наступне:
+
+- Qiskit SDK v2.0 або пізніше, з підтримкою [візуалізації](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime ( `pip install qiskit-ibm-runtime` ) v0.37 або пізніше
+## Налаштування
+
+```python
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.classical import expr
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.visualization import plot_circuit_layout
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Batch,
+    SamplerV2 as Sampler,
+)
+import matplotlib.pyplot as plt
+import numpy as np
+```
+
+## Крок 1: Відображення класичних входів на квантову задачу
+
+Тепер ми реалізуємо дальній гейт CNOT між двома віддаленими кубітами, слідуючи конструкції динамічної схеми, показаній нижче (адаптовано з Рис. 1a в Посиланні [1](#ref-1)). Ключова ідея полягає у використанні "шини" допоміжних кубітів, ініціалізованих до $|0\rangle$, для посередництва в дальній телепортації гейта.
+
+![Long-range CNOT circuit](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+Як показано на малюнку, процес працює наступним чином:
+1. Підготувати ланцюжок пар Белла, що з'єднують керуючий та цільовий кубіти через проміжні допоміжні кубіти.
+2. Виконати вимірювання Белла між незаплутаними сусідніми кубітами, обмінюючи заплутування крок за кроком, доки керуючий та цільовий кубіти не поділять пару Белла.
+3. Використовувати цю пару Белла для телепортації гейта, перетворюючи локальний CNOT на детерміністичний дальній CNOT постійної глибини.
+
+Цей підхід замінює довгі ланцюжки SWAP на протокол постійної глибини, зменшуючи вплив помилок двокубітних гейтів і роблячи операцію масштабованою зі розміром пристрою.
+
+У наступному ми спершу розглянемо реалізацію схеми LRCX на основі динамічних схем. Наприкінці ми також надамо унітарну реалізацію для порівняння, щоб підкреслити переваги динамічних схем у цій ситуації.
+### (i) Ініціалізація схеми
+
+Ми починаємо з простої квантової задачі, яка слугуватиме основою для порівняння. Зокрема, ми ініціалізуємо схему з керуючим кубітом на індексі 0 і застосовуємо до нього гейт Адамара. Це створює стан суперпозиції, який, коли за ним слідує операція керованого-X, генерує стан Белла $(|00\rangle + |11\rangle)/\sqrt{2}$ між керуючим та цільовим кубітами.
+
+На цьому етапі ми ще не конструюємо сам дальній керований-X (LRCX). Натомість наша мета полягає в тому, щоб визначити чітку та мінімальну початкову схему, яка підкреслює роль LRCX. У Кроці 2 ми покажемо, як LRCX може бути реалізований як оптимізація з використанням динамічних схем, і порівняємо його продуктивність з унітарним еквівалентом. Важливо, що протокол LRCX може бути застосований до будь-якої початкової схеми. Тут ми використовуємо це просте налаштування з Адамаром для ясності демонстрації.
+
+```python
+distance = 6  # The distance of the CNOT gate, with the convention that a distance of zero is a nearest-neighbor CNOT.
+
+def initialize_circuit(distance):
+    assert distance >= 0
+    control = 0  # control qubit
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    k = int(n / 2)  # Number of Bell States to be used
+
+    allcr = [cr]
+    if (
+        distance > 1
+    ):  # This classical register will be used to store ZZ measurements. It is only used for long-range CX gates with distance > 1
+        c1 = ClassicalRegister(
+            k, name="c1"
+        )  # Classical register needed for post processing
+        allcr.append(c1)
+    if (
+        distance > 0
+    ):  # This classical register will be used to store XX measurements. It is only used if distance > 0
+        c2 = ClassicalRegister(
+            n - k, name="c2"
+        )  # Classical register needed for post processing
+        allcr.append(c2)
+
+    qc = QuantumCircuit(qr, *allcr, name="CNOT")
+
+    # Apply a Hadamard gate to the control qubit such that the long-range CNOT gate will prepare a Bell state (|00> + |11>)/sqrt(2)
+    qc.h(control)
+
+    return qc
+
+qc = initialize_circuit(distance)
+qc.draw(fold=-1, output="mpl", scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/0446b8e8-0.avif)
+
+## Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+На цьому кроці ми показуємо, як побудувати схему LRCX з використанням динамічних схем. Мета полягає в оптимізації схеми для виконання на обладнанні шляхом зменшення глибини порівняно з суто унітарною реалізацією. Щоб проілюструвати переваги, ми покажемо як динамічну конструкцію LRCX, так і її унітарний еквівалент, і пізніше порівняємо їх продуктивність після транспіляції. Важливо, що хоча тут ми застосовуємо LRCX до простої задачі, ініціалізованої Адамаром, протокол може бути застосований до будь-якої схеми, де потрібен дальній CNOT.
+
+### (ii) Підготовка пар Белла
+Ми починаємо зі створення ланцюжка пар Белла уздовж шляху між керуючим та цільовим кубітами. Якщо відстань непарна, ми спочатку застосовуємо CNOT від керуючого кубіта до його сусіда, що є CNOT, який буде телепортований. Для парної відстані цей CNOT буде застосовано після кроку підготовки пари Белла. Ланцюжок пар Белла потім заплутує послідовні пари кубітів, встановлюючи ресурс, необхідний для передачі керуючої інформації через пристрій.
+
+```python
+# Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+def check_even(n: int) -> int:
+    """Return 1 if n is even, else 2."""
+    return 1 if n % 2 == 0 else 2
+
+def prepare_bell_pairs(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if add_barriers:
+        qc.barrier()
+
+    x0 = check_even(n)
+    if n % 2 != 0:
+        qc.cx(0, 1)
+
+    # Create k Bell pairs
+    for i in range(k):
+        qc.h(x0 + 2 * i)
+        qc.cx(x0 + 2 * i, x0 + 2 * i + 1)
+    return qc
+
+qc = prepare_bell_pairs(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4df8ebba-0.avif)
+
+### (iii) Вимірювання сусідніх пар кубітів у базисі Белла
+Далі ми вимірюємо *незаплутані* сусідні кубіти в базисі Белла (двокубітні вимірювання $XX$ та $ZZ$). Це створює дальню пару Белла між цільовим кубітом та кубітом, сусіднім з керуючим (з точністю до корекцій Паулі, які будуть реалізовані через прямий зв'язок на наступному кроці). Паралельно ми реалізуємо заплутуюче вимірювання, яке телепортує гейт CNOT для дії на цільовий кубіт.
+
+```python
+def measure_bell_basis(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+    x0 = 1 if n % 2 == 0 else 2
+
+    # Entangling layer that implements the Bell measurement (and additionally adds the CNOT to be teleported, if n is even)
+    for i in range(k + 1):
+        qc.cx(x0 - 1 + 2 * i, x0 + 2 * i)
+
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.h(2 * i + 1 - x0)
+        else:
+            qc.h(2 * i + 1 - x0)
+
+    if add_barriers:
+        qc.barrier()
+
+    # Map the ZZ measurements onto classical register c1
+    for i in range(k):
+        if i == 0:
+            qc.measure(2 * i + x0, c1[i])
+        else:
+            qc.measure(2 * i + x0, c1[i])
+
+    # Map the XX measurements onto classical register c2
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+        else:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+    return qc
+
+qc = measure_bell_basis(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/8eed9e57-0.avif)
+
+### (iv) Далі, застосування корекцій прямого зв'язку для виправлення побічних операторів Паулі
+
+Вимірювання в базисі Белла вносять побічні оператори Паулі, які повинні бути виправлені з використанням записаних результатів. Це робиться у два кроки. Спочатку нам потрібно обчислити парність всіх вимірювань $ZZ$, яка потім використовується для умовного застосування гейта $X$ до цільового кубіта. Аналогічно, обчислюється парність вимірювань $XX$ і використовується для умовного застосування гейта $Z$ до керуючого кубіта.
+
+З новою структурою класичних виразів у Qiskit ці парності можуть бути обчислені безпосередньо в шарі класичної обробки схеми. Замість застосування послідовності окремих умовних гейтів для кожного біта вимірювання, ми можемо побудувати єдиний класичний вираз, який представляє XOR (парність) всіх відповідних результатів вимірювання. Цей вираз потім використовується як умова в одному блоці `if_test`, що дозволяє застосовувати корекційні гейти з постійною глибиною. Цей підхід як спрощує схему, так і гарантує, що корекції прямого зв'язку не вносять непотрібної додаткової затримки.
+
+```python
+def apply_ffwd_corrections(qc):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+    n = qc.num_qubits - 2  # number of qubits between target and control
+
+    k = int(n / 2)
+    x0 = check_even(n)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # First, let's compute the parity of all ZZ measurements
+    for i in range(k):
+        if i == 0:
+            parity_ZZ = expr.lift(
+                c1[i]
+            )  # Store the value of the first ZZ measurement in parity_ZZ
+        else:
+            parity_ZZ = expr.bit_xor(
+                c1[i], parity_ZZ
+            )  # Successively compute the parity via XOR operations
+
+    for i in range(1, k + x0):
+        if i == 1:
+            parity_XX = expr.lift(
+                c2[i - 1]
+            )  # Store the value of the first XX measurement in parity_XX
+        else:
+            parity_XX = expr.bit_xor(
+                c2[i - 1], parity_XX
+            )  # Successively compute the parity via XOR operations
+
+    if n > 0:
+        with qc.if_test(parity_XX):
+            qc.z(control)
+
+    if n > 1:
+        with qc.if_test(parity_ZZ):
+            qc.x(target)
+    return qc
+
+qc = apply_ffwd_corrections(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4915791a-0.avif)
+
+### (v) Нарешті, вимірювання керуючого та цільового кубітів
+Ми визначаємо допоміжну функцію, яка дозволяє вимірювати керуючий та цільовий кубіти в базисах $XX$, $YY$ або $ZZ$. Для перевірки стану Белла $(|00\rangle + |11\rangle)/\sqrt{2}$, очікувані значення $XX$ та $ZZ$ повинні обидва дорівнювати $+1$, оскільки вони є стабілізаторами стану. Вимірювання $YY$ також підтримується тут і буде використано нижче при обчисленні точності.
+
+```python
+def measure_in_basis(qc, basis="XX", add_barrier=True):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+
+    assert basis in ["XX", "YY", "ZZ"]
+
+    qc = (
+        qc.copy()
+    )  # We copy the circuit because we want to measure in different bases
+    cr = qc.cregs[0]
+
+    if add_barrier:
+        qc.barrier()
+
+    if basis == "XX":
+        qc.h(control)
+        qc.h(target)
+    elif basis == "YY":
+        qc.sdg(control)
+        qc.sdg(target)
+        qc.h(control)
+        qc.h(target)
+
+    qc.measure(control, cr[0])
+    qc.measure(target, cr[1])
+    return qc
+
+qc_YY = measure_in_basis(qc.copy(), basis="YY")
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d087d7c1-0.avif)
+
+### Об'єднання всього разом
+Ми поєднуємо різні кроки, визначені вище, щоб створити дальній гейт CX на двох кінцях 1D лінії. Кроки включають
+- Ініціалізацію керуючого кубіта в $\\ket{+}$
+- Підготовку пар Белла
+- Вимірювання сусідніх пар кубітів
+- Застосування корекцій прямого зв'язку, що залежать від MCM
+
+```python
+def lrcx(distance, prep_barrier=True, pre_measure_barrier=True):
+    qc = initialize_circuit(distance)
+    qc = prepare_bell_pairs(qc, prep_barrier)
+    qc = measure_bell_basis(qc, pre_measure_barrier)
+    qc = apply_ffwd_corrections(qc)
+    return qc
+
+qc = lrcx(distance)
+# Apply the measurement in the XX, YY, and ZZ bases
+qc_XX, qc_YY, qc_ZZ = [
+    measure_in_basis(qc, basis=basis) for basis in ["XX", "YY", "ZZ"]
+]
+
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/11fc8adc-0.avif)
+### Генерація схем для різних відстаней
+
+Тепер ми генеруємо схеми довгодіапазонних CX для діапазону відстаней між кубітами. Для кожної відстані ми будуємо схеми, які вимірюють у базисах $XX$, $YY$ та $ZZ$, які пізніше будуть використані для обчислення точності.
+
+Список відстаней включає як короткодіапазонні, так і довгодіапазонні відстані, де `distance = 0` відповідає найближчому сусідньому CX. Ці ж самі відстані також будуть використані для генерації відповідних унітарних схем пізніше для порівняння.
+
+```python
+distances = [
+    0,
+    1,
+    2,
+    3,
+    6,
+    11,
+    16,
+    21,
+    28,
+    35,
+    44,
+    55,
+    60,
+]  # Distances for long range CX. distance of 0 is a nearest-neighbor CX
+distances.sort()
+assert (
+    min(distances) >= 0
+)  # Only works for distance larger than 2 because classical register cannot be empty
+basis_list = ["XX", "YY", "ZZ"]
+
+circuits_dyn = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_dyn.append(
+            measure_in_basis(lrcx(distance, prep_barrier=False), basis=basis)
+        )
+print(f"Number of circuits: {len(circuits_dyn)}")
+circuits_dyn[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/72c70b11-1.avif)
+
+#### Унітарна реалізація зі свопінгом кубітів до середини
+
+Для порівняння ми спочатку розглянемо випадок, коли довгодіапазонний гейт CNOT реалізується з використанням з'єднань найближчих сусідів та унітарних гейтів. На наступному малюнку зліва показана схема для довгодіапазонного гейта CNOT, що охоплює 1D ланцюг з n-кубітів, обмежений лише з'єднаннями найближчих сусідів. Посередині показана еквівалентна унітарна декомпозиція, яку можна реалізувати за допомогою локальних гейтів CNOT, з глибиною схеми $O(n)$.
+
+![Long-range CNOT circuit](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+Схему посередині можна реалізувати наступним чином:
+
+```python
+def cnot_unitary(distance):
+    """Generate a long range CNOT gate using local CNOTs on a 1D chain of qubits subject to n
+    nearest-neighbor connections only.
+
+    Args:
+        distance (int) : The distance of the CNOT gate, with the convention that a distance of 0 is a nearest-neighbor CNOT.
+
+    Returns:
+        QuantumCircuit: A Quantum Circuit implementing a long-range CNOT gate between qubit 0 and qubit distance+1
+    """
+    assert distance >= 0
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    qc = QuantumCircuit(qr, cr, name="CNOT_unitary")
+
+    control_qubit = 0
+
+    qc.h(control_qubit)  # Prepare the control qubit in the |+> state
+
+    k = int(n / 2)
+    qc.barrier()
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(i, i + 1)
+        qc.cx(i + 1, i)
+        qc.cx(-i - 1, -i - 2)
+        qc.cx(-i - 2, -i - 1)
+    if n % 2 == 1:
+        qc.cx(k + 2, k + 1)
+        qc.cx(k + 1, k + 2)
+    qc.barrier()
+    qc.cx(k, k + 1)
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(k - i, k - 1 - i)
+        qc.cx(k - 1 - i, k - i)
+        qc.cx(k + i + 1, k + i + 2)
+        qc.cx(k + i + 2, k + i + 1)
+    if n % 2 == 1:
+        qc.cx(-2, -1)
+        qc.cx(-1, -2)
+
+    return qc
+```
+
+Тепер побудуємо всі унітарні схеми та створимо схеми, які вимірюють у базисах $XX$, $YY$ та $ZZ$, точно так само, як ми робили для динамічних схем вище.
+
+```python
+circuits_uni = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_uni.append(
+            measure_in_basis(cnot_unitary(distance), basis=basis)
+        )
+
+print(f"Number of circuits: {len(circuits_uni)}")
+circuits_uni[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d6154b1c-1.avif)
+
+Тепер, коли ми маємо як динамічні, так і унітарні схеми для діапазону відстаней, ми готові до транспіляції. Спочатку нам потрібно вибрати бекенд-пристрій.
+
+```python
+# Set up access to IBM Quantum devices
+from qiskit.circuit import IfElseOp
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=156
+)
+```
+
+Наступний крок гарантує, що бекенд підтримує інструкцію `if_else`, яка необхідна для новішої версії динамічних схем. Оскільки ця функція все ще знаходиться на етапі раннього доступу, ми явно додаємо `IfElseOp` до цілі бекенда, якщо вона ще не доступна.
+
+```python
+if "if_else" not in backend.target.operation_names:
+    backend.target.add_instruction(IfElseOp, name="if_else")
+```
+
+#### Використання рядка Layer Fidelity для вибору 1D ланцюга
+Оскільки ми хочемо порівняти продуктивність динамічних та унітарних схем на 1D ланцюзі, ми використовуємо рядок Layer Fidelity для вибору лінійної топології найкращого ланцюга кубітів з пристрою. Це гарантує, що обидва типи схем транспілюються за однакових обмежень зв'язності, що дозволяє справедливо порівняти їхню продуктивність.
+
+```python
+# This selects best qubits for longest distance and uses the same control for all lengths
+lf_qubits = backend.properties().to_dict()[
+    "general_qlists"
+]  # best linear chain qubits
+chosen_layouts = {
+    distance: [
+        val["qubits"]
+        for val in lf_qubits
+        if val["name"] == f"lf_{distances[-1] + 2}"
+    ][0][: distance + 2]
+    for distance in distances
+}
+print(chosen_layouts[max(distances)])  # best qubits at each distance
+```
+
+```text
+[10, 11, 12, 13, 14, 15, 19, 35, 34, 33, 39, 53, 54, 55, 59, 75, 74, 73, 72, 71, 58, 51, 50, 49, 48, 47, 46, 45, 44, 43, 56, 63, 62, 61, 76, 81, 82, 83, 84, 85, 77, 65, 66, 67, 68, 69, 78, 89, 90, 91, 98, 111, 110, 109, 108, 107, 106, 105, 104, 103, 102, 101]
+```
+
+```python
+isa_circuits_dyn = []
+isa_circuits_uni = []
+
+# Using the same initial layouts for both circuits for better apples to apples comparison
+for qc in circuits_dyn:
+    pm = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        initial_layout=chosen_layouts[qc.num_qubits - 2],
+    )
+    isa_circuits_dyn.append(pm.run(qc))
+
+for qc in circuits_uni:
+    pm = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        initial_layout=chosen_layouts[qc.num_qubits - 2],
+    )
+    isa_circuits_uni.append(pm.run(qc))
+```
+
+```python
+print(
+    f"2Q depth: {isa_circuits_dyn[14].depth(lambda x: x.operation.num_qubits == 2)}"
+)
+isa_circuits_dyn[14].draw("mpl", fold=-1, idle_wires=0)
+```
+
+```text
+2Q depth: 2
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/c77c3fd3-1.avif)
+
+```python
+print(
+    f"2Q depth: {isa_circuits_uni[14].depth(lambda x: x.operation.num_qubits == 2)}"
+)
+isa_circuits_uni[14].draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+2Q depth: 13
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/7e5fc240-1.avif)
+### Візуалізація кубітів, використаних для схеми LRCX
+
+У цьому розділі ми розглянемо, як схема LRCX відображається на апаратне забезпечення. Ми почнемо з візуалізації фізичних кубітів, використаних у схемі, а потім дослідимо, як відстань керування-ціль у розміщенні впливає на кількість операцій.
+
+```python
+# Note: the qubit coordinates must be hard-coded.
+# The backend API does not currently provide this information directly.
+# If using a different backend, you will need to adjust the coordinates accordingly,
+# or set the qubit_coordinates = None to use the default layout coordinates.
+
+def _heron_coords_r2():
+    """Generate coordinates for the Heron layout in R2. Note"""
+    cord_map = np.array(
+        [
+            [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+            ],
+            -1
+            * np.array([j for i in range(15) for j in [i] * [16, 4][i % 2]]),
+        ],
+        dtype=int,
+    )
+
+    hcords = []
+    ycords = cord_map[0]
+    xcords = cord_map[1]
+    for i in range(156):
+        hcords.append([xcords[i] + 1, np.abs(ycords[i]) + 1])
+
+    return hcords
+
+# Visualize the active qubits in the circuit layout
+plot_circuit_layout(
+    circuit=isa_circuits_uni[-1],
+    backend=backend,
+    view="physical",
+    qubit_coordinates=_heron_coords_r2(),
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/2d090f8a-0.avif)
+
+## Крок 3: Виконання з використанням примітивів Qiskit
+
+На цьому кроці ми виконуємо експеримент на вказаному бекенді. Ми також використовуємо пакетування для ефективного виконання експерименту в декількох випробуваннях. Виконання повторних випробувань дозволяє нам обчислити середні значення для більш точного порівняння між унітарним та динамічним методами, а також для кількісної оцінки їх мінливості шляхом порівняння відхилень між запусками.
+
+```python
+print(backend.name)
+```
+
+```text
+ibm_kingston
+```
+
+Виберіть кількість випробувань і виконайте пакетне виконання.
+
+```python
+num_trials = 10
+jobs_uni = []
+jobs_dyn = []
+with Batch(backend=backend) as batch:
+    sampler = Sampler(mode=batch)
+    for _ in range(num_trials):
+        jobs_uni.append(sampler.run(isa_circuits_uni, shots=1024))
+        jobs_dyn.append(sampler.run(isa_circuits_dyn, shots=1024))
+```
+
+## Крок 4: Пост-обробка та повернення результату в бажаному класичному форматі
+Після того, як експерименти успішно виконано, ми тепер виконуємо пост-обробку підрахунків вимірювань для отримання значущих метрик.
+На цьому кроці ми:
+
+- Визначаємо метрики якості для оцінювання продуктивності довгодіючого CX.
+- Обчислюємо очікувані значення операторів Паулі з необроблених результатів вимірювань.
+- Використовуємо їх для обчислення точності згенерованого стану Белла.
+
+Цей аналіз надає чітку картину того, наскільки добре динамічні схеми працюють порівняно з унітарною базовою реалізацією.
+### Метрики якості
+
+Щоб оцінити успіх протоколу довгодіючого CX, ми вимірюємо, наскільки близьким вихідний стан є до ідеального стану Белла. Зручним способом кількісно оцінити це є обчислення точності стану за допомогою очікуваних значень операторів Паулі. Точність для стану Белла на керуючому і цільовому стані може бути обчислена після знання $\braket{XX}$, $\braket{YY}$ і $\braket{ZZ}$. Зокрема,
+
+$$ F = \frac{1}{4} (1 + \braket{XX} - \braket{YY} + \braket{ZZ})$$
+
+Щоб обчислити ці очікувані значення з необроблених даних вимірювань, ми визначаємо набір допоміжних функцій:
+
+- **`compute_ZZ_expectation`**: За заданими підрахунками вимірювань обчислює очікуване значення двокубітного оператора Паулі в базисі $Z$.
+- **`compute_fidelity`**: Об'єднує очікувані значення $XX$, $YY$ і $ZZ$ у вищенаведений вираз точності.
+- **`get_counts_from_bitarray`**: Утиліта для витягування підрахунків з об'єктів результатів бекенду.
+
+```python
+def compute_ZZ_expectation(counts):
+    total = sum(counts.values())
+    expectation = 0
+    for bitstring, count in counts.items():
+        # Ensure bitstring is 2 bits
+        z1 = (-1) ** (int(bitstring[-1]))
+        z2 = (-1) ** (int(bitstring[-2]))
+        expectation += z1 * z2 * count
+    return expectation / total
+
+def compute_fidelity(counts_xx, counts_yy, counts_zz):
+    xx, yy, zz = [
+        compute_ZZ_expectation(c) for c in [counts_xx, counts_yy, counts_zz]
+    ]
+    return 1 / 4 * (1 + xx - yy + zz)
+```
+
+Ми обчислюємо точність для динамічних схем довгодіючого CX. Для кожної відстані ми витягуємо результати вимірювань у базисах $\braket{XX}$, $\braket{YY}$ і $\braket{ZZ}$. Ці результати об'єднуються за допомогою раніше визначених допоміжних функцій для обчислення точності згідно з $F = \tfrac{1}{4} \big( 1 + \langle XX \rangle - \langle YY \rangle + \langle ZZ \rangle \big)$. Це надає спостережувану точність протоколу з динамічним виконанням на кожній відстані.
+
+```python
+fidelities_dyn = []
+
+# loop over trials
+for job in jobs_dyn:
+    result_dyn = job.result()
+    trial_fidelities = []
+    # loop over all distances
+    for ind, dist in enumerate(distances):
+        counts_xx = result_dyn[ind * 3].data.cr.get_counts()
+        counts_yy = result_dyn[ind * 3 + 1].data.cr.get_counts()
+        counts_zz = result_dyn[ind * 3 + 2].data.cr.get_counts()
+        trial_fidelities.append(
+            compute_fidelity(counts_xx, counts_yy, counts_zz)
+        )
+    fidelities_dyn.append(trial_fidelities)
+# average over trials for each distance
+avg_fidelities_dyn = np.mean(fidelities_dyn, axis=0)
+std_fidelities_dyn = np.std(fidelities_dyn, axis=0)
+```
+
+Тепер ми обчислюємо точність для унітарних схем довгодіючого CX, і ми робимо це так само, як ми робили для динамічних схем вище.
+
+```python
+fidelities_uni = []
+
+# loop over trials
+for job in jobs_uni:
+    result_uni = job.result()
+    trial_fidelities = []
+    # loop over all distances
+    for ind, dist in enumerate(distances):
+        counts_xx = result_uni[ind * 3].data.cr.get_counts()
+        counts_yy = result_uni[ind * 3 + 1].data.cr.get_counts()
+        counts_zz = result_uni[ind * 3 + 2].data.cr.get_counts()
+        trial_fidelities.append(
+            compute_fidelity(counts_xx, counts_yy, counts_zz)
+        )
+    fidelities_uni.append(trial_fidelities)
+# average over trials for each distance
+avg_fidelities_uni = np.mean(fidelities_uni, axis=0)
+std_fidelities_uni = np.std(fidelities_uni, axis=0)
+```
+
+### Побудова результатів
+Щоб краще оцінити результати візуально, комірка нижче будує графік оцінених точностей вентилів, виміряних на різних відстанях між заплутаними кубітами для методів.
+
+```python
+fig, ax = plt.subplots()
+
+# Unitary with error bars
+ax.errorbar(
+    distances,
+    avg_fidelities_uni,
+    yerr=std_fidelities_uni,
+    fmt="o-.",
+    color="c",
+    ecolor="c",
+    elinewidth=1,
+    capsize=4,
+    label="Unitary",
+)
+# Dynamic with error bars
+ax.errorbar(
+    distances,
+    avg_fidelities_dyn,
+    yerr=std_fidelities_dyn,
+    fmt="o-.",
+    color="m",
+    ecolor="m",
+    elinewidth=1,
+    capsize=4,
+    label="Dynamic",
+)
+# Random gate baseline
+ax.axhline(y=1 / 4, linestyle="--", color="gray", label="Random gate")
+
+legend = ax.legend(frameon=True)
+for text in legend.get_texts():
+    text.set_color("black")
+legend.get_frame().set_facecolor("white")
+legend.get_frame().set_edgecolor("black")
+ax.set_title(
+    "Bell State Fidelity vs Control–Target Separation", color="black"
+)
+ax.set_xlabel("Distance", color="black")
+ax.set_ylabel("Bell state fidelity", color="black")
+ax.grid(linestyle=":", linewidth=0.6, alpha=0.4, color="gray")
+ax.set_ylim((0.2, 1))
+ax.set_facecolor("white")
+fig.patch.set_facecolor("white")
+for spine in ax.spines.values():
+    spine.set_visible(True)
+    spine.set_color("black")
+ax.tick_params(axis="x", colors="black")
+ax.tick_params(axis="y", colors="black")
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/724da22d-0.avif)
+
+Із графіка точності вище видно, що LRCX не завжди перевершував пряму унітарну реалізацію. Фактично, для коротких відстаней керування-ціль унітарна схема досягла вищої точності. Однак на більших відстанях динамічна схема починає досягати кращої точності, ніж унітарна реалізація. Така поведінка не є несподіваною на поточному обладнанні: хоча динамічні схеми зменшують глибину схеми, уникаючи довгих ланцюгів SWAP, вони вводять додатковий час схеми через вимірювання в середині схеми, класичне прямоспрямування та затримки шляху керування. Додана затримка збільшує декогеренцію та помилки зчитування, що може переважити економію глибини на коротких відстанях.
+
+Незважаючи на це, ми спостерігаємо точку перетину, де динамічний підхід перевершує унітарний. Це є прямим результатом різного масштабування: глибина унітарної схеми зростає лінійно з відстанню між кубітами, тоді як глибина динамічної схеми залишається постійною.
+
+**Ключові моменти:**
+- **Безпосередня перевага динамічних схем:** Основна сьогоднішня мотивація — це зменшена *глибина двокубітних операцій*, не обов'язково покращена точність.
+- **Чому точність може бути гіршою сьогодні:** Збільшений час схеми від вимірювання та класичних операцій часто домінує, особливо коли відстань керування-ціль мала.
+- **Перспектива:** У міру вдосконалення обладнання, зокрема прискорення зчитування, скорочення затримки класичного керування та зменшення накладних витрат вимірювання в середині схеми, ми повинні очікувати, що ці зменшення глибини та тривалості перетворяться на вимірні покращення точності.
+
+```python
+# Compute metrics for each distance, skipping the basis circuits since they are identical for each distance
+depths_2q_dyn = [
+    c.depth(lambda x: x.operation.num_qubits == 2)
+    for c in isa_circuits_dyn[::3]
+]
+meas_dyn = [
+    sum(1 for instr in c.data if instr.operation.name == "measure")
+    for c in isa_circuits_dyn[::3]
+]
+
+depths_2q_uni = [
+    c.depth(lambda x: x.operation.num_qubits == 2)
+    for c in isa_circuits_uni[::3]
+]
+meas_uni = [
+    sum(1 for instr in c.data if instr.operation.name == "measure")
+    for c in isa_circuits_uni[::3]
+]
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+axes[0].plot(
+    distances, depths_2q_uni, "o-.", color="c", label="Unitary (2Q depth)"
+)
+axes[0].plot(
+    distances, depths_2q_dyn, "o-.", color="m", label="Dynamic (2Q depth)"
+)
+axes[0].set_xlabel("Number of qubits between control and target")
+axes[0].set_ylabel("Two-qubit depth")
+axes[0].grid(True, linestyle=":", linewidth=0.6, alpha=0.4)
+axes[0].legend()
+
+axes[1].plot(
+    distances, meas_uni, "o-.", color="c", label="Unitary (# measurements)"
+)
+axes[1].plot(
+    distances, meas_dyn, "o-.", color="m", label="Dynamic (# measurements)"
+)
+axes[1].set_xlabel("Number of qubits between control and target")
+axes[1].set_ylabel("Number of measurements")
+axes[1].grid(True, linestyle=":", linewidth=0.6, alpha=0.4)
+axes[1].legend()
+
+fig.suptitle("Scaling of Unitary vs Dynamic LRCX with Distance", fontsize=12)
+
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/3dcff343-0.avif)
+
+Цей графік глибини двокубітних операцій підкреслює основну перевагу LRCX, реалізованого за допомогою динамічних схем: продуктивність залишається по суті постійною, коли відстань між керуючим і цільовим кубітами збільшується. На відміну від цього, унітарна реалізація зростає лінійно з відстанню через необхідні ланцюги SWAP. Глибина відображає логічне масштабування двокубітних операцій, тоді як кількість вимірювань відображає додаткові накладні витрати для динамічних схем. Ці вимірювання є ефективними, оскільки виконуються паралельно, але вони все ще вводять фіксовані витрати на сьогоднішньому обладнанні.
+
+Чому точність може бути гіршою сьогодні: Збільшений час схеми від вимірювання та класичних операцій часто домінує, особливо коли відстань керування-ціль мала. Наприклад, середня тривалість зчитування на процесорі Heron r2 становить 2280 нс, тоді як його тривалість 2Q-вентиля становить лише 68 нс.
+
+У міру покращення затримок вимірювання та класичних операцій ми очікуємо, що постійна глибина та постійне масштабування вимірювань динамічних схем дадуть чіткі переваги точності та часу виконання на більших схемах.
+## Посилання
+
+<a id="ref-1"></a>
+[1] Efficient Long-Range Entanglement using Dynamic Circuits, by

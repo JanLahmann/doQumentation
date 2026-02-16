@@ -1,0 +1,250 @@
+---
+title: "Оцінка енергії основного стану ланцюга Гайзенберга за допомогою VQE"
+sidebar_label: "Оцінка енергії основного стану ланцюга Гайзенберга за допомогою VQE"
+description: "Створіть, розгорніть та запустіть шаблон Qiskit для моделювання ланцюга Гайзенберга та оцінки його енергії основного стану."
+notebook_path: "docs/tutorials/spin-chain-vqe.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/spin-chain-vqe.ipynb" />
+
+
+
+# Оцінка енергії основного стану ланцюга Гайзенберга за допомогою VQE
+*Орієнтовне використання: дві хвилини на процесорі Eagle r3 (ПРИМІТКА: це лише орієнтовна оцінка. Ваш час виконання може відрізнятися.)*
+## Передумови
+
+У цьому посібнику показано, як створити, розгорнути та запустити `Qiskit pattern` для моделювання ланцюга Гайзенберга та оцінки його енергії основного стану. Для отримання додаткової інформації про `Qiskit patterns` та про те, як `Qiskit Serverless` можна використовувати для їх розгортання у хмарі з керованим виконанням, відвідайте нашу [сторінку документації на IBM Quantum&reg; Platform](/guides/serverless).
+## Вимоги
+
+Перед початком роботи з цим посібником переконайтеся, що у Вас встановлено наступне:
+
+* Qiskit SDK v1.2 або новішої версії, з підтримкою [візуалізації](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime v0.28 або новішої версії (`pip install qiskit-ibm-runtime`)
+* Qiskit Serverless (pip install qiskit_serverless)
+* IBM Catalog (pip install qiskit-ibm-catalog)
+## Налаштування
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from scipy.optimize import minimize
+from typing import Sequence
+
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.primitives.base import BaseEstimatorV2
+from qiskit.circuit.library import XGate
+from qiskit.circuit.library import efficient_su2
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session, Estimator
+
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+```
+
+```python
+def visualize_results(results):
+    plt.plot(results["cost_history"], lw=2)
+    plt.xlabel("Iteration")
+    plt.ylabel("Energy")
+    plt.show()
+
+def build_callback(
+    ansatz: QuantumCircuit,
+    hamiltonian: SparsePauliOp,
+    estimator: BaseEstimatorV2,
+    callback_dict: dict,
+):
+    def callback(current_vector):
+        # Keep track of the number of iterations
+        callback_dict["iters"] += 1
+        # Set the prev_vector to the latest one
+        callback_dict["prev_vector"] = current_vector
+        # Compute the value of the cost function at the current vector
+        current_cost = (
+            estimator.run([(ansatz, hamiltonian, [current_vector])])
+            .result()[0]
+            .data.evs[0]
+        )
+        callback_dict["cost_history"].append(current_cost)
+        # Print to screen on single line
+        print(
+            "Iters. done: {} [Current cost: {}]".format(
+                callback_dict["iters"], current_cost
+            ),
+            end="\r",
+            flush=True,
+        )
+
+    return callback
+```
+
+## Крок 1: Перетворення класичних вхідних даних у квантову задачу
+
+*   Вхідні дані: кількість спінів
+*   Вихідні дані: анзац та гамільтоніан, що моделюють ланцюг Гайзенберга
+
+Побудуйте анзац та гамільтоніан, які моделюють ланцюг Гайзенберга з 10 спінами. Спочатку ми імпортуємо деякі загальні пакети та створюємо кілька допоміжних функцій.
+
+```python
+num_spins = 10
+ansatz = efficient_su2(num_qubits=num_spins, reps=3)
+
+# Remember to insert your token in the QiskitRuntimeService constructor
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=num_spins, simulator=False
+)
+
+coupling = backend.target.build_coupling_map()
+reduced_coupling = coupling.reduce(list(range(num_spins)))
+
+edge_list = reduced_coupling.graph.edge_list()
+ham_list = []
+
+for edge in edge_list:
+    ham_list.append(("ZZ", edge, 0.5))
+    ham_list.append(("YY", edge, 0.5))
+    ham_list.append(("XX", edge, 0.5))
+
+for qubit in reduced_coupling.physical_qubits:
+    ham_list.append(("Z", [qubit], np.random.random() * 2 - 1))
+
+hamiltonian = SparsePauliOp.from_sparse_list(ham_list, num_qubits=num_spins)
+
+ansatz.draw("mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/spin-chain-vqe/extracted-outputs/7e8d2f10-f1d6-4ec2-bac9-9db23499c9e1-0.avif)
+
+## Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+
+*   Вхідні дані: абстрактна схема, спостережувана величина
+*   Вихідні дані: цільова схема та спостережувана величина, оптимізовані для обраного QPU
+
+Використовуйте функцію `generate_preset_pass_manager` з Qiskit для автоматичної генерації процедури оптимізації нашої схеми відносно обраного QPU. Ми обираємо `optimization_level=3`, що забезпечує найвищий рівень оптимізації серед попередньо налаштованих менеджерів проходів. Ми також додаємо проходи планування `ALAPScheduleAnalysis` та `PadDynamicalDecoupling` для придушення помилок декогеренції.
+
+```python
+target = backend.target
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(durations=target.durations()),
+        PadDynamicalDecoupling(
+            durations=target.durations(),
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+ansatz_ibm = pm.run(ansatz)
+observable_ibm = hamiltonian.apply_layout(ansatz_ibm.layout)
+ansatz_ibm.draw("mpl", scale=0.6, style="iqp", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/spin-chain-vqe/extracted-outputs/a0a5f1c8-5c31-4d9f-ae81-37bd67271d44-0.avif)
+
+## Крок 3: Виконання за допомогою примітивів Qiskit
+
+*   Вхідні дані: цільова схема та спостережувана величина
+*   Вихідні дані: результати оптимізації
+
+Мінімізуйте оцінену енергію основного стану системи шляхом оптимізації параметрів схеми. Використовуйте примітив `Estimator` з Qiskit Runtime для обчислення функції вартості під час оптимізації.
+
+Для цієї демонстрації ми будемо виконувати обчислення на QPU за допомогою примітивів `qiskit-ibm-runtime`. Щоб виконати обчислення з примітивами на основі вектора стану `qiskit`, замініть блок коду, що використовує примітиви Qiskit IBM Runtime, на закоментований блок.
+
+```python
+# SciPy minimizer routine
+def cost_func(
+    params: Sequence,
+    ansatz: QuantumCircuit,
+    hamiltonian: SparsePauliOp,
+    estimator: BaseEstimatorV2,
+) -> float:
+    """Ground state energy evaluation."""
+    return (
+        estimator.run([(ansatz, hamiltonian, [params])])
+        .result()[0]
+        .data.evs[0]
+    )
+
+num_params = ansatz_ibm.num_parameters
+params = 2 * np.pi * np.random.random(num_params)
+
+callback_dict = {
+    "prev_vector": None,
+    "iters": 0,
+    "cost_history": [],
+}
+
+# Evaluate the problem on a QPU by using Qiskit IBM Runtime
+with Session(backend=backend) as session:
+    estimator = Estimator()
+    callback = build_callback(
+        ansatz_ibm, observable_ibm, estimator, callback_dict
+    )
+    res = minimize(
+        cost_func,
+        x0=params,
+        args=(ansatz_ibm, observable_ibm, estimator),
+        callback=callback,
+        method="cobyla",
+        options={"maxiter": 100},
+    )
+
+visualize_results(callback_dict)
+```
+
+## Крок 4: Постобробка та повернення результату у бажаному класичному форматі
+
+*   Вхідні дані: оцінки енергії основного стану під час оптимізації
+*   Вихідні дані: оцінена енергія основного стану
+
+```python
+print(f'Estimated ground state energy: {res["fun"]}')
+```
+
+## Розгортання шаблону Qiskit у хмарі
+
+Для цього перемістіть наведений вище вихідний код у файл `./source/heisenberg.py`, оберніть код у скрипт, який приймає вхідні дані та повертає кінцевий розв'язок, а потім завантажте його на віддалений кластер за допомогою класу `QiskitFunction` з `qiskit-ibm-catalog`. Для отримання рекомендацій щодо визначення зовнішніх залежностей, передачі вхідних аргументів та іншого, ознайомтеся з [посібниками Qiskit Serverless](/guides/serverless).
+
+Вхідними даними для шаблону є кількість спінів у ланцюзі. Вихідними даними є оцінка енергії основного стану системи.
+
+```python
+# Authenticate to the remote cluster and submit the pattern for remote execution
+serverless = QiskitServerless()
+heisenberg_function = QiskitFunction(
+    title="ibm_heisenberg",
+    entrypoint="heisenberg.py",
+    working_dir="./source/",
+)
+serverless.upload(heisenberg_function)
+```
+
+### Запуск шаблону Qiskit як керованого сервісу
+
+Після того як ми завантажили шаблон у хмару, ми можемо легко запустити його за допомогою клієнта `QiskitServerless`.
+
+```python
+# Run the pattern on the remote cluster
+
+ibm_heisenberg = serverless.load("ibm_heisenberg")
+job = serverless.run(ibm_heisenberg)
+solution = job.result()
+
+print(solution)
+print(job.logs())
+```
+
+## Опитування щодо посібника
+
+Будь ласка, пройдіть це коротке опитування, щоб надати відгук про цей посібник. Ваші думки допоможуть нам покращити наш контент та досвід користувачів.
+
+[Посилання на опитування](https://your.feedback.ibm.com/jfe/form/SV_bfuBwfNeeFBxnim)

@@ -1,0 +1,563 @@
+---
+title: "Розрізання дротів для оцінки очікуваних значень"
+sidebar_label: "Розрізання дротів для оцінки очікуваних значень"
+description: "Використовуйте розрізання дротів для розбиття схем на багато менших підсхем."
+notebook_path: "docs/tutorials/wire-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/wire-cutting.ipynb" />
+
+
+
+{/* cspell:ignore edgecolor Cutqc */}
+
+*Оцінка часу використання: одна хвилина на процесорі Eagle (ПРИМІТКА: Це лише оцінка. Фактичний час виконання може відрізнятися.)*
+## Передумови
+
+Розрізання схем — це загальний термін, який охоплює різні методи розбиття схеми на кілька менших підсхем, що включають меншу кількість вентилів та/або кубітів. Кожна з підсхем може виконуватися незалежно, а кінцевий результат отримується шляхом класичної постобробки результатів кожної підсхеми. Ця техніка доступна у [додатку Qiskit для розрізання схем](https://qiskit.github.io/qiskit-addon-cutting/index.html), детальне пояснення техніки наведено у [документації](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html) разом з іншими [вступними матеріалами](https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html).
+
+Цей блокнот розглядає метод під назвою <b>розрізання дротів</b>, де схема розбивається вздовж дроту [\[1\], \[2\]](#references). Зауважте, що розбиття є простим у класичних схемах, оскільки результат у точці розбиття можна визначити детерміновано, і він дорівнює 0 або 1. Однак стан кубіта в точці розрізу, як правило, є змішаним станом. Тому кожну підсхему потрібно вимірювати кілька разів у різних базисах (зазвичай томографічно повний набір базисів, такий як базис Паулі [\[3\], \[4\]](#references) і відповідно готувати у власному стані. На наведеному нижче малюнку (<i>надано: PhD Thesis, Ritajit Majumdar</i>) показано приклад розрізання дротів для 4-кубітного стану GHZ на три підсхеми. Тут $M_j$ позначає набір базисів (зазвичай Паулі X, Y і Z), а $P_i$ позначає набір власних станів (зазвичай $|0\rangle$, $|1\rangle$, $|+\rangle$ і $|+i\rangle$).
+
+![wc-1.png](/docs/images/tutorials/wire-cutting-to-improve-performance/0ce8857b-7f5f-400e-8536-6a496c724d50.avif)
+![wc-2.png](/docs/images/tutorials/wire-cutting-to-improve-performance/cbce4455-4794-4c81-8630-3e3993e1b29f.avif)
+
+Оскільки кожна підсхема має меншу кількість кубітів та/або вентилів, очікується, що вони будуть менш схильні до шуму. Цей блокнот показує приклад, де цей метод може використовуватися для ефективного придушення шуму в системі.
+## Вимоги
+Перед початком цього навчального посібника переконайтеся, що у Вас встановлено наступне:
+
+- Qiskit SDK v2.0 або новіша версія з підтримкою [візуалізації](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 або новіша версія ( `pip install qiskit-ibm-runtime` )
+- Додаток Qiskit для розрізання схем v0.9.0 або новіша версія (`pip install qiskit-addon-cutting`)
+
+Ми розглянемо схему багаточастинкової локалізації (MBL) для цього блокноту. Схема MBL є апаратно-ефективною схемою і параметризована двома параметрами $\theta$ і $\vec{\phi}$. Коли $\theta$ встановлено на $0$, а початковий стан підготовлено у $|0\rangle$ для всіх кубітів, ідеальне очікуване значення $\langle Z_i \rangle$ дорівнює $+1$ для кожної позиції кубіта $i$ незалежно від значень $\vec{\phi}$. Ви можете ознайомитися з додатковими деталями про схеми MBL у <a href="https://arxiv.org/abs/2307.07552">цій статті</a>.
+## Налаштування
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.quantum_info import PauliList, SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.result import sampled_expectation_value
+
+from qiskit_addon_cutting.instructions import CutWire
+from qiskit_addon_cutting import (
+    cut_wires,
+    expand_observables,
+    partition_problem,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+class MBLChainCircuit(QuantumCircuit):
+    def __init__(
+        self, num_qubits: int, depth: int, use_cut: bool = False
+    ) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainCircuit<{num_qubits}, {depth}>"
+        )
+        evolution = MBLChainEvolution(num_qubits, depth, use_cut)
+        self.compose(evolution, inplace=True)
+
+class MBLChainEvolution(QuantumCircuit):
+    def __init__(self, num_qubits: int, depth: int, use_cut) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainEvolution<{num_qubits}, {depth}>"
+        )
+
+        theta = Parameter("θ")
+        phis = ParameterVector("φ", num_qubits)
+
+        for layer in range(depth):
+            layer_parity = layer % 2
+            # print("layer parity", layer_parity)
+            for qubit in range(layer_parity, num_qubits - 1, 2):
+                # print(qubit)
+                self.cz(qubit, qubit + 1)
+                self.u(theta, 0, np.pi, qubit)
+                self.u(theta, 0, np.pi, qubit + 1)
+                if (
+                    use_cut
+                    and layer_parity == 0
+                    and (
+                        qubit == num_qubits // 2 - 1
+                        or qubit == num_qubits // 2
+                    )
+                ):
+                    self.append(CutWire(), [num_qubits // 2])
+                if use_cut and layer < depth - 1 and layer_parity == 1:
+                    if qubit == num_qubits // 2:
+                        self.append(CutWire(), [qubit])
+            for qubit in range(num_qubits):
+                self.p(phis[qubit], qubit)
+```
+
+## Частина I. Приклад малого масштабу
+### Крок 1: Зіставлення класичних вхідних даних з квантовою задачею
+Спочатку ми побудуємо шаблонну схему без конкретних значень параметрів. Ми також надаємо заповнювачі, які називаються `CutWire`, для позначення позиції розрізів. Для прикладу малого масштабу ми розглянемо 10-кубітну схему MBL.
+
+```python
+num_qubits = 10
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+mbl.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/9c7939a1-6b70-4dad-b873-5f34d67551c4-0.avif)
+
+Нагадаємо, що ми прагнемо знайти очікуване значення спостережуваної величини $\frac{1}{n}\sum_{i=1} ^n Z_i$ коли $\theta=0$. Ми встановимо деякі випадкові значення для параметра $\vec{\phi}$.
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+params
+```
+
+```text
+[0,
+ 0.2376615174332788,
+ 0.28244289857682414,
+ 0.019248960591717768,
+ 0.46140600996102477,
+ 0.31408025180068433,
+ 0.718184005135733,
+ 0.991153920182475,
+ 0.09289485768301442,
+ 0.8857848280067783,
+ 0.6177529765767047]
+```
+
+Тепер ми позначимо схему для розрізання, вставивши відповідні **CutWire** для створення двох приблизно рівних розрізів. Ми встановимо `use_cut=True` у функції та дозволимо їй позначити після $\frac{n}{2}$ кубітів, де $n$ — кількість кубітів у вихідній схемі.
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/31844134-514b-46ea-85f9-133e432f053f-0.avif)
+
+### Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+Далі ми розріжемо схему на дві менші підсхеми. Для цього прикладу ми обмежимося лише 2 підсхемами. Для цього ми використовуємо <a href="https://qiskit.github.io/qiskit-addon-cutting/">Додаток Qiskit: Розрізання схем</a>.
+#### Розрізання схеми на менші підсхеми
+Розрізання дроту в точці збільшує кількість кубітів на один. Окрім вихідного кубіта, тепер є додатковий кубіт як заповнювач для схеми після розрізання. Наступне зображення дає уявлення:
+
+![wc-4.png](/docs/images/tutorials/wire-cutting-to-improve-performance/dfc5f923-e507-4873-888e-d90e1618be3a.avif)
+
+Цей додаток використовує функцію `cut_wires` для обліку додаткових кубітів, що виникають внаслідок розрізання.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+```
+
+#### Створення та розширення спостережуваних величин
+
+Тепер ми побудуємо спостережувану величину $M_z = \frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$. Оскільки ідеальний результат $\langle Z_i \rangle$ для кожного $i$ дорівнює $+1$, ідеальний результат $M_z$ також дорівнює $+1$.
+
+```python
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+observable
+```
+
+```text
+PauliList(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII',
+           'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII',
+           'IIIIIIIIZI', 'IIIIIIIIIZ'])
+```
+
+Однак зауважте, що кількість кубітів у схемі збільшилася після вставки віртуальних 2-кубітних операцій `Move` після розрізання. Тому нам також потрібно розширити спостережувані величини, вставивши одиниці для відповідності поточній схемі.
+
+```python
+new_obs = expand_observables(observable, mbl, mbl_move)
+new_obs
+```
+
+```text
+PauliList(['ZIIIIIIIIII', 'IZIIIIIIIII', 'IIZIIIIIIII', 'IIIZIIIIIII',
+           'IIIIZIIIIII', 'IIIIIIZIIII', 'IIIIIIIZIII', 'IIIIIIIIZII',
+           'IIIIIIIIIZI', 'IIIIIIIIIIZ'])
+```
+
+Зауважте, що кожна спостережувана величина тепер розширилася для розміщення семи кубітів, як у схемі з операцією `Move`, замість вихідних 6 кубітів. Далі розбиваємо схему на дві підсхеми.
+
+```python
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+```
+
+Давайте візуалізуємо підсхеми
+
+```python
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subcircuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/c10af39c-88fe-4605-975c-5bf0e21ee4c4-0.avif)
+
+```python
+subcircuits[1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/35920640-76e8-4af6-a252-ee6a22e9c26a-0.avif)
+
+Спостережувані величини також були розбиті для відповідності підсхемам
+
+```python
+subobservables = partitioned_problem.subobservables
+subobservables
+```
+
+```text
+{0: PauliList(['IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IZIIII',
+            'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']),
+ 1: PauliList(['ZIIII', 'IZIII', 'IIZII', 'IIIZI', 'IIIIZ', 'IIIII', 'IIIII',
+            'IIIII', 'IIIII', 'IIIII'])}
+```
+
+Зауважте, що кожна підсхема призводить до певної кількості вибірок. Реконструкція враховує результат кожної з цих вибірок. Кожна з цих вибірок називається `subexperiment`.
+Розширення спостережуваної величини за допомогою операції `Move` вимагає структури даних `PauliList`. Ми також можемо створити спостережувану величину $M_z$ у більш загальній структурі даних `SparsePauliOp`, що буде корисно пізніше під час реконструкції підекспериментів.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+M_z
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII', 'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII', 'IIIIIIIIZI', 'IIIIIIIIIZ'],
+              coeffs=[0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j,
+ 0.1+0.j, 0.1+0.j])
+```
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+Розглянемо два приклади, де розрізані кубіти вимірюються у двох різних базисах. Спочатку вони вимірюються у звичайному базисі Z, а потім у базисі X.
+
+```python
+subexperiments[0][6].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/749e8f27-9c83-48d8-bcf6-635c967bf10b-0.avif)
+
+```python
+subexperiments[0][2].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/987547e4-296a-41e4-ad82-41f4139a87a0-0.avif)
+
+#### Транспіляція кожного підексперименту
+
+Наразі нам потрібно транспілювати наші схеми перед відправленням їх на виконання. Тому ми спочатку транспілюємо кожну схему в підекспериментах.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Тепер нам потрібно транспілювати кожну зі схем у підекспериментах. Для цього ми спочатку створюємо менеджер проходів, а потім використовуємо його для транспіляції кожної зі схем.
+
+```python
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+```python
+isa_subexperiments[0][0].draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/962c4745-a235-4ef8-b56b-d3026be67fb6-0.avif)
+
+### Крок 3: Виконання з використанням примітивів Qiskit
+Тепер ми виконаємо кожну схему в підексперименті. `Qiskit-addon-cutting` використовує `SamplerV2` для виконання підекспериментів.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+Після виконання схем нам тепер потрібно отримати результати та реконструювати очікуване значення для нерозрізаної схеми та вихідної спостережуваної величини.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9674376845359803
+```
+
+#### Перехресна перевірка
+
+Тепер давайте виконаємо схему без розрізання і перевіримо результат там. Зауважте, що для виконання нерозрізаної схеми ми можемо безпосередньо використовувати `EstimatorV2` для обчислення очікуваних значень. Але ми використовуватимемо той самий `Primitive` наскрізь. Тому ми використаємо `SamplerV2` для отримання розподілу ймовірностей та обчислимо очікуване значення за допомогою функції `sampled_expectation_value`.
+
+Спочатку нам потрібно транспілювати нерозрізану схему `mbl`.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+```
+
+Далі ми побудуємо `pub` і запустимо нерозрізану схему.
+
+```python
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+```
+
+```python
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9498046875000001
+```
+
+Ми зауважуємо, що очікуване значення, отримане за допомогою розрізання дротів, ближче до ідеального значення $+1$, ніж нерозрізане. Тепер давайте збільшимо масштаб задачі.
+## Частина II. Збільшення масштабу!
+
+Раніше ми показали результати для 10-кубітної MBL схеми. Далі ми демонструємо, що покращення очікуваного значення також отримується для більших схем. Для цього ми повторюємо процес для 60-кубітної MBL схеми.
+### Крок 1: Відображення класичних вхідних даних на квантову задачу
+
+```python
+num_qubits = 60
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+```
+
+Ми створюємо випадковий набір значень для $\vec{\phi}$
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+```
+
+Далі ми будуємо розрізану схему
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+### Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+Як показано для малого прикладу, ми розбиваємо схему та спостережувану величину для експериментів з розрізанням.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+
+# Define observable
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+new_obs = expand_observables(observable, mbl, mbl_move)
+
+# Partition the circuit into subcircuits
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+
+# Get subcircuits
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subobservables = partitioned_problem.subobservables
+```
+
+Ми також створюємо об'єкт `SparsePauliOp` для спостережуваної величини з відповідними коефіцієнтами.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+```
+
+Далі ми генеруємо підексперименти та транспілюємо кожну схему в підексперименті.
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+### Крок 3: Виконання з використанням примітивів Qiskit
+Ми використовуємо режим `Batch` для виконання всіх схем у підекспериментах.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+Тепер давайте отримаємо результати для кожної схеми в підексперименті та відновимо очікуване значення, що відповідає нерозрізаній схемі та початковій спостережуваній величині.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9631355921427409
+```
+
+#### Перехресна перевірка
+
+Як у малому прикладі, ми знову отримаємо очікуване значення шляхом виконання нерозрізаної схеми та порівняємо результат з розрізанням схеми. Ми використаємо `SamplerV2` для підтримки однорідності у використанні примітивів.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9426757812499998
+```
+
+#### Візуалізація
+
+Давайте візуалізуємо покращення, отримане в очікуваному значенні завдяки використанню розрізання дротів.
+
+```python
+ax = plt.gca()
+methods = ["cut", "uncut"]
+values = [reconstructed_expval, uncut_expval]
+
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(y=1, color="k", linestyle="--")
+ax.set_ylim([0.85, 1.02])
+plt.text(0.3, 0.99, "Exact result")
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/19dad6bb-544e-45b9-90c4-3555681e4e5b-0.avif)
+
+#### Висновок
+
+Ми спостерігаємо, що як у малих, так і у великих задачах розрізання дротів призводить до кращого результату, ніж нерозрізаний варіант. Зверніть увагу, що для цих експериментів не використовувалися методи пом'якшення помилок. Отже, покращення результату, яке було отримано, обумовлено лише розрізанням дротів. Можливо, можна додатково покращити результати, використовуючи різні методи пом'якшення разом з розрізанням схем.
+
+Крім того, у цьому блокноті ми обчислювали обидві підсхеми на одному і тому ж обладнанні. У [\[5\], \[6\]](#references) автори показують метод розподілу підсхем на різне обладнання з використанням інформації про шум для максимізації придушення шуму та паралелізації процесу.
+## Додаток: міркування щодо масштабування ресурсів
+Кількість схем, які потрібно виконати, зростає зі збільшенням кількості розрізів. Тому, хоча багато розрізів можуть створювати малі підсхеми, що ще більше покращує продуктивність, це також призводить до значно великої кількості виконань схем, що може бути непрактичним для більшості випадків. Нижче ми показуємо приклад кількості підсхем, що відповідають кількості розрізів для 50-кубітної схеми.
+
+![wc-5.png](/docs/images/tutorials/wire-cutting-to-improve-performance/5c6ea4da-bbd8-47f9-ac48-e438cc59a11d.avif)
+
+Зверніть увагу, що навіть для п'яти розрізів кількість підекспериментів становить близько 200 тисяч. Тому розрізання схем слід використовувати лише тоді, коли кількість розрізів є малою.
+### По одному прикладу схем, сприятливих і несприятливих для розрізання
+
+#### Схема, сприятлива для розрізання
+
+Як зазначалося раніше, схема є сприятливою для розрізання, коли схему можна розбити на менші роз'єднані підсхеми з невеликою кількістю розрізів. Будь-яка апаратно-ефективна схема, тобто схема, яка вимагає мало або взагалі не вимагає вентилів SWAP при відображенні на карту зв'язків обладнання, загалом є сприятливою для розрізання. Нижче ми показуємо приклад анзаца збереження збудження, який використовується в квантовій хімії. Зверніть увагу, що таку схему можна розбити на дві підсхеми з одним розрізом незалежно від кількості кубітів.
+
+![wc-6.png](/docs/images/tutorials/wire-cutting-to-improve-performance/c122a418-b914-41e7-a1aa-00eb1eec5b87.avif)
+
+#### Схема, несприятлива для розрізання
+
+Схема є несприятливою для розрізання, якщо, загалом, кількість розрізів, необхідних для формування роз'єднаних розбиттів, значно зростає з глибиною або кількістю кубітів. Згадайте, що з кожним розрізом потрібен додатковий кубіт. Отже, з кількістю розрізів ефективна кількість кубітів також збільшується. Нижче ми показуємо приклад 3-кубітної схеми Гровера з можливим випадком розрізання.
+
+![wc-7.png](/docs/images/tutorials/wire-cutting-to-improve-performance/b31dc57e-e6d7-49fd-9f46-304a328b3764.avif)
+
+Ми зазначаємо, що потрібні три розрізи, і розріз є більше вертикальним, ніж горизонтальним. Це означає, що очікується, що кількість розрізів масштабуватиметься лінійно з кількістю кубітів, що не є прийнятним для розрізання.
+## Посилання
+
+[1] Peng, T., Harrow, A. W., Ozols, M., & Wu, X. (2020). Simulating large quantum circuits on a small quantum computer. Physical review letters, 125(15), 150504.
+
+[2] Tang, W., Tomesh, T., Suchara, M., Larson, J., & Martonosi, M. (2021, April). Cutqc: using small quantum computers for large quantum circuit evaluations. In Proceedings of the 26th ACM International conference on architectural support for programming languages and operating systems (pp. 473-486).
+
+[3]  Perlin, M. A., Saleem, Z. H., Suchara, M., & Osborn, J. C. (2021). Quantum circuit cutting with maximum-likelihood tomography. npj Quantum Information, 7(1), 64.
+
+[4]  Majumdar, R., & Wood, C. J. (2022). Error mitigated quantum circuit cutting. arXiv preprint arXiv:2211.13431.
+
+[5]  Khare, T., Majumdar, R., Sangle, R., Ray, A., Seshadri, P. V., & Simmhan, Y. (2023). Parallelizing Quantum-Classical Workloads: Profiling the Impact of Splitting Techniques. In 2023 IEEE International Conference on Quantum Computing and Engineering (QCE) (Vol. 1, pp. 990-1000). IEEE.
+
+[6]  Bhoumik, D., Majumdar, R., Saha, A., & Sur-Kolay, S. (2023). Distributed Scheduling of Quantum Circuits with Noise and Time Optimization. arXiv preprint arXiv:2309.06005.
+## Опитування щодо навчального посібника
+
+Будь ласка, пройдіть це коротке опитування, щоб надати відгук про цей навчальний посібник. Ваші думки допоможуть нам покращити наші пропозиції контенту та користувацький досвід.

@@ -1,0 +1,549 @@
+---
+title: "Розрізання схем для періодичних граничних умов"
+sidebar_label: "Розрізання схем для періодичних граничних умов"
+description: "Використовуйте розрізання схем для роботи з корисною проблемою періодичного ланцюга, де перший та останній кубіти не є сусідами."
+notebook_path: "docs/tutorials/periodic-boundary-conditions-with-circuit-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/periodic-boundary-conditions-with-circuit-cutting.ipynb" />
+
+
+
+{/* cspell:ignore fontsize edgecolor */}
+
+*Оцінка використання: Дві хвилини на процесорі Eagle (ПРИМІТКА: Це лише оцінка. Ваш час виконання може відрізнятися.)*
+## Передумови
+
+У цьому блокноті ми розглядаємо симуляцію періодичного ланцюга кубітів, де є двокубітна операція між кожними двома сусідніми кубітами, включаючи перший та останній. Періодичні ланцюги часто зустрічаються в задачах фізики та хімії, таких як моделі Ізінга та молекулярне моделювання.
+
+Поточні пристрої IBM Quantum&reg; є планарними. Можна безпосередньо вбудувати деякі періодичні ланцюги в топологію, де перший та останній кубіти є сусідами. Однак для достатньо великих задач перший та останній кубіти можуть бути далеко один від одного, що вимагає багато вентилів SWAP для двокубітної операції між цими двома кубітами. Така проблема періодичних граничних умов була вивчена в <a href="https://arxiv.org/abs/2402.17833">цій статті</a>.
+
+У цьому блокноті ми демонструємо використання розрізання схем для роботи з такою проблемою періодичного ланцюга корисного масштабу, де перший та останній кубіти не є сусідами. Розрізання цього далекого зв'язку дозволяє уникнути додаткових вентилів SWAP за рахунок виконання кількох екземплярів схеми та деякої класичної постобробки. Підсумовуючи, розрізання може бути включено для логічного обчислення далеких двокубітних операцій. Іншими словами, цей підхід призводить до ефективного збільшення зв'язності карти з'єднань, що призводить до меншої кількості вентилів SWAP.
+
+Зверніть увагу, що існує два типи розрізань - розрізання проводу схеми (називається `wire cutting`), або заміна двокубітного вентиля кількома однокубітними операціями (називається `gate cutting`). У цьому блокноті ми зосередимося на розрізанні вентилів. Для більш детальної інформації про розрізання вентилів зверніться до <a href="https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html">пояснювальних матеріалів</a> у `qiskit-addon-cutting` та відповідних посилань. Для більш детальної інформації про розрізання проводів зверніться до навчального посібника [Wire cutting for expectation values estimation](/tutorials/wire-cutting) або до навчальних посібників у <a href='https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html'>qiskit-addon-cutting</a>.
+## Вимоги
+
+Перед початком цього навчального посібника переконайтеся, що у Вас встановлено наступне:
+
+- Qiskit SDK v1.2 або пізніше (`pip install qiskit`)
+- Qiskit Runtime v0.3 або пізніше (`pip install qiskit-ibm-runtime`)
+- Circuit cutting Qiskit addon v.9.0 або пізніше (`pip install qiskit-addon-cutting`)
+## Налаштування
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    BasisTranslator,
+    Optimize1qGatesDecomposition,
+)
+from qiskit.circuit.equivalence_library import (
+    SessionEquivalenceLibrary as sel,
+)
+from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit.result import sampled_expectation_value
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.circuit.library import TwoLocal
+
+from qiskit_addon_cutting import (
+    cut_gates,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2, SamplerOptions, Batch
+```
+
+## Крок 1: Відобразити класичні вхідні дані на квантову задачу
+
+Тут ми згенеруємо схему TwoLocal та визначимо деякі спостережувані величини.
+
+<ul>
+    <li>Вхід: Параметри для створення схеми</li>
+    <li>Вихід: Абстрактна схема та спостережувані величини</li>
+</ul>
+Ми розглядаємо апаратно-ефективну `entangler map` для схеми TwoLocal з періодичною зв'язністю між останнім та першим кубітами `entangler map`. Ця далека взаємодія може призвести до додаткових вентилів SWAP під час транспіляції, таким чином збільшуючи глибину схеми.
+#### Вибір бекенду та початкового розташування
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Для цього блокноту ми розглянемо періодичний одновимірний ланцюг з 109 кубітів, який є найдовшим одновимірним ланцюгом у топології 127-кубітного пристрою IBM Quantum. Неможливо розташувати періодичний ланцюг з 109 кубітів на пристрої зі 127 кубітами таким чином, щоб перший та останній кубіти були сусідами без включення додаткових вентилів SWAP.
+
+```python
+init_layout = [
+    13,
+    12,
+    11,
+    10,
+    9,
+    8,
+    7,
+    6,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0,
+    14,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    36,
+    51,
+    50,
+    49,
+    48,
+    47,
+    46,
+    45,
+    44,
+    43,
+    42,
+    41,
+    40,
+    39,
+    38,
+    37,
+    52,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    74,
+    89,
+    88,
+    87,
+    86,
+    85,
+    84,
+    83,
+    82,
+    81,
+    80,
+    79,
+    78,
+    77,
+    76,
+    75,
+    90,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    112,
+    126,
+    125,
+    124,
+    123,
+    122,
+    121,
+    120,
+    119,
+    118,
+    117,
+    116,
+    115,
+    114,
+    113,
+]
+
+# the number of qubits in the circuit is governed by the length of the initial layout
+num_qubits = len(init_layout)
+num_qubits
+```
+
+```text
+109
+```
+
+#### Побудова entangler map для схеми TwoLocal
+
+```python
+coupling_map = [(i, i + 1) for i in range(0, len(init_layout) - 1)]
+coupling_map.append(
+    (len(init_layout) - 1, 0)
+)  # adding in the periodic connectivity
+```
+
+Схема TwoLocal дозволяє повторення `rotation_blocks` та `entangler map` кілька разів. У цьому випадку кількість повторень визначає кількість періодичних вентилів, які потрібно розрізати. Оскільки накладні витрати на вибірку зростають експоненціально з кількістю розрізів (зверніться до навчального посібника [Wire cutting for expectation values estimation](/tutorials/wire-cutting) для більш детальної інформації), ми встановимо кількість повторень на 2 у цьому блокноті.
+
+```python
+num_reps = 2
+entangler_map = []
+
+for even_edge in coupling_map[0 : len(coupling_map) : 2]:
+    entangler_map.append(even_edge)
+
+for odd_edge in coupling_map[1 : len(coupling_map) : 2]:
+    entangler_map.append(odd_edge)
+```
+
+```python
+ansatz = TwoLocal(
+    num_qubits=num_qubits,
+    rotation_blocks="rx",
+    entanglement_blocks="cx",
+    entanglement=entangler_map,
+    reps=num_reps,
+).decompose()
+ansatz.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/79428537-66cf-40ce-87cf-0f75f591cb4b-0.avif)
+
+Щоб перевірити якість результату, використовуючи розрізання схем, нам потрібно знати ідеальний результат. Поточна обрана схема виходить за межі класичної симуляції грубою силою. Тому ми ретельно встановлюємо параметри схеми, щоб зробити її кліффордовською.
+
+Ми призначимо значення параметра $0$ для перших двох шарів вентилів `Rx` та значення $\pi$ для останнього шару. Це забезпечує, що ідеальний результат цієї схеми є $|1\rangle^{\otimes n}$, де $n$ - кількість кубітів. Тому очікувані значення $\langle Z_i \rangle$ та $\langle Z_i Z_{i+1} \rangle$, де $i$ - це індекс кубіта, дорівнюють $-1$ та $+1$ відповідно.
+
+```python
+params_last_layer = [np.pi] * ansatz.num_qubits
+params = [0] * (ansatz.num_parameters - ansatz.num_qubits)
+params.extend(params_last_layer)
+
+ansatz.assign_parameters(params, inplace=True)
+```
+
+#### Вибір спостережуваних величин
+Щоб кількісно оцінити переваги розрізання вентилів, ми вимірюємо очікувані значення спостережуваних величин $\frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$ та $\frac{1}{n-1}\sum_{i=1}^{n-1} \langle Z_i Z_{i+1} \rangle$. Як обговорювалося раніше, ідеальні очікувані значення становлять $-1$ та $+1$ відповідно.
+
+```python
+observables = []
+
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(obs)
+
+for i in range(num_qubits):
+    if i == num_qubits - 1:
+        obs = "Z" + "I" * (num_qubits - 2) + "Z"
+    else:
+        obs = "I" * i + "ZZ" + "I" * (num_qubits - i - 2)
+    observables.append(obs)
+
+observables = SparsePauliOp(observables)
+paulis = observables.paulis
+coeffs = observables.coeffs
+```
+## Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+
+<ul>
+    <li>Вхідні дані: Абстрактна схема та спостережувані</li>
+    <li>Вихідні дані: Цільова схема та спостережувані, отримані шляхом розрізання вентилів дальнього діапазону</li>
+</ul>
+#### Транспіляція схеми
+
+Зверніть увагу, що схема може бути транспільована на цьому етапі або після розрізання. Якщо ми транспілюємо після розрізання, це вимагатиме від нас транспіляції кожного з підекспериментів, згенерованих через накладні витрати на вибірку. Тому більш розумно транспілювати на цьому етапі, щоб зменшити накладні витрати на транспіляцію.
+
+Однак, якщо транспіляція виконується на цьому етапі з нативною зв'язністю обладнання, транспілятор додасть кілька вентилів SWAP для розміщення періодичної 2-кубітної операції – приховуючи переваги розрізання схеми. Щоб уникнути цієї проблеми, ми можемо використати той факт, що ми знаємо точні вентилі, які потрібно розрізати. Зокрема, ми можемо створити віртуальну карту зв'язності, додавши віртуальні з'єднання між віддаленими кубітами, щоб врахувати ці періодичні 2-кубітні вентилі. Це забезпечить можливість транспіляції схеми на цьому етапі без включення додаткових вентилів SWAP.
+
+```python
+coupling_map = backend.configuration().coupling_map
+
+# create a virtual coupling map with long range connectivity
+virtual_coupling_map = coupling_map.copy()
+virtual_coupling_map.append([init_layout[-1], init_layout[0]])
+virtual_coupling_map.append([init_layout[0], init_layout[-1]])
+```
+
+```python
+pm_virtual = generate_preset_pass_manager(
+    optimization_level=1,
+    coupling_map=virtual_coupling_map,
+    initial_layout=init_layout,
+    basis_gates=backend.configuration().basis_gates,
+)
+
+virtual_mapped_circuit = pm_virtual.run(ansatz)
+virtual_mapped_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/ad38aa32-4613-46c5-bf62-da332a1b9dfb-0.avif)
+
+#### Розрізання періодичних зв'язностей дальнього діапазону
+Тепер ми розрізаємо вентилі в транспільованій схемі. Зверніть увагу, що 2-кубітні вентилі, які потрібно розрізати, - це ті, що з'єднують останній та перший кубіти макету.
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(virtual_mapped_circuit.data)
+    if {virtual_mapped_circuit.find_bit(q)[0] for q in instruction.qubits}
+    == {init_layout[-1], init_layout[0]}
+]
+```
+
+Ми застосуємо макет транспільованої схеми до спостережуваного.
+
+```python
+trans_observables = observables.apply_layout(virtual_mapped_circuit.layout)
+```
+
+Нарешті, підексперименти генеруються шляхом вибірки по різних базисах вимірювання та підготовки.
+
+```python
+qpd_circuit, bases = cut_gates(virtual_mapped_circuit, cut_indices)
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit,
+    observables=trans_observables.paulis,
+    num_samples=np.inf,
+)
+```
+
+Зверніть увагу, що розрізання взаємодій дальнього діапазону призводить до виконання кількох зразків схеми, які відрізняються базисами вимірювання та підготовки. Більше інформації про це можна знайти в <a href='https://arxiv.org/abs/1909.07534'>Constructing a virtual two-qubit gate by sampling single-qubit operations</a> та <a href='https://arxiv.org/abs/2312.11638'>Cutting circuits with multiple two-qubit unitaries</a>.
+
+Кількість періодичних вентилів, які потрібно розрізати, дорівнює кількості повторень шару `TwoLocal`, визначеній як `num_reps` вище. Накладні витрати на вибірку при розрізанні вентилів становлять 6. Таким чином, загальна кількість підекспериментів становитиме $6^{num\_reps}$.
+
+```python
+print(f"Number of subexperiments is {len(subexperiments)} = 6**{num_reps}")
+```
+
+```text
+Number of subexperiments is 36 = 6**2
+```
+
+#### Транспіляція підекспериментів
+На цьому етапі підексперименти містять схеми з деякими 1-кубітними вентилями, які не входять до набору базисних вентилів. Це тому, що розрізані кубіти вимірюються в різних базисах, а вентилі обертання, використані для цього, не обов'язково належать до набору базисних вентилів. Наприклад, вимірювання в базисі X означає застосування вентиля Адамара перед звичайним вимірюванням у базисі Z. Але Адамар не є частиною набору базисних вентилів.
+
+Замість застосування всього процесу транспіляції до кожної зі схем у підекспериментах, ми можемо використовувати конкретні проходи транспіляції. Зверніться до <a href="https://docs.quantum.ibm.com/api/qiskit/transpiler_passes">цієї документації</a> для детального опису всіх доступних проходів транспіляції.
+
+Ми застосуємо проходи ```BasisTranslator```, а потім ```Optimize1qGatesDecomposition```, щоб переконатися, що всі вентилі в цих схемах належать до набору базисних вентилів. Використання цих двох проходів є швидшим, ніж весь процес транспіляції, оскільки інші кроки, такі як маршрутизація та вибір початкового макету, не виконуються знову.
+
+```python
+pass_ = PassManager(
+    [Optimize1qGatesDecomposition(basis=backend.configuration().basis_gates)]
+)
+
+subexperiments = pass_.run(
+    [
+        dag_to_circuit(
+            BasisTranslator(sel, target_basis=backend.basis_gates).run(
+                circuit_to_dag(circ)
+            )
+        )
+        for circ in subexperiments
+    ]
+)
+```
+
+## Крок 3: Виконання за допомогою примітивів Qiskit
+
+<ul>
+    <li>Вхідні дані: Цільові схеми</li>
+    <li>Вихідні дані: Квазіймовірнісні розподіли</li>
+</ul>
+Ми використовуємо примітив `SamplerV2` для виконання розрізаних схем. Ми вимикаємо `dynamical decoupling` та `twirling`, щоб будь-яке поліпшення, яке ми отримаємо в результаті, було виключно завдяки ефективному застосуванню розрізання вентилів для цього типу схеми.
+
+```python
+options = SamplerOptions()
+options.default_shots = 10000
+options.dynamical_decoupling.enable = False
+options.twirling.enable_gates = False
+options.twirling.enable_measure = False
+```
+
+Тепер ми надішлемо завдання, використовуючи пакетний режим.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(options=options)
+    cut_job = sampler.run(subexperiments)
+
+print(f"Job ID {cut_job.job_id()}")
+```
+
+```text
+Job ID cwxf7wq60bqg008pvt8g
+```
+
+```python
+result = cut_job.result()
+```
+
+## Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+<ul>
+    <li>Вхідні дані: Квазіймовірнісні розподіли</li>
+    <li>Вихідні дані: Реконструйовані очікувані значення</li>
+</ul>
+
+```python
+reconstructed_expvals = reconstruct_expectation_values(
+    result,
+    coefficients,
+    paulis,
+)
+```
+
+Тепер ми обчислимо середнє значення спостережуваних Z-типу ваги-1 та ваги-2.
+
+```python
+cut_weight_1 = np.mean(reconstructed_expvals[:num_qubits])
+cut_weight_2 = np.mean(reconstructed_expvals[num_qubits:])
+
+print(f"Average of weight-1 expectation values is {cut_weight_1}")
+print(f"Average of weight-2 expectation values is {cut_weight_2}")
+```
+
+```text
+Average of weight-1 expectation values is -0.741733944954063
+Average of weight-2 expectation values is 0.6968862385320495
+```
+
+### Перехресна перевірка: Отримання очікуваного значення без розрізання
+Корисно провести перехресну перевірку переваги техніки розрізання схеми порівняно з нерозрізаною. Тут ми обчислимо очікувані значення без розрізання схеми. Зверніть увагу, що така нерозрізана схема постраждає від великої кількості вентилів SWAP, необхідних для реалізації 2-кубітної операції між першим і останнім кубітами. Ми використаємо функцію `sampled_expectation_value` для отримання очікуваних значень нерозрізаної схеми після отримання розподілу ймовірності через `SamplerV2`. Це дозволяє однорідне використання примітива для всіх екземплярів. Однак зверніть увагу, що ми могли б використовувати `EstimatorV2` також для безпосереднього обчислення очікуваних значень.
+
+```python
+if ansatz.num_clbits == 0:
+    ansatz.measure_all()
+
+pm_uncut = generate_preset_pass_manager(
+    optimization_level=1, backend=backend, initial_layout=init_layout
+)
+
+transpiled_circuit = pm_uncut.run(ansatz)
+```
+
+```python
+sampler = SamplerV2(mode=backend, options=options)
+uncut_job = sampler.run([transpiled_circuit])
+```
+
+```python
+uncut_job_id = uncut_job.job_id()
+print(f"The job id for the uncut clifford circuit is {uncut_job_id}")
+```
+
+```text
+The job id for the uncut clifford circuit is cwxfads2ac5g008jhe7g
+```
+
+```python
+uncut_result = uncut_job.result()[0]
+uncut_counts = uncut_result.data.meas.get_counts()
+```
+
+Тепер ми обчислимо середні очікувані значення всіх спостережуваних Z-типу ваги-1 та ваги-2 без розрізання.
+
+```python
+uncut_expvals = [
+    sampled_expectation_value(uncut_counts, obs) for obs in paulis
+]
+
+uncut_weight_1 = np.mean(uncut_expvals[:num_qubits])
+uncut_weight_2 = np.mean(uncut_expvals[num_qubits:])
+
+print(f"Average of weight-1 expectation values is {uncut_weight_1}")
+print(f"Average of weight-2 expectation values is {uncut_weight_2}")
+```
+
+```text
+Average of weight-1 expectation values is -0.32494128440366965
+Average of weight-2 expectation values is 0.32340917431192656
+```
+
+### Візуалізація
+Давайте тепер візуалізуємо поліпшення, отримане для спостережуваних ваги-1 та ваги-2 при використанні розрізання вентилів для схеми періодичного ланцюга
+
+```python
+mpl.rcParams.update(mpl.rcParamsDefault)
+
+fig = plt.subplots(figsize=(12, 8), dpi=200)
+width = 0.25
+labels = ["Weight-1", "Weight-2"]
+x = np.arange(len(labels))
+
+ideal = [-1, 1]
+cut = [cut_weight_1, cut_weight_2]
+uncut = [uncut_weight_1, uncut_weight_2]
+
+br1 = np.arange(len(ideal))
+br2 = [x + width for x in br1]
+br3 = [x + width for x in br2]
+
+plt.bar(
+    br1, ideal, width=width, edgecolor="k", label="Ideal", color="#4589ff"
+)
+plt.bar(br2, cut, width=width, edgecolor="k", label="Cut", color="#a56eff")
+plt.bar(
+    br3, uncut, width=width, edgecolor="k", label="Uncut", color="#009d9a"
+)
+
+plt.axhline(y=0, color="k", linestyle="-")
+
+plt.xticks([r + width for r in range(len(ideal))], labels, fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.legend(fontsize=14)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/2ba8913f-ba35-409c-bc4c-5f28e3698f20-0.avif)
+
+### Підсумок
+
+Підсумовуючи, ми обчислили середні очікувані значення спостережуваних Z-типу ваги-1 та ваги-2 для періодичного 1D ланцюга з 109 кубітів. Для цього ми
+
+- створили віртуальну карту зв'язності, додавши зв'язність дальнього діапазону між першим і останнім кубітами 1D ланцюга, та транспілювали схему.
+    - транспіляція на цьому етапі дозволила нам уникнути накладних витрат на транспіляцію кожного підексперименту окремо після розрізання,
+    - використання віртуальної карти зв'язності дозволило нам уникнути додаткових вентилів SWAP для 2-кубітної операції між першим і останнім кубітами.
+- видалили зв'язність дальнього діапазону з транспільованої схеми за допомогою розрізання вентилів.
+- перетворили розрізані схеми в набір базисних вентилів, застосувавши відповідні проходи транспіляції.
+- виконали розрізані схеми на квантовому пристрої IBM, використовуючи примітив `SamplerV2`.
+- отримали очікуване значення шляхом реконструкції результатів розрізаних схем.
+### Висновок
+
+Ми помічаємо з результатів, що середнє значення спостережуваних типу ваги-1 $\langle Z \rangle$ та ваги-2 $\langle ZZ \rangle$ значно покращується шляхом розрізання періодичних вентилів. Зверніть увагу, що це дослідження не включає жодних методів придушення або пом'якшення помилок. Спостережуване поліпшення є виключно завдяки правильному використанню розрізання вентилів для цієї задачі. Результати могли б бути ще більше покращені шляхом використання методів пом'якшення та придушення.
+
+Це дослідження показує приклад ефективного використання розрізання вентилів для покращення продуктивності обчислень.
+## Опитування про підручник
+
+Будь ласка, візьміть участь у цьому короткому опитуванні, щоб надати відгук про цей підручник. Ваші думки допоможуть нам покращити наші пропозиції щодо вмісту та досвіду користувачів.
