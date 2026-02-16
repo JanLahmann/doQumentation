@@ -1,0 +1,596 @@
+---
+title: "Introduction aux portes fractionnaires"
+sidebar_label: "Introduction aux portes fractionnaires"
+description: "Les portes fractionnaires, des portes quantiques paramétrées qui permettent l'exécution directe de rotations d'angle arbitraire, peuvent réduire la profondeur et la durée des circuits quantiques."
+notebook_path: "docs/tutorials/fractional-gates.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/fractional-gates.ipynb" />
+
+
+
+*Estimation d'utilisation : moins de 30 secondes sur un processeur Heron r2 (REMARQUE : Il ne s'agit que d'une estimation. Votre temps d'exécution peut varier.)*
+## Contexte
+
+### Portes fractionnaires sur les QPU IBM
+
+Les portes fractionnaires sont des portes quantiques paramétrées qui permettent l'exécution directe de rotations d'angle arbitraire (dans des limites spécifiques),
+éliminant ainsi la nécessité de les décomposer en plusieurs portes de base.
+En tirant parti des interactions natives entre les qubits physiques, les utilisateurs peuvent implémenter certaines unitaires plus efficacement sur le matériel.
+
+Les QPU IBM Quantum&reg; Heron prennent en charge les portes fractionnaires suivantes :
+- $R_{ZZ}(\theta)$ pour $0 < \theta < \pi / 2$
+- $R_X(\theta)$ pour toute valeur réelle $\theta$
+
+Ces portes peuvent réduire considérablement à la fois la profondeur et la durée des circuits quantiques.
+Elles sont particulièrement avantageuses dans les applications qui reposent fortement sur $R_{ZZ}$ et $R_X$,
+telles que la simulation hamiltonienne, l'algorithme d'optimisation approximative quantique (QAOA) et les méthodes de noyaux quantiques.
+Dans ce tutoriel, nous nous concentrons sur le noyau quantique comme exemple pratique.
+### Limitations
+
+Les portes fractionnaires sont actuellement une fonctionnalité expérimentale et comportent quelques contraintes :
+- $R_{ZZ}$ est limité aux angles dans la plage $0 < \theta < \pi / 2$.
+- L'utilisation des portes fractionnaires n'est pas prise en charge pour les [circuits dynamiques](/guides/classical-feedforward-and-control-flow), le [Pauli twirling](/guides/error-mitigation-and-suppression-techniques#pauli-twirling), l'[annulation probabiliste d'erreurs](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-cancellation-pec) (PEC) et l'[extrapolation à bruit nul](/guides/error-mitigation-and-suppression-techniques#zero-noise-extrapolation-zne) (ZNE) (utilisant l'[amplification probabiliste d'erreurs](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-amplification-pea) (PEA)).
+
+Les portes fractionnaires nécessitent un flux de travail différent par rapport à l'approche standard.
+Ce tutoriel explique comment travailler avec les portes fractionnaires à travers une application pratique.
+
+Consultez les ressources suivantes pour plus de détails sur les portes fractionnaires.
+- [Portes fractionnaires](/guides/fractional-gates)
+- [Quand *ne pas* utiliser les portes fractionnaires](/guides/fractional-gates#when-not-to-use)
+## Vue d'ensemble
+Le flux de travail pour l'utilisation des portes fractionnaires suit généralement le flux de travail [Qiskit patterns](/guides/intro-to-patterns).
+La différence principale est que tous les angles RZZ doivent satisfaire la contrainte $0 < \theta \leq \pi/2$.
+Il existe deux approches pour garantir que cette condition est remplie.
+Ce tutoriel se concentre sur la seconde approche et la recommande.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-basis-constructor
+```
+
+### 1. Générer des valeurs de paramètres qui satisfont la contrainte d'angle RZZ
+
+Si vous êtes certain que tous les angles RZZ se situent dans la plage valide, vous pouvez suivre le flux de travail standard Qiskit patterns.
+Dans ce cas, vous soumettez simplement les valeurs de paramètres dans le cadre d'un PUB. Le flux de travail se déroule comme suit.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+t_circuit = pm.run(circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit, parameter_values)])
+estimator.run([(t_circuit, t_observable, parameter_values)])
+```
+
+Si vous tentez de soumettre un PUB qui inclut une porte RZZ avec un angle en dehors de la plage valide, vous rencontrerez un message d'erreur tel que :
+```
+'The instruction rzz is supported only for angles in the range [0, pi/2], but an angle (20.0) outside of this range has been requested; via parameter value(s) γ[0]=10.0, substituted in parameter expression 2.0*γ[0].'
+```
+Pour éviter cette erreur, vous devriez envisager la seconde approche décrite ci-dessous.
+### 2. Assigner les valeurs de paramètres aux circuits avant la transpilation
+
+Le package `qiskit-ibm-runtime` fournit une passe de transpilation spécialisée appelée [`FoldRzzAngle`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-fold-rzz-angle).
+Cette passe transforme les circuits quantiques de sorte que tous les angles RZZ respectent la contrainte d'angle RZZ.
+Si vous fournissez le backend à `generate_preset_pass_manager` ou `transpile`, Qiskit applique automatiquement `FoldRzzAngle` aux circuits quantiques.
+Cela vous demande d'assigner les valeurs de paramètres aux circuits quantiques avant la transpilation.
+Le flux de travail se déroule comme suit.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+b_circuit = circuit.assign_parameters(parameter_values)
+t_circuit = pm.run(b_circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit,)])
+estimator.run([(t_circuit, t_observable)])
+```
+
+Notez que ce flux de travail entraîne un coût de calcul plus élevé que la première approche, car il implique l'assignation des valeurs de paramètres aux circuits quantiques et le stockage local des circuits liés aux paramètres.
+De plus, il existe un problème connu dans Qiskit où la transformation des portes RZZ peut échouer dans certains scénarios. Pour une solution de contournement, veuillez consulter la section [Dépannage](#troubleshooting).
+Ce tutoriel démontre comment utiliser les portes fractionnaires via la seconde approche à travers un exemple inspiré de la méthode des noyaux quantiques.
+Pour mieux comprendre où les noyaux quantiques sont susceptibles d'être utiles, nous recommandons la lecture de [Liu, Arunachalam & Temme (2021).](https://www.nature.com/articles/s41567-021-01287-z)
+
+Vous pouvez également suivre le tutoriel [Entraînement de noyaux quantiques](/tutorials/quantum-kernel-training) et la leçon [Noyaux quantiques](/learning/courses/quantum-machine-learning/quantum-kernel-methods) dans le cours Apprentissage automatique quantique sur IBM Quantum Learning.
+### Prérequis
+
+Avant de commencer ce tutoriel, assurez-vous d'avoir installé les éléments suivants :
+- Qiskit SDK v2.0 ou version ultérieure, avec la prise en charge de la [visualisation](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.37 ou version ultérieure (`pip install qiskit-ibm-runtime`)
+- Qiskit Basis Constructor (`pip install qiskit_basis_constructor`)
+### Configuration
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+from qiskit import QuantumCircuit, generate_preset_pass_manager
+from qiskit.circuit import ParameterVector
+from qiskit.circuit.library import unitary_overlap
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+### Activer les portes fractionnaires et vérifier les portes de base
+
+Pour utiliser les portes fractionnaires, vous pouvez obtenir un backend qui les prend en charge en définissant l'option `use_fractional_gates=True`.
+Si le backend prend en charge les portes fractionnaires, vous verrez `rzz` et `rx` parmi ses portes de base.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=133
+)  # backend should be a heron device or later
+backend_name = backend.name
+backend_c = service.backend(backend_name)  # w/o fractional gates
+backend_f = service.backend(
+    backend_name, use_fractional_gates=True
+)  # w/ fractional gates
+print(f"Backend: {backend_name}")
+print(f"No fractional gates: {backend_c.basis_gates}")
+print(f"With fractional gates: {backend_f.basis_gates}")
+if "rzz" not in backend_f.basis_gates:
+    print(f"Backend {backend_name} does not support fractional gates")
+```
+
+```text
+Backend: ibm_fez
+No fractional gates: ['cz', 'id', 'rz', 'sx', 'x']
+With fractional gates: ['cz', 'id', 'rx', 'rz', 'rzz', 'sx', 'x']
+```
+
+## Flux de travail avec les portes fractionnaires
+### Étape 1 : Mapper les entrées classiques sur un problème quantique
+
+#### Circuit de noyau quantique
+Dans cette section, nous explorons le circuit de noyau quantique utilisant des portes RZZ pour présenter le flux de travail des portes fractionnaires.
+
+Nous commençons par construire un circuit quantique pour calculer les entrées individuelles de la matrice de noyau.
+Cela se fait en combinant des circuits de carte de caractéristiques ZZ avec un recouvrement unitaire.
+La fonction de noyau prend des vecteurs dans l'espace mappé par les caractéristiques et retourne leur produit scalaire comme entrée de la matrice de noyau :
+$$K(x, y) = \langle \Phi(x) | \Phi(y) \rangle,$$
+où $|\Phi(x)\rangle$ représente l'état quantique mappé par les caractéristiques.
+
+Nous construisons manuellement un circuit de carte de caractéristiques ZZ utilisant des portes RZZ.
+Bien que Qiskit fournisse un `zz_feature_map` intégré, celui-ci ne prend pas actuellement en charge les portes RZZ dans Qiskit v2.0.2 ([voir le problème](https://github.com/Qiskit/qiskit/issues/14469)).
+
+Ensuite, nous calculons la fonction de noyau pour des entrées identiques - par exemple, $K(x, x) = 1$.
+Sur des ordinateurs quantiques bruités, cette valeur peut être inférieure à 1 en raison du bruit.
+Un résultat plus proche de 1 indique un niveau de bruit plus faible lors de l'exécution.
+Dans ce tutoriel, nous désignons cette valeur comme la *fidélité*, définie par
+$$\text{fidelity} = K(x, x).$$
+
+```python
+optimization_level = 2
+shots = 2000
+reps = 3
+rng = np.random.default_rng(seed=123)
+```
+
+```python
+def my_zz_feature_map(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    x = ParameterVector("x", num_qubits * reps)
+    qc = QuantumCircuit(num_qubits)
+    qc.h(range(num_qubits))
+    for k in range(reps):
+        K = k * num_qubits
+        for i in range(num_qubits):
+            qc.rz(x[i + K], i)
+        pairs = [(i, i + 1) for i in range(num_qubits - 1)]
+        for i, j in pairs[0::2] + pairs[1::2]:
+            qc.rzz((np.pi - x[i + K]) * (np.pi - x[j + K]), i, j)
+    return qc
+
+def quantum_kernel(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    qc = my_zz_feature_map(num_qubits, reps=reps)
+    inner_product = unitary_overlap(qc, qc, "x", "y", insert_barrier=True)
+    inner_product.measure_all()
+    return inner_product
+
+def random_parameters(inner_product: QuantumCircuit) -> np.ndarray:
+    return np.tile(rng.random(inner_product.num_parameters // 2), 2)
+
+def fidelity(result) -> float:
+    ba = result.data.meas
+    return ba.get_int_counts().get(0, 0) / ba.num_shots
+```
+
+Les circuits de noyau quantique et leurs valeurs de paramètres correspondantes sont générés pour des systèmes de 4 à 40 qubits, et leurs fidélités sont ensuite évaluées.
+
+```python
+qubits = list(range(4, 44, 4))
+circuits = [quantum_kernel(i, reps=reps) for i in qubits]
+params = [random_parameters(circ) for circ in circuits]
+```
+
+Le circuit à quatre qubits est visualisé ci-dessous.
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b3d6341a-0.avif)
+
+Dans le flux de travail standard Qiskit patterns, les valeurs de paramètres sont généralement transmises au primitive Sampler ou Estimator dans le cadre d'un PUB.
+Cependant, lors de l'utilisation d'un backend prenant en charge les portes fractionnaires, ces valeurs de paramètres doivent être explicitement assignées au circuit quantique avant la transpilation.
+
+```python
+b_qc = [
+    circ.assign_parameters(param) for circ, param in zip(circuits, params)
+]
+b_qc[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6c9c1977-0.avif)
+
+### Étape 2 : Optimiser le problème pour l'exécution sur le matériel quantique
+Nous transpilons ensuite le circuit en utilisant le gestionnaire de passes suivant le pattern standard de Qiskit.
+En fournissant un backend prenant en charge les portes fractionnaires à `generate_preset_pass_manager`, une passe spécialisée appelée `FoldRzzAngle` est automatiquement incluse.
+Cette passe modifie le circuit pour respecter les contraintes d'angle RZZ.
+En conséquence, les portes RZZ avec des valeurs négatives dans la figure précédente sont transformées en valeurs positives, et quelques portes X supplémentaires sont ajoutées.
+
+```python
+backend_f = service.backend(name=backend_name, use_fractional_gates=True)
+# pm_f includes `FoldRzzAngle` pass
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_f
+)
+```
+
+```python
+t_qc_f = pm_f.run(b_qc)
+print(t_qc_f[0].count_ops())
+t_qc_f[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 35), ('rzz', 18), ('x', 13), ('rx', 9), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a18e5c70-1.avif)
+
+Pour évaluer l'impact des portes fractionnaires, nous mesurons le nombre de portes non locales (CZ et RZZ pour ce backend),
+ainsi que les profondeurs et durées des circuits, et comparons ces métriques à celles d'un flux de travail standard plus loin.
+
+```python
+nnl_f = [qc.num_nonlocal_gates() for qc in t_qc_f]
+depth_f = [qc.depth() for qc in t_qc_f]
+duration_f = [
+    qc.estimate_duration(backend_f.target, unit="u") for qc in t_qc_f
+]
+```
+
+### Étape 3 : Exécuter en utilisant les primitives Qiskit
+Nous exécutons le circuit transpilé avec le backend prenant en charge les portes fractionnaires.
+
+```python
+sampler_f = SamplerV2(mode=backend_f)
+sampler_f.options.dynamical_decoupling.enable = True
+sampler_f.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_f.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_f.run(t_qc_f, shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bninsi51bc738j97eg
+```
+
+### Étape 4 : Post-traiter et retourner le résultat dans le format classique souhaité
+Vous pouvez obtenir la valeur de la fonction de noyau $K(x, x)$ en mesurant la probabilité de la chaîne de bits tout-zéro `00...00` dans la sortie.
+
+```python
+# job = service.job("d1obougt0npc73flhiag")
+result = job.result()
+fidelity_f = [fidelity(result=res) for res in result]
+print(fidelity_f)
+usage_f = job.usage()
+```
+
+```text
+[0.9005, 0.647, 0.3345, 0.355, 0.3315, 0.174, 0.1875, 0.149, 0.1175, 0.085]
+```
+
+## Comparaison du flux de travail et du circuit sans portes fractionnaires
+
+Dans cette section, nous présentons le flux de travail standard Qiskit patterns utilisant un backend qui ne prend pas en charge les portes fractionnaires.
+En comparant les circuits transpilés, vous remarquerez que la version utilisant les portes fractionnaires (de la section précédente) est plus compacte que celle sans portes fractionnaires.
+
+```python
+# step 1: map classical inputs to quantum problem
+# `circuits` and `params` from the previous section are reused here
+```
+
+```python
+# step 2: optimize circuits
+backend_c = service.backend(backend_name)  # w/o fractional gates
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc_c = pm_c.run(circuits)
+print(t_qc_c[0].count_ops())
+t_qc_c[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 130), ('sx', 80), ('cz', 36), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a10f2d95-1.avif)
+
+```python
+nnl_c = [qc.num_nonlocal_gates() for qc in t_qc_c]
+depth_c = [qc.depth() for qc in t_qc_c]
+duration_c = [
+    qc.estimate_duration(backend_c.target, unit="u") for qc in t_qc_c
+]
+```
+
+```python
+# step 3: execute
+sampler_c = SamplerV2(backend_c)
+sampler_c.options.dynamical_decoupling.enable = True
+sampler_c.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_c.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_c.run(pubs=zip(t_qc_c, params), shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bnirvnmdfs73ae3a2g
+```
+
+```python
+# step 4: post-processing
+# job = service.job("d1obp8j3rr0s73bg4810")
+result = job.result()
+fidelity_c = [fidelity(res) for res in result]
+print(fidelity_c)
+usage_c = job.usage()
+```
+
+```text
+[0.6675, 0.5725, 0.098, 0.102, 0.065, 0.0235, 0.006, 0.0015, 0.0015, 0.002]
+```
+
+## Comparaison des profondeurs et des fidélités
+
+Dans cette section, nous comparons le nombre de portes non locales et les fidélités entre les circuits avec et sans portes fractionnaires.
+Cela met en évidence les avantages potentiels de l'utilisation des portes fractionnaires en termes d'efficacité d'exécution et de qualité.
+
+```python
+plt.plot(qubits, depth_c, "-o", label="no fractional gates")
+plt.plot(qubits, depth_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("depth")
+plt.title("Comparison of depths")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bcaac50>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/ef343a53-1.avif)
+
+```python
+plt.plot(qubits, duration_c, "-o", label="no fractional gates")
+plt.plot(qubits, duration_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("duration (µs)")
+plt.title("Comparison of durations")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bdef310>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/98bb2cd0-1.avif)
+
+```python
+plt.plot(qubits, nnl_c, "-o", label="no fractional gates")
+plt.plot(qubits, nnl_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("number of non-local gates")
+plt.title("Comparison of numbers of non-local gates")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12be8ac90>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/1383b242-1.avif)
+
+```python
+plt.plot(qubits, fidelity_c, "-o", label="no fractional gates")
+plt.plot(qubits, fidelity_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("fidelity")
+plt.title("Comparison of fidelities")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bea8290>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/8b4594f5-1.avif)
+
+Nous comparons le temps d'utilisation du QPU avec et sans portes fractionnaires. Les résultats dans la cellule suivante montrent que les temps d'utilisation du QPU sont presque identiques.
+
+```python
+print(f"no fractional gates: {usage_c} seconds")
+print(f"fractional gates: {usage_f} seconds")
+```
+
+```text
+no fractional gates: 7 seconds
+fractional gates: 7 seconds
+```
+
+## Sujet avancé : Utiliser uniquement les portes RX fractionnaires
+
+La nécessité d'un flux de travail modifié lors de l'utilisation des portes fractionnaires provient principalement de la restriction sur les angles des portes RZZ.
+Cependant, si vous utilisez uniquement les portes RX fractionnaires et excluez les portes RZZ fractionnaires, vous pouvez continuer à suivre le flux de travail standard Qiskit patterns.
+Cette approche peut tout de même offrir des avantages significatifs, en particulier dans les circuits qui impliquent un grand nombre de portes RX et de portes U, en réduisant le nombre total de portes et en améliorant potentiellement les performances.
+Dans cette section, nous démontrons comment optimiser vos circuits en utilisant uniquement les portes RX fractionnaires, tout en omettant les portes RZZ.
+
+Pour ce faire, nous fournissons une fonction utilitaire qui vous permet de désactiver une porte de base spécifique dans un objet Target.
+Ici, nous l'utilisons pour désactiver les portes RZZ.
+
+```python
+from qiskit.circuit.library import n_local
+from qiskit.transpiler import Target
+```
+
+```python
+def remove_instruction_from_target(target: Target, gate_name: str) -> Target:
+    new_target = Target(
+        description=target.description,
+        num_qubits=target.num_qubits,
+        dt=target.dt,
+        granularity=target.granularity,
+        min_length=target.min_length,
+        pulse_alignment=target.pulse_alignment,
+        acquire_alignment=target.acquire_alignment,
+        qubit_properties=target.qubit_properties,
+        concurrent_measurements=target.concurrent_measurements,
+    )
+
+    for name, qarg_map in target.items():
+        if name == gate_name:
+            continue
+        instruction = target.operation_from_name(name)
+        if qarg_map == {None: None}:
+            qarg_map = None
+        new_target.add_instruction(instruction, qarg_map, name=name)
+    return new_target
+```
+
+Nous utilisons un circuit composé de portes U, CZ et RZZ comme exemple.
+
+```python
+qc = n_local(3, "u", "cz", "linear", reps=1)
+qc.rzz(1.1, 0, 1)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6b812497-0.avif)
+
+Nous transpilons d'abord le circuit pour un backend qui ne prend pas en charge les portes fractionnaires.
+
+```python
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc = pm_c.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 23), ('sx', 16), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/9e8e0709-1.avif)
+
+Ensuite, nous transpilons le même circuit en utilisant les portes RX fractionnaires, tout en excluant les portes RZZ.
+Cela entraîne une légère réduction du nombre total de portes, grâce à l'implémentation plus efficace des portes RX.
+
+```python
+backend_f = service.backend(backend_name, use_fractional_gates=True)
+target = remove_instruction_from_target(backend_f.target, "rzz")
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 22), ('sx', 14), ('cz', 4), ('rx', 1)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/db45feb0-1.avif)
+
+### Optimiser les portes U avec les portes RX fractionnaires
+
+Dans cette section, nous démontrons comment optimiser les portes U en utilisant les portes RX fractionnaires, en nous appuyant sur le même circuit introduit dans la section précédente.
+
+Vous devrez installer le [package](https://github.com/Qiskit/qiskit-basis-constructor) `qiskit-basis-constructor` pour cette section.
+Il s'agit d'une version bêta d'un nouveau plugin de transpilation pour Qiskit, qui pourrait être intégré à Qiskit à l'avenir.
+
+```python
+# %pip install qiskit-basis-constructor
+```
+
+```python
+from qiskit.circuit.library import UGate
+from qiskit_basis_constructor import DEFAULT_EQUIVALENCE_LIBRARY
+```
+
+Nous transpilons le circuit en utilisant uniquement les portes RX fractionnaires, en excluant les portes RZZ.
+En introduisant une règle de décomposition personnalisée, comme illustré ci-dessous,
+nous pouvons réduire le nombre de portes à un seul qubit nécessaires pour implémenter une porte U.
+
+Cette fonctionnalité est actuellement en discussion dans ce [problème GitHub.](https://github.com/Qiskit/qiskit/issues/13455)
+
+```python
+# special decomposition rule for UGate
+x = ParameterVector("x", 3)
+zxz = QuantumCircuit(1)
+zxz.rz(x[2] - np.pi / 2, 0)
+zxz.rx(x[0], 0)
+zxz.rz(x[1] + np.pi / 2, 0)
+DEFAULT_EQUIVALENCE_LIBRARY.add_equivalence(UGate(x[0], x[1], x[2]), zxz)
+```
+
+Ensuite, nous appliquons le Transpiler en utilisant la traduction `constructor-beta` fournie par le package `qiskit-basis-constructor`.
+En conséquence, le nombre total de portes est réduit par rapport à la transpilation précédente.
+
+```python
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+    translation_method="constructor-beta",
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 16), ('rx', 9), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b19aae7c-1.avif)
+
+## Dépannage
+### Problème : Des angles RZZ invalides peuvent subsister après la transpilation
+
+Depuis Qiskit v2.0.3, il existe des problèmes connus où des portes RZZ avec des angles invalides peuvent subsister dans les circuits même après la transpilation.
+Le problème survient généralement dans les conditions suivantes.
+#### Échec lors de l'utilisation de l'option `target` avec `generate_preset_pass_manager` ou `transpiler`
+
+Lorsque l'option `target` est utilisée avec `generate_preset_pass_manager` ou `transpiler`, la passe de transpilation spécialisée `FoldRzzAngle` n'est pas invoquée.
+Pour garantir un traitement correct des angles RZZ pour les portes fractionnaires, nous recommandons de toujours utiliser l'option `backend` à la place.
+Consultez [ce problème](https://github.com/Qiskit/qiskit/issues/14318) pour plus de détails.
+#### Échec lorsque les circuits contiennent certaines portes
+
+Si votre circuit inclut certaines portes telles que `XXPlusYYGate`, le Transpiler Qiskit peut générer des portes RZZ avec des angles invalides.
+Si vous rencontrez ce problème, consultez ce [problème GitHub](https://github.com/Qiskit/qiskit-ibm-runtime/issues/2256#issuecomment-2889487152) pour une solution de contournement.
+## Enquête sur le tutoriel
+
+Veuillez répondre à cette courte enquête pour nous faire part de vos commentaires sur ce tutoriel. Vos retours nous aideront à améliorer nos contenus et l'expérience utilisateur.
+
+[Lien vers l'enquête](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

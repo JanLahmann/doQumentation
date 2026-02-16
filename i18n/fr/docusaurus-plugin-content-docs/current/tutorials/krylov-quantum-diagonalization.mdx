@@ -1,0 +1,1076 @@
+---
+title: "Diagonalisation quantique de Krylov pour les hamiltoniens de réseau"
+sidebar_label: "Diagonalisation quantique de Krylov pour les hamiltoniens de réseau"
+description: "Implémentez l'algorithme de diagonalisation quantique de Krylov (KQD) dans le cadre des modèles Qiskit."
+notebook_path: "docs/tutorials/krylov-quantum-diagonalization.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/krylov-quantum-diagonalization.ipynb" />
+
+
+
+{/* cspell:ignore prefactors */}
+
+*Estimation d'utilisation : 20 minutes sur un Heron r2 (REMARQUE : ceci est une estimation uniquement. Votre temps d'exécution peut varier.)*
+
+```python
+# This cell is hidden from users – it disables some lint rules
+# ruff: noqa: E402 E722 F601
+```
+
+## Contexte
+
+Ce tutoriel montre comment implémenter l'algorithme de diagonalisation quantique de Krylov (KQD) dans le cadre des modèles Qiskit. Vous apprendrez d'abord la théorie sous-jacente à l'algorithme, puis vous verrez une démonstration de son exécution sur un QPU.
+
+Dans de nombreuses disciplines, nous cherchons à connaître les propriétés de l'état fondamental des systèmes quantiques. Parmi les exemples, on trouve la compréhension de la nature fondamentale des particules et des forces, la prédiction et la compréhension du comportement de matériaux complexes, ainsi que la compréhension des interactions et réactions biochimiques. En raison de la croissance exponentielle de l'espace de Hilbert et des corrélations qui apparaissent dans les systèmes intriqués, les algorithmes classiques peinent à résoudre ce problème pour des systèmes quantiques de taille croissante. À une extrémité du spectre, l'approche existante qui tire parti du matériel quantique se concentre sur les méthodes quantiques variationnelles (par exemple, le [solveur quantique variationnel des valeurs propres](/tutorials/spin-chain-vqe)). Ces techniques font face à des défis avec les dispositifs actuels en raison du grand nombre d'appels de fonction requis dans le processus d'optimisation, ce qui ajoute une surcharge importante en ressources une fois que des techniques avancées d'atténuation des erreurs sont introduites, limitant ainsi leur efficacité aux petits systèmes. À l'autre extrémité du spectre, il existe des méthodes quantiques tolérantes aux fautes avec des garanties de performance (par exemple, l'[estimation de phase quantique](https://arxiv.org/abs/quant-ph/0604193)), qui nécessitent des circuits profonds ne pouvant être exécutés que sur un dispositif tolérant aux fautes. Pour ces raisons, nous introduisons ici un algorithme quantique basé sur les méthodes de sous-espace (tel que décrit dans cet [article de synthèse](https://arxiv.org/abs/2312.00178)), l'algorithme de diagonalisation quantique de Krylov (KQD). Cet algorithme fonctionne bien à grande échelle [\[1\]](#references) sur le matériel quantique existant, partage des [garanties de performance](https://arxiv.org/abs/2110.07492) similaires à celles de l'estimation de phase, est compatible avec les techniques avancées d'atténuation des erreurs et pourrait fournir des résultats classiquement inaccessibles.
+## Prérequis
+Avant de commencer ce tutoriel, assurez-vous d'avoir installé les éléments suivants :
+
+- Qiskit SDK v2.0 ou version ultérieure, avec le support de la [visualisation](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 ou version ultérieure ( `pip install qiskit-ibm-runtime` )
+## Configuration
+
+```python
+import numpy as np
+import scipy as sp
+import matplotlib.pylab as plt
+from typing import Union, List
+import itertools as it
+import copy
+from sympy import Matrix
+import warnings
+
+warnings.filterwarnings("ignore")
+
+from qiskit.quantum_info import SparsePauliOp, Pauli, StabilizerState
+from qiskit.circuit import Parameter, IfElseOp
+from qiskit import QuantumCircuit, QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+from qiskit.transpiler import Target, CouplingMap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    EstimatorV2 as Estimator,
+)
+
+def solve_regularized_gen_eig(
+    h: np.ndarray,
+    s: np.ndarray,
+    threshold: float,
+    k: int = 1,
+    return_dimn: bool = False,
+) -> Union[float, List[float]]:
+    """
+    Method for solving the generalized eigenvalue problem with regularization
+
+    Args:
+        h (numpy.ndarray):
+            The effective representation of the matrix in the Krylov subspace
+        s (numpy.ndarray):
+            The matrix of overlaps between vectors of the Krylov subspace
+        threshold (float):
+            Cut-off value for the eigenvalue of s
+        k (int):
+            Number of eigenvalues to return
+        return_dimn (bool):
+            Whether to return the size of the regularized subspace
+
+    Returns:
+        lowest k-eigenvalue(s) that are the solution of the regularized generalized eigenvalue problem
+
+    """
+    s_vals, s_vecs = sp.linalg.eigh(s)
+    s_vecs = s_vecs.T
+    good_vecs = np.array(
+        [vec for val, vec in zip(s_vals, s_vecs) if val > threshold]
+    )
+    h_reg = good_vecs.conj() @ h @ good_vecs.T
+    s_reg = good_vecs.conj() @ s @ good_vecs.T
+    if k == 1:
+        if return_dimn:
+            return sp.linalg.eigh(h_reg, s_reg)[0][0], len(good_vecs)
+        else:
+            return sp.linalg.eigh(h_reg, s_reg)[0][0]
+    else:
+        if return_dimn:
+            return sp.linalg.eigh(h_reg, s_reg)[0][:k], len(good_vecs)
+        else:
+            return sp.linalg.eigh(h_reg, s_reg)[0][:k]
+
+def single_particle_gs(H_op, n_qubits):
+    """
+    Find the ground state of the single particle(excitation) sector
+    """
+    H_x = []
+    for p, coeff in H_op.to_list():
+        H_x.append(set([i for i, v in enumerate(Pauli(p).x) if v]))
+
+    H_z = []
+    for p, coeff in H_op.to_list():
+        H_z.append(set([i for i, v in enumerate(Pauli(p).z) if v]))
+
+    H_c = H_op.coeffs
+
+    print("n_sys_qubits", n_qubits)
+
+    n_exc = 1
+    sub_dimn = int(sp.special.comb(n_qubits + 1, n_exc))
+    print("n_exc", n_exc, ", subspace dimension", sub_dimn)
+
+    few_particle_H = np.zeros((sub_dimn, sub_dimn), dtype=complex)
+
+    sparse_vecs = [
+        set(vec) for vec in it.combinations(range(n_qubits + 1), r=n_exc)
+    ]  # list all of the possible sets of n_exc indices of 1s in n_exc-particle states
+
+    m = 0
+    for i, i_set in enumerate(sparse_vecs):
+        for j, j_set in enumerate(sparse_vecs):
+            m += 1
+
+            if len(i_set.symmetric_difference(j_set)) <= 2:
+                for p_x, p_z, coeff in zip(H_x, H_z, H_c):
+                    if i_set.symmetric_difference(j_set) == p_x:
+                        sgn = ((-1j) ** len(p_x.intersection(p_z))) * (
+                            (-1) ** len(i_set.intersection(p_z))
+                        )
+                    else:
+                        sgn = 0
+
+                    few_particle_H[i, j] += sgn * coeff
+
+    gs_en = min(np.linalg.eigvalsh(few_particle_H))
+    print("single particle ground state energy: ", gs_en)
+    return gs_en
+```
+
+## Étape 1 : Transposer les entrées classiques en un problème quantique
+### L'espace de Krylov
+
+L'espace de Krylov $\mathcal{K}^r$ d'ordre $r$ est l'espace engendré par les vecteurs obtenus en multipliant des puissances croissantes d'une matrice $A$, jusqu'à $r-1$, avec un vecteur de référence $\vert v \rangle$.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+Si la matrice $A$ est le hamiltonien $H$, nous désignerons l'espace correspondant comme l'espace de Krylov en puissances $\mathcal{K}_P$. Dans le cas où $A$ est l'opérateur d'évolution temporelle généré par le hamiltonien $U=e^{-iHt}$, nous désignerons l'espace comme l'espace de Krylov unitaire $\mathcal{K}_U$. Le sous-espace de Krylov en puissances que nous utilisons classiquement ne peut pas être généré directement sur un ordinateur quantique car $H$ n'est pas un opérateur unitaire. En revanche, nous pouvons utiliser l'opérateur d'évolution temporelle $U = e^{-iHt}$ qui offre des [garanties de convergence](https://arxiv.org/abs/2110.07492) similaires à celles de la méthode des puissances. Les puissances de $U$ deviennent alors différents pas de temps $U^k = e^{-iH(kt)}$.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+
+Consultez l'annexe pour une dérivation détaillée montrant comment l'espace de Krylov unitaire permet de représenter avec précision les états propres de basse énergie.
+### Algorithme de diagonalisation quantique de Krylov
+
+Étant donné un hamiltonien $H$ que nous souhaitons diagonaliser, nous considérons d'abord l'espace de Krylov unitaire correspondant $\mathcal{K}_U$. L'objectif est de trouver une représentation compacte du hamiltonien dans $\mathcal{K}_U$, que nous désignerons par $\tilde{H}$. Les éléments de matrice de $\tilde{H}$, la projection du hamiltonien dans l'espace de Krylov, peuvent être calculés en évaluant les valeurs moyennes suivantes
+
+$$
+\tilde{H}_{mn} = \langle \psi_m \vert H \vert \psi_n \rangle =
+$$
+$$
+= \langle \psi \vert  e^{i H t_m}   H e^{-i H t_n} \vert \psi \rangle
+$$
+$$
+= \langle \psi \vert  e^{i H m dt}   H e^{-i H n dt} \vert \psi \rangle
+$$
+
+Où $\vert \psi_n \rangle = e^{-i H t_n} \vert \psi \rangle$ sont les vecteurs de l'espace de Krylov unitaire et $t_n = n dt$ sont les multiples du pas de temps $dt$ choisi. Sur un ordinateur quantique, le calcul de chaque élément de matrice peut être effectué avec tout algorithme permettant d'obtenir le recouvrement entre états quantiques. Ce tutoriel se concentre sur le test de Hadamard. Étant donné que $\mathcal{K}_U$ a une dimension $r$, le hamiltonien projeté dans le sous-espace aura des dimensions $r \times r$. Avec $r$ suffisamment petit (généralement $r<<100$ suffit pour obtenir la convergence des estimations des énergies propres), nous pouvons alors facilement diagonaliser le hamiltonien projeté $\tilde{H}$. Cependant, nous ne pouvons pas diagonaliser directement $\tilde{H}$ en raison de la non-orthogonalité des vecteurs de l'espace de Krylov. Nous devrons mesurer leurs recouvrements et construire une matrice $\tilde{S}$
+
+$$
+\tilde{S}_{mn} = \langle \psi_m \vert \psi_n \rangle
+$$
+
+Cela nous permet de résoudre le problème aux valeurs propres dans un espace non orthogonal (également appelé problème aux valeurs propres généralisé)
+
+$$
+\tilde{H} \ \vec{c} = E \ \tilde{S} \ \vec{c}
+$$
+
+On peut alors obtenir des estimations des valeurs propres et des états propres de $H$ en examinant ceux de $\tilde{H}$. Par exemple, l'estimation de l'énergie de l'état fondamental est obtenue en prenant la plus petite valeur propre $c$ et l'état fondamental à partir du vecteur propre correspondant $\vec{c}$. Les coefficients dans $\vec{c}$ déterminent la contribution des différents vecteurs qui engendrent $\mathcal{K}_U$.
+
+![fig1.png](/docs/images/tutorials/krylov-subspace-diagonalization/fc662b76-8ad7-4a6c-8c49-5f08c125aee8.avif)
+
+La figure montre une représentation en circuit du test de Hadamard modifié, une méthode utilisée pour calculer le recouvrement entre différents états quantiques. Pour chaque élément de matrice $\tilde{H}_{i,j}$, un test de Hadamard entre l'état $\vert \psi_i \rangle$ et $\vert \psi_j \rangle$ est effectué. Ceci est mis en évidence dans la figure par le code couleur des éléments de matrice et les opérations correspondantes $\text{Prep} \; \psi_i$, $\text{Prep} \; \psi_j$. Ainsi, un ensemble de tests de Hadamard pour toutes les combinaisons possibles de vecteurs de l'espace de Krylov est nécessaire pour calculer tous les éléments de matrice du hamiltonien projeté $\tilde{H}$. Le fil supérieur dans le circuit du test de Hadamard est un qubit ancillaire qui est mesuré soit dans la base X, soit dans la base Y ; sa valeur moyenne détermine la valeur du recouvrement entre les états. Le fil inférieur représente tous les qubits du hamiltonien du système. L'opération $\text{Prep} \; \psi_i$ prépare le qubit du système dans l'état $\vert \psi_i \rangle$ de manière contrôlée par l'état du qubit ancillaire (de même pour $\text{Prep} \; \psi_j$), et l'opération $P$ représente la décomposition de Pauli du hamiltonien du système $H = \sum_i P_i$. Une dérivation plus détaillée des opérations calculées par le test de Hadamard est donnée ci-dessous.
+#### Définition du hamiltonien
+
+Considérons le hamiltonien de Heisenberg pour $N$ qubits sur une chaîne linéaire : $H= \sum_{i,j}^N X_i X_j + Y_i Y_j - J Z_i Z_j$
+
+```python
+# Define problem Hamiltonian.
+n_qubits = 30
+J = 1  # coupling strength for ZZ interaction
+
+# Define the Hamiltonian:
+H_int = [["I"] * n_qubits for _ in range(3 * (n_qubits - 1))]
+for i in range(n_qubits - 1):
+    H_int[i][i] = "Z"
+    H_int[i][i + 1] = "Z"
+for i in range(n_qubits - 1):
+    H_int[n_qubits - 1 + i][i] = "X"
+    H_int[n_qubits - 1 + i][i + 1] = "X"
+for i in range(n_qubits - 1):
+    H_int[2 * (n_qubits - 1) + i][i] = "Y"
+    H_int[2 * (n_qubits - 1) + i][i + 1] = "Y"
+H_int = ["".join(term) for term in H_int]
+H_tot = [(term, J) if term.count("Z") == 2 else (term, 1) for term in H_int]
+
+# Get operator
+H_op = SparsePauliOp.from_list(H_tot)
+print(H_tot)
+```
+
+```text
+[('ZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIZZIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIZZIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIZZIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIZZIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIZZIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 1), ('XXIIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IXXIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIXXIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIXXIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIXXIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIXXIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIXXIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIXXIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIXXIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIXXIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIXXIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIXXIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIXXIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIXXIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIXXIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIXXIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIXXIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIXXIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIXXIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIXXIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIXXIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIXXIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIXXIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIXXIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIXXIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIXXIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIXXII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIXXI', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIIXX', 1), ('YYIIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IYYIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIYYIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIYYIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIYYIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIYYIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIYYIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIYYIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIYYIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIYYIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIYYIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIYYIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIYYIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIYYIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIYYIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIYYIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIYYIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIYYIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIYYIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIYYIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIYYIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIYYIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIYYIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIYYIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIYYIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIYYIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIYYII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIYYI', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIIYY', 1)]
+```
+
+#### Définition des paramètres de l'algorithme
+Nous choisissons heuristiquement une valeur pour le pas de temps `dt` (basée sur des bornes supérieures de la norme du hamiltonien). La référence [\[2\]](#references) a montré qu'un pas de temps suffisamment petit est $\pi/\vert \vert H \vert \vert$, et qu'il est préférable, jusqu'à un certain point, de sous-estimer cette valeur plutôt que de la surestimer, car une surestimation peut permettre aux contributions des états de haute énergie de corrompre même l'état optimal dans l'espace de Krylov. En revanche, choisir un $dt$ trop petit conduit à un moins bon conditionnement du sous-espace de Krylov, puisque les vecteurs de la base de Krylov diffèrent moins d'un pas de temps à l'autre.
+
+```python
+# Get Hamiltonian restricted to single-particle states
+single_particle_H = np.zeros((n_qubits, n_qubits))
+for i in range(n_qubits):
+    for j in range(i + 1):
+        for p, coeff in H_op.to_list():
+            p_x = Pauli(p).x
+            p_z = Pauli(p).z
+            if all(
+                p_x[k] == ((i == k) + (j == k)) % 2 for k in range(n_qubits)
+            ):
+                sgn = (
+                    (-1j) ** sum(p_z[k] and p_x[k] for k in range(n_qubits))
+                ) * ((-1) ** p_z[i])
+            else:
+                sgn = 0
+            single_particle_H[i, j] += sgn * coeff
+for i in range(n_qubits):
+    for j in range(i + 1, n_qubits):
+        single_particle_H[i, j] = np.conj(single_particle_H[j, i])
+
+# Set dt according to spectral norm
+dt = np.pi / np.linalg.norm(single_particle_H, ord=2)
+dt
+```
+
+```text
+np.float64(0.10833078115826875)
+```
+
+Nous définissons ensuite les autres paramètres de l'algorithme. Dans le cadre de ce tutoriel, nous nous limiterons à utiliser un espace de Krylov de seulement cinq dimensions, ce qui est assez restrictif.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of Krylov subspace
+num_trotter_steps = 6
+dt_circ = dt / num_trotter_steps
+```
+
+#### Préparation de l'état
+Choisissez un état de référence $\vert \psi \rangle$ qui possède un certain recouvrement avec l'état fondamental. Pour ce hamiltonien, nous utilisons un état avec une excitation sur le qubit central $\vert 00..010...00 \rangle$ comme état de référence.
+
+```python
+qc_state_prep = QuantumCircuit(n_qubits)
+qc_state_prep.x(int(n_qubits / 2) + 1)
+qc_state_prep.draw("mpl", scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/70161afe-8ace-4642-894a-cd21ed77a3b9-0.avif)
+
+#### Évolution temporelle
+
+Nous pouvons réaliser l'opérateur d'évolution temporelle généré par un hamiltonien donné : $U=e^{-iHt}$ via l'[approximation de Lie-Trotter](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter).
+
+```python
+t = Parameter("t")
+
+## Create the time-evo op circuit
+evol_gate = PauliEvolutionGate(
+    H_op, time=t, synthesis=LieTrotter(reps=num_trotter_steps)
+)
+
+qr = QuantumRegister(n_qubits)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+```
+
+```text
+<qiskit.circuit.instructionset.InstructionSet at 0x11eef9be0>
+```
+
+#### Test de Hadamard
+
+![fig2.png](/docs/images/tutorials/krylov-subspace-diagonalization/c5263851-6067-4ca2-8e0c-a835631cdc7f.avif)
+
+$$
+\begin{equation*}
+    |0\rangle|0\rangle^N \quad\longrightarrow\quad \frac{1}{\sqrt{2}}\Big(|0\rangle + |1\rangle \Big)|0\rangle^N \quad\longrightarrow\quad \frac{1}{\sqrt{2}}\Big(|0\rangle|0\rangle^N+|1\rangle |\psi_i\rangle\Big) \quad\longrightarrow\quad \frac{1}{\sqrt{2}}\Big(|0\rangle |0\rangle^N+|1\rangle P |\psi_i\rangle\Big) \quad\longrightarrow\quad\frac{1}{\sqrt{2}}\Big(|0\rangle |\psi_j\rangle+|1\rangle P|\psi_i\rangle\Big)
+\end{equation*}
+$$
+
+Où $P$ est l'un des termes de la décomposition du hamiltonien $H=\sum P$ et $\text{Prep} \; \psi_i$, $\text{Prep} \; \psi_j$ sont des opérations contrôlées qui préparent les vecteurs $|\psi_i\rangle$, $|\psi_j\rangle$ de l'espace de Krylov unitaire, avec $|\psi_k\rangle = e^{-i H k dt } \vert \psi \rangle = e^{-i H k dt } U_{\psi} \vert 0 \rangle^N$. Pour mesurer $X$, on applique d'abord $H$...
+
+$$
+\begin{equation*}
+    \longrightarrow\quad\frac{1}{2}|0\rangle\Big( |\psi_j\rangle + P|\psi_i\rangle\Big) + \frac{1}{2}|1\rangle\Big(|\psi_j\rangle - P|\psi_i\rangle\Big)
+\end{equation*}
+$$
+
+... puis on mesure :
+
+$$
+\begin{equation*}
+\begin{split}
+    \Rightarrow\quad\langle X\rangle &= \frac{1}{4}\Bigg(\Big\|| \psi_j\rangle + P|\psi_i\rangle \Big\|^2-\Big\||\psi_j\rangle - P|\psi_i\rangle\Big\|^2\Bigg) \\
+    &= \text{Re}\Big[\langle\psi_j| P|\psi_i\rangle\Big].
+\end{split}
+\end{equation*}
+$$
+
+À partir de l'identité $|a + b\|^2 = \langle a + b | a + b \rangle = \|a\|^2 + \|b\|^2 + 2\text{Re}\langle a | b \rangle$. De manière similaire, la mesure de $Y$ donne
+$$
+\begin{equation*}
+    \langle Y\rangle = \text{Im}\Big[\langle\psi_j| P|\psi_i\rangle\Big].
+\end{equation*}
+$$
+
+```python
+## Create the time-evo op circuit
+evol_gate = PauliEvolutionGate(
+    H_op, time=dt, synthesis=LieTrotter(reps=num_trotter_steps)
+)
+
+## Create the time-evo op dagger circuit
+evol_gate_d = PauliEvolutionGate(
+    H_op, time=dt, synthesis=LieTrotter(reps=num_trotter_steps)
+)
+evol_gate_d = evol_gate_d.inverse()
+
+# Put pieces together
+qc_reg = QuantumRegister(n_qubits)
+qc_temp = QuantumCircuit(qc_reg)
+qc_temp.compose(qc_state_prep, inplace=True)
+for _ in range(num_trotter_steps):
+    qc_temp.append(evol_gate, qargs=qc_reg)
+for _ in range(num_trotter_steps):
+    qc_temp.append(evol_gate_d, qargs=qc_reg)
+qc_temp.compose(qc_state_prep.inverse(), inplace=True)
+
+# Create controlled version of the circuit
+controlled_U = qc_temp.to_gate().control(1)
+
+# Create hadamard test circuit for real part
+qr = QuantumRegister(n_qubits + 1)
+qc_real = QuantumCircuit(qr)
+qc_real.h(0)
+qc_real.append(controlled_U, list(range(n_qubits + 1)))
+qc_real.h(0)
+
+print(
+    "Circuit for calculating the real part of the overlap in S via Hadamard test"
+)
+qc_real.draw("mpl", fold=-1, scale=0.5)
+```
+
+```text
+Circuit for calculating the real part of the overlap in S via Hadamard test
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/7c1efca7-7db9-43a9-bcb7-053ba274d6f6-1.avif)
+
+Le circuit du test de Hadamard peut être un circuit profond une fois que nous le décomposons en portes natives (ce qui augmentera encore davantage si nous tenons compte de la topologie du dispositif)
+
+```python
+print(
+    "Number of layers of 2Q operations",
+    qc_real.decompose(reps=2).depth(lambda x: x[0].num_qubits == 2),
+)
+```
+
+```text
+Number of layers of 2Q operations 112753
+```
+
+## Étape 2 : Optimiser le problème pour l'exécution sur du matériel quantique
+
+### Test de Hadamard efficace
+Nous pouvons optimiser les circuits profonds pour le test de Hadamard que nous avons obtenus en introduisant certaines approximations et en nous appuyant sur certaines hypothèses concernant le Hamiltonien du modèle. Par exemple, considérons le circuit suivant pour le test de Hadamard :
+
+![fig3.png](/docs/images/tutorials/krylov-subspace-diagonalization/35b13797-5a46-486c-b50e-97c205cc9747.avif)
+
+Supposons que nous pouvons calculer classiquement $E_0$, la valeur propre de $|0\rangle^N$ sous le Hamiltonien $H$.
+Cette condition est satisfaite lorsque le Hamiltonien préserve la symétrie U(1). Bien que cela puisse sembler être une hypothèse forte, il existe de nombreux cas où il est raisonnable de supposer qu'il existe un état de vide (qui dans ce cas correspond à l'état $|0\rangle^N$) qui n'est pas affecté par l'action du Hamiltonien. C'est vrai par exemple pour les Hamiltoniens de chimie qui décrivent des molécules stables (où le nombre d'électrons est conservé).
+Étant donné que la porte $\text{Prep} \; \psi$ prépare l'état de référence souhaité $\ket{psi} = \text{Prep} \; \psi \ket{0} = e^{-i H 0 dt} U_{\psi} \ket{0}$, par exemple, pour préparer l'état HF en chimie, $\text{Prep} \; \psi$ serait un produit de portes NOT mono-qubit, de sorte que la version contrôlée controlled-$\text{Prep} \; \psi$ est simplement un produit de portes CNOT.
+Alors le circuit ci-dessus implémente l'état suivant avant la mesure :
+
+$$
+\begin{equation}
+\begin{split}
+    \ket{0} \ket{0}^N\xrightarrow{H}&\frac{1}{\sqrt{2}}
+    \left(
+    \ket{0}\ket{0}^N+ \ket{1} \ket{0}^N
+    \right)\\
+    \xrightarrow{\text{1-ctrl-init}}&\frac{1}{\sqrt{2}}\left(|0\rangle|0\rangle^N+|1\rangle|\psi\rangle\right)\\
+    \xrightarrow{U}&\frac{1}{\sqrt{2}}\left(e^{i\phi}\ket{0}\ket{0}^N+\ket{1} U\ket{\psi}\right)\\
+    \xrightarrow{\text{0-ctrl-init}}&\frac{1}{\sqrt{2}}
+    \left(
+    e^{i\phi}\ket{0} \ket{\psi}
+    +\ket{1} U\ket{\psi}
+    \right)\\
+    =&\frac{1}{2}
+    \left(
+    \ket{+}\left(e^{i\phi}\ket{\psi}+U\ket{\psi}\right)
+    +\ket{-}\left(e^{i\phi}\ket{\psi}-U\ket{\psi}\right)
+    \right)\\
+    =&\frac{1}{2}
+    \left(
+    \ket{+i}\left(e^{i\phi}\ket{\psi}-iU\ket{\psi}\right)
+    +\ket{-i}\left(e^{i\phi}\ket{\psi}+iU\ket{\psi}\right)
+    \right)
+\end{split}
+\end{equation}
+$$
+
+où nous avons utilisé le déphasage calculable classiquement $ U\ket{0}^N = e^{i\phi}\ket{0}^N$ à la troisième ligne. Les valeurs d'attente sont donc obtenues comme suit
+
+$$
+\begin{equation}
+\begin{split}
+    \langle X\otimes P\rangle&=\frac{1}{4}
+    \Big(
+    \left(e^{-i\phi}\bra{\psi}+\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}+U\ket{\psi}\right)
+    \\
+    &\qquad-\left(e^{-i\phi}\bra{\psi}-\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}-U\ket{\psi}\right)
+    \Big)\\
+    &=\text{Re}\left[e^{-i\phi}\bra{\psi}PU\ket{\psi}\right],
+\end{split}
+\end{equation}
+$$
+
+$$
+\begin{equation}
+\begin{split}
+    \langle Y\otimes P\rangle&=\frac{1}{4}
+    \Big(
+    \left(e^{-i\phi}\bra{\psi}+i\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}-iU\ket{\psi}\right)
+    \\
+    &\qquad-\left(e^{-i\phi}\bra{\psi}-i\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}+iU\ket{\psi}\right)
+    \Big)\\
+    &=\text{Im}\left[e^{-i\phi}\bra{\psi}PU\ket{\psi}\right].
+\end{split}
+\end{equation}
+$$
+
+En utilisant ces hypothèses, nous avons pu exprimer les valeurs d'attente des opérateurs d'intérêt avec moins d'opérations contrôlées. En effet, nous n'avons besoin d'implémenter que la préparation d'état contrôlée $\text{Prep} \; \psi$ et non les évolutions temporelles contrôlées. Reformuler notre calcul comme ci-dessus nous permettra de réduire considérablement la profondeur des circuits résultants.
+### Décomposer l'opérateur d'évolution temporelle avec la décomposition de Trotter
+Au lieu d'implémenter exactement l'opérateur d'évolution temporelle, nous pouvons utiliser la décomposition de Trotter pour en implémenter une approximation. Répéter plusieurs fois une décomposition de Trotter d'un certain ordre nous permet de réduire davantage l'erreur introduite par l'approximation. Dans ce qui suit, nous construisons directement l'implémentation de Trotter de la manière la plus efficace pour le graphe d'interaction du Hamiltonien que nous considérons (interactions aux plus proches voisins uniquement). En pratique, nous insérons des rotations de Pauli $R_{xx}$, $R_{yy}$, $R_{zz}$ avec un angle paramétré $t$ qui correspondent à l'implémentation approchée de $e^{-i (XX + YY + ZZ) t}$. Étant donné la différence de définition entre les rotations de Pauli et l'évolution temporelle que nous essayons d'implémenter, nous devrons utiliser le paramètre $2*dt$ pour obtenir une évolution temporelle de $dt$. De plus, nous inversons l'ordre des opérations pour un nombre impair de répétitions des étapes de Trotter, ce qui est fonctionnellement équivalent mais permet de synthétiser des opérations adjacentes en une seule unitaire $SU(2)$. Cela donne un circuit beaucoup moins profond que celui obtenu en utilisant la fonctionnalité générique `PauliEvolutionGate()`.
+
+```python
+t = Parameter("t")
+
+# Create instruction for rotation about XX+YY-ZZ:
+Rxyz_circ = QuantumCircuit(2)
+Rxyz_circ.rxx(t, 0, 1)
+Rxyz_circ.ryy(t, 0, 1)
+Rxyz_circ.rzz(t, 0, 1)
+Rxyz_instr = Rxyz_circ.to_instruction(label="RXX+YY+ZZ")
+
+interaction_list = [
+    [[i, i + 1] for i in range(0, n_qubits - 1, 2)],
+    [[i, i + 1] for i in range(1, n_qubits - 1, 2)],
+]  # linear chain
+
+qr = QuantumRegister(n_qubits)
+trotter_step_circ = QuantumCircuit(qr)
+for i, color in enumerate(interaction_list):
+    for interaction in color:
+        trotter_step_circ.append(Rxyz_instr, interaction)
+    if i < len(interaction_list) - 1:
+        trotter_step_circ.barrier()
+reverse_trotter_step_circ = trotter_step_circ.reverse_ops()
+
+qc_evol = QuantumCircuit(qr)
+for step in range(num_trotter_steps):
+    if step % 2 == 0:
+        qc_evol = qc_evol.compose(trotter_step_circ)
+    else:
+        qc_evol = qc_evol.compose(reverse_trotter_step_circ)
+
+qc_evol.decompose().draw("mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/267716dc-fa23-41bd-abe4-6d4e0499a0f4-0.avif)
+
+### Utiliser un circuit optimisé pour la préparation d'état
+
+```python
+control = 0
+excitation = int(n_qubits / 2) + 1
+controlled_state_prep = QuantumCircuit(n_qubits + 1)
+controlled_state_prep.cx(control, excitation)
+controlled_state_prep.draw("mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/70411715-eed3-4cf5-961d-06a6f1e04efc-0.avif)
+
+### Circuits modèles pour le calcul des éléments de matrice de $\tilde{S}$ et $\tilde{H}$ via le test de Hadamard
+La seule différence entre les circuits utilisés dans le test de Hadamard réside dans la phase de l'opérateur d'évolution temporelle et les observables mesurées. Nous pouvons donc préparer un circuit modèle qui représente le circuit générique pour le test de Hadamard, avec des emplacements réservés pour les portes qui dépendent de l'opérateur d'évolution temporelle.
+
+```python
+# Parameters for the template circuits
+parameters = []
+for idx in range(1, krylov_dim):
+    parameters.append(2 * dt_circ * (idx))
+```
+
+```python
+# Create modified hadamard test circuit
+qr = QuantumRegister(n_qubits + 1)
+qc = QuantumCircuit(qr)
+qc.h(0)
+qc.compose(controlled_state_prep, list(range(n_qubits + 1)), inplace=True)
+qc.barrier()
+qc.compose(qc_evol, list(range(1, n_qubits + 1)), inplace=True)
+qc.barrier()
+qc.x(0)
+qc.compose(
+    controlled_state_prep.inverse(), list(range(n_qubits + 1)), inplace=True
+)
+qc.x(0)
+
+qc.decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/33ec7c29-904e-4445-a654-405214349a4d-0.avif)
+
+```python
+print(
+    "The optimized circuit has 2Q gates depth: ",
+    qc.decompose().decompose().depth(lambda x: x[0].num_qubits == 2),
+)
+```
+
+```text
+The optimized circuit has 2Q gates depth:  74
+```
+
+Nous avons considérablement réduit la profondeur du test de Hadamard grâce à une combinaison de l'approximation de Trotter et d'unitaires non contrôlées.
+## Étape 3 : Exécuter à l'aide des primitives Qiskit
+Instancier le backend et définir les paramètres d'exécution
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+if (
+    "if_else" not in backend.target.operation_names
+):  # Needed as "op_name" could be "if_else"
+    backend.target.add_instruction(IfElseOp, name="if_else")
+print(backend.name)
+```
+
+### Transpilation vers un QPU
+Tout d'abord, sélectionnons des sous-ensembles de la carte de couplage contenant des qubits aux « bonnes » performances (où « bonnes » est assez arbitraire ici, nous souhaitons surtout éviter les qubits aux performances vraiment médiocres) et créons une nouvelle cible pour la transpilation.
+
+```python
+target = backend.target
+cmap = target.build_coupling_map(filter_idle_qubits=True)
+cmap_list = list(cmap.get_edges())
+
+cust_cmap_list = copy.deepcopy(cmap_list)
+for q in range(target.num_qubits):
+    meas_err = target["measure"][(q,)].error
+    t2 = target.qubit_properties[q].t2 * 1e6
+    if meas_err > 0.02 or t2 < 100:
+        for q_pair in cmap_list:
+            if q in q_pair:
+                try:
+                    cust_cmap_list.remove(q_pair)
+                except:
+                    continue
+
+for q in cmap_list:
+    op_name = list(target.operation_names_for_qargs(q))[0]
+    twoq_gate_err = target[f"{op_name}"][q].error
+    if twoq_gate_err > 0.005:
+        for q_pair in cmap_list:
+            if q == q_pair:
+                try:
+                    cust_cmap_list.remove(q)
+                except:
+                    continue
+
+cust_cmap = CouplingMap(cust_cmap_list)
+cust_target = Target.from_configuration(
+    basis_gates=backend.configuration().basis_gates,
+    coupling_map=cust_cmap,
+)
+```
+
+Ensuite, transpilez le circuit virtuel vers la meilleure disposition physique dans cette nouvelle cible.
+
+```python
+basis_gates = list(target.operation_names)
+pm = generate_preset_pass_manager(
+    optimization_level=3,
+    target=cust_target,
+    basis_gates=basis_gates,
+)
+
+qc_trans = pm.run(qc)
+
+print("depth", qc_trans.depth(lambda x: x[0].num_qubits == 2))
+print("num 2q ops", qc_trans.count_ops())
+print(
+    "physical qubits",
+    sorted(
+        [
+            idx
+            for idx, qb in qc_trans.layout.initial_layout.get_physical_bits().items()
+            if qb._register.name != "ancilla"
+        ]
+    ),
+)
+```
+
+```text
+depth 52
+num 2q ops OrderedDict([('rz', 2058), ('sx', 1703), ('cz', 728), ('x', 84), ('barrier', 8)])
+physical qubits [91, 92, 93, 94, 95, 98, 99, 108, 109, 110, 111, 113, 114, 115, 119, 127, 132, 133, 134, 135, 137, 139, 147, 148, 149, 150, 151, 152, 153, 154, 155]
+```
+
+### Créer les PUB pour l'exécution avec l'Estimator
+
+```python
+# Define observables to measure for S
+observable_S_real = "I" * (n_qubits) + "X"
+observable_S_imag = "I" * (n_qubits) + "Y"
+
+observable_op_real = SparsePauliOp(
+    observable_S_real
+)  # define a sparse pauli operator for the observable
+observable_op_imag = SparsePauliOp(observable_S_imag)
+
+layout = qc_trans.layout  # get layout of transpiled circuit
+observable_op_real = observable_op_real.apply_layout(
+    layout
+)  # apply physical layout to the observable
+observable_op_imag = observable_op_imag.apply_layout(layout)
+observable_S_real = (
+    observable_op_real.paulis.to_labels()
+)  # get the label of the physical observable
+observable_S_imag = observable_op_imag.paulis.to_labels()
+
+observables_S = [[observable_S_real], [observable_S_imag]]
+
+# Define observables to measure for H
+# Hamiltonian terms to measure
+observable_list = []
+for pauli, coeff in zip(H_op.paulis, H_op.coeffs):
+    # print(pauli)
+    observable_H_real = pauli[::-1].to_label() + "X"
+    observable_H_imag = pauli[::-1].to_label() + "Y"
+    observable_list.append([observable_H_real])
+    observable_list.append([observable_H_imag])
+
+layout = qc_trans.layout
+
+observable_trans_list = []
+for observable in observable_list:
+    observable_op = SparsePauliOp(observable)
+    observable_op = observable_op.apply_layout(layout)
+    observable_trans_list.append([observable_op.paulis.to_labels()])
+
+observables_H = observable_trans_list
+
+# Define a sweep over parameter values
+params = np.vstack(parameters).T
+
+# Estimate the expectation value for all combinations of
+# observables and parameter values, where the pub result will have
+# shape (# observables, # parameter values).
+pub = (qc_trans, observables_S + observables_H, params)
+```
+
+### Exécuter les circuits
+Les circuits pour $t=0$ sont calculables classiquement
+
+```python
+qc_cliff = qc.assign_parameters({t: 0})
+
+# Get expectation values from experiment
+S_expval_real = StabilizerState(qc_cliff).expectation_value(
+    Pauli("I" * (n_qubits) + "X")
+)
+S_expval_imag = StabilizerState(qc_cliff).expectation_value(
+    Pauli("I" * (n_qubits) + "Y")
+)
+
+# Get expectation values
+S_expval = S_expval_real + 1j * S_expval_imag
+
+H_expval = 0
+for obs_idx, (pauli, coeff) in enumerate(zip(H_op.paulis, H_op.coeffs)):
+    # Get expectation values from experiment
+    expval_real = StabilizerState(qc_cliff).expectation_value(
+        Pauli(pauli[::-1].to_label() + "X")
+    )
+    expval_imag = StabilizerState(qc_cliff).expectation_value(
+        Pauli(pauli[::-1].to_label() + "Y")
+    )
+    expval = expval_real + 1j * expval_imag
+
+    # Fill-in matrix elements
+    H_expval += coeff * expval
+
+print(H_expval)
+```
+
+```text
+(25+0j)
+```
+
+Exécuter les circuits pour $S$ et $\tilde{H}$ avec l'Estimator
+
+```python
+# Experiment options
+num_randomizations = 300
+num_randomizations_learning = 30
+shots_per_randomization = 100
+noise_factors = [1, 1.2, 1.4]
+learning_pair_depths = [0, 4, 24, 48]
+
+experimental_opts = {}
+experimental_opts["resilience"] = {
+    "measure_mitigation": True,
+    "measure_noise_learning": {
+        "num_randomizations": num_randomizations_learning,
+        "shots_per_randomization": shots_per_randomization,
+    },
+    "zne_mitigation": True,
+    "zne": {"noise_factors": noise_factors},
+    "layer_noise_learning": {
+        "max_layers_to_learn": 10,
+        "layer_pair_depths": learning_pair_depths,
+        "shots_per_randomization": shots_per_randomization,
+        "num_randomizations": num_randomizations_learning,
+    },
+    "zne": {
+        "amplifier": "pea",
+        "extrapolated_noise_factors": [0] + noise_factors,
+    },
+}
+experimental_opts["twirling"] = {
+    "num_randomizations": num_randomizations,
+    "shots_per_randomization": shots_per_randomization,
+    "strategy": "all",
+}
+
+estimator = Estimator(mode=backend, options=experimental_opts)
+
+job = estimator.run([pub])
+```
+
+## Étape 4 : Post-traitement et renvoi du résultat dans le format classique souhaité
+
+```python
+results = job.result()[0]
+```
+
+### Calculer les matrices de Hamiltonien effectif et de recouvrement
+Calculez d'abord la phase accumulée par l'état $\vert 0 \rangle$ durant l'évolution temporelle non contrôlée
+
+```python
+prefactors = [
+    np.exp(-1j * sum([c for p, c in H_op.to_list() if "Z" in p]) * i * dt)
+    for i in range(1, krylov_dim)
+]
+```
+
+Une fois que nous avons les résultats des exécutions de circuits, nous pouvons post-traiter les données pour calculer les éléments de matrice de $S$
+
+```python
+# Assemble S, the overlap matrix of dimension D:
+S_first_row = np.zeros(krylov_dim, dtype=complex)
+S_first_row[0] = 1 + 0j
+
+# Add in ancilla-only measurements:
+for i in range(krylov_dim - 1):
+    # Get expectation values from experiment
+    expval_real = results.data.evs[0][0][
+        i
+    ]  # automatic extrapolated evs if ZNE is used
+    expval_imag = results.data.evs[1][0][
+        i
+    ]  # automatic extrapolated evs if ZNE is used
+
+    # Get expectation values
+    expval = expval_real + 1j * expval_imag
+    S_first_row[i + 1] += prefactors[i] * expval
+
+S_first_row_list = S_first_row.tolist()  # for saving purposes
+
+S_circ = np.zeros((krylov_dim, krylov_dim), dtype=complex)
+
+# Distribute entries from first row across matrix:
+for i, j in it.product(range(krylov_dim), repeat=2):
+    if i >= j:
+        S_circ[j, i] = S_first_row[i - j]
+    else:
+        S_circ[j, i] = np.conj(S_first_row[j - i])
+```
+
+```python
+Matrix(S_circ)
+```
+
+$$
+\displaystyle \left[\begin{matrix}1.0 & -0.723052998582984 - 0.345085413575966 i & 0.467051960502366 + 0.516197865254034 i & -0.180546747798251 - 0.492624093654174 i & 0.0012070853532697 + 0.312052218182462 i\\-0.723052998582984 + 0.345085413575966 i & 1.0 & -0.723052998582984 - 0.345085413575966 i & 0.467051960502366 + 0.516197865254034 i & -0.180546747798251 - 0.492624093654174 i\\0.467051960502366 - 0.516197865254034 i & -0.723052998582984 + 0.345085413575966 i & 1.0 & -0.723052998582984 - 0.345085413575966 i & 0.467051960502366 + 0.516197865254034 i\\-0.180546747798251 + 0.492624093654174 i & 0.467051960502366 - 0.516197865254034 i & -0.723052998582984 + 0.345085413575966 i & 1.0 & -0.723052998582984 - 0.345085413575966 i\\0.0012070853532697 - 0.312052218182462 i & -0.180546747798251 + 0.492624093654174 i & 0.467051960502366 - 0.516197865254034 i & -0.723052998582984 + 0.345085413575966 i & 1.0\end{matrix}\right]
+$$
+
+Et les éléments de matrice de $\tilde{H}$
+
+```python
+# Assemble S, the overlap matrix of dimension D:
+H_first_row = np.zeros(krylov_dim, dtype=complex)
+H_first_row[0] = H_expval
+
+for obs_idx, (pauli, coeff) in enumerate(zip(H_op.paulis, H_op.coeffs)):
+    # Add in ancilla-only measurements:
+    for i in range(krylov_dim - 1):
+        # Get expectation values from experiment
+        expval_real = results.data.evs[2 + 2 * obs_idx][0][
+            i
+        ]  # automatic extrapolated evs if ZNE is used
+        expval_imag = results.data.evs[2 + 2 * obs_idx + 1][0][
+            i
+        ]  # automatic extrapolated evs if ZNE is used
+
+        # Get expectation values
+        expval = expval_real + 1j * expval_imag
+        H_first_row[i + 1] += prefactors[i] * coeff * expval
+
+H_first_row_list = H_first_row.tolist()
+
+H_eff_circ = np.zeros((krylov_dim, krylov_dim), dtype=complex)
+
+# Distribute entries from first row across matrix:
+for i, j in it.product(range(krylov_dim), repeat=2):
+    if i >= j:
+        H_eff_circ[j, i] = H_first_row[i - j]
+    else:
+        H_eff_circ[j, i] = np.conj(H_first_row[j - i])
+```
+
+```python
+Matrix(H_eff_circ)
+```
+
+$$
+\displaystyle \left[\begin{matrix}25.0 & -14.2437089383409 - 6.50486277982165 i & 10.2857217968584 + 9.0431912203186 i & -5.15587257589417 - 8.88280836036843 i & 1.98818301405581 + 5.8897614762563 i\\-14.2437089383409 + 6.50486277982165 i & 25.0 & -14.2437089383409 - 6.50486277982165 i & 10.2857217968584 + 9.0431912203186 i & -5.15587257589417 - 8.88280836036843 i\\10.2857217968584 - 9.0431912203186 i & -14.2437089383409 + 6.50486277982165 i & 25.0 & -14.2437089383409 - 6.50486277982165 i & 10.2857217968584 + 9.0431912203186 i\\-5.15587257589417 + 8.88280836036843 i & 10.2857217968584 - 9.0431912203186 i & -14.2437089383409 + 6.50486277982165 i & 25.0 & -14.2437089383409 - 6.50486277982165 i\\1.98818301405581 - 5.8897614762563 i & -5.15587257589417 + 8.88280836036843 i & 10.2857217968584 - 9.0431912203186 i & -14.2437089383409 + 6.50486277982165 i & 25.0\end{matrix}\right]
+$$
+
+Enfin, nous pouvons résoudre le problème de valeurs propres généralisé pour $\tilde{H}$ :
+
+$$\tilde{H} \vec{c} = c S \vec{c}$$
+
+et obtenir une estimation de l'énergie de l'état fondamental $c_{min}$
+
+```python
+gnd_en_circ_est_list = []
+for d in range(1, krylov_dim + 1):
+    # Solve generalized eigenvalue problem for different size of the Krylov space
+    gnd_en_circ_est = solve_regularized_gen_eig(
+        H_eff_circ[:d, :d], S_circ[:d, :d], threshold=9e-1
+    )
+    gnd_en_circ_est_list.append(gnd_en_circ_est)
+    print("The estimated ground state energy is: ", gnd_en_circ_est)
+```
+
+```text
+The estimated ground state energy is:  25.0
+The estimated ground state energy is:  22.572154819954875
+The estimated ground state energy is:  21.691509219286587
+The estimated ground state energy is:  21.23882298756386
+The estimated ground state energy is:  20.965499325470294
+```
+
+Pour un secteur à particule unique, nous pouvons calculer efficacement l'état fondamental de ce secteur du Hamiltonien de manière classique
+
+```python
+gs_en = single_particle_gs(H_op, n_qubits)
+```
+
+```text
+n_sys_qubits 30
+n_exc 1 , subspace dimension 31
+single particle ground state energy:  21.021912418526906
+```
+
+```python
+plt.plot(
+    range(1, krylov_dim + 1),
+    gnd_en_circ_est_list,
+    color="blue",
+    linestyle="-.",
+    label="KQD estimate",
+)
+plt.plot(
+    range(1, krylov_dim + 1),
+    [gs_en] * krylov_dim,
+    color="red",
+    linestyle="-",
+    label="exact",
+)
+plt.xticks(range(1, krylov_dim + 1), range(1, krylov_dim + 1))
+plt.legend()
+plt.xlabel("Krylov space dimension")
+plt.ylabel("Energy")
+plt.title(
+    "Estimating Ground state energy with Krylov Quantum Diagonalization"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/4bc52594-0376-497f-8a61-0949415a1fe0-0.avif)
+
+## Annexe : Sous-espace de Krylov à partir d'évolutions temporelles réelles
+
+L'espace de Krylov unitaire est défini comme
+
+$$
+\mathcal{K}_U(H, |\psi\rangle) = \text{span}\left\{ |\psi\rangle,  e^{-iH\,dt} |\psi\rangle, \dots, e^{-irH\,dt} |\psi\rangle \right\}
+$$
+
+pour un pas de temps $dt$ que nous déterminerons ultérieurement. Supposons temporairement que $r$ est pair : définissons alors $d=r/2$. Remarquez que lorsque nous projetons le Hamiltonien dans l'espace de Krylov ci-dessus, celui-ci est indiscernable de l'espace de Krylov
+
+$$
+\mathcal{K}_U(H, |\psi\rangle) = \text{span}\left\{ e^{i\,d\,H\,dt}|\psi\rangle,  e^{i(d-1)H\,dt} |\psi\rangle, \dots, e^{-i(d-1)H\,dt} |\psi\rangle, e^{-i\,d\,H\,dt} |\psi\rangle \right\},
+$$
+
+c'est-à-dire celui où toutes les évolutions temporelles sont décalées en arrière de $d$ pas de temps.
+La raison pour laquelle il est indiscernable est que les éléments de matrice
+
+$$
+\tilde{H}_{j,k} = \langle\psi|e^{i\,j\,H\,dt}He^{-i\,k\,H\,dt}|\psi\rangle=\langle\psi|He^{i(j-k)H\,dt}|\psi\rangle
+$$
+
+sont invariants sous des décalages globaux du temps d'évolution, puisque les évolutions temporelles commutent avec le Hamiltonien. Pour $r$ impair, nous pouvons utiliser l'analyse pour $r-1$.
+
+Nous souhaitons montrer que quelque part dans cet espace de Krylov, il existe un état de basse énergie garanti. Nous le faisons par le biais du résultat suivant, dérivé du Théorème 3.1 dans [\[3\]](#references) :
+
+**Affirmation 1 :** il existe une fonction $f$ telle que pour les énergies $E$ dans la plage spectrale du Hamiltonien (c'est-à-dire entre l'énergie de l'état fondamental et l'énergie maximale)...
+1. $f(E_0)=1$
+2. $|f(E)|\le2\left(1 + \delta\right)^{-d}$ pour toutes les valeurs de $E$ situées à une distance $\ge\delta$ de $E_0$, c'est-à-dire qu'elle est exponentiellement supprimée
+3. $f(E)$ est une combinaison linéaire de $e^{ijE\,dt}$ pour $j=-d,-d+1,...,d-1,d$
+
+Nous fournissons une preuve ci-dessous, mais celle-ci peut être ignorée sans risque à moins que vous ne souhaitiez comprendre l'argument rigoureux complet. Pour l'instant, nous nous concentrons sur les implications de l'affirmation ci-dessus. Par la propriété 3 ci-dessus, nous pouvons voir que l'espace de Krylov décalé ci-dessus contient l'état $f(H)|\psi\rangle$. C'est notre état de basse énergie. Pour comprendre pourquoi, écrivons $|\psi\rangle$ dans la base des états propres d'énergie :
+
+$$
+|\psi\rangle = \sum_{k=0}^{N}\gamma_k|E_k\rangle,
+$$
+
+où $|E_k\rangle$ est le k-ième état propre d'énergie et $\gamma_k$ est son amplitude dans l'état initial $|\psi\rangle$. Exprimé en ces termes, $f(H)|\psi\rangle$ est donné par
+
+$$
+f(H)|\psi\rangle = \sum_{k=0}^{N}\gamma_kf(E_k)|E_k\rangle,
+$$
+
+en utilisant le fait que nous pouvons remplacer $H$ par $E_k$ lorsqu'il agit sur l'état propre $|E_k\rangle$. L'erreur en énergie de cet état est donc
+
+$$
+\text{energy error} = \frac{\langle\psi|f(H)(H-E_0)f(H)|\psi\rangle}{\langle\psi|f(H)^2|\psi\rangle}
+$$
+
+$$
+= \frac{\sum_{k=0}^{N}|\gamma_k|^2f(E_k)^2(E_k-E_0)}{\sum_{k=0}^{N}|\gamma_k|^2f(E_k)^2}.
+$$
+
+Pour transformer ceci en une borne supérieure plus facile à comprendre, nous séparons d'abord la somme au numérateur en termes avec $E_k-E_0\le\delta$ et termes avec $E_k-E_0>\delta$ :
+
+$$
+\text{energy error} = \frac{\sum_{E_k\le E_0+\delta}|\gamma_k|^2f(E_k)^2(E_k-E_0)}{\sum_{k=0}^{N}|\gamma_k|^2f(E_k)^2} + \frac{\sum_{E_k> E_0+\delta}|\gamma_k|^2f(E_k)^2(E_k-E_0)}{\sum_{k=0}^{N}|\gamma_k|^2f(E_k)^2}.
+$$
+
+Nous pouvons borner supérieurement le premier terme par $\delta$,
+
+$$
+\frac{\sum_{E_k\le E_0+\delta}|\gamma_k|^2f(E_k)^2(E_k-E_0)}{\sum_{k=0}^{N}|\gamma_k|^2f(E_k)^2} < \frac{\delta\sum_{E_k\le E_0+\delta}|\gamma_k|^2f(E_k)^2}{\sum_{k=0}^{N}|\gamma_k|^2f(E_k)^2} \le \delta,
+$$
+
+où la première étape découle du fait que $E_k-E_0\le\delta$ pour chaque $E_k$ dans la somme, et la seconde étape découle du fait que la somme au numérateur est un sous-ensemble de la somme au dénominateur. Pour le second terme, nous bornons inférieurement le dénominateur par $|\gamma_0|^2$, puisque $f(E_0)^2=1$ : en rassemblant le tout, cela donne
+
+$$
+\text{energy error} \le \delta + \frac{1}{|\gamma_0|^2}\sum_{E_k>E_0+\delta}|\gamma_k|^2f(E_k)^2(E_k-E_0).
+$$
+
+Pour simplifier ce qui reste, remarquez que pour tous ces $E_k$, par la définition de $f$, nous savons que $f(E_k)^2 \le 4\left(1 + \delta\right)^{-2d}$. En bornant de plus supérieurement $E_k-E_0<2\|H\|$ et en bornant supérieurement $\sum_{E_k>E_0+\delta}|\gamma_k|^2<1$, on obtient
+
+$$
+\text{energy error} \le \delta + \frac{8}{|\gamma_0|^2}\|H\|\left(1 + \delta\right)^{-2d}.
+$$
+
+Ceci est valable pour tout $\delta>0$, donc si nous fixons $\delta$ égal à notre erreur cible, alors la borne d'erreur ci-dessus converge vers cette valeur exponentiellement avec la dimension de l'espace de Krylov $2d=r$. Notez également que si $\delta<E_1-E_0$, alors le terme en $\delta$ disparaît entièrement dans la borne ci-dessus.
+
+Pour compléter l'argument, nous notons d'abord que ce qui précède n'est que l'erreur en énergie de l'état particulier $f(H)|\psi\rangle$, plutôt que l'erreur en énergie de l'état de plus basse énergie dans l'espace de Krylov. Cependant, par le principe variationnel (de Rayleigh-Ritz), l'erreur en énergie de l'état de plus basse énergie dans l'espace de Krylov est bornée supérieurement par l'erreur en énergie de tout état dans l'espace de Krylov, donc ce qui précède est également une borne supérieure sur l'erreur en énergie de l'état de plus basse énergie, c'est-à-dire la sortie de l'algorithme de diagonalisation quantique de Krylov.
+
+Une analyse similaire à celle ci-dessus peut être menée en tenant compte additionnellement du bruit et de la procédure de seuillage discutée dans ce notebook. Voir [\[2\]](#references) et [\[4\]](#references) pour cette analyse.
+
+## Annexe : preuve de l'Affirmation 1
+Ce qui suit est principalement dérivé de [\[3\]](#references), Théorème 3.1 : soit $ 0 < a < b $ et soit $ \Pi^*_d $ l'espace des polynômes résiduels (polynômes dont la valeur en 0 est 1) de degré au plus $ d $. La solution de
+
+$$
+\beta(a, b, d) = \min_{p \in \Pi^*_d} \max_{x \in [a, b]} |p(x)| \quad
+$$
+
+est
+
+$$
+p^*(x) = \frac{T_d\left(\frac{b + a - 2x}{b - a}\right)}{T_d\left(\frac{b + a}{b - a}\right)}, \quad
+$$
+
+et la valeur minimale correspondante est
+
+$$
+\beta(a, b, d) = T_d^{-1}\left(\frac{b + a}{b - a}\right).
+$$
+
+Nous souhaitons convertir ceci en une fonction qui puisse être exprimée naturellement en termes d'exponentielles complexes, car ce sont les évolutions temporelles réelles qui engendrent l'espace quantique de Krylov.
+Pour ce faire, il est commode d'introduire la transformation suivante des énergies dans la plage spectrale du Hamiltonien vers des nombres dans l'intervalle $[0,1]$ : définissons
+
+$$
+g(E) = \frac{1-\cos\big((E-E_0)dt\big)}{2},
+$$
+
+où $dt$ est un pas de temps tel que $-\pi < E_0dt < E_\text{max}dt < \pi$.
+Remarquez que $g(E_0)=0$ et que $g(E)$ croît à mesure que $E$ s'éloigne de $E_0$.
+
+En utilisant maintenant le polynôme $p^*(x)$ avec les paramètres a, b, d fixés à $a = g(E_0 + \delta)$, $b = 1$, et d = int(r/2), nous définissons la fonction :
+
+$$
+f(E) = p^* \left( g(E) \right) = \frac{T_d\left(1 + 2\frac{\cos\big((E-E_0)dt\big) - \cos\big(\delta\,dt\big)}{1 +\cos\big(\delta\,dt\big)}\right)}{T_d\left(1 + 2\frac{1-\cos\big(\delta\,dt\big)}{1 + \cos\big(\delta\,dt\big)}\right)}
+$$
+
+où $E_0$ est l'énergie de l'état fondamental. Nous pouvons voir en insérant $\cos(x)=\frac{e^{ix}+e^{-ix}}{2}$ que $f(E)$ est un polynôme trigonométrique de degré $d$, c'est-à-dire une combinaison linéaire de $e^{ijE\,dt}$ pour $j=-d,-d+1,...,d-1,d$. De plus, d'après la définition de $p^*(x)$ ci-dessus, nous avons que $f(E_0)=p(0)=1$ et pour toute énergie $E$ dans la plage spectrale telle que $\vert E-E_0 \vert > \delta$, nous avons
+
+$$
+|f(E)| \le \beta(a, b, d) = T_d^{-1}\left(1 + 2\frac{1-\cos\big(\delta\,dt\big)}{1 + \cos\big(\delta\,dt\big)}\right)
+$$
+
+$$
+\leq 2\left(1 + \delta\right)^{-d} = 2\left(1 + \delta\right)^{-\lfloor k/2\rfloor}.
+$$
+## Références
+
+[1] N. Yoshioka, M. Amico, W. Kirby et al. "Diagonalization of large many-body Hamiltonians on a quantum processor". [arXiv:2407.14431](https://arxiv.org/abs/2407.14431)
+
+[2] Ethan N. Epperly, Lin Lin, and Yuji Nakatsukasa. "A theory of quantum subspace diagonalization". SIAM Journal on Matrix Analysis and Applications 43, 1263–1290 (2022).
+
+[3] Å. Björck. "Numerical methods in matrix computations". Texts in Applied Mathematics. Springer International Publishing. (2014).
+
+[4] William Kirby. "Analysis of quantum Krylov algorithms with errors". Quantum 8, 1457 (2024).
+## Enquête sur le tutoriel
+
+Veuillez répondre à cette courte enquête pour nous faire part de vos commentaires sur ce tutoriel. Vos retours nous aideront à améliorer nos contenus et l'expérience utilisateur.
+
+[Link to survey](https://your.feedback.ibm.com/jfe/form/SV_82nennpKIjjD8rQ)
