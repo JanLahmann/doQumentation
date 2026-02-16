@@ -21,12 +21,14 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'de', 'es', 'uk'],
+    locales: ['en', 'de', 'es', 'uk', 'ar', 'he'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
       es: { label: 'Español', url: 'https://es.doqumentation.org' },
       uk: { label: 'Українська', url: 'https://uk.doqumentation.org' },
+      ar: { label: 'العربية', direction: 'rtl', url: 'https://ar.doqumentation.org' },
+      he: { label: 'עברית', direction: 'rtl', url: 'https://he.doqumentation.org' },
     },
   },
 
