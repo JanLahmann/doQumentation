@@ -1,0 +1,362 @@
+---
+title: "Estimatorプリミティブによるエラー軽減オプションの組み合わせ"
+sidebar_label: "Estimatorプリミティブによるエラー軽減オプションの組み合わせ"
+description: "100量子ビット以上のIBM Quantum QPUとQiskit Runtime Estimatorプリミティブを使用した、実用規模の実験におけるエラー軽減オプションの組み合わせ。"
+notebook_path: "docs/tutorials/combine-error-mitigation-techniques.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/combine-error-mitigation-techniques.ipynb" />
+
+
+
+*使用時間の目安: Heron r2プロセッサで約7分（注: これは目安です。実際の実行時間は異なる場合があります。）*
+
+## 背景
+
+このウォークスルーでは、Qiskit RuntimeのEstimatorプリミティブで利用可能なエラー抑制およびエラー軽減オプションについて探ります。回路とオブザーバブルを構築し、異なるエラー軽減設定の組み合わせを使用してEstimatorプリミティブでジョブを送信します。その後、結果をプロットして、さまざまな設定の効果を観察します。ほとんどの例では、視覚化を容易にするために10量子ビットの回路を使用し、最後にワークフローを50量子ビットにスケールアップします。
+
+使用するエラー抑制および軽減オプションは以下のとおりです。
+
+- 動的デカップリング
+- 測定エラー軽減
+- ゲートトワーリング
+- ゼロノイズ外挿（ZNE）
+## 前提条件
+
+このウォークスルーを始める前に、以下がインストールされていることを確認してください。
+
+- Qiskit SDK v2.1以降、[可視化](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き
+- Qiskit Runtime v0.40以降（`pip install qiskit-ibm-runtime`）
+## セットアップ
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+from qiskit.circuit.library import efficient_su2, unitary_overlap
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Batch, EstimatorV2 as Estimator
+```
+
+## ステップ1: 古典的な入力を量子問題にマッピングする
+
+このウォークスルーでは、古典的な問題がすでに量子にマッピングされていることを前提とします。まず、測定する回路とオブザーバブルを構築します。ここで使用する手法はさまざまな種類の回路に適用できますが、簡略化のためにQiskit回路ライブラリに含まれている[`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2)回路を使用します。
+
+`efficient_su2`は、量子ビット接続性が制限された量子ハードウェア上で効率的に実行できるように設計されたパラメータ化量子回路であり、最適化や化学などのアプリケーション領域の問題を解くのに十分な表現力を備えています。指定された繰り返し回数に対して、パラメータ化された単一量子ビットゲートの層と、固定パターンの2量子ビットゲートを含む層を交互に重ねて構築されます。2量子ビットゲートのパターンはユーザーが指定できます。ここでは、2量子ビットゲートをできるだけ密にパッキングして回路の深さを最小化する組み込みの`pairwise`パターンを使用します。このパターンは線形量子ビット接続性のみで実行できます。
+
+```python
+n_qubits = 10
+reps = 1
+
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+
+circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-1.avif)
+
+オブザーバブルとして、最後の量子ビットに作用するパウリ$Z$演算子、$Z I \cdots I$を取ります。
+
+```python
+# Z on the last qubit (index -1) with coefficient 1.0
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+```
+
+この時点で、回路を実行してオブザーバブルを測定することもできます。しかし、量子デバイスの出力を正しい答え、つまり回路がエラーなしで実行された場合のオブザーバブルの理論値と比較することも必要です。小規模な量子回路では、古典コンピュータで回路をシミュレーションしてこの値を計算できますが、より大規模な実用規模の回路ではこれは不可能です。この問題は「ミラー回路」手法（「計算-逆計算」とも呼ばれます）を使用して回避できます。この手法は量子デバイスの性能をベンチマークするのに役立ちます。
+
+#### ミラー回路
+
+ミラー回路手法では、回路の各ゲートを逆順に反転させて形成した逆回路を、元の回路に連結します。結果として得られる回路は恒等演算子を実装するため、簡単にシミュレーションできます。ミラー回路には元の回路の構造が保持されているため、ミラー回路を実行することで、量子デバイスが元の回路でどのように動作するかを把握することができます。
+
+次のコードセルでは、回路にランダムなパラメータを割り当て、[`unitary_overlap`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.unitary_overlap)クラスを使用してミラー回路を構築します。回路をミラーリングする前に、[バリア](https://docs.quantum.ibm.com/api/qiskit/circuit#qiskit.circuit.Barrier)命令を追加して、トランスパイラがバリアの両側の回路の2つの部分を統合するのを防ぎます。バリアがないと、トランスパイラが元の回路とその逆回路を統合し、ゲートのないトランスパイル済み回路になってしまいます。
+
+```python
+# Generate random parameters
+rng = np.random.default_rng(1234)
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+
+# Assign the parameters to the circuit
+assigned_circuit = circuit.assign_parameters(params)
+
+# Add a barrier to prevent circuit optimization of mirrored operators
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+mirror_circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-1.avif)
+
+## ステップ2: 量子ハードウェアでの実行に向けて問題を最適化する
+
+ハードウェアで実行する前に、回路を最適化する必要があります。このプロセスにはいくつかのステップが含まれます。
+
+- 回路の仮想量子ビットをハードウェア上の物理量子ビットにマッピングする量子ビットレイアウトを選択します。
+- 接続されていない量子ビット間の相互作用をルーティングするために、必要に応じてスワップゲートを挿入します。
+- 回路内のゲートを、ハードウェア上で直接実行できる[命令セットアーキテクチャ（ISA）](/guides/transpile#instruction-set-architecture)命令に変換します。
+- 回路の深さとゲート数を最小化するための回路最適化を行います。
+
+Qiskitに組み込まれたトランスパイラは、これらのステップをすべて実行できます。この例ではハードウェア効率の良い回路を使用しているため、トランスパイラは相互作用のルーティングにスワップゲートの挿入を必要としない量子ビットレイアウトを選択できるはずです。
+
+回路を最適化する前に、使用するハードウェアデバイスを選択する必要があります。次のコードセルでは、127量子ビット以上の最も空いているデバイスをリクエストします。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+パスマネージャーを作成し、そのパスマネージャーを回路に対して実行することで、選択したバックエンド向けに回路をトランスパイルできます。パスマネージャーを作成する簡単な方法は、[`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager)関数を使用することです。パスマネージャーを使用したトランスパイルの詳細については、[パスマネージャーによるトランスパイル](/guides/transpile-with-pass-managers)を参照してください。
+
+```python
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=1234
+)
+isa_circuit = pass_manager.run(mirror_circuit)
+
+isa_circuit.draw("mpl", idle_wires=False, scale=0.7, fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-1.avif)
+
+トランスパイルされた回路には、ISA命令のみが含まれるようになりました。単一量子ビットゲートは$\sqrt{X}$ゲートと$R_z$回転に分解され、CXゲートは[ECRゲート](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.ECRGate#ecrgate)と単一量子ビット回転に分解されています。
+
+トランスパイルプロセスにより、回路の仮想量子ビットがハードウェア上の物理量子ビットにマッピングされました。量子ビットレイアウトに関する情報は、トランスパイルされた回路の`layout`属性に保存されています。オブザーバブルも仮想量子ビットに基づいて定義されているため、このレイアウトをオブザーバブルに適用する必要があります。これは`SparsePauliOp`の[`apply_layout`](https://docs.quantum.ibm.com/api/qiskit/qiskit.quantum_info.SparsePauliOp#apply_layout)メソッドを使用して行えます。
+
+```python
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+print("Original observable:")
+print(observable)
+print()
+print("Observable with layout applied:")
+print(isa_observable)
+```
+
+```text
+Original observable:
+SparsePauliOp(['ZIIIIIIIII'],
+              coeffs=[1.+0.j])
+
+Observable with layout applied:
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## ステップ3: Qiskitプリミティブを使用して実行する
+
+これで、Estimatorプリミティブを使用して回路を実行する準備が整いました。
+
+ここでは、エラー抑制や軽減なしの状態から始めて、Qiskit Runtimeで利用可能なさまざまなエラー抑制・軽減オプションを順次有効にしながら、5つの個別のジョブを送信します。各オプションの詳細については、以下のページを参照してください。
+
+- [すべてのオプションの概要](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options)
+- [動的デカップリング](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-dynamical-decoupling-options)
+- [レジリエンス（測定エラー軽減とゼロノイズ外挿（ZNE）を含む）](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-resilience-options-v2)
+- [トワーリング](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-twirling-options)
+
+これらのジョブは互いに独立して実行できるため、[バッチモード](/guides/run-jobs-batch)を使用して、Qiskit Runtimeに実行タイミングを最適化させることができます。
+
+```python
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+```
+
+## ステップ4: 後処理を行い、結果を目的の古典的な形式で返す
+
+最後に、データを分析します。ここではジョブの結果を取得し、測定された期待値を抽出し、1標準偏差の誤差バーを含めて値をプロットします。
+
+```python
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/eef38976-0ca2-429a-b2dc-41aac69605f7-0.avif)
+
+この小規模では、ほとんどのエラー軽減手法の効果を確認するのは困難ですが、ゼロノイズ外挿は顕著な改善をもたらします。ただし、この改善は無償ではなく、ZNEの結果はより大きな誤差バーを伴うことに注意してください。
+## 実験のスケールアップ
+
+実験を開発する際には、可視化やシミュレーションを容易にするために小さな回路から始めるのが有用です。10量子ビットの回路でワークフローを開発・テストしたので、次は50量子ビットにスケールアップします。以下のコードセルでは、このウォークスルーのすべてのステップを繰り返しますが、50量子ビットの回路に適用します。
+
+```python
+n_qubits = 50
+reps = 1
+
+# Construct circuit and observable
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+
+# Assign parameters to circuit
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+assigned_circuit = circuit.assign_parameters(params)
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+# Transpile circuit and observable
+isa_circuit = pass_manager.run(mirror_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+# Run jobs
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/d7d8408b-faf1-4eda-ab9c-bdeaab01ff53-0.avif)
+
+50量子ビットの結果を先ほどの10量子ビットの結果と比較すると、以下の点に気づくかもしれません（結果は実行ごとに異なる場合があります）。
+
+- エラー軽減なしの結果は悪化しています。より大きな回路を実行すると、より多くのゲートを実行するため、エラーが蓄積する機会が増えます。
+- 動的デカップリングの追加によって性能が悪化した可能性があります。回路が非常に密であるため、これは驚くべきことではありません。動的デカップリングは主に、量子ビットにゲートが適用されずにアイドル状態のまま待機する大きなギャップが回路内にある場合に有用です。これらのギャップが存在しない場合、動的デカップリングは効果がなく、動的デカップリングパルス自体のエラーにより性能が悪化する可能性さえあります。10量子ビットの回路では、この効果を観察するには規模が小さすぎた可能性があります。
+- ゼロノイズ外挿を使用すると、誤差バーはかなり大きくなりますが、結果は10量子ビットの結果と同等かそれに近いものになります。これはZNE手法の威力を示しています。
+
+## まとめ
+
+このウォークスルーでは、Qiskit Runtime Estimatorプリミティブで利用可能なさまざまなエラー軽減オプションについて調査しました。10量子ビットの回路を使用してワークフローを開発し、その後50量子ビットにスケールアップしました。より多くのエラー抑制・軽減オプションを有効にしても、必ずしも性能が向上するとは限らないことが観察されたかもしれません（具体的には、この場合の動的デカップリングの有効化）。ほとんどのオプションは追加の設定を受け付けますので、ご自身の作業でテストしてみてください。

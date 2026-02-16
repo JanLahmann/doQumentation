@@ -1,0 +1,659 @@
+---
+title: "ショアのアルゴリズム"
+sidebar_label: "ショアのアルゴリズム"
+description: "このチュートリアルでは、量子コンピュータ上で15を素因数分解することにより、ショアのアルゴリズムを実演します。"
+notebook_path: "docs/tutorials/shors-algorithm.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/shors-algorithm.ipynb" />
+
+
+
+{/* cspell:ignore textrm */}
+
+*使用量の目安: Eagle r3プロセッサで約3秒（注意: これは目安です。実際の実行時間は異なる場合があります。）*
+
+[ショアのアルゴリズム](https://epubs.siam.org/doi/abs/10.1137/S0036144598347011)は、1994年にピーター・ショアによって開発された、整数を多項式時間で素因数分解する画期的な量子アルゴリズムです。その重要性は、既知のどの古典アルゴリズムよりも指数関数的に高速に大きな整数を素因数分解できる能力にあります。これは、大きな数の素因数分解の困難さに依存するRSAなどの広く使われている暗号システムのセキュリティを脅かすものです。十分に強力な量子コンピュータ上でこの問題を効率的に解くことにより、ショアのアルゴリズムは暗号技術、サイバーセキュリティ、計算数学などの分野に革命をもたらす可能性があり、量子計算の変革的な力を示しています。
+
+このチュートリアルでは、量子コンピュータ上で15を素因数分解することにより、ショアのアルゴリズムを実演することに焦点を当てます。
+
+まず、位数発見問題を定義し、量子位相推定プロトコルから対応する回路を構築します。次に、トランスパイル可能な最短深度の回路を用いて、実際のハードウェア上で位数発見回路を実行します。最後のセクションでは、位数発見問題と整数の素因数分解を結びつけることにより、ショアのアルゴリズムを完成させます。
+
+チュートリアルの最後に、実際のハードウェア上でのショアのアルゴリズムの他の実演について議論します。汎用的な実装と、15や21などの特定の整数の素因数分解に特化した実装の両方に焦点を当てます。
+注意: このチュートリアルは、ショアのアルゴリズムに関する回路の実装と実演に重点を置いています。内容に関する詳細な学習リソースについては、ジョン・ワトラス博士による[量子アルゴリズムの基礎](/learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction)コース、および[参考文献](#references)セクションの論文をご参照ください。
+### 前提条件
+このチュートリアルを開始する前に、以下がインストールされていることを確認してください。
+- Qiskit SDK v2.0以降、[可視化](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き
+- Qiskit Runtime v0.40以降 (`pip install qiskit-ibm-runtime`)
+### セットアップ
+
+```python
+import numpy as np
+import pandas as pd
+from fractions import Fraction
+from math import floor, gcd, log
+
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.library import QFT, UnitaryGate
+from qiskit.transpiler import CouplingMap, generate_preset_pass_manager
+from qiskit.visualization import plot_histogram
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+```
+
+## ステップ1: 古典的な入力を量子問題にマッピングする
+### 背景
+
+ショアの整数素因数分解アルゴリズムは、*位数発見*問題として知られる中間的な問題を利用します。このセクションでは、*量子位相推定*を用いて位数発見問題を解く方法を示します。
+### 位相推定問題
+
+位相推定問題では、$n$量子ビットの量子状態$\ket{\psi}$と、$n$量子ビットに作用するユニタリ量子回路が与えられます。$\ket{\psi}$が回路の動作を記述するユニタリ行列$U$の固有ベクトルであることが保証されており、目標は$\ket{\psi}$に対応する固有値$\lambda = e^{2 \pi i \theta}$を計算または近似することです。言い換えれば、回路は以下を満たす数$\theta \in [0, 1)$の近似値を出力する必要があります。$$U \ket{\psi}= e^{2 \pi i \theta} \ket{\psi}.$$
+位相推定回路の目標は、$\theta$を$m$ビットで近似することです。数学的には、$y \in {0, 1, 2, \dots, 2^{m-1}}$に対して$\theta \approx y / 2^m$となる$y$を求めたいということです。以下の図は、$m$量子ビットの測定により$y$を$m$ビットで推定する量子回路を示しています。
+![量子位相推定回路](/learning/images/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.svg)
+上記の回路では、上位$m$量子ビットは$\ket{0^m}$状態に初期化され、下位$n$量子ビットは$U$の固有ベクトルであることが保証されている$\ket{\psi}$に初期化されます。位相推定回路の最初の要素は、対応する制御量子ビットに対して*位相キックバック*を実行する制御ユニタリ演算です。これらの制御ユニタリは、最下位ビットから最上位ビットまで、制御量子ビットの位置に応じてべき乗されます。$\ket{\psi}$は$U$の固有ベクトルであるため、下位$n$量子ビットの状態はこの演算の影響を受けませんが、固有値の位相情報が上位$m$量子ビットに伝搬します。
+制御ユニタリによる位相キックバック演算の後、上位$m$量子ビットのすべての可能な状態は、ユニタリ$U$の各固有ベクトル$\ket{\psi}$に対して互いに直交正規であることがわかります。したがって、これらの状態は完全に区別可能であり、それらが形成する基底を計算基底に回転させて測定を行うことができます。数学的な解析により、この回転行列は$2^m$次元ヒルベルト空間における逆量子フーリエ変換（QFT）に対応することが示されます。この直感的な理由は、モジュラべき乗演算子の周期的構造が量子状態にエンコードされており、QFTがこの周期性を周波数領域の測定可能なピークに変換するためです。
+
+ショアのアルゴリズムでQFT回路が使用される理由のより深い理解については、[量子アルゴリズムの基礎](/learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction)コースをご参照ください。
+これで、位相推定回路を位数発見に使用する準備が整いました。
+### 位数発見問題
+
+位数発見問題を定義するために、いくつかの数論の概念から始めます。まず、任意の正の整数$N$に対して、集合$\mathbb{Z}_N$を次のように定義します。$$\mathbb{Z}_N = \{0, 1, 2, \dots, N-1\}.$$
+$\mathbb{Z}_N$におけるすべての算術演算は$N$を法として行われます。特に、$N$と互いに素なすべての要素$a \in \mathbb{Z}_n$は特別であり、$\mathbb{Z}^*_N$を構成します。$$\mathbb{Z}^*_N = \{ a \in \mathbb{Z}_N : \mathrm{gcd}(a, N)=1 \}.$$
+要素$a \in \mathbb{Z}^*_N$に対して、$$a^r \equiv 1 \; (\mathrm{mod} \; N)$$を満たす最小の正の整数$r$を、$a$の$N$を法とする*位数*と定義します。後で見るように、$a \in \mathbb{Z}^*_N$の位数を求めることで$N$を素因数分解することができます。
+位相推定回路から位数発見回路を構築するには、2つの考慮事項が必要です。第一に、位数$r$を求めることを可能にするユニタリ$U$を定義する必要があり、第二に、位相推定回路の初期状態を準備するための$U$の固有ベクトル$\ket{\psi}$を定義する必要があります。
+
+位数発見問題を位相推定に結びつけるために、古典的な状態が$\mathbb{Z}_N$に対応するシステム上で、固定された要素$a \in \mathbb{Z}^*_N$を乗じる演算を考えます。特に、この乗算演算子$M_a$を、各$x \in \mathbb{Z}_N$に対して$$M_a \ket{x} = \ket{ax \; (\mathrm{mod} \; N)}$$と定義します。ケットの右辺の内部で$N$を法とする積を取っていることは暗黙的であることに注意してください。数学的な解析により、$M_a$はユニタリ演算子であることが示されます。さらに、$M_a$は$a$の位数$r$を位相推定問題に結びつけることを可能にする固有ベクトルと固有値のペアを持つことがわかります。具体的には、$j \in \{0, \dots, r-1\}$の任意の選択に対して、$$\ket{\psi_j} = \frac{1}{\sqrt{r}} \sum^{r-1}_{k=0} \omega^{-jk}_{r} \ket{a^k}$$は$M_a$の固有ベクトルであり、対応する固有値は$\omega^{j}_{r}$です。ここで、$$\omega^{j}_{r} = e^{2 \pi i \frac{j}{r}}$$です。
+観察により、便利な固有ベクトル/固有値のペアは、$\omega^{1}_{r} = e^{2 \pi i \frac{1}{r}}$を持つ状態$\ket{\psi_1}$であることがわかります。したがって、固有ベクトル$\ket{\psi_1}$を見つけることができれば、量子回路で位相$\theta=1/r$を推定し、位数$r$の推定値を得ることができます。しかし、これは容易ではなく、代替案を検討する必要があります。
+
+初期状態として計算基底状態$\ket{1}$を準備した場合に回路がどうなるかを考えてみましょう。これは$M_a$の固有状態ではありませんが、上で説明した固有状態の一様な重ね合わせです。言い換えれば、以下の関係が成り立ちます。$$ \ket{1} = \frac{1}{\sqrt{r}} \sum^{r-1}_{k=0} \ket{\psi_k} $$
+上記の方程式の意味は、初期状態を$\ket{1}$に設定した場合、$k \in \{ 0, \dots, r-1\}$から一様にランダムに$k$を選択し、位相推定回路の固有ベクトルとして$\ket{\psi_k}$を使用した場合とまったく同じ測定結果が得られるということです。つまり、上位$m$量子ビットの測定は、$k \in \{ 0, \dots, r-1\}$が一様にランダムに選ばれた値$k / r$の近似値$y / 2^m$を与えます。これにより、複数回の独立した実行の後に高い確度で$r$を学習することができ、これが我々の目標でした。
+### モジュラべき乗演算子
+
+ここまでで、量子回路において$U = M_a$および$\ket{\psi} = \ket{1}$を定義することにより、位相推定問題を位数発見問題に結びつけました。したがって、残る最後の要素は、$k = 1, 2, 4, \dots, 2^{m-1}$に対して$M_a$のモジュラべき乗$M_a^k$を効率的に定義する方法を見つけることです。
+この計算を行うために、任意のべき乗$k$に対して、$M_a$の回路を$k$回繰り返すのではなく、$b = a^k \; \mathrm{mod} \; N$を計算してから$M_b$の回路を使用することで$M_a^k$の回路を作成できることがわかります。必要なべき乗は2のべき乗のみであるため、反復二乗法を用いて古典的に効率よく計算できます。
+## ステップ2: 量子ハードウェア実行のための問題の最適化
+### $N = 15$、$a=2$の具体的な例
+
+ここで一旦立ち止まって、具体的な例について議論し、$N=15$の位数発見回路を構築しましょう。$N=15$に対する可能な非自明な$a \in \mathbb{Z}_N^*$は$a \in \{2, 4, 7, 8, 11, 13, 14 \}$であることに注意してください。この例では$a=2$を選びます。$M_2$演算子とモジュラべき乗演算子$M_2^k$を構築します。
+$M_2$の計算基底状態への作用は以下の通りです。
+$$M_2 \ket{0} = \ket{0} \quad M_2 \ket{5} = \ket{10} \quad M_2 \ket{10} = \ket{5}$$
+$$M_2 \ket{1} = \ket{2} \quad M_2 \ket{6} = \ket{12} \quad M_2 \ket{11} = \ket{7}$$
+$$M_2 \ket{2} = \ket{4} \quad M_2 \ket{7} = \ket{14} \quad M_2 \ket{12} = \ket{9}$$
+$$M_2 \ket{3} = \ket{6} \quad M_2 \ket{8} = \ket{1} \quad M_2 \ket{13} = \ket{11}$$
+$$M_2 \ket{4} = \ket{8} \quad M_2 \ket{9} = \ket{3} \quad M_2 \ket{14} = \ket{13}$$
+観察により、基底状態がシャッフルされていることがわかるため、置換行列が得られます。この演算はスワップゲートを用いて4量子ビット上で構築できます。以下では、$M_2$および制御$M_2$演算を構築します。
+
+```python
+def M2mod15():
+    """
+    M2 (mod 15)
+    """
+    b = 2
+    U = QuantumCircuit(4)
+
+    U.swap(2, 3)
+    U.swap(1, 2)
+    U.swap(0, 1)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+
+    return U
+```
+
+```python
+# Get the M2 operator
+M2 = M2mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(4)
+circ.compose(M2, inplace=True)
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0a8885f1-91d4-40bd-912d-dc5eea05f5bd-0.avif)
+
+```python
+def controlled_M2mod15():
+    """
+    Controlled M2 (mod 15)
+    """
+    b = 2
+    U = QuantumCircuit(4)
+
+    U.swap(2, 3)
+    U.swap(1, 2)
+    U.swap(0, 1)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+    c_U = U.control()
+
+    return c_U
+```
+
+```python
+# Get the controlled-M2 operator
+controlled_M2 = controlled_M2mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(5)
+circ.compose(controlled_M2, inplace=True)
+circ.decompose(reps=1).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/ab7fe331-2f9e-47ca-ba3b-f5d67992062a-0.avif)
+
+3量子ビット以上に作用するゲートは、さらに2量子ビットゲートに分解されます。
+
+```python
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/13b4841d-a4ac-46bd-b4d0-d111b3017189-0.avif)
+
+次に、モジュラべき乗演算子を構築する必要があります。位相推定で十分な精度を得るために、推定測定に8量子ビットを使用します。したがって、各$k = 0, 1, \dots, 7$に対して$b = a^{2^k} \; (\mathrm{mod} \; N)$となる$M_b$を構築する必要があります。
+
+```python
+def a2kmodN(a, k, N):
+    """Compute a^{2^k} (mod N) by repeated squaring"""
+    for _ in range(k):
+        a = int(np.mod(a**2, N))
+    return a
+```
+
+```python
+k_list = range(8)
+b_list = [a2kmodN(2, k, 15) for k in k_list]
+
+print(b_list)
+```
+
+```text
+[2, 4, 1, 1, 1, 1, 1, 1]
+```
+
+$b$の値のリストからわかるように、先ほど構築した$M_2$に加えて、$M_4$と$M_1$も構築する必要があります。$M_1$は計算基底状態に対して自明に作用するため、単純に恒等演算子であることに注意してください。
+
+$M_4$の計算基底状態への作用は以下の通りです。
+$$M_4 \ket{0} = \ket{0} \quad M_4 \ket{5} = \ket{5} \quad M_4 \ket{10} = \ket{10}$$
+$$M_4 \ket{1} = \ket{4} \quad M_4 \ket{6} = \ket{9} \quad M_4 \ket{11} = \ket{14}$$
+$$M_4 \ket{2} = \ket{8} \quad M_4 \ket{7} = \ket{13} \quad M_4 \ket{12} = \ket{3}$$
+$$M_4 \ket{3} = \ket{12} \quad M_4 \ket{8} = \ket{2} \quad M_4 \ket{13} = \ket{7}$$
+$$M_4 \ket{4} = \ket{1} \quad M_4 \ket{9} = \ket{6} \quad M_4 \ket{14} = \ket{11}$$
+
+したがって、この置換は以下のスワップ演算で構築できます。
+
+```python
+def M4mod15():
+    """
+    M4 (mod 15)
+    """
+    b = 4
+    U = QuantumCircuit(4)
+
+    U.swap(1, 3)
+    U.swap(0, 2)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+
+    return U
+```
+
+```python
+# Get the M4 operator
+M4 = M4mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(4)
+circ.compose(M4, inplace=True)
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/be041e3d-28b1-453e-983e-184c2366aeb9-0.avif)
+
+```python
+def controlled_M4mod15():
+    """
+    Controlled M4 (mod 15)
+    """
+    b = 4
+    U = QuantumCircuit(4)
+
+    U.swap(1, 3)
+    U.swap(0, 2)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+    c_U = U.control()
+
+    return c_U
+```
+
+```python
+# Get the controlled-M4 operator
+controlled_M4 = controlled_M4mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(5)
+circ.compose(controlled_M4, inplace=True)
+circ.decompose(reps=1).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/8d943b00-a502-4157-8a0d-13fb1f55e705-0.avif)
+
+3量子ビット以上に作用するゲートは、さらに2量子ビットゲートに分解されます。
+
+```python
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/68399eef-5e55-4c95-a8a4-c8efaebd34b9-0.avif)
+
+$M_b$演算子は、与えられた$b \in \mathbb{Z}^*_N$に対して置換演算であることを確認しました。ここでは$N=15$で4量子ビットしか必要としないため、置換問題が比較的小規模であることから、これらの演算を目視検査により``SWAP``ゲートで直接合成することができました。一般的には、これはスケーラブルなアプローチではない可能性があります。代わりに、置換行列を明示的に構築し、Qiskitの``UnitaryGate``クラスとトランスパイル手法を使用してこの置換行列を合成する必要があるかもしれません。ただし、これにより回路の深度が大幅に増加する可能性があります。以下に例を示します。
+
+```python
+def mod_mult_gate(b, N):
+    """
+    Modular multiplication gate from permutation matrix.
+    """
+    if gcd(b, N) > 1:
+        print(f"Error: gcd({b},{N}) > 1")
+    else:
+        n = floor(log(N - 1, 2)) + 1
+        U = np.full((2**n, 2**n), 0)
+        for x in range(N):
+            U[b * x % N][x] = 1
+        for x in range(N, 2**n):
+            U[x][x] = 1
+        G = UnitaryGate(U)
+        G.name = f"M_{b}"
+        return G
+```
+
+```python
+# Let's build M2 using the permutation matrix definition
+M2_other = mod_mult_gate(2, 15)
+
+# Add it to a circuit
+circ = QuantumCircuit(4)
+circ.compose(M2_other, inplace=True)
+circ = circ.decompose()
+
+# Transpile the circuit and get the depth
+coupling_map = CouplingMap.from_line(4)
+pm = generate_preset_pass_manager(coupling_map=coupling_map)
+transpiled_circ = pm.run(circ)
+
+print(f"qubits: {circ.num_qubits}")
+print(
+    f"2q-depth: {transpiled_circ.depth(lambda x: x.operation.num_qubits==2)}"
+)
+print(f"2q-size: {transpiled_circ.size(lambda x: x.operation.num_qubits==2)}")
+print(f"Operator counts: {transpiled_circ.count_ops()}")
+transpiled_circ.decompose().draw(
+    output="mpl", fold=-1, style="clifford", idle_wires=False
+)
+```
+
+```text
+qubits: 4
+2q-depth: 94
+2q-size: 96
+Operator counts: OrderedDict({'cx': 45, 'swap': 32, 'u': 24, 'u1': 7, 'u3': 4, 'unitary': 3, 'circuit-335': 1, 'circuit-338': 1, 'circuit-341': 1, 'circuit-344': 1, 'circuit-347': 1, 'circuit-350': 1, 'circuit-353': 1, 'circuit-356': 1, 'circuit-359': 1, 'circuit-362': 1, 'circuit-365': 1, 'circuit-368': 1, 'circuit-371': 1, 'circuit-374': 1, 'circuit-377': 1, 'circuit-380': 1})
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/c184f6dd-9f80-4487-ac0b-0dd94170b0f0-1.avif)
+
+手動で実装した$M_2$ゲートのコンパイル済み回路の深度と、これらのカウントを比較してみましょう。
+
+```python
+# Get the M2 operator from our manual construction
+M2 = M2mod15()
+
+# Add it to a circuit
+circ = QuantumCircuit(4)
+circ.compose(M2, inplace=True)
+circ = circ.decompose(reps=3)
+
+# Transpile the circuit and get the depth
+coupling_map = CouplingMap.from_line(4)
+pm = generate_preset_pass_manager(coupling_map=coupling_map)
+transpiled_circ = pm.run(circ)
+
+print(f"qubits: {circ.num_qubits}")
+print(
+    f"2q-depth: {transpiled_circ.depth(lambda x: x.operation.num_qubits==2)}"
+)
+print(f"2q-size: {transpiled_circ.size(lambda x: x.operation.num_qubits==2)}")
+print(f"Operator counts: {transpiled_circ.count_ops()}")
+transpiled_circ.draw(
+    output="mpl", fold=-1, style="clifford", idle_wires=False
+)
+```
+
+```text
+qubits: 4
+2q-depth: 9
+2q-size: 9
+Operator counts: OrderedDict({'cx': 9})
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0235c931-0adb-4972-9fce-32a0341822bf-1.avif)
+
+ご覧の通り、置換行列によるアプローチは、単一の$M_2$ゲートであっても手動実装と比較して大幅に深い回路になりました。したがって、以前の$M_b$演算の実装を引き続き使用します。
+次に、先ほど定義した制御モジュラべき乗演算子を使用して、完全な位数発見回路を構築する準備が整いました。以下のコードでは、Qiskit回路ライブラリから[QFT回路](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.QFT)もインポートしています。この回路は各量子ビットにアダマールゲート、一連の制御U1（または位相に応じてZ）ゲート、およびスワップゲートの層を使用します。
+
+```python
+# Order finding problem for N = 15 with a = 2
+N = 15
+a = 2
+
+# Number of qubits
+num_target = floor(log(N - 1, 2)) + 1  # for modular exponentiation operators
+num_control = 2 * num_target  # for enough precision of estimation
+
+# List of M_b operators in order
+k_list = range(num_control)
+b_list = [a2kmodN(2, k, 15) for k in k_list]
+
+# Initialize the circuit
+control = QuantumRegister(num_control, name="C")
+target = QuantumRegister(num_target, name="T")
+output = ClassicalRegister(num_control, name="out")
+circuit = QuantumCircuit(control, target, output)
+
+# Initialize the target register to the state |1>
+circuit.x(num_control)
+
+# Add the Hadamard gates and controlled versions of the
+# multiplication gates
+for k, qubit in enumerate(control):
+    circuit.h(k)
+    b = b_list[k]
+    if b == 2:
+        circuit.compose(
+            M2mod15().control(), qubits=[qubit] + list(target), inplace=True
+        )
+    elif b == 4:
+        circuit.compose(
+            M4mod15().control(), qubits=[qubit] + list(target), inplace=True
+        )
+    else:
+        continue  # M1 is the identity operator
+
+# Apply the inverse QFT to the control register
+circuit.compose(QFT(num_control, inverse=True), qubits=control, inplace=True)
+
+# Measure the control register
+circuit.measure(control, output)
+
+circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0e854aed-c11b-494c-8c80-adeb8eb0e8fe-0.avif)
+
+$M_1$が恒等演算子であるため、残りの制御量子ビットからの制御モジュラべき乗演算を省略したことに注意してください。
+このチュートリアルの後半では、この回路を`ibm_marrakesh`バックエンドで実行します。これを行うために、この特定のバックエンドに合わせて回路をトランスパイルし、回路の深度とゲート数を報告します。
+
+```python
+service = QiskitRuntimeService()
+backend = service.backend("ibm_marrakesh")
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+
+print(
+    f"2q-depth: {transpiled_circuit.depth(lambda x: x.operation.num_qubits==2)}"
+)
+print(
+    f"2q-size: {transpiled_circuit.size(lambda x: x.operation.num_qubits==2)}"
+)
+print(f"Operator counts: {transpiled_circuit.count_ops()}")
+transpiled_circuit.draw(
+    output="mpl", fold=-1, style="clifford", idle_wires=False
+)
+```
+
+```text
+2q-depth: 187
+2q-size: 260
+Operator counts: OrderedDict({'sx': 521, 'rz': 354, 'cz': 260, 'measure': 8, 'x': 4})
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/95925dd5-7ba9-4746-b96e-ba50400fa5ac-1.avif)
+## ステップ3：Qiskitプリミティブを使用して実行する
+まず、この回路を理想的なシミュレータで実行した場合に理論的に何が得られるかを説明します。以下は、上記の回路を1024ショットでシミュレーションした結果です。ご覧の通り、制御量子ビットに関する4つのビット列にわたって、ほぼ均一な分布が得られます。
+
+```python
+# Obtained from the simulator
+counts = {"00000000": 264, "01000000": 268, "10000000": 249, "11000000": 243}
+```
+
+```python
+plot_histogram(counts)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0d6d2702-02e4-47de-8f7e-0b256657ef0f-0.avif)
+
+制御量子ビットを測定することで、$M_a$演算子の8ビット位相推定を得ることができます。この2進表現を10進数に変換して、測定された位相を求めることができます。上記のヒストグラムからわかるように、4つの異なるビット列が測定され、それぞれが以下のように位相値に対応しています。
+
+```python
+# Rows to be displayed in table
+rows = []
+# Corresponding phase of each bitstring
+measured_phases = []
+
+for output in counts:
+    decimal = int(output, 2)  # Convert bitstring to decimal
+    phase = decimal / (2**num_control)  # Find corresponding eigenvalue
+    measured_phases.append(phase)
+    # Add these values to the rows in our table:
+    rows.append(
+        [
+            f"{output}(bin) = {decimal:>3}(dec)",
+            f"{decimal}/{2 ** num_control} = {phase:.2f}",
+        ]
+    )
+
+# Print the rows in a table
+headers = ["Register Output", "Phase"]
+df = pd.DataFrame(rows, columns=headers)
+print(df)
+```
+
+```text
+Register Output           Phase
+0  00000000(bin) =   0(dec)    0/256 = 0.00
+1  01000000(bin) =  64(dec)   64/256 = 0.25
+2  10000000(bin) = 128(dec)  128/256 = 0.50
+3  11000000(bin) = 192(dec)  192/256 = 0.75
+```
+
+測定された任意の位相は$\theta = k / r$に対応しており、ここで$k$は$\{0, 1, \dots, r-1 \}$から一様ランダムにサンプリングされることを思い出してください。したがって、連分数アルゴリズムを使用して$k$と位数$r$を求めることができます。Pythonにはこの機能が組み込まれています。`fractions`モジュールを使用して、浮動小数点数を`Fraction`オブジェクトに変換することができます。例えば：
+
+```python
+Fraction(0.666)
+```
+
+```text
+Fraction(5998794703657501, 9007199254740992)
+```
+
+これは結果を正確に返す（この場合は`0.6660000...`）ため、上記のような扱いにくい結果が返されることがあります。`.limit_denominator()`メソッドを使用して、指定した値以下の分母を持つ、元の浮動小数点数に最も近い分数を取得できます：
+
+```python
+# Get fraction that most closely resembles 0.666
+# with denominator < 15
+Fraction(0.666).limit_denominator(15)
+```
+
+```text
+Fraction(2, 3)
+```
+
+こちらの方がはるかに見やすくなります。位数（r）はNより小さくなければならないため、最大分母を`15`に設定します：
+
+```python
+# Rows to be displayed in a table
+rows = []
+
+for phase in measured_phases:
+    frac = Fraction(phase).limit_denominator(15)
+    rows.append(
+        [phase, f"{frac.numerator}/{frac.denominator}", frac.denominator]
+    )
+
+# Print the rows in a table
+headers = ["Phase", "Fraction", "Guess for r"]
+df = pd.DataFrame(rows, columns=headers)
+print(df)
+```
+
+```text
+Phase Fraction  Guess for r
+0   0.00      0/1            1
+1   0.25      1/4            4
+2   0.50      1/2            2
+3   0.75      3/4            4
+```
+
+測定された固有値のうち2つが正しい結果$r=4$を与えたことがわかります。また、位数発見のためのショアのアルゴリズムには失敗する可能性があることもわかります。これらの不正確な結果は、$k = 0$である場合、または$k$と$r$が互いに素でない場合に生じます。後者の場合、$r$の代わりに$r$の因数が得られます。最も簡単な解決策は、$r$に対して満足のいく結果が得られるまで実験を繰り返すことです。
+ここまでで、位相推定回路を使用してシミュレータ上で$N=15$、$a=2$の位数発見問題を実装しました。ショアのアルゴリズムの最後のステップは、位数発見問題を整数因数分解問題に結び付けることです。アルゴリズムのこの最後の部分は純粋に古典的であり、量子コンピュータから位相測定値を取得した後に古典コンピュータ上で解くことができます。したがって、実際のハードウェア上で位数発見回路を実行する方法を示した後に、アルゴリズムの最後の部分を説明します。
+### ハードウェアでの実行
+ここでは、先ほど`ibm_marrakesh`向けにトランスパイルした位数発見回路を実行します。ここでは、エラー抑制のために[動的デカップリング](/guides/error-mitigation-and-suppression-techniques#dynamical-decoupling)（DD）を、エラー軽減のために[ゲートトワリング](/guides/error-mitigation-and-suppression-techniques#pauli-twirling)を使用します。DDは、精密にタイミングされた制御パルスのシーケンスを量子デバイスに適用することで、不要な環境との相互作用やデコヒーレンスを効果的に平均化します。一方、ゲートトワリングは特定の量子ゲートをランダム化して、コヒーレントなエラーをパウリエラーに変換します。パウリエラーは二次的ではなく線形的に蓄積されます。両方の手法は、量子計算のコヒーレンスと忠実度を向上させるために組み合わせて使用されることが多いです。
+
+```python
+# Sampler primitive to obtain the probability distribution
+sampler = Sampler(backend)
+
+# Turn on dynamical decoupling with sequence XpXm
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XpXm"
+# Enable gate twirling
+sampler.options.twirling.enable_gates = True
+
+pub = transpiled_circuit
+job = sampler.run([pub], shots=1024)
+```
+
+```python
+result = job.result()[0]
+counts = result.data["out"].get_counts()
+```
+
+```python
+plot_histogram(counts, figsize=(35, 5))
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/559d7030-1f67-44e8-afa7-6afc7a334677-0.avif)
+
+ご覧の通り、最も高いカウントを持つ同じビット列が得られました。量子ハードウェアにはノイズがあるため、他のビット列への漏れが多少ありますが、統計的にフィルタリングすることができます。
+
+```python
+# Dictionary of bitstrings and their counts to keep
+counts_keep = {}
+# Threshold to filter
+threshold = np.max(list(counts.values())) / 2
+
+for key, value in counts.items():
+    if value > threshold:
+        counts_keep[key] = value
+
+print(counts_keep)
+```
+
+```text
+{'00000000': 58, '01000000': 41, '11000000': 42, '10000000': 40}
+```
+
+## ステップ4：後処理を行い、結果を所望の古典形式で返す
+### 整数因数分解
+ここまでで、位相推定回路を使用した位数発見問題の実装方法について説明しました。ここでは、位数発見問題を整数因数分解に結び付けます。これがショアのアルゴリズムの完成となります。アルゴリズムのこの部分は古典的であることに注意してください。
+$N = 15$および$a = 2$の例を使用して、これを実演します。測定した位相は$k / r$であり、ここで$$a^r \; (\textrm{mod} \; N) = 1$$であり、$k$は$0$から$r - 1$までのランダムな整数であることを思い出してください。この方程式から、$$(a^r - 1) \; (\textrm{mod} \; N) = 0$$が得られます。これは$N$が$a^r-1$を割り切ることを意味します。$r$が偶数であれば、$$a^r -1 = (a^{r/2}-1)(a^{r/2}+1)$$と書くことができます。$r$が偶数でない場合は、これ以上進めることができないため、異なる$a$の値で再試行する必要があります。そうでなければ、$N$と$a^{r/2}-1$または$a^{r/2}+1$のいずれかの最大公約数が$N$の真の因数である確率が高くなります。
+
+アルゴリズムの一部の実行は統計的に失敗するため、$N$の少なくとも1つの因数が見つかるまでこのアルゴリズムを繰り返します。
+以下のセルは、$N=15$の少なくとも1つの因数が見つかるまでアルゴリズムを繰り返します。各反復で位相と対応する因数を推測するために、上記のハードウェア実行の結果を使用します。
+
+```python
+a = 2
+N = 15
+
+FACTOR_FOUND = False
+num_attempt = 0
+
+while not FACTOR_FOUND:
+    print(f"\nATTEMPT {num_attempt}:")
+    # Here, we get the bitstring by iterating over outcomes
+    # of a previous hardware run with multiple shots.
+    # Instead, we can also perform a single-shot measurement
+    # here in the loop.
+    bitstring = list(counts_keep.keys())[num_attempt]
+    num_attempt += 1
+    # Find the phase from measurement
+    decimal = int(bitstring, 2)
+    phase = decimal / (2**num_control)  # phase = k / r
+    print(f"Phase: theta = {phase}")
+
+    # Guess the order from phase
+    frac = Fraction(phase).limit_denominator(N)
+    r = frac.denominator  # order = r
+    print(f"Order of {a} modulo {N} estimated as: r = {r}")
+
+    if phase != 0:
+        # Guesses for factors are gcd(a^{r / 2} ± 1, 15)
+        if r % 2 == 0:
+            x = pow(a, r // 2, N) - 1
+            d = gcd(x, N)
+            if d > 1:
+                FACTOR_FOUND = True
+                print(f"*** Non-trivial factor found: {x} ***")
+```
+
+```text
+ATTEMPT 0:
+Phase: theta = 0.0
+Order of 2 modulo 15 estimated as: r = 1
+
+ATTEMPT 1:
+Phase: theta = 0.25
+Order of 2 modulo 15 estimated as: r = 4
+*** Non-trivial factor found: 3 ***
+```
+
+## 考察
+### 関連研究
+このセクションでは、実際のハードウェア上でショアのアルゴリズムを実演した他のマイルストーン的な研究について説明します。
+
+IBMの先駆的な研究[[3]](#references)は、7量子ビットの核磁気共鳴（NMR）量子コンピュータを使用して、初めてショアのアルゴリズムを実演し、15をその素因数3と5に因数分解しました。別の実験[[4]](#references)では、光子量子ビットを使用して15を因数分解しました。単一の量子ビットを複数回再利用し、ワークレジスタをより高次元の状態にエンコードすることで、研究者たちは必要な量子ビット数を標準プロトコルの3分の1に削減し、2光子コンパイルアルゴリズムを利用しました。ショアのアルゴリズムの実演における重要な論文は[[5]](#references)であり、キタエフの反復位相推定[[8]](#references)手法を使用してアルゴリズムの量子ビット要件を削減しています。著者らは7つの制御量子ビットと4つのキャッシュ量子ビットを使用し、モジュラー乗算器の実装と組み合わせました。ただし、この実装にはミッドサーキット測定とフィードフォワード操作、およびリセット操作による量子ビットの再利用が必要です。この実演はイオントラップ量子コンピュータ上で行われました。
+
+より最近の研究[[6]](#references)は、IBM Quantum&reg;ハードウェア上での15、21、35の因数分解に焦点を当てています。先行研究と同様に、研究者たちは物理量子ビットとゲートの数を最小限に抑えるため、キタエフが提案した半古典量子フーリエ変換を採用したコンパイル版アルゴリズムを使用しました。最も最近の研究[[7]](#references)も、整数21の因数分解の概念実証を行いました。この実演も量子位相推定ルーチンのコンパイル版を使用しており、[[4]](#references)による先行研究を基に構築されています。著者らは、残留位相シフトを伴う近似トフォリゲートの構成を使用することで、この研究をさらに発展させました。アルゴリズムはわずか5量子ビットのみを使用してIBM量子プロセッサ上で実装され、制御量子ビットとレジスタ量子ビット間のエンタングルメントの存在が正常に検証されました。
+### アルゴリズムのスケーラビリティ
+
+RSA暗号では通常、2048ビットから4096ビットの鍵サイズが使用されていることに注意してください。ショアのアルゴリズムで2048ビットの数を因数分解しようとすると、誤り訂正のオーバーヘッドを含めて数百万量子ビット、そして10億のオーダーの回路深さを持つ量子回路が必要となり、これは現在の量子ハードウェアの実行限界を超えています。したがって、ショアのアルゴリズムが現代の暗号システムを実際に解読するためには、最適化された回路構成手法またはロバストな量子誤り訂正が必要となります。ショアのアルゴリズムのリソース推定に関するより詳細な議論については、[[9]](#references)を参照してください。
+## チャレンジ
+
+チュートリアルの完了おめでとうございます！ここで理解度を確認してみましょう。21を因数分解するための回路を構成してみてください。$a$は自由に選択することができます。アルゴリズムのビット精度を決定して量子ビット数を選択し、モジュラー冪乗演算子$M_a$を設計する必要があります。まずご自身で取り組んでみることをお勧めします。その後、[[6]](#references)のFig. 9および[[7]](#references)のFig. 2に示されている手法について読んでみてください。
+
+```python
+def M_a_mod21():
+    """
+    M_a (mod 21)
+    """
+
+    # Your code here
+    pass
+```
+
+## 参考文献
+1. Shor, Peter W. "[Polynomial-time algorithms for prime factorization and discrete logarithms on a quantum computer](https://epubs.siam.org/doi/abs/10.1137/S0036144598347011)." SIAM review 41.2 (1999): 303-332.
+2. IBM Quantum [Fundamentals of Quantum Algorithms](https://learning.quantum.ibm.com/course/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring) course by Dr. John Watrous.
+3. Vandersypen, Lieven MK, et al. "[Experimental realization of Shor's quantum factoring algorithm using nuclear magnetic resonance](https://www.nature.com/articles/414883a)." Nature 414.6866 (2001): 883-887.
+4. Martin-Lopez, Enrique, et al. "[Experimental realization of Shor's quantum factoring algorithm using qubit recycling](https://www.nature.com/articles/nphoton.2012.259)." Nature photonics 6.11 (2012): 773-776.
+5. Monz, Thomas, et al. "[Realization of a scalable Shor algorithm](https://www.science.org/doi/full/10.1126/science.aad9480)." Science 351.6277 (2016): 1068-1070.
+6. Amico, Mirko, Zain H. Saleem, and Muir Kumph. "[Experimental study of Shor's factoring algorithm using the IBM Q Experience](https://journals.aps.org/pra/abstract/10.1103/PhysRevA.100.012305)." Physical Review A 100.1 (2019): 012305.
+7. Skosana, Unathi, and Mark Tame. "[Demonstration of Shor's factoring algorithm for N=21 on IBM quantum processors](https://www.nature.com/articles/s41598-021-95973-w)." Scientific reports 11.1 (2021): 16599.
+8. Kitaev, A. Yu. "[Quantum measurements and the Abelian stabilizer problem](https://arxiv.org/abs/quant-ph/9511026)." arXiv preprint quant-ph/9511026 (1995).
+9. Gidney, Craig, and Martin Ekerå. "[How to factor 2048 bit RSA integers in 8 hours using 20 million noisy qubits](https://doi.org/10.22331/q-2021-04-15-433)." Quantum 5 (2021): 433.

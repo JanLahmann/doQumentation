@@ -1,0 +1,425 @@
+---
+title: "量子ポートフォリオオプティマイザー - Global Data Quantumによる Qiskit Function"
+sidebar_label: "量子ポートフォリオオプティマイザー - Global Data Quantumによる Qiskit Function"
+description: "Global Data Quantumの量子ポートフォリオオプティマイザーを使用して、ユーティリティスケールの動的最適化問題を解きます。"
+notebook_path: "docs/tutorials/global-data-quantum-optimizer.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/global-data-quantum-optimizer.ipynb" />
+
+
+
+{/* cspell:ignore fontsize rebalance patheffects labelsize */}
+
+# Global Data Quantumのポートフォリオオプティマイザーによる動的ポートフォリオ最適化の実行
+<Admonition type="note" title="注意">
+Qiskit Functionsは、IBM Quantum&reg; Premium Plan、Flex Plan、およびOn-Prem（IBM Quantum Platform API経由）Planのユーザーのみが利用できる実験的な機能です。プレビューリリースの状態であり、変更される可能性があります。
+</Admonition>
+
+*使用量の目安: Heron r2プロセッサーで約55分。（注: これは推定値です。実際の実行時間は異なる場合があります。）*
+## 背景
+動的ポートフォリオ最適化問題は、複数の期間にわたる最適な投資戦略を見つけることを目的としています。予算、取引コスト、リスク回避などの制約条件の下で、期待されるポートフォリオのリターンを最大化し、リスクを最小化します。単一のリバランスタイミングのみを考慮する標準的なポートフォリオ最適化とは異なり、動的バージョンでは資産の変動する性質を考慮し、資産のパフォーマンスの変化に基づいて投資を適応させます。
+
+このチュートリアルでは、量子ポートフォリオオプティマイザー Qiskit Functionを使用して動的ポートフォリオ最適化を実行する方法を示します。具体的には、このアプリケーション関数を使用して、複数の時間ステップにわたる投資配分問題を解く方法を説明します。
+
+このアプローチでは、ポートフォリオ最適化を多目的二次制約なしバイナリ最適化（QUBO）問題として定式化します。具体的には、4つの異なる目的を同時に最適化するためにQUBO関数 $O$ を定式化します：
+
+* リターン関数 $F$ の最大化
+* 投資リスク $R$ の最小化
+* 取引コスト $C$ の最小化
+* 投資制約の遵守（最小化する追加項 $P$ として定式化）
+
+まとめると、これらの目的に取り組むために、QUBO関数を以下のように定式化します
+$$O = -F + \frac{\gamma}{2} R + C + \rho P,$$
+ここで $\gamma$ はリスク回避係数、$\rho$ は制約強化係数（ラグランジュ乗数）です。明示的な定式化は、論文 [\[1\]](#references) の式 (15) に記載されています。
+
+変分量子固有値ソルバー（VQE）に基づくハイブリッド量子古典手法を用いて解を求めます。この設定では、量子回路がコスト関数を推定し、古典的な最適化は差分進化アルゴリズムを使用して実行され、解空間の効率的な探索を可能にします。必要な量子ビット数は、主に3つの要因に依存します：資産数 ``na``、期間数 ``nt``、および投資を表現するためのビット分解能 ``nq`` です。具体的には、この問題における最小量子ビット数は `na*nt*nq` です。
+
+このチュートリアルでは、スペインのIBEX 35指数に基づく地域ポートフォリオの最適化に焦点を当てます。具体的には、以下の表に示す7つの資産で構成されるポートフォリオを使用します：
+
+| **IBEX 35 ポートフォリオ** | ACS.MC | ITX.MC | FER.MC | ELE.MC | SCYR.MC | AENA.MC | AMS.MC |
+|-----------------------|--------|--------|--------|--------|---------|---------|--------|
+
+2022年11月1日から開始し、30日間隔の4つの時間ステップでポートフォリオをリバランスします。各投資変数は2ビットでエンコードされます。これにより、56量子ビットを必要とする問題となります。
+
+最適化Real Amplitudesアンザッツを使用します。これは、この種の金融最適化問題のパフォーマンスを向上させるために特別に調整された、標準的なReal Amplitudesアンザッツのカスタマイズされたハードウェア効率の良い適応版です。
+
+量子実行は `ibm_torino` バックエンドで行われます。問題の定式化、方法論、およびパフォーマンス評価の詳細については、公開された論文 [\[1\]](#references) を参照してください。
+## 要件
+
+```python
+!pip install qiskit-ibm-catalog
+!pip install pandas
+!pip install matplotlib
+!pip install yfinance
+```
+
+## セットアップ
+量子ポートフォリオオプティマイザーを使用するには、Qiskit Functions Catalog経由で関数を選択します。この関数を実行するには、Global Data Quantumのライセンスを持つIBM Quantum Premium PlanまたはFlex Planアカウントが必要です。
+
+まず、[APIキー](https://quantum.cloud.ibm.com)で認証します。次に、Qiskit Functions Catalogから目的の関数をロードします。ここでは、`QiskitFunctionsCatalog` クラスを使用して、カタログから `quantum_portfolio_optimizer` 関数にアクセスします。この関数により、事前定義された量子ポートフォリオ最適化ソルバーを使用できます。
+
+```python
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+catalog = QiskitFunctionsCatalog(
+    channel="ibm_quantum_platform",
+    instance="INSTANCE_CRN",
+    token="YOUR_API_KEY",  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+)
+
+# Access function
+dpo_solver = catalog.load("global-data-quantum/quantum-portfolio-optimizer")
+```
+
+## ステップ 1: 入力ポートフォリオの読み込み
+
+このステップでは、IBEX 35指数から選択した7つの資産の過去データを、**2022年11月1日**から**2023年4月1日**までの期間でロードします。
+
+Yahoo Finance APIを使用して終値データを取得します。その後、すべての資産が同じ日数のデータを持つようにデータを処理します。欠損データ（非取引日）は適切に処理され、すべての資産が同じ日付で整列されます。
+
+データはすべての資産にわたって一貫したフォーマットのDataFrameとして構造化されます。
+
+```python
+import yfinance as yf
+import pandas as pd
+
+# List of IBEX 35 symbols
+symbols = [
+    "ACS.MC",
+    "ITX.MC",
+    "FER.MC",
+    "ELE.MC",
+    "SCYR.MC",
+    "AENA.MC",
+    "AMS.MC",
+]
+
+start_date = "2022-11-01"
+end_date = "2023-4-01"
+
+series_list = []
+symbol_names = [symbol.replace(".", "_") for symbol in symbols]
+
+# Create a full date index including weekends
+full_index = pd.date_range(start=start_date, end=end_date, freq="D")
+
+for symbol, name in zip(symbols, symbol_names):
+    print(f"Downloading data for {symbol}...")
+    data = yf.download(symbol, start=start_date, end=end_date)["Close"]
+    data.name = name
+
+    # Reindex to include weekends
+    data = data.reindex(full_index)
+
+    # Fill missing values (for example, weekends or holidays) by forward/backward fill
+    data.ffill(inplace=True)
+    data.bfill(inplace=True)
+
+    series_list.append(data)
+
+# Combine all series into a single DataFrame
+df = pd.concat(series_list, axis=1)
+
+# Convert index to string for consistency
+df.index = df.index.astype(str)
+
+# Convert DataFrame to dictionary
+assets = df.to_dict()
+```
+
+```text
+[*********************100%***********************]  1 of 1 completed
+```
+
+```text
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+[*********************100%***********************]  1 of 1 completed
+```
+
+```text
+Downloading data for ACS.MC...
+Downloading data for ITX.MC...
+Downloading data for FER.MC...
+Downloading data for ELE.MC...
+Downloading data for SCYR.MC...
+Downloading data for AENA.MC...
+Downloading data for AMS.MC...
+```
+
+## ステップ 2: 問題の入力を定義する
+QUBO問題を定義するために必要なパラメータは、`qubo_settings` 辞書で設定します。時間ステップ数（`nt`）、投資指定のビット数（`nq`）、および各時間ステップの時間ウィンドウ（`dt`）を定義します。さらに、資産あたりの最大投資額、リスク回避係数、取引手数料、および制約係数を設定します（問題の定式化の詳細については[論文](https://arxiv.org/pdf/2412.19150)を参照してください）。これらの設定により、QUBO問題を特定の投資シナリオに適応させることができます。
+
+```python
+qubo_settings = {
+    "nt": 4,
+    "nq": 2,
+    "dt": 30,
+    "max_investment": 5,  # maximum investment per asset is 2**nq/max_investment = 80%
+    "risk_aversion": 1000.0,
+    "transaction_fee": 0.01,
+    "restriction_coeff": 1.0,
+}
+```
+
+`optimizer_settings` 辞書は最適化プロセスを設定します。反復回数の `num_generations` や、各世代の候補解の数の `population_size` などのパラメータが含まれます。その他の設定は、組み換え率、並列ジョブ数、バッチサイズ、突然変異範囲などを制御します。さらに、`estimator_shots`、`estimator_precision`、`sampler_shots` などのプリミティブ設定は、最適化プロセスにおける量子推定器とサンプラーの構成を定義します。
+
+```python
+optimizer_settings = {
+    "de_optimizer_settings": {
+        "num_generations": 20,
+        "population_size": 40,
+        "recombination": 0.4,
+        "max_parallel_jobs": 5,
+        "max_batchsize": 4,
+        "mutation_range": [0.0, 0.25],
+    },
+    "optimizer": "differential_evolution",
+    "primitive_settings": {
+        "estimator_shots": 25_000,
+        "estimator_precision": None,
+        "sampler_shots": 100_000,
+    },
+}
+```
+
+<Admonition type="note">
+回路の総数は `optimizer_settings` パラメータに依存し、``(num_generations + 1) * population_size`` として計算されます。
+</Admonition>
+`ansatz_settings` 辞書は量子回路アンザッツを設定します。`ansatz` パラメータは `"optimized_real_amplitudes"` アプローチの使用を指定します。これは金融最適化問題向けに設計されたハードウェア効率の良いアンザッツです。さらに、`multiple_passmanager` 設定を有効にすると、最適化プロセス中に複数のパスマネージャー（デフォルトのローカルQiskitパスマネージャーとQiskit AI搭載トランスパイラーサービスを含む）を使用できるようになり、回路実行の全体的なパフォーマンスと効率が向上します。
+
+```python
+ansatz_settings = {
+    "ansatz": "optimized_real_amplitudes",
+    "multiple_passmanager": False,
+}
+```
+
+最後に、準備された入力を渡して `dpo_solver.run()` 関数を実行し、最適化を行います。これには、資産データ辞書（`assets`）、QUBO設定（`qubo_settings`）、最適化パラメータ（`optimizer_settings`）、および量子回路アンザッツ設定（`ansatz_settings`）が含まれます。さらに、バックエンドや結果に後処理を適用するかどうかなどの実行詳細を指定します。これにより、選択した量子バックエンド上で動的ポートフォリオ最適化プロセスが開始されます。
+
+```python
+dpo_job = dpo_solver.run(
+    assets=assets,
+    qubo_settings=qubo_settings,
+    optimizer_settings=optimizer_settings,
+    ansatz_settings=ansatz_settings,
+    backend_name="ibm_torino",
+    previous_session_id=[],
+    apply_postprocess=True,
+)
+```
+
+## ステップ 3: 最適化結果の分析
+このセクションでは、最適化結果から目的コストが最も低い解を抽出して表示します。最小目的コストとともに、対応する解に関連する主要な指標（制約逸脱、シャープレシオ、投資リターンなど）も提示します。
+
+```python
+# Get the results of the job
+dpo_result = dpo_job.result()
+
+# Show the solution strategy
+dpo_result["result"]
+```
+
+```text
+{'time_step_0': {'ACS.MC': 0.11764705882352941,
+  'ITX.MC': 0.20588235294117646,
+  'FER.MC': 0.38235294117647056,
+  'ELE.MC': 0.058823529411764705,
+  'SCYR.MC': 0.0,
+  'AENA.MC': 0.058823529411764705,
+  'AMS.MC': 0.17647058823529413},
+ 'time_step_1': {'ACS.MC': 0.11428571428571428,
+  'ITX.MC': 0.14285714285714285,
+  'FER.MC': 0.2,
+  'ELE.MC': 0.02857142857142857,
+  'SCYR.MC': 0.42857142857142855,
+  'AENA.MC': 0.0,
+  'AMS.MC': 0.08571428571428572},
+ 'time_step_2': {'ACS.MC': 0.0,
+  'ITX.MC': 0.09375,
+  'FER.MC': 0.3125,
+  'ELE.MC': 0.34375,
+  'SCYR.MC': 0.0,
+  'AENA.MC': 0.0,
+  'AMS.MC': 0.25},
+ 'time_step_3': {'ACS.MC': 0.3939393939393939,
+  'ITX.MC': 0.09090909090909091,
+  'FER.MC': 0.12121212121212122,
+  'ELE.MC': 0.18181818181818182,
+  'SCYR.MC': 0.0,
+  'AENA.MC': 0.0,
+  'AMS.MC': 0.21212121212121213}}
+```
+
+```python
+import pandas as pd
+
+# Get results from the job
+dpo_result = dpo_job.result()
+
+# Convert metadata to a DataFrame, excluding 'session_id'
+df = pd.DataFrame(dpo_result["metadata"]["all_samples_metrics"])
+
+# Find the minimum objective cost
+min_cost = df["objective_costs"].min()
+print(f"Minimum Objective Cost Found: {min_cost:.2f}")
+
+# Extract the row with the lowest cost
+best_row = df[df["objective_costs"] == min_cost].iloc[0]
+
+# Display the results associated with the best solution
+print("Best Solution:")
+print(f"  - Restriction Deviation: {best_row['rest_breaches']}%")
+print(f"  - Sharpe Ratio: {best_row['sharpe_ratios']:.2f}")
+print(f"  - Return: {best_row['returns']:.2f}")
+```
+
+```text
+Minimum Objective Cost Found: -3.67
+Best Solution:
+  - Restriction Deviation: 40.0%
+  - Sharpe Ratio: 14.54
+  - Return: 0.28
+```
+
+以下のコードは、最適化アルゴリズムのコスト分布とランダムサンプリング分布を可視化して比較する方法を示しています。同様に、ランダムな投資で評価することにより、QUBO目的関数のランドスケープ（関数の出力からロード可能）を探索します。最適化プロセスがランダムサンプリングとコストの点でどのように異なるかを比較しやすくするために、両方の分布を振幅で正規化してプロットします。さらに、古典的なベンチマークとして、DOCPlexを使用して得られた結果が破線の垂直参照線として含まれています。同じ問題を古典的に解くために、[DOCPlexの無料版](https://ibmdecisionoptimization.github.io/docplex-doc/)（IBM&reg;のPythonによる数理最適化のためのオープンソースライブラリ）を使用しています。
+
+```python
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
+import matplotlib.patheffects as patheffects
+
+def plot_normalized(dpo_x, dpo_y_normalized, random_x, random_y_normalized):
+    """
+    Plots normalized results for two sampling results.
+
+    Parameters:
+        dpo_x (array-like): X-values for the VQE Post-processed curve.
+        dpo_y_normalized (array-like): Y-values (normalized) for the VQE Post-processed curve.
+        random_x (array-like): X-values for the Noise (Random) curve.
+        random_y_normalized (array-like): Y-values (normalized) for the Noise (Random) curve.
+    """
+    plt.figure(figsize=(6, 3))
+    plt.tick_params(axis="both", which="major", labelsize=12)
+
+    # Define custom colors
+    colors = ["#4823E8", "#9AA4AD"]
+
+    # Plot DPO results
+    (line1,) = plt.plot(
+        dpo_x, dpo_y_normalized, label="VQE Postprocessed", color=colors[0]
+    )
+    line1.set_path_effects(
+        [patheffects.withStroke(linewidth=3, foreground="white")]
+    )
+
+    # Plot Random results
+    (line2,) = plt.plot(
+        random_x, random_y_normalized, label="Noise (Random)", color=colors[1]
+    )
+    line2.set_path_effects(
+        [patheffects.withStroke(linewidth=3, foreground="white")]
+    )
+
+    # Set X-axis ticks to increment by 5 units
+    plt.gca().xaxis.set_major_locator(MultipleLocator(5))
+
+    # Axis labels and legend
+    plt.xlabel("Objective cost", fontsize=14)
+    plt.ylabel("Normalized Counts", fontsize=14)
+
+    # Add DOCPLEX reference line
+    plt.axvline(
+        x=-4.11, color="black", linestyle="--", linewidth=1, label="DOCPlex"
+    )  # DOCPlex value
+    plt.ylim(bottom=0)
+
+    plt.legend()
+
+    # Adjust layout
+    plt.tight_layout()
+    plt.show()
+```
+
+```python
+import numpy as np
+from collections import defaultdict
+
+# ================================
+# STEP 1: DPO COST DISTRIBUTION
+# ================================
+
+# Extract data from DPO results
+counts_list = dpo_result["metadata"]["all_samples_metrics"][
+    "objective_costs"
+]  # List of how many times each solution occurred
+cost_list = dpo_result["metadata"]["all_samples_metrics"][
+    "counts"
+]  # List of corresponding objective function values (costs)
+
+# Round costs to one decimal and accumulate counts for each unique cost
+dpo_counter = defaultdict(int)
+for cost, count in zip(cost_list, counts_list):
+    rounded_cost = round(cost, 1)
+    dpo_counter[rounded_cost] += count
+
+# Prepare data for plotting
+dpo_x = sorted(dpo_counter.keys())  # Sorted list of cost values
+dpo_y = [dpo_counter[c] for c in dpo_x]  # Corresponding counts
+
+# Normalize the counts to the range [0, 1] for better comparison
+dpo_min = min(dpo_y)
+dpo_max = max(dpo_y)
+dpo_y_normalized = [
+    (count - dpo_min) / (dpo_max - dpo_min) for count in dpo_y
+]
+
+# ================================
+# STEP 2: RANDOM COST DISTRIBUTION
+# ================================
+
+# Read the QUBO matrix
+qubo = np.array(dpo_result["metadata"]["qubo"])
+
+bitstring_length = qubo.shape[0]
+num_random_samples = 100_000  # Number of random samples to generate
+random_cost_counter = defaultdict(int)
+
+# Generate random bitstrings and calculate their cost
+for _ in range(num_random_samples):
+    x = np.random.randint(0, 2, size=bitstring_length)
+    cost = float(x @ qubo @ x.T)
+    rounded_cost = round(cost, 1)
+    random_cost_counter[rounded_cost] += 1
+
+# Prepare random data for plotting
+random_x = sorted(random_cost_counter.keys())
+random_y = [random_cost_counter[c] for c in random_x]
+
+# Normalize the random cost distribution
+random_min = min(random_y)
+random_max = max(random_y)
+random_y_normalized = [
+    (count - random_min) / (random_max - random_min) for count in random_y
+]
+
+# ================================
+# STEP 3: PLOTTING
+# ================================
+
+plot_normalized(dpo_x, dpo_y_normalized, random_x, random_y_normalized)
+```
+
+![前のコードセルの出力](/docs/images/tutorials/global-data-quantum-optimizer/extracted-outputs/6b662682-279b-48b5-bc61-681846cf3c00-0.avif)
+
+このグラフは、量子ポートフォリオオプティマイザーが一貫して最適化された投資戦略を返すことを示しています。
+## 参考文献
+
+[1] [Nodar, Álvaro, Irene De León, Danel Arias, Ernesto Mamedaliev, María Esperanza Molina, Manuel Martín-Cordero, Senaida Hernández-Santana et al. "Scaling the Variational Quantum Eigensolver for Dynamic Portfolio Optimization." arXiv preprint arXiv:2412.19150 (2024).](https://arxiv.org/pdf/2412.19150)
+## チュートリアルアンケート
+このチュートリアルについてのフィードバックをお寄せください。皆様のご意見は、コンテンツとユーザー体験の改善に役立てさせていただきます。
+[アンケートへのリンク](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)

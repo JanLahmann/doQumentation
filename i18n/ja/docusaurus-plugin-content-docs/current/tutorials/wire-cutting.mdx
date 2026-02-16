@@ -1,0 +1,562 @@
+---
+title: "期待値推定のためのワイヤカッティング"
+sidebar_label: "期待値推定のためのワイヤカッティング"
+description: "ワイヤカッティングを使用して、回路を多数の小さなサブ回路に分割します。"
+notebook_path: "docs/tutorials/wire-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/wire-cutting.ipynb" />
+
+
+
+{/* cspell:ignore edgecolor Cutqc */}
+
+*使用量の目安：Eagleプロセッサで約1分（注意：これはあくまで目安です。実行時間は異なる場合があります。）*
+## 背景
+
+回路ニッティング（Circuit-knitting）とは、回路をより少ないゲートやキュービットで構成される複数の小さなサブ回路に分割するさまざまな手法を包括する総称です。各サブ回路は独立して実行でき、最終的な結果は各サブ回路の結果に対する古典的な後処理によって得られます。この手法は[Circuit Cutting Qiskitアドオン](https://qiskit.github.io/qiskit-addon-cutting/index.html)で利用可能であり、技術の詳細な説明は[ドキュメント](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html)に記載されています。また、その他の[入門資料](https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html)も提供されています。
+
+このノートブックでは、**ワイヤカッティング**と呼ばれる手法を扱います。これは回路をワイヤに沿って分割する方法です[\[1\], \[2\]](#references)。古典回路では、分割点における結果が決定論的に求められ、0か1のいずれかであるため、分割は単純です。しかし、カット点におけるキュービットの状態は、一般的に混合状態です。そのため、各サブ回路は異なる基底（通常はパウリ基底[\[3\], \[4\]](#references)のようなトモグラフィ的に完全な基底のセット）で複数回測定し、対応する固有状態で準備する必要があります。以下の図（<i>出典：Ritajit Majumdar 博士論文</i>）は、4キュービットGHZ状態を3つのサブ回路にワイヤカッティングする例を示しています。ここで $M_j$ は基底のセット（通常はパウリ X、Y、Z）を表し、$P_i$ は固有状態のセット（通常は $|0\rangle$、$|1\rangle$、$|+\rangle$、$|+i\rangle$）を表します。
+
+![wc-1.png](/docs/images/tutorials/wire-cutting-to-improve-performance/0ce8857b-7f5f-400e-8536-6a496c724d50.avif)
+![wc-2.png](/docs/images/tutorials/wire-cutting-to-improve-performance/cbce4455-4794-4c81-8630-3e3993e1b29f.avif)
+
+各サブ回路はキュービット数やゲート数が少ないため、ノイズの影響を受けにくいと期待されます。このノートブックでは、この手法を使用してシステム内のノイズを効果的に抑制できる例を示します。
+## 必要条件
+このチュートリアルを始める前に、以下がインストールされていることをご確認ください：
+
+- Qiskit SDK v2.0以降（[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き）
+- Qiskit Runtime v0.22以降（`pip install qiskit-ibm-runtime`）
+- Circuit Cutting Qiskitアドオン v0.9.0以降（`pip install qiskit-addon-cutting`）
+
+このノートブックでは、多体局在（Many Body Localization, MBL）回路を取り扱います。MBL回路はハードウェア効率の良い回路であり、2つのパラメータ $\theta$ と $\vec{\phi}$ によってパラメータ化されています。$\theta$ を $0$ に設定し、すべてのキュービットの初期状態を $|0\rangle$ に準備した場合、$\langle Z_i \rangle$ の理想的な期待値は $\vec{\phi}$ の値に関係なく、すべてのキュービットサイト $i$ において $+1$ となります。MBL回路の詳細については<a href="https://arxiv.org/abs/2307.07552">こちらの論文</a>をご参照ください。
+## セットアップ
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.quantum_info import PauliList, SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.result import sampled_expectation_value
+
+from qiskit_addon_cutting.instructions import CutWire
+from qiskit_addon_cutting import (
+    cut_wires,
+    expand_observables,
+    partition_problem,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+class MBLChainCircuit(QuantumCircuit):
+    def __init__(
+        self, num_qubits: int, depth: int, use_cut: bool = False
+    ) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainCircuit<{num_qubits}, {depth}>"
+        )
+        evolution = MBLChainEvolution(num_qubits, depth, use_cut)
+        self.compose(evolution, inplace=True)
+
+class MBLChainEvolution(QuantumCircuit):
+    def __init__(self, num_qubits: int, depth: int, use_cut) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainEvolution<{num_qubits}, {depth}>"
+        )
+
+        theta = Parameter("θ")
+        phis = ParameterVector("φ", num_qubits)
+
+        for layer in range(depth):
+            layer_parity = layer % 2
+            # print("layer parity", layer_parity)
+            for qubit in range(layer_parity, num_qubits - 1, 2):
+                # print(qubit)
+                self.cz(qubit, qubit + 1)
+                self.u(theta, 0, np.pi, qubit)
+                self.u(theta, 0, np.pi, qubit + 1)
+                if (
+                    use_cut
+                    and layer_parity == 0
+                    and (
+                        qubit == num_qubits // 2 - 1
+                        or qubit == num_qubits // 2
+                    )
+                ):
+                    self.append(CutWire(), [num_qubits // 2])
+                if use_cut and layer < depth - 1 and layer_parity == 1:
+                    if qubit == num_qubits // 2:
+                        self.append(CutWire(), [qubit])
+            for qubit in range(num_qubits):
+                self.p(phis[qubit], qubit)
+```
+
+## パート I. 小規模な例
+### ステップ 1：古典入力を量子問題にマッピングする
+まず、特定のパラメータ値を持たないテンプレート回路を構築します。また、カットの位置を示すために `CutWire` と呼ばれるプレースホルダーを用意します。この小規模な例では、10キュービットのMBL回路を考えます。
+
+```python
+num_qubits = 10
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+mbl.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/9c7939a1-6b70-4dad-b873-5f34d67551c4-0.avif)
+
+$\theta=0$ のときのオブザーバブル $\frac{1}{n}\sum_{i=1} ^n Z_i$ の期待値を求めることが目標であることを思い出してください。パラメータ $\vec{\phi}$ にはランダムな値を設定します。
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+params
+```
+
+```text
+[0,
+ 0.2376615174332788,
+ 0.28244289857682414,
+ 0.019248960591717768,
+ 0.46140600996102477,
+ 0.31408025180068433,
+ 0.718184005135733,
+ 0.991153920182475,
+ 0.09289485768301442,
+ 0.8857848280067783,
+ 0.6177529765767047]
+```
+
+次に、適切な **CutWire** を挿入して回路にカットのアノテーションを行い、おおよそ等しい2つのカットを作成します。関数内で `use_cut=True` を設定し、元の回路のキュービット数を $n$ として $\frac{n}{2}$ キュービット後にアノテーションを行います。
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/31844134-514b-46ea-85f9-133e432f053f-0.avif)
+
+### ステップ 2：量子ハードウェア実行のための問題の最適化
+次に、回路を2つの小さなサブ回路にカットします。この例では、2つのサブ回路のみに限定します。これには<a href="https://qiskit.github.io/qiskit-addon-cutting/">Qiskit Addon: Circuit Cutting</a>を使用します。
+#### 回路を小さなサブ回路にカットする
+ワイヤをある点でカットすると、キュービット数が1つ増加します。元のキュービットに加えて、カット後の回路へのプレースホルダーとして追加のキュービットが必要になります。以下の画像がその表現を示しています：
+
+![wc-4.png](/docs/images/tutorials/wire-cutting-to-improve-performance/dfc5f923-e507-4873-888e-d90e1618be3a.avif)
+
+このアドオンでは、カットによって生じる追加のキュービットを処理するために `cut_wires` 関数を使用します。
+
+```python
+mbl_move = cut_wires(mbl_cut)
+```
+
+#### オブザーバブルの作成と拡張
+
+次に、オブザーバブル $M_z = \frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$ を構築します。各 $i$ に対する $\langle Z_i \rangle$ の理想的な結果は $+1$ であるため、$M_z$ の理想的な結果も $+1$ となります。
+
+```python
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+observable
+```
+
+```text
+PauliList(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII',
+           'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII',
+           'IIIIIIIIZI', 'IIIIIIIIIZ'])
+```
+
+ただし、カット後に仮想的な2キュービットの `Move` 操作を挿入したことで、回路内のキュービット数が増加していることに注意してください。したがって、現在の回路に合わせて恒等演算子を挿入し、オブザーバブルも拡張する必要があります。
+
+```python
+new_obs = expand_observables(observable, mbl, mbl_move)
+new_obs
+```
+
+```text
+PauliList(['ZIIIIIIIIII', 'IZIIIIIIIII', 'IIZIIIIIIII', 'IIIZIIIIIII',
+           'IIIIZIIIIII', 'IIIIIIZIIII', 'IIIIIIIZIII', 'IIIIIIIIZII',
+           'IIIIIIIIIZI', 'IIIIIIIIIIZ'])
+```
+
+各オブザーバブルが、元の6キュービットではなく、`Move` 操作を含む回路の7キュービットに対応するように拡張されていることに注目してください。次に、回路を2つのサブ回路に分割します。
+
+```python
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+```
+
+サブ回路を可視化してみましょう。
+
+```python
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subcircuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/c10af39c-88fe-4605-975c-5bf0e21ee4c4-0.avif)
+
+```python
+subcircuits[1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/35920640-76e8-4af6-a252-ee6a22e9c26a-0.avif)
+
+オブザーバブルもサブ回路に合わせて分割されています。
+
+```python
+subobservables = partitioned_problem.subobservables
+subobservables
+```
+
+```text
+{0: PauliList(['IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IZIIII',
+            'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']),
+ 1: PauliList(['ZIIII', 'IZIII', 'IIZII', 'IIIZI', 'IIIIZ', 'IIIII', 'IIIII',
+            'IIIII', 'IIIII', 'IIIII'])}
+```
+
+各サブ回路は複数のサンプルを生成することに注意してください。再構成では、これらの各サンプルの結果が考慮されます。これらの各サンプルは `subexperiment`（サブ実験）と呼ばれます。
+`Move` 操作を使用してオブザーバブルを拡張するには `PauliList` データ構造が必要です。また、サブ実験の再構成時に後で役立つ、より汎用的な `SparsePauliOp` データ構造でも $M_z$ オブザーバブルを作成できます。
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+M_z
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII', 'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII', 'IIIIIIIIZI', 'IIIIIIIIIZ'],
+              coeffs=[0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j,
+ 0.1+0.j, 0.1+0.j])
+```
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+カットされたキュービットが2つの異なる基底で測定される2つの例を見てみましょう。最初の例では通常のZ基底で測定され、次の例ではX基底で測定されます。
+
+```python
+subexperiments[0][6].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/749e8f27-9c83-48d8-bcf6-635c967bf10b-0.avif)
+
+```python
+subexperiments[0][2].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/987547e4-296a-41e4-ad82-41f4139a87a0-0.avif)
+
+#### 各サブ実験のトランスパイル
+
+現在、回路を実行のために送信する前にトランスパイルする必要があります。そのため、まずサブ実験内の各回路をトランスパイルします。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+次に、サブ実験内の各回路をトランスパイルする必要があります。そのために、まずパスマネージャーを作成し、それを使用して各回路をトランスパイルします。
+
+```python
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+```python
+isa_subexperiments[0][0].draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/962c4745-a235-4ef8-b56b-d3026be67fb6-0.avif)
+
+### ステップ 3：Qiskitプリミティブを使用した実行
+次に、サブ実験内の各回路を実行します。`Qiskit-addon-cutting` はサブ実験の実行に `SamplerV2` を使用します。
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### ステップ 4：後処理と所望の古典形式での結果の返却
+回路の実行が完了したら、結果を取得し、カットされていない回路と元のオブザーバブルに対する期待値を再構成する必要があります。
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9674376845359803
+```
+
+#### 交差検証
+
+ここで、カットなしで回路を実行し、その結果を確認してみましょう。カットされていない回路の実行には `EstimatorV2` を直接使用して期待値を計算することもできますが、全体を通して同じプリミティブを使用します。そのため、`SamplerV2` を使用して確率分布を取得し、`sampled_expectation_value` 関数を使って期待値を計算します。
+
+まず、カットされていない `mbl` 回路をトランスパイルする必要があります。
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+```
+
+次に、`pub` を構成し、カットされていない回路を実行します。
+
+```python
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+```
+
+```python
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9498046875000001
+```
+
+ワイヤカッティングで得られた期待値が、カットなしの場合よりも理想値 $+1$ に近いことがわかります。次に、問題のサイズをスケールアップしてみましょう。## パート II：スケールアップ！
+
+前のセクションでは、10量子ビットのMBL回路の結果を示しました。次に、より大規模な回路でも期待値の改善が得られることを示します。そのために、60量子ビットのMBL回路で同じプロセスを繰り返します。
+### ステップ 1：古典的な入力を量子問題にマッピングする
+
+```python
+num_qubits = 60
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+```
+
+$\vec{\phi}$ のランダムな値のセットを作成します。
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+```
+
+次に、カット回路を構築します。
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+### ステップ 2：量子ハードウェア実行のための問題の最適化
+小規模の例で示したように、カッティング実験のために回路とオブザーバブルを分割します。
+
+```python
+mbl_move = cut_wires(mbl_cut)
+
+# Define observable
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+new_obs = expand_observables(observable, mbl, mbl_move)
+
+# Partition the circuit into subcircuits
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+
+# Get subcircuits
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subobservables = partitioned_problem.subobservables
+```
+
+また、適切な係数を持つオブザーバブル用の `SparsePauliOp` オブジェクトを作成します。
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+```
+
+次に、サブ実験を生成し、サブ実験内の各回路をトランスパイルします。
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+### ステップ 3：Qiskit プリミティブを使用した実行
+`Batch` モードを使用して、サブ実験内のすべての回路を実行します。
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### ステップ 4：後処理と望ましい古典形式での結果の返却
+サブ実験内の各回路の結果を取得し、カットされていない回路と元のオブザーバブルに対応する期待値を再構成しましょう。
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9631355921427409
+```
+
+#### 交差検証
+
+小規模の例と同様に、カットされていない回路を実行して期待値を取得し、ワイヤカッティングの結果と比較します。プリミティブの使用を統一するために、`SamplerV2` を使用します。
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9426757812499998
+```
+
+#### 可視化
+
+ワイヤカッティングを使用することで得られた期待値の改善を可視化しましょう。
+
+```python
+ax = plt.gca()
+methods = ["cut", "uncut"]
+values = [reconstructed_expval, uncut_expval]
+
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(y=1, color="k", linestyle="--")
+ax.set_ylim([0.85, 1.02])
+plt.text(0.3, 0.99, "Exact result")
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/19dad6bb-544e-45b9-90c4-3555681e4e5b-0.avif)
+
+#### 考察
+
+小規模および大規模の両方の問題において、ワイヤカッティングがカットなしの場合よりも良い結果をもたらすことが確認できます。なお、これらの実験ではエラー緩和手法は使用されていません。したがって、得られた結果の改善はワイヤカッティングのみによるものです。回路カッティングと異なる緩和手法を組み合わせることで、結果をさらに改善できる可能性があります。
+
+さらに、このノートブックでは両方のサブ回路を同じハードウェア上で計算しました。[\[5\], \[6\]](#references) では、著者らがノイズ情報を利用してサブ回路を異なるハードウェアに分散させ、ノイズ抑制を最大化し、プロセスを並列化する手法を示しています。
+## 付録：リソースのスケーリングに関する考慮事項
+実行する回路の数はカット数の増加に伴い増大します。そのため、多くのカットを行えばより小さなサブ回路を生成でき、性能がさらに向上する一方で、回路実行数が著しく増加し、多くの場合実用的ではなくなります。以下に、50量子ビット回路におけるカット数に対応するサブ回路数の例を示します。
+
+![wc-5.png](/docs/images/tutorials/wire-cutting-to-improve-performance/5c6ea4da-bbd8-47f9-ac48-e438cc59a11d.avif)
+
+5回のカットであっても、サブ実験数は約20万に達することに注意してください。したがって、回路カッティングはカット数が少ない場合にのみ使用すべきです。
+### カットに適した回路とカットに適さない回路の例
+
+#### カットに適した回路
+
+先述のとおり、少数のカットで小さな互いに独立したサブ回路に分割できる回路はカットに適しています。ハードウェア効率の良い回路、すなわちハードウェアのカップリングマップにマッピングする際にSWAPゲートがほとんどまたは全く必要ない回路は、一般にカットに適しています。以下に、量子化学で使用される励起保存アンザッツの例を示します。このような回路は、量子ビット数に関係なく、1回のカットで2つのサブ回路に分割できることに注目してください。
+
+![wc-6.png](/docs/images/tutorials/wire-cutting-to-improve-performance/c122a418-b914-41e7-a1aa-00eb1eec5b87.avif)
+
+#### カットに適さない回路
+
+一般に、互いに独立した分割を形成するために必要なカット数が、深さや量子ビット数に応じて大幅に増加する回路はカットに適していません。各カットごとに追加の量子ビットが必要であることを思い出してください。したがって、カット数に応じて実効的な量子ビット数も増加します。以下に、3量子ビットのグローバー回路とその可能なカットの例を示します。
+
+![wc-7.png](/docs/images/tutorials/wire-cutting-to-improve-performance/b31dc57e-e6d7-49fd-9f46-304a328b3764.avif)
+
+3回のカットが必要であり、カットは水平方向よりも垂直方向に寄っていることがわかります。これは、カット数が量子ビット数に対して線形にスケールすることが予想されることを意味しており、カッティングには適していません。
+## 参考文献
+
+[1] Peng, T., Harrow, A. W., Ozols, M., & Wu, X. (2020). Simulating large quantum circuits on a small quantum computer. Physical review letters, 125(15), 150504.
+
+[2] Tang, W., Tomesh, T., Suchara, M., Larson, J., & Martonosi, M. (2021, April). Cutqc: using small quantum computers for large quantum circuit evaluations. In Proceedings of the 26th ACM International conference on architectural support for programming languages and operating systems (pp. 473-486).
+
+[3]  Perlin, M. A., Saleem, Z. H., Suchara, M., & Osborn, J. C. (2021). Quantum circuit cutting with maximum-likelihood tomography. npj Quantum Information, 7(1), 64.
+
+[4]  Majumdar, R., & Wood, C. J. (2022). Error mitigated quantum circuit cutting. arXiv preprint arXiv:2211.13431.
+
+[5]  Khare, T., Majumdar, R., Sangle, R., Ray, A., Seshadri, P. V., & Simmhan, Y. (2023). Parallelizing Quantum-Classical Workloads: Profiling the Impact of Splitting Techniques. In 2023 IEEE International Conference on Quantum Computing and Engineering (QCE) (Vol. 1, pp. 990-1000). IEEE.
+
+[6]  Bhoumik, D., Majumdar, R., Saha, A., & Sur-Kolay, S. (2023). Distributed Scheduling of Quantum Circuits with Noise and Time Optimization. arXiv preprint arXiv:2309.06005.
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックをお寄せいただくため、短いアンケートにご協力ください。皆様のご意見は、コンテンツの提供およびユーザーエクスペリエンスの改善に役立てさせていただきます。

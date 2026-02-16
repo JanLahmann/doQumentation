@@ -1,0 +1,562 @@
+---
+title: "量子ビット選択のためのリアルタイムベンチマーキング"
+sidebar_label: "量子ビット選択のためのリアルタイムベンチマーキング"
+description: "リアルタイムの特性評価実験を実行し、バックエンドのプロパティを更新することで、回路をQPU上の物理量子ビットにマッピングする際の量子ビット選択を改善します。"
+notebook_path: "docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb" />
+
+
+
+{/* cspell:ignore sharex */}
+
+*使用量の目安: Eagle r2 プロセッサで約4分（注意: これは推定値です。実際の実行時間は異なる場合があります。）*
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-experiments
+```
+
+```python
+# This cell is hidden from users – it disables some lint rules
+# ruff: noqa: E722
+```
+
+## 背景
+
+このチュートリアルでは、リアルタイムの特性評価実験を実行し、バックエンドのプロパティを更新することで、回路をQPU上の物理量子ビットにマッピングする際の量子ビット選択を改善する方法を示します。QPUの特性を決定するために使用される基本的な特性評価実験、Qiskitでの実行方法、およびこれらの実験結果に基づいてQPUを表すバックエンドオブジェクトに保存されたプロパティを更新する方法を学びます。
+
+QPUの報告プロパティは1日1回更新されますが、システムは更新間隔よりも速くドリフトする場合があります。これは、パスマネージャの `Layout` ステージにおける量子ビット選択ルーチンの信頼性に影響を与える可能性があります。なぜなら、QPUの現在の状態を反映していない報告プロパティが使用されることになるためです。このため、特性評価実験にQPU時間を割くことが有益な場合があります。その結果を `Layout` ルーチンで使用するQPUプロパティの更新に活用できます。
+## 要件
+
+このチュートリアルを開始する前に、以下がインストールされていることを確認してください。
+
+- Qiskit SDK v2.0以降、[可視化](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き
+- Qiskit Runtime v0.40以降（`pip install qiskit-ibm-runtime`）
+- Qiskit Experiments v0.12以降（`pip install qiskit-experiments`）
+- Rustworkxグラフライブラリ（`pip install rustworkx`）
+## セットアップ
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import hellinger_fidelity
+from qiskit.transpiler import InstructionProperties
+
+from qiskit_experiments.library import (
+    T1,
+    T2Hahn,
+    LocalReadoutError,
+    StandardRB,
+)
+from qiskit_experiments.framework import BatchExperiment, ParallelExperiment
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session
+
+from datetime import datetime
+from collections import defaultdict
+import numpy as np
+import rustworkx
+import matplotlib.pyplot as plt
+import copy
+```
+
+## ステップ1: 古典的な入力を量子問題にマッピングする
+
+性能の違いをベンチマークするために、さまざまな長さの線形チェーン全体にわたってベル状態を準備する回路を考えます。チェーンの両端におけるベル状態の忠実度を測定します。
+
+```python
+from qiskit import QuantumCircuit
+
+ideal_dist = {"00": 0.5, "11": 0.5}
+
+num_qubits_list = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 127]
+circuits = []
+for num_qubits in num_qubits_list:
+    circuit = QuantumCircuit(num_qubits, 2)
+    circuit.h(0)
+    for i in range(num_qubits - 1):
+        circuit.cx(i, i + 1)
+    circuit.barrier()
+    circuit.measure(0, 0)
+    circuit.measure(num_qubits - 1, 1)
+    circuits.append(circuit)
+
+circuits[-1].draw(output="mpl", style="clifford", fold=-1)
+```
+
+![前のコードセルの出力](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-0.avif)
+
+![前のコードセルの出力](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-1.avif)
+
+### バックエンドとカップリングマップの設定
+まず、バックエンドを選択します。
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+
+qubits = list(range(backend.num_qubits))
+```
+
+次に、そのカップリングマップを取得します。
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+
+# Get unidirectional coupling map
+one_dir_coupling_map = coupling_graph.edge_list()
+```
+
+できるだけ多くの2量子ビットゲートを同時にベンチマークするために、カップリングマップを `layered_coupling_map` に分割します。このオブジェクトには、レイヤーのリストが含まれており、各レイヤーは2量子ビットゲートを同時に実行できるエッジのリストです。これはカップリングマップの辺彩色とも呼ばれます。
+
+```python
+# Get layered coupling map
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+layered_coupling_map = defaultdict(list)
+for edge_idx, color in edge_coloring.items():
+    layered_coupling_map[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layered_coupling_map = [
+    sorted(layered_coupling_map[i])
+    for i in sorted(layered_coupling_map.keys())
+]
+```
+
+### 特性評価実験
+
+QPU内の量子ビットの主要な特性を評価するために、一連の実験が使用されます。これらは $T_1$、$T_2$、読み出しエラー、および単一量子ビットゲートエラーと2量子ビットゲートエラーです。これらの特性が何であるかを簡単にまとめ、それらを特性評価するために使用される [`qiskit-experiments`](https://qiskit-community.github.io/qiskit-experiments/index.html) パッケージの実験を参照します。
+
+#### T1
+
+$T_1$ は、振幅減衰デコヒーレンスプロセスにより、励起された量子ビットが基底状態に落ちるまでの特性時間です。[$T_1$ 実験](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t1.html)では、遅延後に励起された量子ビットを測定します。遅延時間が長いほど、量子ビットが基底状態に落ちる可能性が高くなります。この実験の目的は、量子ビットの基底状態への減衰率を特性評価することです。
+
+#### T2
+
+$T_2$ は、位相緩和デコヒーレンスプロセスにより、単一量子ビットのブロッホベクトルのXY平面への射影が初期振幅の約37%（$\frac{1}{e}$）に低下するまでに必要な時間を表します。[$T_2$ ハーンエコー実験](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t2hahn.html)では、この減衰率を推定できます。
+
+#### 状態準備と測定（SPAM）エラーの特性評価
+
+[SPAMエラー特性評価実験](https://qiskit-community.github.io/qiskit-experiments/manuals/measurement/readout_mitigation.html)では、量子ビットを特定の状態（$\vert 0 \rangle$ または $\vert 1 \rangle$）に準備し測定します。準備された状態とは異なる状態が測定される確率が、エラーの確率を与えます。
+
+#### 単一量子ビットおよび2量子ビットのランダム化ベンチマーキング
+
+[ランダム化ベンチマーキング（RB）](https://qiskit-community.github.io/qiskit-experiments/manuals/verification/randomized_benchmarking.html)は、量子プロセッサのエラー率を特性評価するための一般的なプロトコルです。RB実験は、計算されるユニタリが恒等演算となるように、指定された量子ビット上でランダムなクリフォード回路を生成することで構成されます。回路を実行した後、エラー（すなわち、基底状態とは異なる出力）が発生したショット数をカウントし、このデータからクリフォードあたりのエラー率を計算することで、量子デバイスのエラー推定値を推測できます。
+
+```python
+# Create T1 experiments on all qubit in parallel
+t1_exp = ParallelExperiment(
+    [
+        T1(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create T2-Hahn experiments on all qubit in parallel
+t2_exp = ParallelExperiment(
+    [
+        T2Hahn(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create readout experiments on all qubit in parallel
+readout_exp = LocalReadoutError(qubits)
+
+# Create single-qubit RB experiments on all qubit in parallel
+singleq_rb_exp = ParallelExperiment(
+    [
+        StandardRB(
+            physical_qubits=[qubit], lengths=[10, 100, 500], num_samples=10
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create two-qubit RB experiments on the three layers of disjoint edges of the heavy-hex
+twoq_rb_exp_batched = BatchExperiment(
+    [
+        ParallelExperiment(
+            [
+                StandardRB(
+                    physical_qubits=pair,
+                    lengths=[10, 50, 100],
+                    num_samples=10,
+                )
+                for pair in layer
+            ],
+            backend,
+            analysis=None,
+        )
+        for layer in layered_coupling_map
+    ],
+    backend,
+    flatten_results=True,
+    analysis=None,
+)
+```
+
+### QPUプロパティの時間変化
+
+報告されたQPUプロパティの時間変化を見ると（以下では1週間分を考えます）、これらが1日単位で大きく変動しうることがわかります。小さな変動は1日の中でも起こりえます。このようなシナリオでは、報告されたプロパティ（1日1回更新）はQPUの現在の状態を正確に捉えることができません。さらに、ジョブがローカルでトランスパイルされ（現在の報告プロパティを使用）、送信されたものの後から（数分後または数日後に）実行される場合、トランスパイルステップの量子ビット選択において古いプロパティが使用されるリスクがあります。これは、実行時にQPUの最新情報を持つことの重要性を浮き彫りにしています。まず、特定の時間範囲にわたるプロパティを取得しましょう。
+
+```python
+instruction_2q_name = "cz"  # set the name of the default 2q of the device
+errors_list = []
+for day_idx in range(10, 17):
+    calibrations_time = datetime(
+        year=2025, month=8, day=day_idx, hour=0, minute=0, second=0
+    )
+    targer_hist = backend.target_history(datetime=calibrations_time)
+
+    t1_dict, t2_dict = {}, {}
+    for qubit in range(targer_hist.num_qubits):
+        t1_dict[qubit] = targer_hist.qubit_properties[qubit].t1
+        t2_dict[qubit] = targer_hist.qubit_properties[qubit].t2
+
+    errors_dict = {
+        "1q": targer_hist["sx"],
+        "2q": targer_hist[f"{instruction_2q_name}"],
+        "spam": targer_hist["measure"],
+        "t1": t1_dict,
+        "t2": t2_dict,
+    }
+
+    errors_list.append(errors_dict)
+```
+
+次に、値をプロットしましょう。
+
+```python
+fig, axs = plt.subplots(5, 1, figsize=(10, 20), sharex=False)
+
+# Plot for T1 values
+for qubit in range(targer_hist.num_qubits):
+    t1s = []
+    for errors_dict in errors_list:
+        t1_dict = errors_dict["t1"]
+        try:
+            t1s.append(t1_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t1 data for qubit {qubit}")
+
+    axs[0].plot(t1s)
+
+axs[0].set_title("T1")
+axs[0].set_ylabel(r"Time ($\mu s$)")
+axs[0].set_xlabel("Days")
+
+# Plot for T2 values
+for qubit in range(targer_hist.num_qubits):
+    t2s = []
+    for errors_dict in errors_list:
+        t2_dict = errors_dict["t2"]
+        try:
+            t2s.append(t2_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t2 data for qubit {qubit}")
+
+    axs[1].plot(t2s)
+
+axs[1].set_title("T2")
+axs[1].set_ylabel(r"Time ($\mu s$)")
+axs[1].set_xlabel("Days")
+
+# Plot SPAM values
+for qubit in range(targer_hist.num_qubits):
+    spams = []
+    for errors_dict in errors_list:
+        spam_dict = errors_dict["spam"]
+        spams.append(spam_dict[tuple([qubit])].error)
+
+    axs[2].plot(spams)
+
+axs[2].set_title("SPAM Errors")
+axs[2].set_ylabel("Error Rate")
+axs[2].set_xlabel("Days")
+
+# Plot 1Q Gate Errors
+for qubit in range(targer_hist.num_qubits):
+    oneq_gates = []
+    for errors_dict in errors_list:
+        oneq_gate_dict = errors_dict["1q"]
+        oneq_gates.append(oneq_gate_dict[tuple([qubit])].error)
+
+    axs[3].plot(oneq_gates)
+
+axs[3].set_title("1Q Gate Errors")
+axs[3].set_ylabel("Error Rate")
+axs[3].set_xlabel("Days")
+
+# Plot 2Q Gate Errors
+for pair in one_dir_coupling_map:
+    twoq_gates = []
+    for errors_dict in errors_list:
+        twoq_gate_dict = errors_dict["2q"]
+        twoq_gates.append(twoq_gate_dict[pair].error)
+
+    axs[4].plot(twoq_gates)
+
+axs[4].set_title("2Q Gate Errors")
+axs[4].set_ylabel("Error Rate")
+axs[4].set_xlabel("Days")
+
+plt.subplots_adjust(hspace=0.5)
+plt.show()
+```
+
+![前のコードセルの出力](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/e0ba509d-e0e0-438b-aedf-5e01919c7d4f-0.avif)
+
+数日間にわたって、量子ビットのプロパティの一部が大きく変化する可能性があることがわかります。これは、実験に最もパフォーマンスの良い量子ビットを選択できるよう、QPUの状態に関する最新情報を持つことの重要性を浮き彫りにしています。
+## ステップ2：量子ハードウェア実行のための問題の最適化
+
+このチュートリアルでは、回路やオペレーターの最適化は行いません。
+## ステップ3：Qiskitプリミティブを使用した実行
+### デフォルトの量子ビット選択による量子回路の実行
+
+性能の参考結果として、デフォルトの量子ビット、つまりリクエストされたバックエンドのプロパティに基づいて選択された量子ビットを使用して、QPU上で量子回路を実行します。`optimization_level = 3` を使用します。この設定には最も高度なトランスパイル最適化が含まれており、ターゲットのプロパティ（操作エラーなど）を使用して、実行に最適な量子ビットを選択します。
+
+```python
+pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
+isa_circuits = pm.run(circuits)
+initial_qubits = [
+    [
+        idx
+        for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+        if qb._register.name != "ancilla"
+    ]
+    for circuit in isa_circuits
+]
+```
+
+### リアルタイム量子ビット選択による量子回路の実行
+
+このセクションでは、最適な結果を得るためにQPUの量子ビットプロパティに関する最新情報を持つことの重要性を検証します。まず、QPUキャラクタリゼーション実験のフルスイート（$T_1$、$T_2$、SPAM、単一量子ビットRB、および2量子ビットRB）を実施し、その結果を使用してバックエンドのプロパティを更新します。これにより、パスマネージャーはQPUに関する最新の情報に基づいて実行用の量子ビットを選択でき、実行性能が向上する可能性があります。次に、ベルペア回路を実行し、更新されたQPUプロパティで量子ビットを選択した場合に得られる忠実度と、デフォルトの報告済みプロパティを使用して量子ビットを選択した場合に得られた忠実度を比較します。
+
+<Admonition type="caution">
+一部のキャラクタリゼーション実験では、フィッティングルーチンが測定データに曲線をフィットできない場合に失敗することがあります。これらの実験から警告が表示された場合は、どの量子ビットでどのキャラクタリゼーションが失敗したかを確認し、実験のパラメータ（$T_1$、$T_2$の時間やRB実験の長さなど）を調整してみてください。
+</Admonition>
+
+```python
+# Prepare characterization experiments
+batches = [t1_exp, t2_exp, readout_exp, singleq_rb_exp, twoq_rb_exp_batched]
+batches_exp = BatchExperiment(batches, backend)  # , analysis=None)
+run_options = {"shots": 1e3, "dynamic": False}
+
+with Session(backend=backend) as session:
+    sampler = SamplerV2(mode=session)
+
+    # Run characterization experiments
+    batches_exp_data = batches_exp.run(
+        sampler=sampler, **run_options
+    ).block_for_results()
+
+    EPG_sx_result_list = batches_exp_data.analysis_results("EPG_sx")
+    EPG_sx_result_q_indices = [
+        result.device_components.index for result in EPG_sx_result_list
+    ]
+    EPG_x_result_list = batches_exp_data.analysis_results("EPG_x")
+    EPG_x_result_q_indices = [
+        result.device_components.index for result in EPG_x_result_list
+    ]
+    T1_result_list = batches_exp_data.analysis_results("T1")
+    T1_result_q_indices = [
+        result.device_components.index for result in T1_result_list
+    ]
+
+    T2_result_list = batches_exp_data.analysis_results("T2")
+    T2_result_q_indices = [
+        result.device_components.index for result in T2_result_list
+    ]
+
+    Readout_result_list = batches_exp_data.analysis_results(
+        "Local Readout Mitigator"
+    )
+
+    EPG_2q_result_list = batches_exp_data.analysis_results(
+        f"EPG_{instruction_2q_name}"
+    )
+
+    # Update target properties
+    target = copy.deepcopy(backend.target)
+    for i in range(target.num_qubits - 1):
+        qarg = (i,)
+
+        if qarg in EPG_sx_result_q_indices:
+            target.update_instruction_properties(
+                instruction="sx",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_sx_result_list[i].value.nominal_value
+                ),
+            )
+        if qarg in EPG_x_result_q_indices:
+            target.update_instruction_properties(
+                instruction="x",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_x_result_list[i].value.nominal_value
+                ),
+            )
+
+        err_mat = Readout_result_list.value.assignment_matrix(i)
+        readout_assignment_error = (
+            err_mat[0, 1] + err_mat[1, 0]
+        ) / 2  # average readout error
+        target.update_instruction_properties(
+            instruction="measure",
+            qargs=qarg,
+            properties=InstructionProperties(error=readout_assignment_error),
+        )
+
+        if qarg in T1_result_q_indices:
+            target.qubit_properties[i].t1 = T1_result_list[
+                i
+            ].value.nominal_value
+        if qarg in T2_result_q_indices:
+            target.qubit_properties[i].t2 = T2_result_list[
+                i
+            ].value.nominal_value
+
+    for pair_idx, pair in enumerate(one_dir_coupling_map):
+        qarg = tuple(pair)
+        try:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+        except:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg[::-1],
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+
+    # transpile circuits to updated target
+    pm = generate_preset_pass_manager(target=target, optimization_level=3)
+    isa_circuit_updated = pm.run(circuits)
+    updated_qubits = [
+        [
+            idx
+            for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+            if qb._register.name != "ancilla"
+        ]
+        for circuit in isa_circuit_updated
+    ]
+
+    n_trials = 3  # run multiple trials to see variations
+
+    # interleave circuits
+    interleaved_circuits = []
+    for original_circuit, updated_circuit in zip(
+        isa_circuits, isa_circuit_updated
+    ):
+        interleaved_circuits.append(original_circuit)
+        interleaved_circuits.append(updated_circuit)
+
+    # Run circuits
+    # Set simple error suppression/mitigation options
+    sampler.options.dynamical_decoupling.enable = True
+    sampler.options.dynamical_decoupling.sequence_type = "XY4"
+
+    job_interleaved = sampler.run(interleaved_circuits * n_trials)
+```
+
+## ステップ4：後処理と所望の古典形式での結果の返却
+
+最後に、2つの異なる設定で得られたベル状態の忠実度を比較しましょう。
+
+- `original`：バックエンドの報告済みプロパティに基づいてトランスパイラが選択したデフォルトの量子ビットを使用した場合。
+- `updated`：キャラクタリゼーション実験の実行後に更新されたバックエンドのプロパティに基づいて選択された量子ビットを使用した場合。
+
+```python
+results = job_interleaved.result()
+all_fidelity_list, all_fidelity_updated_list = [], []
+for exp_idx in range(n_trials):
+    fidelity_list, fidelity_updated_list = [], []
+
+    for idx, num_qubits in enumerate(num_qubits_list):
+        pub_result_original = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx
+        ]
+        pub_result_updated = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx + 1
+        ]
+
+        fid = hellinger_fidelity(
+            ideal_dist, pub_result_original.data.c.get_counts()
+        )
+        fidelity_list.append(fid)
+
+        fid_up = hellinger_fidelity(
+            ideal_dist, pub_result_updated.data.c.get_counts()
+        )
+        fidelity_updated_list.append(fid_up)
+    all_fidelity_list.append(fidelity_list)
+    all_fidelity_updated_list.append(fidelity_updated_list)
+```
+
+```python
+plt.figure(figsize=(8, 6))
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_list, axis=0),
+    yerr=np.std(all_fidelity_list, axis=0),
+    fmt="o-.",
+    label="original",
+    color="b",
+)
+# plt.plot(num_qubits_list, fidelity_list, '-.')
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_updated_list, axis=0),
+    yerr=np.std(all_fidelity_updated_list, axis=0),
+    fmt="o-.",
+    label="updated",
+    color="r",
+)
+# plt.plot(num_qubits_list, fidelity_updated_list, '-.')
+plt.xlabel("Chain length")
+plt.xticks(num_qubits_list)
+plt.ylabel("Fidelity")
+plt.title("Bell pair fidelity at the edge of N-qubits chain")
+plt.legend()
+plt.grid(
+    alpha=0.2,
+    linestyle="-.",
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/656ec97a-3fd9-4635-9a98-1c5589761689-0.avif)
+
+すべての実行でリアルタイムキャラクタリゼーションによる性能向上が見られるわけではありません。また、チェーンの長さが長くなるにつれて物理量子ビットを選択する自由度が減少するため、更新されたデバイス情報の重要性は低下します。しかし、デバイスのプロパティに関する最新データを収集し、その性能を把握することは良い習慣です。一時的な二準位系（TLS）が一部の量子ビットの性能に影響を与える場合があります。リアルタイムデータにより、そのようなイベントの発生を把握し、そのような場合の実験の失敗を回避することができます。
+<Admonition type="note" title="Call to action">
+この手法をご自身の実行に適用して、どの程度の改善が得られるか試してみてください。また、異なるバックエンドでどの程度の改善が得られるかも確認してみてください。
+</Admonition>
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックを提供するため、こちらの短いアンケートにご協力ください。皆様のご意見は、コンテンツの提供とユーザー体験の改善に役立てさせていただきます。
