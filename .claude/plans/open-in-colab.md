@@ -11,82 +11,143 @@ Currently the project offers two ways to open the original notebook externally:
 | **OpenInLabBanner** | Banner below page title | Always (Lab or Binder) |
 | **ExecutableCode toolbar** | Above first code cell | `labEnabled && notebookPath` (local/Docker only) |
 
-Google Colab can open any public GitHub notebook via a deterministic URL:
+The upstream `.ipynb` files assume a pre-configured environment (Binder or Docker) and contain **no `pip install` cells**. The sync script already detects missing imports via `analyze_notebook_imports()` and injects `%pip install` cells into the MDX pages, but the raw notebooks lack them.
 
-```
-https://colab.research.google.com/github/{owner}/{repo}/blob/{branch}/{path}
-```
+**Problem:** When a user opens a notebook externally (Colab or Binder Lab), dependencies like `qiskit` (missing from Colab) or `scikit-learn` (missing from Binder) are not installed, causing `ModuleNotFoundError`.
 
-For this project:
-
-```
-https://colab.research.google.com/github/JanLahmann/Qiskit-documentation/blob/main/docs/tutorials/hello-world.ipynb
-```
+**Solution:** Publish dependency-ready notebook copies via GitHub Pages with a single universal install cell per notebook. Both Colab and Binder Lab link to these copies instead of the raw upstream files.
 
 ---
 
 ## Scope
 
-Add an "Open in Colab" button that appears on every notebook-sourced page, in all deployment environments (GitHub Pages, Docker, RasQberry, custom). The button opens the original `.ipynb` directly in Google Colab.
-
 **In scope:**
-- URL generation function in `src/config/jupyter.ts`
-- Colab button in the `OpenInLabBanner` component (alongside existing Lab/Binder button)
-- Colab button in the `ExecutableCode` toolbar (alongside existing Run/Back/Lab buttons)
+- Extend `copy_notebook_with_rewrite()` in `sync-content.py` to inject a `!pip install -q` cell into each `.ipynb` copy
+- Publish `notebooks/` via GitHub Pages (copy into `static/notebooks/`)
+- URL generation functions in `src/config/jupyter.ts` (`getColabUrl`, updated `getBinderLabUrl`)
+- Colab button in `OpenInLabBanner` and `ExecutableCode` toolbar
 - Styling consistent with existing buttons
 
 **Out of scope:**
-- Colab-specific dependency setup (Colab users run `!pip install qiskit` themselves)
-- Deep Colab API integration (no runtime embedding, just a link)
-- Changes to sync-content.py (existing `notebookPath` prop is sufficient)
+- Platform-specific notebook variants (single universal install cell covers both Colab and Binder; already-installed packages resolve as no-ops)
+- Deep Colab API integration (just a link)
+- Changes to MDX files (existing `notebookPath` prop is sufficient)
 
 ---
 
 ## Implementation
 
-### Step 1: Add `getColabUrl()` to `src/config/jupyter.ts`
+### Step 1: Inject install cell into notebook copies (`sync-content.py`)
 
-Add a new URL generator after the existing `getBinderLabUrl()` function:
+Extend `copy_notebook_with_rewrite()` to inject a pip install cell at the top of each `.ipynb` copy. The cell includes the full Qiskit stack (needed for Colab) plus any per-notebook extras detected by `analyze_notebook_imports()` (needed for both Colab and Binder).
+
+```python
+def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path):
+    """Copy a notebook, rewriting image paths and injecting dependency install cell."""
+    content = src_path.read_text()
+    content = rewrite_notebook_image_paths(content, nb_rel_path)
+
+    # Parse notebook JSON to inject install cell
+    nb = json.loads(content)
+    cells = nb.get('cells', [])
+
+    # Base packages needed for Colab (Binder has these, pip resolves as no-op)
+    base_pkgs = ['qiskit', 'qiskit-aer', 'qiskit-ibm-runtime', 'pylatexenc']
+
+    # Per-notebook extras (missing from both Colab and Binder baselines)
+    extra_pkgs = analyze_notebook_imports(cells)
+
+    all_pkgs = base_pkgs + [p for p in extra_pkgs if p not in base_pkgs]
+
+    install_cell = {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# Install dependencies (runs quickly if already installed)\n",
+            f"!pip install -q {' '.join(all_pkgs)}"
+        ]
+    }
+
+    nb['cells'] = [install_cell] + cells
+    content = json.dumps(nb, indent=1, ensure_ascii=False)
+
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    dst_path.write_text(content)
+```
+
+**Key decisions:**
+- Single universal install cell — redundant packages on either platform resolve in ~5-10s via `Requirement already satisfied` (suppressed by `-q`).
+- `base_pkgs` covers the core Qiskit stack that Colab lacks. `extra_pkgs` covers per-notebook extras (scikit-learn, plotly, python-sat, etc.) missing from both platforms.
+- The existing `analyze_notebook_imports()` already does the heavy lifting — it scans imports, filters stdlib and `BINDER_PROVIDED`, and maps import names to pip names.
+
+### Step 2: Publish notebooks via GitHub Pages
+
+During sync, copy the `notebooks/` directory into `static/notebooks/` so Docusaurus deploys it to gh-pages:
+
+```python
+# In sync-content.py, after all notebook copies are generated:
+def publish_notebooks_to_static():
+    """Copy notebooks/ into static/notebooks/ for GitHub Pages deployment."""
+    static_nb = STATIC_DIR / "notebooks"
+    if static_nb.exists():
+        shutil.rmtree(static_nb)
+    shutil.copytree(NOTEBOOKS_OUTPUT, static_nb)
+```
+
+This makes notebooks available at `https://doqumentation.org/notebooks/tutorials/hello-world.ipynb` and, critically, in the `gh-pages` branch at a known path for Colab's GitHub URL scheme.
+
+### Step 3: Add `getColabUrl()` to `src/config/jupyter.ts`
 
 ```typescript
 /**
- * Colab base URL for opening notebooks from the upstream GitHub repo.
- */
-const COLAB_GITHUB_BASE = 'https://colab.research.google.com/github';
-const UPSTREAM_OWNER = 'JanLahmann';
-const UPSTREAM_REPO = 'Qiskit-documentation';
-const UPSTREAM_BRANCH = 'main';
-
-/**
- * Get the Google Colab URL for a notebook in the upstream repo.
+ * Get the Google Colab URL for a notebook.
+ * Points to the dependency-ready copy on gh-pages (not the raw upstream).
  */
 export function getColabUrl(notebookPath: string): string {
-  return `${COLAB_GITHUB_BASE}/${UPSTREAM_OWNER}/${UPSTREAM_REPO}/blob/${UPSTREAM_BRANCH}/${notebookPath}`;
+  // notebookPath is upstream-relative, e.g. "docs/tutorials/hello-world.ipynb"
+  // notebooks/ on gh-pages mirrors this structure under the content-type prefix:
+  //   docs/tutorials/X.ipynb → notebooks/tutorials/X.ipynb
+  //   docs/guides/X.ipynb   → notebooks/guides/X.ipynb
+  //   learning/courses/...   → notebooks/learning/courses/...
+  //   hello-world.ipynb      → notebooks/tutorials/hello-world.ipynb
+  const nbPath = notebookPath
+    .replace(/^docs\//, '');  // strip docs/ prefix → tutorials/X.ipynb
+
+  return `https://colab.research.google.com/github/JanLahmann/doQumentation/blob/gh-pages/notebooks/${nbPath}`;
 }
 ```
 
-Notes:
-- No `config` parameter needed — Colab URLs are environment-independent.
-- The upstream owner/repo/branch constants can later be reused by `getBinderLabUrl()` to DRY up the Binder URL, but that refactor is out of scope here.
-- `notebookPath` values like `docs/tutorials/hello-world.ipynb` are already URL-safe (no spaces, no special chars in the upstream repo).
+### Step 4: Update `getBinderLabUrl()` in `src/config/jupyter.ts`
 
-### Step 2: Add Colab button to `OpenInLabBanner`
+Point Binder Lab at the same dependency-ready copies instead of the raw upstream:
+
+```typescript
+export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): string | null {
+  if (!config.binderUrl) {
+    return null;
+  }
+  // Point to gh-pages copy (has install cell) instead of raw upstream
+  const nbPath = notebookPath.replace(/^docs\//, '');
+  const fullPath = `notebooks/${nbPath}`;
+  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
+}
+```
+
+**Note:** `getLabUrl()` (local/Docker) is unchanged — it opens from the local `notebooks/` directory where all deps are already installed in the Docker environment.
+
+### Step 5: Add Colab button to `OpenInLabBanner`
 
 Modify `src/components/OpenInLabBanner/index.tsx`:
 
-1. Import `getColabUrl` from `../../config/jupyter`.
-2. Generate the Colab URL from `notebookPath`.
-3. Render a second button next to the existing Lab/Binder button.
-
-The banner currently shows one action button on the right. Add the Colab button as a secondary link next to it. Keep the existing Lab/Binder button as the primary action (solid background), style Colab as an outlined/secondary button so the two are visually distinct but co-located.
+1. Import `getColabUrl`.
+2. Render Colab button alongside the existing Lab/Binder button.
+3. Colab button always shows when `notebookPath` is set (environment-independent).
 
 ```tsx
-import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl } from '../../config/jupyter';
-
-// Inside the render:
 const colabUrl = getColabUrl(notebookPath);
 
-// Render both buttons in a flex container:
 <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
   <a href={colabUrl} target="_blank" rel="noopener noreferrer"
      title="Open notebook in Google Colab"
@@ -94,27 +155,16 @@ const colabUrl = getColabUrl(notebookPath);
     Open in Colab ↗
   </a>
   {labUrl && (
-    <a href={labUrl} target="_blank" rel="noopener noreferrer"
-       title="Opens the full Jupyter notebook for editing and advanced use"
-       style={{ /* existing primary style */ }}>
+    <a href={labUrl} target="_blank" rel="noopener noreferrer" ...>
       {label} ↗
     </a>
   )}
 </div>
 ```
 
-**Key design decisions:**
-- Colab button always shows (doesn't depend on environment — Colab is always available).
-- If `labUrl` is `null` (unknown environment, no Binder, no local Lab), the banner still renders with Colab as the sole action. This is an improvement: currently those environments see nothing.
-- Order: Colab first (secondary/outlined), then Lab/Binder (primary/filled) — keeps Lab as the primary recommendation for users who have it, but gives everyone a fallback.
+### Step 6: Add Colab button to `ExecutableCode` toolbar
 
-### Step 3: Add Colab button to `ExecutableCode` toolbar
-
-Modify `src/components/ExecutableCode/index.tsx`:
-
-1. Import `getColabUrl`.
-2. After the existing "Open in Lab" button (line ~879), add an "Open in Colab" button.
-3. The Colab button shows whenever `notebookPath` is set (regardless of `labEnabled`).
+Modify `src/components/ExecutableCode/index.tsx` (after the existing "Open in Lab" button at line ~879):
 
 ```tsx
 {notebookPath && (
@@ -130,20 +180,22 @@ Modify `src/components/ExecutableCode/index.tsx`:
 )}
 ```
 
-Note: This uses an `<a>` tag (not `<button>` with `onClick` + `window.open`) for better accessibility and right-click support. The existing Lab button could be refactored to match, but that's out of scope.
+Uses `<a>` instead of `<button>` for better accessibility and right-click support.
 
-### Step 4: Verify & test
+### Step 7: Verify & test
 
-1. `npm run build` — ensure no TypeScript or build errors.
-2. `npm start` — manually verify on a tutorial page:
-   - Banner shows both "Open in Colab" and "Open in Binder JupyterLab" (or "Open in JupyterLab" on local).
-   - Clicking "Open in Colab" opens the correct notebook in a new Colab tab.
-   - Toolbar above code cells shows the Colab button.
-3. Spot-check URL correctness for each content type:
-   - Tutorial: `docs/tutorials/{name}.ipynb`
-   - Guide: `docs/guides/{name}.ipynb`
-   - Course: `learning/courses/{dir}/{name}.ipynb`
-   - Module: `learning/modules/{dir}/{name}.ipynb`
+1. `python scripts/sync-content.py` — verify notebooks in `notebooks/` have the install cell, and `static/notebooks/` is populated.
+2. Spot-check a generated `.ipynb` — confirm the first cell is `!pip install -q qiskit ...`.
+3. `npm run build` — no TypeScript or build errors.
+4. `npm start` — verify on a tutorial page:
+   - Banner shows "Open in Colab" and "Open in Binder JupyterLab".
+   - Toolbar shows "Open in Colab".
+   - Colab link opens the gh-pages copy with install cell.
+5. URL correctness for each content type:
+   - Tutorial: `notebooks/tutorials/{name}.ipynb`
+   - Guide: `notebooks/guides/{name}.ipynb`
+   - Course: `notebooks/learning/courses/{dir}/{name}.ipynb`
+   - Module: `notebooks/learning/modules/{dir}/{name}.ipynb`
 
 ---
 
@@ -151,11 +203,30 @@ Note: This uses an `<a>` tag (not `<button>` with `onClick` + `window.open`) for
 
 | File | Change |
 |------|--------|
-| `src/config/jupyter.ts` | Add `getColabUrl()` function + upstream constants |
+| `scripts/sync-content.py` | Extend `copy_notebook_with_rewrite()` to inject install cell; add `publish_notebooks_to_static()` |
+| `src/config/jupyter.ts` | Add `getColabUrl()`; update `getBinderLabUrl()` to point to gh-pages copies |
 | `src/components/OpenInLabBanner/index.tsx` | Add Colab button alongside Lab/Binder button |
 | `src/components/ExecutableCode/index.tsx` | Add Colab button to toolbar |
 
-No changes to `sync-content.py`, `docusaurus.config.ts`, or any MDX files.
+No changes to `docusaurus.config.ts` or MDX files.
+
+---
+
+## Data Flow
+
+```
+Upstream .ipynb (no install cell)
+    │
+    ├── sync-content.py: convert_notebook()
+    │       → MDX page with %pip install cell (for in-page execution)
+    │
+    └── sync-content.py: copy_notebook_with_rewrite()
+            → notebooks/{path}.ipynb (image paths rewritten + install cell injected)
+            → static/notebooks/{path}.ipynb (deployed to gh-pages)
+                    │
+                    ├── Colab URL: colab.research.google.com/github/.../blob/gh-pages/notebooks/...
+                    └── Binder URL: mybinder.org/...?labpath=notebooks/...
+```
 
 ---
 
@@ -163,7 +234,9 @@ No changes to `sync-content.py`, `docusaurus.config.ts`, or any MDX files.
 
 | Risk | Mitigation |
 |------|-----------|
-| Upstream repo path mismatch (notebook doesn't exist at that path) | Same paths already work for Binder — if Binder works, Colab works |
-| Colab can't install Qiskit (heavy deps) | Out of scope — Colab supports `pip install qiskit` but users manage this themselves; no worse than any external Colab link |
-| Upstream repo goes private | Same risk applies to existing Binder integration; repo is public and intended to stay so |
+| Redundant pip installs add startup time | `-q` flag suppresses output; ~5-10s of no-op resolution is acceptable |
+| gh-pages branch size increases | ~50 notebooks + images; negligible vs. existing site assets |
+| Notebooks lag behind upstream until next sync+deploy | Same cadence as the rest of the site content; acceptable |
+| `analyze_notebook_imports()` misses a dependency | Existing risk — already affects MDX pages; not new |
+| Binder can't find notebook at new path | Verify Binder `?labpath=` resolves relative to repo root on gh-pages branch |
 | Button clutter on mobile | Two compact buttons in a flex row; test on narrow viewports |
