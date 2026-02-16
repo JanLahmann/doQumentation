@@ -15,21 +15,24 @@ The upstream `.ipynb` files assume a pre-configured environment (Binder or Docke
 
 **Problem:** When a user opens a notebook externally (Colab or Binder Lab), dependencies like `qiskit` (missing from Colab) or `scikit-learn` (missing from Binder) are not installed, causing `ModuleNotFoundError`.
 
-**Solution:** Publish dependency-ready notebook copies via GitHub Pages with a single universal install cell per notebook. Both Colab and Binder Lab link to these copies instead of the raw upstream files.
+**Solution:** Publish dependency-ready notebook copies via GitHub Pages with two install cells per notebook:
+
+1. **Initialization cell** (auto-runs on Colab via `cell_execution_strategy: "setup"`) — installs the base Qiskit stack. On Binder this auto-runs too but resolves as a fast no-op since Qiskit is pre-installed.
+2. **Normal extras cell** (only if needed, user-visible and user-controlled) — installs per-notebook extras like `scikit-learn`, `plotly`, etc. that are missing from both Colab and Binder.
 
 ---
 
 ## Scope
 
 **In scope:**
-- Extend `copy_notebook_with_rewrite()` in `sync-content.py` to inject a `!pip install -q` cell into each `.ipynb` copy
+- Extend `copy_notebook_with_rewrite()` in `sync-content.py` to inject up to two install cells + Colab notebook metadata
 - Publish `notebooks/` via GitHub Pages (copy into `static/notebooks/`)
 - URL generation functions in `src/config/jupyter.ts` (`getColabUrl`, updated `getBinderLabUrl`)
 - Colab button in `OpenInLabBanner` and `ExecutableCode` toolbar
 - Styling consistent with existing buttons
 
 **Out of scope:**
-- Platform-specific notebook variants (single universal install cell covers both Colab and Binder; already-installed packages resolve as no-ops)
+- Platform-specific notebook variants (single set of copies serves both Colab and Binder)
 - Deep Colab API integration (just a link)
 - Changes to MDX files (existing `notebookPath` prop is sufficient)
 
@@ -37,50 +40,79 @@ The upstream `.ipynb` files assume a pre-configured environment (Binder or Docke
 
 ## Implementation
 
-### Step 1: Inject install cell into notebook copies (`sync-content.py`)
+### Step 1: Inject install cells + Colab metadata into notebook copies (`sync-content.py`)
 
-Extend `copy_notebook_with_rewrite()` to inject a pip install cell at the top of each `.ipynb` copy. The cell includes the full Qiskit stack (needed for Colab) plus any per-notebook extras detected by `analyze_notebook_imports()` (needed for both Colab and Binder).
+Extend `copy_notebook_with_rewrite()` to:
+1. Add Colab notebook metadata with `cell_execution_strategy: "setup"` so the first cell auto-runs on open.
+2. Inject an **initialization cell** (cell 0) that installs the base Qiskit stack.
+3. Optionally inject a **normal extras cell** (cell 1) for per-notebook dependencies detected by `analyze_notebook_imports()`.
 
 ```python
+# Base packages always needed for Colab (pre-installed in Binder → no-op there)
+COLAB_BASE_PKGS = ['qiskit', 'qiskit-aer', 'qiskit-ibm-runtime', 'pylatexenc']
+
+
 def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path):
-    """Copy a notebook, rewriting image paths and injecting dependency install cell."""
+    """Copy a notebook, rewriting image paths and injecting dependency cells."""
     content = src_path.read_text()
     content = rewrite_notebook_image_paths(content, nb_rel_path)
 
-    # Parse notebook JSON to inject install cell
     nb = json.loads(content)
     cells = nb.get('cells', [])
 
-    # Base packages needed for Colab (Binder has these, pip resolves as no-op)
-    base_pkgs = ['qiskit', 'qiskit-aer', 'qiskit-ibm-runtime', 'pylatexenc']
-
-    # Per-notebook extras (missing from both Colab and Binder baselines)
-    extra_pkgs = analyze_notebook_imports(cells)
-
-    all_pkgs = base_pkgs + [p for p in extra_pkgs if p not in base_pkgs]
-
-    install_cell = {
+    # ── Cell 0: Initialization cell (auto-runs on Colab) ──
+    # Installs base Qiskit stack. On Binder this is a fast no-op.
+    init_cell = {
         "cell_type": "code",
         "execution_count": None,
         "metadata": {},
         "outputs": [],
         "source": [
-            "# Install dependencies (runs quickly if already installed)\n",
-            f"!pip install -q {' '.join(all_pkgs)}"
+            "# Setup: install Qiskit (runs automatically in Colab, no-op in Binder)\n",
+            f"!pip install -q {' '.join(COLAB_BASE_PKGS)}"
         ]
     }
 
-    nb['cells'] = [install_cell] + cells
-    content = json.dumps(nb, indent=1, ensure_ascii=False)
+    # ── Cell 1 (optional): Extras cell (user-visible, user-controlled) ──
+    # Per-notebook dependencies missing from both Colab and Binder.
+    extra_pkgs = analyze_notebook_imports(cells)
+    # Filter out packages already covered by the init cell
+    extra_pkgs = [p for p in extra_pkgs if p not in COLAB_BASE_PKGS]
 
+    injected = [init_cell]
+    if extra_pkgs:
+        extras_cell = {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# Additional dependencies for this notebook\n",
+                f"!pip install -q {' '.join(extra_pkgs)}"
+            ]
+        }
+        injected.append(extras_cell)
+
+    nb['cells'] = injected + cells
+
+    # ── Colab notebook metadata ──
+    # "cell_execution_strategy": "setup" tells Colab to auto-run the
+    # first cell (or first section) when the notebook is opened.
+    colab_meta = nb.setdefault('metadata', {}).setdefault('colab', {})
+    colab_meta['cell_execution_strategy'] = 'setup'
+
+    content = json.dumps(nb, indent=1, ensure_ascii=False)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     dst_path.write_text(content)
 ```
 
-**Key decisions:**
-- Single universal install cell — redundant packages on either platform resolve in ~5-10s via `Requirement already satisfied` (suppressed by `-q`).
-- `base_pkgs` covers the core Qiskit stack that Colab lacks. `extra_pkgs` covers per-notebook extras (scikit-learn, plotly, python-sat, etc.) missing from both platforms.
-- The existing `analyze_notebook_imports()` already does the heavy lifting — it scans imports, filters stdlib and `BINDER_PROVIDED`, and maps import names to pip names.
+**Behavior by environment:**
+
+| | Colab | Binder Lab |
+|---|---|---|
+| **Init cell** (Qiskit stack) | Auto-runs on open, installs Qiskit | Auto-runs, fast no-op (already installed) |
+| **Extras cell** (scikit-learn, etc.) | User sees it, decides to run | User sees it, decides to run |
+| **`cell_execution_strategy`** | Honored (drives auto-run) | Ignored (not a Colab feature) |
 
 ### Step 2: Publish notebooks via GitHub Pages
 
@@ -128,7 +160,7 @@ export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): st
   if (!config.binderUrl) {
     return null;
   }
-  // Point to gh-pages copy (has install cell) instead of raw upstream
+  // Point to gh-pages copy (has install cells) instead of raw upstream
   const nbPath = notebookPath.replace(/^docs\//, '');
   const fullPath = `notebooks/${nbPath}`;
   return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
@@ -184,18 +216,23 @@ Uses `<a>` instead of `<button>` for better accessibility and right-click suppor
 
 ### Step 7: Verify & test
 
-1. `python scripts/sync-content.py` — verify notebooks in `notebooks/` have the install cell, and `static/notebooks/` is populated.
-2. Spot-check a generated `.ipynb` — confirm the first cell is `!pip install -q qiskit ...`.
+1. `python scripts/sync-content.py` — verify notebooks in `notebooks/` have the install cells, and `static/notebooks/` is populated.
+2. Spot-check a generated `.ipynb`:
+   - Confirm notebook metadata contains `"cell_execution_strategy": "setup"`.
+   - Confirm cell 0 is the Qiskit init cell.
+   - Confirm cell 1 (if present) is the extras cell.
+   - Confirm original notebook cells follow after.
 3. `npm run build` — no TypeScript or build errors.
 4. `npm start` — verify on a tutorial page:
    - Banner shows "Open in Colab" and "Open in Binder JupyterLab".
    - Toolbar shows "Open in Colab".
-   - Colab link opens the gh-pages copy with install cell.
+   - Colab link opens the gh-pages copy with init cell auto-running.
 5. URL correctness for each content type:
    - Tutorial: `notebooks/tutorials/{name}.ipynb`
    - Guide: `notebooks/guides/{name}.ipynb`
    - Course: `notebooks/learning/courses/{dir}/{name}.ipynb`
    - Module: `notebooks/learning/modules/{dir}/{name}.ipynb`
+6. Manual Colab test: open a notebook via the Colab URL, verify the init cell auto-runs and installs Qiskit.
 
 ---
 
@@ -203,7 +240,7 @@ Uses `<a>` instead of `<button>` for better accessibility and right-click suppor
 
 | File | Change |
 |------|--------|
-| `scripts/sync-content.py` | Extend `copy_notebook_with_rewrite()` to inject install cell; add `publish_notebooks_to_static()` |
+| `scripts/sync-content.py` | Extend `copy_notebook_with_rewrite()` with two-cell injection + Colab metadata; add `publish_notebooks_to_static()` |
 | `src/config/jupyter.ts` | Add `getColabUrl()`; update `getBinderLabUrl()` to point to gh-pages copies |
 | `src/components/OpenInLabBanner/index.tsx` | Add Colab button alongside Lab/Binder button |
 | `src/components/ExecutableCode/index.tsx` | Add Colab button to toolbar |
@@ -215,17 +252,25 @@ No changes to `docusaurus.config.ts` or MDX files.
 ## Data Flow
 
 ```
-Upstream .ipynb (no install cell)
+Upstream .ipynb (no install cells, no Colab metadata)
     │
     ├── sync-content.py: convert_notebook()
     │       → MDX page with %pip install cell (for in-page execution)
     │
     └── sync-content.py: copy_notebook_with_rewrite()
-            → notebooks/{path}.ipynb (image paths rewritten + install cell injected)
+            → notebooks/{path}.ipynb:
+            │   - Colab metadata: cell_execution_strategy = "setup"
+            │   - Cell 0: !pip install -q qiskit ... (init, auto-runs on Colab)
+            │   - Cell 1: !pip install -q scikit-learn ... (extras, optional)
+            │   - Cell 2+: original notebook cells
+            │
             → static/notebooks/{path}.ipynb (deployed to gh-pages)
                     │
-                    ├── Colab URL: colab.research.google.com/github/.../blob/gh-pages/notebooks/...
-                    └── Binder URL: mybinder.org/...?labpath=notebooks/...
+                    ├── Colab: colab.research.google.com/github/.../blob/gh-pages/notebooks/...
+                    │          → init cell auto-runs, extras cell visible to user
+                    │
+                    └── Binder: mybinder.org/...?labpath=notebooks/...
+                               → init cell auto-runs (no-op), extras cell visible to user
 ```
 
 ---
@@ -234,7 +279,8 @@ Upstream .ipynb (no install cell)
 
 | Risk | Mitigation |
 |------|-----------|
-| Redundant pip installs add startup time | `-q` flag suppresses output; ~5-10s of no-op resolution is acceptable |
+| Colab ignores `cell_execution_strategy` for GitHub-opened notebooks | Graceful degradation — init cell is still visible and runnable manually; test with actual Colab URL |
+| Init cell no-op adds ~5-10s on Binder | Acceptable; `-q` suppresses output |
 | gh-pages branch size increases | ~50 notebooks + images; negligible vs. existing site assets |
 | Notebooks lag behind upstream until next sync+deploy | Same cadence as the rest of the site content; acceptable |
 | `analyze_notebook_imports()` misses a dependency | Existing risk — already affects MDX pages; not new |
