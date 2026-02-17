@@ -19,6 +19,88 @@ const config: Config = {
 
   onBrokenLinks: 'warn',
 
+  headTags: [
+    // Preconnect hints for external resources
+    {
+      tagName: 'link',
+      attributes: { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+    },
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'preconnect',
+        href: 'https://fonts.gstatic.com',
+        crossorigin: 'anonymous',
+      },
+    },
+    {
+      tagName: 'link',
+      attributes: { rel: 'preconnect', href: 'https://cdn.jsdelivr.net' },
+    },
+    // Robots meta — max-snippet:-1 recommended for AI search
+    {
+      tagName: 'meta',
+      attributes: {
+        name: 'robots',
+        content: 'index, follow, max-snippet:-1, max-image-preview:large',
+      },
+    },
+    // Organization schema
+    {
+      tagName: 'script',
+      attributes: { type: 'application/ld+json' },
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'Organization',
+        name: 'doQumentation',
+        url: 'https://doqumentation.org',
+        logo: 'https://doqumentation.org/img/logo.svg',
+        description:
+          'Open-source frontend for IBM Quantum tutorials, courses, and documentation with live code execution.',
+        sameAs: ['https://github.com/JanLahmann/doQumentation'],
+      }),
+    },
+    // WebPage schema
+    {
+      tagName: 'script',
+      attributes: { type: 'application/ld+json' },
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'WebPage',
+        name: 'doQumentation',
+        description:
+          'doQumentation adds a feature-rich, user-friendly, open-source frontend to IBM Quantum tutorials, courses, and documentation.',
+        url: 'https://doqumentation.org',
+        isPartOf: {
+          '@type': 'WebSite',
+          name: 'doQumentation',
+          url: 'https://doqumentation.org',
+        },
+      }),
+    },
+    // SoftwareApplication schema
+    {
+      tagName: 'script',
+      attributes: { type: 'application/ld+json' },
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: 'doQumentation',
+        applicationCategory: 'EducationalApplication',
+        operatingSystem: 'Web, Docker, Raspberry Pi',
+        description:
+          'Open-source frontend for IBM Quantum documentation with live Jupyter code execution, simulator mode, and offline support.',
+        url: 'https://doqumentation.org',
+        offers: {
+          '@type': 'Offer',
+          price: '0',
+          priceCurrency: 'USD',
+        },
+        license: 'https://www.apache.org/licenses/LICENSE-2.0',
+      }),
+    },
+  ],
+
   i18n: {
     defaultLocale: 'en',
     locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he'],
@@ -95,7 +177,20 @@ const config: Config = {
   themeConfig: {
     // Social card image
     image: 'img/rasqberry-social-card.png',
-    
+
+    // Global meta tags for social sharing and SEO
+    metadata: [
+      { property: 'og:type', content: 'website' },
+      { property: 'og:site_name', content: 'doQumentation' },
+      { name: 'twitter:title', content: 'doQumentation' },
+      {
+        name: 'twitter:description',
+        content:
+          'Open-source frontend for IBM Quantum tutorials, courses, and documentation with live code execution.',
+      },
+      { name: 'theme-color', content: '#161616' },
+    ],
+
     navbar: {
       title: 'doQumentation',
       logo: {
