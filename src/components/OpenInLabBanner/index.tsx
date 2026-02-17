@@ -75,7 +75,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               {labUrl && (
                 <a
                   href={labUrl}
-                  target="_blank"
+                  target="binder-lab"
                   rel="noopener noreferrer"
                   title="Opens the full Jupyter notebook for editing and advanced use"
                   style={{
