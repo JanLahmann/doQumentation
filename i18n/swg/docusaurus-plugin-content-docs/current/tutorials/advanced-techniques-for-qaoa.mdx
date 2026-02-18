@@ -1,0 +1,1035 @@
+---
+title: "Fortgschrittene Technike für QAOA"
+sidebar_label: "Fortgschrittene Technike für QAOA"
+description: "Des Notebook stellt fortgschrittene Technike zur Verbesserung vo dr Leistung vom Quantum Approximate Optimization Algorithm (QAOA) mit ara große Anzahl vo Qubits vor."
+notebook_path: "docs/tutorials/advanced-techniques-for-qaoa.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/advanced-techniques-for-qaoa.ipynb" />
+
+
+
+{/* cspell:ignore setminus pysat lbrack IEICE frameon */}
+
+*Nutzungsschätzung: 3 Minute auf emm Heron r2 Prozessor (HINWEIS: Des isch nur a Schätzung. Ihre Laufzeit ka variiere.)*
+## Hintergrund {#Hintergrund}
+
+Des Notebook stellt fortgschrittene Technike zur Verbesserung vo dr Leistung vom **Quantum Approximate Optimization Algorithm (QAOA)** mit ara große Anzahl vo Qubits vor.
+A Einführung in QAOA findet Se im Tutorial [Utility-scale Quanteoptimierungsproblem löse](/tutorials/quantum-approximate-optimization-algorithm).
+
+D'in dem Notebook vorgstellte fortgschrittene Technike umfasset:
+
+* **SWAP-Strategie mit SAT-Initial-Mapping**: Des isch a speziell für QAOA entwickelter Transpiler-Pass, wo a SWAP-Strategie und an SAT-Solver zamma verwendet, um d'Auswahl vo de physische Qubits auf dr QPU z'verbessere. D'SWAP-Strategie nutzt d'Kommutativität vo de QAOA-Operatore, um Gates so umz'ordne, dass Schichte vo SWAP-Gates gleichzeitig ausgführt werre kennet, wodurch d'Tiefe vom Circuit reduziert wird [\[1\]](#references). Dr SAT-Solver wird verwendet, um a Initial-Mapping z'finde, des d'Anzahl vo de SWAP-Operatione minimiert, wo bruucht werdet, um d'Qubits im Circuit auf d'physische Qubits vom Gerät abz'bilde [\[2\]](#references).
+* **CVaR-Kostenfunktion**: Typischerweise wird dr Erwartungswert vom Kosten-Hamiltonian als Kostenfunktion für QAOA verwendet, aber wie in [\[3\]](#references) zoigt worde isch, ka d'Konzentration auf dr Tail vo dr Verteilung anstatt vom Erwartungswert d'Leistung vo QAOA für kombinatorische Optimierungsproblem verbessere. Dr CVaR erreicht des. Für a gegebene Menge vo Shots mit entsprechende Zielfunktionswerte vom betrachtete Optimierungsproblem isch dr Conditional Value at Risk (CVaR) mit Konfidenzniveau $\alpha \in [0, 1]$ als Durchschnitt vo de $\alpha$ beschte Shots definiert [\[3\]](#references).
+Somit entspricht $\alpha = 1$ dem Standard-Erwartungswert, während $\alpha=0$ dem Minimum vo de gegebene Shots entspricht, und $\alpha \in (0, 1)$ isch a Kompromiss zwische dr Konzentration auf bessere Shots und dr Anwendung vo ara gwisse Mittelung zur Glättung vo dr Optimierungslandschaft. Zusätzlich ka dr CVaR als Fehlerminderungstechnik verwendet werre, um d'Qualität vo dr Schätzung vom Zielfunktionswert z'verbessere [\[4\]](#references).
+## Anforderungen {#Anforderungen}
+
+Schau vor dem Aafange vo diesem Tutorial, dass Se des Folgende installiert hend:
+
+* Qiskit SDK v2.0 oder höher, mit Unterstützung für [Visualisierung](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime v0.43 oder höher (`pip install qiskit-ibm-runtime`)
+* Rustworkx Graph-Bibliothek (`pip install rustworkx`)
+* Python SAT (`pip install python-sat`)
+## Setup
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q python-sat
+```
+
+```python
+from __future__ import annotations
+
+import numpy as np
+import rustworkx as rx
+from dataclasses import dataclass
+from itertools import combinations
+from threading import Timer
+from collections.abc import Callable, Iterable
+from pysat.formula import CNF, IDPool
+from pysat.solvers import Solver
+from scipy.optimize import minimize
+from rustworkx.visualization import mpl_draw as draw_graph
+
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import QAOAAnsatz
+from qiskit.circuit import QuantumCircuit, ParameterVector
+from qiskit.transpiler import CouplingMap, PassManager
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes.routing.commuting_2q_gate_routing import (
+    SwapStrategy,
+    FindCommutingPauliEvolutions,
+    Commuting2qGateRouter,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService, Session
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+```
+
+### Max-Cut-Problem {#Max-Cut-Problem}
+
+Betrachte mr d'Lösung vom **Max-Cut**-Problem auf emm Graphe mit 100 Knote mittels QAOA.
+Des Max-Cut-Problem isch a kombinatorisches Optimierungsproblem, des auf emm Graphe $G = (V, E)$ definiert isch, wobei $V$ d'Menge vo de Knote und $E$ d'Menge vo de Kante isch. Des Ziel isch, d'Knote in zwoi Menge, $S$ und $V \setminus S$, z'partitioniere, so dass d'Anzahl vo de Kante zwische de beide Menge maximiert wird.
+In dem Beispiel verwendet mer an Graphe mit 100 Knote, wo auf ara Hardware-Coupling-Map basiert.
+## Schritt 1: Klassische Eingabe auf a Quanteproblem abbilden {#Schritt-1}
+
+### Graph &rarr; Hamiltonian
+
+Bilde Se zunächscht des Problem auf an Quantecircuit ab, wo für QAOA geeignet isch. Details zu dem Prozess findet Se im [einführende QAOA-Tutorial.](/tutorials/quantum-approximate-optimization-algorithm)
+
+```python
+# Instantiate runtime to access backend
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    min_num_qubits=100, operational=True, simulator=False
+)
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_fez')>
+```
+
+```python
+backend.coupling_map.is_symmetric
+```
+
+```text
+True
+```
+
+```python
+n = 100
+graph_100 = rx.PyGraph()
+graph_100.add_nodes_from((np.arange(0, n, 1)))
+w = 1.0
+elist = []
+
+for edge in backend.coupling_map:
+    if (edge[0] < n) and (edge[1] < n):
+        if (edge[1], edge[0], w) not in elist:
+            elist.append((edge[0], edge[1], w))
+
+graph_100.add_edges_from(elist)
+draw_graph(graph_100, with_labels=True)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/advanced-techniques-for-qaoa/extracted-outputs/8b864d32-9483-45ea-831f-60488e330adb-0.avif)
+
+```python
+# Construct cost hamiltonian
+
+def build_max_cut_paulis(graph: rx.PyGraph) -> list[tuple[str, float]]:
+    """Convert the graph to Pauli list.
+
+    This function does the inverse of `build_max_cut_graph`
+    """
+    pauli_list = []
+    for edge in list(graph.edge_list()):
+        paulis = ["I"] * len(graph)
+        paulis[edge[0]], paulis[edge[1]] = "Z", "Z"
+
+        weight = graph.get_edge_data(edge[0], edge[1])
+
+        pauli_list.append(("".join(paulis)[::-1], weight))
+
+    return pauli_list
+
+max_cut_paulis = build_max_cut_paulis(graph_100)
+
+cost_hamiltonian = SparsePauliOp.from_list(max_cut_paulis)
+print("Cost Function Hamiltonian:", cost_hamiltonian)
+```
+
+```text
+Cost Function Hamiltonian: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j])
+```
+
+## Schritt 2: Problem für d'Ausführung auf Quantehardware optimiere {#Schritt-2}
+
+### SWAP-Strategie mit SAT-Initial-Mapping {#SWAP-Strategie-mit-SAT-Initial-Mapping}
+
+Mir werdet demonstriere, wie QAOA-Circuits mit dr **SWAP-Strategie mit SAT-Initial-Mapping** erstellt und optimiert werdet, emm speziell für QAOA entwickelte Transpiler-Pass für quadratische Problem.
+
+In dem Beispiel wähle mer a SWAP-Einfügungsstrategie für Blöck vo kommutierend Zwei-Qubit-Gates, wo Schichte vo SWAP-Gates aawendet, wo gleichzeitig auf dr Coupling-Map ausgführt werre kennet. Die Strategie wird in [\[1\]](#references) vorgstellt und an `Commuting2qGateRouter` übergebe, des als standardisierter Qiskit-Transpiler-Pass verfügbar isch (sieh [`Commuting2qGateRouter`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.Commuting2qGateRouter)). In dem Beispiel verwende mer a Line-Swap-Strategie.
+
+```python
+# Extract longest path with no repeated nodes
+nodes = rx.longest_simple_path(graph_100)
+
+# Collect even edges and odd edges
+even_edges = [
+    (nodes[i], nodes[i + 1])
+    if nodes[i] < nodes[i + 1]
+    else (nodes[i + 1], nodes[i])
+    for i in range(0, len(nodes) - 1, 2)
+]
+odd_edges = [
+    (nodes[i], nodes[i + 1])
+    if nodes[i] < nodes[i + 1]
+    else (nodes[i + 1], nodes[i])
+    for i in range(1, len(nodes) - 1, 2)
+]
+edge_list = [
+    (edge[0], edge[1]) if edge[0] < edge[1] else (edge[1], edge[0])
+    for edge in graph_100.edge_list()
+]
+
+swap_strategy = SwapStrategy(CouplingMap(edge_list), (even_edges, odd_edges))
+```
+
+#### Dr Graphe mit emm SAT-Mapper neu abbilde {#Den-Graphen-mit-einem-SAT-Mapper-neu-abbilden}
+
+Selbscht wenn a Circuit aus kommutierend Gates beschtoht (des isch dr Fall für dr QAOA-Circuit, aber au für Trotterisierte Simulatione vo Ising-Hamiltonians), isch des Finde vo emm guete Initial-Mapping a herausfordernd Aufgab. Dr in [\[2\]](#references) vorgstellte SAT-basierte Ansatz ermöglicht d'Entdeckung vo effektive Initial-Mappings für Circuits mit kommutierend Gates, was z'ara signifikante Reduzierung vo dr Anzahl erforderlicher SWAP-Schichte führt. Der Ansatz isch auf bis zu *500 Qubits* skaliert worde, wie im Paper dargestellt.
+
+Dr folgende Code demonstriert, wie dr `SATMapper` vo Matsuo et al. verwendet wird, um dr Graphe neu abz'bilde. Der Prozess ermöglicht's, des Problem auf an optimalere Ausgangszustand für a bestimmte SWAP-Strategie abz'bilde, was z'ara signifikante Reduzierung vo dr Anzahl vo de SWAP-Schichte führt, wo zur Ausführung vom Circuit erforderlich send.
+
+Im `SATMapper` wird des Problem, a guets Initial-Mapping z'finde, als SAT-Problem formuliert. A SAT-Solver wird verwendet, um a solches Initial-Mapping für dr QAOA-Circuit z'finde. `python-sat` (`pysat` kurz) isch a Python-Bibliothek für an SAT-Solver, und mir werdet sie verwende, um des SAT-Problem in dem Beispiel z'löse.
+
+```python
+"""A class to solve the SWAP gate insertion initial mapping problem
+using the SAT approach from https://arxiv.org/abs/2212.05666.
+"""
+
+@dataclass
+class SATResult:
+    """A data class to hold the result of a SAT solver."""
+
+    satisfiable: bool  # Satisfiable is True if the SAT model could be solved
+    # in a given time.
+    solution: dict  # The solution to the SAT problem if it is satisfiable.
+    mapping: list  # The mapping of nodes in the pattern graph to nodes in the
+    # target graph.
+    elapsed_time: float  # The time it took to solve the SAT model.
+
+class SATMapper:
+    r"""A class to introduce a SAT-approach to solve
+    the initial mapping problem in SWAP gate insertion for commuting gates.
+
+    When this pass is run on a DAG it will look for the first instance of
+    :class:`.Commuting2qBlock` and use the program graph :math:`P` of this block
+    of gates to find a layout for a given swap strategy. This layout is found
+    with a binary search over the layers :math:`l` of the swap strategy. At each
+    considered layer a subgraph isomorphism problem formulated as a SAT is solved
+    by a SAT solver. Each instance is whether it is possible to embed the program
+    graph :math:`P` into the effective connectivity graph :math:`C_l` that is
+    achieved by applying :math:`l` layers of the swap strategy to the coupling map
+    :math:`C_0` of the backend. Since solving SAT problems can be hard, a
+    ``time_out`` fixes the maximum time allotted to the SAT solver for each
+    instance. If this time is exceeded the considered problem is deemed
+    unsatisfiable and the binary search proceeds to the next number of swap
+    layers :math:``l``.
+    """
+
+    def __init__(self, timeout: int = 60):
+        """Initialize the SATMapping.
+
+        Args:
+            timeout: The allowed time in seconds for each iteration of the SAT
+                solver. This variable defaults to 60 seconds.
+        """
+        self.timeout = timeout
+
+    def find_initial_mappings(
+        self,
+        program_graph: rx.Graph,
+        swap_strategy: SwapStrategy,
+        min_layers: int | None = None,
+        max_layers: int | None = None,
+    ) -> dict[int, SATResult]:
+        r"""Find an initial mapping for a given swap strategy. Perform a
+        binary search over the number of swap layers, and for each number
+        of swap layers solve a subgraph isomorphism problem formulated as
+        a SAT problem.
+
+        Args:
+            program_graph (rx.Graph): The program graph with commuting gates, where
+                                        each edge represents a two-qubit gate.
+            swap_strategy (SwapStrategy): The swap strategy to use to find the
+                                        initial mapping.
+            min_layers (int): The minimum number of swap layers to consider.
+                                        Defaults to the maximum degree of the
+                                        program graph - 2.
+            max_layers (int): The maximum number of swap layers to consider.
+                                        Defaults to the number of qubits in the
+                                        swap strategy - 2.
+
+        Returns:
+            dict[int, SATResult]: A dictionary containing the results of the SAT
+                                    solver for each number of swap layers.
+        """
+        num_nodes_g1 = len(program_graph.nodes())
+        num_nodes_g2 = swap_strategy.distance_matrix.shape[0]
+        if num_nodes_g1 > num_nodes_g2:
+            return SATResult(False, [], [], 0)
+        if min_layers is None:
+            # use the maximum degree of the program graph - 2
+            # as the lower bound.
+            min_layers = max((d for _, d in program_graph.degree)) - 2
+        if max_layers is None:
+            max_layers = num_nodes_g2 - 1
+
+        variable_pool = IDPool(start_from=1)
+        variables = np.array(
+            [
+                [variable_pool.id(f"v_{i}_{j}") for j in range(num_nodes_g2)]
+                for i in range(num_nodes_g1)
+            ],
+            dtype=int,
+        )
+        vid2mapping = {v: idx for idx, v in np.ndenumerate(variables)}
+        binary_search_results = {}
+
+        def interrupt(solver):
+            # This function is called to interrupt the solver when the
+            # timeout is reached.
+            solver.interrupt()
+
+        # Make a cnf (conjunctive normal form) for the one-to-one
+        # mapping constraint
+        cnf1 = []
+        for i in range(num_nodes_g1):
+            clause = variables[i, :].tolist()
+            cnf1.append(clause)
+            for k, m in combinations(clause, 2):
+                cnf1.append([-1 * k, -1 * m])
+        for j in range(num_nodes_g2):
+            clause = variables[:, j].tolist()
+            for k, m in combinations(clause, 2):
+                cnf1.append([-1 * k, -1 * m])
+
+        # Perform a binary search over the number of swap layers to find the
+        # minimum number of swap layers that satisfies the subgraph isomorphism
+        # problem.
+        while min_layers < max_layers:
+            num_layers = (min_layers + max_layers) // 2
+
+            # Create the connectivity matrix. Note that if the swap strategy
+            # cannot reach full connectivity then its distance matrix will have
+            # entries with -1. These entries must be treated as False.
+            d_matrix = swap_strategy.distance_matrix
+            connectivity_matrix = (
+                (-1 < d_matrix) & (d_matrix <= num_layers)
+            ).astype(int)
+            # Make a cnf for the adjacency constraint
+            cnf2 = []
+            for e_0, e_1 in list(program_graph.edge_list()):
+                clause_matrix = np.multiply(
+                    connectivity_matrix, variables[e_1, :]
+                )
+                clause = np.concatenate(
+                    (
+                        [[-variables[e_0, i]] for i in range(num_nodes_g2)],
+                        clause_matrix,
+                    ),
+                    axis=1,
+                )
+                # Remove 0s from each clause
+                cnf2.extend([c[c != 0].tolist() for c in clause])
+
+            cnf = CNF(from_clauses=cnf1 + cnf2)
+
+            with Solver(bootstrap_with=cnf, use_timer=True) as solver:
+                # Solve the SAT problem with a timeout.
+                # Timer is used to interrupt the solver when the
+                # timeout is reached.
+                timer = Timer(self.timeout, interrupt, [solver])
+                timer.start()
+                status = solver.solve_limited(expect_interrupt=True)
+                timer.cancel()
+                # Get the solution and the elapsed time.
+                sol = solver.get_model()
+                e_time = solver.time()
+
+                print(
+                    f"Layers: {num_layers}, Status: {status}, Time: {e_time}"
+                )
+                if status:
+                    # If the SAT problem is satisfiable, convert the solution
+                    # to a mapping.
+                    mapping = [vid2mapping[idx] for idx in sol if idx > 0]
+                    binary_search_results[num_layers] = SATResult(
+                        status, sol, mapping, e_time
+                    )
+                    max_layers = num_layers
+                else:
+                    # If the SAT problem is unsatisfiable, return the last
+                    # satisfiable solution.
+                    binary_search_results[num_layers] = SATResult(
+                        status, sol, [], e_time
+                    )
+                    min_layers = num_layers + 1
+
+        return binary_search_results
+
+    def remap_graph_with_sat(
+        self, graph: rx.Graph, swap_strategy, max_layers
+    ):
+        """Applies the SAT mapping.
+
+        Args:
+            graph (nx.Graph): The graph to remap.
+            swap_strategy (SwapStrategy): The swap strategy to use
+                                            to find the initial mapping.
+
+        Returns:
+            tuple: A tuple containing the remapped graph, the edge map, and the
+            number of layers of the swap strategy that was used to find the
+            initial mapping. If no solution is found then the tuple contains
+            None for each element. Note the returned edge map `{k: v}` means that
+            node `k` in the original graph gets mapped to node `v` in the
+            Pauli strings.
+        """
+        num_nodes = len(graph.nodes())
+        results = self.find_initial_mappings(
+            graph, swap_strategy, 0, max_layers
+        )
+        solutions = [k for k, v in results.items() if v.satisfiable]
+
+        if len(solutions):
+            min_k = min(solutions)
+            edge_map = dict(results[min_k].mapping)
+            # Create the remapped graph
+            remapped_graph = rx.PyGraph()
+            remapped_graph.add_nodes_from(range(num_nodes))
+            mapping = dict(results[min_k].mapping)
+            for i, graph_edge in enumerate(list(graph.edge_list())):
+                remapped_edge = tuple(mapping[node] for node in graph_edge)
+                remapped_graph.add_edge(*remapped_edge, graph.edges()[i])
+            return remapped_graph, edge_map, min_k
+        else:
+            return None, None, None
+```
+
+```python
+sm = SATMapper(timeout=10)
+remapped_graph, edge_map, min_swap_layers = sm.remap_graph_with_sat(
+    graph=graph_100, swap_strategy=swap_strategy, max_layers=1
+)
+print("Map from old to new nodes: ", edge_map)
+print("Min SWAP layers:", min_swap_layers)
+draw_graph(remapped_graph, node_size=200, with_labels=True, width=1)
+```
+
+```text
+Layers: 0, Status: True, Time: 0.022812999999999306
+Map from old to new nodes:  {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11, 12: 12, 13: 13, 14: 14, 15: 15, 16: 16, 17: 17, 18: 18, 19: 19, 20: 20, 21: 21, 22: 22, 23: 23, 24: 24, 25: 25, 26: 26, 27: 27, 28: 28, 29: 29, 30: 30, 31: 31, 32: 32, 33: 33, 34: 34, 35: 35, 36: 36, 37: 37, 38: 38, 39: 39, 40: 40, 41: 41, 42: 42, 43: 43, 44: 44, 45: 45, 46: 46, 47: 47, 48: 48, 49: 49, 50: 50, 51: 51, 52: 52, 53: 53, 54: 54, 55: 55, 56: 56, 57: 57, 58: 58, 59: 59, 60: 60, 61: 61, 62: 62, 63: 63, 64: 64, 65: 65, 66: 66, 67: 67, 68: 68, 69: 69, 70: 70, 71: 71, 72: 72, 73: 73, 74: 74, 75: 75, 76: 76, 77: 77, 78: 78, 79: 79, 80: 80, 81: 81, 82: 82, 83: 83, 84: 84, 85: 85, 86: 86, 87: 87, 88: 88, 89: 89, 90: 90, 91: 91, 92: 92, 93: 93, 94: 94, 95: 95, 96: 96, 97: 97, 98: 98, 99: 99}
+Min SWAP layers: 0
+```
+
+![Output of the previous code cell](/docs/images/tutorials/advanced-techniques-for-qaoa/extracted-outputs/e689e09e-6ca7-4154-8602-d1d954ebe80b-1.avif)
+
+```python
+remapped_max_cut_paulis = build_max_cut_paulis(remapped_graph)
+# define a qiskit SparsePauliOp from the list of paulis
+remapped_cost_operator = SparsePauliOp.from_list(remapped_max_cut_paulis)
+print(remapped_cost_operator)
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j])
+```
+
+#### An QAOA-Circuit mit SWAP-Strategie und SAT-Mapping erstelle {#Einen-QAOA-Circuit-mit-SWAP-Strategie-und-SAT-Mapping-erstellen}
+
+Mir möchtet d'SWAP-Strategie nur auf d'Kosten-Operator-Schicht aawendet, deshalb erstelle mir zunächscht dr isolierte Block, wo mer später transformiere und an dr endgültige QAOA-Circuit aahänge werdet.
+
+Hierfür kennet mer d'Klasse [`QAOAAnsatz`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.QAOAAnsatz) vo Qiskit verwende. Mir gebet an leere Circuit in d'Felder `initial_state` und `mixer_operator` ei, um sicherzstelle, dass mer a isolierte Kosten-Operator-Schicht erstelle.
+Mir definiere au d'edge_coloring-Map, damit RZZ-Gates nebe SWAP-Gates positioniert werdet. Die strategische Platzierung ermöglicht's uns, CX-Auslöschunge ausz'nutze und dr Circuit für a bessere Leistung z'optimiere.
+Der Prozess wird innerhalb vo dr Funktion `create_qaoa_swap_circuit` ausgführt.
+
+```python
+def make_meas_map(circuit: QuantumCircuit) -> dict:
+    """Return a mapping from qubit index (the key) to classical bit (the value).
+
+    This allows us to account for the swapping order introduced by the SWAP strategy.
+    """
+    creg = circuit.cregs[0]
+    qreg = circuit.qregs[0]
+
+    meas_map = {}
+    for inst in circuit.data:
+        if inst.operation.name == "measure":
+            meas_map[qreg.index(inst.qubits[0])] = creg.index(inst.clbits[0])
+
+    return meas_map
+
+def apply_swap_strategy(
+    circuit: QuantumCircuit,
+    swap_strategy: SwapStrategy,
+    edge_coloring: dict[tuple[int, int], int] | None = None,
+) -> QuantumCircuit:
+    """Transpile with a SWAP strategy.
+
+    Returns:
+        A quantum circuit transpiled with the given swap strategy.
+    """
+
+    pm_pre = PassManager(
+        [
+            FindCommutingPauliEvolutions(),
+            Commuting2qGateRouter(
+                swap_strategy,
+                edge_coloring,
+            ),
+        ]
+    )
+    return pm_pre.run(circuit)
+
+def apply_qaoa_layers(
+    cost_layer: QuantumCircuit,
+    meas_map: dict,
+    num_layers: int,
+    gamma: list[float] | ParameterVector = None,
+    beta: list[float] | ParameterVector = None,
+    initial_state: QuantumCircuit = None,
+    mixer: QuantumCircuit = None,
+):
+    """Applies QAOA layers to construct circuit.
+
+    First, the initial state is applied. If `initial_state` is None, we begin in the
+    initial superposition state. Next, we alternate between layers of the cost operator
+    and the mixer. The cost operator is alternatively applied in order and in reverse
+    instruction order. This allows us to apply the swap strategy on odd `p` layers
+    and undo the swap strategy on even `p` layers.
+    """
+
+    num_qubits = cost_layer.num_qubits
+    new_circuit = QuantumCircuit(num_qubits, num_qubits)
+
+    if initial_state is not None:
+        new_circuit.append(initial_state, range(num_qubits))
+    else:
+        # all h state by default
+        new_circuit.h(range(num_qubits))
+
+    if gamma is None or beta is None:
+        gamma = ParameterVector("γ'", num_layers)
+        if mixer is None or mixer.num_parameters == 0:
+            beta = ParameterVector("β'", num_layers)
+        else:
+            beta = ParameterVector("β'", num_layers * mixer.num_parameters)
+
+    if mixer is not None:
+        mixer_layer = mixer
+    else:
+        mixer_layer = QuantumCircuit(num_qubits)
+        mixer_layer.rx(-2 * beta[0], range(num_qubits))
+
+    for layer in range(num_layers):
+        bind_dict = {cost_layer.parameters[0]: gamma[layer]}
+        cost_layer_ = cost_layer.assign_parameters(bind_dict)
+        bind_dict = {
+            mixer_layer.parameters[i]: beta[layer + i]
+            for i in range(mixer_layer.num_parameters)
+        }
+        layer_mixer = mixer_layer.assign_parameters(bind_dict)
+
+        if layer % 2 == 0:
+            new_circuit.append(cost_layer_, range(num_qubits))
+        else:
+            new_circuit.append(cost_layer_.reverse_ops(), range(num_qubits))
+
+        new_circuit.append(layer_mixer, range(num_qubits))
+
+    for qidx, cidx in meas_map.items():
+        new_circuit.measure(qidx, cidx)
+
+    return new_circuit
+
+def create_qaoa_swap_circuit(
+    cost_operator: SparsePauliOp,
+    swap_strategy: SwapStrategy,
+    edge_coloring: dict = None,
+    theta: list[float] = None,
+    qaoa_layers: int = 1,
+    initial_state: QuantumCircuit = None,
+    mixer: QuantumCircuit = None,
+):
+    """Create the circuit for QAOA.
+
+    Notes: This circuit construction for QAOA works for quadratic terms in `Z` and will be
+    extended to first-order terms in `Z`. Higher-orders are not supported.
+
+    Args:
+        cost_operator: the cost operator.
+        swap_strategy: selected swap strategy
+        edge_coloring: A coloring of edges that should correspond to the coupling
+            map of the hardware. It defines the order in which we apply the Rzz
+            gates. This allows us to choose an ordering such that `Rzz` gates will
+            immediately precede SWAP gates to leverage CNOT cancellation.
+        theta: The QAOA angles.
+        qaoa_layers: The number of layers of the cost operator and the mixer operator.
+        initial_state: The initial state on which we apply layers of cost operator
+            and mixer.
+        mixer: The QAOA mixer. It will be applied as is onto the QAOA circuit. Therefore,
+            its output must have the same ordering of qubits as its input.
+    """
+
+    num_qubits = cost_operator.num_qubits
+
+    if theta is not None:
+        gamma = theta[: len(theta) // 2]
+        beta = theta[len(theta) // 2 :]
+        qaoa_layers = len(theta) // 2
+    else:
+        gamma = beta = None
+
+    # First, create the ansatz of one layer of QAOA without mixer
+    cost_layer = QAOAAnsatz(
+        cost_operator,
+        reps=1,
+        initial_state=QuantumCircuit(num_qubits),
+        mixer_operator=QuantumCircuit(num_qubits),
+    ).decompose()
+
+    # This will allow us to recover the permutation of the measurements that the swaps introduce.
+    cost_layer.measure_all()
+
+    # Now, apply the swap strategy for commuting gates
+    cost_layer = apply_swap_strategy(cost_layer, swap_strategy, edge_coloring)
+
+    # Compute the measurement map (qubit to classical bit).
+    # We will apply this for odd layers where the swaps were inserted.
+    if qaoa_layers % 2 == 1:
+        meas_map = make_meas_map(cost_layer)
+    else:
+        meas_map = {idx: idx for idx in range(num_qubits)}
+
+    cost_layer.remove_final_measurements()
+
+    # Finally, introduce the mixer circuit and add measurements following measurement map
+    circuit = apply_qaoa_layers(
+        cost_layer, meas_map, qaoa_layers, gamma, beta, initial_state, mixer
+    )
+
+    return circuit
+```
+
+```python
+# We can define the edge_coloring map so that RZZ gates are positioned right before SWAP gates to exploit CX cancellations
+# We use greedy edge coloring from rustworkx to color the edges of the graph. This coloring is used to order the RZZ gates in the circuit.
+
+edge_coloring_idx = rx.graph_greedy_edge_color(graph_100)
+edge_coloring = {
+    edge: edge_coloring_idx[idx]
+    for idx, edge in enumerate(list(graph_100.edge_list()))
+}
+edge_coloring = {tuple(sorted(k)): v for k, v in edge_coloring.items()}
+```
+
+```python
+qaoa_circ = create_qaoa_swap_circuit(
+    remapped_cost_operator,
+    swap_strategy,
+    edge_coloring=edge_coloring,
+    qaoa_layers=1,
+)
+qaoa_circ.draw(output="mpl", fold=False)
+```
+
+```text
+/Users/mirko/Workspace/documentation/.venv/lib/python3.13/site-packages/qiskit/circuit/quantumcircuit.py:4625: UserWarning: Trying to add QuantumRegister to a QuantumCircuit having a layout
+  circ.add_register(qreg)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/advanced-techniques-for-qaoa/extracted-outputs/82ae28b3-85eb-4487-8100-1e622e93cccf-1.avif)
+
+## Schritt 3: Ausführung mit Qiskit Primitives {#Schritt-3}
+
+### A CVaR-Kostenfunktion definiere {#Eine-CVaR-Kostenfunktion-definieren}
+
+Des Beispiel zoigt, wie d'in [\[3\]](#references) eingeführte Conditional Value at Risk (CVaR)-Kostenfunktion innerhalb variationaler Quanteoptimierungsalgorithme verwendet wird.
+
+Dr CVaR vo ara Zufallsvariable $X$ für a Konfidenzniveau $α ∈ (0, 1]$ isch definiert als
+$CVaR_{\alpha}(X) = \mathbb{E} \lbrack X | X \leq F_X^{-1}(\alpha) \rbrack$
+wobei $F_X^{-1}(p)$ d'inverse kumulative Verteilungsfunktion vo $X$ isch. Mit andere Worte isch CVaR dr Erwartungswert vom untere $\alpha$-Tail vo dr Verteilung vo $X$.
+
+```python
+pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+
+transpiled_qaoa_circ = pass_manager.run(qaoa_circ)
+```
+
+```python
+# Utility functions for the evaluation of the expectation value of a measured state
+# In this code, for optimization, the measured state is converted into a bit string,
+# and the sign of the value is determined by taking the exclusive OR of the bits
+# corresponding to Pauli Z.
+
+_PARITY = np.array(
+    [-1 if bin(i).count("1") % 2 else 1 for i in range(256)],
+    dtype=np.complex128,
+)
+
+def evaluate_sparse_pauli(state: int, observable: SparsePauliOp) -> complex:
+    """Utility for the evaluation of the expectation value of a measured state.
+
+    Args:
+        state (int): The measured state.
+        observable (SparsePauliOp): The observable to evaluate the expectation value for.
+
+    Returns:
+        complex: The expectation value of the measured state.
+    """
+    packed_uint8 = np.packbits(
+        observable.paulis.z, axis=1, bitorder="little"
+    )  # convert observable to array with 8 bit integer
+    state_bytes = np.frombuffer(
+        state.to_bytes(packed_uint8.shape[1], "little"),
+        dtype=np.uint8,  # convert bitstring to array with 8 bit integer
+    )
+    reduced = np.bitwise_xor.reduce(
+        packed_uint8 & state_bytes, axis=1
+    )  # take bitwise xor of the result of 'and' conditional on the above two, return 0 or 1
+    return np.sum(observable.coeffs * _PARITY[reduced])
+```
+
+```python
+def qaoa_sampler_cost_fun(
+    params, ansatz, hamiltonian, sampler, aggregation=None
+):
+    """Standard sampler-based QAOA cost function to be plugged into optimizer routines.
+
+    Args:
+        params (np.ndarray): Parameters for the ansatz.
+        ansatz (QuantumCircuit): Ansatz circuit.
+        hamiltonian (SparsePauliOp): Hamiltonian to be minimized.
+        sampler (QAOASampler): Sampler to be used.
+        aggregation (Callable | float | None): Aggregation function to be applied to
+            the sampled results. If None, the sum of the expectation values is returned.
+            If float, the CVaR with the given alpha is used.
+    """
+    # Run the circuit
+    job = sampler.run([(ansatz, params)])
+    sampler_result = job.result()
+    sampled_int_counts = sampler_result[
+        0
+    ].data.c.get_int_counts()  # bitstrings are stored as integers
+    shots = sum(sampled_int_counts.values())
+    int_count_distribution = {
+        key: val / shots for key, val in sampled_int_counts.items()
+    }
+
+    # a dictionary containing: {state: (measurement probability, value)}
+    evaluated = {
+        state: (
+            probability,
+            np.real(evaluate_sparse_pauli(state, hamiltonian)),
+        )
+        for state, probability in int_count_distribution.items()
+    }
+
+    # If aggregation is None, return the sum of the expectation values.
+    # If aggregation is a float, return the CVaR with the given alpha.
+    # Otherwise, use the aggregation function.
+    if aggregation is None:
+        result = sum(
+            probability * value for probability, value in evaluated.values()
+        )
+    elif isinstance(aggregation, float):
+        cvar_aggregation = _get_cvar_aggregation(aggregation)
+        result = cvar_aggregation(evaluated.values())
+    else:
+        result = aggregation(evaluated.values())
+
+    global iter_counts, result_dict
+    iter_counts += 1
+    temp_dict = {}
+    temp_dict["params"] = params.tolist()
+    temp_dict["cvar_fval"] = result
+    temp_dict["fval"] = sum(
+        probability * value for probability, value in evaluated.values()
+    )
+    temp_dict["distribution"] = sampled_int_counts
+    temp_dict["evaluated"] = evaluated
+    result_dict[iter_counts] = temp_dict
+    print(f"Iteration {iter_counts}: {result}")
+
+    return result
+
+def _get_cvar_aggregation(alpha: float | None) -> Callable:
+    """Return the CVaR aggregation function with the given alpha.
+
+    Args:
+        alpha (float | None): Alpha value for the CVaR aggregation. If None, 1 is used
+            by default.
+    Raises:
+        ValueError: If alpha is not in [0, 1].
+    """
+    if alpha is None:
+        alpha = 1
+    elif not 0 <= alpha <= 1:
+        raise ValueError(f"alpha must be in [0, 1], but {alpha} was given.")
+
+    def cvar_aggregation(
+        objective_dict: Iterable[tuple[float, float]],
+    ) -> float:
+        """Return the CVaR of the given measurements.
+        Args:
+            objective_dict (Iterable[tuple[float, float]]): An iterable of tuples containing
+                the measured bit string and the objective value based on the bit string.
+
+        """
+        sorted_measurements = sorted(objective_dict, key=lambda x: x[1])
+        # accumulate the probabilities until alpha is reached
+        accumulated_percent = 0.0
+        cvar = 0.0
+        for probability, value in sorted_measurements:
+            cvar += value * min(probability, alpha - accumulated_percent)
+            accumulated_percent += probability
+            if accumulated_percent >= alpha:
+                break
+        return cvar / alpha
+
+    return cvar_aggregation
+```
+
+Dr CVaR ka als Fehlerminderungstechnik verwendet werre, wie zuvor diskutiert [\[4\]](#references). In dem Beispiel bestimme mer $\alpha$ und d'Anzahl vo de Shots entsprechend dr Fehlerrate vom Circuit.
+
+```python
+num_2q_ops = transpiled_qaoa_circ.count_ops()[
+    "cz"
+]  # the two qubit gates on our backend are cz's.
+
+for el in backend.properties().general:
+    if el.name[:2] == "lf" and el.name[3:] == str(
+        n
+    ):  # pick out lf_100, lf of the best 100q chain
+        lf = el.value  # layer fidelity
+        print("layer fidelity", lf)
+        eplg = 1 - lf ** (1 / (n - 1))  # error per layered gate (EPLG)
+        fid_cz = 1 - eplg
+        gamma_cz = 1 / fid_cz**2
+        gamma_circ = gamma_cz**num_2q_ops
+
+cvar_aggregation = 1 / np.sqrt(gamma_circ)
+print("")
+print("The corresponding CVaR aggregation value is: ", cvar_aggregation)
+print(
+    "To mitigate the twirled noise, increase shots by a factor of",
+    np.sqrt(gamma_circ),
+)
+```
+
+```text
+layer fidelity 0.5454643821399414
+
+The corresponding CVaR aggregation value is:  0.2568730767702702
+To mitigate the twirled noise, increase shots by a factor of 3.8929731857197782
+```
+
+```python
+iter_counts = 0
+result_dict = {}
+init_params = [np.pi, np.pi / 2]
+
+with Session(backend=backend) as session:
+    sampler = Sampler(mode=session)
+    sampler.options.default_shots = int(1000 / cvar_aggregation)
+    sampler.options.dynamical_decoupling.enable = True
+    sampler.options.dynamical_decoupling.sequence_type = "XY4"
+    sampler.options.twirling.enable_gates = True
+    sampler.options.twirling.enable_measure = True
+
+    result = minimize(
+        qaoa_sampler_cost_fun,
+        init_params,
+        args=(
+            transpiled_qaoa_circ,
+            remapped_cost_operator,
+            sampler,
+            cvar_aggregation,
+        ),
+        method="COBYLA",
+        tol=1e-2,
+    )
+print(result)
+```
+
+```text
+Iteration 1: -13.227556797094595
+Iteration 2: -13.181545294899571
+Iteration 3: -13.149537293372594
+Iteration 4: -3.305576300816324
+Iteration 5: -12.647411769418035
+Iteration 6: -13.443610807401718
+Iteration 7: -12.475368761210511
+Iteration 8: -15.905726329447413
+Iteration 9: -18.011752834505565
+Iteration 10: -14.125781339945583
+Iteration 11: -19.693673319331744
+Iteration 12: -21.175543794613695
+Iteration 13: -21.805701324676196
+Iteration 14: -22.121280244318488
+Iteration 15: -20.02575633517435
+Iteration 16: -22.399349757584158
+Iteration 17: -22.569392265696226
+Iteration 18: -21.877719328111898
+Iteration 19: -22.79144777628963
+Iteration 20: -22.437359259397432
+Iteration 21: -23.021505287264777
+Iteration 22: -22.69742427180412
+Iteration 23: -23.12553129222746
+Iteration 24: -22.893473281156922
+ message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: -23.12553129222746
+       x: [ 2.766e+00  1.080e+00]
+    nfev: 24
+   maxcv: 0.0
+```
+
+## Schritt 4: Nachbearbeitung und Rückgabe vom Ergebnis im gwünschte klassische Format {#Schritt-4}
+
+```python
+from matplotlib import pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(
+    [result_dict[i]["cvar_fval"] for i in range(1, iter_counts + 1)],
+    label="CVaR",
+)
+plt.plot(
+    [result_dict[i]["fval"] for i in range(1, iter_counts + 1)],
+    label="Standard",
+)
+plt.legend()
+plt.xlabel("Iteration")
+plt.ylabel("Cost")
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/advanced-techniques-for-qaoa/extracted-outputs/761821cb-9a0c-4efb-806b-75513302d34a-0.avif)
+
+Des Folgende ruft d'beschte Lösung aus de gesampelte Bitstrings ab
+
+```python
+# sort the result_dict[iter_counts]['evaluated'] by the CVaR value
+sorted_result_dict = [
+    (k, v)
+    for k, v in sorted(
+        result_dict[iter_counts]["evaluated"].items(),
+        key=lambda item: item[1][1],
+    )
+]
+print(
+    f"bitstring (int): {sorted_result_dict[0][0]}, probability: {sorted_result_dict[0][1][0]}, objective value: {sorted_result_dict[0][1][1]}"
+)
+```
+
+```text
+bitstring (int): 283561207335785714592526814041, probability: 0.00025693730729701953, objective value: -43.0
+```
+
+Betrachte Se dr Hamiltonian $H_C$ für des **Max-Cut**-Problem. Sei jeder Knote vom Graphe emm Qubit im Zustand $|0\rangle$ oder $|1\rangle$ zugeordnet, wobei dr Wert d'Menge aagibt, in wo sich dr Knote befindet. Des Ziel vom Problem isch, d'Anzahl vo de Kante $(v_1, v_2)$ z'maximiere, für wo $v_1 = |0\rangle$ und $v_2 = |1\rangle$ isch, oder umgekehrt. Wenn mer dr $Z$-Operator jedem Qubit zuordne, wobei
+
+$$
+    Z|0\rangle = |0\rangle \qquad Z|1\rangle = -|1\rangle
+$$
+
+dann ghört a Kante $(v_1, v_2)$ zum Cut, wenn dr Eigenwert vo $(Z_1|v_1\rangle) \cdot (Z_2|v_2\rangle) = -1$ isch; mit andere Worte, d'Qubits, wo mit $v_1$ und $v_2$ verbunde send, send unterschiedlich. Ebenso ghört $(v_1, v_2)$ ned zum Cut, wenn dr Eigenwert vo $(Z_1|v_1\rangle) \cdot (Z_2|v_2\rangle) = 1$ isch
+
+```python
+from typing import Sequence
+
+def to_bitstring(integer, num_bits):
+    result = np.binary_repr(integer, width=num_bits)
+    return [int(digit) for digit in result]
+
+def evaluate_sample(x: Sequence[int], graph: rx.PyGraph) -> float:
+    assert len(x) == len(
+        list(graph.nodes())
+    ), "The length of x must coincide with the number of nodes in the graph."
+    return sum(
+        x[u] * (1 - x[v])
+        + x[v]
+        * (
+            1 - x[u]
+        )  # x[u] = x[v] if same cut, x[u] \neq x[v] if different cuts
+        for u, v in list(graph.edge_list())
+    )
+
+bitstring = to_bitstring(
+    sorted_result_dict[0][0], len(list(remapped_graph.nodes()))
+)
+bitstring = bitstring[::-1]
+print(f"Result bitstring (binary) : {bitstring}")
+
+cut_value = evaluate_sample(bitstring, remapped_graph)
+print(f"The value of the cut is: {cut_value}")
+```
+
+```text
+Result bitstring (binary) : [1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0]
+The value of the cut is: 77
+```
+
+Zeichne mer abschließend an Graphe basierend auf em CVaR-Ergebnis.
+Mir teilet d'Graphknote basierend auf em CVaR-Ergebnis in zwoi Menge auf.
+D'Knote in dr erschte Menge send grau gfärbt, und d'Knote in dr zweite Menge send violett gfärbt.
+D'Kante zwische de beide Menge send d'Kante, wo durch d'Partitionierung gschnitte werdet.
+
+```python
+def plot_result(G, x):
+    colors = ["tab:grey" if i == 0 else "tab:purple" for i in x]
+    pos, _default_axes = rx.spring_layout(G), plt.axes(frameon=True)
+    rx.visualization.mpl_draw(
+        G,
+        node_color=colors,
+        node_size=150,
+        alpha=0.8,
+        pos=pos,
+        with_labels=True,
+        width=1,
+    )
+
+plot_result(graph_100, to_bitstring(sorted_result_dict[0][0], 100)[::-1])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/advanced-techniques-for-qaoa/extracted-outputs/852dfeed-2871-4ca1-9754-15c95293198e-0.avif)
+
+## Referenze {#references}
+
+\[1] Weidenfeller, J., Valor, L. C., Gacon, J., Tornow, C., Bello, L., Woerner, S., & Egger, D. J. (2022). Scaling of the quantum approximate optimization algorithm on superconducting qubit based hardware. Quantum, 6, 870.
+
+\[2] Matsuo, A., Yamashita, S., & Egger, D. J. (2023). A SAT approach to the initial mapping problem in SWAP gate insertion for commuting gates. IEICE Transactions on Fundamentals of Electronics, Communications and Computer Sciences, 106(11), 1424-1431.
+
+\[3] Barkoutsos, P. K., Nannicini, G., Robert, A., Tavernelli, I., & Woerner, S. (2020). Improving variational quantum optimization using CVaR. Quantum, 4, 256.
+
+\[4] Barron, S. V., Egger, D. J., Pelofske, E., Bärtschi, A., Eidenbenz, S., Lehmkuehler, M., & Woerner, S. (2023). Provable bounds for noise-free expectation values computed from noisy samples. arXiv preprint arXiv:2312.00733.
+## Tutorial-Umfrage {#Tutorial-Umfrage}
+
+Bitte nehmet Se sich a Minute Zeit, um Feedback zu dem Tutorial z'gebe. Ihre Erkenntniss helfet uns, unsere Inhalt und Benutzererfahrung z'verbessere.
+
+[Link zur Umfrage](https://your.feedback.ibm.com/jfe/form/SV_cZwpScxyXVDpIeq)
