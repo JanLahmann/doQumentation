@@ -193,7 +193,8 @@ def cmd_extract(args):
             "locale_label": {"de": "German", "es": "Spanish", "ja": "Japanese",
                              "fr": "French", "uk": "Ukrainian", "it": "Italian",
                              "pt": "Portuguese", "tl": "Tagalog/Filipino",
-                             "th": "Thai"}.get(locale, locale),
+                             "th": "Thai", "swg": "Schwäbisch",
+                             "bad": "Badisch", "bar": "Bayerisch"}.get(locale, locale),
             "status": "pending",  # pending → translated → assembled
             "files": [],
         }
@@ -268,6 +269,24 @@ BANNER_TEMPLATES = {
         "\n:::note[ยังไม่ได้แปล]\n"
         "หน้านี้ยังไม่ได้รับการแปล "
         "คุณกำลังดูเวอร์ชันต้นฉบับภาษาอังกฤษ\n"
+        ":::\n"
+    ),
+    "swg": (
+        "\n:::note[No net ibersetzt]\n"
+        "Die Seid isch no net ibersetzt worda. "
+        "Se gucket die englische Originalversion.\n"
+        ":::\n"
+    ),
+    "bad": (
+        "\n:::note[Nonig ibersetzt]\n"
+        "Die Siite isch nonig ibersetzt worre. "
+        "Ihr luege d englischi Originalversion aa.\n"
+        ":::\n"
+    ),
+    "bar": (
+        "\n:::note[No ned ibersetzt]\n"
+        "De Seitn is no ned ibersetzt worn. "
+        "Sie schaung de englische Originalversion o.\n"
         ":::\n"
     ),
 }
