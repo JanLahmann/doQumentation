@@ -174,43 +174,129 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ---
 
-## Open Items
+## Multi-Language Infrastructure
 
-### Multi-Language Subdomain Infrastructure (Feb 2026)
+### Architecture
 
-**Architecture**: Each language gets its own subdomain via satellite GitHub repos.
+Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CNAME `*` → `janlahmann.github.io` at IONOS covers all subdomains automatically.
 
 | Locale | URL | Pages | Status |
 |--------|-----|-------|--------|
 | DE | [de.doqumentation.org](https://de.doqumentation.org) | 79 + UI | Live |
 | ES | [es.doqumentation.org](https://es.doqumentation.org) | 55 + UI | Live |
 | UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 55 + UI | Live |
-| FR | fr.doqumentation.org | 44 | Staged (no config/UI/satellite yet) |
-| IT | it.doqumentation.org | 44 | Staged (no config/UI/satellite yet) |
-| PT | pt.doqumentation.org | 44 | Staged (no config/UI/satellite yet) |
-| JA | ja.doqumentation.org | 59 | Staged (no config/UI/satellite yet) |
-| TL | tl.doqumentation.org | 8 | Staged (no config/UI/satellite yet) |
+| FR | [fr.doqumentation.org](https://fr.doqumentation.org) | 44 + UI | Configured |
+| IT | [it.doqumentation.org](https://it.doqumentation.org) | 44 + UI | Configured |
+| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | 44 + UI | Configured |
+| JA | [ja.doqumentation.org](https://ja.doqumentation.org) | 59 + UI | Configured |
+| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 8 + UI | Configured |
 
-- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links. hreflang tags auto-generated.
-- **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds DE/ES/UK separately, pushes to satellite repos via SSH deploy keys.
-- **DNS**: Wildcard CNAME `*` → `janlahmann.github.io` at IONOS. Covers all current and future subdomains.
-- **Satellite repos**: `JanLahmann/doQumentation-de`, `-es`, `-uk` with gh-pages branches, deploy keys, custom domains configured. FR/IT/PT/JA/TL repos not yet created.
-- **Translation prompt**: `.claude/translation-prompt.md` — Sonnet model (tested vs Haiku, Sonnet wins significantly), 1 file/agent, 20+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
-- **Fallback system**: `populate-locale` fills untranslated pages with English + banner. ~372 fallbacks per locale. 9 banner templates: de, ja, uk, es, fr, it, pt, tl, th.
+- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links natively. hreflang tags auto-generated.
+- **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 8 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL}`).
+- **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,fr,it,pt,ja,tl}` — each has `main` branch (README + LICENSE + LICENSE-DOCS + NOTICE) and `gh-pages` branch (build output). GitHub Pages + custom domains configured.
+- **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 9 banner templates defined in `scripts/translate-content.py`.
+- **Translation**: `.claude/translation-prompt.md` — Sonnet model, 1 file/agent, 20+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `scripts/fix-heading-anchors.py` for batch fixing.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
+- **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) included in all repos and CI deploy output.
 
-### Completed (Feb 26, 2026)
-- **Heading anchors fixed** — `scripts/fix-heading-anchors.py` added 5,068 `{#english-anchor}` pins across 384 files in 8 locales. 8 files retranslated to fix structural issues (missing sections, scrambled levels). Zero errors remaining.
-- **Cherry-pick committed** — 264 tutorial translations from exploration branch merged to main.
+### How to Add a New Language
+
+#### 1. UI strings (4 files)
+
+Generate templates, then translate all `"message"` values:
+
+```bash
+npm run write-translations -- --locale {XX}
+```
+
+This creates `i18n/{XX}/code.json` and `i18n/{XX}/docusaurus-plugin-content-docs/current.json`. Then create:
+
+- `i18n/{XX}/code.json` — buttons, search placeholder, "Next"/"Previous", custom text (~200 strings)
+- `i18n/{XX}/docusaurus-plugin-content-docs/current.json` — sidebar category labels (~60 strings)
+- `i18n/{XX}/docusaurus-theme-classic/navbar.json` — navbar items (Tutorials, Guides, Courses, etc.)
+- `i18n/{XX}/docusaurus-theme-classic/footer.json` — footer labels + copyright disclaimer
+
+Use `i18n/de/` as reference for all files.
+
+#### 2. Banner template
+
+Add a `{XX}` entry to `BANNER_TEMPLATES` in `scripts/translate-content.py` — an admonition with "This page has not been translated yet" in the target language.
+
+#### 3. Config (`docusaurus.config.ts`)
+
+- Add locale to `locales` array
+- Add entry to `localeConfigs` with `label` and `url: 'https://{XX}.doqumentation.org'`
+- Add to search plugin `language` array (if [`lunr-languages`](https://github.com/MihaiValentin/lunr-languages) supports it — currently no support for `uk` or `tl`)
+
+#### 4. CI matrix (`deploy-locales.yml`)
+
+Add entry to the matrix:
+```yaml
+- locale: {XX}
+  repo: JanLahmann/doqumentation-{XX}
+```
+
+#### 5. Satellite repo + deploy infrastructure
+
+```bash
+# Create satellite repo (public, empty)
+gh repo create JanLahmann/doqumentation-{XX} --public
+
+# Initialize main branch with README + licenses
+# (see existing satellite repos for README template)
+# Push LICENSE, LICENSE-DOCS, NOTICE, README.md
+
+# Initialize gh-pages branch
+git checkout --orphan gh-pages
+echo "<h1>Deploying...</h1>" > index.html
+echo "{XX}.doqumentation.org" > CNAME
+git add -A && git commit -m "Init gh-pages" && git push origin gh-pages
+
+# Generate SSH deploy key
+ssh-keygen -t ed25519 -C "deploy-doqumentation-{XX}" -f deploy_key_{XX} -N ""
+# Public key → deploy key (write access) on satellite repo
+# Private key → secret DEPLOY_KEY_{XX} on main repo (uppercase locale)
+
+# Enable GitHub Pages: source gh-pages, custom domain {XX}.doqumentation.org, HTTPS enforced
+```
+
+DNS: The wildcard CNAME `*` → `janlahmann.github.io` at IONOS covers all subdomains automatically. No per-locale DNS needed.
+
+#### 6. Translate content
+
+```bash
+# Translate pages (via Claude Code — see .claude/translation-prompt.md)
+Read .claude/translation-prompt.md. Translate all untranslated pages to {LANGUAGE} ({XX}).
+
+# Populate English fallbacks for untranslated pages
+python scripts/translate-content.py populate-locale --locale {XX}
+
+# Fix heading anchors
+python scripts/fix-heading-anchors.py --locale {XX} --apply
+
+# Verify build
+DQ_LOCALE_URL=https://{XX}.doqumentation.org npx docusaurus build --locale {XX}
+
+# Stage translations (gitignored, must force-add)
+git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
+```
+
+#### 7. Git tracking
+
+- `code.json`, `navbar.json`, `footer.json`, `current.json` — tracked normally
+- MDX translations in `i18n/{XX}/docusaurus-plugin-content-docs/current/` — gitignored, must `git add -f`
+
+---
+
+## Open Items
 
 ### TODO
-- **New locale setup (FR/IT/PT/TL/JA)** — UI strings (code.json, navbar.json, footer.json), config updates (`docusaurus.config.ts` locales array), satellite repos + deploy keys, CI matrix update, populate fallbacks.
 - **Mobile locale switcher** — Language dropdown not visible on mobile devices. Needs CSS/hamburger menu fix.
 - **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
 - **Translation expansion** — DE at 79/387, ES/UK at 55/387, others tutorials only. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
-- **Delete stale branch** — `claude/explore-capabilities-4vVq3` can be deleted now that cherry-pick is committed.
 
 ### Testing (Feb 2026)
 - 180+ comprehensive tests, ~200 Chrome browser tests — 99.5% pass, zero real bugs
