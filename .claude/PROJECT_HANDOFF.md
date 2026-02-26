@@ -199,14 +199,18 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 - **Fallback system**: `populate-locale` fills untranslated pages with English + banner. ~372 fallbacks per locale. 9 banner templates: de, ja, uk, es, fr, it, pt, tl, th.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 
+### Completed (Feb 26, 2026)
+- **Heading anchors fixed** — `scripts/fix-heading-anchors.py` added 5,068 `{#english-anchor}` pins across 384 files in 8 locales. 8 files retranslated to fix structural issues (missing sections, scrambled levels). Zero errors remaining.
+- **Cherry-pick committed** — 264 tutorial translations from exploration branch merged to main.
+
 ### TODO
-- **Fix heading anchors** — All translated files (369 total) have translated headings without `{#english-anchor}` pins. Internal `#anchor` links are broken. Batch fix needed. Plan: `.claude/plans/translation-cherry-pick-fixes.md`
 - **New locale setup (FR/IT/PT/TL/JA)** — UI strings (code.json, navbar.json, footer.json), config updates (`docusaurus.config.ts` locales array), satellite repos + deploy keys, CI matrix update, populate fallbacks.
 - **Mobile locale switcher** — Language dropdown not visible on mobile devices. Needs CSS/hamburger menu fix.
 - **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
 - **Translation expansion** — DE at 79/387, ES/UK at 55/387, others tutorials only. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
+- **Delete stale branch** — `claude/explore-capabilities-4vVq3` can be deleted now that cherry-pick is committed.
 
 ### Testing (Feb 2026)
 - 180+ comprehensive tests, ~200 Chrome browser tests — 99.5% pass, zero real bugs
