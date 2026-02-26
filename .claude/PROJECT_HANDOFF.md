@@ -123,7 +123,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, MDXComponents
-├── i18n/                       # Translations: de (75 pages), es (15), uk (15), ja (15 disabled)
+├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (8)
 ├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
@@ -178,27 +178,33 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ### Multi-Language Subdomain Infrastructure (Feb 2026)
 
-**Architecture**: Each language gets its own subdomain via satellite GitHub repos. **Fully deployed and live.**
+**Architecture**: Each language gets its own subdomain via satellite GitHub repos.
 
 | Locale | URL | Pages | Status |
 |--------|-----|-------|--------|
-| DE | [de.doqumentation.org](https://de.doqumentation.org) | 75 + UI | Live |
-| ES | [es.doqumentation.org](https://es.doqumentation.org) | 15 + UI | Live |
-| UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 15 + UI | Live |
+| DE | [de.doqumentation.org](https://de.doqumentation.org) | 79 + UI | Live |
+| ES | [es.doqumentation.org](https://es.doqumentation.org) | 55 + UI | Live |
+| UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 55 + UI | Live |
+| FR | fr.doqumentation.org | 44 | Staged (no config/UI/satellite yet) |
+| IT | it.doqumentation.org | 44 | Staged (no config/UI/satellite yet) |
+| PT | pt.doqumentation.org | 44 | Staged (no config/UI/satellite yet) |
+| JA | ja.doqumentation.org | 59 | Staged (no config/UI/satellite yet) |
+| TL | tl.doqumentation.org | 8 | Staged (no config/UI/satellite yet) |
 
 - **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links. hreflang tags auto-generated.
 - **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds DE/ES/UK separately, pushes to satellite repos via SSH deploy keys.
 - **DNS**: Wildcard CNAME `*` → `janlahmann.github.io` at IONOS. Covers all current and future subdomains.
-- **Satellite repos**: `JanLahmann/doQumentation-de`, `-es`, `-uk` with gh-pages branches, deploy keys, custom domains configured.
-- **Translation prompt**: `.claude/translation-prompt.md` — Sonnet model, 2 files/agent, 10+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Satellite repos**: `JanLahmann/doQumentation-de`, `-es`, `-uk` with gh-pages branches, deploy keys, custom domains configured. FR/IT/PT/JA/TL repos not yet created.
+- **Translation prompt**: `.claude/translation-prompt.md` — Sonnet model (tested vs Haiku, Sonnet wins significantly), 1 file/agent, 20+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
 - **Fallback system**: `populate-locale` fills untranslated pages with English + banner. ~372 fallbacks per locale. 9 banner templates: de, ja, uk, es, fr, it, pt, tl, th.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 
 ### TODO
+- **Fix heading anchors** — All translated files (369 total) have translated headings without `{#english-anchor}` pins. Internal `#anchor` links are broken. Batch fix needed. Plan: `.claude/plans/translation-cherry-pick-fixes.md`
+- **New locale setup (FR/IT/PT/TL/JA)** — UI strings (code.json, navbar.json, footer.json), config updates (`docusaurus.config.ts` locales array), satellite repos + deploy keys, CI matrix update, populate fallbacks.
 - **Mobile locale switcher** — Language dropdown not visible on mobile devices. Needs CSS/hamburger menu fix.
-- **Fix heading anchors in existing translations** — 75 DE + 15 ES/UK pages have translated headings without `{#english-anchor}` pins. Internal `#anchor` links are broken. Batch fix needed.
 - **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
-- **Translation expansion** — DE at 75/387, ES/UK at 15/387. Use `.claude/translation-prompt.md` (Sonnet, 10+ parallel agents, 2 files each).
+- **Translation expansion** — DE at 79/387, ES/UK at 55/387, others tutorials only. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
@@ -224,4 +230,4 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 
 ---
 
-*Last updated: February 14, 2026*
+*Last updated: February 26, 2026*

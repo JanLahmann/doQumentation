@@ -1,0 +1,228 @@
+---
+title: "回路カッティングによる深さ削減"
+sidebar_label: "回路カッティングによる深さ削減"
+description: "量子回路のゲートをカットして回路深さを削減するQiskitパターンを構築します。"
+notebook_path: "docs/tutorials/depth-reduction-with-circuit-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/depth-reduction-with-circuit-cutting.ipynb" />
+
+
+
+*使用時間の目安: Eagleプロセッサで約8分（注意: これはあくまで目安です。実際の実行時間は異なる場合があります。）*
+## 背景
+
+このチュートリアルでは、量子回路のゲートをカットして回路深さを削減するための`Qiskitパターン`の構築方法を説明します。回路カッティングに関するより詳細な議論については、[回路カッティングQiskitアドオンのドキュメント](https://qiskit.github.io/qiskit-addon-cutting/)をご覧ください。
+## 前提条件
+
+このチュートリアルを始める前に、以下がインストールされていることを確認してください：
+- Qiskit SDK v2.0以降（[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き）
+- Qiskit Runtime v0.22以降（`pip install qiskit-ibm-runtime`）
+- 回路カッティングQiskitアドオン v0.9.0以降（`pip install qiskit-addon-cutting`）
+## セットアップ
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+
+from qiskit.circuit.library import EfficientSU2
+from qiskit.quantum_info import PauliList, Statevector, SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_addon_cutting import (
+    cut_gates,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+## ステップ1: 古典的な入力を量子問題にマッピングする
+
+[ドキュメント](/guides/intro-to-patterns)で概説されている4つのステップに従って、Qiskitパターンを実装します。この場合、ゲートをカットしてスワップゲートを生成し、より浅い回路でサブ実験を実行することで、特定の深さの回路の期待値をシミュレーションします。ゲートカッティングは、ステップ2（遠距離ゲートを分解して量子実行用に回路を最適化）およびステップ4（元の回路の期待値を再構成するための後処理）に関連します。
+最初のステップでは、Qiskit回路ライブラリから回路を生成し、いくつかのオブザーバブルを定義します。
+
+*   入力: 回路を定義するための古典的パラメータ
+*   出力: 抽象回路とオブザーバブル
+
+```python
+circuit = EfficientSU2(num_qubits=4, entanglement="circular").decompose()
+circuit.assign_parameters([0.4] * len(circuit.parameters), inplace=True)
+observables = PauliList(["ZZII", "IZZI", "IIZZ", "XIXI", "ZIZZ", "IXIX"])
+circuit.draw("mpl", scale=0.8, style="iqp")
+```
+
+![前のコードセルの出力](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/54ed0f13-0.avif)
+
+## ステップ2: 量子ハードウェア実行のために問題を最適化する
+
+*   入力: 抽象回路とオブザーバブル
+*   出力: 遠距離ゲートをカットしてトランスパイル後の回路深さを削減することで生成されるターゲット回路とオブザーバブル
+
+量子ビット3と0の間のゲートを実行するために2回のスワップが必要で、量子ビットを元の位置に戻すためにさらに2回のスワップが必要な初期レイアウトを選択します。プリセットパスマネージャーで利用可能な最高レベルの最適化である`optimization_level=3`を選択します。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=circuit.num_qubits, simulator=False
+)
+
+pm = generate_preset_pass_manager(
+    optimization_level=3, initial_layout=[0, 1, 2, 3], backend=backend
+)
+transpiled_qc = pm.run(circuit)
+```
+
+![スワップが必要な量子ビットを示すカップリングマップ](/docs/images/tutorials/depth-reduction-with-circuit-cutting/swaps.avif)
+
+```python
+print(f"Transpiled circuit depth: {transpiled_qc.depth()}")
+transpiled_qc.draw("mpl", scale=0.4, idle_wires=False, style="iqp", fold=-1)
+```
+
+```text
+Transpiled circuit depth: 103
+```
+
+![前のコードセルの出力](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/4fe4af43-1.avif)
+
+*遠距離ゲートの検出とカット:* 遠距離ゲート（非ローカル量子ビット0と3を接続するゲート）のインデックスを指定し、`TwoQubitQPDGate`オブジェクトに置き換えます。`cut_gates`は、指定されたインデックスのゲートを`TwoQubitQPDGate`オブジェクトに置き換え、各ゲート分解に対応する`QPDBasis`インスタンスのリストも返します。`QPDBasis`オブジェクトには、カットされたゲートを単一量子ビット操作に分解する方法に関する情報が含まれています。
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(circuit.data)
+    if {circuit.find_bit(q)[0] for q in instruction.qubits} == {0, 3}
+]
+
+# Decompose distant CNOTs into TwoQubitQPDGate instances
+qpd_circuit, bases = cut_gates(circuit, cut_indices)
+
+qpd_circuit.draw("mpl", scale=0.8)
+```
+
+![前のコードセルの出力](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/23e3d25e-0.avif)
+
+*バックエンドで実行するサブ実験の生成*: `generate_cutting_experiments`は、`TwoQubitQPDGate`インスタンスを含む回路と`PauliList`形式のオブザーバブルを受け取ります。
+
+フルサイズの回路の期待値をシミュレーションするために、分解されたゲートの結合準確率分布から多数のサブ実験が生成され、1つまたは複数のバックエンドで実行されます。分布からのサンプル数は`num_samples`で制御され、各ユニークなサンプルに対して1つの結合係数が与えられます。係数の計算方法の詳細については、[解説資料](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html)を参照してください。
+
+```python
+# Generate the subexperiments and sampling coefficients
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit, observables=observables, num_samples=np.inf
+)
+```
+
+*比較のため、遠距離ゲートをカットした後のQPDサブ実験がより浅くなることを確認します*: 以下は、QPD回路から生成された任意のサブ実験の例です。その深さは半分以上削減されています。より深い回路の期待値を再構成するためには、このような確率的サブ実験を多数生成・評価する必要があります。
+
+```python
+# Transpile the decomposed circuit to the same layout
+transpiled_qpd_circuit = pm.run(subexperiments[100])
+
+print(f"Original circuit depth after transpile: {transpiled_qc.depth()}")
+print(
+    f"QPD subexperiment depth after transpile: {transpiled_qpd_circuit.depth()}"
+)
+transpiled_qpd_circuit.draw(
+    "mpl", scale=0.6, style="iqp", idle_wires=False, fold=-1
+)
+```
+
+```text
+Original circuit depth after transpile: 103
+QPD subexperiment depth after transpile: 46
+```
+
+![前のコードセルの出力](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/70e2f1b6-1.avif)
+
+*一方で、カッティングには追加のサンプリングが必要になります*。ここでは3つのCNOTゲートをカットしており、サンプリングオーバーヘッドは$9^3$となります。回路カッティングによるサンプリングオーバーヘッドの詳細については、[Circuit Knitting Toolboxのドキュメント](https://qiskit-extensions.github.io/circuit-knitting-toolbox/circuit_cutting/explanation/index.html)を参照してください。
+
+```python
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 729.0
+```
+
+## ステップ3: Qiskitプリミティブを使用して実行する
+
+ターゲット回路（「サブ実験」）をSamplerプリミティブで実行します。
+
+*   入力: ターゲット回路
+*   出力: 準確率分布
+
+```python
+# Transpile the subexperiments to the backend's instruction set architecture (ISA)
+isa_subexperiments = pm.run(subexperiments)
+
+# Set up the Qiskit Runtime Sampler primitive.  For a fake backend, this will use a local simulator.
+sampler = SamplerV2(backend)
+
+# Submit the subexperiments
+job = sampler.run(isa_subexperiments)
+```
+
+```python
+# Retrieve the results
+results = job.result()
+```
+
+```python
+print(job.job_id())
+```
+
+```text
+czypg1r6rr3g008mgp6g
+```
+
+## ステップ4: 後処理を行い、所望の古典形式で結果を返す
+
+サブ実験の結果、サブオブザーバブル、およびサンプリング係数を使用して、元の回路の期待値を再構成します。
+
+入力: 準確率分布
+出力: 再構成された期待値
+
+```python
+reconstructed_expvals = reconstruct_expectation_values(
+    results,
+    coefficients,
+    observables,
+)
+# Reconstruct final expectation value
+final_expval = np.dot(reconstructed_expvals, [1] * len(observables))
+print("Final reconstructed expectation value")
+print(final_expval)
+```
+
+```text
+Final reconstructed expectation value
+1.0751342773437473
+```
+
+```python
+ideal_expvals = [
+    Statevector(circuit).expectation_value(SparsePauliOp(observable))
+    for observable in observables
+]
+print("Ideal expectation value")
+print(np.dot(ideal_expvals, [1] * len(observables)).real)
+```
+
+```text
+Ideal expectation value
+1.2283177520039992
+```
+
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックをお寄せいただくため、短いアンケートにご協力ください。皆様のご意見は、コンテンツおよびユーザーエクスペリエンスの改善に役立てさせていただきます。
+
+[アンケートへのリンク](https://your.feedback.ibm.com/jfe/form/SV_2ftYFf9t72yFNIO)

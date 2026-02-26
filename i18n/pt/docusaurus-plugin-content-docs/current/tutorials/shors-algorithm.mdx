@@ -1,0 +1,658 @@
+---
+title: "Algoritmo de Shor"
+sidebar_label: "Algoritmo de Shor"
+description: "Este tutorial foca em demonstrar o algoritmo de Shor fatorando o número 15 em um computador quântico."
+notebook_path: "docs/tutorials/shors-algorithm.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/shors-algorithm.ipynb" />
+
+
+
+{/* cspell:ignore textrm */}
+
+*Estimativa de uso: Três segundos em um processador Eagle r3 (NOTA: Esta é apenas uma estimativa. Seu tempo de execução pode variar.)*
+
+[O algoritmo de Shor,](https://epubs.siam.org/doi/abs/10.1137/S0036144598347011) desenvolvido por Peter Shor em 1994, é um algoritmo quântico revolucionário para fatoração de inteiros em tempo polinomial. Sua importância reside em sua capacidade de fatorar grandes inteiros exponencialmente mais rápido do que qualquer algoritmo clássico conhecido, ameaçando a segurança de sistemas criptográficos amplamente utilizados como o RSA, que dependem da dificuldade de fatorar grandes números. Ao resolver eficientemente este problema em um computador quântico suficientemente poderoso, o algoritmo de Shor poderia revolucionar campos como criptografia, segurança cibernética e matemática computacional, destacando o poder transformador da computação quântica.
+
+Este tutorial foca em demonstrar o algoritmo de Shor fatorando o número 15 em um computador quântico.
+
+Primeiro, definimos o problema de encontrar a ordem e construímos os circuitos correspondentes a partir do protocolo de estimativa de fase quântica. Em seguida, executamos os circuitos de busca de ordem em hardware real usando os circuitos de menor profundidade que podemos transpilar. A última seção completa o algoritmo de Shor conectando o problema de encontrar a ordem à fatoração de inteiros.
+
+Encerramos o tutorial com uma discussão sobre outras demonstrações do algoritmo de Shor em hardware real, focando tanto em implementações genéricas quanto naquelas personalizadas para fatorar inteiros específicos como 15 e 21.
+Nota: Este tutorial foca mais na implementação e demonstração dos circuitos relacionados ao algoritmo de Shor. Para um recurso educacional aprofundado sobre o material, consulte o curso [Fundamentos de algoritmos quânticos](/learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction) do Dr. John Watrous e os artigos na seção [Referências](#references).
+### Requisitos
+Antes de iniciar este tutorial, certifique-se de ter o seguinte instalado:
+- Qiskit SDK v2.0 ou posterior, com suporte para [visualização](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 ou posterior (`pip install qiskit-ibm-runtime`)
+### Configuração
+
+```python
+import numpy as np
+import pandas as pd
+from fractions import Fraction
+from math import floor, gcd, log
+
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.library import QFT, UnitaryGate
+from qiskit.transpiler import CouplingMap, generate_preset_pass_manager
+from qiskit.visualization import plot_histogram
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+```
+
+## Etapa 1: Mapear entradas clássicas para um problema quântico
+### Contexto
+
+O algoritmo de Shor para fatoração de inteiros utiliza um problema intermediário conhecido como problema de *encontrar a ordem*. Nesta seção, demonstramos como resolver o problema de encontrar a ordem usando *estimativa de fase quântica*.
+### Problema de estimativa de fase
+
+No problema de estimativa de fase, recebemos um estado quântico $\ket{\psi}$ de $n$ qubits, juntamente com um circuito quântico unitário que atua sobre $n$ qubits. É prometido que $\ket{\psi}$ é um autovetor da matriz unitária $U$ que descreve a ação do circuito, e nosso objetivo é calcular ou aproximar o autovalor $\lambda = e^{2 \pi i \theta}$ ao qual $\ket{\psi}$ corresponde. Em outras palavras, o circuito deve produzir uma aproximação do número $\theta \in [0, 1)$ satisfazendo $$U \ket{\psi}= e^{2 \pi i \theta} \ket{\psi}.$$
+O objetivo do circuito de estimativa de fase é aproximar $\theta$ em $m$ bits. Matematicamente falando, gostaríamos de encontrar $y$ tal que $\theta \approx y / 2^m$, onde $y \in {0, 1, 2, \dots, 2^{m-1}}$. A imagem a seguir mostra o circuito quântico que estima $y$ em $m$ bits fazendo uma medição em $m$ qubits.
+![Quantum phase estimation circuit](/learning/images/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.svg)
+No circuito acima, os $m$ qubits superiores são iniciados no estado $\ket{0^m}$, e os $n$ qubits inferiores são iniciados em $\ket{\psi}$, que é prometido ser um autovetor de $U$. O primeiro ingrediente no circuito de estimativa de fase são as operações unitárias controladas que são responsáveis por realizar um *phase kickback* para seu qubit de controle correspondente. Essas unitárias controladas são exponenciadas de acordo com a posição do qubit de controle, variando do bit menos significativo ao bit mais significativo. Como $\ket{\psi}$ é um autovetor de $U$, o estado dos $n$ qubits inferiores não é afetado por esta operação, mas a informação de fase do autovalor se propaga para os $m$ qubits superiores.
+Acontece que após a operação de phase kickback via unitárias controladas, todos os estados possíveis dos $m$ qubits superiores são ortonormais entre si para cada autovetor $\ket{\psi}$ da unitária $U$. Portanto, esses estados são perfeitamente distinguíveis, e podemos rotacionar a base que eles formam de volta para a base computacional para fazer uma medição. Uma análise matemática mostra que esta matriz de rotação corresponde à transformada quântica de Fourier (QFT) inversa no espaço de Hilbert de dimensão $2^m$. A intuição por trás disso é que a estrutura periódica dos operadores de exponenciação modular é codificada no estado quântico, e a QFT converte esta periodicidade em picos mensuráveis no domínio da frequência.
+
+Para uma compreensão mais profunda de por que o circuito QFT é empregado no algoritmo de Shor, referimos o leitor ao curso [Fundamentos de algoritmos quânticos](/learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction).
+Agora estamos prontos para usar o circuito de estimativa de fase para encontrar a ordem.
+### Problema de encontrar a ordem
+
+Para definir o problema de encontrar a ordem, começamos com alguns conceitos de teoria dos números. Primeiro, para qualquer inteiro positivo $N$, definimos o conjunto $\mathbb{Z}_N$ como $$\mathbb{Z}_N = \{0, 1, 2, \dots, N-1\}.$$
+Todas as operações aritméticas em $\mathbb{Z}_N$ são realizadas módulo $N$. Em particular, todos os elementos $a \in \mathbb{Z}_n$ que são coprimos com $N$ são especiais e constituem $\mathbb{Z}^*_N$ como $$\mathbb{Z}^*_N = \{ a \in \mathbb{Z}_N : \mathrm{gcd}(a, N)=1 \}.$$
+Para um elemento $a \in \mathbb{Z}^*_N$, o menor inteiro positivo $r$ tal que $$a^r \equiv 1 \; (\mathrm{mod} \; N)$$ é definido como a *ordem* de $a$ módulo $N$. Como veremos mais tarde, encontrar a ordem de um $a \in \mathbb{Z}^*_N$ nos permitirá fatorar $N$.
+Para construir o circuito de busca de ordem a partir do circuito de estimativa de fase, precisamos de duas considerações. Primeiro, precisamos definir a unitária $U$ que nos permitirá encontrar a ordem $r$, e segundo, precisamos definir um autovetor $\ket{\psi}$ de $U$ para preparar o estado inicial do circuito de estimativa de fase.
+
+Para conectar o problema de encontrar a ordem à estimativa de fase, consideramos a operação definida em um sistema cujos estados clássicos correspondem a $\mathbb{Z}_N$, onde multiplicamos por um elemento fixo $a \in \mathbb{Z}^*_N$. Em particular, definimos este operador de multiplicação $M_a$ tal que $$M_a \ket{x} = \ket{ax \; (\mathrm{mod} \; N)}$$ para cada $x \in \mathbb{Z}_N$. Note que é implícito que estamos tomando o produto módulo $N$ dentro do ket no lado direito da equação. Uma análise matemática mostra que $M_a$ é um operador unitário. Além disso, acontece que $M_a$ tem pares de autovetor e autovalor que nos permitem conectar a ordem $r$ de $a$ ao problema de estimativa de fase. Especificamente, para qualquer escolha de $j \in \{0, \dots, r-1\}$, temos que $$\ket{\psi_j} = \frac{1}{\sqrt{r}} \sum^{r-1}_{k=0} \omega^{-jk}_{r} \ket{a^k}$$ é um autovetor de $M_a$ cujo autovalor correspondente é $\omega^{j}_{r}$, onde $$\omega^{j}_{r} = e^{2 \pi i \frac{j}{r}}.$$
+Por observação, vemos que um par autovetor/autovalor conveniente é o estado $\ket{\psi_1}$ com $\omega^{1}_{r} = e^{2 \pi i \frac{1}{r}}$. Portanto, se pudéssemos encontrar o autovetor $\ket{\psi_1}$, poderíamos estimar a fase $\theta=1/r$ com nosso circuito quântico e, portanto, obter uma estimativa da ordem $r$. No entanto, não é fácil fazer isso, e precisamos considerar uma alternativa.
+
+Vamos considerar qual seria o resultado do circuito se preparássemos o estado computacional $\ket{1}$ como o estado inicial. Este não é um autoestado de $M_a$, mas é a superposição uniforme dos autoestados que acabamos de descrever acima. Em outras palavras, a seguinte relação é válida. $$ \ket{1} = \frac{1}{\sqrt{r}} \sum^{r-1}_{k=0} \ket{\psi_k} $$
+A implicação da equação acima é que se definirmos o estado inicial como $\ket{1}$, obteremos precisamente o mesmo resultado de medição como se tivéssemos escolhido $k \in \{ 0, \dots, r-1\}$ uniformemente ao acaso e usado $\ket{\psi_k}$ como autovetor no circuito de estimativa de fase. Em outras palavras, uma medição dos $m$ qubits superiores produz uma aproximação $y / 2^m$ do valor $k / r$ onde $k \in \{ 0, \dots, r-1\}$ é escolhido uniformemente ao acaso. Isso nos permite aprender $r$ com um alto grau de confiança após várias execuções independentes, que era nosso objetivo.
+### Operadores de exponenciação modular
+
+Até agora, vinculamos o problema de estimativa de fase ao problema de encontrar a ordem definindo $U = M_a$ e $\ket{\psi} = \ket{1}$ em nosso circuito quântico. Portanto, o último ingrediente restante é encontrar uma maneira eficiente de definir exponenciais modulares de $M_a$ como $M_a^k$ para $k = 1, 2, 4, \dots, 2^{m-1}$.
+Para realizar esta computação, descobrimos que para qualquer potência $k$ que escolhemos, podemos criar um circuito para $M_a^k$ não iterando $k$ vezes o circuito para $M_a$, mas sim calculando $b = a^k \; \mathrm{mod} \; N$ e então usando o circuito para $M_b$. Como só precisamos das potências que são elas mesmas potências de 2, podemos fazer isso classicamente de forma eficiente usando elevação ao quadrado iterativa.
+## Etapa 2: Otimizar o problema para execução em hardware quântico
+### Exemplo específico com $N = 15$ e $a=2$
+
+Podemos pausar aqui para discutir um exemplo específico e construir o circuito de busca de ordem para $N=15$. Note que possíveis $a \in \mathbb{Z}_N^*$ não triviais para $N=15$ são $a \in \{2, 4, 7, 8, 11, 13, 14 \}$. Para este exemplo, escolhemos $a=2$. Construiremos o operador $M_2$ e os operadores de exponenciação modular $M_2^k$.
+A ação de $M_2$ nos estados da base computacional é a seguinte.
+$$M_2 \ket{0} = \ket{0} \quad M_2 \ket{5} = \ket{10} \quad M_2 \ket{10} = \ket{5}$$
+$$M_2 \ket{1} = \ket{2} \quad M_2 \ket{6} = \ket{12} \quad M_2 \ket{11} = \ket{7}$$
+$$M_2 \ket{2} = \ket{4} \quad M_2 \ket{7} = \ket{14} \quad M_2 \ket{12} = \ket{9}$$
+$$M_2 \ket{3} = \ket{6} \quad M_2 \ket{8} = \ket{1} \quad M_2 \ket{13} = \ket{11}$$
+$$M_2 \ket{4} = \ket{8} \quad M_2 \ket{9} = \ket{3} \quad M_2 \ket{14} = \ket{13}$$
+Por observação, podemos ver que os estados da base são embaralhados, então temos uma matriz de permutação. Podemos construir esta operação em quatro qubits com portas swap. Abaixo, construímos as operações $M_2$ e $M_2$ controlado.
+
+```python
+def M2mod15():
+    """
+    M2 (mod 15)
+    """
+    b = 2
+    U = QuantumCircuit(4)
+
+    U.swap(2, 3)
+    U.swap(1, 2)
+    U.swap(0, 1)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+
+    return U
+```
+
+```python
+# Get the M2 operator
+M2 = M2mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(4)
+circ.compose(M2, inplace=True)
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0a8885f1-91d4-40bd-912d-dc5eea05f5bd-0.avif)
+
+```python
+def controlled_M2mod15():
+    """
+    Controlled M2 (mod 15)
+    """
+    b = 2
+    U = QuantumCircuit(4)
+
+    U.swap(2, 3)
+    U.swap(1, 2)
+    U.swap(0, 1)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+    c_U = U.control()
+
+    return c_U
+```
+
+```python
+# Get the controlled-M2 operator
+controlled_M2 = controlled_M2mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(5)
+circ.compose(controlled_M2, inplace=True)
+circ.decompose(reps=1).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/ab7fe331-2f9e-47ca-ba3b-f5d67992062a-0.avif)
+
+Portas atuando em mais de dois qubits serão decompostas ainda mais em portas de dois qubits.
+
+```python
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/13b4841d-a4ac-46bd-b4d0-d111b3017189-0.avif)
+
+Agora precisamos construir os operadores de exponenciação modular. Para obter precisão suficiente na estimativa de fase, usaremos oito qubits para a medição de estimativa. Portanto, precisamos construir $M_b$ com $b = a^{2^k} \; (\mathrm{mod} \; N)$ para cada $k = 0, 1, \dots, 7$.
+
+```python
+def a2kmodN(a, k, N):
+    """Compute a^{2^k} (mod N) by repeated squaring"""
+    for _ in range(k):
+        a = int(np.mod(a**2, N))
+    return a
+```
+
+```python
+k_list = range(8)
+b_list = [a2kmodN(2, k, 15) for k in k_list]
+
+print(b_list)
+```
+
+```text
+[2, 4, 1, 1, 1, 1, 1, 1]
+```
+
+Como podemos ver na lista de valores $b$, além de $M_2$ que construímos anteriormente, também precisamos construir $M_4$ e $M_1$. Note que $M_1$ age trivialmente nos estados da base computacional, então é simplesmente o operador identidade.
+
+$M_4$ age nos estados da base computacional da seguinte forma.
+$$M_4 \ket{0} = \ket{0} \quad M_4 \ket{5} = \ket{5} \quad M_4 \ket{10} = \ket{10}$$
+$$M_4 \ket{1} = \ket{4} \quad M_4 \ket{6} = \ket{9} \quad M_4 \ket{11} = \ket{14}$$
+$$M_4 \ket{2} = \ket{8} \quad M_4 \ket{7} = \ket{13} \quad M_4 \ket{12} = \ket{3}$$
+$$M_4 \ket{3} = \ket{12} \quad M_4 \ket{8} = \ket{2} \quad M_4 \ket{13} = \ket{7}$$
+$$M_4 \ket{4} = \ket{1} \quad M_4 \ket{9} = \ket{6} \quad M_4 \ket{14} = \ket{11}$$
+
+Portanto, esta permutação pode ser construída com a seguinte operação swap.
+
+```python
+def M4mod15():
+    """
+    M4 (mod 15)
+    """
+    b = 4
+    U = QuantumCircuit(4)
+
+    U.swap(1, 3)
+    U.swap(0, 2)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+
+    return U
+```
+
+```python
+# Get the M4 operator
+M4 = M4mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(4)
+circ.compose(M4, inplace=True)
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/be041e3d-28b1-453e-983e-184c2366aeb9-0.avif)
+
+```python
+def controlled_M4mod15():
+    """
+    Controlled M4 (mod 15)
+    """
+    b = 4
+    U = QuantumCircuit(4)
+
+    U.swap(1, 3)
+    U.swap(0, 2)
+
+    U = U.to_gate()
+    U.name = f"M_{b}"
+    c_U = U.control()
+
+    return c_U
+```
+
+```python
+# Get the controlled-M4 operator
+controlled_M4 = controlled_M4mod15()
+
+# Add it to a circuit and plot
+circ = QuantumCircuit(5)
+circ.compose(controlled_M4, inplace=True)
+circ.decompose(reps=1).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/8d943b00-a502-4157-8a0d-13fb1f55e705-0.avif)
+
+Portas atuando em mais de dois qubits serão decompostas ainda mais em portas de dois qubits.
+
+```python
+circ.decompose(reps=2).draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/68399eef-5e55-4c95-a8a4-c8efaebd34b9-0.avif)
+
+Vimos que os operadores $M_b$ para um dado $b \in \mathbb{Z}^*_N$ são operações de permutação. Devido ao tamanho relativamente pequeno do problema de permutação que temos aqui, já que $N=15$ requer apenas quatro qubits, conseguimos sintetizar essas operações diretamente com portas ``SWAP`` por inspeção. Em geral, esta pode não ser uma abordagem escalável. Em vez disso, podemos precisar construir a matriz de permutação explicitamente e usar a classe ``UnitaryGate`` do Qiskit e métodos de transpilação para sintetizar esta matriz de permutação. No entanto, isso pode resultar em circuitos significativamente mais profundos. Um exemplo segue.
+
+```python
+def mod_mult_gate(b, N):
+    """
+    Modular multiplication gate from permutation matrix.
+    """
+    if gcd(b, N) > 1:
+        print(f"Error: gcd({b},{N}) > 1")
+    else:
+        n = floor(log(N - 1, 2)) + 1
+        U = np.full((2**n, 2**n), 0)
+        for x in range(N):
+            U[b * x % N][x] = 1
+        for x in range(N, 2**n):
+            U[x][x] = 1
+        G = UnitaryGate(U)
+        G.name = f"M_{b}"
+        return G
+```
+
+```python
+# Let's build M2 using the permutation matrix definition
+M2_other = mod_mult_gate(2, 15)
+
+# Add it to a circuit
+circ = QuantumCircuit(4)
+circ.compose(M2_other, inplace=True)
+circ = circ.decompose()
+
+# Transpile the circuit and get the depth
+coupling_map = CouplingMap.from_line(4)
+pm = generate_preset_pass_manager(coupling_map=coupling_map)
+transpiled_circ = pm.run(circ)
+
+print(f"qubits: {circ.num_qubits}")
+print(
+    f"2q-depth: {transpiled_circ.depth(lambda x: x.operation.num_qubits==2)}"
+)
+print(f"2q-size: {transpiled_circ.size(lambda x: x.operation.num_qubits==2)}")
+print(f"Operator counts: {transpiled_circ.count_ops()}")
+transpiled_circ.decompose().draw(
+    output="mpl", fold=-1, style="clifford", idle_wires=False
+)
+```
+
+```text
+qubits: 4
+2q-depth: 94
+2q-size: 96
+Operator counts: OrderedDict({'cx': 45, 'swap': 32, 'u': 24, 'u1': 7, 'u3': 4, 'unitary': 3, 'circuit-335': 1, 'circuit-338': 1, 'circuit-341': 1, 'circuit-344': 1, 'circuit-347': 1, 'circuit-350': 1, 'circuit-353': 1, 'circuit-356': 1, 'circuit-359': 1, 'circuit-362': 1, 'circuit-365': 1, 'circuit-368': 1, 'circuit-371': 1, 'circuit-374': 1, 'circuit-377': 1, 'circuit-380': 1})
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/c184f6dd-9f80-4487-ac0b-0dd94170b0f0-1.avif)
+
+Vamos comparar essas contagens com a profundidade do circuito compilado de nossa implementação manual da porta $M_2$.
+
+```python
+# Get the M2 operator from our manual construction
+M2 = M2mod15()
+
+# Add it to a circuit
+circ = QuantumCircuit(4)
+circ.compose(M2, inplace=True)
+circ = circ.decompose(reps=3)
+
+# Transpile the circuit and get the depth
+coupling_map = CouplingMap.from_line(4)
+pm = generate_preset_pass_manager(coupling_map=coupling_map)
+transpiled_circ = pm.run(circ)
+
+print(f"qubits: {circ.num_qubits}")
+print(
+    f"2q-depth: {transpiled_circ.depth(lambda x: x.operation.num_qubits==2)}"
+)
+print(f"2q-size: {transpiled_circ.size(lambda x: x.operation.num_qubits==2)}")
+print(f"Operator counts: {transpiled_circ.count_ops()}")
+transpiled_circ.draw(
+    output="mpl", fold=-1, style="clifford", idle_wires=False
+)
+```
+
+```text
+qubits: 4
+2q-depth: 9
+2q-size: 9
+Operator counts: OrderedDict({'cx': 9})
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0235c931-0adb-4972-9fce-32a0341822bf-1.avif)
+
+Como podemos ver, a abordagem da matriz de permutação resultou em um circuito significativamente profundo mesmo para uma única porta $M_2$ comparado à nossa implementação manual dela. Portanto, continuaremos com nossa implementação anterior das operações $M_b$.
+Agora, estamos prontos para construir o circuito completo de busca de ordem usando nossos operadores de exponenciação modular controlados previamente definidos. No código a seguir, também importamos o [circuito QFT](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.QFT) da biblioteca de circuitos do Qiskit, que usa portas Hadamard em cada qubit, uma série de portas U1 controladas (ou Z, dependendo da fase), e uma camada de portas swap.
+
+```python
+# Order finding problem for N = 15 with a = 2
+N = 15
+a = 2
+
+# Number of qubits
+num_target = floor(log(N - 1, 2)) + 1  # for modular exponentiation operators
+num_control = 2 * num_target  # for enough precision of estimation
+
+# List of M_b operators in order
+k_list = range(num_control)
+b_list = [a2kmodN(2, k, 15) for k in k_list]
+
+# Initialize the circuit
+control = QuantumRegister(num_control, name="C")
+target = QuantumRegister(num_target, name="T")
+output = ClassicalRegister(num_control, name="out")
+circuit = QuantumCircuit(control, target, output)
+
+# Initialize the target register to the state |1>
+circuit.x(num_control)
+
+# Add the Hadamard gates and controlled versions of the
+# multiplication gates
+for k, qubit in enumerate(control):
+    circuit.h(k)
+    b = b_list[k]
+    if b == 2:
+        circuit.compose(
+            M2mod15().control(), qubits=[qubit] + list(target), inplace=True
+        )
+    elif b == 4:
+        circuit.compose(
+            M4mod15().control(), qubits=[qubit] + list(target), inplace=True
+        )
+    else:
+        continue  # M1 is the identity operator
+
+# Apply the inverse QFT to the control register
+circuit.compose(QFT(num_control, inverse=True), qubits=control, inplace=True)
+
+# Measure the control register
+circuit.measure(control, output)
+
+circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0e854aed-c11b-494c-8c80-adeb8eb0e8fe-0.avif)
+
+Note que omitimos as operações de exponenciação modular controladas dos qubits de controle restantes porque $M_1$ é o operador identidade.
+Note que mais tarde neste tutorial, executaremos este circuito no backend `ibm_marrakesh`. Para fazer isso, transpilamos o circuito de acordo com este backend específico e relatamos a profundidade do circuito e as contagens de portas.
+
+```python
+service = QiskitRuntimeService()
+backend = service.backend("ibm_marrakish")
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+
+print(
+    f"2q-depth: {transpiled_circuit.depth(lambda x: x.operation.num_qubits==2)}"
+)
+print(
+    f"2q-size: {transpiled_circuit.size(lambda x: x.operation.num_qubits==2)}"
+)
+print(f"Operator counts: {transpiled_circuit.count_ops()}")
+transpiled_circuit.draw(
+    output="mpl", fold=-1, style="clifford", idle_wires=False
+)
+```
+
+```text
+2q-depth: 187
+2q-size: 260
+Operator counts: OrderedDict({'sx': 521, 'rz': 354, 'cz': 260, 'measure': 8, 'x': 4})
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/95925dd5-7ba9-4746-b96e-ba50400fa5ac-1.avif)
+
+## Passo 3: Executar usando primitivos Qiskit
+Primeiro, discutimos o que obteríamos teoricamente se executássemos este circuito em um simulador ideal. Abaixo, temos um conjunto de resultados de simulação do circuito acima usando 1024 disparos. Como podemos ver, obtemos uma distribuição aproximadamente uniforme sobre quatro bitstrings nos qubits de controle.
+
+```python
+# Obtained from the simulator
+counts = {"00000000": 264, "01000000": 268, "10000000": 249, "11000000": 243}
+```
+
+```python
+plot_histogram(counts)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/0d6d2702-02e4-47de-8f7e-0b256657ef0f-0.avif)
+
+Ao medir os qubits de controle, obtemos uma estimativa de fase de oito bits do operador $M_a$. Podemos converter essa representação binária em decimal para encontrar a fase medida. Como podemos ver no histograma acima, quatro bitstrings diferentes foram medidos, e cada um deles corresponde a um valor de fase da seguinte forma.
+
+```python
+# Rows to be displayed in table
+rows = []
+# Corresponding phase of each bitstring
+measured_phases = []
+
+for output in counts:
+    decimal = int(output, 2)  # Convert bitstring to decimal
+    phase = decimal / (2**num_control)  # Find corresponding eigenvalue
+    measured_phases.append(phase)
+    # Add these values to the rows in our table:
+    rows.append(
+        [
+            f"{output}(bin) = {decimal:>3}(dec)",
+            f"{decimal}/{2 ** num_control} = {phase:.2f}",
+        ]
+    )
+
+# Print the rows in a table
+headers = ["Register Output", "Phase"]
+df = pd.DataFrame(rows, columns=headers)
+print(df)
+```
+
+```text
+Register Output           Phase
+0  00000000(bin) =   0(dec)    0/256 = 0.00
+1  01000000(bin) =  64(dec)   64/256 = 0.25
+2  10000000(bin) = 128(dec)  128/256 = 0.50
+3  11000000(bin) = 192(dec)  192/256 = 0.75
+```
+
+Lembre-se de que qualquer fase medida corresponde a $\theta = k / r$ onde $k$ é amostrado uniformemente de forma aleatória de $\{0, 1, \dots, r-1 \}$. Portanto, podemos usar o algoritmo de frações contínuas para tentar encontrar $k$ e a ordem $r$. Python tem essa funcionalidade integrada. Podemos usar o módulo `fractions` para transformar um float em um objeto `Fraction`, por exemplo:
+
+```python
+Fraction(0.666)
+```
+
+```text
+Fraction(5998794703657501, 9007199254740992)
+```
+
+Como isso fornece frações que retornam o resultado exatamente (neste caso, `0.6660000...`), isso pode gerar resultados complicados como o acima. Podemos usar o método `.limit_denominator()` para obter a fração que mais se assemelha ao nosso float, com um denominador abaixo de um certo valor:
+
+```python
+# Get fraction that most closely resembles 0.666
+# with denominator < 15
+Fraction(0.666).limit_denominator(15)
+```
+
+```text
+Fraction(2, 3)
+```
+
+Isso é muito melhor. A ordem (r) deve ser menor que N, então definiremos o denominador máximo como `15`:
+
+```python
+# Rows to be displayed in a table
+rows = []
+
+for phase in measured_phases:
+    frac = Fraction(phase).limit_denominator(15)
+    rows.append(
+        [phase, f"{frac.numerator}/{frac.denominator}", frac.denominator]
+    )
+
+# Print the rows in a table
+headers = ["Phase", "Fraction", "Guess for r"]
+df = pd.DataFrame(rows, columns=headers)
+print(df)
+```
+
+```text
+Phase Fraction  Guess for r
+0   0.00      0/1            1
+1   0.25      1/4            4
+2   0.50      1/2            2
+3   0.75      3/4            4
+```
+
+Podemos ver que dois dos autovalores medidos nos forneceram o resultado correto: $r=4$, e podemos ver que o algoritmo de Shor para encontrar a ordem tem uma chance de falhar. Esses resultados ruins ocorrem porque $k = 0$, ou porque $k$ e $r$ não são coprimos - e em vez de $r$, recebemos um fator de $r$. A solução mais fácil para isso é simplesmente repetir o experimento até obtermos um resultado satisfatório para $r$.
+Até agora, implementamos o problema de encontrar a ordem para $N=15$ com $a=2$ usando o circuito de estimativa de fase em um simulador. O último passo do algoritmo de Shor será relacionar o problema de encontrar a ordem ao problema de fatoração de inteiros. Esta última parte do algoritmo é puramente clássica e pode ser resolvida em um computador clássico após as medições de fase terem sido obtidas de um computador quântico. Portanto, adiamos a última parte do algoritmo até depois de demonstrarmos como podemos executar o circuito de encontrar a ordem em hardware real.
+### Execuções em hardware
+Agora podemos executar o circuito de encontrar a ordem que anteriormente transpilamos para `ibm_marrakesh`. Aqui recorremos ao [desacoplamento dinâmico](/guides/error-mitigation-and-suppression-techniques#dynamical-decoupling) (DD) para supressão de erros, e [twirling de portas](/guides/error-mitigation-and-suppression-techniques#pauli-twirling) para fins de mitigação de erros. DD envolve a aplicação de sequências de pulsos de controle precisamente temporizados a um dispositivo quântico, efetivamente calculando a média das interações ambientais indesejadas e da decoerência. O twirling de portas, por outro lado, aleatoriza portas quânticas específicas para transformar erros coerentes em erros de Pauli, que se acumulam linearmente em vez de quadraticamente. Ambas as técnicas são frequentemente combinadas para melhorar a coerência e a fidelidade das computações quânticas.
+
+```python
+# Sampler primitive to obtain the probability distribution
+sampler = Sampler(backend)
+
+# Turn on dynamical decoupling with sequence XpXm
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XpXm"
+# Enable gate twirling
+sampler.options.twirling.enable_gates = True
+
+pub = transpiled_circuit
+job = sampler.run([pub], shots=1024)
+```
+
+```python
+result = job.result()[0]
+counts = result.data["out"].get_counts()
+```
+
+```python
+plot_histogram(counts, figsize=(35, 5))
+```
+
+![Output of the previous code cell](/docs/images/tutorials/shors-algorithm/extracted-outputs/559d7030-1f67-44e8-afa7-6afc7a334677-0.avif)
+
+Como podemos ver, obtivemos as mesmas bitstrings com as contagens mais altas. Como o hardware quântico tem ruído, há algum vazamento para outras bitstrings, que podemos filtrar estatisticamente.
+
+```python
+# Dictionary of bitstrings and their counts to keep
+counts_keep = {}
+# Threshold to filter
+threshold = np.max(list(counts.values())) / 2
+
+for key, value in counts.items():
+    if value > threshold:
+        counts_keep[key] = value
+
+print(counts_keep)
+```
+
+```text
+{'00000000': 58, '01000000': 41, '11000000': 42, '10000000': 40}
+```
+
+## Passo 4: Pós-processar e retornar resultado no formato clássico desejado
+### Fatoração de Inteiros
+Até agora, discutimos como podemos implementar o problema de encontrar a ordem usando um circuito de estimativa de fase. Agora, conectamos o problema de encontrar a ordem à fatoração de inteiros, o que completa o algoritmo de Shor. Note que esta parte do algoritmo é clássica.
+Agora demonstramos isso usando nosso exemplo de $N = 15$ e $a = 2$. Lembre-se de que a fase que medimos é $k / r$, onde $$a^r \; (\textrm{mod} \; N) = 1$$ e $k$ é um inteiro aleatório entre $0$ e $r - 1$. Dessa equação, temos $$(a^r - 1) \; (\textrm{mod} \; N) = 0,$$ o que significa que $N$ deve dividir $a^r-1$. Se $r$ também for par, então podemos escrever $$a^r -1 = (a^{r/2}-1)(a^{r/2}+1).$$ Se $r$ não for par, não podemos ir mais longe e devemos tentar novamente com um valor diferente para $a$; caso contrário, há uma alta probabilidade de que o maior divisor comum de $N$ e $a^{r/2}-1$, ou $a^{r/2}+1$ seja um fator próprio de $N$.
+
+Como algumas execuções do algoritmo falharão estatisticamente, repetiremos este algoritmo até que pelo menos um fator de $N$ seja encontrado.
+A célula abaixo repete o algoritmo até que pelo menos um fator de $N=15$ seja encontrado. Usaremos os resultados da execução em hardware acima para adivinhar a fase e o fator correspondente em cada iteração.
+
+```python
+a = 2
+N = 15
+
+FACTOR_FOUND = False
+num_attempt = 0
+
+while not FACTOR_FOUND:
+    print(f"\nATTEMPT {num_attempt}:")
+    # Here, we get the bitstring by iterating over outcomes
+    # of a previous hardware run with multiple shots.
+    # Instead, we can also perform a single-shot measurement
+    # here in the loop.
+    bitstring = list(counts_keep.keys())[num_attempt]
+    num_attempt += 1
+    # Find the phase from measurement
+    decimal = int(bitstring, 2)
+    phase = decimal / (2**num_control)  # phase = k / r
+    print(f"Phase: theta = {phase}")
+
+    # Guess the order from phase
+    frac = Fraction(phase).limit_denominator(N)
+    r = frac.denominator  # order = r
+    print(f"Order of {a} modulo {N} estimated as: r = {r}")
+
+    if phase != 0:
+        # Guesses for factors are gcd(a^{r / 2} ± 1, 15)
+        if r % 2 == 0:
+            x = pow(a, r // 2, N) - 1
+            d = gcd(x, N)
+            if d > 1:
+                FACTOR_FOUND = True
+                print(f"*** Non-trivial factor found: {x} ***")
+```
+
+```text
+ATTEMPT 0:
+Phase: theta = 0.0
+Order of 2 modulo 15 estimated as: r = 1
+
+ATTEMPT 1:
+Phase: theta = 0.25
+Order of 2 modulo 15 estimated as: r = 4
+*** Non-trivial factor found: 3 ***
+```
+
+## Discussão
+### Trabalhos relacionados
+Nesta seção, discutimos outros trabalhos marcantes que demonstraram o algoritmo de Shor em hardware real.
+
+O trabalho seminal [[3]](#references) da IBM&reg; demonstrou o algoritmo de Shor pela primeira vez, fatorando o número 15 em seus fatores primos 3 e 5 usando um computador quântico de ressonância magnética nuclear (RMN) de sete qubits. Outro experimento [[4]](#references) fatorou 15 usando qubits fotônicos. Ao empregar um único qubit reciclado várias vezes e codificar o registrador de trabalho em estados de dimensões superiores, os pesquisadores reduziram o número necessário de qubits para um terço do protocolo padrão, utilizando um algoritmo compilado de dois fótons. Um artigo significativo na demonstração do algoritmo de Shor é [[5]](#references), que usa a técnica de estimativa de fase iterativa de Kitaev [[8]](#references) para reduzir o requisito de qubits do algoritmo. Os autores usaram sete qubits de controle e quatro qubits de cache, juntamente com a implementação de multiplicadores modulares. Esta implementação, no entanto, requer medições no meio do circuito com operações de feed-forward e reciclagem de qubits com operações de reset. Esta demonstração foi feita em um computador quântico de armadilha de íons.
+
+Um trabalho mais recente [[6]](#references) focou na fatoração de 15, 21 e 35 em hardware IBM Quantum&reg;. Semelhante ao trabalho anterior, os pesquisadores usaram uma versão compilada do algoritmo que empregou uma transformada de Fourier quântica semi-clássica conforme proposto por Kitaev para minimizar o número de qubits físicos e portas. Um trabalho mais recente [[7]](#references) também realizou uma demonstração de prova de conceito para fatorar o inteiro 21. Esta demonstração também envolveu o uso de uma versão compilada da rotina de estimativa de fase quântica, e se baseou na demonstração anterior de [[4]](#references). Os autores foram além deste trabalho usando uma configuração de portas Toffoli aproximadas com deslocamentos de fase residuais. O algoritmo foi implementado em processadores quânticos IBM usando apenas cinco qubits, e a presença de emaranhamento entre os qubits de controle e de registrador foi verificada com sucesso.
+### Escalabilidade do algoritmo
+
+Observamos que a criptografia RSA normalmente envolve tamanhos de chave na ordem de 2048 a 4096 bits. Tentar fatorar um número de 2048 bits com o algoritmo de Shor resultará em um circuito quântico com milhões de qubits, incluindo a sobrecarga de correção de erros e uma profundidade de circuito na ordem de um bilhão, o que está além dos limites do hardware quântico atual para executar. Portanto, o algoritmo de Shor exigirá métodos de construção de circuito otimizados ou correção de erros quântica robusta para ser praticamente viável para quebrar sistemas criptográficos modernos. Recomendamos [[9]](#references) para uma discussão mais detalhada sobre estimativa de recursos para o algoritmo de Shor.
+## Desafio
+
+Parabéns por concluir o tutorial! Agora é um ótimo momento para testar sua compreensão. Você poderia tentar construir o circuito para fatorar 21? Você pode selecionar um $a$ de sua própria escolha. Você precisará decidir sobre a precisão de bits do algoritmo para escolher o número de qubits, e precisará projetar os operadores de exponenciação modular $M_a$. Encorajamos você a tentar isso sozinho e depois ler sobre as metodologias mostradas na Fig. 9 de [[6]](#references) e Fig. 2 de [[7]](#references).
+
+```python
+def M_a_mod21():
+    """
+    M_a (mod 21)
+    """
+
+    # Your code here
+    pass
+```
+
+## Referências
+1. Shor, Peter W. "[Polynomial-time algorithms for prime factorization and discrete logarithms on a quantum computer](https://epubs.siam.org/doi/abs/10.1137/S0036144598347011)." SIAM review 41.2 (1999): 303-332.
+2. IBM Quantum [Fundamentals of Quantum Algorithms](https://learning.quantum.ibm.com/course/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring) course by Dr. John Watrous.
+3. Vandersypen, Lieven MK, et al. "[Experimental realization of Shor's quantum factoring algorithm using nuclear magnetic resonance](https://www.nature.com/articles/414883a)." Nature 414.6866 (2001): 883-887.
+4. Martin-Lopez, Enrique, et al. "[Experimental realization of Shor's quantum factoring algorithm using qubit recycling](https://www.nature.com/articles/nphoton.2012.259)." Nature photonics 6.11 (2012): 773-776.
+5. Monz, Thomas, et al. "[Realization of a scalable Shor algorithm](https://www.science.org/doi/full/10.1126/science.aad9480)." Science 351.6277 (2016): 1068-1070.
+6. Amico, Mirko, Zain H. Saleem, and Muir Kumph. "[Experimental study of Shor's factoring algorithm using the IBM Q Experience](https://journals.aps.org/pra/abstract/10.1103/PhysRevA.100.012305)." Physical Review A 100.1 (2019): 012305.
+7. Skosana, Unathi, and Mark Tame. "[Demonstration of Shor's factoring algorithm for N=21 on IBM quantum processors](https://www.nature.com/articles/s41598-021-95973-w)." Scientific reports 11.1 (2021): 16599.

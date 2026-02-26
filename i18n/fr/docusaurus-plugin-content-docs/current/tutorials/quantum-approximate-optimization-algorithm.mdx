@@ -1,0 +1,768 @@
+---
+title: "Algorithme d'optimisation approximative quantique"
+sidebar_label: "Algorithme d'optimisation approximative quantique"
+description: "Apprenez les bases de l'informatique quantique et comment utiliser les services et les QPU IBM Quantum pour résoudre des problèmes concrets."
+notebook_path: "docs/tutorials/quantum-approximate-optimization-algorithm.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/quantum-approximate-optimization-algorithm.ipynb" />
+
+
+
+{/* cspell:ignore rarr, QUBO, elist, fval, frameon */}
+*Estimation d'utilisation : 22 minutes sur un processeur Heron r3 (REMARQUE : il s'agit uniquement d'une estimation. Votre temps d'exécution peut varier.)*
+## Contexte
+Ce tutoriel montre comment implémenter l'**algorithme d'optimisation approximative quantique (QAOA)** -- une méthode itérative hybride (quantique-classique) -- dans le cadre des patterns Qiskit. Vous résoudrez d'abord le problème de **coupe maximale** (ou **Max-Cut**) pour un petit graphe, puis vous apprendrez à l'exécuter à l'échelle utilitaire. Toutes les exécutions matérielles de ce tutoriel devraient s'effectuer dans la limite de temps du plan Open, accessible gratuitement.
+
+Le problème Max-Cut est un problème d'optimisation difficile à résoudre (plus précisément, il s'agit d'un problème *NP-difficile*) avec de nombreuses applications en clustering, en science des réseaux et en physique statistique. Ce tutoriel considère un graphe de nœuds connectés par des arêtes, et vise à partitionner les nœuds en deux ensembles de manière à maximiser le nombre d'arêtes traversées par cette coupe.
+
+![Illustration d'un problème de coupe maximale](/docs/images/tutorials/quantum-approximate-optimization-algorithm/maxcut-illustration.avif)
+## Prérequis
+
+Avant de commencer ce tutoriel, assurez-vous d'avoir installé les éléments suivants :
+- Qiskit SDK v1.0 ou version ultérieure, avec le support de [visualisation](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 ou version ultérieure (`pip install qiskit-ibm-runtime`)
+
+De plus, vous aurez besoin d'un accès à une instance sur [IBM Quantum Platform](/guides/cloud-setup). Notez que ce tutoriel ne peut pas être exécuté avec le plan Open, car il exécute des charges de travail utilisant des [sessions](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/session), qui ne sont disponibles qu'avec un accès au plan Premium.
+## Configuration
+
+```python
+import matplotlib
+import matplotlib.pyplot as plt
+import rustworkx as rx
+from rustworkx.visualization import mpl_draw as draw_graph
+import numpy as np
+from scipy.optimize import minimize
+from collections import defaultdict
+from typing import Sequence
+
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import QAOAAnsatz
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session, EstimatorV2 as Estimator
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+```
+
+## Partie I. QAOA à petite échelle
+La première partie de ce tutoriel utilise un problème Max-Cut à petite échelle pour illustrer les étapes de résolution d'un problème d'optimisation à l'aide d'un ordinateur quantique.
+
+Pour donner un contexte avant de transposer ce problème en un algorithme quantique, vous pouvez mieux comprendre comment le problème Max-Cut devient un problème d'optimisation combinatoire classique en considérant d'abord la minimisation d'une fonction $f(x)$
+
+$$
+\min_{x\in \{0, 1\}^n}f(x),
+$$
+
+où l'entrée $x$ est un vecteur dont les composantes correspondent à chaque nœud d'un graphe. Ensuite, contraignez chacune de ces composantes à être soit $0$ soit $1$ (ce qui représente l'inclusion ou non dans la coupe). Cet exemple à petite échelle utilise un graphe avec $n=5$ nœuds.
+
+Vous pourriez écrire une fonction d'une paire de nœuds $i,j$ qui indique si l'arête correspondante $(i,j)$ est dans la coupe. Par exemple, la fonction $x_i + x_j - 2 x_i x_j$ vaut 1 uniquement si l'un des deux $x_i$ ou $x_j$ vaut 1 (ce qui signifie que l'arête est dans la coupe) et zéro sinon. Le problème de maximisation des arêtes dans la coupe peut être formulé comme
+
+$$
+\max_{x\in \{0, 1\}^n} \sum_{(i,j)} x_i + x_j - 2 x_i x_j,
+$$
+
+ce qui peut être réécrit sous forme de minimisation
+
+$$
+\min_{x\in \{0, 1\}^n} \sum_{(i,j)}  2 x_i x_j - x_i - x_j.
+$$
+
+Le minimum de $f(x)$ dans ce cas correspond au moment où le nombre d'arêtes traversées par la coupe est maximal. Comme vous pouvez le constater, il n'y a encore rien qui relève de l'informatique quantique. Vous devez reformuler ce problème en quelque chose qu'un ordinateur quantique peut comprendre.
+Initialisez votre problème en créant un graphe avec $n=5$ nœuds.
+
+```python
+n = 5
+
+graph = rx.PyGraph()
+graph.add_nodes_from(np.arange(0, n, 1))
+edge_list = [
+    (0, 1, 1.0),
+    (0, 2, 1.0),
+    (0, 4, 1.0),
+    (1, 2, 1.0),
+    (2, 3, 1.0),
+    (3, 4, 1.0),
+]
+graph.add_edges_from(edge_list)
+draw_graph(graph, node_size=600, with_labels=True)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/6ced6bea-0.avif)
+
+### Étape 1 : Transposer les entrées classiques en un problème quantique
+
+La première étape du pattern consiste à transposer le problème classique (graphe) en **circuits** et **opérateurs** quantiques. Pour cela, trois étapes principales sont nécessaires :
+
+1. Utiliser une série de reformulations mathématiques pour représenter ce problème en utilisant la notation des problèmes d'optimisation binaire quadratique sans contraintes (QUBO).
+2. Réécrire le problème d'optimisation sous forme d'un hamiltonien dont l'état fondamental correspond à la solution qui minimise la fonction de coût.
+3. Créer un circuit quantique qui préparera l'état fondamental de cet hamiltonien via un processus similaire au recuit quantique.
+
+**Remarque :** Dans la méthodologie QAOA, vous souhaitez finalement obtenir un opérateur (**hamiltonien**) qui représente la **fonction de coût** de notre algorithme hybride, ainsi qu'un circuit paramétré (**Ansatz**) qui représente des états quantiques avec des solutions candidates au problème. Vous pouvez échantillonner à partir de ces états candidats puis les évaluer à l'aide de la fonction de coût.
+
+#### Graphe &rarr; problème d'optimisation
+
+La première étape de la transposition est un changement de notation. Ce qui suit exprime le problème en notation QUBO :
+
+$$
+\min_{x\in \{0, 1\}^n}x^T Q x,
+$$
+
+où $Q$ est une matrice $n\times n$ de nombres réels, $n$ correspond au nombre de nœuds dans votre graphe, $x$ est le vecteur de variables binaires introduit ci-dessus, et $x^T$ indique la transposée du vecteur $x$.
+
+```
+Maximize
+ -2*x_0*x_1 - 2*x_0*x_2 - 2*x_0*x_4 - 2*x_1*x_2 - 2*x_2*x_3 - 2*x_3*x_4 + 3*x_0
+ + 2*x_1 + 3*x_2 + 2*x_3 + 2*x_4
+
+Subject to
+  No constraints
+
+  Binary variables (5)
+    x_0 x_1 x_2 x_3 x_4
+```
+### Problème d'optimisation &rarr; hamiltonien
+
+Vous pouvez ensuite reformuler le problème QUBO sous forme d'un **hamiltonien** (ici, une matrice qui représente l'énergie d'un système) :
+
+$$
+H_C=\sum_{ij}Q_{ij}Z_iZ_j + \sum_i b_iZ_i.
+$$
+
+<details>
+<summary>
+**Étapes de reformulation du problème QAOA vers l'hamiltonien**
+</summary>
+
+Pour montrer comment le problème QAOA peut être réécrit de cette manière, remplacez d'abord les variables binaires $x_i$ par un nouvel ensemble de variables $z_i\in\{-1, 1\}$ via
+
+$$
+x_i = \frac{1-z_i}{2}.
+$$
+
+Ici, vous pouvez voir que si $x_i$ vaut $0$, alors $z_i$ doit valoir $1$. Lorsque les $x_i$ sont substitués par les $z_i$ dans le problème d'optimisation ($x^TQx$), une formulation équivalente peut être obtenue.
+
+$$
+x^TQx=\sum_{ij}Q_{ij}x_ix_j \\ =\frac{1}{4}\sum_{ij}Q_{ij}(1-z_i)(1-z_j) \\=\frac{1}{4}\sum_{ij}Q_{ij}z_iz_j-\frac{1}{4}\sum_{ij}(Q_{ij}+Q_{ji})z_i + \frac{n^2}{4}.
+$$
+
+Maintenant, si nous définissons $b_i=-\sum_{j}(Q_{ij}+Q_{ji})$, supprimons le préfacteur et le terme constant $n^2$, nous obtenons les deux formulations équivalentes du même problème d'optimisation.
+
+$$
+\min_{x\in\{0,1\}^n} x^TQx\Longleftrightarrow \min_{z\in\{-1,1\}^n}z^TQz + b^Tz
+$$
+
+Ici, $b$ dépend de $Q$. Notez que pour obtenir $z^TQz + b^Tz$ nous avons supprimé le facteur de 1/4 et un décalage constant de $n^2$ qui ne jouent aucun rôle dans l'optimisation.
+
+Maintenant, pour obtenir une formulation quantique du problème, promouvez les variables $z_i$ en une matrice de Pauli $Z$, telle qu'une matrice $2\times 2$ de la forme
+
+$$
+Z_i = \begin{pmatrix}1 & 0 \\ 0 & -1\end{pmatrix}.
+$$
+
+Lorsque vous substituez ces matrices dans le problème d'optimisation ci-dessus, vous obtenez l'hamiltonien suivant
+
+$$
+H_C=\sum_{ij}Q_{ij}Z_iZ_j + \sum_i b_iZ_i.
+$$
+
+*Rappelez-vous également que les matrices $Z$ sont intégrées dans l'espace de calcul de l'ordinateur quantique, c'est-à-dire un espace de Hilbert de taille $2^n\times 2^n$. Par conséquent, vous devez comprendre des termes tels que $Z_iZ_j$ comme le produit tensoriel $Z_i\otimes Z_j$ intégré dans l'espace de Hilbert $2^n\times 2^n$. Par exemple, dans un problème avec cinq variables de décision, le terme $Z_1Z_3$ doit être compris comme $I\otimes Z_3\otimes I\otimes Z_1\otimes I$ où $I$ est la matrice identité $2\times 2$.*
+</details>
+
+Cet hamiltonien est appelé l'**hamiltonien de la fonction de coût**. Il a la propriété que son état fondamental correspond à la solution qui **minimise la fonction de coût $f(x)$**.
+Par conséquent, pour résoudre votre problème d'optimisation, vous devez maintenant préparer l'état fondamental de $H_C$ (ou un état ayant un fort recouvrement avec celui-ci) sur l'ordinateur quantique. Ensuite, l'échantillonnage à partir de cet état donnera, avec une forte probabilité, la solution à $min~f(x)$.
+Considérons maintenant l'hamiltonien $H_C$ pour le problème **Max-Cut**. Soit chaque sommet du graphe associé à un qubit dans l'état $|0\rangle$ ou $|1\rangle$, où la valeur indique l'ensemble auquel le sommet appartient. L'objectif du problème est de maximiser le nombre d'arêtes $(v_1, v_2)$ pour lesquelles $v_1 = |0\rangle$ et $v_2 = |1\rangle$, ou vice-versa. Si nous associons l'opérateur $Z$ à chaque qubit, où
+
+$$
+    Z|0\rangle = |0\rangle \qquad Z|1\rangle = -|1\rangle
+$$
+
+alors une arête $(v_1, v_2)$ appartient à la coupe si la valeur propre de $(Z_1|v_1\rangle) \cdot (Z_2|v_2\rangle) = -1$ ; en d'autres termes, les qubits associés à $v_1$ et $v_2$ sont différents. De même, $(v_1, v_2)$ n'appartient pas à la coupe si la valeur propre de $(Z_1|v_1\rangle) \cdot (Z_2|v_2\rangle) = 1$. Notez que nous ne nous intéressons pas à l'état exact du qubit associé à chaque sommet, mais uniquement à savoir s'ils sont identiques ou non de part et d'autre d'une arête. Le problème Max-Cut nous demande de trouver une assignation des qubits sur les sommets telle que la valeur propre de l'hamiltonien suivant soit minimisée
+$$
+    H_C = \sum_{(i,j) \in e} Q_{ij} \cdot Z_i Z_j.
+$$
+
+En d'autres termes, $b_i = 0$ pour tout $i$ dans le problème Max-Cut. La valeur de $Q_{ij}$ indique le poids de l'arête. Dans ce tutoriel, nous considérons un graphe non pondéré, c'est-à-dire $Q_{ij} = 1.0$ pour tout $i, j$.
+
+```python
+def build_max_cut_paulis(
+    graph: rx.PyGraph,
+) -> list[tuple[str, list[int], float]]:
+    """Convert the graph to Pauli list.
+
+    This function does the inverse of `build_max_cut_graph`
+    """
+    pauli_list = []
+    for edge in list(graph.edge_list()):
+        weight = graph.get_edge_data(edge[0], edge[1])
+        pauli_list.append(("ZZ", [edge[0], edge[1]], weight))
+    return pauli_list
+
+max_cut_paulis = build_max_cut_paulis(graph)
+cost_hamiltonian = SparsePauliOp.from_sparse_list(max_cut_paulis, n)
+print("Cost Function Hamiltonian:", cost_hamiltonian)
+```
+
+```text
+Cost Function Hamiltonian: SparsePauliOp(['IIIZZ', 'IIZIZ', 'ZIIIZ', 'IIZZI', 'IZZII', 'ZZIII'],
+              coeffs=[1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j])
+```
+
+#### Hamiltonien &rarr; circuit quantique
+L'hamiltonien $H_C$ contient la définition quantique de votre problème. Vous pouvez maintenant créer un circuit quantique qui aidera à *échantillonner* de bonnes solutions à partir de l'ordinateur quantique. Le QAOA s'inspire du recuit quantique et applique des couches alternées d'opérateurs dans le circuit quantique.
+
+L'idée générale est de partir de l'état fondamental d'un système connu, $H^{\otimes n}|0\rangle$ ci-dessus, puis de diriger le système vers l'état fondamental de l'opérateur de coût qui vous intéresse. Cela se fait en appliquant les opérateurs $\exp\{-i\gamma_k H_C\}$ et $\exp\{-i\beta_k H_m\}$ avec les angles $\gamma_1,...,\gamma_p$ et $\beta_1,...,\beta_p~$.
+
+Le circuit quantique que vous générez est **paramétré** par $\gamma_i$ et $\beta_i$, vous pouvez donc essayer différentes valeurs de $\gamma_i$ et $\beta_i$ et échantillonner à partir de l'état résultant.
+
+![Diagramme de circuit avec des couches QAOA](/docs/images/tutorials/quantum-approximate-optimization-algorithm/circuit-diagram.svg)
+
+Dans ce cas, vous allez essayer un exemple avec une couche QAOA contenant deux paramètres : $\gamma_1$ et $\beta_1$.
+
+```python
+circuit = QAOAAnsatz(cost_operator=cost_hamiltonian, reps=2)
+circuit.measure_all()
+
+circuit.draw("mpl")
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/7bd8c6d4-f40f-4a11-a440-0b26d9021b53-0.avif)
+
+```python
+circuit.parameters
+```
+
+```text
+ParameterView([ParameterVectorElement(β[0]), ParameterVectorElement(β[1]), ParameterVectorElement(γ[0]), ParameterVectorElement(γ[1])])
+```
+
+### Étape 2 : Optimiser le problème pour l'exécution sur du matériel quantique
+Le circuit ci-dessus contient une série d'abstractions utiles pour raisonner sur les algorithmes quantiques, mais qui ne peuvent pas être exécutées directement sur le matériel. Pour pouvoir s'exécuter sur un QPU, le circuit doit subir une série d'opérations qui constituent l'étape de **transpilation** ou d'**optimisation de circuit** du pattern.
+
+La bibliothèque Qiskit offre une série de **passes de transpilation** qui couvrent un large éventail de transformations de circuits. Vous devez vous assurer que votre circuit est **optimisé** pour votre objectif.
+
+La transpilation peut impliquer plusieurs étapes, telles que :
+
+* **Mappage initial** des qubits dans le circuit (tels que les variables de décision) vers les qubits physiques du dispositif.
+* **Décomposition** des instructions du circuit quantique en instructions natives du matériel que le Backend comprend.
+* **Routage** de tout qubit du circuit qui interagit vers des qubits physiques adjacents les uns aux autres.
+* **Suppression d'erreurs** par l'ajout de portes à qubit unique pour supprimer le bruit avec le découplage dynamique.
+
+Plus d'informations sur la transpilation sont disponibles dans notre [documentation](/guides/transpile).
+
+Le code suivant transforme et optimise le circuit abstrait dans un format prêt à être exécuté sur l'un des dispositifs accessibles via le cloud en utilisant le **service Qiskit IBM Runtime**.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+print(backend)
+
+# Create pass manager for transpilation
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+candidate_circuit = pm.run(circuit)
+candidate_circuit.draw("mpl", fold=False, idle_wires=False)
+```
+
+```text
+<IBMBackend('test_heron_pok_1')>
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/3f28a422-805c-4d3d-b5f6-62539e9133bd-1.avif)
+
+### Étape 3 : Exécuter à l'aide des primitives Qiskit
+Dans le flux de travail QAOA, les paramètres QAOA optimaux sont trouvés dans une boucle d'optimisation itérative, qui exécute une série d'évaluations de circuits et utilise un optimiseur classique pour trouver les paramètres $\beta_k$ et $\gamma_k$ optimaux. Cette boucle d'exécution est réalisée via les étapes suivantes :
+
+1. Définir les paramètres initiaux
+2. Instancier une nouvelle `Session` contenant la boucle d'optimisation et la primitive utilisée pour échantillonner le circuit
+3. Une fois qu'un ensemble optimal de paramètres est trouvé, exécuter le circuit une dernière fois pour obtenir une distribution finale qui sera utilisée dans l'étape de post-traitement.
+#### Définir le circuit avec les paramètres initiaux
+Nous commençons avec des paramètres choisis arbitrairement.
+
+```python
+initial_gamma = np.pi
+initial_beta = np.pi / 2
+init_params = [initial_beta, initial_beta, initial_gamma, initial_gamma]
+```
+
+#### Définir le Backend et la primitive d'exécution
+Utilisez les **primitives Qiskit Runtime** pour interagir avec les Backends IBM&reg;. Les deux primitives sont Sampler et Estimator, et le choix de la primitive dépend du type de mesure que vous souhaitez effectuer sur l'ordinateur quantique. Pour la minimisation de $H_C$, utilisez l'Estimator puisque la mesure de la fonction de coût est simplement la valeur d'espérance de $\langle H_C \rangle$.
+#### Exécution
+
+Les primitives offrent une variété de [modes d'exécution](/guides/execution-modes) pour planifier les charges de travail sur les dispositifs quantiques, et un flux de travail QAOA s'exécute de manière itérative dans une session.
+
+![Illustration montrant le comportement des modes d'exécution Job unique, Batch et Session.](/docs/images/tutorials/quantum-approximate-optimization-algorithm/runtime-modes.avif)
+
+Vous pouvez intégrer la fonction de coût basée sur le Sampler dans la routine de minimisation SciPy pour trouver les paramètres optimaux.
+
+```python
+def cost_func_estimator(params, ansatz, hamiltonian, estimator):
+    # transform the observable defined on virtual qubits to
+    # an observable defined on all physical qubits
+    isa_hamiltonian = hamiltonian.apply_layout(ansatz.layout)
+
+    pub = (ansatz, isa_hamiltonian, params)
+    job = estimator.run([pub])
+
+    results = job.result()[0]
+    cost = results.data.evs
+
+    objective_func_vals.append(cost)
+
+    return cost
+```
+
+```python
+objective_func_vals = []  # Global variable
+with Session(backend=backend) as session:
+    # If using qiskit-ibm-runtime<0.24.0, change `mode=` to `session=`
+    estimator = Estimator(mode=session)
+    estimator.options.default_shots = 1000
+
+    # Set simple error suppression/mitigation options
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XY4"
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+
+    result = minimize(
+        cost_func_estimator,
+        init_params,
+        args=(candidate_circuit, cost_hamiltonian, estimator),
+        method="COBYLA",
+        tol=1e-2,
+    )
+    print(result)
+```
+
+```text
+message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: -1.6295230263157894
+       x: [ 1.530e+00  1.439e+00  4.071e+00  4.434e+00]
+    nfev: 26
+   maxcv: 0.0
+```
+
+L'optimiseur a pu réduire le coût et trouver de meilleurs paramètres pour le circuit.
+
+```python
+plt.figure(figsize=(12, 6))
+plt.plot(objective_func_vals)
+plt.xlabel("Iteration")
+plt.ylabel("Cost")
+plt.show()
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/e14ecc92-0.avif)
+
+Une fois que vous avez trouvé les paramètres optimaux pour le circuit, vous pouvez assigner ces paramètres et échantillonner la distribution finale obtenue avec les paramètres optimisés. C'est ici que la primitive *Sampler* doit être utilisée puisque c'est la distribution de probabilité des mesures de chaînes de bits qui correspond à la coupe optimale du graphe.
+
+**Remarque :** Cela signifie préparer un état quantique $\psi$ dans l'ordinateur puis le mesurer. Une mesure fera s'effondrer l'état en un seul état de base computationnelle -- par exemple, `010101110000...` -- qui correspond à une solution candidate $x$ à notre problème d'optimisation initial ($\max f(x)$ ou $\min f(x)$ selon la tâche).
+
+```python
+optimized_circuit = candidate_circuit.assign_parameters(result.x)
+optimized_circuit.draw("mpl", fold=False, idle_wires=False)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/2989e76e-4296-4dd8-b065-2b8fced064cf-0.avif)
+
+```python
+# If using qiskit-ibm-runtime<0.24.0, change `mode=` to `backend=`
+sampler = Sampler(mode=backend)
+sampler.options.default_shots = 10000
+
+# Set simple error suppression/mitigation options
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XY4"
+sampler.options.twirling.enable_gates = True
+sampler.options.twirling.num_randomizations = "auto"
+
+pub = (optimized_circuit,)
+job = sampler.run([pub], shots=int(1e4))
+counts_int = job.result()[0].data.meas.get_int_counts()
+counts_bin = job.result()[0].data.meas.get_counts()
+shots = sum(counts_int.values())
+final_distribution_int = {key: val / shots for key, val in counts_int.items()}
+final_distribution_bin = {key: val / shots for key, val in counts_bin.items()}
+print(final_distribution_int)
+```
+
+```text
+{28: 0.0328, 11: 0.0343, 2: 0.0296, 25: 0.0308, 16: 0.0303, 27: 0.0302, 13: 0.0323, 7: 0.0312, 4: 0.0296, 9: 0.0295, 26: 0.0321, 30: 0.031, 23: 0.0324, 31: 0.0303, 21: 0.0335, 15: 0.0317, 12: 0.0309, 29: 0.0297, 3: 0.0313, 5: 0.0312, 6: 0.0274, 10: 0.0329, 22: 0.0353, 0: 0.0315, 20: 0.0326, 8: 0.0322, 14: 0.0306, 17: 0.0295, 18: 0.0279, 1: 0.0325, 24: 0.0334, 19: 0.0295}
+```
+
+### Étape 4 : Post-traiter et retourner le résultat dans le format classique souhaité
+
+L'étape de post-traitement interprète la sortie de l'échantillonnage pour retourner une solution à votre problème original. Dans ce cas, vous vous intéressez à la chaîne de bits avec la plus haute probabilité car elle détermine la coupe optimale. Les symétries du problème permettent quatre solutions possibles, et le processus d'échantillonnage en retournera une avec une probabilité légèrement plus élevée, mais vous pouvez voir dans la distribution tracée ci-dessous que quatre des chaînes de bits sont nettement plus probables que les autres.
+
+```python
+# auxiliary functions to sample most likely bitstring
+def to_bitstring(integer, num_bits):
+    result = np.binary_repr(integer, width=num_bits)
+    return [int(digit) for digit in result]
+
+keys = list(final_distribution_int.keys())
+values = list(final_distribution_int.values())
+most_likely = keys[np.argmax(np.abs(values))]
+most_likely_bitstring = to_bitstring(most_likely, len(graph))
+most_likely_bitstring.reverse()
+
+print("Result bitstring:", most_likely_bitstring)
+```
+
+```text
+Result bitstring: [0, 1, 1, 0, 1]
+```
+
+```python
+matplotlib.rcParams.update({"font.size": 10})
+final_bits = final_distribution_bin
+values = np.abs(list(final_bits.values()))
+top_4_values = sorted(values, reverse=True)[:4]
+positions = []
+for value in top_4_values:
+    positions.append(np.where(values == value)[0])
+fig = plt.figure(figsize=(11, 6))
+ax = fig.add_subplot(1, 1, 1)
+plt.xticks(rotation=45)
+plt.title("Result Distribution")
+plt.xlabel("Bitstrings (reversed)")
+plt.ylabel("Probability")
+ax.bar(list(final_bits.keys()), list(final_bits.values()), color="tab:grey")
+for p in positions:
+    ax.get_children()[int(p[0])].set_color("tab:purple")
+plt.show()
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/650875e9-adbc-43bd-9505-556be2566278-0.avif)
+
+#### Visualiser la meilleure coupe
+
+À partir de la chaîne de bits optimale, vous pouvez ensuite visualiser cette coupe sur le graphe original.
+
+```python
+# auxiliary function to plot graphs
+def plot_result(G, x):
+    colors = ["tab:grey" if i == 0 else "tab:purple" for i in x]
+    pos, _default_axes = rx.spring_layout(G), plt.axes(frameon=True)
+    rx.visualization.mpl_draw(
+        G, node_color=colors, node_size=100, alpha=0.8, pos=pos
+    )
+
+plot_result(graph, most_likely_bitstring)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/33135970-8bc4-4fb2-ab87-08726a432ce4-0.avif)
+
+Et calculer la valeur de la coupe :
+
+```python
+def evaluate_sample(x: Sequence[int], graph: rx.PyGraph) -> float:
+    assert len(x) == len(
+        list(graph.nodes())
+    ), "The length of x must coincide with the number of nodes in the graph."
+    return sum(
+        x[u] * (1 - x[v]) + x[v] * (1 - x[u])
+        for u, v in list(graph.edge_list())
+    )
+
+cut_value = evaluate_sample(most_likely_bitstring, graph)
+print("The value of the cut is:", cut_value)
+```
+
+```text
+The value of the cut is: 5
+```
+
+## Partie II. Passage à l'échelle !
+
+Vous avez accès à de nombreux dispositifs de plus de 100 qubits sur IBM Quantum&reg; Platform. Sélectionnez-en un sur lequel résoudre le problème Max-Cut pour un graphe pondéré de 100 nœuds. Il s'agit d'un problème à « échelle utilitaire ». Les étapes pour construire le flux de travail sont les mêmes que ci-dessus, mais avec un graphe beaucoup plus grand.
+
+```python
+n = 100  # Number of nodes in graph
+graph_100 = rx.PyGraph()
+graph_100.add_nodes_from(np.arange(0, n, 1))
+elist = []
+for edge in backend.coupling_map:
+    if edge[0] < n and edge[1] < n:
+        elist.append((edge[0], edge[1], 1.0))
+graph_100.add_edges_from(elist)
+draw_graph(graph_100, node_size=200, with_labels=True, width=1)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/590fe2ce-0.avif)
+
+### Étape 1 : Transposer les entrées classiques en un problème quantique
+#### Graphe &rarr; hamiltonien
+Commencez par convertir le graphe que vous souhaitez résoudre directement en un hamiltonien adapté au QAOA.
+
+```python
+max_cut_paulis_100 = build_max_cut_paulis(graph_100)
+
+cost_hamiltonian_100 = SparsePauliOp.from_sparse_list(max_cut_paulis_100, 100)
+print("Cost Function Hamiltonian:", cost_hamiltonian_100)
+```
+
+```text
+Cost Function Hamiltonian: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j,
+ 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j, 1.+0.j])
+```
+
+#### Hamiltonien &rarr; circuit quantique
+
+```python
+circuit_100 = QAOAAnsatz(cost_operator=cost_hamiltonian_100, reps=1)
+circuit_100.measure_all()
+
+circuit_100.draw("mpl", fold=False, scale=0.2, idle_wires=False)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/9693adfc-0.avif)
+
+### Étape 2 : Optimiser le problème pour l'exécution quantique
+Pour passer à l'échelle l'étape d'optimisation de circuit aux problèmes à échelle utilitaire, vous pouvez tirer parti des stratégies de transpilation haute performance introduites dans le Qiskit SDK v1.0. D'autres outils incluent le nouveau service de transpilation avec des [passes de transpilation améliorées par l'IA](/guides/ai-transpiler-passes).
+
+```python
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+candidate_circuit_100 = pm.run(circuit_100)
+candidate_circuit_100.draw("mpl", fold=False, scale=0.1, idle_wires=False)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/3a14e7ad-0.avif)
+
+### Étape 3 : Exécuter à l'aide des primitives Qiskit
+
+Pour exécuter le QAOA, vous devez connaître les paramètres optimaux $\gamma_k$ et $\beta_k$ à injecter dans le circuit variationnel. Optimisez ces paramètres en exécutant une boucle d'optimisation sur le dispositif. La cellule soumet des jobs jusqu'à ce que la valeur de la fonction de coût ait convergé et que les paramètres optimaux pour $\gamma_k$ et $\beta_k$ soient déterminés.
+#### Trouver une solution candidate en exécutant l'optimisation sur le dispositif
+Commencez par exécuter la boucle d'optimisation pour les paramètres du circuit sur un dispositif.
+
+```python
+initial_gamma = np.pi
+initial_beta = np.pi / 2
+init_params = [initial_beta, initial_gamma]
+
+objective_func_vals = []  # Global variable
+with Session(backend=backend) as session:
+    # If using qiskit-ibm-runtime<0.24.0, change `mode=` to `session=`
+    estimator = Estimator(mode=session)
+
+    estimator.options.default_shots = 1000
+
+    # Set simple error suppression/mitigation options
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XY4"
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+
+    result = minimize(
+        cost_func_estimator,
+        init_params,
+        args=(candidate_circuit_100, cost_hamiltonian_100, estimator),
+        method="COBYLA",
+    )
+    print(result)
+```
+
+```text
+message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: -3.9939191365979383
+       x: [ 1.571e+00  3.142e+00]
+    nfev: 29
+   maxcv: 0.0
+```
+
+Une fois les paramètres optimaux trouvés en exécutant le QAOA sur le dispositif, assignez les paramètres au circuit.
+
+```python
+optimized_circuit_100 = candidate_circuit_100.assign_parameters(result.x)
+optimized_circuit_100.draw("mpl", fold=False, idle_wires=False)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/1c432c2e-0.avif)
+
+Enfin, exécutez le circuit avec les paramètres optimaux pour échantillonner à partir de la distribution correspondante.
+
+```python
+# If using qiskit-ibm-runtime<0.24.0, change `mode=` to `backend=`
+sampler = Sampler(mode=backend)
+sampler.options.default_shots = 10000
+
+# Set simple error suppression/mitigation options
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XY4"
+sampler.options.twirling.enable_gates = True
+sampler.options.twirling.num_randomizations = "auto"
+
+pub = (optimized_circuit_100,)
+job = sampler.run([pub], shots=int(1e4))
+
+counts_int = job.result()[0].data.meas.get_int_counts()
+counts_bin = job.result()[0].data.meas.get_counts()
+shots = sum(counts_int.values())
+final_distribution_100_int = {
+    key: val / shots for key, val in counts_int.items()
+}
+```
+
+Vérifiez que le coût minimisé dans la boucle d'optimisation a convergé vers une certaine valeur.
+
+```python
+plt.figure(figsize=(12, 6))
+plt.plot(objective_func_vals)
+plt.xlabel("Iteration")
+plt.ylabel("Cost")
+plt.show()
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/0fda3611-0.avif)
+
+### Étape 4 : Post-traiter et retourner le résultat dans le format classique souhaité
+Étant donné que la probabilité de chaque solution est faible, extrayez la solution qui correspond au coût le plus bas.
+
+```python
+_PARITY = np.array(
+    [-1 if bin(i).count("1") % 2 else 1 for i in range(256)],
+    dtype=np.complex128,
+)
+
+def evaluate_sparse_pauli(state: int, observable: SparsePauliOp) -> complex:
+    """Utility for the evaluation of the expectation value of a measured state."""
+    packed_uint8 = np.packbits(observable.paulis.z, axis=1, bitorder="little")
+    state_bytes = np.frombuffer(
+        state.to_bytes(packed_uint8.shape[1], "little"), dtype=np.uint8
+    )
+    reduced = np.bitwise_xor.reduce(packed_uint8 & state_bytes, axis=1)
+    return np.sum(observable.coeffs * _PARITY[reduced])
+
+def best_solution(samples, hamiltonian):
+    """Find solution with lowest cost"""
+    min_cost = 1000
+    min_sol = None
+    for bit_str in samples.keys():
+        # Qiskit use little endian hence the [::-1]
+        candidate_sol = int(bit_str)
+        # fval = qp.objective.evaluate(candidate_sol)
+        fval = evaluate_sparse_pauli(candidate_sol, hamiltonian).real
+        if fval <= min_cost:
+            min_sol = candidate_sol
+
+    return min_sol
+
+best_sol_100 = best_solution(final_distribution_100_int, cost_hamiltonian_100)
+best_sol_bitstring_100 = to_bitstring(int(best_sol_100), len(graph_100))
+best_sol_bitstring_100.reverse()
+
+print("Result bitstring:", best_sol_bitstring_100)
+```
+
+```text
+Result bitstring: [1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]
+```
+
+Ensuite, visualisez la coupe. Les nœuds de la même couleur appartiennent au même groupe.
+
+```python
+plot_result(graph_100, best_sol_bitstring_100)
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/b4a25e28-0.avif)
+
+Calculez la valeur de la coupe.
+
+```python
+cut_value_100 = evaluate_sample(best_sol_bitstring_100, graph_100)
+print("The value of the cut is:", cut_value_100)
+```
+
+```text
+The value of the cut is: 124
+```
+
+Maintenant, vous devez calculer la valeur de la fonction objectif de chaque échantillon que vous avez mesuré sur l'ordinateur quantique. L'échantillon avec la valeur de fonction objectif la plus basse est la solution retournée par l'ordinateur quantique.
+
+```python
+# auxiliary function to help plot cumulative distribution functions
+def _plot_cdf(objective_values: dict, ax, color):
+    x_vals = sorted(objective_values.keys(), reverse=True)
+    y_vals = np.cumsum([objective_values[x] for x in x_vals])
+    ax.plot(x_vals, y_vals, color=color)
+
+def plot_cdf(dist, ax, title):
+    _plot_cdf(
+        dist,
+        ax,
+        "C1",
+    )
+    ax.vlines(min(list(dist.keys())), 0, 1, "C1", linestyle="--")
+
+    ax.set_title(title)
+    ax.set_xlabel("Objective function value")
+    ax.set_ylabel("Cumulative distribution function")
+    ax.grid(alpha=0.3)
+
+# auxiliary function to convert bit-strings to objective values
+def samples_to_objective_values(samples, hamiltonian):
+    """Convert the samples to values of the objective function."""
+
+    objective_values = defaultdict(float)
+    for bit_str, prob in samples.items():
+        candidate_sol = int(bit_str)
+        fval = evaluate_sparse_pauli(candidate_sol, hamiltonian).real
+        objective_values[fval] += prob
+
+    return objective_values
+```
+
+```python
+result_dist = samples_to_objective_values(
+    final_distribution_100_int, cost_hamiltonian_100
+)
+```
+
+Enfin, vous pouvez tracer la fonction de distribution cumulative pour visualiser comment chaque échantillon contribue à la distribution de probabilité totale et à la valeur de la fonction objectif correspondante. L'étendue horizontale montre la plage des valeurs de la fonction objectif des échantillons dans la distribution finale. Idéalement, vous observeriez que la fonction de distribution cumulative présente des « sauts » à l'extrémité inférieure de l'axe des valeurs de la fonction objectif. Cela signifierait que peu de solutions à faible coût ont une probabilité élevée d'être échantillonnées. Une courbe lisse et étendue indique que chaque échantillon est également probable, et qu'ils peuvent avoir des valeurs de fonction objectif très différentes, faibles ou élevées.
+
+```python
+fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+plot_cdf(result_dist, ax, "Eagle device")
+```
+
+![Sortie de la cellule de code précédente](/docs/images/tutorials/quantum-approximate-optimization-algorithm/extracted-outputs/4381a2b3-0.avif)
+
+## Conclusion
+
+Ce tutoriel a montré comment résoudre un problème d'optimisation avec un ordinateur quantique en utilisant le cadre Qiskit patterns. La démonstration comprenait un exemple à échelle utilitaire, avec des tailles de circuits qui ne peuvent pas être simulées exactement de manière classique. Actuellement, les ordinateurs quantiques ne surpassent pas les ordinateurs classiques pour l'optimisation combinatoire en raison du bruit. Cependant, le matériel s'améliore régulièrement, et de nouveaux algorithmes pour les ordinateurs quantiques sont continuellement développés. En effet, une grande partie de la recherche travaillant sur les heuristiques quantiques pour l'optimisation combinatoire est testée avec des simulations classiques qui ne permettent qu'un petit nombre de qubits, typiquement autour de 20 qubits. Désormais, avec un plus grand nombre de qubits et des dispositifs moins bruyants, les chercheurs pourront commencer à évaluer ces heuristiques quantiques sur des problèmes de grande taille sur du matériel quantique.
+## Enquête sur le tutoriel
+
+Veuillez répondre à cette courte enquête pour nous faire part de vos commentaires sur ce tutoriel. Vos retours nous aideront à améliorer notre contenu et l'expérience utilisateur.
+
+[Lien vers l'enquête](https://your.feedback.ibm.com/jfe/form/SV_cNHi0H1YIagQZ9Q)

@@ -1,0 +1,228 @@
+---
+title: "Навчання квантового ядра"
+sidebar_label: "Навчання квантового ядра"
+description: "Побудуйте шаблон Qiskit для обчислення елементів матриці квантового ядра, що використовується для бінарної класифікації."
+notebook_path: "docs/tutorials/quantum-kernel-training.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/quantum-kernel-training.ipynb" />
+
+
+
+*Оцінка використання: менше однієї хвилини на процесорі Eagle r3 (ПРИМІТКА: Це лише оцінка. Ваш час виконання може відрізнятися.)*
+## Передумови
+
+Цей посібник демонструє, як побудувати `Qiskit pattern` для обчислення елементів матриці квантового ядра, що використовується для бінарної класифікації. Для отримання додаткової інформації про `Qiskit patterns` та про те, як `Qiskit Serverless` може бути використаний для їх розгортання у хмарі для керованого виконання, відвідайте нашу [сторінку документації IBM Quantum&reg; Platform](/guides/serverless).
+## Вимоги
+
+Перед початком цього посібника переконайтеся, що у Вас встановлено наступне:
+- Qiskit SDK v1.0 або новіший, з підтримкою [візуалізації](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 або новіший (`pip install qiskit-ibm-runtime`)
+## Налаштування
+
+```python
+!wget https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv
+
+# General Imports and helper functions
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.circuit.library import UnitaryOverlap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
+
+# from qiskit_serverless import IBMServerlessClient, QiskitFunction
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+
+def visualize_counts(res_counts, num_qubits, num_shots):
+    """Visualize the outputs from the Qiskit Sampler primitive."""
+    zero_prob = res_counts.get(0, 0.0)
+    top_10 = dict(
+        sorted(res_counts.items(), key=lambda item: item[1], reverse=True)[
+            :10
+        ]
+    )
+    top_10.update({0: zero_prob})
+    by_key = dict(sorted(top_10.items(), key=lambda item: item[0]))
+    x_vals, y_vals = list(zip(*by_key.items()))
+    x_vals = [bin(x_val)[2:].zfill(num_qubits) for x_val in x_vals]
+    y_vals_prob = []
+    for t in range(len(y_vals)):
+        y_vals_prob.append(y_vals[t] / num_shots)
+    y_vals = y_vals_prob
+    plt.bar(x_vals, y_vals)
+    plt.xticks(rotation=75)
+    plt.title("Results of sampling")
+    plt.xlabel("Measured bitstring")
+    plt.ylabel("Probability")
+    plt.show()
+
+def get_training_data():
+    """Read the training data."""
+    df = pd.read_csv("dataset_graph7.csv", sep=",", header=None)
+    training_data = df.values[:20, :]
+    ind = np.argsort(training_data[:, -1])
+    X_train = training_data[ind][:, :-1]
+
+    return X_train
+```
+
+```text
+7[1A[1G[27G[Files: 0  Bytes: 0  [0 B/s] Re]87[2A[1G[27G[https://raw.githubusercontent.]87[1S[3A[1G[0JSaving 'dataset_graph7.csv.1'
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1S[3A[1G[0JHTTP response 200  [https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv]
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1A[1G[27G[Files: 1  Bytes: 20.25K [93.33]8[m[m[m[m
+```
+
+## Крок 1: Відображення класичних вхідних даних на квантову задачу
+
+*   Вхідні дані: Навчальний набір даних.
+*   Вихідні дані: Абстрактна схема для обчислення елемента матриці ядра.
+
+Створіть квантову схему, що використовується для обчислення одного елемента матриці ядра. Ми використовуємо вхідні дані для визначення кутів обертання параметризованих вентилів схеми. Ми будемо використовувати зразки даних `x1=14` та `x2=19`.
+
+***Примітка: Набір даних, що використовується в цьому посібнику, можна завантажити [тут](https://github.com/qiskit-community/prototype-quantum-kernel-training/blob/main/data/dataset_graph7.csv).***
+
+```python
+# Prepare training data
+X_train = get_training_data()
+
+# Empty kernel matrix
+num_samples = np.shape(X_train)[0]
+kernel_matrix = np.full((num_samples, num_samples), np.nan)
+
+# Prepare feature map for computing overlap
+num_features = np.shape(X_train)[1]
+num_qubits = int(num_features / 2)
+entangler_map = [[0, 2], [3, 4], [2, 5], [1, 4], [2, 3], [4, 6]]
+fm = QuantumCircuit(num_qubits)
+training_param = Parameter("θ")
+feature_params = ParameterVector("x", num_qubits * 2)
+fm.ry(training_param, fm.qubits)
+for cz in entangler_map:
+    fm.cz(cz[0], cz[1])
+for i in range(num_qubits):
+    fm.rz(-2 * feature_params[2 * i + 1], i)
+    fm.rx(-2 * feature_params[2 * i], i)
+
+# Assign tunable parameter to known optimal value and set the data params for first two samples
+x1 = 14
+x2 = 19
+unitary1 = fm.assign_parameters(list(X_train[x1]) + [np.pi / 2])
+unitary2 = fm.assign_parameters(list(X_train[x2]) + [np.pi / 2])
+
+# Create the overlap circuit
+overlap_circ = UnitaryOverlap(unitary1, unitary2)
+overlap_circ.measure_all()
+overlap_circ.draw("mpl", scale=0.6, style="iqp")
+```
+
+![Вихідні дані попередньої комірки коду](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/70d6faff-9a56-44bb-b26f-f573a8c90889-0.avif)
+
+## Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+
+*   Вхідні дані: Абстрактна схема, не оптимізована для конкретного бекенду
+*   Вихідні дані: Цільова схема та спостережувана величина, оптимізовані для обраного QPU
+
+Використайте функцію `generate_preset_pass_manager` з Qiskit, щоб визначити процедуру оптимізації нашої схеми відносно QPU, на якому ми плануємо виконувати експеримент. Ми встановлюємо `optimization_level=3`, що означає використання попередньо налаштованого менеджера проходів, який забезпечує найвищий рівень оптимізації.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=overlap_circ.num_qubits
+)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+overlap_ibm = pm.run(overlap_circ)
+overlap_ibm.draw("mpl", scale=0.6, idle_wires=False, fold=-1, style="iqp")
+```
+
+![Вихідні дані попередньої комірки коду](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/49607b34-9723-493d-85da-bd97c1351104-0.avif)
+
+## Крок 3: Виконання за допомогою примітивів Qiskit
+
+*   Вхідні дані: Цільова схема
+*   Вихідні дані: Квазіймовірнісний розподіл
+
+Використайте примітив `Sampler` з Qiskit Runtime для реконструкції квазіймовірнісного розподілу станів, отриманих шляхом вибірки зі схеми. Для задачі генерації матриці ядра нас особливо цікавить ймовірність вимірювання стану |0>.
+
+Для цієї демонстрації ми будемо виконувати на QPU з примітивами `qiskit-ibm-runtime`. Щоб виконати на примітивах на основі вектора стану `qiskit`, замініть блок коду, що використовує примітиви Qiskit IBM&reg; Runtime, на закоментований блок.
+
+```python
+num_shots = 10_000
+
+## Evaluate the problem using statevector-based primitives from Qiskit
+# from qiskit.primitives import StatevectorSampler
+
+# sampler = StatevectorSampler()
+# results = sampler.run([overlap_circ]).result()
+# counts = results[0].data.meas.get_int_counts()
+
+# Evaluate the problem using a QPU via Qiskit IBM Runtime
+
+sampler = Sampler(mode=backend)
+results = sampler.run([overlap_ibm]).result()
+counts = results[0].data.meas.get_int_counts()
+
+visualize_counts(counts, num_qubits, num_shots)
+```
+
+![Вихідні дані попередньої комірки коду](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/d2f4f6cf-067e-4d53-aa04-7ca9c803d3e1-0.avif)
+
+## Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+
+*   Вхідні дані: Розподіл ймовірностей
+*   Вихідні дані: Один елемент матриці ядра
+
+Обчисліть ймовірність вимірювання |0> на схемі перекриття та заповніть матрицю ядра в позиції, що відповідає зразкам, представленим цією конкретною схемою перекриття (рядок 15, стовпець 20). На цій візуалізації темніший червоний колір вказує на значення близькості, ближчі до 1.0. Щоб заповнити всю матрицю ядра, нам потрібно виконати квантовий експеримент для кожного елемента.
+
+```python
+# Calculate the fidelity, or the probability to measure 0
+kernel_matrix[x1, x2] = counts.get(0, 0.0) / num_shots
+print(f"Fidelity: {kernel_matrix[x1, x2]}")
+```
+
+```text
+Fidelity: 0.1279
+```
+
+![kernel_matrix.png](/docs/images/tutorials/quantum-kernel-training/kernel_matrix.avif)
+## Розгортання шаблону Qiskit у хмарі
+
+Для цього перемістіть наведений вище вихідний код у файл `./source/generate_kernel_entry.py`, оберніть код у скрипт, який приймає вхідні дані та повертає кінцевий розв'язок, і нарешті завантажте його на віддалений кластер за допомогою класу `QiskitFunction` з `Qiskit Serverless`. Для отримання рекомендацій щодо визначення зовнішніх залежностей, передачі вхідних аргументів тощо ознайомтеся з [посібниками Qiskit Serverless](https://qiskit.github.io/qiskit-serverless/getting_started/index.html).
+
+Вхідними даними для шаблону є пара зразків даних, `x1` та `x2`. Вихідними даними є близькість між двома зразками. Це значення буде використано для заповнення елемента матриці ядра, що відповідає цим двом зразкам.
+
+```python
+serverless = QiskitServerless()
+
+kernel_entry_pattern = QiskitFunction(
+    title="generate-kernel-entry",
+    entrypoint="generate_kernel_entry.py",
+    working_dir="./source/",
+)
+
+serverless.upload(kernel_entry_pattern)
+```
+
+## Запуск шаблону Qiskit як керованого сервісу
+
+Після завантаження шаблону у хмару ми можемо легко запустити його за допомогою клієнта `IBMServerlessProvider`. Для простоти ми будемо використовувати точний квантовий симулятор у хмарному середовищі, тому обчислена близькість буде точною.
+
+```python
+generate_kernel_entry = serverless.load("generate-kernel-entry")
+job = generate_kernel_entry.run(
+    sample1=list(X_train[x1]), sample2=list(X_train[x2])
+)
+
+kernel_matrix[x1, x2] = job.result()["fidelity"]
+print(f"fidelity: {kernel_matrix[x1, x2]}")
+```
+
+## Опитування щодо посібника
+
+Будь ласка, пройдіть це коротке опитування, щоб надати відгук про цей посібник. Ваші думки допоможуть нам покращити наш контент та досвід користувачів.
+
+[Посилання на опитування](https://your.feedback.ibm.com/jfe/form/SV_6xsFvUYV1pNHCqW)

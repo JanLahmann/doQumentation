@@ -1,0 +1,396 @@
+---
+title: "Estimativa de Fase Quântica com Funções Qiskit da Q-CTRL"
+sidebar_label: "Estimativa de Fase Quântica com Funções Qiskit da Q-CTRL"
+description: "Implemente o algoritmo de Estimativa de Fase Quântica em 35 qubits usando a Função Qiskit da Q-CTRL"
+notebook_path: "docs/tutorials/quantum-phase-estimation-qctrl.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/quantum-phase-estimation-qctrl.ipynb" />
+
+
+
+{/* cspell:ignore eigenphase topk ylab boxstyle fontsize */}
+
+*Estimativa de uso: 40 segundos em um processador Heron r2. (NOTA: Esta é apenas uma estimativa. Seu tempo de execução pode variar.)*
+## Contexto
+A Estimativa de Fase Quântica (QPE) é um algoritmo fundamental na computação quântica que forma a base de muitas aplicações importantes, como o algoritmo de Shor, estimativa de energia do estado fundamental em química quântica e problemas de autovalores. A QPE estima a fase $\varphi$ associada a um autoestado de um operador unitário, codificada na relação
+
+$$ U \lvert \varphi \rangle = e^{2\pi i \varphi} \lvert \varphi \rangle, $$
+
+e a determina com uma precisão de $\epsilon = O(1/2^m)$ usando $m$ qubits de contagem [\[1\]](#references). Ao preparar esses qubits em superposição, aplicar potências controladas de $U$ e então usar a Transformada de Fourier Quântica (QFT) inversa para extrair a fase em resultados de medição codificados em binário, a QPE produz uma distribuição de probabilidade com pico em bitstrings cujas frações binárias aproximam $\varphi$. No caso ideal, o resultado de medição mais provável corresponde diretamente à expansão binária da fase, enquanto a probabilidade de outros resultados diminui rapidamente com o número de qubits de contagem. No entanto, executar circuitos QPE profundos em hardware apresenta desafios: o grande número de qubits e operações de emaranhamento tornam o algoritmo altamente sensível à decoerência e erros de porta. Isso resulta em distribuições de bitstrings alargadas e deslocadas, mascarando a verdadeira fase própria. Como consequência, o bitstring com a maior probabilidade pode não mais corresponder à expansão binária correta de $\varphi$.
+
+Neste tutorial, apresentamos uma implementação do algoritmo QPE usando as ferramentas de supressão de erros e gerenciamento de desempenho Fire Opal da Q-CTRL, oferecidas como uma Função Qiskit (consulte a [documentação do Fire Opal](/guides/q-ctrl-performance-management)). O Fire Opal aplica automaticamente otimizações avançadas, incluindo desacoplamento dinâmico, melhorias de layout de qubit e técnicas de supressão de erros, resultando em resultados de maior fidelidade. Essas melhorias aproximam as distribuições de bitstrings de hardware daquelas obtidas em simulações sem ruído, para que você possa identificar de forma confiável a fase própria correta mesmo sob os efeitos do ruído.
+## Requisitos
+
+Antes de começar este tutorial, certifique-se de ter o seguinte instalado:
+- Qiskit SDK v1.4 ou posterior, com suporte para [visualização](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 ou posterior (`pip install qiskit-ibm-runtime`)
+- Catálogo de Funções Qiskit v0.9.0 (`pip install qiskit-ibm-catalog`)
+- Fire Opal SDK v9.0.2 ou posterior (`pip install fire-opal`)
+- Q-CTRL Visualizer v8.0.2 ou posterior (`pip install qctrl-visualizer`)
+## Configuração
+Primeiro, autentique usando sua [chave de API do IBM Quantum](http://quantum.cloud.ibm.com/). Em seguida, selecione a Função Qiskit da seguinte forma. (Este código pressupõe que você já [salvou sua conta](/guides/functions#install-qiskit-functions-catalog-client) em seu ambiente local.)
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qctrlvisualizer
+```
+
+```python
+from qiskit import QuantumCircuit
+
+import numpy as np
+import matplotlib.pyplot as plt
+import qiskit
+from qiskit import qasm2
+from qiskit_aer import AerSimulator
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+import qctrlvisualizer as qv
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+plt.style.use(qv.get_qctrl_style())
+```
+
+```python
+catalog = QiskitFunctionsCatalog(channel="ibm_quantum_platform")
+
+# Access Function
+perf_mgmt = catalog.load("q-ctrl/performance-management")
+```
+
+## Passo 1: Mapear entradas clássicas para um problema quântico
+
+Neste tutorial, ilustramos a QPE para recuperar a fase própria de um unitário de qubit único conhecido. O unitário cuja fase queremos estimar é a porta de fase de qubit único aplicada ao qubit alvo:
+
+$$
+U(\theta)=
+\begin{pmatrix}
+1 & 0\\[2pt]
+0 & e^{i\theta}
+\end{pmatrix}
+= e^{i\theta\,|1\rangle\!\langle 1|}.
+$$
+
+Preparamos seu autoestado $|\psi\rangle=|1\rangle$. Como $|1\rangle$ é um autovetor de $U(\theta)$ com autovalor $e^{i\theta}$, a fase própria a ser estimada é:
+
+$$
+\varphi = \frac{\theta}{2\pi} \pmod{1}
+$$
+
+Definimos $\theta=\tfrac{1}{6}\cdot 2\pi$, então a fase verdadeira é $\varphi=1/6$. O circuito QPE implementa as potências controladas $U^{2^k}$ aplicando rotações de fase controladas com ângulos $\theta\cdot2^k$, depois aplica a QFT inversa ao registrador de contagem e o mede. Os bitstrings resultantes se concentram em torno da representação binária de $1/6$.
+
+O circuito usa $m$ qubits de contagem (para definir a precisão de estimativa) mais um qubit alvo. Começamos definindo os blocos de construção necessários para implementar a QPE: a Transformada de Fourier Quântica (QFT) e sua inversa, funções utilitárias para mapear entre frações decimais e binárias da fase própria, e auxiliares para normalizar contagens brutas em probabilidades para comparar resultados de simulação e hardware.
+
+```python
+def inverse_quantum_fourier_transform(quantum_circuit, number_of_qubits):
+    """
+    Apply an inverse Quantum Fourier Transform the first `number_of_qubits` qubits in the
+    `quantum_circuit`.
+    """
+    for qubit in range(number_of_qubits // 2):
+        quantum_circuit.swap(qubit, number_of_qubits - qubit - 1)
+    for j in range(number_of_qubits):
+        for m in range(j):
+            quantum_circuit.cp(-np.pi / float(2 ** (j - m)), m, j)
+        quantum_circuit.h(j)
+    return quantum_circuit
+```
+
+```python
+def bitstring_count_to_probabilities(data, shot_count):
+    """
+    This function turns an unsorted dictionary of bitstring counts into a sorted dictionary
+    of probabilities.
+    """
+    # Turn the bitstring counts into probabilities.
+    probabilities = {
+        bitstring: bitstring_count / shot_count
+        for bitstring, bitstring_count in data.items()
+    }
+
+    sorted_probabilities = dict(
+        sorted(probabilities.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    return sorted_probabilities
+```
+
+## Passo 2: Otimizar o problema para execução em hardware quântico
+
+Construímos o circuito QPE preparando os qubits de contagem em superposição, aplicando rotações de fase controladas para codificar a fase própria alvo e finalizando com uma QFT inversa antes da medição.
+
+```python
+def quantum_phase_estimation_benchmark_circuit(
+    number_of_counting_qubits, phase
+):
+    """
+    Create the circuit for quantum phase estimation.
+
+    Parameters
+    ----------
+    number_of_counting_qubits : The number of qubits in the circuit.
+    phase : The desired phase.
+
+    Returns
+    -------
+    QuantumCircuit
+        The quantum phase estimation circuit for `number_of_counting_qubits` qubits.
+    """
+    qc = QuantumCircuit(
+        number_of_counting_qubits + 1, number_of_counting_qubits
+    )
+    target = number_of_counting_qubits
+
+    # |1> eigenstate for the single-qubit phase gate
+    qc.x(target)
+
+    # Hadamards on counting register
+    for q in range(number_of_counting_qubits):
+        qc.h(q)
+
+    # ONE controlled phase per counting qubit: cp(phase * 2**k)
+    for k in range(number_of_counting_qubits):
+        qc.cp(phase * (1 << k), k, target)
+
+    qc.barrier()
+
+    # Inverse QFT on counting register
+    inverse_quantum_fourier_transform(qc, number_of_counting_qubits)
+
+    qc.barrier()
+    for q in range(number_of_counting_qubits):
+        qc.measure(q, q)
+    return qc
+```
+
+## Passo 3: Executar usando primitivas Qiskit
+
+Definimos o número de shots e qubits para o experimento, e codificamos a fase alvo $\varphi = 1/6$ usando $m$ dígitos binários. Com esses parâmetros, construímos o circuito QPE que será executado em simulação, hardware padrão e backends aprimorados pelo Fire Opal.
+
+```python
+shot_count = 10000
+num_qubits = 35
+phase = (1 / 6) * 2 * np.pi
+circuits_quantum_phase_estimation = (
+    quantum_phase_estimation_benchmark_circuit(
+        number_of_counting_qubits=num_qubits, phase=phase
+    )
+)
+```
+
+### Executar simulação MPS
+Primeiro, geramos uma distribuição de referência usando o simulador `matrix_product_state` e convertemos as contagens em probabilidades normalizadas para posterior comparação com os resultados de hardware.
+
+```python
+# Run the algorithm on the IBM Aer simulator.
+aer_simulator = AerSimulator(method="matrix_product_state")
+
+# Transpile the circuits for the simulator.
+transpiled_circuits = qiskit.transpile(
+    circuits_quantum_phase_estimation, aer_simulator
+)
+```
+
+```python
+simulated_result = (
+    aer_simulator.run(transpiled_circuits, shots=shot_count)
+    .result()
+    .get_counts()
+)
+```
+
+```python
+simulated_result_probabilities = []
+
+simulated_result_probabilities.append(
+    bitstring_count_to_probabilities(
+        simulated_result,
+        shot_count=shot_count,
+    )
+)
+```
+
+### Executar em hardware
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuits = pm.run(circuits_quantum_phase_estimation)
+```
+
+```python
+# Run the algorithm with IBM default.
+sampler = Sampler(backend)
+
+# Run all circuits using Qiskit Runtime.
+ibm_default_job = sampler.run([isa_circuits], shots=shot_count)
+```
+
+### Executar em hardware com Fire Opal
+
+```python
+# Run the circuit using the sampler
+fire_opal_job = perf_mgmt.run(
+    primitive="sampler",
+    pubs=[qasm2.dumps(circuits_quantum_phase_estimation)],
+    backend_name=backend.name,
+    options={"default_shots": shot_count},
+)
+```
+
+## Passo 4: Pós-processar e retornar o resultado no formato clássico desejado
+
+```python
+# Retrieve results.
+ibm_default_result = ibm_default_job.result()
+ibm_default_probabilities = []
+
+for idx, pub_result in enumerate(ibm_default_result):
+    ibm_default_probabilities.append(
+        bitstring_count_to_probabilities(
+            pub_result.data.c0.get_counts(),
+            shot_count=shot_count,
+        )
+    )
+```
+
+```python
+fire_opal_result = fire_opal_job.result()
+
+fire_opal_probabilities = []
+for idx, pub_result in enumerate(fire_opal_result):
+    fire_opal_probabilities.append(
+        bitstring_count_to_probabilities(
+            pub_result.data.c0.get_counts(),
+            shot_count=shot_count,
+        )
+    )
+```
+
+```python
+data = {
+    "simulation": simulated_result_probabilities,
+    "default": ibm_default_probabilities,
+    "fire_opal": fire_opal_probabilities,
+}
+```
+
+```python
+def plot_distributions(
+    data,
+    number_of_counting_qubits,
+    top_k=None,
+    by="prob",
+    shot_count=None,
+):
+    def nrm(d):
+        s = sum(d.values())
+        return {k: (v / s if s else 0.0) for k, v in d.items()}
+
+    def as_float(d):
+        return {k: float(v) for k, v in d.items()}
+
+    def to_space(d):
+        if by == "prob":
+            return nrm(as_float(d))
+        else:
+            if shot_count and 0.99 <= sum(d.values()) <= 1.01:
+                return {
+                    k: v * float(shot_count) for k, v in as_float(d).items()
+                }
+            else:
+                return as_float(d)
+
+    def topk(d, k):
+        items = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
+        return items[: (k or len(d))]
+
+    phase = "1/6"
+
+    sim = to_space(data["simulation"])
+    dft = to_space(data["default"])
+    qct = to_space(data["fire_opal"])
+
+    correct = max(sim, key=sim.get) if sim else None
+    print("Correct result:", correct)
+
+    sim_items = topk(sim, top_k)
+    dft_items = topk(dft, top_k)
+    qct_items = topk(qct, top_k)
+
+    sim_keys, y_sim = zip(*sim_items) if sim_items else ([], [])
+    dft_keys, y_dft = zip(*dft_items) if dft_items else ([], [])
+    qct_keys, y_qct = zip(*qct_items) if qct_items else ([], [])
+
+    fig, axes = plt.subplots(3, 1, layout="constrained")
+    ylab = "Probabilities"
+
+    def panel(ax, keys, ys, title, color):
+        x = np.arange(len(keys))
+        bars = ax.bar(x, ys, color=color)
+        ax.set_title(title)
+        ax.set_ylabel(ylab)
+        ax.set_xticks(x)
+        ax.set_xticklabels(keys, rotation=90)
+        ax.set_xlabel("Bitstrings")
+        if correct in keys:
+            i = keys.index(correct)
+            bars[i].set_edgecolor("black")
+            bars[i].set_linewidth(2)
+        return max(ys, default=0.0)
+
+    c_sim, c_dft, c_qct = (
+        qv.QCTRL_STYLE_COLORS[5],
+        qv.QCTRL_STYLE_COLORS[1],
+        qv.QCTRL_STYLE_COLORS[0],
+    )
+    m1 = panel(axes[0], list(sim_keys), list(y_sim), "Simulation", c_sim)
+    m2 = panel(axes[1], list(dft_keys), list(y_dft), "Default", c_dft)
+    m3 = panel(axes[2], list(qct_keys), list(y_qct), "Q-CTRL", c_qct)
+
+    for ax, m in zip(axes, (m1, m2, m3)):
+        ax.set_ylim(0, 1.05 * (m or 1.0))
+
+    for ax in axes:
+        ax.label_outer()
+    fig.suptitle(
+        rf"{number_of_counting_qubits} counting qubits, $2\pi\varphi$={phase}"
+    )
+    fig.set_size_inches(20, 10)
+    plt.show()
+```
+
+```python
+experiment_index = 0
+phase_index = 0
+
+distributions = {
+    "simulation": data["simulation"][phase_index],
+    "default": data["default"][phase_index],
+    "fire_opal": data["fire_opal"][phase_index],
+}
+
+plot_distributions(
+    distributions, num_qubits, top_k=100, by="prob", shot_count=shot_count
+)
+```
+
+```text
+Correct result: 00101010101010101010101010101010101
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-phase-estimation-qctrl/extracted-outputs/593334d2-1.avif)
+
+A simulação estabelece a linha de base para a fase própria correta. As execuções em hardware padrão mostram ruído que obscurece este resultado, pois o ruído espalha a probabilidade por muitos bitstrings incorretos. Com o Gerenciamento de Desempenho da Q-CTRL, a distribuição se torna mais nítida e o resultado correto é recuperado, permitindo uma QPE confiável nesta escala.
+## Referências
+
+[1] Lecture 7: [Phase Estimation and Factoring](/learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction). IBM Quantum Learning - Fundamentals of quantum algorithms. Retrieved October 3, 2025.
+## Pesquisa do tutorial
+
+Por favor, reserve um minuto para fornecer feedback sobre este tutorial. Suas percepções nos ajudarão a melhorar nossas ofertas de conteúdo e experiência do usuário.
+
+[Link to survey](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)

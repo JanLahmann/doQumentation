@@ -1,0 +1,730 @@
+---
+title: "Retropropagazione dell'operatore (OBP) per la stima dei valori di aspettazione"
+sidebar_label: "Retropropagazione dell'operatore (OBP) per la stima dei valori di aspettazione"
+description: "In questo tutorial implementeremo un pattern Qiskit per simulare la dinamica quantistica di una catena di spin di Heisenberg utilizzando qiskit-addon-obp"
+notebook_path: "docs/tutorials/operator-back-propagation.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/operator-back-propagation.ipynb" />
+
+
+
+{/* cspell:ignore fontsize edgecolor circo simeq  // This in an equation and isn't being ignored correctly */}
+
+*Stima dell'utilizzo: 16 minuti su un processore Eagle r3 (NOTA: Questa è solo una stima. Il vostro tempo di esecuzione potrebbe variare.)*
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-obp
+```
+
+```python
+# This cell is hidden from users;
+# it disables linting rules.
+# ruff: noqa
+```
+
+## Background
+
+La retropropagazione dell'operatore è una tecnica che consiste nell'assorbire operazioni dalla fine di un circuito quantistico nell'osservabile misurata, riducendo generalmente la profondità del circuito al costo di termini aggiuntivi nell'osservabile. L'obiettivo è retropropagare il più possibile del circuito senza permettere all'osservabile di crescere troppo. Un'implementazione basata su Qiskit è disponibile nell'addon Qiskit OBP, maggiori dettagli possono essere trovati nella corrispondente [documentazione](/guides/qiskit-addons-obp) con un [semplice esempio](/guides/qiskit-addons-obp-get-started) per iniziare.
+
+Considerate un circuito di esempio per il quale deve essere misurata un'osservabile $O = \sum_P c_P P$, dove $P$ sono Pauli e $c_P$ sono coefficienti. Denotiamo il circuito come un singolo unitario $U$ che può essere logicamente partizionato in $U = U_C U_Q$ come mostrato nella figura seguente.
+
+![Circuit diagram showing Uq followed by Uc](/docs/images/tutorials/improving-estimation-of-expectation-values-with-operator-backpropagation/logical-partitioning.avif)
+
+La retropropagazione dell'operatore assorbe l'unitario $U_C$ nell'osservabile facendolo evolvere come $O' = U_C^{\dagger}OU_C = \sum_P c_P U_C^{\dagger}PU_C$. In altre parole, parte del calcolo viene eseguita classicamente tramite l'evoluzione dell'osservabile da $O$ a $O'$. Il problema originale può ora essere riformulato come la misurazione dell'osservabile $O'$ per il nuovo circuito di profondità inferiore il cui unitario è $U_Q$.
+
+L'unitario $U_C$ è rappresentato come un numero di fette $U_C = U_S U_{S-1}...U_2U_1$. Esistono diversi modi per definire una fetta. Per esempio, nel circuito di esempio precedente, ogni strato di $R_{zz}$ e ogni strato di porte $R_x$ possono essere considerati come fette individuali. La retropropagazione comporta il calcolo di $O' = \Pi_{s=1}^S \sum_P c_P U_s^{\dagger} P U_s$ classicamente. Ogni fetta $U_s$ può essere rappresentata come $U_s = exp(\frac{-i\theta_s P_s}{2})$, dove $P_s$ è un Pauli di $n$-qubit e $\theta_s$ è uno scalare. È facile verificare che
+
+$$
+U_s^{\dagger} P U_s = P \qquad \text{if} ~[P,P_s] = 0,
+$$
+$$
+U_s^{\dagger} P U_s = \qquad cos(\theta_s)P + i sin(\theta_s)P_sP \qquad \text{if} ~\{P,P_s\} = 0
+$$
+
+Nell'esempio precedente, se $\{P,P_s\} = 0$, allora dobbiamo eseguire due circuiti quantistici, invece di uno, per calcolare il valore di aspettazione. Pertanto, la retropropagazione può aumentare il numero di termini nell'osservabile, portando a un numero maggiore di esecuzioni del circuito. Un modo per consentire una retropropagazione più profonda nel circuito, evitando che l'operatore cresca troppo, è troncare i termini con coefficienti piccoli, piuttosto che aggiungerli all'operatore. Per esempio, nell'esempio precedente, si può scegliere di troncare il termine che coinvolge $P_sP$ a condizione che $\theta_s$ sia sufficientemente piccolo. Il troncamento dei termini può comportare un minor numero di circuiti quantistici da eseguire, ma farlo comporta un certo errore nel calcolo finale del valore di aspettazione proporzionale all'ampiezza dei coefficienti dei termini troncati.
+
+Questo tutorial implementa un [pattern Qiskit](/guides/intro-to-patterns) per simulare la dinamica quantistica di una catena di spin di Heisenberg utilizzando <a href="https://github.com/Qiskit/qiskit-addon-obp">qiskit-addon-obp</a>.
+## Requisiti
+
+Prima di iniziare questo tutorial, assicuratevi di avere installato quanto segue:
+
+- Qiskit SDK v1.2 o versione successiva (`pip install qiskit`)
+- Qiskit Runtime v0.28 o versione successiva (`pip install qiskit-ibm-runtime`)
+- Addon Qiskit OBP (`pip install qiskit-addon-obp`)
+- Addon utils Qiskit (`pip install qiskit-addon-utils`)
+## Setup
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.primitives import StatevectorEstimator as Estimator
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import CouplingMap
+from qiskit.synthesis import LieTrotter
+
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_utils.slicing import slice_by_gate_types, combine_slices
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+from rustworkx.visualization import graphviz_draw
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import EstimatorV2, EstimatorOptions
+```
+
+## Parte I: Catena di spin di Heisenberg su piccola scala
+### Passo 1: Mappare input classici su un problema quantistico
+#### Mappare l'evoluzione temporale di un modello quantistico di Heisenberg su un esperimento quantistico.
+
+Il pacchetto [qiskit_addon_utils](https://github.com/Qiskit/qiskit-addon-utils) fornisce alcune funzionalità riutilizzabili per vari scopi.
+
+Il suo modulo [qiskit_addon_utils.problem_generators](https://docs.quantum.ibm.com/api/qiskit-addon-utils/problem-generators) fornisce funzioni per generare Hamiltoniane simili a Heisenberg su un dato grafo di connettività.
+Questo grafo può essere un [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html) o una [CouplingMap](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.CouplingMap) rendendolo facile da usare nei flussi di lavoro incentrati su Qiskit.
+
+Nel seguito, generiamo una catena lineare `CouplingMap` di 10 qubit.
+
+```python
+num_qubits = 10
+layout = [(i - 1, i) for i in range(1, num_qubits)]
+
+# Instantiate a CouplingMap object
+coupling_map = CouplingMap(layout)
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/de8ce35e-a2c5-474f-adb9-88c9afb2bd76-0.avif)
+
+Successivamente, generiamo un operatore di Pauli che modella un Hamiltoniana XYZ di Heisenberg.
+
+$$
+{\hat{\mathcal{H}}_{XYZ} = \sum_{(j,k)\in E} (J_{x} \sigma_j^{x} \sigma_{k}^{x} + J_{y} \sigma_j^{y} \sigma_{k}^{y} + J_{z} \sigma_j^{z} \sigma_{k}^{z}) + \sum_{j\in V} (h_{x} \sigma_j^{x} + h_{y} \sigma_j^{y} + h_{z} \sigma_j^{z})}
+$$
+
+Dove $G(V,E)$ è il grafo della mappa di accoppiamento fornita.
+
+```python
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIIY', 'IIIIIIIIIZ', 'IIIIIIIIXI', 'IIIIIIIIYI', 'IIIIIIIIZI', 'IIIIIIIXII', 'IIIIIIIYII', 'IIIIIIIZII', 'IIIIIIXIII', 'IIIIIIYIII', 'IIIIIIZIII', 'IIIIIXIIII', 'IIIIIYIIII', 'IIIIIZIIII', 'IIIIXIIIII', 'IIIIYIIIII', 'IIIIZIIIII', 'IIIXIIIIII', 'IIIYIIIIII', 'IIIZIIIIII', 'IIXIIIIIII', 'IIYIIIIIII', 'IIZIIIIIII', 'IXIIIIIIII', 'IYIIIIIIII', 'IZIIIIIIII', 'XIIIIIIIII', 'YIIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+Dall'operatore di qubit, possiamo generare un circuito quantistico che modella la sua evoluzione temporale.
+Ancora una volta, il modulo [qiskit_addon_utils.problem_generators](https://docs.quantum.ibm.com/api/qiskit-addon-utils/problem-generators) viene in soccorso con una comoda funzione per fare proprio questo:
+
+```python
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=2),
+)
+circuit.draw("mpl", style="iqp", scale=0.6)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/1d68f197-ffa4-49de-9fe8-243b1facbd00-0.avif)
+
+### Passo 2: Ottimizzare il problema per l'esecuzione su hardware quantistico
+#### Creare fette di circuito da retropropagare
+
+Ricordate, la funzione ``backpropagate`` retropropagherà intere fette di circuito alla volta, quindi la scelta di come affettare può avere un impatto su quanto bene funziona la retropropagazione per un dato problema. Qui, raggrupperemo le porte dello stesso tipo in fette utilizzando la funzione [slice_by_gate_types](https://docs.quantum.ibm.com/api/qiskit-addon-utils/slicing#slice_by_gate_types).
+
+Per una discussione più dettagliata sull'affettamento del circuito, consultate questa [guida pratica](https://qiskit.github.io/qiskit-addon-utils/how_tos/create_circuit_slices.html) del pacchetto [qiskit-addon-utils](https://github.com/Qiskit/qiskit-addon-utils).
+
+```python
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+#### Vincolare quanto può crescere l'operatore durante la retropropagazione
+
+Durante la retropropagazione, il numero di termini nell'operatore generalmente si avvicinerà rapidamente a $4^N$, dove $N$ è il numero di qubit. Quando due termini nell'operatore non commutano qubit per qubit, abbiamo bisogno di circuiti separati per ottenere i valori di aspettazione corrispondenti ad essi. Per esempio, se abbiamo un'osservabile a 2 qubit $O = 0.1 XX + 0.3 IZ - 0.5 IX$, allora poiché $[XX,IX] = 0$, una misurazione in una singola base è sufficiente per calcolare i valori di aspettazione per questi due termini. Tuttavia, $IZ$ anticommuta con gli altri due termini. Quindi abbiamo bisogno di una misurazione in base separata per calcolare il valore di aspettazione di $IZ$. In altre parole, abbiamo bisogno di due circuiti, invece di uno, per calcolare $\langle O \rangle$. Man mano che il numero di termini nell'operatore aumenta, c'è la possibilità che anche il numero richiesto di esecuzioni del circuito aumenti.
+
+La dimensione dell'operatore può essere limitata specificando il parametro ``operator_budget`` della funzione ``backpropagate``, che accetta un'istanza [OperatorBudget](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-simplify#operatorbudget).
+
+Per controllare la quantità di risorse extra (tempo) allocate, limitiamo il numero massimo di gruppi di Pauli commutanti qubit per qubit che l'osservabile retropropagata può avere. Qui specifichiamo che la retropropagazione dovrebbe fermarsi quando il numero di gruppi di Pauli commutanti qubit per qubit nell'operatore supera 8.
+
+```python
+op_budget = OperatorBudget(max_qwc_groups=8)
+```
+
+#### Retropropagare fette dal circuito
+
+Prima specifichiamo che l'osservabile sia $M_Z = \frac{1}{N} \sum_{i=1}^N \langle Z_i \rangle$, dove $N$ è il numero di qubit. Retropropagheremo le fette dal circuito di evoluzione temporale finché i termini nell'osservabile non potranno più essere combinati in otto o meno gruppi di Pauli commutanti qubit per qubit.
+
+```python
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / num_qubits) for i in range(num_qubits)],
+    num_qubits=num_qubits,
+)
+observable
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j,
+ 0.1+0.j, 0.1+0.j])
+```
+
+Di seguito vedrete che abbiamo retropropagato sei fette, e i termini sono stati combinati in sei e non otto gruppi. Questo implica che retropropagare un'altra fetta causerebbe il superamento di otto del numero di gruppi di Pauli. Possiamo verificare che questo sia il caso ispezionando i metadati restituiti. Notate anche che in questa porzione la trasformazione del circuito è esatta. Cioè, nessun termine della nuova osservabile $O'$ è stato troncato. Il circuito retropropagato e l'operatore retropropagato danno lo stesso risultato esatto del circuito e dell'operatore originale.
+
+```python
+# Backpropagate slices onto the observable
+bp_obs, remaining_slices, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget
+)
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", fold=-1, scale=0.6)
+```
+
+```text
+Backpropagated 6 slices.
+New observable has 60 terms, which can be combined into 6 groups.
+Note that backpropagating one more slice would result in 114 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/65ec9cb1-a4ed-497b-a616-180e9659956f-1.avif)
+
+Successivamente, specificheremo lo stesso problema con gli stessi vincoli sulla dimensione dell'osservabile di output. Tuttavia, questa volta, assegneremo un budget di errore a ciascuna fetta utilizzando la funzione [setup_budget](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-truncating#setup_budget). I termini di Pauli con coefficienti piccoli verranno troncati da ciascuna fetta finché il budget di errore non sarà riempito, e il budget residuo verrà aggiunto al budget della fetta successiva. Notate che in questo caso, la trasformazione dovuta alla retropropagazione è approssimata poiché alcuni dei termini nell'operatore sono troncati.
+
+Per abilitare questo troncamento, dobbiamo impostare il nostro budget di errore in questo modo:
+
+```python
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+Notate che allocando un errore di `5e-3` per fetta per il troncamento, siamo in grado di rimuovere 1 fetta in più dal circuito, rimanendo entro il budget originale di otto gruppi di Pauli commutanti nell'osservabile. Per impostazione predefinita, `backpropagate` utilizza la norma L1 dei coefficienti troncati per limitare l'errore totale derivante dal troncamento. Per altre opzioni fate riferimento alla [guida pratica sulla specifica della p_norm](https://qiskit.github.io/qiskit-addon-obp/how_tos/bound_error_using_p_norm.html).
+
+In questo particolare esempio in cui abbiamo retropropagato sette fette, l'errore totale di troncamento non dovrebbe superare ``(5e-3 errore/fetta) * (7 fette) = 3.5e-2``.
+Per ulteriori discussioni sulla distribuzione di un budget di errore tra le vostre fette, consultate [questa guida pratica](https://qiskit.github.io/qiskit-addon-obp/how_tos/truncate_operator_terms.html).
+
+```python
+# Run the same experiment but truncate observable terms with small coefficients
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(
+    remaining_slices_trunc, include_barriers=False
+)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 82 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 3.266e-02
+Note that backpropagating one more slice would result in 114 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/5e8bae1a-ef18-4eb0-9d2a-1ac7bbdced3b-1.avif)
+
+Notiamo che il troncamento ci consente di retropropagare ulteriormente senza aumentare il numero di gruppi commutanti nell'osservabile.
+#### Ora che abbiamo il nostro ansatz ridotto e le osservabili espanse, possiamo traspilare i nostri esperimenti al backend.
+
+Qui useremo un computer quantistico IBM&reg; a 127 qubit per dimostrare come traspilare su un backend QPU.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+Creiamo il <a href="/guides/primitive-input-output">Primitive Unified Bloc (PUB)</a> per ciascuno dei tre casi.
+
+```python
+pub = (circuit_isa, observable_isa)
+bp_pub = (bp_circuit_isa, bp_obs_isa)
+bp_trunc_pub = (bp_circuit_trunc_isa, bp_obs_trunc_isa)
+```
+
+### Passo 3: Eseguire utilizzando le primitive Qiskit
+#### Calcolare il valore di aspettazione
+
+Infine, possiamo eseguire gli esperimenti retropropagati e confrontarli con l'esperimento completo utilizzando il [StatevectorEstimator](https://docs.quantum.ibm.com/api/qiskit/qiskit.primitives.StatevectorEstimator) senza rumore.
+
+```python
+ideal_estimator = Estimator()
+
+# Run the experiments using Estimator primitive to obtain the exact outcome
+result_exact = (
+    ideal_estimator.run([(circuit, observable)]).result()[0].data.evs.item()
+)
+print(f"Exact expectation value: {result_exact}")
+```
+
+```text
+Exact expectation value: 0.8871244838989416
+```
+
+Useremo <a href="/guides/configure-error-mitigation">resilience_level</a> = 2 per questo esempio.
+
+```python
+options = EstimatorOptions()
+options.default_precision = 0.011
+options.resilience_level = 2
+
+estimator = EstimatorV2(mode=backend, options=options)
+```
+
+```python
+job = estimator.run([pub, bp_pub, bp_trunc_pub])
+```
+
+### Passo 4: Post-elaborare e restituire il risultato nel formato classico desiderato
+
+```python
+result_no_bp = job.result()[0].data.evs.item()
+result_bp = job.result()[1].data.evs.item()
+result_bp_trunc = job.result()[2].data.evs.item()
+
+std_no_bp = job.result()[0].data.stds.item()
+std_bp = job.result()[1].data.stds.item()
+std_bp_trunc = job.result()[2].data.stds.item()
+```
+
+```python
+print(
+    f"Expectation value without backpropagation: {result_no_bp} ± {std_no_bp}"
+)
+print(f"Backpropagated expectation value: {result_bp} ± {std_bp}")
+print(
+    f"Backpropagated expectation value with truncation: {result_bp_trunc} ± {std_bp_trunc}"
+)
+```
+
+```text
+Expectation value without backpropagation: 0.8033194665993642
+Backpropagated expectation value: 0.8599808781259016
+Backpropagated expectation value with truncation: 0.8868736004169483
+```
+
+```python
+methods = [
+    "No backpropagation",
+    "Backpropagation",
+    "Backpropagation w/ truncation",
+]
+values = [result_no_bp, result_bp, result_bp_trunc]
+stds = [std_no_bp, std_bp, std_bp_trunc]
+
+ax = plt.gca()
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(result_exact)
+ax.set_ylim([0.6, 0.92])
+plt.text(0.2, 0.895, "Exact result")
+ax.set_ylabel(r"$M_Z$", fontsize=12)
+```
+
+```text
+Text(0, 0.5, '$M_Z$')
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/b444d8bc-c800-4aa3-9927-eb807e92194f-1.avif)
+
+
+## Parte B: Aumentiamo la scala!
+Utilizziamo ora la Retropropagazione degli Operatori per studiare le dinamiche dell'Hamiltoniana di una catena di spin di Heisenberg a 50 qubit.
+### Passo 1: Mappare gli input classici a un problema quantistico
+
+Consideriamo un'Hamiltoniana a 50 qubit $\hat{\mathcal{H}}_{XYZ}$ per il problema su scala maggiore con gli stessi valori per i coefficienti $J$ e $h$ dell'esempio su piccola scala. Anche l'osservabile $M_Z = \frac{1}{N} \sum_{i=1}^N \langle Z_i \rangle$ è la stessa di prima. Questo problema va oltre la simulazione classica a forza bruta.
+
+```python
+num_qubits = 50
+layout = [(i - 1, i) for i in range(1, num_qubits)]
+
+# Instantiate a CouplingMap object
+coupling_map = CouplingMap(layout)
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/47cb1ac7-44db-4f96-b49b-e889a920d83c-0.avif)
+
+```python
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXX', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYY', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'XXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'YYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIX', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIY', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'XIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'YIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+```python
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / num_qubits) for i in range(num_qubits)],
+    num_qubits,
+)
+observable
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j,
+ 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j,
+ 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j,
+ 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j,
+ 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j,
+ 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j,
+ 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j, 0.02+0.j,
+ 0.02+0.j])
+```
+
+Per questo problema su scala maggiore abbiamo considerato il tempo di evoluzione come $0.2$ con $4$ passi di Trotter. Il problema è selezionato in modo che vada oltre la simulazione classica a forza bruta, ma possa essere simulato tramite metodo di reti tensoriali. Ciò ci consente di verificare il risultato ottenuto tramite retropropagazione su un computer quantistico con il risultato ideale.
+
+Il valore di aspettazione ideale per questo problema, ottenuto tramite simulazione di reti tensoriali, è $\simeq 0.89$.
+
+```python
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=4),
+)
+circuit.draw("mpl", style="iqp", fold=-1, scale=0.6)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/b10d16cf-95da-42c0-9b47-b2e5a8516c82-0.avif)
+
+### Passo 2: Ottimizzare il problema per l'esecuzione su hardware quantistico
+
+```python
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 36 slices.
+```
+
+Specifichiamo che `max_error_per_slice` sia 0.005 come prima. Tuttavia, poiché il numero di slice per questo problema su larga scala è molto più alto del problema su piccola scala, consentire un errore di 0.005 per slice può finire per creare un grande errore complessivo di retropropagazione. Possiamo limitare questo specificando `max_error_total` che delimita l'errore totale di retropropagazione, e impostiamo il suo valore a 0.03 (che è approssimativamente lo stesso dell'esempio su piccola scala).
+
+Per questo esempio su larga scala, consentiamo un valore più alto per il numero di gruppi commutanti e lo impostiamo a 15.
+
+```python
+op_budget = OperatorBudget(max_qwc_groups=15)
+truncation_error_budget = setup_budget(
+    max_error_total=0.03, max_error_per_slice=0.005
+)
+```
+
+Otteniamo prima il circuito retropropagato e l'osservabile senza alcun troncamento.
+
+```python
+bp_obs, remaining_slices, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget
+)
+bp_circuit = combine_slices(remaining_slices)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", fold=-1, scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 634 terms, which can be combined into 12 groups.
+Note that backpropagating one more slice would result in 1246 terms across 27 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/164e2f00-25b6-4cf1-98f8-8b2886f007ee-1.avif)
+
+Ora consentendo il troncamento, otteniamo:
+
+```python
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(
+    remaining_slices_trunc, include_barriers=False
+)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", fold=-1, scale=0.6)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 646 terms, which can be combined into 14 groups.
+After truncation, the error in our observable is bounded by 2.998e-02
+Note that backpropagating one more slice would result in 1226 terms across 29 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/c05a85bc-e5ca-4e02-8c96-98b28811f335-1.avif)
+
+Notiamo che consentire il troncamento porta alla retropropagazione di tre slice aggiuntive. Possiamo verificare la profondità a 2 qubit del circuito originale, del circuito retropropagato e del circuito retropropagato con troncamento dopo la transpilazione.
+
+```python
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile the backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs_trunc.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+```python
+print(
+    f"2-qubit depth of original circuit: {circuit_isa.depth(lambda x:x.operation.num_qubits==2)}"
+)
+print(
+    f"2-qubit depth of backpropagated circuit: {bp_circuit_isa.depth(lambda x:x.operation.num_qubits==2)}"
+)
+print(
+    f"2-qubit depth of backpropagated circuit with truncation: {bp_circuit_trunc_isa.depth(lambda x:x.operation.num_qubits==2)}"
+)
+```
+
+```text
+2-qubit depth of original circuit: 48
+2-qubit depth of backpropagated circuit: 40
+2-qubit depth of backpropagated circuit with truncation: 36
+```
+
+### Passo 3: Eseguire utilizzando le primitive di Qiskit
+
+```python
+pubs = [
+    (circuit_isa, observable_isa),
+    (bp_circuit_isa, bp_obs_isa),
+    (bp_circuit_trunc_isa, bp_obs_trunc_isa),
+]
+```
+
+```python
+options = EstimatorOptions()
+options.default_precision = 0.01
+options.resilience_level = 2
+options.resilience.zne.noise_factors = [1, 1.2, 1.4]
+options.resilience.zne.extrapolator = ["linear"]
+
+estimator = EstimatorV2(mode=backend, options=options)
+```
+
+```python
+job = estimator.run(pubs)
+```
+
+### Passo 4: Post-elaborare e restituire il risultato nel formato classico desiderato
+
+```python
+result_no_bp = job.result()[0].data.evs.item()
+result_bp = job.result()[1].data.evs.item()
+result_bp_trunc = job.result()[2].data.evs.item()
+```
+
+```python
+print(f"Expectation value without backpropagation: {result_no_bp}")
+print(f"Backpropagated expectation value: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+```
+
+```text
+Expectation value without backpropagation: 0.7887194658035515
+Backpropagated expectation value: 0.9532818300978584
+Backpropagated expectation value with truncation: 0.8913400398926913
+```
+
+```python
+methods = [
+    "No backpropagation",
+    "Backpropagation",
+    "Backpropagation w/ truncation",
+]
+values = [result_no_bp, result_bp, result_bp_trunc]
+
+ax = plt.gca()
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(0.89)
+ax.set_ylim([0.6, 0.98])
+plt.text(0.2, 0.895, "Exact result")
+ax.set_ylabel(r"$M_Z$", fontsize=12)
+```
+
+```text
+Text(0, 0.5, '$M_Z$')
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/047d448f-aebf-45ff-a81b-83b2d5ca866d-1.avif)
+
+## Sondaggio sul tutorial
+
+Vi preghiamo di rispondere a questo breve sondaggio per fornire feedback su questo tutorial. Le vostre intuizioni ci aiuteranno a migliorare i nostri contenuti e l'esperienza utente.

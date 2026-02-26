@@ -1,0 +1,535 @@
+---
+title: "Diagonalizzazione quantistica di Krylov basata su campioni di un modello reticolare fermionico"
+sidebar_label: "Diagonalizzazione quantistica di Krylov basata su campioni di un modello reticolare fermionico"
+description: "Utilizzate l'algoritmo di diagonalizzazione quantistica basato su campioni per simulare il modello di Anderson a singola impurità usando hardware quantistico rumoroso."
+notebook_path: "docs/tutorials/sample-based-krylov-quantum-diagonalization.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/sample-based-krylov-quantum-diagonalization.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize nocc SQKD DMRG textrm varepsilon vecs pqrs ijkl */}
+
+*Stima di utilizzo: Nove secondi su un processore Heron r2 (NOTA: Questa è solo una stima. Il vostro tempo di esecuzione potrebbe variare.)*
+## Background
+
+Questo tutorial mostra come utilizzare la diagonalizzazione quantistica basata su campioni (SQD) per stimare l'energia dello stato fondamentale di un modello reticolare fermionico. Nello specifico, studiamo il modello di Anderson a singola impurità unidimensionale (SIAM), che viene utilizzato per descrivere impurità magnetiche incorporate nei metalli.
+
+Questo tutorial segue un flusso di lavoro simile al tutorial correlato [Diagonalizzazione quantistica basata su campioni di un Hamiltoniano di chimica](/tutorials/sample-based-quantum-diagonalization). Tuttavia, una differenza chiave risiede nel modo in cui vengono costruiti i circuiti quantistici. L'altro tutorial utilizza un ansatz variazionale euristico, che è attraente per gli Hamiltoniani di chimica con potenzialmente milioni di termini di interazione. D'altra parte, questo tutorial utilizza circuiti che approssimano l'evoluzione temporale dell'Hamiltoniano. Tali circuiti possono essere profondi, il che rende questo approccio migliore per applicazioni a modelli reticolari. I vettori di stato preparati da questi circuiti formano la base per un [sottospazio di Krylov](https://en.wikipedia.org/wiki/Krylov_subspace), e di conseguenza, l'algoritmo converge in modo dimostrabile ed efficiente allo stato fondamentale, sotto opportune ipotesi.
+
+L'approccio utilizzato in questo tutorial può essere visto come una combinazione delle tecniche utilizzate in SQD e [diagonalizzazione quantistica di Krylov (KQD)](https://arxiv.org/abs/2407.14431). L'approccio combinato viene talvolta indicato come diagonalizzazione quantistica di Krylov basata su campioni (SQKD). Consultate [Diagonalizzazione quantistica di Krylov degli Hamiltoniani reticolari](/tutorials/krylov-quantum-diagonalization) per un tutorial sul metodo KQD.
+
+Questo tutorial si basa sul lavoro ["Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization"](https://arxiv.org/abs/2501.09702), a cui si può fare riferimento per maggiori dettagli.
+
+### Modello di Anderson a singola impurità (SIAM)
+
+L'Hamiltoniano SIAM unidimensionale è una somma di tre termini:
+
+$$
+H = H_{\textrm{imp}}+ H_\textrm{bath} + H_\textrm{hyb},
+$$
+
+dove
+
+$$
+\begin{align*}
+  H_\textrm{imp} &= \varepsilon \left( \hat{n}_{d\uparrow} + \hat{n}_{d\downarrow} \right) + U \hat{n}_{d\uparrow}\hat{n}_{d\downarrow}, \\
+  H_\textrm{bath} &= -t \sum_{\substack{\mathbf{j} = 0\\ \sigma\in \{\uparrow, \downarrow\}}}^{L-1} \left(\hat{c}^\dagger_{\mathbf{j}, \sigma}\hat{c}_{\mathbf{j}+1, \sigma} + \hat{c}^\dagger_{\mathbf{j}+1, \sigma}\hat{c}_{\mathbf{j}, \sigma} \right), \\
+  H_\textrm{hyb} &= V\sum_{\sigma \in \{\uparrow, \downarrow \}} \left(\hat{d}^\dagger_\sigma \hat{c}_{0, \sigma} + \hat{c}^\dagger_{0, \sigma} \hat{d}_{\sigma} \right).
+\end{align*}
+$$
+
+Qui, $c^\dagger_{\mathbf{j},\sigma}/c_{\mathbf{j},\sigma}$ sono gli operatori fermionici di creazione/annichilazione per il $\mathbf{j}^{\textrm{esimo}}$ sito del bagno con spin $\sigma$, $\hat{d}^\dagger_{\sigma}/\hat{d}_{\sigma}$ sono gli operatori di creazione/annichilazione per il modo di impurità, e $\hat{n}_{d\sigma} = \hat{d}^\dagger_{\sigma} \hat{d}_{\sigma}$. $t$, $U$ e $V$ sono numeri reali che descrivono le interazioni di hopping, on-site e ibridazione, e $\varepsilon$ è un numero reale che specifica il potenziale chimico.
+
+Notate che l'Hamiltoniano è un'istanza specifica dell'Hamiltoniano generico di elettroni interagenti,
+
+$$
+\begin{align*}
+  H &= \sum_{\substack{p, q \\ \sigma}} h_{pq} \hat{a}^\dagger_{p\sigma} \hat{a}_{q\sigma}  +  \sum_{\substack{p, q, r, s \\ \sigma \tau}} \frac{h_{pqrs}}{2} \hat{a}^\dagger_{p\sigma} \hat{a}^\dagger_{q\tau} \hat{a}_{s\tau} \hat{a}_{r\sigma} \\
+  &= H_1 + H_2,
+\end{align*}
+$$
+
+dove $H_1$ consiste di termini a un corpo, che sono quadratici negli operatori fermionici di creazione e annichilazione, e $H_2$ consiste di termini a due corpi, che sono quartici. Per il SIAM,
+$$
+H_2 = U \hat{n}_{d\uparrow}\hat{n}_{d\downarrow}
+$$
+
+e $H_1$ contiene il resto dei termini dell'Hamiltoniano. Per rappresentare l'Hamiltoniano in modo programmatico, memorizziamo la matrice $h_{pq}$ e il tensore $h_{pqrs}$.
+
+### Basi di posizione e momento
+
+A causa dell'approssimativa simmetria traslazionale in $H_\textrm{bath}$, non ci aspettiamo che lo stato fondamentale sia sparso nella base di posizione (la base orbitale in cui l'Hamiltoniano è specificato sopra). Le prestazioni di SQD sono garantite solo se lo stato fondamentale è sparso, cioè ha peso significativo solo su un piccolo numero di stati di base computazionale. Per migliorare la sparsità dello stato fondamentale, eseguiamo la simulazione nella base orbitale in cui $H_\textrm{bath}$ è diagonale. Chiamiamo questa base la *base di momento*. Poiché $H_\textrm{bath}$ è un Hamiltoniano fermionico quadratico, può essere diagonalizzato in modo efficiente mediante una rotazione orbitale.
+
+### Approssimazione dell'evoluzione temporale dell'Hamiltoniano
+
+Per approssimare l'evoluzione temporale dell'Hamiltoniano, utilizziamo una decomposizione di Trotter-Suzuki di secondo ordine,
+
+$$
+  e^{-i \Delta t H} \approx e^{-i\frac{\Delta t}{2} H_2} e^{-i\Delta t H_1} e^{-i\frac{\Delta t}{2} H_2}.
+$$
+
+Sotto la [trasformazione di Jordan-Wigner](https://en.wikipedia.org/wiki/Jordan%E2%80%93Wigner_transformation), l'evoluzione temporale di $H_2$ equivale a una singola porta [CPhase](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.CPhaseGate) tra gli orbitali spin-up e spin-down nel sito dell'impurità. Poiché $H_1$ è un Hamiltoniano fermionico quadratico, l'evoluzione temporale di $H_1$ equivale a una rotazione orbitale.
+
+Gli stati base di Krylov $\{ |\psi_k\rangle \}_{k=0}^{D-1}$, dove $D$ è la dimensione del sottospazio di Krylov, sono formati dall'applicazione ripetuta di un singolo passo di Trotter, quindi
+
+$$
+  |\psi_k\rangle \approx \left[e^{-i\frac{\Delta t}{2} H_2} e^{-i\Delta t H_1} e^{-i\frac{\Delta t}{2} H_2} \right]^k\ket{\psi_0}.
+$$
+
+Nel seguente flusso di lavoro basato su SQD, campioneremo da questo insieme di circuiti e post-elaboreremo l'insieme combinato di stringhe di bit con SQD. Questo approccio contrasta con quello utilizzato nel tutorial correlato [Diagonalizzazione quantistica basata su campioni di un Hamiltoniano di chimica](/tutorials/sample-based-quantum-diagonalization), dove i campioni sono stati estratti da un singolo circuito variazionale euristico.
+## Requisiti
+
+Prima di iniziare questo tutorial, assicuratevi di avere installato quanto segue:
+
+- Qiskit SDK v1.0 o successivo, con supporto per la [visualizzazione](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 o successivo (`pip install qiskit-ibm-runtime`)
+- SQD Qiskit addon v0.11 o successivo (`pip install qiskit-addon-sqd`)
+- ffsim (`pip install ffsim`)
+## Passo 1: Mappare il problema su un circuito quantistico
+Prima, generiamo l'Hamiltoniano SIAM nella base di posizione. L'Hamiltoniano è rappresentato dalla matrice $h_{pq}$ e dal tensore $h_{pqrs}$. Poi, lo ruotiamo nella base di momento. Nella base di posizione, collochiamo l'impurità nel primo sito. Tuttavia, quando ruotiamo nella base di momento, spostiamo l'impurità in un sito centrale per facilitare le interazioni con altri orbitali.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q ffsim qiskit-addon-sqd
+```
+
+```python
+import numpy as np
+
+def siam_hamiltonian(
+    norb: int,
+    hopping: float,
+    onsite: float,
+    hybridization: float,
+    chemical_potential: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Hamiltonian for the single-impurity Anderson model."""
+    # Place the impurity on the first site
+    impurity_orb = 0
+
+    # One body matrix elements in the "position" basis
+    h1e = np.zeros((norb, norb))
+    np.fill_diagonal(h1e[:, 1:], -hopping)
+    np.fill_diagonal(h1e[1:, :], -hopping)
+    h1e[impurity_orb, impurity_orb + 1] = -hybridization
+    h1e[impurity_orb + 1, impurity_orb] = -hybridization
+    h1e[impurity_orb, impurity_orb] = chemical_potential
+
+    # Two body matrix elements in the "position" basis
+    h2e = np.zeros((norb, norb, norb, norb))
+    h2e[impurity_orb, impurity_orb, impurity_orb, impurity_orb] = onsite
+
+    return h1e, h2e
+
+def momentum_basis(norb: int) -> np.ndarray:
+    """Get the orbital rotation to change from the position to the momentum basis."""
+    n_bath = norb - 1
+
+    # Orbital rotation that diagonalizes the bath (non-interacting system)
+    hopping_matrix = np.zeros((n_bath, n_bath))
+    np.fill_diagonal(hopping_matrix[:, 1:], -1)
+    np.fill_diagonal(hopping_matrix[1:, :], -1)
+    _, vecs = np.linalg.eigh(hopping_matrix)
+
+    # Expand to include impurity
+    orbital_rotation = np.zeros((norb, norb))
+    # Impurity is on the first site
+    orbital_rotation[0, 0] = 1
+    orbital_rotation[1:, 1:] = vecs
+
+    # Move the impurity to the center
+    new_index = n_bath // 2
+    perm = np.r_[1 : (new_index + 1), 0, (new_index + 1) : norb]
+    orbital_rotation = orbital_rotation[:, perm]
+
+    return orbital_rotation
+
+def rotated(
+    h1e: np.ndarray, h2e: np.ndarray, orbital_rotation: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rotate the orbital basis of a Hamiltonian."""
+    h1e_rotated = np.einsum(
+        "ab,Aa,Bb->AB",
+        h1e,
+        orbital_rotation,
+        orbital_rotation.conj(),
+        optimize="greedy",
+    )
+    h2e_rotated = np.einsum(
+        "abcd,Aa,Bb,Cc,Dd->ABCD",
+        h2e,
+        orbital_rotation,
+        orbital_rotation.conj(),
+        orbital_rotation,
+        orbital_rotation.conj(),
+        optimize="greedy",
+    )
+    return h1e_rotated, h2e_rotated
+
+# Total number of spatial orbitals, including the bath sites and the impurity
+# This should be an even number
+norb = 20
+
+# System is half-filled
+nelec = (norb // 2, norb // 2)
+# One orbital is the impurity, the rest are bath sites
+n_bath = norb - 1
+
+# Hamiltonian parameters
+hybridization = 1.0
+hopping = 1.0
+onsite = 10.0
+chemical_potential = -0.5 * onsite
+
+# Generate Hamiltonian in position basis
+h1e, h2e = siam_hamiltonian(
+    norb=norb,
+    hopping=hopping,
+    onsite=onsite,
+    hybridization=hybridization,
+    chemical_potential=chemical_potential,
+)
+
+# Rotate to momentum basis
+orbital_rotation = momentum_basis(norb)
+h1e_momentum, h2e_momentum = rotated(h1e, h2e, orbital_rotation.T.conj())
+# In the momentum basis, the impurity is placed in the center
+impurity_index = n_bath // 2
+```
+
+Successivamente, generiamo i circuiti per produrre gli stati base di Krylov.
+Per ogni specie di spin, lo stato iniziale $\ket{\psi_0}$ è dato dalla sovrapposizione di tutte le possibili eccitazioni dei tre elettroni più vicini al livello di Fermi nei 4 modi vuoti più vicini partendo dallo stato $|00\cdots 0011 \cdots 11\rangle$, e realizzato dall'applicazione di sette [XXPlusYYGate](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.XXPlusYYGate).
+Gli stati evoluti temporalmente sono prodotti da applicazioni successive di un passo di Trotter di secondo ordine.
+
+Per una descrizione più dettagliata di questo modello e di come sono progettati i circuiti, consultate ["Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization"](https://arxiv.org/abs/2501.09702).
+
+```python
+from typing import Sequence
+
+import ffsim
+import scipy
+from qiskit import QuantumCircuit, QuantumRegister
+from qiskit.circuit import CircuitInstruction, Qubit
+from qiskit.circuit.library import CPhaseGate, XGate, XXPlusYYGate
+
+def prepare_initial_state(qubits: Sequence[Qubit], norb: int, nocc: int):
+    """Prepare initial state."""
+    x_gate = XGate()
+    rot = XXPlusYYGate(0.5 * np.pi, -0.5 * np.pi)
+    for i in range(nocc):
+        yield CircuitInstruction(x_gate, [qubits[i]])
+        yield CircuitInstruction(x_gate, [qubits[norb + i]])
+    for i in range(3):
+        for j in range(nocc - i - 1, nocc + i, 2):
+            yield CircuitInstruction(rot, [qubits[j], qubits[j + 1]])
+            yield CircuitInstruction(
+                rot, [qubits[norb + j], qubits[norb + j + 1]]
+            )
+    yield CircuitInstruction(rot, [qubits[j + 1], qubits[j + 2]])
+    yield CircuitInstruction(
+        rot, [qubits[norb + j + 1], qubits[norb + j + 2]]
+    )
+
+def trotter_step(
+    qubits: Sequence[Qubit],
+    time_step: float,
+    one_body_evolution: np.ndarray,
+    h2e: np.ndarray,
+    impurity_index: int,
+    norb: int,
+):
+    """A Trotter step."""
+    # Assume the two-body interaction is just the on-site interaction of the impurity
+    onsite = h2e[
+        impurity_index, impurity_index, impurity_index, impurity_index
+    ]
+    # Two-body evolution for half the time
+    yield CircuitInstruction(
+        CPhaseGate(-0.5 * time_step * onsite),
+        [qubits[impurity_index], qubits[norb + impurity_index]],
+    )
+    # One-body evolution for the full time
+    yield CircuitInstruction(
+        ffsim.qiskit.OrbitalRotationJW(norb, one_body_evolution), qubits
+    )
+    # Two-body evolution for half the time
+    yield CircuitInstruction(
+        CPhaseGate(-0.5 * time_step * onsite),
+        [qubits[impurity_index], qubits[norb + impurity_index]],
+    )
+
+# Time step
+time_step = 0.2
+# Number of Krylov basis states
+krylov_dim = 8
+
+# Initialize circuit
+qubits = QuantumRegister(2 * norb, name="q")
+circuit = QuantumCircuit(qubits)
+
+# Generate initial state
+for instruction in prepare_initial_state(qubits, norb=norb, nocc=norb // 2):
+    circuit.append(instruction)
+circuit.measure_all()
+
+# Create list of circuits, starting with the initial state circuit
+circuits = [circuit.copy()]
+
+# Add time evolution circuits to the list
+one_body_evolution = scipy.linalg.expm(-1j * time_step * h1e_momentum)
+for i in range(krylov_dim - 1):
+    # Remove measurements
+    circuit.remove_final_measurements()
+    # Append another Trotter step
+    for instruction in trotter_step(
+        qubits,
+        time_step,
+        one_body_evolution,
+        h2e_momentum,
+        impurity_index,
+        norb,
+    ):
+        circuit.append(instruction)
+    # Measure qubits
+    circuit.measure_all()
+    # Add a copy of the circuit to the list
+    circuits.append(circuit.copy())
+```
+
+```python
+circuits[0].draw("mpl", scale=0.4, fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/9f2cc4d4-ecac-457a-bcae-558319668e1f-0.avif)
+
+```python
+circuits[-1].draw("mpl", scale=0.4, fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/827976ec-4815-4707-80b1-e13fb2fef309-0.avif)
+
+
+## Step 2: Ottimizzare il problema per l'esecuzione quantistica
+Ora che abbiamo creato i circuiti, possiamo ottimizzarli per un hardware target. Scegliamo la QPU meno occupata con almeno 127 qubit. Consultate la [documentazione di Qiskit IBM&reg; Runtime](/guides/get-started-with-primitives#get-started-with-sampler) per ulteriori informazioni.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+print(f"Using backend {backend.name}")
+```
+
+```text
+Using backend ibm_fez
+```
+
+Ora, utilizziamo Qiskit per traspilare i circuiti verso il backend target.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend
+)
+isa_circuits = pass_manager.run(circuits)
+```
+
+## Step 3: Eseguire utilizzando le primitive Qiskit
+Dopo aver ottimizzato i circuiti per l'esecuzione hardware, siamo pronti ad eseguirli sull'hardware target e raccogliere campioni per la stima dell'energia dello stato fondamentale. Dopo aver utilizzato la primitiva Sampler per campionare bitstring da ciascun circuito, combiniamo tutti i risultati in un singolo dizionario di conteggi e tracciamo le 20 bitstring campionate più frequentemente.
+
+```python
+from qiskit.visualization import plot_histogram
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# Sample from the circuits
+sampler = Sampler(backend)
+job = sampler.run(isa_circuits, shots=500)
+```
+
+```python
+from qiskit.primitives import BitArray
+
+# Combine the counts from the individual Trotter circuits
+bit_array = BitArray.concatenate_shots(
+    [result.data.meas for result in job.result()]
+)
+
+plot_histogram(bit_array.get_counts(), number_to_keep=20)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/10af4663-7375-4b50-bae6-9f3d5106457b-0.avif)
+
+## Step 4: Post-processare e restituire il risultato nel formato classico desiderato
+Ora, eseguiamo l'algoritmo SQD utilizzando la funzione `diagonalize_fermionic_hamiltonian`. Consultate la [documentazione API](https://qiskit.github.io/qiskit-addon-sqd/apidocs/qiskit_addon_sqd.fermion.html#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian) per le spiegazioni degli argomenti di questa funzione.
+
+```python
+from qiskit_addon_sqd.fermion import (
+    SCIResult,
+    diagonalize_fermionic_hamiltonian,
+)
+
+# List to capture intermediate results
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(
+            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+        )
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e_momentum,
+    h2e_momentum,
+    bit_array,
+    samples_per_batch=100,
+    norb=norb,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=5,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+```
+
+```text
+Iteration 1
+	Subsample 0
+		Energy: -28.61321893815165
+		Subspace dimension: 10609
+	Subsample 1
+		Energy: -28.628985564542244
+		Subspace dimension: 13924
+	Subsample 2
+		Energy: -28.620151775558114
+		Subspace dimension: 10404
+Iteration 2
+	Subsample 0
+		Energy: -28.656893066053115
+		Subspace dimension: 34225
+	Subsample 1
+		Energy: -28.65277622004119
+		Subspace dimension: 38416
+	Subsample 2
+		Energy: -28.670856034959165
+		Subspace dimension: 39601
+Iteration 3
+	Subsample 0
+		Energy: -28.684787675404362
+		Subspace dimension: 42436
+	Subsample 1
+		Energy: -28.676984757118426
+		Subspace dimension: 50176
+	Subsample 2
+		Energy: -28.671581704249885
+		Subspace dimension: 40804
+Iteration 4
+	Subsample 0
+		Energy: -28.6859683054753
+		Subspace dimension: 47961
+	Subsample 1
+		Energy: -28.69418206537316
+		Subspace dimension: 51529
+	Subsample 2
+		Energy: -28.686083516445752
+		Subspace dimension: 51529
+Iteration 5
+	Subsample 0
+		Energy: -28.694665630711178
+		Subspace dimension: 50625
+	Subsample 1
+		Energy: -28.69505984237118
+		Subspace dimension: 47524
+	Subsample 2
+		Energy: -28.6942873883992
+		Subspace dimension: 48841
+```
+
+La seguente cella di codice traccia i risultati. Il primo grafico mostra l'energia calcolata in funzione del numero di iterazioni di recupero della configurazione, e il secondo grafico mostra l'occupazione media di ciascun orbitale spaziale dopo l'iterazione finale. Per l'energia di riferimento, utilizziamo i risultati di un calcolo [DMRG](https://en.wikipedia.org/wiki/Density_matrix_renormalization_group) che è stato eseguito separatamente.
+
+```python
+import matplotlib.pyplot as plt
+
+dmrg_energy = -28.70659686
+
+min_es = [
+    min(result, key=lambda res: res.energy).energy
+    for result in result_history
+]
+min_id, min_e = min(enumerate(min_es), key=lambda x: x[1])
+
+# Data for energies plot
+x1 = range(len(result_history))
+
+# Data for avg spatial orbital occupancy
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, min_es, label="energy", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].axhline(
+    y=dmrg_energy, color="#BF5700", linestyle="--", label="DMRG energy"
+)
+axs[0].set_title("Approximated Ground State Energy vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Reference (DMRG) energy: {dmrg_energy:.5f}")
+print(f"SQD energy: {min_e:.5f}")
+print(f"Absolute error: {abs(min_e - dmrg_energy):.5f}")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Reference (DMRG) energy: -28.70660
+SQD energy: -28.69506
+Absolute error: 0.01154
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/b6879566-8bf5-4c28-bfb6-b2686692e3d3-1.avif)
+
+### Verificare l'energia
+
+L'energia restituita da SQD è garantita essere un limite superiore dell'energia dello stato fondamentale reale. Il valore dell'energia può essere verificato perché SQD restituisce anche i coefficienti del vettore di stato che approssima lo stato fondamentale. Potete calcolare l'energia dal vettore di stato utilizzando le sue matrici di densità ridotte a 1 e 2 particelle, come dimostrato nella seguente cella di codice.
+
+```python
+rdm1 = result.sci_state.rdm(rank=1, spin_summed=True)
+rdm2 = result.sci_state.rdm(rank=2, spin_summed=True)
+
+energy = np.sum(h1e_momentum * rdm1) + 0.5 * np.sum(h2e_momentum * rdm2)
+
+print(f"Recomputed energy: {energy:.5f}")
+```
+
+```text
+Recomputed energy: -28.69506
+```
+
+## Riferimenti
+
+- [Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization (SKQD paper)](https://arxiv.org/abs/2501.09702)

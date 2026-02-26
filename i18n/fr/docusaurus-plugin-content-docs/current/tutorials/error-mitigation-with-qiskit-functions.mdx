@@ -1,0 +1,224 @@
+---
+title: "Attenuation des erreurs avec la fonction IBM Circuit"
+sidebar_label: "Attenuation des erreurs avec la fonction IBM Circuit"
+description: "Parcourez un exemple de construction et d'execution d'un workflow utilisant la fonction IBM Circuit."
+notebook_path: "docs/tutorials/error-mitigation-with-qiskit-functions.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/error-mitigation-with-qiskit-functions.ipynb" />
+
+
+
+<Admonition type="note" title="Remarque">
+Les fonctions Qiskit sont une fonctionnalite experimentale disponible uniquement pour les utilisateurs des plans IBM Quantum&reg; Premium, Flex et On-Prem (via l'API IBM Quantum Platform). Elles sont en version preliminaire et sont susceptibles d'etre modifiees.
+</Admonition>
+
+*Estimation d'utilisation : 26 minutes sur un processeur Eagle (REMARQUE : il s'agit d'une estimation uniquement. Votre temps d'execution peut varier.)*
+Ce tutoriel presente un exemple de construction et d'execution d'un workflow utilisant la fonction IBM Circuit. Cette fonction prend des [Primitive Unified Blocs](/guides/primitive-input-output) (PUBs) en entree et renvoie des valeurs d'esperance avec attenuation des erreurs en sortie. Elle fournit un pipeline automatise et personnalise pour optimiser les circuits et les executer sur du materiel quantique, afin que les chercheurs puissent se concentrer sur la decouverte d'algorithmes et d'applications.
+
+Consultez la documentation pour une [introduction aux fonctions Qiskit](/guides/functions) et apprenez comment demarrer avec la [fonction IBM Circuit](/guides/ibm-circuit-function).
+## Contexte
+
+Ce tutoriel considere un circuit general d'evolution temporelle de Trotter, efficace pour le materiel, pour le modele d'Ising a champ transverse en 2D, et calcule la magnetisation globale. Un tel circuit est utile dans differents domaines d'application tels que la physique de la matiere condensee, la chimie et l'apprentissage automatique. Pour plus d'informations sur la structure de ce modele, consultez [Nature 618, 500-505 (2023)](https://www.nature.com/articles/s41586-023-06096-3).
+
+La fonction IBM Circuit combine les capacites du service de transpilation Qiskit et de l'estimateur Qiskit Runtime pour fournir une interface simplifiee d'execution des circuits. La fonction effectue la transpilation, la suppression des erreurs, l'attenuation des erreurs et l'execution des circuits au sein d'un seul service gere, afin que nous puissions nous concentrer sur la correspondance entre le probleme et les circuits plutot que sur la construction de chaque etape du processus.
+## Prerequis
+
+Avant de commencer ce tutoriel, assurez-vous d'avoir installe les elements suivants :
+
+- Qiskit SDK v1.2 ou version ulterieure (`pip install qiskit`)
+- Qiskit Runtime v0.28 ou version ulterieure (`pip install qiskit-ibm-runtime`)
+- Client IBM Qiskit Functions Catalog v0.0.0 ou version ulterieure (`pip install qiskit-ibm-catalog`)
+- Qiskit Aer v0.15.0 ou version ulterieure (`pip install qiskit-aer`)
+## Configuration
+
+```python
+import rustworkx
+from collections import defaultdict
+from numpy import pi, mean
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.quantum_info import SparsePauliOp
+```
+
+## Etape 1 : Convertir les entrees classiques en un probleme quantique
+
+<ul>
+    <li>Entree : Parametres pour creer le circuit quantique</li>
+    <li>Sortie : Circuit abstrait et observables</li>
+</ul>
+#### Construire le circuit
+Le circuit que nous allons creer est un circuit d'evolution temporelle de Trotter, efficace pour le materiel, pour le modele d'Ising a champ transverse en 2D. Nous commencons par selectionner un backend. Les proprietes de ce backend (c'est-a-dire sa carte de couplage) seront utilisees pour definir le probleme quantique et garantir qu'il est efficace pour le materiel.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Ensuite, nous obtenons la carte de couplage a partir du backend.
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+layer_couplings = defaultdict(list)
+```
+
+Nous devons etre attentifs a la conception des couches de notre circuit. Pour cela, nous allons colorer les aretes de la carte de couplage (c'est-a-dire regrouper les aretes disjointes) et utiliser cette coloration pour placer plus efficacement les portes dans le circuit. Cela produira un circuit moins profond avec des couches de portes pouvant etre executees simultanement sur le materiel.
+
+```python
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+
+for edge_idx, color in edge_coloring.items():
+    layer_couplings[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layer_couplings = [
+    sorted(layer_couplings[i]) for i in sorted(layer_couplings.keys())
+]
+```
+
+Ensuite, nous ecrivons une fonction auxiliaire simple qui implemente le circuit d'evolution temporelle de Trotter, efficace pour le materiel, pour le modele d'Ising a champ transverse en 2D, en utilisant la coloration des aretes obtenue ci-dessus.
+
+```python
+def construct_trotter_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    layer_couplings: list,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    theta, phi = Parameter("theta"), Parameter("phi")
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(theta, range(num_qubits))
+        for layer in layer_couplings:
+            for edge in layer:
+                if edge[0] < num_qubits and edge[1] < num_qubits:
+                    circuit.rzz(phi, edge[0], edge[1])
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+```
+
+Nous allons choisir le nombre de qubits et d'etapes de Trotter, puis construire le circuit.
+
+```python
+num_qubits = 100
+num_trotter_steps = 2
+
+circuit = construct_trotter_circuit(
+    num_qubits, num_trotter_steps, layer_couplings
+)
+circuit.draw("mpl", fold=-1)
+```
+
+![Sortie de la cellule de code precedente](/docs/images/tutorials/error-mitigation-with-qiskit-functions/extracted-outputs/18eefa99-f1c4-41b5-90b8-7fd8723cac84-0.avif)
+
+Afin d'evaluer la qualite de l'execution, nous devons la comparer avec le resultat ideal. Le circuit choisi depasse les capacites de simulation classique par force brute. Nous fixons donc les parametres de toutes les portes `Rx` du circuit a $0$, et ceux de toutes les portes `Rzz` a $\pi$. Cela rend le circuit de type Clifford, ce qui permet d'effectuer la simulation ideale et d'obtenir le resultat ideal pour la comparaison. Dans ce cas, nous savons que le resultat sera `1.0`.
+
+```python
+parameters = [0, pi]
+```
+
+#### Construire l'observable
+Tout d'abord, calculez la magnetisation globale selon $\hat{z}$ pour le probleme a $N$ qubits : $M_z = \sum_{i=1}^N \langle Z_i \rangle / N$. Cela necessite d'abord de calculer la magnetisation par site $\langle Z_i \rangle$ pour chaque qubit $i$, qui est definie dans le code suivant.
+
+```python
+observables = []
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(SparsePauliOp(obs))
+
+print(observables[0])
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## Etapes 2 et 3 : Optimiser le probleme pour l'execution sur materiel quantique et executer avec la fonction IBM Circuit
+
+<ul>
+    <li>Entree : Circuit abstrait et observables</li>
+    <li>Sortie : Valeurs d'esperance avec attenuation des erreurs</li>
+</ul>
+Nous pouvons maintenant transmettre le circuit abstrait et les observables a la fonction IBM Circuit. Elle se chargera de la transpilation et de l'execution sur le materiel quantique pour nous, et renverra des valeurs d'esperance avec attenuation des erreurs. Tout d'abord, nous chargeons la fonction depuis le [catalogue IBM Qiskit Functions](/guides/functions).
+
+```python
+catalog = QiskitFunctionsCatalog(
+    token="<YOUR_API_KEY>"
+)  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+function = catalog.load("ibm/circuit-function")
+```
+
+La fonction IBM Circuit prend des `pubs`, un `backend_name`, ainsi que des entrees optionnelles pour configurer la transpilation, l'attenuation des erreurs, etc. Nous creons le `pub` a partir du circuit abstrait, des observables et des parametres du circuit. Le nom du backend doit etre specifie sous forme de chaine de caracteres.
+
+```python
+pubs = [(circuit, observables, parameters)]
+backend_name = backend.name
+```
+
+Nous pouvons egalement configurer les `options` pour la transpilation, la suppression des erreurs et l'attenuation des erreurs. Les parametres par defaut seront utilises si nous ne souhaitons pas les specifier. La fonction IBM Circuit propose des options couramment utilisees pour `optimization_level`, qui controle le degre d'optimisation du circuit, et `mitigation_level`, qui specifie le degre de suppression et d'attenuation des erreurs a appliquer. Notez que le `mitigation_level` de la fonction IBM Circuit est distinct du `resilience_level` utilise dans l'[estimateur Qiskit Runtime](/guides/configure-error-mitigation). Pour une description detaillee de ces options courantes ainsi que d'autres options avancees, consultez la [documentation de la fonction IBM Circuit](/guides/ibm-circuit-function).
+
+Dans ce tutoriel, nous definirons `default_precision`, `optimization_level: 3` et `mitigation_level: 3`, ce qui activera le gate twirling et l'extrapolation de bruit zero (ZNE) via l'amplification probabiliste des erreurs (PEA) en plus des parametres par defaut du niveau 1.
+
+```python
+options = {
+    "default_precision": 0.011,
+    "optimization_level": 3,
+    "mitigation_level": 3,
+}
+```
+
+Avec les entrees specifiees, nous soumettons la tache a la fonction IBM Circuit pour optimisation et execution.
+
+```python
+job = function.run(backend_name=backend_name, pubs=pubs, options=options)
+```
+
+## Etape 4 : Post-traiter et renvoyer le resultat dans le format classique souhaite
+
+<ul>
+    <li>Entree : Resultats de la fonction IBM Circuit</li>
+    <li>Sortie : Magnetisation globale</li>
+</ul>
+#### Calculer la magnetisation globale
+Le resultat de l'execution de la fonction a le meme format que l'[estimateur](/guides/primitive-input-output#estimator-output).
+
+```python
+result = job.result()[0]
+```
+
+Nous obtenons les valeurs d'esperance avec et sans attenuation des erreurs a partir de ce resultat. Ces valeurs d'esperance representent la magnetisation par site selon la direction $\hat{z}$. Nous les moyennons pour obtenir la magnetisation globale et comparons avec la valeur ideale de `1.0` pour cette instance du probleme.
+
+```python
+mitigated_expvals = result.data.evs
+magnetization_mitigated = mean(mitigated_expvals)
+
+print("mitigated:", magnetization_mitigated)
+
+unmitigated_expvals = [
+    result.data.evs_extrapolated[i][0][1] for i in range(num_qubits)
+]
+magnetization_unmitigated = mean(unmitigated_expvals)
+
+print("unmitigated:", magnetization_unmitigated)
+```
+
+```text
+mitigated: 0.9749883476088692
+unmitigated: 0.7832977198447583
+```
+
+## Enquete sur le tutoriel
+
+Veuillez repondre a cette courte enquete pour nous faire part de vos commentaires sur ce tutoriel. Vos retours nous aideront a ameliorer nos contenus et l'experience utilisateur.
+
+[Lien vers l'enquete](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

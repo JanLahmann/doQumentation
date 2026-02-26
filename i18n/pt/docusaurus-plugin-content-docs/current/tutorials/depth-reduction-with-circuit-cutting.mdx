@@ -1,0 +1,228 @@
+---
+title: "Corte de circuitos para redução de profundidade"
+sidebar_label: "Corte de circuitos para redução de profundidade"
+description: "Construa um padrão Qiskit para cortar portas em um circuito quântico e reduzir a profundidade do circuito."
+notebook_path: "docs/tutorials/depth-reduction-with-circuit-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/depth-reduction-with-circuit-cutting.ipynb" />
+
+
+
+*Estimativa de uso: Oito minutos em um processador Eagle (NOTA: Esta é apenas uma estimativa. Seu tempo de execução pode variar.)*
+## Contexto
+
+Este tutorial demonstra como construir um `padrão Qiskit` para cortar portas em um circuito quântico e reduzir a profundidade do circuito. Para uma discussão mais aprofundada sobre corte de circuitos, visite a [documentação do addon Qiskit de corte de circuitos](https://qiskit.github.io/qiskit-addon-cutting/).
+## Requisitos
+
+Antes de iniciar este tutorial, certifique-se de ter o seguinte instalado:
+- Qiskit SDK v2.0 ou posterior, com suporte a [visualização](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 ou posterior (`pip install qiskit-ibm-runtime`)
+- Addon Qiskit de corte de circuitos v0.9.0 ou posterior (`pip install qiskit-addon-cutting`)
+## Configuração
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+
+from qiskit.circuit.library import EfficientSU2
+from qiskit.quantum_info import PauliList, Statevector, SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_addon_cutting import (
+    cut_gates,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+## Passo 1: Mapear entradas clássicas para um problema quântico
+
+Implementaremos nosso padrão Qiskit usando os quatro passos descritos na [documentação](/guides/intro-to-patterns). Neste caso, simularemos valores de expectativa em um circuito de uma certa profundidade cortando portas que resultam em portas de troca e executando subexperimentos em circuitos mais rasos. O corte de portas é relevante para os Passos 2 (otimizar circuito para execução quântica decompondo portas distantes) e 4 (pós-processamento para reconstruir valores de expectativa no circuito original).
+No primeiro passo, geraremos um circuito da biblioteca de circuitos do Qiskit e definiremos alguns observáveis.
+
+*   Entrada: Parâmetros clássicos para definir um circuito
+*   Saída: Circuito abstrato e observáveis
+
+```python
+circuit = EfficientSU2(num_qubits=4, entanglement="circular").decompose()
+circuit.assign_parameters([0.4] * len(circuit.parameters), inplace=True)
+observables = PauliList(["ZZII", "IZZI", "IIZZ", "XIXI", "ZIZZ", "IXIX"])
+circuit.draw("mpl", scale=0.8, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/54ed0f13-0.avif)
+
+## Passo 2: Otimizar problema para execução em hardware quântico
+
+*   Entrada: Circuito abstrato e observáveis
+*   Saída: Circuito alvo e observáveis produzidos ao cortar portas distantes para reduzir a profundidade do circuito transpilado
+
+Escolhemos um layout inicial que requer duas trocas para executar as portas entre os qubits 3 e 0 e mais duas trocas para retornar os qubits às suas posições iniciais. Escolhemos `optimization_level=3`, que é o nível mais alto de otimização disponível com um gerenciador de passos predefinido.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=circuit.num_qubits, simulator=False
+)
+
+pm = generate_preset_pass_manager(
+    optimization_level=3, initial_layout=[0, 1, 2, 3], backend=backend
+)
+transpiled_qc = pm.run(circuit)
+```
+
+![Coupling map showing the qubits that will need to be swapped](/docs/images/tutorials/depth-reduction-with-circuit-cutting/swaps.avif)
+
+```python
+print(f"Transpiled circuit depth: {transpiled_qc.depth()}")
+transpiled_qc.draw("mpl", scale=0.4, idle_wires=False, style="iqp", fold=-1)
+```
+
+```text
+Transpiled circuit depth: 103
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/4fe4af43-1.avif)
+
+*Encontrar e cortar as portas distantes:* Substituiremos as portas distantes (portas conectando qubits não-locais, 0 e 3) por objetos `TwoQubitQPDGate` especificando seus índices. `cut_gates` substituirá as portas nos índices especificados por objetos `TwoQubitQPDGate` e também retornará uma lista de instâncias `QPDBasis` -- uma para cada decomposição de porta. O objeto `QPDBasis` contém informações sobre como decomor as portas cortadas em operações de um único qubit.
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(circuit.data)
+    if {circuit.find_bit(q)[0] for q in instruction.qubits} == {0, 3}
+]
+
+# Decompose distant CNOTs into TwoQubitQPDGate instances
+qpd_circuit, bases = cut_gates(circuit, cut_indices)
+
+qpd_circuit.draw("mpl", scale=0.8)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/23e3d25e-0.avif)
+
+*Gerar os subexperimentos para executar no backend*: `generate_cutting_experiments` aceita um circuito contendo instâncias `TwoQubitQPDGate` e observáveis como uma `PauliList`.
+
+Para simular o valor de expectativa do circuito em tamanho completo, muitos subexperimentos são gerados a partir da distribuição de quasiprobabilidade conjunta das portas decompostas e então executados em um ou mais backends. O número de amostras retiradas da distribuição é controlado por `num_samples`, e um coeficiente combinado é dado para cada amostra única. Para mais informações sobre como os coeficientes são calculados, consulte o [material explicativo](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html).
+
+```python
+# Generate the subexperiments and sampling coefficients
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit, observables=observables, num_samples=np.inf
+)
+```
+
+*Para comparação, vemos que os subexperimentos QPD serão mais rasos após o corte de portas distantes*: Aqui está um exemplo de um subexperimento arbitrariamente escolhido gerado a partir do circuito QPD. Sua profundidade foi reduzida em mais da metade. Muitos desses subexperimentos probabilísticos devem ser gerados e avaliados para reconstruir um valor de expectativa do circuito mais profundo.
+
+```python
+# Transpile the decomposed circuit to the same layout
+transpiled_qpd_circuit = pm.run(subexperiments[100])
+
+print(f"Original circuit depth after transpile: {transpiled_qc.depth()}")
+print(
+    f"QPD subexperiment depth after transpile: {transpiled_qpd_circuit.depth()}"
+)
+transpiled_qpd_circuit.draw(
+    "mpl", scale=0.6, style="iqp", idle_wires=False, fold=-1
+)
+```
+
+```text
+Original circuit depth after transpile: 103
+QPD subexperiment depth after transpile: 46
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/70e2f1b6-1.avif)
+
+*Por outro lado, o corte resulta na necessidade de amostragem extra*. Aqui cortamos três portas CNOT, resultando em uma sobrecarga de amostragem de $9^3$. Para mais informações sobre a sobrecarga de amostragem incorrida pelo corte de circuitos, consulte a [documentação do Circuit Knitting Toolbox](https://qiskit-extensions.github.io/circuit-knitting-toolbox/circuit_cutting/explanation/index.html).
+
+```python
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 729.0
+```
+
+## Passo 3: Executar usando primitivas Qiskit
+
+Execute os circuitos alvo ("subexperimentos") com a Primitiva Sampler.
+
+*   Entrada: Circuitos alvo
+*   Saída: Distribuições de quasiprobabilidade
+
+```python
+# Transpile the subexperiments to the backend's instruction set architecture (ISA)
+isa_subexperiments = pm.run(subexperiments)
+
+# Set up the Qiskit Runtime Sampler primitive.  For a fake backend, this will use a local simulator.
+sampler = SamplerV2(backend)
+
+# Submit the subexperiments
+job = sampler.run(isa_subexperiments)
+```
+
+```python
+# Retrieve the results
+results = job.result()
+```
+
+```python
+print(job.job_id())
+```
+
+```text
+czypg1r6rr3g008mgp6g
+```
+
+## Passo 4: Pós-processar e retornar resultado no formato clássico desejado
+
+Use os resultados dos subexperimentos, subobserváveis e coeficientes de amostragem para reconstruir o valor de expectativa do circuito original.
+
+Entrada: Distribuições de quasiprobabilidade
+Saída: Valores de expectativa reconstruídos
+
+```python
+reconstructed_expvals = reconstruct_expectation_values(
+    results,
+    coefficients,
+    observables,
+)
+# Reconstruct final expectation value
+final_expval = np.dot(reconstructed_expvals, [1] * len(observables))
+print("Final reconstructed expectation value")
+print(final_expval)
+```
+
+```text
+Final reconstructed expectation value
+1.0751342773437473
+```
+
+```python
+ideal_expvals = [
+    Statevector(circuit).expectation_value(SparsePauliOp(observable))
+    for observable in observables
+]
+print("Ideal expectation value")
+print(np.dot(ideal_expvals, [1] * len(observables)).real)
+```
+
+```text
+Ideal expectation value
+1.2283177520039992
+```
+
+## Pesquisa do tutorial
+
+Por favor, responda a esta breve pesquisa para fornecer feedback sobre este tutorial. Suas percepções nos ajudarão a melhorar nossas ofertas de conteúdo e experiência do usuário.
+
+[Link to survey](https://your.feedback.ibm.com/jfe/form/SV_2ftYFf9t72yFNIO)

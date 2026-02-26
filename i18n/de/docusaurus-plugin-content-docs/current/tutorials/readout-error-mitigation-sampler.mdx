@@ -1,0 +1,909 @@
+---
+title: "Auslesefehler-Mitigation für das Sampler-Primitiv mit M3"
+sidebar_label: "Auslesefehler-Mitigation für das Sampler-Primitiv mit M3"
+description: "Verwenden Sie das M3-Auslesefehler-Mitigations-Addon mit dem Sampler-Primitiv"
+notebook_path: "docs/tutorials/readout-error-mitigation-sampler.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/readout-error-mitigation-sampler.ipynb" />
+
+
+
+{/* cspell:ignore braket, Zgrm, newcommand, probs, quasis, topten */}
+
+*Nutzungsschätzung: unter einer Minute auf einem Heron-r2-Prozessor (HINWEIS: Dies ist nur eine Schätzung. Ihre Laufzeit kann abweichen.)*
+
+## Hintergrund
+
+Im Gegensatz zum Estimator-Primitiv bietet das Sampler-Primitiv keine integrierte Unterstützung für Fehlerminderung.
+Mehrere der vom Estimator unterstützten Methoden sind speziell für Erwartungswerte konzipiert und daher nicht auf das Sampler-Primitiv anwendbar. Eine Ausnahme bildet die Auslesefehler-Mitigation, eine äußerst effektive Methode, die auch auf das Sampler-Primitiv anwendbar ist.
+
+Das [M3-Qiskit-Addon](https://qiskit.github.io/qiskit-addon-mthree/) implementiert eine effiziente Methode zur Auslesefehler-Mitigation. Dieses Tutorial erläutert, wie Sie das M3-Qiskit-Addon zur Minderung von Auslesefehlern für das Sampler-Primitiv verwenden können.
+
+### Was ist ein Auslesefehler?
+
+Unmittelbar vor der Messung wird der Zustand eines Qubit-Registers
+durch eine Superposition von Rechenbasisständen
+oder durch eine Dichtematrix beschrieben.
+Die Messung des Qubit-Registers in ein klassisches Bitregister erfolgt dann in zwei Schritten.
+Zunächst wird die eigentliche Quantenmessung durchgeführt.
+Das bedeutet, dass der Zustand des Qubit-Registers
+auf einen einzelnen Basiszustand projiziert wird, der
+durch eine Folge von $1$en und $0$en charakterisiert ist.
+Der zweite Schritt besteht darin, die den Basiszustand charakterisierende Bitfolge auszulesen
+und in den klassischen Computerspeicher zu schreiben.
+Wir nennen diesen Schritt *Auslese* (Readout).
+Es zeigt sich, dass der zweite Schritt (Auslese) mehr Fehler verursacht als der erste Schritt (Projektion auf Basiszustände).
+Dies ist nachvollziehbar, wenn Sie bedenken, dass die Auslese die Erkennung eines mikroskopischen
+Quantenzustands und dessen Verstärkung in den makroskopischen Bereich erfordert. Ein Ausleseresonator ist an
+das (Transmon-)Qubit gekoppelt und erfährt dadurch eine sehr kleine Frequenzverschiebung. Ein Mikrowellenpuls
+wird vom Resonator reflektiert und erfährt dabei kleine Änderungen in seinen
+Eigenschaften. Der reflektierte Puls wird dann verstärkt und analysiert. Dies ist ein empfindlicher
+Prozess und unterliegt einer Vielzahl von Fehlern.
+
+Der wichtige Punkt ist, dass sowohl die Quantenmessung als auch die Auslese fehlerbehaftet sind, wobei
+letztere den dominierenden Fehler verursacht, den sogenannten Auslesefehler, der im Mittelpunkt dieses Tutorials steht.
+### Theoretischer Hintergrund
+
+Wenn sich die abgetastete Bitfolge (im klassischen Speicher gespeichert) von der Bitfolge unterscheidet, die
+den projizierten Quantenzustand charakterisiert, sprechen wir von einem Auslesefehler.
+Diese Fehler sind zufällig und von Abtastung zu Abtastung unkorreliert.
+Es hat sich als nützlich erwiesen, den Auslesefehler als einen _verrauschten klassischen Kanal_ zu modellieren.
+Das heißt, für jedes Paar
+von Bitfolgen $i$ und $j$ gibt es eine feste Wahrscheinlichkeit, dass ein wahrer Wert von $j$
+fälschlicherweise als $i$ gelesen wird.
+
+Genauer gesagt gibt es für jedes Paar von Bitfolgen $(i, j)$ eine (bedingte) Wahrscheinlichkeit ${M}_{i,j}$,
+dass $i$ gelesen wird, unter der Bedingung, dass der wahre Wert $j$ ist.
+Das heißt,
+$$
+    {M}_{i,j} =  \Pr(\text{readout value is } i | \text{true value is } j)
+    \text{ for } i,j \in (0,...,2^n - 1), \tag{1}
+$$
+wobei $n$ die Anzahl der Bits im Ausleseregister ist.
+Zur Konkretisierung nehmen wir an, dass $i$ eine dezimale Ganzzahl ist, deren Binärdarstellung
+die Bitfolge ist, die die Rechenbasisstände bezeichnet.
+Wir nennen die $2^n \times 2^n$-Matrix ${M}$ die _Zuweisungsmatrix_.
+Für einen festen wahren Wert $j$ muss die Summe der Wahrscheinlichkeit über alle verrauschten Ergebnisse $i$ den Wert $1$ ergeben. Das heißt
+$$
+    \sum_{i=0}^{2^n - 1} {M}_{i,j} = 1 \text{ for all } j
+$$
+Eine Matrix ohne negative Einträge, die (1) erfüllt, wird
+_links-stochastisch_ genannt.
+Eine links-stochastische Matrix wird auch _spalten-stochastisch_ genannt, da die Summe jeder ihrer Spalten $1$ ergibt.
+Wir bestimmen experimentell Näherungswerte für jedes Element ${M}_{i,j}$, indem wir
+wiederholt jeden Basiszustand $|j \rangle$ präparieren und dann die Häufigkeiten
+des Auftretens abgetasteter Bitfolgen berechnen.
+
+Wenn ein Experiment die Schätzung einer Wahrscheinlichkeitsverteilung über Ausgangs-Bitfolgen durch wiederholte Abtastung umfasst,
+können wir ${M}$ verwenden, um den Auslesefehler auf der Ebene der Verteilung zu mindern.
+Der erste Schritt besteht darin, einen festen Schaltkreis von Interesse viele Male zu wiederholen
+und ein Histogramm der abgetasteten Bitfolgen zu erstellen.
+Das normierte Histogramm ist die gemessene Wahrscheinlichkeitsverteilung über
+die $2^n$ möglichen Bitfolgen, die wir mit ${\tilde{p}} \in \mathbb{R}^{2^n}$ bezeichnen.
+Die (geschätzte) Wahrscheinlichkeit ${{\tilde{p}}}_i$ für die Abtastung der Bitfolge $i$
+ist gleich der Summe über alle wahren Bitfolgen $j$, jeweils gewichtet mit
+der Wahrscheinlichkeit, dass sie mit $i$ verwechselt wird.
+Diese Aussage in Matrixform lautet
+$$
+    {\tilde{p}} = {M} {\vec{p}}, \tag{2},
+$$
+wobei ${\vec{p}}$ die wahre Verteilung ist. In Worten: Der Auslesefehler hat die Wirkung, die
+ideale Verteilung über Bitfolgen ${\vec{p}}$ mit der Zuweisungsmatrix ${M}$ zu multiplizieren, um
+die beobachtete Verteilung ${\tilde{p}}$ zu erzeugen.
+Wir haben ${\tilde{p}}$ und ${M}$ gemessen, haben aber keinen direkten Zugang zu ${\vec{p}}$. Im Prinzip erhalten wir
+die wahre Verteilung der Bitfolgen für unseren Schaltkreis,
+indem wir Gleichung (2) numerisch nach ${\vec{p}}$ lösen.
+
+Bevor wir fortfahren, ist es erwähnenswert, dass dieser naive Ansatz einige wichtige Eigenschaften aufweist.
+
+- In der Praxis wird Gleichung (2) nicht durch Invertierung von ${M}$ gelöst. Routinen der linearen Algebra
+  in Softwarebibliotheken verwenden Methoden, die stabiler, genauer und effizienter sind.
+- Bei der Schätzung von ${M}$ haben wir angenommen, dass nur Auslesefehler aufgetreten sind. Insbesondere
+  nehmen wir an, dass keine Zustandspräparations- und Quantenmessfehler aufgetreten sind —
+  oder dass diese anderweitig gemindert wurden.
+  Insofern diese Annahme gerechtfertigt ist, repräsentiert ${M}$ wirklich
+  nur den Auslesefehler. Wenn wir jedoch ${M}$ _verwenden_, um eine gemessene Verteilung
+  über Bitfolgen zu korrigieren, machen wir keine solche Annahme. Tatsächlich erwarten wir, dass ein interessanter
+  Schaltkreis Rauschen einführt, beispielsweise Gatterfehler. Die „wahre" Verteilung
+  enthält weiterhin Auswirkungen aller Fehler, die nicht anderweitig gemindert werden.
+
+Diese Methode, obwohl unter bestimmten Umständen nützlich, weist einige Einschränkungen auf.
+
+Der Speicher- und Zeitaufwand zur Schätzung von ${M}$ wächst exponentiell in $n$:
+- Die Schätzung von ${M}$ und ${\tilde{p}}$ unterliegt statistischen Fehlern aufgrund endlicher Abtastung.
+  Dieses Rauschen kann beliebig klein gemacht werden,
+  allerdings auf Kosten von mehr Schüssen (bis zur Zeitskala driftender Hardwareparameter,
+  die zu systematischen Fehlern in ${M}$ führen).
+  Wenn jedoch keine Annahmen über die beim Durchführen der Mitigation beobachteten Bitfolgen gemacht werden,
+  wächst die Anzahl der Schüsse, die zur Schätzung von ${M}$ erforderlich sind,
+  mindestens exponentiell in $n$.
+- ${M}$ ist eine $2^n \times 2^n$-Matrix.
+  Wenn $n>10$, übersteigt der erforderliche Speicher zur Speicherung von ${M}$
+  den verfügbaren Speicher eines leistungsstarken Laptops.
+
+Weitere Einschränkungen sind:
+
+- Die wiederhergestellte Verteilung ${\vec{p}}$ kann eine
+  oder mehrere negative Wahrscheinlichkeiten aufweisen (wobei die Summe weiterhin eins ergibt). Eine Lösung
+  besteht darin, $||{M} {\vec{p}} - {\tilde{p}}||^2$ unter der Bedingung zu minimieren, dass
+  jeder Eintrag in ${\vec{p}}$ nicht-negativ ist. Die Laufzeit einer solchen
+  Methode ist jedoch um Größenordnungen länger als das direkte Lösen von Gleichung (2).
+- Dieses Mitigationsverfahren arbeitet auf der Ebene einer Wahrscheinlichkeitsverteilung
+  über Bitfolgen. Insbesondere kann es keinen Fehler in einer einzelnen
+  beobachteten Bitfolge korrigieren.
+### M3-Qiskit-Addon: Skalierung auf längere Bitfolgen
+
+Das Lösen von Gleichung (2) mit Standard-Methoden der numerischen linearen Algebra ist auf Bitfolgen von höchstens etwa 10 Bit beschränkt. M3 kann jedoch mit wesentlich längeren Bitfolgen umgehen. Zwei Schlüsseleigenschaften von M3, die dies ermöglichen, sind:
+- Korrelationen im Auslesefehler dritter und höherer Ordnung zwischen Bit-Gruppen
+  werden als vernachlässigbar angenommen und ignoriert. Prinzipiell könnten auf Kosten zusätzlicher Schüsse
+  auch höhere Korrelationen geschätzt werden.
+- Anstatt ${M}$ explizit zu konstruieren, verwenden wir eine wesentlich kleinere effektive Matrix, die
+  Wahrscheinlichkeiten nur für Bitfolgen aufzeichnet, die bei der Konstruktion von ${\tilde{p}}$ gesammelt wurden.
+
+Auf einer übergeordneten Ebene funktioniert das Verfahren wie folgt.
+
+Zunächst konstruieren wir Bausteine, aus denen wir eine vereinfachte, effektive Beschreibung von ${M}$ aufbauen können.
+Dann führen wir den Schaltkreis von Interesse wiederholt aus und sammeln Bitfolgen, die wir verwenden, um
+sowohl ${\tilde{p}}$ als auch, mithilfe der Bausteine, ein effektives ${M}$ zu konstruieren.
+
+Genauer gesagt:
+- Einzel-Qubit-Zuweisungsmatrizen werden für jedes Qubit geschätzt. Dazu präparieren wir wiederholt
+  das Qubit-Register im All-Null-Zustand $|0 ... 0 \rangle$ und dann im All-Eins-Zustand
+  $|1 ... 1 \rangle$ und verzeichnen die Wahrscheinlichkeit für jedes Qubit, dass es falsch
+  ausgelesen wird.
+- Korrelationen dritter und höherer Ordnung werden als vernachlässigbar angenommen und ignoriert.
+
+  Stattdessen konstruieren wir eine Anzahl $n$ von $2 \times 2$ Einzel-Qubit-Zuweisungsmatrizen
+  und eine Anzahl $n(n-1)/2$ von $4 \times 4$ Zwei-Qubit-Zuweisungsmatrizen.
+  Diese Ein- und Zwei-Qubit-Zuweisungsmatrizen werden für die spätere
+  Verwendung gespeichert.
+- Nach dem wiederholten Abtasten eines Schaltkreises zur Konstruktion von ${\tilde{p}}$
+  konstruieren wir eine effektive Approximation an ${M}$ unter ausschließlicher Verwendung
+  von Bitfolgen, die bei der Konstruktion von ${\tilde{p}}$ abgetastet werden. Diese effektive Matrix
+  wird mithilfe der im vorherigen Punkt beschriebenen Einzel- und Zwei-Qubit-Matrizen aufgebaut.
+  Die lineare Dimension dieser Matrix beträgt höchstens in der Größenordnung der Anzahl
+  der Schüsse, die bei der Konstruktion von ${\tilde{p}}$ verwendet werden, was wesentlich kleiner ist als
+  die Dimension $2^n$ der vollständigen Zuweisungsmatrix ${M}$.
+
+Für technische Details zu M3 können Sie auf [*Scalable Mitigation of Measurement Errors on Quantum Computers*](https://journals.aps.org/prxquantum/abstract/10.1103/PRXQuantum.2.040326) verweisen.
+### Anwendung von M3 auf einen Quantenalgorithmus
+Wir wenden die Auslesefehler-Mitigation von M3 auf das Problem der verborgenen Verschiebung an. Das Problem der verborgenen Verschiebung und eng verwandte Probleme wie das [Problem der verborgenen Untergruppe](https://en.wikipedia.org/wiki/Hidden_subgroup_problem) wurden ursprünglich in einem fehlertoleranten Kontext konzipiert (genauer gesagt, bevor der Beweis erbracht wurde, dass fehlertolerante QPUs möglich sind!). Sie werden jedoch auch mit verfügbaren Prozessoren untersucht. Ein Beispiel für eine algorithmische exponentielle Beschleunigung, die für eine Variante des Problems der verborgenen Verschiebung auf 127-Qubit-IBM&reg;-QPUs erzielt wurde, finden Sie in [diesem Artikel](https://journals.aps.org/prx/accepted/a9074K06A8e1590147da9c69f8c4b64c28247be5a) ([arXiv-Version](https://arxiv.org/abs/2401.07934)).
+
+Im Folgenden ist die gesamte Arithmetik Boolesch.
+Das heißt, für $a, b \in \mathbb{Z}_2 = \{0, 1\}$ ist die Addition $a + b$ die logische XOR-Funktion.
+Darüber hinaus ist die Multiplikation $a \times b$ (oder $a b$) die logische AND-Funktion. Für $x, y \in \{0, 1\}^n$
+ist $x + y$ durch bitweise Anwendung von XOR definiert.
+Das Skalarprodukt $\cdot: {\mathbb{Z}_2^n} \rightarrow \mathbb{Z}_2$ ist definiert
+durch $x \cdot y = \sum_i x_i y_i$.
+#### Hadamard-Operator und Fourier-Transformation
+
+Bei der Implementierung von Quantenalgorithmen ist es sehr üblich, den Hadamard-Operator als Fourier-Transformation zu verwenden.
+Die Rechenbasisstände werden manchmal als _klassische Zustände_ bezeichnet. Sie stehen in
+einer Eins-zu-Eins-Beziehung zu den klassischen Bitfolgen.
+Der $n$-Qubit-Hadamard-Operator auf klassischen Zuständen kann als Fourier-Transformation auf dem Booleschen Hyperwürfel betrachtet werden:
+$$
+H^{\otimes n} =  \frac{1}{\sqrt{2^n}} \sum_{x,y \in {\mathbb{Z}_2^n}} (-1)^{x \cdot y} {|{y}\rangle}{\langle{x}|}.
+$$
+Betrachten Sie einen Zustand ${|{s}\rangle}$, der einer festen Bitfolge $s$ entspricht.
+Durch Anwendung von $H^{\otimes n}$ und unter Verwendung von ${\langle {x}|{s}\rangle} = \delta_{x,s}$
+sehen wir, dass die Fourier-Transformierte von ${|{s}\rangle}$ geschrieben werden kann als
+$$
+   H^{\otimes n} {|{s}\rangle} =  \frac{1}{\sqrt{2^n}} \sum_{y \in {\mathbb{Z}_2^n}} (-1)^{s \cdot y} {|{y}\rangle}.
+$$
+
+Der Hadamard-Operator ist seine eigene Inverse, das heißt,
+ $H^{\otimes n} H^{\otimes n} = (H H)^{\otimes n} = I^{\otimes n}$.
+Somit ist die inverse Fourier-Transformation derselbe Operator, $H^{\otimes n}$.
+Explizit haben wir
+$$
+  {|{s}\rangle} =  H^{\otimes n} H^{\otimes n} {|{s}\rangle}  =  H^{\otimes n} \frac{1}{\sqrt{2^n}} \sum_{y \in {\mathbb{Z}_2^n}} (-1)^{s \cdot y} {|{y}\rangle}.
+$$
+#### Das Problem der verborgenen Verschiebung
+
+Wir betrachten ein einfaches Beispiel eines _Problems der verborgenen Verschiebung_.
+Das Problem besteht darin, eine konstante Verschiebung im Eingang einer Funktion zu identifizieren.
+Die Funktion, die wir betrachten, ist das Skalarprodukt. Es ist das einfachste Mitglied
+einer großen Klasse von Funktionen, die eine Quantenbeschleunigung für das Problem der verborgenen Verschiebung
+durch Techniken ermöglichen, die den unten vorgestellten ähnlich sind.
+
+Seien $x,y \in {\mathbb{Z}_2^m}$ Bitfolgen der Länge $m$.
+Wir definieren ${f}: {\mathbb{Z}_2^m} \times {\mathbb{Z}_2^m} \rightarrow \{-1,1\}$ durch
+$$
+  {f}(x, y) = (-1)^{x \cdot y}.
+$$
+  Seien $a,b \in {\mathbb{Z}_2^m}$ feste Bitfolgen der Länge $m$.
+  Wir definieren ferner $g: {\mathbb{Z}_2^m} \times {\mathbb{Z}_2^m} \rightarrow \{-1,1\}$ durch
+$$
+  g(x, y) = {f}(x+a, y+b) = (-1)^{(x+a) \cdot (y+b)},
+  $$
+  wobei $a$ und $b$ (verborgene) Parameter sind.
+  Wir erhalten zwei Blackboxen, eine implementiert $f$ und die andere $g$.
+  Wir nehmen an, dass wir wissen, dass sie die oben definierten Funktionen berechnen, außer dass wir weder
+  $a$ noch $b$ kennen. Das Ziel ist es, die verborgenen Bitfolgen (Verschiebungen)
+  $a$ und $b$ durch Abfragen an $f$ und $g$ zu bestimmen. Es ist klar, dass wir im klassischen Fall
+  $O(2m)$ Abfragen benötigen, um $a$ und $b$ zu bestimmen. Beispielsweise können wir $g$ mit allen Paaren von Zeichenfolgen abfragen, bei denen ein Element des Paares ausschließlich aus Nullen besteht und das andere Element genau ein auf $1$ gesetztes Element hat.
+  Bei jeder Abfrage erfahren wir ein Element von entweder $a$ oder $b$.
+  Wir werden jedoch sehen, dass, wenn die Blackboxen als Quantenschaltkreise implementiert werden,
+  wir $a$ und $b$ mit einer einzigen Abfrage an jeweils $f$ und $g$ bestimmen können.
+
+  Im Kontext der algorithmischen Komplexität wird eine Blackbox als _Orakel_ bezeichnet.
+  Zusätzlich zur Undurchsichtigkeit hat ein Orakel die Eigenschaft, dass es die Eingabe verarbeitet und
+  die Ausgabe sofort erzeugt, ohne etwas zum Komplexitätsbudget des Algorithmus beizutragen,
+  in den es eingebettet ist. Tatsächlich werden sich die Orakel, die $f$ und
+  $g$ implementieren, als effizient erweisen.
+#### Quantenschaltkreise für $f$ und $g$
+
+Wir benötigen die folgenden Zutaten, um $f$ und $g$ als Quantenschaltkreise zu implementieren.
+
+Für Einzel-Qubit-klassische Zustände ${|{x_1}\rangle}, {|{y_1}\rangle}$ mit $x_1,y_1 \in \mathbb{Z}_2$
+kann das kontrollierte-$Z$-Gatter ${CZ}$ geschrieben werden als
+$$
+{CZ} {|{x_1}\rangle}{|{y_1}\rangle}{x_1} = (-1)^{x_1 y_1} {|{x_1}\rangle}{x_1}{|{y_1}\rangle}.
+$$
+Wir arbeiten mit $m$ CZ-Gattern, eines auf $(x_1, y_1)$, eines auf $(x_2, y_2)$ und so weiter bis $(x_m, y_m)$.
+Wir nennen diesen Operator ${CZ}_{x,y}$.
+
+$U_f = {CZ}_{x,y}$ ist eine Quantenversion von ${f} = {f}(x,y)$:
+$$
+%\CZ_{x,y} {|#1\rangle}{z} =
+U_f {|{x}\rangle}{|{y}\rangle} = {CZ}_{x,y} {|{x}\rangle}{|{y}\rangle} = (-1)^{x \cdot y}  {|{x}\rangle}{|{y}\rangle}.
+$$
+
+Wir müssen außerdem eine Bitfolgen-Verschiebung implementieren.
+Wir bezeichnen den Operator auf dem $x$-Register $X^{a_1}\cdots X^{a_m}$ mit $X_a$
+und entsprechend auf dem $y$-Register $X_b =  X^{b_1}\cdots X^{b_m}$.
+Diese Operatoren wenden $X$ an, wo ein einzelnes Bit $1$ ist, und die Identität $I$, wo es $0$ ist.
+Dann gilt
+$$
+ X_a X_b  {|{x}\rangle}{|{y}\rangle} = {|{x+a}\rangle}{|{y+b}\rangle}.
+$$
+
+Die zweite Blackbox $g$ wird durch den unitären Operator $U_g$ implementiert, gegeben durch
+$$
+%U_g {|{x}\rangle}{|{y}\rangle} = X_aX_b \CZ_{x,y} X_aX_b {|{x}\rangle}{|{y}\rangle}.
+U_g = X_aX_b {CZ}_{x,y} X_aX_b.
+$$
+Um dies zu sehen, wenden wir die Operatoren von rechts nach links auf den Zustand ${|{x}\rangle}{|{y}\rangle}$ an.
+Zunächst
+
+$$
+ X_a X_b  {|{x}\rangle}{|{y}\rangle} = {|{x+a}\rangle}{|{y+b}\rangle}.
+$$
+
+Dann
+$$
+  {CZ}_{x,y}  {|{x+a}\rangle}{|{y+b}\rangle} = (-1)^{(x+a)\cdot (y+b)} {|{x+a}\rangle}{|{y+b}\rangle}.
+$$
+
+Schließlich
+
+$$
+  X^a X^b (-1)^{(x+a)\cdot (y+b)} {|{x+a}\rangle}{|{y+b}\rangle} = (-1)^{(x+a)\cdot (y+b)} {|{x}\rangle}{|{y}\rangle},
+$$
+
+was tatsächlich die Quantenversion von $f(x+a, y+b)$ ist.
+#### Der Algorithmus der verborgenen Verschiebung
+
+Nun setzen wir die Teile zusammen, um das Problem der verborgenen Verschiebung zu lösen.
+Wir beginnen, indem wir Hadamard-Gatter auf die im All-Null-Zustand initialisierten Register anwenden.
+$$
+H^{\otimes 2m} = H^{\otimes m} \otimes H^{\otimes m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}} = \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{x \cdot y} {|{x}\rangle}{|{y}\rangle}.
+$$
+
+Als Nächstes befragen wir das Orakel $g$ und erhalten
+$$
+U_g H^{\otimes 2m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}}
+= \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{(x+a) \cdot (y+b)} {|{x}\rangle}{|{y}\rangle}
+$$
+$$
+\approx \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{x \cdot y + x \cdot b + y \cdot a} {|{x}\rangle}{|{y}\rangle}.
+$$
+In der letzten Zeile haben wir den konstanten globalen Phasenfaktor $(-1)^{a \cdot b}$ weggelassen
+und bezeichnen die Gleichheit bis auf eine Phase mit $\approx$.
+Als Nächstes führt die Anwendung des Orakels $f$ einen weiteren Faktor $(-1)^{x \cdot y}$ ein, der den bereits
+vorhandenen aufhebt. Wir erhalten dann:
+$$
+U_f U_g H^{\otimes 2m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}}
+\approx \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{x \cdot b + y \cdot a} {|{x}\rangle}{|{y}\rangle}.
+$$
+Der letzte Schritt besteht in der Anwendung der inversen Fourier-Transformation, $H^{\otimes 2m} = H^{\otimes m} \otimes H^{\otimes m}$,
+was ergibt
+$$
+H^{\otimes 2m} U_f U_g  H^{\otimes 2m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}}
+\approx {|{b}\rangle}{|{a}\rangle}.
+$$
+Der Schaltkreis ist fertig. In Abwesenheit von Rauschen wird die Abtastung der Quantenregister
+die Bitfolgen $b, a$ mit Wahrscheinlichkeit $1$ zurückgeben.
+
+Das Boolesche Skalarprodukt ist ein Beispiel für sogenannte Bent-Funktionen.
+Wir werden Bent-Funktionen hier nicht definieren,
+sondern lediglich anmerken, dass sie
+„maximal resistent gegen Angriffe sind, die versuchen, eine Abhängigkeit der
+Ausgaben von einem linearen Unterraum der Eingaben auszunutzen."
+Dieses Zitat stammt aus dem Artikel [_Quantum algorithms for highly non-linear Boolean functions_](https://arxiv.org/abs/0811.3208), der
+effiziente Algorithmen für die verborgene Verschiebung für mehrere Klassen von Bent-Funktionen angibt.
+Der Algorithmus in diesem Tutorial erscheint in Abschnitt 3.1 des Artikels.
+
+Im allgemeineren Fall ist der Schaltkreis zum Finden einer verborgenen Verschiebung $s \in \mathbb{Z}^n$
+$$
+ H^{\otimes n} U_{\tilde{f}}  H^{\otimes n} U_g  H^{\otimes n} {|{0}\rangle}^{\otimes n} = {|{s}\rangle}.
+$$
+ Im allgemeinen Fall sind $f$ und $g$ Funktionen einer einzelnen Variablen.
+ Unser Beispiel des Skalarprodukts hat diese Form, wenn wir $f(x, y) \to f(z)$ setzen,
+ wobei $z$ gleich der Verkettung von $x$ und $y$ ist, und $s$ gleich der Verkettung
+ von $a$ und $b$.
+ Der allgemeine Fall erfordert genau zwei Orakel: Ein Orakel für $g$ und eines für $\tilde{f}$,
+ wobei letzteres eine als _Dual_ der Bent-Funktion $f$ bekannte Funktion ist.
+ Die Skalarprodukt-Funktion hat die Eigenschaft der Selbstdualität $\tilde{f}=f$.
+
+ In unserem Schaltkreis für die verborgene Verschiebung beim Skalarprodukt haben wir die mittlere Schicht
+ von Hadamard-Gattern weggelassen, die im Schaltkreis für den allgemeinen Fall erscheint. Während diese Schicht
+ im allgemeinen Fall notwendig ist, haben wir etwas Tiefe gespart, indem wir sie weggelassen haben, auf Kosten
+ etwas zusätzlicher Nachverarbeitung, da die Ausgabe ${|{b}\rangle}{|{a}\rangle}$ statt des gewünschten ${|{a}\rangle}{|{b}\rangle}$ ist.
+## Voraussetzungen
+
+Stellen Sie vor Beginn dieses Tutorials sicher, dass Folgendes installiert ist:
+
+- Qiskit SDK v2.1 oder höher, mit Unterstützung für [Visualisierung](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.41 oder höher (`pip install qiskit-ibm-runtime`)
+- M3-Qiskit-Addon v3.0 (`pip install mthree`)
+## Einrichtung
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q mthree
+```
+
+```python
+from collections.abc import Iterator, Sequence
+from random import Random
+from qiskit.circuit import (
+    CircuitInstruction,
+    QuantumCircuit,
+    QuantumRegister,
+    Qubit,
+)
+from qiskit.circuit.library import CZGate, HGate, XGate
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+import timeit
+import matplotlib.pyplot as plt
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+import mthree
+```
+## Schritt 1: Klassische Eingaben auf ein Quantenproblem abbilden
+Zunächst schreiben wir die Funktionen, um das Hidden-Shift-Problem als `QuantumCircuit` zu implementieren.
+
+```python
+def apply_hadamards(qubits: Sequence[Qubit]) -> Iterator[CircuitInstruction]:
+    """Apply a Hadamard gate to every qubit."""
+    for q in qubits:
+        yield CircuitInstruction(HGate(), [q], [])
+
+def apply_shift(
+    qubits: Sequence[Qubit], shift: int
+) -> Iterator[CircuitInstruction]:
+    """Apply X gates where the bits of the shift are equal to 1."""
+    for i, q in zip(range(shift.bit_length()), qubits):
+        if shift >> i & 1:
+            yield CircuitInstruction(XGate(), [q], [])
+
+def oracle_f(qubits: Sequence[Qubit]) -> Iterator[CircuitInstruction]:
+    """Apply the f oracle."""
+    for i in range(0, len(qubits) - 1, 2):
+        yield CircuitInstruction(CZGate(), [qubits[i], qubits[i + 1]])
+
+def oracle_g(
+    qubits: Sequence[Qubit], shift: int
+) -> Iterator[CircuitInstruction]:
+    """Apply the g oracle."""
+    yield from apply_shift(qubits, shift)
+    yield from oracle_f(qubits)
+    yield from apply_shift(qubits, shift)
+
+def determine_hidden_shift(
+    qubits: Sequence[Qubit], shift: int
+) -> Iterator[CircuitInstruction]:
+    """Determine the hidden shift."""
+    yield from apply_hadamards(qubits)
+    yield from oracle_g(qubits, shift)
+    # We omit this layer in exchange for post processing
+    # yield from apply_hadamards(qubits)
+    yield from oracle_f(qubits)
+    yield from apply_hadamards(qubits)
+
+def run_hidden_shift_circuit(n_qubits, rng):
+    hidden_shift = rng.getrandbits(n_qubits)
+
+    qubits = QuantumRegister(n_qubits, name="q")
+    circuit = QuantumCircuit.from_instructions(
+        determine_hidden_shift(qubits, hidden_shift), qubits=qubits
+    )
+    circuit.measure_all()
+    # Format the hidden shift as a string.
+    hidden_shift_string = format(hidden_shift, f"0{n_qubits}b")
+    return (circuit, hidden_shift, hidden_shift_string)
+
+def display_circuit(circuit):
+    return circuit.remove_final_measurements(inplace=False).draw(
+        "mpl", idle_wires=False, scale=0.5, fold=-1
+    )
+```
+
+Wir beginnen mit einem kleinen Beispiel:
+
+```python
+n_qubits = 6
+random_seed = 12345
+rng = Random(random_seed)
+circuit, hidden_shift, hidden_shift_string = run_hidden_shift_circuit(
+    n_qubits, rng
+)
+
+print(f"Hidden shift string {hidden_shift_string}")
+
+display_circuit(circuit)
+```
+
+```text
+Hidden shift string 011010
+```
+
+![Output of the previous code cell](/docs/images/tutorials/readout-error-mitigation-sampler/extracted-outputs/8297843e-00c3-4bb5-9d33-a7e558d1698c-1.avif)
+
+## Schritt 2: Schaltkreise für die Ausführung auf Quantenhardware optimieren
+
+```python
+job_tags = [
+    f"shift {hidden_shift_string}",
+    f"n_qubits {n_qubits}",
+    f"seed = {random_seed}",
+]
+job_tags
+```
+
+```text
+['shift 011010', 'n_qubits 6', 'seed = 12345']
+```
+
+```python
+# Uncomment this to run the circuits on a quantum computer on IBMCloud.
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=100
+)
+
+# from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+# backend = FakeMelbourneV2()
+# backend.refresh(service)
+
+print(f"Using backend {backend.name}")
+
+def get_isa_circuit(circuit, backend):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=3, backend=backend, seed_transpiler=1234
+    )
+    isa_circuit = pass_manager.run(circuit)
+    return isa_circuit
+
+isa_circuit = get_isa_circuit(circuit, backend)
+display_circuit(isa_circuit)
+```
+
+```text
+Using backend ibm_kingston
+```
+
+![Output of the previous code cell](/docs/images/tutorials/readout-error-mitigation-sampler/extracted-outputs/f2b77d93-c34a-43a4-b436-e7a25024a94a-1.avif)
+
+## Schritt 3: Schaltkreise mit Qiskit-Primitiven ausführen
+
+```python
+# submit job for solving the hidden shift problem using the Sampler primitive
+NUM_SHOTS = 50_000
+
+def run_sampler(backend, isa_circuit, num_shots):
+    sampler = Sampler(mode=backend)
+    sampler.options.environment.job_tags
+    pubs = [(isa_circuit, None, NUM_SHOTS)]
+    job = sampler.run(pubs)
+    return job
+
+def setup_mthree_mitigation(isa_circuit, backend):
+    # retrieve the final qubit mapping so mthree knows which qubits to calibrate
+    qubit_mapping = mthree.utils.final_measurement_mapping(isa_circuit)
+
+    # submit jobs for readout error calibration
+    mit = mthree.M3Mitigation(backend)
+    mit.cals_from_system(qubit_mapping, rep_delay=None)
+
+    return mit, qubit_mapping
+```
+
+```python
+job = run_sampler(backend, isa_circuit, NUM_SHOTS)
+mit, qubit_mapping = setup_mthree_mitigation(isa_circuit, backend)
+```
+## Schritt 4: Nachbearbeitung und Rückgabe der Ergebnisse im klassischen Format
+
+In der obigen theoretischen Diskussion haben wir festgestellt, dass für die Eingabe $ab$ die Ausgabe $ba$ erwartet wird.
+Eine zusätzliche Komplikation besteht darin, dass wir, um eine einfachere (vor-transpilierte) Schaltung zu erhalten, die erforderlichen CZ-Gatter zwischen
+benachbarten Qubit-Paaren eingefügt haben. Dies entspricht einer Verschränkung der Bitstrings $a$ und $b$ als $a1 b1 a2 b2 \ldots$.
+Der Ausgabestring $ba$ wird auf ähnliche Weise verschränkt: $b1 a1 b2 a2 \ldots$. Die Funktion `unscramble` weiter unten
+transformiert den Ausgabestring von $b1 a1 b2 a2 \ldots$ zu $a1 b1 a2 b2 \ldots$, sodass die Eingabe- und Ausgabestrings direkt verglichen werden können.
+
+```python
+# retrieve bitstring counts
+def get_bitstring_counts(job):
+    result = job.result()
+    pub_result = result[0]
+    counts = pub_result.data.meas.get_counts()
+    return counts, pub_result
+```
+
+```python
+counts, pub_result = get_bitstring_counts(job)
+```
+
+Die Hamming-Distanz zwischen zwei Bitstrings ist die Anzahl der Indizes, an denen sich die Bits unterscheiden.
+
+```python
+def hamming_distance(s1, s2):
+    weight = 0
+    for c1, c2 in zip(s1, s2):
+        (c1, c2) = (int(c1), int(c2))
+        if (c1 == 1 and c2 == 1) or (c1 == 0 and c2 == 0):
+            weight += 1
+
+    return weight
+```
+
+```python
+# Replace string of form a1b1a2b2... with b1a1b2a1...
+# That is, reverse order of successive pairs of bits.
+def unscramble(bitstring):
+    ps = [bitstring[i : i + 2][::-1] for i in range(0, len(bitstring), 2)]
+    return "".join(ps)
+
+def find_hidden_shift_bitstring(counts, hidden_shift_string):
+    # convert counts to probabilities
+    probs = {
+        unscramble(bitstring): count / NUM_SHOTS
+        for bitstring, count in counts.items()
+    }
+
+    # Retrieve the most probable bitstring.
+    most_probable = max(probs, key=lambda x: probs[x])
+
+    print(f"Expected hidden shift string: {hidden_shift_string}")
+    if most_probable == hidden_shift_string:
+        print("Most probable bitstring matches hidden shift 😊.")
+    else:
+        print("Most probable bitstring didn't match hidden shift ☹️.")
+    print("Top 10 bitstrings and their probabilities:")
+    display(
+        {
+            k: (v, hamming_distance(hidden_shift_string, k))
+            for k, v in sorted(
+                probs.items(), key=lambda x: x[1], reverse=True
+            )[:10]
+        }
+    )
+
+    return probs, most_probable
+```
+
+```python
+probs, most_probable = find_hidden_shift_bitstring(
+    counts, hidden_shift_string
+)
+```
+
+```text
+Expected hidden shift string: 011010
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their probabilities:
+```
+
+```text
+{'011010': (0.9743, 6),
+ '001010': (0.00812, 5),
+ '010010': (0.0063, 5),
+ '011000': (0.00554, 5),
+ '011011': (0.00492, 5),
+ '011110': (0.00044, 5),
+ '001000': (0.00012, 4),
+ '010000': (8e-05, 4),
+ '001011': (6e-05, 4),
+ '000010': (6e-05, 4)}
+```
+
+Halten wir die Wahrscheinlichkeit des wahrscheinlichsten Bitstrings fest, bevor wir die Auslesefehler-Mitigation mit M3 anwenden.
+
+```python
+max_probability_before_M3 = probs[most_probable]
+max_probability_before_M3
+```
+
+```text
+0.9743
+```
+
+Nun wenden wir die von M3 erlernte Auslesekorrektur auf die Zählerstände an.
+Die Funktion `apply_corrections` gibt eine Quasi-Wahrscheinlichkeitsverteilung zurück. Dies ist eine Liste von `float`-Objekten, deren Summe $1$ ergibt. Einige Werte können jedoch negativ sein.
+
+```python
+def perform_mitigation(mit, counts, qubit_mapping):
+    # mitigate readout error
+    quasis = mit.apply_correction(counts, qubit_mapping)
+
+    # print results
+    most_probable_after_m3 = unscramble(max(quasis, key=lambda x: quasis[x]))
+
+    is_hidden_shift_identified = most_probable_after_m3 == hidden_shift_string
+    if is_hidden_shift_identified:
+        print("Most probable bitstring matches hidden shift 😊.")
+    else:
+        print("Most probable bitstring didn't match hidden shift ☹️.")
+    print("Top 10 bitstrings and their quasi-probabilities:")
+    topten = {
+        unscramble(k): f"{v:.2e}"
+        for k, v in sorted(quasis.items(), key=lambda x: x[1], reverse=True)[
+            :10
+        ]
+    }
+    max_probability_after_M3 = float(topten[most_probable_after_m3])
+    display(topten)
+
+    return max_probability_after_M3, is_hidden_shift_identified
+```
+
+```python
+print(f"Expected hidden shift string: {hidden_shift_string}")
+max_probability_after_M3, is_hidden_shift_identified = perform_mitigation(
+    mit, counts, qubit_mapping
+)
+```
+
+```text
+Expected hidden shift string: 011010
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their quasi-probabilities:
+```
+
+```text
+{'011010': '1.01e+00',
+ '001010': '8.75e-04',
+ '001000': '7.38e-05',
+ '010000': '4.51e-05',
+ '111000': '2.18e-05',
+ '001011': '1.74e-05',
+ '000010': '6.42e-06',
+ '011001': '-7.18e-06',
+ '011000': '-4.53e-04',
+ '010010': '-1.28e-03'}
+```
+
+#### Vergleich der Identifizierung des Hidden-Shift-Strings vor und nach Anwendung der M3-Korrektur
+
+```python
+def compare_before_and_after_M3(
+    max_probability_before_M3,
+    max_probability_after_M3,
+    is_hidden_shift_identified,
+):
+    is_probability_improved = (
+        max_probability_after_M3 > max_probability_before_M3
+    )
+    print(f"Most probable probability before M3: {max_probability_before_M3}")
+    print(f"Most probable probability after M3: {max_probability_after_M3}")
+    if is_hidden_shift_identified and is_probability_improved:
+        print("Readout error mitigation effective! 😊")
+    else:
+        print("Readout error mitigation not effective. ☹️")
+```
+
+```python
+compare_before_and_after_M3(
+    max_probability_before_M3,
+    max_probability_after_M3,
+    is_hidden_shift_identified,
+)
+```
+
+```text
+Most probable probability before M3: 0.9743
+Most probable probability after M3: 1.01
+Readout error mitigation effective! 😊
+```
+
+### Darstellung der Skalierung der CPU-Zeit von M3 mit der Anzahl der Shots
+
+```python
+# Collect samples for numbers of shots varying from 5000 to 25000.
+shots_range = range(5000, NUM_SHOTS + 1, 2500)
+times = []
+for shots in shots_range:
+    print(f"Applying M3 correction to {shots} shots...")
+    t0 = timeit.default_timer()
+    _ = mit.apply_correction(
+        pub_result.data.meas.slice_shots(range(shots)).get_counts(),
+        qubit_mapping,
+    )
+    t1 = timeit.default_timer()
+    print(f"\tDone in {t1 - t0} seconds.")
+    times.append(t1 - t0)
+
+fig, ax = plt.subplots()
+ax.plot(shots_range, times, "o--")
+ax.set_xlabel("Shots")
+ax.set_ylabel("Time (s)")
+ax.set_title("Time to apply M3 correction")
+```
+
+```text
+Applying M3 correction to 5000 shots...
+	Done in 0.003321983851492405 seconds.
+Applying M3 correction to 7500 shots...
+	Done in 0.004425413906574249 seconds.
+Applying M3 correction to 10000 shots...
+	Done in 0.006366567220538855 seconds.
+Applying M3 correction to 12500 shots...
+	Done in 0.0071477219462394714 seconds.
+Applying M3 correction to 15000 shots...
+	Done in 0.00860048783943057 seconds.
+Applying M3 correction to 17500 shots...
+	Done in 0.010026784148067236 seconds.
+Applying M3 correction to 20000 shots...
+	Done in 0.011459112167358398 seconds.
+Applying M3 correction to 22500 shots...
+	Done in 0.012727141845971346 seconds.
+Applying M3 correction to 25000 shots...
+	Done in 0.01406092382967472 seconds.
+Applying M3 correction to 27500 shots...
+	Done in 0.01546052098274231 seconds.
+Applying M3 correction to 30000 shots...
+	Done in 0.016769016161561012 seconds.
+Applying M3 correction to 32500 shots...
+	Done in 0.019537431187927723 seconds.
+Applying M3 correction to 35000 shots...
+	Done in 0.019739801064133644 seconds.
+Applying M3 correction to 37500 shots...
+	Done in 0.021093040239065886 seconds.
+Applying M3 correction to 40000 shots...
+	Done in 0.022840639110654593 seconds.
+Applying M3 correction to 42500 shots...
+	Done in 0.023974396288394928 seconds.
+Applying M3 correction to 45000 shots...
+	Done in 0.026412792038172483 seconds.
+Applying M3 correction to 47500 shots...
+	Done in 0.026364430785179138 seconds.
+Applying M3 correction to 50000 shots...
+	Done in 0.02820305060595274 seconds.
+```
+
+```text
+Text(0.5, 1.0, 'Time to apply M3 correction')
+```
+
+![Output of the previous code cell](/docs/images/tutorials/readout-error-mitigation-sampler/extracted-outputs/33addc38-f738-48ed-a29d-9790f446c036-2.avif)
+
+#### Interpretation des Diagramms
+
+Das obige Diagramm zeigt, dass die für die Anwendung der M3-Korrektur erforderliche Zeit linear mit der Anzahl der Shots skaliert.
+## Hochskalierung
+
+```python
+n_qubits = 80
+rng = Random(12345)
+circuit, hidden_shift, hidden_shift_string = run_hidden_shift_circuit(
+    n_qubits, rng
+)
+
+print(f"Hidden shift string {hidden_shift_string}")
+```
+
+```text
+Hidden shift string 00000010100110101011101110010001010000110011101001101010101001111001100110000111
+```
+
+```python
+isa_circuit = get_isa_circuit(circuit, backend)
+```
+
+```python
+job = run_sampler(backend, isa_circuit, NUM_SHOTS)
+mit, qubit_mapping = setup_mthree_mitigation(isa_circuit, backend)
+```
+
+```python
+counts, pub_result = get_bitstring_counts(job)
+```
+
+```python
+probs, most_probable = find_hidden_shift_bitstring(
+    counts, hidden_shift_string
+)
+```
+
+```text
+Expected hidden shift string: 00000010100110101011101110010001010000110011101001101010101001111001100110000111
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their probabilities:
+```
+
+```text
+{'00000010100110101011101110010001010000110011101001101010101001111001100110000111': (0.50402,
+  80),
+ '00000010100110101011101110010001010000110011100001101010101001111001100110000111': (0.0396,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001111001100100000111': (0.0323,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001101001100110000111': (0.01936,
+  79),
+ '00000010100110101011101110010011010000110011101001101010101001111001100110000111': (0.01432,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001011001100110000111': (0.0101,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001110001100110000111': (0.00924,
+  79),
+ '00000010100110101011101110010001010000010011101001101010101001111001100110000111': (0.00908,
+  79),
+ '00000010100110101011100110010001010000110011101001101010101001111001100110000111': (0.00888,
+  79),
+ '00000010100110101011101110010001010000110011101001100010101001111001100110000111': (0.0082,
+  79)}
+```
+
+Wir sehen, dass der korrekte Hidden-Shift-String gefunden wird. Darüber hinaus weichen die neun nächstwahrscheinlichsten Bitstrings nur an einer einzigen Position ab.
+Halten wir die höchste Wahrscheinlichkeit fest:
+
+```python
+max_probability_before_M3 = probs[most_probable]
+max_probability_before_M3
+```
+
+```text
+0.50402
+```
+
+```python
+print(f"Expected hidden shift string: {hidden_shift_string}")
+max_probability_after_M3, is_hidden_shift_identified = perform_mitigation(
+    mit, counts, qubit_mapping
+)
+```
+
+```text
+Expected hidden shift string: 00000010100110101011101110010001010000110011101001101010101001111001100110000111
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their quasi-probabilities:
+```
+
+```text
+{'00000010100110101011101110010001010000110011101001101010101001111001100110000111': '9.85e-01',
+ '00000010100110101011101110010001010000110011100001101010101001111001100110000111': '6.84e-03',
+ '00000010100110101011100110010001010000110011101001101010101001111001100110000111': '3.87e-03',
+ '00000010100110101011101110010011010000110011101001101010101001111001100110000111': '3.42e-03',
+ '00000010100110101011101110010001010000110011101001101010101001111001100100000111': '3.30e-03',
+ '00000010100110101011101110010001010000110011101001101010101001110001100110000111': '3.28e-03',
+ '00000010100010101011101110010001010000110011101001101010101001111001100110000111': '2.62e-03',
+ '00000010100110101011101110010001010000110011101001101010101001101001100110000111': '2.43e-03',
+ '00000010100110101011101110010000010000110011101001101010101001111001100110000111': '1.73e-03',
+ '00000010100110101011101110010001010000110011101001101010101001111001000110000111': '1.63e-03'}
+```
+
+```python
+compare_before_and_after_M3(
+    max_probability_before_M3,
+    max_probability_after_M3,
+    is_hidden_shift_identified,
+)
+```
+
+```text
+Most probable probability before M3: 0.54348
+Most probable probability after M3: 0.99
+Readout error mitigation effective! 😊
+```

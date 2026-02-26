@@ -1,0 +1,1128 @@
+---
+title: "時間発展回路のための近似量子コンパイル"
+sidebar_label: "時間発展回路のための近似量子コンパイル"
+description: "このチュートリアルでは、Qiskitを使用してAQC-Tensorを実装し、量子回路の性能を向上させる方法を示します"
+notebook_path: "docs/tutorials/approximate-quantum-compilation-for-time-evolution.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/approximate-quantum-compilation-for-time-evolution.ipynb" />
+
+
+
+{/* cspell:ignore circo */}
+
+*使用時間の目安：Eagleプロセッサで5分程度（注意：これは目安です。実際の実行時間は異なる場合があります。）*
+## 背景
+
+このチュートリアルでは、テンソルネットワークを用いた**近似量子コンパイル**（AQC-Tensor）をQiskitで実装し、量子回路の性能を向上させる方法を示します。トロッター化された時間発展の文脈でAQC-Tensorを適用し、シミュレーション精度を維持しながら回路深度を削減します。Qiskitフレームワークを用いた状態準備と最適化の手順に従います。初期トロッター回路から低深度のアンザッツ回路を作成し、テンソルネットワークで最適化し、量子ハードウェアでの実行に向けて準備する方法を学びます。
+
+主な目的は、モデルハミルトニアンの時間発展を回路深度を削減してシミュレーションすることです。これは、**AQC-Tensor** Qiskitアドオンである[qiskit-addon-aqc-tensor](https://github.com/Qiskit/qiskit-addon-aqc-tensor)を使用して実現されます。このアドオンは、テンソルネットワーク、特に行列積状態（MPS）を活用して初期回路を圧縮・最適化します。反復的な調整を通じて、圧縮されたアンザッツ回路は元の回路に対する忠実度を維持しながら、近い将来の量子ハードウェアで実行可能な状態を保ちます。詳細については、対応する[ドキュメント](/guides/qiskit-addons-aqc)と、入門用の[簡単な例](/guides/qiskit-addons-aqc-get-started)をご参照ください。
+
+近似量子コンパイルは、ハードウェアのコヒーレンス時間を超えるような量子シミュレーションにおいて特に有利です。複雑なシミュレーションをより効率的に実行することが可能になります。このチュートリアルでは、QiskitにおけるAQC-Tensorワークフローのセットアップを案内し、ハミルトニアンの初期化、トロッター回路の生成、最適化された最終回路のターゲットデバイスへのトランスパイルについて説明します。
+## 要件
+
+このチュートリアルを始める前に、以下がインストールされていることを確認してください：
+
+* Qiskit SDK v1.0以降（[可視化](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き）
+* Qiskit Runtime v0.22以降（`pip install qiskit-ibm-runtime`）
+* AQC-Tensor Qiskitアドオン（`pip install 'qiskit-addon-aqc-tensor[aer,quimb-jax]'`）
+## セットアップ
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-aqc-tensor quimb
+```
+
+```python
+import numpy as np
+import quimb.tensor
+import datetime
+import matplotlib.pyplot as plt
+
+from scipy.optimize import OptimizeResult, minimize
+
+from qiskit.quantum_info import SparsePauliOp, Pauli
+from qiskit.transpiler import CouplingMap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit import QuantumCircuit
+from qiskit.synthesis import SuzukiTrotter
+
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_aqc_tensor.ansatz_generation import (
+    generate_ansatz_from_circuit,
+)
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+from rustworkx.visualization import graphviz_draw
+```
+
+## パートI：小規模な例
+
+このチュートリアルの最初のパートでは、10サイトの小規模な例を使用して、量子シミュレーション問題を実行可能な量子回路にマッピングするプロセスを説明します。ここでは、10サイトのXXZモデルのダイナミクスを探索し、より大規模なシステムにスケールアップする前に、管理可能な量子回路の構築と最適化を行います。
+
+XXZモデルは、スピン相互作用と磁性特性の研究において物理学で広く研究されているモデルです。ここでは、開放境界条件を持つハミルトニアンを設定し、鎖に沿った隣接サイト間にサイト依存の相互作用を持たせます。
+
+### モデルハミルトニアンと観測量
+
+10サイトXXZモデルのハミルトニアンは以下のように定義されます：
+$$
+\hat{\mathcal{H}}_{XXZ} = \sum_{i=1}^{L-1} J_{i,(i+1)}\left(X_i X_{(i+1)}+Y_i Y_{(i+1)}+ 2\cdot Z_i Z_{(i+1)} \right) \, ,
+$$
+
+ここで、$J_{i,(i+1)}$はエッジ$(i, i+1)$に対応するランダム係数であり、$L=10$はサイト数です。
+
+回路深度を削減してこのシステムの発展をシミュレーションすることにより、AQC-Tensorを使用した回路の圧縮と最適化に関する知見を得ることができます。
+#### ハミルトニアンと観測量の設定
+
+問題をマッピングする前に、10サイトXXZモデルのカップリングマップ、ハミルトニアン、および観測量を設定する必要があります。
+
+```python
+# L is the number of sites, also the length of the 1D spin chain
+L = 10
+
+# Generate the coupling map
+edge_list = [(i - 1, i) for i in range(1, L)]
+# Generate an edge-coloring so we can make hw-efficient circuits
+even_edges = edge_list[::2]
+odd_edges = edge_list[1::2]
+coupling_map = CouplingMap(edge_list)
+
+# Generate random coefficients for our XXZ Hamiltonian
+np.random.seed(0)
+Js = np.random.rand(L - 1) + 0.5 * np.ones(L - 1)
+hamiltonian = SparsePauliOp(Pauli("I" * L))
+for i, edge in enumerate(even_edges + odd_edges):
+    hamiltonian += SparsePauliOp.from_sparse_list(
+        [
+            ("XX", (edge), Js[i] / 2),
+            ("YY", (edge), Js[i] / 2),
+            ("ZZ", (edge), Js[i]),
+        ],
+        num_qubits=L,
+    )
+
+# Generate a ZZ observable between the two middle qubits
+observable = SparsePauliOp.from_sparse_list(
+    [("ZZ", (L // 2 - 1, L // 2), 1.0)], num_qubits=L
+)
+
+print("Hamiltonian:", hamiltonian)
+print("Observable:", observable)
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+```text
+Hamiltonian: SparsePauliOp(['IIIIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII'],
+              coeffs=[1.        +0.j, 0.52440675+0.j, 0.52440675+0.j, 1.0488135 +0.j,
+ 0.60759468+0.j, 0.60759468+0.j, 1.21518937+0.j, 0.55138169+0.j,
+ 0.55138169+0.j, 1.10276338+0.j, 0.52244159+0.j, 0.52244159+0.j,
+ 1.04488318+0.j, 0.4618274 +0.j, 0.4618274 +0.j, 0.9236548 +0.j,
+ 0.57294706+0.j, 0.57294706+0.j, 1.14589411+0.j, 0.46879361+0.j,
+ 0.46879361+0.j, 0.93758721+0.j, 0.6958865 +0.j, 0.6958865 +0.j,
+ 1.391773  +0.j, 0.73183138+0.j, 0.73183138+0.j, 1.46366276+0.j])
+Observable: SparsePauliOp(['IIIIZZIIII'],
+              coeffs=[1.+0.j])
+```
+
+![前のコードセルの出力](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/1ea0e102-23d5-4e6e-8ef8-e82843452b19-1.avif)
+
+ハミルトニアンが定義できたので、初期状態の構築に進みます。
+
+```python
+# Generate an initial state
+initial_state = QuantumCircuit(L)
+for i in range(L):
+    if i % 2:
+        initial_state.x(i)
+```
+
+### ステップ1：古典的な入力を量子問題にマッピングする
+
+ハミルトニアンを構築し、スピン間相互作用とシステムを特徴づける外部磁場を定義したので、AQC-Tensorワークフローの3つの主要なステップに従います：
+
+1. **最適化されたAQC回路の生成**：トロッター化を使用して初期発展を近似し、その後回路深度を削減するために圧縮します。
+2. **残りの時間発展回路の作成**：初期セグメントを超える残りの時間の発展を捕捉します。
+3. **回路の結合**：最適化されたAQC回路と残りの発展回路を統合し、実行可能な完全な時間発展回路を作成します。
+
+このアプローチにより、ターゲットの発展に対する低深度アンザッツが作成され、近い将来の量子ハードウェアの制約内での効率的なシミュレーションが可能になります。
+#### 古典的にシミュレーションする時間発展の部分を決定する
+
+先に定義したモデルハミルトニアンの時間発展を、トロッター発展を用いてシミュレーションすることが目標です。このプロセスを量子ハードウェアに対して効率的にするため、発展を2つのセグメントに分割します：
+
+- **初期セグメント**：$t_i = 0.0$から$t_f = 0.2$までの発展の初期部分は、MPSでシミュレーション可能であり、AQC-Tensorを使用して効率的に「コンパイル」できます。[AQC-Tensor Qiskitアドオン](https://github.com/Qiskit/qiskit-addon-aqc-tensor)を使用して、このセグメントの圧縮回路を生成します。これを`aqc_target_circuit`と呼びます。このセグメントはテンソルネットワークシミュレータでシミュレーションされるため、ハードウェアリソースに大きな影響を与えることなく、より多くのトロッターレイヤーを使用できます。このセグメントでは`aqc_target_num_trotter_steps = 32`と設定します。
+
+- **後続セグメント**：$t = 0.2$から$t = 0.4$までの発展の残り部分は、量子ハードウェア上で実行されます。これを`subsequent_circuit`と呼びます。ハードウェアの制限を考慮し、管理可能な回路深度を維持するために、できるだけ少ないトロッターレイヤーを使用することを目指します。このセグメントでは`subsequent_num_trotter_steps = 3`を使用します。
+
+#### 分割時間の選択
+古典的なシミュレーション可能性とハードウェアの実現可能性のバランスを取るため、$t = 0.2$を分割時間として選択します。発展の初期段階では、XXZモデルにおけるエンタングルメントはMPSなどの古典的手法で正確に近似できるほど十分に低い状態にあります。
+
+分割時間を選択する際の良い指針は、エンタングルメントが古典的にまだ管理可能でありながら、ハードウェアで実行される部分を簡素化できるほど十分な発展を捕捉する時点を選ぶことです。異なるハミルトニアンに対して最適なバランスを見つけるには、試行錯誤が必要になる場合があります。
+
+```python
+# Generate the AQC target circuit (initial segment)
+aqc_evolution_time = 0.2
+aqc_target_num_trotter_steps = 32
+
+aqc_target_circuit = initial_state.copy()
+aqc_target_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+```python
+# Generate the subsequent circuit
+subsequent_num_trotter_steps = 3
+subsequent_evolution_time = 0.2
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+subsequent_circuit.draw("mpl", fold=-1)
+```
+
+![前のコードセルの出力](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/83039f82-97cb-4613-86c9-a8faf0839a02-0.avif)
+
+意味のある比較を可能にするため、さらに2つの回路を生成します：
+
+- **AQC比較回路**：この回路は`aqc_evolution_time`まで発展しますが、`subsequent_circuit`と同じトロッターステップ間隔を使用します。`aqc_target_circuit`との比較として機能し、トロッターステップ数を増やさなかった場合に観測される発展を示します。この回路を`aqc_comparison_circuit`と呼びます。
+
+- **参照回路**：この回路は、正確な結果を得るための基準として使用されます。テンソルネットワークを使用して完全な発展をシミュレーションし、正確な結果を計算します。AQC-Tensorの有効性を評価するための参照となります。この回路を`reference_circuit`と呼びます。
+
+```python
+# Generate the AQC comparison circuit
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps
+    / subsequent_evolution_time
+    * aqc_evolution_time
+)
+print(
+    "Number of Trotter steps for comparison:",
+    aqc_comparison_num_trotter_steps,
+)
+
+aqc_comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+```text
+Number of Trotter steps for comparison: 3
+```
+
+```python
+# Generate the reference circuit
+evolution_time = 0.4
+reps = 200
+
+reference_circuit = initial_state.copy()
+reference_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=reps),
+        time=evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+#### トロッターステップ数が少ないトロッター回路からアンザッツと初期パラメータを生成する
+
+4つの回路が構築できたので、AQC-Tensorワークフローに進みましょう。まず、ターゲット回路と同じ発展時間を持ちながら、より少ないトロッターステップ（したがってより少ないレイヤー）を持つ「良い」回路を構築します。
+
+次に、この「良い」回路をAQC-Tensorの`generate_ansatz_from_circuit`関数に渡します。この関数は回路の2量子ビット接続性を分析し、2つのものを返します：
+
+1. 入力回路と同じ2量子ビット接続性を持つ、一般的なパラメータ化されたアンザッツ回路。
+2. アンザッツに代入すると入力（良い）回路を再現するパラメータ。
+
+この後、これらのパラメータを反復的に調整し、アンザッツ回路をターゲットMPSにできるだけ近づけます。
+
+```python
+aqc_ansatz_num_trotter_steps = 1
+
+aqc_good_circuit = initial_state.copy()
+aqc_good_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![前のコードセルの出力](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/b9e81c51-dc6f-4237-9aca-e1384f1897bc-0.avif)
+
+```python
+print(f"AQC Comparison circuit: depth {aqc_comparison_circuit.depth()}")
+print(f"Target circuit:         depth {aqc_target_circuit.depth()}")
+print(
+    f"Ansatz circuit:         depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters"
+)
+```
+
+```text
+AQC Comparison circuit: depth 36
+Target circuit:         depth 385
+Ansatz circuit:         depth 7, with 156 parameters
+```
+
+#### テンソルネットワークシミュレーションの設定を選択する
+
+ここでは、Quimbの行列積状態回路シミュレータを使用し、勾配の計算にはjaxを使用します。
+
+```python
+simulator_settings = QuimbSimulator(
+    quimb.tensor.CircuitMPS, autodiff_backend="jax"
+)
+```
+
+次に、AQC-Tensorを使用して近似されるターゲット状態のMPS表現を構築します。この表現により、エンタングルメントの効率的な処理が可能になり、さらなる最適化のための量子状態のコンパクトな記述が得られます。
+
+```python
+aqc_target_mps = tensornetwork_from_circuit(
+    aqc_target_circuit, simulator_settings
+)
+print("Target MPS maximum bond dimension:", aqc_target_mps.psi.max_bond())
+
+# Obtains the reference MPS, where we can obtain the exact expectation value by examining the `local_expectation``
+reference_mps = tensornetwork_from_circuit(
+    reference_circuit, simulator_settings
+)
+reference_expval = reference_mps.local_expectation(
+    quimb.pauli("Z") & quimb.pauli("Z"), (L // 2 - 1, L // 2)
+).real.item()
+print("Reference MPS maximum bond dimension:", reference_mps.psi.max_bond())
+```
+
+```text
+Target MPS maximum bond dimension: 5
+Reference MPS maximum bond dimension: 7
+```
+
+ターゲット状態に対してより多くのトロッターステップを選択することで、初期回路と比較してトロッター誤差を効果的に削減していることに注意してください。初期回路で準備された状態とターゲット状態の間の忠実度（$|\langle \psi_1 | \psi_2 \rangle|^2$）を評価して、この差を定量化できます。
+
+```python
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Starting fidelity:", starting_fidelity)
+```
+
+```text
+Starting fidelity: 0.9982464959067222
+```
+
+#### MPSの計算を用いてアンザッツのパラメータを最適化する
+このステップでは、SciPyのL-BFGSオプティマイザを使用して、シンプルなコスト関数`MaximizeStateFidelity`を最小化することにより、アンザッツパラメータを最適化します。AQC-Tensorを使用しない初期回路の忠実度を超えることを保証する忠実度の停止基準を選択します。この閾値に達すると、圧縮された回路は元の回路と比較してトロッター誤差が低く、回路深度も削減されます。追加のCPU時間を使用することで、さらなる最適化を続けて忠実度を向上させることができます。
+
+```python
+# Setting values for the optimization
+aqc_stopping_fidelity = 1
+aqc_max_iterations = 500
+
+stopping_point = 1.0 - aqc_stopping_fidelity
+objective = MaximizeStateFidelity(
+    aqc_target_mps, aqc_ansatz, simulator_settings
+)
+
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(
+        f"{datetime.datetime.now()} Intermediate result: Fidelity {fidelity:.8f}"
+    )
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if (
+    result.status
+    not in (
+        0,
+        1,
+        99,
+    )
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+2025-04-14 11:46:52.174235 Intermediate result: Fidelity 0.99795851
+2025-04-14 11:46:52.218249 Intermediate result: Fidelity 0.99822826
+2025-04-14 11:46:52.280924 Intermediate result: Fidelity 0.99829675
+2025-04-14 11:46:52.356214 Intermediate result: Fidelity 0.99832474
+2025-04-14 11:46:52.411609 Intermediate result: Fidelity 0.99836131
+2025-04-14 11:46:52.453747 Intermediate result: Fidelity 0.99839954
+2025-04-14 11:46:52.496184 Intermediate result: Fidelity 0.99846517
+2025-04-14 11:46:52.542046 Intermediate result: Fidelity 0.99865029
+2025-04-14 11:46:52.583679 Intermediate result: Fidelity 0.99872332
+2025-04-14 11:46:52.628732 Intermediate result: Fidelity 0.99892359
+2025-04-14 11:46:52.690386 Intermediate result: Fidelity 0.99900640
+2025-04-14 11:46:52.759398 Intermediate result: Fidelity 0.99907169
+2025-04-14 11:46:52.819496 Intermediate result: Fidelity 0.99911423
+2025-04-14 11:46:52.884505 Intermediate result: Fidelity 0.99918716
+2025-04-14 11:46:52.947919 Intermediate result: Fidelity 0.99921278
+2025-04-14 11:46:53.012808 Intermediate result: Fidelity 0.99924853
+2025-04-14 11:46:53.083626 Intermediate result: Fidelity 0.99928797
+2025-04-14 11:46:53.153235 Intermediate result: Fidelity 0.99933028
+2025-04-14 11:46:53.221371 Intermediate result: Fidelity 0.99935757
+2025-04-14 11:46:53.286211 Intermediate result: Fidelity 0.99938140
+2025-04-14 11:46:53.352391 Intermediate result: Fidelity 0.99940964
+2025-04-14 11:46:53.420472 Intermediate result: Fidelity 0.99944051
+2025-04-14 11:46:53.486279 Intermediate result: Fidelity 0.99946828
+2025-04-14 11:46:53.552338 Intermediate result: Fidelity 0.99948723
+2025-04-14 11:46:53.618688 Intermediate result: Fidelity 0.99951011
+2025-04-14 11:46:53.690878 Intermediate result: Fidelity 0.99954718
+2025-04-14 11:46:53.762725 Intermediate result: Fidelity 0.99956267
+2025-04-14 11:46:53.829784 Intermediate result: Fidelity 0.99958949
+2025-04-14 11:46:53.897477 Intermediate result: Fidelity 0.99960498
+2025-04-14 11:46:53.954633 Intermediate result: Fidelity 0.99961308
+2025-04-14 11:46:54.010125 Intermediate result: Fidelity 0.99962894
+2025-04-14 11:46:54.064717 Intermediate result: Fidelity 0.99964121
+2025-04-14 11:46:54.118892 Intermediate result: Fidelity 0.99964348
+2025-04-14 11:46:54.183236 Intermediate result: Fidelity 0.99964860
+2025-04-14 11:46:54.245521 Intermediate result: Fidelity 0.99965695
+2025-04-14 11:46:54.305792 Intermediate result: Fidelity 0.99966398
+2025-04-14 11:46:54.355819 Intermediate result: Fidelity 0.99967816
+2025-04-14 11:46:54.409580 Intermediate result: Fidelity 0.99968293
+2025-04-14 11:46:54.457979 Intermediate result: Fidelity 0.99968936
+2025-04-14 11:46:54.505891 Intermediate result: Fidelity 0.99969223
+2025-04-14 11:46:54.551084 Intermediate result: Fidelity 0.99970009
+2025-04-14 11:46:54.601817 Intermediate result: Fidelity 0.99970724
+2025-04-14 11:46:54.650097 Intermediate result: Fidelity 0.99970987
+2025-04-14 11:46:54.714727 Intermediate result: Fidelity 0.99971237
+2025-04-14 11:46:54.780052 Intermediate result: Fidelity 0.99971916
+2025-04-14 11:46:54.871994 Intermediate result: Fidelity 0.99971940
+2025-04-14 11:46:54.958244 Intermediate result: Fidelity 0.99972465
+2025-04-14 11:46:55.011057 Intermediate result: Fidelity 0.99972763
+2025-04-14 11:46:55.175339 Intermediate result: Fidelity 0.99972894
+2025-04-14 11:46:56.688912 Intermediate result: Fidelity 0.99972894
+Done after 50 iterations.
+```
+
+```python
+parameters = [float(param) for param in aqc_final_parameters]
+print("Final parameters:", parameters)
+```
+
+```text
+Final parameters: [-7.853983035039254, 1.5707966468427772, 1.5707962768868613, -1.570798010835122, 1.570794480409574, 1.5707972214146968, -1.570796593027083, 1.5707968206822998, -1.5707959018046258, -1.5707991700969144, 1.5707965852600927, 4.712386891737442, -7.853980840717957, 1.5707967508132654, 1.5707943162503217, -1.5707955382023582, 1.5707958007156742, 1.570796096113293, -1.5707928509846847, 1.5707971042943747, -1.570797909276557, -1.5707941020637393, 1.5707980179540793, 4.712389823219363, -1.5707928752386107, 1.5707996426312891, -1.5707975640471001, -1.570794132802984, 1.5707944361599957, 4.712390747060803, 0.1048818190315936, 0.06686710468840577, -0.0668645844756557, -3.1415923537135466, 1.2374931269696063, 6.323169390432535e-07, 3.53229204771738e-08, 2.1091105688681484, 6.283186439944202, 0.12152258846156239, 0.07961752617254866, -0.07961775088604585, -1.6564278051174865e-06, 2.0771163596472384, 3.141592651630471, -6.283185775192653, 1.7691609006726954, 3.1415922910116216, 0.19837572065074083, 0.11114901449078964, -0.11115124544944892, -3.141591983034976, 0.8570788408766729, 4.201601390404146e-07, -3.141593736550978, 0.34652010942396333, 6.283186232785291, 0.13606356527241956, 0.03891676349289617, -0.03891524189533726, -1.5707965732853424, 1.5707968967088564, -0.3086133992238162, 1.5707957152428194, 1.5707968398959653, -0.32062737993080026, 0.11027416939993417, 0.0726167290795046, -0.07262020423334464, -2.3729431959735024e-06, 1.8204437429254703, 9.299060301196612e-07, -3.141592899563451, 2.103269568939461, 3.1415937539734626, 0.11536891854817125, 0.09099022308254198, -0.09098864958606581, -3.1415913307373127, 2.078429034357281, -1.509777998069368e-06, -3.1415922600663255, 1.5189162645358172, -3.1415878461323583, 0.09999070991480716, 0.04352011445148391, -0.04351849541849812, -1.570797642506462, 1.570795238023824, 0.8903442644396505, 1.5707962698006606, 1.5707946765132268, 0.9098791754570567, 0.10448284343424026, 0.07317037684936827, -0.07316718173961152, -3.141592682240966, 2.1665363080039612, -7.450882112394189e-07, -5.771181304929921e-07, 2.615334999517103, -3.1415914971653898, 0.1890887078648001, 0.13578163074571992, -0.13578078143610256, 7.156734195912883e-07, 1.7915385305413096, -5.188866034727312e-07, 1.2827742939197711e-06, 1.2348316581417487, 6.28318357406372, 0.08061187643781703, 0.03820789039271876, -0.03820731868804904, 1.5707964027727628, 1.570798734462218, 4.387336153720882, -1.570795722044763, 1.570798457375325, 4.450361734163248, 0.092360147257953, 0.06047700345049011, -0.06048592856713045, -3.141591214829027, 2.6593289993286047, -2.366937342261038e-07, 8.112162974032695e-08, 1.8907014631413432, 8.355881261853104e-07, 0.23303641819370874, 0.14331998953606456, -0.1433194488304741, -3.141591621822901, 0.7455776479558791, 3.1415914520163586, -3.1415933560496105, 0.7603938554148255, -1.6230983177616282e-06, 0.07186349688535713, 0.03197144517771341, -0.031971177878588546, -4.712389048748508, 1.5707948403165752, 1.2773619319829186, -1.5707990802172127, 1.5707957676951863, 1.289083769394045, 0.13644999397718796, 0.032761460443590046, -0.032762060585195645, -1.5707977610073176, 1.5707964181578042, -3.4826435600366983, -4.712389691708343, 1.570794277502252, 2.799088046133275]
+```
+
+この時点で、アンザッツ回路の最終パラメータを見つけるだけで十分です。最適化されたAQC回路と残りの発展回路を統合して、量子ハードウェアで実行するための完全な時間発展回路を作成できます。
+
+```python
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+aqc_final_circuit.compose(subsequent_circuit, inplace=True)
+aqc_final_circuit.draw("mpl", fold=-1)
+```
+
+![前のコードセルの出力](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/813c9ced-6a2e-4345-bffc-7dae938e2015-0.avif)
+
+また、`aqc_comparison_circuit`と残りの発展回路を統合する必要があります。この回路は、AQC-Tensorで最適化された回路と元の回路の性能を比較するために使用されます。
+
+```python
+aqc_comparison_circuit.compose(subsequent_circuit, inplace=True)
+aqc_comparison_circuit.draw("mpl", fold=-1)
+```
+
+![前のコードセルの出力](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/86ba26ff-0bfa-47d0-b5ee-8944a8ddf274-0.avif)
+### ステップ 2: 量子ハードウェア実行のための問題の最適化
+ハードウェアを選択します。ここでは、127量子ビット以上を持つ利用可能な IBM Quantum&reg; デバイスのいずれかを使用します。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(min_num_qubits=127)
+print(backend)
+```
+
+PUB（回路とオブザーバブル）をバックエンドの ISA（命令セットアーキテクチャ）に合わせてトランスパイルします。`optimization_level=3` を設定することで、トランスパイラは回路を一次元の量子ビットチェーンに適合するよう最適化し、回路の忠実度に影響を与えるノイズを低減します。回路がバックエンドと互換性のある形式に変換された後、変更された量子ビットレイアウトに合わせてオブザーバブルにも対応する変換を適用します。
+
+```python
+pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=3
+)
+isa_circuit = pass_manager.run(aqc_final_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+print("Observable info:", isa_observable)
+print("Circuit depth:", isa_circuit.depth())
+isa_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ'],
+              coeffs=[1.+0.j])
+Circuit depth: 111
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/087fff8d-98b9-4f9a-8004-01a3b0166e12-1.avif)
+
+比較回路のトランスパイルを実行します。
+
+```python
+isa_comparison_circuit = pass_manager.run(aqc_comparison_circuit)
+isa_comparison_observable = observable.apply_layout(
+    isa_comparison_circuit.layout
+)
+print("Observable info:", isa_comparison_observable)
+print("Circuit depth:", isa_comparison_circuit.depth())
+isa_comparison_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ'],
+              coeffs=[1.+0.j])
+Circuit depth: 158
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/7c2e5fe7-21ce-461d-adaa-776f8d882163-1.avif)
+
+### ステップ 3: Qiskit プリミティブを使用した実行
+
+このステップでは、トランスパイルされた回路を量子ハードウェア（またはシミュレートされたバックエンド）上で実行します。`qiskit_ibm_runtime` の `EstimatorV2` クラスを使用してエスティメータをセットアップし、回路を実行して指定されたオブザーバブルを測定します。ジョブの結果はオブザーバブルの期待値を提供し、ターゲットハードウェアにおける回路の性能についての知見を得ることができます。
+
+```python
+estimator = Estimator(backend)
+job = estimator.run([(isa_circuit, isa_observable)])
+print("Job ID:", job.job_id())
+job.result()
+```
+
+```text
+Job ID: czyhqdxd8drg008hx0yg
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), ensemble_standard_error=np.ndarray(<shape=(), dtype=float64>)), metadata={'shots': 4096, 'target_precision': 0.015625, 'circuit_metadata': {}, 'resilience': {}, 'num_randomizations': 32})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': False, 'enable_measure': True, 'num_randomizations': 'auto', 'shots_per_randomization': 'auto', 'interleave_randomizations': True, 'strategy': 'active-accum'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': False, 'pec_mitigation': False}, 'version': 2})
+```
+
+比較回路の実行を行います。
+
+```python
+job_comparison = estimator.run([(isa_comparison_circuit, isa_observable)])
+print("Job Comparison ID:", job.job_id())
+job_comparison.result()
+```
+
+```text
+Job Comparison ID: czyhqdxd8drg008hx0yg
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), ensemble_standard_error=np.ndarray(<shape=(), dtype=float64>)), metadata={'shots': 4096, 'target_precision': 0.015625, 'circuit_metadata': {}, 'resilience': {}, 'num_randomizations': 32})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': False, 'enable_measure': True, 'num_randomizations': 'auto', 'shots_per_randomization': 'auto', 'interleave_randomizations': True, 'strategy': 'active-accum'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': False, 'pec_mitigation': False}, 'version': 2})
+```
+
+### ステップ 4: 後処理と所望の古典形式での結果の返却
+
+この場合、再構成は不要です。実行出力から期待値に直接アクセスすることで、結果を確認できます。
+
+```python
+# AQC results
+hw_results = job.result()
+hw_results_dicts = [pub_result.data.__dict__ for pub_result in hw_results]
+hw_expvals = [
+    pub_result_data["evs"].tolist() for pub_result_data in hw_results_dicts
+]
+aqc_expval = hw_expvals[0]
+
+# AQC comparison results
+hw_comparison_results = job_comparison.result()
+hw_comparison_results_dicts = [
+    pub_result.data.__dict__ for pub_result in hw_comparison_results
+]
+hw_comparison_expvals = [
+    pub_result_data["evs"].tolist()
+    for pub_result_data in hw_comparison_results_dicts
+]
+aqc_compare_expval = hw_comparison_expvals[0]
+
+print(f"Exact:         \t{reference_expval:.4f}")
+print(
+    f"AQC:           \t{aqc_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_expval):.4f}"
+)
+print(
+    f"AQC Comparison:\t{aqc_compare_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_compare_expval):.4f}"
+)
+```
+
+```text
+Exact:         	-0.5252
+AQC:           	-0.4903, |∆| = 0.0349
+AQC Comparison:	0.5424, |∆| = 1.0676
+```
+
+AQC、比較、および厳密回路の結果を比較する棒グラフです。
+
+```python
+plt.style.use("seaborn-v0_8")
+
+labels = ["AQC Result", "AQC Comparison Result"]
+values = [abs(aqc_expval), abs(aqc_compare_expval)]
+
+plt.figure(figsize=(10, 6))
+bars = plt.bar(labels, values, color=["tab:blue", "tab:purple"])
+plt.axhline(
+    y=abs(reference_expval), color="red", linestyle="--", label="Exact Result"
+)
+plt.xlabel("Results")
+plt.ylabel("Absolute Expected Value")
+plt.title("AQC Result vs AQC Comparison Result (Absolute Values)")
+plt.legend()
+for bar in bars:
+    y_val = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2.0,
+        y_val,
+        round(y_val, 2),
+        va="bottom",
+    )
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/5f7b36a6-3666-4223-9c5d-d92bca741ad2-0.avif)
+
+## パート II: スケールアップ
+
+このチュートリアルの第2部では、前述の例を基に50サイトのより大きなシステムにスケールアップし、より複雑な量子シミュレーション問題を実行可能な量子回路にマッピングする方法を示します。ここでは、50サイトの XXZ モデルのダイナミクスを探索し、より現実的なシステムサイズを反映する大規模な量子回路の構築と最適化を行います。
+
+50サイト XXZ モデルのハミルトニアンは以下のように定義されます：
+$$
+\hat{\mathcal{H}}_{XXZ} = \sum_{i=1}^{L-1} J_{i,(i+1)}\left(X_i X_{(i+1)}+Y_i Y_{(i+1)}+ 2\cdot Z_i Z_{(i+1)} \right) \, ,
+$$
+
+ここで、$J_{i,(i+1)}$ は辺 $(i, i+1)$ に対応するランダムな係数であり、$L=50$ はサイト数です。
+ハミルトニアンの結合マップと辺を定義します。
+
+```python
+L = 50  # L = length of our 1D spin chain
+
+# Generate the edge list for this spin-chain
+edge_list = [(i - 1, i) for i in range(1, L)]
+# Generate an edge-coloring so we can make hw-efficient circuits
+even_edges = edge_list[::2]
+odd_edges = edge_list[1::2]
+
+# Instantiate a CouplingMap object
+coupling_map = CouplingMap(edge_list)
+
+# Generate random coefficients for our XXZ Hamiltonian
+np.random.seed(0)
+Js = np.random.rand(L - 1) + 0.5 * np.ones(L - 1)
+
+hamiltonian = SparsePauliOp(Pauli("I" * L))
+for i, edge in enumerate(even_edges + odd_edges):
+    hamiltonian += SparsePauliOp.from_sparse_list(
+        [
+            ("XX", (edge), Js[i] / 2),
+            ("YY", (edge), Js[i] / 2),
+            ("ZZ", (edge), Js[i]),
+        ],
+        num_qubits=L,
+    )
+
+observable = SparsePauliOp.from_sparse_list(
+    [("ZZ", (L // 2 - 1, L // 2), 1.0)], num_qubits=L
+)
+
+# Generate an initial state
+L = hamiltonian.num_qubits
+initial_state = QuantumCircuit(L)
+for i in range(L):
+    if i % 2:
+        initial_state.x(i)
+```
+
+### ステップ 1: 古典的な入力を量子問題にマッピング
+
+このより大きな問題では、まず50サイト XXZ モデルのハミルトニアンを構築し、全サイトにわたるスピン間相互作用と外部磁場を定義します。その後、以下の3つの主要なステップに従います：
+
+1. **最適化された AQC 回路の生成**: トロッター化を使用して初期の時間発展を近似し、次にこのセグメントを圧縮して回路深度を削減します。
+2. **残りの時間発展回路の作成**: 初期セグメントを超える残りの時間発展を捕捉します。
+3. **回路の結合**: 最適化された AQC 回路と残りの時間発展回路を統合し、実行可能な完全な時間発展回路を作成します。
+
+AQC ターゲット回路（初期セグメント）を生成します。
+
+```python
+aqc_evolution_time = 0.2
+aqc_target_num_trotter_steps = 32
+
+aqc_target_circuit = initial_state.copy()
+aqc_target_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+後続回路（残りのセグメント）を生成します。
+
+```python
+subsequent_num_trotter_steps = 3
+subsequent_evolution_time = 0.2
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+```
+
+AQC 比較回路（初期セグメントと同じですが、後続回路と同じトロッターステップ数を使用）を生成します。
+
+```python
+# Generate the AQC comparison circuit
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps
+    / subsequent_evolution_time
+    * aqc_evolution_time
+)
+print(
+    "Number of Trotter steps for comparison:",
+    aqc_comparison_num_trotter_steps,
+)
+
+aqc_comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+```text
+Number of Trotter steps for comparison: 3
+```
+
+参照回路を生成します。
+
+```python
+evolution_time = 0.4
+reps = 200
+
+reference_circuit = initial_state.copy()
+reference_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=reps),
+        time=evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+より少ないステップ数のトロッター回路からアンザッツと初期パラメータを生成します。
+
+```python
+aqc_ansatz_num_trotter_steps = 1
+
+aqc_good_circuit = initial_state.copy()
+aqc_good_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit
+)
+```
+
+```python
+print(f"AQC Comparison circuit: depth {aqc_comparison_circuit.depth()}")
+print(f"Target circuit:         depth {aqc_target_circuit.depth()}")
+print(
+    f"Ansatz circuit:         depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters"
+)
+```
+
+```text
+AQC Comparison circuit: depth 36
+Target circuit:         depth 385
+Ansatz circuit:         depth 7, with 816 parameters
+```
+
+テンソルネットワークシミュレーションの設定を行い、最適化のためにターゲット状態の行列積状態（MPS）表現を構築します。次に、初期回路とターゲット状態の間の忠実度を評価し、トロッター誤差の差を定量化します。
+
+```python
+simulator_settings = QuimbSimulator(
+    quimb.tensor.CircuitMPS, autodiff_backend="jax"
+)
+
+# Build the matrix-product representation of the state to be approximated by AQC
+aqc_target_mps = tensornetwork_from_circuit(
+    aqc_target_circuit, simulator_settings
+)
+print("Target MPS maximum bond dimension:", aqc_target_mps.psi.max_bond())
+
+# Obtains the reference MPS, where we can obtain the exact expectation value by examining the `local_expectation``
+reference_mps = tensornetwork_from_circuit(
+    reference_circuit, simulator_settings
+)
+reference_expval = reference_mps.local_expectation(
+    quimb.pauli("Z") & quimb.pauli("Z"), (L // 2 - 1, L // 2)
+).real.item()
+
+# Compute the starting fidelity
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Starting fidelity:", starting_fidelity)
+```
+
+```text
+Target MPS maximum bond dimension: 5
+Starting fidelity: 0.9926466919924161
+```
+
+アンザッツパラメータを最適化するために、SciPy の L-BFGS オプティマイザを使用して `MaximizeStateFidelity` コスト関数を最小化します。停止基準は、AQC-Tensor を使用しない初期回路の忠実度を上回ることに設定されています。これにより、圧縮された回路がトロッター誤差の低減と回路深度の削減の両方を達成することが保証されます。
+
+```python
+# Setting values for the optimization
+aqc_stopping_fidelity = 1
+aqc_max_iterations = 500
+
+stopping_point = 1.0 - aqc_stopping_fidelity
+objective = MaximizeStateFidelity(
+    aqc_target_mps, aqc_ansatz, simulator_settings
+)
+
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(
+        f"{datetime.datetime.now()} Intermediate result: Fidelity {fidelity:.8f}"
+    )
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if (
+    result.status
+    not in (
+        0,
+        1,
+        99,
+    )
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+2025-04-14 11:48:28.705807 Intermediate result: Fidelity 0.99795851
+2025-04-14 11:48:28.743265 Intermediate result: Fidelity 0.99822826
+2025-04-14 11:48:28.776629 Intermediate result: Fidelity 0.99829675
+2025-04-14 11:48:28.816153 Intermediate result: Fidelity 0.99832474
+2025-04-14 11:48:28.856437 Intermediate result: Fidelity 0.99836131
+2025-04-14 11:48:28.896432 Intermediate result: Fidelity 0.99839954
+2025-04-14 11:48:28.936670 Intermediate result: Fidelity 0.99846517
+2025-04-14 11:48:28.982069 Intermediate result: Fidelity 0.99865029
+2025-04-14 11:48:29.026130 Intermediate result: Fidelity 0.99872332
+2025-04-14 11:48:29.067426 Intermediate result: Fidelity 0.99892359
+2025-04-14 11:48:29.110742 Intermediate result: Fidelity 0.99900640
+2025-04-14 11:48:29.161362 Intermediate result: Fidelity 0.99907169
+2025-04-14 11:48:29.207933 Intermediate result: Fidelity 0.99911423
+2025-04-14 11:48:29.266772 Intermediate result: Fidelity 0.99918716
+2025-04-14 11:48:29.331727 Intermediate result: Fidelity 0.99921278
+2025-04-14 11:48:29.401694 Intermediate result: Fidelity 0.99924853
+2025-04-14 11:48:29.467980 Intermediate result: Fidelity 0.99928797
+2025-04-14 11:48:29.533281 Intermediate result: Fidelity 0.99933028
+2025-04-14 11:48:29.600833 Intermediate result: Fidelity 0.99935757
+2025-04-14 11:48:29.670816 Intermediate result: Fidelity 0.99938140
+2025-04-14 11:48:29.736928 Intermediate result: Fidelity 0.99940964
+2025-04-14 11:48:29.802931 Intermediate result: Fidelity 0.99944051
+2025-04-14 11:48:29.869177 Intermediate result: Fidelity 0.99946828
+2025-04-14 11:48:29.940156 Intermediate result: Fidelity 0.99948723
+2025-04-14 11:48:30.005751 Intermediate result: Fidelity 0.99951011
+2025-04-14 11:48:30.070853 Intermediate result: Fidelity 0.99954718
+2025-04-14 11:48:30.139171 Intermediate result: Fidelity 0.99956267
+2025-04-14 11:48:30.210506 Intermediate result: Fidelity 0.99958949
+2025-04-14 11:48:30.279647 Intermediate result: Fidelity 0.99960498
+2025-04-14 11:48:30.348016 Intermediate result: Fidelity 0.99961308
+2025-04-14 11:48:30.414311 Intermediate result: Fidelity 0.99962894
+2025-04-14 11:48:30.488910 Intermediate result: Fidelity 0.99964121
+2025-04-14 11:48:30.561298 Intermediate result: Fidelity 0.99964348
+2025-04-14 11:48:30.632214 Intermediate result: Fidelity 0.99964860
+2025-04-14 11:48:30.705703 Intermediate result: Fidelity 0.99965695
+2025-04-14 11:48:30.775679 Intermediate result: Fidelity 0.99966398
+2025-04-14 11:48:30.842629 Intermediate result: Fidelity 0.99967816
+2025-04-14 11:48:30.912357 Intermediate result: Fidelity 0.99968293
+2025-04-14 11:48:30.979420 Intermediate result: Fidelity 0.99968936
+2025-04-14 11:48:31.049196 Intermediate result: Fidelity 0.99969223
+2025-04-14 11:48:31.125391 Intermediate result: Fidelity 0.99970009
+2025-04-14 11:48:31.201256 Intermediate result: Fidelity 0.99970724
+2025-04-14 11:48:31.272424 Intermediate result: Fidelity 0.99970987
+2025-04-14 11:48:31.338907 Intermediate result: Fidelity 0.99971237
+2025-04-14 11:48:31.404800 Intermediate result: Fidelity 0.99971916
+2025-04-14 11:48:31.475226 Intermediate result: Fidelity 0.99971940
+2025-04-14 11:48:31.547746 Intermediate result: Fidelity 0.99972465
+2025-04-14 11:48:31.622827 Intermediate result: Fidelity 0.99972763
+2025-04-14 11:48:31.819516 Intermediate result: Fidelity 0.99972894
+2025-04-14 11:48:33.444538 Intermediate result: Fidelity 0.99972894
+Done after 50 iterations.
+```
+
+```python
+parameters = [float(param) for param in aqc_final_parameters]
+```
+
+最適化されたアンザッツと残りの時間発展回路を組み合わせて、トランスパイル用の最終回路を構築します。
+
+```python
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+aqc_final_circuit.compose(subsequent_circuit, inplace=True)
+```
+
+```python
+aqc_comparison_circuit.compose(subsequent_circuit, inplace=True)
+```
+### ステップ 2: 量子ハードウェア実行のための問題の最適化
+バックエンドを選択します。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(min_num_qubits=127)
+print(backend)
+```
+
+完成した回路をターゲットハードウェア上でトランスパイルし、実行の準備を行います。得られたISA回路は、バックエンド上で実行するために送信できます。
+
+```python
+pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=3
+)
+isa_circuit = pass_manager.run(aqc_final_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+print("Observable info:", isa_observable)
+print("Circuit depth:", isa_circuit.depth())
+isa_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+Circuit depth: 122
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/85b4acc0-7121-416d-9bf5-b6d3135ae805-1.avif)
+
+```python
+isa_comparison_circuit = pass_manager.run(aqc_comparison_circuit)
+isa_comparison_observable = observable.apply_layout(
+    isa_comparison_circuit.layout
+)
+print("Observable info:", isa_comparison_observable)
+print("Circuit depth:", isa_comparison_circuit.depth())
+isa_comparison_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+Circuit depth: 158
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/b0d295c7-c816-4683-bb2a-0ce9898e5d88-1.avif)
+
+### ステップ 3: Qiskitプリミティブを使用した実行
+
+このステップでは、`qiskit_ibm_runtime` の `EstimatorV2` を使用して、トランスパイルされた回路を量子ハードウェア（またはシミュレーションバックエンド）上で実行し、指定されたオブザーバブルを測定します。ジョブの結果は、ターゲットハードウェア上での回路のパフォーマンスに関する貴重な知見を提供します。
+
+この大規模な例では、`EstimatorOptions` を活用してハードウェア実験のパラメータをより適切に管理・制御する方法を探ります。これらの設定はオプションですが、実験パラメータの追跡や、最適な結果を得るための実行オプションの調整に役立ちます。
+
+利用可能な実行オプションの完全なリストについては、[qiskit-ibm-runtimeのドキュメント](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-estimator-options)を参照してください。
+
+```python
+twirling_options = {
+    "enable_gates": True,
+    "enable_measure": True,
+    "num_randomizations": 300,
+    "shots_per_randomization": 100,
+    "strategy": "active",
+}
+
+zne_options = {
+    "amplifier": "gate_folding",
+    "noise_factors": [1, 2, 3],
+    "extrapolated_noise_factors": list(np.linspace(0, 3, 31)),
+    "extrapolator": ["exponential", "linear", "fallback"],
+}
+
+meas_learning_options = {
+    "num_randomizations": 512,
+    "shots_per_randomization": 512,
+}
+
+resilience_options = {
+    "measure_mitigation": True,
+    "zne_mitigation": True,
+    "zne": zne_options,
+    "measure_noise_learning": meas_learning_options,
+}
+
+estimator_options = {
+    "resilience": resilience_options,
+    "twirling": twirling_options,
+}
+
+estimator = Estimator(backend, options=estimator_options)
+```
+
+```python
+job = estimator.run([(isa_circuit, isa_observable)])
+print("Job ID:", job.job_id())
+job.result()
+```
+
+```text
+Job ID: czyjx6crxz8g008f63r0
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), evs_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), ensemble_stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), evs_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>), stds_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>)), metadata={'shots': 30000, 'target_precision': 0.005773502691896258, 'circuit_metadata': {}, 'resilience': {'zne': {'extrapolator': 'exponential'}}, 'num_randomizations': 300})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': True, 'enable_measure': True, 'num_randomizations': 300, 'shots_per_randomization': 100, 'interleave_randomizations': True, 'strategy': 'active'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': True, 'pec_mitigation': False, 'zne': {'noise_factors': [1, 2, 3], 'extrapolator': ['exponential', 'linear', 'fallback'], 'extrapolated_noise_factors': [0, 0.1, 0.2, 0.30000000000000004, 0.4, 0.5, 0.6000000000000001, 0.7000000000000001, 0.8, 0.9, 1, 1.1, 1.2000000000000002, 1.3, 1.4000000000000001, 1.5, 1.6, 1.7000000000000002, 1.8, 1.9000000000000001, 2, 2.1, 2.2, 2.3000000000000003, 2.4000000000000004, 2.5, 2.6, 2.7, 2.8000000000000003, 2.9000000000000004, 3]}}, 'version': 2})
+```
+
+```python
+job_comparison = estimator.run([(isa_comparison_circuit, isa_observable)])
+print("Job Comparison ID:", job.job_id())
+job_comparison.result()
+```
+
+```text
+Job Comparison ID: czyjx6crxz8g008f63r0
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), evs_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), ensemble_stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), evs_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>), stds_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>)), metadata={'shots': 30000, 'target_precision': 0.005773502691896258, 'circuit_metadata': {}, 'resilience': {'zne': {'extrapolator': 'exponential'}}, 'num_randomizations': 300})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': True, 'enable_measure': True, 'num_randomizations': 300, 'shots_per_randomization': 100, 'interleave_randomizations': True, 'strategy': 'active'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': True, 'pec_mitigation': False, 'zne': {'noise_factors': [1, 2, 3], 'extrapolator': ['exponential', 'linear', 'fallback'], 'extrapolated_noise_factors': [0, 0.1, 0.2, 0.30000000000000004, 0.4, 0.5, 0.6000000000000001, 0.7000000000000001, 0.8, 0.9, 1, 1.1, 1.2000000000000002, 1.3, 1.4000000000000001, 1.5, 1.6, 1.7000000000000002, 1.8, 1.9000000000000001, 2, 2.1, 2.2, 2.3000000000000003, 2.4000000000000004, 2.5, 2.6, 2.7, 2.8000000000000003, 2.9000000000000004, 3]}}, 'version': 2})
+```
+
+### ステップ 4: 後処理と所望の古典形式での結果の返却
+ここでは、前回と同様に再構成は不要です。実行出力から期待値に直接アクセスして結果を確認できます。
+
+```python
+# AQC results
+hw_results = job.result()
+hw_results_dicts = [pub_result.data.__dict__ for pub_result in hw_results]
+hw_expvals = [
+    pub_result_data["evs"].tolist() for pub_result_data in hw_results_dicts
+]
+aqc_expval = hw_expvals[0]
+
+# AQC comparison results
+hw_comparison_results = job_comparison.result()
+hw_comparison_results_dicts = [
+    pub_result.data.__dict__ for pub_result in hw_comparison_results
+]
+hw_comparison_expvals = [
+    pub_result_data["evs"].tolist()
+    for pub_result_data in hw_comparison_results_dicts
+]
+aqc_compare_expval = hw_comparison_expvals[0]
+
+print(f"Exact:         \t{reference_expval:.4f}")
+print(
+    f"AQC:           \t{aqc_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_expval):.4f}"
+)
+print(
+    f"AQC Comparison:\t{aqc_compare_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_compare_expval):.4f}"
+)
+```
+
+```text
+Exact:         	-0.5888
+AQC:           	-0.4809, |∆| = 0.1078
+AQC Comparison:	1.1764, |∆| = 1.7652
+```
+
+50サイトXXZモデルにおけるAQC、比較、および厳密回路の結果をプロットします。
+
+```python
+labels = ["AQC Result", "AQC Comparison Result"]
+values = [abs(aqc_expval), abs(aqc_compare_expval)]
+
+plt.figure(figsize=(10, 6))
+bars = plt.bar(labels, values, color=["tab:blue", "tab:purple"])
+plt.axhline(
+    y=abs(reference_expval), color="red", linestyle="--", label="Exact Result"
+)
+plt.xlabel("Results")
+plt.ylabel("Absolute Expected Value")
+plt.title("AQC Result vs AQC Comparison Result (Absolute Values)")
+plt.legend()
+for bar in bars:
+    y_val = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2.0,
+        y_val,
+        round(y_val, 2),
+        va="bottom",
+    )
+
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/01889c4d-16a4-458a-9211-08be8bcae1e4-0.avif)
+
+## 結論
+
+このチュートリアルでは、テンソルネットワークを用いた近似量子コンパイル（AQC-Tensor）を使用して、大規模な量子ダイナミクスシミュレーションのための回路を圧縮・最適化する方法を実演しました。小規模および大規模なハイゼンベルグモデルの両方を用いて、AQC-Tensorを適用し、トロッター化された時間発展に必要な回路深度を削減しました。簡略化されたトロッター回路からパラメータ化されたアンザッツを生成し、行列積状態（MPS）技法で最適化することにより、正確かつ効率的なターゲット発展の低深度近似を実現しました。
+
+ここでのワークフローは、量子シミュレーションのスケーリングにおけるAQC-Tensorの主要な利点を示しています。
+
+- **大幅な回路圧縮**: AQC-Tensorは、複雑な時間発展に必要な回路深度を削減し、現行デバイスでの実現可能性を向上させました。
+- **効率的な最適化**: MPSアプローチは、忠実度と計算効率のバランスを取りながら、パラメータ最適化のための堅牢なフレームワークを提供しました。
+- **ハードウェア対応の実行**: 最終的に最適化された回路をトランスパイルすることで、ターゲット量子ハードウェアの制約を満たすことが保証されました。
+
+より大規模な量子デバイスやより高度なアルゴリズムが登場するにつれて、AQC-Tensorのような技術は、近い将来のハードウェア上で複雑な量子シミュレーションを実行するために不可欠なものとなり、スケーラブルな量子アプリケーションにおける深度と忠実度の管理において有望な進歩を示しています。
+
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックを提供するため、この短いアンケートにご協力ください。皆様のご意見は、コンテンツの提供内容やユーザーエクスペリエンスの向上に活用させていただきます。

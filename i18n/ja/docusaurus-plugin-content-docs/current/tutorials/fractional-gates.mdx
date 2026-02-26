@@ -1,0 +1,592 @@
+---
+title: "分数ゲートの入門"
+sidebar_label: "分数ゲートの入門"
+description: "分数ゲート（パラメータ化量子ゲート）は、任意角度の回転を直接実行することを可能にし、量子回路の深さと実行時間を削減できます。"
+notebook_path: "docs/tutorials/fractional-gates.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/fractional-gates.ipynb" />
+
+
+
+*使用量の目安: Heron r2 プロセッサで30秒未満（注意: これは目安です。実際の実行時間は異なる場合があります。）*
+## 背景
+
+### IBM QPU における分数ゲート
+
+分数ゲートは、パラメータ化された量子ゲートであり、任意の角度の回転（特定の範囲内）を直接実行することを可能にします。
+これにより、複数の基底ゲートへの分解が不要になります。
+物理量子ビット間のネイティブな相互作用を活用することで、ハードウェア上でより効率的に特定のユニタリ演算を実装できます。
+
+IBM Quantum&reg; Heron QPU は以下の分数ゲートをサポートしています:
+- $R_{ZZ}(\theta)$ for $0 < \theta < \pi / 2$
+- $R_X(\theta)$ for any real value $\theta$
+
+これらのゲートは、量子回路の深さと実行時間の両方を大幅に削減できます。
+特に $R_{ZZ}$ と $R_X$ を多用するアプリケーションにおいて有利です。
+例えば、ハミルトニアンシミュレーション、量子近似最適化アルゴリズム（QAOA）、量子カーネル法などが挙げられます。
+本チュートリアルでは、実践的な例として量子カーネルに焦点を当てます。
+### 制限事項
+
+分数ゲートは現在実験的な機能であり、いくつかの制約があります:
+- $R_{ZZ}$ の角度は $0 < \theta < \pi / 2$ の範囲に制限されています。
+- 分数ゲートの使用は、[動的回路](/guide/classical-feedforward-and-control-flow)、[パウリ・ツイリング](/guides/error-mitigation-and-suppression-techniques#pauli-twirling)、[確率的エラーキャンセレーション](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-cancellation-pec)（PEC）、および[ゼロノイズ外挿](/guides/error-mitigation-and-suppression-techniques#zero-noise-extrapolation-zne)（ZNE）（[確率的エラー増幅](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-amplification-pea)（PEA）を使用する場合）ではサポートされていません。
+
+分数ゲートは、標準的なアプローチとは異なるワークフローを必要とします。
+本チュートリアルでは、実践的なアプリケーションを通じて分数ゲートの使い方を説明します。
+
+分数ゲートの詳細については、以下を参照してください。
+- [分数ゲート](/guides/fractional-gates)
+- [分数ゲートを使用*しない*方がよい場合](/guides/fractional-gates#when-not-to-use)
+## 概要
+分数ゲートを使用するワークフローは、一般的に [Qiskit パターン](/guides/intro-to-patterns)のワークフローに従います。
+主な違いは、すべての RZZ 角度が $0 < \theta \leq \pi/2$ の制約を満たす必要があることです。
+この条件を確保するためのアプローチは2つあります。
+本チュートリアルでは、2番目のアプローチに焦点を当て、推奨します。
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-basis-constructor
+```
+
+### 1. RZZ 角度制約を満たすパラメータ値を生成する
+
+すべての RZZ 角度が有効範囲内にあることが確実な場合、標準的な Qiskit パターンのワークフローに従うことができます。
+この場合、パラメータ値を PUB の一部として送信するだけです。ワークフローは以下のように進みます。
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+t_circuit = pm.run(circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit, parameter_values)])
+estimator.run([(t_circuit, t_observable, parameter_values)])
+```
+
+有効範囲外の角度を持つ RZZ ゲートを含む PUB を送信しようとすると、以下のようなエラーメッセージが表示されます:
+```
+'The instruction rzz is supported only for angles in the range [0, pi/2], but an angle (20.0) outside of this range has been requested; via parameter value(s) γ[0]=10.0, substituted in parameter expression 2.0*γ[0].'
+```
+このエラーを回避するには、以下に説明する2番目のアプローチを検討してください。
+### 2. トランスパイル前にパラメータ値を回路に割り当てる
+
+`qiskit-ibm-runtime` パッケージは、[`FoldRzzAngle`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-fold-rzz-angle) という専用のトランスパイラパスを提供しています。
+このパスは、すべての RZZ 角度が RZZ 角度制約に準拠するように量子回路を変換します。
+`generate_preset_pass_manager` または `transpile` にバックエンドを指定すると、Qiskit は自動的に `FoldRzzAngle` を量子回路に適用します。
+この方法では、トランスパイル前にパラメータ値を量子回路に割り当てる必要があります。
+ワークフローは以下のように進みます。
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+b_circuit = circuit.assign_parameters(parameter_values)
+t_circuit = pm.run(b_circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit,)])
+estimator.run([(t_circuit, t_observable)])
+```
+
+このワークフローは、パラメータ値を量子回路に割り当て、パラメータが束縛された回路をローカルに保存する必要があるため、最初のアプローチよりも計算コストが高くなることに注意してください。
+また、Qiskit には特定のシナリオで RZZ ゲートの変換が失敗する既知の問題があります。回避策については、[トラブルシューティング](#troubleshooting)セクションを参照してください。
+本チュートリアルでは、量子カーネル法に着想を得た例を通じて、2番目のアプローチで分数ゲートを使用する方法を説明します。
+量子カーネルが有用である可能性が高い場面をより深く理解するために、[Liu, Arunachalam & Temme (2021)](https://www.nature.com/articles/s41567-021-01287-z) を読むことをお勧めします。
+
+また、[量子カーネルトレーニング](/tutorials/quantum-kernel-training)チュートリアルや、IBM Quantum Learning の量子機械学習コースにおける[量子カーネル](/learning/courses/quantum-machine-learning/quantum-kernel-methods)レッスンも併せてご参照ください。
+### 前提条件
+
+本チュートリアルを始める前に、以下がインストールされていることを確認してください:
+- Qiskit SDK v2.0 以降、[可視化](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き
+- Qiskit Runtime v0.37 以降（`pip install qiskit-ibm-runtime`）
+- Qiskit Basis Constructor（`pip install qiskit_basis_constructor`）
+### セットアップ
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+from qiskit import QuantumCircuit, generate_preset_pass_manager
+from qiskit.circuit import ParameterVector
+from qiskit.circuit.library import unitary_overlap
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+### 分数ゲートの有効化と基底ゲートの確認
+
+分数ゲートを使用するには、`use_fractional_gates=True` オプションを設定して、分数ゲートをサポートするバックエンドを取得します。
+バックエンドが分数ゲートをサポートしている場合、基底ゲートの一覧に `rzz` と `rx` が表示されます。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=133
+)  # backend should be a heron device or later
+backend_name = backend.name
+backend_c = service.backend(backend_name)  # w/o fractional gates
+backend_f = service.backend(
+    backend_name, use_fractional_gates=True
+)  # w/ fractional gates
+print(f"Backend: {backend_name}")
+print(f"No fractional gates: {backend_c.basis_gates}")
+print(f"With fractional gates: {backend_f.basis_gates}")
+if "rzz" not in backend_f.basis_gates:
+    print(f"Backend {backend_name} does not support fractional gates")
+```
+
+```text
+Backend: ibm_fez
+No fractional gates: ['cz', 'id', 'rz', 'sx', 'x']
+With fractional gates: ['cz', 'id', 'rx', 'rz', 'rzz', 'sx', 'x']
+```
+
+## 分数ゲートを用いたワークフロー
+### ステップ 1: 古典的な入力を量子問題にマッピングする
+
+#### 量子カーネル回路
+このセクションでは、RZZ ゲートを使用した量子カーネル回路を探究し、分数ゲートのワークフローを紹介します。
+
+まず、カーネル行列の個々の要素を計算するための量子回路を構築します。
+これは、ZZ 特徴マップ回路とユニタリオーバーラップを組み合わせることで行います。
+カーネル関数は、特徴マップ空間のベクトルを受け取り、カーネル行列の要素として内積を返します:
+$$K(x, y) = \langle \Phi(x) | \Phi(y) \rangle,$$
+ここで $|\Phi(x)\rangle$ は特徴マップされた量子状態を表します。
+
+RZZ ゲートを使用して、ZZ 特徴マップ回路を手動で構築します。
+Qiskit には組み込みの `zz_feature_map` が提供されていますが、Qiskit v2.0.2 の時点では RZZ ゲートをサポートしていません（[issue を参照](https://github.com/Qiskit/qiskit/issues/14469)）。
+
+次に、同一の入力に対するカーネル関数を計算します。例えば $K(x, x) = 1$ となります。
+ノイズのある量子コンピュータでは、ノイズの影響によりこの値が1未満になる場合があります。
+1に近い結果ほど、実行時のノイズが少ないことを示します。
+本チュートリアルでは、この値を*忠実度*と呼び、以下のように定義します。
+$$\text{fidelity} = K(x, x).$$
+
+```python
+optimization_level = 2
+shots = 2000
+reps = 3
+rng = np.random.default_rng(seed=123)
+```
+
+```python
+def my_zz_feature_map(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    x = ParameterVector("x", num_qubits * reps)
+    qc = QuantumCircuit(num_qubits)
+    qc.h(range(num_qubits))
+    for k in range(reps):
+        K = k * num_qubits
+        for i in range(num_qubits):
+            qc.rz(x[i + K], i)
+        pairs = [(i, i + 1) for i in range(num_qubits - 1)]
+        for i, j in pairs[0::2] + pairs[1::2]:
+            qc.rzz((np.pi - x[i + K]) * (np.pi - x[j + K]), i, j)
+    return qc
+
+def quantum_kernel(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    qc = my_zz_feature_map(num_qubits, reps=reps)
+    inner_product = unitary_overlap(qc, qc, "x", "y", insert_barrier=True)
+    inner_product.measure_all()
+    return inner_product
+
+def random_parameters(inner_product: QuantumCircuit) -> np.ndarray:
+    return np.tile(rng.random(inner_product.num_parameters // 2), 2)
+
+def fidelity(result) -> float:
+    ba = result.data.meas
+    return ba.get_int_counts().get(0, 0) / ba.num_shots
+```
+
+4量子ビットから40量子ビットまでのシステムに対して、量子カーネル回路とそれに対応するパラメータ値が生成され、その後忠実度が評価されます。
+
+```python
+qubits = list(range(4, 44, 4))
+circuits = [quantum_kernel(i, reps=reps) for i in qubits]
+params = [random_parameters(circ) for circ in circuits]
+```
+
+4量子ビットの回路を以下に可視化します。
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b3d6341a-0.avif)
+
+標準的な Qiskit パターンのワークフローでは、パラメータ値は通常 PUB の一部として Sampler または Estimator プリミティブに渡されます。
+しかし、分数ゲートをサポートするバックエンドを使用する場合、これらのパラメータ値はトランスパイル前に量子回路に明示的に割り当てる必要があります。
+
+```python
+b_qc = [
+    circ.assign_parameters(param) for circ, param in zip(circuits, params)
+]
+b_qc[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6c9c1977-0.avif)
+
+### ステップ 2: 量子ハードウェア実行のための問題の最適化
+次に、標準的な Qiskit パターンに従い、パスマネージャーを使用して回路をトランスパイルします。
+分数ゲートをサポートするバックエンドを `generate_preset_pass_manager` に提供することで、`FoldRzzAngle` という専用パスが自動的に含まれます。
+このパスは、RZZ 角度制約に準拠するように回路を変更します。
+その結果、前の図で負の値を持っていた RZZ ゲートは正の値に変換され、いくつかの追加の X ゲートが挿入されます。
+
+```python
+backend_f = service.backend(name=backend_name, use_fractional_gates=True)
+# pm_f includes `FoldRzzAngle` pass
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_f
+)
+```
+
+```python
+t_qc_f = pm_f.run(b_qc)
+print(t_qc_f[0].count_ops())
+t_qc_f[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 35), ('rzz', 18), ('x', 13), ('rx', 9), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a18e5c70-1.avif)
+
+分数ゲートの効果を評価するために、非局所ゲートの数（このバックエンドでは CZ と RZZ）、
+回路の深さと実行時間を評価し、後ほど標準ワークフローのものと比較します。
+
+```python
+nnl_f = [qc.num_nonlocal_gates() for qc in t_qc_f]
+depth_f = [qc.depth() for qc in t_qc_f]
+duration_f = [
+    qc.estimate_duration(backend_f.target, unit="u") for qc in t_qc_f
+]
+```
+
+### ステップ 3: Qiskit プリミティブを使用して実行する
+分数ゲートをサポートするバックエンドでトランスパイル済み回路を実行します。
+
+```python
+sampler_f = SamplerV2(mode=backend_f)
+sampler_f.options.dynamical_decoupling.enable = True
+sampler_f.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_f.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_f.run(t_qc_f, shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bninsi51bc738j97eg
+```
+
+### ステップ 4: 後処理と結果の古典的な形式への変換
+出力における全ゼロビット列 `00...00` の確率を測定することで、カーネル関数の値 $K(x, x)$ を得ることができます。
+
+```python
+# job = service.job("d1obougt0npc73flhiag")
+result = job.result()
+fidelity_f = [fidelity(result=res) for res in result]
+print(fidelity_f)
+usage_f = job.usage()
+```
+
+```text
+[0.9005, 0.647, 0.3345, 0.355, 0.3315, 0.174, 0.1875, 0.149, 0.1175, 0.085]
+```
+
+## 分数ゲートなしのワークフローと回路の比較
+
+このセクションでは、分数ゲートをサポートしないバックエンドを使用した標準的な Qiskit パターンのワークフローを示します。
+トランスパイルされた回路を比較すると、分数ゲートを使用したバージョン（前のセクション）の方が、分数ゲートなしのバージョンよりもコンパクトであることがわかります。
+
+```python
+# step 1: map classical inputs to quantum problem
+# `circuits` and `params` from the previous section are reused here
+```
+
+```python
+# step 2: optimize circuits
+backend_c = service.backend(backend_name)  # w/o fractional gates
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc_c = pm_c.run(circuits)
+print(t_qc_c[0].count_ops())
+t_qc_c[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 130), ('sx', 80), ('cz', 36), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a10f2d95-1.avif)
+
+```python
+nnl_c = [qc.num_nonlocal_gates() for qc in t_qc_c]
+depth_c = [qc.depth() for qc in t_qc_c]
+duration_c = [
+    qc.estimate_duration(backend_c.target, unit="u") for qc in t_qc_c
+]
+```
+
+```python
+# step 3: execute
+sampler_c = SamplerV2(backend_c)
+sampler_c.options.dynamical_decoupling.enable = True
+sampler_c.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_c.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_c.run(pubs=zip(t_qc_c, params), shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bnirvnmdfs73ae3a2g
+```
+
+```python
+# step 4: post-processing
+# job = service.job("d1obp8j3rr0s73bg4810")
+result = job.result()
+fidelity_c = [fidelity(res) for res in result]
+print(fidelity_c)
+usage_c = job.usage()
+```
+
+```text
+[0.6675, 0.5725, 0.098, 0.102, 0.065, 0.0235, 0.006, 0.0015, 0.0015, 0.002]
+```
+## 深さと忠実度の比較
+
+このセクションでは、フラクショナルゲートを使用した回路と使用しない回路の間で、非局所ゲートの数と忠実度を比較します。
+これにより、実行効率と品質の観点からフラクショナルゲートを使用する潜在的なメリットが明らかになります。
+
+```python
+plt.plot(qubits, depth_c, "-o", label="no fractional gates")
+plt.plot(qubits, depth_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("depth")
+plt.title("Comparison of depths")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bcaac50>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/ef343a53-1.avif)
+
+```python
+plt.plot(qubits, duration_c, "-o", label="no fractional gates")
+plt.plot(qubits, duration_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("duration (µs)")
+plt.title("Comparison of durations")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bdef310>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/98bb2cd0-1.avif)
+
+```python
+plt.plot(qubits, nnl_c, "-o", label="no fractional gates")
+plt.plot(qubits, nnl_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("number of non-local gates")
+plt.title("Comparison of numbers of non-local gates")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12be8ac90>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/1383b242-1.avif)
+
+```python
+plt.plot(qubits, fidelity_c, "-o", label="no fractional gates")
+plt.plot(qubits, fidelity_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("fidelity")
+plt.title("Comparison of fidelities")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bea8290>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/8b4594f5-1.avif)
+
+フラクショナルゲートを使用した場合と使用しない場合のQPU使用時間を比較します。以下のセルの結果は、QPU使用時間がほぼ同一であることを示しています。
+
+```python
+print(f"no fractional gates: {usage_c} seconds")
+print(f"fractional gates: {usage_f} seconds")
+```
+
+```text
+no fractional gates: 7 seconds
+fractional gates: 7 seconds
+```
+
+## 応用トピック: フラクショナルRXゲートのみの使用
+
+フラクショナルゲートを使用する際に変更されたワークフローが必要となる主な原因は、RZZゲートの角度に関する制約にあります。
+ただし、フラクショナルRXゲートのみを使用し、フラクショナルRZZゲートを除外する場合は、標準的なQiskitパターンのワークフローをそのまま使用し続けることができます。
+このアプローチは、特にRXゲートやUゲートを多数含む回路において、全体的なゲート数を削減し、パフォーマンスを向上させる可能性があるため、依然として有意義なメリットを提供できます。
+このセクションでは、RZZゲートを除外しながら、フラクショナルRXゲートのみを使用して回路を最適化する方法を示します。
+
+これをサポートするために、Targetオブジェクト内の特定の基底ゲートを無効にするユーティリティ関数を提供します。
+ここでは、この関数を使用してRZZゲートを無効にします。
+
+```python
+from qiskit.circuit.library import n_local
+from qiskit.transpiler import Target
+```
+
+```python
+def remove_instruction_from_target(target: Target, gate_name: str) -> Target:
+    new_target = Target(
+        description=target.description,
+        num_qubits=target.num_qubits,
+        dt=target.dt,
+        granularity=target.granularity,
+        min_length=target.min_length,
+        pulse_alignment=target.pulse_alignment,
+        acquire_alignment=target.acquire_alignment,
+        qubit_properties=target.qubit_properties,
+        concurrent_measurements=target.concurrent_measurements,
+    )
+
+    for name, qarg_map in target.items():
+        if name == gate_name:
+            continue
+        instruction = target.operation_from_name(name)
+        if qarg_map == {None: None}:
+            qarg_map = None
+        new_target.add_instruction(instruction, qarg_map, name=name)
+    return new_target
+```
+
+U、CZ、RZZゲートで構成される回路を例として使用します。
+
+```python
+qc = n_local(3, "u", "cz", "linear", reps=1)
+qc.rzz(1.1, 0, 1)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6b812497-0.avif)
+
+まず、フラクショナルゲートをサポートしないバックエンド向けに回路をトランスパイルします。
+
+```python
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc = pm_c.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 23), ('sx', 16), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/9e8e0709-1.avif)
+
+次に、RZZゲートを除外しながら、フラクショナルRXゲートを使用して同じ回路をトランスパイルします。
+これにより、RXゲートのより効率的な実装のおかげで、全体的なゲート数がわずかに削減されます。
+
+```python
+backend_f = service.backend(backend_name, use_fractional_gates=True)
+target = remove_instruction_from_target(backend_f.target, "rzz")
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 22), ('sx', 14), ('cz', 4), ('rx', 1)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/db45feb0-1.avif)
+
+### フラクショナルRXゲートによるUゲートの最適化
+
+このセクションでは、前のセクションで紹介した同じ回路を基に、フラクショナルRXゲートを使用してUゲートを最適化する方法を示します。
+
+このセクションでは、`qiskit-basis-constructor` [パッケージ](https://github.com/Qiskit/qiskit-basis-constructor)のインストールが必要です。
+これはQiskit向けの新しいトランスパイレーションプラグインのベータ版であり、将来的にQiskitに統合される可能性があります。
+
+```python
+# %pip install qiskit-basis-constructor
+```
+
+```python
+from qiskit.circuit.library import UGate
+from qiskit_basis_constructor import DEFAULT_EQUIVALENCE_LIBRARY
+```
+
+フラクショナルRXゲートのみを使用し、RZZゲートを除外して回路をトランスパイルします。
+以下に示すようにカスタム分解ルールを導入することで、Uゲートの実装に必要な単一量子ビットゲートの数を削減できます。
+
+この機能については、現在こちらの[GitHubイシュー](https://github.com/Qiskit/qiskit/issues/13455)で議論が行われています。
+
+```python
+# special decomposition rule for UGate
+x = ParameterVector("x", 3)
+zxz = QuantumCircuit(1)
+zxz.rz(x[2] - np.pi / 2, 0)
+zxz.rx(x[0], 0)
+zxz.rz(x[1] + np.pi / 2, 0)
+DEFAULT_EQUIVALENCE_LIBRARY.add_equivalence(UGate(x[0], x[1], x[2]), zxz)
+```
+
+次に、`qiskit-basis-constructor`パッケージが提供する`constructor-beta`トランスレーションを使用してトランスパイラを適用します。
+その結果、前回のトランスパイレーションと比較して、全体的なゲート数が削減されます。
+
+```python
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+    translation_method="constructor-beta",
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 16), ('rx', 9), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b19aae7c-1.avif)
+
+## トラブルシューティング
+### 問題: トランスパイレーション後に無効なRZZ角度が残る場合がある
+
+Qiskit v2.0.3の時点では、トランスパイレーション後でも無効な角度を持つRZZゲートが回路内に残る既知の問題があります。
+この問題は通常、以下の条件下で発生します。
+#### `generate_preset_pass_manager`または`transpiler`で`target`オプションを使用した場合の失敗
+
+`generate_preset_pass_manager`または`transpiler`で`target`オプションを使用すると、専用のトランスパイラパス`FoldRzzAngle`が呼び出されません。
+フラクショナルゲートにおけるRZZ角度の適切な処理を確実にするために、常に`backend`オプションを使用することを推奨します。
+詳細については、[こちらのイシュー](https://github.com/Qiskit/qiskit/issues/14318)をご覧ください。
+#### 特定のゲートを含む回路での失敗
+
+回路に`XXPlusYYGate`などの特定のゲートが含まれている場合、Qiskitトランスパイラが無効な角度を持つRZZゲートを生成することがあります。
+この問題が発生した場合は、こちらの[GitHubイシュー](https://github.com/Qiskit/qiskit-ibm-runtime/issues/2256#issuecomment-2889487152)で回避策をご確認ください。
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックをお寄せいただくため、短いアンケートにご協力ください。皆様のご意見は、コンテンツの改善とユーザー体験の向上に役立てさせていただきます。

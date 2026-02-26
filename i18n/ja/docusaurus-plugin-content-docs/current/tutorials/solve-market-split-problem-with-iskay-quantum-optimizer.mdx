@@ -1,0 +1,885 @@
+---
+title: "Kipu QuantumのIskay量子オプティマイザーでMarket Split問題を解く"
+sidebar_label: "Kipu QuantumのIskay量子オプティマイザーでMarket Split問題を解く"
+description: "bf-DCQOアルゴリズムを用いたIskay量子オプティマイザーによるMarket Split問題のIBM Quantum ハードウェア上での解法を学びます"
+notebook_path: "docs/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.ipynb" />
+
+
+
+{/* cspell:ignore adiabaticity, HUBO, bitflip, metaheuristic, fontweight, fontsize, QOBLIB, Zuse, Kochenberger, Tramontani, Weninger, edgecolor, nonumber */}
+<Admonition type="note" title="注意">
+Qiskit Functionsは、IBM Quantum&reg; Premium Plan、Flex Plan、およびOn-Prem（IBM Quantum Platform API経由）Planのユーザーのみが利用できる実験的な機能です。プレビューリリースの状態であり、変更される可能性があります。
+</Admonition>
+
+*使用量の目安: Heron r2プロセッサで20秒。（注意: これはあくまで目安です。実際の実行時間は異なる場合があります。）*
+## 背景
+
+このチュートリアルでは、[Kipu QuantumのIskay量子オプティマイザー](/guides/kipu-optimization) [\[1\]](#references)を使用してMarket Split問題を解く方法を説明します。Market Split問題は、正確な需要目標を満たすために市場をバランスの取れた販売地域に分割する、実世界のリソース割り当て課題を表しています。
+
+### Market Splitの課題
+
+Market Split問題は、リソース割り当てにおける一見単純でありながら計算的に非常に困難な課題です。$m$種類の製品を$n$の異なる市場で販売する企業を考えてみましょう。各市場は特定の製品の組み合わせを購入します（行列$A$の列で表されます）。ビジネス上の目的は、これらの市場を2つのバランスの取れた販売地域に分割し、各地域がすべての製品について総需要のちょうど半分を受け取るようにすることです。
+
+**数学的定式化:**
+
+二値の割り当てベクトル$x$を求めます。ここで：
+- $x_j = 1$は市場$j$を地域Aに割り当てることを意味します
+- $x_j = 0$は市場$j$を地域Bに割り当てることを意味します
+- 制約$Ax = b$が満たされなければなりません。ここで$b$は目標売上（通常、製品ごとの総需要の半分）を表します
+
+**コスト関数:**
+
+この問題を解くために、制約違反の二乗和を最小化します：
+
+$$C(x) = ||Ax - b||^2 = \sum_{i=1}^{m} \left(\sum_{j=1}^{n} A_{ij}x_j - b_i\right)^2$$
+
+ここで：
+- $A_{ij}$は市場$j$における製品$i$の売上を表します
+- $x_j \in \{0,1\}$は市場$j$の二値割り当てです
+- $b_i$は各地域における製品$i$の目標売上です
+- コストはすべての制約が満たされたときに正確にゼロになります
+
+和の各項は、特定の製品の目標売上からの二乗偏差を表しています。このコスト関数を展開すると、次のようになります：
+
+$$C(x) = x^T A^T A x - 2b^T A x + b^T b$$
+
+$b^T b$は定数であるため、$C(x)$の最小化は二次関数$x^T A^T A x - 2b^T A x$の最小化と等価であり、これはまさにQUBO（二次制約なし二値最適化）問題です。
+
+**計算量の複雑さ:**
+
+ビジネス上の解釈は分かりやすいにもかかわらず、この問題は顕著な計算困難性を示します：
+- **小規模での失敗**: 従来の混合整数計画法ソルバーは、1時間のタイムアウト下でわずか7製品のインスタンスでも失敗します [\[4\]](#references)
+- **指数的な増大**: 解空間は指数的に増大し（$2^n$通りの割り当て）、総当たり探索は実行不可能です
+
+この深刻な計算上の障壁と、テリトリー計画やリソース割り当てにおける実用的な関連性が相まって、Market Split問題は量子最適化アルゴリズムの理想的なベンチマークとなっています [\[4\]](#references)。
+
+### Iskayのアプローチが独自である理由
+
+Iskayオプティマイザーは、**bf-DCQO（バイアス場デジタル化反断熱量子最適化）**アルゴリズム [\[1\]](#references)を使用しており、これは量子最適化における重要な進歩を表しています：
+
+**回路の効率性**: bf-DCQOアルゴリズムは驚くべきゲート削減を達成します [\[1\]](#references)：
+- デジタル量子アニーリング（DQA）と比較して**最大10倍少ないエンタングリングゲート**
+- 大幅に浅い回路により以下が可能になります：
+  - 量子実行中のエラー蓄積の低減
+  - 現在の量子ハードウェアでより大きな問題に取り組む能力
+  - エラー軽減技術が不要
+
+**非変分設計**: 約100回の反復を必要とする変分アルゴリズムとは異なり、bf-DCQOは通常**約10回の反復**のみで済みます [\[1\]](#references)。これは以下によって達成されます：
+- 測定された状態分布からのインテリジェントなバイアス場計算
+- 前回の解に近いエネルギー状態からの各反復の開始
+- 局所探索を統合した古典的な後処理
+
+**反断熱プロトコル**: このアルゴリズムは、短い発展時間中の不要な量子励起を抑制する反断熱項を組み込んでおり、急速な遷移でもシステムが基底状態の近くに留まることを可能にします [\[1\]](#references)。
+## 前提条件
+
+このチュートリアルを始める前に、以下がインストールされていることを確認してください：
+
+* Qiskit IBM Runtime (`pip install qiskit-ibm-runtime`)
+* Qiskit Functions (`pip install qiskit-ibm-catalog`)
+* NumPy (`pip install numpy`)
+* Requests (`pip install requests`)
+* Opt Mapper Qiskitアドオン (`pip install qiskit-addon-opt-mapper`)
+
+また、Qiskit Functionsカタログから[Iskay量子オプティマイザー関数](https://quantum.cloud.ibm.com/functions?id=kipu-quantum-iskay-quantum-optimizer)へのアクセスを取得する必要があります。
+## セットアップ
+
+まず、このチュートリアルに必要なすべてのパッケージをインポートします。
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-opt-mapper
+```
+
+```python
+import os
+import tempfile
+import time
+from typing import Tuple, Optional
+
+import numpy as np
+import requests
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit_addon_opt_mapper import OptimizationProblem
+from qiskit_addon_opt_mapper.converters import OptimizationProblemToQubo
+
+print("All required libraries imported successfully")
+```
+
+### IBM Quantum資格情報の設定
+
+[IBM Quantum&reg; Platform](https://quantum.cloud.ibm.com/)の資格情報を定義します。以下が必要です：
+- **APIトークン**: IBM Quantum Platformの44文字のAPIキー
+- **インスタンスCRN**: IBM Cloud&reg;のインスタンス識別子
+
+```python
+token = "<YOUR_API_KEY>"
+instance = "<YOUR_INSTANCE_CRN>"
+```
+
+## ステップ1: 古典的な入力を量子問題にマッピングする
+
+古典的な問題を量子互換の表現にマッピングすることから始めます。このステップでは以下を行います：
+
+1. Iskay量子オプティマイザーへの接続
+2. Market Split問題の読み込みと定式化
+3. 問題を解くbf-DCQOアルゴリズムの理解
+
+### Iskay量子オプティマイザーへの接続
+
+まず、Qiskit Functionsカタログへの接続を確立し、Iskay量子オプティマイザーを読み込みます。IskayオプティマイザーはKipu Quantumが提供する量子関数であり、量子ハードウェア上で最適化問題を解くためのbf-DCQOアルゴリズムを実装しています。
+
+```python
+catalog = QiskitFunctionsCatalog(token=token, instance=instance)
+iskay_solver = catalog.load("kipu-quantum/iskay-quantum-optimizer")
+
+print("Iskay optimizer loaded successfully")
+print("Ready to solve optimization problems using bf-DCQO algorithm")
+```
+
+### 問題の読み込みと定式化
+
+#### 問題データ形式の理解
+
+QOBLIB（量子最適化ベンチマーキングライブラリ）[\[2\]](#references)の問題インスタンスは、シンプルなテキスト形式で保存されています。対象インスタンス`ms_03_200_177.dat`の実際の内容を確認しましょう：
+
+```text
+3 20
+60   92  161   53   97    2   75   81    6  139  132   45  108  112  181   93  152  200  164   51 1002
+176  196   41  143    2   88    0   79   10   71   75  148   82  135   34  187   33  155   58   46  879
+68   68  179  173  127  163   48   49   99   78   44   52  173  131   73  198   84  109  180   95 1040
+```
+
+**形式の構造:**
+- **1行目:** `3 20`
+  - `3` = 製品数（制約数/行列$A$の行数）
+  - `20` = 市場数（変数数/行列$A$の列数）
+
+- **次の3行:** 係数行列$A$と目標ベクトル$b$
+  - 各行には21個の数値があります：最初の20個は行の係数、最後の1つが目標値です
+  - 2行目: `60 92 161 ... 51 | 1002`
+    - 最初の20個の数値: 20の市場それぞれにおける製品1の販売量
+    - 最後の数値（1002）: 一方の地域における製品1の目標売上
+  - 3行目: `176 196 41 ... 46 | 879`
+    - 各市場における製品2の販売量と目標値（879）
+  - 4行目: `68 68 179 ... 95 | 1040`
+    - 各市場における製品3の販売量と目標値（1040）
+
+**ビジネス上の解釈:**
+- 市場0の販売量: 製品1が60単位、製品2が176単位、製品3が68単位
+- 市場1の販売量: 製品1が92単位、製品2が196単位、製品3が68単位
+- 20の市場すべてについて同様に続きます...
+- **目標**: これら20の市場を2つの地域に分割し、各地域が製品1をちょうど1002単位、製品2を879単位、製品3を1040単位受け取るようにします
+
+#### QUBOへの変換
+
+## 制約からQUBOへ：数学的変換
+
+量子最適化の力は、制約付き問題を制約なしの二次形式に変換することにあります [\[4\]](#references)。Market Split問題では、等式制約
+
+$$ Ax = b $$
+
+（ここで$x ∈ \{0,1\}^n$）を、制約違反にペナルティを課すことでQUBOに変換します。
+
+**ペナルティ法:**
+$Ax = b$を正確に成り立たせる必要があるため、二乗違反を最小化します：
+$$f(x) = ||Ax - b||^2$$
+
+これはすべての制約が満たされたときに正確にゼロになります。代数的に展開すると：
+$$f(x) = (Ax - b)^T(Ax - b) = x^T A^T A x - 2b^T A x + b^T b$$
+
+**QUBO目的関数:**
+$b^T b$は定数であるため、最適化は以下のようになります：
+$$\text{minimize} \quad Q(x) = x^T(A^T A)x - 2(A^T b)^T x$$
+
+**重要な知見:** この変換は近似ではなく厳密です。等式制約は補助変数やペナルティパラメータを必要とせずに自然に二次形式に二乗されます。これにより、量子ソルバーにとって数学的にエレガントかつ計算効率の高い定式化が得られます [\[4\]](#references)。制約付き問題を定義するために`OptimizationProblem`クラスを使用し、次に**qiskit_addon_opt_mapper**パッケージの`OptimizationProblemToQubo`を使用してQUBO形式に変換します。これによりペナルティベースの変換が自動的に処理されます。
+### データ読み込みとQUBO変換関数の実装
+
+ここで3つのユーティリティ関数を定義します：
+1. `parse_marketsplit_dat()` - `.dat`ファイル形式を解析し、行列$A$と$b$を抽出します
+2. `fetch_marketsplit_data()` - QOBLIBリポジトリから問題インスタンスを直接ダウンロードします
+
+```python
+def parse_marketsplit_dat(filename: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Parse a market split problem from a .dat file format.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the .dat file containing the market split problem data.
+
+    Returns
+    -------
+    A : np.ndarray
+        Coefficient matrix of shape (m, n) where m is the number of products
+        and n is the number of markets.
+    b : np.ndarray
+        Target vector of shape (m,) containing the target sales per product.
+    """
+    with open(filename, "r", encoding="utf-8") as f:
+        lines = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.startswith("#")
+        ]
+
+    if not lines:
+        raise ValueError("Empty or invalid .dat file")
+
+    # First line: m n (number of products and markets)
+    m, n = map(int, lines[0].split())
+
+    # Next m lines: each row of A followed by corresponding element of b
+    A, b = [], []
+    for i in range(1, m + 1):
+        values = list(map(int, lines[i].split()))
+        A.append(values[:-1])  # First n values: product sales per market
+        b.append(values[-1])  # Last value: target sales for this product
+
+    return np.array(A, dtype=np.int32), np.array(b, dtype=np.int32)
+
+def fetch_marketsplit_data(
+    instance_name: str = "ms_03_200_177.dat",
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Fetch market split data directly from the QOBLIB repository.
+
+    Parameters
+    ----------
+    instance_name : str
+        Name of the .dat file to fetch (default: "ms_03_200_177.dat").
+
+    Returns
+    -------
+    A : np.ndarray or None
+        Coefficient matrix if successful, None if failed.
+    b : np.ndarray or None
+        Target vector if successful, None if failed.
+    """
+    url = f"https://git.zib.de/qopt/qoblib-quantum-optimization-benchmarking-library/-/raw/main/01-marketsplit/instances/{instance_name}"
+
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".dat", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(response.text)
+            temp_path = f.name
+
+        try:
+            return parse_marketsplit_dat(temp_path)
+        finally:
+            os.unlink(temp_path)
+    except Exception as e:
+        print(f"Error: {e}")
+        return None, None
+```
+
+### 問題インスタンスの読み込み
+
+ここでQOBLIB [2]から特定の問題インスタンス`ms_03_200_177.dat`を読み込みます。このインスタンスは以下の特徴を持ちます：
+- 3種類の製品（制約）
+- 20の市場（二値決定変数）
+- 100万通り以上の市場割り当てを探索（$2^{20} = 1,048,576$）
+
+```python
+# Load the problem instance
+instance_name = "ms_03_200_177.dat"
+A, b = fetch_marketsplit_data(instance_name=instance_name)
+
+if A is not None:
+    print("Successfully loaded problem instance from QOBLIB")
+    print("\nProblem Instance Analysis:")
+    print("=" * 50)
+    print(f"Coefficient Matrix A: {A.shape[0]} × {A.shape[1]}")
+    print(f"   → {A.shape[0]} products (constraints)")
+    print(f"   → {A.shape[1]} markets (decision variables)")
+    print(f"Target Vector b: {b}")
+    print("   → Target sales per product for each region")
+    print(
+        f"Solution Space: 2^{A.shape[1]} = {2**A.shape[1]:,} possible assignments"
+    )
+```
+
+### QUBO形式への変換
+
+ここで制約付き最適化問題をQUBO形式に変換します：
+
+```python
+# Create optimization problem
+ms = OptimizationProblem(instance_name.replace(".dat", ""))
+
+# Add binary variables (one for each market)
+ms.binary_var_list(A.shape[1])
+
+# Add equality constraints (one for each product)
+for idx, rhs in enumerate(b):
+    ms.linear_constraint(A[idx, :], sense="==", rhs=rhs)
+
+# Convert to QUBO with penalty parameter
+qubo = OptimizationProblemToQubo(penalty=1).convert(ms)
+
+print("QUBO Conversion Complete:")
+print("=" * 50)
+print(f"Number of variables: {qubo.get_num_vars()}")
+print(f"Constant term: {qubo.objective.constant}")
+print(f"Linear terms: {len(qubo.objective.linear.to_dict())}")
+print(f"Quadratic terms: {len(qubo.objective.quadratic.to_dict())}")
+```
+
+### QUBOをIskay形式に変換
+
+次に、QUBOオブジェクトをKipu QuantumのIskayオプティマイザーが必要とする辞書形式に変換する必要があります。
+
+`problem`引数と`problem_type`引数は、以下の形式の最適化問題をエンコードします
+
+$$
+\begin{align}
+\min_{(x_1, x_2, \ldots, x_n) \in D} C(x_1, x_2, \ldots, x_n) \nonumber
+\end{align}
+$$
+ここで
+
+$$
+C(x_1, ... , x_n) = a + \sum_{i} b_i x_i + \sum_{i, j} c_{i, j} x_i x_j + ... + \sum_{k_1, ..., k_m} g_{k_1, ..., k_m} x_{k_1} ... x_{k_m}
+$$
+
+- `problem_type = "binary"`を選択すると、コスト関数が`binary`形式であることを指定します。つまり、$D = \{0,  1\}^{n}$であり、コスト関数はQUBO/HUBO定式化で記述されます。
+- 一方、`problem_type = "spin"`を選択すると、コスト関数はイジング定式化で記述され、$D = \{-1, 1\}^{n}$となります。
+
+問題の係数は以下のように辞書でエンコードする必要があります：
+$$
+\begin{align} \nonumber
+&\texttt{\{} \\ \nonumber
+&\texttt{"()"}&: \quad &a, \\ \nonumber
+&\texttt{"(i,)"}&: \quad &b_i, \\ \nonumber
+&\texttt{"(i, j)"}&: \quad &c_{i, j}, \quad (i \neq j) \\ \nonumber
+&\quad  \vdots \\ \nonumber
+&\texttt{"(} k_1, ..., k_m  \texttt{)"}&: \quad &g_{k_1, ..., k_m}, \quad (k_1 \neq k_2 \neq \dots \neq k_m) \\ \nonumber
+&\texttt{\}}
+\end{align}
+$$
+
+辞書のキーは、繰り返しのない整数の有効なタプルを含む文字列でなければならないことに注意してください。二値問題の場合、以下が成り立ちます：
+
+$$
+x_i^2 = x_i
+$$
+
+$i=j$の場合（$x_i \in \{0,1\}$であるため$x_i \cdot x_i = x_i$）。したがって、QUBO定式化において線形寄与$b_i x_i$と対角二次寄与$c_{i,i} x_i^2$の両方がある場合、これらの項を単一の線形係数に統合する必要があります：
+
+**変数$x_i$の合計線形係数:** $b_i + c_{i,i}$
+
+これは以下を意味します：
+- `"(i, )"`のような線形項には、元の線形係数 + 対角二次係数が含まれます
+- `"(i, i)"`のような対角二次項は最終的な辞書に含めるべきでは**ありません**
+- $i \neq j$である`"(i, j)"`のような非対角二次項のみが個別のエントリとして含まれるべきです
+
+**例:** QUBOが$3x_1 + 2x_1^2 + 4x_1 x_2$を持つ場合、Iskay辞書は以下を含むべきです：
+- `"(0, )"`: `5.0`（$3 + 2 = 5$を統合）
+- `"(0, 1)"`: `4.0`（非対角項）
+
+`"(0, )"`: `3.0`と`"(0, 0)"`: `2.0`を別々のエントリとして持つべきでは**ありません**。
+
+```python
+# Convert QUBO to Iskay dictionary format:
+
+# Create empty Iskay input dictionary
+iskay_input_problem = {}
+
+# Convert QUBO to Iskay dictionary format
+iskay_input_problem = {"()": qubo.objective.constant}
+
+for i in range(qubo.get_num_vars()):
+    for j in range(i, qubo.get_num_vars()):
+        if i == j:
+            # Add linear term (including diagonal quadratic contribution)
+            iskay_input_problem[f"({i}, )"] = float(
+                qubo.objective.linear.to_dict().get(i)
+            ) + float(qubo.objective.quadratic.to_dict().get((i, i)))
+        else:
+            # Add off-diagonal quadratic term
+            iskay_input_problem[f"({i}, {j})"] = float(
+                qubo.objective.quadratic.to_dict().get((i, j))
+            )
+
+# Display Iskay dictionary summary
+print("Iskay Dictionary Format:")
+print("=" * 50)
+print(f"Total coefficients: {len(iskay_input_problem)}")
+print(f"  • Constant term: {iskay_input_problem['()']}")
+print(
+    f"  • Linear terms: {sum(1 for k in iskay_input_problem.keys() if k != '()' and ', )' in k)}"
+)
+print(
+    f"  • Quadratic terms: {sum(1 for k in iskay_input_problem.keys() if k != '()' and ', )' not in k)}"
+)
+print("\nSample coefficients:")
+
+# Get first 10 and last 5 items properly
+items = list(iskay_input_problem.items())
+first_10 = list(enumerate(items[:10]))
+last_5 = list(enumerate(items[-5:], start=len(items) - 5))
+
+for i, (key, value) in first_10 + last_5:
+    coeff_type = (
+        "constant"
+        if key == "()"
+        else "linear"
+        if ", )" in key
+        else "quadratic"
+    )
+    print(f"  {key}: {value} ({coeff_type})")
+print("  ...")
+print("\n✓ Problem ready for Iskay optimizer!")
+```
+
+### bf-DCQOアルゴリズムの理解
+
+最適化を実行する前に、Iskayを支えるbf-DCQO（バイアス場デジタル化反断熱量子最適化）という高度な量子アルゴリズムについて理解しましょう [\[1\]](#references)。
+
+#### bf-DCQOとは何ですか？
+
+bf-DCQOは、問題の解が最終的な量子ハミルトニアンの**基底状態**（最低エネルギー状態）にエンコードされる量子システムの時間発展に基づいています [\[1\]](#references)。このアルゴリズムは量子最適化における根本的な課題に取り組んでいます：
+
+**課題**: 従来の断熱量子計算では、断熱定理に従って基底状態の条件を維持するために非常にゆっくりとした発展が必要です。これは問題の複雑さが増すにつれてますます深い量子回路を要求し、より多くのゲート操作とエラーの蓄積をもたらします。
+
+**解決策**: bf-DCQOは反断熱プロトコルを使用して、基底状態の忠実度を維持しながら急速な発展を可能にし、回路の深さを劇的に削減します。
+
+#### 数学的枠組み
+
+このアルゴリズムは以下の形式のコスト関数を最小化します：
+
+$$\min_{(x_1,x_2,...,x_n) \in D} C(x_1,x_2,...,x_n)$$
+
+ここで二値変数に対して$D = \{0,1\}^n$であり：
+
+$$C(x) = a + \sum_i b_i x_i + \sum_{i,j} c_{ij} x_i x_j + ... + \sum g_{k_1,...,k_m} x_{k_1}...x_{k_m}$$
+
+Market Split問題におけるコスト関数は以下のようになります：
+
+$$C(x) = ||Ax - b||^2 = x^T A^T A x - 2 b^T A x + b^T b$$
+
+#### 反断熱項の役割
+
+**反断熱項**は、量子発展中の不要な励起を抑制するために時間依存ハミルトニアンに導入される追加項です。以下がその重要性を説明します：
+
+断熱量子最適化では、時間依存ハミルトニアンに従ってシステムを発展させます：
+
+$$H(t) = \left(1 - \frac{t}{T}\right) H_{\text{initial}} + \frac{t}{T} H_{\text{problem}}$$
+
+ここで$H_{\text{problem}}$は最適化問題をエンコードしています。急速な発展中に基底状態を維持するために、反断熱項を追加します：
+
+$$H_{\text{CD}}(t) = H(t) + H_{\text{counter}}(t)$$
+
+これらの反断熱項は以下の機能を果たします：
+1. **不要な遷移の抑制**: 急速な発展中に量子状態が励起状態にジャンプすることを防ぎます
+2. **より短い発展時間の実現**: 断熱性を損なうことなく、はるかに速く最終状態に到達することを可能にします
+3. **回路深さの削減**: より短い発展はより少ないゲートとより少ないエラーにつながります
+
+実用的な影響は劇的です：bf-DCQOはデジタル量子アニーリングと比較して**最大10倍少ないエンタングリングゲート**を使用し [\[1\]](#references)、今日のノイズのある量子ハードウェアで実用的なものとなっています。
+
+#### バイアス場による反復最適化
+
+回路パラメータを多数の反復で最適化する変分アルゴリズムとは異なり、bf-DCQOは約10回の反復で収束する**バイアス場ガイドアプローチ**を使用します [1]：
+
+**反復プロセス:**
+
+1. **初期量子発展**: 反断熱発展プロトコルを実装する量子回路から開始します
+
+2. **測定**: 量子状態を測定して、ビット列上の確率分布を取得します
+
+3. **バイアス場の計算**: 測定統計を分析し、各量子ビットに対する最適なバイアス場$h_i$を計算します：
+   $$h_i = \text{f}(\text{measurement statistics}, \text{previous solutions})$$
+
+4. **次の反復**: バイアス場が次の反復のハミルトニアンを修正します：
+   $$H_{\text{next}} = H_{\text{problem}} + \sum_i h_i \sigma_i^z$$
+
+   これにより、以前に見つかった良い解の近くから開始でき、事実上「量子局所探索」の一形態を実行します
+
+5. **収束**: 解の品質が安定するか、最大反復回数に達するまで繰り返します
+
+**主な利点**: 各反復は、パラメータ空間を盲目的に探索しなければならない変分手法とは異なり、前回の測定からの情報を取り込むことで最適解に向けた意味のある進歩を提供します。
+
+#### 統合された古典的後処理
+
+量子最適化が収束した後、Iskayは古典的な**局所探索**後処理を実行します：
+
+- **ビット反転探索**: 最良の測定解のビットを体系的またはランダムに反転します
+- **エネルギー評価**: 各修正解に対して$C(x)$を計算します
+- **貪欲選択**: コスト関数を下げる改善を受け入れます
+- **複数パス**: 複数のパスを実行します（`postprocessing_level`で制御）
+
+このハイブリッドアプローチは、ハードウェアの不完全性や読み出しエラーによるビット反転エラーを補償し、ノイズのある量子デバイスでも高品質な解を保証します。
+
+#### bf-DCQOが現在のハードウェアで優れている理由
+
+bf-DCQOアルゴリズムは、今日のノイズのある中規模量子（NISQ）デバイスで優れた性能を発揮するよう特別に設計されています [\[1\]](#references)：
+
+1. **エラー耐性**: より少ないゲート（10倍の削減）により、エラー蓄積が劇的に減少します
+2. **エラー軽減が不要**: アルゴリズム固有の効率性により、高コストなエラー軽減技術が不要になります [\[1\]](#references)
+3. **スケーラビリティ**: 直接量子ビットマッピングにより、最大156量子ビット（156の二値変数）の問題を処理できます [\[1\]](#references)
+4. **実証された性能**: ベンチマークのMaxCutおよびHUBOインスタンスで100%の近似比を達成しています [\[1\]](#references)
+
+それでは、Market Split問題に対してこの強力なアルゴリズムの動作を見てみましょう！## ステップ2：量子ハードウェア実行のための問題の最適化
+
+bf-DCQOアルゴリズムは回路の最適化を自動的に処理し、ターゲットバックエンド向けに特別に設計された反断熱項を含む浅い量子回路を生成します。
+
+### 最適化の設定
+
+Iskayオプティマイザーは、最適化問題を効果的に解くためにいくつかの重要なパラメータを必要とします。各パラメータとその量子最適化プロセスにおける役割を確認しましょう。
+
+#### 必須パラメータ
+
+| パラメータ | 型 | 説明 | 例 |
+|-----------|------|-------------|---------|
+| **problem** | `Dict[str, float]` | 文字列キー形式のQUBO係数 | `{"()": -21.0, "(0,4)": 0.5, "(0,1)": 0.5}` |
+| **problem_type** | `str` | 形式の指定：QUBOの場合は`"binary"`、イジングの場合は`"spin"` | `"binary"` |
+| **backend_name** | `str` | ターゲット量子デバイス | `"ibm_fez"` |
+
+#### 基本概念
+
+- **問題の形式**：変数がバイナリ（0/1）でマーケットの割り当てを表すため、`"binary"`を使用します。
+- **バックエンドの選択**：ニーズとコンピュートリソースインスタンスに基づいて、利用可能なQPU（例：`"ibm_fez"`）から選択します。
+- **QUBO構造**：問題の辞書には、数学的変換から得られた正確な係数が含まれています。
+
+#### 詳細オプション（任意）
+
+Iskayはオプションパラメータによる微調整機能を提供しています。デフォルト値はほとんどの問題に対して適切に機能しますが、特定の要件に合わせて動作をカスタマイズすることができます。
+
+| パラメータ | 型 | デフォルト | 説明 |
+|-----------|------|---------|-------------|
+| **shots** | `int` | 10000 | イテレーションあたりの量子測定回数（高いほど精度が向上） |
+| **num_iterations** | `int` | 10 | アルゴリズムのイテレーション回数（回数を増やすと解の品質が向上する可能性があります） |
+| **use_session** | `bool` | True | キュー待ち時間短縮のためにIBMセッションを使用 |
+| **seed_transpiler** | `int` | None | 再現可能な量子回路コンパイルのためのシード値を設定 |
+| **direct_qubit_mapping** | `bool` | False | 仮想量子ビットを物理量子ビットに直接マッピング |
+| **job_tags** | `List[str]` | None | ジョブ追跡用のカスタムタグ |
+| **preprocessing_level** | `int` | 0 | 問題の前処理強度（0〜3）- 詳細は以下を参照 |
+| **postprocessing_level** | `int` | 2 | 解の後処理レベル（0〜2）- 詳細は以下を参照 |
+| **transpilation_level** | `int` | 0 | トランスパイラ最適化試行回数（0〜5）- 詳細は以下を参照 |
+| **transpile_only** | `bool` | False | 完全な実行を行わずに回路最適化の分析のみを実施 |
+
+**前処理レベル（0〜3）**：現在のハードウェアのコヒーレンス時間に収まらない大規模な問題に対して特に重要です。前処理レベルを上げると、問題のトランスパイルにおける近似によって、より浅い回路深度を実現します。
+- **レベル0**：厳密、より長い回路
+- **レベル1**：精度と近似のバランスが良好で、角度が下位10パーセンタイルのゲートのみを除外
+- **レベル2**：やや高い近似度で、角度が下位20パーセンタイルのゲートを除外し、トランスパイルで`approximation_degree=0.95`を使用
+- **レベル3**：最大近似レベルで、下位30パーセンタイルのゲートを除外し、トランスパイルで`approximation_degree=0.90`を使用
+
+**トランスパイルレベル（0〜5）**：量子回路コンパイルの高度なトランスパイラ最適化試行を制御します。これにより古典的なオーバーヘッドが増加する可能性があり、場合によっては回路深度が変わらないこともあります。デフォルト値の`2`は一般的に最小の回路を生成し、比較的高速です。
+- **レベル0**：分解されたDCQO回路の最適化（レイアウト、ルーティング、スケジューリング）
+- **レベル1**：`PauliEvolutionGate`の最適化後、分解されたDCQO回路の最適化（max_trials=10）
+- **レベル2**：`PauliEvolutionGate`の最適化後、分解されたDCQO回路の最適化（max_trials=15）
+- **レベル3**：`PauliEvolutionGate`の最適化後、分解されたDCQO回路の最適化（max_trials=20）
+- **レベル4**：`PauliEvolutionGate`の最適化後、分解されたDCQO回路の最適化（max_trials=25）
+- **レベル5**：`PauliEvolutionGate`の最適化後、分解されたDCQO回路の最適化（max_trials=50）
+
+**後処理レベル（0〜2）**：ビットフリップエラーを補償するための古典的最適化の度合いを制御し、異なる回数の貪欲法によるローカルサーチパスを実行します。
+- **レベル0**：1パス
+- **レベル1**：2パス
+- **レベル2**：3パス
+
+**トランスパイルのみモード**：完全な量子アルゴリズムの実行を行わずに回路最適化を分析したいユーザー向けに利用可能です。
+
+#### カスタム設定の例
+
+以下は、異なる設定でIskayを構成する方法の例です。
+```python
+custom_options = {
+    "shots": 15_000,                                        # Higher shot count for better statistics
+    "num_iterations": 12,                                   # More iterations for solution refinement
+    "preprocessing_level": 1,                               # Light preprocessing for problem simplification
+    "postprocessing_level": 2,                              # Maximum postprocessing for solution quality
+    "transpilation_level": 3,                               # Using higher transpilation level for circuit optimization
+    "seed_transpiler": 42,                                  # Fixed seed for reproducible results
+    "job_tags": ["market_split"]                            # Custom tracking tags
+}
+```
+このチュートリアルでは、ほとんどのデフォルトパラメータをそのまま使用し、バイアスフィールドのイテレーション回数のみを変更します。
+
+```python
+# Specify the target backend
+backend_name = "ibm_fez"
+
+# Set the number of bias-field iterations and set a tag to identify the jobs
+options = {
+    "num_iterations": 3,  # Change number of bias-field iterations
+    "job_tags": ["market_split_example"],  # Tag to identify jobs
+}
+
+# Configure Iskay optimizer
+iskay_input = {
+    "problem": iskay_input_problem,
+    "problem_type": "binary",
+    "backend_name": backend_name,
+    "options": options,
+}
+
+print("Iskay Optimizer Configuration:")
+print("=" * 40)
+print(f"  Backend: {backend_name}")
+print(f"  Problem: {len(iskay_input['problem'])} terms")
+print("  Algorithm: bf-DCQO")
+```
+
+## ステップ3：Qiskitプリミティブを使用した実行
+
+ここで、IBM Quantum ハードウェア上で問題を実行するためにジョブを送信します。bf-DCQOアルゴリズムは以下の処理を行います。
+1. 反断熱項を含む浅い量子回路を構築します
+2. バイアスフィールド最適化による約10回のイテレーションを実行します
+3. ローカルサーチによる古典的な後処理を行います
+4. 最適なマーケット割り当てを返します
+
+```python
+# Submit the optimization job
+print("Submitting optimization job to Kipu Quantum...")
+print(
+    f"Problem size: {A.shape[1]} variables, {len(iskay_input['problem'])} terms"
+)
+print(
+    "Algorithm: bf-DCQO (bias-field digitized counterdiabatic quantum optimization)"
+)
+
+job = iskay_solver.run(**iskay_input)
+
+print("\nJob successfully submitted!")
+print(f"Job ID: {job.job_id}")
+print("Optimization in progress...")
+print(
+    f"The bf-DCQO algorithm will efficiently explore {2**A.shape[1]:,} possible assignments"
+)
+```
+
+### ジョブステータスの監視
+
+最適化ジョブの現在のステータスを確認できます。ステータスの種類は以下の通りです。
+- `QUEUED`：ジョブはキューで待機中です
+- `RUNNING`：ジョブは現在量子ハードウェア上で実行中です
+- `DONE`：ジョブは正常に完了しました
+- `CANCELED`：ジョブはキャンセルされました
+- `ERROR`：ジョブでエラーが発生しました
+
+```python
+# Check job status
+print(f"Job status: {job.status()}")
+```
+
+### 完了の待機
+
+このセルはジョブが完了するまでブロックされます。最適化プロセスには以下が含まれます。
+- キュー待ち時間（量子ハードウェアへのアクセス待ち）
+- 実行時間（約10回のイテレーションによるbf-DCQOアルゴリズムの実行）
+- 後処理時間（古典的ローカルサーチ）
+
+通常の完了時間は、キューの状況に応じて数分から数十分程度です。
+
+```python
+# Wait for job completion
+while True:
+    status = job.status()
+    print(
+        f"Waiting for job {job.job_id} to complete... (status: {status})",
+        end="\r",
+        flush=True,
+    )
+    if status in ["DONE", "CANCELED", "ERROR"]:
+        print(
+            f"\nJob {job.job_id} completed with status: {status}" + " " * 20
+        )
+        break
+    time.sleep(30)
+
+# Retrieve the optimization results
+result = job.result()
+print("\nOptimization complete!")
+```
+## ステップ4：後処理と結果を希望する古典的形式で返す
+
+ここでは、量子実行結果の後処理を行います。これには以下が含まれます：
+- 解の構造の分析
+- 制約条件の充足検証
+- 古典的アプローチとのベンチマーク比較
+
+### 結果の分析
+
+#### 結果の構造を理解する
+
+Iskayは以下の情報を含む包括的な結果辞書を返します：
+- **`solution`**: 変数インデックスとその最適値（0または1）のマッピング辞書
+- **`solution_info`**: 以下を含む詳細情報：
+  - `bitstring`: バイナリ文字列としての最適な割り当て
+  - `cost`: 目的関数の値（完全な制約充足の場合は0になります）
+  - `mapping`: ビット文字列の位置と問題変数の対応関係
+  - `seed_transpiler`: 再現性のために使用されるシード値
+- **`prob_type`**: 解がバイナリ形式かスピン形式かを示します
+
+量子オプティマイザが返した解を確認しましょう。
+
+```python
+# Display the optimization results
+print("Optimization Results")
+print("=" * 50)
+print(f"Problem Type: {result['prob_type']}")
+print("\nSolution Info:")
+print(f"  Bitstring: {result['solution_info']['bitstring']}")
+print(f"  Cost: {result['solution_info']['cost']}")
+print("\nSolution (first 10 variables):")
+for i, (var, val) in enumerate(list(result["solution"].items())[:10]):
+    print(f"  {var}: {val}")
+print("  ...")
+```
+
+#### 解の検証
+
+次に、量子解がMarket Split制約を満たしているかどうかを検証します。検証プロセスでは以下を確認します：
+
+**制約違反とは何か？**
+- 各製品 $i$ について、地域Aにおける実際の売上を計算します：$(Ax)_i$
+- これを目標売上 $b_i$ と比較します
+- **違反**は絶対差です：$|(Ax)_i - b_i|$
+- **実行可能解**はすべての製品で違反がゼロです
+
+**期待される結果：**
+- **理想的なケース**：総違反 = 0（すべての制約が完全に充足されている）
+  - 地域Aが製品1を正確に1002個、製品2を879個、製品3を1040個取得します
+  - 地域Bが残りの個数を取得します（それぞれ1002、879、1040個）
+- **良好なケース**：総違反が小さい（準最適解）
+- **不良なケース**：大きな違反は、解がビジネス要件を満たしていないことを示します
+
+検証関数は以下を計算します：
+1. 各地域における製品ごとの実際の売上
+2. 各製品の制約違反
+3. 地域間の市場分配
+
+```python
+def validate_solution(A, b, solution):
+    """Validate market split solution."""
+    x = np.array(solution)
+    region_a = A @ x
+    region_b = A @ (1 - x)
+    violations = np.abs(region_a - b)
+
+    return {
+        "target": b,
+        "region_a": region_a,
+        "region_b": region_b,
+        "violations": violations,
+        "total_violation": np.sum(violations),
+        "is_feasible": np.sum(violations) == 0,
+        "region_a_markets": int(np.sum(x)),
+        "region_b_markets": len(x) - int(np.sum(x)),
+    }
+
+# Convert bitstring to list of integers and validate
+optimal_assignment = [
+    int(bit) for bit in result["solution_info"]["bitstring"]
+]
+validation = validate_solution(A, b, optimal_assignment)
+```
+
+#### 検証結果の解釈
+
+検証結果は、量子オプティマイザが実行可能解を見つけたかどうかを示します。以下の項目を確認しましょう：
+
+**実行可能性の確認：**
+- **`is_feasible = True`** は、解がすべての制約を完全に満たしていることを意味します（総違反 = 0）
+- **`is_feasible = False`** は、一部の制約が違反されていることを意味します
+
+**売上分析：**
+- 各製品の目標値と実績値を比較します
+- 完全な解の場合：両地域のすべての製品で実績 = 目標となります
+- 差分は、望ましい市場分割にどれだけ近いかを示します
+
+**市場分配：**
+- 各地域に割り当てられた市場の数を示します
+- 市場数が均等である必要はなく、売上目標が達成されることのみが要件です
+
+```python
+print("Solution Validation")
+print("=" * 50)
+print(f"Feasible solution: {validation['is_feasible']}")
+print(f"Total constraint violation: {validation['total_violation']}")
+
+print("\nSales Analysis (Target vs Actual):")
+for i, (target, actual_a, actual_b) in enumerate(
+    zip(validation["target"], validation["region_a"], validation["region_b"])
+):
+    violation_a = abs(actual_a - target)
+    violation_b = abs(actual_b - target)
+    print(f"  Product {i+1}:")
+    print(f"    Target: {target}")
+    print(f"    Region A: {actual_a} (violation: {violation_a})")
+    print(f"    Region B: {actual_b} (violation: {violation_b})")
+
+print("\nMarket Distribution:")
+print(f"  Region A: {validation['region_a_markets']} markets")
+print(f"  Region B: {validation['region_b_markets']} markets")
+```
+
+#### 解の品質評価
+
+上記の検証結果に基づいて、量子解の品質を評価できます：
+
+**`is_feasible = True`（総違反 = 0）の場合：**
+- 量子オプティマイザは最適解を正常に見つけました
+- すべてのビジネス制約が完全に満たされています
+- これは、古典的ソルバーが苦戦する問題における量子優位性を示しています [\[4\]](#references)
+
+**`is_feasible = False`（総違反 > 0）の場合：**
+- 解は準最適であり、完全ではありません
+- 小さな違反は実用上許容できる場合があります
+- オプティマイザのパラメータの調整を検討してください：
+  - `num_iterations` を増やして最適化パスを増やす
+  - `postprocessing_level` を増やして古典的な改良を強化する
+  - `shots` を増やして測定統計を改善する
+
+**コスト関数の解釈：**
+- `solution_info` の `cost` 値は $||Ax - b||^2$ に等しくなります
+- コスト = 0 は完全な制約充足を示します
+- より高いコスト値はより大きな制約違反を示します
+## まとめ
+
+### 達成した内容
+
+このチュートリアルでは、以下を成功裏に実施しました：
+
+1. **実際の最適化問題の読み込み**：QOBLIBベンチマークライブラリから困難なMarket Splitインスタンスを取得しました [2]
+2. **QUBO形式への変換**：制約付き問題を制約なし二次定式化に変換しました [3]
+3. **先進的な量子アルゴリズムの活用**：Kipu Quantumの反断熱項を含むbf-DCQOアルゴリズムを使用しました [1]
+4. **最適解の取得**：すべての制約を満たす実行可能解を発見しました
+
+### 主な知見
+
+**アルゴリズムの革新**：bf-DCQOアルゴリズムは重要な進歩を示しています [\[1\]](#references)：
+- デジタル量子アニーリングと比べて**10分の1のゲート数**
+- 変分法の約100回に対し**約10回のイテレーション**
+- 回路効率による**組み込みのエラー耐性**
+
+**反断熱項**：基底状態の忠実度を維持しながら高速な量子進化を可能にし、現在のノイズの多いハードウェアで量子最適化を実用的にします [\[1\]](#references)。
+
+**バイアスフィールドガイダンス**：反復的なバイアスフィールドアプローチにより、各イテレーションが以前に見つかった良好な解の近くから開始できるため、量子強化局所探索の一形態を提供します [\[1\]](#references)。
+
+### 次のステップ
+
+理解を深め、さらに探求するために：
+
+1. **異なるインスタンスを試す**：さまざまなサイズのQOBLIBインスタンスを実験してみてください
+2. **パラメータの調整**：`num_iterations`、`preprocessing_level`、`postprocessing_level` を調整してみてください
+3. **古典的手法との比較**：古典的な最適化ソルバーとベンチマーク比較を行ってください
+4. **異なる戦略を試す**：より良い符号化を見つけるか、問題をHUBO（可能であれば）として定式化してみてください
+5. **自身の分野への応用**：QUBO/HUBO定式化手法を自身の最適化問題に適用してみてください
+
+### 参考文献
+
+[1] IBM Quantum. "[Kipu Quantum Optimization](/guides/kipu-optimization)." *IBM Quantum Documentation*.
+
+[2] QOBLIB - Quantum Optimization Benchmarking Library. Zuse Institute Berlin (ZIB). https://git.zib.de/qopt/qoblib-quantum-optimization-benchmarking-library
+
+[3] Glover, F., Kochenberger, G., & Du, Y. (2019). "Quantum bridge analytics I: a tutorial on formulating and using QUBO models." *4OR: A Quarterly Journal of Operations Research*, 17(4), 335-371.

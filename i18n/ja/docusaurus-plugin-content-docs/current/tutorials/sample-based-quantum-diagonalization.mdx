@@ -1,0 +1,691 @@
+---
+title: "サンプルベース量子対角化による化学ハミルトニアンの解析"
+sidebar_label: "サンプルベース量子対角化による化学ハミルトニアンの解析"
+description: "サンプルベース量子対角化アルゴリズムを使用して、ノイズのある量子ハードウェア上で窒素分子をシミュレーションします。"
+notebook_path: "docs/tutorials/sample-based-quantum-diagonalization.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/sample-based-quantum-diagonalization.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize milli LUCJ CCSD ccsd hcore pvdz */}
+
+*使用量の目安: Heron r2 プロセッサで1分未満（注: これはあくまで目安です。実際の実行時間は異なる場合があります。）*
+## 背景
+
+このチュートリアルでは、59量子ビット量子回路（52システム量子ビット + 7補助量子ビット）から取得したサンプルを用いて、[サンプルベース量子対角化（SQD）アルゴリズム](https://arxiv.org/abs/2405.05068)により、平衡結合長における窒素分子 $\text{N}_2$ の基底状態の近似を求めるために、ノイズのある量子サンプルを後処理する方法を示します。Qiskitベースの実装は [SQD Qiskit アドオン](https://github.com/Qiskit/qiskit-addon-sqd) で利用可能であり、詳細は対応する[ドキュメント](/guides/qiskit-addons-sqd)に記載されています。また、[簡単な例](/guides/qiskit-addons-sqd-get-started)から始めることもできます。
+SQDは、量子システムのハミルトニアンなどの量子演算子の固有値と固有ベクトルを、量子コンピューティングと分散古典コンピューティングを組み合わせて求める手法です。古典分散コンピューティングは、量子プロセッサから得られたサンプルを処理し、それらが張る部分空間にターゲットハミルトニアンを射影して対角化するために使用されます。これにより、SQDは量子ノイズで劣化したサンプルに対してロバストであり、数百万の相互作用項を持つ化学ハミルトニアンのような、厳密対角化手法の限界を超える大規模ハミルトニアンを扱うことができます。SQDベースのワークフローは以下のステップで構成されます：
+
+1. 回路アンザッツを選択し、参照状態（この場合は [Hartree-Fock](https://en.wikipedia.org/wiki/Hartree%E2%80%93Fock_method) 状態）に対して量子コンピュータ上で適用します。
+2. 得られた量子状態からビット列をサンプリングします。
+3. ビット列に対して*自己無撞着配置回復*手順を実行し、基底状態の近似を取得します。
+
+SQDは、ターゲット固有状態がスパースである場合にうまく機能することが知られています。つまり、波動関数が基底状態の集合 $\mathcal{S} = \{|x\rangle \}$ で支持されており、そのサイズが問題のサイズに対して指数的に増大しない場合です。
+
+### 量子化学
+
+分子の性質は、その内部の電子の構造によって大部分が決定されます。フェルミ粒子である電子は、第二量子化と呼ばれる数学的形式を用いて記述できます。その考え方は、いくつかの*軌道*が存在し、それぞれがフェルミ粒子によって空であるか占有されているかのいずれかであるというものです。$N$ 個の軌道を持つ系は、フェルミオン反交換関係を満たすフェルミオン消滅演算子の集合 $\{\hat{a}_p\}_{p=1}^N$ によって記述されます。
+
+$$
+\begin{align*}
+\hat{a}_p \hat{a}_q + \hat{a}_q \hat{a}_p &= 0, \\
+\hat{a}_p \hat{a}_q^\dagger + \hat{a}_q^\dagger \hat{a}_p &= \delta_{pq}.
+\end{align*}
+$$
+
+随伴 $\hat{a}_p^\dagger$ は生成演算子と呼ばれます。
+
+ここまでの説明では、フェルミ粒子の基本的な性質であるスピンを考慮していませんでした。スピンを考慮すると、軌道は*空間軌道*と呼ばれるペアになります。各空間軌道は2つの*スピン軌道*で構成され、一方は「スピン-$\alpha$」、もう一方は「スピン-$\beta$」とラベル付けされます。ここで、空間軌道 $p$ のスピン $\sigma$（$\sigma \in \{\alpha, \beta\}$）を持つスピン軌道に関連する消滅演算子を $\hat{a}_{p\sigma}$ と書きます。$N$ を空間軌道の数とすると、合計 $2N$ 個のスピン軌道が存在します。この系のヒルベルト空間は、2部分ビット列でラベル付けされた $2^{2N}$ 個の正規直交基底ベクトル $\lvert z \rangle = \lvert z_\beta z_\alpha \rangle = \lvert z_{\beta, N} \cdots z_{\beta, 1} z_{\alpha, N} \cdots z_{\alpha, 1} \rangle$ によって張られます。
+
+分子系のハミルトニアンは次のように記述できます。
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++ \frac12
+\sum_{ \substack{prqs\\\sigma\tau} }
+h_{prqs} \,
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma},
+$$
+
+ここで、$h_{pr}$ と $h_{prqs}$ は分子積分と呼ばれる複素数であり、コンピュータプログラムを使用して分子の仕様から計算することができます。このチュートリアルでは、[PySCF](https://pyscf.org/) ソフトウェアパッケージを使用して積分を計算します。
+
+分子ハミルトニアンの導出の詳細については、量子化学の教科書（例えば、Szabo と Ostlund 著 *Modern Quantum Chemistry*）を参照してください。量子化学問題が量子コンピュータにどのようにマッピングされるかの概要については、Qiskit Global Summer School 2024 の講義 [*Mapping Problems to Qubits*](https://youtube.com/watch?v=TyFU6r8uEsE&t=900) をご覧ください。
+
+### 局所ユニタリクラスターヤストロー（LUCJ）アンザッツ
+
+SQDではサンプルを抽出するための量子回路アンザッツが必要です。このチュートリアルでは、物理的な動機付けとハードウェア親和性の両方を兼ね備えた[局所ユニタリクラスターヤストロー（LUCJ）](https://pubs.rsc.org/en/content/articlelanding/2023/sc/d3sc02516k)アンザッツを使用します。
+
+LUCJアンザッツは、一般的なユニタリクラスターヤストロー（UCJ）アンザッツの特殊化された形式であり、UCJアンザッツは次の形式を持ちます。
+
+$$
+  \lvert \Psi \rangle = \prod_{\mu=1}^L e^{\hat{K}_\mu} e^{i \hat{J}_\mu} e^{-\hat{K}_\mu} | \Phi_0 \rangle
+$$
+
+ここで $\lvert \Phi_0 \rangle$ は参照状態であり、通常はHartree-Fock状態が用いられます。また、$\hat{K}_\mu$ と $\hat{J}_\mu$ は次の形式を持ちます。
+
+$$
+\hat{K}_\mu = \sum_{pq, \sigma} K_{pq}^\mu \, \hat{a}^\dagger_{p \sigma} \hat{a}^{\phantom{\dagger}}_{q \sigma}
+\;,\;
+\hat{J}_\mu = \sum_{pq, \sigma\tau} J_{pq,\sigma\tau}^\mu \, \hat{n}_{p \sigma} \hat{n}_{q \tau}
+\;,
+$$
+
+ここで、数演算子を次のように定義しています。
+
+$$
+\hat{n}_{p \sigma} = \hat{a}^\dagger_{p \sigma} \hat{a}^{\phantom{\dagger}}_{p \sigma}.
+$$
+
+演算子 $e^{\hat{K}_\mu}$ は軌道回転であり、線形深度かつ線形接続性を用いた既知のアルゴリズムで実装できます。
+UCJアンザッツの $e^{i \mathcal{J}_k}$ 項を実装するには、全対全接続性またはフェルミオンスワップネットワークの使用が必要であり、接続性が限られたノイズのあるフォールトトレラント前の量子プロセッサでは困難です。*局所* UCJアンザッツの考え方は、$\mathbf{J}^{\alpha\alpha}$ および $\mathbf{J}^{\alpha\beta}$ 行列にスパース性制約を課すことで、限られた接続性を持つ量子ビットトポロジー上で定数深度で実装できるようにすることです。制約は、上三角行列内でゼロでない値を取ることが許される行列要素のインデックスのリストで指定されます（行列は対称であるため、上三角のみを指定する必要があります）。これらのインデックスは、相互作用が許される軌道のペアとして解釈できます。
+
+例として、正方格子量子ビットトポロジーを考えます。$\alpha$ 軌道と $\beta$ 軌道を格子上の平行線に配置し、これらの線の間の接続がはしご型の「横木」を形成するようにできます。以下のようになります：
+
+![正方格子上のLUCJアンザッツの量子ビットマッピング図](/docs/images/tutorials/improving-energy-estimation-of-a-fermionic-hamiltonian-with-sqd/baad4e53-5bfd-4cb4-8027-2ec26d27ecdd.avif)
+
+この配置では、同じスピンを持つ軌道は線形トポロジーで接続され、異なるスピンを持つ軌道は同じ空間軌道を共有する場合に接続されます。これにより、$\mathbf{J}$ 行列に対して以下のインデックス制約が得られます：
+
+$$
+\begin{align*}
+\mathbf{J}^{\alpha\alpha} &: \set{(p, p+1) \; , \; p = 0, \ldots, N-2} \\
+\mathbf{J}^{\alpha\beta} &: \set{(p, p) \;, \; p = 0, \ldots, N-1}
+\end{align*}
+$$
+
+言い換えれば、$\mathbf{J}$ 行列が上三角の指定されたインデックスでのみゼロでない場合、$e^{i \mathcal{J}_k}$ 項はスワップゲートを使用せずに、正方トポロジー上で定数深度で実装できます。もちろん、アンザッツにこのような制約を課すと表現力が低下するため、より多くのアンザッツの繰り返しが必要になる場合があります。
+
+IBM&reg; ハードウェアはヘビーヘックス格子量子ビットトポロジーを持っており、この場合は以下に示す「ジグザグ」パターンを採用できます。このパターンでは、同じスピンを持つ軌道は線形トポロジーの量子ビットにマッピングされ（赤と青の円）、異なるスピンの軌道間の接続は4番目の空間軌道ごとに存在し、補助量子ビット（紫の円）を介して接続が行われます。この場合、インデックス制約は次のようになります。
+
+$$
+\begin{align*}
+\mathbf{J}^{\alpha\alpha} &: \set{(p, p+1) \; , \; p = 0, \ldots, N-2} \\
+\mathbf{J}^{\alpha\beta} &: \set{(p, p) \;, \; p = 0, 4, 8, \ldots (p \leq N-1)}
+\end{align*}
+$$
+
+![ヘビーヘックス格子上のLUCJアンザッツの量子ビットマッピング図](/docs/images/tutorials/improving-energy-estimation-of-a-fermionic-hamiltonian-with-sqd/7e0ee7e1-2d24-417f-ac59-25c58db79aa9.avif)
+
+### 自己無撞着配置回復
+
+自己無撞着配置回復手順は、ノイズのある量子サンプルからできる限り多くの信号を抽出するために設計されています。分子ハミルトニアンは粒子数とスピンZを保存するため、これらの対称性も保存する回路アンザッツを選択することが合理的です。Hartree-Fock状態に適用した場合、ノイズがない設定では、得られる状態は固定された粒子数とスピンZを持ちます。したがって、この状態からサンプリングされた任意のビット列のスピン-$\alpha$ 半分とスピン-$\beta$ 半分は、Hartree-Fock状態と同じ[ハミング重み](https://en.wikipedia.org/wiki/Hamming_weight)を持つはずです。現在の量子プロセッサにはノイズが存在するため、測定されたビット列の一部はこの性質に違反します。単純なポストセレクションではこれらのビット列を破棄しますが、それらのビット列にはまだ何らかの信号が含まれている可能性があるため、これは無駄です。自己無撞着回復手順は、後処理でその信号の一部を回復しようとするものです。この手順は反復的であり、入力として基底状態における各軌道の平均占有数の推定値が必要で、まず生のサンプルから計算されます。手順はループ内で実行され、各反復は以下のステップで構成されます：
+
+1. 指定された対称性に違反する各ビット列について、現在の平均軌道占有数の推定値にビット列を近づけるように設計された確率的手順でビットを反転させ、新しいビット列を取得します。
+2. 対称性を満たすすべての古いビット列と新しいビット列を収集し、事前に選択した固定サイズの部分集合をサブサンプリングします。
+3. 各ビット列の部分集合について、対応する基底ベクトルが張る部分空間にハミルトニアンを射影し（これらの基底ベクトルの説明は[前のセクション](#quantum-chemistry)を参照）、古典コンピュータ上で射影ハミルトニアンの基底状態推定を計算します。
+4. 最もエネルギーが低い基底状態推定で、平均軌道占有数の推定値を更新します。
+
+### SQDワークフロー図
+
+SQDワークフローは以下の図に示されています：
+
+![SQDアルゴリズムのワークフロー図](/docs/images/tutorials/improving-energy-estimation-of-a-fermionic-hamiltonian-with-sqd/fd7e816f-4e2e-4dd7-a7da-f71afb9ca68d.avif)
+## 要件
+
+このチュートリアルを開始する前に、以下がインストールされていることを確認してください：
+
+- Qiskit SDK v1.0 以降、[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) サポート付き
+- Qiskit Runtime v0.22 以降（`pip install qiskit-ibm-runtime`）
+- SQD Qiskit アドオン v0.11 以降（`pip install qiskit-addon-sqd`）
+- ffsim v0.0.58 以降（`pip install ffsim`）
+## セットアップ
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q ffsim qiskit-addon-sqd
+```
+
+```python
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+import ffsim
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit import QuantumCircuit, QuantumRegister
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+```
+
+## ステップ 1: 古典的な入力を量子問題にマッピングする
+
+このチュートリアルでは、cc-pVDZ基底セットにおける平衡状態の分子の基底状態の近似を求めます。まず、分子とその性質を指定します。
+
+```python
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],
+    basis="cc-pvdz",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)
+
+# Store reference energy from SCI calculation performed separately
+exact_energy = -109.22690201485733
+```
+
+```text
+converged SCF energy = -108.929838385609
+```
+
+LUCJアンザッツ回路を構築する前に、まず以下のコードセルでCCSD計算を実行します。この計算から得られる [$t_1$ および $t_2$ 振幅](https://en.wikipedia.org/wiki/Coupled_cluster#Cluster_operator) は、アンザッツのパラメータの初期化に使用されます。
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(
+    scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]
+).run()
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.2177884185543  E_corr = -0.2879500329450045
+```
+
+次に、[ffsim](https://github.com/qiskit-community/ffsim) を使用してアンザッツ回路を作成します。この分子は閉殻Hartree-Fock状態を持つため、UCJアンザッツのスピンバランス型変種である [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced) を使用します。ヘビーヘックス格子量子ビットトポロジーに適した相互作用ペアを渡します（[LUCJアンザッツに関する背景セクション](#local-unitary-cluster-jastrow-lucj-ansatz)を参照）。`from_t_amplitudes` メソッドで `optimize=True` を設定して、$t_2$ 振幅の「圧縮」二重因子分解を有効にします（詳細はffismのドキュメントの [The local unitary cluster Jastrow (LUCJ) ansatz](https://qiskit-community.github.io/ffsim/explanations/lucj.html#Parameter-initialization-from-CCSD) を参照してください）。
+
+```python
+n_reps = 1
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+    # Setting optimize=True enables the "compressed" factorization
+    optimize=True,
+    # Limit the number of optimization iterations to prevent the code cell from running
+    # too long. Removing this line may improve results.
+    options=dict(maxiter=1000),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+```
+
+## ステップ 2: 量子ハードウェア実行のための問題の最適化
+次に、ターゲットハードウェアに対して回路を最適化します。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=133
+)
+
+print(f"Using backend {backend.name}")
+```
+
+```text
+Using backend ibm_fez
+```
+
+アンザッツを最適化し、ハードウェア互換にするために、以下のステップを推奨します。
+
+- ターゲットハードウェアから、前述の「ジグザグ」パターンに従う物理量子ビット（`initial_layout`）を選択します。このパターンで量子ビットを配置することにより、ゲート数の少ない効率的なハードウェア互換回路が得られます。ここでは、選択したレイアウトに関連するエラーを最小化するスコアリングヒューリスティックを使用して、「ジグザグ」パターンの選択を自動化するコードを含めています。
+- Qiskitの [generate_preset_pass_manager](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager) 関数を使用して、`backend` と `initial_layout` を指定したステージ化パスマネージャを生成します。
+- ステージ化パスマネージャの `pre_init` ステージを `ffsim.qiskit.PRE_INIT` に設定します。`ffsim.qiskit.PRE_INIT` には、ゲートを軌道回転に分解し、軌道回転を統合するQiskitトランスパイラパスが含まれており、最終回路のゲート数が削減されます。
+- パスマネージャを回路に対して実行します。
+<details>
+<summary>「ジグザグ」レイアウトの自動選択のためのコード</summary>
+
+</details>
+
+```python
+from typing import Sequence
+
+import rustworkx
+from qiskit.providers import BackendV2
+from rustworkx import NoEdgeBetweenNodes, PyGraph
+
+IBM_TWO_Q_GATES = {"cx", "ecr", "cz"}
+
+def create_linear_chains(num_orbitals: int) -> PyGraph:
+    """In zig-zag layout, there are two linear chains (with connecting qubits between
+    the chains). This function creates those two linear chains: a rustworkx PyGraph
+    with two disconnected linear chains. Each chain contains `num_orbitals` number
+    of nodes, that is, in the final graph there are `2 * num_orbitals` number of nodes.
+
+    Args:
+        num_orbitals (int): Number orbitals or nodes in each linear chain. They are
+            also known as alpha-alpha interaction qubits.
+
+    Returns:
+        A rustworkx.PyGraph with two disconnected linear chains each with `num_orbitals`
+            number of nodes.
+    """
+    G = rustworkx.PyGraph()
+
+    for n in range(num_orbitals):
+        G.add_node(n)
+
+    for n in range(num_orbitals - 1):
+        G.add_edge(n, n + 1, None)
+
+    for n in range(num_orbitals, 2 * num_orbitals):
+        G.add_node(n)
+
+    for n in range(num_orbitals, 2 * num_orbitals - 1):
+        G.add_edge(n, n + 1, None)
+
+    return G
+
+def create_lucj_zigzag_layout(
+    num_orbitals: int, backend_coupling_graph: PyGraph
+) -> tuple[PyGraph, int]:
+    """This function creates the complete zigzag graph that 'can be mapped' to an IBM QPU with
+    heavy-hex connectivity (the zigzag must be an isomorphic sub-graph to the QPU/backend
+    coupling graph for it to be mapped).
+    The zigzag pattern includes both linear chains (alpha-alpha interactions) and connecting
+    qubits between the linear chains (alpha-beta interactions).
+
+    Args:
+        num_orbitals (int): Number of orbitals, that is, number of nodes in each alpha-alpha linear chain.
+        backend_coupling_graph (PyGraph): The coupling graph of the backend on which the LUCJ ansatz
+            will be mapped and run. This function takes the coupling graph as a undirected
+            `rustworkx.PyGraph` where there is only one 'undirected' edge between two nodes,
+            that is, qubits. Usually, the coupling graph of a IBM backend is directed (for example, Eagle devices
+            such as ibm_brisbane) or may have two edges between two nodes (for example, Heron `ibm_torino`).
+            A user needs to be make such graphs undirected and/or remove duplicate edges to make them
+            compatible with this function.
+
+    Returns:
+        G_new (PyGraph): The graph with IBM backend compliant zigzag pattern.
+        num_alpha_beta_qubits (int): Number of connecting qubits between the linear chains
+            in the zigzag pattern. While we want as many connecting (alpha-beta) qubits between
+            the linear (alpha-alpha) chains, we cannot accommodate all due to qubit and connectivity
+            constraints of backends. This is the maximum number of connecting qubits the zigzag pattern
+            can have while being backend compliant (that is, isomorphic to backend coupling graph).
+    """
+    isomorphic = False
+    G = create_linear_chains(num_orbitals=num_orbitals)
+
+    num_iters = num_orbitals
+    while not isomorphic:
+        G_new = G.copy()
+        num_alpha_beta_qubits = 0
+        for n in range(num_iters):
+            if n % 4 == 0:
+                new_node = 2 * num_orbitals + num_alpha_beta_qubits
+                G_new.add_node(new_node)
+                G_new.add_edge(n, new_node, None)
+                G_new.add_edge(new_node, n + num_orbitals, None)
+                num_alpha_beta_qubits = num_alpha_beta_qubits + 1
+        isomorphic = rustworkx.is_subgraph_isomorphic(
+            backend_coupling_graph, G_new
+        )
+        num_iters -= 1
+
+    return G_new, num_alpha_beta_qubits
+
+def lightweight_layout_error_scoring(
+    backend: BackendV2,
+    virtual_edges: Sequence[Sequence[int]],
+    physical_layouts: Sequence[int],
+    two_q_gate_name: str,
+) -> list[list[list[int], float]]:
+    """Lightweight and heuristic function to score isomorphic layouts. There can be many zigzag patterns,
+    each with different set of physical qubits, that can be mapped to a backend. Some of them may
+    include less noise qubits and couplings than others. This function computes a simple error score
+    for each such layout. It sums up 2Q gate error for all couplings in the zigzag pattern (layout) and
+    measurement of errors of physical qubits in the layout to compute the error score.
+
+    Note:
+        This lightweight scoring can be refined using concepts such as mapomatic.
+
+    Args:
+        backend (BackendV2): A backend.
+        virtual_edges (Sequence[Sequence[int]]): Edges in the device compliant zigzag pattern where
+            nodes are numbered from 0 to (2 * num_orbitals + num_alpha_beta_qubits).
+        physical_layouts (Sequence[int]): All physical layouts of the zigzag pattern that are isomorphic
+            to each other and to the larger backend coupling map.
+        two_q_gate_name (str): The name of the two-qubit gate of the backend. The name is used for fetching
+            two-qubit gate error from backend properties.
+
+    Returns:
+        scores (list): A list of lists where each sublist contains two items. First item is the layout, and
+            second item is a float representing error score of the layout. The layouts in the `scores` are
+            sorted in the ascending order of error score.
+    """
+    props = backend.properties()
+    scores = []
+    for layout in physical_layouts:
+        total_2q_error = 0
+        for edge in virtual_edges:
+            physical_edge = (layout[edge[0]], layout[edge[1]])
+            try:
+                ge = props.gate_error(two_q_gate_name, physical_edge)
+            except Exception:
+                ge = props.gate_error(two_q_gate_name, physical_edge[::-1])
+            total_2q_error += ge
+        total_measurement_error = 0
+        for qubit in layout:
+            meas_error = props.readout_error(qubit)
+            total_measurement_error += meas_error
+        scores.append([layout, total_2q_error + total_measurement_error])
+
+    return sorted(scores, key=lambda x: x[1])
+
+def _make_backend_cmap_pygraph(backend: BackendV2) -> PyGraph:
+    graph = backend.coupling_map.graph
+    if not graph.is_symmetric():
+        graph.make_symmetric()
+    backend_coupling_graph = graph.to_undirected()
+
+    edge_list = backend_coupling_graph.edge_list()
+    removed_edge = []
+    for edge in edge_list:
+        if set(edge) in removed_edge:
+            continue
+        try:
+            backend_coupling_graph.remove_edge(edge[0], edge[1])
+            removed_edge.append(set(edge))
+        except NoEdgeBetweenNodes:
+            pass
+
+    return backend_coupling_graph
+
+def get_zigzag_physical_layout(
+    num_orbitals: int, backend: BackendV2, score_layouts: bool = True
+) -> tuple[list[int], int]:
+    """The main function that generates the zigzag pattern with physical qubits that can be used
+    as an `intial_layout` in a preset passmanager/transpiler.
+
+    Args:
+        num_orbitals (int): Number of orbitals.
+        backend (BackendV2): A backend.
+        score_layouts (bool): Optional. If `True`, it uses the `lightweight_layout_error_scoring`
+            function to score the isomorphic layouts and returns the layout with less erroneous qubits.
+            If `False`, returns the first isomorphic subgraph.
+
+    Returns:
+        A tuple of device compliant layout (list[int]) with zigzag pattern and an int representing
+            number of alpha-beta-interactions.
+    """
+    backend_coupling_graph = _make_backend_cmap_pygraph(backend=backend)
+
+    G, num_alpha_beta_qubits = create_lucj_zigzag_layout(
+        num_orbitals=num_orbitals,
+        backend_coupling_graph=backend_coupling_graph,
+    )
+
+    isomorphic_mappings = rustworkx.vf2_mapping(
+        backend_coupling_graph, G, subgraph=True
+    )
+    isomorphic_mappings = list(isomorphic_mappings)
+
+    edges = list(G.edge_list())
+
+    layouts = []
+    for mapping in isomorphic_mappings:
+        initial_layout = [None] * (2 * num_orbitals + num_alpha_beta_qubits)
+        for key, value in mapping.items():
+            initial_layout[value] = key
+        layouts.append(initial_layout)
+
+    two_q_gate_name = IBM_TWO_Q_GATES.intersection(
+        backend.configuration().basis_gates
+    ).pop()
+
+    if score_layouts:
+        scores = lightweight_layout_error_scoring(
+            backend=backend,
+            virtual_edges=edges,
+            physical_layouts=layouts,
+            two_q_gate_name=two_q_gate_name,
+        )
+
+        return scores[0][0][:-num_alpha_beta_qubits], num_alpha_beta_qubits
+
+    return layouts[0][:-num_alpha_beta_qubits], num_alpha_beta_qubits
+```
+
+```python
+initial_layout, _ = get_zigzag_physical_layout(num_orbitals, backend=backend)
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=initial_layout
+)
+
+# without PRE_INIT passes
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/o pre-init passes): {isa_circuit.count_ops()}")
+
+# with PRE_INIT passes
+# We will use the circuit generated by this pass manager for hardware execution
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
+```
+
+```text
+Gate counts (w/o pre-init passes): OrderedDict({'rz': 12438, 'sx': 12169, 'cz': 3986, 'x': 573, 'measure': 52, 'barrier': 1})
+Gate counts (w/ pre-init passes): OrderedDict({'sx': 7059, 'rz': 6962, 'cz': 1876, 'measure': 52, 'x': 35, 'barrier': 1})
+```
+
+## ステップ 3: Qiskit プリミティブを使用して実行する
+ハードウェア実行用に回路を最適化した後、ターゲットハードウェア上で回路を実行し、基底状態エネルギー推定のためのサンプルを収集する準備が整います。回路は1つだけなので、Qiskit Runtime の [ジョブ実行モード](/guides/execution-modes) を使用して回路を実行します。
+
+```python
+sampler = Sampler(mode=backend)
+job = sampler.run([isa_circuit], shots=100_000)
+```
+
+```python
+primitive_result = job.result()
+pub_result = primitive_result[0]
+```
+
+## ステップ 4: 後処理を行い、結果を所望の古典フォーマットで返す
+次に、`diagonalize_fermionic_hamiltonian` 関数を使用してハミルトニアンの基底状態エネルギーを推定します。この関数は、自己無撞着配置回復（self-consistent configuration recovery）手続きを実行し、ノイズを含む量子サンプルを反復的に改善してエネルギー推定値の精度を向上させます。中間結果を後の解析のために保存できるよう、コールバック関数を渡します。`diagonalize_fermionic_hamiltonian` の引数の説明については、[API ドキュメント](https://docs.quantum.ibm.com/api/qiskit-addon-sqd/fermion#diagonalize_fermionic_hamiltonian) を参照してください。
+
+```python
+from functools import partial
+
+from qiskit_addon_sqd.fermion import (
+    SCIResult,
+    diagonalize_fermionic_hamiltonian,
+    solve_sci_batch,
+)
+
+# SQD options
+energy_tol = 1e-3
+occupancies_tol = 1e-3
+max_iterations = 5
+
+# Eigenstate solver options
+num_batches = 3
+samples_per_batch = 300
+symmetrize_spin = True
+carryover_threshold = 1e-4
+max_cycle = 200
+
+# Pass options to the built-in eigensolver. If you just want to use the defaults,
+# you can omit this step, in which case you would not specify the sci_solver argument
+# in the call to diagonalize_fermionic_hamiltonian below.
+sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=max_cycle)
+
+# List to capture intermediate results
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy + nuclear_repulsion_energy}")
+        print(
+            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+        )
+
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    pub_result.data.meas,
+    samples_per_batch=samples_per_batch,
+    norb=num_orbitals,
+    nelec=nelec,
+    num_batches=num_batches,
+    energy_tol=energy_tol,
+    occupancies_tol=occupancies_tol,
+    max_iterations=max_iterations,
+    sci_solver=sci_solver,
+    symmetrize_spin=symmetrize_spin,
+    carryover_threshold=carryover_threshold,
+    callback=callback,
+    seed=12345,
+)
+```
+
+```text
+Iteration 1
+	Subsample 0
+		Energy: -108.97781410104506
+		Subspace dimension: 28561
+	Subsample 1
+		Energy: -108.97781410104506
+		Subspace dimension: 28561
+	Subsample 2
+		Energy: -108.97781410104506
+		Subspace dimension: 28561
+Iteration 2
+	Subsample 0
+		Energy: -109.05150860754739
+		Subspace dimension: 287296
+	Subsample 1
+		Energy: -109.08152283263908
+		Subspace dimension: 264196
+	Subsample 2
+		Energy: -109.11636893067873
+		Subspace dimension: 284089
+Iteration 3
+	Subsample 0
+		Energy: -109.15878555367885
+		Subspace dimension: 429025
+	Subsample 1
+		Energy: -109.16462831275786
+		Subspace dimension: 473344
+	Subsample 2
+		Energy: -109.15895026995382
+		Subspace dimension: 435600
+Iteration 4
+	Subsample 0
+		Energy: -109.17784051223317
+		Subspace dimension: 622521
+	Subsample 1
+		Energy: -109.1774651326829
+		Subspace dimension: 657721
+	Subsample 2
+		Energy: -109.18085212360191
+		Subspace dimension: 617796
+Iteration 5
+	Subsample 0
+		Energy: -109.18636242518915
+		Subspace dimension: 815409
+	Subsample 1
+		Energy: -109.18451014767518
+		Subspace dimension: 837225
+	Subsample 2
+		Energy: -109.18333728638888
+		Subspace dimension: 857476
+```
+
+### 結果の可視化
+
+最初のプロットは、数回の反復後に基底状態エネルギーを ``~41 mH`` 以内で推定できていることを示しています（化学精度は一般に ``1 kcal/mol`` $\approx$ ``1.6 mH`` とされています）。配置回復の反復回数を増やすか、バッチあたりのサンプル数を増やすことで、エネルギーの精度をさらに向上させることができます。
+
+2番目のプロットは、最終反復後の各空間軌道の平均占有数を示しています。スピンアップ電子とスピンダウン電子の両方が、解において高い確率で最初の5つの軌道を占有していることがわかります。
+
+```python
+# Data for energies plot
+x1 = range(len(result_history))
+min_e = [
+    min(result, key=lambda res: res.energy).energy + nuclear_repulsion_energy
+    for result in result_history
+]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-4)
+axs[0].axhline(
+    y=chem_accuracy,
+    color="#BF5700",
+    linestyle="--",
+    label="chemical accuracy",
+)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sample-based-quantum-diagonalization/extracted-outputs/caffd888-e89c-4aa9-8bae-4d1bb723b35e-0.avif)
+
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックをお寄せいただくため、短いアンケートにご協力ください。皆様のご意見は、コンテンツの充実とユーザーエクスペリエンスの向上に役立てさせていただきます。

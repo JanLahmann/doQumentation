@@ -1,0 +1,250 @@
+---
+title: "VQEによるハイゼンベルグ鎖の基底状態エネルギー推定"
+sidebar_label: "VQEによるハイゼンベルグ鎖の基底状態エネルギー推定"
+description: "ハイゼンベルグ鎖をシミュレーションし、その基底状態エネルギーを推定するためのQiskitパターンを構築、デプロイ、実行します。"
+notebook_path: "docs/tutorials/spin-chain-vqe.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/spin-chain-vqe.ipynb" />
+
+
+
+# VQEによるハイゼンベルグ鎖の基底状態エネルギー推定
+*使用量の目安: Eagle r3プロセッサで約2分（注意: これはあくまで目安です。実際の実行時間は異なる場合があります。）*
+## 背景
+
+このチュートリアルでは、ハイゼンベルグ鎖をシミュレーションし、その基底状態エネルギーを推定するための`Qiskitパターン`を構築、デプロイ、実行する方法を説明します。`Qiskitパターン`の詳細や、`Qiskit Serverless`を使用してクラウドにデプロイしマネージド実行を行う方法については、[IBM Quantum&reg; Platformのドキュメントページ](/guides/serverless)をご覧ください。
+## 前提条件
+
+このチュートリアルを開始する前に、以下がインストールされていることを確認してください：
+
+* Qiskit SDK v1.2以降（[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き）
+* Qiskit Runtime v0.28以降（`pip install qiskit-ibm-runtime`）
+* Qiskit Serverless（pip install qiskit_serverless）
+* IBM Catalog（pip install qiskit-ibm-catalog）
+## セットアップ
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from scipy.optimize import minimize
+from typing import Sequence
+
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.primitives.base import BaseEstimatorV2
+from qiskit.circuit.library import XGate
+from qiskit.circuit.library import efficient_su2
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session, Estimator
+
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+```
+
+```python
+def visualize_results(results):
+    plt.plot(results["cost_history"], lw=2)
+    plt.xlabel("Iteration")
+    plt.ylabel("Energy")
+    plt.show()
+
+def build_callback(
+    ansatz: QuantumCircuit,
+    hamiltonian: SparsePauliOp,
+    estimator: BaseEstimatorV2,
+    callback_dict: dict,
+):
+    def callback(current_vector):
+        # Keep track of the number of iterations
+        callback_dict["iters"] += 1
+        # Set the prev_vector to the latest one
+        callback_dict["prev_vector"] = current_vector
+        # Compute the value of the cost function at the current vector
+        current_cost = (
+            estimator.run([(ansatz, hamiltonian, [current_vector])])
+            .result()[0]
+            .data.evs[0]
+        )
+        callback_dict["cost_history"].append(current_cost)
+        # Print to screen on single line
+        print(
+            "Iters. done: {} [Current cost: {}]".format(
+                callback_dict["iters"], current_cost
+            ),
+            end="\r",
+            flush=True,
+        )
+
+    return callback
+```
+
+## ステップ1: 古典的な入力を量子問題にマッピングする
+
+*   入力: スピンの数
+*   出力: ハイゼンベルグ鎖をモデル化するアンザッツとハミルトニアン
+
+10スピンのハイゼンベルグ鎖をモデル化するアンザッツとハミルトニアンを構築します。まず、汎用的なパッケージをインポートし、いくつかのヘルパー関数を作成します。
+
+```python
+num_spins = 10
+ansatz = efficient_su2(num_qubits=num_spins, reps=3)
+
+# Remember to insert your token in the QiskitRuntimeService constructor
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=num_spins, simulator=False
+)
+
+coupling = backend.target.build_coupling_map()
+reduced_coupling = coupling.reduce(list(range(num_spins)))
+
+edge_list = reduced_coupling.graph.edge_list()
+ham_list = []
+
+for edge in edge_list:
+    ham_list.append(("ZZ", edge, 0.5))
+    ham_list.append(("YY", edge, 0.5))
+    ham_list.append(("XX", edge, 0.5))
+
+for qubit in reduced_coupling.physical_qubits:
+    ham_list.append(("Z", [qubit], np.random.random() * 2 - 1))
+
+hamiltonian = SparsePauliOp.from_sparse_list(ham_list, num_qubits=num_spins)
+
+ansatz.draw("mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/spin-chain-vqe/extracted-outputs/7e8d2f10-f1d6-4ec2-bac9-9db23499c9e1-0.avif)
+
+## ステップ2: 量子ハードウェア実行向けに問題を最適化する
+
+*   入力: 抽象回路、オブザーバブル
+*   出力: 選択したQPU向けに最適化されたターゲット回路とオブザーバブル
+
+Qiskitの`generate_preset_pass_manager`関数を使用して、選択したQPUに対する回路の最適化ルーチンを自動的に生成します。プリセットパスマネージャーの中で最も高い最適化レベルを提供する`optimization_level=3`を選択します。また、デコヒーレンスエラーを抑制するために、`ALAPScheduleAnalysis`および`PadDynamicalDecoupling`スケジューリングパスも組み込みます。
+
+```python
+target = backend.target
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(durations=target.durations()),
+        PadDynamicalDecoupling(
+            durations=target.durations(),
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+ansatz_ibm = pm.run(ansatz)
+observable_ibm = hamiltonian.apply_layout(ansatz_ibm.layout)
+ansatz_ibm.draw("mpl", scale=0.6, style="iqp", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/spin-chain-vqe/extracted-outputs/a0a5f1c8-5c31-4d9f-ae81-37bd67271d44-0.avif)
+
+## ステップ3: Qiskitプリミティブを使用して実行する
+
+*   入力: ターゲット回路とオブザーバブル
+*   出力: 最適化の結果
+
+回路パラメータを最適化することで、システムの推定基底状態エネルギーを最小化します。最適化中のコスト関数の評価には、Qiskit Runtimeの`Estimator`プリミティブを使用します。
+
+このデモでは、`qiskit-ibm-runtime`プリミティブを使用してQPU上で実行します。`qiskit`の状態ベクトルベースのプリミティブで実行する場合は、Qiskit IBM Runtimeプリミティブを使用しているコードブロックを、コメントアウトされたブロックに置き換えてください。
+
+```python
+# SciPy minimizer routine
+def cost_func(
+    params: Sequence,
+    ansatz: QuantumCircuit,
+    hamiltonian: SparsePauliOp,
+    estimator: BaseEstimatorV2,
+) -> float:
+    """Ground state energy evaluation."""
+    return (
+        estimator.run([(ansatz, hamiltonian, [params])])
+        .result()[0]
+        .data.evs[0]
+    )
+
+num_params = ansatz_ibm.num_parameters
+params = 2 * np.pi * np.random.random(num_params)
+
+callback_dict = {
+    "prev_vector": None,
+    "iters": 0,
+    "cost_history": [],
+}
+
+# Evaluate the problem on a QPU by using Qiskit IBM Runtime
+with Session(backend=backend) as session:
+    estimator = Estimator()
+    callback = build_callback(
+        ansatz_ibm, observable_ibm, estimator, callback_dict
+    )
+    res = minimize(
+        cost_func,
+        x0=params,
+        args=(ansatz_ibm, observable_ibm, estimator),
+        callback=callback,
+        method="cobyla",
+        options={"maxiter": 100},
+    )
+
+visualize_results(callback_dict)
+```
+
+## ステップ4: 後処理を行い、結果を所望の古典的形式で返す
+
+*   入力: 最適化中の基底状態エネルギー推定値
+*   出力: 推定された基底状態エネルギー
+
+```python
+print(f'Estimated ground state energy: {res["fun"]}')
+```
+
+## Qiskitパターンをクラウドにデプロイする
+
+これを行うには、上記のソースコードをファイル`./source/heisenberg.py`に移動し、入力を受け取り最終的な解を返すスクリプトとしてコードをラップし、最後に`qiskit-ibm-catalog`の`QiskitFunction`クラスを使用してリモートクラスターにアップロードします。外部依存関係の指定、入力引数の受け渡しなどの詳細については、[Qiskit Serverlessガイド](/guides/serverless)をご参照ください。
+
+パターンへの入力は、鎖のスピン数です。出力は、システムの基底状態エネルギーの推定値です。
+
+```python
+# Authenticate to the remote cluster and submit the pattern for remote execution
+serverless = QiskitServerless()
+heisenberg_function = QiskitFunction(
+    title="ibm_heisenberg",
+    entrypoint="heisenberg.py",
+    working_dir="./source/",
+)
+serverless.upload(heisenberg_function)
+```
+
+### Qiskitパターンをマネージドサービスとして実行する
+
+パターンをクラウドにアップロードしたら、`QiskitServerless`クライアントを使用して簡単に実行できます。
+
+```python
+# Run the pattern on the remote cluster
+
+ibm_heisenberg = serverless.load("ibm_heisenberg")
+job = serverless.run(ibm_heisenberg)
+solution = job.result()
+
+print(solution)
+print(job.logs())
+```
+
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックをお寄せいただくため、短いアンケートにご協力ください。お寄せいただいたご意見は、コンテンツの改善やユーザー体験の向上に役立てさせていただきます。
+
+[アンケートはこちら](https://your.feedback.ibm.com/jfe/form/SV_bfuBwfNeeFBxnim)

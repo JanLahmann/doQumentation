@@ -1,0 +1,362 @@
+---
+title: "Поєднання методів пом'якшення помилок із примітивом Estimator"
+sidebar_label: "Поєднання методів пом'якшення помилок із примітивом Estimator"
+description: "Поєднуйте методи пом'якшення помилок для експериментів утилітарного масштабу з використанням квантових процесорів IBM Quantum на 100+ кубітів та примітива Qiskit Runtime Estimator."
+notebook_path: "docs/tutorials/combine-error-mitigation-techniques.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/combine-error-mitigation-techniques.ipynb" />
+
+
+
+*Оцінка використання: сім хвилин на процесорі Heron r2 (ПРИМІТКА: це лише оцінка. Ваш час виконання може відрізнятися.)*
+
+## Передумови
+
+У цьому покроковому посібнику розглядаються параметри придушення та пом'якшення помилок, доступні з примітивом Estimator від Qiskit Runtime. Ви побудуєте схему та спостережувану величину, а потім надішлете завдання за допомогою примітива Estimator з різними комбінаціями налаштувань пом'якшення помилок. Потім Ви побудуєте графіки результатів, щоб спостерігати вплив різних налаштувань. Більшість прикладів використовують 10-кубітну схему для зручності візуалізації, а наприкінці Ви зможете масштабувати робочий процес до 50 кубітів.
+
+Ось параметри придушення та пом'якшення помилок, які Ви будете використовувати:
+
+- Динамічне розв'язання (Dynamical decoupling)
+- Пом'якшення помилок вимірювання
+- Гейт-твірлінг (Gate twirling)
+- Екстраполяція нульового шуму (ZNE)
+## Вимоги
+
+Перш ніж розпочати цей покроковий посібник, переконайтеся, що у Вас встановлено наступне:
+
+- Qiskit SDK v2.1 або новіша версія з підтримкою [візуалізації](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 або новіша версія (`pip install qiskit-ibm-runtime`)
+## Налаштування
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+from qiskit.circuit.library import efficient_su2, unitary_overlap
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Batch, EstimatorV2 as Estimator
+```
+
+## Крок 1: Відображення класичних вхідних даних на квантову задачу
+
+У цьому покроковому посібнику передбачається, що класична задача вже була відображена на квантову. Почніть з побудови схеми та спостережуваної величини для вимірювання. Хоча методи, що використовуються тут, застосовні до багатьох різних типів схем, для простоти в цьому посібнику використовується схема [`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2), що входить до бібліотеки схем Qiskit.
+
+`efficient_su2` — це параметризована квантова схема, розроблена для ефективного виконання на квантовому обладнанні з обмеженою зв'язністю кубітів, і водночас достатньо виразна для розв'язання задач у таких прикладних областях, як оптимізація та хімія. Вона будується шляхом чергування шарів параметризованих однокубітних гейтів із шаром, що містить фіксований шаблон двокубітних гейтів, для обраної кількості повторень. Шаблон двокубітних гейтів може бути визначений користувачем. Тут Ви можете використати вбудований шаблон `pairwise`, оскільки він мінімізує глибину схеми, упаковуючи двокубітні гейти якомога щільніше. Цей шаблон може бути виконаний з використанням лише лінійної зв'язності кубітів.
+
+```python
+n_qubits = 10
+reps = 1
+
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+
+circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-0.avif)
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-1.avif)
+
+Як спостережувану величину візьмемо оператор Паулі $Z$, що діє на останній кубіт, $Z I \cdots I$.
+
+```python
+# Z on the last qubit (index -1) with coefficient 1.0
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+```
+
+На цьому етапі Ви могли б перейти до запуску схеми та вимірювання спостережуваної величини. Однак Ви також хочете порівняти результат квантового пристрою з правильною відповіддю — тобто теоретичним значенням спостережуваної величини, якби схема була виконана без помилок. Для невеликих квантових схем Ви можете обчислити це значення шляхом моделювання схеми на класичному комп'ютері, але це неможливо для більших схем утилітарного масштабу. Ви можете обійти цю проблему за допомогою техніки «дзеркальної схеми» (також відомої як «обчислення-зворотне обчислення»), яка корисна для порівняльного аналізу продуктивності квантових пристроїв.
+
+#### Дзеркальна схема
+
+У техніці дзеркальної схеми Ви об'єднуєте схему з її оберненою схемою, яка формується шляхом інверсії кожного гейта схеми у зворотному порядку. Результуюча схема реалізує оператор тотожності, який можна тривіально змоделювати. Оскільки структура оригінальної схеми зберігається в дзеркальній схемі, виконання дзеркальної схеми все ще дає уявлення про те, як квантовий пристрій працюватиме з оригінальною схемою.
+
+Наступна комірка коду призначає випадкові параметри Вашій схемі, а потім будує дзеркальну схему за допомогою класу [`unitary_overlap`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.unitary_overlap). Перед дзеркальним відображенням схеми до неї додається інструкція [бар'єру](https://docs.quantum.ibm.com/api/qiskit/circuit#qiskit.circuit.Barrier), щоб запобігти об'єднанню транспілятором двох частин схеми по обидва боки бар'єру. Без бар'єру транспілятор об'єднав би оригінальну схему з її оберненою, що призвело б до транспільованої схеми без жодних гейтів.
+
+```python
+# Generate random parameters
+rng = np.random.default_rng(1234)
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+
+# Assign the parameters to the circuit
+assigned_circuit = circuit.assign_parameters(params)
+
+# Add a barrier to prevent circuit optimization of mirrored operators
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+mirror_circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-0.avif)
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-1.avif)
+
+## Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+
+Ви повинні оптимізувати свою схему перед запуском на обладнанні. Цей процес включає кілька кроків:
+
+- Вибір розкладки кубітів, яка відображає віртуальні кубіти Вашої схеми на фізичні кубіти обладнання.
+- Вставка гейтів swap за потреби для маршрутизації взаємодій між кубітами, що не з'єднані між собою.
+- Трансляція гейтів у Вашій схемі до інструкцій [архітектури набору інструкцій (ISA)](/guides/transpile#instruction-set-architecture), які можуть бути безпосередньо виконані на обладнанні.
+- Виконання оптимізацій схеми для мінімізації глибини схеми та кількості гейтів.
+
+Транспілятор, вбудований у Qiskit, може виконати всі ці кроки за Вас. Оскільки цей приклад використовує апаратно-ефективну схему, транспілятор повинен мати змогу вибрати розкладку кубітів, яка не потребує вставки жодних гейтів swap для маршрутизації взаємодій.
+
+Вам потрібно вибрати апаратний пристрій для використання перед оптимізацією схеми. Наступна комірка коду запитує найменш завантажений пристрій з щонайменше 127 кубітами.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Ви можете транспілювати свою схему для обраного бекенда, створивши менеджер проходів, а потім запустивши його на схемі. Простий спосіб створити менеджер проходів — використати функцію [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager). Див. [Транспіляція з менеджерами проходів](/guides/transpile-with-pass-managers) для більш детального пояснення транспіляції з менеджерами проходів.
+
+```python
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=1234
+)
+isa_circuit = pass_manager.run(mirror_circuit)
+
+isa_circuit.draw("mpl", idle_wires=False, scale=0.7, fold=-1)
+```
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-0.avif)
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-1.avif)
+
+Транспільована схема тепер містить лише інструкції ISA. Однокубітні гейти були розкладені у термінах гейтів $\sqrt{X}$ та обертань $R_z$, а гейти CX були розкладені на [гейти ECR](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.ECRGate#ecrgate) та однокубітні обертання.
+
+Процес транспіляції відобразив віртуальні кубіти схеми на фізичні кубіти обладнання. Інформація про розкладку кубітів зберігається в атрибуті `layout` транспільованої схеми. Спостережувана величина також була визначена в термінах віртуальних кубітів, тому Вам потрібно застосувати цю розкладку до спостережуваної величини, що можна зробити за допомогою методу [`apply_layout`](https://docs.quantum.ibm.com/api/qiskit/qiskit.quantum_info.SparsePauliOp#apply_layout) класу `SparsePauliOp`.
+
+```python
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+print("Original observable:")
+print(observable)
+print()
+print("Observable with layout applied:")
+print(isa_observable)
+```
+
+```text
+Original observable:
+SparsePauliOp(['ZIIIIIIIII'],
+              coeffs=[1.+0.j])
+
+Observable with layout applied:
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## Крок 3: Виконання за допомогою примітивів Qiskit
+
+Тепер Ви готові запустити свою схему за допомогою примітива Estimator.
+
+Тут Ви надішлете п'ять окремих завдань, починаючи без придушення або пом'якшення помилок, і послідовно вмикаючи різні параметри придушення та пом'якшення помилок, доступні в Qiskit Runtime. Для отримання інформації про параметри зверніться до наступних сторінок:
+
+- [Огляд усіх параметрів](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options)
+- [Динамічне розв'язання](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-dynamical-decoupling-options)
+- [Стійкість, включаючи пом'якшення помилок вимірювання та екстраполяцію нульового шуму (ZNE)](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-resilience-options-v2)
+- [Твірлінг](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-twirling-options)
+
+Оскільки ці завдання можуть виконуватися незалежно одне від одного, Ви можете використовувати [пакетний режим](/guides/run-jobs-batch), щоб дозволити Qiskit Runtime оптимізувати час їх виконання.
+
+```python
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+```
+
+## Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+
+Нарешті, Ви можете проаналізувати дані. Тут Ви отримаєте результати завдань, витягнете з них виміряні очікувані значення та побудуєте графіки значень, включаючи планки похибок в одне стандартне відхилення.
+
+```python
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/eef38976-0ca2-429a-b2dc-41aac69605f7-0.avif)
+
+На такому невеликому масштабі важко побачити вплив більшості методів пом'якшення помилок, але екстраполяція нульового шуму дає помітне покращення. Однак зверніть увагу, що це покращення не є безкоштовним, оскільки результат ZNE також має більшу планку похибки.
+## Масштабування експерименту
+
+При розробці експерименту корисно починати з невеликої схеми, щоб полегшити візуалізацію та моделювання. Тепер, коли Ви розробили та протестували робочий процес на 10-кубітній схемі, Ви можете масштабувати його до 50 кубітів. Наступна комірка коду повторює всі кроки цього посібника, але тепер застосовує їх до 50-кубітної схеми.
+
+```python
+n_qubits = 50
+reps = 1
+
+# Construct circuit and observable
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+
+# Assign parameters to circuit
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+assigned_circuit = circuit.assign_parameters(params)
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+# Transpile circuit and observable
+isa_circuit = pass_manager.run(mirror_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+# Run jobs
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Вивід попередньої комірки коду](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/d7d8408b-faf1-4eda-ab9c-bdeaab01ff53-0.avif)
+
+Коли Ви порівнюєте результати для 50 кубітів із результатами для 10 кубітів, отриманими раніше, Ви можете помітити наступне (Ваші результати можуть відрізнятися між запусками):
+
+- Результати без пом'якшення помилок гірші. Запуск більшої схеми передбачає виконання більшої кількості гейтів, тому є більше можливостей для накопичення помилок.
+- Додавання динамічного розв'язання могло погіршити продуктивність. Це не дивно, оскільки схема дуже щільна. Динамічне розв'язання найбільш корисне, коли в схемі є великі проміжки, протягом яких кубіти простоюють без застосування до них гейтів. Коли ці проміжки відсутні, динамічне розв'язання неефективне і може навіть погіршити продуктивність через помилки в самих імпульсах динамічного розв'язання. 10-кубітна схема могла бути занадто малою, щоб спостерігати цей ефект.
+- З екстраполяцією нульового шуму результат такий самий хороший або майже такий самий хороший, як результат для 10 кубітів, хоча планка похибки значно більша. Це демонструє потужність техніки ZNE!
+
+## Висновок
+
+У цьому покроковому посібнику Ви дослідили різні параметри пом'якшення помилок, доступні для примітива Qiskit Runtime Estimator. Ви розробили робочий процес з використанням 10-кубітної схеми, а потім масштабували його до 50 кубітів. Ви могли помітити, що ввімкнення додаткових параметрів придушення та пом'якшення помилок не завжди покращує продуктивність (зокрема, ввімкнення динамічного розв'язання в цьому випадку). Більшість параметрів приймають додаткову конфігурацію, яку Ви можете протестувати у своїй власній роботі!

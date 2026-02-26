@@ -1,0 +1,860 @@
+---
+title: "Otimizações de transpilação com SABRE"
+sidebar_label: "Otimizações de transpilação com SABRE"
+description: "SABRE é uma ferramenta de otimização para layout e roteamento. É especialmente eficaz com circuitos de grande escala e mapas de acoplamento complexos,"
+notebook_path: "docs/tutorials/transpilation-optimizations-with-sabre.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/transpilation-optimizations-with-sabre.ipynb" />
+
+
+
+{/* cspell:ignore ylabel xlabel fontsize sharex edgecolor */}
+
+# Otimizações de Transpilação com SABRE
+*Estimativa de uso: menos de um minuto em um processador Heron r2 (NOTA: Esta é apenas uma estimativa. Seu tempo de execução pode variar.)*
+## Contexto
+A transpilação é uma etapa crítica no Qiskit que converte circuitos quânticos em formas compatíveis com hardware quântico específico. Ela envolve dois estágios principais: **layout de qubit** (mapeamento de qubits lógicos para qubits físicos no dispositivo) e **roteamento de portas** (garantindo que portas de múltiplos qubits respeitem a conectividade do dispositivo inserindo portas SWAP conforme necessário).
+
+SABRE (*algoritmo de busca heurística bidirecional baseado em SWAP*) é uma poderosa ferramenta de otimização tanto para layout quanto para roteamento. É especialmente eficaz para **circuitos de grande escala** (100+ qubits) e dispositivos com mapas de acoplamento complexos, como o **IBM&reg; Heron**, onde o crescimento exponencial nas possíveis mapeamentos de qubits exige soluções eficientes.
+
+### Por que usar o SABRE?
+
+O SABRE minimiza o número de portas SWAP e reduz a profundidade do circuito, melhorando o desempenho do circuito em hardware real. Sua abordagem baseada em heurística o torna ideal para hardware avançado e circuitos grandes e complexos. Melhorias recentes introduzidas no algoritmo [LightSABRE](https://arxiv.org/abs/2409.08368) otimizam ainda mais o desempenho do SABRE, oferecendo tempos de execução mais rápidos e menos portas SWAP. Esses aprimoramentos o tornam ainda mais eficaz para circuitos de grande escala.
+
+### O que você aprenderá
+
+Este tutorial é dividido em duas partes:
+1. Aprenda a usar o SABRE com **padrões Qiskit** para otimização avançada de circuitos grandes.
+2. Aproveite o **qiskit_serverless** para maximizar o potencial do SABRE para transpilação escalável e eficiente.
+
+Você irá:
+- Otimizar o SABRE para circuitos com 100+ qubits, superando configurações de transpilação padrão como `optimization_level=3`.
+- Explorar **aprimoramentos do LightSABRE** que melhoram o tempo de execução e reduzem contagens de portas.
+- Personalizar parâmetros-chave do SABRE (`swap_trials`, `layout_trials`, `max_iterations`, `heuristic`) para equilibrar **qualidade do circuito** e **tempo de execução da transpilação**.
+## Requisitos
+
+Antes de iniciar este tutorial, certifique-se de ter o seguinte instalado:
+- Qiskit SDK v1.0 ou posterior, com suporte a [visualização](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.28 ou posterior (`pip install qiskit-ibm-runtime`)
+- Serverless (`pip install qiskit-ibm-catalog qiskit_serverless`)
+## Configuração
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-serverless
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import EstimatorOptions
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit.transpiler import CouplingMap
+from qiskit.transpiler.passes import SabreLayout, SabreSwap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+```
+
+## Parte I. Usando SABRE com padrões Qiskit
+
+O SABRE pode ser usado no Qiskit para otimizar circuitos quânticos, lidando com os estágios de layout de qubit e roteamento de portas. Nesta seção, vamos guiá-lo através do **exemplo mínimo** de uso do SABRE com padrões Qiskit, com foco principal no passo 2 de otimização.
+
+Para executar o SABRE, você precisa:
+- Uma representação **DAG** (Grafo Acíclico Direcionado) do seu circuito quântico.
+- O **mapa de acoplamento** do backend, que especifica como os qubits estão fisicamente conectados.
+- O **passe SABRE**, que aplica o algoritmo para otimizar o layout e roteamento.
+
+Para esta parte, vamos focar no passe **SabreLayout**. Ele realiza tanto tentativas de layout quanto de roteamento, trabalhando para encontrar o layout inicial mais eficiente enquanto minimiza o número de portas SWAP necessárias. Importante, `SabreLayout`, sozinho, otimiza internamente tanto o layout quanto o roteamento armazenando a solução que adiciona o menor número de portas SWAP. Note que ao usar apenas **SabreLayout**, não podemos mudar a heurística do SABRE, mas somos capazes de personalizar o número de `layout_trials`.
+### Passo 1: Mapear entradas clássicas para um problema quântico
+
+Um circuito **GHZ (Greenberger-Horne-Zeilinger)** é um circuito quântico que prepara um estado emaranhado onde todos os qubits estão no estado `|0...0⟩` ou `|1...1⟩`. O estado GHZ para $n$ qubits é matematicamente representado como:
+$$ |\text{GHZ}\rangle = \frac{1}{\sqrt{2}} \left( |0\rangle^{\otimes n} + |1\rangle^{\otimes n} \right) $$
+
+Ele é construído aplicando:
+1. Uma porta Hadamard ao primeiro qubit para criar superposição.
+2. Uma série de portas CNOT para emaranhar os qubits restantes com o primeiro.
+
+Para este exemplo, construímos intencionalmente um **circuito GHZ de topologia em estrela** em vez de um de topologia linear. Na topologia em estrela, o primeiro qubit atua como o "hub", e todos os outros qubits são emaranhados diretamente com ele usando portas CNOT. Esta escolha é deliberada porque, embora o **estado GHZ de topologia linear** possa teoricamente ser implementado em profundidade $ O(N) $ em um mapa de acoplamento linear sem nenhuma porta SWAP, o SABRE encontraria trivialmente uma solução ótima mapeando um circuito GHZ de 100 qubits para um subgrafo do mapa de acoplamento heavy-hex do backend.
+
+O **circuito GHZ de topologia em estrela** apresenta um problema significativamente mais desafiador. Embora ainda possa teoricamente ser executado em profundidade $ O(N) $ sem portas SWAP, encontrar essa solução requer identificar um layout inicial ótimo, o que é muito mais difícil devido à conectividade não-linear do circuito. Esta topologia serve como um melhor caso de teste para avaliar o SABRE, pois demonstra como os parâmetros de configuração impactam o desempenho de layout e roteamento sob condições mais complexas.
+
+![ghz_star_topology.png](/docs/images/tutorials/transpilation-optimizations-with-sabre/ghz_star_topology.avif)
+
+Notavelmente:
+- A ferramenta **HighLevelSynthesis** pode produzir a solução de profundidade $ O(N) $ ótima para o circuito GHZ de topologia em estrela sem introduzir portas SWAP, como mostrado na imagem acima.
+- Alternativamente, o passe **StarPrerouting** pode reduzir ainda mais a profundidade guiando as decisões de roteamento do SABRE, embora possa ainda introduzir algumas portas SWAP. No entanto, StarPrerouting aumenta o tempo de execução e requer integração no processo de transpilação inicial.
+
+Para os propósitos deste tutorial, excluímos tanto HighLevelSynthesis quanto StarPrerouting para isolar e destacar o impacto direto da configuração do SABRE no tempo de execução e profundidade do circuito. Ao medir o valor esperado $ \langle Z_0 Z_i \rangle $ para cada par de qubits, analisamos:
+- Quão bem o SABRE reduz portas SWAP e profundidade do circuito.
+- O efeito dessas otimizações na fidelidade do circuito executado, onde desvios de $ \langle Z_0 Z_i \rangle = 1 $ indicam perda de emaranhamento.!
+
+```python
+# set seed for reproducibility
+seed = 42
+num_qubits = 110
+
+# Create GHZ circuit
+qc = QuantumCircuit(num_qubits)
+qc.h(0)
+for i in range(1, num_qubits):
+    qc.cx(0, i)
+
+qc.measure_all()
+```
+
+Em seguida, mapearemos os operadores de interesse para avaliar o comportamento do sistema. Especificamente, usaremos operadores `ZZ` entre qubits para examinar como o emaranhamento se degrada conforme os qubits ficam mais distantes. Esta análise é crítica porque imprecisões nos valores esperados  $\langle Z_0 Z_i \rangle$ para qubits distantes podem revelar o impacto de ruído e erros na execução do circuito. Ao estudar esses desvios, obtemos insights sobre quão bem o circuito preserva o emaranhamento sob diferentes configurações do SABRE e quão efetivamente o SABRE minimiza o impacto das restrições de hardware.
+
+```python
+# ZZII...II, ZIZI...II, ... , ZIII...IZ
+operator_strings = [
+    "Z" + "I" * i + "Z" + "I" * (num_qubits - 2 - i)
+    for i in range(num_qubits - 1)
+]
+print(operator_strings)
+print(len(operator_strings))
+
+operators = [SparsePauliOp(operator) for operator in operator_strings]
+```
+
+```text
+['ZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZI', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZ']
+109
+```
+
+### Passo 2: Otimizar o problema para execução em hardware quântico
+
+Neste passo, focamos em otimizar o layout do circuito para execução em um dispositivo de hardware quântico específico com 127 qubits. Este é o foco principal do tutorial, pois realizamos **otimizações SABRE e transpilação** para alcançar o melhor desempenho do circuito. Usando o passe `SabreLayout`, determinamos um mapeamento inicial de qubits que minimiza a necessidade de portas SWAP durante o roteamento. Ao passar o `coupling_map` do backend alvo, `SabreLayout` adapta o layout às restrições de conectividade do dispositivo.
+
+Usaremos `generate_preset_pass_manager` com `optimization_level=3` para o processo de transpilação e personalizaremos o passe `SabreLayout` com diferentes configurações. O objetivo é encontrar uma configuração que produza um circuito transpilado com o **menor tamanho e/ou profundidade**, demonstrando o impacto das otimizações SABRE.
+
+#### Por que tamanho e profundidade do circuito são importantes?
+
+- **Menor tamanho (contagem de portas):** Reduz o número de operações, minimizando oportunidades para erros se acumularem.
+- **Menor profundidade:** Encurta o tempo total de execução, o que é crítico para evitar decoerência e manter a fidelidade do estado quântico.
+
+Ao otimizar essas métricas, melhoramos a confiabilidade do circuito e a precisão da execução em hardware quântico ruidoso.
+Selecione o backend.
+
+```python
+service = QiskitRuntimeService()
+# backend = service.least_busy(
+#    operational=True, simulator=False, min_num_qubits=127
+# )
+backend = service.backend("ibm_boston")
+print(f"Using backend: {backend.name}")
+```
+
+```text
+Using backend: ibm_boston
+```
+
+Para avaliar o impacto de diferentes configurações na otimização do circuito, criaremos três gerenciadores de passes, cada um com configurações únicas para o passe `SabreLayout`. Essas configurações ajudam a analisar o trade-off entre qualidade do circuito e tempo de transpilação.
+
+#### Parâmetros-chave
+- **`max_iterations`**: O número de iterações de roteamento forward-backward para refinar o layout e reduzir custos de roteamento.
+- **`layout_trials`**: O número de layouts iniciais aleatórios testados, selecionando aquele que minimiza portas SWAP.
+- **`swap_trials`**: O número de tentativas de roteamento para cada layout, refinando o posicionamento de portas para melhor roteamento.
+
+Aumente `layout_trials` e `swap_trials` para realizar otimização mais completa, ao custo de maior tempo de transpilação.
+
+#### Configurações neste tutorial
+1. **`pm_1`**: Configurações padrão com `optimization_level=3`.
+   - `max_iterations=4`
+   - `layout_trials=20`
+   - `swap_trials=20`
+
+2. **`pm_2`**: Aumenta o número de tentativas para melhor exploração.
+   - `max_iterations=4`
+   - `layout_trials=200`
+   - `swap_trials=200`
+
+3. **`pm_3`**: Estende `pm_2` aumentando o número de iterações para refinamento adicional.
+   - `max_iterations=8`
+   - `layout_trials=200`
+   - `swap_trials=200`
+
+Ao comparar os resultados dessas configurações, pretendemos determinar qual alcança o melhor equilíbrio entre qualidade do circuito (por exemplo, tamanho e profundidade) e custo computacional.
+
+```python
+# Get the coupling map from the backend
+cmap = CouplingMap(backend().configuration().coupling_map)
+
+# Create the SabreLayout passes for the custom configurations
+sl_2 = SabreLayout(
+    coupling_map=cmap,
+    seed=seed,
+    max_iterations=4,
+    layout_trials=200,
+    swap_trials=200,
+)
+sl_3 = SabreLayout(
+    coupling_map=cmap,
+    seed=seed,
+    max_iterations=8,
+    layout_trials=200,
+    swap_trials=200,
+)
+
+# Create the pass managers, need to first create then configure the SabreLayout passes
+pm_1 = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_2 = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_3 = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+```
+
+Agora podemos configurar o passe `SabreLayout` nos gerenciadores de passes personalizados. Para fazer isso, sabemos que para o `generate_preset_pass_manager` padrão em `optimization_level=3`, o passe `SabreLayout` está no índice 2, pois `SabreLayout` ocorre após os passes `SetLayout` e `VF2Laout`. Podemos acessar este passe e modificar seus parâmetros.
+
+```python
+pm_2.layout.replace(index=2, passes=sl_2)
+pm_3.layout.replace(index=2, passes=sl_3)
+```
+
+Com cada gerenciador de passes configurado, agora executaremos o processo de transpilação para cada um. Para comparar resultados, rastrearemos métricas-chave, incluindo o tempo de transpilação, a profundidade do circuito (medida como a profundidade de portas de dois qubits) e o número total de portas nos circuitos transpilados
+
+```python
+# Transpile the circuit with each pass manager and measure the time
+t0 = time.time()
+tqc_1 = pm_1.run(qc)
+t1 = time.time() - t0
+t0 = time.time()
+tqc_2 = pm_2.run(qc)
+t2 = time.time() - t0
+t0 = time.time()
+tqc_3 = pm_3.run(qc)
+t3 = time.time() - t0
+
+# Obtain the depths and the total number of gates (circuit size)
+depth_1 = tqc_1.depth(lambda x: x.operation.num_qubits == 2)
+depth_2 = tqc_2.depth(lambda x: x.operation.num_qubits == 2)
+depth_3 = tqc_3.depth(lambda x: x.operation.num_qubits == 2)
+size_1 = tqc_1.size()
+size_2 = tqc_2.size()
+size_3 = tqc_3.size()
+
+# Transform the observables to match the backend's ISA
+operators_list_1 = [op.apply_layout(tqc_1.layout) for op in operators]
+operators_list_2 = [op.apply_layout(tqc_2.layout) for op in operators]
+operators_list_3 = [op.apply_layout(tqc_3.layout) for op in operators]
+
+# Compute improvements compared to pass manager 1 (default)
+depth_improvement_2 = ((depth_1 - depth_2) / depth_1) * 100
+depth_improvement_3 = ((depth_1 - depth_3) / depth_1) * 100
+size_improvement_2 = ((size_1 - size_2) / size_1) * 100
+size_improvement_3 = ((size_1 - size_3) / size_1) * 100
+time_increase_2 = ((t2 - t1) / t1) * 100
+time_increase_3 = ((t3 - t1) / t1) * 100
+
+print(
+    f"Pass manager 1 (4,20,20)  : Depth {depth_1}, Size {size_1}, Time {t1:.4f} s"
+)
+print(
+    f"Pass manager 2 (4,200,200): Depth {depth_2}, Size {size_2}, Time {t2:.4f} s"
+)
+print(f"  - Depth improvement: {depth_improvement_2:.2f}%")
+print(f"  - Size improvement: {size_improvement_2:.2f}%")
+print(f"  - Time increase: {time_increase_2:.2f}%")
+print(
+    f"Pass manager 3 (8,200,200): Depth {depth_3}, Size {size_3}, Time {t3:.4f} s"
+)
+print(f"  - Depth improvement: {depth_improvement_3:.2f}%")
+print(f"  - Size improvement: {size_improvement_3:.2f}%")
+print(f"  - Time increase: {time_increase_3:.2f}%")
+```
+
+```text
+Pass manager 1 (4,20,20)  : Depth 439, Size 2346, Time 0.5775 s
+Pass manager 2 (4,200,200): Depth 395, Size 2070, Time 3.9927 s
+  - Depth improvement: 10.02%
+  - Size improvement: 11.76%
+  - Time increase: 591.43%
+Pass manager 3 (8,200,200): Depth 375, Size 1873, Time 2.3079 s
+  - Depth improvement: 14.58%
+  - Size improvement: 20.16%
+  - Time increase: 299.67%
+```
+
+Os resultados demonstram que aumentar o número de tentativas (`layout_trials` e `swap_trials`) pode melhorar significativamente a qualidade do circuito reduzindo tanto a profundidade quanto o tamanho. No entanto, essa melhoria geralmente vem ao custo de maior tempo de execução devido à computação adicional necessária para explorar mais layouts e caminhos de roteamento potenciais.
+
+Aumentar o `max_iterations` pode melhorar ainda mais a otimização refinando o layout através de mais ciclos de roteamento forward-backward. Neste caso, aumentar `max_iterations` resultou na redução mais significativa na profundidade e tamanho do circuito, até mesmo reduzindo o tempo de execução em comparação com `pm_2`, provavelmente simplificando os estágios de otimização subsequentes. É importante notar, no entanto, que a eficácia de aumentar `max_iterations` pode variar significativamente dependendo do circuito. Embora mais iterações possam gerar melhores escolhas de layout e roteamento, elas não fornecem garantias e dependem fortemente da estrutura do circuito e da complexidade das restrições de conectividade
+
+```python
+# Plot the results of the metrics
+times = [t1, t2, t3]
+depths = [depth_1, depth_2, depth_3]
+sizes = [size_1, size_2, size_3]
+pm_names = [
+    "pm_1 (4 iter, 20 trials)",
+    "pm_2 (4 iter, 200 trials)",
+    "pm_3 (8 iter, 200 trials)",
+]
+colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(pm_names)))
+
+# Create a figure with three subplots
+fig, axs = plt.subplots(3, 1, figsize=(6, 9), sharex=True)
+axs[0].bar(pm_names, times, color=colors)
+axs[0].set_ylabel("Time (s)", fontsize=12)
+axs[0].set_title("Transpilation Time", fontsize=14)
+axs[0].grid(axis="y", linestyle="--", alpha=0.7)
+axs[1].bar(pm_names, depths, color=colors)
+axs[1].set_ylabel("Depth", fontsize=12)
+axs[1].set_title("Circuit Depth", fontsize=14)
+axs[1].grid(axis="y", linestyle="--", alpha=0.7)
+axs[2].bar(pm_names, sizes, color=colors)
+axs[2].set_ylabel("Size", fontsize=12)
+axs[2].set_title("Circuit Size", fontsize=14)
+axs[2].set_xticks(range(len(pm_names)))
+axs[2].set_xticklabels(pm_names, fontsize=10, rotation=15)
+axs[2].grid(axis="y", linestyle="--", alpha=0.7)
+
+# Add some spacing between subplots
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/818a8997-d2c7-4661-a6ea-f58eac376bf8-0.avif)
+
+### Passo 3: Executar usando primitivas Qiskit
+
+Neste passo, usamos a primitiva `Estimator` para calcular os valores esperados $\langle Z_0 Z_i \rangle$ para os operadores `ZZ`, avaliando o emaranhamento e a qualidade de execução dos circuitos transpilados. Para alinhar com fluxos de trabalho típicos de usuário, enviamos o job para execução e aplicamos supressão de erro usando **desacoplamento dinâmico**, uma técnica que mitiga decoerência inserindo sequências de portas para preservar estados de qubits. Adicionalmente, especificamos um nível de resiliência para contrabalançar ruído, com níveis mais altos fornecendo resultados mais precisos ao custo de maior tempo de processamento. Esta abordagem avalia o desempenho de cada configuração de gerenciador de passes sob condições de execução realistas.
+
+```python
+options = EstimatorOptions()
+options.resilience_level = 2
+options.dynamical_decoupling.enable = True
+options.dynamical_decoupling.sequence_type = "XY4"
+
+# Create an Estimator object
+estimator = Estimator(backend, options=options)
+```
+
+```python
+# Submit the circuit to Estimator
+job_1 = estimator.run([(tqc_1, operators_list_1)])
+job_1_id = job_1.job_id()
+print(job_1_id)
+
+job_2 = estimator.run([(tqc_2, operators_list_2)])
+job_2_id = job_2.job_id()
+print(job_2_id)
+
+job_3 = estimator.run([(tqc_3, operators_list_3)])
+job_3_id = job_3.job_id()
+print(job_3_id)
+```
+
+```text
+d5k0qs7853es738dab6g
+d5k0qsf853es738dab70
+d5k0qsf853es738dab7g
+```
+
+```python
+# Run the jobs
+result_1 = job_1.result()[0]
+print("Job 1 done")
+result_2 = job_2.result()[0]
+print("Job 2 done")
+result_3 = job_3.result()[0]
+print("Job 3 done")
+```
+
+```text
+Job 1 done
+Job 2 done
+Job 3 done
+```
+
+### Passo 4: Pós-processar e retornar resultado no formato clássico desejado
+
+Uma vez que o job é concluído, analisamos os resultados plotando os valores esperados  $\langle Z_0 Z_i \rangle$ para cada qubit. Em uma simulação ideal, todos os valores  $\langle Z_0 Z_i \rangle$ devem ser 1, refletindo emaranhamento perfeito através dos qubits. No entanto, devido a ruído e restrições de hardware, os valores esperados tipicamente diminuem conforme `i` aumenta, revelando como o emaranhamento se degrada ao longo da distância.
+
+Neste passo, comparamos os resultados de cada configuração de gerenciador de passes com a simulação ideal. Ao examinar o desvio de $\langle Z_0 Z_i \rangle$ de 1 para cada configuração, podemos quantificar quão bem cada gerenciador de passes preserva o emaranhamento e mitiga os efeitos do ruído. Esta análise avalia diretamente o impacto das otimizações SABRE na fidelidade de execução e destaca qual configuração melhor equilibra qualidade de otimização e desempenho de execução.
+
+Os resultados serão visualizados para destacar diferenças entre gerenciadores de passes, mostrando como melhorias em layout e roteamento influenciam a execução final do circuito em hardware quântico ruidoso.
+
+```python
+data = list(range(1, len(operators) + 1))  # Distance between the Z operators
+
+values_1 = list(result_1.data.evs)
+values_2 = list(result_2.data.evs)
+values_3 = list(result_3.data.evs)
+
+plt.plot(
+    data,
+    values_1,
+    marker="o",
+    label="pm_1 (iters=4, swap_trials=20, layout_trials=20)",
+)
+plt.plot(
+    data,
+    values_2,
+
+    values_2,
+    marker="s",
+    label="pm_2 (iters=4, swap_trials=200, layout_trials=200)",
+)
+plt.plot(
+    data,
+    values_3,
+    marker="^",
+    label="pm_3 (iters=8, swap_trials=200, layout_trials=200)",
+)
+plt.xlabel("Distance between qubits $i$")
+plt.ylabel(r"$\langle Z_i Z_0 \rangle / \langle Z_1 Z_0 \rangle $")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/bc6cb36f-4bf2-4275-baf5-9557fcba520a-0.avif)
+
+### Análise dos Resultados
+
+O gráfico mostra os valores esperados $\langle Z_0 Z_i \rangle / \langle Z_0 Z_0 \rangle$ em função da distância entre qubits para três configurações de gerenciadores de passagens com níveis crescentes de otimização. No caso ideal, esses valores permanecem próximos a 1, indicando fortes correlações ao longo do circuito. À medida que a distância aumenta, ruído e erros acumulados levam a uma degradação nas correlações, revelando quão bem cada estratégia de transpilação preserva a estrutura subjacente do estado.
+
+Entre as três configurações, `pm_1` claramente apresenta o pior desempenho. Seus valores de correlação decaem rapidamente conforme a distância aumenta e se aproximam de zero muito mais cedo do que as outras duas configurações. Esse comportamento é consistente com sua maior profundidade de circuito e contagem de portas, onde o ruído acumulado rapidamente degrada as correlações de longo alcance.
+
+Tanto `pm_2` quanto `pm_3` representam melhorias significativas em relação a `pm_1` em essencialmente todas as distâncias. Em média, `pm_3` exibe o desempenho geral mais forte, mantendo valores de correlação mais altos ao longo de distâncias maiores e mostrando uma degradação mais gradual. Isso se alinha com sua otimização mais agressiva, que produz circuitos mais rasos que geralmente são mais robustos ao acúmulo de ruído.
+
+Dito isso, `pm_2` mostra uma precisão notavelmente melhor em distâncias curtas em comparação com `pm_3`, apesar de ter uma profundidade e contagem de portas ligeiramente maiores. Isso sugere que a profundidade do circuito por si só não determina totalmente o desempenho; a estrutura específica produzida pela transpilação, incluindo como as portas de emaranhamento são organizadas e como os erros se propagam pelo circuito, também desempenha um papel importante. Em alguns casos, as transformações aplicadas por `pm_2` parecem preservar melhor as correlações locais, mesmo que não escalem tão bem para distâncias maiores.
+
+Tomados em conjunto, esses resultados destacam um compromisso entre compactação do circuito e estrutura do circuito. Embora o aumento da otimização geralmente melhore a estabilidade de longo alcance, o melhor desempenho para um determinado observável depende tanto de reduzir a profundidade do circuito quanto de produzir uma estrutura que esteja bem ajustada às características de ruído do hardware.
+## Parte II. Configurando a heurística no SABRE e usando Serverless
+
+Além de ajustar o número de tentativas, o SABRE suporta a personalização da heurística de roteamento usada durante a transpilação. Por padrão, `SabreLayout` emprega a heurística de decaimento (decay), que pondera dinamicamente os qubits com base em sua probabilidade de serem trocados. Para usar uma heurística diferente (como a heurística `lookahead`), você pode criar uma passagem `SabreSwap` personalizada e conectá-la ao `SabreLayout` executando um `PassManager` com `FullAncillaAllocation`, `EnlargeWithAncilla` e `ApplyLayout`. Ao usar `SabreSwap` como parâmetro para `SabreLayout`, apenas uma tentativa de layout é executada por padrão. Para executar eficientemente múltiplas tentativas de layout, aproveitamos o runtime serverless para paralelização. Para mais informações sobre serverless, consulte a [documentação Serverless](/guides/serverless).
+
+### Como Alterar a Heurística de Roteamento
+1. Crie uma passagem `SabreSwap` personalizada com a heurística desejada.
+2. Use esta `SabreSwap` personalizada como método de roteamento para a passagem `SabreLayout`.
+
+Embora seja possível executar múltiplas tentativas de layout usando um loop, o runtime serverless é a melhor escolha para experimentos de larga escala e mais rigorosos. O Serverless suporta execução paralela de tentativas de layout, acelerando significativamente a otimização de circuitos maiores e grandes varreduras experimentais. Isso o torna especialmente valioso ao trabalhar com tarefas que consomem muitos recursos ou quando a eficiência de tempo é crítica.
+
+Esta seção foca exclusivamente no passo 2 da otimização: minimizar o tamanho e a profundidade do circuito para alcançar o melhor circuito transpilado possível. Construindo sobre os resultados anteriores, agora exploramos como a personalização de heurística e a paralelização serverless podem melhorar ainda mais o desempenho da otimização, tornando-a adequada para transpilação de circuitos quânticos em larga escala.
+### Resultados sem runtime serverless (1 tentativa de layout):
+
+```python
+swap_trials = 1000
+
+# Default PassManager with `SabreLayout` and `SabreSwap`, using heuristic "decay"
+sr_default = SabreSwap(
+    coupling_map=cmap, heuristic="decay", trials=swap_trials, seed=seed
+)
+sl_default = SabreLayout(
+    coupling_map=cmap, routing_pass=sr_default, seed=seed
+)
+pm_default = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_default.layout.replace(index=2, passes=sl_default)
+pm_default.routing.replace(index=1, passes=sr_default)
+
+t0 = time.time()
+tqc_default = pm_default.run(qc)
+t_default = time.time() - t0
+size_default = tqc_default.size()
+depth_default = tqc_default.depth(lambda x: x.operation.num_qubits == 2)
+
+# Custom PassManager with `SabreLayout` and `SabreSwap`, using heuristic "lookahead"
+sr_custom = SabreSwap(
+    coupling_map=cmap, heuristic="lookahead", trials=swap_trials, seed=seed
+)
+sl_custom = SabreLayout(coupling_map=cmap, routing_pass=sr_custom, seed=seed)
+pm_custom = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_custom.layout.replace(index=2, passes=sl_custom)
+pm_custom.routing.replace(index=1, passes=sr_custom)
+
+t0 = time.time()
+tqc_custom = pm_custom.run(qc)
+t_custom = time.time() - t0
+size_custom = tqc_custom.size()
+depth_custom = tqc_custom.depth(lambda x: x.operation.num_qubits == 2)
+
+print(
+    f"Default (heuristic='decay')    : Depth {depth_default}, Size {size_default}, Time {t_default}"
+)
+print(
+    f"Custom  (heuristic='lookahead'): Depth {depth_custom}, Size {size_custom}, Time {t_custom}"
+)
+```
+
+```text
+Default (heuristic='decay')    : Depth 443, Size 3115, Time 1.034372091293335
+Custom  (heuristic='lookahead'): Depth 432, Size 2856, Time 0.6669301986694336
+```
+
+Aqui vemos que a heurística `lookahead` tem desempenho melhor do que a heurística `decay` em termos de profundidade do circuito, tamanho e tempo. Essas melhorias destacam como podemos melhorar o SABRE além de apenas tentativas e iterações para seu circuito específico e restrições de hardware. Observe que esses resultados são baseados em uma única tentativa de layout. Para obter resultados mais precisos, recomendamos executar múltiplas tentativas de layout, o que pode ser feito eficientemente usando o runtime serverless.
+### Resultados com runtime serverless (múltiplas tentativas de layout)
+O Qiskit Serverless requer a configuração dos arquivos `.py` da sua carga de trabalho em um diretório dedicado. A célula de código a seguir é um arquivo Python no diretório `source_files` chamado `transpile_remote.py`. Este arquivo contém a função que executa o processo de transpilação.
+
+```python
+# This cell is hidden from users, it makes sure the `source_files` directory exists
+from pathlib import Path
+
+Path("source_files").mkdir(exist_ok=True)
+```
+
+```python
+%%writefile source_files/transpile_remote.py
+import time
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes import SabreLayout, SabreSwap
+from qiskit.transpiler import CouplingMap
+from qiskit_serverless import get_arguments, save_result, distribute_task, get
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+@distribute_task(target={
+    "cpu": 1,
+    "mem": 1024 * 1024 * 1024
+})
+def transpile_remote(qc, optimization_level, backend_name, seed, swap_trials, heuristic):
+    """Transpiles an abstract circuit into an ISA circuit for a given backend."""
+
+    service = QiskitRuntimeService()
+    backend = service.backend(backend_name)
+
+    pm = generate_preset_pass_manager(
+        optimization_level=optimization_level,
+        backend=backend,
+        seed_transpiler=seed
+    )
+
+    # Changing the `SabreLayout` and `SabreSwap` passes to use the custom configurations
+    cmap = CouplingMap(backend().configuration().coupling_map)
+    sr = SabreSwap(coupling_map=cmap, heuristic=heuristic, trials=swap_trials, seed=seed)
+    sl = SabreLayout(coupling_map=cmap, routing_pass=sr, seed=seed)
+    pm.layout.replace(index=2, passes=sl)
+    pm.routing.replace(index=1, passes=sr)
+
+    # Measure the transpile time
+    start_time = time.time()  # Start timer
+    tqc = pm.run(qc)  # Transpile the circuit
+    end_time = time.time()  # End timer
+
+    transpile_time = end_time - start_time  # Calculate the elapsed time
+    return tqc, transpile_time  # Return both the transpiled circuit and the transpile time
+
+# Get program arguments
+arguments = get_arguments()
+circuit = arguments.get("circuit")
+backend_name = arguments.get("backend_name")
+optimization_level = arguments.get("optimization_level")
+seed_list = arguments.get("seed_list")
+swap_trials = arguments.get("swap_trials")
+heuristic = arguments.get("heuristic")
+
+# Transpile the circuits
+transpile_worker_references = [
+    transpile_remote(circuit, optimization_level, backend_name, seed, swap_trials, heuristic)
+    for seed in seed_list
+]
+
+results_with_times = get(transpile_worker_references)
+
+# Separate the transpiled circuits and their transpile times
+transpiled_circuits = [result[0] for result in results_with_times]
+transpile_times = [result[1] for result in results_with_times]
+
+# Save both results and transpile times
+save_result({"transpiled_circuits": transpiled_circuits, "transpile_times": transpile_times})
+```
+
+```text
+Overwriting source_files/transpile_remote.py
+```
+
+A célula a seguir carrega o arquivo `transpile_remote.py` como um programa Qiskit Serverless com o nome `transpile_remote_serverless`.
+
+```python
+serverless = QiskitServerless()
+
+transpile_remote_demo = QiskitFunction(
+    title="transpile_remote_serverless",
+    entrypoint="transpile_remote.py",
+    working_dir="./source_files/",
+)
+serverless.upload(transpile_remote_demo)
+transpile_remote_serverless = serverless.load("transpile_remote_serverless")
+```
+
+Gere 20 seeds diferentes para representar 20 tentativas de layout diferentes.
+
+```python
+num_seeds = 20  # represents the different layout trials
+seed_list = [seed + i for i in range(num_seeds)]
+```
+
+Execute o programa carregado e passe as entradas para a heurística lookahead.
+
+```python
+job_lookahead = transpile_remote_serverless.run(
+    circuit=qc,
+    backend_name=backend.name,
+    optimization_level=3,
+    seed_list=seed_list,
+    swap_trials=swap_trials,
+    heuristic="lookahead",
+)
+```
+
+```python
+job_lookahead.job_id
+```
+
+```text
+'15767dfc-e71d-4720-94d6-9212f72334c2'
+```
+
+```python
+job_lookahead.status()
+```
+
+```text
+'QUEUED'
+```
+
+Receba os logs e resultados do runtime serverless.
+
+```python
+logs_lookahead = job_lookahead.logs()
+print(logs_lookahead)
+```
+
+```text
+No logs yet.
+```
+
+Uma vez que um programa está `DONE`, você pode usar `job.results()` para buscar o resultado armazenado em `save_result()`.
+
+```python
+# Run the job with lookahead heuristic
+start_time = time.time()
+results_lookahead = job_lookahead.result()
+end_time = time.time()
+
+job_lookahead_time = end_time - start_time
+```
+
+Agora execute o mesmo para a heurística decay.
+
+```python
+job_decay = transpile_remote_serverless.run(
+    circuit=qc,
+    backend_name=backend.name,
+    optimization_level=3,
+    seed_list=seed_list,
+    swap_trials=swap_trials,
+    heuristic="decay",
+)
+```
+
+```python
+job_decay.job_id
+```
+
+```text
+'00418c76-d6ec-4bd8-9f70-05d0fa14d4eb'
+```
+
+```python
+logs_decay = job_decay.logs()
+print(logs_decay)
+```
+
+```text
+No logs yet.
+```
+
+```python
+# Run the job with the decay heuristic
+start_time = time.time()
+results_decay = job_decay.result()
+end_time = time.time()
+
+job_decay_time = end_time - start_time
+```
+
+```python
+# Extract transpilation times
+transpile_times_decay = results_decay["transpile_times"]
+transpile_times_lookahead = results_lookahead["transpile_times"]
+
+# Calculate total transpilation time for serial execution
+total_transpile_time_decay = sum(transpile_times_decay)
+total_transpile_time_lookahead = sum(transpile_times_lookahead)
+
+# Print total transpilation time
+print("=== Total Transpilation Time (Serial Execution) ===")
+print(f"Decay Heuristic    : {total_transpile_time_decay:.2f} seconds")
+print(f"Lookahead Heuristic: {total_transpile_time_lookahead:.2f} seconds")
+
+# Print serverless job time (parallel execution)
+print("\n=== Serverless Job Time (Parallel Execution) ===")
+print(f"Decay Heuristic    : {job_decay_time:.2f} seconds")
+print(f"Lookahead Heuristic: {job_lookahead_time:.2f} seconds")
+
+# Calculate and print average runtime per transpilation
+avg_transpile_time_decay = total_transpile_time_decay / num_seeds
+avg_transpile_time_lookahead = total_transpile_time_lookahead / num_seeds
+avg_job_time_decay = job_decay_time / num_seeds
+avg_job_time_lookahead = job_lookahead_time / num_seeds
+
+print("\n=== Average Time Per Transpilation ===")
+print(f"Decay Heuristic (Serial)    : {avg_transpile_time_decay:.2f} seconds")
+print(f"Decay Heuristic (Serverless): {avg_job_time_decay:.2f} seconds")
+print(
+    f"Lookahead Heuristic (Serial)    : {avg_transpile_time_lookahead:.2f} seconds"
+)
+print(
+    f"Lookahead Heuristic (Serverless): {avg_job_time_lookahead:.2f} seconds"
+)
+
+# Calculate and print serverless improvement percentage
+decay_improvement_percentage = (
+    (total_transpile_time_decay - job_decay_time) / total_transpile_time_decay
+) * 100
+lookahead_improvement_percentage = (
+    (total_transpile_time_lookahead - job_lookahead_time)
+    / total_transpile_time_lookahead
+) * 100
+
+print("\n=== Serverless Improvement ===")
+print(f"Decay Heuristic    : {decay_improvement_percentage:.2f}%")
+print(f"Lookahead Heuristic: {lookahead_improvement_percentage:.2f}%")
+```
+
+```text
+=== Total Transpilation Time (Serial Execution) ===
+Decay Heuristic    : 112.37 seconds
+Lookahead Heuristic: 85.37 seconds
+
+=== Serverless Job Time (Parallel Execution) ===
+Decay Heuristic    : 5.72 seconds
+Lookahead Heuristic: 5.85 seconds
+
+=== Average Time Per Transpilation ===
+Decay Heuristic (Serial)    : 5.62 seconds
+Decay Heuristic (Serverless): 0.29 seconds
+Lookahead Heuristic (Serial)    : 4.27 seconds
+Lookahead Heuristic (Serverless): 0.29 seconds
+
+=== Serverless Improvement ===
+Decay Heuristic    : 94.91%
+Lookahead Heuristic: 93.14%
+```
+
+Esses resultados demonstram os ganhos substanciais de eficiência ao usar execução serverless para transpilação de circuitos quânticos. Comparada à execução serial, a execução serverless reduz dramaticamente o tempo de execução geral para ambas as heurísticas `decay` e `lookahead` ao paralelizar tentativas de transpilação independentes. Enquanto a execução serial reflete o custo cumulativo total de explorar múltiplas tentativas de layout, os tempos de trabalho serverless destacam como a execução paralela colapsa esse custo em um tempo de relógio de parede muito mais curto. Como resultado, o tempo efetivo por transpilação é reduzido para uma pequena fração daquele necessário no cenário serial, em grande parte independente da heurística usada. Essa capacidade é particularmente importante para otimizar o SABRE ao seu potencial máximo. Muitos dos ganhos de desempenho mais fortes do SABRE vêm do aumento do número de tentativas de layout e roteamento, o que pode ser proibitivamente caro quando executado sequencialmente. A execução serverless remove esse gargalo, permitindo varreduras de parâmetros em larga escala e exploração mais profunda de configurações heurísticas com sobrecarga mínima.
+
+No geral, essas descobertas mostram que a execução serverless é fundamental para escalar a otimização SABRE, tornando a experimentação agressiva e o refinamento práticos em comparação com a execução serial.
+Obtenha os resultados do runtime serverless e compare os resultados das heurísticas lookahead e decay. Compararemos os tamanhos e profundidades.
+
+```python
+# Extract sizes and depths
+sizes_lookahead = [
+    circuit.size() for circuit in results_lookahead["transpiled_circuits"]
+]
+depths_lookahead = [
+    circuit.depth(lambda x: x.operation.num_qubits == 2)
+    for circuit in results_lookahead["transpiled_circuits"]
+]
+sizes_decay = [
+    circuit.size() for circuit in results_decay["transpiled_circuits"]
+]
+depths_decay = [
+    circuit.depth(lambda x: x.operation.num_qubits == 2)
+    for circuit in results_decay["transpiled_circuits"]
+]
+
+def create_scatterplot(x, y1, y2, xlabel, ylabel, title, labels, colors):
+    plt.figure(figsize=(8, 5))
+    plt.scatter(
+        x, y1, label=labels[0], color=colors[0], alpha=0.8, edgecolor="k"
+    )
+    plt.scatter(
+        x, y2, label=labels[1], color=colors[1], alpha=0.8, edgecolor="k"
+    )
+    plt.xlabel(xlabel, fontsize=12)
+    plt.ylabel(ylabel, fontsize=12)
+    plt.title(title, fontsize=14)
+    plt.legend(fontsize=10)
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+create_scatterplot(
+    seed_list,
+    sizes_lookahead,
+    sizes_decay,
+    "Seed",
+    "Size",
+    "Circuit Size",
+    ["lookahead", "Decay"],
+    ["blue", "red"],
+)
+create_scatterplot(
+    seed_list,
+    depths_lookahead,
+    depths_decay,
+    "Seed",
+    "Depth",
+    "Circuit Depth",
+    ["lookahead", "Decay"],
+    ["blue", "red"],
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/4cf9588b-8ea6-4761-b544-14bef8f0be85-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/4cf9588b-8ea6-4761-b544-14bef8f0be85-1.avif)
+
+Cada ponto nos gráficos de dispersão acima representa uma tentativa de layout, com o eixo x indicando a profundidade do circuito e o eixo y indicando o tamanho do circuito. Os resultados revelam que a heurística lookahead geralmente supera a heurística decay em minimizar a profundidade e o tamanho do circuito. Em aplicações práticas, o objetivo é identificar a tentativa de layout ideal para sua heurística escolhida, seja priorizando profundidade ou tamanho. Isso pode ser alcançado selecionando a tentativa com o valor mais baixo para a métrica desejada. É importante notar que aumentar o número de tentativas de layout melhora as chances de obter um resultado melhor em termos de tamanho ou profundidade, mas isso vem ao custo de maior sobrecarga computacional.
+
+```python
+min_depth_lookahead = min(depths_lookahead)
+min_depth_decay = min(depths_decay)
+min_size_lookahead = min(sizes_lookahead)
+min_size_decay = min(sizes_decay)
+print(
+    "Lookahead: Min Depth",
+    min_depth_lookahead,
+    "Min Size",
+    min_size_lookahead,
+)
+print("Decay:     Min Depth", min_depth_decay, "Min Size", min_size_decay)
+```
+
+```text
+Lookahead: Min Depth 399 Min Size 2452
+Decay:     Min Depth 415 Min Size 2611
+```
+
+Em nossa comparação inicial usando uma única tentativa de layout, a heurística lookahead mostrou desempenho ligeiramente melhor tanto em profundidade quanto em tamanho do circuito. Ao estender este estudo para múltiplas tentativas de layout usando `QiskitServerless`, conseguimos explorar um espaço muito mais amplo de inicializações SABRE, permitindo uma comparação mais representativa entre heurísticas.
+
+A partir dos gráficos de dispersão e dos melhores resultados observados, fica claro que o desempenho varia significativamente com a seed aleatória usada pelo SABRE. Ambas as heurísticas exibem uma ampla dispersão na profundidade e no tamanho do circuito entre as seeds, indicando que uma única execução muitas vezes é insuficiente para capturar resultados quase ótimos. Essa variabilidade destaca a importância de executar muitas tentativas com diferentes seeds ao buscar minimizar a profundidade e/ou a contagem de portas. Em todo o conjunto de tentativas, tanto as heurísticas `lookahead` quanto `decay` foram capazes de produzir resultados competitivos. Em alguns casos, a heurística `decay` igualou ou até superou `lookahead` para seeds específicas. No entanto, para este circuito em particular, os melhores resultados gerais foram obtidos usando a heurística lookahead, embora por uma margem modesta. Isso sugere que, embora lookahead tenha fornecido o resultado mais forte aqui, sua vantagem sobre decay não é absoluta.
+
+No geral, esses resultados reforçam dois pontos-chave. Primeiro, aproveitar muitas seeds é essencial para extrair o melhor desempenho possível do SABRE, independentemente da heurística usada. Segundo, embora a escolha da heurística seja importante, a estrutura do circuito desempenha um papel dominante, e o desempenho relativo de `lookahead` e `decay` pode diferir para outros circuitos. Como tal, a experimentação em larga escala com múltiplas seeds é crítica para uma transpilação de circuitos quânticos robusta e eficaz.
+
+```python
+# This cell is hidden from users, it cleans up the `source_files` directory
+from pathlib import Path
+
+Path("source_files/transpile_remote.py").unlink()
+Path("source_files").rmdir()
+```
+
+## Conclusão
+
+Neste tutorial, exploramos como otimizar circuitos grandes usando SABRE no Qiskit. Demonstramos como configurar a passagem `SabreLayout` com diferentes parâmetros para equilibrar a qualidade do circuito e o tempo de execução da transpilação. Também mostramos como personalizar a heurística de roteamento no SABRE e usar o runtime `QiskitServerless` para paralelizar tentativas de layout eficientemente quando `SabreSwap` está envolvido. Ao ajustar esses parâmetros e heurísticas, você pode otimizar o layout e o roteamento de circuitos grandes, garantindo que sejam executados eficientemente no hardware quântico.
+## Pesquisa do tutorial
+
+Por favor, responda a esta breve pesquisa para fornecer feedback sobre este tutorial. Seus insights nos ajudarão a melhorar nossas ofertas de conteúdo e experiência do usuário.

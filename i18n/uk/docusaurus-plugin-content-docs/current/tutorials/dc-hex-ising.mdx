@@ -1,0 +1,1284 @@
+---
+title: "Симуляція kicked Ising Hamiltonian з динамічними схемами"
+sidebar_label: "Симуляція kicked Ising Hamiltonian з динамічними схемами"
+description: "Посібник, що демонструє динамічні схеми утилітного масштабу з використанням симуляції гексагональної kicked Ising моделі"
+notebook_path: "docs/tutorials/dc-hex-ising.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/dc-hex-ising.ipynb" />
+
+
+{/* cspell:ignore hcords ycords xcords fontsize ncol Krsulich Lishman */}
+
+*Оцінка використання: 7,5 хвилин на процесорі Heron r3. (ПРИМІТКА: Це лише оцінка. Ваш час виконання може відрізнятися.)*
+Динамічні схеми — це схеми з класичним прямим зв'язком, іншими словами, це виміри в середині схеми, за якими йдуть операції класичної логіки, що визначають квантові операції, обумовлені класичним виходом. У цьому посібнику ми симулюємо kicked Ising модель на гексагональній решітці спінів і використовуємо динамічні схеми для реалізації взаємодій, що виходять за межі фізичного зв'язку обладнання.
+
+Модель Ізінга вивчалася широко в різних галузях фізики. Вона моделює спіни, що зазнають взаємодій Ізінга між вузлами решітки, а також поштовхи від локального магнітного поля на кожному вузлі. Троттерізована еволюція спінів у часі, розглянута в цьому посібнику, взята з [[1]](#references), задається наступним унітарним оператором:
+
+$$
+U(\theta)=\left(\prod_{\langle j, k\rangle} \exp \left(i \frac{\pi}{8} Z_j Z_k\right)\right)\left(\prod_j \exp \left(-i \frac{\theta}{2} X_j\right)\right)
+$$
+
+Для дослідження динаміки спінів ми вивчаємо середню намагніченість спінів на кожному вузлі як функцію від кроків Троттера. Таким чином, ми конструюємо наступну спостережувану величину:
+
+$$
+\langle O\rangle =  \frac{1}{N} \sum_i \langle Z_i \rangle
+$$
+
+Для реалізації ZZ взаємодії між вузлами решітки ми представляємо рішення з використанням функції динамічної схеми, що призводить до значно меншої глибини двокубітних операцій порівняно зі стандартним методом маршрутизації з вентилями SWAP. З іншого боку, операції класичного прямого зв'язку в динамічних схемах зазвичай мають довший час виконання, ніж квантові вентилі; отже, динамічні схеми мають обмеження та компроміси. Ми також представляємо спосіб додавання послідовності динамічного розв'язування на кубітах, що простоюють, під час операції класичного прямого зв'язку з використанням тривалості [stretch](/guides/stretch).
+## Вимоги
+Перед початком цього посібника переконайтеся, що у Вас встановлено наступне:
+
+* Qiskit SDK v2.0 або пізніше з підтримкою [візуалізації](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime v0.37 або пізніше з підтримкою візуалізації (`pip install 'qiskit-ibm-runtime[visualization]'`)
+* Бібліотека графів Rustworkx (`pip install rustworkx`)
+* Qiskit Aer (`pip install qiskit-aer`)
+## Налаштування
+
+```python
+import numpy as np
+from typing import List
+import rustworkx as rx
+import matplotlib.pyplot as plt
+from rustworkx.visualization import mpl_draw
+from qiskit.circuit import (
+    Parameter,
+    QuantumCircuit,
+    QuantumRegister,
+    ClassicalRegister,
+)
+from qiskit.transpiler import CouplingMap
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.classical import expr
+from qiskit.transpiler.preset_passmanagers import (
+    generate_preset_pass_manager,
+)
+from qiskit.transpiler import PassManager
+from qiskit.circuit.library import RZGate, XGate
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.circuit.measure import Measure
+from qiskit.transpiler.passes.utils.remove_final_measurements import (
+    calc_final_ops,
+)
+from qiskit.circuit import Instruction
+
+from qiskit.visualization import plot_circuit_layout
+from qiskit.circuit.tools import pi_check
+
+from qiskit_aer import AerSimulator
+from qiskit_aer.primitives import SamplerV2 as Aer_Sampler
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Batch,
+    SamplerV2 as Sampler,
+)
+from qiskit_ibm_runtime.exceptions import QiskitBackendNotFoundError
+from qiskit_ibm_runtime.visualization import (
+    draw_circuit_schedule_timing,
+)
+```
+
+## Крок 1: Відображення класичних входів у квантову схему
+Ми починаємо з визначення решітки для симуляції. Ми обираємо роботу з сотовою (також називаною гексагональною) решіткою, яка є планарним графом з вузлами степеня 3. Тут ми вказуємо розмір решітки, відповідні параметри схеми, що цікавлять нас у троттерізованій динаміці. Ми симулюємо троттерізовану еволюцію в часі під моделлю Ізінга при трьох різних значеннях $\theta$ локального магнітного поля.
+
+```python
+hex_rows = 3  # specify lattice size
+hex_cols = 5
+depths = range(9)  # specify Trotter steps
+zz_angle = np.pi / 8  # parameter for ZZ interaction
+max_angle = np.pi / 2  # max theta angle
+points = 3  # number of theta parameters
+
+θ = Parameter("θ")
+params = np.linspace(0, max_angle, points)
+```
+
+```python
+def make_hex_lattice(hex_rows=1, hex_cols=1):
+    """Define hexagon lattice."""
+    hex_cmap = CouplingMap.from_hexagonal_lattice(
+        hex_rows, hex_cols, bidirectional=False
+    )
+    data = list(hex_cmap.physical_qubits)
+    graph = hex_cmap.graph.to_undirected(multigraph=False)
+    edge_colors = rx.graph_misra_gries_edge_color(graph)
+    layer_edges = {color: [] for color in edge_colors.values()}
+    for edge_index, color in edge_colors.items():
+        layer_edges[color].append(graph.edge_list()[edge_index])
+    return data, layer_edges, hex_cmap, graph
+```
+
+Почнемо з невеликого тестового прикладу:
+
+```python
+hex_rows_test = 1
+hex_cols_test = 2
+
+data_test, layer_edges_test, hex_cmap_test, graph_test = make_hex_lattice(
+    hex_rows=hex_rows_test, hex_cols=hex_cols_test
+)
+
+# display a small example for illustration
+node_colors_test = ["lightblue"] * len(graph_test.node_indices())
+pos = rx.graph_spring_layout(
+    graph_test,
+    k=5 / np.sqrt(len(graph_test.nodes())),
+    repulsive_exponent=1,
+    num_iter=150,
+)
+mpl_draw(graph_test, node_color=node_colors_test, pos=pos)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/c011bc1a-0.avif)
+
+Ми будемо використовувати малий приклад для ілюстрації та симуляції. Нижче ми також конструюємо великий приклад, щоб показати, що робочий процес може бути розширений до великих розмірів.
+
+```python
+data, layer_edges, hex_cmap, graph = make_hex_lattice(
+    hex_rows=hex_rows, hex_cols=hex_cols
+)
+num_qubits = len(data)
+print(f"num_qubits = {num_qubits}")
+
+# display the honeycomb lattice to simulate
+node_colors = ["lightblue"] * len(graph.node_indices())
+pos = rx.graph_spring_layout(
+    graph,
+    k=5 / np.sqrt(num_qubits),
+    repulsive_exponent=1,
+    num_iter=150,
+)
+mpl_draw(graph, node_color=node_colors, pos=pos)
+plt.show()
+```
+
+```text
+num_qubits = 46
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/ba481bd4-1.avif)
+
+### Побудова унітарних схем
+Коли розмір задачі та параметри вказані, ми готові побудувати параметризовану схему, що симулює троттерізовану еволюцію $U(\theta)$ в часі з різними кроками Троттера, вказаними аргументом `depth`. Схема, яку ми конструюємо, має чергуються шари вентилів `Rx`($\theta$) та вентилів `Rzz`. Вентилі `Rzz` реалізують ZZ взаємодії між зв'язаними спінами, які будуть розміщені між кожним вузлом решітки, вказаним аргументом `layer_edges`.
+
+```python
+def gen_hex_unitary(
+    num_qubits=6,
+    zz_angle=np.pi / 8,
+    layer_edges=[
+        [(0, 1), (2, 3), (4, 5)],
+        [(1, 2), (3, 4), (5, 0)],
+    ],
+    θ=Parameter("θ"),
+    depth=1,
+    measure=False,
+    final_rot=True,
+):
+    """Build unitary circuit."""
+    circuit = QuantumCircuit(num_qubits)
+    # Build trotter layers
+    for _ in range(depth):
+        for i in range(num_qubits):
+            circuit.rx(θ, i)
+        circuit.barrier()
+        for coloring in layer_edges.keys():
+            for e in layer_edges[coloring]:
+                circuit.rzz(zz_angle, e[0], e[1])
+        circuit.barrier()
+    # Optional final rotation, set True to be consistent with Ref. [1]
+    if final_rot:
+        for i in range(num_qubits):
+            circuit.rx(θ, i)
+    if measure:
+        circuit.measure_all()
+
+    return circuit
+```
+
+Візуалізуємо малу тестову схему:
+
+```python
+circ_unitary_test = gen_hex_unitary(
+    num_qubits=len(data_test),
+    layer_edges=layer_edges_test,
+    θ=Parameter("θ"),
+    depth=1,
+    measure=True,
+)
+circ_unitary_test.draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/268e6999-0.avif)
+
+Аналогічно, конструюємо унітарні схеми великого прикладу на різних кроках Троттера та спостережувану величину для оцінки очікуваного значення.
+
+```python
+circuits_unitary = []
+for depth in depths:
+    circ = gen_hex_unitary(
+        num_qubits=num_qubits,
+        layer_edges=layer_edges,
+        θ=Parameter("θ"),
+        depth=depth,
+        measure=True,
+    )
+    circuits_unitary.append(circ)
+```
+
+```python
+observables_unitary = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / num_qubits) for i in range(num_qubits)],
+    num_qubits=num_qubits,
+)
+```
+
+### Побудова реалізації динамічної схеми
+
+Цей розділ демонструє основну реалізацію динамічної схеми для симуляції тієї ж троттерізованої еволюції в часі. Зверніть увагу, що сотова решітка, яку ми хочемо симулювати, не відповідає важкій решітці кубітів обладнання. Одним простим способом відобразити схему на обладнання є введення серії SWAP операцій для наближення взаємодіючих кубітів один до одного, щоб реалізувати ZZ взаємодію. Тут ми висвітлюємо альтернативний підхід з використанням динамічних схем як рішення, що ілюструє, що ми можемо використовувати комбінацію квантових та обчислень класичних в реальному часі всередині схеми в Qiskit для реалізації взаємодій за межами найближчих сусідів.
+
+У реалізації динамічної схеми ZZ взаємодія ефективно реалізується за допомогою допоміжних кубітів, виміру в середині схеми та прямого зв'язку. Щоб зрозуміти це, зверніть увагу, що ZZ обертання застосовує фазовий множник $e^{i\theta}$ до стану на основі його парності. Для двох кубітів базисні стани обчислювальної основи — це $|00\rangle$, $|01\rangle$, $|10\rangle$ та $|11\rangle$. Вентиль ZZ обертання застосовує фазовий множник до станів $|01\rangle$ та $|10\rangle$, парність яких (кількість одиниць у стані) є непарною, і залишає стани з парною парністю незмінними. Нижче описано, як ми можемо ефективно реалізувати ZZ взаємодії на двох кубітах за допомогою динамічних схем.
+
+1. Обчислення парності у допоміжний кубіт: замість прямого застосування ZZ до двох кубітів ми вводимо третій кубіт, допоміжний кубіт, для зберігання інформації про парність двох даних кубітів. Ми заплутуємо допоміжний кубіт з кожним даним кубітом, використовуючи вентилі CX від даного кубіта до допоміжного кубіта.
+
+2. Застосування однокубітного Z обертання до допоміжного кубіта: це тому, що допоміжний кубіт має інформацію про парність двох даних кубітів, що ефективно реалізує ZZ обертання на даних кубітах.
+
+3. Вимір допоміжного кубіта в X базисі: це ключовий крок, який колапсує стан допоміжного кубіта, і результат виміру повідомляє нам, що сталося:
+
+    * Вимір 0: коли спостерігається результат 0, ми фактично правильно застосували обертання $ZZ(\theta)$ до наших даних кубітів.
+
+    * Вимір 1: коли спостерігається результат 1, ми застосували $ZZ(\theta + \pi)$ замість цього.
+
+4. Застосування корекційного вентиля при вимірі 1: якщо ми виміряли 1, ми застосовуємо вентилі Z до даних кубітів, щоб "виправити" додаткову фазу $\pi$.
+
+Результуюча схема є наступною:
+
+![dynamic implementation](/docs/images/tutorials/dc-hex-ising/circuit-1.avif)
+Коли ми приймаємо цей підхід для симуляції сотової решітки, результуюча схема ідеально вбудовується в обладнання з важкою гексагональною решіткою: всі дані кубіти розташовані на вузлах степеня 3 решітки, які утворюють гексагональну решітку. Кожна пара даних кубітів має спільний допоміжний кубіт, що знаходиться на вузлі степеня 2. Нижче ми конструюємо кубітну решітку для реалізації динамічної схеми, вводячи допоміжні кубіти (показані темнішими фіолетовими колами).
+
+```python
+def make_lattice(hex_rows=1, hex_cols=1):
+    """Define heavy-hex lattice and corresponding lists of data and ancilla nodes."""
+    hex_cmap = CouplingMap.from_hexagonal_lattice(
+        hex_rows, hex_cols, bidirectional=False
+    )
+    data = list(hex_cmap.physical_qubits)
+
+    heavyhex_cmap = CouplingMap()
+    for d in data:
+        heavyhex_cmap.add_physical_qubit(d)
+
+    # make coupling map
+    a = len(data)
+    for edge in hex_cmap.get_edges():
+        heavyhex_cmap.add_physical_qubit(a)
+        heavyhex_cmap.add_edge(edge[0], a)
+        heavyhex_cmap.add_edge(edge[1], a)
+        a += 1
+    ancilla = list(range(len(data), a))
+    qubits = data + ancilla
+
+    # color edges
+    graph = heavyhex_cmap.graph.to_undirected(multigraph=False)
+    edge_colors = rx.graph_misra_gries_edge_color(graph)
+    layer_edges = {color: [] for color in edge_colors.values()}
+    for edge_index, color in edge_colors.items():
+        layer_edges[color].append(graph.edge_list()[edge_index])
+
+    # construct observable
+    obs_hex = SparsePauliOp.from_sparse_list(
+        [("Z", [i], 1 / len(data)) for i in data],
+        num_qubits=len(qubits),
+    )
+
+    return (data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex)
+```
+
+Візуалізуємо важку гексагональну решітку для даних кубітів та допоміжних кубітів у малому масштабі:
+
+```python
+(data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex) = (
+    make_lattice(hex_rows=hex_rows, hex_cols=hex_cols)
+)
+
+print(f"number of data qubits = {len(data)}")
+print(f"number of ancilla qubits = {len(ancilla)}")
+
+node_colors = []
+for node in graph.node_indices():
+    if node in ancilla:
+        node_colors.append("purple")
+    else:
+        node_colors.append("lightblue")
+
+pos = rx.graph_spring_layout(
+    graph,
+    k=1 / np.sqrt(len(qubits)),
+    repulsive_exponent=2,
+    num_iter=200,
+)
+
+# Visualize the graph, blue circles are data qubits and purple circles are ancillas
+mpl_draw(graph, node_color=node_colors, pos=pos)
+plt.show()
+```
+
+```text
+number of data qubits = 46
+number of ancilla qubits = 60
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/2d7224ef-1.avif)
+
+Нижче ми конструюємо динамічну схему для троттерізованої еволюції в часі. Вентилі `RZZ` замінені на реалізацію динамічної схеми з використанням кроків, описаних вище.
+
+```python
+def gen_hex_dynamic(
+    depth=1,
+    zz_angle=np.pi / 8,
+    θ=Parameter("θ"),
+    hex_rows=1,
+    hex_cols=1,
+    measure=False,
+    add_dd=True,
+):
+    """Build dynamic circuits."""
+    (data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex) = (
+        make_lattice(hex_rows=hex_rows, hex_cols=hex_cols)
+    )
+    # Initialize circuit
+    qr = QuantumRegister(len(qubits), "qr")
+    cr = ClassicalRegister(len(ancilla), "cr")
+    circuit = QuantumCircuit(qr, cr)
+
+    for k in range(depth):
+        # Single-qubit Rx layer
+        for d in data:
+            circuit.rx(θ, d)
+        circuit.barrier()
+
+        # CX gates from data qubits to ancilla qubits
+        for same_color_edges in layer_edges.values():
+            for e in same_color_edges:
+                circuit.cx(e[0], e[1])
+        circuit.barrier()
+
+        # Apply Rz rotation on ancilla qubits and rotate into X basis
+        for a in ancilla:
+            circuit.rz(zz_angle, a)
+            circuit.h(a)
+        # Add barrier to align terminal measurement
+        circuit.barrier()
+
+        # Measure ancilla qubits
+        for i, a in enumerate(ancilla):
+            circuit.measure(a, i)
+        d2ros = {}
+        a2ro = {}
+        # Retrieve ancilla measurement outcomes
+        for a in ancilla:
+            a2ro[a] = cr[ancilla.index(a)]
+
+        # For each data qubit, retrieve measurement outcomes of neighboring ancilla qubits
+        for d in data:
+            ros = [a2ro[a] for a in heavyhex_cmap.neighbors(d)]
+            d2ros[d] = ros
+
+        # Build classical feedforward operations (optionally add DD on idling data qubits)
+        for d in data:
+            if add_dd:
+                circuit = add_stretch_dd(circuit, d, f"data_{d}_depth_{k}")
+
+            # # XOR the neighboring readouts of the data qubit; if True, apply Z to it
+            ros = d2ros[d]
+            parity = ros[0]
+            for ro in ros[1:]:
+                parity = expr.bit_xor(parity, ro)
+            with circuit.if_test(expr.equal(parity, True)):
+                circuit.z(d)
+
+        # Reset the ancilla if its readout is 1
+        for a in ancilla:
+            with circuit.if_test(expr.equal(a2ro[a], True)):
+                circuit.x(a)
+        circuit.barrier()
+
+    # Final single-qubit Rx layer to match the unitary circuits
+    for d in data:
+        circuit.rx(θ, d)
+
+    if measure:
+        circuit.measure_all()
+    return circuit, obs_hex
+
+def add_stretch_dd(qc, q, name):
+    """Add XpXm DD sequence."""
+    s = qc.add_stretch(name)
+    qc.delay(s, q)
+    qc.x(q)
+    qc.delay(s, q)
+    qc.delay(s, q)
+    qc.rz(np.pi, q)
+    qc.x(q)
+    qc.rz(-np.pi, q)
+    qc.delay(s, q)
+    return qc
+```
+
+#### Динамічне розв'язування (DD) та підтримка тривалості `stretch`
+Одним із застережень використання реалізації динамічної схеми для реалізації ZZ взаємодії є те, що вимір у середині схеми та операції класичного прямого зв'язку зазвичай займають більше часу для виконання, ніж квантові вентилі. Для придушення декогеренції кубітів під час простою для виконання класичних операцій ми додали послідовність [динамічного розв'язування](/guides/error-mitigation-and-suppression-techniques#dynamical-decoupling) (DD) після операції виміру на допоміжних кубітах і перед умовною Z операцією на даному кубіті, перед оператором `if_test`.
+
+Послідовність DD додається функцією `add_stretch_dd()`, яка використовує [тривалості `stretch`](/guides/stretch) для визначення часових інтервалів між вентилями DD. Тривалість `stretch` — це спосіб вказати розтяжну тривалість часу для операції `delay` таким чином, щоб тривалість затримки могла зростати для заповнення часу простою кубіта. Змінні тривалості, вказані `stretch`, розв'язуються під час компіляції на бажані тривалості, які задовольняють певне обмеження. Це дуже корисно, коли синхронізація послідовностей DD є критичною для досягнення хорошої продуктивності придушення помилок. Для більш детальної інформації про тип `stretch` дивіться документацію [OpenQASM](https://openqasm.com/language/delays.html#duration-and-stretch-types). Наразі підтримка типу `stretch` у Qiskit Runtime є експериментальною. Для отримання детальної інформації про обмеження його використання, будь ласка, зверніться до [розділу обмежень](/guides/stretch#qiskit-runtime-limitations) документації `stretch`.
+
+Використовуючи функції, визначені вище, ми будуємо схеми троттерізованої еволюції в часі, з DD та без нього, і відповідні спостережувані величини.
+Почнемо з візуалізації динамічної схеми невеликого прикладу:
+
+```python
+hex_rows_test = 1
+hex_cols_test = 1
+
+(
+    data_test,
+    qubits_test,
+    ancilla_test,
+    layer_edges_test,
+    heavyhex_cmap_test,
+    graph_test,
+    obs_hex_test,
+) = make_lattice(hex_rows=hex_rows_test, hex_cols=hex_cols_test)
+
+node_colors = []
+for node in graph_test.node_indices():
+    if node in ancilla_test:
+        node_colors.append("purple")
+    else:
+        node_colors.append("lightblue")
+pos = rx.graph_spring_layout(
+    graph_test,
+    k=5 / np.sqrt(len(qubits_test)),
+    repulsive_exponent=2,
+    num_iter=150,
+)
+
+# display a small example for illustration
+node_colors_test = ["lightblue"] * len(graph_test.node_indices())
+mpl_draw(graph_test, node_color=node_colors, pos=pos)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/b6e2e76c-0.avif)
+
+```python
+circuit_dynamic_test, obs_dynamic_test = gen_hex_dynamic(
+    depth=1,
+    θ=Parameter("θ"),
+    hex_rows=hex_rows_test,
+    hex_cols=hex_cols_test,
+    measure=False,
+    add_dd=False,
+)
+circuit_dynamic_test.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/735e590a-0.avif)
+
+```python
+circuit_dynamic_dd_test, _ = gen_hex_dynamic(
+    depth=1,
+    θ=Parameter("θ"),
+    hex_rows=hex_rows_test,
+    hex_cols=hex_cols_test,
+    measure=False,
+    add_dd=True,
+)
+circuit_dynamic_dd_test.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/5de9381a-0.avif)
+
+Аналогічно, конструюємо динамічні схеми для великого прикладу:
+
+```python
+circuits_dynamic = []
+circuits_dynamic_dd = []
+observables_dynamic = []
+for depth in depths:
+    circuit, obs = gen_hex_dynamic(
+        depth=depth,
+        θ=Parameter("θ"),
+        hex_rows=hex_rows,
+        hex_cols=hex_cols,
+        measure=True,
+        add_dd=False,
+    )
+    circuits_dynamic.append(circuit)
+
+    circuit_dd, _ = gen_hex_dynamic(
+        depth=depth,
+        θ=Parameter("θ"),
+        hex_rows=hex_rows,
+        hex_cols=hex_cols,
+        measure=True,
+        add_dd=True,
+    )
+    circuits_dynamic_dd.append(circuit_dd)
+    observables_dynamic.append(obs)
+```
+## Крок 2: Оптимізація задачі для виконання на обладнанні
+Тепер ми готові транспілювати схему для обладнання. Ми транспілюємо як стандартну унітарну реалізацію, так і реалізацію з динамічними схемами для обладнання.
+
+Для транспіляції на обладнання ми спочатку створюємо екземпляр бекенду. Якщо доступно, ми виберемо бекенд, де підтримується інструкція [`MidCircuitMeasure`](/guides/measure-qubits) (`measure_2`).
+
+```python
+service = QiskitRuntimeService()
+try:
+    backend = service.least_busy(
+        operational=True,
+        simulator=False,
+        use_fractional_gates=True,
+        filters=lambda b: "measure_2" in b.supported_instructions,
+    )
+except QiskitBackendNotFoundError:
+    backend = service.least_busy(
+        operational=True,
+        simulator=False,
+        use_fractional_gates=True,
+    )
+```
+
+### Транспіляція для динамічних схем
+Спочатку ми транспілюємо динамічні схеми з додаванням послідовності DD і без неї. Щоб переконатися, що ми використовуємо один і той самий набір фізичних кубітів у всіх схемах для більш узгоджених результатів, ми спочатку транспілюємо схему один раз, а потім використовуємо її розташування для всіх наступних схем, вказане через [`initial_layout`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.TranspileLayout#initial_layout) у менеджері проходів. Потім ми конструюємо [примітивні уніфіковані блоки](/guides/primitive-input-output) (PUB) як вхідні дані для примітиву Sampler.
+
+```python
+pm_temp = generate_preset_pass_manager(
+    optimization_level=3,
+    backend=backend,
+)
+isa_temp = pm_temp.run(circuits_dynamic[-1])
+dynamic_layout = isa_temp.layout.initial_index_layout(filter_ancillas=True)
+
+pm = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=dynamic_layout
+)
+
+dynamic_isa_circuits = [pm.run(circ) for circ in circuits_dynamic]
+dynamic_pubs = [(circ, params) for circ in dynamic_isa_circuits]
+
+dynamic_isa_circuits_dd = [pm.run(circ) for circ in circuits_dynamic_dd]
+dynamic_pubs_dd = [(circ, params) for circ in dynamic_isa_circuits_dd]
+```
+
+Ми можемо візуалізувати розташування кубітів транспільованої схеми нижче. Чорні кола показують кубіти даних і допоміжні кубіти, які використовуються в реалізації динамічної схеми.
+
+```python
+def _heron_coords_r2():
+    cord_map = np.array(
+        [
+            [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+            ],
+            -1
+            * np.array([j for i in range(15) for j in [i] * [16, 4][i % 2]]),
+        ],
+        dtype=int,
+    )
+
+    hcords = []
+    ycords = cord_map[0]
+    xcords = cord_map[1]
+    for i in range(156):
+        hcords.append([xcords[i] + 1, np.abs(ycords[i]) + 1])
+
+    return hcords
+```
+
+```python
+plot_circuit_layout(
+    dynamic_isa_circuits_dd[8],
+    backend,
+    qubit_coordinates=_heron_coords_r2(),
+    view="virtual",
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/98d402e0-0.avif)
+
+<Admonition type="note">
+Якщо Ви отримуєте помилки про те, що `neato` не знайдено з `plot_circuit_layout()`, переконайтеся, що у Вас встановлено пакет `graphviz` і він доступний у Вашому PATH. Якщо він встановлюється в нестандартне місце (наприклад, використовуючи `homebrew` на MacOS), Вам може знадобитися оновити змінну середовища `PATH`. Це можна зробити всередині цього ноутбука, використовуючи наступне:
+
+```python
+import os
+os.environ['PATH'] = f"path/to/neato{os.pathsep}{os.environ['PATH']}"
+```
+</Admonition>
+
+```python
+dynamic_isa_circuits[1].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/82fb6fa8-0.avif)
+
+```python
+dynamic_isa_circuits_dd[1].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/99ad295c-0.avif)
+
+#### Транспіляція з використанням `MidCircuitMeasure`
+
+`MidCircuitMeasure` — це доповнення до доступних операцій вимірювання, відкаліброваних спеціально для виконання [вимірювань у середині схеми](/guides/measure-qubits#mid-circuit-measurements). Інструкція `MidCircuitMeasure` відповідає інструкції `measure_2`, яку підтримують бекенди. Зверніть увагу, що `measure_2` підтримується не на всіх бекендах. Ви можете використовувати `service.backends(filters=lambda b: "measure_2" in b.supported_instructions)`, щоб знайти бекенди, які її підтримують. Тут ми показуємо, як транспілювати схему так, щоб вимірювання в середині схеми, визначені у схемі, виконувалися з використанням операції `MidCircuitMeasure`, якщо бекенд її підтримує.
+
+Нижче ми виводимо тривалість для інструкції `measure_2` і стандартної інструкції `measure`.
+
+```python
+print(
+    f'Mid-circuit measurement `measure_2` duration: {backend.instruction_durations.get('measure_2',0) * backend.dt * 1e9/1e3} μs'
+)
+print(
+    f'Terminal measurement `measure` duration: {backend.instruction_durations.get('measure',0) * backend.dt *1e9/1e3} μs'
+)
+```
+
+```text
+Mid-circuit measurement `measure_2` duration:  1.624 μs
+Terminal measurement `measure` duration: 2.2 μs
+```
+
+```python
+"""Pass that replaces terminal measures in the middle of the circuit with
+MidCircuitMeasure instructions."""
+
+class ConvertToMidCircuitMeasure(TransformationPass):
+    """This pass replaces terminal measures in the middle of the circuit with
+    MidCircuitMeasure instructions.
+    """
+
+    def __init__(self, target):
+        super().__init__()
+        self.target = target
+
+    def run(self, dag):
+        """Run the pass on a dag."""
+        mid_circ_measure = None
+        for inst in self.target.instructions:
+            if isinstance(inst[0], Instruction) and inst[0].name.startswith(
+                "measure_"
+            ):
+                mid_circ_measure = inst[0]
+                break
+        if not mid_circ_measure:
+            return dag
+
+        final_measure_nodes = calc_final_ops(dag, {"measure"})
+        for node in dag.op_nodes(Measure):
+            if node not in final_measure_nodes:
+                dag.substitute_node(node, mid_circ_measure, inplace=True)
+
+        return dag
+
+pm = PassManager(ConvertToMidCircuitMeasure(backend.target))
+
+dynamic_isa_circuits_meas2 = [pm.run(circ) for circ in dynamic_isa_circuits]
+dynamic_pubs_meas2 = [(circ, params) for circ in dynamic_isa_circuits_meas2]
+
+dynamic_isa_circuits_dd_meas2 = [
+    pm.run(circ) for circ in dynamic_isa_circuits_dd
+]
+dynamic_pubs_dd_meas2 = [
+    (circ, params) for circ in dynamic_isa_circuits_dd_meas2
+]
+```
+
+### Транспіляція для унітарних схем
+
+Щоб встановити справедливе порівняння між динамічними схемами та їх унітарним аналогом, ми використовуємо той самий набір фізичних кубітів, використаних у динамічних схемах для кубітів даних, як розташування для транспіляції унітарних схем.
+
+```python
+init_layout = [
+    dynamic_layout[ind] for ind in range(circuits_unitary[0].num_qubits)
+]
+
+pm = generate_preset_pass_manager(
+    target=backend.target,
+    initial_layout=init_layout,
+    optimization_level=3,
+)
+
+def transpile_minimize(circ: QuantumCircuit, pm: PassManager, iterations=10):
+    """Transpile circuits for specified number of iterations and return the one with smallest two-qubit gate depth"""
+    circs = [pm.run(circ) for i in range(iterations)]
+    circs_sorted = sorted(
+        circs,
+        key=lambda x: x.depth(lambda x: x.operation.num_qubits == 2),
+    )
+    return circs_sorted[0]
+
+unitary_isa_circuits = []
+for circ in circuits_unitary:
+    circ_t = transpile_minimize(circ, pm, iterations=100)
+    unitary_isa_circuits.append(circ_t)
+
+unitary_pubs = [(circ, params) for circ in unitary_isa_circuits]
+```
+
+Ми візуалізуємо розташування кубітів транспільованих унітарних схем. Чорні кола вказують на фізичні кубіти, які використовуються для транспіляції унітарних схем, і їх індекси відповідають індексам віртуальних кубітів. Порівнюючи це з розташуванням, накресленим для динамічних схем, ми можемо підтвердити, що унітарні схеми використовують той самий набір фізичних кубітів, що й кубіти даних у динамічних схемах.
+
+```python
+plot_circuit_layout(
+    unitary_isa_circuits[-1],
+    backend,
+    qubit_coordinates=_heron_coords_r2(),
+    view="virtual",
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/8c3c633f-0.avif)
+
+Тепер ми додаємо послідовність DD до транспільованих схем і конструюємо відповідні PUB для подання завдання.
+
+```python
+pm_dd = PassManager(
+    [
+        ALAPScheduleAnalysis(target=backend.target),
+        PadDynamicalDecoupling(
+            dd_sequence=[
+                XGate(),
+                RZGate(np.pi),
+                XGate(),
+                RZGate(-np.pi),
+            ],
+            spacing=[1 / 4, 1 / 2, 0, 0, 1 / 4],
+            target=backend.target,
+        ),
+    ]
+)
+
+unitary_isa_circuits_dd = pm_dd.run(unitary_isa_circuits)
+unitary_pubs_dd = [(circ, params) for circ in unitary_isa_circuits_dd]
+```
+
+### Порівняння глибини двокубітних воріт унітарних і динамічних схем
+
+```python
+# compare circuit depth of unitary and dynamic circuit implementations
+unitary_depth = [
+    unitary_isa_circuits[i].depth(lambda x: x.operation.num_qubits == 2)
+    for i in range(len(unitary_isa_circuits))
+]
+
+dynamic_depth = [
+    dynamic_isa_circuits[i].depth(lambda x: x.operation.num_qubits == 2)
+    for i in range(len(dynamic_isa_circuits))
+]
+
+plt.plot(
+    list(range(len(unitary_depth))),
+    unitary_depth,
+    label="unitary circuits",
+    color="#be95ff",
+)
+plt.plot(
+    list(range(len(dynamic_depth))),
+    dynamic_depth,
+    label="dynamic circuits",
+    color="#ff7eb6",
+)
+plt.xlabel("Trotter steps")
+plt.ylabel("Two-qubit depth")
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x374225760>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/36f1d72d-1.avif)
+
+Основна перевага схеми на основі вимірювань полягає в тому, що при реалізації кількох взаємодій ZZ шари CX можуть бути паралелізовані, і вимірювання можуть відбуватися одночасно. Це тому, що всі взаємодії ZZ комутують, тому обчислення можна виконати з глибиною вимірювання 1. Після транспіляції схем ми спостерігаємо, що підхід із динамічною схемою дає значно меншу глибину двокубітних воріт, ніж стандартний унітарний підхід, з тією застережкою, що додаткове вимірювання в середині схеми та класичне випереджувальне керування самі по собі займають час і вносять власні джерела помилок.
+## Крок 3: Виконання з використанням примітивів Qiskit
+#### Режим локального тестування
+
+Перед відправкою завдань на обладнання ми можемо виконати невелику тестову симуляцію динамічного ланцюга, використовуючи [режим локального тестування](/guides/local-testing-mode).
+
+```python
+aer_sim = AerSimulator()
+pm = generate_preset_pass_manager(backend=aer_sim, optimization_level=1)
+circuit_dynamic_test.measure_all()
+isa_qc = pm.run(circuit_dynamic_test)
+with Batch(backend=aer_sim) as batch:
+    sampler = Sampler(mode=batch)
+    result = sampler.run([(isa_qc, params)]).result()
+
+print(
+    "Simulated average magnetization at trotter step = 1 at three theta values"
+)
+result[0].data["meas"].expectation_values(obs_dynamic_test[0])
+```
+
+```text
+Simulated average magnetization at trotter step = 1 at three theta values
+```
+
+```text
+array([ 0.16666667,  0.01855469, -0.13476562])
+```
+
+#### MPS симуляція
+
+Для великих ланцюгів ми можемо використовувати симулятор `matrix_product_state` (MPS), який надає приблизний результат для очікуваного значення відповідно до обраної розмірності зв'язку. Пізніше ми використовуємо результати симуляції MPS як базову лінію для порівняння результатів з обладнання.
+
+```python
+# The MPS simulation below took approximately 7 minutes to run on a laptop with Apple M1 chip
+
+mps_backend = AerSimulator(
+    method="matrix_product_state",
+    matrix_product_state_truncation_threshold=1e-5,
+    matrix_product_state_max_bond_dimension=100,
+)
+mps_sampler = Aer_Sampler.from_backend(mps_backend)
+
+shots = 4096
+
+data_sim = []
+for j in range(points):
+    circ_list = [
+        circ.assign_parameters([params[j]]) for circ in circuits_unitary
+    ]
+
+    mps_job = mps_sampler.run(circ_list, shots=shots)
+    result = mps_job.result()
+
+    point_data = [
+        result[d].data["meas"].expectation_values(observables_unitary)
+        for d in depths
+    ]
+
+    data_sim.append(point_data)  # data at one theta value
+
+data_sim = np.array(data_sim)
+```
+
+Маючи підготовлені ланцюги та спостережувані величини, тепер ми виконуємо їх на обладнанні, використовуючи примітив Sampler.
+
+Тут ми відправляємо три завдання для `unitary_pubs`, `dynamic_pubs` та `dynamic_pubs_dd`. Кожне з них є списком параметризованих ланцюгів, що відповідають дев'яти різним крокам Троттера з трьома різними параметрами $\theta$.
+
+```python
+shots = 10000
+
+with Batch(backend=backend) as batch:
+    sampler = Sampler(mode=batch)
+
+    sampler.options.experimental = {
+        "execution": {
+            "scheduler_timing": True
+        },  # set to True to retrieve circuit timing info
+    }
+
+    job_unitary = sampler.run(unitary_pubs, shots=shots)
+    print(f"unitary: {job_unitary.job_id()}")
+
+    job_unitary_dd = sampler.run(unitary_pubs_dd, shots=shots)
+    print(f"unitary_dd: {job_unitary_dd.job_id()}")
+
+    job_dynamic = sampler.run(dynamic_pubs, shots=shots)
+    print(f"dynamic: {job_dynamic.job_id()}")
+
+    job_dynamic_dd = sampler.run(dynamic_pubs_dd, shots=shots)
+    print(f"dynamic_dd: {job_dynamic_dd.job_id()}")
+
+    job_dynamic_meas2 = sampler.run(dynamic_pubs_meas2, shots=shots)
+    print(f"dynamic_meas2: {job_dynamic_meas2.job_id()}")
+
+    job_dynamic_dd_meas2 = sampler.run(dynamic_pubs_dd_meas2, shots=shots)
+    print(f"dynamic_dd_meas2: {job_dynamic_dd_meas2.job_id()}")
+```
+
+```text
+unitary: d5dtt0ldq8ts73fvbhj0
+unitary: d5dtt11smlfc739onuag
+dynamic: d5dtt1hsmlfc739onuc0
+dynamic_dd: d5dtt25jngic73avdne0
+dynamic_meas2: d5dtt2ldq8ts73fvbhm0
+dynamic_dd_meas2: d5dtt2tjngic73avdnf0
+```
+
+## Крок 4: Постобробка та повернення результатів у бажаному класичному форматі
+
+Після завершення завдань ми можемо отримати тривалість ланцюга з метаданих результатів завдання та візуалізувати інформацію про розклад ланцюга. Щоб дізнатися більше про візуалізацію інформації про планування ланцюга, зверніться до [цієї сторінки](/guides/visualize-circuit-timing#qiskit-runtime-support).
+
+```python
+# Circuit durations is reported in the unit of `dt` which can be retrieved from `Backend` object
+unitary_durations = [
+    job_unitary.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+dynamic_durations = [
+    job_dynamic.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+dynamic_durations_meas2 = [
+    job_dynamic_meas2.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+result_dd = job_dynamic_dd.result()[1]
+circuit_schedule_dd = result_dd.metadata["compilation"]["scheduler_timing"][
+    "timing"
+]
+
+# to visualize the circuit schedule, one can show the figure below
+fig_dd = draw_circuit_schedule_timing(
+    circuit_schedule=circuit_schedule_dd,
+    included_channels=None,
+    filter_readout_channels=False,
+    filter_barriers=False,
+    width=1000,
+)
+
+# Save to a file since the figure is large
+fig_dd.write_html("scheduler_timing_dd.html")
+```
+
+Ми будуємо графік тривалостей ланцюгів для унітарних ланцюгів та динамічних ланцюгів. З графіка нижче ми бачимо, що, незважаючи на час, необхідний для вимірювань всередині ланцюга та класичних операцій, реалізація динамічного ланцюга з `measure_2` призводить до порівнянних тривалостей ланцюга, як і унітарна реалізація.
+
+```python
+# visualize circuit durations
+
+def convert_dt_to_microseconds(circ_duration: List, backend_dt: float):
+    dt = backend_dt * 1e6  # dt in microseconds
+    return list(map(lambda x: x * dt, circ_duration))
+
+dt = backend.target.dt
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(unitary_durations, dt),
+    color="#be95ff",
+    linestyle=":",
+    label="unitary",
+)
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(dynamic_durations, dt),
+    color="#ff7eb6",
+    linestyle="-.",
+    label="dynamic",
+)
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(dynamic_durations_meas2, dt),
+    color="#ff7eb6",
+    linestyle="-.",
+    marker="s",
+    mfc="none",
+    label="dynamic w/ meas2",
+)
+
+plt.xlabel("Trotter steps")
+plt.ylabel(r"Circuit durations in $\mu$s")
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x17f73c6e0>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/639221e6-1.avif)
+
+Після завершення завдань ми отримуємо дані нижче та обчислюємо середню намагніченість, оцінену спостережуваними величинами `observables_unitary` або `observables_dynamic`, які ми створили раніше.
+
+```python
+runs = {
+    "unitary": (
+        job_unitary,
+        [observables_unitary] * len(circuits_unitary),
+    ),
+    "unitary_dd": (
+        job_unitary_dd,
+        [observables_unitary] * len(circuits_unitary),
+    ),
+    # Omitting Dyn w/o DD and Dynamic w/ DD plots for better readability
+    # "dynamic": (job_dynamic, observables_dynamic),
+    # "dynamic_dd": (job_dynamic_dd, observables_dynamic),
+    "dynamic_meas2": (job_dynamic_meas2, observables_dynamic),
+    "dynamic_dd_meas2": (
+        job_dynamic_dd_meas2,
+        observables_dynamic,
+    ),
+}
+```
+
+```python
+data_dict = {}
+for key, (job, obs) in runs.items():
+    data = []
+    for i in range(points):
+        data.append(
+            [
+                job.result()[ind].data["meas"].expectation_values(obs[ind])[i]
+                for ind in depths
+            ]
+        )
+    data_dict[key] = data
+```
+
+Нижче ми будуємо графік спінової намагніченості як функції кроків Троттера при різних значеннях $\theta$, що відповідають різним значенням сили локального магнітного поля. Ми будуємо як попередньо обчислені результати симуляції MPS для ідеальних унітарних ланцюгів, так і експериментальні результати від наступних:
+
+1. виконання унітарних ланцюгів з DD
+3. виконання динамічних ланцюгів з DD та `MidCircuitMeasure`
+
+```python
+plt.figure(figsize=(10, 6))
+
+colors = ["#0f62fe", "#be95ff", "#ff7eb6"]
+for i in range(points):
+    plt.plot(
+        depths,
+        data_sim[i],
+        color=colors[i],
+        linestyle="solid",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (MPS)",
+    )
+    # plt.plot(
+    #     depths,
+    #     data_dict["unitary"][i],
+    #     color=colors[i],
+    #     linestyle=":",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Unitary)",
+    # )
+
+    plt.plot(
+        depths,
+        data_dict["unitary_dd"][i],
+        color=colors[i],
+        marker="o",
+        mfc="none",
+        linestyle=":",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (Unitary w/DD)",
+    )
+
+    # Omitting Dyn w/o DD and Dynamic w/ DD plots for better readability
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic"][i],
+    #     color=colors[i],
+    #     linestyle="-.",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dyn w/o DD)",
+    # )
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic_dd"][i],
+    #     marker="D",
+    #     mfc="none",
+    #     color=colors[i],
+    #     linestyle="-.",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ DD)",
+    # )
+
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic_meas2"][i],
+    #     color=colors[i],
+    #     marker="s",
+    #     mfc="none",
+    #     linestyle=':',
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ MidCircuitMeas)",
+    # )
+
+    plt.plot(
+        depths,
+        data_dict["dynamic_dd_meas2"][i],
+        color=colors[i],
+        marker="*",
+        markersize=8,
+        linestyle=":",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ DD & MidCircuitMeas)",
+    )
+
+plt.xlabel("Trotter steps", fontsize=16)
+plt.ylabel("Average magnetization", fontsize=16)
+plt.xticks(rotation=45)
+handles, labels = plt.gca().get_legend_handles_labels()
+plt.legend(
+    handles,
+    labels,
+    loc="upper right",
+    bbox_to_anchor=(1.46, 1.0),
+    shadow=True,
+    ncol=1,
+)
+plt.title(
+    f"{hex_rows}x{hex_cols} hex ring, {num_qubits} data qubits, {len(ancilla)} ancilla qubits \n{backend.name}: Sampler"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/662239cf-0.avif)
+
+Коли ми порівнюємо експериментальні результати з симуляцією, ми бачимо, що реалізація динамічного ланцюга (пунктирна лінія зі зірками) загалом має кращу продуктивність, ніж стандартна унітарна реалізація (пунктирна лінія з колами). Підсумовуючи, ми представляємо динамічні ланцюги як рішення для симуляції спінових моделей Ізінга на гратці з сотовою структурою, топології, яка не є рідною для обладнання. Рішення з динамічними ланцюгами дозволяє взаємодії ZZ між кубітами, які не є найближчими сусідами, з меншою глибиною двокубітних воріт, ніж при використанні воріт SWAP, за рахунок введення додаткових допоміжних кубітів та операцій класичної прямої передачі.

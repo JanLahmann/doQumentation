@@ -1,0 +1,550 @@
+---
+title: "Corte de circuitos para condições de contorno periódicas"
+sidebar_label: "Corte de circuitos para condições de contorno periódicas"
+description: "Use corte de circuitos para lidar com um problema de cadeia periódica em escala útil onde o primeiro e o último qubits não são vizinhos."
+notebook_path: "docs/tutorials/periodic-boundary-conditions-with-circuit-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/periodic-boundary-conditions-with-circuit-cutting.ipynb" />
+
+
+
+{/* cspell:ignore fontsize edgecolor */}
+
+*Estimativa de uso: Dois minutos em um processador Eagle (NOTA: Isso é apenas uma estimativa. Seu tempo de execução pode variar.)*
+## Contexto
+
+Neste notebook, consideramos a simulação de uma cadeia periódica de qubits onde há uma operação de dois qubits entre cada dois qubits adjacentes, incluindo o primeiro e o último. Cadeias periódicas são frequentemente encontradas em problemas de física e química, como modelos de Ising e simulação molecular.
+
+Os dispositivos IBM Quantum&reg; atuais são planares. É possível incorporar algumas cadeias periódicas diretamente na topologia onde o primeiro e o último qubits são vizinhos. No entanto, para problemas grandes o suficiente, o primeiro e o último qubits podem estar distantes, exigindo assim muitos gates SWAP para a operação de 2 qubits entre esses dois qubits. Tal problema de contorno periódico foi estudado em <a href="https://arxiv.org/abs/2402.17833">este artigo</a>.
+
+Neste notebook, mostramos o uso de corte de circuitos para lidar com tal problema de cadeia periódica em escala útil onde o primeiro e o último qubits não são vizinhos. Cortar essa conectividade de longo alcance evita os gates SWAP extras ao custo de executar múltiplas instâncias do circuito e algum pós-processamento clássico. Em resumo, o corte pode ser incorporado para calcular logicamente as operações de 2 qubits de longa distância. Em outras palavras, essa abordagem leva a um aumento efetivo na conectividade do mapa de acoplamento, levando assim a um número menor de gates SWAP.
+
+Observe que existem dois tipos de cortes - cortar o fio de um circuito (chamado de `wire cutting`), ou substituir um gate de 2 qubits por múltiplas operações de qubit único (chamado de `gate cutting`). Neste notebook, vamos nos concentrar no gate cutting. Para mais detalhes sobre gate cutting, consulte os <a href="https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html">materiais explicativos</a> no `qiskit-addon-cutting`, e as referências correspondentes. Para mais detalhes sobre wire cutting, consulte o tutorial [Wire cutting for expectation values estimation](/tutorials/wire-cutting), ou os tutoriais em <a href='https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html'>qiskit-addon-cutting</a>.
+## Requisitos
+
+Antes de iniciar este tutorial, certifique-se de ter o seguinte instalado:
+
+- Qiskit SDK v1.2 ou posterior (`pip install qiskit`)
+- Qiskit Runtime v0.3 ou posterior (`pip install qiskit-ibm-runtime`)
+- Circuit cutting Qiskit addon v.9.0 ou posterior (`pip install qiskit-addon-cutting`)
+## Configuração
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    BasisTranslator,
+    Optimize1qGatesDecomposition,
+)
+from qiskit.circuit.equivalence_library import (
+    SessionEquivalenceLibrary as sel,
+)
+from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit.result import sampled_expectation_value
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.circuit.library import TwoLocal
+
+from qiskit_addon_cutting import (
+    cut_gates,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2, SamplerOptions, Batch
+```
+
+## Passo 1: Mapear entradas clássicas para um problema quântico
+
+Aqui, vamos gerar um circuito TwoLocal e definir alguns observáveis.
+
+<ul>
+    <li>Entrada: Parâmetros para criar um circuito</li>
+    <li>Saída: Circuito abstrato e observáveis</li>
+</ul>
+Consideramos um `entangler map` eficiente em hardware para o circuito TwoLocal com conectividade periódica entre o último e o primeiro qubits do `entangler map`. Esta interação de longo alcance pode levar a gates SWAP extras durante a transpilação, aumentando assim a profundidade do circuito.
+#### Selecionar backend e layout inicial
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Para este notebook, vamos considerar uma cadeia 1D periódica de 109 qubits, que é a cadeia 1D mais longa na topologia de um dispositivo IBM Quantum de 127 qubits. Não é possível arranjar uma cadeia periódica de 109 qubits em um dispositivo de 127 qubits de modo que o primeiro e o último qubits sejam vizinhos sem incorporar gates SWAP extras.
+
+```python
+init_layout = [
+    13,
+    12,
+    11,
+    10,
+    9,
+    8,
+    7,
+    6,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0,
+    14,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    36,
+    51,
+    50,
+    49,
+    48,
+    47,
+    46,
+    45,
+    44,
+    43,
+    42,
+    41,
+    40,
+    39,
+    38,
+    37,
+    52,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    74,
+    89,
+    88,
+    87,
+    86,
+    85,
+    84,
+    83,
+    82,
+    81,
+    80,
+    79,
+    78,
+    77,
+    76,
+    75,
+    90,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    112,
+    126,
+    125,
+    124,
+    123,
+    122,
+    121,
+    120,
+    119,
+    118,
+    117,
+    116,
+    115,
+    114,
+    113,
+]
+
+# the number of qubits in the circuit is governed by the length of the initial layout
+num_qubits = len(init_layout)
+num_qubits
+```
+
+```text
+109
+```
+
+#### Construir o entangler map para o circuito TwoLocal
+
+```python
+coupling_map = [(i, i + 1) for i in range(0, len(init_layout) - 1)]
+coupling_map.append(
+    (len(init_layout) - 1, 0)
+)  # adding in the periodic connectivity
+```
+
+O circuito TwoLocal permite a repetição dos `rotation_blocks` e do `entangler map` múltiplas vezes. Para este caso, o número de repetições determina o número de gates periódicos que precisam ser cortados. Como o overhead de amostragem aumenta exponencialmente com o número de cortes (consulte o tutorial [Wire cutting for expectation values estimation](/tutorials/wire-cutting) para mais detalhes), vamos fixar o número de repetições em 2 neste notebook.
+
+```python
+num_reps = 2
+entangler_map = []
+
+for even_edge in coupling_map[0 : len(coupling_map) : 2]:
+    entangler_map.append(even_edge)
+
+for odd_edge in coupling_map[1 : len(coupling_map) : 2]:
+    entangler_map.append(odd_edge)
+```
+
+```python
+ansatz = TwoLocal(
+    num_qubits=num_qubits,
+    rotation_blocks="rx",
+    entanglement_blocks="cx",
+    entanglement=entangler_map,
+    reps=num_reps,
+).decompose()
+ansatz.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/79428537-66cf-40ce-87cf-0f75f591cb4b-0.avif)
+
+Para verificar a qualidade do resultado usando corte de circuito, precisamos conhecer o resultado ideal. O circuito atual escolhido está além da simulação clássica de força bruta. Portanto, fixamos os parâmetros do circuito cuidadosamente para torná-lo clifford.
+
+Vamos atribuir o valor de parâmetro $0$ para as primeiras duas camadas de gates `Rx`, e o valor $\pi$ para a última camada. Isso garante que o resultado ideal deste circuito seja $|1\rangle^{\otimes n}$, sendo $n$ o número de qubits. Portanto, os valores esperados de $\langle Z_i \rangle$ e $\langle Z_i Z_{i+1} \rangle$, onde $i$ é o índice do qubit, são $-1$ e $+1$ respectivamente.
+
+```python
+params_last_layer = [np.pi] * ansatz.num_qubits
+params = [0] * (ansatz.num_parameters - ansatz.num_qubits)
+params.extend(params_last_layer)
+
+ansatz.assign_parameters(params, inplace=True)
+```
+
+#### Selecionar observáveis
+Para quantificar os benefícios do gate cutting, medimos os valores esperados dos observáveis $\frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$ e $\frac{1}{n-1}\sum_{i=1}^{n-1} \langle Z_i Z_{i+1} \rangle$. Como discutido anteriormente, os valores esperados ideais são $-1$ e $+1$ respectivamente.
+
+```python
+observables = []
+
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(obs)
+
+for i in range(num_qubits):
+    if i == num_qubits - 1:
+        obs = "Z" + "I" * (num_qubits - 2) + "Z"
+    else:
+        obs = "I" * i + "ZZ" + "I" * (num_qubits - i - 2)
+    observables.append(obs)
+
+observables = SparsePauliOp(observables)
+paulis = observables.paulis
+coeffs = observables.coeffs
+```
+
+## Passo 2: Otimizar o problema para execução em hardware quântico
+
+<ul>
+    <li>Entrada: Circuito abstrato e observáveis</li>
+    <li>Saída: Circuito alvo e observáveis produzidos pelo corte de portas de longo alcance</li>
+</ul>
+#### Transpilar o circuito
+
+Observe que o circuito pode ser transpilado nesta etapa, ou após o corte. Se transpilarmos após o corte, isso exigirá que transpilemos cada um dos subexperimentos gerados devido à sobrecarga de amostragem. Portanto, é mais prudente transpilar nesta etapa para reduzir a sobrecarga de transpilação.
+
+No entanto, se a transpilação for feita nesta etapa com conectividade nativa do hardware, o transpilador anexará múltiplas portas SWAP para posicionar a operação periódica de 2 qubits – obscurecendo os benefícios do corte de circuito. Para evitar esse problema, podemos aproveitar o fato de que sabemos exatamente quais portas precisam ser cortadas. Especificamente, podemos criar um mapa de acoplamento virtual adicionando conexões virtuais entre qubits distantes para acomodar essas portas periódicas de 2 qubits. Isso garantirá que o circuito possa ser transpilado nesta etapa sem incorporar as portas SWAP extras.
+
+```python
+coupling_map = backend.configuration().coupling_map
+
+# create a virtual coupling map with long range connectivity
+virtual_coupling_map = coupling_map.copy()
+virtual_coupling_map.append([init_layout[-1], init_layout[0]])
+virtual_coupling_map.append([init_layout[0], init_layout[-1]])
+```
+
+```python
+pm_virtual = generate_preset_pass_manager(
+    optimization_level=1,
+    coupling_map=virtual_coupling_map,
+    initial_layout=init_layout,
+    basis_gates=backend.configuration().basis_gates,
+)
+
+virtual_mapped_circuit = pm_virtual.run(ansatz)
+virtual_mapped_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/ad38aa32-4613-46c5-bf62-da332a1b9dfb-0.avif)
+
+#### Cortar as conectividades periódicas de longo alcance
+Agora cortamos as portas no circuito transpilado. Observe que as portas de 2 qubits que precisam ser cortadas são aquelas conectando o último e o primeiro qubits do layout.
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(virtual_mapped_circuit.data)
+    if {virtual_mapped_circuit.find_bit(q)[0] for q in instruction.qubits}
+    == {init_layout[-1], init_layout[0]}
+]
+```
+
+Devemos aplicar o layout do circuito transpilado ao observável.
+
+```python
+trans_observables = observables.apply_layout(virtual_mapped_circuit.layout)
+```
+
+Finalmente, os subexperimentos são gerados por amostragem sobre diferentes bases de medição e preparação.
+
+```python
+qpd_circuit, bases = cut_gates(virtual_mapped_circuit, cut_indices)
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit,
+    observables=trans_observables.paulis,
+    num_samples=np.inf,
+)
+```
+
+Observe que o corte das interações de longo alcance leva à execução de múltiplas amostras do circuito que diferem nas bases de medição e preparação. Mais informações sobre isso podem ser encontradas em <a href='https://arxiv.org/abs/1909.07534'>Constructing a virtual two-qubit gate by sampling single-qubit operations</a> e <a href='https://arxiv.org/abs/2312.11638'>Cutting circuits with multiple two-qubit unitaries</a>.
+
+O número de portas periódicas a serem cortadas é igual ao número de repetições da camada `TwoLocal`, definida como `num_reps` acima. A sobrecarga de amostragem do corte de portas é 6. Portanto, o número total de subexperimentos será $6^{num\_reps}$.
+
+```python
+print(f"Number of subexperiments is {len(subexperiments)} = 6**{num_reps}")
+```
+
+```text
+Number of subexperiments is 36 = 6**2
+```
+
+#### Transpilar os subexperimentos
+Neste ponto, os subexperimentos contêm circuitos com algumas portas de 1 qubit que não estão no conjunto de portas base. Isso ocorre porque os qubits cortados são medidos em bases diferentes, e as portas de rotação usadas para isso não necessariamente pertencem ao conjunto de portas base. Por exemplo, medição na base X implica aplicar uma porta Hadamard antes da medição usual na base Z. Mas Hadamard não faz parte do conjunto de portas base.
+
+Em vez de aplicar todo o processo de transpilação em cada um dos circuitos nos subexperimentos, podemos usar passos de transpilação específicos. Consulte <a href="https://docs.quantum.ibm.com/api/qiskit/transpiler_passes">esta documentação</a> para uma descrição detalhada de todos os passos de transpilação disponíveis.
+
+Aplicaremos os passos ```BasisTranslator``` e depois ```Optimize1qGatesDecomposition``` para garantir que todas as portas nesses circuitos pertençam ao conjunto de portas base. Usar esses dois passos é mais rápido do que todo o processo de transpilação, já que outras etapas como roteamento e seleção de layout inicial não são executadas novamente.
+
+```python
+pass_ = PassManager(
+    [Optimize1qGatesDecomposition(basis=backend.configuration().basis_gates)]
+)
+
+subexperiments = pass_.run(
+    [
+        dag_to_circuit(
+            BasisTranslator(sel, target_basis=backend.basis_gates).run(
+                circuit_to_dag(circ)
+            )
+        )
+        for circ in subexperiments
+    ]
+)
+```
+
+## Passo 3: Executar usando primitivos Qiskit
+
+<ul>
+    <li>Entrada: Circuitos alvo</li>
+    <li>Saída: Distribuições de quase-probabilidade</li>
+</ul>
+Usamos um primitivo `SamplerV2` para execução dos circuitos cortados. Desabilitamos o `dynamical decoupling` e o `twirling` para que qualquer melhoria que obtenhamos no resultado seja unicamente devido à aplicação efetiva do corte de portas para este tipo de circuito.
+
+```python
+options = SamplerOptions()
+options.default_shots = 10000
+options.dynamical_decoupling.enable = False
+options.twirling.enable_gates = False
+options.twirling.enable_measure = False
+```
+
+Agora submeteremos os trabalhos usando o modo batch.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(options=options)
+    cut_job = sampler.run(subexperiments)
+
+print(f"Job ID {cut_job.job_id()}")
+```
+
+```text
+Job ID cwxf7wq60bqg008pvt8g
+```
+
+```python
+result = cut_job.result()
+```
+
+## Passo 4: Pós-processar e retornar resultado no formato clássico desejado
+<ul>
+    <li>Entrada: Distribuições de quase-probabilidade</li>
+    <li>Saída: Valores esperados reconstruídos</li>
+</ul>
+
+```python
+reconstructed_expvals = reconstruct_expectation_values(
+    result,
+    coefficients,
+    paulis,
+)
+```
+
+Agora calculamos a média dos observáveis tipo Z de peso 1 e peso 2.
+
+```python
+cut_weight_1 = np.mean(reconstructed_expvals[:num_qubits])
+cut_weight_2 = np.mean(reconstructed_expvals[num_qubits:])
+
+print(f"Average of weight-1 expectation values is {cut_weight_1}")
+print(f"Average of weight-2 expectation values is {cut_weight_2}")
+```
+
+```text
+Average of weight-1 expectation values is -0.741733944954063
+Average of weight-2 expectation values is 0.6968862385320495
+```
+
+### Verificação cruzada: Obter valor esperado sem corte
+É útil verificar de forma cruzada a vantagem da técnica de corte de circuito em relação ao circuito sem corte. Aqui calcularemos os valores esperados sem cortar o circuito. Observe que tal circuito sem corte sofrerá de um grande número de portas SWAP necessárias para implementar a operação de 2 qubits entre o primeiro e o último qubits. Usaremos a função `sampled_expectation_value` para obter os valores esperados do circuito sem corte após obter a distribuição de probabilidade via `SamplerV2`. Isso permite um uso homogêneo do primitivo em todas as instâncias. No entanto, observe que poderíamos ter usado `EstimatorV2` também para calcular diretamente os valores esperados.
+
+```python
+if ansatz.num_clbits == 0:
+    ansatz.measure_all()
+
+pm_uncut = generate_preset_pass_manager(
+    optimization_level=1, backend=backend, initial_layout=init_layout
+)
+
+transpiled_circuit = pm_uncut.run(ansatz)
+```
+
+```python
+sampler = SamplerV2(mode=backend, options=options)
+uncut_job = sampler.run([transpiled_circuit])
+```
+
+```python
+uncut_job_id = uncut_job.job_id()
+print(f"The job id for the uncut clifford circuit is {uncut_job_id}")
+```
+
+```text
+The job id for the uncut clifford circuit is cwxfads2ac5g008jhe7g
+```
+
+```python
+uncut_result = uncut_job.result()[0]
+uncut_counts = uncut_result.data.meas.get_counts()
+```
+
+Agora calcularemos os valores esperados médios de todos os observáveis tipo Z de peso 1 e peso 2 sem corte.
+
+```python
+uncut_expvals = [
+    sampled_expectation_value(uncut_counts, obs) for obs in paulis
+]
+
+uncut_weight_1 = np.mean(uncut_expvals[:num_qubits])
+uncut_weight_2 = np.mean(uncut_expvals[num_qubits:])
+
+print(f"Average of weight-1 expectation values is {uncut_weight_1}")
+print(f"Average of weight-2 expectation values is {uncut_weight_2}")
+```
+
+```text
+Average of weight-1 expectation values is -0.32494128440366965
+Average of weight-2 expectation values is 0.32340917431192656
+```
+
+### Visualizar
+Vamos agora visualizar a melhoria obtida para os observáveis de peso 1 e peso 2 ao usar corte de portas para circuito de cadeia periódica
+
+```python
+mpl.rcParams.update(mpl.rcParamsDefault)
+
+fig = plt.subplots(figsize=(12, 8), dpi=200)
+width = 0.25
+labels = ["Weight-1", "Weight-2"]
+x = np.arange(len(labels))
+
+ideal = [-1, 1]
+cut = [cut_weight_1, cut_weight_2]
+uncut = [uncut_weight_1, uncut_weight_2]
+
+br1 = np.arange(len(ideal))
+br2 = [x + width for x in br1]
+br3 = [x + width for x in br2]
+
+plt.bar(
+    br1, ideal, width=width, edgecolor="k", label="Ideal", color="#4589ff"
+)
+plt.bar(br2, cut, width=width, edgecolor="k", label="Cut", color="#a56eff")
+plt.bar(
+    br3, uncut, width=width, edgecolor="k", label="Uncut", color="#009d9a"
+)
+
+plt.axhline(y=0, color="k", linestyle="-")
+
+plt.xticks([r + width for r in range(len(ideal))], labels, fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.legend(fontsize=14)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/2ba8913f-ba35-409c-bc4c-5f28e3698f20-0.avif)
+
+### Resumo
+
+Em resumo, calculamos os valores esperados médios dos observáveis tipo Z de peso 1 e peso 2 para uma cadeia 1D periódica de 109 qubits. Para fazer isso, nós
+
+- criamos um mapa de acoplamento virtual adicionando uma conectividade de longo alcance entre o primeiro e o último qubits da cadeia 1D, e transpilamos o circuito.
+    - a transpilação nesta etapa nos permitiu evitar a sobrecarga de transpilar cada subexperimento separadamente após o corte,
+    - usar o mapa de acoplamento virtual nos permitiu evitar portas SWAP extras para a operação de 2 qubits entre o primeiro e o último qubits.
+- removemos a conectividade de longo alcance do circuito transpilado via corte de portas.
+- convertemos os circuitos cortados em conjunto de portas base aplicando passos de transpilação apropriados.
+- executamos os circuitos cortados em dispositivo IBM Quantum usando um primitivo `SamplerV2`.
+- obtivemos o valor esperado reconstruindo os resultados dos circuitos cortados.
+### Inferência
+
+Notamos a partir dos resultados que a média dos observáveis tipo $\langle Z \rangle$ de peso 1 e $\langle ZZ \rangle$ de peso 2 são significativamente melhoradas ao cortar as portas periódicas. Observe que este estudo não inclui nenhuma técnica de supressão ou mitigação de erros. A melhoria observada é unicamente devido ao uso adequado do corte de portas para este problema. Os resultados poderiam ter sido ainda mais melhorados usando as técnicas de mitigação e supressão.
+
+Este estudo mostra um exemplo de uso efetivo do corte de portas para melhorar o desempenho da computação.
+## Pesquisa do tutorial
+
+Por favor, responda esta breve pesquisa para fornecer feedback sobre este tutorial. Suas opiniões nos ajudarão a melhorar nossas ofertas de conteúdo e experiência do usuário.

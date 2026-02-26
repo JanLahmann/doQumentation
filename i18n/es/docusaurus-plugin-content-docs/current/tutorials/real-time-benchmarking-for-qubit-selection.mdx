@@ -1,0 +1,564 @@
+---
+title: "Evaluación comparativa en tiempo real para la selección de qubits"
+sidebar_label: "Evaluación comparativa en tiempo real para la selección de qubits"
+description: "Ejecute experimentos de caracterización en tiempo real y actualice las propiedades del backend para mejorar la selección de qubits al mapear un circuito a los qubits físicos en una QPU."
+notebook_path: "docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb" />
+
+
+
+{/* cspell:ignore sharex */}
+
+*Estimación de uso: 4 minutos en un procesador Eagle r2 (NOTA: Esto es solo una estimación. Su tiempo de ejecución puede variar.)*
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-experiments
+```
+
+```python
+# This cell is hidden from users – it disables some lint rules
+# ruff: noqa: E722
+```
+
+## Contexto
+
+Este tutorial muestra cómo ejecutar experimentos de caracterización en tiempo real y actualizar las propiedades del backend para mejorar la selección de qubits al mapear un circuito a los qubits físicos en una QPU. Usted aprenderá los experimentos básicos de caracterización que se utilizan para determinar las propiedades de la QPU, cómo realizarlos en Qiskit y cómo actualizar las propiedades guardadas en el objeto backend que representa la QPU en función de estos experimentos.
+
+Las propiedades reportadas por la QPU se actualizan una vez al día, pero el sistema puede presentar variaciones más rápido que el intervalo entre actualizaciones. Esto puede afectar la fiabilidad de las rutinas de selección de qubits en la etapa `Layout` del gestor de pasadas, ya que estarían utilizando propiedades reportadas que no representan el estado actual de la QPU. Por esta razón, puede valer la pena dedicar algo de tiempo de la QPU a experimentos de caracterización, cuyos resultados pueden luego utilizarse para actualizar las propiedades de la QPU empleadas por la rutina `Layout`.
+## Requisitos
+
+Antes de comenzar este tutorial, asegúrese de tener instalado lo siguiente:
+
+- Qiskit SDK v2.0 o posterior, con soporte de [visualización](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 o posterior ( `pip install qiskit-ibm-runtime` )
+- Qiskit Experiments v0.12 o posterior ( `pip install qiskit-experiments` )
+- Biblioteca de grafos Rustworkx (`pip install rustworkx`)
+## Configuración
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import hellinger_fidelity
+from qiskit.transpiler import InstructionProperties
+
+from qiskit_experiments.library import (
+    T1,
+    T2Hahn,
+    LocalReadoutError,
+    StandardRB,
+)
+from qiskit_experiments.framework import BatchExperiment, ParallelExperiment
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session
+
+from datetime import datetime
+from collections import defaultdict
+import numpy as np
+import rustworkx
+import matplotlib.pyplot as plt
+import copy
+```
+
+## Paso 1: Mapear entradas clásicas a un problema cuántico
+
+Para evaluar la diferencia en el rendimiento, consideramos un circuito que prepara un estado de Bell a lo largo de una cadena lineal de longitud variable. Se mide la fidelidad del estado de Bell en los extremos de la cadena.
+
+```python
+from qiskit import QuantumCircuit
+
+ideal_dist = {"00": 0.5, "11": 0.5}
+
+num_qubits_list = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 127]
+circuits = []
+for num_qubits in num_qubits_list:
+    circuit = QuantumCircuit(num_qubits, 2)
+    circuit.h(0)
+    for i in range(num_qubits - 1):
+        circuit.cx(i, i + 1)
+    circuit.barrier()
+    circuit.measure(0, 0)
+    circuit.measure(num_qubits - 1, 1)
+    circuits.append(circuit)
+
+circuits[-1].draw(output="mpl", style="clifford", fold=-1)
+```
+
+![Salida de la celda de código anterior](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-0.avif)
+
+![Salida de la celda de código anterior](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-1.avif)
+
+### Configurar el backend y el mapa de acoplamiento
+Primero, seleccione un backend
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+
+qubits = list(range(backend.num_qubits))
+```
+
+Luego obtenga su mapa de acoplamiento
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+
+# Get unidirectional coupling map
+one_dir_coupling_map = coupling_graph.edge_list()
+```
+
+Para evaluar simultáneamente la mayor cantidad posible de compuertas de dos qubits, separamos el mapa de acoplamiento en un `layered_coupling_map`. Este objeto contiene una lista de capas donde cada capa es una lista de aristas en las que se pueden ejecutar compuertas de dos qubits al mismo tiempo. Esto también se conoce como una coloración de aristas del mapa de acoplamiento.
+
+```python
+# Get layered coupling map
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+layered_coupling_map = defaultdict(list)
+for edge_idx, color in edge_coloring.items():
+    layered_coupling_map[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layered_coupling_map = [
+    sorted(layered_coupling_map[i])
+    for i in sorted(layered_coupling_map.keys())
+]
+```
+
+### Experimentos de caracterización
+
+Se utiliza una serie de experimentos para caracterizar las propiedades principales de los qubits en una QPU. Estas son $T_1$, $T_2$, error de lectura, y error de compuertas de un qubit y dos qubits. Resumiremos brevemente qué son estas propiedades y haremos referencia a los experimentos del paquete [`qiskit-experiments`](https://qiskit-community.github.io/qiskit-experiments/index.html) que se utilizan para caracterizarlas.
+
+#### T1
+
+$T_1$ es el tiempo característico que tarda un qubit excitado en caer al estado fundamental debido a procesos de decoherencia por amortiguamiento de amplitud. En un [experimento $T_1$](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t1.html), medimos un qubit excitado después de un retardo. Cuanto mayor sea el tiempo de retardo, más probable es que el qubit caiga al estado fundamental. El objetivo del experimento es caracterizar la tasa de decaimiento del qubit hacia el estado fundamental.
+
+#### T2
+
+$T_2$ representa la cantidad de tiempo requerido para que la proyección del vector de Bloch de un solo qubit en el plano XY caiga a aproximadamente el 37% ($\frac{1}{e}$) de su amplitud inicial debido a procesos de decoherencia por desfase. En un [experimento de eco de Hahn $T_2$](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t2hahn.html), podemos estimar la tasa de este decaimiento.
+
+#### Caracterización del error de preparación de estado y medición (SPAM)
+
+En un [experimento de caracterización de error SPAM](https://qiskit-community.github.io/qiskit-experiments/manuals/measurement/readout_mitigation.html), los qubits se preparan en un cierto estado ($\vert 0 \rangle$ o $\vert 1 \rangle$) y se miden. La probabilidad de medir un estado diferente al preparado proporciona entonces la probabilidad del error.
+
+#### Evaluación comparativa aleatorizada de compuertas de un qubit y dos qubits
+
+La [evaluación comparativa aleatorizada (RB)](https://qiskit-community.github.io/qiskit-experiments/manuals/verification/randomized_benchmarking.html) es un protocolo popular para caracterizar la tasa de error de los procesadores cuánticos. Un experimento de RB consiste en la generación de circuitos Clifford aleatorios sobre los qubits dados, de tal manera que la unitaria calculada por los circuitos sea la identidad. Después de ejecutar los circuitos, se cuenta el número de disparos que resultan en un error (es decir, una salida diferente del estado fundamental), y a partir de estos datos se pueden inferir estimaciones de error para el dispositivo cuántico, calculando el Error Por Clifford.
+
+```python
+# Create T1 experiments on all qubit in parallel
+t1_exp = ParallelExperiment(
+    [
+        T1(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create T2-Hahn experiments on all qubit in parallel
+t2_exp = ParallelExperiment(
+    [
+        T2Hahn(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create readout experiments on all qubit in parallel
+readout_exp = LocalReadoutError(qubits)
+
+# Create single-qubit RB experiments on all qubit in parallel
+singleq_rb_exp = ParallelExperiment(
+    [
+        StandardRB(
+            physical_qubits=[qubit], lengths=[10, 100, 500], num_samples=10
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create two-qubit RB experiments on the three layers of disjoint edges of the heavy-hex
+twoq_rb_exp_batched = BatchExperiment(
+    [
+        ParallelExperiment(
+            [
+                StandardRB(
+                    physical_qubits=pair,
+                    lengths=[10, 50, 100],
+                    num_samples=10,
+                )
+                for pair in layer
+            ],
+            backend,
+            analysis=None,
+        )
+        for layer in layered_coupling_map
+    ],
+    backend,
+    flatten_results=True,
+    analysis=None,
+)
+```
+
+### Propiedades de la QPU a lo largo del tiempo
+
+Al observar las propiedades reportadas de la QPU a lo largo del tiempo (consideraremos una sola semana a continuación), vemos cómo estas pueden fluctuar en la escala de un solo día. Pequeñas fluctuaciones pueden ocurrir incluso dentro de un día. En este escenario, las propiedades reportadas (actualizadas una vez al día) no capturarán con precisión el estado actual de la QPU. Además, si un trabajo se transpila localmente (usando las propiedades reportadas actuales) y se envía pero se ejecuta solo en un momento posterior (minutos o días), corre el riesgo de haber utilizado propiedades desactualizadas para la selección de qubits en el paso de transpilación. Esto resalta la importancia de tener información actualizada sobre la QPU en el momento de la ejecución. Primero, recuperemos las propiedades durante un cierto rango de tiempo.
+
+```python
+instruction_2q_name = "cz"  # set the name of the default 2q of the device
+errors_list = []
+for day_idx in range(10, 17):
+    calibrations_time = datetime(
+        year=2025, month=8, day=day_idx, hour=0, minute=0, second=0
+    )
+    targer_hist = backend.target_history(datetime=calibrations_time)
+
+    t1_dict, t2_dict = {}, {}
+    for qubit in range(targer_hist.num_qubits):
+        t1_dict[qubit] = targer_hist.qubit_properties[qubit].t1
+        t2_dict[qubit] = targer_hist.qubit_properties[qubit].t2
+
+    errors_dict = {
+        "1q": targer_hist["sx"],
+        "2q": targer_hist[f"{instruction_2q_name}"],
+        "spam": targer_hist["measure"],
+        "t1": t1_dict,
+        "t2": t2_dict,
+    }
+
+    errors_list.append(errors_dict)
+```
+
+Luego, grafiquemos los valores
+
+```python
+fig, axs = plt.subplots(5, 1, figsize=(10, 20), sharex=False)
+
+# Plot for T1 values
+for qubit in range(targer_hist.num_qubits):
+    t1s = []
+    for errors_dict in errors_list:
+        t1_dict = errors_dict["t1"]
+        try:
+            t1s.append(t1_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t1 data for qubit {qubit}")
+
+    axs[0].plot(t1s)
+
+axs[0].set_title("T1")
+axs[0].set_ylabel(r"Time ($\mu s$)")
+axs[0].set_xlabel("Days")
+
+# Plot for T2 values
+for qubit in range(targer_hist.num_qubits):
+    t2s = []
+    for errors_dict in errors_list:
+        t2_dict = errors_dict["t2"]
+        try:
+            t2s.append(t2_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t2 data for qubit {qubit}")
+
+    axs[1].plot(t2s)
+
+axs[1].set_title("T2")
+axs[1].set_ylabel(r"Time ($\mu s$)")
+axs[1].set_xlabel("Days")
+
+# Plot SPAM values
+for qubit in range(targer_hist.num_qubits):
+    spams = []
+    for errors_dict in errors_list:
+        spam_dict = errors_dict["spam"]
+        spams.append(spam_dict[tuple([qubit])].error)
+
+    axs[2].plot(spams)
+
+axs[2].set_title("SPAM Errors")
+axs[2].set_ylabel("Error Rate")
+axs[2].set_xlabel("Days")
+
+# Plot 1Q Gate Errors
+for qubit in range(targer_hist.num_qubits):
+    oneq_gates = []
+    for errors_dict in errors_list:
+        oneq_gate_dict = errors_dict["1q"]
+        oneq_gates.append(oneq_gate_dict[tuple([qubit])].error)
+
+    axs[3].plot(oneq_gates)
+
+axs[3].set_title("1Q Gate Errors")
+axs[3].set_ylabel("Error Rate")
+axs[3].set_xlabel("Days")
+
+# Plot 2Q Gate Errors
+for pair in one_dir_coupling_map:
+    twoq_gates = []
+    for errors_dict in errors_list:
+        twoq_gate_dict = errors_dict["2q"]
+        twoq_gates.append(twoq_gate_dict[pair].error)
+
+    axs[4].plot(twoq_gates)
+
+axs[4].set_title("2Q Gate Errors")
+axs[4].set_ylabel("Error Rate")
+axs[4].set_xlabel("Days")
+
+plt.subplots_adjust(hspace=0.5)
+plt.show()
+```
+
+![Salida de la celda de código anterior](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/e0ba509d-e0e0-438b-aedf-5e01919c7d4f-0.avif)
+
+Puede observar que a lo largo de varios días algunas de las propiedades de los qubits pueden cambiar considerablemente. Esto resalta la importancia de tener información actualizada del estado de la QPU, para poder seleccionar los qubits con mejor rendimiento para un experimento.
+## Paso 2: Optimizar el problema para la ejecución en hardware cuántico
+
+No se realiza ninguna optimización de los circuitos u operadores en este tutorial.
+## Paso 3: Ejecutar utilizando primitivas de Qiskit
+### Ejecutar un circuito cuántico con la selección de qubits predeterminada
+
+Como resultado de referencia del rendimiento, ejecutaremos un circuito cuántico en una QPU utilizando los qubits predeterminados, que son los qubits seleccionados con las propiedades reportadas del backend solicitado. Utilizaremos `optimization_level = 3`. Esta configuración incluye la optimización de transpilación más avanzada, y utiliza las propiedades del objetivo (como los errores de operación) para seleccionar los qubits con mejor rendimiento para la ejecución.
+
+```python
+pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
+isa_circuits = pm.run(circuits)
+initial_qubits = [
+    [
+        idx
+        for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+        if qb._register.name != "ancilla"
+    ]
+    for circuit in isa_circuits
+]
+```
+
+### Ejecutar un circuito cuántico con selección de qubits en tiempo real
+
+En esta sección, investigaremos la importancia de tener información actualizada sobre las propiedades de los qubits de la QPU para obtener resultados óptimos. Primero, llevaremos a cabo un conjunto completo de experimentos de caracterización de la QPU ($T_1$, $T_2$, SPAM, RB de un qubit y RB de dos qubits), que luego podremos utilizar para actualizar las propiedades del backend. Esto permite al gestor de pasadas seleccionar los qubits para la ejecución basándose en información actualizada sobre la QPU, lo que posiblemente mejore el rendimiento de la ejecución. En segundo lugar, ejecutamos el circuito del par de Bell y comparamos la fidelidad obtenida después de seleccionar los qubits con las propiedades actualizadas de la QPU con la fidelidad que obtuvimos anteriormente cuando utilizamos las propiedades reportadas predeterminadas para la selección de qubits.
+
+<Admonition type="caution">
+Tenga en cuenta que algunos de los experimentos de caracterización pueden fallar cuando la rutina de ajuste no puede ajustar una curva a los datos medidos. Si observa advertencias provenientes de estos experimentos, inspecciónelas para comprender qué caracterización falló en qué qubits, e intente ajustar los parámetros del experimento (como los tiempos para $T_1$, $T_2$, o las longitudes de los experimentos de RB).
+</Admonition>
+
+```python
+# Prepare characterization experiments
+batches = [t1_exp, t2_exp, readout_exp, singleq_rb_exp, twoq_rb_exp_batched]
+batches_exp = BatchExperiment(batches, backend)  # , analysis=None)
+run_options = {"shots": 1e3, "dynamic": False}
+
+with Session(backend=backend) as session:
+    sampler = SamplerV2(mode=session)
+
+    # Run characterization experiments
+    batches_exp_data = batches_exp.run(
+        sampler=sampler, **run_options
+    ).block_for_results()
+
+    EPG_sx_result_list = batches_exp_data.analysis_results("EPG_sx")
+    EPG_sx_result_q_indices = [
+        result.device_components.index for result in EPG_sx_result_list
+    ]
+    EPG_x_result_list = batches_exp_data.analysis_results("EPG_x")
+    EPG_x_result_q_indices = [
+        result.device_components.index for result in EPG_x_result_list
+    ]
+    T1_result_list = batches_exp_data.analysis_results("T1")
+    T1_result_q_indices = [
+        result.device_components.index for result in T1_result_list
+    ]
+
+    T2_result_list = batches_exp_data.analysis_results("T2")
+    T2_result_q_indices = [
+        result.device_components.index for result in T2_result_list
+    ]
+
+    Readout_result_list = batches_exp_data.analysis_results(
+        "Local Readout Mitigator"
+    )
+
+    EPG_2q_result_list = batches_exp_data.analysis_results(
+        f"EPG_{instruction_2q_name}"
+    )
+
+    # Update target properties
+    target = copy.deepcopy(backend.target)
+    for i in range(target.num_qubits - 1):
+        qarg = (i,)
+
+        if qarg in EPG_sx_result_q_indices:
+            target.update_instruction_properties(
+                instruction="sx",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_sx_result_list[i].value.nominal_value
+                ),
+            )
+        if qarg in EPG_x_result_q_indices:
+            target.update_instruction_properties(
+                instruction="x",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_x_result_list[i].value.nominal_value
+                ),
+            )
+
+        err_mat = Readout_result_list.value.assignment_matrix(i)
+        readout_assignment_error = (
+            err_mat[0, 1] + err_mat[1, 0]
+        ) / 2  # average readout error
+        target.update_instruction_properties(
+            instruction="measure",
+            qargs=qarg,
+            properties=InstructionProperties(error=readout_assignment_error),
+        )
+
+        if qarg in T1_result_q_indices:
+            target.qubit_properties[i].t1 = T1_result_list[
+                i
+            ].value.nominal_value
+        if qarg in T2_result_q_indices:
+            target.qubit_properties[i].t2 = T2_result_list[
+                i
+            ].value.nominal_value
+
+    for pair_idx, pair in enumerate(one_dir_coupling_map):
+        qarg = tuple(pair)
+        try:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+        except:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg[::-1],
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+
+    # transpile circuits to updated target
+    pm = generate_preset_pass_manager(target=target, optimization_level=3)
+    isa_circuit_updated = pm.run(circuits)
+    updated_qubits = [
+        [
+            idx
+            for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+            if qb._register.name != "ancilla"
+        ]
+        for circuit in isa_circuit_updated
+    ]
+
+    n_trials = 3  # run multiple trials to see variations
+
+    # interleave circuits
+    interleaved_circuits = []
+    for original_circuit, updated_circuit in zip(
+        isa_circuits, isa_circuit_updated
+    ):
+        interleaved_circuits.append(original_circuit)
+        interleaved_circuits.append(updated_circuit)
+
+    # Run circuits
+    # Set simple error suppression/mitigation options
+    sampler.options.dynamical_decoupling.enable = True
+    sampler.options.dynamical_decoupling.sequence_type = "XY4"
+
+    job_interleaved = sampler.run(interleaved_circuits * n_trials)
+```
+
+## Paso 4: Post-procesar y devolver el resultado en el formato clásico deseado
+
+Finalmente, comparemos la fidelidad del estado de Bell obtenida en los dos escenarios diferentes:
+
+- `original`, es decir, con los qubits predeterminados elegidos por el transpilador basándose en las propiedades reportadas del backend.
+- `updated`, es decir, con los qubits elegidos basándose en las propiedades actualizadas del backend después de que se hayan ejecutado los experimentos de caracterización.
+
+```python
+results = job_interleaved.result()
+all_fidelity_list, all_fidelity_updated_list = [], []
+for exp_idx in range(n_trials):
+    fidelity_list, fidelity_updated_list = [], []
+
+    for idx, num_qubits in enumerate(num_qubits_list):
+        pub_result_original = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx
+        ]
+        pub_result_updated = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx + 1
+        ]
+
+        fid = hellinger_fidelity(
+            ideal_dist, pub_result_original.data.c.get_counts()
+        )
+        fidelity_list.append(fid)
+
+        fid_up = hellinger_fidelity(
+            ideal_dist, pub_result_updated.data.c.get_counts()
+        )
+        fidelity_updated_list.append(fid_up)
+    all_fidelity_list.append(fidelity_list)
+    all_fidelity_updated_list.append(fidelity_updated_list)
+```
+
+```python
+plt.figure(figsize=(8, 6))
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_list, axis=0),
+    yerr=np.std(all_fidelity_list, axis=0),
+    fmt="o-.",
+    label="original",
+    color="b",
+)
+# plt.plot(num_qubits_list, fidelity_list, '-.')
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_updated_list, axis=0),
+    yerr=np.std(all_fidelity_updated_list, axis=0),
+    fmt="o-.",
+    label="updated",
+    color="r",
+)
+# plt.plot(num_qubits_list, fidelity_updated_list, '-.')
+plt.xlabel("Chain length")
+plt.xticks(num_qubits_list)
+plt.ylabel("Fidelity")
+plt.title("Bell pair fidelity at the edge of N-qubits chain")
+plt.legend()
+plt.grid(
+    alpha=0.2,
+    linestyle="-.",
+)
+plt.show()
+```
+
+![Salida de la celda de código anterior](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/656ec97a-3fd9-4635-9a98-1c5589761689-0.avif)
+
+No todas las ejecuciones mostrarán una mejora en el rendimiento debido a la caracterización en tiempo real, y con longitudes de cadena crecientes, y por lo tanto menos libertad para elegir qubits físicos, la importancia de la información actualizada del dispositivo se vuelve menos sustancial. Sin embargo, es una buena práctica recopilar datos frescos sobre las propiedades del dispositivo para comprender su rendimiento. Ocasionalmente, sistemas transitorios de dos niveles pueden afectar el rendimiento de algunos de los qubits. Los datos en tiempo real pueden informarnos cuando tales eventos están ocurriendo y ayudarnos a evitar fallas experimentales en tales instancias.
+<Admonition type="note" title="Llamada a la acción">
+Intente aplicar este método a sus ejecuciones y determine cuánto beneficio obtiene. También puede intentar ver cuánta mejora obtiene con diferentes backends.
+</Admonition>
+## Encuesta del tutorial
+
+Por favor, responda esta breve encuesta para proporcionar comentarios sobre este tutorial. Sus opiniones nos ayudarán a mejorar nuestras ofertas de contenido y la experiencia del usuario.
+
+[Enlace a la encuesta](https://your.feedback.ibm.com/jfe/form/SV_0w6FZ9QrWkKfTQq)

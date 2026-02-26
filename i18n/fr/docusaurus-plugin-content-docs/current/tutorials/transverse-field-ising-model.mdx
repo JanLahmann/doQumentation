@@ -1,0 +1,587 @@
+---
+title: "Modèle d'Ising en champ transverse avec la gestion des performances de Q-CTRL"
+sidebar_label: "Modèle d'Ising en champ transverse avec la gestion des performances de Q-CTRL"
+description: "Construire et résoudre le modèle d'Ising en champ transverse avec Fire Opal et Qiskit"
+notebook_path: "docs/tutorials/transverse-field-ising-model.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/transverse-field-ising-model.ipynb" />
+
+
+
+{/* cspell:ignore fontsize sharey rmse RMSE boxstyle */}
+
+*Estimation d'utilisation : 2 minutes sur un processeur Heron r2. (REMARQUE : ceci est une estimation uniquement. Votre temps d'exécution peut varier.)*
+## Contexte
+Le modèle d'Ising en champ transverse (TFIM) est important pour l'étude du magnétisme quantique et des transitions de phase. Il décrit un ensemble de spins disposés sur un réseau, où chaque spin interagit avec ses voisins tout en étant influencé par un champ magnétique externe qui induit des fluctuations quantiques.
+
+Une approche courante pour simuler ce modèle consiste à utiliser la décomposition de Trotter pour approximer l'opérateur d'évolution temporelle, en construisant des circuits qui alternent entre des rotations à un seul Qubit et des interactions intriquées à deux Qubits. Cependant, cette simulation sur du matériel réel est difficile en raison du bruit et de la décohérence, entraînant des écarts par rapport à la dynamique réelle. Pour surmonter cela, nous utilisons les outils de suppression d'erreurs et de gestion des performances Fire Opal de Q-CTRL, proposés en tant que Qiskit Function (voir la [documentation Fire Opal](/guides/q-ctrl-performance-management)). Fire Opal optimise automatiquement l'exécution des circuits en appliquant le découplage dynamique, le placement avancé, le routage et d'autres techniques de suppression d'erreurs, le tout visant à réduire le bruit. Grâce à ces améliorations, les résultats matériels s'alignent plus étroitement avec les simulations sans bruit, et nous pouvons ainsi étudier la dynamique de magnétisation du TFIM avec une fidélité accrue.
+
+Dans ce tutoriel, nous allons :
+
+* Construire le Hamiltonien TFIM sur un graphe de triangles de spins connectés
+* Simuler l'évolution temporelle avec des circuits trotterisés à différentes profondeurs
+* Calculer et visualiser les magnétisations à un seul Qubit $\langle Z_i \rangle$ au cours du temps
+* Comparer les simulations de référence avec les résultats d'exécutions matérielles utilisant la gestion des performances Fire Opal de Q-CTRL
+
+## Vue d'ensemble
+
+Le modèle d'Ising en champ transverse (TFIM) est un modèle de spin quantique qui capture les caractéristiques essentielles des transitions de phase quantiques. Le Hamiltonien est défini comme :
+
+$$
+H = -J \sum_{i} Z_i Z_{i+1} - h \sum_{i} X_i
+$$
+
+où $Z_i$ et $X_i$ sont les opérateurs de Pauli agissant sur le Qubit $i$, $J$ est la constante de couplage entre spins voisins, et $h$ est l'intensité du champ magnétique transverse. Le premier terme représente les interactions ferromagnétiques classiques, tandis que le second introduit des fluctuations quantiques par le biais du champ transverse. Pour simuler la dynamique du TFIM, vous utilisez une décomposition de Trotter de l'opérateur d'évolution unitaire $e^{-iHt}$, implémentée à travers des couches de Gates RX et RZZ basées sur un graphe personnalisé de triangles de spins connectés. La simulation explore comment la magnétisation $\langle Z \rangle$ évolue avec le nombre croissant d'étapes de Trotter.
+
+Les performances de l'implémentation TFIM proposée sont évaluées en comparant les simulations sans bruit avec les Backends bruités. Les fonctionnalités d'exécution améliorée et de suppression d'erreurs de Fire Opal sont utilisées pour atténuer l'effet du bruit sur le matériel réel, produisant des estimations plus fiables des observables de spin comme $\langle Z_i \rangle$ et des corrélateurs $\langle Z_i Z_j \rangle$.
+## Prérequis
+
+Avant de commencer ce tutoriel, assurez-vous d'avoir installé les éléments suivants :
+- Qiskit SDK v1.4 ou ultérieur, avec le support de [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 ou ultérieur (`pip install qiskit-ibm-runtime`)
+- Qiskit Functions Catalog v0.9.0 (`pip install qiskit-ibm-catalog`)
+- Fire Opal SDK v9.0.2 ou ultérieur (`pip install fire-opal`)
+- Q-CTRL Visualizer v8.0.2 ou ultérieur (`pip install qctrl-visualizer`)
+## Configuration
+Commencez par vous authentifier avec votre [clé API IBM Quantum](http://quantum.cloud.ibm.com/). Ensuite, sélectionnez la Qiskit Function comme suit. (Ce code suppose que vous avez déjà [enregistré votre compte](/guides/functions#install-qiskit-functions-catalog-client) dans votre environnement local.)
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q networkx qctrlvisualizer
+```
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit import QuantumCircuit
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_aer import AerSimulator
+
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+import qctrlvisualizer as qv
+```
+
+```python
+catalog = QiskitFunctionsCatalog(channel="ibm_quantum_platform")
+
+# Access Function
+perf_mgmt = catalog.load("q-ctrl/performance-management")
+```
+
+## Étape 1 : Transformer les entrées classiques en un problème quantique
+
+### Générer le graphe TFIM
+Nous commençons par définir le réseau de spins et les couplages entre eux. Dans ce tutoriel, le réseau est construit à partir de triangles connectés disposés en chaîne linéaire. Chaque triangle est constitué de trois nœuds connectés en boucle fermée, et la chaîne est formée en reliant un nœud de chaque triangle au triangle précédent.
+
+La fonction auxiliaire `connected_triangles_adj_matrix` construit la matrice d'adjacence pour cette structure. Pour une chaîne de $n$ triangles, le graphe résultant contient $2n+1$ nœuds.
+
+```python
+def connected_triangles_adj_matrix(n):
+    """
+    Generate the adjacency matrix for 'n' connected triangles in a chain.
+    """
+    num_nodes = 2 * n + 1
+    adj_matrix = np.zeros((num_nodes, num_nodes), dtype=int)
+
+    for i in range(n):
+        a, b, c = i * 2, i * 2 + 1, i * 2 + 2  # Nodes of the current triangle
+
+        # Connect the three nodes in a triangle
+        adj_matrix[a, b] = adj_matrix[b, a] = 1
+        adj_matrix[b, c] = adj_matrix[c, b] = 1
+        adj_matrix[a, c] = adj_matrix[c, a] = 1
+
+        # If not the first triangle, connect to the previous triangle
+        if i > 0:
+            adj_matrix[a, a - 1] = adj_matrix[a - 1, a] = 1
+
+    return adj_matrix
+```
+
+Pour visualiser le réseau que nous venons de définir, nous pouvons tracer la chaîne de triangles connectés et étiqueter chaque nœud. La fonction ci-dessous construit le graphe pour un nombre choisi de triangles et l'affiche.
+
+```python
+def plot_triangle_chain(n, side=1.0):
+    """
+    Plot a horizontal chain of n equilateral triangles.
+    Baseline: even nodes (0,2,4,...,2n) on y=0
+    Apexes: odd nodes (1,3,5,...,2n-1) above the midpoint.
+    """
+    # Build graph
+    A = connected_triangles_adj_matrix(n)
+    G = nx.from_numpy_array(A)
+
+    h = np.sqrt(3) / 2 * side
+    pos = {}
+
+    # Place baseline nodes
+    for k in range(n + 1):
+        pos[2 * k] = (k * side, 0.0)
+
+    # Place apex nodes
+    for k in range(n):
+        x_left = pos[2 * k][0]
+        x_right = pos[2 * k + 2][0]
+        pos[2 * k + 1] = ((x_left + x_right) / 2, h)
+
+    # Draw
+    fig, ax = plt.subplots(figsize=(1.5 * n, 2.5))
+    nx.draw(
+        G,
+        pos,
+        ax=ax,
+        with_labels=True,
+        font_size=10,
+        font_color="white",
+        node_size=600,
+        node_color=qv.QCTRL_STYLE_COLORS[0],
+        edge_color="black",
+        width=2,
+    )
+    ax.set_aspect("equal")
+    ax.margins(0.2)
+    plt.show()
+
+    return G, pos
+```
+
+Pour ce tutoriel, nous utiliserons une chaîne de 20 triangles.
+
+```python
+n_triangles = 20
+n_qubits = 2 * n_triangles + 1
+plot_triangle_chain(n_triangles, side=1.0)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transverse-field-ising-model/extracted-outputs/861ab6e3-0.avif)
+
+### Coloration des arêtes du graphe
+Pour implémenter le couplage spin-spin, il est utile de regrouper les arêtes qui ne se chevauchent pas. Cela nous permet d'appliquer des Gates à deux Qubits en parallèle. Nous pouvons le faire avec une procédure simple de coloration d'arêtes [\[1\]](#references), qui attribue une couleur à chaque arête de sorte que les arêtes se rejoignant au même nœud soient placées dans des groupes différents.
+
+```python
+def edge_coloring(graph):
+    """
+    Takes a NetworkX graph and returns a list of lists where each inner list contains
+    the edges assigned the same color.
+    """
+    line_graph = nx.line_graph(graph)
+    edge_colors = nx.coloring.greedy_color(line_graph)
+
+    color_groups = {}
+    for edge, color in edge_colors.items():
+        if color not in color_groups:
+            color_groups[color] = []
+        color_groups[color].append(edge)
+
+    return list(color_groups.values())
+```
+
+## Étape 2 : Optimiser le problème pour l'exécution sur matériel quantique
+### Générer des circuits trotterisés sur des graphes de spins
+Pour simuler la dynamique du TFIM, nous construisons des circuits qui approximent l'opérateur d'évolution temporelle.
+
+$$
+U(t) = e^{-i H t}, \quad \text{where} \quad H = -J \sum_{\langle i,j \rangle} Z_i Z_j - h \sum_i X_i .
+$$
+
+Nous utilisons une décomposition de Trotter au second ordre :
+
+$$
+e^{-i H \Delta t} \approx e^{-i H_X \Delta t / 2}\, e^{-i H_Z \Delta t}\, e^{-i H_X \Delta t / 2},
+$$
+
+où $H_X = -h \sum_i X_i$ et $H_Z = -J \sum_{\langle i,j \rangle} Z_i Z_j$.
+
+* Le terme $H_X$ est implémenté avec des couches de rotations `RX`.
+* Le terme $H_Z$ est implémenté avec des couches de Gates `RZZ` le long des arêtes du graphe d'interaction.
+
+Les angles de ces Gates sont déterminés par le champ transverse $h$, la constante de couplage $J$ et le pas de temps $\Delta t$. En empilant plusieurs étapes de Trotter, nous générons des circuits de profondeur croissante qui approximent la dynamique du système. Les fonctions `generate_tfim_circ_custom_graph` et `trotter_circuits` construisent un Circuit quantique trotterisé à partir d'un graphe d'interaction de spins arbitraire.
+
+```python
+def generate_tfim_circ_custom_graph(
+    steps, h, J, dt, psi0, graph: nx.graph.Graph, meas_basis="Z", mirror=False
+):
+    """
+    Generate a second order trotter of the form e^(a+b) ~ e^(b/2) e^a e^(b/2) for simulating a transverse field ising model:
+    e^{-i H t} where the Hamiltonian H = -J \\sum_i Z_i Z_{i+1} + h \\sum_i X_i.
+
+    steps: Number of trotter steps
+    theta_x: Angle for layer of X rotations
+    theta_zz: Angle for layer of ZZ rotations
+    theta_x: Angle for second layer of X rotations
+    J: Coupling between nearest neighbor spins
+    h: The transverse magnetic field strength
+    dt: t/total_steps
+    psi0: initial state (assumed to be prepared in the computational basis).
+    meas_basis: basis to measure all correlators in
+
+    This is a second order trotter of the form e^(a+b) ~ e^(b/2) e^a e^(b/2)
+    """
+    theta_x = h * dt
+    theta_zz = -2 * J * dt
+    nq = graph.number_of_nodes()
+    color_edges = edge_coloring(graph)
+    circ = QuantumCircuit(nq, nq)
+    # Initial state, for typical cases in the computational basis
+    for i, b in enumerate(psi0):
+        if b == "1":
+            circ.x(i)
+    # Trotter steps
+    for step in range(steps):
+        for i in range(nq):
+            circ.rx(theta_x, i)
+        if mirror:
+            color_edges = [sublist[::-1] for sublist in color_edges[::-1]]
+        for edge_list in color_edges:
+            for edge in edge_list:
+                circ.rzz(theta_zz, edge[0], edge[1])
+        for i in range(nq):
+            circ.rx(theta_x, i)
+
+    # some typically used basis rotations
+    if meas_basis == "X":
+        for b in range(nq):
+            circ.h(b)
+    elif meas_basis == "Y":
+        for b in range(nq):
+            circ.sdg(b)
+            circ.h(b)
+
+    for i in range(nq):
+        circ.measure(i, i)
+
+    return circ
+
+def trotter_circuits(G, d_ind_tot, J, h, dt, meas_basis, mirror=True):
+    """
+    Generates a sequence of Trotterized circuits, each with increasing depth.
+    Given a spin interaction graph and Hamiltonian parameters, it constructs
+    a list of circuits with 1 to d_ind_tot Trotter steps
+
+    G: Graph defining spin interactions (edges = ZZ couplings)
+    d_ind_tot: Number of Trotter steps (maximum depth)
+    J: Coupling between nearest neighboring spins
+    h: Transverse magnetic field strength
+    dt: (t / total_steps
+    meas_basis: Basis to measure all correlators in
+    mirror: If True, mirror the Trotter layers
+    """
+    qubit_count = len(G)
+    circuits = []
+    psi0 = "0" * qubit_count
+
+    for steps in range(1, d_ind_tot + 1):
+        circuits.append(
+            generate_tfim_circ_custom_graph(
+                steps, h, J, dt, psi0, G, meas_basis, mirror
+            )
+        )
+    return circuits
+```
+
+### Estimer les magnétisations à un seul Qubit $\langle Z_i \rangle$
+Pour étudier la dynamique du modèle, nous souhaitons mesurer la magnétisation de chaque Qubit, définie par la valeur d'expectation $\langle Z_i \rangle = \langle \psi | Z_i | \psi \rangle$.
+
+Dans les simulations, nous pouvons calculer cela directement à partir des résultats de mesure. La fonction `z_expectation` traite les comptages de chaînes de bits et renvoie la valeur de $\langle Z_i \rangle$ pour un indice de Qubit donné. Sur le matériel réel, nous évaluons la même quantité en spécifiant l'opérateur de Pauli à l'aide de la fonction `generate_z_observables`, puis le Backend calcule la valeur d'expectation.
+
+```python
+def z_expectation(counts, index):
+    """
+    counts: Dict of mitigated bitstrings.
+    index: Index i in the single operator expectation value < II...Z_i...I > to be calculated.
+    return:  < Z_i >
+    """
+    z_exp = 0
+    tot = 0
+    for bitstring, value in counts.items():
+        bit = int(bitstring[index])
+        sign = 1
+        if bit % 2 == 1:
+            sign = -1
+        z_exp += sign * value
+        tot += value
+
+    return z_exp / tot
+```
+
+```python
+def generate_z_observables(nq):
+    observables = []
+    for i in range(nq):
+        pauli_string = "".join(["Z" if j == i else "I" for j in range(nq)])
+        observables.append(SparsePauliOp(pauli_string))
+    return observables
+```
+
+```python
+observables = generate_z_observables(n_qubits)
+```
+
+Nous définissons maintenant les paramètres pour la génération des circuits trotterisés. Dans ce tutoriel, le réseau est une chaîne de 20 triangles connectés, ce qui correspond à un système de 41 Qubits.
+
+```python
+all_circs_mirror = []
+for num_triangles in [n_triangles]:
+    for meas_basis in ["Z"]:
+        A = connected_triangles_adj_matrix(num_triangles)
+        G = nx.from_numpy_array(A)
+        nq = len(G)
+        d_ind_tot = 22
+        dt = 2 * np.pi * 1 / 30 * 0.25
+        J = 1
+        h = -7
+        all_circs_mirror.extend(
+            trotter_circuits(G, d_ind_tot, J, h, dt, meas_basis, True)
+        )
+circs = all_circs_mirror
+```
+
+## Étape 3 : Exécuter à l'aide des primitives Qiskit
+### Exécuter la simulation MPS
+La liste des circuits trotterisés est exécutée à l'aide du simulateur `matrix_product_state` avec un choix arbitraire de $4096$ coups. La méthode MPS fournit une approximation efficace de la dynamique du Circuit, avec une précision déterminée par la dimension de liaison choisie. Pour les tailles de systèmes considérées ici, la dimension de liaison par défaut est suffisante pour capturer la dynamique de magnétisation avec une haute fidélité. Les comptages bruts sont normalisés, et à partir de ceux-ci nous calculons les valeurs d'expectation à un seul Qubit $\langle Z_i \rangle$ à chaque étape de Trotter. Enfin, nous calculons la moyenne sur tous les Qubits pour obtenir une courbe unique montrant comment la magnétisation évolue au cours du temps.
+
+```python
+backend_sim = AerSimulator(method="matrix_product_state")
+
+def normalize_counts(counts_list, shots):
+    new_counts_list = []
+    for counts in counts_list:
+        a = {k: v / shots for k, v in counts.items()}
+        new_counts_list.append(a)
+    return new_counts_list
+
+def run_sim(circ_list):
+    shots = 4096
+    res = backend_sim.run(circ_list, shots=shots)
+    normed = normalize_counts(res.result().get_counts(), shots)
+    return normed
+
+sim_counts = run_sim(circs)
+```
+
+### Exécuter sur le matériel
+
+```python
+service = QiskitRuntimeService()
+backend = service.backend("ibm_marrakesh")
+
+def run_qiskit(circ_list):
+    shots = 4096
+    pm = generate_preset_pass_manager(backend=backend)
+    isa_circuits = [pm.run(qc) for qc in circ_list]
+    sampler = Sampler(mode=backend)
+    res = sampler.run(isa_circuits, shots=shots)
+    res = [r.data.c.get_counts() for r in res.result()]
+    normed = normalize_counts(res, shots)
+    return normed
+
+qiskit_counts = run_qiskit(circs)
+```
+
+### Exécuter sur le matériel avec Fire Opal
+Nous évaluons la dynamique de magnétisation sur du matériel quantique réel. Fire Opal fournit une Qiskit Function qui étend la primitive Estimator standard de Qiskit Runtime avec une suppression d'erreurs automatisée et une gestion des performances. Nous soumettons les circuits trotterisés directement à un Backend IBM&reg; tandis que Fire Opal gère l'exécution adaptée au bruit.
+
+Nous préparons une liste de `pubs`, où chaque élément contient un Circuit et les observables Pauli-Z correspondantes. Ceux-ci sont transmis à la fonction estimateur de Fire Opal, qui renvoie les valeurs d'expectation $\langle Z_i \rangle$ pour chaque Qubit à chaque étape de Trotter. Les résultats peuvent ensuite être moyennés sur les Qubits pour obtenir la courbe de magnétisation à partir du matériel.
+
+```python
+backend_name = "ibm_marrakesh"
+estimator_pubs = [(qc, observables) for qc in all_circs_mirror[:]]
+
+# Run the circuit using the estimator
+qctrl_estimator_job = perf_mgmt.run(
+    primitive="estimator",
+    pubs=estimator_pubs,
+    backend_name=backend_name,
+    options={"default_shots": 4096},
+)
+
+result_qctrl = qctrl_estimator_job.result()
+```
+
+## Étape 4 : Post-traiter et renvoyer le résultat dans le format classique souhaité
+
+Enfin, nous comparons la courbe de magnétisation du simulateur avec les résultats obtenus sur le matériel réel. L'affichage côte à côte montre à quel point l'exécution matérielle avec Fire Opal correspond à la référence sans bruit à travers les étapes de Trotter.
+
+```python
+def make_correlators(test_counts, nq, d_ind_tot):
+    mz = np.empty((nq, d_ind_tot))
+    for d_ind in range(d_ind_tot):
+        counts = test_counts[d_ind]
+        for i in range(nq):
+            mz[i, d_ind] = z_expectation(counts, i)
+    average_z = np.mean(mz, axis=0)
+    return np.concatenate((np.array([1]), average_z), axis=0)
+
+sim_exp = make_correlators(sim_counts[0:22], nq=nq, d_ind_tot=22)
+qiskit_exp = make_correlators(qiskit_counts[0:22], nq=nq, d_ind_tot=22)
+```
+
+```python
+qctrl_exp = [ev.data.evs for ev in result_qctrl[:]]
+qctrl_exp_mean = np.concatenate(
+    (np.array([1]), np.mean(qctrl_exp, axis=1)), axis=0
+)
+```
+
+```python
+def make_expectations_plot(
+    sim_z,
+    depths,
+    exp_qctrl=None,
+    exp_qctrl_error=None,
+    exp_qiskit=None,
+    exp_qiskit_error=None,
+    plot_from=0,
+    plot_upto=23,
+):
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    depth_ticks = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+
+    d = np.asarray(depths)[plot_from:plot_upto]
+    sim = np.asarray(sim_z)[plot_from:plot_upto]
+
+    qk = (
+        None
+        if exp_qiskit is None
+        else np.asarray(exp_qiskit)[plot_from:plot_upto]
+    )
+    qc = (
+        None
+        if exp_qctrl is None
+        else np.asarray(exp_qctrl)[plot_from:plot_upto]
+    )
+
+    qk_err = (
+        None
+        if exp_qiskit_error is None
+        else np.asarray(exp_qiskit_error)[plot_from:plot_upto]
+    )
+    qc_err = (
+        None
+        if exp_qctrl_error is None
+        else np.asarray(exp_qctrl_error)[plot_from:plot_upto]
+    )
+
+    # ---- helper(s) ----
+    def rmse(a, b):
+        if a is None or b is None:
+            return None
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        mask = np.isfinite(a) & np.isfinite(b)
+        if not np.any(mask):
+            return None
+        diff = a[mask] - b[mask]
+        return float(np.sqrt(np.mean(diff**2)))
+
+    def plot_panel(ax, method_y, method_err, color, label, band_color=None):
+        # Noiseless reference
+        ax.plot(d, sim, color="grey", label="Noiseless simulation")
+
+        # Method line + band
+        if method_y is not None:
+            ax.plot(d, method_y, color=color, label=label)
+            if method_err is not None:
+                lo = np.clip(method_y - method_err, -1.05, 1.05)
+                hi = np.clip(method_y + method_err, -1.05, 1.05)
+                ax.fill_between(
+                    d,
+                    lo,
+                    hi,
+                    alpha=0.18,
+                    color=band_color if band_color else color,
+                    label=f"{label} ± error",
+                )
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                "No data",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=10,
+                color="0.4",
+            )
+
+        # RMSE box (vs sim)
+        r = rmse(method_y, sim)
+        if r is not None:
+            ax.text(
+                0.98,
+                0.02,
+                f"RMSE: {r:.4f}",
+                transform=ax.transAxes,
+                va="bottom",
+                ha="right",
+                fontsize=8,
+                bbox=dict(
+                    boxstyle="round,pad=0.35", fc="white", ec="0.7", alpha=0.9
+                ),
+            )
+        # Axes
+        ax.set_xticks(depth_ticks)
+        ax.set_ylim(-1.05, 1.05)
+        ax.grid(True, which="both", linewidth=0.4, alpha=0.4)
+        ax.set_axisbelow(True)
+        ax.legend(prop={"size": 8}, loc="best")
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), dpi=300, sharey=True)
+
+    axes[0].set_title("Fire Opal (Q-CTRL)", fontsize=10)
+    plot_panel(
+        axes[0],
+        qc,
+        qc_err,
+        color="#680CE9",
+        label="Fire Opal",
+        band_color="#680CE9",
+    )
+    axes[0].set_xlabel("Trotter step")
+    axes[0].set_ylabel(r"$\langle Z \rangle$")
+    axes[1].set_title("Qiskit", fontsize=10)
+    plot_panel(
+        axes[1], qk, qk_err, color="blue", label="Qiskit", band_color="blue"
+    )
+    axes[1].set_xlabel("Trotter step")
+
+    plt.tight_layout()
+    plt.show()
+```
+
+```python
+depths = list(range(d_ind_tot + 1))
+errors = np.abs(np.array(qctrl_exp_mean) - np.array(sim_exp))
+
+errors_qiskit = np.abs(np.array(qiskit_exp) - np.array(sim_exp))
+```
+
+```python
+make_expectations_plot(
+    sim_exp,
+    depths,
+    exp_qctrl=qctrl_exp_mean,
+    exp_qctrl_error=errors,
+    exp_qiskit=qiskit_exp,
+    exp_qiskit_error=errors_qiskit,
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transverse-field-ising-model/extracted-outputs/d4902d14-0.avif)
+
+## Références
+
+[1] Graph coloring. Wikipedia. Retrieved September 15, 2025, from https://en.wikipedia.org/wiki/Graph_coloring
+## Enquête sur le tutoriel
+
+Veuillez prendre une minute pour donner votre avis sur ce tutoriel. Vos retours nous aideront à améliorer notre contenu et l'expérience utilisateur.
+
+[Lien vers l'enquête](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)

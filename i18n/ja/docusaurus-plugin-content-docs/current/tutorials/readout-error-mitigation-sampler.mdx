@@ -1,0 +1,898 @@
+---
+title: "M3を使用したSamplerプリミティブの読み出しエラー軽減"
+sidebar_label: "M3を使用したSamplerプリミティブの読み出しエラー軽減"
+description: "M3読み出し軽減アドオンをSamplerプリミティブとともに使用する"
+notebook_path: "docs/tutorials/readout-error-mitigation-sampler.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/readout-error-mitigation-sampler.ipynb" />
+
+
+
+{/* cspell:ignore braket, Zgrm, newcommand, probs, quasis, topten */}
+
+*使用量の目安: Heron r2プロセッサで1分未満（注意: これは目安です。実際の実行時間は異なる場合があります。）*
+
+## 背景
+
+Estimatorプリミティブとは異なり、Samplerプリミティブにはエラー軽減の組み込みサポートがありません。
+Estimatorがサポートするいくつかの手法は期待値の計算に特化して設計されているため、Samplerプリミティブには適用できません。例外は読み出しエラー軽減であり、これは非常に効果的な手法で、Samplerプリミティブにも適用可能です。
+
+[M3 Qiskitアドオン](https://qiskit.github.io/qiskit-addon-mthree/)は、読み出しエラー軽減のための効率的な手法を実装しています。このチュートリアルでは、M3 Qiskitアドオンを使用してSamplerプリミティブの読み出しエラーを軽減する方法を説明します。
+
+### 読み出しエラーとは何か
+
+測定の直前において、量子ビットレジスタの状態は
+計算基底状態の重ね合わせ、
+または密度行列によって記述されます。
+量子ビットレジスタから古典ビットレジスタへの測定は、2つのステップで行われます。
+最初に量子測定そのものが実行されます。
+これは、量子ビットレジスタの状態が
+$1$と$0$の文字列で特徴付けられる
+単一の基底状態に射影されることを意味します。
+2番目のステップは、この基底状態を特徴付けるビット文字列を読み取り、
+古典コンピュータのメモリに書き込むことです。
+このステップを*読み出し*と呼びます。
+2番目のステップ（読み出し）は、最初のステップ（基底状態への射影）よりも多くのエラーを生じることが分かっています。
+これは、読み出しが微視的な量子状態を検出し、
+それを巨視的な領域に増幅する必要があることを思い出せば納得できます。読み出し共振器が
+（トランズモン）量子ビットに結合されており、それによって非常に小さな周波数シフトが生じます。マイクロ波パルスが
+共振器で反射され、その特性にわずかな変化が生じます。反射されたパルスは増幅され、分析されます。これは繊細な
+プロセスであり、さまざまなエラーの影響を受けます。
+
+重要な点は、量子測定と読み出しの両方がエラーの影響を受けますが、
+後者が支配的なエラー、すなわち読み出しエラーを生じるということです。これがこのチュートリアルの焦点です。
+### 理論的背景
+
+サンプリングされたビット文字列（古典メモリに格納されたもの）が、
+射影された量子状態を特徴付けるビット文字列と異なる場合、読み出しエラーが発生したと言います。
+これらのエラーはランダムであり、サンプルごとに無相関であることが観測されています。
+読み出しエラーを_ノイズのある古典チャネル_としてモデル化することが有用であることが示されています。
+すなわち、すべてのビット文字列の組
+$i$と$j$に対して、真の値$j$が
+$i$として誤って読み取られる固定の確率が存在します。
+
+より正確には、すべてのビット文字列の組$(i, j)$に対して、真の値が$j$であるときに
+$i$が読み取られる（条件付き）確率${M}_{i,j}$が存在します。
+すなわち、
+$$
+    {M}_{i,j} =  \Pr(\text{readout value is } i | \text{true value is } j)
+    \text{ for } i,j \in (0,...,2^n - 1), \tag{1}
+$$
+ここで$n$は読み出しレジスタのビット数です。
+具体的には、$i$は計算基底状態をラベル付けするビット文字列の
+2進表現に対応する10進整数であると仮定します。
+$2^n \times 2^n$行列${M}$を_割り当て行列_と呼びます。
+固定の真の値$j$に対して、すべてのノイズのある結果$i$について確率を合計すると$1$になる必要があります。すなわち、
+$$
+    \sum_{i=0}^{2^n - 1} {M}_{i,j} = 1 \text{ for all } j
+$$
+非負の要素を持ち(1)を満たす行列を
+_左確率的_と呼びます。
+左確率的行列は、各列の合計が$1$になるため、_列確率的_とも呼ばれます。
+各要素${M}_{i,j}$の近似値は、
+各基底状態$|j \rangle$を繰り返し準備し、サンプリングされたビット文字列の
+出現頻度を計算することで実験的に決定します。
+
+実験が繰り返しサンプリングによる出力ビット文字列の確率分布の推定を含む場合、
+${M}$を使用して分布レベルで読み出しエラーを軽減できます。
+最初のステップは、関心のある固定の回路を何度も繰り返し実行し、
+サンプリングされたビット文字列のヒストグラムを作成することです。
+正規化されたヒストグラムは、
+$2^n$個の可能なビット文字列に対する測定された確率分布であり、${\tilde{p}} \in \mathbb{R}^{2^n}$と表記します。
+ビット文字列$i$がサンプリングされる（推定）確率${{\tilde{p}}}_i$は、
+すべての真のビット文字列$j$の合計に等しく、各$j$は
+それが$i$と誤認される確率で重み付けされています。
+この文を行列形式で表すと、
+$$
+    {\tilde{p}} = {M} {\vec{p}}, \tag{2},
+$$
+となります。ここで${\vec{p}}$は真の分布です。言い換えると、読み出しエラーは
+ビット文字列に対する理想的な分布${\vec{p}}$に割り当て行列${M}$を掛けて
+観測された分布${\tilde{p}}$を生成する効果を持ちます。
+${\tilde{p}}$と${M}$は測定されていますが、${\vec{p}}$に直接アクセスすることはできません。原理的には、
+方程式(2)を${\vec{p}}$について数値的に解くことで、
+回路のビット文字列の真の分布を得ることができます。
+
+先に進む前に、この素朴なアプローチのいくつかの重要な特徴について述べておく価値があります。
+
+- 実際には、方程式(2)は${M}$を逆行列にすることでは解かれません。ソフトウェアライブラリの線形代数
+  ルーチンは、より安定で、正確で、効率的な手法を採用しています。
+- ${M}$を推定する際、読み出しエラーのみが発生したと仮定しました。特に、
+  状態準備エラーや量子測定エラーがなかった、
+  あるいは少なくとも別の方法で軽減されていたと仮定しています。
+  この仮定が妥当である限り、${M}$は実際に
+  読み出しエラーのみを表します。しかし、測定されたビット文字列の分布を補正するために${M}$を_使用する_場合、
+  そのような仮定は行いません。実際、興味深い回路は
+  ノイズ、例えばゲートエラーを導入することが予想されます。「真の」分布は、
+  他の方法で軽減されていないすべてのエラーの影響を含んでいます。
+
+この手法は、いくつかの状況では有用ですが、いくつかの制限があります。
+
+${M}$を推定するために必要な空間と時間のリソースは$n$に対して指数的に増大します：
+- ${M}$と${\tilde{p}}$の推定は、有限サンプリングによる統計的誤差の影響を受けます。
+  このノイズは、より多くのショットを使用することで所望の大きさまで小さくすることができます
+  （${M}$に系統的誤差をもたらすハードウェアパラメータのドリフトの時間スケールまで）。
+  しかし、軽減を行う際に観測されるビット文字列について仮定を置かない場合、
+  ${M}$を推定するために必要なショット数は
+  $n$に対して少なくとも指数的に増大します。
+- ${M}$は$2^n \times 2^n$行列です。
+  $n>10$の場合、${M}$を格納するために必要なメモリ量は、
+  高性能なラップトップで利用可能なメモリを超えます。
+
+さらなる制限は以下の通りです：
+
+- 回復された分布${\vec{p}}$は、1つ以上の
+  負の確率を持つ場合があります（合計は1のまま）。1つの解決策は、
+  ${\vec{p}}$の各要素が非負であるという制約の下で$||{M} {\vec{p}} - {\tilde{p}}||^2$を最小化することです。しかし、このような
+  手法の実行時間は、方程式(2)を直接解くよりも桁違いに長くなります。
+- この軽減手順は、ビット文字列に対する確率分布のレベルで機能します。
+  特に、個々の観測されたビット文字列のエラーを補正することはできません。
+### Qiskit M3アドオン：より長いビット文字列へのスケーリング
+
+標準的な数値線形代数ルーチンを使用して方程式(2)を解く方法は、約10ビット以下のビット文字列に限定されます。しかし、M3ははるかに長いビット文字列を処理できます。これを可能にするM3の2つの重要な特性は以下の通りです：
+- ビットの集合間における3次以上の読み出しエラーの相関は
+  無視できるものと仮定され、無視されます。原理的には、より多くのショットを使用することで、
+  より高次の相関も推定できます。
+- ${M}$を明示的に構築する代わりに、${\tilde{p}}$を構築する際に収集されたビット文字列のみの
+  確率を記録する、はるかに小さな有効行列を使用します。
+
+大まかに言えば、手順は以下のように機能します。
+
+まず、${M}$の簡略化された有効な記述を構築するための構成要素を作成します。
+次に、関心のある回路を繰り返し実行してビット文字列を収集し、
+それを使用して${\tilde{p}}$と、構成要素の助けを借りて有効な${M}$の両方を構築します。
+
+より正確には、
+- 各量子ビットについて単一量子ビットの割り当て行列が推定されます。これを行うために、量子ビットレジスタを
+  全ゼロ状態$|0 ... 0 \rangle$に繰り返し準備し、次に全1状態
+  $|1 ... 1 \rangle$に準備して、各量子ビットが誤って読み取られる確率を記録します。
+- 3次以上の相関は無視できるものと仮定され、無視されます。
+
+  代わりに、$n$個の$2 \times 2$単一量子ビット割り当て行列と、
+  $n(n-1)/2$個の$4 \times 4$二量子ビット割り当て行列を構築します。
+  これらの1量子ビットおよび2量子ビットの割り当て行列は、後で使用するために保存されます。
+- ${\tilde{p}}$を構築するために回路を繰り返しサンプリングした後、
+  ${\tilde{p}}$を構築する際にサンプリングされたビット文字列のみを使用して、
+  ${M}$の有効な近似を構築します。この有効行列は、
+  前の項目で説明した単一量子ビットおよび二量子ビット行列を使用して構築されます。
+  この行列の線形次元は、${\tilde{p}}$の構築に使用されるショット数の
+  オーダー以下であり、これは完全な割り当て行列${M}$の
+  次元$2^n$よりもはるかに小さいです。
+
+M3の技術的な詳細については、[*Scalable Mitigation of Measurement Errors on Quantum Computers*](https://journals.aps.org/prxquantum/abstract/10.1103/PRXQuantum.2.040326)を参照してください。
+### 量子アルゴリズムへのM3の適用
+M3の読み出し軽減を隠れシフト問題に適用します。隠れシフト問題、および[隠れ部分群問題](https://en.wikipedia.org/wiki/Hidden_subgroup_problem)などの密接に関連する問題は、もともとフォールトトレラントな設定で考案されました（より正確には、フォールトトレラントなQPUが可能であることが証明される前に考案されました！）。しかし、利用可能なプロセッサでも研究されています。127量子ビットのIBM&reg; QPUで隠れシフト問題の変種に対して得られたアルゴリズム的な指数的高速化の例は、[この論文](https://journals.aps.org/prx/accepted/a9074K06A8e1590147da9c69f8c4b64c28247be5a)（[arXiv版](https://arxiv.org/abs/2401.07934)）で見つけることができます。
+
+以下では、すべての算術はブール演算です。
+すなわち、$a, b \in \mathbb{Z}_2 = \{0, 1\}$に対して、加算$a + b$は論理XOR関数です。
+さらに、乗算$a \times b$（または$a b$）は論理AND関数です。$x, y \in \{0, 1\}^n$に対して、
+$x + y$はXORのビットごとの適用によって定義されます。
+内積$\cdot: {\mathbb{Z}_2^n} \rightarrow \mathbb{Z}_2$は
+$x \cdot y = \sum_i x_i y_i$で定義されます。
+#### アダマール演算子とフーリエ変換
+
+量子アルゴリズムの実装において、アダマール演算子をフーリエ変換として使用することは非常に一般的です。
+計算基底状態は_古典状態_と呼ばれることがあります。これらは古典的なビット文字列と
+1対1の対応関係にあります。
+$n$量子ビットのアダマール演算子を古典状態に適用したものは、ブール超立方体上のフーリエ変換と見なすことができます：
+$$
+H^{\otimes n} =  \frac{1}{\sqrt{2^n}} \sum_{x,y \in {\mathbb{Z}_2^n}} (-1)^{x \cdot y} {|{y}\rangle}{\langle{x}|}.
+$$
+固定のビット文字列$s$に対応する状態${|{s}\rangle}$を考えます。
+$H^{\otimes n}$を適用し、${\langle {x}|{s}\rangle} = \delta_{x,s}$を用いると、
+${|{s}\rangle}$のフーリエ変換は以下のように書けます：
+$$
+   H^{\otimes n} {|{s}\rangle} =  \frac{1}{\sqrt{2^n}} \sum_{y \in {\mathbb{Z}_2^n}} (-1)^{s \cdot y} {|{y}\rangle}.
+$$
+
+アダマール演算子はそれ自身の逆演算子です。すなわち、
+ $H^{\otimes n} H^{\otimes n} = (H H)^{\otimes n} = I^{\otimes n}$です。
+したがって、逆フーリエ変換は同じ演算子$H^{\otimes n}$です。
+明示的に書くと、
+$$
+  {|{s}\rangle} =  H^{\otimes n} H^{\otimes n} {|{s}\rangle}  =  H^{\otimes n} \frac{1}{\sqrt{2^n}} \sum_{y \in {\mathbb{Z}_2^n}} (-1)^{s \cdot y} {|{y}\rangle}.
+$$
+#### 隠れシフト問題
+
+_隠れシフト問題_の簡単な例を考えます。
+この問題は、関数への入力における定数シフトを特定することです。
+ここで考える関数は内積です。これは、以下に示す手法と同様の手法で
+隠れシフト問題に対して量子高速化を可能にする関数の大きなクラスの
+最も単純なメンバーです。
+
+$x,y \in {\mathbb{Z}_2^m}$を長さ$m$のビット文字列とします。
+${f}: {\mathbb{Z}_2^m} \times {\mathbb{Z}_2^m} \rightarrow \{-1,1\}$を以下のように定義します：
+$$
+  {f}(x, y) = (-1)^{x \cdot y}.
+$$
+  $a,b \in {\mathbb{Z}_2^m}$を長さ$m$の固定のビット文字列とします。
+  さらに、$g: {\mathbb{Z}_2^m} \times {\mathbb{Z}_2^m} \rightarrow \{-1,1\}$を以下のように定義します：
+$$
+  g(x, y) = {f}(x+a, y+b) = (-1)^{(x+a) \cdot (y+b)},
+  $$
+  ここで$a$と$b$は（隠された）パラメータです。
+  2つのブラックボックスが与えられます。1つは$f$を実装し、もう1つは$g$を実装します。
+  これらが上記で定義された関数を計算することは分かっていますが、
+  $a$も$b$も知らないと仮定します。このゲームの目的は、$f$と$g$へのクエリによって
+  隠されたビット文字列（シフト）$a$と$b$を決定することです。古典的にこのゲームをプレイする場合、
+  $a$と$b$を決定するには$O(2m)$回のクエリが必要であることは明らかです。例えば、組の一方の要素が全ゼロで、もう一方の要素がちょうど1つの要素が$1$に設定されているすべての文字列の組で$g$にクエリを行うことができます。
+  各クエリで、$a$または$b$の1つの要素が分かります。
+  しかし、ブラックボックスが量子回路として実装されている場合、
+  $f$と$g$それぞれに対して1回のクエリで$a$と$b$を決定できることを示します。
+
+  アルゴリズムの計算量の文脈では、ブラックボックスは_オラクル_と呼ばれます。
+  不透明であることに加えて、オラクルは入力を消費し、
+  出力を瞬時に生成するという性質を持ち、それが組み込まれたアルゴリズムの
+  計算量バジェットに何も加えません。実際、ここで扱う場合では、$f$と
+  $g$を実装するオラクルは効率的であることが分かります。
+#### $f$と$g$の量子回路
+
+$f$と$g$を量子回路として実装するために、以下の要素が必要です。
+
+単一量子ビットの古典状態${|{x_1}\rangle}, {|{y_1}\rangle}$（$x_1,y_1 \in \mathbb{Z}_2$）に対して、
+制御$Z$ゲート${CZ}$は以下のように書けます：
+$$
+{CZ} {|{x_1}\rangle}{|{y_1}\rangle}{x_1} = (-1)^{x_1 y_1} {|{x_1}\rangle}{x_1}{|{y_1}\rangle}.
+$$
+$m$個のCZゲートを使用します。1つは$(x_1, y_1)$に、1つは$(x_2, y_2)$に、そして$(x_m, y_m)$まで同様に適用します。
+この演算子を${CZ}_{x,y}$と呼びます。
+
+$U_f = {CZ}_{x,y}$は${f} = {f}(x,y)$の量子版です：
+$$
+%\CZ_{x,y} {|#1\rangle}{z} =
+U_f {|{x}\rangle}{|{y}\rangle} = {CZ}_{x,y} {|{x}\rangle}{|{y}\rangle} = (-1)^{x \cdot y}  {|{x}\rangle}{|{y}\rangle}.
+$$
+
+また、ビット文字列のシフトも実装する必要があります。
+$x$レジスタ上の演算子$X^{a_1}\cdots X^{a_m}$を$X_a$と表記し、
+同様に$y$レジスタ上の$X_b =  X^{b_1}\cdots X^{b_m}$とします。
+これらの演算子は、単一ビットが$1$の箇所に$X$を適用し、$0$の箇所には恒等演算子$I$を適用します。
+すると、
+$$
+ X_a X_b  {|{x}\rangle}{|{y}\rangle} = {|{x+a}\rangle}{|{y+b}\rangle}.
+$$
+
+2番目のブラックボックス$g$は、以下のユニタリ$U_g$によって実装されます：
+$$
+%U_g {|{x}\rangle}{|{y}\rangle} = X_aX_b \CZ_{x,y} X_aX_b {|{x}\rangle}{|{y}\rangle}.
+U_g = X_aX_b {CZ}_{x,y} X_aX_b.
+$$
+これを確認するために、演算子を右から左に状態${|{x}\rangle}{|{y}\rangle}$に適用します。
+まず、
+
+$$
+ X_a X_b  {|{x}\rangle}{|{y}\rangle} = {|{x+a}\rangle}{|{y+b}\rangle}.
+$$
+
+次に、
+$$
+  {CZ}_{x,y}  {|{x+a}\rangle}{|{y+b}\rangle} = (-1)^{(x+a)\cdot (y+b)} {|{x+a}\rangle}{|{y+b}\rangle}.
+$$
+
+最後に、
+
+$$
+  X^a X^b (-1)^{(x+a)\cdot (y+b)} {|{x+a}\rangle}{|{y+b}\rangle} = (-1)^{(x+a)\cdot (y+b)} {|{x}\rangle}{|{y}\rangle},
+$$
+
+これは確かに$f(x+a, y+b)$の量子版です。
+#### 隠れシフトアルゴリズム
+
+ここで、隠れシフト問題を解くためにすべての要素を組み合わせます。
+まず、全ゼロ状態に初期化されたレジスタにアダマールを適用します。
+$$
+H^{\otimes 2m} = H^{\otimes m} \otimes H^{\otimes m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}} = \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{x \cdot y} {|{x}\rangle}{|{y}\rangle}.
+$$
+
+次に、オラクル$g$にクエリして以下に到達します：
+$$
+U_g H^{\otimes 2m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}}
+= \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{(x+a) \cdot (y+b)} {|{x}\rangle}{|{y}\rangle}
+$$
+$$
+\approx \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{x \cdot y + x \cdot b + y \cdot a} {|{x}\rangle}{|{y}\rangle}.
+$$
+最後の行では、定数のグローバル位相因子$(-1)^{a \cdot b}$を省略し、
+位相を除いた等号を$\approx$で表しています。
+次に、オラクル$f$を適用すると別の$(-1)^{x \cdot y}$の因子が導入され、既に存在するものと打ち消し合います。すると以下のようになります：
+$$
+U_f U_g H^{\otimes 2m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}}
+\approx \frac{1}{\sqrt{2^{2m}}} \sum_{x, y \in {\mathbb{Z}_2^m}} (-1)^{x \cdot b + y \cdot a} {|{x}\rangle}{|{y}\rangle}.
+$$
+最後のステップは、逆フーリエ変換$H^{\otimes 2m} = H^{\otimes m} \otimes H^{\otimes m}$を適用することであり、
+結果は以下のようになります：
+$$
+H^{\otimes 2m} U_f U_g  H^{\otimes 2m} {{|{0}\rangle}^{\otimes m}}{{|{0}\rangle}^{\otimes m}}
+\approx {|{b}\rangle}{|{a}\rangle}.
+$$
+回路はこれで完成です。ノイズがない場合、量子レジスタをサンプリングすると、
+確率$1$でビット文字列$b, a$が返されます。
+
+ブール内積は、いわゆるベント関数の一例です。
+ここではベント関数を定義しませんが、
+ベント関数は「入力の何らかの線形部分空間への出力の依存性を利用しようとする攻撃に対して
+最大限に耐性がある」ことを記しておきます。
+この引用は論文[_Quantum algorithms for highly non-linear Boolean functions_](https://arxiv.org/abs/0811.3208)からのもので、
+この論文はいくつかのクラスのベント関数に対する効率的な隠れシフトアルゴリズムを与えています。
+このチュートリアルのアルゴリズムは、その論文のセクション3.1に記載されています。
+
+より一般的な場合、隠れシフト$s \in \mathbb{Z}^n$を見つけるための回路は以下の通りです：
+$$
+ H^{\otimes n} U_{\tilde{f}}  H^{\otimes n} U_g  H^{\otimes n} {|{0}\rangle}^{\otimes n} = {|{s}\rangle}.
+$$
+ 一般的な場合、$f$と$g$は単一変数の関数です。
+ 内積の例は、$f(x, y) \to f(z)$とし、
+ $z$を$x$と$y$の連結、$s$を$a$と$b$の連結と等しくすれば、この形式になります。
+ 一般的な場合、正確に2つのオラクルが必要です：$g$のためのオラクル1つと$\tilde{f}$のためのオラクル1つで、
+ 後者はベント関数$f$の_双対_として知られる関数です。
+ 内積関数は自己双対性$\tilde{f}=f$を持ちます。
+
+ 内積に対する隠れシフトの回路では、一般的な場合の回路に現れる中間層の
+ アダマールを省略しました。一般的な場合ではこの層が必要ですが、
+ 出力が所望の${|{a}\rangle}{|{b}\rangle}$ではなく${|{b}\rangle}{|{a}\rangle}$となるため少しの後処理が必要になる代わりに、
+ 回路の深さを少し節約しました。
+## 要件
+
+このチュートリアルを開始する前に、以下がインストールされていることを確認してください：
+
+- Qiskit SDK v2.1以降、[可視化](https://docs.quantum.ibm.com/api/qiskit/visualization)サポート付き
+- Qiskit Runtime v0.41以降（`pip install qiskit-ibm-runtime`）
+- M3 Qiskitアドオン v3.0（`pip install mthree`）
+## セットアップ
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q mthree
+```
+
+```python
+from collections.abc import Iterator, Sequence
+from random import Random
+from qiskit.circuit import (
+    CircuitInstruction,
+    QuantumCircuit,
+    QuantumRegister,
+    Qubit,
+)
+from qiskit.circuit.library import CZGate, HGate, XGate
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+import timeit
+import matplotlib.pyplot as plt
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+import mthree
+```
+
+## ステップ1：古典的な入力を量子問題にマッピングする
+まず、隠れシフト問題を`QuantumCircuit`として実装する関数を記述します。
+
+```python
+def apply_hadamards(qubits: Sequence[Qubit]) -> Iterator[CircuitInstruction]:
+    """Apply a Hadamard gate to every qubit."""
+    for q in qubits:
+        yield CircuitInstruction(HGate(), [q], [])
+
+def apply_shift(
+    qubits: Sequence[Qubit], shift: int
+) -> Iterator[CircuitInstruction]:
+    """Apply X gates where the bits of the shift are equal to 1."""
+    for i, q in zip(range(shift.bit_length()), qubits):
+        if shift >> i & 1:
+            yield CircuitInstruction(XGate(), [q], [])
+
+def oracle_f(qubits: Sequence[Qubit]) -> Iterator[CircuitInstruction]:
+    """Apply the f oracle."""
+    for i in range(0, len(qubits) - 1, 2):
+        yield CircuitInstruction(CZGate(), [qubits[i], qubits[i + 1]])
+
+def oracle_g(
+    qubits: Sequence[Qubit], shift: int
+) -> Iterator[CircuitInstruction]:
+    """Apply the g oracle."""
+    yield from apply_shift(qubits, shift)
+    yield from oracle_f(qubits)
+    yield from apply_shift(qubits, shift)
+
+def determine_hidden_shift(
+    qubits: Sequence[Qubit], shift: int
+) -> Iterator[CircuitInstruction]:
+    """Determine the hidden shift."""
+    yield from apply_hadamards(qubits)
+    yield from oracle_g(qubits, shift)
+    # We omit this layer in exchange for post processing
+    # yield from apply_hadamards(qubits)
+    yield from oracle_f(qubits)
+    yield from apply_hadamards(qubits)
+
+def run_hidden_shift_circuit(n_qubits, rng):
+    hidden_shift = rng.getrandbits(n_qubits)
+
+    qubits = QuantumRegister(n_qubits, name="q")
+    circuit = QuantumCircuit.from_instructions(
+        determine_hidden_shift(qubits, hidden_shift), qubits=qubits
+    )
+    circuit.measure_all()
+    # Format the hidden shift as a string.
+    hidden_shift_string = format(hidden_shift, f"0{n_qubits}b")
+    return (circuit, hidden_shift, hidden_shift_string)
+
+def display_circuit(circuit):
+    return circuit.remove_final_measurements(inplace=False).draw(
+        "mpl", idle_wires=False, scale=0.5, fold=-1
+    )
+```
+
+小さな例から始めましょう：
+
+```python
+n_qubits = 6
+random_seed = 12345
+rng = Random(random_seed)
+circuit, hidden_shift, hidden_shift_string = run_hidden_shift_circuit(
+    n_qubits, rng
+)
+
+print(f"Hidden shift string {hidden_shift_string}")
+
+display_circuit(circuit)
+```
+
+```text
+Hidden shift string 011010
+```
+
+![Output of the previous code cell](/docs/images/tutorials/readout-error-mitigation-sampler/extracted-outputs/8297843e-00c3-4bb5-9d33-a7e558d1698c-1.avif)
+## ステップ 2: 量子ハードウェア実行のための回路の最適化
+
+```python
+job_tags = [
+    f"shift {hidden_shift_string}",
+    f"n_qubits {n_qubits}",
+    f"seed = {random_seed}",
+]
+job_tags
+```
+
+```text
+['shift 011010', 'n_qubits 6', 'seed = 12345']
+```
+
+```python
+# Uncomment this to run the circuits on a quantum computer on IBMCloud.
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=100
+)
+
+# from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+# backend = FakeMelbourneV2()
+# backend.refresh(service)
+
+print(f"Using backend {backend.name}")
+
+def get_isa_circuit(circuit, backend):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=3, backend=backend, seed_transpiler=1234
+    )
+    isa_circuit = pass_manager.run(circuit)
+    return isa_circuit
+
+isa_circuit = get_isa_circuit(circuit, backend)
+display_circuit(isa_circuit)
+```
+
+```text
+Using backend ibm_kingston
+```
+
+![Output of the previous code cell](/docs/images/tutorials/readout-error-mitigation-sampler/extracted-outputs/f2b77d93-c34a-43a4-b436-e7a25024a94a-1.avif)
+
+## ステップ 3: Qiskit プリミティブを使用した回路の実行
+
+```python
+# submit job for solving the hidden shift problem using the Sampler primitive
+NUM_SHOTS = 50_000
+
+def run_sampler(backend, isa_circuit, num_shots):
+    sampler = Sampler(mode=backend)
+    sampler.options.environment.job_tags
+    pubs = [(isa_circuit, None, NUM_SHOTS)]
+    job = sampler.run(pubs)
+    return job
+
+def setup_mthree_mitigation(isa_circuit, backend):
+    # retrieve the final qubit mapping so mthree knows which qubits to calibrate
+    qubit_mapping = mthree.utils.final_measurement_mapping(isa_circuit)
+
+    # submit jobs for readout error calibration
+    mit = mthree.M3Mitigation(backend)
+    mit.cals_from_system(qubit_mapping, rep_delay=None)
+
+    return mit, qubit_mapping
+```
+
+```python
+job = run_sampler(backend, isa_circuit, NUM_SHOTS)
+mit, qubit_mapping = setup_mthree_mitigation(isa_circuit, backend)
+```
+
+## ステップ 4: 後処理と古典形式での結果の返却
+
+上記の理論的な議論において、入力 $ab$ に対して出力 $ba$ が期待されることを確認しました。
+さらに複雑な点として、（トランスパイル前の）より単純な回路を実現するために、必要な CZ ゲートを隣接する量子ビットのペア間に挿入しました。これはビット列 $a$ と $b$ を $a1 b1 a2 b2 \ldots$ のようにインターリーブすることに相当します。
+出力文字列 $ba$ も同様にインターリーブされます：$b1 a1 b2 a2 \ldots$。以下の `unscramble` 関数は、出力文字列を $b1 a1 b2 a2 \ldots$ から $a1 b1 a2 b2 \ldots$ に変換し、入力と出力の文字列を直接比較できるようにします。
+
+```python
+# retrieve bitstring counts
+def get_bitstring_counts(job):
+    result = job.result()
+    pub_result = result[0]
+    counts = pub_result.data.meas.get_counts()
+    return counts, pub_result
+```
+
+```python
+counts, pub_result = get_bitstring_counts(job)
+```
+
+2つのビット列間のハミング距離とは、ビットが異なるインデックスの数です。
+
+```python
+def hamming_distance(s1, s2):
+    weight = 0
+    for c1, c2 in zip(s1, s2):
+        (c1, c2) = (int(c1), int(c2))
+        if (c1 == 1 and c2 == 1) or (c1 == 0 and c2 == 0):
+            weight += 1
+
+    return weight
+```
+
+```python
+# Replace string of form a1b1a2b2... with b1a1b2a1...
+# That is, reverse order of successive pairs of bits.
+def unscramble(bitstring):
+    ps = [bitstring[i : i + 2][::-1] for i in range(0, len(bitstring), 2)]
+    return "".join(ps)
+
+def find_hidden_shift_bitstring(counts, hidden_shift_string):
+    # convert counts to probabilities
+    probs = {
+        unscramble(bitstring): count / NUM_SHOTS
+        for bitstring, count in counts.items()
+    }
+
+    # Retrieve the most probable bitstring.
+    most_probable = max(probs, key=lambda x: probs[x])
+
+    print(f"Expected hidden shift string: {hidden_shift_string}")
+    if most_probable == hidden_shift_string:
+        print("Most probable bitstring matches hidden shift 😊.")
+    else:
+        print("Most probable bitstring didn't match hidden shift ☹️.")
+    print("Top 10 bitstrings and their probabilities:")
+    display(
+        {
+            k: (v, hamming_distance(hidden_shift_string, k))
+            for k, v in sorted(
+                probs.items(), key=lambda x: x[1], reverse=True
+            )[:10]
+        }
+    )
+
+    return probs, most_probable
+```
+
+```python
+probs, most_probable = find_hidden_shift_bitstring(
+    counts, hidden_shift_string
+)
+```
+
+```text
+Expected hidden shift string: 011010
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their probabilities:
+```
+
+```text
+{'011010': (0.9743, 6),
+ '001010': (0.00812, 5),
+ '010010': (0.0063, 5),
+ '011000': (0.00554, 5),
+ '011011': (0.00492, 5),
+ '011110': (0.00044, 5),
+ '001000': (0.00012, 4),
+ '010000': (8e-05, 4),
+ '001011': (6e-05, 4),
+ '000010': (6e-05, 4)}
+```
+
+M3 による読み出しエラー緩和を適用する前の、最も確率の高いビット列の確率を記録しましょう。
+
+```python
+max_probability_before_M3 = probs[most_probable]
+max_probability_before_M3
+```
+
+```text
+0.9743
+```
+
+次に、M3 が学習した読み出し補正をカウントに適用します。
+`apply_corrections` 関数は擬似確率分布を返します。これは合計が $1$ になる `float` オブジェクトのリストですが、一部の値が負になる場合があります。
+
+```python
+def perform_mitigation(mit, counts, qubit_mapping):
+    # mitigate readout error
+    quasis = mit.apply_correction(counts, qubit_mapping)
+
+    # print results
+    most_probable_after_m3 = unscramble(max(quasis, key=lambda x: quasis[x]))
+
+    is_hidden_shift_identified = most_probable_after_m3 == hidden_shift_string
+    if is_hidden_shift_identified:
+        print("Most probable bitstring matches hidden shift 😊.")
+    else:
+        print("Most probable bitstring didn't match hidden shift ☹️.")
+    print("Top 10 bitstrings and their quasi-probabilities:")
+    topten = {
+        unscramble(k): f"{v:.2e}"
+        for k, v in sorted(quasis.items(), key=lambda x: x[1], reverse=True)[
+            :10
+        ]
+    }
+    max_probability_after_M3 = float(topten[most_probable_after_m3])
+    display(topten)
+
+    return max_probability_after_M3, is_hidden_shift_identified
+```
+
+```python
+print(f"Expected hidden shift string: {hidden_shift_string}")
+max_probability_after_M3, is_hidden_shift_identified = perform_mitigation(
+    mit, counts, qubit_mapping
+)
+```
+
+```text
+Expected hidden shift string: 011010
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their quasi-probabilities:
+```
+
+```text
+{'011010': '1.01e+00',
+ '001010': '8.75e-04',
+ '001000': '7.38e-05',
+ '010000': '4.51e-05',
+ '111000': '2.18e-05',
+ '001011': '1.74e-05',
+ '000010': '6.42e-06',
+ '011001': '-7.18e-06',
+ '011000': '-4.53e-04',
+ '010010': '-1.28e-03'}
+```
+
+#### M3 補正適用前後における隠れシフト文字列の識別結果の比較
+
+```python
+def compare_before_and_after_M3(
+    max_probability_before_M3,
+    max_probability_after_M3,
+    is_hidden_shift_identified,
+):
+    is_probability_improved = (
+        max_probability_after_M3 > max_probability_before_M3
+    )
+    print(f"Most probable probability before M3: {max_probability_before_M3}")
+    print(f"Most probable probability after M3: {max_probability_after_M3}")
+    if is_hidden_shift_identified and is_probability_improved:
+        print("Readout error mitigation effective! 😊")
+    else:
+        print("Readout error mitigation not effective. ☹️")
+```
+
+```python
+compare_before_and_after_M3(
+    max_probability_before_M3,
+    max_probability_after_M3,
+    is_hidden_shift_identified,
+)
+```
+
+```text
+Most probable probability before M3: 0.9743
+Most probable probability after M3: 1.01
+Readout error mitigation effective! 😊
+```
+
+### M3 に必要な CPU 時間がショット数に対してどのようにスケールするかのプロット
+
+```python
+# Collect samples for numbers of shots varying from 5000 to 25000.
+shots_range = range(5000, NUM_SHOTS + 1, 2500)
+times = []
+for shots in shots_range:
+    print(f"Applying M3 correction to {shots} shots...")
+    t0 = timeit.default_timer()
+    _ = mit.apply_correction(
+        pub_result.data.meas.slice_shots(range(shots)).get_counts(),
+        qubit_mapping,
+    )
+    t1 = timeit.default_timer()
+    print(f"\tDone in {t1 - t0} seconds.")
+    times.append(t1 - t0)
+
+fig, ax = plt.subplots()
+ax.plot(shots_range, times, "o--")
+ax.set_xlabel("Shots")
+ax.set_ylabel("Time (s)")
+ax.set_title("Time to apply M3 correction")
+```
+
+```text
+Applying M3 correction to 5000 shots...
+	Done in 0.003321983851492405 seconds.
+Applying M3 correction to 7500 shots...
+	Done in 0.004425413906574249 seconds.
+Applying M3 correction to 10000 shots...
+	Done in 0.006366567220538855 seconds.
+Applying M3 correction to 12500 shots...
+	Done in 0.0071477219462394714 seconds.
+Applying M3 correction to 15000 shots...
+	Done in 0.00860048783943057 seconds.
+Applying M3 correction to 17500 shots...
+	Done in 0.010026784148067236 seconds.
+Applying M3 correction to 20000 shots...
+	Done in 0.011459112167358398 seconds.
+Applying M3 correction to 22500 shots...
+	Done in 0.012727141845971346 seconds.
+Applying M3 correction to 25000 shots...
+	Done in 0.01406092382967472 seconds.
+Applying M3 correction to 27500 shots...
+	Done in 0.01546052098274231 seconds.
+Applying M3 correction to 30000 shots...
+	Done in 0.016769016161561012 seconds.
+Applying M3 correction to 32500 shots...
+	Done in 0.019537431187927723 seconds.
+Applying M3 correction to 35000 shots...
+	Done in 0.019739801064133644 seconds.
+Applying M3 correction to 37500 shots...
+	Done in 0.021093040239065886 seconds.
+Applying M3 correction to 40000 shots...
+	Done in 0.022840639110654593 seconds.
+Applying M3 correction to 42500 shots...
+	Done in 0.023974396288394928 seconds.
+Applying M3 correction to 45000 shots...
+	Done in 0.026412792038172483 seconds.
+Applying M3 correction to 47500 shots...
+	Done in 0.026364430785179138 seconds.
+Applying M3 correction to 50000 shots...
+	Done in 0.02820305060595274 seconds.
+```
+
+```text
+Text(0.5, 1.0, 'Time to apply M3 correction')
+```
+
+![Output of the previous code cell](/docs/images/tutorials/readout-error-mitigation-sampler/extracted-outputs/33addc38-f738-48ed-a29d-9790f446c036-2.avif)
+
+#### プロットの解釈
+
+上記のプロットは、M3 補正の適用に必要な時間がショット数に対して線形にスケールすることを示しています。## スケールアップ
+
+```python
+n_qubits = 80
+rng = Random(12345)
+circuit, hidden_shift, hidden_shift_string = run_hidden_shift_circuit(
+    n_qubits, rng
+)
+
+print(f"Hidden shift string {hidden_shift_string}")
+```
+
+```text
+Hidden shift string 00000010100110101011101110010001010000110011101001101010101001111001100110000111
+```
+
+```python
+isa_circuit = get_isa_circuit(circuit, backend)
+```
+
+```python
+job = run_sampler(backend, isa_circuit, NUM_SHOTS)
+mit, qubit_mapping = setup_mthree_mitigation(isa_circuit, backend)
+```
+
+```python
+counts, pub_result = get_bitstring_counts(job)
+```
+
+```python
+probs, most_probable = find_hidden_shift_bitstring(
+    counts, hidden_shift_string
+)
+```
+
+```text
+Expected hidden shift string: 00000010100110101011101110010001010000110011101001101010101001111001100110000111
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their probabilities:
+```
+
+```text
+{'00000010100110101011101110010001010000110011101001101010101001111001100110000111': (0.50402,
+  80),
+ '00000010100110101011101110010001010000110011100001101010101001111001100110000111': (0.0396,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001111001100100000111': (0.0323,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001101001100110000111': (0.01936,
+  79),
+ '00000010100110101011101110010011010000110011101001101010101001111001100110000111': (0.01432,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001011001100110000111': (0.0101,
+  79),
+ '00000010100110101011101110010001010000110011101001101010101001110001100110000111': (0.00924,
+  79),
+ '00000010100110101011101110010001010000010011101001101010101001111001100110000111': (0.00908,
+  79),
+ '00000010100110101011100110010001010000110011101001101010101001111001100110000111': (0.00888,
+  79),
+ '00000010100110101011101110010001010000110011101001100010101001111001100110000111': (0.0082,
+  79)}
+```
+
+正しい隠れシフト文字列が見つかったことが確認できます。さらに、次に確率の高い9つのビット文字列は、1つの位置のみが異なっています。
+最も確率の高い値を記録します。
+
+```python
+max_probability_before_M3 = probs[most_probable]
+max_probability_before_M3
+```
+
+```text
+0.50402
+```
+
+```python
+print(f"Expected hidden shift string: {hidden_shift_string}")
+max_probability_after_M3, is_hidden_shift_identified = perform_mitigation(
+    mit, counts, qubit_mapping
+)
+```
+
+```text
+Expected hidden shift string: 00000010100110101011101110010001010000110011101001101010101001111001100110000111
+Most probable bitstring matches hidden shift 😊.
+Top 10 bitstrings and their quasi-probabilities:
+```
+
+```text
+{'00000010100110101011101110010001010000110011101001101010101001111001100110000111': '9.85e-01',
+ '00000010100110101011101110010001010000110011100001101010101001111001100110000111': '6.84e-03',
+ '00000010100110101011100110010001010000110011101001101010101001111001100110000111': '3.87e-03',
+ '00000010100110101011101110010011010000110011101001101010101001111001100110000111': '3.42e-03',
+ '00000010100110101011101110010001010000110011101001101010101001111001100100000111': '3.30e-03',
+ '00000010100110101011101110010001010000110011101001101010101001110001100110000111': '3.28e-03',
+ '00000010100010101011101110010001010000110011101001101010101001111001100110000111': '2.62e-03',
+ '00000010100110101011101110010001010000110011101001101010101001101001100110000111': '2.43e-03',
+ '00000010100110101011101110010000010000110011101001101010101001111001100110000111': '1.73e-03',
+ '00000010100110101011101110010001010000110011101001101010101001111001000110000111': '1.63e-03'}
+```
+
+```python
+compare_before_and_after_M3(
+    max_probability_before_M3,
+    max_probability_after_M3,
+    is_hidden_shift_identified,
+)
+```
+
+```text
+Most probable probability before M3: 0.54348
+Most probable probability after M3: 0.99
+Readout error mitigation effective! 😊
+```

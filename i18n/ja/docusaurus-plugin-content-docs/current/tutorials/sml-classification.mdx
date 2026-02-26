@@ -1,0 +1,607 @@
+---
+title: "ハイブリッド量子強化アンサンブル分類（電力グリッド安定性ワークフロー）"
+sidebar_label: "ハイブリッド量子強化アンサンブル分類（電力グリッド安定性ワークフロー）"
+description: "Multiverse ComputingのSingularity Qiskit Functionを使用して、IBM QPU上でグリッド安定性分類のためのハイブリッド量子・古典アンサンブルを構築・分析します。"
+notebook_path: "docs/tutorials/sml-classification.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/sml-classification.ipynb" />
+
+
+
+{/* cspell:ignore QEEC interpretability hyperparameters overfitting sublinear preds prec */}
+
+*使用量の目安：Eagle r3プロセッサ上の各ジョブにつきQPU時間で約20分。（注意：これはあくまで目安です。実際の実行時間は異なる場合があります。）*
+## 背景
+
+このチュートリアルでは、古典アンサンブルを量子最適化ステップで強化するハイブリッド量子・古典ワークフローを実演します。Multiverse Computingの「Singularity Machine Learning – Classification」（Qiskit Function）を使用して、従来型の学習器プール（例：決定木、k-NN、ロジスティック回帰）を訓練し、その後量子レイヤーでプールを精錬することで多様性と汎化性能を向上させます。目的は実用的なものです。実際のグリッド安定性予測タスクにおいて、同じデータ分割の下で強力な古典ベースラインと量子最適化された代替手法を比較し、量子ステップがどこで有効か、またそのコストがどの程度かを確認できるようにします。
+
+これが重要である理由は以下の通りです。多数の弱学習器から優れたサブセットを選択することは、アンサンブルサイズに応じて急速に増大する組合せ最適化問題です。ブースティング、バギング、スタッキングなどの古典的ヒューリスティクスは中規模では良好に機能しますが、大規模で冗長なモデルライブラリを効率的に探索するのは困難になることがあります。この関数は量子アルゴリズム、具体的にはQAOA（および他の構成ではオプションでVQE）を統合し、古典学習器の訓練後にその探索空間をより効果的に探索することで、汎化性能に優れたコンパクトで多様なサブセットを見つける可能性を高めます。
+
+重要な点として、データスケールは量子ビット数による制限を受けません。データに関する重い処理（前処理、学習器プールの訓練、評価）は古典的なまま行われ、数百万のサンプルを扱うことができます。量子ビットは量子選択ステップで使用されるアンサンブルサイズのみを決定します。この分離こそが、現在のハードウェアでこのアプローチを実用的にしている理由です。データとモデル訓練には馴染みのあるscikit-learnワークフローを維持しながら、Qiskit Functionsのクリーンなアクションインターフェースを通じて量子ステップを呼び出すことができます。
+
+実際には、アンサンブルに様々な種類の学習器を提供できます（例：決定木、ロジスティック回帰、k-NNなど）が、決定木が最も良い性能を発揮する傾向があります。オプティマイザは一貫してより強力なアンサンブルメンバーを優先し、異種の学習器が提供された場合、線形回帰器のような弱いモデルは通常、決定木のようなより表現力の高いモデルに置き換えられて除去されます。
+
+このチュートリアルで行うこと：グリッド安定性データセットの準備とバランス調整、古典的なAdaBoostベースラインの確立、アンサンブル幅と正則化を変化させた複数の量子構成の実行、Qiskit Serverless経由でのIBM&reg;シミュレータまたはQPU上での実行、そしてすべての実行における精度、適合率、再現率、F1スコアの比較を行います。この過程で、関数のアクションパターン（`create`、`fit`、`predict`、`fit_predict`、`create_fit_predict`）と主要な制御パラメータを使用します：
+- 正則化タイプ：直接的なスパース化のための`onsite`（λ）と、相互作用項とオンサイト項の比率ベースのトレードオフのための`alpha`
+- 自動正則化：目標選択比率を指定して`regularization="auto"`を設定し、スパース性を自動的に適応させます
+- オプティマイザオプション：シミュレータ対QPU、反復回数、古典オプティマイザとそのオプション、トランスパイレーション深度、ランタイムサンプラー/エスティメータ設定
+
+ドキュメントのベンチマークによると、困難な問題において学習器数（量子ビット数）が増加するにつれて精度が向上し、量子分類器は同等の古典アンサンブルと同等以上の性能を達成しています。このチュートリアルでは、ワークフロー全体をエンドツーエンドで再現し、アンサンブル幅の増加や適応的正則化への切り替えが、合理的なリソース使用量でより良いF1スコアをもたらすタイミングを検証します。その結果として、量子最適化ステップが実際のアプリケーションにおいて古典的アンサンブル学習を置き換えるのではなく、いかに補完できるかについての実践的な理解が得られます。
+## 要件
+
+このチュートリアルを開始する前に、Python環境に以下のパッケージがインストールされていることを確認してください：
+
+- `qiskit[visualization]~=2.1.0`
+- `qiskit-serverless~=0.24.0`
+- `qiskit-ibm-runtime v0.40.1`
+- `qiskit-ibm-catalog~=0.8.0`
+- `scikit-learn==1.5.2`
+- `pandas>=2.0.0,<3.0.0`
+- `imbalanced-learn~=0.12.3`
+## セットアップ
+
+このセクションでは、Qiskit Serverlessクライアントを初期化し、Multiverse Computingが提供するSingularity Machine Learning – Classification関数をロードします。
+Qiskit Serverlessを使用すると、リソース管理を気にすることなく、IBMのマネージドクラウドインフラストラクチャ上でハイブリッド量子・古典ワークフローを実行できます。
+認証してQiskit Functionsにアクセスするには、IBM Quantum PlatformのAPIキーとクラウドリソース名（CRN）が必要です。
+### データセットのダウンロード
+
+このチュートリアルを実行するために、ラベル付きの電力系統センサーデータを含む前処理済みの**グリッド安定性分類データセット**を使用します。
+以下のセルは、必要なフォルダ構造を自動的に作成し、`wget`を使用してトレーニングファイルとテストファイルの両方を環境に直接ダウンロードします。
+これらのファイルが既にローカルにある場合でも、バージョンの一貫性を確保するために安全に上書きされます。
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q imbalanced-learn scikit-learn
+```
+
+```python
+## Download dataset for Grid Stability Classification
+
+# Create data directory if it doesn't exist
+!mkdir -p data_tutorial/grid_stability
+
+# Download the training and test sets from the official Qiskit documentation repo
+!wget -q --show-progress -O data_tutorial/grid_stability/train.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/train.csv
+
+!wget -q --show-progress -O data_tutorial/grid_stability/test.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/test.csv
+
+# Check the files have been downloaded
+!echo "Dataset files downloaded:"
+!ls -lh data_tutorial/grid_stability/*.csv
+```
+
+```text
+data_tutorial/grid_ 100%[===================>] 612.94K  --.-KB/s    in 0.01s
+data_tutorial/grid_ 100%[===================>] 108.19K  --.-KB/s    in 0.006s
+Dataset files downloaded:
+-rw-r--r-- 1 coder coder 109K Nov  8 18:50 data_tutorial/grid_stability/test.csv
+-rw-r--r-- 1 coder coder 613K Nov  8 18:50 data_tutorial/grid_stability/train.csv
+```
+
+### 必要なパッケージのインポート
+
+このセクションでは、チュートリアル全体で使用するすべてのPythonパッケージとQiskitモジュールをインポートします。
+これらには、データ処理とモデル評価のための主要な科学計算ライブラリ（`NumPy`、`pandas`、`scikit-learn`など）、可視化ツール、および量子強化モデルを実行するためのQiskitコンポーネントが含まれます。
+また、IBM Quantum&reg;サービスに接続しSingularity Machine Learning関数にアクセスするために、`QiskitRuntimeService`と`QiskitFunctionsCatalog`もインポートします。
+
+```python
+from typing import Tuple
+import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from imblearn.over_sampling import RandomOverSampler
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_ibm_runtime import QiskitRuntimeService
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.model_selection import train_test_split
+
+warnings.filterwarnings("ignore")
+```
+
+### 定数変数の設定
+
+```python
+IBM_TOKEN = ""
+IBM_INSTANCE_TEST = ""
+IBM_INSTANCE_QUANTUM = ""
+FUNCTION_NAME = "multiverse/singularity"
+RANDOM_STATE: int = 123
+TRAIN_PATH = "data_tutorial/grid_stability/train.csv"
+TEST_PATH = "data_tutorial/grid_stability/test.csv"
+```
+
+### IBM Quantumへの接続とSingularity関数のロード
+
+次に、IBM Quantumサービスで認証を行い、Qiskit Functions CatalogからSingularity Machine Learning – Classification関数をロードします。
+`QiskitRuntimeService`は、APIトークンとインスタンスCRNを使用してIBM Quantum Platformへの安全な接続を確立し、量子バックエンドへのアクセスを可能にします。
+その後、`QiskitFunctionsCatalog`を使用して名前（`"multiverse/singularity"`）でSingularity関数を取得し、後でハイブリッド量子・古典計算に呼び出せるようにします。
+セットアップが成功すると、関数が正しくロードされたことを示す確認メッセージが表示されます。
+
+```python
+service = QiskitRuntimeService(
+    token=IBM_TOKEN,
+    channel="ibm_quantum_platform",
+    instance=IBM_INSTANCE_QUANTUM,
+)
+
+backend = service.least_busy()
+catalog = QiskitFunctionsCatalog(
+    token=IBM_TOKEN,
+    instance=IBM_INSTANCE_TEST,
+    channel="ibm_quantum_platform",
+)
+singularity = catalog.load(FUNCTION_NAME)
+print(
+    "Successfully connected to IBM Qiskit Serverless and loaded the Singularity function."
+)
+print("Catalog:", catalog)
+print("Singularity function:", singularity)
+```
+
+```text
+Successfully connected to IBM Qiskit Serverless and loaded the Singularity function.
+Catalog: <QiskitFunctionsCatalog>
+Singularity function: QiskitFunction(multiverse/singularity)
+```
+
+### ヘルパー関数の定義
+
+メインの実験を実行する前に、データの読み込みとモデル評価を効率化するいくつかの小さなユーティリティ関数を定義します。
+- `load_data()`は、入力CSVファイルをNumPy配列に読み込み、`scikit-learn`および量子ワークフローとの互換性のために特徴量とラベルを分離します。
+- `evaluate_predictions()`は、主要なパフォーマンス指標（精度、適合率、再現率、F1スコア）を計算し、タイミング情報が提供された場合はオプションで実行時間を報告します。
+
+これらのヘルパー関数は、ノートブックの後半で繰り返される操作を簡略化し、古典分類器と量子分類器の両方で一貫した指標の報告を保証します。
+
+```python
+def load_data(data_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load data from the given path to X and y arrays."""
+    df: pd.DataFrame = pd.read_csv(data_path)
+    return df.iloc[:, :-1].values, df.iloc[:, -1].values
+
+def evaluate_predictions(predictions, y_true):
+    """Compute and print accuracy, precision, recall, and F1 score."""
+    accuracy = accuracy_score(y_true, predictions)
+    precision = precision_score(y_true, predictions)
+    recall = recall_score(y_true, predictions)
+    f1 = f1_score(y_true, predictions)
+    print("Accuracy:", accuracy)
+    print("Precision:", precision)
+    print("Recall:", recall)
+    print("F1:", f1)
+    return accuracy, precision, recall, f1
+```
+
+## ステップ1：古典的な入力を量子問題にマッピングする
+
+ハイブリッド量子・古典実験のためにデータセットを準備するところから始めます。このステップの目的は、生のグリッド安定性データを、古典ワークフローと量子ワークフローの両方で一貫して使用できるバランスの取れた訓練セット、検証セット、テストセットに変換することです。同一の分割を維持することで、後のパフォーマンス比較が公平かつ再現可能になります。
+### データの読み込みと前処理
+
+まず、トレーニングとテストのCSVファイルを読み込み、検証用分割を作成し、ランダムオーバーサンプリングを使用してデータセットのバランスを調整します。バランス調整により多数派クラスへの偏りを防ぎ、古典および量子アンサンブルモデルの両方により安定した学習信号を提供します。
+
+```python
+# Load and upload the data
+X_train, y_train = load_data(TRAIN_PATH)
+X_test, y_test = load_data(TEST_PATH)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train, test_size=0.2, random_state=RANDOM_STATE
+)
+
+# Balance the dataset through over-sampling of the positive class
+ros = RandomOverSampler(random_state=RANDOM_STATE)
+X_train_bal, y_train_bal = ros.fit_resample(X_train, y_train)
+
+print("Shapes:")
+print("  X_train_bal:", X_train_bal.shape)
+print("  y_train_bal:", y_train_bal.shape)
+print("  X_val:", X_val.shape)
+print("  y_val:", y_val.shape)
+print("  X_test:", X_test.shape)
+print("  y_test:", y_test.shape)
+```
+
+```text
+Shapes:
+  X_train_bal: (5104, 12)
+  y_train_bal: (5104,)
+  X_val: (850, 12)
+  y_val: (850,)
+  X_test: (750, 12)
+  y_test: (750,)
+```
+
+### 古典ベースライン：AdaBoostリファレンス
+
+量子最適化を実行する前に、同じバランス調整済みデータで強力な古典ベースライン（標準的なAdaBoost分類器）を訓練します。これにより、後の比較のための再現可能な基準点が提供され、量子最適化が十分にチューニングされた古典アンサンブルを超えて汎化性能や効率を改善するかどうかを定量化するのに役立ちます。
+
+```python
+# ----- Classical baseline: AdaBoost -----
+baseline = AdaBoostClassifier(n_estimators=60, random_state=RANDOM_STATE)
+baseline.fit(X_train_bal, y_train_bal)
+baseline_pred = baseline.predict(X_test)
+print("Classical AdaBoost baseline:")
+_ = evaluate_predictions(baseline_pred, y_test)
+```
+
+```text
+Classical AdaBoost baseline:
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+```
+
+## ステップ2：量子ハードウェア実行のための問題の最適化
+
+アンサンブル選択タスクは組合せ最適化問題として定式化されます。ここでは、各弱学習器が二値決定変数であり、目的関数は正則化項を通じて精度とスパース性のバランスを取ります。`QuantumEnhancedEnsembleClassifier`はIBMハードウェア上でQAOAを使用してこの問題を解きますが、シミュレータベースの探索も可能です。`optimizer_options`はハイブリッドループを制御します：`simulator=False`は回路を選択したQPUにルーティングし、`num_solutions`は探索幅を増加させ、`classical_optimizer_options`（内部の古典オプティマイザ用）は収束を制御します。約60回の反復が品質と実行時間のバランスとして適切です。ランタイムオプション（適度な回路深度（`reps`）や標準的なトランスパイレーション努力など）は、デバイス間で堅牢な性能を確保するのに役立ちます。以下の構成はハードウェア実行に使用する「最良結果」プロファイルです。`simulator=True`に切り替えることで、QPU時間を消費せずにワークフローをドライランするための純粋なシミュレーションバリアントを作成することもできます。
+
+```python
+# QAOA / runtime configuration for best results on hardware
+optimizer_options = {
+    "simulator": False,  # set True to test locally without QPU
+    "num_solutions": 100_000,  # broaden search over candidate ensembles
+    "reps": 3,  # QAOA depth (circuit layers)
+    "optimization_level": 3,  # transpilation effort
+    "num_transpiler_runs": 30,  # explore multiple layouts
+    "classical_optimizer": "COBYLA",  # robust default for this landscape
+    "classical_optimizer_options": {
+        "maxiter": 60  # practical convergence budget
+    },
+    # You can pass backend-specific options; leaving None uses least-busy routing
+    "estimator_options": None,
+    "sampler_options": None,
+}
+
+print("Configured hardware optimization profile:")
+for key, value in optimizer_options.items():
+    print(f"  {key}: {value}")
+```
+
+```text
+Configured hardware optimization profile:
+  simulator: False
+  num_solutions: 100000
+  reps: 3
+  optimization_level: 3
+  num_transpiler_runs: 30
+  classical_optimizer: COBYLA
+  classical_optimizer_options: {'maxiter': 60}
+  estimator_options: None
+  sampler_options: None
+```
+## ステップ3：Qiskitプリミティブを使用した実行
+
+ここでは、Singularity関数の `create_fit_predict` アクションを使用してワークフロー全体を実行し、`QuantumEnhancedEnsembleClassifier` をIBMインフラストラクチャ上でエンドツーエンドに訓練、最適化、評価します。この関数はアンサンブルを構築し、Qiskitプリミティブを通じて量子最適化を適用し、予測結果とジョブメタデータ（実行時間やリソース使用量を含む）の両方を返します。再現性のためにステップ1で作成した古典的なデータ分割を再利用し、最適化がハイパーパラメータを内部で調整できるようにバリデーションデータを `fit_params` を通じて渡します。これにより、ホールドアウトテストセットは未使用のまま保たれます。
+
+このステップでは、量子アンサンブルの複数の構成を検討し、主要パラメータ（具体的には `num_learners` と `regularization`）が結果の品質とQPU使用量の両方にどのように影響するかを理解します。
+- `num_learners` はアンサンブルの幅（暗黙的に量子ビット数）を決定し、モデルの容量と計算コストに影響を与えます。
+- `regularization` はスパース性と過学習を制御し、最適化後にどれだけの学習器がアクティブなまま残るかを形作ります。
+
+これらのパラメータを変化させることで、アンサンブルの幅と正則化がどのように相互作用するかを確認できます。幅を広げると一般的にF1は向上しますがQPU時間のコストが増加し、一方で強い正則化や適応的正則化は同程度のハードウェア負荷で汎化性能を向上させることができます。以下のサブセクションでは、これらの効果を示す3つの代表的な構成について説明します。
+### ベースライン
+
+この構成では `num_learners = 10` および `regularization = 7` を使用します。
+
+- `num_learners` はアンサンブルの幅を制御します。これは実質的に組み合わされる弱学習器の数であり、量子ハードウェア上では**必要な量子ビット数**に相当します。値が大きいほど組合せ探索空間が拡大し、精度やリコールが向上する可能性がありますが、回路幅、コンパイル時間、および全体的なQPU使用量も増加します。
+- `regularization` は追加の学習器を含めることに対するペナルティの強度を設定します。デフォルトの「onsite」正則化では、値が高いほど強いスパース性を強制し（保持される学習器が少なくなり）、値が低いほどより複雑なアンサンブルが許容されます。
+
+この設定は低コストのベースラインを提供し、幅のスケーリングやスパース性の調整を行う前に、小規模なアンサンブルがどのように振る舞うかを示します。
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 10
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_1 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_1 = job_1.result()
+print("Action status:", result_1.get("status"))
+print("Action message:", result_1.get("message"))
+print("Metadata:", result_1.get("metadata"))
+qeec_pred_job_1 = np.array(result_1["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_1, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 267.05158376693726}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 3336.8785166740417}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 152.4274561405182}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1550.1889700889587}}}
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+```
+
+```python
+status_1 = job_1.status()
+print("\nQuantum job status:", status_1)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### 学習器数の増加
+
+ここでは `num_learners` を10から30に増加させ、`regularization = 7` は維持します。
+
+- 学習器を増やすと仮説空間が拡大し、モデルがより微妙なパターンを捉えられるようになり、F1がわずかに向上する可能性があります。
+- ほとんどの場合、10個と30個の学習器間の実行時間の差は大きくなく、回路幅の増加が実行コストを大幅には増加させないことを示しています。
+- 品質の向上は依然として*収穫逓減曲線*に従います。アンサンブルが成長するにつれて初期の改善が現れますが、追加の学習器が提供する新しい情報が減少するにつれてプラトーに達します。
+
+この実験は品質と効率のトレードオフを明らかにします。アンサンブル幅を増加させると、バックエンドとトランスパイレーション条件に応じて、大きな実行時間のペナルティなしにわずかな精度向上が得られる場合があります。
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 30
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_2 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_2 = job_2.result()
+print("Action status:", result_2.get("status"))
+print("Action message:", result_2.get("message"))
+print("QPU Time:", result_2.get("metadata"))
+qeec_pred_job_2 = np.array(result_2["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_2, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+QPU Time: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 680.2116754055023}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 80.80395102500916}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 154.4466371536255}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1095.822762966156}}}
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+```
+
+```python
+status_2 = job_2.status()
+print("\nQuantum job status:", status_2)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### 正則化
+
+この構成では、`num_learners = 60` に増加させ、スパース性をより直感的に管理するための適応的正則化を導入します。
+
+- `regularization = "auto"` の場合、オプティマイザは手動でペナルティを固定するのではなく、最終アンサンブルでおおよそ `regularization_ratio * num_learners` 個の弱学習器を選択する適切な正則化強度を自動的に見つけます。これにより、スパース性とアンサンブルサイズのバランスを管理するためのより便利なインターフェースが提供されます。
+- `regularization_type = "alpha"` はペナルティの適用方法を定義します。無限大まで上限のない `[0, ∞]` の `onsite` とは異なり、`alpha` は `[0, 1]` の間に制限されているため、調整と解釈が容易です。このパラメータは個別ペナルティとペアワイズペナルティのトレードオフを制御し、よりスムーズな設定範囲を提供します。
+- `regularization_desired_ratio ≈ 0.82` は、正則化後にアクティブに保つ学習器の目標比率を指定します。ここでは約82%の学習器が保持され、最も弱い18%が自動的に削除されます。
+
+適応的正則化は設定を簡素化し、バランスの取れたアンサンブルの維持を助けますが、必ずしもより良い、またはより安定した性能を保証するものではありません。実際の品質は適切な正則化パラメータの選択に依存し、クロスバリデーションによる微調整は計算コストが高くなる可能性があります。主な利点は、直接的な精度向上ではなく、使いやすさと解釈可能性の向上にあります。
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 60
+REGULARIZATION = "auto"
+REGULARIZATION_TYPE = "alpha"
+REGULARIZATION_RATIO = 0.82
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_3 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    regularization_type=REGULARIZATION_TYPE,
+    regularization_desired_ratio=REGULARIZATION_RATIO,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_3 = job_3.result()
+print("Action status:", result_3.get("status"))
+print("Action message:", result_3.get("message"))
+print("Metadata:", result_3.get("metadata"))
+qeec_pred_job_3 = np.array(result_3["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_3, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 1387.7451872825623}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 95.41597843170166}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 171.78878355026245}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1146.5584812164307}}}
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```python
+status_3 = job_3.status()
+print("\nQuantum job status:", status_3)
+```
+
+```text
+Quantum job status: DONE
+```
+
+## ステップ4：後処理と所望の古典形式での結果の返却
+
+ここでは、古典的な実行と量子実行の両方の出力を後処理し、下流の評価のために一貫した形式に変換します。このステップでは、標準的なメトリクス（精度、適合率、リコール、F1）を使用して予測品質を比較し、アンサンブル幅（`num_learners`）とスパース性制御（`regularization`）がパフォーマンスと計算動作の両方にどのように影響するかを分析します。
+
+古典的なAdaBoostベースラインは、小規模な学習のためのコンパクトで安定したリファレンスを提供します。限られたアンサンブルと無視できる計算オーバーヘッドで良好な性能を発揮し、仮説空間がまだ扱いやすい場合の伝統的なブースティングの強みを反映しています。量子構成（`qeec_pred_job_1`、`qeec_pred_job_2`、および `qeec_pred_job_3`）は、アンサンブル選択プロセスを変分量子最適化ループに埋め込むことで、このベースラインを拡張します。これにより、システムは重ね合わせを利用して指数関数的に大きな学習器の部分集合を同時に探索でき、スケールが増大するにつれてアンサンブル選択の組合せ的な性質をより効率的に処理できます。
+
+結果は、`num_learners` を10から30に増加させるとリコールとF1が向上することを示しており、より広いアンサンブルが弱学習器間のより豊かな相互作用を捉えることを確認しています。現在のハードウェアでは改善は線形以下です（追加の学習器ごとに精度の増分が小さくなります）が、量子オプティマイザが古典的な部分集合選択に典型的な指数的増大なしにより広い構成空間を探索できるため、基礎となるスケーリング動作は依然として有利です。正則化はさらなるニュアンスをもたらします。固定のλ=7は一貫したスパース性を強制し収束を安定させますが、適応的α正則化は学習器間の相関に基づいてスパース性を自動的に調整します。この動的なプルーニングは、同じ量子ビット幅でわずかに高いF1を達成することが多く、モデルの複雑さと汎化のバランスを取ります。
+
+AdaBoostベースラインと直接比較すると、最小の量子構成（L=10）は同様の精度を再現し、ハイブリッドパイプラインの正確性を検証します。より大きな幅では、量子バリアント（特にauto正則化を使用した場合）が古典的なベースラインをわずかに上回り始め、計算コストの線形的な増加なしにリコールとF1の向上を示します。これらの改善は即座の「量子優位性」を示すものではなく、むしろ**スケーリング効率**を示しています。量子オプティマイザは、古典的なアプローチが部分集合選択の複雑さにおいて指数関数的な成長に直面する場面で、アンサンブルが拡大しても扱いやすい性能を維持します。
+
+実際の運用では：
+- 小規模なデータセットでの迅速な検証とベンチマークには**古典的なベースライン**を使用してください。
+- モデルの幅や特徴量の複雑さが増大する場合には**量子アンサンブル**を適用してください。QAOAベースの探索はそのような領域でより優雅にスケールします。
+- 回路幅を増加させることなくスパース性と汎化を維持するために**適応的α正則化**を採用してください。
+- 品質向上と近い将来のハードウェア制約のバランスを取るために、QPU時間と深さを監視してください。
+
+これらの実験は総合的に、量子最適化されたアンサンブルが古典的手法を補完することを示しています。小規模ではベースラインの精度を再現しながら、より大規模で組合せ的な学習問題における効率的なスケーリングへの道を提供します。ハードウェアが改善されるにつれて、これらのスケーリング上の利点は複合的に増大し、古典的に実用的な範囲を超えてアンサンブルベースモデルの実現可能なサイズと深さを拡大することが期待されます。
+### 各構成のメトリクス評価
+
+ここでは、すべての構成（古典的なAdaBoostベースラインと3つの量子アンサンブル）を `evaluate_predictions` ヘルパーを使用して評価し、同一のテストセット上で精度、適合率、リコール、F1を計算します。この比較により、古典的なアプローチに対して量子最適化がどのようにスケールするかが明確になります。小さな幅では両者は同様の性能を示し、アンサンブルが成長するにつれて量子手法はより大きな仮説空間をより効率的に探索できます。結果の表は、これらの傾向を一貫した定量的な形式で捉えています。
+
+```python
+results = []
+
+# Classical baseline
+acc_b, prec_b, rec_b, f1_b = evaluate_predictions(baseline_pred, y_test)
+results.append(
+    {
+        "Config": "AdaBoost (Classical)",
+        "Accuracy": acc_b,
+        "Precision": prec_b,
+        "Recall": rec_b,
+        "F1": f1_b,
+    }
+)
+
+# Quantum runs
+for label, preds in [
+    ("QEEC L=10, reg=7", qeec_pred_job_1),
+    ("QEEC L=30, reg=7", qeec_pred_job_2),
+    (f"QEEC L=60, reg=auto (α={REGULARIZATION_RATIO})", qeec_pred_job_3),
+]:
+    acc, prec, rec, f1 = evaluate_predictions(preds, y_test)
+    results.append(
+        {
+            "Config": label,
+            "Accuracy": acc,
+            "Precision": prec,
+            "Recall": rec,
+            "F1": f1,
+        }
+    )
+
+df_results = pd.DataFrame(results)
+df_results
+```
+
+```text
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```text
+Config  Accuracy  Precision    Recall        F1
+0          AdaBoost (Classical)  0.789333        1.0  0.789333  0.882265
+1              QEEC L=10, reg=7  0.868000        1.0  0.868000  0.929336
+2              QEEC L=30, reg=7  0.894667        1.0  0.894667  0.944405
+3  QEEC L=60, reg=auto (α=0.82)  0.908000        1.0  0.908000  0.951782
+```
+
+### 構成間の品質傾向の可視化
+
+以下のグループ化された棒グラフは、古典的なベースラインと量子アンサンブル（`L=10`、`L=30`、および `L=60 auto-α`）にわたる**精度**と**F1**を比較しています。量子アンサンブルの幅が増加するにつれて精度が安定しF1が徐々に向上する様子が示されており、ハイブリッド手法が古典的な部分集合選択に典型的な指数的コスト増大なしに性能のスケーリングを維持していることを実証しています。
+
+```python
+x = np.arange(len(df_results))
+width = 0.35
+plt.figure(figsize=(7.6, 4.6))
+plt.bar(x - width / 2, df_results["Accuracy"], width=width, label="Accuracy")
+plt.bar(x + width / 2, df_results["F1"], width=width, label="F1")
+plt.xticks(x, df_results["Config"], rotation=10)
+plt.ylabel("Score")
+plt.title("Classical vs Quantum ensemble performance")
+plt.legend()
+plt.ylim(0, 1.0)
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sml-classification/extracted-outputs/0f15c5fb-2450-4671-9bc2-471043414df2-0.avif)
+
+### 解釈
+
+このプロットは期待されるスケーリングパターンを確認しています。古典的なAdaBoostは小規模なアンサンブルでは優れた性能を発揮しますが、弱学習器の数が増えるにつれてスケーリングのコストが増大します。これは部分集合選択の問題が組合せ的に拡大するためです。量子強化モデルは低い幅では古典的な精度を再現し、アンサンブルサイズが増加するにつれて、特に適応的α正則化の下で古典的なベースラインを上回り始めます。これは、量子オプティマイザが重ね合わせを通じて多くの候補部分集合を並行してサンプリングおよび評価する能力を反映しており、より高い幅でも扱いやすい探索を維持します。現在のハードウェアオーバーヘッドは理論的な利得の一部を相殺しますが、この傾向は量子定式化のスケーリング効率の利点を示しています。実用的には、古典的手法は軽量なベンチマークに引き続き適していますが、量子強化アンサンブルはモデルの次元数やアンサンブルサイズが拡大するにつれて有利になり、精度、汎化、および計算量の増大の間でより良いトレードオフを提供します。
+## 付録：スケーリングの利点と拡張
+
+`QuantumEnhancedEnsembleClassifier` のスケーラビリティの利点は、アンサンブル選択プロセスが量子最適化にどのようにマッピングされるかに起因しています。
+AdaBoostやランダムフォレストなどの古典的なアンサンブル学習手法は、弱学習器の数が増加するにつれて計算コストが高くなります。これは最適な部分集合の選択が指数関数的にスケールする組合せ問題であるためです。
+
+対照的に、ここではQuantum Approximate Optimization Algorithm（QAOA）を通じて実装された量子定式化は、重ね合わせで複数の構成を同時に評価することにより、これらの指数関数的に大きな探索空間をより効率的に探索できます。
+その結果、訓練時間は学習器の数に伴って大幅には増加せず、アンサンブル幅が増加してもモデルは効率的なままです。
+
+現在のハードウェアではノイズや深さの制限がありますが、このワークフローは古典的コンポーネントと量子コンポーネントが協調する近い将来のハイブリッドアプローチを実証しています。量子オプティマイザが古典的ループにより良い初期化ランドスケープを提供し、収束と最終的なモデル品質を向上させます。
+量子プロセッサが進化するにつれて、これらのスケーラビリティの利点はより大規模なデータセット、より広いアンサンブル、およびより深い回路深度に拡張されることが期待されます。
+## 参考文献
+
+1. [Introduction to Qiskit Functions](/guides/functions)
+2. [Multiverse Computing Singularity Machine Learning](/guides/multiverse-computing-singularity)
+## チュートリアルアンケート
+
+このチュートリアルについてのフィードバックをお寄せください。皆様のご意見は、コンテンツの提供やユーザーエクスペリエンスの改善に役立てさせていただきます。

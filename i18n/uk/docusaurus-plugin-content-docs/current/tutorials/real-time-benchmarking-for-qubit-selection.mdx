@@ -1,0 +1,562 @@
+---
+title: "Бенчмаркінг у реальному часі для вибору кубітів"
+sidebar_label: "Бенчмаркінг у реальному часі для вибору кубітів"
+description: "Запускайте експерименти з характеризації у реальному часі та оновлюйте властивості бекенду для покращення вибору кубітів під час відображення схеми на фізичні кубіти на КОП."
+notebook_path: "docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb" />
+
+
+
+{/* cspell:ignore sharex */}
+
+*Оцінка використання: 4 хвилини на процесорі Eagle r2 (ПРИМІТКА: Це лише оцінка. Ваш час виконання може відрізнятися.)*
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-experiments
+```
+
+```python
+# This cell is hidden from users – it disables some lint rules
+# ruff: noqa: E722
+```
+
+## Передумови
+
+Цей посібник показує, як запускати експерименти з характеризації у реальному часі та оновлювати властивості бекенду для покращення вибору кубітів під час відображення схеми на фізичні кубіти на КОП. Ви дізнаєтесь про базові експерименти з характеризації, які використовуються для визначення властивостей КОП, як виконувати їх у Qiskit, і як оновлювати властивості, збережені в об'єкті бекенду, що представляє КОП, на основі цих експериментів.
+
+Властивості, які повідомляє КОП, оновлюються раз на день, але система може дрейфувати швидше, ніж час між оновленнями. Це може вплинути на надійність процедур вибору кубітів на етапі `Layout` менеджера проходів, оскільки вони будуть використовувати повідомлені властивості, які не відображають поточний стан КОП. З цієї причини може бути доцільно виділити трохи часу КОП на експерименти з характеризації, які потім можна використовувати для оновлення властивостей КОП, що використовуються процедурою `Layout`.
+## Вимоги
+
+Перед початком цього посібника переконайтеся, що у Вас встановлено наступне:
+
+- Qiskit SDK v2.0 або пізніше, з підтримкою [візуалізації](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 або пізніше ( `pip install qiskit-ibm-runtime` )
+- Qiskit Experiments v0.12 або пізніше ( `pip install qiskit-experiments` )
+- Бібліотека графів Rustworkx (`pip install rustworkx`)
+## Налаштування
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import hellinger_fidelity
+from qiskit.transpiler import InstructionProperties
+
+from qiskit_experiments.library import (
+    T1,
+    T2Hahn,
+    LocalReadoutError,
+    StandardRB,
+)
+from qiskit_experiments.framework import BatchExperiment, ParallelExperiment
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session
+
+from datetime import datetime
+from collections import defaultdict
+import numpy as np
+import rustworkx
+import matplotlib.pyplot as plt
+import copy
+```
+
+## Крок 1: Відобразити класичні входи на квантову задачу
+
+Для бенчмаркінгу різниці в продуктивності ми розглядаємо схему, яка готує стан Белла через лінійний ланцюг змінної довжини. Вимірюється точність стану Белла на кінцях ланцюга.
+
+```python
+from qiskit import QuantumCircuit
+
+ideal_dist = {"00": 0.5, "11": 0.5}
+
+num_qubits_list = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 127]
+circuits = []
+for num_qubits in num_qubits_list:
+    circuit = QuantumCircuit(num_qubits, 2)
+    circuit.h(0)
+    for i in range(num_qubits - 1):
+        circuit.cx(i, i + 1)
+    circuit.barrier()
+    circuit.measure(0, 0)
+    circuit.measure(num_qubits - 1, 1)
+    circuits.append(circuit)
+
+circuits[-1].draw(output="mpl", style="clifford", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-1.avif)
+
+### Налаштувати бекенд та карту з'єднань
+Спочатку виберіть бекенд
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+
+qubits = list(range(backend.num_qubits))
+```
+
+Потім отримайте його карту з'єднань
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+
+# Get unidirectional coupling map
+one_dir_coupling_map = coupling_graph.edge_list()
+```
+
+Щоб провести бенчмаркінг якомога більшої кількості двокубітних вентилів одночасно, ми розділяємо карту з'єднань на `layered_coupling_map`. Цей об'єкт містить список шарів, де кожен шар є списком ребер, на яких двокубітні вентилі можуть виконуватися одночасно. Це також називається реберним розфарбуванням карти з'єднань.
+
+```python
+# Get layered coupling map
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+layered_coupling_map = defaultdict(list)
+for edge_idx, color in edge_coloring.items():
+    layered_coupling_map[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layered_coupling_map = [
+    sorted(layered_coupling_map[i])
+    for i in sorted(layered_coupling_map.keys())
+]
+```
+
+### Експерименти з характеризації
+
+Серія експериментів використовується для характеризації основних властивостей кубітів у КОП. Це $T_1$, $T_2$, помилка зчитування та помилка однокубітних і двокубітних вентилів. Ми коротко узагальнимо, що це за властивості, та звернемося до експериментів у пакеті [`qiskit-experiments`](https://qiskit-community.github.io/qiskit-experiments/index.html), які використовуються для їх характеризації.
+
+#### T1
+
+$T_1$ — це характерний час, необхідний для того, щоб збуджений кубіт перейшов у основний стан через процеси декогеренції з загасанням амплітуди. В експерименті [$T_1$](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t1.html) ми вимірюємо збуджений кубіт після затримки. Чим більший час затримки, тим більша ймовірність того, що кубіт перейде в основний стан. Мета експерименту полягає в характеризації швидкості затухання кубіта до основного стану.
+
+#### T2
+
+$T_2$ представляє час, необхідний для того, щоб проекція вектора Блоха одиночного кубіта на площину XY впала приблизно до 37% ($\frac{1}{e}$) своєї початкової амплітуди через процеси декогеренції дефазування. В експерименті [$T_2$ Hahn Echo](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t2hahn.html) ми можемо оцінити швидкість цього затухання.
+
+#### Характеризація помилки підготовки стану та вимірювання (SPAM)
+
+В експерименті [з характеризації SPAM-помилки](https://qiskit-community.github.io/qiskit-experiments/manuals/measurement/readout_mitigation.html) кубіти готуються в певному стані ($\vert 0 \rangle$ або $\vert 1 \rangle$) та вимірюються. Ймовірність виміру стану, відмінного від підготовленого, тоді дає ймовірність помилки.
+
+#### Рандомізований бенчмаркінг однокубітних і двокубітних вентилів
+
+[Рандомізований бенчмаркінг (RB)](https://qiskit-community.github.io/qiskit-experiments/manuals/verification/randomized_benchmarking.html) — це популярний протокол для характеризації частоти помилок квантових процесорів. Експеримент RB складається з генерації випадкових схем Кліффорда на заданих кубітах таким чином, що унітарний оператор, обчислений схемами, є тотожністю. Після виконання схем підраховується кількість вимірювань, що призводять до помилки (тобто виходу, відмінного від основного стану), і з цих даних можна вивести оцінки помилок для квантового пристрою, обчисливши помилку на Кліффорд.
+
+```python
+# Create T1 experiments on all qubit in parallel
+t1_exp = ParallelExperiment(
+    [
+        T1(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create T2-Hahn experiments on all qubit in parallel
+t2_exp = ParallelExperiment(
+    [
+        T2Hahn(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create readout experiments on all qubit in parallel
+readout_exp = LocalReadoutError(qubits)
+
+# Create single-qubit RB experiments on all qubit in parallel
+singleq_rb_exp = ParallelExperiment(
+    [
+        StandardRB(
+            physical_qubits=[qubit], lengths=[10, 100, 500], num_samples=10
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create two-qubit RB experiments on the three layers of disjoint edges of the heavy-hex
+twoq_rb_exp_batched = BatchExperiment(
+    [
+        ParallelExperiment(
+            [
+                StandardRB(
+                    physical_qubits=pair,
+                    lengths=[10, 50, 100],
+                    num_samples=10,
+                )
+                for pair in layer
+            ],
+            backend,
+            analysis=None,
+        )
+        for layer in layered_coupling_map
+    ],
+    backend,
+    flatten_results=True,
+    analysis=None,
+)
+```
+
+### Властивості КОП з часом
+
+Дивлячись на повідомлені властивості КОП з часом (нижче ми розглянемо один тиждень), ми бачимо, як вони можуть коливатися в масштабі одного дня. Невеликі коливання можуть відбуватися навіть протягом дня. У цьому сценарії повідомлені властивості (оновлюються раз на день) не точно відображатимуть поточний стан КОП. Більше того, якщо завдання транспілюється локально (використовуючи поточні повідомлені властивості) та відправляється, але виконується лише пізніше (через хвилини або дні), воно може ризикувати використанням застарілих властивостей для вибору кубітів на етапі транспіляції. Це підкреслює важливість наявності оновленої інформації про КОП під час виконання. Спочатку отримаймо властивості за певний часовий діапазон.
+
+```python
+instruction_2q_name = "cz"  # set the name of the default 2q of the device
+errors_list = []
+for day_idx in range(10, 17):
+    calibrations_time = datetime(
+        year=2025, month=8, day=day_idx, hour=0, minute=0, second=0
+    )
+    targer_hist = backend.target_history(datetime=calibrations_time)
+
+    t1_dict, t2_dict = {}, {}
+    for qubit in range(targer_hist.num_qubits):
+        t1_dict[qubit] = targer_hist.qubit_properties[qubit].t1
+        t2_dict[qubit] = targer_hist.qubit_properties[qubit].t2
+
+    errors_dict = {
+        "1q": targer_hist["sx"],
+        "2q": targer_hist[f"{instruction_2q_name}"],
+        "spam": targer_hist["measure"],
+        "t1": t1_dict,
+        "t2": t2_dict,
+    }
+
+    errors_list.append(errors_dict)
+```
+
+Потім побудуймо графіки значень
+
+```python
+fig, axs = plt.subplots(5, 1, figsize=(10, 20), sharex=False)
+
+# Plot for T1 values
+for qubit in range(targer_hist.num_qubits):
+    t1s = []
+    for errors_dict in errors_list:
+        t1_dict = errors_dict["t1"]
+        try:
+            t1s.append(t1_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t1 data for qubit {qubit}")
+
+    axs[0].plot(t1s)
+
+axs[0].set_title("T1")
+axs[0].set_ylabel(r"Time ($\mu s$)")
+axs[0].set_xlabel("Days")
+
+# Plot for T2 values
+for qubit in range(targer_hist.num_qubits):
+    t2s = []
+    for errors_dict in errors_list:
+        t2_dict = errors_dict["t2"]
+        try:
+            t2s.append(t2_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t2 data for qubit {qubit}")
+
+    axs[1].plot(t2s)
+
+axs[1].set_title("T2")
+axs[1].set_ylabel(r"Time ($\mu s$)")
+axs[1].set_xlabel("Days")
+
+# Plot SPAM values
+for qubit in range(targer_hist.num_qubits):
+    spams = []
+    for errors_dict in errors_list:
+        spam_dict = errors_dict["spam"]
+        spams.append(spam_dict[tuple([qubit])].error)
+
+    axs[2].plot(spams)
+
+axs[2].set_title("SPAM Errors")
+axs[2].set_ylabel("Error Rate")
+axs[2].set_xlabel("Days")
+
+# Plot 1Q Gate Errors
+for qubit in range(targer_hist.num_qubits):
+    oneq_gates = []
+    for errors_dict in errors_list:
+        oneq_gate_dict = errors_dict["1q"]
+        oneq_gates.append(oneq_gate_dict[tuple([qubit])].error)
+
+    axs[3].plot(oneq_gates)
+
+axs[3].set_title("1Q Gate Errors")
+axs[3].set_ylabel("Error Rate")
+axs[3].set_xlabel("Days")
+
+# Plot 2Q Gate Errors
+for pair in one_dir_coupling_map:
+    twoq_gates = []
+    for errors_dict in errors_list:
+        twoq_gate_dict = errors_dict["2q"]
+        twoq_gates.append(twoq_gate_dict[pair].error)
+
+    axs[4].plot(twoq_gates)
+
+axs[4].set_title("2Q Gate Errors")
+axs[4].set_ylabel("Error Rate")
+axs[4].set_xlabel("Days")
+
+plt.subplots_adjust(hspace=0.5)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/e0ba509d-e0e0-438b-aedf-5e01919c7d4f-0.avif)
+
+Ви можете побачити, що протягом кількох днів деякі властивості кубітів можуть значно змінюватися. Це підкреслює важливість наявності свіжої інформації про стан КОП, щоб мати можливість вибрати кубіти з найкращою продуктивністю для експерименту.
+## Крок 2: Оптимізація задачі для виконання на квантовому обладнанні
+
+В цьому підручнику не виконується оптимізація схем або операторів.
+## Крок 3: Виконання з використанням примітивів Qiskit
+### Виконання квантової схеми з вибором кубітів за замовчуванням
+
+Як еталонний результат продуктивності, ми виконаємо квантову схему на QPU, використовуючи кубіти за замовчуванням, які є кубітами, обраними із запитаними властивостями бекенду. Ми використаємо `optimization_level = 3`. Це налаштування включає найбільш просунуту оптимізацію транспіляції та використовує властивості цілі (такі як помилки операцій) для вибору кубітів з найкращою продуктивністю для виконання.
+
+```python
+pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
+isa_circuits = pm.run(circuits)
+initial_qubits = [
+    [
+        idx
+        for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+        if qb._register.name != "ancilla"
+    ]
+    for circuit in isa_circuits
+]
+```
+
+### Виконання квантової схеми з вибором кубітів у реальному часі
+
+У цьому розділі ми дослідимо важливість наявності оновленої інформації про властивості кубітів QPU для оптимальних результатів. Спочатку ми проведемо повний набір експериментів з характеризації QPU ($T_1$, $T_2$, SPAM, одно-кубітна RB та дво-кубітна RB), які потім можна використовувати для оновлення властивостей бекенду. Це дозволяє менеджеру проходів вибирати кубіти для виконання на основі свіжої інформації про QPU, що може покращити продуктивність виконання. По-друге, ми виконуємо схему пари Белла і порівнюємо точність, отриману після вибору кубітів з оновленими властивостями QPU, з точністю, яку ми отримали раніше, коли використовували властивості, що повідомляються за замовчуванням, для вибору кубітів.
+
+<Admonition type="caution">
+Зауважте, що деякі експерименти з характеризації можуть завершитися невдачею, коли підпрограма підгонки не може підігнати криву до виміряних даних. Якщо Ви бачите попередження від цих експериментів, перевірте їх, щоб зрозуміти, яка характеризація не вдалася на яких кубітах, і спробуйте налаштувати параметри експерименту (наприклад, часи для $T_1$, $T_2$ або кількість довжин експериментів RB).
+</Admonition>
+
+```python
+# Prepare characterization experiments
+batches = [t1_exp, t2_exp, readout_exp, singleq_rb_exp, twoq_rb_exp_batched]
+batches_exp = BatchExperiment(batches, backend)  # , analysis=None)
+run_options = {"shots": 1e3, "dynamic": False}
+
+with Session(backend=backend) as session:
+    sampler = SamplerV2(mode=session)
+
+    # Run characterization experiments
+    batches_exp_data = batches_exp.run(
+        sampler=sampler, **run_options
+    ).block_for_results()
+
+    EPG_sx_result_list = batches_exp_data.analysis_results("EPG_sx")
+    EPG_sx_result_q_indices = [
+        result.device_components.index for result in EPG_sx_result_list
+    ]
+    EPG_x_result_list = batches_exp_data.analysis_results("EPG_x")
+    EPG_x_result_q_indices = [
+        result.device_components.index for result in EPG_x_result_list
+    ]
+    T1_result_list = batches_exp_data.analysis_results("T1")
+    T1_result_q_indices = [
+        result.device_components.index for result in T1_result_list
+    ]
+
+    T2_result_list = batches_exp_data.analysis_results("T2")
+    T2_result_q_indices = [
+        result.device_components.index for result in T2_result_list
+    ]
+
+    Readout_result_list = batches_exp_data.analysis_results(
+        "Local Readout Mitigator"
+    )
+
+    EPG_2q_result_list = batches_exp_data.analysis_results(
+        f"EPG_{instruction_2q_name}"
+    )
+
+    # Update target properties
+    target = copy.deepcopy(backend.target)
+    for i in range(target.num_qubits - 1):
+        qarg = (i,)
+
+        if qarg in EPG_sx_result_q_indices:
+            target.update_instruction_properties(
+                instruction="sx",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_sx_result_list[i].value.nominal_value
+                ),
+            )
+        if qarg in EPG_x_result_q_indices:
+            target.update_instruction_properties(
+                instruction="x",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_x_result_list[i].value.nominal_value
+                ),
+            )
+
+        err_mat = Readout_result_list.value.assignment_matrix(i)
+        readout_assignment_error = (
+            err_mat[0, 1] + err_mat[1, 0]
+        ) / 2  # average readout error
+        target.update_instruction_properties(
+            instruction="measure",
+            qargs=qarg,
+            properties=InstructionProperties(error=readout_assignment_error),
+        )
+
+        if qarg in T1_result_q_indices:
+            target.qubit_properties[i].t1 = T1_result_list[
+                i
+            ].value.nominal_value
+        if qarg in T2_result_q_indices:
+            target.qubit_properties[i].t2 = T2_result_list[
+                i
+            ].value.nominal_value
+
+    for pair_idx, pair in enumerate(one_dir_coupling_map):
+        qarg = tuple(pair)
+        try:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+        except:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg[::-1],
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+
+    # transpile circuits to updated target
+    pm = generate_preset_pass_manager(target=target, optimization_level=3)
+    isa_circuit_updated = pm.run(circuits)
+    updated_qubits = [
+        [
+            idx
+            for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+            if qb._register.name != "ancilla"
+        ]
+        for circuit in isa_circuit_updated
+    ]
+
+    n_trials = 3  # run multiple trials to see variations
+
+    # interleave circuits
+    interleaved_circuits = []
+    for original_circuit, updated_circuit in zip(
+        isa_circuits, isa_circuit_updated
+    ):
+        interleaved_circuits.append(original_circuit)
+        interleaved_circuits.append(updated_circuit)
+
+    # Run circuits
+    # Set simple error suppression/mitigation options
+    sampler.options.dynamical_decoupling.enable = True
+    sampler.options.dynamical_decoupling.sequence_type = "XY4"
+
+    job_interleaved = sampler.run(interleaved_circuits * n_trials)
+```
+
+## Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+
+Нарешті, давайте порівняємо точність стану Белла, отриману в двох різних налаштуваннях:
+
+- `original`, тобто з кубітами за замовчуванням, обраними транспілятором на основі повідомлених властивостей бекенду.
+- `updated`, тобто з кубітами, обраними на основі оновлених властивостей бекенду після виконання експериментів з характеризації.
+
+```python
+results = job_interleaved.result()
+all_fidelity_list, all_fidelity_updated_list = [], []
+for exp_idx in range(n_trials):
+    fidelity_list, fidelity_updated_list = [], []
+
+    for idx, num_qubits in enumerate(num_qubits_list):
+        pub_result_original = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx
+        ]
+        pub_result_updated = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx + 1
+        ]
+
+        fid = hellinger_fidelity(
+            ideal_dist, pub_result_original.data.c.get_counts()
+        )
+        fidelity_list.append(fid)
+
+        fid_up = hellinger_fidelity(
+            ideal_dist, pub_result_updated.data.c.get_counts()
+        )
+        fidelity_updated_list.append(fid_up)
+    all_fidelity_list.append(fidelity_list)
+    all_fidelity_updated_list.append(fidelity_updated_list)
+```
+
+```python
+plt.figure(figsize=(8, 6))
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_list, axis=0),
+    yerr=np.std(all_fidelity_list, axis=0),
+    fmt="o-.",
+    label="original",
+    color="b",
+)
+# plt.plot(num_qubits_list, fidelity_list, '-.')
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_updated_list, axis=0),
+    yerr=np.std(all_fidelity_updated_list, axis=0),
+    fmt="o-.",
+    label="updated",
+    color="r",
+)
+# plt.plot(num_qubits_list, fidelity_updated_list, '-.')
+plt.xlabel("Chain length")
+plt.xticks(num_qubits_list)
+plt.ylabel("Fidelity")
+plt.title("Bell pair fidelity at the edge of N-qubits chain")
+plt.legend()
+plt.grid(
+    alpha=0.2,
+    linestyle="-.",
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/656ec97a-3fd9-4635-9a98-1c5589761689-0.avif)
+
+Не всі запуски покажуть покращення продуктивності завдяки характеризації в реальному часі - і зі збільшенням довжини ланцюга, а отже менше свободи вибору фізичних кубітів, важливість оновленої інформації про пристрій стає менш суттєвою. Однак, хорошою практикою є збір свіжих даних про властивості пристрою для розуміння його продуктивності. Час від часу перехідні дворівневі системи можуть впливати на продуктивність деяких кубітів. Дані в реальному часі можуть повідомити нас про те, коли такі події відбуваються, і допомогти нам уникнути експериментальних збоїв у таких випадках.
+<Admonition type="note" title="Заклик до дії">
+Спробуйте застосувати цей метод до Ваших виконань і визначте, наскільки великою є отримана вигода! Ви також можете спробувати і побачити, скільки покращень Ви отримуєте від різних бекендів.
+</Admonition>
+## Опитування щодо підручника
+
+Будь ласка, пройдіть це коротке опитування, щоб надати відгук про цей підручник. Ваші думки допоможуть нам покращити наші пропозиції контенту та користувацький досвід.

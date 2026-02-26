@@ -1,0 +1,224 @@
+---
+title: "IBM Circuit関数を用いたエラー緩和"
+sidebar_label: "IBM Circuit関数を用いたエラー緩和"
+description: "IBM Circuit関数を使用してワークフローを構築および実行する例をウォークスルーします。"
+notebook_path: "docs/tutorials/error-mitigation-with-qiskit-functions.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/error-mitigation-with-qiskit-functions.ipynb" />
+
+
+
+<Admonition type="note" title="注意">
+Qiskit Functionsは、IBM Quantum&reg; Premium Plan、Flex Plan、およびOn-Prem（IBM Quantum Platform API経由）Planユーザーのみが利用できる実験的機能です。これらはプレビューリリース状態であり、変更される可能性があります。
+</Admonition>
+
+*使用時間の推定: Eagleプロセッサで26分（注意: これは推定値です。実際の実行時間は異なる場合があります。）*
+このチュートリアルでは、IBM Circuit関数を使用してワークフローを構築および実行する例をウォークスルーします。この関数は[Primitive Unified Blocs](/guides/primitive-input-output)（PUB）を入力として受け取り、エラー緩和された期待値を出力として返します。これにより、研究者がアルゴリズムとアプリケーションの発見に集中できるよう、回路を最適化し量子ハードウェア上で実行するための自動化されたカスタマイズされたパイプラインを提供します。
+
+[Qiskit Functionsの紹介](/guides/functions)に関するドキュメントを参照し、[IBM Circuit関数](/guides/ibm-circuit-function)の使用方法を学んでください。
+## 背景
+
+このチュートリアルでは、2次元横磁場イジングモデルの一般的なハードウェア効率的なトロッター化時間発展回路を考慮し、グローバル磁化を計算します。このような回路は、凝縮系物理学、化学、機械学習などのさまざまなアプリケーション領域で有用です。このモデルの構造の詳細については、[Nature 618, 500–505 (2023)](https://www.nature.com/articles/s41586-023-06096-3)を参照してください。
+
+IBM Circuit関数は、QiskitトランスパイラサービスとQiskit Runtime Estimatorの機能を組み合わせて、回路を実行するための簡素化されたインターフェースを提供します。この関数は、単一のマネージドサービス内でトランスパイレーション、エラー抑制、エラー緩和、および回路実行を実行するため、パターンの各ステップを自分で構築するのではなく、問題を回路にマッピングすることに集中できます。
+## 要件
+
+このチュートリアルを開始する前に、以下がインストールされていることを確認してください。
+
+- Qiskit SDK v1.2以降（`pip install qiskit`）
+- Qiskit Runtime v0.28以降（`pip install qiskit-ibm-runtime`）
+- IBM Qiskit Functions Catalogクライアント v0.0.0以降（`pip install qiskit-ibm-catalog`）
+- Qiskit Aer v0.15.0以降（`pip install qiskit-aer`）
+## セットアップ
+
+```python
+import rustworkx
+from collections import defaultdict
+from numpy import pi, mean
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.quantum_info import SparsePauliOp
+```
+
+## ステップ1: 古典的入力を量子問題にマッピングする
+
+<ul>
+    <li>入力: 量子回路を作成するためのパラメータ</li>
+    <li>出力: 抽象回路とオブザーバブル</li>
+</ul>
+#### 回路の構築
+作成する回路は、2次元横磁場イジングモデルのハードウェア効率的なトロッター化時間発展回路です。まず、バックエンドの選択から始めます。このバックエンドのプロパティ（つまり、そのカップリングマップ）は、量子問題を定義し、ハードウェア効率的であることを保証するために使用されます。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+次に、バックエンドからカップリングマップを取得します。
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+layer_couplings = defaultdict(list)
+```
+
+回路のレイヤーをどのように設計するかについて慎重に行う必要があります。これは、カップリングマップのエッジを色分けする（つまり、互いに素なエッジをグループ化する）ことによって行い、その色分けを使用して回路にゲートをより効率的に配置します。これにより、ハードウェア上で同時に実行できるゲートのレイヤーを持つ、より浅い回路が得られます。
+
+```python
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+
+for edge_idx, color in edge_coloring.items():
+    layer_couplings[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layer_couplings = [
+    sorted(layer_couplings[i]) for i in sorted(layer_couplings.keys())
+]
+```
+
+次に、上記で取得したエッジカラーリングを使用して、2次元横磁場イジングモデルのハードウェア効率的なトロッター化時間発展回路を実装する簡単なヘルパー関数を作成します。
+
+```python
+def construct_trotter_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    layer_couplings: list,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    theta, phi = Parameter("theta"), Parameter("phi")
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(theta, range(num_qubits))
+        for layer in layer_couplings:
+            for edge in layer:
+                if edge[0] < num_qubits and edge[1] < num_qubits:
+                    circuit.rzz(phi, edge[0], edge[1])
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+```
+
+量子ビット数とトロッターステップ数を選択し、回路を構築します。
+
+```python
+num_qubits = 100
+num_trotter_steps = 2
+
+circuit = construct_trotter_circuit(
+    num_qubits, num_trotter_steps, layer_couplings
+)
+circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-mitigation-with-qiskit-functions/extracted-outputs/18eefa99-f1c4-41b5-90b8-7fd8723cac84-0.avif)
+
+実行の品質をベンチマークするために、理想的な結果と比較する必要があります。選択した回路は、ブルートフォース古典シミュレーションを超えています。そこで、回路内のすべての`Rx`ゲートのパラメータを$0$に、すべての`Rzz`ゲートのパラメータを$\pi$に固定します。これにより回路がCliffordになり、理想的なシミュレーションを実行して比較のための理想的な結果を得ることができます。この場合、その結果が`1.0`になることがわかっています。
+
+```python
+parameters = [0, pi]
+```
+
+#### オブザーバブルの構築
+まず、$N$量子ビット問題に対する$\hat{z}$に沿ったグローバル磁化を計算します: $M_z = \sum_{i=1}^N \langle Z_i \rangle / N$。これには、各量子ビット$i$に対する単一サイト磁化$\langle Z_i \rangle$を最初に計算する必要があり、これは以下のコードで定義されています。
+
+```python
+observables = []
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(SparsePauliOp(obs))
+
+print(observables[0])
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## ステップ2と3: 量子ハードウェア実行のための問題の最適化とIBM Circuit関数での実行
+
+<ul>
+    <li>入力: 抽象回路とオブザーバブル</li>
+    <li>出力: 緩和された期待値</li>
+</ul>
+これで、抽象回路とオブザーバブルをIBM Circuit関数に渡すことができます。この関数は、トランスパイレーションと量子ハードウェア上での実行を処理し、緩和された期待値を返します。まず、[IBM Qiskit Functions Catalog](/guides/functions)から関数をロードします。
+
+```python
+catalog = QiskitFunctionsCatalog(
+    token="<YOUR_API_KEY>"
+)  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+function = catalog.load("ibm/circuit-function")
+```
+
+IBM Circuit関数は、`pubs`、`backend_name`、およびトランスパイレーション、エラー緩和などを設定するためのオプション入力を受け取ります。抽象回路、オブザーバブル、および回路パラメータから`pub`を作成します。バックエンドの名前は文字列として指定する必要があります。
+
+```python
+pubs = [(circuit, observables, parameters)]
+backend_name = backend.name
+```
+
+また、トランスパイレーション、エラー抑制、およびエラー緩和のための`options`を設定することもできます。これらを指定しない場合は、デフォルト設定が使用されます。IBM Circuit関数には、回路最適化の程度を制御する`optimization_level`と、適用するエラー抑制と緩和の程度を指定する`mitigation_level`の一般的に使用されるオプションが付属しています。IBM Circuit関数の`mitigation_level`は、[Qiskit Runtime Estimator](/guides/configure-error-mitigation)で使用される`resilience_level`とは異なることに注意してください。これらの一般的に使用されるオプションおよびその他の高度なオプションの詳細については、[IBM Circuit関数のドキュメント](/guides/ibm-circuit-function)を参照してください。
+
+このチュートリアルでは、`default_precision`、`optimization_level: 3`、および`mitigation_level: 3`を設定します。これにより、デフォルトのレベル1設定に加えて、ゲートツイスリングとProbabilistic Error Amplification（PEA）によるZero Noise Extrapolation（ZNE）が有効になります。
+
+```python
+options = {
+    "default_precision": 0.011,
+    "optimization_level": 3,
+    "mitigation_level": 3,
+}
+```
+
+入力を指定したら、最適化と実行のためにジョブをIBM Circuit関数に送信します。
+
+```python
+job = function.run(backend_name=backend_name, pubs=pubs, options=options)
+```
+
+## ステップ4: 後処理と希望する古典形式での結果の返却
+
+<ul>
+    <li>入力: IBM Circuit関数からの結果</li>
+    <li>出力: グローバル磁化</li>
+</ul>
+#### グローバル磁化の計算
+関数を実行した結果は、[Estimator](/guides/primitive-input-output#estimator-output)と同じ形式です。
+
+```python
+result = job.result()[0]
+```
+
+この結果から、緩和された期待値と緩和されていない期待値を取得します。これらの期待値は、$\hat{z}$方向に沿った単一サイト磁化を表しています。これらを平均してグローバル磁化を求め、この問題インスタンスの理想値である`1.0`と比較します。
+
+```python
+mitigated_expvals = result.data.evs
+magnetization_mitigated = mean(mitigated_expvals)
+
+print("mitigated:", magnetization_mitigated)
+
+unmitigated_expvals = [
+    result.data.evs_extrapolated[i][0][1] for i in range(num_qubits)
+]
+magnetization_unmitigated = mean(unmitigated_expvals)
+
+print("unmitigated:", magnetization_unmitigated)
+```
+
+```text
+mitigated: 0.9749883476088692
+unmitigated: 0.7832977198447583
+```
+
+## チュートリアルアンケート
+
+このチュートリアルに関するフィードバックを提供するために、この短いアンケートにご回答ください。皆様のご意見は、コンテンツの提供とユーザーエクスペリエンスの改善に役立ちます。
+
+[アンケートへのリンク](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

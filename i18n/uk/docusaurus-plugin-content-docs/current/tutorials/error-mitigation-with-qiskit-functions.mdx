@@ -1,0 +1,224 @@
+---
+title: "Пом'якшення помилок за допомогою функції IBM Circuit"
+sidebar_label: "Пом'якшення помилок за допомогою функції IBM Circuit"
+description: "Покроковий приклад побудови та запуску робочого процесу з використанням функції IBM Circuit."
+notebook_path: "docs/tutorials/error-mitigation-with-qiskit-functions.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/error-mitigation-with-qiskit-functions.ipynb" />
+
+
+
+<Admonition type="note" title="Примітка">
+Функції Qiskit Functions є експериментальною можливістю, доступною лише для користувачів планів IBM Quantum&reg; Premium, Flex та On-Prem (через API IBM Quantum Platform). Вони мають статус попереднього випуску та можуть змінюватися.
+</Admonition>
+
+*Приблизний час виконання: 26 хвилин на процесорі Eagle (ПРИМІТКА: Це лише оцінка. Ваш час виконання може відрізнятися.)*
+У цьому посібнику розглядається приклад побудови та запуску робочого процесу з використанням функції IBM Circuit. Ця функція приймає на вхід [Primitive Unified Blocs](/guides/primitive-input-output) (PUB) і повертає очікувані значення з пом'якшенням помилок. Вона забезпечує автоматизований та налаштований конвеєр для оптимізації схем і виконання на квантовому обладнанні, щоб дослідники могли зосередитися на розробці алгоритмів та застосувань.
+
+Відвідайте документацію для ознайомлення зі [вступом до Qiskit Functions](/guides/functions) та дізнайтеся, як розпочати роботу з [функцією IBM Circuit](/guides/ibm-circuit-function).
+## Передумови
+
+У цьому посібнику розглядається загальна апаратно-ефективна тротеризована схема часової еволюції для двовимірної моделі Ізінга з поперечним полем, а також обчислюється глобальна намагніченість. Така схема корисна в різних прикладних галузях, таких як фізика конденсованих середовищ, хімія та машинне навчання. Для отримання додаткової інформації про структуру цієї моделі зверніться до [Nature 618, 500–505 (2023)](https://www.nature.com/articles/s41586-023-06096-3).
+
+Функція IBM Circuit поєднує можливості сервісу транспіляції Qiskit та Qiskit Runtime Estimator, надаючи спрощений інтерфейс для запуску схем. Функція виконує транспіляцію, придушення помилок, пом'якшення помилок та виконання схем в рамках єдиного керованого сервісу, щоб ми могли зосередитися на відображенні задачі на схеми, а не на побудові кожного кроку шаблону самостійно.
+## Вимоги
+
+Перед початком роботи з цим посібником переконайтеся, що у Вас встановлено наступне:
+
+- Qiskit SDK v1.2 або новіший (`pip install qiskit`)
+- Qiskit Runtime v0.28 або новіший (`pip install qiskit-ibm-runtime`)
+- Клієнт IBM Qiskit Functions Catalog v0.0.0 або новіший (`pip install qiskit-ibm-catalog`)
+- Qiskit Aer v0.15.0 або новіший (`pip install qiskit-aer`)
+## Налаштування
+
+```python
+import rustworkx
+from collections import defaultdict
+from numpy import pi, mean
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.quantum_info import SparsePauliOp
+```
+
+## Крок 1: Відображення класичних вхідних даних на квантову задачу
+
+<ul>
+    <li>Вхід: Параметри для створення квантової схеми</li>
+    <li>Вихід: Абстрактна схема та спостережувані величини</li>
+</ul>
+#### Побудова схеми
+Схема, яку ми створимо, є апаратно-ефективною тротеризованою схемою часової еволюції для двовимірної моделі Ізінга з поперечним полем. Ми починаємо з вибору бекенду. Властивості цього бекенду (а саме його карта зв'язків) будуть використані для визначення квантової задачі та забезпечення її апаратної ефективності.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Далі ми отримуємо карту зв'язків з бекенду.
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+layer_couplings = defaultdict(list)
+```
+
+Ми маємо бути уважними при проєктуванні шарів нашої схеми. Ми зробимо це шляхом розфарбовування ребер карти зв'язків (тобто групування неперетинних ребер) і використаємо це розфарбовування для більш ефективного розміщення вентилів у схемі. Це призведе до меншої глибини схеми з шарами вентилів, які можуть виконуватися одночасно на обладнанні.
+
+```python
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+
+for edge_idx, color in edge_coloring.items():
+    layer_couplings[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layer_couplings = [
+    sorted(layer_couplings[i]) for i in sorted(layer_couplings.keys())
+]
+```
+
+Далі ми напишемо просту допоміжну функцію, яка реалізує апаратно-ефективну тротеризовану схему часової еволюції для двовимірної моделі Ізінга з поперечним полем, використовуючи отримане вище розфарбовування ребер.
+
+```python
+def construct_trotter_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    layer_couplings: list,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    theta, phi = Parameter("theta"), Parameter("phi")
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(theta, range(num_qubits))
+        for layer in layer_couplings:
+            for edge in layer:
+                if edge[0] < num_qubits and edge[1] < num_qubits:
+                    circuit.rzz(phi, edge[0], edge[1])
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+```
+
+Ми виберемо кількість кубітів та кроків Троттера, а потім побудуємо схему.
+
+```python
+num_qubits = 100
+num_trotter_steps = 2
+
+circuit = construct_trotter_circuit(
+    num_qubits, num_trotter_steps, layer_couplings
+)
+circuit.draw("mpl", fold=-1)
+```
+
+![Результат виконання попередньої комірки коду](/docs/images/tutorials/error-mitigation-with-qiskit-functions/extracted-outputs/18eefa99-f1c4-41b5-90b8-7fd8723cac84-0.avif)
+
+Для оцінки якості виконання нам потрібно порівняти результат з ідеальним. Обрана схема виходить за межі можливостей класичного моделювання методом повного перебору. Тому ми фіксуємо параметри всіх вентилів `Rx` у схемі на $0$, а всіх вентилів `Rzz` на $\pi$. Це робить схему кліфордовою, що дозволяє виконати ідеальне моделювання та отримати ідеальний результат для порівняння. У цьому випадку ми знаємо, що результат буде `1.0`.
+
+```python
+parameters = [0, pi]
+```
+
+#### Побудова спостережуваної величини
+Спочатку обчислимо глобальну намагніченість вздовж $\hat{z}$ для $N$-кубітної задачі: $M_z = \sum_{i=1}^N \langle Z_i \rangle / N$. Для цього потрібно спочатку обчислити намагніченість окремого вузла $\langle Z_i \rangle$ для кожного кубіта $i$, що визначено в наступному коді.
+
+```python
+observables = []
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(SparsePauliOp(obs))
+
+print(observables[0])
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## Кроки 2 та 3: Оптимізація задачі для виконання на квантовому обладнанні та запуск за допомогою функції IBM Circuit
+
+<ul>
+    <li>Вхід: Абстрактна схема та спостережувані величини</li>
+    <li>Вихід: Очікувані значення з пом'якшенням помилок</li>
+</ul>
+Тепер ми можемо передати абстрактну схему та спостережувані величини функції IBM Circuit. Вона виконає транспіляцію та запуск на квантовому обладнанні за нас і поверне очікувані значення з пом'якшенням помилок. Спочатку ми завантажимо функцію з [каталогу IBM Qiskit Functions](/guides/functions).
+
+```python
+catalog = QiskitFunctionsCatalog(
+    token="<YOUR_API_KEY>"
+)  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+function = catalog.load("ibm/circuit-function")
+```
+
+Функція IBM Circuit приймає `pubs`, `backend_name`, а також додаткові вхідні параметри для налаштування транспіляції, пом'якшення помилок тощо. Ми створюємо `pub` з абстрактної схеми, спостережуваних величин та параметрів схеми. Назва бекенду повинна бути вказана як рядок.
+
+```python
+pubs = [(circuit, observables, parameters)]
+backend_name = backend.name
+```
+
+Ми також можемо налаштувати `options` для транспіляції, придушення помилок та пом'якшення помилок. Якщо ми не бажаємо вказувати їх, будуть використані налаштування за замовчуванням. Функція IBM Circuit постачається з часто використовуваними параметрами: `optimization_level`, який контролює ступінь оптимізації схеми, та `mitigation_level`, який визначає ступінь придушення та пом'якшення помилок. Зверніть увагу, що `mitigation_level` функції IBM Circuit відрізняється від `resilience_level`, що використовується в [Qiskit Runtime Estimator](/guides/configure-error-mitigation). Для детального опису цих часто використовуваних параметрів, а також інших розширених параметрів, відвідайте [документацію функції IBM Circuit](/guides/ibm-circuit-function).
+
+У цьому посібнику ми встановимо `default_precision`, `optimization_level: 3` та `mitigation_level: 3`, що увімкне твірлінг вентилів та екстраполяцію нульового шуму (ZNE) через імовірнісне підсилення помилок (PEA) поверх налаштувань рівня 1 за замовчуванням.
+
+```python
+options = {
+    "default_precision": 0.011,
+    "optimization_level": 3,
+    "mitigation_level": 3,
+}
+```
+
+З визначеними вхідними даними ми надсилаємо завдання функції IBM Circuit для оптимізації та виконання.
+
+```python
+job = function.run(backend_name=backend_name, pubs=pubs, options=options)
+```
+
+## Крок 4: Постобробка та повернення результату в бажаному класичному форматі
+
+<ul>
+    <li>Вхід: Результати від функції IBM Circuit</li>
+    <li>Вихід: Глобальна намагніченість</li>
+</ul>
+#### Обчислення глобальної намагніченості
+Результат виконання функції має такий самий формат, як і [Estimator](/guides/primitive-input-output#estimator-output).
+
+```python
+result = job.result()[0]
+```
+
+Ми отримуємо очікувані значення з пом'якшенням та без пом'якшення помилок з цього результату. Ці очікувані значення представляють намагніченість окремого вузла вздовж напрямку $\hat{z}$. Ми усереднюємо їх для отримання глобальної намагніченості та порівнюємо з ідеальним значенням `1.0` для даного екземпляра задачі.
+
+```python
+mitigated_expvals = result.data.evs
+magnetization_mitigated = mean(mitigated_expvals)
+
+print("mitigated:", magnetization_mitigated)
+
+unmitigated_expvals = [
+    result.data.evs_extrapolated[i][0][1] for i in range(num_qubits)
+]
+magnetization_unmitigated = mean(unmitigated_expvals)
+
+print("unmitigated:", magnetization_unmitigated)
+```
+
+```text
+mitigated: 0.9749883476088692
+unmitigated: 0.7832977198447583
+```
+
+## Опитування щодо посібника
+
+Будь ласка, пройдіть це коротке опитування, щоб надати відгук про цей посібник. Ваші думки допоможуть нам покращити наш контент та досвід користувачів.
+
+[Посилання на опитування](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)
