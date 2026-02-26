@@ -1,0 +1,614 @@
+---
+title: "تصنيف هجين معزَّز كميًّا بالتعلم التجميعي (سير عمل استقرار الشبكة الكهربائية)"
+sidebar_label: "تصنيف هجين معزَّز كميًّا بالتعلم التجميعي (سير عمل استقرار الشبكة الكهربائية)"
+description: "بناء وتحليل تجميع هجين كمي-كلاسيكي لتصنيف استقرار الشبكة الكهربائية على وحدات المعالجة الكمية من IBM باستخدام دالة Singularity Qiskit من Multiverse Computing."
+notebook_path: "docs/tutorials/sml-classification.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/sml-classification.ipynb" />
+
+
+
+{/* cspell:ignore QEEC interpretability hyperparameters overfitting sublinear preds prec */}
+
+*تقدير الاستخدام: 20 دقيقة من وقت وحدة المعالجة الكمية لكل مهمة على معالج Eagle r3. (ملاحظة: هذا تقدير فحسب. قد يختلف وقت التشغيل الفعلي.)*
+## الخلفية النظرية {#background}
+
+يوضح هذا البرنامج التعليمي سير عملًا هجينًا كميًّا-كلاسيكيًّا يُعزِّز تجميعًا كلاسيكيًّا بخطوة تحسين كمية. باستخدام وظيفة "Singularity Machine Learning – Classification" من Multiverse Computing (وهي دالة Qiskit)، نُدرِّب مجموعة من المتعلمين التقليديين (على سبيل المثال، أشجار القرار، وخوارزمية k-NN، والانحدار اللوجستي)، ثم نُنقِّح هذه المجموعة بطبقة كمية لتحسين التنوع والتعميم. الهدف عملي: في مهمة تنبؤ حقيقية باستقرار الشبكة الكهربائية، نقارن خطًّا أساسيًّا كلاسيكيًّا قويًّا مع بديل مُحسَّن كميًّا وفق تقسيمات البيانات ذاتها، حتى تتمكن من رؤية الحالات التي تُسهم فيها الخطوة الكمية إيجابًا وتكلفتها.
+
+سبب أهمية ذلك: اختيار مجموعة فرعية جيدة من كثير من المتعلمين الضعفاء هو مسألة تحسين تركيبية تنمو بسرعة مع حجم التجميع. تؤدي الأساليب الاستدلالية الكلاسيكية كالتعزيز والتجميع والتكديس أداءً جيدًا عند المقاييس المتوسطة، لكنها قد تُعاني في استكشاف مكتبات ضخمة ومتكررة من النماذج باستكفاء. تدمج الدالة الخوارزميات الكمية - تحديدًا QAOA (واختياريًّا VQE في تكوينات أخرى) - للبحث في ذلك الفضاء بصورة أكثر فاعلية بعد تدريب المتعلمين الكلاسيكيين، مما يزيد من احتمالية إيجاد مجموعة فرعية مدمجة ومتنوعة تُعمِّم بشكل أفضل.
+
+من الناحية الجوهرية، لا يتقيد حجم البيانات بعدد القيوت. يظل الجزء الثقيل المتعلق بالبيانات - المعالجة المسبقة وتدريب مجموعة المتعلمين والتقييم - كلاسيكيًّا وقادرًا على معالجة الملايين من الأمثلة. تحدد القيوت فقط حجم التجميع المستخدم في خطوة الاختيار الكمية. هذا الفصل هو ما يجعل النهج قابلًا للتطبيق على الأجهزة الحالية: تحتفظ بسير عمل scikit-learn المعتادة للبيانات وتدريب النماذج بينما تستدعي الخطوة الكمية عبر واجهة action نظيفة في Qiskit Functions.
+
+في التطبيق العملي، بينما يمكن تزويد التجميع بأنواع مختلفة من المتعلمين (مثل أشجار القرار، والانحدار اللوجستي، أو k-NN)، تميل أشجار القرار إلى الأداء الأفضل. يُفضِّل المحسِّن باستمرار أعضاء التجميع الأقوى - فعند تزويده بمتعلمين غير متجانسين، تُقلَّم النماذج الأضعف كالمنحدرات الخطية لصالح النماذج الأكثر تعبيرًا مثل أشجار القرار.
+
+ما ستفعله هنا: تجهيز مجموعة بيانات استقرار الشبكة الكهربائية وموازنتها؛ وضع خط أساسي كلاسيكي باستخدام AdaBoost؛ تشغيل عدة تكوينات كمية تتباين في عرض التجميع والتنظيم؛ التنفيذ على المحاكيات أو وحدات المعالجة الكمية من IBM&reg; عبر Qiskit Serverless؛ ومقارنة الدقة والضبط والاستدعاء و F1 عبر جميع التشغيلات. على طول الطريق، ستستخدم نمط action الخاص بالدالة (`create` و`fit` و`predict` و`fit_predict` و`create_fit_predict`) والضوابط الرئيسية:
+- أنواع التنظيم: `onsite` (λ) للتشتيت المباشر و`alpha` للمقايضة النسبية بين حدَّي التفاعل والموقع
+- التنظيم التلقائي: اضبط `regularization="auto"` مع نسبة اختيار مستهدفة لضبط التشتيت تلقائيًّا
+- خيارات المحسِّن: المحاكي مقابل وحدة المعالجة الكمية، والتكرارات، والمحسِّن الكلاسيكي وخياراته، وعمق النقل، وإعدادات sampler/estimator لبيئة التشغيل
+
+تُظهر المعايير المرجعية في الوثائق أن الدقة تتحسن مع زيادة عدد المتعلمين (القيوت) في المسائل الصعبة، إذ يُضاهي المصنِّف الكمي أو يتجاوز التجميع الكلاسيكي المقارن. في هذا البرنامج التعليمي، ستُعيد إنتاج سير العمل من البداية إلى النهاية وتفحص متى يُعطي زيادة عرض التجميع أو التبديل إلى التنظيم التكيفي قيمة F1 أفضل مع استخدام معقول للموارد. والنتيجة هي رؤية راسخة لكيفية تكامل خطوة التحسين الكمية مع التعلم التجميعي الكلاسيكي في التطبيقات الحقيقية بدلًا من إحلالها محله.
+## المتطلبات {#requirements}
+
+قبل البدء بهذا البرنامج التعليمي، تأكد من تثبيت الحزم التالية في بيئة Python الخاصة بك:
+
+- `qiskit[visualization]~=2.1.0`
+- `qiskit-serverless~=0.24.0`
+- `qiskit-ibm-runtime v0.40.1`
+- `qiskit-ibm-catalog~=0.8.0`
+- `scikit-learn==1.5.2`
+- `pandas>=2.0.0,<3.0.0`
+- `imbalanced-learn~=0.12.3`
+## الإعداد {#setup}
+
+في هذا القسم، نُهيِّئ عميل Qiskit Serverless ونُحمِّل دالة Singularity Machine Learning – Classification المقدَّمة من Multiverse Computing.
+مع Qiskit Serverless، يمكنك تشغيل سير عمل هجينة كمية-كلاسيكية على البنية التحتية السحابية المُدارة من IBM دون القلق بشأن إدارة الموارد.
+ستحتاج إلى مفتاح API لمنصة IBM Quantum واسم موردك السحابي (CRN) للمصادقة والوصول إلى Qiskit Functions.
+### تنزيل مجموعة البيانات {#download-the-dataset}
+
+لتشغيل هذا البرنامج التعليمي، نستخدم **مجموعة بيانات تصنيف استقرار الشبكة الكهربائية** المُعالَجة مسبقًا والتي تحتوي على قراءات مستشعرات نظام الطاقة الموسومة.
+تُنشئ الخلية التالية تلقائيًّا بنية المجلدات المطلوبة وتُنزِّل ملفَّي التدريب والاختبار مباشرةً في بيئتك باستخدام `wget`.
+إذا كانت هذه الملفات متاحة لديك محليًّا، فستقوم هذه الخطوة بالكتابة فوقها بأمان لضمان اتساق الإصدارات.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q imbalanced-learn scikit-learn
+```
+
+```python
+## Download dataset for Grid Stability Classification
+
+# Create data directory if it doesn't exist
+!mkdir -p data_tutorial/grid_stability
+
+# Download the training and test sets from the official Qiskit documentation repo
+!wget -q --show-progress -O data_tutorial/grid_stability/train.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/train.csv
+
+!wget -q --show-progress -O data_tutorial/grid_stability/test.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/test.csv
+
+# Check the files have been downloaded
+!echo "Dataset files downloaded:"
+!ls -lh data_tutorial/grid_stability/*.csv
+```
+
+```text
+data_tutorial/grid_ 100%[===================>] 612.94K  --.-KB/s    in 0.01s
+data_tutorial/grid_ 100%[===================>] 108.19K  --.-KB/s    in 0.006s
+Dataset files downloaded:
+-rw-r--r-- 1 coder coder 109K Nov  8 18:50 data_tutorial/grid_stability/test.csv
+-rw-r--r-- 1 coder coder 613K Nov  8 18:50 data_tutorial/grid_stability/train.csv
+```
+
+### استيراد الحزم المطلوبة {#import-required-packages}
+
+في هذا القسم، نستورد جميع حزم Python ووحدات Qiskit المستخدمة طوال البرنامج التعليمي.
+تشمل هذه الحزم المكتبات العلمية الأساسية لمعالجة البيانات وتقييم النماذج - مثل `NumPy` و`pandas` و`scikit-learn` - إلى جانب أدوات التصوير ومكونات Qiskit لتشغيل النموذج المعزَّز كميًّا.
+نستورد أيضًا `QiskitRuntimeService` و`QiskitFunctionsCatalog` للاتصال بخدمات IBM Quantum&reg; والوصول إلى دالة Singularity Machine Learning.
+
+```python
+from typing import Tuple
+import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from imblearn.over_sampling import RandomOverSampler
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_ibm_runtime import QiskitRuntimeService
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.model_selection import train_test_split
+
+warnings.filterwarnings("ignore")
+```
+
+### تعيين المتغيرات الثابتة {#set-constant-variables}
+
+```python
+IBM_TOKEN = ""
+IBM_INSTANCE_TEST = ""
+IBM_INSTANCE_QUANTUM = ""
+FUNCTION_NAME = "multiverse/singularity"
+RANDOM_STATE: int = 123
+TRAIN_PATH = "data_tutorial/grid_stability/train.csv"
+TEST_PATH = "data_tutorial/grid_stability/test.csv"
+```
+
+### الاتصال بـ IBM Quantum وتحميل دالة Singularity {#connect-to-ibm-quantum-and-load-the-singularity-function}
+
+بعد ذلك، نُجري المصادقة مع خدمات IBM Quantum ونُحمِّل دالة Singularity Machine Learning – Classification من Qiskit Functions Catalog.
+تُنشئ `QiskitRuntimeService` اتصالًا آمنًا بمنصة IBM Quantum باستخدام رمز API الخاص بك ومعرِّف CRN، مما يتيح الوصول إلى الواجهات الخلفية الكمية.
+يُستخدَم `QiskitFunctionsCatalog` بعد ذلك لاسترداد دالة Singularity بالاسم (`"multiverse/singularity"`)، مما يُمكِّننا من استدعائها لاحقًا للحوسبة الهجينة الكمية-الكلاسيكية.
+إذا نجح الإعداد، ستظهر رسالة تأكيد تُشير إلى تحميل الدالة بصورة صحيحة.
+
+```python
+service = QiskitRuntimeService(
+    token=IBM_TOKEN,
+    channel="ibm_quantum_platform",
+    instance=IBM_INSTANCE_QUANTUM,
+)
+
+backend = service.least_busy()
+catalog = QiskitFunctionsCatalog(
+    token=IBM_TOKEN,
+    instance=IBM_INSTANCE_TEST,
+    channel="ibm_quantum_platform",
+)
+singularity = catalog.load(FUNCTION_NAME)
+print(
+    "Successfully connected to IBM Qiskit Serverless and loaded the Singularity function."
+)
+print("Catalog:", catalog)
+print("Singularity function:", singularity)
+```
+
+```text
+Successfully connected to IBM Qiskit Serverless and loaded the Singularity function.
+Catalog: <QiskitFunctionsCatalog>
+Singularity function: QiskitFunction(multiverse/singularity)
+```
+
+### تعريف الدوال المساعدة {#define-helper-functions}
+
+قبل تشغيل التجارب الرئيسية، نُعرِّف عددًا قليلًا من الدوال المساعدة الصغيرة التي تُبسِّط تحميل البيانات وتقييم النماذج.
+- تقرأ `load_data()` ملفات CSV المدخلة إلى مصفوفات NumPy، مُفصِلةً بين السمات والتسميات لتوافقها مع `scikit-learn` وسير العمل الكمية.
+- تحسب `evaluate_predictions()` مقاييس الأداء الرئيسية - الدقة الكلية والضبط والاستدعاء ودرجة F1 - وتُبلِّغ اختياريًّا عن وقت التشغيل إذا توفرت معلومات التوقيت.
+
+تُبسِّط هذه الدوال المساعدة العمليات المتكررة لاحقًا في كراسة الملاحظات وتضمن تقارير متسقة للمقاييس عبر المصنِّفات الكلاسيكية والكمية على حدٍّ سواء.
+
+```python
+def load_data(data_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load data from the given path to X and y arrays."""
+    df: pd.DataFrame = pd.read_csv(data_path)
+    return df.iloc[:, :-1].values, df.iloc[:, -1].values
+
+def evaluate_predictions(predictions, y_true):
+    """Compute and print accuracy, precision, recall, and F1 score."""
+    accuracy = accuracy_score(y_true, predictions)
+    precision = precision_score(y_true, predictions)
+    recall = recall_score(y_true, predictions)
+    f1 = f1_score(y_true, predictions)
+    print("Accuracy:", accuracy)
+    print("Precision:", precision)
+    print("Recall:", recall)
+    print("F1:", f1)
+    return accuracy, precision, recall, f1
+```
+
+## الخطوة 1: تعيين المدخلات الكلاسيكية إلى مسألة كمية {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+نبدأ بتجهيز مجموعة البيانات للتجريب الهجين الكمي-الكلاسيكي. يهدف هذا القسم إلى تحويل بيانات استقرار الشبكة الكهربائية الخام إلى تقسيمات متوازنة للتدريب والتحقق والاختبار يمكن استخدامها باتساق في سير العمل الكلاسيكية والكمية. يضمن الحفاظ على تقسيمات متطابقة أن مقارنات الأداء اللاحقة عادلة وقابلة للاستنساخ.
+### تحميل البيانات والمعالجة المسبقة {#data-loading-and-preprocessing}
+
+نُحمِّل أولًا ملفات CSV للتدريب والاختبار، وننشئ تقسيم تحقق، ونُوازن مجموعة البيانات باستخدام أخذ عينات زائدة عشوائية. تمنع الموازنة التحيز نحو الفئة الأغلب وتوفر إشارة تعلُّم أكثر استقرارًا لكلٍّ من النماذج التجميعية الكلاسيكية والكمية.
+
+```python
+# Load and upload the data
+X_train, y_train = load_data(TRAIN_PATH)
+X_test, y_test = load_data(TEST_PATH)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train, test_size=0.2, random_state=RANDOM_STATE
+)
+
+# Balance the dataset through over-sampling of the positive class
+ros = RandomOverSampler(random_state=RANDOM_STATE)
+X_train_bal, y_train_bal = ros.fit_resample(X_train, y_train)
+
+print("Shapes:")
+print("  X_train_bal:", X_train_bal.shape)
+print("  y_train_bal:", y_train_bal.shape)
+print("  X_val:", X_val.shape)
+print("  y_val:", y_val.shape)
+print("  X_test:", X_test.shape)
+print("  y_test:", y_test.shape)
+```
+
+```text
+Shapes:
+  X_train_bal: (5104, 12)
+  y_train_bal: (5104,)
+  X_val: (850, 12)
+  y_val: (850,)
+  X_test: (750, 12)
+  y_test: (750,)
+```
+
+### الخط الأساسي الكلاسيكي: مرجع AdaBoost {#classical-baseline-adaboost-reference}
+
+قبل تشغيل أي تحسين كمي، ندرِّب خطًّا أساسيًّا كلاسيكيًّا قويًّا - مصنِّف AdaBoost قياسي - على البيانات المتوازنة ذاتها. يوفر ذلك نقطة مرجعية قابلة للاستنساخ للمقارنة لاحقًا، مما يساعد على قياس ما إذا كان التحسين الكمي يُحسِّن التعميم أو الكفاءة بما يتجاوز التجميع الكلاسيكي المضبوط جيدًا.
+
+```python
+# ----- Classical baseline: AdaBoost -----
+baseline = AdaBoostClassifier(n_estimators=60, random_state=RANDOM_STATE)
+baseline.fit(X_train_bal, y_train_bal)
+baseline_pred = baseline.predict(X_test)
+print("Classical AdaBoost baseline:")
+_ = evaluate_predictions(baseline_pred, y_test)
+```
+
+```text
+Classical AdaBoost baseline:
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+```
+
+## الخطوة 2: تحسين المسألة لتنفيذها على الأجهزة الكمية {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+تُصاغ مهمة اختيار التجميع كمسألة تحسين تركيبية حيث يُمثِّل كل متعلِّم ضعيف متغيرًا ثنائيًّا للقرار، ويُوازن الهدف بين الدقة والتشتيت من خلال حد تنظيمي. يحلّ `QuantumEnhancedEnsembleClassifier` هذه المسألة باستخدام QAOA على أجهزة IBM، مع السماح أيضًا باستكشاف قائم على المحاكي. تتحكم `optimizer_options` في الحلقة الهجينة: يُوجِّه `simulator=False` الدوائر إلى وحدة المعالجة الكمية المختارة، بينما يُوسِّع `num_solutions` نطاق البحث، وتتحكم `classical_optimizer_options` (للمحسِّن الكلاسيكي الداخلي) في التقارب؛ تُعدُّ القيم حول 60 تكرارًا توازنًا جيدًا بين الجودة ووقت التشغيل. تُساعد خيارات بيئة التشغيل - كعمق دائرة معتدل (`reps`) وجهد نقل قياسي - على ضمان أداء قوي عبر الأجهزة المختلفة. التكوين أدناه هو ملف تعريف "أفضل النتائج" الذي سنستخدمه في تشغيلات الأجهزة؛ يمكنك أيضًا إنشاء نسخة محاكاة بحتة عن طريق تبديل `simulator=True` للتشغيل الجاف للسير دون استهلاك وقت وحدة المعالجة الكمية.
+
+```python
+# QAOA / runtime configuration for best results on hardware
+optimizer_options = {
+    "simulator": False,  # set True to test locally without QPU
+    "num_solutions": 100_000,  # broaden search over candidate ensembles
+    "reps": 3,  # QAOA depth (circuit layers)
+    "optimization_level": 3,  # transpilation effort
+    "num_transpiler_runs": 30,  # explore multiple layouts
+    "classical_optimizer": "COBYLA",  # robust default for this landscape
+    "classical_optimizer_options": {
+        "maxiter": 60  # practical convergence budget
+    },
+    # You can pass backend-specific options; leaving None uses least-busy routing
+    "estimator_options": None,
+    "sampler_options": None,
+}
+
+print("Configured hardware optimization profile:")
+for key, value in optimizer_options.items():
+    print(f"  {key}: {value}")
+```
+
+```text
+Configured hardware optimization profile:
+  simulator: False
+  num_solutions: 100000
+  reps: 3
+  optimization_level: 3
+  num_transpiler_runs: 30
+  classical_optimizer: COBYLA
+  classical_optimizer_options: {'maxiter': 60}
+  estimator_options: None
+  sampler_options: None
+```
+
+## الخطوة 3: التنفيذ باستخدام Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+
+ننفِّذ الآن سير العمل الكامل باستخدام الإجراء `create_fit_predict` لدالة Singularity لتدريب `QuantumEnhancedEnsembleClassifier` وتحسينه وتقييمه من البداية إلى النهاية على بنية IBM التحتية. تبني الدالة التجميع وتطبِّق التحسين الكمي عبر Qiskit primitives وتُعيد كلًّا من التنبؤات وبيانات المهمة (بما فيها وقت التشغيل واستخدام الموارد). يُعاد استخدام تقسيم البيانات الكلاسيكية من الخطوة 1 لقابلية الاستنساخ، مع تمرير بيانات التحقق عبر `fit_params` حتى يتمكن التحسين من ضبط المعاملات الفائقة داخليًّا مع إبقاء مجموعة الاختبار المحجوزة دون مساس.
+
+في هذه الخطوة، نستكشف عدة تكوينات للتجميع الكمي لفهم كيفية تأثير المعاملات الرئيسية - تحديدًا `num_learners` و`regularization` - على جودة النتائج واستخدام وحدة المعالجة الكمية.
+- يحدد `num_learners` عرض التجميع (ومن ثَمَّ ضمنيًّا عدد القيوت)، مما يؤثر على قدرة النموذج وتكلفته الحسابية.
+- يتحكم `regularization` في التشتيت والإفراط في التخصيص، ويُشكِّل عدد المتعلمين النشطين بعد التحسين.
+
+من خلال تغيير هذين المعاملين، يمكننا رؤية كيفية تفاعل عرض التجميع والتنظيم: يُحسِّن زيادة العرض عادةً قيمة F1 لكنه يكلف وقتًا أطول في وحدة المعالجة الكمية، بينما يمكن للتنظيم الأقوى أو التكيفي تحسين التعميم مع بصمة أجهزة مماثلة تقريبًا. تستعرض الأقسام الفرعية التالية ثلاثة تكوينات تمثيلية لتوضيح هذه التأثيرات.
+### الخط الأساسي {#baseline}
+
+يستخدم هذا التكوين `num_learners = 10` و`regularization = 7`.
+
+- يتحكم `num_learners` في عرض التجميع — وهو فعليًّا عدد المتعلمين الضعفاء المدمَجين، وعلى الأجهزة الكمية **عدد القيوت المطلوبة**. تُوسِّع القيمة الأكبر فضاء البحث التركيبي ويمكنها تحسين الدقة والاستدعاء، لكنها تزيد أيضًا من عرض الدائرة ووقت الترجمة والاستخدام الكلي لوحدة المعالجة الكمية.
+- يضبط `regularization` قوة العقوبة على إدراج متعلمين إضافيين. مع التنظيم الافتراضي "onsite"، تفرض القيم الأعلى تشتيتًا أقوى (يُحتفظ بعدد أقل من المتعلمين)، بينما تسمح القيم الأدنى بتجميعات أكثر تعقيدًا.
+
+يوفر هذا الإعداد خطًّا أساسيًّا منخفض التكلفة، يُظهر كيف يتصرف تجميع صغير قبل توسيع العرض أو ضبط التشتيت.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 10
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_1 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_1 = job_1.result()
+print("Action status:", result_1.get("status"))
+print("Action message:", result_1.get("message"))
+print("Metadata:", result_1.get("metadata"))
+qeec_pred_job_1 = np.array(result_1["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_1, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 267.05158376693726}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 3336.8785166740417}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 152.4274561405182}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1550.1889700889587}}}
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+```
+
+```python
+status_1 = job_1.status()
+print("\nQuantum job status:", status_1)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### زيادة عدد المتعلمين {#increase-the-number-of-learners}
+
+هنا نزيد `num_learners` من 10 إلى 30 مع الإبقاء على `regularization = 7`.
+
+- يُوسِّع المزيد من المتعلمين فضاء الفرضيات، مما يسمح للنموذج بالتقاط أنماط أكثر دقة، وهو ما يمكن أن يرفع قيمة F1 بشكل معتدل.
+- في معظم الحالات، لا يكون الفارق في وقت التشغيل بين 10 و30 متعلمًا كبيرًا، مما يُشير إلى أن زيادة عرض الدائرة لا تزيد تكلفة التنفيذ زيادةً ملحوظة.
+- لا يزال تحسُّن الجودة يتبع *منحنى العوائد المتناقصة*: تظهر المكاسب المبكرة مع نمو التجميع، لكنها تتسطح مع إسهام المتعلمين الإضافيين بمعلومات جديدة أقل.
+
+يُبرز هذه التجربة مقايضة الجودة مقابل الكفاءة - قد يُقدِّم زيادة عرض التجميع مكاسب دقة صغيرة دون عقوبة كبيرة في وقت التشغيل، وفقًا للواجهة الخلفية وظروف النقل.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 30
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_2 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_2 = job_2.result()
+print("Action status:", result_2.get("status"))
+print("Action message:", result_2.get("message"))
+print("QPU Time:", result_2.get("metadata"))
+qeec_pred_job_2 = np.array(result_2["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_2, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+
+```text
+QPU Time: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 680.2116754055023}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 80.80395102500916}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 154.4466371536255}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1095.822762966156}}}
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+```
+
+```python
+status_2 = job_2.status()
+print("\nQuantum job status:", status_2)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### التنظيم
+
+في هذا الإعداد، نرفع العدد إلى `num_learners = 60` ونُدخل التنظيم التكيّفي لإدارة التخلخل بصورة أكثر وضوحاً وسهولةً.
+
+- مع `regularization = "auto"`، يجد المُحسِّن تلقائياً قوةً مناسبة للتنظيم تُفضي إلى اختيار ما يُقارب `regularization_ratio * num_learners` من المُتعلِّمات الضعيفة لتشكيل المجموعة النهائية، بدلاً من تثبيت قيمة العقوبة يدوياً. يوفر هذا واجهةً أكثر ملاءمةً لإدارة التوازن بين التخلخل وحجم المجموعة.
+- يُحدِّد `regularization_type = "alpha"` أسلوب تطبيق العقوبة. على خلاف `onsite` الذي يكون غير محدود `[0, ∞]`، فإن `alpha` محدود بين `[0, 1]`، مما يُسهِّل ضبطه وتفسيره. يتحكم هذا المعامل في التوازن بين العقوبات الفردية والزوجية، مما يُتيح نطاقاً أكثر سلاسةً للضبط.
+- يُحدِّد `regularization_desired_ratio ≈ 0.82` النسبة المستهدفة من المُتعلِّمات التي تبقى نشطةً بعد التنظيم — إذ يُحتفظ هنا بنحو 82% من المُتعلِّمات، مع استبعاد الـ 18% الأضعف أداءً تلقائياً.
+
+على الرغم من أن التنظيم التكيّفي يُبسِّط الإعداد ويُساعد في الحفاظ على توازن المجموعة، إلا أنه لا يضمن بالضرورة أداءً أفضل أو أكثر استقراراً. تعتمد الجودة الفعلية على اختيار معامل تنظيم مناسب، وقد يكون الضبط الدقيق عبر التحقق المتقاطع مُكلفاً حسابياً. تتمثّل الميزة الرئيسية في تحسين قابلية الاستخدام والتفسير، لا في مكاسب الدقة المباشرة.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 60
+REGULARIZATION = "auto"
+REGULARIZATION_TYPE = "alpha"
+REGULARIZATION_RATIO = 0.82
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_3 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    regularization_type=REGULARIZATION_TYPE,
+    regularization_desired_ratio=REGULARIZATION_RATIO,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_3 = job_3.result()
+print("Action status:", result_3.get("status"))
+print("Action message:", result_3.get("message"))
+print("Metadata:", result_3.get("metadata"))
+qeec_pred_job_3 = np.array(result_3["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_3, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 1387.7451872825623}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 95.41597843170166}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 171.78878355026245}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1146.5584812164307}}}
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```python
+status_3 = job_3.status()
+print("\nQuantum job status:", status_3)
+```
+
+```text
+Quantum job status: DONE
+```
+
+## الخطوة الرابعة: المعالجة اللاحقة وإعادة النتيجة بالتنسيق الكلاسيكي المطلوب
+
+نُجري الآن معالجةً لاحقةً لمُخرجات كلٍّ من تشغيلَي الحوسبة الكلاسيكية والكمية، وذلك بتحويلها إلى تنسيق موحَّد للتقييم في المراحل اللاحقة. تُقارن هذه الخطوة جودة التنبؤات باستخدام مقاييس قياسية — الدقة، والضبط، والاستدعاء، وF1 — وتُحلِّل كيف يؤثر اتساع المجموعة (`num_learners`) والتحكم في التخلخل (`regularization`) على الأداء والسلوك الحسابي معاً.
+
+يوفر خط الأساس الكلاسيكي AdaBoost مرجعاً مضغوطاً ومستقراً للتعلم على النطاق الصغير. يُحقق أداءً جيداً مع مجموعات محدودة وتكاليف حسابية ضئيلة، مما يعكس قوة التعزيز التقليدي حين يظل فضاء الفرضيات قابلاً للتحكم فيه. تُوسِّع الإعدادات الكمية (`qeec_pred_job_1` و`qeec_pred_job_2` و`qeec_pred_job_3`) هذا الخط الأساسي بتضمين عملية اختيار المجموعة داخل حلقة تحسين كمي تغايري. يُتيح ذلك للنظام استكشاف مجموعات فرعية ضخمة من المُتعلِّمات في آنٍ واحد عبر التراكب الكمي، مما يُعالج الطابع التوافقي لاختيار المجموعات بكفاءة أعلى مع تزايد النطاق.
+
+تُظهر النتائج أن الرفع من `num_learners = 10` إلى `30` يُحسِّن الاستدعاء و F1، مما يؤكد أن المجموعة الأوسع تلتقط تفاعلات أغنى بين المُتعلِّمات الضعيفة. يكون الكسب دون خطي على الأجهزة الحالية — إذ يُفضي كل مُتعلِّم إضافي إلى زيادات دقة أصغر — غير أن سلوك التوسع الكامن يظل مواتياً لأن المُحسِّن الكمي يستطيع البحث في فضاءات إعداد أوسع دون التضخم الأسي النموذجي للاختيار الكلاسيكي للمجموعات الجزئية. يُضيف التنظيم دقةً إضافيةً: فـ λ=7 الثابت يُطبِّق تخلخلاً متسقاً ويُثبِّت التقارب، في حين يضبط تنظيم α التكيّفي التخلخل تلقائياً استناداً إلى الارتباطات بين المُتعلِّمات. كثيراً ما يُحقق هذا التقليم الديناميكي قيم F1 أعلى قليلاً لنفس عرض القيبت، مُوازناً بين تعقيد النموذج وقدرته على التعميم.
+
+بالمقارنة المباشرة مع خط الأساس AdaBoost، يُعيد أصغر إعداد كمي (L=10) إنتاج دقة مماثلة، مما يُتحقق من صحة خط الأنابيب الهجين. عند الاتساعات الأكبر، تبدأ الإصدارات الكمية — لا سيما مع التنظيم التلقائي — في تجاوز خط الأساس الكلاسيكي بتحسين الاستدعاء وF1 دون نمو خطي في التكلفة الحسابية. لا تدل هذه التحسينات على "تفوق كمي" فوري، بل على **كفاءة التوسع**: يُحافظ المُحسِّن الكمي على أداء قابل للتحكم مع توسع المجموعة، حيث سيواجه المنهج الكلاسيكي نمواً أسياً في تعقيد الاختيار الجزئي.
+
+في التطبيق العملي:
+- استخدم **خط الأساس الكلاسيكي** للتحقق السريع والقياس المرجعي على مجموعات البيانات الصغيرة.
+- طبِّق **المجموعات الكمية** حين يتزايد اتساع النموذج أو تعقيد الميزات — فالبحث القائم على QAOA يتوسع بصورة أكثر سلاسةً في تلك الأنظمة.
+- وظِّف **تنظيم α التكيّفي** للحفاظ على التخلخل والتعميم دون زيادة عرض الدائرة.
+- راقب وقت QPU والعمق لتوازن بين مكاسب الجودة وقيود الأجهزة قريبة المدى.
+
+تُبيِّن هذه التجارب مجتمعةً أن المجموعات المُحسَّنة كمياً تُكمِّل الأساليب الكلاسيكية: فهي تُعيد إنتاج دقة خط الأساس على النطاقات الصغيرة، مع تقديم مسار نحو التوسع الفعّال على مسائل التعلم التوافقية الأكبر. ومع تقدم الأجهزة، من المتوقع أن تتضاعف مزايا التوسع هذه، مُوسِّعةً الحجم الممكن وعمق النماذج القائمة على المجموعات إلى ما هو أبعد مما هو عملي كلاسيكياً.
+
+### تقييم المقاييس لكل إعداد
+
+نُقيِّم الآن جميع الإعدادات — خط الأساس الكلاسيكي AdaBoost والمجموعات الكمية الثلاث — باستخدام المساعد `evaluate_predictions` لحساب الدقة، والضبط، والاستدعاء، وF1 على مجموعة الاختبار ذاتها. توضح هذه المقارنة كيف يتوسع التحسين الكمي قياساً بالمنهج الكلاسيكي: عند الاتساعات الصغيرة يُحقق كلاهما أداءً متماثلاً؛ ومع نمو المجموعات، يستطيع الأسلوب الكمي استكشاف فضاءات الفرضيات الأوسع بكفاءة أعلى. يُثبِّت الجدول الناتج هذه الاتجاهات في صورة كمية متسقة.
+
+```python
+results = []
+
+# Classical baseline
+acc_b, prec_b, rec_b, f1_b = evaluate_predictions(baseline_pred, y_test)
+results.append(
+    {
+        "Config": "AdaBoost (Classical)",
+        "Accuracy": acc_b,
+        "Precision": prec_b,
+        "Recall": rec_b,
+        "F1": f1_b,
+    }
+)
+
+# Quantum runs
+for label, preds in [
+    ("QEEC L=10, reg=7", qeec_pred_job_1),
+    ("QEEC L=30, reg=7", qeec_pred_job_2),
+    (f"QEEC L=60, reg=auto (α={REGULARIZATION_RATIO})", qeec_pred_job_3),
+]:
+    acc, prec, rec, f1 = evaluate_predictions(preds, y_test)
+    results.append(
+        {
+            "Config": label,
+            "Accuracy": acc,
+            "Precision": prec,
+            "Recall": rec,
+            "F1": f1,
+        }
+    )
+
+df_results = pd.DataFrame(results)
+df_results
+```
+
+```text
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```text
+Config  Accuracy  Precision    Recall        F1
+0          AdaBoost (Classical)  0.789333        1.0  0.789333  0.882265
+1              QEEC L=10, reg=7  0.868000        1.0  0.868000  0.929336
+2              QEEC L=30, reg=7  0.894667        1.0  0.894667  0.944405
+3  QEEC L=60, reg=auto (α=0.82)  0.908000        1.0  0.908000  0.951782
+```
+
+### تصوير اتجاهات الجودة عبر الإعدادات
+
+يُقارن المخطط الشريطي المجمَّع أدناه **الدقة** و**F1** عبر خط الأساس الكلاسيكي والمجموعات الكمية (`L=10` و`L=30` و`L=60 auto-α`). يُوضِّح كيف تستقر الدقة بينما يتحسن F1 تدريجياً مع زيادة اتساع المجموعة الكمية، مما يُبيِّن أن الأسلوب الهجين يحافظ على توسع الأداء دون النمو الأسي في التكلفة النموذجي للاختيار الكلاسيكي للمجموعات الجزئية.
+
+```python
+x = np.arange(len(df_results))
+width = 0.35
+plt.figure(figsize=(7.6, 4.6))
+plt.bar(x - width / 2, df_results["Accuracy"], width=width, label="Accuracy")
+plt.bar(x + width / 2, df_results["F1"], width=width, label="F1")
+plt.xticks(x, df_results["Config"], rotation=10)
+plt.ylabel("Score")
+plt.title("Classical vs Quantum ensemble performance")
+plt.legend()
+plt.ylim(0, 1.0)
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sml-classification/extracted-outputs/0f15c5fb-2450-4671-9bc2-471043414df2-0.avif)
+
+### التفسير
+
+يُؤكد المخطط نمط التوسع المتوقع. يُحقق AdaBoost الكلاسيكي أداءً قوياً مع المجموعات الأصغر، غير أن توسيعه يزداد تكلفةً مع نمو عدد المُتعلِّمات الضعيفة، إذ تتضخم مسألة الاختيار الجزئي لديه بصورة توافقية. تُعيد النماذج المُعزَّزة كمياً إنتاج الدقة الكلاسيكية عند الاتساعات المنخفضة وتبدأ في تجاوزها مع تزايد حجم المجموعة، لا سيما في ظل تنظيم α التكيّفي. يعكس ذلك قدرة المُحسِّن الكمي على أخذ عينات من كثير من المجموعات الجزئية المرشحة في آنٍ واحد عبر التراكب الكمي وتقييمها، مما يُبقي البحث قابلاً للتحكم حتى عند الاتساعات الأعلى. في حين يُعوِّض العبء الحسابي للأجهزة الحالية بعض المكاسب النظرية، يُوضِّح الاتجاه ميزة كفاءة التوسع في الصياغة الكمية. من الناحية العملية، يبقى الأسلوب الكلاسيكي أفضل خياراً للمعايير الخفيفة، بينما تصبح المجموعات المُعزَّزة كمياً أكثر نفعاً مع توسع أبعاد النموذج وحجم المجموعة، مُقدِّمةً مقايضات أفضل بين الدقة والتعميم والنمو الحسابي.
+
+## الملحق: فوائد التوسع والتحسينات
+
+تنشأ ميزة قابلية التوسع لدى `QuantumEnhancedEnsembleClassifier` من كيفية تعيين عملية اختيار المجموعة على التحسين الكمي.
+تصبح أساليب تعلم المجموعة الكلاسيكية، كـ AdaBoost والغابات العشوائية، باهظة الحساب مع تزايد عدد المُتعلِّمات الضعيفة، لأن اختيار المجموعة الجزئية المثلى هو مسألة توافقية تتوسع بصورة أسية.
+
+في المقابل، يستطيع الصياغة الكمية — المُنفَّذة هنا عبر خوارزمية التحسين الكمي التقريبي (QAOA) — استكشاف هذه الفضاءات الضخمة الأسية بكفاءة أكبر بتقييم إعدادات متعددة في حالة تراكب كمي.
+ونتيجةً لذلك، لا يتزايد وقت التدريب بصورة ملحوظة مع عدد المُتعلِّمات، مما يُتيح للنموذج الحفاظ على كفاءته حتى مع اتساع حجم المجموعة.
+
+في حين تُدخل الأجهزة الحالية بعض الضوضاء وقيوداً على العمق، يُوضِّح هذا سير العمل نهجاً هجيناً قريب المدى تتعاون فيه المكوِّنات الكلاسيكية والكمية: يُوفِّر المُحسِّن الكمي مشهداً أفضل للتهيئة الأولية للحلقة الكلاسيكية، مما يُحسِّن التقارب وجودة النموذج النهائية.
+ومع تطور المعالجات الكمية، من المتوقع أن تمتد فوائد قابلية التوسع هذه إلى مجموعات بيانات أكبر، ومجموعات أوسع، وأعماق دائرة أعمق.
+
+## المراجع
+
+1. [Introduction to Qiskit Functions](/guides/functions)
+2. [Multiverse Computing Singularity Machine Learning](/guides/multiverse-computing-singularity)
+
+## استطلاع البرنامج التعليمي
+
+يُرجى تخصيص دقيقة لتقديم ملاحظاتك حول هذا البرنامج التعليمي. ستُساعدنا آراؤك في تحسين محتوانا وتجربة المستخدمين.

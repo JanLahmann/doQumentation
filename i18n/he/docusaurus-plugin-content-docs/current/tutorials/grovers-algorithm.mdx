@@ -1,0 +1,201 @@
+---
+title: "אלגוריתם גרובר"
+sidebar_label: "אלגוריתם גרובר"
+description: "למד את יסודות המחשוב הקוונטי, וכיצד להשתמש בשירותי IBM Quantum ובמעבדי QPU לפתרון בעיות מהעולם האמיתי."
+notebook_path: "docs/tutorials/grovers-algorithm.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/grovers-algorithm.ipynb" />
+
+
+
+*הערכת שימוש: פחות מדקה על מעבד Eagle r3 (הערה: זוהי הערכה בלבד. זמן הריצה בפועל עשוי להשתנות.)*
+## רקע {#background}
+
+הגברת משרעת (Amplitude Amplification) היא אלגוריתם קוונטי כללי, או שגרת עזר, שניתן להשתמש בה להשגת האצה ריבועית על פני מספר אלגוריתמים קלאסיים. [אלגוריתם גרובר](https://arxiv.org/abs/quant-ph/9605043) היה הראשון להדגים האצה זו על בעיות חיפוש לא-מובנות. ניסוח בעיית חיפוש של גרובר מצריך פונקציית אורקל המסמנת מצב אחד או יותר של בסיס חישובי כמצבים שאנו מעוניינים למצוא, ומעגל הגברה המגדיל את המשרעת של המצבים המסומנים תוך דיכוי שאר המצבים.
+
+כאן, נדגים כיצד לבנות אורקלים של גרובר ולהשתמש ב-[`grover_operator()`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.grover_operator) מספריית המעגלים של Qiskit להגדרה קלה של מופע חיפוש גרובר. הפרימיטיב `Sampler` של Runtime מאפשר ביצוע חלק של מעגלי גרובר.
+## דרישות מקדימות {#requirements}
+
+לפני תחילת המדריך, ודא שהדברים הבאים מותקנים:
+
+* Qiskit SDK גרסה 1.4 ומעלה, עם תמיכה ב-[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime‏ (`pip install qiskit-ibm-runtime`) גרסה 0.36 ומעלה
+## הגדרה {#setup}
+
+```python
+# Built-in modules
+import math
+
+# Imports from Qiskit
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import grover_operator, MCMTGate, ZGate
+from qiskit.visualization import plot_distribution
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+# Imports from Qiskit Runtime
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+def grover_oracle(marked_states):
+    """Build a Grover oracle for multiple marked states
+
+    Here we assume all input marked states have the same number of bits
+
+    Parameters:
+        marked_states (str or list): Marked states of oracle
+
+    Returns:
+        QuantumCircuit: Quantum circuit representing Grover oracle
+    """
+    if not isinstance(marked_states, list):
+        marked_states = [marked_states]
+    # Compute the number of qubits in circuit
+    num_qubits = len(marked_states[0])
+
+    qc = QuantumCircuit(num_qubits)
+    # Mark each target state in the input list
+    for target in marked_states:
+        # Flip target bit-string to match Qiskit bit-ordering
+        rev_target = target[::-1]
+        # Find the indices of all the '0' elements in bit-string
+        zero_inds = [
+            ind
+            for ind in range(num_qubits)
+            if rev_target.startswith("0", ind)
+        ]
+        # Add a multi-controlled Z-gate with pre- and post-applied X-gates (open-controls)
+        # where the target bit-string has a '0' entry
+        if zero_inds:
+            qc.x(zero_inds)
+        qc.compose(MCMTGate(ZGate(), num_qubits - 1, 1), inplace=True)
+        if zero_inds:
+            qc.x(zero_inds)
+    return qc
+```
+
+## שלב 1: מיפוי קלט קלאסי לבעיה קוונטית {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+אלגוריתם גרובר מצריך [אורקל](/learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/introduction) המציין מצב אחד או יותר של בסיס חישובי מסומן, כאשר "מסומן" משמעותו מצב עם פאזה של -1. שער Z-מבוקר, או הכללתו הרב-מבוקרת על $N$ קיוביטים, מסמן את המצב $2^{N}-1$ (מחרוזת הביטים `'1'`*$N$). סימון מצבי בסיס עם `'0'` אחד או יותר בייצוג הבינארי מצריך הפעלת שערי X על הקיוביטים המתאימים לפני ואחרי שער ה-Z-המבוקר; שקול לשליטה פתוחה על אותו קיוביט. בקוד הבא, אנו מגדירים אורקל שעושה בדיוק זאת, ומסמן מצב אחד או יותר של בסיס קלט המוגדרים דרך ייצוג מחרוזת הביטים שלהם. שער ה-`MCMT` משמש למימוש שער ה-Z הרב-מבוקר.
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+backend.name
+```
+
+```text
+'ibm_brisbane'
+```
+
+### מופע ספציפי של גרובר {#specific-grovers-instance}
+
+כעת שיש לנו את פונקציית האורקל, נוכל להגדיר מופע ספציפי של חיפוש גרובר. בדוגמה זו נסמן שני מצבים חישוביים מתוך שמונת המצבים הזמינים במרחב החישובי בן שלושת הקיוביטים:
+
+```python
+marked_states = ["011", "100"]
+
+oracle = grover_oracle(marked_states)
+oracle.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/c150298f-0.avif)
+
+```python
+marked_states = ["011", "100"]
+
+oracle = grover_oracle(marked_states)
+oracle.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/7baca7e2-99fc-4089-b5d8-30da56816a6a-0.avif)
+
+```python
+marked_states = ["011", "100"]
+
+oracle = grover_oracle(marked_states)
+oracle.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/d3a26fc9-9090-4527-a749-a412661260b6-0.avif)
+
+### אופרטור גרובר {#grover-operator}
+
+הפונקציה המובנית `grover_operator()` של Qiskit מקבלת מעגל אורקל ומחזירה מעגל המורכב ממעגל האורקל עצמו ומעגל שמגביר את המצבים המסומנים על ידי האורקל. כאן, אנו משתמשים בשיטת `decompose()` על המעגל כדי לראות את השערים בתוך האופרטור:
+
+```python
+grover_op = grover_operator(oracle)
+grover_op.decompose().draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/283d5265-0.avif)
+
+יישומים חוזרים של מעגל `grover_op` זה מגבירים את המצבים המסומנים, הופכים אותם למחרוזות הביטים בעלות הסבירות הגבוהה ביותר בהתפלגות הפלט מהמעגל. קיים מספר אופטימלי של יישומים כאלה הנקבע לפי יחס המצבים המסומנים למספר הכולל של המצבים החישוביים האפשריים:
+
+```python
+optimal_num_iterations = math.floor(
+    math.pi
+    / (4 * math.asin(math.sqrt(len(marked_states) / 2**grover_op.num_qubits)))
+)
+```
+
+### מעגל גרובר המלא {#full-grover-circuit}
+
+ניסוי גרובר מלא מתחיל בשער Hadamard על כל קיוביט, ויוצר סופרפוזיציה אחידה של כל מצבי הבסיס החישובי, ולאחר מכן האופרטור `grover_op` מיושם מספר האיטרציות האופטימלי. כאן אנו עושים שימוש בשיטת `QuantumCircuit.power(INT)` להפעלה חוזרת של אופרטור גרובר.
+
+```python
+qc = QuantumCircuit(grover_op.num_qubits)
+# Create even superposition of all basis states
+qc.h(range(grover_op.num_qubits))
+# Apply Grover operator the optimal number of times
+qc.compose(grover_op.power(optimal_num_iterations), inplace=True)
+# Measure all qubits
+qc.measure_all()
+qc.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/4933ae44-0.avif)
+
+## שלב 2: אופטימיזציה של הבעיה לביצוע על חומרה קוונטית {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+```python
+target = backend.target
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+
+circuit_isa = pm.run(qc)
+circuit_isa.draw(output="mpl", idle_wires=False, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/c9a3020e-0.avif)
+
+## שלב 3: ביצוע באמצעות פרימיטיבים של Qiskit {#step-3-execute-using-qiskit-primitives}
+
+הגברת משרעת היא בעיית דגימה המתאימה לביצוע עם הפרימיטיב [`Sampler`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/sampler-v2) של Runtime.
+
+שים לב שמתודת `run()` של [Qiskit Runtime `SamplerV2`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/sampler-v2) מקבלת אוסף של `primitive unified blocks (PUBs)`. עבור Sampler, כל PUB הוא אוסף בפורמט `(circuit, parameter_values)`. עם זאת, כמינימום, הוא מקבל רשימה של מעגל(י) קוונטי.
+
+```python
+# To run on local simulator:
+#   1. Use the StatevectorSampler from qiskit.primitives instead
+sampler = Sampler(mode=backend)
+sampler.options.default_shots = 10_000
+result = sampler.run([circuit_isa]).result()
+dist = result[0].data.meas.get_counts()
+```
+
+## שלב 4: עיבוד לאחר-מדידה והצגת תוצאה בפורמט קלאסי {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+```python
+plot_distribution(dist)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/a5ef9913-0.avif)
+
+## סקר על המדריך {#tutorial-survey}
+
+אנא מלא סקר קצר זה כדי לספק משוב על מדריך זה. התובנות שלך יסייעו לנו לשפר את תכני הלמידה וחוויית המשתמש.
+
+[קישור לסקר](https://your.feedback.ibm.com/jfe/form/SV_0j1SlLPkooyeFJY)

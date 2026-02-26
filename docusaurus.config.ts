@@ -21,7 +21,7 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl'],
+    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
@@ -32,6 +32,8 @@ const config: Config = {
       pt: { label: 'Português', url: 'https://pt.doqumentation.org' },
       ja: { label: '日本語', url: 'https://ja.doqumentation.org' },
       tl: { label: 'Filipino', url: 'https://tl.doqumentation.org' },
+      ar: { label: 'العربية', direction: 'rtl', url: 'https://ar.doqumentation.org' },
+      he: { label: 'עברית', direction: 'rtl', url: 'https://he.doqumentation.org' },
     },
   },
 
@@ -66,7 +68,7 @@ const config: Config = {
         hashed: true,
         indexBlog: false,
         docsRouteBasePath: '/',
-        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja'],
+        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he'],
       },
     ],
   ],

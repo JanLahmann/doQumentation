@@ -1,0 +1,224 @@
+---
+title: "تخفيف الأخطاء باستخدام دالة IBM Circuit"
+sidebar_label: "تخفيف الأخطاء باستخدام دالة IBM Circuit"
+description: "استعراض مثال لبناء سير عمل وتشغيله باستخدام دالة IBM Circuit."
+notebook_path: "docs/tutorials/error-mitigation-with-qiskit-functions.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/error-mitigation-with-qiskit-functions.ipynb" />
+
+
+
+<Admonition type="note" title="ملاحظة">
+دوال Qiskit Functions ميزة تجريبية متاحة فقط لمستخدمي خطة IBM Quantum&reg; Premium Plan وخطة Flex Plan وخطة On-Prem (عبر IBM Quantum Platform API). وهي في مرحلة إصدار أولي وعرضة للتغيير.
+</Admonition>
+
+*تقدير الاستخدام: 26 دقيقة على معالج Eagle (ملاحظة: هذا تقدير فحسب. قد يختلف وقت التشغيل الفعلي.)*
+يستعرض هذا الدرس التعليمي مثالاً لبناء سير عمل وتشغيله باستخدام دالة IBM Circuit. تأخذ هذه الدالة [كتل Primitive Unified Blocs](/guides/primitive-input-output) (PUBs) كمدخلات وتُعيد قيم التوقع المعالجة من الأخطاء كمخرجات. وهي توفر خطوط أنابيب آلية ومخصصة لتحسين الدوائر الكمومية وتنفيذها على الأجهزة الكمومية، مما يتيح للباحثين التركيز على اكتشاف الخوارزميات والتطبيقات.
+
+تفضل بزيارة الوثائق للاطلاع على [مقدمة حول Qiskit Functions](/guides/functions) ومعرفة كيفية البدء مع [دالة IBM Circuit](/guides/ibm-circuit-function).
+## الخلفية النظرية {#background}
+
+يتناول هذا الدرس التعليمي دائرة تطور زمني Trotterized فعّالة للأجهزة للنموذج الإيزيني ثنائي الأبعاد في حقل عرضي، ويحسب المغنطة الكلية. تُعدّ هذه الدائرة مفيدة في مجالات تطبيقية متعددة كفيزياء المادة المكثفة والكيمياء والتعلم الآلي. لمزيد من المعلومات حول بنية هذا النموذج، يُرجى الرجوع إلى [Nature 618, 500–505 (2023)](https://www.nature.com/articles/s41586-023-06096-3).
+
+تجمع دالة IBM Circuit بين إمكانات خدمة Qiskit transpiler وخدمة Qiskit Runtime Estimator لتوفير واجهة مبسطة لتشغيل الدوائر الكمومية. تُنفّذ الدالة عمليات التحويل وقمع الأخطاء وتخفيفها وتنفيذ الدوائر ضمن خدمة مُدارة واحدة، مما يُتيح لنا التركيز على تعيين المسألة إلى دوائر كمومية بدلاً من بناء كل خطوة من خطوات النمط بأنفسنا.
+## المتطلبات {#requirements}
+
+قبل البدء في هذا الدرس التعليمي، تأكد من تثبيت ما يلي:
+
+- Qiskit SDK v1.2 أو أحدث (`pip install qiskit`)
+- Qiskit Runtime v0.28 أو أحدث (`pip install qiskit-ibm-runtime`)
+- IBM Qiskit Functions Catalog client v0.0.0 أو أحدث (`pip install qiskit-ibm-catalog`)
+- Qiskit Aer v0.15.0 أو أحدث (`pip install qiskit-aer`)
+## الإعداد {#setup}
+
+```python
+import rustworkx
+from collections import defaultdict
+from numpy import pi, mean
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.quantum_info import SparsePauliOp
+```
+
+## الخطوة الأولى: تعيين المدخلات الكلاسيكية إلى مسألة كمومية {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+<ul>
+    <li>المدخلات: معاملات لإنشاء الدائرة الكمومية</li>
+    <li>المخرجات: دائرة مجردة والمراقبات</li>
+</ul>
+#### بناء الدائرة {#construct-the-circuit}
+الدائرة التي سننشئها هي دائرة تطور زمني Trotterized فعّالة للأجهزة للنموذج الإيزيني ثنائي الأبعاد في حقل عرضي. نبدأ باختيار backend. ستُستخدم خصائص هذا الـ backend (أي خريطة الاقتران الخاصة به) لتحديد المسألة الكمومية والتأكد من فعاليتها للأجهزة.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+بعد ذلك، نستخرج خريطة الاقتران من الـ backend.
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+layer_couplings = defaultdict(list)
+```
+
+ينبغي أن نكون دقيقين في كيفية تصميم طبقات دائرتنا. سنقوم بذلك من خلال تلوين حواف خريطة الاقتران (أي تجميع الحواف غير المتقاطعة) واستخدام ذلك التلوين لوضع البوابات في الدائرة بكفاءة أكبر. سيؤدي هذا إلى دائرة أقل عمقاً مع طبقات من البوابات التي يمكن تنفيذها في آنٍ واحد على الجهاز.
+
+```python
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+
+for edge_idx, color in edge_coloring.items():
+    layer_couplings[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layer_couplings = [
+    sorted(layer_couplings[i]) for i in sorted(layer_couplings.keys())
+]
+```
+
+بعد ذلك، نكتب دالة مساعدة بسيطة تُنفّذ دائرة التطور الزمني Trotterized الفعّالة للأجهزة للنموذج الإيزيني ثنائي الأبعاد في حقل عرضي باستخدام تلوين الحواف المُحصل عليه أعلاه.
+
+```python
+def construct_trotter_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    layer_couplings: list,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    theta, phi = Parameter("theta"), Parameter("phi")
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(theta, range(num_qubits))
+        for layer in layer_couplings:
+            for edge in layer:
+                if edge[0] < num_qubits and edge[1] < num_qubits:
+                    circuit.rzz(phi, edge[0], edge[1])
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+```
+
+سنختار عدد الكيوبتات وخطوات Trotter ثم نبني الدائرة.
+
+```python
+num_qubits = 100
+num_trotter_steps = 2
+
+circuit = construct_trotter_circuit(
+    num_qubits, num_trotter_steps, layer_couplings
+)
+circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-mitigation-with-qiskit-functions/extracted-outputs/18eefa99-f1c4-41b5-90b8-7fd8723cac84-0.avif)
+
+لمعايرة جودة التنفيذ، نحتاج إلى مقارنته بالنتيجة المثالية. الدائرة المختارة تتجاوز إمكانات المحاكاة الكلاسيكية المباشرة. لذا، نثبّت معاملات جميع بوابات `Rx` في الدائرة عند $0$، وجميع بوابات `Rzz` عند $\pi$. هذا يجعل الدائرة Clifford، مما يُتيح إجراء المحاكاة المثالية والحصول على النتيجة المثالية للمقارنة. في هذه الحالة، نعلم أن النتيجة ستكون `1.0`.
+
+```python
+parameters = [0, pi]
+```
+
+#### بناء المراقبة {#construct-the-observable}
+أولاً، احسب المغنطة الكلية على طول $\hat{z}$ للمسألة ذات $N$ كيوبت: $M_z = \sum_{i=1}^N \langle Z_i \rangle / N$. يتطلب ذلك أولاً حساب المغنطة أحادية الموقع $\langle Z_i \rangle$ لكل كيوبت $i$، والتي تُعرَّف في الكود التالي.
+
+```python
+observables = []
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(SparsePauliOp(obs))
+
+print(observables[0])
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## الخطوتان الثانية والثالثة: تحسين المسألة لتنفيذها على الأجهزة الكمومية والتنفيذ باستخدام دالة IBM Circuit {#steps-2-and-3-optimize-problem-for-quantum-hardware-execution-and-execute-with-the-ibm-circuit-function}
+
+<ul>
+    <li>المدخلات: الدائرة المجردة والمراقبات</li>
+    <li>المخرجات: قيم التوقع المعالجة من الأخطاء</li>
+</ul>
+الآن، يمكننا تمرير الدائرة المجردة والمراقبات إلى دالة IBM Circuit. ستتولى الدالة عمليات التحويل والتنفيذ على الأجهزة الكمومية نيابةً عنا وتُعيد قيم التوقع المعالجة من الأخطاء. أولاً، نحمّل الدالة من [IBM Qiskit Functions Catalog](/guides/functions).
+
+```python
+catalog = QiskitFunctionsCatalog(
+    token="<YOUR_API_KEY>"
+)  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+function = catalog.load("ibm/circuit-function")
+```
+
+تأخذ دالة IBM Circuit كلاً من `pubs` و`backend_name`، فضلاً عن مدخلات اختيارية لضبط إعدادات التحويل وتخفيف الأخطاء وغيرها. ننشئ `pub` من الدائرة المجردة والمراقبات ومعاملات الدائرة. يجب تحديد اسم الـ backend كسلسلة نصية.
+
+```python
+pubs = [(circuit, observables, parameters)]
+backend_name = backend.name
+```
+
+يمكننا أيضاً ضبط `options` للتحويل وقمع الأخطاء وتخفيفها. ستُستخدم الإعدادات الافتراضية إذا لم نرغب في تحديدها. تأتي دالة IBM Circuit مع خيارات شائعة الاستخدام لـ `optimization_level`، الذي يتحكم في مقدار تحسين الدائرة، و`mitigation_level`، الذي يحدد مقدار قمع الأخطاء وتخفيفها المُطبَّق. لاحظ أن `mitigation_level` في دالة IBM Circuit يختلف عن `resilience_level` المستخدم في [Qiskit Runtime Estimator](/guides/configure-error-mitigation). للاطلاع على وصف تفصيلي لهذه الخيارات الشائعة وغيرها من الخيارات المتقدمة، تفضل بزيارة [وثائق دالة IBM Circuit](/guides/ibm-circuit-function).
+
+في هذا الدرس التعليمي، سنضع `default_precision` و`optimization_level: 3` و`mitigation_level: 3`، مما سيُفعّل تقليب البوابات (gate twirling) والاستقراء إلى الضوضاء الصفرية (Zero Noise Extrapolation - ZNE) عبر تضخيم الأخطاء الاحتمالي (Probabilistic Error Amplification - PEA) إضافةً إلى إعدادات المستوى الافتراضي 1.
+
+```python
+options = {
+    "default_precision": 0.011,
+    "optimization_level": 3,
+    "mitigation_level": 3,
+}
+```
+
+بعد تحديد المدخلات، نُرسل المهمة إلى دالة IBM Circuit للتحسين والتنفيذ.
+
+```python
+job = function.run(backend_name=backend_name, pubs=pubs, options=options)
+```
+
+## الخطوة الرابعة: المعالجة اللاحقة وإعادة النتيجة بالصيغة الكلاسيكية المطلوبة {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+<ul>
+    <li>المدخلات: نتائج دالة IBM Circuit</li>
+    <li>المخرجات: المغنطة الكلية</li>
+</ul>
+#### حساب المغنطة الكلية {#compute-the-global-magnetization}
+النتيجة من تشغيل الدالة لها نفس صيغة مخرجات [Estimator](/guides/primitive-input-output#estimator-output).
+
+```python
+result = job.result()[0]
+```
+
+نستخرج قيم التوقع المعالجة وغير المعالجة من الأخطاء من هذه النتيجة. تمثل قيم التوقع هذه المغنطة أحادية الموقع على طول اتجاه $\hat{z}$. نحسب متوسطها للحصول على المغنطة الكلية ونقارنها بالقيمة المثالية `1.0` لهذا المثال.
+
+```python
+mitigated_expvals = result.data.evs
+magnetization_mitigated = mean(mitigated_expvals)
+
+print("mitigated:", magnetization_mitigated)
+
+unmitigated_expvals = [
+    result.data.evs_extrapolated[i][0][1] for i in range(num_qubits)
+]
+magnetization_unmitigated = mean(unmitigated_expvals)
+
+print("unmitigated:", magnetization_unmitigated)
+```
+
+```text
+mitigated: 0.9749883476088692
+unmitigated: 0.7832977198447583
+```
+
+## استبيان الدرس التعليمي {#tutorial-survey}
+
+يُرجى الإجابة على هذا الاستبيان القصير لتقديم ملاحظاتك حول هذا الدرس التعليمي. ستُساعدنا آراؤك في تحسين محتوانا وتجربة المستخدم.
+
+[رابط الاستبيان](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

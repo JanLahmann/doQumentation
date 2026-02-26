@@ -1,0 +1,228 @@
+---
+title: "قطع الدوائر لتقليل العمق"
+sidebar_label: "قطع الدوائر لتقليل العمق"
+description: "بناء نمط Qiskit لقطع البوابات في دائرة كمية لتقليل عمق الدائرة."
+notebook_path: "docs/tutorials/depth-reduction-with-circuit-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/depth-reduction-with-circuit-cutting.ipynb" />
+
+
+
+*تقدير الاستخدام: ثماني دقائق على معالج Eagle (ملاحظة: هذا تقدير فقط. قد يختلف وقت التشغيل الفعلي.)*
+## الخلفية {#background}
+
+يوضح هذا البرنامج التعليمي كيفية بناء `Qiskit pattern` لقطع البوابات في دائرة كمية بهدف تقليل عمق الدائرة. للاطلاع على نقاش أعمق حول قطع الدوائر، تفضل بزيارة [توثيق إضافة Qiskit لقطع الدوائر](https://qiskit.github.io/qiskit-addon-cutting/).
+## المتطلبات {#requirements}
+
+قبل البدء بهذا البرنامج التعليمي، تأكد من تثبيت ما يلي:
+- Qiskit SDK الإصدار 2.0 أو أحدث، مع دعم [التصور](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime الإصدار 0.22 أو أحدث (`pip install qiskit-ibm-runtime`)
+- إضافة Qiskit لقطع الدوائر الإصدار 0.9.0 أو أحدث (`pip install qiskit-addon-cutting`)
+## الإعداد {#setup}
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+
+from qiskit.circuit.library import EfficientSU2
+from qiskit.quantum_info import PauliList, Statevector, SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_addon_cutting import (
+    cut_gates,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+## الخطوة 1: تحويل المدخلات الكلاسيكية إلى مسألة كمية {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+سننفذ نمط Qiskit باتباع الخطوات الأربع الموضحة في [التوثيق](/guides/intro-to-patterns). في هذه الحالة، سنحاكي قيم التوقع على دائرة ذات عمق معين عن طريق قطع البوابات مما ينتج عنه بوابات swap، ثم تنفيذ التجارب الفرعية على دوائر أقل عمقاً. يرتبط قطع البوابات بالخطوة 2 (تحسين الدائرة للتنفيذ الكمي عن طريق تحليل البوابات البعيدة) والخطوة 4 (المعالجة اللاحقة لإعادة بناء قيم التوقع على الدائرة الأصلية).
+في الخطوة الأولى، سنولد دائرة من مكتبة دوائر Qiskit ونعرّف بعض المؤثرات.
+
+*   المدخل: معاملات كلاسيكية لتعريف دائرة
+*   المخرج: دائرة مجردة ومؤثرات
+
+```python
+circuit = EfficientSU2(num_qubits=4, entanglement="circular").decompose()
+circuit.assign_parameters([0.4] * len(circuit.parameters), inplace=True)
+observables = PauliList(["ZZII", "IZZI", "IIZZ", "XIXI", "ZIZZ", "IXIX"])
+circuit.draw("mpl", scale=0.8, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/54ed0f13-0.avif)
+
+## الخطوة 2: تحسين المسألة لتنفيذها على العتاد الكمي {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+*   المدخل: دائرة مجردة ومؤثرات
+*   المخرج: دائرة هدف ومؤثرات ناتجة عن قطع البوابات البعيدة لتقليل عمق الدائرة بعد التحويل
+
+نختار تخطيطاً أولياً يستلزم swap-تين لتنفيذ البوابات بين البتين الكميتين 3 و0 وswap-تين أخريين لإعادة البتات الكمية إلى مواضعها الأصلية. نختار `optimization_level=3` وهو أعلى مستوى من التحسين المتاح مع مدير التمريرات الجاهز.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=circuit.num_qubits, simulator=False
+)
+
+pm = generate_preset_pass_manager(
+    optimization_level=3, initial_layout=[0, 1, 2, 3], backend=backend
+)
+transpiled_qc = pm.run(circuit)
+```
+
+![Coupling map showing the qubits that will need to be swapped](/docs/images/tutorials/depth-reduction-with-circuit-cutting/swaps.avif)
+
+```python
+print(f"Transpiled circuit depth: {transpiled_qc.depth()}")
+transpiled_qc.draw("mpl", scale=0.4, idle_wires=False, style="iqp", fold=-1)
+```
+
+```text
+Transpiled circuit depth: 103
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/4fe4af43-1.avif)
+
+*البحث عن البوابات البعيدة وقطعها:* سنستبدل البوابات البعيدة (البوابات التي تربط البتين الكميتين غير المحليتين 0 و3) بكائنات `TwoQubitQPDGate` عبر تحديد مؤشراتها. ستستبدل `cut_gates` البوابات عند المؤشرات المحددة بكائنات `TwoQubitQPDGate` وستُعيد أيضاً قائمة من نسخ `QPDBasis` -- واحدة لكل تحليل بوابة. يحتوي كائن `QPDBasis` على معلومات حول كيفية تحليل البوابات المقطوعة إلى عمليات أحادية البت الكمي.
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(circuit.data)
+    if {circuit.find_bit(q)[0] for q in instruction.qubits} == {0, 3}
+]
+
+# Decompose distant CNOTs into TwoQubitQPDGate instances
+qpd_circuit, bases = cut_gates(circuit, cut_indices)
+
+qpd_circuit.draw("mpl", scale=0.8)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/23e3d25e-0.avif)
+
+*توليد التجارب الفرعية للتشغيل على الخلفية*: تقبل `generate_cutting_experiments` دائرة تحتوي على نسخ `TwoQubitQPDGate` ومؤثرات على شكل `PauliList`.
+
+لمحاكاة قيمة التوقع للدائرة الكاملة الحجم، يتم توليد تجارب فرعية عديدة من التوزيع الاحتمالي شبه الكمي للبوابات المحللة، ثم تنفيذها على خلفية أو أكثر. يتحكم `num_samples` في عدد العينات المأخوذة من التوزيع، ويُعطى معامل مشترك واحد لكل عينة فريدة. لمزيد من المعلومات حول كيفية حساب المعاملات، راجع [المواد التوضيحية](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html).
+
+```python
+# Generate the subexperiments and sampling coefficients
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit, observables=observables, num_samples=np.inf
+)
+```
+
+*للمقارنة، نلاحظ أن التجارب الفرعية لـ QPD ستكون أقل عمقاً بعد قطع البوابات البعيدة*: فيما يلي مثال لتجربة فرعية مختارة بشكل عشوائي تم توليدها من دائرة QPD. انخفض عمقها بأكثر من النصف. يجب توليد وتقييم كثير من هذه التجارب الفرعية الاحتمالية لإعادة بناء قيمة التوقع للدائرة الأعمق.
+
+```python
+# Transpile the decomposed circuit to the same layout
+transpiled_qpd_circuit = pm.run(subexperiments[100])
+
+print(f"Original circuit depth after transpile: {transpiled_qc.depth()}")
+print(
+    f"QPD subexperiment depth after transpile: {transpiled_qpd_circuit.depth()}"
+)
+transpiled_qpd_circuit.draw(
+    "mpl", scale=0.6, style="iqp", idle_wires=False, fold=-1
+)
+```
+
+```text
+Original circuit depth after transpile: 103
+QPD subexperiment depth after transpile: 46
+```
+
+![Output of the previous code cell](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/70e2f1b6-1.avif)
+
+*من ناحية أخرى، يستلزم القطع الحاجة إلى أخذ عينات إضافية*. هنا نقطع ثلاث بوابات CNOT، مما ينتج عنه عبء أخذ عينات قدره $9^3$. لمزيد من المعلومات حول عبء أخذ العينات الناتج عن قطع الدوائر، راجع [توثيق Circuit Knitting Toolbox](https://qiskit-extensions.github.io/circuit-knitting-toolbox/circuit_cutting/explanation/index.html).
+
+```python
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 729.0
+```
+
+## الخطوة 3: التنفيذ باستخدام primitives في Qiskit {#step-3-execute-using-qiskit-primitives}
+
+نفّذ الدوائر الهدف ("التجارب الفرعية") باستخدام Sampler Primitive.
+
+*   المدخل: الدوائر الهدف
+*   المخرج: توزيعات الاحتمال شبه الكمي
+
+```python
+# Transpile the subexperiments to the backend's instruction set architecture (ISA)
+ isa_subexperiments = pm.run(subexperiments)
+
+# Set up the Qiskit Runtime Sampler primitive.  For a fake backend, this will use a local simulator.
+sampler = SamplerV2(backend)
+
+# Submit the subexperiments
+job = sampler.run(isa_subexperiments)
+```
+
+```python
+# Retrieve the results
+results = job.result()
+```
+
+```python
+print(job.job_id())
+```
+
+```text
+czypg1r6rr3g008mgp6g
+```
+
+## الخطوة 4: المعالجة اللاحقة وإعادة النتيجة بالصيغة الكلاسيكية المطلوبة {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+استخدم نتائج التجارب الفرعية والمؤثرات الفرعية ومعاملات أخذ العينات لإعادة بناء قيمة التوقع للدائرة الأصلية.
+
+المدخل: توزيعات الاحتمال شبه الكمي
+المخرج: قيم التوقع المعاد بناؤها
+
+```python
+reconstructed_expvals = reconstruct_expectation_values(
+    results,
+    coefficients,
+    observables,
+)
+# Reconstruct final expectation value
+final_expval = np.dot(reconstructed_expvals, [1] * len(observables))
+print("Final reconstructed expectation value")
+print(final_expval)
+```
+
+```text
+Final reconstructed expectation value
+1.0751342773437473
+```
+
+```python
+ideal_expvals = [
+    Statevector(circuit).expectation_value(SparsePauliOp(observable))
+    for observable in observables
+]
+print("Ideal expectation value")
+print(np.dot(ideal_expvals, [1] * len(observables)).real)
+```
+
+```text
+Ideal expectation value
+1.2283177520039992
+```
+
+## استطلاع البرنامج التعليمي {#tutorial-survey}
+
+يُرجى ملء هذا الاستطلاع القصير لتقديم ملاحظاتك حول هذا البرنامج التعليمي. ستساعدنا آراؤك في تحسين محتوانا وتجربة المستخدم.
+
+[رابط الاستطلاع](https://your.feedback.ibm.com/jfe/form/SV_2ftYFf9t72yFNIO)

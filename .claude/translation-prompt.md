@@ -46,16 +46,37 @@ File (path relative to docs/): {file}
 3. Write the translation to `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}`
 
 Rules:
+- Use the Read tool to read files and the Write tool to write files. Do NOT use Bash for file operations.
+- If the target file exists and contains `{/* doqumentation-untranslated-fallback */}`, it's a fallback — overwrite it completely
+- If the target file exists WITHOUT that marker, it's already translated — SKIP it
 - Preserve ALL frontmatter keys exactly — translate ONLY values of `title`, `description`, `sidebar_label`
-- Preserve ALL code blocks, math/LaTeX, JSX components, imports, HTML tags, URLs, image paths, inline code backticks UNCHANGED
+- Preserve ALL code blocks (` ```python `, ` ```bash `, ` ```text `, etc.) completely unchanged
+- Preserve ALL math/LaTeX (`$...$`, `$$...$$`) completely unchanged
+- Preserve ALL JSX components, imports, and HTML tags unchanged (e.g., `<Admonition>`, `<Tabs>`, `<OpenInLabBanner>`)
+- Preserve ALL URLs/links and image paths unchanged
+- Preserve ALL inline code backticks unchanged (e.g., `Statevector`, `QuantumCircuit`, `numpy`)
 - Translate ONLY prose: paragraphs, headings, list items, admonition text content
-- **Heading anchors**: When translating headings that are linked to within the same page, pin the original English anchor using Docusaurus syntax: `## Translated Heading {#original-english-anchor}`. This ensures internal `#anchor` links keep working. Example: `## Change ordering in Qiskit` → `## Reihenfolge in Qiskit ändern {#change-ordering-in-qiskit}`
+- **Heading anchors**: When translating headings, pin the original English anchor using Docusaurus syntax: `## Translated Heading {#original-english-anchor}`. This ensures internal `#anchor` links keep working. Example: `## Change ordering in Qiskit` → `## Reihenfolge in Qiskit ändern {#change-ordering-in-qiskit}`
 - Keep standard quantum computing terms (Qubit, Gate, Circuit, Backend, Transpiler)
 - Use {FORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
-- If the target file exists and contains `{/* doqumentation-untranslated-fallback */}`, it's a fallback — overwrite it completely
-- If the target file exists WITHOUT that marker, it's already translated — SKIP it
+- **Use proper Unicode characters** — NEVER use ASCII digraph substitutes. For German: use ä ö ü Ä Ö Ü ß directly, NEVER ae oe ue ss. For other languages: use the native script characters, never romanized approximations.
+
+### Large file chunking (>400 lines)
+
+Files over ~400 lines should be **split into chunks** for translation to avoid output token limits:
+
+1. Read the source file and identify section boundaries (e.g., `## Part I`, `## Step 3`)
+2. Split into chunks of **~400 lines each**, always at a section heading boundary (500 upper limit)
+3. Translate each chunk in a **separate parallel agent** — write to temp files (`/tmp/{filename}-part1.mdx`, etc.)
+4. First chunk includes frontmatter; subsequent chunks start at their section heading
+5. After all chunks complete, concatenate with a **blank line between chunks**
+6. **Verify integrity**: total line count vs source (should match), section heading count, code block count (triple backticks), LaTeX block count (`$$` pairs), last 5 lines of each chunk (truncation is the most common failure)
+7. **Verify Unicode** — grep for ASCII digraph patterns (e.g., `koennen`, `fuer` for German) and fix any found
+
+Files under 400 lines: translate in a single pass.
 ```
+
 
 ---
 
@@ -96,13 +117,13 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 
 ## Variable Reference
 
-| Variable | DE | JA | UK | ES | FR | IT | PT | TL | TH |
-|---|---|---|---|---|---|---|---|---|---|
-| LOCALE | de | ja | uk | es | fr | it | pt | tl | th |
-| LANGUAGE | German | Japanese | Ukrainian | Spanish | French | Italian | Portuguese | Tagalog/Filipino | Thai |
-| FORMAL_FORM | formal ("Sie" not "du") | polite (です/ます form) | formal ("Ви" not "ти") | formal ("usted" not "tú") | formal ("vous" not "tu") | formal ("Lei" not "tu") | formal ("você" formal) | formal ("po/opo" forms) | polite (ครับ/ค่ะ forms) |
+| Variable | DE | JA | UK | ES | FR | IT | PT | TL | TH | AR | HE |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| LOCALE | de | ja | uk | es | fr | it | pt | tl | th | ar | he |
+| LANGUAGE | German | Japanese | Ukrainian | Spanish | French | Italian | Portuguese | Tagalog/Filipino | Thai | Arabic | Hebrew |
+| FORMAL_FORM | formal ("Sie" not "du") | polite (です/ます form) | formal ("Ви" not "ти") | formal ("usted" not "tú") | formal ("vous" not "tu") | formal ("Lei" not "tu") | formal ("você" formal) | formal ("po/opo" forms) | polite (ครับ/ค่ะ forms) | formal (فصحى) | professional register |
 
-**New locales**: Before using `populate-locale` for a new locale, ensure its banner template exists in `BANNER_TEMPLATES` dict in `scripts/translate-content.py`. Currently defined: de, ja, uk, es, fr, it, pt, tl, th.
+**New locales**: Before using `populate-locale` for a new locale, ensure its banner template exists in `BANNER_TEMPLATES` dict in `scripts/translate-content.py`. Currently defined: de, ja, uk, es, fr, it, pt, tl, th, ar, he.
 
 ## Adding a New Language — Checklist
 
@@ -133,10 +154,16 @@ Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add
 
 | Locale | Pages | Status |
 |--------|-------|--------|
-| DE | 75/387 | 54 guides, 14 tutorials, 5 courses/modules, homepage, 2 indexes + UI strings |
-| ES | 15/387 | 4 tutorials, 5 guides, 3 courses, 2 modules, homepage + UI strings |
-| UK | 15/387 | Same pages as ES + UI strings |
-| JA | 15/387 | Same pages as ES. **Disabled** (no UI strings). Not in `locales` array. |
+| DE | 79/387 | 54 guides, 18 tutorials, 5 courses/modules, homepage, 2 indexes + UI strings |
+| ES | 55/387 | 43 tutorials, 5 guides, 3 courses, 2 modules, homepage + UI strings |
+| UK | 55/387 | 43 tutorials, 5 guides, 3 courses, 2 modules, homepage + UI strings |
+| FR | 44/387 | 44 tutorials + UI strings |
+| IT | 44/387 | 44 tutorials + UI strings |
+| PT | 44/387 | 44 tutorials + UI strings |
+| JA | 59/387 | 44 tutorials, 5 guides, 3 courses, 2 modules, homepage, 2 indexes + UI strings |
+| TL | 8/387 | 8 tutorials + UI strings |
+| AR | 44/387 | 44 tutorials + UI strings (RTL) |
+| HE | 9/387 | 9 tutorials + UI strings (RTL) |
 
 ## Agent Configuration Summary
 
@@ -144,6 +171,6 @@ Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add
 |---------|-------|
 | Model | `sonnet` |
 | Subagent type | `general-purpose` |
-| Files per agent | 1 |
+| Files per agent | 1 (use chunking for files >400 lines) |
 | Parallel agents | 20+ per round |
 | Rounds for full locale | ~19 rounds (371 files ÷ 20 agents per round) |

@@ -1,0 +1,896 @@
+---
+title: "حل مسألة تقسيم السوق باستخدام محسِّن Iskay الكمومي من Kipu Quantum"
+sidebar_label: "حل مسألة تقسيم السوق باستخدام محسِّن Iskay الكمومي من Kipu Quantum"
+description: "تعلَّم كيفية حل مسألة تقسيم السوق باستخدام محسِّن Iskay الكمومي مع خوارزمية bf-DCQO على أجهزة IBM Quantum"
+notebook_path: "docs/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.ipynb" />
+
+
+
+{/* cspell:ignore adiabaticity, HUBO, bitflip, metaheuristic, fontweight, fontsize, QOBLIB, Zuse, Kochenberger, Tramontani, Weninger, edgecolor, nonumber */}
+<Admonition type="note" title="ملاحظة">
+وظائف Qiskit ميزةٌ تجريبية متاحة فقط لمستخدمي خطط IBM Quantum&reg; Premium Plan وFlex Plan وOn-Prem (عبر IBM Quantum Platform API). وهي في مرحلة إصدار أولي وعرضةٌ للتغيير.
+</Admonition>
+
+*تقدير الاستخدام: 20 ثانية على معالج Heron r2. (ملاحظة: هذا تقدير فحسب. قد يختلف وقت التشغيل الفعلي.)*
+## الخلفية النظرية {#background}
+
+يُوضِّح هذا البرنامج التعليمي كيفية حل مسألة تقسيم السوق باستخدام [محسِّن Iskay الكمومي من Kipu Quantum](/guides/kipu-optimization) [\[1\]](#references). تُمثِّل مسألة تقسيم السوق تحدياً واقعياً في تخصيص الموارد، إذ يجب تقسيم الأسواق إلى مناطق مبيعات متوازنة لتلبية أهداف الطلب بدقة.
+
+### تحدي تقسيم السوق {#the-market-split-challenge}
+
+تطرح مسألة تقسيم السوق تحدياً خادعاً في بساطته الظاهرة لكنه بالغ التعقيد حسابياً في مجال تخصيص الموارد. تخيَّل شركةً لديها $m$ منتج يُباع عبر $n$ سوقاً مختلفة، حيث يشتري كل سوق حزمة محددة من المنتجات (تمثَّل بأعمدة المصفوفة $A$). يتمثَّل الهدف التجاري في تقسيم هذه الأسواق إلى منطقتَي مبيعات متوازنتين بحيث تحصل كل منطقة على نصف إجمالي الطلب لكل منتج تماماً.
+
+**الصياغة الرياضية:**
+
+نسعى إلى إيجاد متجه تعيين ثنائي $x$، حيث:
+- $x_j = 1$ يعني تعيين السوق $j$ إلى المنطقة A
+- $x_j = 0$ يعني تعيين السوق $j$ إلى المنطقة B
+- يجب أن يتحقق القيد $Ax = b$، حيث يمثِّل $b$ أهداف المبيعات (عادةً نصف إجمالي الطلب لكل منتج)
+
+**دالة التكلفة:**
+
+لحل هذه المسألة، نُقلِّل مربع انتهاك القيد:
+
+$$C(x) = ||Ax - b||^2 = \sum_{i=1}^{m} \left(\sum_{j=1}^{n} A_{ij}x_j - b_i\right)^2$$
+
+حيث:
+- $A_{ij}$ يمثِّل مبيعات المنتج $i$ في السوق $j$
+- $x_j \in \{0,1\}$ هو التعيين الثنائي للسوق $j$
+- $b_i$ هو هدف المبيعات للمنتج $i$ في كل منطقة
+- تساوي التكلفة صفراً تماماً عند تحقُّق جميع القيود
+
+يمثِّل كل حد في المجموع الانحراف التربيعي عن هدف المبيعات لمنتج معين. عند توسيع دالة التكلفة هذه، نحصل على:
+
+$$C(x) = x^T A^T A x - 2b^T A x + b^T b$$
+
+بما أن $b^T b$ ثابت، فإن تقليل $C(x)$ يكافئ تقليل الدالة التربيعية $x^T A^T A x - 2b^T A x$، وهي تماماً مسألة QUBO (التحسين الثنائي التربيعي غير المقيَّد).
+
+**التعقيد الحسابي:**
+
+على الرغم من بساطة تفسيرها التجاري، تُظهر هذه المسألة تعقيداً حسابياً لافتاً:
+- **الإخفاق في الحالات الصغيرة**: تفشل حلَّالات البرمجة الصحيحة المختلطة التقليدية في الحالات التي لا تتجاوز سبعة منتجات ضمن مهلة زمنية ساعة واحدة [\[4\]](#references)
+- **النمو الأسي**: يتزايد فضاء الحلول بصورة أسية ($2^n$ تعيين محتمل)، مما يجعل نهج القوة الغاشمة غير مجدٍ
+
+يجعل هذا الحاجز الحسابي الشديد، إلى جانب الأهمية العملية لتخطيط المناطق وتخصيص الموارد، من مسألة تقسيم السوق معياراً مثالياً لخوارزميات التحسين الكمومي [\[4\]](#references).
+
+### ما الذي يُميِّز نهج Iskay؟ {#what-makes-iskays-approach-unique}
+
+يستخدم محسِّن Iskay خوارزمية **bf-DCQO (التحسين الكمومي الرقمي المضاد للحث المتحيِّز بالحقل)** [\[1\]](#references)، التي تمثِّل تقدماً ملحوظاً في التحسين الكمومي:
+
+**كفاءة الدائرة**: تُحقِّق خوارزمية bf-DCQO تقليصاً ملحوظاً في عدد البوابات [\[1\]](#references):
+- حتى **10 أضعاف أقل من البوابات المتشابكة** مقارنةً بالتلدين الكمومي الرقمي (DQA)
+- تُتيح الدوائر الأكثر ضحالة بشكل ملحوظ:
+  - تراكم أخطاء أقل أثناء التنفيذ الكمومي
+  - القدرة على معالجة مسائل أكبر على الأجهزة الكمومية الحالية
+  - عدم الحاجة إلى تقنيات تخفيف الأخطاء
+
+**التصميم غير التغايري**: على عكس الخوارزميات التغايرية التي تتطلب نحو 100 تكرار، تحتاج خوارزمية bf-DCQO عادةً إلى **نحو 10 تكرارات فقط** [\[1\]](#references). يتحقق ذلك من خلال:
+- حسابات ذكية للحقل المتحيِّز من توزيعات الحالة المقيسة
+- بدء كل تكرار من حالة طاقة قريبة من الحل السابق
+- معالجة كلاسيكية متكاملة مع البحث المحلي
+
+**البروتوكولات المضادة للحث**: تدمج الخوارزمية حدوداً مضادة للحث تُثبِّط الإثارات الكمومية غير المرغوبة أثناء أوقات التطور القصيرة، مما يُمكِّن النظام من البقاء قرب الحالة الأساسية حتى في ظل الانتقالات السريعة [\[1\]](#references).
+## المتطلبات {#requirements}
+
+قبل البدء بهذا البرنامج التعليمي، تأكَّد من تثبيت ما يلي:
+
+* Qiskit IBM Runtime (`pip install qiskit-ibm-runtime`)
+* Qiskit Functions (`pip install qiskit-ibm-catalog`)
+* NumPy (`pip install numpy`)
+* Requests (`pip install requests`)
+* Opt Mapper Qiskit addon (`pip install qiskit-addon-opt-mapper`)
+
+ستحتاج أيضاً إلى الحصول على صلاحية الوصول إلى [وظيفة محسِّن Iskay الكمومي](https://quantum.cloud.ibm.com/functions?id=kipu-quantum-iskay-quantum-optimizer) من كتالوج وظائف Qiskit.
+## الإعداد {#setup}
+
+أولاً، استورِد جميع الحزم المطلوبة لهذا البرنامج التعليمي.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-opt-mapper
+```
+
+```python
+import os
+import tempfile
+import time
+from typing import Tuple, Optional
+
+import numpy as np
+import requests
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit_addon_opt_mapper import OptimizationProblem
+from qiskit_addon_opt_mapper.converters import OptimizationProblemToQubo
+
+print("All required libraries imported successfully")
+```
+
+### تهيئة بيانات اعتماد IBM Quantum {#configure-ibm-quantum-credentials}
+
+حدِّد بيانات اعتماد [منصة IBM Quantum&reg;](https://quantum.cloud.ibm.com/). ستحتاج إلى:
+- **رمز API**: مفتاح API المكوَّن من 44 حرفاً من منصة IBM Quantum
+- **Instance CRN**: معرِّف نسختك على IBM Cloud&reg;
+
+```python
+token = "<YOUR_API_KEY>"
+instance = "<YOUR_INSTANCE_CRN>"
+```
+
+## الخطوة 1: تعيين المدخلات الكلاسيكية إلى مسألة كمومية {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+نبدأ بتعيين مسألتنا الكلاسيكية إلى تمثيل متوافق مع الحوسبة الكمومية. تشمل هذه الخطوة:
+
+1. الاتصال بمحسِّن Iskay الكمومي
+2. تحميل مسألة تقسيم السوق وصياغتها
+3. فهم خوارزمية bf-DCQO التي ستحل المسألة
+
+### الاتصال بمحسِّن Iskay الكمومي {#connect-to-iskay-quantum-optimizer}
+
+نبدأ بإنشاء اتصال بكتالوج وظائف Qiskit وتحميل محسِّن Iskay الكمومي. محسِّن Iskay هو وظيفة كمومية مقدَّمة من Kipu Quantum تُنفِّذ خوارزمية bf-DCQO لحل مسائل التحسين على الأجهزة الكمومية.
+
+```python
+catalog = QiskitFunctionsCatalog(token=token, instance=instance)
+iskay_solver = catalog.load("kipu-quantum/iskay-quantum-optimizer")
+
+print("Iskay optimizer loaded successfully")
+print("Ready to solve optimization problems using bf-DCQO algorithm")
+```
+
+### تحميل المسألة وصياغتها {#load-and-formulate-the-problem}
+
+#### فهم تنسيق بيانات المسألة {#understand-the-problem-data-format}
+
+تُخزَّن نسخ المسائل من QOBLIB (مكتبة معايير التحسين الكمومي) [\[2\]](#references) بتنسيق نصي بسيط. لنفحص المحتوى الفعلي لنسختنا المستهدفة `ms_03_200_177.dat`:
+
+```text
+3 20
+60   92  161   53   97    2   75   81    6  139  132   45  108  112  181   93  152  200  164   51 1002
+176  196   41  143    2   88    0   79   10   71   75  148   82  135   34  187   33  155   58   46  879
+68   68  179  173  127  163   48   49   99   78   44   52  173  131   73  198   84  109  180   95 1040
+```
+
+**بنية التنسيق:**
+- **السطر الأول:** `3 20`
+  - `3` = عدد المنتجات (القيود/الصفوف في المصفوفة $A$)
+  - `20` = عدد الأسواق (المتغيرات/الأعمدة في المصفوفة $A$)
+
+- **الـ 3 أسطر التالية:** مصفوفة المعاملات $A$ ومتجه الهدف $b$
+  - يحتوي كل سطر على 21 رقماً: أول 20 هي معاملات الصف، والأخير هو الهدف
+  - السطر 2: `60 92 161 ... 51 | 1002`
+    - أول 20 رقم: مقدار مبيعات المنتج 1 في كل سوق من الأسواق الـ20
+    - الرقم الأخير (1002): هدف المبيعات للمنتج 1 في منطقة واحدة
+  - السطر 3: `176 196 41 ... 46 | 879`
+    - مبيعات المنتج 2 لكل سوق والهدف (879)
+  - السطر 4: `68 68 179 ... 95 | 1040`
+    - مبيعات المنتج 3 لكل سوق والهدف (1040)
+
+**التفسير التجاري:**
+- السوق 0 يبيع: 60 وحدة من المنتج 1، و176 وحدة من المنتج 2، و68 وحدة من المنتج 3
+- السوق 1 يبيع: 92 وحدة من المنتج 1، و196 وحدة من المنتج 2، و68 وحدة من المنتج 3
+- وهكذا لجميع الأسواق الـ20...
+- **الهدف**: تقسيم هذه الأسواق الـ20 إلى منطقتين تحصل كل منهما على 1002 وحدة تماماً من المنتج 1، و879 وحدة من المنتج 2، و1040 وحدة من المنتج 3
+
+#### تحويل QUBO {#qubo-transformation}
+
+## من القيود إلى QUBO: التحويل الرياضي {#from-constraints-to-qubo-the-mathematical-transformation}
+
+تكمن قوة التحسين الكمومي في تحويل المسائل المقيَّدة إلى صيغ تربيعية غير مقيَّدة [\[4\]](#references). لمسألة تقسيم السوق، نُحوِّل قيود المساواة
+
+$$ Ax = b $$
+
+حيث $x ∈ \{0,1\}^n$، إلى QUBO بمعاقبة انتهاكات القيود.
+
+**طريقة العقوبة:**
+بما أننا نحتاج $Ax = b$ أن يتحقق بدقة، نُقلِّل الانتهاك التربيعي:
+$$f(x) = ||Ax - b||^2$$
+
+يساوي هذا صفراً تماماً عند تحقُّق جميع القيود. بالتوسع الجبري:
+$$f(x) = (Ax - b)^T(Ax - b) = x^T A^T A x - 2b^T A x + b^T b$$
+
+**الهدف في صيغة QUBO:**
+بما أن $b^T b$ ثابت، يصبح التحسين:
+$$\text{minimize} \quad Q(x) = x^T(A^T A)x - 2(A^T b)^T x$$
+
+**الفكرة الجوهرية:** هذا التحويل دقيق لا تقريبي. تتحول قيود المساواة بشكل طبيعي إلى صيغة تربيعية عند تربيعها دون الحاجة إلى متغيرات مساعدة أو معامِلات عقوبة - مما يجعل هذه الصياغة أنيقة رياضياً وفعَّالة حسابياً لحلَّالات الكم [\[4\]](#references). سنستخدم الفئة `OptimizationProblem` لتعريف مسألتنا المقيَّدة، ثم نُحوِّلها إلى صيغة QUBO باستخدام `OptimizationProblemToQubo`، وكلتاهما من حزمة **qiskit_addon_opt_mapper**. وهذا يتعامل تلقائياً مع التحويل القائم على العقوبة.
+### تنفيذ دوال تحميل البيانات وتحويل QUBO {#implement-data-loading-and-qubo-conversion-functions}
+
+نُعرِّف الآن ثلاث دوال مساعدة:
+1. `parse_marketsplit_dat()` - تُحلِّل تنسيق الملف `.dat` وتستخرج المصفوفتين $A$ و$b$
+2. `fetch_marketsplit_data()` - تُنزِّل نسخ المسائل مباشرةً من مستودع QOBLIB
+
+```python
+def parse_marketsplit_dat(filename: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Parse a market split problem from a .dat file format.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the .dat file containing the market split problem data.
+
+    Returns
+    -------
+    A : np.ndarray
+        Coefficient matrix of shape (m, n) where m is the number of products
+        and n is the number of markets.
+    b : np.ndarray
+        Target vector of shape (m,) containing the target sales per product.
+    """
+    with open(filename, "r", encoding="utf-8") as f:
+        lines = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.startswith("#")
+        ]
+
+    if not lines:
+        raise ValueError("Empty or invalid .dat file")
+
+    # First line: m n (number of products and markets)
+    m, n = map(int, lines[0].split())
+
+    # Next m lines: each row of A followed by corresponding element of b
+    A, b = [], []
+    for i in range(1, m + 1):
+        values = list(map(int, lines[i].split()))
+        A.append(values[:-1])  # First n values: product sales per market
+        b.append(values[-1])  # Last value: target sales for this product
+
+    return np.array(A, dtype=np.int32), np.array(b, dtype=np.int32)
+
+def fetch_marketsplit_data(
+    instance_name: str = "ms_03_200_177.dat",
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Fetch market split data directly from the QOBLIB repository.
+
+    Parameters
+    ----------
+    instance_name : str
+        Name of the .dat file to fetch (default: "ms_03_200_177.dat").
+
+    Returns
+    -------
+    A : np.ndarray or None
+        Coefficient matrix if successful, None if failed.
+    b : np.ndarray or None
+        Target vector if successful, None if failed.
+    """
+    url = f"https://git.zib.de/qopt/qoblib-quantum-optimization-benchmarking-library/-/raw/main/01-marketsplit/instances/{instance_name}"
+
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".dat", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(response.text)
+            temp_path = f.name
+
+        try:
+            return parse_marketsplit_dat(temp_path)
+        finally:
+            os.unlink(temp_path)
+    except Exception as e:
+        print(f"Error: {e}")
+        return None, None
+```
+
+### تحميل نسخة المسألة {#load-the-problem-instance}
+
+نُحمِّل الآن نسخة المسألة المحددة `ms_03_200_177.dat` من QOBLIB [2]. تتضمن هذه النسخة:
+- 3 منتجات (قيود)
+- 20 سوقاً (متغيرات قرار ثنائية)
+- أكثر من مليون تعيين سوق محتمل للاستكشاف ($2^{20} = 1,048,576$)
+
+```python
+# Load the problem instance
+instance_name = "ms_03_200_177.dat"
+A, b = fetch_marketsplit_data(instance_name=instance_name)
+
+if A is not None:
+    print("Successfully loaded problem instance from QOBLIB")
+    print("\nProblem Instance Analysis:")
+    print("=" * 50)
+    print(f"Coefficient Matrix A: {A.shape[0]} × {A.shape[1]}")
+    print(f"   → {A.shape[0]} products (constraints)")
+    print(f"   → {A.shape[1]} markets (decision variables)")
+    print(f"Target Vector b: {b}")
+    print("   → Target sales per product for each region")
+    print(
+        f"Solution Space: 2^{A.shape[1]} = {2**A.shape[1]:,} possible assignments"
+    )
+```
+
+### التحويل إلى صيغة QUBO {#convert-to-qubo-format}
+
+نُحوِّل الآن مسألة التحسين المقيَّدة إلى صيغة QUBO:
+
+```python
+# Create optimization problem
+ms = OptimizationProblem(instance_name.replace(".dat", ""))
+
+# Add binary variables (one for each market)
+ms.binary_var_list(A.shape[1])
+
+# Add equality constraints (one for each product)
+for idx, rhs in enumerate(b):
+    ms.linear_constraint(A[idx, :], sense="==", rhs=rhs)
+
+# Convert to QUBO with penalty parameter
+qubo = OptimizationProblemToQubo(penalty=1).convert(ms)
+
+print("QUBO Conversion Complete:")
+print("=" * 50)
+print(f"Number of variables: {qubo.get_num_vars()}")
+print(f"Constant term: {qubo.objective.constant}")
+print(f"Linear terms: {len(qubo.objective.linear.to_dict())}")
+print(f"Quadratic terms: {len(qubo.objective.quadratic.to_dict())}")
+```
+
+### تحويل QUBO إلى تنسيق Iskay {#convert-qubo-to-iskay-format}
+
+نحتاج الآن إلى تحويل كائن QUBO إلى تنسيق القاموس المطلوب بواسطة محسِّن Iskay من Kipu Quantum.
+
+تُشفِّر وسيطتا `problem` و`problem_type` مسألة تحسين بالشكل
+
+$$
+\begin{align}
+\min_{(x_1, x_2, \ldots, x_n) \in D} C(x_1, x_2, \ldots, x_n) \nonumber
+\end{align}
+$$
+حيث
+
+$$
+C(x_1, ... , x_n) = a + \sum_{i} b_i x_i + \sum_{i, j} c_{i, j} x_i x_j + ... + \sum_{k_1, ..., k_m} g_{k_1, ..., k_m} x_{k_1} ... x_{k_m}
+$$
+
+- باختيار `problem_type = "binary"`، تُحدِّد أن دالة التكلفة بتنسيق `binary`، أي أن $D = \{0,  1\}^{n}$، بمعنى أن دالة التكلفة مكتوبة بصيغة QUBO/HUBO.
+- من ناحية أخرى، باختيار `problem_type = "spin"`، تُكتب دالة التكلفة بصيغة Ising، حيث $D = \{-1, 1\}^{n}$.
+
+ينبغي ترميز معاملات المسألة في قاموس كما يلي:
+$$
+\begin{align} \nonumber
+&\texttt{\{} \\ \nonumber
+&\texttt{"()"}&: \quad &a, \\ \nonumber
+&\texttt{"(i,)"}&: \quad &b_i, \\ \nonumber
+&\texttt{"(i, j)"}&: \quad &c_{i, j}, \quad (i \neq j) \\ \nonumber
+&\quad  \vdots \\ \nonumber
+&\texttt{"(} k_1, ..., k_m  \texttt{)"}&: \quad &g_{k_1, ..., k_m}, \quad (k_1 \neq k_2 \neq \dots \neq k_m) \\ \nonumber
+&\texttt{\}}
+\end{align}
+$$
+
+لاحظ أن مفاتيح القاموس يجب أن تكون سلاسل نصية تحتوي على صف صحيح من الأعداد الصحيحة غير المتكررة. بالنسبة للمسائل الثنائية، نعلم أن:
+
+$$
+x_i^2 = x_i
+$$
+
+لـ $i=j$ (إذ أن $x_i \in \{0,1\}$ يعني $x_i \cdot x_i = x_i$). لذا، في صياغة QUBO الخاصة بك، إذا كانت لديك إسهامات خطية $b_i x_i$ وإسهامات تربيعية قطرية $c_{i,i} x_i^2$، فيجب دمج هذه الحدود في معامل خطي واحد:
+
+**إجمالي المعامل الخطي للمتغير $x_i$:** $b_i + c_{i,i}$
+
+هذا يعني:
+- الحدود الخطية مثل `"(i, )"` تحتوي على: المعامل الخطي الأصلي + المعامل التربيعي القطري
+- الحدود التربيعية القطرية مثل `"(i, i)"` **يجب ألا** تظهر في القاموس النهائي
+- فقط الحدود التربيعية غير القطرية مثل `"(i, j)"` حيث $i \neq j$ ينبغي إدراجها كإدخالات منفصلة
+
+**مثال:** إذا كان QUBO الخاص بك يحتوي على $3x_1 + 2x_1^2 + 4x_1 x_2$، فيجب أن يحتوي قاموس Iskay على:
+- `"(0, )"`: `5.0` (دمج $3 + 2 = 5$)
+- `"(0, 1)"`: `4.0` (الحد غير القطري)
+
+**وليس** إدخالات منفصلة لـ `"(0, )"`: `3.0` و`"(0, 0)"`: `2.0`.
+
+```python
+# Convert QUBO to Iskay dictionary format:
+
+# Create empty Iskay input dictionary
+iskay_input_problem = {}
+
+# Convert QUBO to Iskay dictionary format
+iskay_input_problem = {"()": qubo.objective.constant}
+
+for i in range(qubo.get_num_vars()):
+```
+
+```python
+for i in range(qubo.get_num_vars()):
+    for j in range(i, qubo.get_num_vars()):
+        if i == j:
+            # Add linear term (including diagonal quadratic contribution)
+            iskay_input_problem[f"({i}, )"] = float(
+                qubo.objective.linear.to_dict().get(i)
+            ) + float(qubo.objective.quadratic.to_dict().get((i, i)))
+        else:
+            # Add off-diagonal quadratic term
+            iskay_input_problem[f"({i}, {j})"] = float(
+                qubo.objective.quadratic.to_dict().get((i, j))
+            )
+
+# Display Iskay dictionary summary
+print("Iskay Dictionary Format:")
+print("=" * 50)
+print(f"Total coefficients: {len(iskay_input_problem)}")
+print(f"  • Constant term: {iskay_input_problem['()']}")
+print(
+    f"  • Linear terms: {sum(1 for k in iskay_input_problem.keys() if k != '()' and ', )' in k)}"
+)
+print(
+    f"  • Quadratic terms: {sum(1 for k in iskay_input_problem.keys() if k != '()' and ', )' not in k)}"
+)
+print("\nSample coefficients:")
+
+# Get first 10 and last 5 items properly
+items = list(iskay_input_problem.items())
+first_10 = list(enumerate(items[:10]))
+last_5 = list(enumerate(items[-5:], start=len(items) - 5))
+
+for i, (key, value) in first_10 + last_5:
+    coeff_type = (
+        "constant"
+        if key == "()"
+        else "linear"
+        if ", )" in key
+        else "quadratic"
+    )
+    print(f"  {key}: {value} ({coeff_type})")
+print("  ...")
+print("\n✓ Problem ready for Iskay optimizer!")
+```
+
+### فهم خوارزمية bf-DCQO {#understand-the-bf-dcqo-algorithm}
+
+قبل تشغيل عملية التحسين، دعنا نتعرف على الخوارزمية الكمية المتطورة التي تُشغّل Iskay: **bf-DCQO (bias-field digitized counterdiabatic quantum optimization)** [\[1\]](#references).
+
+#### ما هي bf-DCQO؟ {#what-is-bf-dcqo}
+
+تستند bf-DCQO إلى التطور الزمني لنظام كمي يُشفَّر فيه حل المسألة في **الحالة الأساسية** (حالة أدنى طاقة) لهاميلتوني الكمي النهائي [\[1\]](#references). تعالج الخوارزمية تحدياً جوهرياً في التحسين الكمي:
+
+**التحدي**: تتطلب الحوسبة الكمية الأديابية التقليدية تطوراً بالغ البطء للحفاظ على شروط الحالة الأساسية وفقاً للمبرهنة الأديابية. ويستوجب هذا دوائر كمية متزايدة العمق مع نمو تعقيد المسألة، مما يؤدي إلى مزيد من العمليات البوابية وتراكم الأخطاء.
+
+**الحل**: تستخدم bf-DCQO بروتوكولات مضادة للأديابية لتمكين التطور السريع مع الحفاظ على دقة الحالة الأساسية، مما يُقلّص عمق الدائرة تقليصاً جذرياً.
+
+#### الإطار الرياضي {#mathematical-framework}
+
+تُقلّل الخوارزمية دالة تكلفة من الشكل:
+
+$$\min_{(x_1,x_2,...,x_n) \in D} C(x_1,x_2,...,x_n)$$
+
+حيث $D = \{0,1\}^n$ للمتغيرات الثنائية، و:
+
+$$C(x) = a + \sum_i b_i x_i + \sum_{i,j} c_{ij} x_i x_j + ... + \sum g_{k_1,...,k_m} x_{k_1}...x_{k_m}$$
+
+بالنسبة لمسألة تقسيم السوق لدينا، تكون دالة التكلفة:
+
+$$C(x) = ||Ax - b||^2 = x^T A^T A x - 2 b^T A x + b^T b$$
+
+#### دور الحدود المضادة للأديابية {#the-role-of-counterdiabatic-terms}
+
+**الحدود المضادة للأديابية** هي حدود إضافية تُدرج في الهاميلتوني المتعلق بالزمن لقمع الإثارات غير المرغوب فيها أثناء التطور الكمي. وفيما يلي سبب أهميتها:
+
+في التحسين الكمي الأديابي، يتطور النظام وفقاً لهاميلتوني متعلق بالزمن:
+
+$$H(t) = \left(1 - \frac{t}{T}\right) H_{\text{initial}} + \frac{t}{T} H_{\text{problem}}$$
+
+حيث يُشفّر $H_{\text{problem}}$ مسألة التحسين. وللحفاظ على الحالة الأساسية خلال التطور السريع، نُضيف الحدود المضادة للأديابية:
+
+$$H_{\text{CD}}(t) = H(t) + H_{\text{counter}}(t)$$
+
+تؤدي هذه الحدود المضادة للأديابية الوظائف الآتية:
+1. **قمع الانتقالات غير المرغوب فيها**: منع الحالة الكمية من القفز إلى حالات مُثارة أثناء التطور السريع
+2. **تمكين أزمنة تطور أقصر**: السماح بالوصول إلى الحالة النهائية بسرعة أكبر دون انتهاك الأديابية
+3. **تقليص عمق الدائرة**: يُفضي التطور الأقصر إلى عدد أقل من البوابات وأخطاء أقل
+
+الأثر العملي بالغ: تستخدم bf-DCQO ما يصل إلى **10 أضعاف أقل من البوابات المتشابكة** مقارنةً بـ Digital Quantum Annealing [\[1\]](#references)، مما يجعلها عملية على الأجهزة الكمية الحالية المضوضاة.
+
+#### التحسين التكراري بحقل الانحياز {#bias-field-iterative-optimization}
+
+على خلاف الخوارزميات التغيّرية التي تُحسّن معاملات الدائرة عبر تكرارات كثيرة، تستخدم bf-DCQO **نهجاً موجَّهاً بحقل الانحياز** يتقارب في نحو 10 تكرارات [1]:
+
+**عملية التكرار:**
+
+1. **التطور الكمي الأولي**: البدء بدائرة كمية تُنفّذ بروتوكول التطور المضاد للأديابية
+
+2. **القياس**: قياس الحالة الكمية للحصول على توزيع احتمالي على سلاسل البتات
+
+3. **حساب حقل الانحياز**: تحليل إحصاءات القياس وحساب حقل انحياز أمثل $h_i$ لكل qubit:
+   $$h_i = \text{f}(\text{measurement statistics}, \text{previous solutions})$$
+
+4. **التكرار التالي**: يُعدّل حقل الانحياز الهاميلتوني للتكرار التالي:
+   $$H_{\text{next}} = H_{\text{problem}} + \sum_i h_i \sigma_i^z$$
+
+   يُتيح هذا البدء بالقرب من الحل الجيد الذي وُجد سابقاً، مما يُجري فعلياً نوعاً من "البحث المحلي الكمي"
+
+5. **التقارب**: التكرار حتى تستقر جودة الحل أو بلوغ الحد الأقصى من التكرارات
+
+**الميزة الرئيسية**: يُحقق كل تكرار تقدماً ملموساً نحو الحل الأمثل باستيعاب معلومات القياسات السابقة، خلافاً للأساليب التغيّرية التي تضطر إلى استكشاف فضاء المعاملات بصورة عشوائية.
+
+#### المعالجة الكلاسيكية البعدية المدمجة {#integrated-classical-post-processing}
+
+بعد تقارب التحسين الكمي، تُجري Iskay معالجة بعدية كلاسيكية عبر **البحث المحلي**:
+
+- **استكشاف قلب البتات**: قلب البتات بصورة منهجية أو عشوائية في أفضل حل تم قياسه
+- **تقييم الطاقة**: حساب $C(x)$ لكل حل معدَّل
+- **الاختيار الجشع**: قبول التحسينات التي تُخفّض دالة التكلفة
+- **تمريرات متعددة**: إجراء عدة تمريرات (يتحكم فيها `postprocessing_level`)
+
+يُعوّض هذا النهج الهجين عن أخطاء قلب البتات الناجمة عن عيوب الأجهزة وأخطاء القراءة، مما يضمن حلولاً عالية الجودة حتى على الأجهزة الكمية المضوضاة.
+
+#### لماذا تتفوق bf-DCQO على الأجهزة الحالية {#why-bf-dcqo-excels-on-current-hardware}
+
+صُمِّمت خوارزمية bf-DCQO تحديداً للتفوق على أجهزة الحوسبة الكمية ذات الحجم المتوسط المضوضاة (NISQ) المتاحة اليوم [\[1\]](#references):
+
+1. **مقاومة الأخطاء**: عدد أقل من البوابات (تقليص بمقدار 10 أضعاف) يعني تراكماً أقل بكثير للأخطاء
+2. **لا حاجة لتخفيف الأخطاء**: تُلغي الكفاءة الجوهرية للخوارزمية الحاجة إلى تقنيات تخفيف الأخطاء المُكلفة [\[1\]](#references)
+3. **قابلية التوسع**: قادرة على معالجة مسائل تصل إلى 156 qubit (156 متغيراً ثنائياً) بالتعيين المباشر للـ qubit [\[1\]](#references)
+4. **أداء مُثبَت**: تحقق نسب تقريب 100% على معايير MaxCut وHUBO [\[1\]](#references)
+
+والآن، دعنا نرى هذه الخوارزمية القوية في العمل على مسألة تقسيم السوق!
+
+## الخطوة 2: تحسين المسألة لتنفيذها على الأجهزة الكمية {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+تتولى خوارزمية bf-DCQO تلقائياً تحسين الدائرة، إذ تُنشئ دوائر كمية ضحلة بحدود مضادة للأديابية مُصمَّمة خصيصاً للنظام الخلفي المستهدف.
+
+### ضبط إعدادات التحسين {#configure-the-optimization}
+
+يتطلب Iskay Optimizer عدة معاملات رئيسية لحل مسألة التحسين بفعالية. دعنا نفحص كل معامل ودوره في عملية التحسين الكمي:
+
+#### المعاملات المطلوبة {#required-parameters}
+
+| المعامل | النوع | الوصف | مثال |
+|-----------|------|-------------|---------|
+| **problem** | `Dict[str, float]` | معاملات QUBO بتنسيق المفتاح النصي | `{"()": -21.0, "(0,4)": 0.5, "(0,1)": 0.5}` |
+| **problem_type** | `str` | مواصفات التنسيق: `"binary"` لـ QUBO أو `"spin"` لـ Ising | `"binary"` |
+| **backend_name** | `str` | الجهاز الكمي المستهدف | `"ibm_fez"` |
+
+#### المفاهيم الأساسية {#essential-concepts}
+
+- **تنسيق المسألة**: نستخدم `"binary"` إذ إن متغيراتنا ثنائية (0/1)، وتمثل تعيينات السوق.
+- **اختيار النظام الخلفي**: الاختيار من بين وحدات معالجة الكم (QPU) المتاحة (مثلاً `"ibm_fez"`) بحسب الاحتياجات ومثيل موارد الحوسبة.
+- **بنية QUBO**: يحتوي قاموس مسألتنا على المعاملات الدقيقة المستخرجة من التحويل الرياضي.
+
+#### الخيارات المتقدمة (اختيارية) {#advanced-options-optional}
+
+توفر Iskay إمكانات ضبط دقيق عبر معاملات اختيارية. وبينما تعمل الإعدادات الافتراضية بكفاءة لمعظم المسائل، يمكن تخصيص السلوك لمتطلبات محددة:
+
+| المعامل | النوع | الافتراضي | الوصف |
+|-----------|------|---------|-------------|
+| **shots** | `int` | 10000 | قياسات كمية لكل تكرار (كلما زادت، كانت النتائج أدق) |
+| **num_iterations** | `int` | 10 | تكرارات الخوارزمية (مزيد من التكرارات قد يُحسّن جودة الحل) |
+| **use_session** | `bool` | True | استخدام جلسات IBM لتقليص أوقات الانتظار في الطابور |
+| **seed_transpiler** | `int` | None | تعيين قيمة للحصول على نتائج ترجمة دائرة كمية قابلة للاستنساخ |
+| **direct_qubit_mapping** | `bool` | False | تعيين الـ qubits الافتراضية مباشرةً إلى الـ qubits الفيزيائية |
+| **job_tags** | `List[str]` | None | علامات مخصصة لتتبع المهام |
+| **preprocessing_level** | `int` | 0 | كثافة المعالجة الأولية للمسألة (0-3) - انظر التفاصيل أدناه |
+| **postprocessing_level** | `int` | 2 | مستوى تنقية الحل (0-2) - انظر التفاصيل أدناه |
+| **transpilation_level** | `int` | 0 | محاولات تحسين المُترجم (0-5) - انظر التفاصيل أدناه |
+| **transpile_only** | `bool` | False | تحليل تحسين الدائرة دون تشغيل التنفيذ الكامل |
+
+**مستويات المعالجة الأولية (0-3)**: ذات أهمية خاصة للمسائل الأكبر التي لا يمكن وضعها حالياً ضمن أزمنة التماسك للأجهزة. تُحقق مستويات المعالجة الأولية الأعلى أعماق دائرة أضحل عبر تقريبات في ترجمة المسألة:
+- **المستوى 0**: دوائر دقيقة وأطول
+- **المستوى 1**: توازن جيد بين الدقة والتقريب، مع حذف البوابات ذات الزوايا في أدنى 10 بالمئة فقط
+- **المستوى 2**: تقريب أعلى قليلاً، مع حذف البوابات ذات الزوايا في أدنى 20 بالمئة واستخدام `approximation_degree=0.95` في الترجمة
+- **المستوى 3**: أقصى مستوى تقريب، مع حذف البوابات في أدنى 30 بالمئة واستخدام `approximation_degree=0.90` في الترجمة
+
+**مستويات الترجمة (0-5)**: تتحكم في محاولات تحسين المُترجم المتقدم لترجمة الدوائر الكمية. قد يُؤدي هذا إلى زيادة في التكلفة الكلاسيكية، وفي بعض الحالات قد لا يُغيّر عمق الدائرة. القيمة الافتراضية `2` تُنتج بوجه عام أصغر دائرة وتعمل بسرعة معقولة.
+- **المستوى 0**: تحسين الدائرة DCQO المُفككة (التخطيط، والتوجيه، والجدولة)
+- **المستوى 1**: تحسين `PauliEvolutionGate` ثم الدائرة DCQO المُفككة (max_trials=10)
+- **المستوى 2**: تحسين `PauliEvolutionGate` ثم الدائرة DCQO المُفككة (max_trials=15)
+- **المستوى 3**: تحسين `PauliEvolutionGate` ثم الدائرة DCQO المُفككة (max_trials=20)
+- **المستوى 4**: تحسين `PauliEvolutionGate` ثم الدائرة DCQO المُفككة (max_trials=25)
+- **المستوى 5**: تحسين `PauliEvolutionGate` ثم الدائرة DCQO المُفككة (max_trials=50)
+
+**مستويات المعالجة البعدية (0-2)**: تتحكم في مقدار التحسين الكلاسيكي الذي يُعوّض عن أخطاء قلب البتات بأعداد مختلفة من التمريرات الجشعة للبحث المحلي:
+- **المستوى 0**: تمرير واحد
+- **المستوى 1**: تمريران
+- **المستوى 2**: ثلاثة تمريرات
+
+**وضع الترجمة فقط**: متاح الآن للمستخدمين الذين يرغبون في تحليل تحسين الدائرة دون تشغيل تنفيذ الخوارزمية الكمية الكاملة.
+
+#### مثال على تهيئة مخصصة {#custom-configuration-example}
+
+إليك طريقة تهيئة Iskay بإعدادات مختلفة:
+```python
+custom_options = {
+    "shots": 15_000,                                        # Higher shot count for better statistics
+    "num_iterations": 12,                                   # More iterations for solution refinement
+    "preprocessing_level": 1,                               # Light preprocessing for problem simplification
+    "postprocessing_level": 2,                              # Maximum postprocessing for solution quality
+    "transpilation_level": 3,                               # Using higher transpilation level for circuit optimization
+    "seed_transpiler": 42,                                  # Fixed seed for reproducible results
+    "job_tags": ["market_split"]                            # Custom tracking tags
+}
+```
+في هذا البرنامج التعليمي، سنبقي معظم المعاملات الافتراضية ولن نُغيّر سوى عدد تكرارات حقل الانحياز:
+
+```python
+# Specify the target backend
+backend_name = "ibm_fez"
+
+# Set the number of bias-field iterations and set a tag to identify the jobs
+options = {
+    "num_iterations": 3,  # Change number of bias-field iterations
+    "job_tags": ["market_split_example"],  # Tag to identify jobs
+}
+
+# Configure Iskay optimizer
+iskay_input = {
+    "problem": iskay_input_problem,
+    "problem_type": "binary",
+    "backend_name": backend_name,
+    "options": options,
+}
+
+print("Iskay Optimizer Configuration:")
+print("=" * 40)
+print(f"  Backend: {backend_name}")
+print(f"  Problem: {len(iskay_input['problem'])} terms")
+print("  Algorithm: bf-DCQO")
+```
+
+## الخطوة 3: التنفيذ باستخدام Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+
+نُرسل الآن مسألتنا للتشغيل على أجهزة IBM Quantum. ستقوم خوارزمية bf-DCQO بما يلي:
+1. بناء دوائر كمية ضحلة بحدود مضادة للأديابية
+2. تنفيذ نحو 10 تكرارات مع تحسين حقل الانحياز
+3. إجراء المعالجة الكلاسيكية البعدية بالبحث المحلي
+4. إرجاع التعيين الأمثل للسوق
+
+```python
+# Submit the optimization job
+print("Submitting optimization job to Kipu Quantum...")
+print(
+    f"Problem size: {A.shape[1]} variables, {len(iskay_input['problem'])} terms"
+)
+print(
+    "Algorithm: bf-DCQO (bias-field digitized counterdiabatic quantum optimization)"
+)
+
+job = iskay_solver.run(**iskay_input)
+
+print("\nJob successfully submitted!")
+print(f"Job ID: {job.job_id}")
+print("Optimization in progress...")
+print(
+    f"The bf-DCQO algorithm will efficiently explore {2**A.shape[1]:,} possible assignments"
+)
+```
+
+### مراقبة حالة المهمة {#monitor-job-status}
+
+يمكنك التحقق من الحالة الراهنة لمهمة التحسين. الحالات الممكنة هي:
+- `QUEUED`: المهمة في انتظار دورها في الطابور
+- `RUNNING`: المهمة تُنفَّذ حالياً على الأجهزة الكمية
+- `DONE`: اكتملت المهمة بنجاح
+- `CANCELED`: أُلغيت المهمة
+- `ERROR`: واجهت المهمة خطأً
+
+```python
+# Check job status
+print(f"Job status: {job.status()}")
+```
+
+### الانتظار حتى الاكتمال {#wait-for-completion}
+
+ستظل هذه الخلية محجوبة حتى تكتمل المهمة. تشمل عملية التحسين:
+- وقت الانتظار في الطابور (انتظار الوصول إلى الأجهزة الكمية)
+- وقت التنفيذ (تشغيل خوارزمية bf-DCQO بنحو 10 تكرارات)
+- وقت المعالجة البعدية (البحث المحلي الكلاسيكي)
+
+تتراوح أوقات الاكتمال النموذجية بين بضع دقائق وعشرات الدقائق، وذلك تبعاً لأحوال الطابور.
+
+```python
+# Wait for job completion
+while True:
+    status = job.status()
+    print(
+        f"Waiting for job {job.job_id} to complete... (status: {status})",
+        end="\r",
+        flush=True,
+    )
+    if status in ["DONE", "CANCELED", "ERROR"]:
+        print(
+            f"\nJob {job.job_id} completed with status: {status}" + " " * 20
+        )
+        break
+    time.sleep(30)
+
+# Retrieve the optimization results
+result = job.result()
+print("\nOptimization complete!")
+```
+
+## الخطوة 4: المعالجة البعدية وإرجاع النتيجة بالتنسيق الكلاسيكي المطلوب {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+نُجري الآن المعالجة البعدية لنتائج التنفيذ الكمي. وتشمل هذه المعالجة:
+- تحليل بنية الحل
+- التحقق من استيفاء القيود
+- المقارنة المعيارية مع الأساليب الكلاسيكية
+
+### تحليل النتائج {#analyze-results}
+
+#### فهم بنية النتيجة {#understand-the-result-structure}
+
+تُرجع Iskay قاموس نتائج شاملاً يحتوي على:
+- **`solution`**: قاموس يربط مؤشرات المتغيرات بقيمها المثلى (0 أو 1)
+- **`solution_info`**: معلومات تفصيلية تشمل:
+  - `bitstring`: التعيين الأمثل بصيغة سلسلة ثنائية
+  - `cost`: قيمة دالة الهدف (ينبغي أن تكون 0 لاستيفاء القيود بشكل مثالي)
+  - `mapping`: كيفية تعيين مواضع سلسلة البتات إلى متغيرات المسألة
+  - `seed_transpiler`: البذرة المستخدمة لضمان قابلية الاستنساخ
+- **`prob_type`**: ما إذا كان الحل بتنسيق ثنائي أو spin
+
+دعنا نفحص الحل الذي أرجعه مُحسِّن الكم.
+
+```python
+# Display the optimization results
+print("Optimization Results")
+print("=" * 50)
+print(f"Problem Type: {result['prob_type']}")
+print("\nSolution Info:")
+print(f"  Bitstring: {result['solution_info']['bitstring']}")
+print(f"  Cost: {result['solution_info']['cost']}")
+print("\nSolution (first 10 variables):")
+for i, (var, val) in enumerate(list(result["solution"].items())[:10]):
+    print(f"  {var}: {val}")
+print("  ...")
+```
+
+#### التحقق من صحة الحل {#solution-validation}
+
+نتحقق الآن من أن الحل الكمي يستوفي قيود مسألة تقسيم السوق. تتضمن عملية التحقق ما يلي:
+
+**ما هو انتهاك القيد؟**
+- لكل منتج $i$، نحسب المبيعات الفعلية في المنطقة A: $(Ax)_i$
+- نقارن هذا بالمبيعات المستهدفة $b_i$
+- **الانتهاك** هو الفارق المطلق: $|(Ax)_i - b_i|$
+- **الحل الممكن** هو الذي لا تنتهك فيه جميع المنتجات أي قيد
+
+**ما نتوقعه:**
+- **الحالة المثالية**: إجمالي الانتهاك = 0 (جميع القيود مُستوفاة تماماً)
+  - تحصل المنطقة A على 1002 وحدة تحديداً من المنتج 1، و879 وحدة من المنتج 2، و1040 وحدة من المنتج 3
+  - تحصل المنطقة B على الوحدات المتبقية (1002 و879 و1040 على التوالي)
+- **الحالة الجيدة**: الانتهاك الإجمالي صغير (حل شبه أمثل)
+- **الحالة السيئة**: انتهاكات كبيرة تُشير إلى أن الحل لا يستوفي متطلبات العمل
+
+ستحسب دالة التحقق:
+1. المبيعات الفعلية لكل منتج في كل منطقة
+2. انتهاكات القيود لكل منتج
+3. توزيع السوق بين المنطقتين
+
+```python
+def validate_solution(A, b, solution):
+    """Validate market split solution."""
+    x = np.array(solution)
+    region_a = A @ x
+    region_b = A @ (1 - x)
+    violations = np.abs(region_a - b)
+
+    return {
+        "target": b,
+        "region_a": region_a,
+        "region_b": region_b,
+        "violations": violations,
+        "total_violation": np.sum(violations),
+        "is_feasible": np.sum(violations) == 0,
+        "region_a_markets": int(np.sum(x)),
+        "region_b_markets": len(x) - int(np.sum(x)),
+    }
+
+# Convert bitstring to list of integers and validate
+optimal_assignment = [
+    int(bit) for bit in result["solution_info"]["bitstring"]
+]
+validation = validate_solution(A, b, optimal_assignment)
+```
+
+#### تفسير نتائج التحقق {#interpret-the-validation-results}
+
+تُبيّن نتائج التحقق ما إذا كان مُحسِّن الكم قد وجد حلاً ممكناً. دعنا نفحص ما يلي:
+
+**التحقق من الجدوى:**
+- **`is_feasible = True`** يعني أن الحل يستوفي جميع القيود بصورة مثالية (إجمالي الانتهاك = 0)
+- **`is_feasible = False`** يعني أن بعض القيود منتهَكة
+
+**تحليل المبيعات:**
+- مقارنة المبيعات المستهدفة بالمبيعات الفعلية لكل منتج
+- للحل المثالي: الفعلي = الهدف لجميع المنتجات في كلتا المنطقتين
+
+- الفارق يُشير إلى مدى قربنا من تقسيم السوق المطلوب
+
+**توزيع الأسواق:**
+- يُظهر عدد الأسواق المخصصة لكل منطقة
+- لا يشترط تساوي عدد الأسواق، بل يكفي تحقيق أهداف المبيعات
+
+```python
+print("Solution Validation")
+print("=" * 50)
+print(f"Feasible solution: {validation['is_feasible']}")
+print(f"Total constraint violation: {validation['total_violation']}")
+
+print("\nSales Analysis (Target vs Actual):")
+for i, (target, actual_a, actual_b) in enumerate(
+    zip(validation["target"], validation["region_a"], validation["region_b"])
+):
+    violation_a = abs(actual_a - target)
+    violation_b = abs(actual_b - target)
+    print(f"  Product {i+1}:")
+    print(f"    Target: {target}")
+    print(f"    Region A: {actual_a} (violation: {violation_a})")
+    print(f"    Region B: {actual_b} (violation: {violation_b})")
+
+print("\nMarket Distribution:")
+print(f"  Region A: {validation['region_a_markets']} markets")
+print(f"  Region B: {validation['region_b_markets']} markets")
+```
+
+#### تقييم جودة الحل {#solution-quality-assessment}
+
+بناءً على نتائج التحقق أعلاه، يمكننا تقييم جودة الحل الكمومي:
+
+**في حال `is_feasible = True` (إجمالي الانتهاك = 0):**
+- نجح المحسِّن الكمومي في إيجاد حل مثالي
+- جميع قيود العمل محققة تماماً
+- يُثبت هذا الأفضلية الكمومية على مسألةٍ تُعاني منها المحسِّنات التقليدية [\[4\]](#references)
+
+**في حال `is_feasible = False` (إجمالي الانتهاك > 0):**
+- الحل قريب من المثالي لكنه ليس مثالياً تاماً
+- قد تكون الانتهاكات الصغيرة مقبولةً من الناحية العملية
+- يُنصح بضبط معاملات المحسِّن:
+  - زيادة `num_iterations` للحصول على مزيد من دورات التحسين
+  - زيادة `postprocessing_level` لتكثيف التنقيح التقليدي
+  - زيادة `shots` للحصول على إحصاءات قياس أفضل
+
+**تفسير دالة التكلفة:**
+- قيمة `cost` المستخرجة من `solution_info` تساوي $||Ax - b||^2$
+- التكلفة = 0 تعني تحقق القيود بصورة مثالية
+- القيم الأعلى للتكلفة تدل على انتهاكات أكبر للقيود
+
+## الخاتمة {#conclusion}
+
+### ما أنجزناه {#what-we-accomplished}
+
+في هذا البرنامج التعليمي، نجحنا في:
+
+1. **تحميل مسألة تحسين حقيقية**: استرجاع نسخة صعبة من مسألة تقسيم السوق من مكتبة QOBLIB المرجعية [2]
+2. **التحويل إلى صيغة QUBO**: تحويل المسألة المقيَّدة إلى صياغة تربيعية غير مقيَّدة [3]
+3. **توظيف خوارزميات كمومية متقدمة**: استخدام خوارزمية bf-DCQO من Kipu Quantum مع الحدود شبه الديباتية [1]
+4. **الحصول على حلول مثالية**: إيجاد حلول قابلة للتطبيق تُحقق جميع القيود
+
+### النقاط الرئيسية {#key-takeaways}
+
+**ابتكار الخوارزمية**: تمثل خوارزمية bf-DCQO تقدماً ملحوظاً [\[1\]](#references):
+- **عدد بوابات أقل بـ 10 مرات** مقارنةً بالتلدين الكمومي الرقمي
+- **نحو 10 تكرارات** بدلاً من نحو 100 في الأساليب التبايُنية
+- **مرونة مدمجة تجاه الأخطاء** عبر كفاءة الدارة الكمومية
+
+**الحدود شبه الديباتية**: تُتيح التطور الكمومي السريع مع الحفاظ على أمانة الحالة الأساسية، مما يجعل التحسين الكمومي عملياً على الأجهزة الصاخبة الحالية [\[1\]](#references).
+
+**التوجيه بحقل التحيز**: يُتيح نهج حقل التحيز التكراري لكل تكرار أن يبدأ بالقرب من الحلول الجيدة المُكتشفة سابقاً، مما يوفر نوعاً من البحث المحلي المعزَّز كمومياً [\[1\]](#references).
+
+### الخطوات التالية {#next-steps}
+
+لتعميق فهمك واستكشاف المزيد:
+
+1. **جرِّب نسخاً مختلفة**: تجربة نسخ QOBLIB أخرى بأحجام متنوعة
+2. **اضبط المعاملات**: تعديل `num_iterations` و`preprocessing_level` و`postprocessing_level`
+3. **قارن بالأساليب التقليدية**: قِس الأداء مقابل محسِّنات التحسين التقليدية
+4. **جرِّب استراتيجيات مختلفة**: ابحث عن ترميز أفضل للمسألة أو صِغها بصيغة HUBO (إن أمكن)
+5. **طبِّق في مجالك**: كيِّف أساليب صياغة QUBO/HUBO لمسائل التحسين الخاصة بك
+
+### المراجع {#references}
+
+[1] IBM Quantum. "[Kipu Quantum Optimization](/guides/kipu-optimization)." *IBM Quantum Documentation*.
+
+[2] QOBLIB - Quantum Optimization Benchmarking Library. Zuse Institute Berlin (ZIB). https://git.zib.de/qopt/qoblib-quantum-optimization-benchmarking-library
+
+[3] Glover, F., Kochenberger, G., & Du, Y. (2019). "Quantum bridge analytics I: a tutorial on formulating and using QUBO models." *4OR: A Quarterly Journal of Operations Research*, 17(4), 335-371.
+
+[4] Lodi, A., Tramontani, A., & Weninger, K. (2023). "The Intractable Decathlon: Benchmarking Hard Combinatorial Problems." *INFORMS Journal on Computing*.

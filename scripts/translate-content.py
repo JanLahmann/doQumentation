@@ -193,7 +193,8 @@ def cmd_extract(args):
             "locale_label": {"de": "German", "es": "Spanish", "ja": "Japanese",
                              "fr": "French", "uk": "Ukrainian", "it": "Italian",
                              "pt": "Portuguese", "tl": "Tagalog/Filipino",
-                             "th": "Thai"}.get(locale, locale),
+                             "th": "Thai", "ar": "Arabic",
+                             "he": "Hebrew"}.get(locale, locale),
             "status": "pending",  # pending → translated → assembled
             "files": [],
         }
@@ -268,6 +269,18 @@ BANNER_TEMPLATES = {
         "\n:::note[ยังไม่ได้แปล]\n"
         "หน้านี้ยังไม่ได้รับการแปล "
         "คุณกำลังดูเวอร์ชันต้นฉบับภาษาอังกฤษ\n"
+        ":::\n"
+    ),
+    "ar": (
+        "\n:::note[لم تُترجم بعد]\n"
+        "هذه الصفحة لم تُترجم بعد. "
+        "يتم عرض المحتوى باللغة الإنجليزية.\n"
+        ":::\n"
+    ),
+    "he": (
+        "\n:::note[טרם תורגם]\n"
+        "דף זה טרם תורגם. "
+        "התוכן מוצג באנגלית.\n"
         ":::\n"
     ),
 }

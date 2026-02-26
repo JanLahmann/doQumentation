@@ -1,0 +1,362 @@
+---
+title: "دمج خيارات تخفيف الأخطاء مع أداة Estimator الأساسية"
+sidebar_label: "دمج خيارات تخفيف الأخطاء مع أداة Estimator الأساسية"
+description: "دمج خيارات تخفيف الأخطاء للتجارب على نطاق المنفعة باستخدام معالجات IBM Quantum QPU التي تتجاوز 100 كيوبت وأداة Qiskit Runtime Estimator الأساسية."
+notebook_path: "docs/tutorials/combine-error-mitigation-techniques.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/combine-error-mitigation-techniques.ipynb" />
+
+
+
+*تقدير الاستخدام: سبع دقائق على معالج Heron r2 (ملاحظة: هذا تقدير فقط. قد يختلف وقت التشغيل الفعلي.)*
+
+## الخلفية {#background}
+
+يستكشف هذا العرض التفصيلي خيارات قمع الأخطاء وتخفيفها المتاحة مع أداة Estimator الأساسية من Qiskit Runtime. ستقوم ببناء دائرة ومتغير قابل للقياس، ثم تُرسل المهام باستخدام أداة Estimator الأساسية مع مجموعات مختلفة من إعدادات تخفيف الأخطاء. بعد ذلك، ستُخطط النتائج لمراقبة تأثيرات الإعدادات المختلفة. تستخدم معظم الأمثلة دائرة من 10 كيوبتات لتسهيل التصورات البصرية، وفي النهاية يمكنك توسيع سير العمل إلى 50 كيوبت.
+
+فيما يلي خيارات قمع الأخطاء وتخفيفها التي ستستخدمها:
+
+- الفصل الديناميكي (Dynamical decoupling)
+- تخفيف أخطاء القياس (Measurement error mitigation)
+- تدوير البوابات (Gate twirling)
+- الاستقراء عند انعدام الضوضاء (Zero-noise extrapolation - ZNE)
+## المتطلبات {#requirements}
+
+قبل البدء في هذا العرض التفصيلي، تأكد من تثبيت ما يلي:
+
+- Qiskit SDK الإصدار 2.1 أو أحدث، مع دعم [التصور البصري](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime الإصدار 0.40 أو أحدث (`pip install qiskit-ibm-runtime`)
+## الإعداد {#setup}
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+from qiskit.circuit.library import efficient_su2, unitary_overlap
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Batch, EstimatorV2 as Estimator
+```
+
+## الخطوة 1: تعيين المدخلات الكلاسيكية إلى مسألة كمومية {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+يفترض هذا العرض التفصيلي أن المسألة الكلاسيكية قد تم تعيينها إلى المجال الكمومي مسبقاً. ابدأ ببناء دائرة ومتغير قابل للقياس. وبينما تنطبق التقنيات المستخدمة هنا على أنواع كثيرة من الدوائر، يستخدم هذا العرض التفصيلي للبساطة دائرة [`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2) المضمّنة في مكتبة دوائر Qiskit.
+
+`efficient_su2` هي دائرة كمومية ذات معاملات مصممة لتنفيذها بكفاءة على الأجهزة الكمومية ذات الاتصال المحدود بين الكيوبتات، مع الحفاظ على قدر كافٍ من التعبيرية لحل مسائل في مجالات تطبيقية كالتحسين والكيمياء. تُبنى هذه الدائرة بالتناوب بين طبقات من بوابات أحادية الكيوبت ذات معاملات وطبقة تحتوي على نمط ثابت من بوابات ثنائية الكيوبت، لعدد مختار من التكرارات. يمكن تحديد نمط بوابات ثنائية الكيوبت من قِبل المستخدم. يمكنك هنا استخدام النمط المدمج `pairwise` لأنه يُقلل عمق الدائرة إلى أدنى حد بتجميع بوابات ثنائية الكيوبت بأكبر كثافة ممكنة. ويمكن تنفيذ هذا النمط باستخدام اتصال خطي فقط بين الكيوبتات.
+
+```python
+n_qubits = 10
+reps = 1
+
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+
+circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-1.avif)
+
+بالنسبة للمتغير القابل للقياس، لنأخذ عامل Pauli $Z$ الذي يعمل على الكيوبت الأخير، $Z I \cdots I$.
+
+```python
+# Z on the last qubit (index -1) with coefficient 1.0
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+```
+
+في هذه المرحلة، يمكنك المتابعة لتشغيل الدائرة وقياس المتغير. ومع ذلك، تريد أيضاً مقارنة مخرجات الجهاز الكمومي بالإجابة الصحيحة - أي القيمة النظرية للمتغير لو كانت الدائرة قد نُفِّذت بدون أخطاء. بالنسبة للدوائر الكمومية الصغيرة، يمكنك حساب هذه القيمة بمحاكاة الدائرة على حاسوب كلاسيكي، لكن هذا غير ممكن للدوائر الأكبر ذات النطاق العملي. يمكنك التحايل على هذه المشكلة بتقنية "الدائرة المرآتية" (المعروفة أيضاً بـ"الحساب وإلغاء الحساب")، وهي مفيدة لقياس أداء الأجهزة الكمومية.
+
+#### الدائرة المرآتية {#mirror-circuit}
+
+في تقنية الدائرة المرآتية، تقوم بتسلسل الدائرة مع دائرتها العكسية، التي تُشكَّل بعكس كل بوابة من بوابات الدائرة بترتيب معكوس. تُنفذ الدائرة الناتجة عامل الهوية، الذي يمكن محاكاته بسهولة. ونظراً لأن بنية الدائرة الأصلية محفوظة في الدائرة المرآتية، فإن تنفيذها يُعطي فكرة عن أداء الجهاز الكمومي على الدائرة الأصلية.
+
+تُسند خلية الكود التالية معاملات عشوائية إلى دائرتك، ثم تبني الدائرة المرآتية باستخدام فئة [`unitary_overlap`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.unitary_overlap). قبل عكس الدائرة، أضف إليها تعليمة [حاجز](https://docs.quantum.ibm.com/api/qiskit/circuit#qiskit.circuit.Barrier) لمنع المُحوِّل من دمج الجزأين من الدائرة على جانبَي الحاجز. بدون الحاجز، سيدمج المُحوِّل الدائرة الأصلية مع عكسها، مما ينتج عنه دائرة محوَّلة بدون أي بوابات.
+
+```python
+# Generate random parameters
+rng = np.random.default_rng(1234)
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+
+# Assign the parameters to the circuit
+assigned_circuit = circuit.assign_parameters(params)
+
+# Add a barrier to prevent circuit optimization of mirrored operators
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+mirror_circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-1.avif)
+
+## الخطوة 2: تحسين المسألة لتنفيذها على الأجهزة الكمومية {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+يجب عليك تحسين دائرتك قبل تشغيلها على الجهاز. تشمل هذه العملية عدة خطوات:
+
+- اختيار تخطيط كيوبت يُعيّن الكيوبتات الافتراضية في دائرتك إلى كيوبتات فيزيائية على الجهاز.
+- إدراج بوابات التبديل (swap gates) حسب الحاجة لتوجيه التفاعلات بين الكيوبتات غير المتصلة.
+- ترجمة البوابات في دائرتك إلى تعليمات [معمارية مجموعة التعليمات (ISA)](/guides/transpile#instruction-set-architecture) التي يمكن تنفيذها مباشرة على الجهاز.
+- تنفيذ تحسينات الدائرة لتقليل عمقها وعدد البوابات فيها.
+
+يستطيع المُحوِّل المدمج في Qiskit تنفيذ كل هذه الخطوات نيابةً عنك. ونظراً لأن هذا المثال يستخدم دائرة فعّالة للأجهزة، يجب أن يتمكن المُحوِّل من اختيار تخطيط كيوبت لا يستلزم إدراج أي بوابات تبديل لتوجيه التفاعلات.
+
+تحتاج إلى اختيار الجهاز الذي ستستخدمه قبل تحسين دائرتك. تطلب خلية الكود التالية الجهاز الأقل انشغالاً والذي يمتلك على الأقل 127 كيوبتاً.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+يمكنك تحويل دائرتك للواجهة الخلفية المختارة عن طريق إنشاء مدير تمرير ثم تشغيله على الدائرة. الطريقة السهلة لإنشاء مدير تمرير هي استخدام الدالة [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager). راجع [التحويل باستخدام مديري التمرير](/guides/transpile-with-pass-managers) للحصول على شرح أكثر تفصيلاً حول التحويل بمديري التمرير.
+
+```python
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=1234
+)
+ isa_circuit = pass_manager.run(mirror_circuit)
+
+isa_circuit.draw("mpl", idle_wires=False, scale=0.7, fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-1.avif)
+
+تحتوي الدائرة المحوَّلة الآن على تعليمات ISA فقط. تم تحليل البوابات أحادية الكيوبت إلى بوابات $\sqrt{X}$ وتدويرات $R_z$، كما تم تحليل بوابات CX إلى [بوابات ECR](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.ECRGate#ecrgate) وتدويرات أحادية الكيوبت.
+
+قامت عملية التحويل بتعيين الكيوبتات الافتراضية للدائرة إلى كيوبتات فيزيائية على الجهاز. تُخزَّن معلومات تخطيط الكيوبتات في خاصية `layout` للدائرة المحوَّلة. وبما أن المتغير القابل للقياس تم تعريفه أيضاً بدلالة الكيوبتات الافتراضية، فأنت بحاجة إلى تطبيق هذا التخطيط على المتغير، وهو ما يمكنك فعله باستخدام طريقة [`apply_layout`](https://docs.quantum.ibm.com/api/qiskit/qiskit.quantum_info.SparsePauliOp#apply_layout) في `SparsePauliOp`.
+
+```python
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+print("Original observable:")
+print(observable)
+print()
+print("Observable with layout applied:")
+print(isa_observable)
+```
+
+```text
+Original observable:
+SparsePauliOp(['ZIIIIIIIII'],
+              coeffs=[1.+0.j])
+
+Observable with layout applied:
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## الخطوة 3: التنفيذ باستخدام الأدوات الأساسية في Qiskit {#step-3-execute-using-qiskit-primitives}
+
+أنت الآن مستعد لتشغيل دائرتك باستخدام أداة Estimator الأساسية.
+
+ستُرسل هنا خمس مهام منفصلة، تبدأ بدون أي قمع أو تخفيف للأخطاء، ثم تُمكِّن تدريجياً خيارات متنوعة لقمع الأخطاء وتخفيفها المتاحة في Qiskit Runtime. للاطلاع على معلومات حول الخيارات، ارجع إلى الصفحات التالية:
+
+- [نظرة عامة على جميع الخيارات](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options)
+- [الفصل الديناميكي](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-dynamical-decoupling-options)
+- [المرونة، بما في ذلك تخفيف أخطاء القياس والاستقراء عند انعدام الضوضاء (ZNE)](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-resilience-options-v2)
+- [التدوير](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-twirling-options)
+
+نظراً لإمكانية تشغيل هذه المهام بشكل مستقل عن بعضها، يمكنك استخدام [وضع الدُفعات](/guides/run-jobs-batch) للسماح لـ Qiskit Runtime بتحسين توقيت تنفيذها.
+
+```python
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+```
+
+## الخطوة 4: المعالجة اللاحقة وإعادة النتيجة بالتنسيق الكلاسيكي المطلوب {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+أخيراً، يمكنك تحليل البيانات. ستسترد هنا نتائج المهام، وتستخرج منها قيم التوقع المقيسة، ثم ترسمها بما في ذلك أشرطة الخطأ لانحراف معياري واحد.
+
+```python
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/eef38976-0ca2-429a-b2dc-41aac69605f7-0.avif)
+
+على هذا النطاق الصغير، يصعب رؤية تأثير معظم تقنيات تخفيف الأخطاء، غير أن الاستقراء عند انعدام الضوضاء يُعطي تحسناً ملحوظاً. ومع ذلك، لاحظ أن هذا التحسن لا يأتي مجاناً، إذ تمتلك نتيجة ZNE أيضاً شريط خطأ أكبر.
+## توسيع نطاق التجربة {#scale-the-experiment-up}
+
+عند تطوير تجربة، من المفيد البدء بدائرة صغيرة لتسهيل التصورات والمحاكاة. بعد أن طوّرت سير العمل واختبرته على دائرة من 10 كيوبتات، يمكنك الآن توسيعه إلى 50 كيوبت. تُكرر خلية الكود التالية جميع خطوات هذا العرض التفصيلي، لكنها تُطبِّقها الآن على دائرة من 50 كيوبت.
+
+```python
+n_qubits = 50
+reps = 1
+
+# Construct circuit and observable
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+
+# Assign parameters to circuit
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+assigned_circuit = circuit.assign_parameters(params)
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+# Transpile circuit and observable
+isa_circuit = pass_manager.run(mirror_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+# Run jobs
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/d7d8408b-faf1-4eda-ab9c-bdeaab01ff53-0.avif)
+
+عند مقارنة نتائج 50 كيوبتاً بنتائج 10 كيوبتات من قبل، قد تلاحظ ما يلي (قد تختلف نتائجك بين التشغيلات):
+
+- النتائج بدون تخفيف الأخطاء أسوأ. يتطلب تشغيل الدائرة الأكبر تنفيذ المزيد من البوابات، مما يُتيح المزيد من الفرص لتراكم الأخطاء.
+- قد يكون إضافة الفصل الديناميكي قد أضرّ بالأداء. هذا ليس مفاجئاً، لأن الدائرة كثيفة جداً. الفصل الديناميكي مفيد أساساً عندما توجد فجوات كبيرة في الدائرة تجلس خلالها الكيوبتات خاملة بدون تطبيق أي بوابات عليها. عندما لا تكون هذه الفجوات موجودة، لا يكون الفصل الديناميكي فعالاً، بل قد يُضعف الأداء فعلياً بسبب الأخطاء في نبضات الفصل الديناميكي نفسها. ربما كانت دائرة 10 كيوبتات صغيرة جداً لملاحظة هذا التأثير.
+- مع الاستقراء عند انعدام الضوضاء، تكون النتيجة جيدة، أو قريبة جداً من نتيجة 10 كيوبتات، وإن كان شريط الخطأ أكبر بكثير. هذا يُوضح قوة تقنية ZNE!
+
+## الخاتمة {#conclusion}
+
+في هذا العرض التفصيلي، استكشفت خيارات تخفيف الأخطاء المختلفة المتاحة لأداة Qiskit Runtime Estimator الأساسية. طوّرت سير عمل باستخدام دائرة من 10 كيوبتات، ثم وسّعته إلى 50 كيوبت. ربما لاحظت أن تمكين المزيد من خيارات قمع الأخطاء وتخفيفها لا يُحسّن الأداء دائماً (تحديداً، تمكين الفصل الديناميكي في هذه الحالة). تقبل معظم الخيارات إعدادات إضافية يمكنك تجربتها في عملك الخاص!

@@ -1,0 +1,572 @@
+---
+title: "القياس المرجعي في الوقت الفعلي لاختيار البتات الكمية"
+sidebar_label: "القياس المرجعي في الوقت الفعلي لاختيار البتات الكمية"
+description: "تشغيل تجارب التوصيف في الوقت الفعلي وتحديث خصائص الواجهة الخلفية لتحسين اختيار البتات الكمية عند رسم خريطة الدائرة على البتات الكمية الفيزيائية في وحدة المعالجة الكمية."
+notebook_path: "docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/real-time-benchmarking-for-qubit-selection.ipynb" />
+
+
+
+{/* cspell:ignore sharex */}
+
+*تقدير الاستخدام: 4 دقائق على معالج Eagle r2 (ملاحظة: هذا تقدير فحسب. قد يختلف وقت التشغيل الفعلي.)*
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-experiments
+```
+
+```python
+# This cell is hidden from users – it disables some lint rules
+# ruff: noqa: E722
+```
+
+## الخلفية النظرية {#background}
+
+يوضح هذا البرنامج التعليمي كيفية تشغيل تجارب التوصيف في الوقت الفعلي وتحديث خصائص الواجهة الخلفية لتحسين اختيار البتات الكمية عند رسم خريطة الدائرة على البتات الكمية الفيزيائية في وحدة المعالجة الكمية (QPU). ستتعلم تجارب التوصيف الأساسية المستخدمة لتحديد خصائص وحدة المعالجة الكمية، وكيفية إجرائها في Qiskit، وكيفية تحديث الخصائص المحفوظة في كائن الواجهة الخلفية الذي يمثل وحدة المعالجة الكمية بناءً على هذه التجارب.
+
+تُحدَّث الخصائص المُبلَّغ عنها من وحدة المعالجة الكمية مرة واحدة يوميًا، غير أن النظام قد يتغير بسرعة أكبر من الفترة الزمنية الفاصلة بين التحديثات. قد يؤثر ذلك على موثوقية روتينات اختيار البتات الكمية في مرحلة `Layout` من مدير التمريرات، إذ ستعتمد على خصائص مُبلَّغ عنها لا تعكس الحالة الراهنة لوحدة المعالجة الكمية. لهذا السبب، قد يكون من المفيد تخصيص جزء من وقت وحدة المعالجة الكمية لتجارب التوصيف، والتي يمكن استخدامها بعد ذلك لتحديث خصائص وحدة المعالجة الكمية التي تستخدمها روتينات `Layout`.
+
+## المتطلبات {#requirements}
+
+قبل البدء في هذا البرنامج التعليمي، تأكد من تثبيت ما يلي:
+
+- Qiskit SDK الإصدار 2.0 أو أحدث، مع دعم [التصور المرئي](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime الإصدار 0.40 أو أحدث ( `pip install qiskit-ibm-runtime` )
+- Qiskit Experiments الإصدار 0.12 أو أحدث ( `pip install qiskit-experiments` )
+- مكتبة الرسوم البيانية Rustworkx (`pip install rustworkx`)
+
+## الإعداد {#setup}
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import hellinger_fidelity
+from qiskit.transpiler import InstructionProperties
+
+from qiskit_experiments.library import (
+    T1,
+    T2Hahn,
+    LocalReadoutError,
+    StandardRB,
+)
+from qiskit_experiments.framework import BatchExperiment, ParallelExperiment
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session
+
+from datetime import datetime
+from collections import defaultdict
+import numpy as np
+import rustworkx
+import matplotlib.pyplot as plt
+import copy
+```
+
+## الخطوة 1: تعيين المدخلات الكلاسيكية إلى مسألة كمية {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+لقياس الفرق في الأداء، نأخذ بعين الاعتبار دائرة تُعدّ حالة Bell عبر سلسلة خطية بأطوال متفاوتة. يُقاس إخلاص حالة Bell عند طرفي السلسلة.
+
+```python
+from qiskit import QuantumCircuit
+
+ideal_dist = {"00": 0.5, "11": 0.5}
+
+num_qubits_list = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 127]
+circuits = []
+for num_qubits in num_qubits_list:
+    circuit = QuantumCircuit(num_qubits, 2)
+    circuit.h(0)
+    for i in range(num_qubits - 1):
+        circuit.cx(i, i + 1)
+    circuit.barrier()
+    circuit.measure(0, 0)
+    circuit.measure(num_qubits - 1, 1)
+    circuits.append(circuit)
+
+circuits[-1].draw(output="mpl", style="clifford", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-1.avif)
+
+### إعداد الواجهة الخلفية وخريطة الاقتران {#set-up-backend-and-coupling-map}
+
+أولًا، اختر الواجهة الخلفية
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+
+qubits = list(range(backend.num_qubits))
+```
+
+ثم احصل على خريطة الاقتران الخاصة بها
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+
+# Get unidirectional coupling map
+one_dir_coupling_map = coupling_graph.edge_list()
+```
+
+لقياس أكبر عدد ممكن من بوابات الكيوبت الثنائية في آنٍ واحد، نقسّم خريطة الاقتران إلى `layered_coupling_map`. يحتوي هذا الكائن على قائمة من الطبقات، حيث تتضمن كل طبقة قائمة من الحواف التي يمكن تنفيذ بوابات الكيوبت الثنائية عليها في نفس الوقت. يُعرف هذا أيضًا بتلوين حواف خريطة الاقتران.
+
+```python
+# Get layered coupling map
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+layered_coupling_map = defaultdict(list)
+for edge_idx, color in edge_coloring.items():
+    layered_coupling_map[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layered_coupling_map = [
+    sorted(layered_coupling_map[i])
+    for i in sorted(layered_coupling_map.keys())
+]
+```
+
+### تجارب التوصيف {#characterization-experiments}
+
+تُستخدم سلسلة من التجارب لتوصيف الخصائص الرئيسية للكيوبتات في وحدة المعالجة الكمية. وتشمل هذه الخصائص: $T_1$، و$T_2$، وخطأ القراءة، وخطأ البوابة أحادية الكيوبت والبوابة ثنائية الكيوبت. سنستعرض باختصار ماهية هذه الخصائص، مع الإشارة إلى التجارب الموجودة في حزمة [`qiskit-experiments`](https://qiskit-community.github.io/qiskit-experiments/index.html) المستخدمة لتوصيفها.
+
+#### T1
+
+$T_1$ هو الزمن المميز الذي يستغرقه الكيوبت المُثار للعودة إلى الحالة الأساسية بسبب عمليات تبدد الترابط (decoherence) الناجمة عن تخميد السعة. في [تجربة $T_1$](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t1.html)، نقيس الكيوبت المُثار بعد تأخير زمني. كلما زاد زمن التأخير، زادت احتمالية عودة الكيوبت إلى الحالة الأساسية. يهدف هذا التجربة إلى توصيف معدل اضمحلال الكيوبت نحو الحالة الأساسية.
+
+#### T2
+
+يمثل $T_2$ مقدار الزمن اللازم لانخفاض إسقاط متجه Bloch للكيوبت الواحد على المستوى XY إلى ما يقارب 37% ($\frac{1}{e}$) من سعته الابتدائية بسبب عمليات تبدد الترابط الناجمة عن الطور. يمكننا تقدير معدل هذا الاضمحلال باستخدام [تجربة $T_2$ Hahn Echo](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t2hahn.html).
+
+#### توصيف خطأ تحضير الحالة والقياس (SPAM) {#state-preparation-and-measurement-spam-error-characterization}
+
+في [تجربة توصيف خطأ SPAM](https://qiskit-community.github.io/qiskit-experiments/manuals/measurement/readout_mitigation.html)، تُحضَّر الكيوبتات في حالة معينة ($\vert 0 \rangle$ أو $\vert 1 \rangle$) ثم تُقاس. تُعطي احتمالية قياس حالة مختلفة عن الحالة المُحضَّرة احتمالية حدوث الخطأ.
+
+#### القياس المرجعي العشوائي أحادي وثنائي الكيوبت {#single-qubit-and-two-qubit-randomized-benchmarking}
+
+[القياس المرجعي العشوائي (RB)](https://qiskit-community.github.io/qiskit-experiments/manuals/verification/randomized_benchmarking.html) هو بروتوكول شائع لتوصيف معدل الخطأ في المعالجات الكمية. تتضمن تجربة RB توليد دوائر Clifford عشوائية على الكيوبتات المحددة بحيث يكون المؤثر الوحدوي المحسوب بواسطة الدوائر هو مؤثر الهوية. بعد تشغيل الدوائر، يُحسب عدد القياسات التي أسفرت عن خطأ (أي مخرج يختلف عن الحالة الأساسية)، ومن هذه البيانات يمكن استنتاج تقديرات الخطأ للجهاز الكمي من خلال حساب الخطأ لكل Clifford.
+
+```python
+# Create T1 experiments on all qubit in parallel
+t1_exp = ParallelExperiment(
+    [
+        T1(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create T2-Hahn experiments on all qubit in parallel
+t2_exp = ParallelExperiment(
+    [
+        T2Hahn(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create readout experiments on all qubit in parallel
+readout_exp = LocalReadoutError(qubits)
+
+# Create single-qubit RB experiments on all qubit in parallel
+singleq_rb_exp = ParallelExperiment(
+    [
+        StandardRB(
+            physical_qubits=[qubit], lengths=[10, 100, 500], num_samples=10
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create two-qubit RB experiments on the three layers of disjoint edges of the heavy-hex
+twoq_rb_exp_batched = BatchExperiment(
+    [
+        ParallelExperiment(
+            [
+                StandardRB(
+                    physical_qubits=pair,
+                    lengths=[10, 50, 100],
+                    num_samples=10,
+                )
+                for pair in layer
+            ],
+            backend,
+            analysis=None,
+        )
+        for layer in layered_coupling_map
+    ],
+    backend,
+    flatten_results=True,
+    analysis=None,
+)
+```
+
+### خصائص وحدة المعالجة الكمية عبر الزمن {#qpu-properties-over-time}
+
+بالنظر إلى الخصائص المُبلَّغ عنها من وحدة المعالجة الكمية عبر الزمن (سنأخذ في الاعتبار أسبوعًا واحدًا أدناه)، نرى كيف يمكن أن تتذبذب هذه الخصائص على مقياس يوم واحد. يمكن أن تحدث تذبذبات طفيفة حتى في غضون يوم واحد. في هذا السيناريو، لن تعكس الخصائص المُبلَّغ عنها (التي تُحدَّث مرة واحدة يوميًا) الحالة الراهنة لوحدة المعالجة الكمية بدقة. علاوة على ذلك، إذا جرى نقل دائرة محليًا (باستخدام الخصائص المُبلَّغ عنها الحالية) وإرسالها للتنفيذ في وقت لاحق (دقائق أو أيام)، فقد تكون قد استُخدمت خصائص قديمة لاختيار الكيوبتات في خطوة النقل. يسلط هذا الضوء على أهمية توفر معلومات محدَّثة عن وحدة المعالجة الكمية في وقت التنفيذ. أولًا، لنسترجع الخصائص خلال نطاق زمني معين.
+
+```python
+instruction_2q_name = "cz"  # set the name of the default 2q of the device
+errors_list = []
+for day_idx in range(10, 17):
+    calibrations_time = datetime(
+        year=2025, month=8, day=day_idx, hour=0, minute=0, second=0
+    )
+    targer_hist = backend.target_history(datetime=calibrations_time)
+
+    t1_dict, t2_dict = {}, {}
+    for qubit in range(targer_hist.num_qubits):
+        t1_dict[qubit] = targer_hist.qubit_properties[qubit].t1
+        t2_dict[qubit] = targer_hist.qubit_properties[qubit].t2
+
+    errors_dict = {
+        "1q": targer_hist["sx"],
+        "2q": targer_hist[f"{instruction_2q_name}"],
+        "spam": targer_hist["measure"],
+        "t1": t1_dict,
+        "t2": t2_dict,
+    }
+
+    errors_list.append(errors_dict)
+```
+
+ثم لنرسم القيم بيانيًا
+
+```python
+fig, axs = plt.subplots(5, 1, figsize=(10, 20), sharex=False)
+
+# Plot for T1 values
+for qubit in range(targer_hist.num_qubits):
+    t1s = []
+    for errors_dict in errors_list:
+        t1_dict = errors_dict["t1"]
+        try:
+            t1s.append(t1_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t1 data for qubit {qubit}")
+
+    axs[0].plot(t1s)
+
+axs[0].set_title("T1")
+axs[0].set_ylabel(r"Time ($\mu s$)")
+axs[0].set_xlabel("Days")
+
+# Plot for T2 values
+for qubit in range(targer_hist.num_qubits):
+    t2s = []
+    for errors_dict in errors_list:
+        t2_dict = errors_dict["t2"]
+        try:
+            t2s.append(t2_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t2 data for qubit {qubit}")
+
+    axs[1].plot(t2s)
+
+axs[1].set_title("T2")
+axs[1].set_ylabel(r"Time ($\mu s$)")
+axs[1].set_xlabel("Days")
+
+# Plot SPAM values
+for qubit in range(targer_hist.num_qubits):
+    spams = []
+    for errors_dict in errors_list:
+        spam_dict = errors_dict["spam"]
+        spams.append(spam_dict[tuple([qubit])].error)
+
+    axs[2].plot(spams)
+
+axs[2].set_title("SPAM Errors")
+axs[2].set_ylabel("Error Rate")
+axs[2].set_xlabel("Days")
+
+# Plot 1Q Gate Errors
+for qubit in range(targer_hist.num_qubits):
+    oneq_gates = []
+    for errors_dict in errors_list:
+        oneq_gate_dict = errors_dict["1q"]
+        oneq_gates.append(oneq_gate_dict[tuple([qubit])].error)
+
+    axs[3].plot(oneq_gates)
+
+axs[3].set_title("1Q Gate Errors")
+axs[3].set_ylabel("Error Rate")
+axs[3].set_xlabel("Days")
+
+# Plot 2Q Gate Errors
+for pair in one_dir_coupling_map:
+    twoq_gates = []
+    for errors_dict in errors_list:
+        twoq_gate_dict = errors_dict["2q"]
+        twoq_gates.append(twoq_gate_dict[pair].error)
+
+    axs[4].plot(twoq_gates)
+
+axs[4].set_title("2Q Gate Errors")
+axs[4].set_ylabel("Error Rate")
+axs[4].set_xlabel("Days")
+
+plt.subplots_adjust(hspace=0.5)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/e0ba509d-e0e0-438b-aedf-5e01919c7d4f-0.avif)
+
+يمكنك أن ترى أن بعض خصائص الكيوبتات يمكن أن تتغير تغييرًا ملحوظًا على مدى عدة أيام. يسلط هذا الضوء على أهمية توفر معلومات حديثة عن حالة وحدة المعالجة الكمية، لاختيار الكيوبتات الأفضل أداءً لأي تجربة.
+
+## الخطوة 2: تحسين المسألة لتنفيذها على الأجهزة الكمية {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+لا يُجرى أي تحسين على الدوائر أو المؤثرات في هذا البرنامج التعليمي.
+
+## الخطوة 3: التنفيذ باستخدام العناصر الأولية في Qiskit {#step-3-execute-using-qiskit-primitives}
+
+### تنفيذ دائرة كمية باختيار الكيوبتات الافتراضي {#execute-a-quantum-circuit-with-default-qubit-selection}
+
+كنتيجة مرجعية للأداء، سننفذ دائرة كمية على وحدة المعالجة الكمية باستخدام الكيوبتات الافتراضية، وهي الكيوبتات المختارة وفقًا لخصائص الواجهة الخلفية المطلوبة. سنستخدم `optimization_level = 3`. يتضمن هذا الإعداد أكثر تحسينات النقل تقدمًا، ويستخدم خصائص الهدف (مثل أخطاء العمليات) لاختيار الكيوبتات الأفضل أداءً للتنفيذ.
+
+```python
+pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
+isa_circuits = pm.run(circuits)
+initial_qubits = [
+    [
+        idx
+        for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+        if qb._register.name != "ancilla"
+    ]
+    for circuit in isa_circuits
+]
+```
+
+### تنفيذ دائرة كمية باختيار الكيوبتات في الوقت الفعلي {#execute-a-quantum-circuit-with-real-time-qubit-selection}
+
+في هذا القسم، سندرس أهمية توفر معلومات محدَّثة عن خصائص الكيوبتات في وحدة المعالجة الكمية للحصول على نتائج مثلى. أولًا، سننفذ مجموعة كاملة من تجارب توصيف وحدة المعالجة الكمية ($T_1$ و$T_2$ و SPAM والقياس المرجعي العشوائي أحادي الكيوبت وثنائي الكيوبت)، والتي يمكننا استخدامها لاحقًا لتحديث خصائص الواجهة الخلفية. يتيح ذلك لمدير التمريرات اختيار الكيوبتات للتنفيذ بناءً على معلومات حديثة عن وحدة المعالجة الكمية، مما قد يحسّن أداء التنفيذ. ثانيًا، ننفذ دائرة زوج Bell ونقارن الإخلاص المُحصَّل بعد اختيار الكيوبتات بخصائص وحدة المعالجة الكمية المحدَّثة بالإخلاص الذي حصلنا عليه مسبقًا عند استخدام الخصائص المُبلَّغ عنها الافتراضية لاختيار الكيوبتات.
+
+<Admonition type="caution">
+لاحظ أن بعض تجارب التوصيف قد تفشل عندما لا تتمكن روتينات المطابقة من ملاءمة منحنى مع البيانات المقيسة. إذا رأيت تحذيرات صادرة عن هذه التجارب، افحصها لفهم التوصيف الذي فشل على أي كيوبتات، وحاول ضبط معاملات التجربة (مثل الأزمنة الخاصة بـ $T_1$ و$T_2$، أو أعداد أطوال تجارب RB).
+</Admonition>
+
+```python
+# Prepare characterization experiments
+batches = [t1_exp, t2_exp, readout_exp, singleq_rb_exp, twoq_rb_exp_batched]
+batches_exp = BatchExperiment(batches, backend)  # , analysis=None)
+run_options = {"shots": 1e3, "dynamic": False}
+
+with Session(backend=backend) as session:
+    sampler = SamplerV2(mode=session)
+
+    # Run characterization experiments
+    batches_exp_data = batches_exp.run(
+        sampler=sampler, **run_options
+    ).block_for_results()
+
+    EPG_sx_result_list = batches_exp_data.analysis_results("EPG_sx")
+    EPG_sx_result_q_indices = [
+        result.device_components.index for result in EPG_sx_result_list
+    ]
+    EPG_x_result_list = batches_exp_data.analysis_results("EPG_x")
+    EPG_x_result_q_indices = [
+        result.device_components.index for result in EPG_x_result_list
+    ]
+    T1_result_list = batches_exp_data.analysis_results("T1")
+    T1_result_q_indices = [
+        result.device_components.index for result in T1_result_list
+    ]
+
+    T2_result_list = batches_exp_data.analysis_results("T2")
+    T2_result_q_indices = [
+        result.device_components.index for result in T2_result_list
+    ]
+
+    Readout_result_list = batches_exp_data.analysis_results(
+        "Local Readout Mitigator"
+    )
+
+    EPG_2q_result_list = batches_exp_data.analysis_results(
+        f"EPG_{instruction_2q_name}"
+    )
+
+    # Update target properties
+    target = copy.deepcopy(backend.target)
+    for i in range(target.num_qubits - 1):
+        qarg = (i,)
+
+        if qarg in EPG_sx_result_q_indices:
+            target.update_instruction_properties(
+                instruction="sx",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_sx_result_list[i].value.nominal_value
+                ),
+            )
+        if qarg in EPG_x_result_q_indices:
+            target.update_instruction_properties(
+                instruction="x",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_x_result_list[i].value.nominal_value
+                ),
+            )
+
+        err_mat = Readout_result_list.value.assignment_matrix(i)
+        readout_assignment_error = (
+            err_mat[0, 1] + err_mat[1, 0]
+        ) / 2  # average readout error
+        target.update_instruction_properties(
+            instruction="measure",
+            qargs=qarg,
+            properties=InstructionProperties(error=readout_assignment_error),
+        )
+
+        if qarg in T1_result_q_indices:
+            target.qubit_properties[i].t1 = T1_result_list[
+                i
+            ].value.nominal_value
+        if qarg in T2_result_q_indices:
+            target.qubit_properties[i].t2 = T2_result_list[
+                i
+            ].value.nominal_value
+
+    for pair_idx, pair in enumerate(one_dir_coupling_map):
+        qarg = tuple(pair)
+        try:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+        except:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg[::-1],
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+
+    # transpile circuits to updated target
+    pm = generate_preset_pass_manager(target=target, optimization_level=3)
+    isa_circuit_updated = pm.run(circuits)
+    updated_qubits = [
+        [
+            idx
+            for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+            if qb._register.name != "ancilla"
+        ]
+        for circuit in isa_circuit_updated
+    ]
+
+    n_trials = 3  # run multiple trials to see variations
+
+    # interleave circuits
+    interleaved_circuits = []
+    for original_circuit, updated_circuit in zip(
+        isa_circuits, isa_circuit_updated
+    ):
+        interleaved_circuits.append(original_circuit)
+        interleaved_circuits.append(updated_circuit)
+
+    # Run circuits
+    # Set simple error suppression/mitigation options
+    sampler.options.dynamical_decoupling.enable = True
+    sampler.options.dynamical_decoupling.sequence_type = "XY4"
+
+    job_interleaved = sampler.run(interleaved_circuits * n_trials)
+```
+
+## الخطوة 4: المعالجة اللاحقة وإرجاع النتيجة بالصيغة الكلاسيكية المطلوبة {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+أخيرًا، لنقارن إخلاص حالة Bell المُحصَّل في الإعدادين المختلفين:
+
+- `original`: أي مع الكيوبتات الافتراضية التي اختارها المُحوِّل البرمجي بناءً على الخصائص المُبلَّغ عنها للواجهة الخلفية.
+- `updated`: أي مع الكيوبتات المختارة بناءً على الخصائص المحدَّثة للواجهة الخلفية بعد تشغيل تجارب التوصيف.
+
+```python
+results = job_interleaved.result()
+all_fidelity_list, all_fidelity_updated_list = [], []
+for exp_idx in range(n_trials):
+    fidelity_list, fidelity_updated_list = [], []
+
+    for idx, num_qubits in enumerate(num_qubits_list):
+        pub_result_original = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx
+        ]
+        pub_result_updated = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx + 1
+        ]
+
+        fid = hellinger_fidelity(
+            ideal_dist, pub_result_original.data.c.get_counts()
+        )
+        fidelity_list.append(fid)
+
+        fid_up = hellinger_fidelity(
+            ideal_dist, pub_result_updated.data.c.get_counts()
+        )
+        fidelity_updated_list.append(fid_up)
+    all_fidelity_list.append(fidelity_list)
+    all_fidelity_updated_list.append(fidelity_updated_list)
+```
+
+```python
+plt.figure(figsize=(8, 6))
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_list, axis=0),
+    yerr=np.std(all_fidelity_list, axis=0),
+    fmt="o-.",
+    label="original",
+    color="b",
+)
+# plt.plot(num_qubits_list, fidelity_list, '-.')
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_updated_list, axis=0),
+    yerr=np.std(all_fidelity_updated_list, axis=0),
+    fmt="o-.",
+    label="updated",
+    color="r",
+)
+# plt.plot(num_qubits_list, fidelity_updated_list, '-.')
+plt.xlabel("Chain length")
+plt.xticks(num_qubits_list)
+plt.ylabel("Fidelity")
+plt.title("Bell pair fidelity at the edge of N-qubits chain")
+plt.legend()
+plt.grid(
+    alpha=0.2,
+    linestyle="-.",
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/656ec97a-3fd9-4635-9a98-1c5589761689-0.avif)
+
+لن تُظهر جميع عمليات التشغيل تحسينًا في الأداء بفضل التوصيف في الوقت الفعلي - ومع تزايد طول السلسلة، وبالتالي تقلّص هامش الحرية في اختيار الكيوبتات الفيزيائية، تقل أهمية المعلومات المحدَّثة عن الجهاز. غير أن جمع بيانات حديثة عن خصائص الجهاز لفهم أدائه يُعدّ ممارسة جيدة. في بعض الأحيان، قد تؤثر أنظمة ذات مستويين عابرة (transient two-level systems) على أداء بعض الكيوبتات. يمكن للبيانات الآنية أن تُعلمنا بحدوث مثل هذه الأحداث وتساعدنا على تفادي الإخفاقات التجريبية في تلك الحالات.
+
+<Admonition type="note" title="دعوة إلى العمل">
+حاول تطبيق هذه الطريقة على تنفيذاتك وحدِّد مقدار الفائدة التي تجنيها! يمكنك أيضًا تجربة قياس مدى التحسينات التي تحصل عليها من واجهات خلفية مختلفة.
+</Admonition>
+
+## استطلاع البرنامج التعليمي {#tutorial-survey}
+
+يُرجى تعبئة هذا الاستطلاع القصير لتقديم ملاحظاتك حول هذا البرنامج التعليمي. ستساعدنا آراؤك في تحسين محتوانا وتجربة المستخدم.
+
+[رابط الاستطلاع](https://your.feedback.ibm.com/jfe/form/SV_0w6FZ9QrWkKfTQq)
