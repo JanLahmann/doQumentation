@@ -348,19 +348,17 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
 }
 
 /**
- * Get the Binder JupyterLab URL for a specific notebook (GitHub Pages).
- * Points to the dependency-ready copy on gh-pages (has install cells).
+ * Get the Binder JupyterLab URL for a specific notebook.
+ * Opens the original notebook in the Binder repo (JanLahmann/Qiskit-documentation).
  */
 export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): string | null {
   if (!config.binderUrl) {
     return null;
   }
 
-  // notebookPath is upstream-relative, e.g. "docs/tutorials/hello-world.ipynb"
-  // Strip "docs/" prefix to match the notebooks/ directory structure on gh-pages.
-  const nbPath = notebookPath.replace(/^docs\//, '');
-  const fullPath = `notebooks/${nbPath}`;
-  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
+  // notebookPath matches the Binder repo structure directly,
+  // e.g. "docs/tutorials/foo.ipynb", "learning/courses/bar.ipynb", "hello-world.ipynb"
+  return `${config.binderUrl}?labpath=${encodeURIComponent(notebookPath)}`;
 }
 
 /**
