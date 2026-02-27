@@ -130,16 +130,21 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: '/jupyter-settings',
-          label: '⚙ Settings',
-          position: 'right',
-        },
-        {
           type: 'localeDropdown',
           position: 'right',
+          className: 'navbar-locale-dropdown',
         },
         {
+          href: '/jupyter-settings',
+          label: 'Settings',
+          position: 'right',
+          className: 'header-settings-link',
+          'aria-label': 'Settings',
+        },
+        // Dark mode toggle is auto-placed here by Docusaurus (CSS order: 3)
+        {
           href: 'https://github.com/JanLahmann/doQumentation',
+          label: 'GitHub',
           position: 'right',
           className: 'header-github-link',
           'aria-label': 'GitHub repository',

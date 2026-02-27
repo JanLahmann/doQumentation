@@ -66,11 +66,6 @@ const tutorialLabels = collectCategoryLabels(tutorialItems);
 const sidebars: SidebarsConfig = {
   tutorialsSidebar: [
     {
-      type: 'doc',
-      id: 'index',
-      label: 'Home',
-    },
-    {
       type: 'category',
       label: 'Tutorials',
       collapsed: true,
@@ -108,16 +103,7 @@ const sidebars: SidebarsConfig = {
           },
         ]
       : []),
-    {
-      type: 'link' as const,
-      label: 'API Reference',
-      href: 'https://quantum.cloud.ibm.com/docs/en/api',
-    },
-    {
-      type: 'link' as const,
-      label: 'Settings',
-      href: '/jupyter-settings',
-    },
+    /* API Reference + Settings are in the navbar — not duplicated here */
   ],
 };
 

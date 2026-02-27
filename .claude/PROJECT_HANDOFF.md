@@ -295,8 +295,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Mobile locale switcher** — Language dropdown not visible on mobile devices. Needs CSS/hamburger menu fix.
-- **"Open in Google Colab" button** — Plan ready (`.claude/plans/cryptic-enchanting-russell.md`).
+- **"Open in Google Colab" button** — Fallback for when Binder is unavailable. URL scheme: `colab.research.google.com/github/{owner}/{repo}/blob/{branch}/{path}`. Note: Colab lacks Qiskit pre-installed.
 - **Translation expansion** — DE at 79/387, ES/UK at 55/387, others tutorials only. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
