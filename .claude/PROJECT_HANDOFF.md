@@ -131,7 +131,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
-├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (8)
+├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (8), swg/bad/bar (31 each)
 ├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
@@ -193,19 +193,22 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | DE | [de.doqumentation.org](https://de.doqumentation.org) | 79 + UI | Live |
 | ES | [es.doqumentation.org](https://es.doqumentation.org) | 55 + UI | Live |
 | UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 55 + UI | Live |
-| FR | [fr.doqumentation.org](https://fr.doqumentation.org) | 48 + UI | Deploying |
-| IT | [it.doqumentation.org](https://it.doqumentation.org) | 48 + UI | Deploying |
-| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | 48 + UI | Deploying |
-| JA | [ja.doqumentation.org](https://ja.doqumentation.org) | 60 + UI | Deploying |
-| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 13 + UI | Deploying |
-| AR | [ar.doqumentation.org](https://ar.doqumentation.org) | 44 + UI | Configured (RTL) |
-| HE | [he.doqumentation.org](https://he.doqumentation.org) | 9 + UI | Configured (RTL) |
+| FR | [fr.doqumentation.org](https://fr.doqumentation.org) | 48 + UI | Live |
+| IT | [it.doqumentation.org](https://it.doqumentation.org) | 48 + UI | Live |
+| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | 48 + UI | Live |
+| JA | [ja.doqumentation.org](https://ja.doqumentation.org) | 60 + UI | Live |
+| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 13 + UI | Live |
+| AR | [ar.doqumentation.org](https://ar.doqumentation.org) | 44 + UI | Live (RTL) |
+| HE | [he.doqumentation.org](https://he.doqumentation.org) | 9 + UI | Live (RTL) |
+| SWG | [swg.doqumentation.org](https://swg.doqumentation.org) | 31 + UI | Live |
+| BAD | [bad.doqumentation.org](https://bad.doqumentation.org) | 31 + UI | Live |
+| BAR | [bar.doqumentation.org](https://bar.doqumentation.org) | 31 + UI | Live |
 
-- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links natively. hreflang tags auto-generated.
+- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links natively. hreflang tags auto-generated.
 - **RTL support**: AR and HE have `direction: 'rtl'` in `localeConfigs`. CSS uses logical properties (`border-inline-start`, `margin-inline-start`, `inset-inline-end`) throughout — direction-agnostic for both LTR and RTL. Noto Sans Arabic/Hebrew fonts loaded via Google Fonts. `[dir="rtl"]` overrides in `custom.css`.
-- **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 10 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL,AR,HE}`).
-- **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,fr,it,pt,ja,tl,ar,he}` — each has `main` branch (README + LICENSE + LICENSE-DOCS + NOTICE) and `gh-pages` branch (build output). GitHub Pages + custom domains configured.
-- **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 11 banner templates defined in `scripts/translate-content.py`.
+- **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 13 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL,AR,HE,SWG,BAD,BAR}`).
+- **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,fr,it,pt,ja,tl,ar,he}` + `doqumentation-{swg,bad,bar}` — each has `main` branch (README + LICENSE + LICENSE-DOCS + NOTICE) and `gh-pages` branch (build output). GitHub Pages + custom domains configured.
+- **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 14 banner templates defined in `scripts/translate-content.py`.
 - **Translation**: `.claude/translation-prompt.md` — Sonnet model, 1 file/agent, 20+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
 - **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `scripts/fix-heading-anchors.py` for batch fixing.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.

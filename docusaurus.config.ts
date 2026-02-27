@@ -103,7 +103,7 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he'],
+    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
@@ -116,6 +116,9 @@ const config: Config = {
       tl: { label: 'Filipino', url: 'https://tl.doqumentation.org' },
       ar: { label: 'العربية', direction: 'rtl', url: 'https://ar.doqumentation.org' },
       he: { label: 'עברית', direction: 'rtl', url: 'https://he.doqumentation.org' },
+      swg: { label: 'Schwäbisch', url: 'https://swg.doqumentation.org' },
+      bad: { label: 'Badisch', url: 'https://bad.doqumentation.org' },
+      bar: { label: 'Boarisch', url: 'https://bar.doqumentation.org' },
     },
   },
 

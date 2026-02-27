@@ -194,7 +194,8 @@ def cmd_extract(args):
                              "fr": "French", "uk": "Ukrainian", "it": "Italian",
                              "pt": "Portuguese", "tl": "Tagalog/Filipino",
                              "th": "Thai", "ar": "Arabic",
-                             "he": "Hebrew"}.get(locale, locale),
+                             "he": "Hebrew", "swg": "Schwäbisch",
+                             "bad": "Badisch", "bar": "Bayerisch"}.get(locale, locale),
             "status": "pending",  # pending → translated → assembled
             "files": [],
         }
@@ -281,6 +282,24 @@ BANNER_TEMPLATES = {
         "\n:::note[טרם תורגם]\n"
         "דף זה טרם תורגם. "
         "התוכן מוצג באנגלית.\n"
+        ":::\n"
+    ),
+    "swg": (
+        "\n:::note[No net ibersetzt]\n"
+        "Die Seid isch no net ibersetzt worda. "
+        "Se gucket die englische Originalversion.\n"
+        ":::\n"
+    ),
+    "bad": (
+        "\n:::note[Nonig ibersetzt]\n"
+        "Die Siite isch nonig ibersetzt worre. "
+        "Ihr luege d englischi Originalversion aa.\n"
+        ":::\n"
+    ),
+    "bar": (
+        "\n:::note[No ned ibersetzt]\n"
+        "De Seitn is no ned ibersetzt worn. "
+        "Sie schaung de englische Originalversion o.\n"
         ":::\n"
     ),
 }
