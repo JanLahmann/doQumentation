@@ -40,6 +40,8 @@ function MobileLocaleSelector() {
     return () => document.removeEventListener('click', handleClick);
   }, [open]);
 
+  const dialectLocales = new Set(['swg', 'bad', 'bar']);
+
   if (locales.length <= 1) return null;
 
   const handleSelect = useCallback(
@@ -67,17 +69,25 @@ function MobileLocaleSelector() {
       </button>
       {open && (
         <ul className="dq-mobile-locale__dropdown">
-          {locales.map((locale) => (
-            <li key={locale}>
-              <button
-                type="button"
-                className={`clean-btn dq-mobile-locale__item${
-                  locale === currentLocale ? ' dq-mobile-locale__item--active' : ''
-                }`}
-                onClick={() => handleSelect(locale)}>
-                {localeConfigs[locale]?.label || locale}
-              </button>
-            </li>
+          {locales.map((locale, i) => (
+            <React.Fragment key={locale}>
+              {dialectLocales.has(locale) &&
+                (i === 0 || !dialectLocales.has(locales[i - 1])) && (
+                  <li className="dq-mobile-locale__separator">
+                    Deutsche Dialekte
+                  </li>
+                )}
+              <li>
+                <button
+                  type="button"
+                  className={`clean-btn dq-mobile-locale__item${
+                    locale === currentLocale ? ' dq-mobile-locale__item--active' : ''
+                  }`}
+                  onClick={() => handleSelect(locale)}>
+                  {localeConfigs[locale]?.label || locale}
+                </button>
+              </li>
+            </React.Fragment>
           ))}
         </ul>
       )}
