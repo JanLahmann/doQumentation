@@ -111,6 +111,8 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 - **Navbar**: Always dark (`#161616`). Right-side icons: locale (globe), settings (gear), dark mode, GitHub (octocat) — all icon-only on desktop (text hidden via `font-size: 0` + `::before` SVG). CSS `order` positions auto-placed dark mode toggle and search bar. Mobile sidebar header swizzled (`Navbar/MobileSidebar/Header`) with matching icon row.
 - **Footer**: Three columns — doQumentation (Features, Settings, GitHub), RasQberry (site + GitHub), IBM Quantum & Qiskit (docs, GitHub, Slack). IBM disclaimer in copyright.
 - **Styling**: Carbon Design-inspired (IBM Plex, `#0f62fe`).
+- **SEO & social sharing**: Open Graph + Twitter Card meta tags, JSON-LD structured data (Organization, WebPage, SoftwareApplication), robots meta for AI indexing, preconnect hints for fonts/CDN. Social card image (`static/img/rasqberry-social-card.png`, 1200x630).
+- **Keyboard accessibility**: `focus-visible` outlines on all interactive elements; light blue variant on dark navbar for contrast.
 
 ---
 
@@ -191,11 +193,11 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | DE | [de.doqumentation.org](https://de.doqumentation.org) | 79 + UI | Live |
 | ES | [es.doqumentation.org](https://es.doqumentation.org) | 55 + UI | Live |
 | UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 55 + UI | Live |
-| FR | [fr.doqumentation.org](https://fr.doqumentation.org) | 44 + UI | Configured |
-| IT | [it.doqumentation.org](https://it.doqumentation.org) | 44 + UI | Configured |
-| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | 44 + UI | Configured |
-| JA | [ja.doqumentation.org](https://ja.doqumentation.org) | 59 + UI | Configured |
-| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 8 + UI | Configured |
+| FR | [fr.doqumentation.org](https://fr.doqumentation.org) | 48 + UI | Deploying |
+| IT | [it.doqumentation.org](https://it.doqumentation.org) | 48 + UI | Deploying |
+| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | 48 + UI | Deploying |
+| JA | [ja.doqumentation.org](https://ja.doqumentation.org) | 60 + UI | Deploying |
+| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 13 + UI | Deploying |
 | AR | [ar.doqumentation.org](https://ar.doqumentation.org) | 44 + UI | Configured (RTL) |
 | HE | [he.doqumentation.org](https://he.doqumentation.org) | 9 + UI | Configured (RTL) |
 
@@ -301,8 +303,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **"Open in Google Colab" button** — Fallback for when Binder is unavailable. URL scheme: `colab.research.google.com/github/{owner}/{repo}/blob/{branch}/{path}`. Note: Colab lacks Qiskit pre-installed.
-- **Translation expansion** — DE at 79/387, ES/UK at 55/387, others tutorials only. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
+- **Translation expansion** — DE at 79/387, ES/UK at 55/387, others at 44-48. All key index pages translated across all 8 active locales. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
