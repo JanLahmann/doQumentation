@@ -103,7 +103,7 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar'],
+    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
@@ -119,6 +119,12 @@ const config: Config = {
       swg: { label: 'Schwäbisch', url: 'https://swg.doqumentation.org' },
       bad: { label: 'Badisch', url: 'https://bad.doqumentation.org' },
       bar: { label: 'Boarisch', url: 'https://bar.doqumentation.org' },
+      ksh: { label: 'Kölsch', url: 'https://ksh.doqumentation.org' },
+      nds: { label: 'Plattdüütsch', url: 'https://nds.doqumentation.org' },
+      gsw: { label: 'Schwiizerdütsch', url: 'https://gsw.doqumentation.org' },
+      sax: { label: 'Säggssch', url: 'https://sax.doqumentation.org' },
+      bln: { label: 'Berlinerisch', url: 'https://bln.doqumentation.org' },
+      aut: { label: 'Österreichisch', url: 'https://aut.doqumentation.org' },
     },
   },
 
@@ -287,8 +293,12 @@ const config: Config = {
           title: 'IBM Quantum & Qiskit',
           items: [
             {
-              label: 'IBM Quantum',
+              label: 'IBM Quantum Platform',
               href: 'https://quantum.cloud.ibm.com',
+            },
+            {
+              label: 'IBM Quantum',
+              href: 'https://ibm.com/quantum',
             },
             {
               label: 'Qiskit Documentation',

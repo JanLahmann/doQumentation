@@ -585,7 +585,7 @@ function getThebelabOptions(config: JupyterConfig): Record<string, unknown> {
       binderOptions: {
         repo: 'JanLahmann/Qiskit-documentation',
         ref: 'main',
-        binderUrl: 'https://2i2c.mybinder.org',
+        binderUrl: 'https://mybinder.org',
       },
       kernelOptions: {
         name: 'python3',

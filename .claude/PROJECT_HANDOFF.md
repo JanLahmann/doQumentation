@@ -100,7 +100,7 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 - `deploy-locales.yml` — Matrix build per locale → push to satellite repos (DE/ES/UK subdomains)
 - `docker.yml` — Multi-arch Docker → ghcr.io (EN only via `--locale en`)
 - `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies
-- Binder repo: daily cache-warming workflow
+- Binder repo: daily cache-warming workflow (warms all 3 federation members: 2i2c, BIDS, GESIS)
 
 ### Other
 - **Homepage**: Hero with stats bar, Getting Started cards (category-tagged), simulator callout, code execution section. No sidebar on homepage itself.
@@ -131,7 +131,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
-├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (8), swg/bad/bar (31 each)
+├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (8), swg/bad/bar (31 each), ksh/nds/gsw/sax/bln/aut (UI only)
 ├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
@@ -174,7 +174,7 @@ podman compose --profile jupyter up   # Full stack → :8080 (site) + :8888 (Jup
 - **Admonition JSX** — Don't convert `<Admonition>` to `:::` directives. Breaks nesting inside `<details>`.
 - **Build memory** — ~380 pages needs `NODE_OPTIONS="--max-old-space-size=8192"`.
 - **thebelab config** — Pass options to `bootstrap(options)`. Do NOT use `<script type="text/x-thebe-config">`.
-- **Binder cache** — Keyed to commit hash. Any push to Binder repo invalidates cache.
+- **Binder cache** — Keyed to commit hash. Any push to Binder repo invalidates cache. Site uses `mybinder.org` federation endpoint (not a specific member). Cache-warming workflow hits all 3 federation members (2i2c, BIDS, GESIS) in parallel.
 - **JSX href** — Card components use `href="/docs/..."`. `MDX_TRANSFORMS` has rewrite rules for both markdown and JSX patterns.
 - **Kernel busy/idle** — thebelab 0.4.0 only emits lifecycle events. Must subscribe to `kernel.statusChanged` signal from `@jupyterlab/services` for actual busy/idle.
 - **`_tag_untagged_code_blocks` + LaTeX** — The regex can match across output boundaries (closing fence → bare `$$...$$` → opening fence). Guards in place: skip if `$$` in content, exclude `$$` from `$` shell heuristic.
@@ -203,12 +203,19 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | SWG | [swg.doqumentation.org](https://swg.doqumentation.org) | 31 + UI | Live |
 | BAD | [bad.doqumentation.org](https://bad.doqumentation.org) | 31 + UI | Live |
 | BAR | [bar.doqumentation.org](https://bar.doqumentation.org) | 31 + UI | Live |
+| KSH | [ksh.doqumentation.org](https://ksh.doqumentation.org) | UI | Deploying |
+| NDS | [nds.doqumentation.org](https://nds.doqumentation.org) | UI | Deploying |
+| GSW | [gsw.doqumentation.org](https://gsw.doqumentation.org) | UI | Deploying |
+| SAX | [sax.doqumentation.org](https://sax.doqumentation.org) | UI | Deploying |
+| BLN | [bln.doqumentation.org](https://bln.doqumentation.org) | UI | Deploying |
+| AUT | [aut.doqumentation.org](https://aut.doqumentation.org) | UI | Deploying |
 
-- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links natively. hreflang tags auto-generated.
+- **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links natively. hreflang tags auto-generated.
 - **RTL support**: AR and HE have `direction: 'rtl'` in `localeConfigs`. CSS uses logical properties (`border-inline-start`, `margin-inline-start`, `inset-inline-end`) throughout — direction-agnostic for both LTR and RTL. Noto Sans Arabic/Hebrew fonts loaded via Google Fonts. `[dir="rtl"]` overrides in `custom.css`.
-- **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 13 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL,AR,HE,SWG,BAD,BAR}`).
-- **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,fr,it,pt,ja,tl,ar,he}` + `doqumentation-{swg,bad,bar}` — each has `main` branch (README + LICENSE + LICENSE-DOCS + NOTICE) and `gh-pages` branch (build output). GitHub Pages + custom domains configured.
-- **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 14 banner templates defined in `scripts/translate-content.py`.
+- **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 19 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL,AR,HE,SWG,BAD,BAR,KSH,NDS,GSW,SAX,BLN,AUT}`).
+- **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,fr,it,pt,ja,tl,ar,he}` + `doqumentation-{swg,bad,bar,ksh,nds,gsw,sax,bln,aut}` — each has `main` branch (README + LICENSE + LICENSE-DOCS + NOTICE) and `gh-pages` branch (build output). GitHub Pages + custom domains configured. Setup script: `.claude/scripts/setup-satellite-repo.sh`.
+- **German dialects**: 9 dialect locales (SWG, BAD, BAR, KSH, NDS, GSW, SAX, BLN, AUT) with "Deutsche Dialekte" separator in locale dropdown. Desktop: CSS `li:has(> a[href*="swg.doqumentation.org"])::before` targets first dialect. Mobile: `dialectLocales` Set in `Navbar/MobileSidebar/Header` renders separator `<li>`. To add a new dialect: add to `dialectLocales` Set + `locales`/`localeConfigs` in config + CI matrix + `BANNER_TEMPLATES` + `locale_label` in translate-content.py.
+- **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 20 banner templates defined in `scripts/translate-content.py`.
 - **Translation**: `.claude/translation-prompt.md` — Sonnet model, 1 file/agent, 20+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
 - **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `scripts/fix-heading-anchors.py` for batch fixing.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
@@ -253,26 +260,29 @@ Add entry to the matrix:
 
 #### 5. Satellite repo + deploy infrastructure
 
+**Automated script:** `.claude/scripts/setup-satellite-repo.sh` handles steps a–c below.
+
 ```bash
-# Create satellite repo (public, empty)
-gh repo create JanLahmann/doqumentation-{XX} --public
+# a) Create satellite repo on GitHub (if not already created)
+gh repo create JanLahmann/doqumentation-{XX} --public --description "doQumentation – {Label} locale"
 
-# Initialize main branch with README + licenses
-# (see existing satellite repos for README template)
-# Push LICENSE, LICENSE-DOCS, NOTICE, README.md
+# b) Initialize main + gh-pages branches (use the script)
+./.claude/scripts/setup-satellite-repo.sh {XX} "{Label}"
+# Creates main branch (LICENSE, LICENSE-DOCS, NOTICE, README.md)
+# Creates gh-pages branch (placeholder index.html + CNAME)
 
-# Initialize gh-pages branch
-git checkout --orphan gh-pages
-echo "<h1>Deploying...</h1>" > index.html
-echo "{XX}.doqumentation.org" > CNAME
-git add -A && git commit -m "Init gh-pages" && git push origin gh-pages
+# c) Generate + configure SSH deploy key
+ssh-keygen -t ed25519 -C "deploy-doqumentation-{XX}" -f /tmp/deploy_key_{XX} -N ""
+# Add public key as deploy key (write access) on satellite repo:
+gh repo deploy-key add /tmp/deploy_key_{XX}.pub --repo JanLahmann/doqumentation-{XX} --title "deploy-doqumentation-{XX}" --allow-write
+# Add private key as secret on main repo (uppercase locale code):
+gh secret set DEPLOY_KEY_{XX_UPPER} --repo JanLahmann/doQumentation --body "$(cat /tmp/deploy_key_{XX})"
+# Clean up key files:
+rm /tmp/deploy_key_{XX} /tmp/deploy_key_{XX}.pub
 
-# Generate SSH deploy key
-ssh-keygen -t ed25519 -C "deploy-doqumentation-{XX}" -f deploy_key_{XX} -N ""
-# Public key → deploy key (write access) on satellite repo
-# Private key → secret DEPLOY_KEY_{XX} on main repo (uppercase locale)
-
-# Enable GitHub Pages: source gh-pages, custom domain {XX}.doqumentation.org, HTTPS enforced
+# d) Enable GitHub Pages + custom domain
+gh api repos/JanLahmann/doqumentation-{XX}/pages --method POST --field source='{"branch":"gh-pages","path":"/"}'
+gh api repos/JanLahmann/doqumentation-{XX}/pages --method PUT --field cname="{XX}.doqumentation.org" --field https_enforced=true
 ```
 
 DNS: The wildcard CNAME `*` → `janlahmann.github.io` at IONOS covers all subdomains automatically. No per-locale DNS needed.
@@ -327,7 +337,8 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 - **RasQberry:** https://github.com/JanLahmann/RasQberry-Two
 - **Content source (fork):** https://github.com/JanLahmann/Qiskit-documentation
-- **IBM Quantum:** https://quantum.cloud.ibm.com
+- **IBM Quantum:** https://ibm.com/quantum
+- **IBM Quantum Platform:** https://quantum.cloud.ibm.com
 - **Docusaurus:** https://docusaurus.io
 
 ---
