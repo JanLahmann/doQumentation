@@ -108,7 +108,7 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 - **Features page**: `/features` — 22 cards across 5 sections
 - **Search**: `@easyops-cn/docusaurus-search-local` — client-side, hashed index
 - **Settings page** (`/jupyter-settings`): IBM credentials, simulator mode, display prefs, progress, bookmarks, custom server
-- **Navbar**: Always dark (`#161616`). Right-side icons: locale (globe), settings (gear), dark mode, GitHub (octocat) — all icon-only on desktop (text hidden via `font-size: 0` + `::before` SVG). CSS `order` positions auto-placed dark mode toggle and search bar. Mobile sidebar header swizzled (`Navbar/MobileSidebar/Header`) with matching icon row.
+- **Navbar**: Always dark (`#161616`). Right-side icons: locale (globe), settings (gear), dark mode, GitHub (octocat) — all icon-only on desktop (text hidden via `font-size: 0` + `::before` SVG). CSS `order` positions auto-placed dark mode toggle and search bar. Mobile sidebar header swizzled (`Navbar/MobileSidebar/Header`) with matching icon row. Locale dropdown has "Deutsche Dialekte" separator before dialect locales (CSS `li:has()` on desktop, React separator `<li>` on mobile).
 - **Footer**: Three columns — doQumentation (Features, Settings, GitHub), RasQberry (site + GitHub), IBM Quantum & Qiskit (docs, GitHub, Slack). IBM disclaimer in copyright.
 - **Styling**: Carbon Design-inspired (IBM Plex, `#0f62fe`).
 - **SEO & social sharing**: Open Graph + Twitter Card meta tags, JSON-LD structured data (Organization, WebPage, SoftwareApplication), robots meta for AI indexing, preconnect hints for fonts/CDN. Social card image (`static/img/rasqberry-social-card.png`, 1200x630).
