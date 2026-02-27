@@ -365,9 +365,10 @@ export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): st
 
 /**
  * Get the Google Colab URL for a notebook.
- * Points to the dependency-ready copy on gh-pages (has install cells + Colab metadata).
+ * Points to the dependency-ready copy served from static/notebooks/ (has install cells + Colab metadata).
  */
 export function getColabUrl(notebookPath: string): string {
   const nbPath = notebookPath.replace(/^docs\//, '');
-  return `https://colab.research.google.com/github/JanLahmann/doQumentation/blob/gh-pages/notebooks/${nbPath}`;
+  const nbUrl = `https://doqumentation.org/notebooks/${nbPath}`;
+  return `https://colab.research.google.com/url/${encodeURIComponent(nbUrl)}`;
 }
