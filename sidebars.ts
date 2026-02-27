@@ -66,6 +66,11 @@ const tutorialLabels = collectCategoryLabels(tutorialItems);
 const sidebars: SidebarsConfig = {
   tutorialsSidebar: [
     {
+      type: 'link',
+      label: 'Home',
+      href: '/',
+    },
+    {
       type: 'category',
       label: 'Tutorials',
       collapsed: true,
