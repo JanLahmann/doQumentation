@@ -36,6 +36,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - Rewrites image paths (IBM URLs → local `static/`) and link paths (markdown `(/docs/...)` + JSX `href="/docs/..."` → local or upstream)
 - `docs/index.mdx` is preserved — all other `docs/` content is regenerated on each sync
 - **Dependency scan**: `analyze_notebook_imports()` injects `%pip install -q` cells into 46/260 notebooks missing packages. `--scan-deps` flag for report only.
+- **Colab/Binder notebook copies**: `copy_notebook_with_rewrite()` injects 1–2 pip install cells (base Qiskit + per-notebook extras) and Colab `cell_execution_strategy: "setup"` metadata. `publish_notebooks_to_static()` copies ~1,650 dependency-ready notebooks to `static/notebooks/` for gh-pages serving.
 - **Custom Hello World**: `hello-world.ipynb` from fork root imported as first tutorial with custom `OpenInLabBanner` description
 
 ### Code Execution (`src/components/ExecutableCode/index.tsx`)
@@ -43,7 +44,8 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - Environment auto-detection: GitHub Pages → Binder, localhost/Docker → local Jupyter, custom → user-configured
 - Cell feedback: amber (running), green (done), red (error) left borders. Error detection for `ModuleNotFoundError` (with clickable Install button), `NameError`, tracebacks.
 - Cell completion uses `kernel.statusChanged` signal (not thebelab events) with 1500ms debounce to avoid premature green borders
-- Execution mode indicator badge + injection toast. "Open in JupyterLab" button on all tiers.
+- Execution mode indicator badge + injection toast. "Open in JupyterLab" button on all tiers. "Open in Colab" button always available.
+- **Binder tab reuse**: "Open in Lab" uses named window target `binder-lab` to reuse the same tab
 - **Interception transparency**: All kernel modifications print `[doQumentation]` messages (simulator intercepts, credential injection, warning suppression, pip install cells)
 - **save_account() protection**: Blue "Skip this cell" banners when credentials/simulator active, prevents overwriting injected values
 
@@ -51,6 +53,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - **Credentials** — API token + CRN in localStorage with adjustable auto-expiry (1/3/7 days). Auto-injected at kernel start. Embedded execution only.
 - **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` (AerSimulator or FakeBackend). Fake backend discovery cached in localStorage, 55-backend fallback list.
 - **Conflict resolution** — Radio buttons when both configured; defaults to simulator.
+- **Colab URLs** — `getColabUrl()` generates Colab links pointing to dependency-ready notebook copies on gh-pages. `getBinderLabUrl()` updated to point to the same copies (with install cells).
 
 ### User Preferences
 All localStorage access centralized in `src/config/preferences.ts` (SSR guards, `clearAllPreferences()`). Cross-component reactivity via custom events: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
@@ -95,7 +98,7 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 ### CI/CD
 - `deploy.yml` — Sync → build → GitHub Pages (English only)
 - `deploy-locales.yml` — Matrix build per locale → push to satellite repos (DE/ES/UK subdomains)
-- `docker.yml` — Multi-arch Docker → ghcr.io
+- `docker.yml` — Multi-arch Docker → ghcr.io (EN only via `--locale en`)
 - `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies
 - Binder repo: daily cache-warming workflow
 
@@ -105,6 +108,7 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 - **Search**: `@easyops-cn/docusaurus-search-local` — client-side, hashed index
 - **Settings page** (`/jupyter-settings`): IBM credentials, simulator mode, display prefs, progress, bookmarks, custom server
 - **Navbar**: Always dark (`#161616`). Right-side icons: locale (globe), settings (gear), dark mode, GitHub (octocat) — all icon-only on desktop (text hidden via `font-size: 0` + `::before` SVG). CSS `order` positions auto-placed dark mode toggle and search bar. Mobile sidebar header swizzled (`Navbar/MobileSidebar/Header`) with matching icon row.
+- **Footer**: Three columns — doQumentation (Features, Settings, GitHub), RasQberry (site + GitHub), IBM Quantum & Qiskit (docs, GitHub, Slack). IBM disclaimer in copyright.
 - **Styling**: Carbon Design-inspired (IBM Plex, `#0f62fe`).
 
 ---

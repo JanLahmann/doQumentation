@@ -19,6 +19,7 @@ import CodeBlock from '@theme-original/CodeBlock';
 import {
   detectJupyterConfig,
   getLabUrl,
+  getColabUrl,
   getIBMQuantumToken,
   getIBMQuantumCRN,
   getSimulatorMode,
@@ -839,7 +840,7 @@ export default function ExecutableCode({
     if (!jupyterConfig || !notebookPath) return;
     const labUrl = getLabUrl(jupyterConfig, notebookPath);
     if (labUrl) {
-      window.open(labUrl, '_blank', 'noopener,noreferrer');
+      window.open(labUrl, 'binder-lab', 'noopener,noreferrer');
     }
   };
 
@@ -884,6 +885,18 @@ export default function ExecutableCode({
             >
               Open in Lab
             </button>
+          )}
+
+          {notebookPath && (
+            <a
+              className="executable-code__button"
+              href={getColabUrl(notebookPath)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open notebook in Google Colab"
+            >
+              Open in Colab
+            </a>
           )}
 
           {(thebeStatus === 'connecting' || thebeStatus === 'error') && (

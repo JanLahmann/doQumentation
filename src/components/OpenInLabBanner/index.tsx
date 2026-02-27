@@ -1,6 +1,6 @@
 import React from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
-import { detectJupyterConfig, getLabUrl, getBinderLabUrl } from '../../config/jupyter';
+import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl } from '../../config/jupyter';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
@@ -8,12 +8,13 @@ interface OpenInLabBannerProps {
 }
 
 /**
- * Page-level banner that links to the original .ipynb in JupyterLab.
+ * Page-level banner that links to the original .ipynb in JupyterLab and/or Colab.
  *
  * Environment-aware:
- * - RasQberry/Docker: opens local JupyterLab
- * - GitHub Pages: opens in Binder JupyterLab
- * - Custom server: opens configured JupyterLab
+ * - RasQberry/Docker: opens local JupyterLab + Colab
+ * - GitHub Pages: opens in Binder JupyterLab + Colab
+ * - Custom server: opens configured JupyterLab + Colab
+ * - Unknown: Colab only (always available)
  */
 export default function OpenInLabBanner({ notebookPath, description }: OpenInLabBannerProps) {
   return (
@@ -21,7 +22,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
       {() => {
         const config = detectJupyterConfig();
 
-        // Build the URL based on environment
+        // Build the Lab/Binder URL based on environment
         let labUrl: string | null = null;
         if (config.labEnabled) {
           labUrl = getLabUrl(config, notebookPath);
@@ -29,11 +30,12 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
           labUrl = getBinderLabUrl(config, notebookPath);
         }
 
-        if (!labUrl) return null;
-
-        const label = config.binderUrl && !config.labEnabled
+        const labLabel = config.binderUrl && !config.labEnabled
           ? 'Open in Binder JupyterLab'
           : 'Open in JupyterLab';
+
+        // Colab URL is always available (environment-independent)
+        const colabUrl = getColabUrl(notebookPath);
 
         return (
           <div
@@ -47,28 +49,49 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               borderRadius: '6px',
               backgroundColor: 'var(--ifm-color-emphasis-100)',
               fontSize: '0.875rem',
+              flexWrap: 'wrap',
             }}
           >
             <span>&#128221;</span>
             <span>{description || 'This page was generated from a Jupyter notebook.'}</span>
-            <a
-              href={labUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Opens the full Jupyter notebook for editing and advanced use"
-              style={{
-                marginLeft: 'auto',
-                padding: '0.25rem 0.75rem',
-                backgroundColor: 'var(--ifm-color-primary)',
-                color: '#fff',
-                borderRadius: '4px',
-                fontWeight: 600,
-                textDecoration: 'none',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {label} &#8599;
-            </a>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+              <a
+                href={colabUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open notebook in Google Colab"
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  border: '1px solid var(--ifm-color-primary)',
+                  color: 'var(--ifm-color-primary)',
+                  borderRadius: '4px',
+                  fontWeight: 600,
+                  textDecoration: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Open in Colab &#8599;
+              </a>
+              {labUrl && (
+                <a
+                  href={labUrl}
+                  target="binder-lab"
+                  rel="noopener noreferrer"
+                  title="Opens the full Jupyter notebook for editing and advanced use"
+                  style={{
+                    padding: '0.25rem 0.75rem',
+                    backgroundColor: 'var(--ifm-color-primary)',
+                    color: '#fff',
+                    borderRadius: '4px',
+                    fontWeight: 600,
+                    textDecoration: 'none',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {labLabel} &#8599;
+                </a>
+              )}
+            </div>
           </div>
         );
       }}

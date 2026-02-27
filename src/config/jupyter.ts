@@ -349,14 +349,26 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
 }
 
 /**
- * Get the Binder JupyterLab URL for a specific notebook (GitHub Pages)
+ * Get the Binder JupyterLab URL for a specific notebook (GitHub Pages).
+ * Points to the dependency-ready copy on gh-pages (has install cells).
  */
-export function getBinderLabUrl(config: JupyterConfig, upstreamPath: string): string | null {
+export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): string | null {
   if (!config.binderUrl) {
     return null;
   }
 
-  return `${config.binderUrl}?labpath=${encodeURIComponent(upstreamPath)}`;
+  // notebookPath is upstream-relative, e.g. "docs/tutorials/hello-world.ipynb"
+  // Strip "docs/" prefix to match the notebooks/ directory structure on gh-pages.
+  const nbPath = notebookPath.replace(/^docs\//, '');
+  const fullPath = `notebooks/${nbPath}`;
+  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
 }
 
-
+/**
+ * Get the Google Colab URL for a notebook.
+ * Points to the dependency-ready copy on gh-pages (has install cells + Colab metadata).
+ */
+export function getColabUrl(notebookPath: string): string {
+  const nbPath = notebookPath.replace(/^docs\//, '');
+  return `https://colab.research.google.com/github/JanLahmann/doQumentation/blob/gh-pages/notebooks/${nbPath}`;
+}
