@@ -14,9 +14,13 @@ if [ -z "$JUPYTER_TOKEN" ]; then
   JUPYTER_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
 fi
 
-# Validate token contains only safe characters (alphanumeric, dash, underscore)
+# Validate token: safe characters only, minimum 8 chars
 if [[ ! "$JUPYTER_TOKEN" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   echo "ERROR: JUPYTER_TOKEN must contain only letters, numbers, dashes, and underscores."
+  exit 1
+fi
+if [ ${#JUPYTER_TOKEN} -lt 8 ]; then
+  echo "ERROR: JUPYTER_TOKEN must be at least 8 characters long."
   exit 1
 fi
 
@@ -29,7 +33,7 @@ cat > "$JUPYTER_DIR/jupyter_server_config.py" << PYEOF
 
 c.ServerApp.token = "${JUPYTER_TOKEN}"
 c.ServerApp.password = ""
-c.ServerApp.allow_origin = "*"
+c.ServerApp.allow_origin = "http://localhost:8080"
 c.ServerApp.allow_remote_access = True
 c.ServerApp.ip = "0.0.0.0"
 c.ServerApp.port = 8888

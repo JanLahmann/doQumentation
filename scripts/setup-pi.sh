@@ -99,23 +99,16 @@ configure_jupyter() {
 
 c.ServerApp.token = '__TOKEN__'
 c.ServerApp.password = ''
-c.ServerApp.allow_origin = '*'
+c.ServerApp.allow_origin = 'http://localhost:__WEB_PORT__'
 c.ServerApp.allow_remote_access = True
 c.ServerApp.ip = '0.0.0.0'
 c.ServerApp.port = __PORT__
 c.ServerApp.open_browser = False
 c.ServerApp.root_dir = '__TUTORIALS_DIR__'
 
-# CORS settings for Thebe
-c.ServerApp.allow_credentials = True
+# XSRF disabled — thebelab 0.4.0 cannot send XSRF cookies/headers.
+# Token auth via Authorization header is the security boundary instead.
 c.ServerApp.disable_check_xsrf = True
-c.ServerApp.tornado_settings = {
-    'headers': {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'accept, content-type, authorization, x-xsrftoken',
-    }
-}
 
 # Resource management for trade show stability
 c.MappingKernelManager.cull_idle_timeout = 600  # Kill idle kernels after 10 min
@@ -123,8 +116,18 @@ c.MappingKernelManager.cull_interval = 120      # Check every 2 min
 c.MappingKernelManager.cull_connected = False   # Don't kill connected kernels
 PYEOF
     # Substitute variables safely (sed, not shell expansion)
+    # Validate substitution values to prevent sed injection
+    for var_name in JUPYTER_TOKEN JUPYTER_PORT WEB_PORT TUTORIALS_DIR; do
+        val="${!var_name}"
+        if [[ "$val" =~ [|] ]]; then
+            echo_error "$var_name contains invalid character '|'"
+            exit 1
+        fi
+    done
+
     sed -i "s|__TOKEN__|${JUPYTER_TOKEN}|g" ~/.jupyter/jupyter_server_config.py
     sed -i "s|__PORT__|${JUPYTER_PORT}|g" ~/.jupyter/jupyter_server_config.py
+    sed -i "s|__WEB_PORT__|${WEB_PORT}|g" ~/.jupyter/jupyter_server_config.py
     sed -i "s|__TUTORIALS_DIR__|${TUTORIALS_DIR}|g" ~/.jupyter/jupyter_server_config.py
     
     echo_info "Jupyter configured"

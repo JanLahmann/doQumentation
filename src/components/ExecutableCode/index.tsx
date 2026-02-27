@@ -101,11 +101,16 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
   // Module errors get a clickable Install button when kernel is available
   if (error.type === 'module' && error.name) {
     const pkg = error.name.split('.')[0];
+    if (!/^[a-zA-Z0-9._-]+$/.test(pkg)) return; // validate package name
     const div = document.createElement('div');
     div.className = 'thebelab-cell__error-hint';
 
     const text = document.createElement('span');
-    text.innerHTML = `Package <code>${pkg}</code> is not installed.`;
+    text.append('Package ');
+    const pkgCode = document.createElement('code');
+    pkgCode.textContent = pkg;
+    text.appendChild(pkgCode);
+    text.append(' is not installed.');
     div.appendChild(text);
 
     if (activeKernel && !kernelDead) {
@@ -117,7 +122,11 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
       div.appendChild(btn);
     } else {
       const fallback = document.createElement('span');
-      fallback.innerHTML = ` Run <code>!pip install -q ${pkg}</code> in a cell.`;
+      fallback.append(' Run ');
+      const fallbackCode = document.createElement('code');
+      fallbackCode.textContent = `!pip install -q ${pkg}`;
+      fallback.appendChild(fallbackCode);
+      fallback.append(' in a cell.');
       div.appendChild(fallback);
     }
 
@@ -125,17 +134,25 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     return;
   }
 
-  let hint = '';
-  if (error.type === 'kernel') {
-    hint = 'Kernel disconnected. Click <strong>Back</strong> then <strong>Run</strong> to reconnect.';
-  } else if (error.type === 'name' && error.name) {
-    hint = `<code>${error.name}</code> is not defined. Run the cells above first &mdash; notebooks must be executed in order.`;
-  }
+  const div = document.createElement('div');
+  div.className = 'thebelab-cell__error-hint';
 
-  if (hint) {
-    const div = document.createElement('div');
-    div.className = 'thebelab-cell__error-hint';
-    div.innerHTML = hint;
+  if (error.type === 'kernel') {
+    div.append('Kernel disconnected. Click ');
+    const back = document.createElement('strong');
+    back.textContent = 'Back';
+    div.appendChild(back);
+    div.append(' then ');
+    const run = document.createElement('strong');
+    run.textContent = 'Run';
+    div.appendChild(run);
+    div.append(' to reconnect.');
+    cell.appendChild(div);
+  } else if (error.type === 'name' && error.name) {
+    const nameCode = document.createElement('code');
+    nameCode.textContent = error.name;
+    div.appendChild(nameCode);
+    div.append(' is not defined. Run the cells above first \u2014 notebooks must be executed in order.');
     cell.appendChild(div);
   }
 }
@@ -146,6 +163,7 @@ async function handlePipInstall(
   pkg: string,
   btn: HTMLButtonElement
 ): Promise<void> {
+  if (!/^[a-zA-Z0-9._-]+$/.test(pkg)) return;
   btn.disabled = true;
   btn.textContent = `Installing ${pkg}...`;
   btn.classList.add('thebelab-cell__install-btn--installing');
@@ -399,8 +417,8 @@ async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolea
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 function getSaveAccountCode(token: string, crn: string): string {
-  const t = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const c = crn.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const t = token.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+  const c = crn.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
   const suppressWarnings = getSuppressWarnings();
   const warningLine = suppressWarnings
     ? `import warnings; warnings.filterwarnings('ignore')
