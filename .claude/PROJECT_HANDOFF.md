@@ -100,11 +100,12 @@ All localStorage access centralized in `src/config/preferences.ts` (SSR guards, 
 - Binder repo: daily cache-warming workflow
 
 ### Other
-- **Homepage**: Hero with stats bar, Getting Started cards (category-tagged), simulator callout, code execution section
+- **Homepage**: Hero with stats bar, Getting Started cards (category-tagged), simulator callout, code execution section. No sidebar (homepage doc removed from sidebar config).
 - **Features page**: `/features` — 22 cards across 5 sections
 - **Search**: `@easyops-cn/docusaurus-search-local` — client-side, hashed index
 - **Settings page** (`/jupyter-settings`): IBM credentials, simulator mode, display prefs, progress, bookmarks, custom server
-- **Styling**: Carbon Design-inspired (IBM Plex, `#0f62fe`). Navbar always dark (`#161616`).
+- **Navbar**: Always dark (`#161616`). Right-side icons: locale (globe), settings (gear), dark mode, GitHub (octocat) — all icon-only on desktop (text hidden via `font-size: 0` + `::before` SVG). CSS `order` positions auto-placed dark mode toggle and search bar. Mobile sidebar header swizzled (`Navbar/MobileSidebar/Header`) with matching icon row.
+- **Styling**: Carbon Design-inspired (IBM Plex, `#0f62fe`).
 
 ---
 
@@ -122,7 +123,7 @@ doQumentation/
 │   ├── config/                 # jupyter.ts (env detection, credentials), preferences.ts (localStorage)
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
-│   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, MDXComponents
+│   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
 ├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (8)
 ├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
@@ -322,4 +323,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: February 26, 2026*
+*Last updated: February 27, 2026*

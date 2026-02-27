@@ -156,12 +156,25 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'RasQberry',
+          title: 'doQumentation',
           items: [
             {
               label: 'Features',
               to: '/features',
             },
+            {
+              label: 'Settings',
+              to: '/jupyter-settings',
+            },
+            {
+              label: 'GitHub',
+              href: 'https://github.com/JanLahmann/doQumentation',
+            },
+          ],
+        },
+        {
+          title: 'RasQberry',
+          items: [
             {
               label: 'RasQberry',
               href: 'https://rasqberry.org',
