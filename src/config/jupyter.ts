@@ -60,8 +60,7 @@ export function detectJupyterConfig(): JupyterConfig {
   if (
     hostname.includes('github.io') ||
     hostname.includes('githubusercontent.com') ||
-    hostname === 'doqumentation.org' ||
-    hostname === 'www.doqumentation.org'
+    hostname.endsWith('doqumentation.org')
   ) {
     return {
       enabled: true,
