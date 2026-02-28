@@ -220,7 +220,7 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **German dialects**: 9 dialect locales (SWG, BAD, BAR, KSH, NDS, GSW, SAX, BLN, AUT) with "Deutsche Dialekte" separator in locale dropdown. Desktop: CSS `li:has(> a[href*="swg.doqumentation.org"])::before` targets first dialect. Mobile: `dialectLocales` Set in `Navbar/MobileSidebar/Header` renders separator `<li>`. To add a new dialect: add to `dialectLocales` Set + `locales`/`localeConfigs` in config + CI matrix + `BANNER_TEMPLATES` + `locale_label` in translate-content.py.
 - **Full UI i18n** (`code.json`): All user-visible strings across React pages and components use Docusaurus `<Translate>` and `translate()` APIs. This covers Settings page (~90 keys), Features page (~39 keys), ExecutableCode toolbar (Run/Back/Lab/Colab buttons, status messages, legend, conflict banner), EditThisPage bookmarks, BookmarksList, DocSidebarItem/Link, BetaNotice, and MobileSidebar header. Total: ~308 keys per locale (~92 theme + ~216 custom). When adding a new language, `npm run write-translations -- --locale {XX}` auto-generates entries with English defaults; translate all `message` values. Technical terms (Qiskit, Binder, AerSimulator, etc.) and code snippets stay in English. Placeholders like `{binder}`, `{saveAccount}`, `{url}`, `{pipCode}`, `{issueLink}`, `{mode}` must be preserved exactly.
 - **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 20 banner templates defined in `scripts/translate-content.py`.
-- **Translation**: `.claude/translation-prompt.md` — Sonnet model, 1 file/agent, 20+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Translation**: `.claude/translation-prompt.md` — Sonnet model, 1 file or chunk per agent, 3 parallel agents per round. Orchestrator handles chunking for files >400 lines. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
 - **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `scripts/fix-heading-anchors.py` for batch fixing.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 - **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) included in all repos and CI deploy output.
@@ -320,7 +320,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation expansion** — DE at 79/387, ES/UK at 55/387, others at 44-48. All key index pages translated across all 8 active locales. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
+- **Translation expansion** — DE at 79/387, ES/UK at 55/387, others at 44-48. All key index pages translated across all 8 active locales. Use `.claude/translation-prompt.md` (Sonnet, 3 parallel agents, 1 file or chunk each).
 - **New dialect locales** — KSH, NDS, GSW, SAX, BLN, AUT have full UI strings + CI matrix entries but no content translations yet. Satellite repos need first deploy (deploy keys + GitHub Pages setup).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware

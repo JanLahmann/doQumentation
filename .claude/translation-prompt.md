@@ -175,9 +175,9 @@ Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add
 | IT | 44/387 | 44 tutorials + UI strings |
 | PT | 44/387 | 44 tutorials + UI strings |
 | JA | 59/387 | 44 tutorials, 5 guides, 3 courses, 2 modules, homepage, 2 indexes + UI strings |
-| TL | 8/387 | 8 tutorials + UI strings |
+| TL | 48/387 | 44 tutorials, 1 homepage, 3 index pages + UI strings |
 | AR | 44/387 | 44 tutorials + UI strings (RTL) |
-| HE | 9/387 | 9 tutorials + UI strings (RTL) |
+| HE | 47/387 | 44 tutorials, 1 homepage, 2 index pages + UI strings (RTL) |
 
 ## Agent Configuration Summary
 
