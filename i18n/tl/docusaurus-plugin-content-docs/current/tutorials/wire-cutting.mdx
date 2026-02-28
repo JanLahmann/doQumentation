@@ -1,0 +1,565 @@
+---
+title: "Pagputol ng wire para sa pagtatantya ng expectation values"
+sidebar_label: "Pagputol ng wire para sa pagtatantya ng expectation values"
+description: "Gumamit ng wire cutting upang hatiin ang mga circuit sa maraming mas maliit na subcircuits."
+notebook_path: "docs/tutorials/wire-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/wire-cutting.ipynb" />
+
+
+
+{/* cspell:ignore edgecolor Cutqc */}
+
+*Tantiya sa paggamit: isang minuto sa Eagle processor (PAALALA: Ito ay tantiya lamang. Maaaring mag-iba ang inyong runtime.)*
+## Background {#background}
+
+Ang circuit-knitting ay isang pangkalahatang termino na sumasaklaw sa iba't ibang pamamaraan ng paghahati ng circuit sa maraming mas maliit na subcircuits na may mas kaunting gates at/o qubits. Ang bawat isa sa mga subcircuits ay maaaring isagawa nang independiyente at ang panghuling resulta ay nakukuha sa pamamagitan ng ilang classical post-processing sa kinalabasan ng bawat subcircuit. Ang pamamaraang ito ay maaaring ma-access sa [circuit cutting Qiskit addon](https://qiskit.github.io/qiskit-addon-cutting/index.html), ang detalyadong paliwanag ng pamamaraan ay ibinigay sa [docs](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html) kasama ng iba pang [introductory material](https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html).
+
+Ang notebook na ito ay tumatalakay sa isang pamamaraang tinatawag na <b>wire cutting</b> kung saan ang circuit ay pinaghahati sa kahabaan ng wire [\[1\], \[2\]](#references). Tandaan na ang paghahati ay simple sa mga classical circuits dahil ang kinalabasan sa punto ng partition ay maaaring matukoy nang deterministiko, at ito ay 0 o 1 lamang. Gayunpaman, ang estado ng qubit sa punto ng pagputol ay, sa pangkalahatan, isang mixed state. Samakatuwid, ang bawat subcircuit ay kailangang sukatin nang maraming beses sa iba't ibang basis (karaniwang isang tomographically complete set ng basis tulad ng Pauli basis [\[3\], \[4\]](#references) at naaangkop na inihanda sa kanyang eigenstate. Ang Figure sa ibaba (<i>pasasalamat: PhD Thesis, Ritajit Majumdar</i>) ay nagpapakita ng halimbawa ng wire cutting para sa 4-qubit GHZ state sa tatlong subcircuits. Dito ang $M_j$ ay tumutukoy sa isang set ng basis (karaniwang Pauli X, Y at Z) at ang $P_i$ ay tumutukoy sa isang set ng eigenstates (karaniwang $|0\rangle$, $|1\rangle$, $|+\rangle$ at $|+i\rangle$).
+
+![wc-1.png](/docs/images/tutorials/wire-cutting-to-improve-performance/0ce8857b-7f5f-400e-8536-6a496c724d50.avif)
+![wc-2.png](/docs/images/tutorials/wire-cutting-to-improve-performance/cbce4455-4794-4c81-8630-3e3993e1b29f.avif)
+
+Dahil ang bawat subcircuit ay may mas kaunting qubits at/o gates, inaasahang mas hindi sila madaling maapektuhan ng noise. Ang notebook na ito ay nagpapakita ng halimbawa kung saan ang pamamaraang ito ay maaaring gamitin upang epektibong pigilin ang noise sa sistema.
+## Mga Kinakailangan {#requirements}
+Bago simulan ang tutorial na ito, tiyaking mayroon kayong mga sumusunod na naka-install:
+
+- Qiskit SDK v2.0 o mas bago, na may [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
+- Qiskit Runtime v0.22 o mas bago ( `pip install qiskit-ibm-runtime` )
+- Circuit cutting Qiskit addon v0.9.0 o mas bago (`pip install qiskit-addon-cutting`)
+
+Isasaalang-alang natin ang isang Many Body Localization (MBL) circuit para sa notebook na ito. Ang MBL circuit ay isang hardware-efficient circuit at may parameter na dalawang parameters na $\theta$ at $\vec{\phi}$. Kapag ang $\theta$ ay nakatakda sa $0$ at ang initial state ay inihanda sa $|0\rangle$ para sa lahat ng qubits, ang ideal expectation value ng $\langle Z_i \rangle$ ay $+1$ para sa bawat qubit site $i$ anuman ang mga halaga ng $\vec{\phi}$. Maaari ninyong tingnan ang mas maraming detalye tungkol sa MBL circuits sa <a href="https://arxiv.org/abs/2307.07552">papel na ito</a>.
+## Setup {#setup}
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.quantum_info import PauliList, SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.result import sampled_expectation_value
+
+from qiskit_addon_cutting.instructions import CutWire
+from qiskit_addon_cutting import (
+    cut_wires,
+    expand_observables,
+    partition_problem,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+class MBLChainCircuit(QuantumCircuit):
+    def __init__(
+        self, num_qubits: int, depth: int, use_cut: bool = False
+    ) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainCircuit<{num_qubits}, {depth}>"
+        )
+        evolution = MBLChainEvolution(num_qubits, depth, use_cut)
+        self.compose(evolution, inplace=True)
+
+class MBLChainEvolution(QuantumCircuit):
+    def __init__(self, num_qubits: int, depth: int, use_cut) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainEvolution<{num_qubits}, {depth}>"
+        )
+
+        theta = Parameter("θ")
+        phis = ParameterVector("φ", num_qubits)
+
+        for layer in range(depth):
+            layer_parity = layer % 2
+            # print("layer parity", layer_parity)
+            for qubit in range(layer_parity, num_qubits - 1, 2):
+                # print(qubit)
+                self.cz(qubit, qubit + 1)
+                self.u(theta, 0, np.pi, qubit)
+                self.u(theta, 0, np.pi, qubit + 1)
+                if (
+                    use_cut
+                    and layer_parity == 0
+                    and (
+                        qubit == num_qubits // 2 - 1
+                        or qubit == num_qubits // 2
+                    )
+                ):
+                    self.append(CutWire(), [num_qubits // 2])
+                if use_cut and layer < depth - 1 and layer_parity == 1:
+                    if qubit == num_qubits // 2:
+                        self.append(CutWire(), [qubit])
+            for qubit in range(num_qubits):
+                self.p(phis[qubit], qubit)
+```
+
+## Bahagi I. Halimbawa ng maliit na sukat {#part-i-small-scale-example}
+### Hakbang 1: I-map ang classical inputs sa quantum problem {#step-1-map-classical-inputs-to-a-quantum-problem}
+Una, bubuo tayo ng template circuit na walang partikular na parameter values. Nagbibigay din tayo ng mga placeholders, na tinatawag na `CutWire`, upang markahan ang posisyon ng mga pagputol. Para sa halimbawa ng maliit na sukat, isasaalang-alang natin ang 10-qubit MBL circuit.
+
+```python
+num_qubits = 10
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+mbl.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/9c7939a1-6b70-4dad-b873-5f34d67551c4-0.avif)
+
+Alalahanin na ang layunin natin ay mahanap ang expectation value ng observable na $\frac{1}{n}\sum_{i=1} ^n Z_i$ kapag $\theta=0$. Maglalagay tayo ng ilang random na halaga para sa parameter na $\vec{\phi}$.
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+params
+```
+
+```text
+[0,
+ 0.2376615174332788,
+ 0.28244289857682414,
+ 0.019248960591717768,
+ 0.46140600996102477,
+ 0.31408025180068433,
+ 0.718184005135733,
+ 0.991153920182475,
+ 0.09289485768301442,
+ 0.8857848280067783,
+ 0.6177529765767047]
+```
+
+Ngayon ay markahan natin ang circuit para sa pagputol sa pamamagitan ng paglalagay ng wastong **CutWire** upang lumikha ng dalawang halos pantay na pagputol. Itinakda natin ang `use_cut=True` sa function, at papayagan itong markahan pagkatapos ng $\frac{n}{2}$ qubits, kung saan ang $n$ ay ang bilang ng mga qubits sa orihinal na circuit.
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/31844134-514b-46ea-85f9-133e432f053f-0.avif)
+
+### Hakbang 2: I-optimize ang problema para sa quantum hardware execution {#step-2-optimize-problem-for-quantum-hardware-execution}
+Susunod, puputulin natin ang circuit sa dalawang mas maliit na subcircuits. Para sa halimbawang ito, manatili tayo sa 2 subcircuits lamang. Para dito, gagamitin natin ang <a href="https://qiskit.github.io/qiskit-addon-cutting/">Qiskit Addon: Circuit Cutting</a>.
+#### Putulin ang circuit sa mas maliit na subcircuits {#cut-the-circuit-into-smaller-subcircuits}
+Ang pagputol ng wire sa isang punto ay nagdaragdag ng isa sa bilang ng qubit. Bukod sa orihinal na qubit, mayroon na ngayong karagdagang qubit bilang placeholder sa circuit pagkatapos ng pagputol. Ang sumusunod na larawan ay nagbibigay ng representasyon:
+
+![wc-4.png](/docs/images/tutorials/wire-cutting-to-improve-performance/dfc5f923-e507-4873-888e-d90e1618be3a.avif)
+
+Ang Addon na ito ay gumagamit ng function na `cut_wires` upang isaalang-alang ang mga karagdagang qubits na lumilitaw dahil sa pagputol.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+```
+
+#### Lumikha at palawakin ang mga observables {#create-and-expand-the-observables}
+
+Ngayon ay bubuo tayo ng observable na $M_z = \frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$. Dahil ang ideal na kinalabasan ng $\langle Z_i \rangle$ para sa bawat $i$ ay $+1$, ang ideal na kinalabasan ng $M_z$ ay $+1$ din.
+
+```python
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+observable
+```
+
+```text
+PauliList(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII',
+           'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII',
+           'IIIIIIIIZI', 'IIIIIIIIIZ'])
+```
+
+Gayunpaman, pansinin na ang bilang ng mga qubits sa circuit ay tumaas pagkatapos ng paglalagay ng virtual 2-qubit `Move` operations pagkatapos ng pagputol. Samakatuwid, kailangan din nating palawakin ang mga observables sa pamamagitan ng paglalagay ng mga identities upang mag-assert sa kasalukuyang circuit.
+
+```python
+new_obs = expand_observables(observable, mbl, mbl_move)
+new_obs
+```
+
+```text
+PauliList(['ZIIIIIIIIII', 'IZIIIIIIIII', 'IIZIIIIIIII', 'IIIZIIIIIII',
+           'IIIIZIIIIII', 'IIIIIIZIIII', 'IIIIIIIZIII', 'IIIIIIIIZII',
+           'IIIIIIIIIZI', 'IIIIIIIIIIZ'])
+```
+
+Pansinin na ang bawat observable ay pinalaki na ngayon upang tumanggap ng pitong qubits, tulad ng nasa circuit na may `Move` operation, sa halip na ang orihinal na 6 qubits. Susunod, hatiin ang circuit sa dalawang subcircuits.
+
+```python
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+```
+
+Tingnan natin ang mga subcircuits
+
+```python
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subcircuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/c10af39c-88fe-4605-975c-5bf0e21ee4c4-0.avif)
+
+```python
+subcircuits[1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/35920640-76e8-4af6-a252-ee6a22e9c26a-0.avif)
+
+Ang mga observables ay pinaghati rin upang umangkop sa mga subcircuits
+
+```python
+subobservables = partitioned_problem.subobservables
+subobservables
+```
+
+```text
+{0: PauliList(['IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IZIIII',
+            'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']),
+ 1: PauliList(['ZIIII', 'IZIII', 'IIZII', 'IIIZI', 'IIIIZ', 'IIIII', 'IIIII',
+            'IIIII', 'IIIII', 'IIIII'])}
+```
+
+Pansinin na ang bawat subcircuit ay humahantong sa ilang samples. Isinasaalang-alang ng reconstruction ang kinalabasan ng bawat isa sa mga samples na ito. Ang bawat isa sa mga samples na ito ay tinatawag na `subexperiment`.
+Ang pagpapalawak ng observable gamit ang `Move` operation ay nangangailangan ng `PauliList` data structure. Maaari din tayong lumikha ng $M_z$ observable sa mas generic na `SparsePauliOp` data structure na magiging kapaki-pakinabang mamaya sa panahon ng reconstruction ng mga subexperiments.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+M_z
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII', 'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII', 'IIIIIIIIZI', 'IIIIIIIIIZ'],
+              coeffs=[0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j,
+ 0.1+0.j, 0.1+0.j])
+```
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+Tingnan natin ang dalawang halimbawa kung saan ang mga cut qubits ay sinusukat sa dalawang magkaibang basis. Una, ito ay sinusukat sa normal na Z basis, at susunod ay sinusukat sa X basis.
+
+```python
+subexperiments[0][6].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/749e8f27-9c83-48d8-bcf6-635c967bf10b-0.avif)
+
+```python
+subexperiments[0][2].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/987547e4-296a-41e4-ad82-41f4139a87a0-0.avif)
+
+#### I-transpile ang bawat subexperiment {#transpile-each-subexperiment}
+
+Sa kasalukuyan ay kailangan nating i-transpile ang ating mga circuits bago isumite ang mga ito para sa execution. Samakatuwid, ita-transpile natin muna ang bawat circuit sa mga subexperiments.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Ngayon ay kailangan nating i-transpile ang bawat isa sa mga circuits sa mga subexperiments. Para diyan ay lumikha muna tayo ng pass manager, at pagkatapos ay gamitin ito upang i-transpile ang bawat isa sa mga circuits.
+
+```python
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+```python
+isa_subexperiments[0][0].draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/962c4745-a235-4ef8-b56b-d3026be67fb6-0.avif)
+
+### Hakbang 3: Isagawa gamit ang Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+Ngayon ay isasagawa natin ang bawat circuit sa subexperiment. Ang `Qiskit-addon-cutting` ay gumagamit ng `SamplerV2` upang isagawa ang mga subexperiments.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### Hakbang 4: Mag-post-process at ibalik ang resulta sa nais na classical format {#step-4-post-process-and-return-result-in-desired-classical-format}
+Kapag naisagawa na ang mga circuits, kailangan na nating kunin ang mga resulta at i-reconstruct ang expectation value para sa uncut circuit at sa orihinal na observable.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9674376845359803
+```
+
+#### Cross verify {#cross-verify}
+
+Isagawa natin ngayon ang circuit nang walang pagputol at suriin ang kinalabasan doon. Pansinin na para sa execution ng uncut circuit ay maaari tayong direktang gumamit ng `EstimatorV2` para sa pagkalkula ng expectation values. Ngunit gagamitin natin ang parehong `Primitive` sa buong proseso. Kaya gagamitin natin ang `SamplerV2` upang makuha ang probability distribution at kalkulahin ang expectation value gamit ang `sampled_expectation_value` function.
+
+Una ay kailangan nating i-transpile ang uncut na `mbl` circuit.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+```
+
+Susunod ay bubuo tayo ng `pub` at patakbuhin ang uncut circuit.
+
+```python
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+```
+
+```python
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9498046875000001
+```
+
+Napapansin natin na ang expectation value na nakuha sa pamamagitan ng wire cutting ay mas malapit sa ideal na halaga ng $+1$ kaysa sa uncut. Palakihin natin ngayon ang sukat ng problema.
+## Bahagi II. Palawakin ito! {#part-ii-scale-it-up}
+
+Dati, ipinakita natin ang mga resulta para sa 10-qubit MBL circuit. Susunod, ipapakita natin na ang pagpapabuti ng expectation value ay nakukuha din para sa mas malalaking circuits. Upang ipakita iyon, uulitin natin ang proseso para sa 60-qubit MBL circuit.
+### Hakbang 1: I-map ang classical inputs sa quantum problem {#step-1-map-classical-inputs-to-a-quantum-problem-1}
+
+```python
+num_qubits = 60
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+```
+
+Lumikha tayo ng random na set ng mga halaga para sa $\vec{\phi}$
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+```
+
+Susunod ay bubuo tayo ng cut circuit
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+### Hakbang 2: I-optimize ang problema para sa quantum hardware execution {#step-2-optimize-problem-for-quantum-hardware-execution-1}
+Tulad ng ipinakita para sa halimbawa ng maliit na sukat, hahatiin natin ang circuit at ang observable para sa mga cutting experiments.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+
+# Define observable
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+new_obs = expand_observables(observable, mbl, mbl_move)
+
+# Partition the circuit into subcircuits
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+
+# Get subcircuits
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subobservables = partitioned_problem.subobservables
+```
+
+Lumikha rin tayo ng `SparsePauliOp` object para sa observable na may wastong mga coefficients.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+```
+
+Susunod ay bubuo tayo ng mga subexperiments at ita-transpile ang bawat circuit sa subexperiment.
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+### Hakbang 3: Isagawa gamit ang Qiskit primitives {#step-3-execute-using-qiskit-primitives-1}
+Gagamitin natin ang `Batch` mode upang isagawa ang lahat ng circuits sa mga subexperiments.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### Hakbang 4: Mag-post-process at ibalik ang resulta sa nais na classical format {#step-4-post-process-and-return-result-in-desired-classical-format-1}
+Kunin natin ngayon ang mga resulta para sa bawat circuit sa subexperiment at i-reconstruct ang expectation value na tumutugma sa uncut circuit at sa orihinal na observable.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9631355921427409
+```
+
+#### Cross verify {#cross-verify-1}
+
+Tulad ng sa halimbawa ng maliit na sukat, kukunin natin muli ang expectation value sa pamamagitan ng pagsasagawa ng uncut circuit, at ikukumpara ang resulta sa circuit cutting. Gagamitin natin ang `SamplerV2` upang mapanatili ang pagkakapareho sa paggamit ng Primitives.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9426757812499998
+```
+
+#### Ipakita {#visualize}
+
+Ipakita natin ang pagpapabuti na nakuha sa expectation value sa pamamagitan ng paggamit ng wire cutting.
+
+```python
+ax = plt.gca()
+methods = ["cut", "uncut"]
+values = [reconstructed_expval, uncut_expval]
+
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(y=1, color="k", linestyle="--")
+ax.set_ylim([0.85, 1.02])
+plt.text(0.3, 0.99, "Exact result")
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/19dad6bb-544e-45b9-90c4-3555681e4e5b-0.avif)
+
+#### Konklusyon {#inference}
+
+Napapansin natin na kapwa sa maliit at malaking sukat ng mga problema, ang wire cutting ay humahantong sa mas magandang resulta kaysa sa uncut. Pansinin na walang error mitigation techniques na ginamit para sa mga eksperimentong ito. Samakatuwid, ang pagpapabuti sa resulta na nakuha ay dahil lamang sa wire cutting. Maaaring mas mapabuti pa ang mga resulta gamit ang iba't ibang mitigation methods kasama ang circuit cutting.
+
+Bukod pa riyan, sa notebook na ito, kinalkula natin ang parehong subcircuits sa parehong hardware. Sa [\[5\], \[6\]](#references), ipinakikita ng mga awtor ang isang pamamaraan upang ipamahagi ang mga subcircuits sa iba't ibang hardware gamit ang noise information upang ma-maximize ang noise suppression, at i-parallelize ang proseso.
+## Apendise: Pagsasaalang-alang sa resource scaling {#appendix-resource-scaling-consideration}
+Ang bilang ng mga circuits na isasagawa ay tumataas sa bilang ng mga pagputol. Samakatuwid, habang maraming pagputol ay maaaring lumikha ng maliliit na subcircuits, at sa gayon ay mas mapapabuti pa ang performance, humahantong din ito sa lubhang mataas na bilang ng circuit executions, na maaaring hindi praktikal para sa karamihan ng mga kaso. Sa ibaba, ipinakikita natin ang isang halimbawa ng bilang ng mga subcircuits na tumutugma sa bilang ng mga pagputol para sa 50-qubit circuit.
+
+![wc-5.png](/docs/images/tutorials/wire-cutting-to-improve-performance/5c6ea4da-bbd8-47f9-ac48-e438cc59a11d.avif)
+
+Pansinin na kahit para sa limang pagputol, ang bilang ng mga subexperiments ay mga 200k. Samakatuwid, ang circuit cutting ay dapat gamitin lamang kapag ang bilang ng mga pagputol ay maliit.
+### Isang halimbawa ng bawat isa sa cut-friendly at cut-unfriendly circuits {#one-example-of-cut-friendly-and-cut-unfriendly-circuits-each}
+
+#### Cut-friendly circuit {#cut-friendly-circuit}
+
+Tulad ng nabanggit kanina, ang isang circuit ay cut-friendly kapag ang circuit ay maaaring hatiin sa mas maliliit na disjoint subcircuits na may maliit na bilang ng mga pagputol. Ang anumang hardware-efficient circuit, ibig sabihin, ang circuit na nangangailangan ng kaunti o walang SWAP gates kapag na-map sa hardware coupling map, ay, sa pangkalahatan, cut-friendly. Sa ibaba, ipinakikita natin ang isang halimbawa ng excitation preserving ansatz, na ginagamit sa Quantum Chemistry. Pansinin na ang ganitong circuit ay maaaring hatiin sa dalawang subcircuits na may isang pagputol lamang anuman ang bilang ng mga qubits.
+
+![wc-6.png](/docs/images/tutorials/wire-cutting-to-improve-performance/c122a418-b914-41e7-a1aa-00eb1eec5b87.avif)
+
+#### Cut-unfriendly circuit {#cut-unfriendly-circuit}
+
+Ang isang circuit ay cut-unfriendly kung, sa pangkalahatan, ang bilang ng mga pagputol na kinakailangan upang bumuo ng disjoint partitions ay lumalaki nang husto sa depth ng bilang ng mga qubits. Alalahanin na sa bawat pagputol ay kinakailangan ang karagdagang qubit. Kaya sa bilang ng mga pagputol, ang epektibong bilang ng mga qubits ay tumataas din. Sa ibaba ay ipinakikita natin ang isang halimbawa ng 3-qubit Grover circuit na may posibleng cutting instance.
+
+![wc-7.png](/docs/images/tutorials/wire-cutting-to-improve-performance/b31dc57e-e6d7-49fd-9f46-304a328b3764.avif)
+
+Napapansin natin na tatlong pagputol ang kinakailangan, at ang pagputol ay mas vertical kaysa horizontal. Nangangahulugan ito na ang bilang ng mga pagputol ay inaasahang tumataas nang linear sa bilang ng mga qubits, na hindi angkop para sa pagputol.
+## Mga Reperensiya {#references}
+
+[1] Peng, T., Harrow, A. W., Ozols, M., & Wu, X. (2020). Simulating large quantum circuits on a small quantum computer. Physical review letters, 125(15), 150504.
+
+[2] Tang, W., Tomesh, T., Suchara, M., Larson, J., & Martonosi, M. (2021, April). Cutqc: using small quantum computers for large quantum circuit evaluations. In Proceedings of the 26th ACM International conference on architectural support for programming languages and operating systems (pp. 473-486).
+
+[3]  Perlin, M. A., Saleem, Z. H., Suchara, M., & Osborn, J. C. (2021). Quantum circuit cutting with maximum-likelihood tomography. npj Quantum Information, 7(1), 64.
+
+[4]  Majumdar, R., & Wood, C. J. (2022). Error mitigated quantum circuit cutting. arXiv preprint arXiv:2211.13431.
+
+[5]  Khare, T., Majumdar, R., Sangle, R., Ray, A., Seshadri, P. V., & Simmhan, Y. (2023). Parallelizing Quantum-Classical Workloads: Profiling the Impact of Splitting Techniques. In 2023 IEEE International Conference on Quantum Computing and Engineering (QCE) (Vol. 1, pp. 990-1000). IEEE.
+
+[6]  Bhoumik, D., Majumdar, R., Saha, A., & Sur-Kolay, S. (2023). Distributed Scheduling of Quantum Circuits with Noise and Time Optimization. arXiv preprint arXiv:2309.06005.
+## Sarbey ng tutorial {#tutorial-survey}
+
+Pakisagot po ang maikling sarbey na ito upang magbigay ng feedback tungkol sa tutorial na ito. Ang inyong mga pananaw ay makakatulong sa amin na mapabuti ang aming mga alok na nilalaman at karanasan ng user.
+
+[Link sa sarbey](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)

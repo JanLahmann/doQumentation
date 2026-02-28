@@ -195,7 +195,10 @@ def cmd_extract(args):
                              "pt": "Portuguese", "tl": "Tagalog/Filipino",
                              "th": "Thai", "ar": "Arabic",
                              "he": "Hebrew", "swg": "Schwäbisch",
-                             "bad": "Badisch", "bar": "Bayerisch"}.get(locale, locale),
+                             "bad": "Badisch", "bar": "Bayerisch",
+                             "ksh": "Kölsch", "nds": "Plattdüütsch",
+                             "gsw": "Schwiizerdütsch", "sax": "Säggssch",
+                             "bln": "Berlinerisch", "aut": "Österreichisch"}.get(locale, locale),
             "status": "pending",  # pending → translated → assembled
             "files": [],
         }
@@ -300,6 +303,42 @@ BANNER_TEMPLATES = {
         "\n:::note[No ned ibersetzt]\n"
         "De Seitn is no ned ibersetzt worn. "
         "Sie schaung de englische Originalversion o.\n"
+        ":::\n"
+    ),
+    "ksh": (
+        "\n:::note[Noch nit övversatz]\n"
+        "Die Sigg es noch nit övversatz. "
+        "Ehr luurt üch de änglesche Originalversion aan.\n"
+        ":::\n"
+    ),
+    "nds": (
+        "\n:::note[Noch nich översett]\n"
+        "Disse Sied is noch nich översett. "
+        "Se kiekt de engelsche Originalversion an.\n"
+        ":::\n"
+    ),
+    "gsw": (
+        "\n:::note[Nonig übersetzt]\n"
+        "Di Siite isch nonig übersetzt worde. "
+        "Dir luege d englischi Originalversion aa.\n"
+        ":::\n"
+    ),
+    "sax": (
+        "\n:::note[Noch nich ibersetzt]\n"
+        "Die Seide is noch nich ibersetzt worn. "
+        "Se guggen de englsche Originalversion.\n"
+        ":::\n"
+    ),
+    "bln": (
+        "\n:::note[Noch nich übersetzt]\n"
+        "Die Seite is noch nich übersetzt. "
+        "Se kieken die englische Originalversion.\n"
+        ":::\n"
+    ),
+    "aut": (
+        "\n:::note[Noch nicht übersetzt]\n"
+        "Diese Seite wurde noch nicht übersetzt. "
+        "Sie sehen die englische Originalversion.\n"
         ":::\n"
     ),
 }

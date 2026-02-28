@@ -2,6 +2,7 @@ import React, {useState, useCallback, useRef, useEffect} from 'react';
 import {useNavbarMobileSidebar} from '@docusaurus/theme-common/internal';
 import {useLocation} from '@docusaurus/router';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import {translate} from '@docusaurus/Translate';
 import NavbarLogo from '@theme/Navbar/Logo';
 import NavbarColorModeToggle from '@theme/Navbar/ColorModeToggle';
 import IconClose from '@theme/Icon/Close';
@@ -11,7 +12,7 @@ function CloseButton() {
   return (
     <button
       type="button"
-      aria-label="Close navigation bar"
+      aria-label={translate({id: 'navbar.mobile.close', message: 'Close navigation bar'})}
       className="clean-btn navbar-sidebar__close"
       onClick={() => mobileSidebar.toggle()}>
       <IconClose />
@@ -40,7 +41,7 @@ function MobileLocaleSelector() {
     return () => document.removeEventListener('click', handleClick);
   }, [open]);
 
-  const dialectLocales = new Set(['swg', 'bad', 'bar']);
+  const dialectLocales = new Set(['swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut']);
 
   if (locales.length <= 1) return null;
 
@@ -57,7 +58,7 @@ function MobileLocaleSelector() {
     <div className="dq-mobile-locale" ref={ref}>
       <button
         type="button"
-        aria-label="Switch language"
+        aria-label={translate({id: 'navbar.mobile.switchLanguage', message: 'Switch language'})}
         className="clean-btn dq-mobile-locale__btn"
         onClick={() => setOpen(!open)}>
         <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
@@ -74,7 +75,7 @@ function MobileLocaleSelector() {
               {dialectLocales.has(locale) &&
                 (i === 0 || !dialectLocales.has(locales[i - 1])) && (
                   <li className="dq-mobile-locale__separator">
-                    Deutsche Dialekte
+                    {translate({id: 'navbar.mobile.germanDialects', message: 'German Dialects'})}
                   </li>
                 )}
               <li>
@@ -100,7 +101,7 @@ function SettingsButton() {
   return (
     <a
       href="/jupyter-settings"
-      aria-label="Settings"
+      aria-label={translate({id: 'navbar.mobile.settings', message: 'Settings'})}
       className="clean-btn dq-mobile-locale__btn"
       onClick={() => mobileSidebar.toggle()}>
       <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
@@ -117,7 +118,7 @@ function GitHubButton() {
   return (
     <a
       href="https://github.com/JanLahmann/doQumentation"
-      aria-label="GitHub repository"
+      aria-label={translate({id: 'navbar.mobile.github', message: 'GitHub repository'})}
       className="clean-btn dq-mobile-locale__btn"
       target="_blank"
       rel="noopener noreferrer">

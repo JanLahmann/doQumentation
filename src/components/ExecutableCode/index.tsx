@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import Translate, {translate} from '@docusaurus/Translate';
 import CodeBlock from '@theme-original/CodeBlock';
 import {
   detectJupyterConfig,
@@ -377,16 +378,46 @@ function annotateSaveAccountCells(): void {
       if (!code.includes('save_account(')) return;
       if (cell.querySelector('.thebelab-cell__skip-hint')) return;
 
+      const skipLabel = translate({
+        id: 'executable.skipCell',
+        message: 'Skip this cell',
+        description: 'Bold label on save_account() cells when simulator/credentials active',
+      });
       const div = document.createElement('div');
       div.className = 'thebelab-cell__skip-hint';
+      const strong = document.createElement('strong');
+      strong.textContent = skipLabel;
+      div.appendChild(strong);
       if (simMode) {
-        div.innerHTML =
-          '<strong>Skip this cell</strong> \u2014 Simulator Mode is active. Running it has no effect.';
+        const simText = translate({
+          id: 'executable.skipCell.simulatorActive',
+          message: 'Simulator Mode is active. Running it has no effect.',
+          description: 'Explanation shown on save_account() cells when simulator mode is on',
+        });
+        div.appendChild(document.createTextNode(` \u2014 ${simText}`));
       } else {
-        div.innerHTML =
-          '<strong>Skip this cell</strong> \u2014 your credentials are already configured via ' +
-          '<a href="/jupyter-settings#ibm-quantum">Settings</a>. ' +
-          'Running it with placeholder values will overwrite them.';
+        const credsBefore = translate({
+          id: 'executable.skipCell.credentialsBefore',
+          message: 'your credentials are already configured via ',
+          description: 'Text before the Settings link on save_account() cells (include trailing space if needed)',
+        });
+        const settingsLabel = translate({
+          id: 'executable.skipCell.settingsLink',
+          message: 'Settings',
+          description: 'Link text pointing to the Settings page',
+        });
+        const credsAfter = translate({
+          id: 'executable.skipCell.credentialsAfter',
+          message: '. Running it with placeholder values will overwrite them.',
+          description: 'Text after the Settings link on save_account() cells (include leading punctuation)',
+        });
+        div.appendChild(document.createTextNode(` \u2014 `));
+        div.appendChild(document.createTextNode(credsBefore));
+        const a = document.createElement('a');
+        a.href = '/jupyter-settings#ibm-quantum';
+        a.textContent = settingsLabel;
+        div.appendChild(a);
+        div.appendChild(document.createTextNode(credsAfter));
       }
       cell.insertBefore(div, cell.firstChild);
     });
@@ -865,10 +896,10 @@ export default function ExecutableCode({
   const statusText: Record<ThebeStatus, string> = {
     idle: '',
     connecting: jupyterConfig?.environment === 'github-pages'
-      ? 'Starting Binder (this may take 1\u20132 minutes on first run)...'
-      : 'Connecting...',
+      ? translate({id: 'executable.status.binderConnecting', message: 'Starting Binder (this may take 1\u20132 minutes on first run)...'})
+      : translate({id: 'executable.status.connecting', message: 'Connecting...'}),
     ready: '',
-    error: 'Disconnected \u2014 click Back, then Run to retry',
+    error: translate({id: 'executable.status.error', message: 'Disconnected \u2014 click Back, then Run to retry'}),
   };
 
   const code = children.replace(/\n$/, '');
@@ -885,13 +916,17 @@ export default function ExecutableCode({
               disabled={thebeStatus === 'connecting'}
               title={
                 mode === 'run'
-                  ? 'Back to static view'
+                  ? translate({id: 'executable.button.backTitle', message: 'Back to static view'})
                   : jupyterConfig?.environment === 'github-pages'
-                    ? 'Execute via Binder (may take a moment to start)'
-                    : 'Execute on local Jupyter server'
+                    ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
+                    : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
               }
             >
-              {thebeStatus === 'connecting' ? 'Connecting...' : mode === 'run' ? 'Back' : 'Run'}
+              {thebeStatus === 'connecting'
+                ? translate({id: 'executable.status.connecting', message: 'Connecting...'})
+                : mode === 'run'
+                  ? translate({id: 'executable.button.back', message: 'Back'})
+                  : translate({id: 'executable.button.run', message: 'Run'})}
             </button>
           )}
 
@@ -899,9 +934,9 @@ export default function ExecutableCode({
             <button
               className="executable-code__button"
               onClick={handleOpenLab}
-              title="Open full notebook in JupyterLab"
+              title={translate({id: 'executable.button.labTitle', message: 'Open full notebook in JupyterLab'})}
             >
-              Open in Lab
+              {translate({id: 'executable.button.lab', message: 'Open in Lab'})}
             </button>
           )}
 
@@ -911,9 +946,9 @@ export default function ExecutableCode({
               href={getColabUrl(notebookPath)}
               target="_blank"
               rel="noopener noreferrer"
-              title="Open notebook in Google Colab"
+              title={translate({id: 'executable.button.colabTitle', message: 'Open notebook in Google Colab'})}
             >
-              Open in Colab
+              {translate({id: 'executable.button.colab', message: 'Open in Colab'})}
             </a>
           )}
 
@@ -925,9 +960,9 @@ export default function ExecutableCode({
 
           {thebeStatus === 'ready' && (
             <span className="executable-code__legend">
-              <span className="executable-code__legend-item executable-code__legend-item--running">running</span>
-              <span className="executable-code__legend-item executable-code__legend-item--done">done</span>
-              <span className="executable-code__legend-item executable-code__legend-item--error">error</span>
+              <span className="executable-code__legend-item executable-code__legend-item--running">{translate({id: 'executable.legend.running', message: 'running'})}</span>
+              <span className="executable-code__legend-item executable-code__legend-item--done">{translate({id: 'executable.legend.done', message: 'done'})}</span>
+              <span className="executable-code__legend-item executable-code__legend-item--error">{translate({id: 'executable.legend.error', message: 'error'})}</span>
             </span>
           )}
 
@@ -940,18 +975,28 @@ export default function ExecutableCode({
           <a
             className="executable-code__settings-link"
             href="/jupyter-settings#ibm-quantum"
-            title="Jupyter & IBM Quantum settings"
+            title={translate({id: 'executable.settingsLink.title', message: 'Jupyter & IBM Quantum settings'})}
           >
-            Settings
+            {translate({id: 'executable.settingsLink', message: 'Settings'})}
           </a>
         </div>
       )}
 
       {isFirstCell && conflictBanner && (
         <div className="executable-code__conflict-banner">
-          Both IBM credentials and simulator mode are configured.
-          Using <strong>{conflictBanner}</strong>.{' '}
-          <a href="/jupyter-settings#ibm-quantum">Change in Settings</a>.
+          <Translate
+            id="executable.conflict"
+            values={{
+              mode: <strong>{conflictBanner}</strong>,
+              settingsLink: (
+                <a href="/jupyter-settings#ibm-quantum">
+                  <Translate id="executable.conflict.settingsLink">Change in Settings</Translate>
+                </a>
+              ),
+            }}
+          >
+            {'Both IBM credentials and simulator mode are configured. Using {mode}. {settingsLink}.'}
+          </Translate>
         </div>
       )}
 
@@ -964,18 +1009,27 @@ export default function ExecutableCode({
       {isFirstCell && thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' &&
         !binderHintDismissed && (
         <div className="executable-code__binder-hint">
-          Need extra packages? Run{' '}
-          <code>!pip install -q &lt;package&gt;</code>{' '}
-          in a cell, or see{' '}
-          <a href="/jupyter-settings#binder-packages">available packages</a>.
+          <Translate
+            id="executable.binderHint"
+            values={{
+              pipCode: <code>!pip install -q &lt;package&gt;</code>,
+              packagesLink: (
+                <a href="/jupyter-settings#binder-packages">
+                  <Translate id="executable.binderHint.packagesLink">available packages</Translate>
+                </a>
+              ),
+            }}
+          >
+            {'Need extra packages? Run {pipCode} in a cell, or see {packagesLink}.'}
+          </Translate>
           <button
             className="executable-code__binder-hint-dismiss"
             onClick={() => {
               dismissBinderHint();
               setBinderHintDismissed(true);
             }}
-            title="Dismiss"
-            aria-label="Dismiss hint"
+            title={translate({id: 'executable.dismissHint', message: 'Dismiss'})}
+            aria-label={translate({id: 'executable.dismissHint', message: 'Dismiss'})}
           >
             &times;
           </button>

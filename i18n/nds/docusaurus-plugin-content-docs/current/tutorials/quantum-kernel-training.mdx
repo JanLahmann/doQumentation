@@ -1,0 +1,228 @@
+---
+title: "Quantenkernel-Training"
+sidebar_label: "Quantenkernel-Training"
+description: "Buut en Qiskit-Muster för dat Utrekenen vun Indrägen in en Quantenkernel-Matrix, de för binär Klassifikatschoon bruukt warrt."
+notebook_path: "docs/tutorials/quantum-kernel-training.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/quantum-kernel-training.ipynb" />
+
+
+
+*Schattstied för den Verbruuk: ünner een Minuut op en Eagle r3 Prozessor (OPPASS: Dat is blots en Schattung. Dien Looptied künnt anners ween.)*
+## Achtergrund {#background}
+
+Dit Tutorial wiest, wo man en `Qiskit-Muster` buut för dat Utrekenen vun Indrägen in en Quantenkernel-Matrix, de för binär Klassifikatschoon bruukt warrt. För mehr Informatschonen över `Qiskit-Muster` un wo `Qiskit Serverless` bruukt warrn kann, dat se in de Wulk utrölt warrt för verwaltete Utföhren, kiek op uns [Dokumentatschoons-Siet över IBM Quantum&reg; Platform](/guides/serverless).
+## Vörutsettsungen {#requirements}
+
+Vördat du mit dit Tutorial anfangen deist, stell seker, dat du dat hier installert hest:
+- Qiskit SDK v1.0 oder later, mit [Visualiseren](https://docs.quantum.ibm.com/api/qiskit/visualization)-Ünnerstütten
+- Qiskit Runtime v0.22 oder later (`pip install qiskit-ibm-runtime`)
+## Opbuun {#setup}
+
+```python
+!wget https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv
+
+# General Imports and helper functions
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.circuit.library import UnitaryOverlap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
+
+# from qiskit_serverless import IBMServerlessClient, QiskitFunction
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+
+def visualize_counts(res_counts, num_qubits, num_shots):
+    """Visualize the outputs from the Qiskit Sampler primitive."""
+    zero_prob = res_counts.get(0, 0.0)
+    top_10 = dict(
+        sorted(res_counts.items(), key=lambda item: item[1], reverse=True)[
+            :10
+        ]
+    )
+    top_10.update({0: zero_prob})
+    by_key = dict(sorted(top_10.items(), key=lambda item: item[0]))
+    x_vals, y_vals = list(zip(*by_key.items()))
+    x_vals = [bin(x_val)[2:].zfill(num_qubits) for x_val in x_vals]
+    y_vals_prob = []
+    for t in range(len(y_vals)):
+        y_vals_prob.append(y_vals[t] / num_shots)
+    y_vals = y_vals_prob
+    plt.bar(x_vals, y_vals)
+    plt.xticks(rotation=75)
+    plt.title("Results of sampling")
+    plt.xlabel("Measured bitstring")
+    plt.ylabel("Probability")
+    plt.show()
+
+def get_training_data():
+    """Read the training data."""
+    df = pd.read_csv("dataset_graph7.csv", sep=",", header=None)
+    training_data = df.values[:20, :]
+    ind = np.argsort(training_data[:, -1])
+    X_train = training_data[ind][:, :-1]
+
+    return X_train
+```
+
+```text
+7[1A[1G[27G[Files: 0  Bytes: 0  [0 B/s] Re]87[2A[1G[27G[https://raw.githubusercontent.]87[1S[3A[1G[0JSaving 'dataset_graph7.csv.1'
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1S[3A[1G[0JHTTP response 200  [https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv]
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1A[1G[27G[Files: 1  Bytes: 20.25K [93.33]8[m[m[m[m
+```
+
+## Schritt 1: Klassische Ingaven op en Quantenproblem afbillen {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+*   Ingaav: Trainingsdatensett.
+*   Utgaav: Abstrakten Schaltkreis för dat Berekenen vun en Kernelmatrix-Indrag.
+
+Muuk den Quantenschaltkreis, de bruukt warrt för dat Utrekenen vun een eenzigen Indrag in de Kernelmatrix. Wi bruukt de Ingaav-Daten för to bestimmen, wat de Dreihwinkels för de parametriseerten Gates sünd. Wi warrt de Daten-Proben `x1=14` un `x2=19` bruken.
+
+***Oppass: De Datensett, de in dit Tutorial bruukt warrt, kann [hier](https://github.com/qiskit-community/prototype-quantum-kernel-training/blob/main/data/dataset_graph7.csv) daallaadt warrn.***
+
+```python
+# Prepare training data
+X_train = get_training_data()
+
+# Empty kernel matrix
+num_samples = np.shape(X_train)[0]
+kernel_matrix = np.full((num_samples, num_samples), np.nan)
+
+# Prepare feature map for computing overlap
+num_features = np.shape(X_train)[1]
+num_qubits = int(num_features / 2)
+entangler_map = [[0, 2], [3, 4], [2, 5], [1, 4], [2, 3], [4, 6]]
+fm = QuantumCircuit(num_qubits)
+training_param = Parameter("θ")
+feature_params = ParameterVector("x", num_qubits * 2)
+fm.ry(training_param, fm.qubits)
+for cz in entangler_map:
+    fm.cz(cz[0], cz[1])
+for i in range(num_qubits):
+    fm.rz(-2 * feature_params[2 * i + 1], i)
+    fm.rx(-2 * feature_params[2 * i], i)
+
+# Assign tunable parameter to known optimal value and set the data params for first two samples
+x1 = 14
+x2 = 19
+unitary1 = fm.assign_parameters(list(X_train[x1]) + [np.pi / 2])
+unitary2 = fm.assign_parameters(list(X_train[x2]) + [np.pi / 2])
+
+# Create the overlap circuit
+overlap_circ = UnitaryOverlap(unitary1, unitary2)
+overlap_circ.measure_all()
+overlap_circ.draw("mpl", scale=0.6, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/70d6faff-9a56-44bb-b26f-f573a8c90889-0.avif)
+
+## Schritt 2: Dat Problem för Quantenhardware-Utföhren optimeern {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+*   Ingaav: Abstrakten Schaltkreis, nich optimeert för en bestimmtet Backend
+*   Utgaav: Teel-Schaltkreis un Observable, optimeert för de utsöchte QPU
+
+Bruuk de `generate_preset_pass_manager`-Funkschoon vun Qiskit för en Optimerungslauf för uns Schaltkreis to spezifizeern, wat den QPU angeiht, op den wi dat Experiment lopen laten wüllt. Wi settt `optimization_level=3`, wat bedüüdt, dat wi den vörgeven Pass Manager bruukt, de dat högste Optimerungs-Niveau bringt.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=overlap_circ.num_qubits
+)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+overlap_ibm = pm.run(overlap_circ)
+overlap_ibm.draw("mpl", scale=0.6, idle_wires=False, fold=-1, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/49607b34-9723-493d-85da-bd97c1351104-0.avif)
+
+## Schritt 3: Utföhren mit Qiskit-Primitiven {#step-3-execute-using-qiskit-primitives}
+
+*   Ingaav: Teel-Schaltkreis
+*   Utgaav: Quasi-Wohrschienlichkeitsverdeelen
+
+Bruuk den `Sampler`-Primitiv vun Qiskit Runtime för en Quasi-Wohrschienlichkeitsverdeelen vun Töständ to rekonstrueern, de ut dat Sampeln vun den Schaltkreis rutkummt. För dat Maken vun en Kernelmatrix sünd wi besünners interesseert an de Wohrschienlichkeit, den |0>-Tostand to meten.
+
+För dit Demo laat wi dat op en QPU mit `qiskit-ibm-runtime`-Primitiven. För dat Lopen op `qiskit`-Statevector-baseerte Primitiven, ersett den Codeblock för Qiskit IBM&reg; Runtime-Primitiven dörch den kommenteerten Block.
+
+```python
+num_shots = 10_000
+
+## Evaluate the problem using statevector-based primitives from Qiskit
+# from qiskit.primitives import StatevectorSampler
+
+# sampler = StatevectorSampler()
+# results = sampler.run([overlap_circ]).result()
+# counts = results[0].data.meas.get_int_counts()
+
+# Evaluate the problem using a QPU via Qiskit IBM Runtime
+
+sampler = Sampler(mode=backend)
+results = sampler.run([overlap_ibm]).result()
+counts = results[0].data.meas.get_int_counts()
+
+visualize_counts(counts, num_qubits, num_shots)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/d2f4f6cf-067e-4d53-aa04-7ca9c803d3e1-0.avif)
+
+## Schritt 4: Nahbearbeiden un dat Resultat in dat wünschte klassische Format torüchgeven {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+*   Ingaav: Wohrschienlichkeitsverdeelen
+*   Utgaav: Een eenzig Kernelmatrix-Element
+
+Reken de Wohrschienlichkeit för dat Meten vun |0> op den Overlap-Schaltkreis un föll de Kernelmatrix an de Positschoon, de de Proben entspreckt, de dörch dissen bestimmten Overlap-Schaltkreis darstellt warrt (Reeg 15, Kolumn 20). In disse Visualiseren wiest dünkereres Root Fidelitäten neger an 1.0. För de hele Kernelmatrix uttoföllen, mööt wi en Quantenexperiment för jeden Indrag lopen laten.
+
+```python
+# Calculate the fidelity, or the probability to measure 0
+kernel_matrix[x1, x2] = counts.get(0, 0.0) / num_shots
+print(f"Fidelity: {kernel_matrix[x1, x2]}")
+```
+
+```text
+Fidelity: 0.1279
+```
+
+![kernel_matrix.png](/docs/images/tutorials/quantum-kernel-training/kernel_matrix.avif)
+## Dat Qiskit-Muster in de Wulk deployen {#deploy-the-qiskit-pattern-to-the-cloud}
+
+För dat to maken, överdraa den Quellcode vun baven in en Datei, `./source/generate_kernel_entry.py`, pack den Code in en Skript, dat Ingaven nimmt un de endgültige Lösen torüchgifft, un laa dat denn op en Feerncluster rop mit de `Qiskit Function`-Klass vun `Qiskit Serverless`. För Anwiesungen över dat Spezifizeern vun externeAfhängigkeiten, dat Övergeven vun Ingaav-Argumenten un mehr, kiek na de [Qiskit Serverless-Anleidungen](https://qiskit.github.io/qiskit-serverless/getting_started/index.html).
+
+De Ingaav för dat Muster is en Paar vun Daten-Proben, `x1` un `x2`. De Utgaav is de Fidelität twischen de beiden Proben. Dissen Weert warrt bruukt för den Kernelmatrix-Indrag to föllen, de de beiden Proben entspreckt.
+
+```python
+serverless = QiskitServerless()
+
+kernel_entry_pattern = QiskitFunction(
+    title="generate-kernel-entry",
+    entrypoint="generate_kernel_entry.py",
+    working_dir="./source/",
+)
+
+serverless.upload(kernel_entry_pattern)
+```
+
+## Dat Qiskit-Muster as verwaltet Deenst lopen laten {#run-the-qiskit-pattern-as-a-managed-service}
+
+Nahdem wi dat Muster in de Wulk ropladen hebbt, künnt wi dat eenfach mit den `IBMServerlessProvider`-Client lopen laten. För dat eenfacher to maken, warrt wi en exakten Quantensimulator in de Wulk-Ümgeven bruken, so dat de Fidelität, de wi berekent, exakt is.
+
+```python
+generate_kernel_entry = serverless.load("generate-kernel-entry")
+job = generate_kernel_entry.run(
+    sample1=list(X_train[x1]), sample2=list(X_train[x2])
+)
+
+kernel_matrix[x1, x2] = job.result()["fidelity"]
+print(f"fidelity: {kernel_matrix[x1, x2]}")
+```
+
+## Tutorial-Ümfraag {#tutorial-survey}
+
+Mook mit bi disse korte Ümfraag, üm Feedback för dit Tutorial to geven. Dien Insichten warrt uns helpen, uns Inhalte un de Bruker-Erfahrung to verbetern.
+
+[Link to de Ümfraag](https://your.feedback.ibm.com/jfe/form/SV_6xsFvUYV1pNHCqW)

@@ -1,0 +1,224 @@
+---
+title: "Fehlerminderung mit der IBM Circuit-Fungdsion"
+sidebar_label: "Fehlerminderung mit der IBM Circuit-Fungdsion"
+description: "Lauf durch a Baischbiel vom Bau'n un Ausführ'n von'm Workflow mit der IBM Circuit-Fungdsion."
+notebook_path: "docs/tutorials/error-mitigation-with-qiskit-functions.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/error-mitigation-with-qiskit-functions.ipynb" />
+
+
+
+<Admonition type="note" title="Himmäärsch">
+Qiskit Functions sin a experimentelle Fungdsionalität, die nur för IBM Quantum&reg; Premium Plan, Flex Plan un On-Prem (übber IBM Quantum Platform API) Plan Nutzer verfügbar is. Se sin im Preview-Status un könn' sich ändern.
+</Admonition>
+
+*Verbrauchs-Schätzung: 26 Minudn uff'm Eagle-Prozessor (HIMMÄÄRSCH: Das is nur a Schätzung. Deine Laufzeit kann annersch sei.)*
+Des Tutorial geht durch a Baischbiel vom Bau'n un Ausführ'n von'm Workflow mit der IBM Circuit-Fungdsion. Diese Fungdsion nimmt [Primitive Unified Blocs](/guides/primitive-input-output) (PUBs) als Eingäng' un gibt fehlergeminnderte Erwardunsgwerte als Ausgäng' zurück. Se liefert a automatisierte un aangbasste Pipeline för de Obdimierung von Schaldgreise un de Ausführung uff Quandnhardware, sodass Forscher sich uff Algorithmus- un Anwendungsentdeckung gongzentriern könn'.
+
+Besuch' de Dogumendasion för a [Einführung in Qiskit Functions](/guides/functions) un lerne, wie de mit der [IBM Circuit-Fungdsion](/guides/ibm-circuit-function) aanfängst.
+## Hintergrund {#background}
+
+Des Tutorial betrachtet 'n allgemein' hardware-effizienten trotterisierten Zeitevoludsionsschaldgreis för's 2D Transversal-Feld Ising-Modell un berechnet de globale Magnedisierung. So a Schaldgreis is nützlich in verschieden' Anwendungsbereichen wie Festkörberphysig, Chemie un maschinelles Lern'. För mehr Informasionen übber de Struktur von dem Modell gug' bei [Nature 618, 500–505 (2023)](https://www.nature.com/articles/s41586-023-06096-3).
+
+De IBM Circuit-Fungdsion gombiniert Fähigkeiten vom Qiskit-Transbiläär-Service un Qiskit Runtime Estimator för a vereinfachte Schnittstelle för's Ausführ'n von Schaldgreisen. De Fungdsion macht Transbilaasion, Fehlerunterdrückung, Fehlerminderung un Schaldgreisausführung innerhalb von'm einzeln' verwaltetn Service, sodass mir uns uff de Zuornnung vom Broblem zu Schaldgreisen gongzentriern könn', anstatt jedn Schritt vom Muster selber uffzubau'n.
+## Voraussetzungen {#requirements}
+
+Bevor de mit dem Tutorial aanfängst, stell' secher, dass de Folgendes installiert hast:
+
+- Qiskit SDK v1.2 oder neier (`pip install qiskit`)
+- Qiskit Runtime v0.28 oder neier (`pip install qiskit-ibm-runtime`)
+- IBM Qiskit Functions Catalog client v0.0.0 oder neier (`pip install qiskit-ibm-catalog`)
+- Qiskit Aer v0.15.0 oder neier (`pip install qiskit-aer`)
+## Einrichtung {#setup}
+
+```python
+import rustworkx
+from collections import defaultdict
+from numpy import pi, mean
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.quantum_info import SparsePauliOp
+```
+
+## Schritt 1: Glassische Eingäng' uff a Quandnbroblem abbildn {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+<ul>
+    <li>Eingang: Parameter för's Erstell'n vom Quandnschaldgreis</li>
+    <li>Ausgang: Abstrakter Schaldgreis un Obsärwabeln</li>
+</ul>
+#### Den Schaldgreis gonstruiern
+Der Schaldgreis, den mer bau'n, is a hardware-effizienter, trotterisierter Zeitevoludsionsschaldgreis för's 2D Transversal-Feld Ising-Modell. Mer fang'n mit der Auswahl von'm Backend aan. Eigenschaften von dem Backend (also seine Kobblungskarte) werd'n gebraucht, för's Quandnbroblem zu definiern un sicherzustell'n, dass es hardware-effizient is.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Als Nächstes hol'n mer de Kobblungskarte vom Backend.
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+layer_couplings = defaultdict(list)
+```
+
+Mer wolln vorsichtig sei, wie mer de Schichtn von unserm Schaldgreis designn. Mer mach'n das, indem mer de Kanten von der Kobblungskarte färb'n (also de disjunktn Kanten grobbiern) un de Färbung bruchen, för Gatter effizienter im Schaldgreis zu bladzieren. Das führt zu'm flachern Schaldgreis mit Schichtn von Gattern, die gleichzeitig uff der Hardware ausgeführt werd'n könn'.
+
+```python
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+
+for edge_idx, color in edge_coloring.items():
+    layer_couplings[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layer_couplings = [
+    sorted(layer_couplings[i]) for i in sorted(layer_couplings.keys())
+]
+```
+
+Als Nächstes schreib'n mer a einfache Hälferfungdsion, die den hardware-effizienten, trotterisierten Zeitevoludsionsschaldgreis för's 2D Transversal-Feld Ising-Modell mit der obgenanntn Kantnfärbung imblemendiert.
+
+```python
+def construct_trotter_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    layer_couplings: list,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    theta, phi = Parameter("theta"), Parameter("phi")
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(theta, range(num_qubits))
+        for layer in layer_couplings:
+            for edge in layer:
+                if edge[0] < num_qubits and edge[1] < num_qubits:
+                    circuit.rzz(phi, edge[0], edge[1])
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+```
+
+Mer wähl'n de Aanzahl von Qubits un Trotterschrittn aus un gonstruiern dann den Schaldgreis.
+
+```python
+num_qubits = 100
+num_trotter_steps = 2
+
+circuit = construct_trotter_circuit(
+    num_qubits, num_trotter_steps, layer_couplings
+)
+circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-mitigation-with-qiskit-functions/extracted-outputs/18eefa99-f1c4-41b5-90b8-7fd8723cac84-0.avif)
+
+För de Gualität von der Ausführung zu benchmarkn, müssn mer se mit dem idealen Ergebnis verglaichn. Der gewählte Schaldgreis is übber de brute force glassische Simulaasion raus. Darum fixiern mer de Parameter von all'n `Rx`-Gattern im Schaldgreis uff $0$, un die von all'n `Rzz`-Gattern uff $\pi$. Das macht den Schaldgreis zu'm Clifford, was es mögälich macht, de ideale Simulaasion durchzuführn un's ideale Ergebnis för'n Verglaich zu griechn. In dem Fall wissn mer, dass das Ergebnis `1.0` sei wird.
+
+```python
+parameters = [0, pi]
+```
+
+#### Das Obsärwable gonstruiern
+Zuerst berechn'n mer de globale Magnedisierung längs $\hat{z}$ för's $N$-Qubit-Broblem: $M_z = \sum_{i=1}^N \langle Z_i \rangle / N$. Das erfodert zuerst de Berechnung von der Einzelblatz-Magnedisierung $\langle Z_i \rangle$ för jedes Qubit $i$, was im folgn Code definiert is.
+
+```python
+observables = []
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(SparsePauliOp(obs))
+
+print(observables[0])
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## Schritt 2 un 3: Broblem för Quandnhardware-Ausführung obdimiern un mit der IBM Circuit-Fungdsion ausführn {#steps-2-and-3-optimize-problem-for-quantum-hardware-execution-and-execute-with-the-ibm-circuit-function}
+
+<ul>
+    <li>Eingang: Abstrakter Schaldgreis un Obsärwabeln</li>
+    <li>Ausgang: Geminnderte Erwardungswerte</li>
+</ul>
+Jetzd könn mer den abstrakten Schaldgreis un Obsärwabeln an de IBM Circuit-Fungdsion übbergeb'n. Se wird Transbilaasion un Ausführung uff Quandnhardware för uns erledigen un geminnderte Erwardungswerte zurückgeb'n. Zuerst lad'n mer de Fungdsion ausm [IBM Qiskit Functions Catalog](/guides/functions).
+
+```python
+catalog = QiskitFunctionsCatalog(
+    token="<YOUR_API_KEY>"
+)  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+function = catalog.load("ibm/circuit-function")
+```
+
+De IBM Circuit-Fungdsion nimmt `pubs`, `backend_name`, sowie obdsionale Eingäng' för de Gonfiguraasion von Transbilaasion, Fehlerminderung usw. Mer erstell'n den `pub` ausm abstraktn Schaldgreis, Obsärwabeln un Schaldgreisparametern. Der Name vom Backend sollte als String aangegeben werd'n.
+
+```python
+pubs = [(circuit, observables, parameters)]
+backend_name = backend.name
+```
+
+Mer könn' auch de `options` för Transbilaasion, Fehlerunterdrückung un Fehlerminderung gonfiguriern. Standardeinstellungen werd'n gebraucht, wenn mer die nich aangeb'n wolln. De IBM Circuit-Fungdsion gommt mit häufig gebrauchtn Obsionen för `optimization_level`, was steuert, wie viel Schaldgreisopdimiernug durchgeführt wird, un `mitigation_level`, was aangibt, wie viel Fehlerunterdrückung un -minderung aangewendet wird. Bass uff, dass das `mitigation_level` von der IBM Circuit-Fungdsion anners is als das `resilience_level`, was im [Qiskit Runtime Estimator](/guides/configure-error-mitigation) gebraucht wird. För a detaillierte Beschreibung von den häufig gebrauchtn Obsionen sowie andren erweiterten Obsionen besuch' de [Dogumendasion för de IBM Circuit-Fungdsion](/guides/ibm-circuit-function).
+
+In dem Tutorial setzn mer `default_precision`, `optimization_level: 3` un `mitigation_level: 3`, was Gate Twirling un Zero Noise Extrapolation (ZNE) übber Probabilistic Error Amplification (PEA) uff de Standard-Level-1-Einstellungen aanschalt'n wird.
+
+```python
+options = {
+    "default_precision": 0.011,
+    "optimization_level": 3,
+    "mitigation_level": 3,
+}
+```
+
+Mit den aangegeben' Eingäng'n übbergeb'n mer den Job an de IBM Circuit-Fungdsion för Obdimierung un Ausführung.
+
+```python
+job = function.run(backend_name=backend_name, pubs=pubs, options=options)
+```
+
+## Schritt 4: Nachbehandlung un Ergebnis im gewünschtn glassischen Format zurückgeb'n {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+<ul>
+    <li>Eingang: Ergebnisse von der IBM Circuit-Fungdsion</li>
+    <li>Ausgang: Globale Magnedisierung</li>
+</ul>
+#### De globale Magnedisierung berechn'n
+Das Ergebnis vom Ausführ'n von der Fungdsion hat das gleiche Format wie der [Estimator](/guides/primitive-input-output#estimator-output).
+
+```python
+result = job.result()[0]
+```
+
+Mer griechn de geminndertn un nich-geminndertn Erwardungswerte aus dem Ergebnis. Diese Erwardungswerte stell'n de Einzelblatz-Magnedisierung längs der $\hat{z}$-Richtung dar. Mer mitteln diese, för zur globaln Magnedisierung zu gomm' un verglaich'n se mit dem idealn Wert von `1.0` för diese Brobleminstanz.
+
+```python
+mitigated_expvals = result.data.evs
+magnetization_mitigated = mean(mitigated_expvals)
+
+print("mitigated:", magnetization_mitigated)
+
+unmitigated_expvals = [
+    result.data.evs_extrapolated[i][0][1] for i in range(num_qubits)
+]
+magnetization_unmitigated = mean(unmitigated_expvals)
+
+print("unmitigated:", magnetization_unmitigated)
+```
+
+```text
+mitigated: 0.9749883476088692
+unmitigated: 0.7832977198447583
+```
+
+## Tutorial-Umfraach {#tutorial-survey}
+
+Bitte mach' diese gorze Umfraach, för Feedback zu dem Tutorial zu geb'n. Deine Einsichtn helfn uns, unser Inhaltsaangebot un Nutzer-Erfahrung zu verbessern.
+
+[Link zur Umfraach](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

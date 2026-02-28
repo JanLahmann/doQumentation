@@ -1,0 +1,596 @@
+---
+title: "מבוא לשערים שבריים"
+sidebar_label: "מבוא לשערים שבריים"
+description: "שערים שבריים, שערים קוונטיים מפרמטרים המאפשרים ביצוע ישיר של סיבובים בזוויות שרירותיות, יכולים להפחית עומק ומשך של מעגלים קוונטיים."
+notebook_path: "docs/tutorials/fractional-gates.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/fractional-gates.ipynb" />
+
+
+
+*הערכת שימוש: פחות מ-30 שניות על מעבד Heron r2 (הערה: זוהי הערכה בלבד. זמן הריצה שלך עשוי להשתנות.)*
+## רקע {#background}
+
+### שערים שבריים ב-QPU של IBM {#fractional-gates-on-ibm-qpus}
+
+שערים שבריים הם שערים קוונטיים מפרמטרים המאפשרים ביצוע ישיר של סיבובים בזוויות שרירותיות (בתוך גבולות ספציפיים),
+ומבטלים את הצורך לפרק אותם למספר שערי בסיס.
+על ידי ניצול האינטראקציות המקוריות בין qubits פיזיים, משתמשים יכולים ליישם יוניטרים מסוימים בצורה יעילה יותר על חומרה.
+
+QPU של IBM Quantum&reg; Heron תומכים בשערים השבריים הבאים:
+- $R_{ZZ}(\theta)$ עבור $0 < \theta < \pi / 2$
+- $R_X(\theta)$ עבור כל ערך ממשי $\theta$
+
+שערים אלה יכולים להפחית באופן משמעותי הן את העומק והן את המשך של מעגלים קוונטיים.
+הם מועילים במיוחד ביישומים המסתמכים במידה רבה על $R_{ZZ}$ ו-$R_X$,
+כגון סימולציה המילטונית, אלגוריתם אופטימיזציה קוונטית משוערת (QAOA), ושיטות גרעין קוונטי.
+במדריך זה, אנו מתמקדים בגרעין הקוונטי כדוגמה מעשית.
+### מגבלות {#limitations}
+
+שערים שבריים הם כרגע תכונה ניסיונית ומגיעים עם כמה אילוצים:
+- $R_{ZZ}$ מוגבל לזוויות בטווח $0 < \theta < \pi / 2$.
+- שימוש בשערים שבריים אינו נתמך עבור [מעגלים דינמיים](/guides/classical-feedforward-and-control-flow), [Pauli twirling](/guides/error-mitigation-and-suppression-techniques#pauli-twirling), [ביטול שגיאות הסתברותי](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-cancellation-pec) (PEC), ו-[אקסטרפולציה של אפס רעש](/guides/error-mitigation-and-suppression-techniques#zero-noise-extrapolation-zne) (ZNE) (באמצעות [הגברת שגיאות הסתברותית](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-amplification-pea) (PEA)).
+
+שערים שבריים דורשים זרימת עבודה שונה בהשוואה לגישה הסטנדרטית.
+מדריך זה מסביר כיצד לעבוד עם שערים שבריים באמצעות יישום מעשי.
+
+ראה את הדברים הבאים לפרטים נוספים על שערים שבריים.
+- [שערים שבריים](/guides/fractional-gates)
+- [מתי *לא* להשתמש בשערים שבריים](/guides/fractional-gates#when-not-to-use)
+## סקירה {#overview}
+זרימת העבודה לשימוש בשערים השבריים עוקבת בדרך כלל אחר זרימת העבודה של [דפוסי Qiskit](/guides/intro-to-patterns).
+ההבדל המרכזי הוא שכל זוויות RZZ חייבות לעמוד באילוץ $0 < \theta \leq \pi/2$.
+ישנן שתי גישות כדי להבטיח שתנאי זה מתקיים.
+מדריך זה מתמקד ומציע את הגישה השנייה.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-basis-constructor
+```
+
+### 1. יצירת ערכי פרמטרים העומדים באילוץ זווית RZZ {#1-generate-parameter-values-that-satisfy-the-rzz-angle-constraint}
+
+אם אתה בטוח שכל זוויות RZZ נמצאות בתוך הטווח התקף, תוכל לעקוב אחר זרימת העבודה הסטנדרטית של דפוסי Qiskit.
+במקרה זה, אתה פשוט מגיש את ערכי הפרמטרים כחלק מ-PUB. זרימת העבודה ממשיכה כדלקמן.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+t_circuit = pm.run(circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit, parameter_values)])
+estimator.run([(t_circuit, t_observable, parameter_values)])
+```
+
+אם תנסה לשלוח PUB הכולל שער RZZ עם זווית מחוץ לטווח התקף, תיתקל בהודעת שגיאה כגון:
+```
+'The instruction rzz is supported only for angles in the range [0, pi/2], but an angle (20.0) outside of this range has been requested; via parameter value(s) γ[0]=10.0, substituted in parameter expression 2.0*γ[0].'
+```
+כדי להימנע משגיאה זו, עליך לשקול את הגישה השנייה המתוארת להלן.
+### 2. הקצאת ערכי פרמטרים למעגלים לפני טרנספילציה {#2-assign-parameter-values-to-circuits-before-transpilation}
+
+חבילת `qiskit-ibm-runtime` מספקת מעבר טרנספיילר מיוחד בשם [`FoldRzzAngle`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-fold-rzz-angle).
+מעבר זה הופך מעגלים קוונטיים כך שכל זוויות RZZ יעמדו באילוץ זווית RZZ.
+אם אתה מספק את ה-backend ל-`generate_preset_pass_manager` או `transpile`, Qiskit מיישם אוטומטית את `FoldRzzAngle` למעגלים הקוונטיים.
+זה דורש ממך להקצות ערכי פרמטרים למעגלים קוונטיים לפני הטרנספילציה.
+זרימת העבודה ממשיכה כדלקמן.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, ...)
+b_circuit = circuit.assign_parameters(parameter_values)
+t_circuit = pm.run(b_circuit)
+t_observable = observable.apply_layout(t_circuit.layout)
+sampler.run([(t_circuit,)])
+estimator.run([(t_circuit, t_observable)])
+```
+
+שימו לב שזרימת עבודה זו גוררת עלות חישובית גבוהה יותר מהגישה הראשונה, מכיוון שהיא כוללת הקצאת ערכי פרמטרים למעגלים קוונטיים ואחסון המעגלים המקושרים לפרמטרים באופן מקומי.
+בנוסף, ישנה בעיה ידועה ב-Qiskit בה השינוי של שערי RZZ עשוי להיכשל בתרחישים מסוימים. לפתרון בעיה, עיין בסעיף [פתרון בעיות](#troubleshooting).
+מדריך זה מדגים כיצד להשתמש בשערים שבריים באמצעות הגישה השנייה דרך דוגמה בהשראת שיטת הגרעין הקוונטי.
+כדי להבין טוב יותר היכן גרעינים קוונטיים צפויים להיות שימושיים, אנו ממליצים לקרוא את [Liu, Arunachalam & Temme (2021).](https://www.nature.com/articles/s41567-021-01287-z)
+
+אתה יכול גם לעבוד דרך המדריך [אימון גרעין קוונטי](/tutorials/quantum-kernel-training) ואת השיעור [גרעינים קוונטיים](/learning/courses/quantum-machine-learning/quantum-kernel-methods) בקורס למידת מכונה קוונטית ב-IBM Quantum Learning.
+### דרישות {#requirements}
+
+לפני שמתחילים מדריך זה, ודא שיש לך את הדברים הבאים מותקנים:
+- Qiskit SDK v2.0 ומעלה, עם תמיכה ב-[ויזואליזציה](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.37 ומעלה (`pip install qiskit-ibm-runtime`)
+- Qiskit Basis Constructor (`pip install qiskit_basis_constructor`)
+### הגדרה {#setup}
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+from qiskit import QuantumCircuit, generate_preset_pass_manager
+from qiskit.circuit import ParameterVector
+from qiskit.circuit.library import unitary_overlap
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+### הפעלת שערים שבריים ובדיקת שערי בסיס {#enable-fractional-gates-and-check-basis-gates}
+
+כדי להשתמש בשערים שבריים, תוכל להשיג backend התומך בהם על ידי הגדרת אופציה `use_fractional_gates=True`.
+אם ה-backend תומך בשערים שבריים, תראה את `rzz` ו-`rx` רשומים בין שערי הבסיס שלו.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=133
+)  # backend should be a heron device or later
+backend_name = backend.name
+backend_c = service.backend(backend_name)  # w/o fractional gates
+backend_f = service.backend(
+    backend_name, use_fractional_gates=True
+)  # w/ fractional gates
+print(f"Backend: {backend_name}")
+print(f"No fractional gates: {backend_c.basis_gates}")
+print(f"With fractional gates: {backend_f.basis_gates}")
+if "rzz" not in backend_f.basis_gates:
+    print(f"Backend {backend_name} does not support fractional gates")
+```
+
+```text
+Backend: ibm_fez
+No fractional gates: ['cz', 'id', 'rz', 'sx', 'x']
+With fractional gates: ['cz', 'id', 'rx', 'rz', 'rzz', 'sx', 'x']
+```
+
+## זרימת עבודה עם שערים שבריים {#workflow-with-fractional-gates}
+### שלב 1: מיפוי קלטים קלאסיים לבעיה קוונטית {#step-1-map-classical-inputs-to-quantum-problem}
+
+#### מעגל גרעין קוונטי {#quantum-kernel-circuit}
+בחלק זה, אנו בוחנים את מעגל הגרעין הקוונטי באמצעות שערי RZZ כדי להציג את זרימת העבודה עבור שערים שבריים.
+
+אנו מתחילים בבניית מעגל קוונטי לחישוב ערכים בודדים של מטריצת הגרעין.
+זה נעשה על ידי שילוב מעגלי מפת תכונות ZZ עם חפיפה יוניטרית.
+פונקציית הגרעין לוקחת וקטורים במרחב הממופה לתכונות ומחזירה את המכפלה הפנימית שלהם כערך של מטריצת הגרעין:
+$$K(x, y) = \langle \Phi(x) | \Phi(y) \rangle,$$
+כאשר $|\Phi(x)\rangle$ מייצג את המצב הקוונטי הממופה לתכונות.
+
+אנו בונים ידנית מעגל מפת תכונות ZZ באמצעות שערי RZZ.
+למרות ש-Qiskit מספק `zz_feature_map` מובנה, הוא אינו תומך כרגע בשערי RZZ נכון ל-Qiskit v2.0.2 ([ראה בעיה](https://github.com/Qiskit/qiskit/issues/14469)).
+
+לאחר מכן, אנו מחשבים את פונקציית הגרעין עבור קלטים זהים - לדוגמה, $K(x, x) = 1$.
+במחשבים קוונטיים רועשים, ערך זה עשוי להיות פחות מ-1 עקב רעש.
+תוצאה קרובה יותר ל-1 מצביעה על רעש נמוך יותר בביצוע.
+במדריך זה, אנו מתייחסים לערך זה כ-*נאמנות* (fidelity), המוגדרת כ-
+$$\text{fidelity} = K(x, x).$$
+
+```python
+optimization_level = 2
+shots = 2000
+reps = 3
+rng = np.random.default_rng(seed=123)
+```
+
+```python
+def my_zz_feature_map(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    x = ParameterVector("x", num_qubits * reps)
+    qc = QuantumCircuit(num_qubits)
+    qc.h(range(num_qubits))
+    for k in range(reps):
+        K = k * num_qubits
+        for i in range(num_qubits):
+            qc.rz(x[i + K], i)
+        pairs = [(i, i + 1) for i in range(num_qubits - 1)]
+        for i, j in pairs[0::2] + pairs[1::2]:
+            qc.rzz((np.pi - x[i + K]) * (np.pi - x[j + K]), i, j)
+    return qc
+
+def quantum_kernel(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    qc = my_zz_feature_map(num_qubits, reps=reps)
+    inner_product = unitary_overlap(qc, qc, "x", "y", insert_barrier=True)
+    inner_product.measure_all()
+    return inner_product
+
+def random_parameters(inner_product: QuantumCircuit) -> np.ndarray:
+    return np.tile(rng.random(inner_product.num_parameters // 2), 2)
+
+def fidelity(result) -> float:
+    ba = result.data.meas
+    return ba.get_int_counts().get(0, 0) / ba.num_shots
+```
+
+מעגלי גרעין קוונטי וערכי הפרמטרים המתאימים שלהם נוצרים עבור מערכות עם 4 עד 40 qubits, והנאמנות שלהם מוערכת לאחר מכן.
+
+```python
+qubits = list(range(4, 44, 4))
+circuits = [quantum_kernel(i, reps=reps) for i in qubits]
+params = [random_parameters(circ) for circ in circuits]
+```
+
+מעגל ארבעת ה-qubits מוצג להלן.
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b3d6341a-0.avif)
+
+בזרימת העבודה הסטנדרטית של דפוסי Qiskit, ערכי פרמטרים מועברים בדרך כלל ל-Sampler או Estimator primitive כחלק מ-PUB.
+עם זאת, בעת שימוש ב-backend התומך בשערים שבריים, ערכי פרמטרים אלה חייבים להיות מוקצים במפורש למעגל הקוונטי לפני הטרנספילציה.
+
+```python
+b_qc = [
+    circ.assign_parameters(param) for circ, param in zip(circuits, params)
+]
+b_qc[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6c9c1977-0.avif)
+
+### שלב 2: אופטימיזציה של בעיה לביצוע על חומרה קוונטית {#step-2-optimize-problem-for-quantum-hardware-execution}
+לאחר מכן אנו מבצעים טרנספילציה של המעגל באמצעות מנהל המעברים בהתאם לדפוס Qiskit הסטנדרטי.
+על ידי מתן backend התומך בשערים שבריים ל-`generate_preset_pass_manager`, מעבר מיוחד בשם `FoldRzzAngle` נכלל אוטומטית.
+מעבר זה משנה את המעגל כדי לעמוד באילוצי זווית RZZ.
+כתוצאה מכך, שערי RZZ עם ערכים שליליים באיור הקודם הופכים לערכים חיוביים, וכמה שערי X נוספים מתווספים.
+
+```python
+backend_f = service.backend(name=backend_name, use_fractional_gates=True)
+# pm_f includes `FoldRzzAngle` pass
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_f
+)
+```
+
+```python
+t_qc_f = pm_f.run(b_qc)
+print(t_qc_f[0].count_ops())
+t_qc_f[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 35), ('rzz', 18), ('x', 13), ('rx', 9), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a18e5c70-1.avif)
+
+כדי להעריך את ההשפעה של שערים שבריים, אנו מעריכים את מספר השערים הלא-מקומיים (CZ ו-RZZ עבור backend זה),
+יחד עם עומקי המעגלים ומשכי הזמן, ומשווים מדדים אלה לאלה מזרימת עבודה סטנדרטית מאוחר יותר.
+
+```python
+nnl_f = [qc.num_nonlocal_gates() for qc in t_qc_f]
+depth_f = [qc.depth() for qc in t_qc_f]
+duration_f = [
+    qc.estimate_duration(backend_f.target, unit="u") for qc in t_qc_f
+]
+```
+
+### שלב 3: ביצוע באמצעות primitives של Qiskit {#step-3-execute-using-qiskit-primitives}
+אנו מריצים את המעגל המטרנספל עם ה-backend התומך בשערים שבריים.
+
+```python
+sampler_f = SamplerV2(mode=backend_f)
+sampler_f.options.dynamical_decoupling.enable = True
+sampler_f.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_f.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_f.run(t_qc_f, shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bninsi51bc738j97eg
+```
+
+### שלב 4: עיבוד בתר והחזרת תוצאה בפורמט קלאסי רצוי {#step-4-post-process-and-return-result-in-desired-classical-format}
+אתה יכול לקבל את ערך פונקציית הגרעין $K(x, x)$ על ידי מדידת ההסתברות של מחרוזת הביטים אפס-כולה `00...00` בפלט.
+
+```python
+# job = service.job("d1obougt0npc73flhiag")
+result = job.result()
+fidelity_f = [fidelity(result=res) for res in result]
+print(fidelity_f)
+usage_f = job.usage()
+```
+
+```text
+[0.9005, 0.647, 0.3345, 0.355, 0.3315, 0.174, 0.1875, 0.149, 0.1175, 0.085]
+```
+
+## השוואת זרימת עבודה ומעגל ללא שערים שבריים {#comparison-of-workflow-and-circuit-without-fractional-gates}
+
+בחלק זה, אנו מציגים את זרימת העבודה הסטנדרטית של דפוסי Qiskit באמצעות backend שאינו תומך בשערים שבריים.
+על ידי השוואת המעגלים המטרנספלים, תבחין שהגרסה המשתמשת בשערים שבריים (מהחלק הקודם) קומפקטית יותר מזו ללא שערים שבריים.
+
+```python
+# step 1: map classical inputs to quantum problem
+# `circuits` and `params` from the previous section are reused here
+```
+
+```python
+# step 2: optimize circuits
+backend_c = service.backend(backend_name)  # w/o fractional gates
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc_c = pm_c.run(circuits)
+print(t_qc_c[0].count_ops())
+t_qc_c[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 130), ('sx', 80), ('cz', 36), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a10f2d95-1.avif)
+
+```python
+nnl_c = [qc.num_nonlocal_gates() for qc in t_qc_c]
+depth_c = [qc.depth() for qc in t_qc_c]
+duration_c = [
+    qc.estimate_duration(backend_c.target, unit="u") for qc in t_qc_c
+]
+```
+
+```python
+# step 3: execute
+sampler_c = SamplerV2(backend_c)
+sampler_c.options.dynamical_decoupling.enable = True
+sampler_c.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_c.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_c.run(pubs=zip(t_qc_c, params), shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bnirvnmdfs73ae3a2g
+```
+
+```python
+# step 4: post-processing
+# job = service.job("d1obp8j3rr0s73bg4810")
+result = job.result()
+fidelity_c = [fidelity(res) for res in result]
+print(fidelity_c)
+usage_c = job.usage()
+```
+
+```text
+[0.6675, 0.5725, 0.098, 0.102, 0.065, 0.0235, 0.006, 0.0015, 0.0015, 0.002]
+```
+
+## השוואת עומקים ונאמנות {#comparison-of-depths-and-fidelities}
+
+בחלק זה, אנו משווים את מספר השערים הלא-מקומיים ואת הנאמנות בין מעגלים עם ובלי שערים שבריים.
+זה מדגיש את היתרונות הפוטנציאליים של שימוש בשערים שבריים מבחינת יעילות ביצוע ואיכות.
+
+```python
+plt.plot(qubits, depth_c, "-o", label="no fractional gates")
+plt.plot(qubits, depth_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("depth")
+plt.title("Comparison of depths")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bcaac50>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/ef343a53-1.avif)
+
+```python
+plt.plot(qubits, duration_c, "-o", label="no fractional gates")
+plt.plot(qubits, duration_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("duration (µs)")
+plt.title("Comparison of durations")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bdef310>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/98bb2cd0-1.avif)
+
+```python
+plt.plot(qubits, nnl_c, "-o", label="no fractional gates")
+plt.plot(qubits, nnl_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("number of non-local gates")
+plt.title("Comparison of numbers of non-local gates")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12be8ac90>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/1383b242-1.avif)
+
+```python
+plt.plot(qubits, fidelity_c, "-o", label="no fractional gates")
+plt.plot(qubits, fidelity_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("fidelity")
+plt.title("Comparison of fidelities")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bea8290>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/8b4594f5-1.avif)
+
+אנו משווים את זמן השימוש ב-QPU עם ובלי שערים שבריים. התוצאות בתא הבא מראות שזמני השימוש ב-QPU כמעט זהים.
+
+```python
+print(f"no fractional gates: {usage_c} seconds")
+print(f"fractional gates: {usage_f} seconds")
+```
+
+```text
+no fractional gates: 7 seconds
+fractional gates: 7 seconds
+```
+
+## נושא מתקדם: שימוש רק בשערי RX שבריים {#advanced-topic-using-only-fractional-rx-gates}
+
+הצורך בזרימת עבודה מותאמת בעת שימוש בשערים שבריים נובע בעיקר מההגבלה על זוויות שער RZZ.
+עם זאת, אם אתה משתמש רק בשערי RX השבריים ולא כולל את שערי RZZ השבריים, אתה יכול להמשיך לעקוב אחר זרימת העבודה הסטנדרטית של דפוסי Qiskit.
+גישה זו עדיין יכולה להציע יתרונות משמעותיים, במיוחד במעגלים הכוללים מספר רב של שערי RX ושערי U, על ידי הפחתת ספירת השערים הכוללת ושיפור הביצועים באופן פוטנציאלי.
+בחלק זה, אנו מדגימים כיצד לבצע אופטימיזציה למעגלים שלך באמצעות רק שערי RX שבריים, תוך השמטת שערי RZZ.
+
+כדי לתמוך בזה, אנו מספקים פונקציית עזר המאפשרת לך להשבית שער בסיס ספציפי באובייקט Target.
+כאן, אנו משתמשים בה כדי להשבית שערי RZZ.
+
+```python
+from qiskit.circuit.library import n_local
+from qiskit.transpiler import Target
+```
+
+```python
+def remove_instruction_from_target(target: Target, gate_name: str) -> Target:
+    new_target = Target(
+        description=target.description,
+        num_qubits=target.num_qubits,
+        dt=target.dt,
+        granularity=target.granularity,
+        min_length=target.min_length,
+        pulse_alignment=target.pulse_alignment,
+        acquire_alignment=target.acquire_alignment,
+        qubit_properties=target.qubit_properties,
+        concurrent_measurements=target.concurrent_measurements,
+    )
+
+    for name, qarg_map in target.items():
+        if name == gate_name:
+            continue
+        instruction = target.operation_from_name(name)
+        if qarg_map == {None: None}:
+            qarg_map = None
+        new_target.add_instruction(instruction, qarg_map, name=name)
+    return new_target
+```
+
+אנו משתמשים במעגל המורכב משערי U, CZ ו-RZZ כדוגמה.
+
+```python
+qc = n_local(3, "u", "cz", "linear", reps=1)
+qc.rzz(1.1, 0, 1)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6b812497-0.avif)
+
+אנו מבצעים תחילה טרנספילציה של המעגל עבור backend שאינו תומך בשערים שבריים.
+
+```python
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc = pm_c.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 23), ('sx', 16), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/9e8e0709-1.avif)
+
+לאחר מכן, אנו מבצעים טרנספילציה של אותו מעגל באמצעות שערי RX שבריים, תוך השמטת שערי RZZ.
+זה מביא להפחתה קלה בספירת השערים הכוללת, הודות ליישום היעיל יותר של שערי RX.
+
+```python
+backend_f = service.backend(backend_name, use_fractional_gates=True)
+target = remove_instruction_from_target(backend_f.target, "rzz")
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 22), ('sx', 14), ('cz', 4), ('rx', 1)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/db45feb0-1.avif)
+
+### אופטימיזציה של שערי U עם שערי RX שבריים {#optimize-u-gates-with-fractional-rx-gates}
+
+בחלק זה, אנו מדגימים כיצד לבצע אופטימיזציה לשערי U באמצעות שערי RX שבריים, תוך התבססות על אותו מעגל שהוצג בחלק הקודם.
+
+תצטרך להתקין את [חבילת](https://github.com/Qiskit/qiskit-basis-constructor) `qiskit-basis-constructor` לחלק זה.
+זוהי גרסת בטא של פלאגין טרנספילציה חדש עבור Qiskit, אשר עשוי להשתלב ב-Qiskit בעתיד.
+
+```python
+# %pip install qiskit-basis-constructor
+```
+
+```python
+from qiskit.circuit.library import UGate
+from qiskit_basis_constructor import DEFAULT_EQUIVALENCE_LIBRARY
+```
+
+אנו מבצעים טרנספילציה של המעגל באמצעות רק שערי RX שבריים, תוך השמטת שערי RZZ.
+על ידי הצגת כלל פירוק מותאם אישית, כפי שמוצג להלן,
+אנו יכולים להפחית את מספר שערי qubit-יחיד הנדרשים ליישום שער U.
+
+תכונה זו נמצאת כרגע בדיון ב-[בעיה GitHub](https://github.com/Qiskit/qiskit/issues/13455) זו.
+
+```python
+# special decomposition rule for UGate
+x = ParameterVector("x", 3)
+zxz = QuantumCircuit(1)
+zxz.rz(x[2] - np.pi / 2, 0)
+zxz.rx(x[0], 0)
+zxz.rz(x[1] + np.pi / 2, 0)
+DEFAULT_EQUIVALENCE_LIBRARY.add_equivalence(UGate(x[0], x[1], x[2]), zxz)
+```
+
+לאחר מכן, אנו מיישמים את הטרנספיילר באמצעות תרגום `constructor-beta` המסופק על ידי חבילת `qiskit-basis-constructor`.
+כתוצאה מכך, מספר השערים הכולל מצטמצם בהשוואה לטרנספילציה הקודמת.
+
+```python
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+    translation_method="constructor-beta",
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 16), ('rx', 9), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b19aae7c-1.avif)
+
+## פתרון בעיות {#troubleshooting}
+### בעיה: זוויות RZZ לא תקפות עשויות להישאר לאחר טרנספילציה {#issue-invalid-rzz-angles-might-remain-after-transpilation}
+
+נכון ל-Qiskit v2.0.3, ישנן בעיות ידועות בהן שערי RZZ עם זוויות לא תקפות עשויים להישאר במעגלים גם לאחר טרנספילציה.
+הבעיה מתעוררת בדרך כלל בתנאים הבאים.
+#### כשל בעת שימוש באופציה `target` עם `generate_preset_pass_manager` או `transpiler` {#failure-when-using-target-option-with-generate_preset_pass_manager-or-transpiler}
+
+כאשר נעשה שימוש באופציה `target` עם `generate_preset_pass_manager` או `transpiler`, מעבר הטרנספיילר המיוחד `FoldRzzAngle` אינו מופעל.
+כדי להבטיח טיפול נאות בזוויות RZZ עבור שערים שבריים, אנו ממליצים תמיד להשתמש באופציה `backend` במקום.
+ראה [בעיה זו](https://github.com/Qiskit/qiskit/issues/14318) לפרטים נוספים.
+#### כשל כאשר מעגלים מכילים שערים מסוימים {#failure-when-circuits-contain-certain-gates}
+
+אם המעגל שלך כולל שערים מסוימים כגון `XXPlusYYGate`, הטרנספיילר Qiskit עשוי ליצור שערי RZZ עם זוויות לא תקפות.
+אם אתה נתקל בבעיה זו, ראה [בעיה GitHub](https://github.com/Qiskit/qiskit-ibm-runtime/issues/2256#issuecomment-2889487152) זו לפתרון.
+## סקר מדריך {#tutorial-survey}
+
+אנא קח את הסקר הקצר הזה כדי לספק משוב על מדריך זה. התובנות שלך יעזרו לנו לשפר את הצעות התוכן ואת חוויית המשתמש שלנו.
+
+[קישור לסקר](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

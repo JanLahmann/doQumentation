@@ -1,6 +1,6 @@
 /**
  * doQumentation Settings Page
- * 
+ *
  * Allows users to configure a custom Jupyter server for code execution.
  * Useful for:
  * - Connecting to a remote Jupyter server
@@ -10,6 +10,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Layout from '@theme/Layout';
+import Translate, {translate} from '@docusaurus/Translate';
 import {
   detectJupyterConfig,
   saveJupyterConfig,
@@ -213,10 +214,10 @@ export default function JupyterSettings(): JSX.Element {
 
   const handleTest = async () => {
     if (!customUrl) return;
-    
+
     setIsTesting(true);
     setTestResult(null);
-    
+
     const result = await testJupyterConnection(customUrl, customToken);
     setTestResult(result);
     setIsTesting(false);
@@ -227,7 +228,7 @@ export default function JupyterSettings(): JSX.Element {
     setConfig(detectJupyterConfig());
     setTestResult({
       success: true,
-      message: 'Settings saved! Refresh the page to apply.',
+      message: translate({id: 'settings.advanced.saveSuccess', message: 'Settings saved! Refresh the page to apply.'}),
     });
   };
 
@@ -238,7 +239,7 @@ export default function JupyterSettings(): JSX.Element {
     setConfig(detectJupyterConfig());
     setTestResult({
       success: true,
-      message: 'Custom settings cleared. Using auto-detected configuration.',
+      message: translate({id: 'settings.advanced.clearSuccess', message: 'Custom settings cleared. Using auto-detected configuration.'}),
     });
   };
 
@@ -257,7 +258,7 @@ export default function JupyterSettings(): JSX.Element {
     if (!ibmToken) return;
     saveIBMQuantumCredentials(ibmToken, ibmCrn);
     setIbmDaysRemaining(ttlDays);
-    setIbmSaveResult('Credentials saved! They will be auto-injected when the kernel starts.');
+    setIbmSaveResult(translate({id: 'settings.ibm.saveSuccess', message: 'Credentials saved! They will be auto-injected when the kernel starts.'}));
     setIbmExpiredNotice(false);
   };
 
@@ -266,7 +267,7 @@ export default function JupyterSettings(): JSX.Element {
     setIbmToken('');
     setIbmCrn('');
     setIbmDaysRemaining(-1);
-    setIbmSaveResult('Credentials deleted.');
+    setIbmSaveResult(translate({id: 'settings.ibm.deleteSuccess', message: 'Credentials deleted.'}));
     setActiveModeState(null);
     setActiveMode(null);
   };
@@ -307,116 +308,168 @@ export default function JupyterSettings(): JSX.Element {
 
   return (
     <Layout
-      title="doQumentation Settings"
-      description="Configure Jupyter server for code execution"
+      title={translate({id: 'settings.title', message: 'doQumentation Settings'})}
+      description={translate({id: 'settings.description', message: 'Configure Jupyter server for code execution'})}
     >
       <main className="container margin-vert--lg">
         <div className="jupyter-settings">
-          <h1>⚙️ doQumentation Settings</h1>
-          
+          <h1><Translate id="settings.heading">⚙️ doQumentation Settings</Translate></h1>
+
           <p>
-            Configure the Jupyter server used for executing Python code in tutorials.
+            <Translate id="settings.intro">
+              Configure the Jupyter server used for executing Python code in tutorials.
+            </Translate>
           </p>
 
           {/* Current Environment Status */}
           <div className="alert alert--info margin-bottom--md">
-            <strong>Current Environment:</strong>{' '}
+            <strong><Translate id="settings.env.label">Current Environment:</Translate></strong>{' '}
             {config?.environment === 'github-pages' && (
-              <>
-                GitHub Pages - Code execution uses{' '}
-                <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">
-                  Binder
-                </a>{' '}
-                (may take a moment to start)
-              </>
+              <Translate
+                id="settings.env.githubPages"
+                values={{binder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">Binder</a>}}
+              >
+                {'GitHub Pages - Code execution uses {binder} (may take a moment to start)'}
+              </Translate>
             )}
             {config?.environment === 'rasqberry' && (
-              <>
-                RasQberry / Local - Connected to {config.baseUrl}
-              </>
+              <Translate
+                id="settings.env.rasqberry"
+                values={{url: config.baseUrl}}
+              >
+                {'RasQberry / Local - Connected to {url}'}
+              </Translate>
             )}
             {config?.environment === 'custom' && (
-              <>
-                Custom Server - {config.baseUrl}
-              </>
+              <Translate
+                id="settings.env.custom"
+                values={{url: config.baseUrl}}
+              >
+                {'Custom Server - {url}'}
+              </Translate>
             )}
             {config?.environment === 'unknown' && (
-              <>
+              <Translate id="settings.env.unknown">
                 Unknown - Code execution disabled
-              </>
+              </Translate>
             )}
           </div>
 
           {/* IBM Quantum Account */}
-          <h2 id="ibm-quantum">IBM Quantum Account</h2>
+          <h2 id="ibm-quantum"><Translate id="settings.ibm.heading">IBM Quantum Account</Translate></h2>
 
           <div className="alert alert--warning margin-bottom--md">
-            <strong>Security note:</strong> Credentials are stored in your browser's
-            localStorage in plain text. They are not encrypted and can be read by
-            browser extensions or anyone with access to this device. Use the expiry
-            setting below to limit exposure, and delete credentials when you're done.
-            For shared or public computers, prefer the manual <code>save_account()</code>{' '}
-            method described below instead.
+            <Translate
+              id="settings.ibm.securityNote"
+              values={{
+                strong: <strong>{translate({id: 'settings.ibm.securityNoteLabel', message: 'Security note:'})}</strong>,
+                saveAccount: <code>save_account()</code>,
+              }}
+            >
+              {'{strong} Credentials are stored in your browser\'s localStorage in plain text. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
+            </Translate>
           </div>
 
           <p>
-            Enter your IBM Quantum credentials once here. They will be
-            auto-injected via <code>save_account()</code> when the kernel starts,
-            so you don't need to enter them in every notebook.
-            This applies to embedded code execution on this site only
-            &mdash; opening a notebook in JupyterLab requires calling{' '}
-            <code>save_account()</code> manually.
+            <Translate
+              id="settings.ibm.autoInjectDesc"
+              values={{
+                saveAccount: <code>save_account()</code>,
+              }}
+            >
+              {'Enter your IBM Quantum credentials once here. They will be auto-injected via {saveAccount} when the kernel starts, so you don\'t need to enter them in every notebook. This applies to embedded code execution on this site only — opening a notebook in JupyterLab requires calling {saveAccount} manually.'}
+            </Translate>
           </p>
 
           <ol>
-            <li><strong>Register</strong> at{' '}
-              <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">
-                quantum.cloud.ibm.com/registration
-              </a>
-              {' '}— no credit card required for the first 30 days
+            <li>
+              <Translate
+                id="settings.ibm.step1"
+                values={{
+                  strong: <strong><Translate id="settings.ibm.step1.label">Register</Translate></strong>,
+                  link: <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com/registration</a>,
+                }}
+              >
+                {'{strong} at {link} — no credit card required for the first 30 days'}
+              </Translate>
             </li>
-            <li><strong>Sign in</strong> at{' '}
-              <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer">
-                quantum.cloud.ibm.com
-              </a>
+            <li>
+              <Translate
+                id="settings.ibm.step2"
+                values={{
+                  strong: <strong><Translate id="settings.ibm.step2.label">Sign in</Translate></strong>,
+                  link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com</a>,
+                }}
+              >
+                {'{strong} at {link}'}
+              </Translate>
             </li>
-            <li><strong>Instance</strong> — Create a free Open Plan instance at{' '}
-              <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer">
-                Instances
-              </a>
-              {' '}if you don't have one yet
+            <li>
+              <Translate
+                id="settings.ibm.step3"
+                values={{
+                  strong: <strong><Translate id="settings.ibm.step3.label">Instance</Translate></strong>,
+                  link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step3.instances">Instances</Translate></a>,
+                }}
+              >
+                {'{strong} — Create a free Open Plan instance at {link} if you don\'t have one yet'}
+              </Translate>
             </li>
-            <li><strong>API Token</strong> — Click your profile icon (top right), then "API token". Copy the key.</li>
-            <li><strong>CRN</strong> — Copy the CRN string from your{' '}
-              <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer">
-                Instances
-              </a>
-              {' '}page
+            <li>
+              <Translate
+                id="settings.ibm.step4"
+                values={{
+                  strong: <strong><Translate id="settings.ibm.step4.label">API Token</Translate></strong>,
+                }}
+              >
+                {'{strong} — Click your profile icon (top right), then "API token". Copy the key.'}
+              </Translate>
+            </li>
+            <li>
+              <Translate
+                id="settings.ibm.step5"
+                values={{
+                  strong: <strong>CRN</strong>,
+                  link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step5.instances">Instances</Translate></a>,
+                }}
+              >
+                {'{strong} — Copy the CRN string from your {link} page'}
+              </Translate>
             </li>
           </ol>
 
           <p>
-            For detailed steps, see IBM's{' '}
-            <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer">
-              Set up authentication
-            </a>{' '}
-            guide (step 2).
+            <Translate
+              id="settings.ibm.guideLink"
+              values={{
+                link: <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.guideLink.text">Set up authentication</Translate></a>,
+              }}
+            >
+              {'For detailed steps, see IBM\'s {link} guide (step 2).'}
+            </Translate>
           </p>
 
           {ibmExpiredNotice && (
             <div className="alert alert--warning margin-bottom--md">
-              Your IBM Quantum credentials have expired and were deleted.
-              Please re-enter them below.
+              <Translate id="settings.ibm.expiredNotice">
+                Your IBM Quantum credentials have expired and were deleted.
+                Please re-enter them below.
+              </Translate>
             </div>
           )}
 
           {ibmDaysRemaining >= 0 && (
             <div className="alert alert--info margin-bottom--md" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
               <span>
-                Credentials expire in <strong>{ibmDaysRemaining} day{ibmDaysRemaining !== 1 ? 's' : ''}</strong>.
+                <Translate
+                  id="settings.ibm.expiryNotice"
+                  values={{days: <strong>{ibmDaysRemaining} {ibmDaysRemaining !== 1 ? translate({id: 'settings.ibm.days', message: 'days'}) : translate({id: 'settings.ibm.day', message: 'day'})}</strong>}}
+                >
+                  {'Credentials expire in {days}.'}
+                </Translate>
               </span>
               <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                Auto-delete after:{' '}
+                <Translate id="settings.ibm.autoDelete">Auto-delete after:</Translate>{' '}
                 <select
                   value={ttlDays}
                   onChange={(e) => {
@@ -433,9 +486,9 @@ export default function JupyterSettings(): JSX.Element {
                     fontSize: '0.85rem',
                   }}
                 >
-                  <option value={1}>1 day</option>
-                  <option value={3}>3 days</option>
-                  <option value={7}>7 days</option>
+                  <option value={1}>{translate({id: 'settings.ibm.ttl.1day', message: '1 day'})}</option>
+                  <option value={3}>{translate({id: 'settings.ibm.ttl.3days', message: '3 days'})}</option>
+                  <option value={7}>{translate({id: 'settings.ibm.ttl.7days', message: '7 days'})}</option>
                 </select>
               </span>
             </div>
@@ -443,13 +496,13 @@ export default function JupyterSettings(): JSX.Element {
 
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__label" htmlFor="ibm-token">
-              API Token
+              <Translate id="settings.ibm.tokenLabel">API Token</Translate>
             </label>
             <input
               id="ibm-token"
               type="password"
               className="jupyter-settings__input"
-              placeholder="44-character API key"
+              placeholder={translate({id: 'settings.ibm.tokenPlaceholder', message: '44-character API key'})}
               value={ibmToken}
               onChange={(e) => setIbmToken(e.target.value)}
             />
@@ -457,7 +510,7 @@ export default function JupyterSettings(): JSX.Element {
 
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__label" htmlFor="ibm-crn">
-              Cloud Resource Name (CRN) / Instance
+              <Translate id="settings.ibm.crnLabel">Cloud Resource Name (CRN) / Instance</Translate>
             </label>
             <input
               id="ibm-crn"
@@ -475,13 +528,13 @@ export default function JupyterSettings(): JSX.Element {
               onClick={handleIbmSave}
               disabled={!ibmToken}
             >
-              Save Credentials
+              <Translate id="settings.ibm.saveBtn">Save Credentials</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
               onClick={handleIbmDelete}
             >
-              Delete Credentials
+              <Translate id="settings.ibm.deleteBtn">Delete Credentials</Translate>
             </button>
           </div>
 
@@ -492,11 +545,13 @@ export default function JupyterSettings(): JSX.Element {
           )}
 
           <details style={{ marginTop: '1rem' }}>
-            <summary><strong>Alternative: Run save_account() manually in a notebook cell</strong></summary>
+            <summary><strong><Translate id="settings.ibm.manualSummary">Alternative: Run save_account() manually in a notebook cell</Translate></strong></summary>
             <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-              If you prefer not to store credentials in this browser, paste this into any
-              code cell and run it. Credentials are saved in the Binder kernel's temporary
-              storage and lost when the session ends.
+              <Translate id="settings.ibm.manualDesc">
+                If you prefer not to store credentials in this browser, paste this into any
+                code cell and run it. Credentials are saved in the Binder kernel's temporary
+                storage and lost when the session ends.
+              </Translate>
             </p>
             <pre><code>{`from qiskit_ibm_runtime import QiskitRuntimeService
 QiskitRuntimeService.save_account(
@@ -507,19 +562,22 @@ QiskitRuntimeService.save_account(
           </details>
 
           {/* Simulator Mode */}
-          <h2 id="simulator-mode" style={{ marginTop: '2rem' }}>Simulator Mode</h2>
+          <h2 id="simulator-mode" style={{ marginTop: '2rem' }}><Translate id="settings.simulator.heading">Simulator Mode</Translate></h2>
 
           <p>
-            Enable to run notebooks without an IBM Quantum account.
-            All <code>QiskitRuntimeService</code> calls are redirected to a local
-            simulator. No cell modifications needed.
-            This applies to embedded code execution on this site only
-            &mdash; opening a notebook in JupyterLab uses the standard Qiskit runtime.
+            <Translate
+              id="settings.simulator.desc"
+              values={{service: <code>QiskitRuntimeService</code>}}
+            >
+              {'Enable to run notebooks without an IBM Quantum account. All {service} calls are redirected to a local simulator. No cell modifications needed. This applies to embedded code execution on this site only — opening a notebook in JupyterLab uses the standard Qiskit runtime.'}
+            </Translate>
           </p>
 
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-            Transpiled circuits and backend-specific results will differ from real hardware
-            when using simulator mode. Static expected outputs shown on pages reflect real IBM backends.
+            <Translate id="settings.simulator.caveat">
+              Transpiled circuits and backend-specific results will differ from real hardware
+              when using simulator mode. Static expected outputs shown on pages reflect real IBM backends.
+            </Translate>
           </p>
 
           <div className="jupyter-settings__field">
@@ -533,7 +591,9 @@ QiskitRuntimeService.save_account(
                 <span className="jupyter-settings__toggle-thumb" />
               </span>
               <span style={{ marginLeft: '0.5rem' }}>
-                {simEnabled ? 'Simulator mode enabled' : 'Simulator mode disabled'}
+                {simEnabled
+                  ? translate({id: 'settings.simulator.toggleOn', message: 'Simulator mode enabled'})
+                  : translate({id: 'settings.simulator.toggleOff', message: 'Simulator mode disabled'})}
               </span>
             </label>
           </div>
@@ -541,7 +601,7 @@ QiskitRuntimeService.save_account(
           {simEnabled && (
             <>
               <div className="jupyter-settings__field">
-                <label className="jupyter-settings__label">Backend</label>
+                <label className="jupyter-settings__label"><Translate id="settings.simulator.backendLabel">Backend</Translate></label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <input
@@ -552,7 +612,7 @@ QiskitRuntimeService.save_account(
                       onChange={() => handleSimBackendChange('aer')}
                     />
                     <span>
-                      <strong>AerSimulator</strong> — Ideal simulation, no noise. Fast, works for all circuits.
+                      <strong>AerSimulator</strong> — <Translate id="settings.simulator.aerDesc">Ideal simulation, no noise. Fast, works for all circuits.</Translate>
                     </span>
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -564,7 +624,7 @@ QiskitRuntimeService.save_account(
                       onChange={() => handleSimBackendChange('fake')}
                     />
                     <span>
-                      <strong>FakeBackend</strong> — Simulates real IBM device noise. More realistic but slower.
+                      <strong>FakeBackend</strong> — <Translate id="settings.simulator.fakeDesc">Simulates real IBM device noise. More realistic but slower.</Translate>
                     </span>
                   </label>
                 </div>
@@ -573,7 +633,7 @@ QiskitRuntimeService.save_account(
               {simBackend === 'fake' && (
                 <div className="jupyter-settings__field">
                   <label className="jupyter-settings__label" htmlFor="fake-device">
-                    Device
+                    <Translate id="settings.simulator.deviceLabel">Device</Translate>
                   </label>
                   <select
                     id="fake-device"
@@ -592,14 +652,16 @@ QiskitRuntimeService.save_account(
                     ))}
                   </select>
                   <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-                    Device list is updated automatically when you run code.
+                    <Translate id="settings.simulator.deviceHint">Device list is updated automatically when you run code.</Translate>
                   </small>
                 </div>
               )}
 
               <div className="alert alert--info margin-top--md">
-                Changes take effect on the next kernel session. If code is running,
-                click Back then Run to apply.
+                <Translate id="settings.simulator.applyHint">
+                  Changes take effect on the next kernel session. If code is running,
+                  click Back then Run to apply.
+                </Translate>
               </div>
             </>
           )}
@@ -607,10 +669,12 @@ QiskitRuntimeService.save_account(
           {/* Active mode selector when both are configured */}
           {hasBothConfigured && (
             <>
-              <h3 style={{ marginTop: '1.5rem' }}>Active Mode</h3>
+              <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.activeMode.heading">Active Mode</Translate></h3>
               <p>
-                You have both IBM credentials and simulator mode configured.
-                Choose which to use when the kernel starts:
+                <Translate id="settings.activeMode.desc">
+                  You have both IBM credentials and simulator mode configured.
+                  Choose which to use when the kernel starts:
+                </Translate>
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -621,7 +685,7 @@ QiskitRuntimeService.save_account(
                     checked={activeMode === 'credentials'}
                     onChange={() => handleActiveModeChange('credentials')}
                   />
-                  <span>Use IBM credentials (connect to real hardware)</span>
+                  <span><Translate id="settings.activeMode.credentials">Use IBM credentials (connect to real hardware)</Translate></span>
                 </label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
@@ -631,24 +695,33 @@ QiskitRuntimeService.save_account(
                     checked={activeMode === 'simulator'}
                     onChange={() => handleActiveModeChange('simulator')}
                   />
-                  <span>Use simulator (no real hardware access)</span>
+                  <span><Translate id="settings.activeMode.simulator">Use simulator (no real hardware access)</Translate></span>
                 </label>
               </div>
               {!activeMode && (
                 <div className="alert alert--warning margin-top--md">
-                  Please select an active mode. Without a selection, simulator
-                  mode will be used by default and a reminder banner will appear.
+                  <Translate id="settings.activeMode.warning">
+                    Please select an active mode. Without a selection, simulator
+                    mode will be used by default and a reminder banner will appear.
+                  </Translate>
                 </div>
               )}
             </>
           )}
 
           {/* Learning Progress */}
-          <h2 id="learning-progress" style={{ marginTop: '2rem' }}>Learning Progress</h2>
+          <h2 id="learning-progress" style={{ marginTop: '2rem' }}><Translate id="settings.progress.heading">Learning Progress</Translate></h2>
 
           <p>
-            Your reading and execution progress is tracked locally in your browser.
-            Visited pages show a <strong>&#10003;</strong> in the sidebar; executed notebooks show a <strong>&#9654;</strong>.
+            <Translate
+              id="settings.progress.desc"
+              values={{
+                check: <strong>&#10003;</strong>,
+                play: <strong>&#9654;</strong>,
+              }}
+            >
+              {'Your reading and execution progress is tracked locally in your browser. Visited pages show a {check} in the sidebar; executed notebooks show a {play}.'}
+            </Translate>
           </p>
 
           {progressStats && (progressStats.visitedCount > 0 || progressStats.executedCount > 0) ? (
@@ -656,11 +729,11 @@ QiskitRuntimeService.save_account(
               <div className="dq-progress-stats">
                 <div className="dq-progress-stat">
                   <span className="dq-progress-stat__number">{progressStats.visitedCount}</span>
-                  <span className="dq-progress-stat__label">Pages visited</span>
+                  <span className="dq-progress-stat__label"><Translate id="settings.progress.pagesVisited">Pages visited</Translate></span>
                 </div>
                 <div className="dq-progress-stat">
                   <span className="dq-progress-stat__number">{progressStats.executedCount}</span>
-                  <span className="dq-progress-stat__label">Notebooks executed</span>
+                  <span className="dq-progress-stat__label"><Translate id="settings.progress.notebooksExecuted">Notebooks executed</Translate></span>
                 </div>
                 {Object.entries(progressStats.visitedByCategory).map(([cat, count]) => (
                   <div className="dq-progress-stat" key={cat}>
@@ -670,7 +743,7 @@ QiskitRuntimeService.save_account(
                 ))}
               </div>
 
-              <h3>Clear Progress</h3>
+              <h3><Translate id="settings.progress.clearHeading">Clear Progress</Translate></h3>
               <div className="dq-clear-buttons">
                 {Object.keys(progressStats.visitedByCategory).map((cat) => (
                   <button
@@ -685,7 +758,7 @@ QiskitRuntimeService.save_account(
                       setProgressStats(getProgressStats());
                     }}
                   >
-                    Clear {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                    {translate({id: 'settings.progress.clearCategory', message: 'Clear {category}'}, {category: cat.charAt(0).toUpperCase() + cat.slice(1)})}
                   </button>
                 ))}
                 <button
@@ -696,7 +769,7 @@ QiskitRuntimeService.save_account(
                     setProgressStats(getProgressStats());
                   }}
                 >
-                  Clear All Progress
+                  <Translate id="settings.progress.clearAll">Clear All Progress</Translate>
                 </button>
                 <button
                   className="jupyter-settings__button jupyter-settings__button--secondary"
@@ -705,20 +778,22 @@ QiskitRuntimeService.save_account(
                     setProgressStats(getProgressStats());
                   }}
                 >
-                  Clear All Preferences
+                  <Translate id="settings.progress.clearPrefs">Clear All Preferences</Translate>
                 </button>
               </div>
             </>
           ) : (
             <div className="alert alert--info margin-bottom--md">
-              No progress tracked yet. Visit tutorials and guides to start tracking.
+              <Translate id="settings.progress.empty">
+                No progress tracked yet. Visit tutorials and guides to start tracking.
+              </Translate>
             </div>
           )}
 
           {/* Display Preferences */}
-          <h2 id="display" style={{ marginTop: '2rem' }}>Display Preferences</h2>
+          <h2 id="display" style={{ marginTop: '2rem' }}><Translate id="settings.display.heading">Display Preferences</Translate></h2>
 
-          <h3>Code Font Size</h3>
+          <h3><Translate id="settings.display.fontSize.heading">Code Font Size</Translate></h3>
           <div className="dq-font-size-control">
             <button
               onClick={() => {
@@ -730,7 +805,7 @@ QiskitRuntimeService.save_account(
                 }
               }}
               disabled={fontSize <= 10}
-              aria-label="Decrease font size"
+              aria-label={translate({id: 'settings.display.fontSize.decrease', message: 'Decrease font size'})}
             >
               &minus;
             </button>
@@ -745,7 +820,7 @@ QiskitRuntimeService.save_account(
                 }
               }}
               disabled={fontSize >= 22}
-              aria-label="Increase font size"
+              aria-label={translate({id: 'settings.display.fontSize.increase', message: 'Increase font size'})}
             >
               +
             </button>
@@ -754,13 +829,14 @@ QiskitRuntimeService.save_account(
             <code>from qiskit import QuantumCircuit</code>
           </div>
 
-          <h3>Pre-computed Outputs</h3>
+          <h3><Translate id="settings.display.outputs.heading">Pre-computed Outputs</Translate></h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-            Each notebook page shows pre-computed outputs (images, tables, text)
-            from IBM's original runs. When you click <strong>Run</strong> to execute
-            code live, both the original outputs and your new live results are
-            shown side by side. Enable this toggle to hide the original outputs
-            during live execution, keeping only your results visible.
+            <Translate
+              id="settings.display.outputs.desc"
+              values={{run: <strong>Run</strong>}}
+            >
+              {'Each notebook page shows pre-computed outputs (images, tables, text) from IBM\'s original runs. When you click {run} to execute code live, both the original outputs and your new live results are shown side by side. Enable this toggle to hide the original outputs during live execution, keeping only your results visible.'}
+            </Translate>
           </p>
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__toggle">
@@ -777,16 +853,20 @@ QiskitRuntimeService.save_account(
                 <span className="jupyter-settings__toggle-thumb" />
               </span>
               <span style={{ marginLeft: '0.5rem' }}>
-                {hideOutputs ? 'Pre-computed outputs hidden during live execution' : 'Show both pre-computed and live outputs'}
+                {hideOutputs
+                  ? translate({id: 'settings.display.outputs.hidden', message: 'Pre-computed outputs hidden during live execution'})
+                  : translate({id: 'settings.display.outputs.shown', message: 'Show both pre-computed and live outputs'})}
               </span>
             </label>
           </div>
 
-          <h3>Python Warnings</h3>
+          <h3><Translate id="settings.display.warnings.heading">Python Warnings</Translate></h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-            By default, Python warnings (deprecation notices, runtime hints) are
-            suppressed for cleaner notebook output. Disable this to see all warnings
-            &mdash; useful for debugging or learning about API changes.
+            <Translate id="settings.display.warnings.desc">
+              By default, Python warnings (deprecation notices, runtime hints) are
+              suppressed for cleaner notebook output. Disable this to see all warnings
+              — useful for debugging or learning about API changes.
+            </Translate>
           </p>
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__toggle">
@@ -803,7 +883,9 @@ QiskitRuntimeService.save_account(
                 <span className="jupyter-settings__toggle-thumb" />
               </span>
               <span style={{ marginLeft: '0.5rem' }}>
-                {suppressWarnings ? 'Warnings suppressed for cleaner output' : 'All Python warnings shown'}
+                {suppressWarnings
+                  ? translate({id: 'settings.display.warnings.suppressed', message: 'Warnings suppressed for cleaner output'})
+                  : translate({id: 'settings.display.warnings.shown', message: 'All Python warnings shown'})}
               </span>
             </label>
           </div>
@@ -811,8 +893,8 @@ QiskitRuntimeService.save_account(
           {/* Bookmarks */}
           {bookmarkCount > 0 && (
             <>
-              <h3 style={{ marginTop: '1.5rem' }}>Bookmarks</h3>
-              <p>{bookmarkCount} bookmarked page{bookmarkCount !== 1 ? 's' : ''}</p>
+              <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.bookmarks.heading">Bookmarks</Translate></h3>
+              <p>{translate({id: 'settings.bookmarks.count', message: '{count} bookmarked page(s)'}, {count: String(bookmarkCount)})}</p>
               <button
                 className="jupyter-settings__button jupyter-settings__button--secondary"
                 onClick={() => {
@@ -820,13 +902,13 @@ QiskitRuntimeService.save_account(
                   setBookmarkCount(0);
                 }}
               >
-                Clear All Bookmarks
+                <Translate id="settings.bookmarks.clearBtn">Clear All Bookmarks</Translate>
               </button>
             </>
           )}
 
           {/* Other preferences */}
-          <h3 style={{ marginTop: '1.5rem' }}>Other</h3>
+          <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.other.heading">Other</Translate></h3>
           <div className="dq-clear-buttons">
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
@@ -834,7 +916,7 @@ QiskitRuntimeService.save_account(
                 resetOnboarding();
               }}
             >
-              Reset Onboarding Tips
+              <Translate id="settings.other.resetOnboarding">Reset Onboarding Tips</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
@@ -842,7 +924,7 @@ QiskitRuntimeService.save_account(
                 clearRecentPages();
               }}
             >
-              Clear Recent History
+              <Translate id="settings.other.clearRecent">Clear Recent History</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
@@ -850,17 +932,22 @@ QiskitRuntimeService.save_account(
                 clearSidebarCollapseStates();
               }}
             >
-              Reset Sidebar Layout
+              <Translate id="settings.other.resetSidebar">Reset Sidebar Layout</Translate>
             </button>
           </div>
 
           {/* Binder Packages */}
-          <h2 id="binder-packages" style={{ marginTop: '2rem' }}>Binder Packages</h2>
+          <h2 id="binder-packages" style={{ marginTop: '2rem' }}><Translate id="settings.binder.heading">Binder Packages</Translate></h2>
 
           <p>
-            When running on GitHub Pages, code executes via{' '}
-            <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">MyBinder</a>.
-            The Binder environment includes core Qiskit packages pre-installed:
+            <Translate
+              id="settings.binder.desc"
+              values={{
+                mybinder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">MyBinder</a>,
+              }}
+            >
+              {'When running on GitHub Pages, code executes via {mybinder}. The Binder environment includes core Qiskit packages pre-installed:'}
+            </Translate>
           </p>
           <pre>
             <code>{`qiskit[visualization], qiskit-aer,
@@ -869,14 +956,16 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
           </pre>
 
           <p>
-            Some notebooks require additional packages. You can install them
-            on demand by running this in a code cell:
+            <Translate id="settings.binder.installHint">
+              Some notebooks require additional packages. You can install them
+              on demand by running this in a code cell:
+            </Translate>
           </p>
           <pre>
             <code>{`!pip install -q <package>`}</code>
           </pre>
 
-          <p>Or install all optional packages at once:</p>
+          <p><Translate id="settings.binder.installAll">Or install all optional packages at once:</Translate></p>
           <pre>
             <code>{`!pip install -q scipy scikit-learn qiskit-ibm-transpiler \\
   qiskit-experiments plotly sympy qiskit-serverless \\
@@ -887,13 +976,13 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
           </pre>
 
           {/* Advanced: Custom Jupyter Server */}
-          <h2 id="advanced" style={{ marginTop: '2rem' }}>Advanced</h2>
+          <h2 id="advanced" style={{ marginTop: '2rem' }}><Translate id="settings.advanced.heading">Advanced</Translate></h2>
 
-          <h3>Custom Jupyter Server</h3>
+          <h3><Translate id="settings.advanced.serverHeading">Custom Jupyter Server</Translate></h3>
 
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__label" htmlFor="jupyter-url">
-              Jupyter Server URL
+              <Translate id="settings.advanced.urlLabel">Jupyter Server URL</Translate>
             </label>
             <input
               id="jupyter-url"
@@ -904,24 +993,24 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
               onChange={(e) => setCustomUrl(e.target.value)}
             />
             <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-              The base URL of your Jupyter server (e.g., http://localhost:8888)
+              <Translate id="settings.advanced.urlHint">The base URL of your Jupyter server (e.g., http://localhost:8888)</Translate>
             </small>
           </div>
 
           <div className="jupyter-settings__field">
             <label className="jupyter-settings__label" htmlFor="jupyter-token">
-              Authentication Token
+              <Translate id="settings.advanced.tokenLabel">Authentication Token</Translate>
             </label>
             <input
               id="jupyter-token"
               type="password"
               className="jupyter-settings__input"
-              placeholder="(optional)"
+              placeholder={translate({id: 'settings.advanced.tokenPlaceholder', message: '(optional)'})}
               value={customToken}
               onChange={(e) => setCustomToken(e.target.value)}
             />
             <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-              Token from jupyter server --generate-config or displayed at startup
+              <Translate id="settings.advanced.tokenHint">Token from jupyter server --generate-config or displayed at startup</Translate>
             </small>
           </div>
 
@@ -931,26 +1020,28 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
               onClick={handleTest}
               disabled={!customUrl || isTesting}
             >
-              {isTesting ? 'Testing...' : 'Test Connection'}
+              {isTesting
+                ? translate({id: 'settings.advanced.testing', message: 'Testing...'})
+                : translate({id: 'settings.advanced.testBtn', message: 'Test Connection'})}
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--primary"
               onClick={handleSave}
               disabled={!customUrl}
             >
-              Save Settings
+              <Translate id="settings.advanced.saveBtn">Save Settings</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
               onClick={handleUseDefault}
             >
-              Use Default
+              <Translate id="settings.advanced.defaultBtn">Use Default</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
               onClick={handleClear}
             >
-              Clear Custom
+              <Translate id="settings.advanced.clearBtn">Clear Custom</Translate>
             </button>
           </div>
 
@@ -965,45 +1056,53 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
           )}
 
           {/* Setup Help */}
-          <h3 style={{ marginTop: '2rem' }}>Setup Help</h3>
-          
-          <h3>RasQberry Setup</h3>
+          <h3 style={{ marginTop: '2rem' }}><Translate id="settings.help.heading">Setup Help</Translate></h3>
+
+          <h3><Translate id="settings.help.rasqberry.heading">RasQberry Setup</Translate></h3>
           <p>
-            If you're running on a RasQberry Pi, the Jupyter server should be
-            automatically detected. If not, ensure the jupyter-tutorials service is running:
+            <Translate id="settings.help.rasqberry.desc">
+              If you're running on a RasQberry Pi, the Jupyter server should be
+              automatically detected. If not, ensure the jupyter-tutorials service is running:
+            </Translate>
           </p>
           <pre>
             <code>sudo systemctl status jupyter-tutorials</code>
           </pre>
 
-          <h3>Local Jupyter Setup</h3>
-          <p>Start a Jupyter server with CORS enabled:</p>
+          <h3><Translate id="settings.help.local.heading">Local Jupyter Setup</Translate></h3>
+          <p><Translate id="settings.help.local.desc">Start a Jupyter server with CORS enabled:</Translate></p>
           <pre>
             <code>{`jupyter server --ServerApp.token='rasqberry' \\
   --ServerApp.allow_origin='*' \\
   --ServerApp.disable_check_xsrf=True`}</code>
           </pre>
 
-          <h3>Docker Setup</h3>
+          <h3><Translate id="settings.help.docker.heading">Docker Setup</Translate></h3>
           <p>
-            The Docker container generates a random Jupyter token at startup.
-            Code execution through the website (port 8080) works automatically
-            &mdash; no token needed. The token is only required for direct
-            JupyterLab access on port 8888.
+            <Translate id="settings.help.docker.desc">
+              The Docker container generates a random Jupyter token at startup.
+              Code execution through the website (port 8080) works automatically
+              — no token needed. The token is only required for direct
+              JupyterLab access on port 8888.
+            </Translate>
           </p>
-          <p>To retrieve the token from container logs:</p>
+          <p><Translate id="settings.help.docker.retrieveToken">To retrieve the token from container logs:</Translate></p>
           <pre>
             <code>docker compose --profile jupyter logs | grep &quot;Jupyter token&quot;</code>
           </pre>
-          <p>To set a fixed token:</p>
+          <p><Translate id="settings.help.docker.fixedToken">To set a fixed token:</Translate></p>
           <pre>
             <code>JUPYTER_TOKEN=mytoken docker compose --profile jupyter up</code>
           </pre>
 
-          <h3>Remote Server</h3>
+          <h3><Translate id="settings.help.remote.heading">Remote Server</Translate></h3>
           <p>
-            For remote servers, ensure CORS is configured to allow connections from this site.
-            Add the following to your <code>jupyter_server_config.py</code>:
+            <Translate
+              id="settings.help.remote.desc"
+              values={{config: <code>jupyter_server_config.py</code>}}
+            >
+              {'For remote servers, ensure CORS is configured to allow connections from this site. Add the following to your {config}:'}
+            </Translate>
           </p>
           <pre>
             <code>{`c.ServerApp.allow_origin = '*'

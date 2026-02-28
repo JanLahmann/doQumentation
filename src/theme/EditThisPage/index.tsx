@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import OriginalEditThisPage from '@theme-original/EditThisPage';
+import {translate} from '@docusaurus/Translate';
 import {
   isBookmarked,
   addBookmark,
@@ -39,13 +40,19 @@ export default function EditThisPage(props: Props): JSX.Element {
       <button
         className={`dq-bookmark-button${bookmarked ? ' dq-bookmark-button--active' : ''}`}
         onClick={handleToggle}
-        title={bookmarked ? 'Remove bookmark' : 'Bookmark this page'}
-        aria-label={bookmarked ? 'Remove bookmark' : 'Bookmark this page'}
+        title={bookmarked
+          ? translate({id: 'bookmark.remove', message: 'Remove bookmark'})
+          : translate({id: 'bookmark.add', message: 'Bookmark this page'})}
+        aria-label={bookmarked
+          ? translate({id: 'bookmark.remove', message: 'Remove bookmark'})
+          : translate({id: 'bookmark.add', message: 'Bookmark this page'})}
       >
         <span className="dq-bookmark-button__icon" aria-hidden="true">
           {bookmarked ? '\u2605' : '\u2606'}
         </span>
-        {bookmarked ? 'Bookmarked' : 'Bookmark'}
+        {bookmarked
+          ? translate({id: 'bookmark.active', message: 'Bookmarked'})
+          : translate({id: 'bookmark.inactive', message: 'Bookmark'})}
       </button>
     </div>
   );

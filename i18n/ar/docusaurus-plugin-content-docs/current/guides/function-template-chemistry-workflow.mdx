@@ -1,0 +1,1431 @@
+---
+title: "Build a Qiskit Function for chemistry simulation"
+sidebar_label: "Build a Qiskit Function for chemistry simulation"
+description: "Learn how to deploy and execute the chemistry workflow template"
+notebook_path: "docs/guides/function-template-chemistry-workflow.ipynb"
+---
+{/* doqumentation-untranslated-fallback */}
+
+:::note[لم تُترجم بعد]
+هذه الصفحة لم تُترجم بعد. يتم عرض المحتوى باللغة الإنجليزية.
+:::
+
+
+
+<OpenInLabBanner notebookPath="docs/guides/function-template-chemistry-workflow.ipynb" />
+
+
+
+# Deploy and run a template for electronic structure simulation with an implicit solvent model
+
+{/* cspell:ignore pvdz, fcisolver, avas, ncas, nelecas, ecore, chkfile, fcivec, hcore, ncore, myci, sqdvec, myeps, mymethod, mysolvmethod, myavas, mcscf, MCSCF, chkfile, prqs */}
+
+This template, developed in collaboration with the Cleveland Clinic, consists of a workflow to calculate the ground state energy and solvation free energy of a molecule in an implicit solvent [[1]](#references). These simulations are based on the sample-based quantum diagonalization (SQD) method [[2-6]](#references) and the integral equation formalism polarizable continuum model (IEF-PCM) of solvent [[7]](#references).
+
+This guide utilizes the template with a methanol molecule as the solute, the electronic structure of which is simulated explicitly, and water as the solvent, approximated as a continuous dielectric medium. To account for the [electron correlation effects](https://onlinelibrary.wiley.com/doi/epdf/10.1002/ijch.202100111) in methanol, while maintaining the balance between the computational cost and accuracy, we only include the $\sigma$, $\sigma^{*}$, and lone pair orbitals in the active space simulated with SQD IEF-PCM. This orbital selection is done with [atomic valence active space (AVAS) method](https://github.com/pyscf/pyscf.github.io/blob/master/examples/mcscf/43-avas.py) using the C[2s,2p], O[2s,2p], and H[1s] atomic orbital components, which results in the active space of 14 electrons and 12 orbitals (14e,12o). The reference orbitals are calculated with closed-shell Hartree Fock using the cc-pvdz basis set.
+## Workflow introduction
+
+This interactive guide shows how to upload this function template to Qiskit Serverless and run an example workload. The template is structured as a Qiskit pattern with four steps:
+
+#### 1. Collect input and map the problem
+
+This step takes the geometry of the molecule, selected active space, solvation model, LUCJ options, and SQD options as an input. It then produces the PySCF Checkpoint file, which contains the Hartree-Fock (HF) IEF-PCM data. This data will be used in the SQD portion of the workflow. For the LUCJ portion of the workflow, the input section also generates the gas-phase HF data, which is stored internally in PySCF FCIDUMP format.
+
+The information from the HF gas-phase simulation and the definition of the active space are taken as input. Importantly, it also uses the user-defined information from the input section concerning the error suppression, number of shots, circuit transpiler optimization level, and the qubit layout.
+
+It generates one-electron and two-electron integrals within the defined active space. The integrals are then used to perform classical CCSD calculations, which return t2 amplitudes that we use to parametrize the LUCJ circuit.
+
+#### 2. Optimize the circuit
+
+The LUCJ circuit is then transpiled into an ISA circuit for the target hardware. A Sampler primitive is then instantiated with a default set of error mitigation options to manage the execution.
+
+#### 3. Execute the circuit
+
+The LUCJ calculations return the bitstrings for each measurement, where these bitstrings correspond to electron configurations of the studied system. The bitstrings are then used as input for post-processing.
+
+#### 4. Post-process by using SQD
+
+This final step takes the PySCF Checkpoint file containing the HF IEF-PCM information, the bitstrings representing the electron configurations predicted by LUCJ, and the user-defined SQD options selected in the input section as input. As  output, it produces the SQD IEF-PCM total energy of the lowest energy batch and the corresponding solvation free energy.
+### Options
+
+For this template you must specify options for generating the LUCJ circuit, and SQD run parameters.
+
+#### LUCJ options
+
+When the LUCJ quantum circuit is executed, a set of samples that represent the computational basis states from the probability distribution of the molecular system are produced. To balance the depth of the LUCJ circuit and its expressibility, the qubits corresponding to the spin orbitals with the opposite spin have the two-qubit gates applied between them when these qubits are neighbors through a single ancilla qubit. To implement this approach on IBM hardware with a heavy-hex topology, qubits that represent the spin orbitals with the same spin are connected through a line topology where each line takes a zig-zag shape due to the heavy-hex connectivity of the target hardware, while the qubits that represent the spin orbitals with the opposite spin only have a connection at every fourth qubit.
+
+<details>
+<summary> Click for more details on the required options: </summary>
+
+The user has to provide the `initial_layout` array corresponding to the qubits that satisfy this [_zig-zag_ pattern](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k) in the `lucj_options` section of the SQD IEF-PCM function. In case of SQD IEF-PCM (14e,12o)/cc-pvdz simulations of methanol, we chose the initial qubit layout corresponding to the main diagonal of the Eagle R3 QPU. Here, the first 12 elements of the `initial_layout` array `[0, 14, 18, 19, 20, 33, 39, 40, 41, 53, 60, 61, ...]` correspond to the alpha spin orbitals. The last 12 elements `[... 2, 3, 4, 15, 22, 23, 24, 34, 43, 44, 45, 54]` correspond to beta spin orbitals.
+
+Importantly, the user has to determine the `number_of_shots`, which corresponds to the number of measurements in the LUCJ circuit. The number of shots needs to be sufficiently large because the first step of S-CORE procedure relies on the samples in the right particle sector to obtain the initial approximation to the ground-state occupation number distribution.
+
+The number of shots is highly system- and hardware-dependent, but [non-covalent](https://arxiv.org/abs/2410.09209), [fragment-based](https://arxiv.org/abs/2411.09861), and [implicit solvent](https://pubs.acs.org/doi/10.1021/acs.jpcb.5c01030) SQD studies suggest that one can reach the chemical accuracy by following these guidelines:
+
+- 20,000 - 200,000 shots for systems with fewer than 16 molecular orbitals (32 spin orbitals)
+- 200,000 shots for systems with 16 - 18 molecular orbitals
+- 200,000 - 2,000,000 shots for systems with more than 18 molecular orbitals
+
+The required number of shots is affected by the number of spin orbitals in the studied system and by the size of the Hilbert space corresponding to the selected active space within the studied system. Generally, instances with smaller Hilbert spaces require fewer shots. Other available LUCJ options are [circuit transpiler optimization level](https://docs.quantum.ibm.com/guides/set-optimization) and [error suppression options](https://docs.quantum.ibm.com/guides/configure-error-suppression). Note that these options also affect the required number of shots and the resulting accuracy.
+
+</details>
+#### SQD options
+
+Important options in SQD simulations include the `sqd_iterations`, `number_of_batches`, and `samples_per_batch`. Generally, the lower number of samples per batch can be counteracted with more batches (`number_of_batches`) and more iterations of S-CORE (`sqd_iterations`). With more batches we can sample more variations of the configurational subspaces. Since the lowest-energy batch is taken as the solution for the ground state energy of the system, more batches can improve the results through better statistics. Additional iterations of S-CORE allow more configurations to be recovered from the original LUCJ distribution if the number of samples in the correct particle sector is low. This can allow the number of samples per batch to be reduced.
+
+<details>
+<summary> Click for more information about configuring the SQD options:</summary>
+
+An alternative strategy is to use more samples per batch, which ensures that most of the initial LUCJ samples in right particle space are used during the S-CORE procedure, and individual subspaces encapsulate a sufficient variety of electron configurations. In turn, this reduces the number of required S-CORE steps, where only two or three iterations of SQD are needed if the number of samples per batch is large enough. However, more samples per batch results in a higher computational cost of each diagonalization step. Hence, the balance between the accuracy and computational cost in SQD simulations can be achieved by choosing  `sqd_iterations`, `number_of_batches`, and `samples_per_batch` optimally.
+
+The [SQD IEF-PCM study](https://pubs.acs.org/doi/10.1021/acs.jpcb.5c01030) shows that when three iterations of S-CORE are used, the chemical accuracy can be reached by following these guidelines:
+
+- 600 samples per batch in methanol SQD IEF-PCM (14e,12o) simulations
+- 1500 samples per batch in methylamine SQD IEF-PCM (14e,13o) simulations
+- 6000 samples per batch in water SQD IEF-PCM (8e,23o) simulations
+- 16000 samples per batch in ethanol SQD IEF-PCM (20e,18o) simulations
+
+Just like the required number of shots in LUCJ, the required number of samples per batch used in S-CORE procedure is highly system- and hardware-dependent. The examples above can be used to estimate the initial point for the benchmark of required number of samples per batch. The tutorial on systematic benchmark of the required number of samples per batch can be found [here](https://qiskit.github.io/qiskit-addon-sqd/how_tos/choose_subspace_dimension.html).
+
+</details>
+## Deploy and execute the template SQD IEF-PCM function
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q ffsim qiskit-addon-sqd qiskit-serverless solve-solvent
+```
+
+### Authentication
+
+Use `qiskit-ibm-catalog` to authenticate to `QiskitServerless` with your API key (token), which can be found on the [IBM Quantum Platform](https://quantum.cloud.ibm.com) dashboard. This allows for the instantiation of the serverless client to upload or run the selected function:
+
+```python
+from qiskit_ibm_catalog import QiskitServerless
+
+serverless = QiskitServerless(
+    channel="ibm_quantum_platform",
+    instance="INSTANCE_CRN",
+    token="YOUR_API_KEY" # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+)
+```
+
+Optionally, use `save_account()` to save your credentials in a local environment (see the [Set up your IBM Cloud account](/guides/cloud-setup#cloud-save) guide). Note that this writes your credentials to the same file as [`QiskitRuntimeService.save_account()`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/qiskit-runtime-service#save_account):
+
+```python
+QiskitServerless.save_account(token="YOUR_API_KEY", channel="ibm_quantum_platform", instance="INSTANCE_CRN")
+```
+
+If the [account is saved,](/guides/save-credentials) there is no need to provide the token to authenticate:
+
+```python
+from qiskit_ibm_catalog import QiskitServerless
+
+serverless = QiskitServerless()
+```
+
+### Upload the template
+To upload a custom Qiskit Function, you must first instantiate a `QiskitFunction` object that defines the function source code. The title will allow you to identify the function once it's in the remote cluster. The main entry point is the file that contains `if __name__ == "__main__"`. If your workflow requires additional source files, you can define a working directory that will be uploaded together with the entry point.
+
+```python
+from qiskit_ibm_catalog import QiskitFunction
+
+template = QiskitFunction(
+    title="sqd_pcm_template",
+    entrypoint="sqd_pcm_entrypoint.py",
+    working_dir="./source_files/",  # all files in this directory will be uploaded
+    dependencies=[
+        "ffsim==0.0.54",
+        "pyscf==2.9.0",
+        "qiskit_addon_sqd==0.10.0",
+    ],
+)
+print(template)
+```
+
+```text
+QiskitFunction(sqd_pcm_template)
+```
+
+Once the instance is ready, upload it to serverless:
+
+```python
+serverless.upload(template)
+```
+
+```text
+QiskitFunction(sqd_pcm_template)
+```
+
+To check if the program successfully uploaded, use `serverless.list()`:
+
+```python
+serverless.list()
+```
+
+```text
+[QiskitFunction(sqd_pcm_template),
+ QiskitFunction(hamiltonian_simulation_template)]
+```
+
+## Load and run the template remotely
+The function template has been uploaded, so you can run it remotely with Qiskit Serverless. First, load the template by name:
+
+```python
+template = serverless.load("sqd_pcm_template")
+print(template)
+```
+
+```text
+QiskitFunction(sqd_pcm_template)
+```
+
+Next, run the template with the domain-level inputs for SQD-IEF PCM. This example specifies a methanol-based workload.
+
+```python
+molecule = {
+    "atom": """
+    O -0.04559 -0.75076 -0.00000;
+    C -0.04844 0.65398 -0.00000;
+    H 0.85330 -1.05128 -0.00000;
+    H -1.08779 0.98076 -0.00000;
+    H 0.44171 1.06337 0.88811;
+    H 0.44171 1.06337 -0.88811
+    """,  # Must be specified
+    "basis": "cc-pvdz",  # default is "sto-3g"
+    "spin": 0,  # default is 0
+    "charge": 0,  # default is 0
+    "verbosity": 0,  # default is 0
+    "number_of_active_orb": 12,  # Must be specified
+    "number_of_active_alpha_elec": 7,  # Must be specified
+    "number_of_active_beta_elec": 7,  # Must be specified
+    "avas_selection": [
+        "%d O %s" % (k, x) for k in [0] for x in ["2s", "2px", "2py", "2pz"]
+    ]
+    + ["%d C %s" % (k, x) for k in [1] for x in ["2s", "2px", "2py", "2pz"]]
+    + ["%d H 1s" % k for k in [2, 3, 4, 5]],  # default is None
+}
+
+solvent_options = {
+    "method": "IEF-PCM",  # other available methods are COSMO, C-PCM, SS(V)PE, see https://manual.q-chem.com/5.4/topic_pcm-em.html
+    "eps": 78.3553,  # value for water
+}
+
+lucj_options = {
+    "initial_layout": [
+        0,
+        14,
+        18,
+        19,
+        20,
+        33,
+        39,
+        40,
+        41,
+        53,
+        60,
+        61,
+        2,
+        3,
+        4,
+        15,
+        22,
+        23,
+        24,
+        34,
+        43,
+        44,
+        45,
+        54,
+    ],
+    "dynamical_decoupling_choice": True,
+    "twirling_choice": True,
+    "number_of_shots": 200000,
+    "optimization_level": 2,
+}
+
+sqd_options = {
+    "sqd_iterations": 3,
+    "number_of_batches": 10,
+    "samples_per_batch": 1000,
+    "max_davidson_cycles": 200,
+}
+
+backend_name = "ibm_sherbrooke"
+```
+
+```python
+job = template.run(
+    backend_name=backend_name,
+    molecule=molecule,
+    solvent_options=solvent_options,
+    lucj_options=lucj_options,
+    sqd_options=sqd_options,
+)
+print(job.job_id)
+```
+
+```text
+39f8fb70-79b2-43ca-b723-84e6b6135821
+```
+
+Check the detailed status of the job:
+
+```python
+import time
+
+t0 = time.time()
+status = job.status()
+if status == "QUEUED":
+    print(f"time = {time.time()-t0:.2f}, status = QUEUED")
+while True:
+    status = job.status()
+    if status == "QUEUED":
+        continue
+    print(f"time = {time.time()-t0:.2f}, status = {status}")
+    if status == "DONE" or status == "ERROR":
+        break
+```
+
+```text
+time = 2.35, status = DONE
+```
+
+While the job is running, you can fetch logs created from the `logger.info` outputs. These can provide actionable information about the progress of the SQD IEF-PCM workflow. For example, the same spin orbital connections, or the two-qubit depth of the final ISA circuit intended for execution on hardware.
+
+```python
+print(job.logs())
+```
+
+Calling for the job result blocks the rest of the program until a result is available. After the job is done, you can retrieve the results. These include the solvation free energy, as well as information about the lowest energy batch, lowest energy value, and other useful information such as the total solver duration.
+
+```python
+result = job.result()
+
+result
+```
+
+```text
+{'total_energy_hist': array([[-115.14768518, -115.1368396 , -114.19181692, -115.13745429,
+         -115.1445012 , -114.19673326, -115.1547003 , -114.20563866,
+         -115.13748344, -115.14764974],
+        [-115.15768392, -115.15850126, -115.15857275, -115.15770916,
+         -115.15801684, -115.15822125, -115.15833521, -115.15844051,
+         -115.15735538, -115.15862354],
+        [-115.15795148, -115.15847925, -115.15856677, -115.15811156,
+         -115.15815602, -115.15785171, -115.1583672 , -115.1585533 ,
+         -115.15833528, -115.15808791]]),
+ 'spin_squared_value_hist': array([[5.37327508e-03, 1.32981759e-02, 1.36214922e-02, 8.84413615e-03,
+         7.26723578e-03, 1.94875195e-02, 3.03153152e-03, 6.07543106e-03,
+         1.04951849e-02, 5.36529204e-03],
+        [6.39397528e-04, 1.36814350e-04, 9.09054260e-05, 5.99361358e-04,
+         3.64261739e-04, 2.54905866e-04, 2.32540370e-04, 1.53181990e-04,
+         7.23519739e-04, 6.80737671e-05],
+        [4.53776416e-04, 1.63043449e-04, 1.05317263e-04, 3.82912836e-04,
+         3.41047803e-04, 5.18620393e-04, 2.06819142e-04, 1.17086537e-04,
+         2.32357159e-04, 4.26071537e-04]]),
+ 'solvation_free_energy_hist': array([[-0.00725018, -0.00743955, -0.01132905, -0.0073377 , -0.00722221,
+         -0.01136705, -0.00719279, -0.01072829, -0.00733404, -0.00725961],
+        [-0.00719252, -0.00718315, -0.00718074, -0.00719325, -0.00717703,
+         -0.00718391, -0.00718354, -0.00717928, -0.00719887, -0.0071801 ],
+        [-0.00719351, -0.00718255, -0.00718198, -0.00718429, -0.00718349,
+         -0.00718329, -0.0071882 , -0.00718363, -0.00718549, -0.00718814]]),
+ 'occupancy_hist': [[array([0.99712298, 0.99278936, 0.99083163, 0.97328469, 0.98959809,
+          0.98922134, 0.720333  , 0.25683194, 0.01939338, 0.02840332,
+          0.00946988, 0.0327204 ]),
+   array([0.99712298, 0.99278936, 0.99083163, 0.97328469, 0.98959809,
+          0.98922134, 0.720333  , 0.25683194, 0.01939338, 0.02840332,
+          0.00946988, 0.0327204 ])],
+  [array([0.9959042 , 0.9922607 , 0.99018862, 0.99265843, 0.98927447,
+          0.9900833 , 0.99403876, 0.00989025, 0.01120814, 0.01137717,
+          0.01152871, 0.01158725]),
+   array([0.9959042 , 0.9922607 , 0.99018862, 0.99265843, 0.98927447,
+          0.9900833 , 0.99403876, 0.00989025, 0.01120814, 0.01137717,
+          0.01152871, 0.01158725])],
+  [array([0.99590079, 0.99222193, 0.99016753, 0.99265045, 0.98927264,
+          0.99007179, 0.99407207, 0.00986684, 0.01125181, 0.01141439,
+          0.01150733, 0.01160243]),
+   array([0.99590079, 0.99222193, 0.99016753, 0.99265045, 0.98927264,
+          0.99007179, 0.99407207, 0.00986684, 0.01125181, 0.01141439,
+          0.01150733, 0.01160243])]],
+ 'lowest_energy_batch': 2,
+ 'lowest_energy_value': -115.1585667736213,
+ 'solvation_free_energy': -0.007181981952470838,
+ 'sci_solver_total_duration': 493.997501373291,
+ 'metadata': {'resources_usage': {'RUNNING: MAPPING': {'CPU_TIME': 6.080063343048096},
+   'RUNNING: OPTIMIZING_FOR_HARDWARE': {'CPU_TIME': 1.999896764755249},
+   'RUNNING: WAITING_FOR_QPU': {'CPU_TIME': 6.2850868701934814},
+   'RUNNING: EXECUTING_QPU': {'QPU_TIME': 21.639373540878296},
+   'RUNNING: POST_PROCESSING': {'CPU_TIME': 495.40831995010376}},
+  'num_iterations_executed': 3}}
+```
+
+Note that the result metadata includes a resource usage summary that lets you better estimate the QPU and CPU time required for each workload (this example ran on a dummy device, so actual resource usage times might differ).
+After the job completes, the entire logging output will be available.
+
+```python
+print(job.logs())
+```
+
+```text
+2025-06-27 08:42:41,358	INFO job_manager.py:531 -- Runtime env is setting up.
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:45,015: Starting runtime service
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:45,621: Backend: ibm_sherbrooke
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:46,809: Initializing molecule object
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:51,599: Performing CCSD
+Parsing /tmp/ray/session_2025-06-27_08-42-13_898146_1/runtime_resources/working_dir_files/_ray_pkg_4bc93dcc58c04b91/output_sqd_pcm/2025-06-27_08-42-45.fcidump.txt
+Overwritten attributes  get_ovlp get_hcore  of <class 'pyscf.scf.hf_symm.SymAdaptedRHF'>
+/usr/local/lib/python3.11/site-packages/pyscf/gto/mole.py:1293: UserWarning: Function mol.dumps drops attribute energy_nuc because it is not JSON-serializable
+  warnings.warn(msg)
+/usr/local/lib/python3.11/site-packages/pyscf/gto/mole.py:1293: UserWarning: Function mol.dumps drops attribute intor_symmetric because it is not JSON-serializable
+  warnings.warn(msg)
+converged SCF energy = -115.049680672847
+E(CCSD) = -115.1519910037652  E_corr = -0.1023103309180226
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:51,694: Same spin orbital connections: [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10), (10, 11)]
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:51,694: Opposite spin orbital connections: [(0, 0), (4, 4), (8, 8)]
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:53,718: Optimization level: 2, ops: OrderedDict([('rz', 2438), ('sx', 1496), ('ecr', 766), ('x', 185), ('measure', 24), ('barrier', 1)]), depth: 391
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:53,736: Two-qubit gate depth: 94
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:53,737: Submitting sampler job
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:54,273: Job ID: d1f5j3lqbivc73ebqpj0
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:42:54,313: Job Status: QUEUED
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,813: Starting configuration recovery iteration 0
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,841: Batch 0 subspace dimension: 531441
+2025-06-27 08:43:24,844	INFO worker.py:1588 -- Using address 172.17.16.124:6379 set in the environment variable RAY_ADDRESS
+2025-06-27 08:43:24,847	INFO worker.py:1723 -- Connecting to existing Ray cluster at address: 172.17.16.124:6379...
+2025-06-27 08:43:24,876	INFO worker.py:1908 -- Connected to Ray cluster. View the dashboard at [1m[32mhttp://172.17.16.124:8265 [39m[22m
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,945: Batch 1 subspace dimension: 519841
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,950: Batch 2 subspace dimension: 543169
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,955: Batch 3 subspace dimension: 532900
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,960: Batch 4 subspace dimension: 534361
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,964: Batch 5 subspace dimension: 531441
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,969: Batch 6 subspace dimension: 540225
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,974: Batch 7 subspace dimension: 524176
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,979: Batch 8 subspace dimension: 537289
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:43:24,983: Batch 9 subspace dimension: 540225
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:09,006: Lowest energy batch: 6
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:09,007: Lowest energy value: -115.15470029849135
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:09,007: Corresponding g_solv value: -0.0071927910374866375
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:09,007: -----------------------------------
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:09,007: Starting configuration recovery iteration 1
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,564: Batch 0 subspace dimension: 413449
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,572: Batch 1 subspace dimension: 399424
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,578: Batch 2 subspace dimension: 438244
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,583: Batch 3 subspace dimension: 422500
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,589: Batch 4 subspace dimension: 409600
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,596: Batch 5 subspace dimension: 404496
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,601: Batch 6 subspace dimension: 410881
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,605: Batch 7 subspace dimension: 442225
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,611: Batch 8 subspace dimension: 409600
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:48:40,618: Batch 9 subspace dimension: 405769
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:49:54,917: Lowest energy batch: 9
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:49:54,917: Lowest energy value: -115.15862353596414
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:49:54,917: Corresponding g_solv value: -0.0071800982859467006
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:49:54,918: -----------------------------------
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:49:54,918: Starting configuration recovery iteration 2
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,501: Batch 0 subspace dimension: 399424
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,508: Batch 1 subspace dimension: 412164
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,514: Batch 2 subspace dimension: 432964
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,519: Batch 3 subspace dimension: 400689
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,524: Batch 4 subspace dimension: 432964
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,529: Batch 5 subspace dimension: 418609
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,533: Batch 6 subspace dimension: 418609
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,538: Batch 7 subspace dimension: 425104
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,543: Batch 8 subspace dimension: 404496
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:50:25,548: Batch 9 subspace dimension: 429025
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:51:37,900: Lowest energy batch: 2
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:51:37,900: Lowest energy value: -115.1585667736213
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:51:37,901: Corresponding g_solv value: -0.007181981952470838
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:51:37,901: -----------------------------------
+sqd_pcm_entrypoint.run_function:INFO:2025-06-27 08:51:37,901: SCI_solver totally takes: 493.997501373291 seconds
+```
+
+## Next steps
+
+<Admonition type="info" title="Recommendations">
+
+- Review the guide on building a function template for [Hamiltonian simulation](./function-template-hamiltonian-simulation)
+- Check out the source files for this template on [GitHub](https://github.com/qiskit-community/qiskit-function-templates/tree/main/chemistry/sqd_pcm)
+
+</Admonition>
+#### References
+
+[1] Danil Kaliakin, Akhil Shajan, Fangchun Liang, and Kenneth M. Merz Jr. [Implicit Solvent Sample-Based Quantum Diagonalization](https://pubs.acs.org/doi/10.1021/acs.jpcb.5c01030), The Journal of Physical Chemistry B, 2025, DOI: 10.1021/acs.jpcb.5c01030
+
+[2] Javier Robledo-Moreno, et al., [Chemistry Beyond Exact Solutions on a Quantum-Centric Supercomputer](https://arxiv.org/abs/2405.05068), arXiv:2405.05068 [quant-ph].
+
+[3] Jeffery Yu, et al., [Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization](https://arxiv.org/abs/2501.09702), arXiv:2501.09702 [quant-ph].
+
+[4] Keita Kanno, et al., [Quantum-Selected Configuration Interaction: classical diagonalization of Hamiltonians in subspaces selected by quantum computers](https://arxiv.org/abs/2302.11320), arXiv:2302.11320 [quant-ph].
+
+[5] Kenji Sugisaki, et al., [Hamiltonian simulation-based quantum-selected configuration interaction for large-scale electronic structure calculations with a quantum computer](https://arxiv.org/abs/2412.07218), arXiv:2412.07218 [quant-ph].
+
+[6] Mathias Mikkelsen, Yuya O. Nakagawa, [Quantum-selected configuration interaction with time-evolved state](https://arxiv.org/abs/2412.13839), arXiv:2412.13839 [quant-ph].
+
+[7] Herbert, John M. [Dielectric continuum methods for quantum chemistry. WIREs Computational Molecular Science](https://wires.onlinelibrary.wiley.com/doi/10.1002/wcms.1519), 2021, 11, 1759-0876.
+
+[8] Saki, A. A.; Barison, S.; Fuller, B.; Garrison, J. R.; Glick, J. R.; Johnson, C.; Mezzacapo, A.; Robledo-Moreno, J.; Rossmannek, M.; Schweigert, P. et al. Qiskit addon: sample-based quantum diagonalization, 2024; https://github.com/Qiskit/qiskit-addon-sqd
+
+[9] Asun, Q.; Zhang, X.; Banerjee, S.; Bao, P.; Barbry, M.; Blunt, N. S.; Bogdanov, N. A.; Booth, G. H.; Chen, J.; Cui, Z.-H. PySCF: Python-based Simulations of Chemistry Framework, 2025; https://github.com/pyscf/pyscf
+
+[10] Kevin J. Sung; et al., FFSIM: Faster simulations of fermionic quantum circuits, 2024. https://github.com/qiskit-community/ffsim
+
+```python
+%%writefile ./source_files/__init__.py
+```
+
+```python
+%%writefile ./source_files/solve_solvent.py
+
+# This code is part of a Qiskit project.
+#
+# (C) Copyright IBM and Cleveland Clinic 2025
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
+
+"""Functions for the study of fermionic systems."""
+
+from __future__ import annotations
+
+import warnings
+
+import numpy as np
+
+# DSK Add imports needed for CASCI wrapper
+from pyscf import ao2mo, scf, fci
+from pyscf.mcscf import avas, casci
+from pyscf.solvent import pcm
+from pyscf.lib import chkfile, logger
+
+from qiskit_addon_sqd.fermion import (
+    SCIState,
+    bitstring_matrix_to_ci_strs,
+    _check_ci_strs,
+)
+
+# DSK Below is the modified CASCI kernel compatible with SQD.
+# It utilizes the "fci.selected_ci.kernel_fixed_space"
+# as well as enables passing the "batch" and "max_davidson"
+# input arguments from "solve_solvent".
+# The "batch" contains the CI addresses corresponding to subspaces
+# derived from LUCJ and S-CORE calculations.
+# The "max_davidson" controls the maximum number of cycles of Davidson's algorithm.
+
+# pylint: disable = unused-argument
+def kernel(casci_object, mo_coeff=None, ci0=None, verbose=logger.NOTE, envs=None):
+    """CASCI solver compatible with SQD.
+
+    Args:
+        casci_object: CASCI or CASSCF object.
+        In case of SQD, only CASCI instance is currently incorporated.
+
+        mo_coeff : ndarray
+            orbitals to construct active space Hamiltonian.
+            In context of SQD, these are either AVAS mo_coeff
+            or all of the MOs (with option to exclude core MOs).
+
+        ci0 : ndarray or custom types FCI solver initial guess.
+            For SQD the usage of ci0 was not tested.
+
+            For external FCI-like solvers, it can be
+            overloaded different data type. For example, in the state-average
+            FCI solver, ci0 is a list of ndarray. In other solvers such as
+            DMRGCI solver, SHCI solver, ci0 are custom types.
+
+    kwargs:
+        envs: dict
+            In case of SQD this option was not explored,
+            but in principle this can facilitate the incorporation of the external solvers.
+
+            The variable envs is created (for PR 807) to passes MCSCF runtime
+            environment variables to SHCI solver. For solvers which do not
+            need this parameter, a kwargs should be created in kernel method
+            and "envs" pop in kernel function.
+    """
+    if mo_coeff is None:
+        mo_coeff = casci_object.mo_coeff
+    if ci0 is None:
+        ci0 = casci_object.ci
+
+    log = logger.new_logger(casci_object, verbose)
+    t0 = (logger.process_clock(), logger.perf_counter())
+    log.debug("Start CASCI")
+
+    ncas = casci_object.ncas
+    nelecas = casci_object.nelecas
+
+    # The start of SQD version of kernel
+    # DSK add the read of configurations for batch
+    ci_strs_sqd = casci_object.batch
+
+    # DSK add the input for the maximum number of cycles of Davidson's algorithm
+    max_davidson = casci_object.max_davidson
+
+    # DSK add electron up and down count and norb = ncas
+    n_up = nelecas[0]
+    n_dn = nelecas[1]
+    norb = ncas
+
+    # DSK Eigenstate solver info
+    sqd_verbose = verbose
+
+    # DSK ERI read
+    eri_cas = ao2mo.restore(1, casci_object.get_h2eff(), casci_object.ncas)
+    t1 = log.timer("integral transformation to CAS space", *t0)
+
+    # DSK 1e integrals
+    h1eff, energy_core = casci_object.get_h1eff()
+    log.debug("core energy = %.15g", energy_core)
+    t1 = log.timer("effective h1e in CAS space", *t1)
+
+    if h1eff.shape[0] != ncas:
+        raise RuntimeError(
+            "Active space size error. nmo=%d ncore=%d ncas=%d"  # pylint: disable=consider-using-f-string
+            % (mo_coeff.shape[1], casci_object.ncore, ncas)
+        )
+
+    # DSK fcisolver needs to be defined in accordance with SQD
+    # in this software stack it is done in the "solve_solvent" portion of the code.
+    myci = casci_object.fcisolver
+    e_cas, sqdvec = fci.selected_ci.kernel_fixed_space(
+        myci,
+        h1eff,
+        eri_cas,
+        norb,
+        (n_up, n_dn),
+        ci_strs=ci_strs_sqd,
+        verbose=sqd_verbose,
+        max_cycle=max_davidson,
+    )
+
+    # DSK fcivec is the general name for CI vector assigned by PySCF.
+    # Depending on type of solver it is either FCI or SCI vector.
+    # In case of sqd we can call it "sqdvec" for clarity.
+    # Nonetheless, for further processing PySCF expects
+    # this data structure to be called fcivec, regardless of the used solver.
+
+    fcivec = sqdvec
+
+    t1 = log.timer("CI solver", *t1)
+    e_tot = energy_core + e_cas
+
+    # Returns either standard CASCI data or SQD data. Return depends on "sqd_run" True/False.
+    return e_tot, e_cas, fcivec
+
+# Replace standard CASCI kernel with the SQD-compatible CASCI kernel defined above
+casci.kernel = kernel
+
+def solve_solvent(
+    bitstring_matrix: tuple[np.ndarray, np.ndarray] | np.ndarray,
+    /,
+    myeps: float,
+    mysolvmethod: str,
+    myavas: list,
+    num_orbitals: int,
+    *,
+    spin_sq: int | None = None,
+    max_davidson: int = 100,
+    verbose: int | None = 0,
+    checkpoint_file: str,
+) -> tuple[float, SCIState, list[np.ndarray], float]:
+    """Approximate the ground state given molecular integrals and a set of electronic configurations.
+
+    Args:
+        bitstring_matrix: A set of configurations defining the subspace onto which the Hamiltonian
+            will be projected and diagonalized. This is a 2D array of ``bool`` representations of bit
+            values such that each row represents a single bitstring. The spin-up configurations
+            should be specified by column indices in range ``(N, N/2]``, and the spin-down
+            configurations should be specified by column indices in range ``(N/2, 0]``, where ``N``
+            is the number of qubits.
+
+            (DEPRECATED) The configurations may also be specified by a length-2 tuple of sorted 1D
+            arrays containing unsigned integer representations of the determinants. The two lists
+            should represent the spin-up and spin-down orbitals, respectively.
+
+        To build PCM model PySCF needs the structure of the molecule. Hence, the electron integrals
+        (hcore and eri) are not enough to form IEF-PCM simulation. Instead the "start.chk" file is used.
+        This workflow also requires additional information about solute and solvent,
+        which is reflected by additional arguments below
+
+        myeps: Dielectric parameter of the solvent.
+        mysolvmethod: Solvent model, which can be IEF-PCM, COSMO, C-PCM, SS(V)PE,
+               see https://manual.q-chem.com/5.4/topic_pcm-em.html
+               At the moment only IEF-PCM was tested.
+               In principle two other models from PySCF "solvent" module can be used as well,
+               namely SMD and polarizable embedding (PE).
+               The SMD and PE were not tested yet and their usage requires addition of more
+               input arguments for "solve_solvent".
+        myavas: This argument allows user to select active space in solute with AVAS.
+                The corresponding list should include target atomic orbitals.
+                If myavas=None, then active space selected based on number of orbitals
+                derived from ci_strs.
+                It is assumed that if myavas=None, then the target calculation is either
+                a) corresponds to full basis case.
+                b) close to full basis case and only few core orbitals are excluded.
+        num_orbitals: Number of orbitals, which is essential when myavas = None.
+                In AVAS case number of orbitals and electrons is derived by AVAS procedure itself.
+        spin_sq: Target value for the total spin squared for the ground state.
+            If ``None``, no spin will be imposed.
+        max_davidson: The maximum number of cycles of Davidson's algorithm
+        verbose: A verbosity level between 0 and 10
+        checkpoint_file: Name of the checkpoint file
+
+        NOTE: For now open shell functionality is not supported in SQD PCM calculations.
+              Hence, at the moment solve_solvent does not include open_shell as one of the arguments.
+
+    Returns:
+        - Minimum energy from SCI calculation
+        - The SCI ground state
+        - Average occupancy of the alpha and beta orbitals, respectively
+        - Expectation value of spin-squared
+        - Solvation free energy
+
+    """
+    # Unlike the "solve_fermion", the "solve_solvent" utilizes the "checkpoint" file to
+    # get the starting HF information, which means that "solve_solvent" does not accept
+    # "hcore" and "eri" as the input arguments.
+    # Instead "hcore" and "eri" are generated inside of the custom SQD-compatible
+    # CASCI kernel (defined above).
+    # The generation of "hcore" and "eri" is based on the information from "checkpoint" file
+    # as well as "myavas" and "num_orbitals" input arguments.
+
+    # DSK this part handles addresses and is identical to "solve_fermion"
+    if isinstance(bitstring_matrix, tuple):
+        warnings.warn(
+            "Passing the input determinants as integers is deprecated. "
+            "Users should instead pass a bitstring matrix defining the subspace.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        ci_strs = bitstring_matrix
+    else:
+        # This will become the default code path after the deprecation period.
+        ci_strs = bitstring_matrix_to_ci_strs(bitstring_matrix, open_shell=False)
+    ci_strs = _check_ci_strs(ci_strs)
+
+    num_up = format(ci_strs[0][0], "b").count("1")
+    num_dn = format(ci_strs[1][0], "b").count("1")
+
+    # DSK assign verbosity
+    verbose_ci = verbose
+
+    # DSK add information about solute and solvent.
+    # Since PCM model needs the information about the structure of the molecule
+    # one cannot use only FCIDUMP. Instead converged HF data can be passed from "checkpoint" file
+    # along with "mol" object containing the geometry and other information about the solute.
+
+    ############################################
+    # This section is specific to "solve_solvent" and is not present in "solve_fermion".
+    # In case of "solve_fermion" the "eri" and "hcore" are passed directly to
+    # "fci.selected_ci.kernel_fixed_space".
+    # In case of "solve_solvent" the incorporation of the polarizable continuum model
+    # requires utilization of "CASCI.with_solvent"
+    # data object from PySCF, where underlying CASCI.base_kernel has to be replaced
+    # with SQD-compatible version.
+    # Due to these differences in the implementation the "solve_solvent" recovers
+    # the converged mean field results and "molecule" object from "checkpoint" file
+    # (instead of using FCIDUMP),
+    # followed by passing of solute, solvent, and active space information to "CASCI.with_solvent".
+    # This includes the initiation of "mol", "cm", "mf", and "mc" data structures.
+
+    mol = chkfile.load_mol(checkpoint_file)
+
+    # DSK Initiation of the solvent model
+    cm = pcm.PCM(mol)
+    cm.eps = myeps  # solute eps value
+    cm.method = mysolvmethod  # IEF-PCM, COSMO, C-PCM, SS(V)PE,
+    # see https://manual.q-chem.com/5.4/topic_pcm-em.html
+
+    # DSK Read-in converged RHF solution
+    scf_result_dic = chkfile.load(checkpoint_file, "scf")
+    mf = scf.RHF(mol).PCM(cm)
+    mf.__dict__.update(scf_result_dic)
+
+    # Identify the active space based on the user input of AVAS or number of orbitals and electrons
+    if myavas is not None:
+        orbs = myavas
+        avas_obj = avas.AVAS(mf, orbs, with_iao=True)
+        avas_obj.kernel()
+        ncas, nelecas, _, _, _ = (
+            avas_obj.ncas,
+            avas_obj.nelecas,
+            avas_obj.mo_coeff,
+            avas_obj.occ_weights,
+            avas_obj.vir_weights,
+        )
+    else:
+        ncas = num_orbitals
+        nelecas = (num_up, num_dn)
+
+    # Initiate the "CASCI.with_solvent" object
+    mc = casci.CASCI(mf, ncas=ncas, nelecas=nelecas).PCM(cm)
+    # Replace mo_coeff with ones produced by AVAS if AVAS is utilized
+    if myavas is not None:
+        mc.mo_coeff = avas_obj.mo_coeff
+    # Read-in the configuration interaction subspace derived from LUCJ and S-CORE
+    mc.batch = ci_strs
+    # Assign number of maximum Davidson steps
+    mc.max_davidson = max_davidson
+
+    ####### The definition of "fcisolver" object is identical to "solve_fermion" case ########
+    myci = fci.selected_ci.SelectedCI()
+    if spin_sq is not None:
+        myci = fci.addons.fix_spin_(myci, ss=spin_sq)
+    mc.fcisolver = myci
+    mc.verbose = verbose_ci
+    #########################################################################################
+
+    # Initiate the "CASCI.with_solvent" simulation with SQD-compatible based CASCI kernel.
+    mc_result = mc.kernel()
+
+    # Get data out of the "CASCI.with_solvent" object
+    e_sci = mc_result[0]
+    sci_vec = mc_result[2]
+    # Here we get additional output comparing to "solve_fermion",
+    # which is the solvation free energy (G_solv)
+    g_solv = mc.with_solvent.e
+
+    #####################################################
+    # The remainder of the code in solve_solvent is nearly identical to solve_fermion code.
+
+    # However, there are two exceptions in "solve_solvent":
+
+    # 1) The dm2 is currently not computed, but can be included if needed
+    # 2) e_sci is directly output as the result of CASCI.with_solvent object.
+
+    # Hence, the two following lines of code are not present in "solve_solvent"
+    # comparing to the "solve_fermion" code:
+
+    # dm2 = myci.make_rdm2(sci_vec, norb, (num_up, num_dn))
+    # e_sci = np.einsum("pr,pr->", dm1, hcore) + 0.5 * np.einsum("prqs,prqs->", dm2, eri)
+
+    # Calculate the avg occupancy of each orbital
+    dm1 = myci.make_rdm1s(sci_vec, ncas, (num_up, num_dn))
+    avg_occupancy = [np.diagonal(dm1[0]), np.diagonal(dm1[1])]
+
+    # Compute total spin
+    spin_squared = myci.spin_square(sci_vec, ncas, (num_up, num_dn))[0]
+
+    # Convert the PySCF SCIVector to internal format. We access a private field here,
+    # so we assert that we expect the SCIVector output from kernel_fixed_space to
+    # have its _strs field populated with alpha and beta strings.
+    assert isinstance(sci_vec._strs[0], np.ndarray) and isinstance(sci_vec._strs[1], np.ndarray)
+    assert sci_vec.shape == (len(sci_vec._strs[0]), len(sci_vec._strs[1]))
+    sci_state = SCIState(
+        amplitudes=np.array(sci_vec),
+        ci_strs_a=sci_vec._strs[0],
+        ci_strs_b=sci_vec._strs[1],
+    )
+
+    return e_sci, sci_state, avg_occupancy, spin_squared, g_solv
+```
+
+```python
+%%writefile ./source_files/sqc_pcm_entrypoint.py
+
+# This code is part of a Qiskit project.
+#
+# (C) Copyright IBM and Cleveland Clinic 2025
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
+
+"""
+SQD-PCM Function Template source code.
+"""
+from pathlib import Path
+from typing import Any
+from datetime import datetime
+import os
+import sys
+import json
+import logging
+import time
+import traceback
+import numpy as np
+
+import ffsim
+
+from pyscf import gto, scf, mcscf, ao2mo, tools, cc
+from pyscf.lib import chkfile
+from pyscf.mcscf import avas
+from pyscf.solvent import pcm
+
+from qiskit import QuantumCircuit, QuantumRegister
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.primitives import BackendSamplerV2
+
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.fermion import bitstring_matrix_to_ci_strs
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+from qiskit_serverless import get_arguments, save_result, distribute_task, get, update_status, Job
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+from solve_solvent import solve_solvent  # pylint: disable=wrong-import-position
+
+logger = logging.getLogger(__name__)
+
+def run_function(
+    backend_name: str,
+    molecule: dict,
+    solvent_options: dict,
+    sqd_options: dict,
+    lucj_options: dict | None = None,
+    **kwargs,
+) -> dict[str, Any]:
+    """
+    Main entry point for the SQD-PCM (Polarizable Continuum Model) workflow.
+
+    This function encapsulates the end-to-end execution of the algorithm.
+
+    Args:
+        backend_name: Identifier for the target backend, required for all
+            workflows that access IBM Quantum hardware.
+
+        molecule: dictionary with molecule information:
+            - "atom" (str): required field, follows pyscf specification for atomic geometry.
+                For example, for methanol the value would be::
+
+                    '''
+                    O -0.04559 -0.75076 -0.00000;
+                    C -0.04844 0.65398 -0.00000;
+                    H 0.85330 -1.05128 -0.00000;
+                    H -1.08779 0.98076 -0.00000;
+                    H 0.44171 1.06337 0.88811;
+                    H 0.44171 1.06337 -0.88811;
+                    '''
+
+            - "number_of_active_orb" (int): required field
+            - "number_of_active_alpha_elec" (int): required field
+            - "number_of_active_beta_elec" (int): required field
+            - "basis" (str): optional field, default is "sto-3g"
+            - "verbosity" (int): optional field, default is 0
+            - "charge" (int): optional field, default is 0
+            - "spin" (int): optional field, default is 0
+            - "avas_selection" (list[str] | None): optional field, default is None
+
+        solvent_options: dictionary with solvent options information:
+            - "method" (str): required field. Method for computing solvent reaction field
+                for the PCM. Accepted values are: "IEF-PCM", "COSMO",
+                "C-PCM", "SS(V)PE", see https://manual.q-chem.com/5.4/topic_pcm-em.html
+            - "eps" (float): required field. Dielectric constant of the solvent in the PCM.
+
+        sqd_options: dictionary with sqd options information:
+            - "sqd_iterations" (int): required field.
+            - "number_of_batches" (int): required field.
+            - "samples_per_batch" (int): required field.
+            - "max_davidson_cycles" (int): required field.
+
+        lucj_options: optional dictionary with lucj options information:
+            - "optimization_level" (int): optional field, default is 2
+            - "initial_layout" (list[int]): optional field, default is None
+            - "dynamical_decoupling" (bool): optional field, default is True
+            - "twirling" (bool): optional field, default is True
+            - "number_of_shots" (int): optional field, default is 10000
+
+        **kwargs
+            Optional keyword arguments to customize behavior. Existing kwargs include:
+            - "files_name" (str): optional name for output files (enabled for local testing)
+            - "testing_backend" (FakeBackendV2): optional fake backend instance to bypass
+                qiskit runtime service instantiation (enabled for local testing)
+            - "count_dict_file_name" (str): path to a count dict file to bypass primitive
+                execution and jump directly to SQD section (enabled for local testing)
+
+    Returns:
+        The function should return the execution results as a dictionary with string keys.
+        This is to ensure compatibility with ``qiskit_serverless.save_result``.
+    """
+
+    # Preparation Step: Input validation.
+    # Do this at the top of the function definition so it fails early if any required
+    # arguments are missing or invalid.
+
+    # Molecule parsing
+    # Required:
+    geo = molecule["atom"]
+    num_active_orb = molecule["number_of_active_orb"]
+    num_active_alpha = molecule["number_of_active_alpha_elec"]
+    num_active_beta = molecule["number_of_active_beta_elec"]
+    # Optional:
+    input_basis = molecule.get("basis", "sto-3g")
+    input_verbosity = molecule.get("verbosity", 0)
+    input_charge = molecule.get("charge", 0)
+    input_spin = molecule.get("spin", 0)
+    myavas = molecule.get("avas_selection", None)
+
+    # Solvent options parsing
+    myeps = solvent_options["eps"]
+    mymethod = solvent_options["method"]
+
+    # LUCJ options parsing
+    if lucj_options is None:
+        lucj_options = {}
+    opt_level = lucj_options.get("optimization_level", 2)
+    initial_layout = lucj_options.get("initial_layout", None)
+    use_dd = lucj_options.get("dynamical_decoupling", True)
+    use_twirling = lucj_options.get("twirling", True)
+    num_shots = lucj_options.get("number_of_shots", True)
+
+    # SQD options parsing
+    iterations = sqd_options["sqd_iterations"]
+    n_batches = sqd_options["number_of_batches"]
+    samples_per_batch = sqd_options["samples_per_batch"]
+    max_davidson_cycles = sqd_options["max_davidson_cycles"]
+
+    # kwarg parsing (local testing)
+    testing_backend = kwargs.get("testing_backend", None)
+    count_dict_file_name = kwargs.get("count_dict_file_name", None)
+
+    files_name = kwargs.get("files_name", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    output_path = Path.cwd() / "output_sqd_pcm"
+    output_path.mkdir(exist_ok=True)
+    datafiles_name = str(output_path) + "/" + files_name
+
+    # --
+    # Preparation Step: Qiskit Runtime & primitive configuration for
+    # execution on IBM Quantum hardware.
+
+    if testing_backend is None:
+        # Initialize Qiskit Runtime Service
+        logger.info("Starting runtime service")
+        service = QiskitRuntimeService(
+            channel=os.environ["QISKIT_IBM_CHANNEL"],
+            instance=os.environ["IBM_CLOUD_INSTANCE"],
+            token=os.environ["your-API_KEY"], # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+        )
+        backend = service.backend(backend_name)
+        logger.info(f"Backend: {backend.name}")
+
+        # Set up sampler and corresponding options
+        sampler = SamplerV2(backend)
+        sampler.options.dynamical_decoupling.enable = use_dd
+        sampler.options.twirling.enable_measure = False
+        sampler.options.twirling.enable_gates = use_twirling
+        sampler.options.default_shots = num_shots
+    else:
+        backend = testing_backend
+        logger.info(f"Testing backend: {backend.name}")
+
+        # Set up backend sampler.
+        # This doesn't allow running with twirling and dd
+        sampler = BackendSamplerV2(backend=testing_backend)
+
+    # Once the preparation steps are completed, the algorithm can be structured following a
+    # Qiskit Pattern workflow:
+    # https://docs.quantum.ibm.com/guides/intro-to-patterns
+
+    # --
+    # Step 1: Map
+    # In this step, input arguments are used to construct relevant quantum circuits and operators
+
+    start_mapping = time.time()
+    update_status(Job.MAPPING)
+
+    # Initialize the molecule object (pyscf)
+    logger.info("Initializing molecule object")
+    mol = gto.Mole()
+    mol.build(
+        atom=geo,
+        basis=input_basis,
+        verbose=input_verbosity,
+        charge=input_charge,
+        spin=input_spin,
+        symmetry=False,
+    )  # Not tested for symmetry calculations
+
+    cm = pcm.PCM(mol)
+    cm.eps = myeps
+    cm.method = mymethod
+
+    mf = scf.RHF(mol).PCM(cm)
+    # Generation of checkpoint file for the solute and solvent
+    # which will be used reused in all subsequent sections
+    checkpoint_file_name = str(datafiles_name + ".chk")
+    mf.chkfile = checkpoint_file_name
+    mf.kernel()
+
+    # Read-in the information about the molecule
+    mol = chkfile.load_mol(checkpoint_file_name)
+
+    # Read-in RHF data
+    scf_result_dic = chkfile.load(checkpoint_file_name, "scf")
+    mf = scf.RHF(mol)
+    mf.__dict__.update(scf_result_dic)
+
+    # LUCJ uses isolated solute
+    mf.kernel()
+
+    # Initialize orbital selection based on user input
+    if myavas is not None:
+        orbs = myavas
+        avas_out = avas.AVAS(mf, orbs, with_iao=True)
+        avas_out.kernel()
+        ncas, nelecas = (avas_out.ncas, avas_out.nelecas)
+    else:
+        ncas = num_active_orb
+        nelecas = (
+            num_active_alpha,
+            num_active_beta,
+        )
+
+    # LUCJ Step:
+    # Generate active space
+    mc = mcscf.CASCI(mf, ncas=ncas, nelecas=nelecas)
+    if myavas is not None:
+        mc.mo_coeff = avas_out.mo_coeff
+    mc.batch = None
+    # Reliable and most convenient way to do the CCSD on only the active space
+    # is to create the FCIDUMP file and then run the CCSD calculation only on the
+    # orbitals stored in the FCIDUMP file.
+
+    h1e_cas, ecore = mc.get_h1eff()
+    h2e_cas = ao2mo.restore(1, mc.get_h2eff(), mc.ncas)
+
+    fcidump_file_name = str(datafiles_name + ".fcidump.txt")
+    tools.fcidump.from_integrals(
+        fcidump_file_name,
+        h1e_cas,
+        h2e_cas,
+        ncas,
+        nelecas,
+        nuc=ecore,
+        ms=0,
+        orbsym=[1] * ncas,
+    )
+
+    logger.info("Performing CCSD")
+    # Read FCIDUMP and perform CCSD on only active space
+    mf_as = tools.fcidump.to_scf(fcidump_file_name)
+    mf_as.kernel()
+
+    mc_cc = cc.CCSD(mf_as)
+    mc_cc.kernel()
+    mc_cc.t1  # pylint: disable=pointless-statement
+    t2 = mc_cc.t2
+
+    n_reps = 2
+    norb = ncas
+
+    if myavas is not None:
+        nelec = (int(nelecas / 2), int(nelecas / 2))
+    else:
+        nelec = nelecas
+
+    alpha_alpha_indices = [(p, p + 1) for p in range(norb - 1)]
+    alpha_beta_indices = [(p, p) for p in range(0, norb, 4)]
+
+    logger.info(f"Same spin orbital connections: {alpha_alpha_indices}")
+    logger.info(f"Opposite spin orbital connections: {alpha_beta_indices}")
+
+    # Construct LUCJ op
+    ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+        t2, n_reps=n_reps, interaction_pairs=(alpha_alpha_indices, alpha_beta_indices)
+    )
+    # Construct circuit
+    qubits = QuantumRegister(2 * norb, name="q")
+    circuit = QuantumCircuit(qubits)
+    circuit.append(ffsim.qiskit.PrepareHartreeFockJW(norb, nelec), qubits)
+    circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+    circuit.measure_all()
+    end_mapping = time.time()
+
+    # --
+    # Step 2: Optimize
+    # Transpile circuits to match ISA
+
+    start_optimizing = time.time()
+    update_status(Job.OPTIMIZING_HARDWARE)
+
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=opt_level,
+        backend=backend,
+        initial_layout=initial_layout,
+    )
+
+    pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+    transpiled = pass_manager.run(circuit)
+
+    end_optimizing = time.time()
+    logger.info(
+        f"Optimization level: {opt_level}, ops: {transpiled.count_ops()}, depth: {transpiled.depth()}"
+    )
+
+    two_q_depth = transpiled.depth(lambda x: x.operation.num_qubits == 2)
+    logger.info(f"Two-qubit gate depth: {two_q_depth}")
+
+    # --
+    # Step 3: Execute on Hardware
+    # Submit the underlying Sampler job. Note that this is not the
+    # actual function job.
+    if count_dict_file_name is None:
+        # Submit the LUCJ job
+        logger.info("Submitting sampler job")
+        job = sampler.run([transpiled])
+        logger.info(f"Job ID: {job.job_id()}")
+        logger.info(f"Job Status: {job.status()}")
+
+        start_waiting_qpu = time.time()
+        while job.status() == "QUEUED":
+            update_status(Job.WAITING_QPU)
+            time.sleep(5)
+
+        end_waiting_qpu = time.time()
+        update_status(Job.EXECUTING_QPU)
+
+        # Wait until job is complete
+        result = job.result()
+        end_executing_qpu = time.time()
+
+        pub_result = result[0]
+        counts_dict = pub_result.data.meas.get_counts()
+
+        waiting_qpu_time = end_waiting_qpu - start_waiting_qpu
+        executing_qpu_time = end_executing_qpu - end_waiting_qpu
+    else:
+        # read LUCJ samples from count_dict
+        logger.info("Skipping sampler, loading counts dict from file")
+        with open(count_dict_file_name, "r") as file:
+            count_dict_string = file.read().replace("\n", "")
+        counts_dict = json.loads(count_dict_string.replace("'", '"'))
+        waiting_qpu_time = 0
+        executing_qpu_time = 0
+
+    # --
+    # Step 4: Post-process
+
+    start_pp = time.time()
+    update_status(Job.POST_PROCESSING)
+
+    # SQD-PCM section
+    start = time.time()
+
+    # Orbitals, electron, and spin initialization
+    num_orbitals = ncas
+    if myavas is not None:
+        num_elec_a = num_elec_b = int(nelecas / 2)
+    else:
+        num_elec_a, num_elec_b = nelecas
+    spin_sq = input_spin
+
+    # Convert counts into bitstring and probability arrays
+    bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts_dict)
+
+    # We set qiskit_serverless to explicitly reserve 1 cpu per thread, as
+    # the task is CPU-bound and might degrade in performance when sharing
+    # a core at scale (this might not be the case with smaller examples)
+    @distribute_task(target={"cpu": 1})
+    def solve_solvent_parallel(
+        batches,
+        myeps,
+        mysolvmethod,
+        myavas,
+        num_orbitals,
+        spin_sq,
+        max_davidson,
+        checkpoint_file,
+    ):
+        return solve_solvent(  # sqd for pyscf
+            batches,
+            myeps,
+            mysolvmethod,
+            myavas,
+            num_orbitals,
+            spin_sq=spin_sq,
+            max_davidson=max_davidson,
+            checkpoint_file=checkpoint_file,
+        )
+
+    e_hist = np.zeros((iterations, n_batches))  # energy history
+    s_hist = np.zeros((iterations, n_batches))  # spin history
+    g_solv_hist = np.zeros((iterations, n_batches))  # g_solv history
+    occupancy_hist = []
+    avg_occupancy = None
+
+    num_ran_iter = 0
+    for i in range(iterations):
+        logger.info(f"Starting configuration recovery iteration {i}")
+        # On the first iteration, we have no orbital occupancy information from the
+        # solver, so we begin with the full set of noisy configurations.
+        if avg_occupancy is None:
+            bs_mat_tmp = bitstring_matrix_full
+            probs_arr_tmp = probs_arr_full
+
+        # If we have average orbital occupancy information, we use it to refine the full
+        # set of noisy configurations
+        else:
+            bs_mat_tmp, probs_arr_tmp = recover_configurations(
+                bitstring_matrix_full, probs_arr_full, avg_occupancy, num_elec_a, num_elec_b
+            )
+
+        # Create batches of subsamples. We post-select here to remove configurations
+        # with incorrect hamming weight during iteration 0, since no config recovery was performed.
+        batches = postselect_and_subsample(
+            bs_mat_tmp,
+            probs_arr_tmp,
+            hamming_right=num_elec_a,
+            hamming_left=num_elec_b,
+            samples_per_batch=samples_per_batch,
+            num_batches=n_batches,
+        )
+
+        # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
+        e_tmp = np.zeros(n_batches)
+        s_tmp = np.zeros(n_batches)
+        g_solvs_tmp = np.zeros(n_batches)
+        occs_tmp = []
+        coeffs = []
+
+        res1 = []
+        for j in range(n_batches):
+            strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+            logger.info(f"Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+
+            res1.append(
+                solve_solvent_parallel(
+                    batches[j],
+                    myeps,
+                    mymethod,
+                    myavas,
+                    num_orbitals,
+                    spin_sq=spin_sq,
+                    max_davidson=max_davidson_cycles,
+                    checkpoint_file=checkpoint_file_name,
+                )
+            )
+
+        res = get(res1)
+
+        for j in range(n_batches):
+            energy_sci, coeffs_sci, avg_occs, spin, g_solv = res[j]
+            e_tmp[j] = energy_sci
+            s_tmp[j] = spin
+            g_solvs_tmp[j] = g_solv
+            occs_tmp.append(avg_occs)
+            coeffs.append(coeffs_sci)
+
+        # Combine batch results
+        avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+        # Track optimization history
+        e_hist[i, :] = e_tmp
+        s_hist[i, :] = s_tmp
+        g_solv_hist[i, :] = g_solvs_tmp
+        occupancy_hist.append(avg_occupancy)
+
+        lowest_e_batch_index = np.argmin(e_hist[i, :])
+
+        logger.info(f"Lowest energy batch: {lowest_e_batch_index}")
+        logger.info(f"Lowest energy value: {np.min(e_hist[i, :])}")
+        logger.info(f"Corresponding g_solv value: {g_solv_hist[i, lowest_e_batch_index]}")
+        logger.info("-----------------------------------")
+        num_ran_iter += 1
+
+    end_pp = time.time()
+    end = time.time()
+    duration = end - start
+    logger.info(f"SCI_solver totally takes: {duration} seconds")
+
+    metadata = {
+        "resources_usage": {
+            "RUNNING: MAPPING": {
+                "CPU_TIME": end_mapping - start_mapping,
+            },
+            "RUNNING: OPTIMIZING_FOR_HARDWARE": {
+                "CPU_TIME": end_optimizing - start_optimizing,
+            },
+            "RUNNING: WAITING_FOR_QPU": {
+                "CPU_TIME": waiting_qpu_time,
+            },
+            "RUNNING: EXECUTING_QPU": {
+                "QPU_TIME": executing_qpu_time,
+            },
+            "RUNNING: POST_PROCESSING": {
+                "CPU_TIME": end_pp - start_pp,
+            },
+        },
+        "num_iterations_executed": num_ran_iter,
+    }
+
+    output = {
+        "total_energy_hist": e_hist,
+        "spin_squared_value_hist": s_hist,
+        "solvation_free_energy_hist": g_solv_hist,
+        "occupancy_hist": occupancy_hist,
+        "lowest_energy_batch": lowest_e_batch_index,
+        "lowest_energy_value": np.min(e_hist[i, :]),
+        "solvation_free_energy": g_solv_hist[i, lowest_e_batch_index],
+        "sci_solver_total_duration": duration,
+        "metadata": metadata,
+    }
+
+    return output
+
+def set_up_logger(my_logger: logging.Logger, level: int = logging.INFO) -> None:
+    """Logger setup to communicate logs through serverless."""
+
+    log_fmt = "%(module)s.%(funcName)s:%(levelname)s:%(asctime)s: %(message)s"
+    formatter = logging.Formatter(log_fmt)
+
+    # Set propagate to `False` since handlers are to be attached.
+    my_logger.propagate = False
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    my_logger.addHandler(stream_handler)
+    my_logger.setLevel(level)
+
+# This is the section where `run_function` is called, it's boilerplate code and can be used
+# without customization.
+if __name__ == "__main__":
+
+    # Use serverless helper function to extract input arguments,
+    input_args = get_arguments()
+
+    # Allow to configure logging level
+    logging_level = input_args.get("logging_level", logging.INFO)
+    set_up_logger(logger, logging_level)
+
+    try:
+        func_result = run_function(**input_args)
+        # Use serverless function to save the results that
+        # will be returned in the job.
+        save_result(func_result)
+    except Exception:
+        save_result(traceback.format_exc())
+        raise
+
+    sys.exit(0)
+```
+
+```python
+# This cell is hidden from users.  It verifies both source listings are identical then deletes the working folder we created
+import shutil
+
+with open("./source_files/sqd_pcm_entrypoint.py") as f1:
+    with open("./source_files/sqd_pcm_entrypoint.py") as f2:
+        assert f1.read() == f2.read()
+
+with open("./source_files/solve_solvent.py") as f1:
+    with open("./source_files/solve_solvent.py") as f2:
+        assert f1.read() == f2.read()
+
+with open("./source_files/__init__.py") as f1:
+    with open("./source_files/__init__.py") as f2:
+        assert f1.read() == f2.read()
+
+shutil.rmtree("./source_files/")
+```

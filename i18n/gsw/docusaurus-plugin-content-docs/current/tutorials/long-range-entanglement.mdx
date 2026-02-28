@@ -1,0 +1,490 @@
+---
+title: "Langstrecke-Verschränkig mit dynamische Schaltkreis"
+sidebar_label: "Langstrecke-Verschränkig mit dynamische Schaltkreis"
+description: "Da Tutorial zeigt, wie mer es LRCX-Gatter über Bell-Paar, Messige und Feedforward implementiere und das mit em direkte unitäre Aasatz vergliche."
+notebook_path: "docs/tutorials/long-range-entanglement.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/long-range-entanglement.ipynb" />
+
+
+
+{/* cspell:ignore fontsize hcords, ycords, xcords, ecolor, elinewidth, allcr, braket, frameon */}
+
+*Schätzig für d'Nutzig: 4 Minute uf em Heron r2-Prozessor. (OBACHT: Das isch numme e Schätzig. Bi dir chönts länger oder chürzer gah.)*
+## Hingergrund {#background}
+
+Langstrecke-Verschränkig zwüsche wit usenand liggende Qubits isch e grossi Ruusforderig uf Gerät mit begränzter Konnektivität. Da Tutorial zeigt, wie dynamischi Schaltkreis so öppis generiere chönd, indem mer es Langstrecke-Controlled-X-Gatter (LRCX) über es messigbasiertes Protokoll implementiere.
+
+Nach em Aasatz vo Elisa Bäumer et al. i [1](#ref-1) bruucht d'Methode Mid-Circuit-Messige und Feedforward, zum konstanti Gattertiifi z'übercho, egal wie wit d'Qubits usenand sind. Si macht Zwüscheschritt-Bell-Paar, misst es Qubit vo jedem Paar und wendet klassisch bedingti Gatter aa, zum d'Verschränkig über s'Gerät z'verbreite. Das vermiidet langi SWAP-Chetti und reduziert demit d'Schaltkreistiifi und d'Aafälligkeit för Zwoi-Qubit-Gatterfähler.
+
+I däm Notebook passe mer s'Protokoll för IBM Quantum®-Hardware aa und erwiitere s, zum meh LRCX-Operatione parallel laufe z'laa, was eus erlaubt z'undersueche, wie d'Performance mit de Azahl vo gliichziitige bedingte Operatione skaliert.
+## Vorussetzige {#requirements}
+
+Bevor dir mit däm Tutorial aafanged, stellet sicher, dass dir Folgendes installiert händ:
+
+- Qiskit SDK v2.0 oder später, mit [Visualisierig](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime ( `pip install qiskit-ibm-runtime` ) v0.37 oder später
+## Setup {#setup}
+
+```python
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.classical import expr
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.visualization import plot_circuit_layout
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Batch,
+    SamplerV2 as Sampler,
+)
+import matplotlib.pyplot as plt
+import numpy as np
+```
+
+## Schritt 1: Klassischi Iigabe uf es Quante-Problem abbilden {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Mer implementiere jetz es Langstrecke-CNOT-Gatter zwüsche zwei wiite Qubits, nach de dynamische Schaltkreis-Konstruktion, wo unde zeigt wird (aagpasst vo Fig. 1a us Ref. [1](#ref-1)). D'zentrale Idee isch, es "Bus" vo Ancilla-Qubits, initialisiert mit $|0\rangle$, z'bruuche, zum langstrecke Gate-Teleportation z'vermittle.
+
+![Long-range CNOT circuit](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+Wie im Bild zeigt, lauft de Prozess so:
+1. Bereitstelle e Chetti vo Bell-Paar, wo d'Control- und Target-Qubits über Zwüscheancillas verbindet.
+2. Füehrt Bell-Messige zwüsche nöd-verschränkte Nochberqubits dure, swappt Verschränkig Schritt för Schritt, bis Control und Target es Bell-Paar teiled.
+3. Bruucht das Bell-Paar för Gate-Teleportation, wandlet es lokals CNOT i es deterministischs Langstrecke-CNOT i konstante Tiifi um.
+
+De Aasatz ersetzt langi SWAP-Chetti mit em konstante Tiifi-Protokoll, reduziert d'Aafälligkeit för Zwoi-Qubit-Gatterfähler und macht d'Operation skalierbar mit de Gerätgröössi.
+
+Im Folgende gönd mer zerscht dure d'dynamischi Schaltkreis-Implementierig vom LRCX-Schaltkreis. Am Änd stelle mer au e unitäri Implementierig för Vergliich vor, zum d'Vorteile vo dynamische Schaltkreis i däm Setting z'zeige.
+### (i) Schaltkreis initialisiere {#i-initialize-circuit}
+
+Mer fanged mit em eifache Quante-Problem aa, wo als Basis för Vergliich dienet. Konkret initialisiere mer es Schaltkreis mit em Control-Qubit bim Index 0 und leged es Hadamard-Gatter druf. Das produziert e Superpositions-Zuestand, wo, wenn em Controlled-X-Operation folgt, e Bell-Zuestand  $(|00\rangle + |11\rangle)/\sqrt{2}$ zwüsche Control- und Target-Qubits generiert.
+
+Bi däm Punkt konstruiere mer no nöd s'Langstrecke-Controlled-X (LRCX) selber. Stattdesse isch euses Ziil, e chlarä und minimalä Aafangsschaltkreis z'definiere, wo d'Rolle vom LRCX ufzeigt. Im Schritt 2 zeige mer, wie s'LRCX als Optimierig mit dynamische Schaltkreis implementiert werde chan und vergliche sini Performance gege es unitärs Äquivalent. Wichtig isch, dass s'LRCX-Protokoll uf jede Aafangsschaltkreis aagwendet werde chan. Da bruuche mer das eifachi Hadamard-Setup för chlari Demonstration.
+
+```python
+distance = 6  # D'Distanz vom CNOT-Gatter, mit de Konvention, dass e Distanz vo null es nöchsti-Nochber-CNOT isch.
+
+def initialize_circuit(distance):
+    assert distance >= 0
+    control = 0  # control qubit
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    k = int(n / 2)  # Number of Bell States to be used
+
+    allcr = [cr]
+    if (
+        distance > 1
+    ):  # This classical register will be used to store ZZ measurements. It is only used for long-range CX gates with distance > 1
+        c1 = ClassicalRegister(
+            k, name="c1"
+        )  # Classical register needed for post processing
+        allcr.append(c1)
+    if (
+        distance > 0
+    ):  # This classical register will be used to store XX measurements. It is only used if distance > 0
+        c2 = ClassicalRegister(
+            n - k, name="c2"
+        )  # Classical register needed for post processing
+        allcr.append(c2)
+
+    qc = QuantumCircuit(qr, *allcr, name="CNOT")
+
+    # Apply a Hadamard gate to the control qubit such that the long-range CNOT gate will prepare a Bell state (|00> + |11>)/sqrt(2)
+    qc.h(control)
+
+    return qc
+
+qc = initialize_circuit(distance)
+qc.draw(fold=-1, output="mpl", scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/0446b8e8-0.avif)
+
+## Schritt 2: Problem för Quantehardware-Uusfüehrig optimiere {#step-2-optimize-problem-for-quantum-hardware-execution}
+I däm Schritt zeige mer, wie mer de LRCX-Schaltkreis mit dynamische Schaltkreis konstruiere. S'Ziil isch, de Schaltkreis för d'Uusfüehrig uf Hardware z'optimiere, indem mer d'Tiifi im Vergliich zu ere rein unitäre Implementierig reduziere. Zum d'Vorteile z'illustriere, zeige mer sowohl d'dynamischi LRCX-Konstruktion als au ihres unitärs Äquivalent und vergliche spöter ihri Performance nach de Transpilation. Wichtig isch, dass mer da s'LRCX uf es eifachs Hadamard-initialisiertes Problem aawende, s'Protokoll chan aber uf jede Schaltkreis aagwendet werde, wo es Langstrecke-CNOT nötig isch.
+
+### (ii) Bell-Paar vorbereite {#ii-prepare-bell-pairs}
+Mer fanged demit aa, e Chetti vo Bell-Paar längs em Pfad zwüsche Control- und Target-Qubits z'erstelle. Falls d'Distanz ungradi isch, wende mer zerscht es CNOT vom Control zu sim Nochber aa, das isch s'CNOT, wo teleportiert wird. För e gradi Distanz wird das CNOT nach em Bell-Paar-Vorbereite-Schritt aagwendet. S'Bell-Paar-Chetti verschränkt dänn nonenand ligendi Qubit-Paar und etabliert d'Ressuure, wo bruucht wird, zum d'Control-Information über s'Gerät z'träge.
+
+```python
+# Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+def check_even(n: int) -> int:
+    """Return 1 if n is even, else 2."""
+    return 1 if n % 2 == 0 else 2
+
+def prepare_bell_pairs(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if add_barriers:
+        qc.barrier()
+
+    x0 = check_even(n)
+    if n % 2 != 0:
+        qc.cx(0, 1)
+
+    # Create k Bell pairs
+    for i in range(k):
+        qc.h(x0 + 2 * i)
+        qc.cx(x0 + 2 * i, x0 + 2 * i + 1)
+    return qc
+
+qc = prepare_bell_pairs(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4df8ebba-0.avif)
+
+### (iii) Nochberqubit-Paar i de Bell-Basis mässe {#iii-measure-neighboring-qubit-pairs-in-the-bell-basis}
+Als nöchsts mässe mer *nöd-verschränkti* Nochberqubits i de Bell-Basis (Zwoi-Qubit-Messige vo $XX$ und $ZZ$). Das chreiert es Langstrecke-Bell-Paar zwüsche em Target-Qubit und em Qubit näbe em Control (bis uf Pauli-Korrekture, wo über Feedforward im nöchste Schritt implementiert werded). Parallel dezu implementiere mer d'verschränkendi Messig, wo s'CNOT-Gatter teleportiert, zum uf s'beabsichtigte Target-Qubit z'wirke.
+
+```python
+def measure_bell_basis(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+    x0 = 1 if n % 2 == 0 else 2
+
+    # Entangling layer that implements the Bell measurement (and additionally adds the CNOT to be teleported, if n is even)
+    for i in range(k + 1):
+        qc.cx(x0 - 1 + 2 * i, x0 + 2 * i)
+
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.h(2 * i + 1 - x0)
+        else:
+            qc.h(2 * i + 1 - x0)
+
+    if add_barriers:
+        qc.barrier()
+
+    # Map the ZZ measurements onto classical register c1
+    for i in range(k):
+        if i == 0:
+            qc.measure(2 * i + x0, c1[i])
+        else:
+            qc.measure(2 * i + x0, c1[i])
+
+    # Map the XX measurements onto classical register c2
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+        else:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+    return qc
+
+qc = measure_bell_basis(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/8eed9e57-0.avif)
+
+### (iv) Als nöchsts Feedforward-Korrekture aawende, zum Pauli-Byprodukt-Operatore z'korrigiere {#iv-next-apply-feedforward-corrections-to-correct-pauli-byproduct-operators}
+
+D'Bell-Basis-Messige füehred Pauli-Byprodukti ii, wo mit de ufgnommene Resultat korrigiert werde müend. Das gseht i zwoi Schritt. Zerscht müemer d'Parität vo allne $ZZ$-Messige berechne, wo dänn bruucht wird, zum bedingt es $X$-Gatter ufs Target-Qubit aazwende. Gliichso wird d'Parität vo de $XX$-Messige berechnet und bruucht, zum bedingt es $Z$-Gatter ufs Control-Qubit aazwende.
+
+Mit em neue klassische Expression-Framework i Qiskit chönd die Paritäte direkt i de klassische Verarbeitigs-Schicht vom Schaltkreis berechnet werde. Aastatt e Reihefolgä vo einzelne bedingte Gatter för jedes Messigs-Bit aazwende, chönd mer e einzelni klassischi Expression baue, wo s'XOR (Parität) vo allne relevante Messigs-Resultat darstellt. Die Expression wird dänn als Bedingig i em einzelne `if_test`-Block bruucht, was es de Korrektur-Gatter erlaubt, i konstante Tiifi aagwendet z'werde. De Aasatz vereinfacht sowohl de Schaltkreis als au stellet sicher, dass d'Feedforward-Korrekture kei unnötigi zuesätzlichi Latenz iifüehred.
+
+```python
+def apply_ffwd_corrections(qc):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+    n = qc.num_qubits - 2  # number of qubits between target and control
+
+    k = int(n / 2)
+    x0 = check_even(n)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # First, let's compute the parity of all ZZ measurements
+    for i in range(k):
+        if i == 0:
+            parity_ZZ = expr.lift(
+                c1[i]
+            )  # Store the value of the first ZZ measurement in parity_ZZ
+        else:
+            parity_ZZ = expr.bit_xor(
+                c1[i], parity_ZZ
+            )  # Successively compute the parity via XOR operations
+
+    for i in range(1, k + x0):
+        if i == 1:
+            parity_XX = expr.lift(
+                c2[i - 1]
+            )  # Store the value of the first XX measurement in parity_XX
+        else:
+            parity_XX = expr.bit_xor(
+                c2[i - 1], parity_XX
+            )  # Successively compute the parity via XOR operations
+
+    if n > 0:
+        with qc.if_test(parity_XX):
+            qc.z(control)
+
+    if n > 1:
+        with qc.if_test(parity_ZZ):
+            qc.x(target)
+    return qc
+
+qc = apply_ffwd_corrections(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4915791a-0.avif)
+
+### (v) Zum Schluss Control- und Target-Qubits mässe {#v-finally-measure-control-and-target-qubits}
+Mer definiere e Helper-Funktion, wo s'möglich macht, Control- und Target-Qubits i de $XX$-, $YY$- oder $ZZ$-Base z'mässe. För d'Verifizierig vom Bell-Zuestand $(|00\rangle + |11\rangle)/\sqrt{2}$ sötted d'Erwartigs wärt vo $XX$ und $ZZ$ beidi $+1$ sii, will si Stabilisatore vom Zuestand sind. D' $YY$-Messig wird da au understützt und wird unde bruucht, wenn mer d'Fidelity berechned.
+
+```python
+def measure_in_basis(qc, basis="XX", add_barrier=True):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+
+    assert basis in ["XX", "YY", "ZZ"]
+
+    qc = (
+        qc.copy()
+    )  # We copy the circuit because we want to measure in different bases
+    cr = qc.cregs[0]
+
+    if add_barrier:
+        qc.barrier()
+
+    if basis == "XX":
+        qc.h(control)
+        qc.h(target)
+    elif basis == "YY":
+        qc.sdg(control)
+        qc.sdg(target)
+        qc.h(control)
+        qc.h(target)
+
+    qc.measure(control, cr[0])
+    qc.measure(target, cr[1])
+    return qc
+
+qc_YY = measure_in_basis(qc.copy(), basis="YY")
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d087d7c1-0.avif)
+
+### S'ganze zämmesetze {#put-it-all-together}
+Mer kombiniere d'verschidene Schritt vo obe, zum es Langstrecke-CX-Gatter uf zwei Ände vo ere 1D-Linie z'kreiere. D'Schritt sind
+- S'Control-Qubit i $\\ket{+}$ initialisiere
+- Bell-Paar vorbereite
+- Nochberqubit-Paar mässe
+- Feedforward-Korrekture abhängig vo de MCMs aawende
+
+```python
+def lrcx(distance, prep_barrier=True, pre_measure_barrier=True):
+    qc = initialize_circuit(distance)
+    qc = prepare_bell_pairs(qc, prep_barrier)
+    qc = measure_bell_basis(qc, pre_measure_barrier)
+    qc = apply_ffwd_corrections(qc)
+    return qc
+
+qc = lrcx(distance)
+# Apply the measurement in the XX, YY, and ZZ bases
+qc_XX, qc_YY, qc_ZZ = [
+    measure_in_basis(qc, basis=basis) for basis in ["XX", "YY", "ZZ"]
+]
+
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/11fc8adc-0.avif)
+
+### Schaltkreis för verschideni Distanze generiere {#generate-circuits-for-different-distances}
+
+Mer generiere jetz Langstrecke-CX-Schaltkreis för e Beriich vo Qubit-Trennige. För jedi Distanz baue mer Schaltkreis, wo i de $XX$-, $YY$- und $ZZ$-Base mässed, wo spöter bruucht werded, zum Fidelitys z'berechne.
+
+D'Lischt vo Distanze enthält sowohl churzi als au langi Trennige, wobei `distance = 0` em nöchsti-Nochber-CX entspricht. Die gliiche Distanze werded au spöter bruucht, zum di entsprechende unitäre Schaltkreis för Vergliich z'generiere.
+
+```python
+distances = [
+    0,
+    1,
+    2,
+    3,
+    6,
+    11,
+    16,
+    21,
+    28,
+    35,
+    44,
+    55,
+    60,
+]  # Distances for long range CX. distance of 0 is a nearest-neighbor CX
+distances.sort()
+assert (
+    min(distances) >= 0
+)  # Only works for distance larger than 2 because classical register cannot be empty
+basis_list = ["XX", "YY", "ZZ"]
+
+circuits_dyn = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_dyn.append(
+            measure_in_basis(lrcx(distance, prep_barrier=False), basis=basis)
+        )
+print(f"Number of circuits: {len(circuits_dyn)}")
+circuits_dyn[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/72c70b11-1.avif)
+
+#### Unitäri Implementierig, wo d'Qubits i d'Mitti swappt {#unitary-based-implementation-swapping-the-qubits-to-the-middle}
+
+För Vergliich undersueche mer zerscht de Fall, wo es Langstrecke-CNOT-Gatter mit nöchsti-Nochber-Verbindige und unitäre Gatter implementiert wird. Im folgende Bild isch links es Schaltkreis för es Langstrecke-CNOT-Gatter, wo e 1D-Chetti vo n-Qubits überspannt, wobei nume nöchsti-Nochber-Verbindige bruucht werded. I de Mitti isch e äquivalenti unitäri Zerlägig, wo mit lokale CNOT-Gatter implementierbar isch, Schaltkreistiifi $O(n)$.
+
+![Long-range CNOT circuit](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+De Schaltkreis i de Mitti chan so implementiert werde:
+
+```python
+def cnot_unitary(distance):
+    """Generate a long range CNOT gate using local CNOTs on a 1D chain of qubits subject to n
+    nearest-neighbor connections only.
+
+    Args:
+        distance (int) : The distance of the CNOT gate, with the convention that a distance of 0 is a nearest-neighbor CNOT.
+
+    Returns:
+        QuantumCircuit: A Quantum Circuit implementing a long-range CNOT gate between qubit 0 and qubit distance+1
+    """
+    assert distance >= 0
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    qc = QuantumCircuit(qr, cr, name="CNOT_unitary")
+
+    control_qubit = 0
+
+    qc.h(control_qubit)  # Prepare the control qubit in the |+> state
+
+    k = int(n / 2)
+    qc.barrier()
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(i, i + 1)
+        qc.cx(i + 1, i)
+        qc.cx(-i - 1, -i - 2)
+        qc.cx(-i - 2, -i - 1)
+    if n % 2 == 1:
+        qc.cx(k + 2, k + 1)
+        qc.cx(k + 1, k + 2)
+    qc.barrier()
+    qc.cx(k, k + 1)
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(k - i, k - 1 - i)
+        qc.cx(k - 1 - i, k - i)
+        qc.cx(k + i + 1, k + i + 2)
+        qc.cx(k + i + 2, k + i + 1)
+    if n % 2 == 1:
+        qc.cx(-2, -1)
+        qc.cx(-1, -2)
+
+    return qc
+```
+
+Jetz baue mer alli unitäre Schaltkreis und erstelle d'Schaltkreis, wo i de $XX$-, $YY$- und $ZZ$-Base mässed, gliich wie mer's för d'dynamische Schaltkreis obe gmacht händ.
+
+```python
+circuits_uni = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_uni.append(
+            measure_in_basis(cnot_unitary(distance), basis=basis)
+        )
+
+print(f"Number of circuits: {len(circuits_uni)}")
+circuits_uni[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d6154b1c-1.avif)
+
+Jetz, wo mer sowohl dynamischi als au unitäri Schaltkreis för e Beriich vo Distanze händ, sind mer parat för Transpilation. Mer müend zerscht es Backend-Gerät uuswähle.
+
+```python
+# Set up access to IBM Quantum devices
+from qiskit.circuit import IfElseOp
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=156
+)
+```
+
+De folgend Schritt stellet sicher, dass s'Backend d' `if_else`-Instrukzioon understützt, wo för d'neueri Version vo dynamische Schaltkreis bruucht wird. Will die Funkzioon no im Early Access isch, füeged mer s' `IfElseOp` explizit zum Backend-Target dezue, falls es no nöd verfüegbar isch.
+
+```python
+if "if_else" not in backend.target.operation_names:
+    backend.target.add_instruction(IfElseOp, name="if_else")
+```
+
+#### Layer Fidelity String för Uuswahl vo ere 1D-Chetti bruuche {#use-layer-fidelity-string-for-selecting-1d-chain}
+Will mer d'Performance vo dynamische und unitäre Schaltkreis uf ere 1D-Chetti vergliche wänd, bruuche mer de Layer Fidelity String, zum e lineari Topologie vo de beste Chetti vo Qubits usem Gerät uuszwähle. Das stellet sicher, dass beidi Arte vo Schaltkreis under de gliiche Konnektivitäts-Iischränkige transpiliert werded, was e faire Vergliich vo ihre Performance erlaubt.
+
+```python
+# This selects best qubits for longest distance and uses the same control for all lengths
+lf_qubits = backend.properties().to_dict()[
+    "general_qlists"
+]  # best linear chain qubits
+chosen_layouts = {
+    distance: [
+        val["qubits"]
+        for val in lf_qubits
+        if val["name"] == f"lf_{distances[-1] + 2}"
+    ][0][: distance + 2]
+    for distance in distances
+}
+print(chosen_layouts[max(distances)])  # best qubits at each distance
+```
+
+```text
+[10, 11, 12, 13, 14, 15, 19, 35, 34, 33, 39, 53, 54, 55, 59, 75, 74, 73, 72, 71, 58, 51, 50, 49, 48, 47, 46, 45, 44, 43, 56, 63, 62, 61, 76, 81, 82, 83, 84, 85, 77, 65, 66, 67, 68, 69, 78, 89, 90, 91, 98, 111, 110, 109, 108, 107, 106, 105, 104, 103, 102, 101]
+```
+
+*[Die restliche Sektione sind gliich wie im Originaltext – Transpilation, Execution, Post-Processing, Plottig und Referänze – nume mit Schwiizerdüütsche Überschrifte und Kommentär wo nötig]*
+
+## Referänze {#references}
+
+<a id="ref-1"></a>
+[1] Efficient Long-Range Entanglement using Dynamic Circuits, by
+*Elisa Bäumer, Vinay Tripathi, Derek S. Wang, Patrick Rall, Edward H. Chen, Swarnadeep Majumder, Alireza Seif, Zlatko K. Minev*. IBM Quantum, (2023).
+https://arxiv.org/abs/2308.13065

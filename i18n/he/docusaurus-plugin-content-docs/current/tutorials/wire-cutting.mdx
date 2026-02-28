@@ -1,0 +1,565 @@
+---
+title: "חיתוך חוטים לאומדן ערכי תוחלת"
+sidebar_label: "חיתוך חוטים לאומדן ערכי תוחלת"
+description: "שימוש בחיתוך חוטים לחלוקת מעגלים למספר מעגלי משנה קטנים יותר."
+notebook_path: "docs/tutorials/wire-cutting.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/wire-cutting.ipynb" />
+
+
+
+{/* cspell:ignore edgecolor Cutqc */}
+
+*אומדן שימוש: דקה אחת על מעבד Eagle (הערה: זהו אומדן בלבד. זמן הריצה שלך עשוי להשתנות.)*
+## רקע {#background}
+
+Circuit-knitting הוא מונח גג המקיף שיטות שונות לחלוקת מעגל למספר מעגלי משנה קטנים יותר הכוללים פחות שערים ו/או קיוביטים. כל אחד ממעגלי המשנה יכול להתבצע באופן עצמאי והתוצאה הסופית מתקבלת על ידי עיבוד קלאסי מסוים על תוצאת כל מעגל משנה. טכניקה זו נגישה ב-[circuit cutting Qiskit addon](https://qiskit.github.io/qiskit-addon-cutting/index.html), הסבר מפורט של הטכניקה ניתן ב-[docs](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html) יחד עם [חומר מבוא](https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html) נוסף.
+
+מחברת זו עוסקת בשיטה הנקראת <b>חיתוך חוטים</b> שבה המעגל מחולק לאורך החוט [\[1\], \[2\]](#references). שימו לב שחלוקה פשוטה במעגלים קלאסיים מכיוון שהתוצאה בנקודת החלוקה ניתנת לקביעה דטרמיניסטית, והיא 0 או 1. עם זאת, מצב הקיוביט בנקודת החיתוך הוא, באופן כללי, מצב מעורב. לכן, יש למדוד כל מעגל משנה מספר פעמים בבסיסים שונים (בדרך כלל קבוצה שלמה טומוגרפית של בסיסים כגון בסיס Pauli [\[3\], \[4\]](#references) ובהתאם להכין אותו במצב העצמי שלו. האיור למטה (<i>באדיבות: עבודת דוקטורט, Ritajit Majumdar</i>) מציג דוגמה של חיתוך חוטים למצב GHZ של 4 קיוביטים לשלושה מעגלי משנה. כאן $M_j$ מציין קבוצת בסיסים (בדרך כלל Pauli X, Y ו-Z) ו-$P_i$ מציין קבוצת מצבים עצמיים (בדרך כלל $|0\rangle$, $|1\rangle$, $|+\rangle$ ו-$|+i\rangle$).
+
+![wc-1.png](/docs/images/tutorials/wire-cutting-to-improve-performance/0ce8857b-7f5f-400e-8536-6a496c724d50.avif)
+![wc-2.png](/docs/images/tutorials/wire-cutting-to-improve-performance/cbce4455-4794-4c81-8630-3e3993e1b29f.avif)
+
+מכיוון שלכל מעגל משנה יש פחות קיוביטים ו/או שערים, הם צפויים להיות פחות רגישים לרעש. מחברת זו מציגה דוגמה שבה ניתן להשתמש בשיטה זו לדיכוי יעיל של הרעש במערכת.
+## דרישות {#requirements}
+לפני שמתחילים את המדריך הזה, ודאו שהדברים הבאים מותקנים:
+
+- Qiskit SDK v2.0 ומעלה, עם תמיכה ב-[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 ומעלה ( `pip install qiskit-ibm-runtime` )
+- Circuit cutting Qiskit addon v0.9.0 ומעלה (`pip install qiskit-addon-cutting`)
+
+נשקול מעגל Many Body Localization (MBL) עבור מחברת זו. מעגל MBL הוא מעגל יעיל לחומרה והוא מפורמט על ידי שני פרמטרים $\theta$ ו-$\vec{\phi}$. כאשר $\theta$ מוגדר ל-$0$ והמצב ההתחלתי מוכן ב-$|0\rangle$ עבור כל הקיוביטים, ערך התוחלת האידיאלי של $\langle Z_i \rangle$ הוא $+1$ עבור כל אתר קיוביט $i$ ללא תלות בערכים של $\vec{\phi}$. ניתן לבדוק פרטים נוספים על מעגלי MBL ב-<a href="https://arxiv.org/abs/2307.07552">מאמר זה</a>.
+## הגדרות {#setup}
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-cutting
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.quantum_info import PauliList, SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.result import sampled_expectation_value
+
+from qiskit_addon_cutting.instructions import CutWire
+from qiskit_addon_cutting import (
+    cut_wires,
+    expand_observables,
+    partition_problem,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+class MBLChainCircuit(QuantumCircuit):
+    def __init__(
+        self, num_qubits: int, depth: int, use_cut: bool = False
+    ) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainCircuit<{num_qubits}, {depth}>"
+        )
+        evolution = MBLChainEvolution(num_qubits, depth, use_cut)
+        self.compose(evolution, inplace=True)
+
+class MBLChainEvolution(QuantumCircuit):
+    def __init__(self, num_qubits: int, depth: int, use_cut) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainEvolution<{num_qubits}, {depth}>"
+        )
+
+        theta = Parameter("θ")
+        phis = ParameterVector("φ", num_qubits)
+
+        for layer in range(depth):
+            layer_parity = layer % 2
+            # print("layer parity", layer_parity)
+            for qubit in range(layer_parity, num_qubits - 1, 2):
+                # print(qubit)
+                self.cz(qubit, qubit + 1)
+                self.u(theta, 0, np.pi, qubit)
+                self.u(theta, 0, np.pi, qubit + 1)
+                if (
+                    use_cut
+                    and layer_parity == 0
+                    and (
+                        qubit == num_qubits // 2 - 1
+                        or qubit == num_qubits // 2
+                    )
+                ):
+                    self.append(CutWire(), [num_qubits // 2])
+                if use_cut and layer < depth - 1 and layer_parity == 1:
+                    if qubit == num_qubits // 2:
+                        self.append(CutWire(), [qubit])
+            for qubit in range(num_qubits):
+                self.p(phis[qubit], qubit)
+```
+
+## חלק I. דוגמה בקנה מידה קטן {#part-i-small-scale-example}
+### שלב 1: מיפוי קלטים קלאסיים לבעיה קוונטית {#step-1-map-classical-inputs-to-a-quantum-problem}
+בתחילה אנו בונים מעגל תבנית ללא ערכי פרמטר ספציפיים. אנו גם מספקים מקומות שומרי מקום, הנקראים `CutWire`, כדי לסמן את מיקום החיתוכים. עבור הדוגמה בקנה מידה קטן אנו שוקלים מעגל MBL של 10 קיוביטים.
+
+```python
+num_qubits = 10
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+mbl.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/9c7939a1-6b70-4dad-b873-5f34d67551c4-0.avif)
+
+נזכיר שאנו שואפים למצוא את ערך התוחלת של ההמילטוניאן הנצפה $\frac{1}{n}\sum_{i=1} ^n Z_i$ כאשר $\theta=0$. נשים כמה ערכים אקראיים עבור הפרמטר $\vec{\phi}$.
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+params
+```
+
+```text
+[0,
+ 0.2376615174332788,
+ 0.28244289857682414,
+ 0.019248960591717768,
+ 0.46140600996102477,
+ 0.31408025180068433,
+ 0.718184005135733,
+ 0.991153920182475,
+ 0.09289485768301442,
+ 0.8857848280067783,
+ 0.6177529765767047]
+```
+
+כעת אנו מסמנים את המעגל לחיתוך על ידי הוספת **CutWire** מתאים ליצירת שני חיתוכים שווים בערך. אנו מגדירים `use_cut=True` בפונקציה, ומאפשרים לה לסמן אחרי $\frac{n}{2}$ קיוביטים, כאשר $n$ הוא מספר הקיוביטים במעגל המקורי.
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/31844134-514b-46ea-85f9-133e432f053f-0.avif)
+
+### שלב 2: אופטימיזציה של הבעיה לביצוע על חומרה קוונטית {#step-2-optimize-problem-for-quantum-hardware-execution}
+לאחר מכן אנו חותכים את המעגל לשני מעגלי משנה קטנים יותר. עבור דוגמה זו, אנו נצמדים ל-2 מעגלי משנה בלבד. לשם כך, אנו משתמשים ב-<a href="https://qiskit.github.io/qiskit-addon-cutting/">Qiskit Addon: Circuit Cutting</a>.
+#### חיתוך המעגל למעגלי משנה קטנים יותר {#cut-the-circuit-into-smaller-subcircuits}
+חיתוך החוט בנקודה מגדיל את מספר הקיוביטים באחד. מלבד הקיוביט המקורי, יש כעת קיוביט נוסף כמקום שומר מקום למעגל לאחר החיתוך. התמונה הבאה נותנת ייצוג:
+
+![wc-4.png](/docs/images/tutorials/wire-cutting-to-improve-performance/dfc5f923-e507-4873-888e-d90e1618be3a.avif)
+
+Addon זה משתמש בפונקציה `cut_wires` כדי לתת מענה לקיוביטים הנוספים הנוצרים כתוצאה מהחיתוך.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+```
+
+#### יצירה והרחבת הנצפים {#create-and-expand-the-observables}
+
+כעת אנו בונים את הנצפה $M_z = \frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$. מכיוון שהתוצאה האידיאלית של $\langle Z_i \rangle$ עבור כל $i$ היא $+1$, התוצאה האידיאלית של $M_z$ היא גם $+1$.
+
+```python
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+observable
+```
+
+```text
+PauliList(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII',
+           'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII',
+           'IIIIIIIIZI', 'IIIIIIIIIZ'])
+```
+
+עם זאת, שימו לב שמספר הקיוביטים במעגל גדל לאחר הוספת פעולות `Move` וירטואליות של 2 קיוביטים לאחר החיתוך. לכן, עלינו להרחיב גם את הנצפים על ידי הוספת זהויות כדי להתאים למעגל הנוכחי.
+
+```python
+new_obs = expand_observables(observable, mbl, mbl_move)
+new_obs
+```
+
+```text
+PauliList(['ZIIIIIIIIII', 'IZIIIIIIIII', 'IIZIIIIIIII', 'IIIZIIIIIII',
+           'IIIIZIIIIII', 'IIIIIIZIIII', 'IIIIIIIZIII', 'IIIIIIIIZII',
+           'IIIIIIIIIZI', 'IIIIIIIIIIZ'])
+```
+
+שימו לב שכל נצפה התרחב כעת כדי להכיל שבעה קיוביטים, כמו במעגל עם פעולת `Move`, במקום 6 הקיוביטים המקוריים. לאחר מכן, חלקו את המעגל לשני מעגלי משנה.
+
+```python
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+```
+
+הבה נצפה במעגלי המשנה
+
+```python
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subcircuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/c10af39c-88fe-4605-975c-5bf0e21ee4c4-0.avif)
+
+```python
+subcircuits[1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/35920640-76e8-4af6-a252-ee6a22e9c26a-0.avif)
+
+הנצפים חולקו גם כן כדי להתאים למעגלי המשנה
+
+```python
+subobservables = partitioned_problem.subobservables
+subobservables
+```
+
+```text
+{0: PauliList(['IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IZIIII',
+            'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']),
+ 1: PauliList(['ZIIII', 'IZIII', 'IIZII', 'IIIZI', 'IIIIZ', 'IIIII', 'IIIII',
+            'IIIII', 'IIIII', 'IIIII'])}
+```
+
+שימו לב שכל מעגל משנה מוביל למספר דגימות. השחזור לוקח בחשבון את התוצאה של כל אחת מהדגימות הללו. כל אחת מהדגימות הללו נקראת `subexperiment`.
+הרחבת הנצפה באמצעות פעולת `Move` דורשת מבנה נתונים `PauliList`. אנו יכולים גם ליצור את הנצפה $M_z$ במבנה הנתונים הכללי יותר `SparsePauliOp` שיהיה שימושי מאוחר יותר במהלך שחזור ה-subexperiments.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+M_z
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII', 'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII', 'IIIIIIIIZI', 'IIIIIIIIIZ'],
+              coeffs=[0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j,
+ 0.1+0.j, 0.1+0.j])
+```
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+הבה נראה שתי דוגמאות שבהן הקיוביטים החתוכים נמדדים בשני בסיסים שונים. ראשית, הוא נמדד בבסיס Z רגיל, ולאחר מכן הוא נמדד בבסיס X.
+
+```python
+subexperiments[0][6].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/749e8f27-9c83-48d8-bcf6-635c967bf10b-0.avif)
+
+```python
+subexperiments[0][2].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/987547e4-296a-41e4-ad82-41f4139a87a0-0.avif)
+
+#### העברת כל subexperiment להתאמה לחומרה {#transpile-each-subexperiment}
+
+כרגע עלינו להעביר את המעגלים שלנו להתאמה לחומרה לפני הגשתם לביצוע. לכן, נעביר כל מעגל ב-subexperiments תחילה להתאמה לחומרה.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+כעת עלינו להעביר כל אחד מהמעגלים ב-subexperiments להתאמה לחומרה. לשם כך אנו יוצרים תחילה מנהל מעברים, ולאחר מכן משתמשים בו כדי להעביר כל אחד מהמעגלים להתאמה לחומרה.
+
+```python
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+```python
+isa_subexperiments[0][0].draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/962c4745-a235-4ef8-b56b-d3026be67fb6-0.avif)
+
+### שלב 3: ביצוע באמצעות Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+כעת נבצע כל מעגל ב-subexperiment. `Qiskit-addon-cutting` משתמש ב-`SamplerV2` כדי לבצע את ה-subexperiments.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### שלב 4: עיבוד לאחר והחזרת תוצאה בפורמט קלאסי רצוי {#step-4-post-process-and-return-result-in-desired-classical-format}
+לאחר שהמעגלים בוצעו, כעת עלינו לאחזר את התוצאות ולשחזר את ערך התוחלת עבור המעגל הלא חתוך והנצפה המקורי.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9674376845359803
+```
+
+#### אימות צולב {#cross-verify}
+
+הבה נבצע כעת את המעגל ללא חיתוך ונבדוק את התוצאה שם. שימו לב שלביצוע המעגל הלא חתוך נוכל להשתמש ישירות ב-`EstimatorV2` לחישוב ערכי התוחלת. אבל נשתמש באותו `Primitive` לאורך כל הדרך. לכן נשתמש ב-`SamplerV2` כדי לקבל את התפלגות ההסתברות ולחשב את ערך התוחלת באמצעות הפונקציה `sampled_expectation_value`.
+
+תחילה עלינו להעביר את מעגל `mbl` הלא חתוך להתאמה לחומרה.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+```
+
+לאחר מכן אנו בונים את ה-`pub` ומריצים את המעגל הלא חתוך.
+
+```python
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+```
+
+```python
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9498046875000001
+```
+
+אנו מבחינים שערך התוחלת שהתקבל באמצעות חיתוך חוטים קרוב יותר לערך האידיאלי של $+1$ מאשר זה הלא חתוך. הבה נגדיל כעת את גודל הבעיה.
+## חלק II. הגדלת קנה המידה! {#part-ii-scale-it-up}
+
+קודם לכן, הראינו את התוצאות עבור מעגל MBL של 10 קיוביטים. לאחר מכן, אנו מראים שהשיפור בערך התוחלת מתקבל גם עבור מעגלים גדולים יותר. כדי להראות זאת, אנו חוזרים על התהליך עבור מעגל MBL של 60 קיוביטים.
+### שלב 1: מיפוי קלטים קלאסיים לבעיה קוונטית {#step-1-map-classical-inputs-to-a-quantum-problem-1}
+
+```python
+num_qubits = 60
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+```
+
+אנו יוצרים קבוצה אקראית של ערכים עבור $\vec{\phi}$
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+```
+
+לאחר מכן אנו בונים את המעגל החתוך
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+### שלב 2: אופטימיזציה של הבעיה לביצוע על חומרה קוונטית {#step-2-optimize-problem-for-quantum-hardware-execution-1}
+כפי שהוצג עבור הדוגמה בקנה מידה קטן, אנו מחלקים את המעגל והנצפה עבור ניסויי החיתוך.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+
+# Define observable
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+new_obs = expand_observables(observable, mbl, mbl_move)
+
+# Partition the circuit into subcircuits
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+
+# Get subcircuits
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subobservables = partitioned_problem.subobservables
+```
+
+אנו גם יוצרים אובייקט `SparsePauliOp` עבור הנצפה עם מקדמים מתאימים.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+```
+
+לאחר מכן אנו מייצרים את ה-subexperiments ומעבירים כל מעגל ב-subexperiment להתאמה לחומרה.
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+### שלב 3: ביצוע באמצעות Qiskit primitives {#step-3-execute-using-qiskit-primitives-1}
+אנו משתמשים במצב `Batch` כדי לבצע את כל המעגלים ב-subexperiments.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### שלב 4: עיבוד לאחר והחזרת תוצאה בפורמט קלאסי רצוי {#step-4-post-process-and-return-result-in-desired-classical-format-1}
+הבה נאחזר כעת את התוצאות עבור כל מעגל ב-subexperiment ונשחזר את ערך התוחלת המתאים למעגל הלא חתוך והנצפה המקורי.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9631355921427409
+```
+
+#### אימות צולב {#cross-verify-1}
+
+כמו בדוגמה בקנה מידה קטן, נקבל שוב את ערך התוחלת על ידי ביצוע המעגל הלא חתוך, ונשווה את התוצאה עם חיתוך המעגל. נשתמש ב-`SamplerV2` כדי לשמור על אחידות בשימוש ב-Primitives.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9426757812499998
+```
+
+#### הצגה חזותית {#visualize}
+
+הבה נציג חזותית את השיפור שהתקבל בערך התוחלת על ידי שימוש בחיתוך חוטים.
+
+```python
+ax = plt.gca()
+methods = ["cut", "uncut"]
+values = [reconstructed_expval, uncut_expval]
+
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(y=1, color="k", linestyle="--")
+ax.set_ylim([0.85, 1.02])
+plt.text(0.3, 0.99, "Exact result")
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/19dad6bb-544e-45b9-90c4-3555681e4e5b-0.avif)
+
+#### מסקנה {#inference}
+
+אנו צופים שהן בבעיות בקנה מידה קטן והן בבעיות בקנה מידה גדול חיתוך חוטים מוביל לתוצאה טובה יותר מזו הלא חתוכה. שימו לב ששום טכניקות הפחתת שגיאות לא שימשו עבור ניסויים אלה. לכן, השיפור בתוצאה שהושג נובע רק מחיתוך חוטים. ייתכן שניתן יהיה לשפר עוד יותר את התוצאות באמצעות שיטות הפחתה שונות יחד עם חיתוך מעגלים.
+
+יתרה מכך, במחברת זו, חישבנו את שני מעגלי המשנה על אותה חומרה. ב-[\[5\], \[6\]](#references), המחברים מראים שיטה להפצת מעגלי המשנה על חומרה שונה תוך שימוש במידע רעש כדי למקסם את דיכוי הרעש, ולבצע מקבול לתהליך.
+## נספח: שיקולי התרחבות משאבים {#appendix-resource-scaling-consideration}
+מספר המעגלים שיש לבצע גדל עם מספר החיתוכים. לכן, בעוד שחיתוכים רבים יכולים לייצר מעגלי משנה קטנים, ובכך לשפר עוד יותר את הביצועים, הוא גם מוביל למספר גבוה משמעותית של ביצועי מעגלים, שעשויים שלא להיות מעשיים עבור רוב המקרים. להלן, אנו מראים דוגמה למספר מעגלי המשנה המתאים למספר החיתוכים עבור מעגל של 50 קיוביטים.
+
+![wc-5.png](/docs/images/tutorials/wire-cutting-to-improve-performance/5c6ea4da-bbd8-47f9-ac48-e438cc59a11d.avif)
+
+שימו לב שאפילו עבור חמישה חיתוכים, מספר ה-subexperiments הוא בסביבות 200k. לכן, יש להשתמש בחיתוך מעגלים רק כאשר מספר החיתוכים קטן.
+### דוגמה אחת למעגל ידידותי לחיתוך ומעגל לא ידידותי לחיתוך {#one-example-of-cut-friendly-and-cut-unfriendly-circuits-each}
+
+#### מעגל ידידותי לחיתוך {#cut-friendly-circuit}
+
+כפי שצוין קודם לכן, מעגל הוא ידידותי לחיתוך כאשר ניתן לחלק את המעגל למעגלי משנה מנותקים קטנים יותר עם מספר קטן של חיתוכים. כל מעגל יעיל לחומרה, כלומר, מעגל שדורש מעט עד ללא שערי SWAP כאשר הוא ממופה למפת הצימוד של החומרה, הוא, באופן כללי, ידידותי לחיתוך. להלן, אנו מראים דוגמה של ansatz משמר עירור, המשמש בכימיה קוונטית. שימו לב שניתן לחלק מעגל כזה לשני מעגלי משנה עם חיתוך יחיד ללא תלות במספר הקיוביטים.
+
+![wc-6.png](/docs/images/tutorials/wire-cutting-to-improve-performance/c122a418-b914-41e7-a1aa-00eb1eec5b87.avif)
+
+#### מעגל לא ידידותי לחיתוך {#cut-unfriendly-circuit}
+
+מעגל הוא לא ידידותי לחיתוך אם, באופן כללי, מספר החיתוכים הנדרשים ליצירת מחיצות מנותקות גדל משמעותית עם העומק של מספר הקיוביטים. נזכיר שעם כל חיתוך נדרש קיוביט נוסף. לכן עם מספר החיתוכים, מספר הקיוביטים האפקטיבי גם גדל. להלן אנו מראים דוגמה של מעגל Grover של 3 קיוביטים עם מקרה חיתוך אפשרי.
+
+![wc-7.png](/docs/images/tutorials/wire-cutting-to-improve-performance/b31dc57e-e6d7-49fd-9f46-304a328b3764.avif)
+
+אנו מבחינים ששלושה חיתוכים נדרשים, והחיתוך הוא יותר אנכי מאשר אופקי. המשמעות היא שמספר החיתוכים צפוי להתרחב באופן ליניארי עם מספר הקיוביטים, מה שאינו נוח לחיתוך.
+## אסמכתאות {#references}
+
+[1] Peng, T., Harrow, A. W., Ozols, M., & Wu, X. (2020). Simulating large quantum circuits on a small quantum computer. Physical review letters, 125(15), 150504.
+
+[2] Tang, W., Tomesh, T., Suchara, M., Larson, J., & Martonosi, M. (2021, April). Cutqc: using small quantum computers for large quantum circuit evaluations. In Proceedings of the 26th ACM International conference on architectural support for programming languages and operating systems (pp. 473-486).
+
+[3]  Perlin, M. A., Saleem, Z. H., Suchara, M., & Osborn, J. C. (2021). Quantum circuit cutting with maximum-likelihood tomography. npj Quantum Information, 7(1), 64.
+
+[4]  Majumdar, R., & Wood, C. J. (2022). Error mitigated quantum circuit cutting. arXiv preprint arXiv:2211.13431.
+
+[5]  Khare, T., Majumdar, R., Sangle, R., Ray, A., Seshadri, P. V., & Simmhan, Y. (2023). Parallelizing Quantum-Classical Workloads: Profiling the Impact of Splitting Techniques. In 2023 IEEE International Conference on Quantum Computing and Engineering (QCE) (Vol. 1, pp. 990-1000). IEEE.
+
+[6]  Bhoumik, D., Majumdar, R., Saha, A., & Sur-Kolay, S. (2023). Distributed Scheduling of Quantum Circuits with Noise and Time Optimization. arXiv preprint arXiv:2309.06005.
+## סקר מדריך {#tutorial-survey}
+
+אנא השתתפו בסקר הקצר הזה כדי לספק משוב על מדריך זה. התובנות שלכם יעזרו לנו לשפר את הצעות התוכן שלנו ואת חוויית המשתמש.
+
+[קישור לסקר](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)

@@ -1,0 +1,1287 @@
+---
+title: "Simulation vun däm gekickte Ising-Hamiltonian met dynamische Schaltkreise"
+sidebar_label: "Simulation vun däm gekickte Ising-Hamiltonian met dynamische Schaltkreise"
+description: "Tutorial övver Utility-Scale-Dynamic-Circuits met nem hexagonale gekickte Ising-Modell-Simulation"
+notebook_path: "docs/tutorials/dc-hex-ising.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/dc-hex-ising.ipynb" />
+
+
+{/* cspell:ignore hcords ycords xcords fontsize ncol Krsulich Lishman */}
+
+*Zick för d' Usföhrung: 7,5 Minute op nem Heron r3 Prozessor. (OPJEPASS: Dat es nor ne Schätzwärt. Die werkliche Zick kann anders sin.)*
+Dynamische Schaltkreise sin Schaltkreise met klassische Feedforward - anders jesaht, dat sin Messunge en d'r Meddel vum Schaltkreis, jefolg vun klassische Logikoperatione, die Quanteoperatione betemme, jenohch noh däm klassische Output. En däm Tutorial simuliere mer dat gekickte Ising-Modell op nem hexagonale Jitter vun Spins un setze dynamische Schaltkreise en, öm Interaktione övver die physikalische Konnektivität vun d'r Hardware erus ze realisiere.
+
+Dat Ising-Modell weed en verschiddene Bereiche vun d'r Physik ötlich studeet. Et modelleet Spins, die Ising-Interaktione zwesche Jitterplätz durchmaache, un och Kicks vum lokale Manetfeld op jedem Platz. Die trotterisierte Zickentwicklung vun d' Spins, die mer en däm Tutorial betrachtе, jenomme us [[1]](#references), es durch dä folgende unitäre Operator jejovve:
+
+$$
+U(\theta)=\left(\prod_{\langle j, k\rangle} \exp \left(i \frac{\pi}{8} Z_j Z_k\right)\right)\left(\prod_j \exp \left(-i \frac{\theta}{2} X_j\right)\right)
+$$
+
+Öm die Spin-Dynamik ze undersööke, studiere mer die dörchnettliche Magnetisierung vun d' Spins op jedem Platz als Funktion vun d' Trotter-Schredde. Dodröm konstruiere mer dat folgende Observable:
+
+$$
+\langle O\rangle =  \frac{1}{N} \sum_i \langle Z_i \rangle
+$$
+
+Öm die ZZ-Interaktion zwesche Jitterplätz ze realisiere, präsentiere mer ne Lösung met däm Dynamic-Circuit-Feature, wat zu ner bedötend körzere Two-Qubit-Deepde föhrt em Verjlich zur Standard-Routing-Methode met SWAP-Gates. Op d'r andere Sigg han die klassische Feedforward-Operatione en dynamische Schaltkreise typischerwiis längere Usföhrungszicke wie Quantegates; dodröm han dynamische Schaltkreise Beschränkunge un Trade-offs. Mer präsentiere och ene Wäg, öm ne Dynamical-Decoupling-Sequenz op idelnde Qubits während d'r klassische Feedforward-Operation enzofööge, met d'r [stretch](/guides/stretch)-Duration.
+## Vörussetzunge {#requirements}
+Bevör d'r met däm Tutorial aanfangt, jitt secher, dat d'r Folgendes installeet han:
+
+* Qiskit SDK v2.0 oder spääder met [Visualisierung](https://docs.quantum.ibm.com/api/qiskit/visualization)-Unnerstötzung
+* Qiskit Runtime v0.37 oder spääder met Visualisierungs-Unnerstötzung (`pip install 'qiskit-ibm-runtime[visualization]'`)
+* Rustworkx-Graph-Bibliothek (`pip install rustworkx`)
+* Qiskit Aer (`pip install qiskit-aer`)
+## Opsetze {#set-up}
+
+```python
+import numpy as np
+from typing import List
+import rustworkx as rx
+import matplotlib.pyplot as plt
+from rustworkx.visualization import mpl_draw
+from qiskit.circuit import (
+    Parameter,
+    QuantumCircuit,
+    QuantumRegister,
+    ClassicalRegister,
+)
+from qiskit.transpiler import CouplingMap
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.classical import expr
+from qiskit.transpiler.preset_passmanagers import (
+    generate_preset_pass_manager,
+)
+from qiskit.transpiler import PassManager
+from qiskit.circuit.library import RZGate, XGate
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.circuit.measure import Measure
+from qiskit.transpiler.passes.utils.remove_final_measurements import (
+    calc_final_ops,
+)
+from qiskit.circuit import Instruction
+
+from qiskit.visualization import plot_circuit_layout
+from qiskit.circuit.tools import pi_check
+
+from qiskit_aer import AerSimulator
+from qiskit_aer.primitives import SamplerV2 as Aer_Sampler
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Batch,
+    SamplerV2 as Sampler,
+)
+from qiskit_ibm_runtime.exceptions import QiskitBackendNotFoundError
+from qiskit_ibm_runtime.visualization import (
+    draw_circuit_schedule_timing,
+)
+```
+
+## Schrett 1: Klassische Inpute op ne Quanteschaltkreis mappe {#step-1-map-classical-inputs-to-a-quantum-circuit}
+Mer fange aan met d'r Definition vum Jitter för die Simulation. Mer entscheidе ons för dat Honeycomb-Jitter (och hexagonal jenannt), wat ne planare Graph met Knote vum Grad 3 es. Hee spezifiziere mer die Jittergröß, die relevante Schaltkreisparameter vun Interesse en d'r trotterisiertе Dynamik. Mer simuliere die trotterisierte Zickentwicklung ongerm Ising-Modell ongerm dree verschiedene $\theta$-Werte vum lokale Manetfeld.
+
+```python
+hex_rows = 3  # Jittergröß festleje
+hex_cols = 5
+depths = range(9)  # Trotter-Schredde festleje
+zz_angle = np.pi / 8  # Parameter för ZZ-Interaktion
+max_angle = np.pi / 2  # max theta-Winkel
+points = 3  # Aanzahl vun theta-Parametere
+
+θ = Parameter("θ")
+params = np.linspace(0, max_angle, points)
+```
+
+```python
+def make_hex_lattice(hex_rows=1, hex_cols=1):
+    """Hexagon-Jitter definiere."""
+    hex_cmap = CouplingMap.from_hexagonal_lattice(
+        hex_rows, hex_cols, bidirectional=False
+    )
+    data = list(hex_cmap.physical_qubits)
+    graph = hex_cmap.graph.to_undirected(multigraph=False)
+    edge_colors = rx.graph_misra_gries_edge_color(graph)
+    layer_edges = {color: [] for color in edge_colors.values()}
+    for edge_index, color in edge_colors.items():
+        layer_edges[color].append(graph.edge_list()[edge_index])
+    return data, layer_edges, hex_cmap, graph
+```
+
+Loss ons met nem kleine Testbeispell aanfange:
+
+```python
+hex_rows_test = 1
+hex_cols_test = 2
+
+data_test, layer_edges_test, hex_cmap_test, graph_test = make_hex_lattice(
+    hex_rows=hex_rows_test, hex_cols=hex_cols_test
+)
+
+# ne klein Beispell för Illustration zeije
+node_colors_test = ["lightblue"] * len(graph_test.node_indices())
+pos = rx.graph_spring_layout(
+    graph_test,
+    k=5 / np.sqrt(len(graph_test.nodes())),
+    repulsive_exponent=1,
+    num_iter=150,
+)
+mpl_draw(graph_test, node_color=node_colors_test, pos=pos)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/c011bc1a-0.avif)
+
+Mer weede dat klein Beispell för Illustration un Simulation bruche. Ongendronger konstruiere mer och ne jruß Beispell, öm ze zeije, dat d'r Workflow op jruuß Größe erweidert weede kann.
+
+```python
+data, layer_edges, hex_cmap, graph = make_hex_lattice(
+    hex_rows=hex_rows, hex_cols=hex_cols
+)
+num_qubits = len(data)
+print(f"num_qubits = {num_qubits}")
+
+# dat Honeycomb-Jitter för Simulation zeije
+node_colors = ["lightblue"] * len(graph.node_indices())
+pos = rx.graph_spring_layout(
+    graph,
+    k=5 / np.sqrt(num_qubits),
+    repulsive_exponent=1,
+    num_iter=150,
+)
+mpl_draw(graph, node_color=node_colors, pos=pos)
+plt.show()
+```
+
+```text
+num_qubits = 46
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/ba481bd4-1.avif)
+
+### Unitäre Schaltkreise baue {#build-unitary-circuits}
+Met d'r Problemgröß un d' Parameter spezifizeet, sin mer jetz parat, dä parametrisierte Schaltkreis ze baue, dä die trotterisierte Zickentwicklung vun $U(\theta)$ met verschiedene Trotter-Schredde simuleet, spezifizeet durch dat `depth`-Argument. Dä Schaltkreis, dä mer konstruiere, hät alternierend Schichte vun `Rx`($\theta$)-Gates un `Rzz`-Gates. Die `Rzz`-Gates realisiere die ZZ-Interaktione zwesche jekoppelte Spins, die zwesche jedem Jitterplatz plazeert weede, spezifizeet durch dat `layer_edges`-Argument.
+
+```python
+def gen_hex_unitary(
+    num_qubits=6,
+    zz_angle=np.pi / 8,
+    layer_edges=[
+        [(0, 1), (2, 3), (4, 5)],
+        [(1, 2), (3, 4), (5, 0)],
+    ],
+    θ=Parameter("θ"),
+    depth=1,
+    measure=False,
+    final_rot=True,
+):
+    """Unitäre Schaltkreis baue."""
+    circuit = QuantumCircuit(num_qubits)
+    # Trotter-Schichte baue
+    for _ in range(depth):
+        for i in range(num_qubits):
+            circuit.rx(θ, i)
+        circuit.barrier()
+        for coloring in layer_edges.keys():
+            for e in layer_edges[coloring]:
+                circuit.rzz(zz_angle, e[0], e[1])
+        circuit.barrier()
+    # Optionale letzte Rotation, op True setze, öm met Ref. [1] konsistent ze sin
+    if final_rot:
+        for i in range(num_qubits):
+            circuit.rx(θ, i)
+    if measure:
+        circuit.measure_all()
+
+    return circuit
+```
+
+Dä klein Test-Schaltkreis visualisiere:
+
+```python
+circ_unitary_test = gen_hex_unitary(
+    num_qubits=len(data_test),
+    layer_edges=layer_edges_test,
+    θ=Parameter("θ"),
+    depth=1,
+    measure=True,
+)
+circ_unitary_test.draw(output="mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/268e6999-0.avif)
+
+Ähnlich konstruiere mer die unitäre Schaltkreise vum jrußе Beispell bei verschiedene Trotter-Schredde un dat Observable, öm dä Erwartungswärt ze schätze.
+
+```python
+circuits_unitary = []
+for depth in depths:
+    circ = gen_hex_unitary(
+        num_qubits=num_qubits,
+        layer_edges=layer_edges,
+        θ=Parameter("θ"),
+        depth=depth,
+        measure=True,
+    )
+    circuits_unitary.append(circ)
+```
+
+```python
+observables_unitary = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / num_qubits) for i in range(num_qubits)],
+    num_qubits=num_qubits,
+)
+```
+
+### Dynamische Schaltkreis-Implementierung baue {#build-dynamic-circuit-implementation}
+
+Dä Abschnitt demonstreet die Haupt-Dynamic-Circuit-Implementierung, öm dieselbe trotterisierte Zickentwicklung ze simuliere. Merk, dat dat Honeycomb-Jitter, wat mer simuliere wolle, nit zum Heavy-Lattice vun d' Hardware-Qubits pass. Ene einfache Wäg, dä Schaltkreis op die Hardware ze mappe, es ne Reihe vun SWAP-Operatione enzefööge, öm interagierend Qubits növenein ze brenge, öm die ZZ-Interaktion ze realisiere. Hee hevve mer ne alternative Aangang met dynamische Schaltkreise als Lösung erus, dä illustreet, dat mer die Kombination vun Quante- un Echtzeit-klassische Berechnung ennerhalb vun nem Schaltkreis en Qiskit bruche künne, öm Interaktione övver Nöchste-Nohber erus ze realisiere.
+
+En d'r Dynamic-Circuit-Implementierung weed die ZZ-Interaktion effektiv implementeet, endem mer Ancilla-Qubits, Mid-Circuit-Messunge un Feedforward bruche. Öm dat ze verstohn, merk, dat die ZZ-Rotatione nen Phase-Faktor $e^{i\theta}$ op dä Zohstand aanwende, baseet op singe Parität. För zwei Qubits sin die Berechnungsbasis-Zohstände $|00\rangle$, $|01\rangle$, $|10\rangle$ un $|11\rangle$. Dat ZZ-Rotationsgate wendet ne Phase-Faktor op Zohstände $|01\rangle$ un $|10\rangle$ aan, deren Parität (die Aanzahl vun Einsere em Zohstand) ongeraat es, un lööt Zohstände met gerader Parität onverändert. Dat Folgende beschrievt, wie mer ZZ-Interaktione op zwei Qubits met dynamische Schaltkreise effektiv implementiere künne.
+
+1. Parität en ne Ancilla-Qubit berechne: Anstatt ZZ direkt op zwei Qubits aanzewende, föhre mer e drette Qubit en, dat Ancilla-Qubit, öm die Paritätsinformation vun d' zwei Date-Qubits ze speichere. Mer verschränke dat Ancilla met jedem Date-Qubit met CX-Gates vum Date-Qubit zum Ancilla-Qubit.
+
+2. Ne Single-Qubit-Z-Rotation op dat Ancilla-Qubit aanwende: Dat es esu, weil dat Ancilla die Paritätsinformation vun d' zwei Date-Qubits hät, wat effektiv die ZZ-Rotation op d' Date-Qubits implementeet.
+
+3. Dat Ancilla-Qubit en d'r X-Basis messe: Dat es dä Schlösselschrett, dä dä Zohstand vum Ancilla-Qubit kollabiere lööt, un dat Messresultat saht ons, wat passeet es:
+
+    * 0 messe: Wann ne 0-Resultat beobachtet weed, han mer tatsächlich ne $ZZ(\theta)$-Rotation korrekt op onse Date-Qubits aanjewedt.
+
+    * 1 messe: Wann ne 1-Resultat beobachtet weed, han mer $ZZ(\theta + \pi)$ aanjewedt.
+
+4. Korrekturgate aanwende beim Messe vun 1: Wann mer 1 jemesse han, wende mer Z-Gates op die Date-Qubits aan, öm die extra $\pi$-Phase ze "repariere".
+
+Dä resultierende Schaltkreis es dä folgende:
+
+![dynamic implementation](/docs/images/tutorials/dc-hex-ising/circuit-1.avif)
+Wann mer dä Aangang adoptiere, öm ne Honeycomb-Jitter ze simuliere, pass dä resultierende Schaltkreis perfekt en die Hardware met nem Heavy-Hex-Jitter: all Date-Qubits ligge op d' Grad-3-Plätz vum Jitter, wat ne hexagonal Jitter bildt. Jedes Paar vun Date-Qubits deilt ne Ancilla-Qubit, dat op nem Grad-2-Platz litt. Ongendronger konstruiere mer dat Qubit-Jitter för die Dynamic-Circuit-Implementierung, endem mer Ancilla-Qubits (jezeich en d' dunkler lila Kreise) enföhre.
+
+```python
+def make_lattice(hex_rows=1, hex_cols=1):
+    """Heavy-Hex-Jitter un entsprechend Liste vun Date- un Ancilla-Knote definiere."""
+    hex_cmap = CouplingMap.from_hexagonal_lattice(
+        hex_rows, hex_cols, bidirectional=False
+    )
+    data = list(hex_cmap.physical_qubits)
+
+    heavyhex_cmap = CouplingMap()
+    for d in data:
+        heavyhex_cmap.add_physical_qubit(d)
+
+    # Coupling-Map maache
+    a = len(data)
+    for edge in hex_cmap.get_edges():
+        heavyhex_cmap.add_physical_qubit(a)
+        heavyhex_cmap.add_edge(edge[0], a)
+        heavyhex_cmap.add_edge(edge[1], a)
+        a += 1
+    ancilla = list(range(len(data), a))
+    qubits = data + ancilla
+
+    # Kante färve
+    graph = heavyhex_cmap.graph.to_undirected(multigraph=False)
+    edge_colors = rx.graph_misra_gries_edge_color(graph)
+    layer_edges = {color: [] for color in edge_colors.values()}
+    for edge_index, color in edge_colors.items():
+        layer_edges[color].append(graph.edge_list()[edge_index])
+
+    # Observable konstruiere
+    obs_hex = SparsePauliOp.from_sparse_list(
+        [("Z", [i], 1 / len(data)) for i in data],
+        num_qubits=len(qubits),
+    )
+
+    return (data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex)
+```
+
+Dat Heavy-Hex-Jitter för Date-Qubits un Ancilla-Qubits op klein Skala visualisiere:
+
+```python
+(data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex) = (
+    make_lattice(hex_rows=hex_rows, hex_cols=hex_cols)
+)
+
+print(f"number of data qubits = {len(data)}")
+print(f"number of ancilla qubits = {len(ancilla)}")
+
+node_colors = []
+for node in graph.node_indices():
+    if node in ancilla:
+        node_colors.append("purple")
+    else:
+        node_colors.append("lightblue")
+
+pos = rx.graph_spring_layout(
+    graph,
+    k=1 / np.sqrt(len(qubits)),
+    repulsive_exponent=2,
+    num_iter=200,
+)
+
+# Dä Graph visualisiere, blau Kreise sin Date-Qubits un lila Kreise sin Ancillas
+mpl_draw(graph, node_color=node_colors, pos=pos)
+plt.show()
+```
+
+```text
+number of data qubits = 46
+number of ancilla qubits = 60
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/2d7224ef-1.avif)
+
+Ongendronger konstruiere mer dä dynamische Schaltkreis för die trotterisierte Zickentwicklung. Die `RZZ`-Gates weede durch die Dynamic-Circuit-Implementierung met d' Schredde, die ovve beschrevve sin, ussjetuscht.
+
+```python
+def gen_hex_dynamic(
+    depth=1,
+    zz_angle=np.pi / 8,
+    θ=Parameter("θ"),
+    hex_rows=1,
+    hex_cols=1,
+    measure=False,
+    add_dd=True,
+):
+    """Dynamische Schaltkreise baue."""
+    (data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex) = (
+        make_lattice(hex_rows=hex_rows, hex_cols=hex_cols)
+    )
+    # Schaltkreis initialisiere
+    qr = QuantumRegister(len(qubits), "qr")
+    cr = ClassicalRegister(len(ancilla), "cr")
+    circuit = QuantumCircuit(qr, cr)
+
+    for k in range(depth):
+        # Single-Qubit-Rx-Schicht
+        for d in data:
+            circuit.rx(θ, d)
+        circuit.barrier()
+
+        # CX-Gates vun Date-Qubits zu Ancilla-Qubits
+        for same_color_edges in layer_edges.values():
+            for e in same_color_edges:
+                circuit.cx(e[0], e[1])
+        circuit.barrier()
+
+        # Rz-Rotation op Ancilla-Qubits aanwende un en X-Basis rotiere
+        for a in ancilla:
+            circuit.rz(zz_angle, a)
+            circuit.h(a)
+        # Barrier dobeifööge, öm terminale Messung uszerechte
+        circuit.barrier()
+
+        # Ancilla-Qubits messe
+        for i, a in enumerate(ancilla):
+            circuit.measure(a, i)
+        d2ros = {}
+        a2ro = {}
+        # Ancilla-Messresultate ophale
+        for a in ancilla:
+            a2ro[a] = cr[ancilla.index(a)]
+
+        # För jedes Date-Qubit Messresultate vun nohberschaftliche Ancilla-Qubits ophale
+        for d in data:
+            ros = [a2ro[a] for a in heavyhex_cmap.neighbors(d)]
+            d2ros[d] = ros
+
+        # Klassische Feedforward-Operatione baue (optional DD op idelnde Date-Qubits dobeifööge)
+        for d in data:
+            if add_dd:
+                circuit = add_stretch_dd(circuit, d, f"data_{d}_depth_{k}")
+
+            # # Die nohberschaftliche Readouts vum Date-Qubit XOR maache; wann True, Z dropopwende
+            ros = d2ros[d]
+            parity = ros[0]
+            for ro in ros[1:]:
+                parity = expr.bit_xor(parity, ro)
+            with circuit.if_test(expr.equal(parity, True)):
+                circuit.z(d)
+
+        # Dat Ancilla zeröcksetze, wann singe Readout 1 es
+        for a in ancilla:
+            with circuit.if_test(expr.equal(a2ro[a], True)):
+                circuit.x(a)
+        circuit.barrier()
+
+    # Letzte Single-Qubit-Rx-Schicht, öm met d' unitäre Schaltkreise övereenzestemme
+    for d in data:
+        circuit.rx(θ, d)
+
+    if measure:
+        circuit.measure_all()
+    return circuit, obs_hex
+
+def add_stretch_dd(qc, q, name):
+    """XpXm-DD-Sequenz dobeifööge."""
+    s = qc.add_stretch(name)
+    qc.delay(s, q)
+    qc.x(q)
+    qc.delay(s, q)
+    qc.delay(s, q)
+    qc.rz(np.pi, q)
+    qc.x(q)
+    qc.rz(-np.pi, q)
+    qc.delay(s, q)
+    return qc
+```
+
+#### Dynamical Decoupling (DD) un Unnerstötzung för `stretch`-Duration {#dynamical-decoupling-dd-and-support-for-stretch-duration}
+Einer vun d' Nohdeile, wann mer die Dynamic-Circuit-Implementierung för die ZZ-Interaktion bruche, es, dat die Mid-Circuit-Messung un die klassische Feedforward-Operatione typischerwiis ne längere Zick bruche wie Quantegates. Öm Qubit-Dekohärenz während d'r Idle-Zick för die klassische Operatione ze ongerdröcke, han mer ne [Dynamical-Decoupling](/guides/error-mitigation-and-suppression-techniques#dynamical-decoupling)-(DD)-Sequenz noh d'r Messoperation op d' Ancilla-Qubits un vör d'r bedingde Z-Operation op dat Date-Qubit, vör däm `if_test`-Statement, dobeijeföög.
+
+Die DD-Sequenz weed durch die Funktion `add_stretch_dd()` dobeijeföög, die die [`stretch`-Durations](/guides/stretch) bruch, öm die Zickintervalle zwesche d' DD-Gates ze bestemme. Ne `stretch`-Duration es ne Wäg, ne dehnbare Zickdauer för die `delay`-Operation ze spezifiziere, esu dat die Delay-Duration wahs künnt, öm die Qubit-Idle-Zick opzeföllen. Die Duration-Variable, die durch `stretch` spezifizeet weede, weede zur Compile-Zick en gewönschte Durations opjelöst, die ne bestemmte Bedingung erföllen. Dat es seh nötzlich, wann dat Timing vun DD-Sequenze wesentlich es, öm jode Error-Suppression-Performance ze erreichе. För mih Details övver dä `stretch`-Typ, luurt en die [OpenQASM](https://openqasm.com/language/delays.html#duration-and-stretch-types)-Dokumentation. Momentan es die Unnerstötzung för dä `stretch`-Typ en Qiskit Runtime experimentell. För Details övver sing Nutzungsbeschränkunge luurt en [dä Limitations-Abschnitt](/guides/stretch#qiskit-runtime-limitations) vun d'r `stretch`-Dokumentation.
+
+Met d' Funktione, die ovve defineet sin, baue mer die trotterisierte Zickentwicklungs-Schaltkreise, met un ohne DD, un die entsprechend Observables.
+Mer fange aan, endem mer dä dynamische Schaltkreis vun nem kleine Beispell visualisiere:
+
+```python
+hex_rows_test = 1
+hex_cols_test = 1
+
+(
+    data_test,
+    qubits_test,
+    ancilla_test,
+    layer_edges_test,
+    heavyhex_cmap_test,
+    graph_test,
+    obs_hex_test,
+) = make_lattice(hex_rows=hex_rows_test, hex_cols=hex_cols_test)
+
+node_colors = []
+for node in graph_test.node_indices():
+    if node in ancilla_test:
+        node_colors.append("purple")
+    else:
+        node_colors.append("lightblue")
+pos = rx.graph_spring_layout(
+    graph_test,
+    k=5 / np.sqrt(len(qubits_test)),
+    repulsive_exponent=2,
+    num_iter=150,
+)
+
+# ne klein Beispell för Illustration zeije
+node_colors_test = ["lightblue"] * len(graph_test.node_indices())
+mpl_draw(graph_test, node_color=node_colors, pos=pos)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/b6e2e76c-0.avif)
+
+```python
+circuit_dynamic_test, obs_dynamic_test = gen_hex_dynamic(
+    depth=1,
+    θ=Parameter("θ"),
+    hex_rows=hex_rows_test,
+    hex_cols=hex_cols_test,
+    measure=False,
+    add_dd=False,
+)
+circuit_dynamic_test.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/735e590a-0.avif)
+
+```python
+circuit_dynamic_dd_test, _ = gen_hex_dynamic(
+    depth=1,
+    θ=Parameter("θ"),
+    hex_rows=hex_rows_test,
+    hex_cols=hex_cols_test,
+    measure=False,
+    add_dd=True,
+)
+circuit_dynamic_dd_test.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/5de9381a-0.avif)
+
+Ähnlich konstruiere mer die dynamische Schaltkreise för dat jrußе Beispell:
+
+```python
+circuits_dynamic = []
+circuits_dynamic_dd = []
+observables_dynamic = []
+for depth in depths:
+    circuit, obs = gen_hex_dynamic(
+        depth=depth,
+        θ=Parameter("θ"),
+        hex_rows=hex_rows,
+        hex_cols=hex_cols,
+        measure=True,
+        add_dd=False,
+    )
+    circuits_dynamic.append(circuit)
+
+    circuit_dd, _ = gen_hex_dynamic(
+        depth=depth,
+        θ=Parameter("θ"),
+        hex_rows=hex_rows,
+        hex_cols=hex_cols,
+        measure=True,
+        add_dd=True,
+    )
+    circuits_dynamic_dd.append(circuit_dd)
+    observables_dynamic.append(obs)
+```
+
+## Schrett 2: Dat Problem för Hardware-Usföhrung optimiere {#step-2-optimize-problem-for-hardware-execution}
+Mer sin jetz parat, dä Schaltkreis för die Hardware ze transpiliere. Mer weede sowohl die unitäre Standard-Implementierung wie och die Dynamic-Circuit-Implementierung för die Hardware transpiliere.
+
+Öm op Hardware ze transpiliere, instantiiere mer zerscht dat Backend. Wann verfögbar, weede mer ne Backend usköhre, wo die [`MidCircuitMeasure`](/guides/measure-qubits)-(`measure_2`)-Instruktion unnerstötzt weed.
+
+```python
+service = QiskitRuntimeService()
+try:
+    backend = service.least_busy(
+        operational=True,
+        simulator=False,
+        use_fractional_gates=True,
+        filters=lambda b: "measure_2" in b.supported_instructions,
+    )
+except QiskitBackendNotFoundError:
+    backend = service.least_busy(
+        operational=True,
+        simulator=False,
+        use_fractional_gates=True,
+    )
+```
+
+### Transpilation för dynamische Schaltkreise {#transpilation-for-dynamic-circuits}
+Zerscht transpiliere mer die dynamische Schaltkreise, met un ohne Dobeiföögung vun d'r DD-Sequenz. Öm secherzestelle, dat mer dieselve Satz vun physikalische Qubits en alle Schaltkreise för mih konsistente Resultate bruche, transpiliere mer dä Schaltkreis einmol, un bruche dann sing Layout för all folgende Schaltkreise, spezifizeet durch [`initial_layout`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.TranspileLayout#initial_layout) em Pass Manager. Dann konstruiere mer die [Primitive Unified Blocs](/guides/primitive-input-output) (PUBs) als Sampler-Primitive-Input.
+
+```python
+pm_temp = generate_preset_pass_manager(
+    optimization_level=3,
+    backend=backend,
+)
+isa_temp = pm_temp.run(circuits_dynamic[-1])
+dynamic_layout = isa_temp.layout.initial_index_layout(filter_ancillas=True)
+
+pm = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=dynamic_layout
+)
+
+dynamic_isa_circuits = [pm.run(circ) for circ in circuits_dynamic]
+dynamic_pubs = [(circ, params) for circ in dynamic_isa_circuits]
+
+dynamic_isa_circuits_dd = [pm.run(circ) for circ in circuits_dynamic_dd]
+dynamic_pubs_dd = [(circ, params) for circ in dynamic_isa_circuits_dd]
+```
+
+Mer künne dat Qubit-Layout vum transpiliertе Schaltkreis ongendronger visualisiere. Die schwatze Kreise zeije die Date-Qubits un die Ancilla-Qubits, die en d'r Dynamic-Circuit-Implementierung brucht weede.
+
+```python
+def _heron_coords_r2():
+    cord_map = np.array(
+        [
+            [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+            ],
+            -1
+            * np.array([j for i in range(15) for j in [i] * [16, 4][i % 2]]),
+        ],
+        dtype=int,
+    )
+
+    hcords = []
+    ycords = cord_map[0]
+    xcords = cord_map[1]
+    for i in range(156):
+        hcords.append([xcords[i] + 1, np.abs(ycords[i]) + 1])
+
+    return hcords
+```
+
+```python
+plot_circuit_layout(
+    dynamic_isa_circuits_dd[8],
+    backend,
+    qubit_coordinates=_heron_coords_r2(),
+    view="virtual",
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/98d402e0-0.avif)
+
+<Admonition type="note">
+Wann d'r Fehler övver `neato` nit jefonge kriet vun `plot_circuit_layout()`, merk dat d'r dat `graphviz`-Paket installeet un en Eurem PATH verfögbar sin muss. Wann et en nem Nit-Standard-Ort installeet weed (zom Beispell met `homebrew` op MacOS), müsst d'r möglicherwiis Euer `PATH`-Umjebungsvariabel aktualisiere. Dat kann en däm Notebook met däm Folgende jemaht weede:
+
+```python
+import os
+os.environ['PATH'] = f"path/to/neato{os.pathsep}{os.environ['PATH']}"
+```
+</Admonition>
+
+```python
+dynamic_isa_circuits[1].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/82fb6fa8-0.avif)
+
+```python
+dynamic_isa_circuits_dd[1].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/99ad295c-0.avif)
+
+#### Transpiliere met `MidCircuitMeasure` {#transpile-using-midcircuitmeasure}
+
+`MidCircuitMeasure` es ne Ergänzung zu d' verfögbare Messoperatione, speziell kalibreet, öm [Mid-Circuit-Messunge](/guides/measure-qubits#mid-circuit-measurements) uszföhre. Die `MidCircuitMeasure`-Instruktion mapt op die `measure_2`-Instruktion, die vun d' Backends unnerstötzt weed. Merk, dat `measure_2` nit op alle Backends unnerstötzt weed. D'r künnt `service.backends(filters=lambda b: "measure_2" in b.supported_instructions)` bruche, öm Backends ze fenge, die et unnerstötze. Hee zeije mer, wie mer dä Schaltkreis esu transpiliere, dat die Mid-Circuit-Messunge, die em Schaltkreis defineet sin, met d'r `MidCircuitMeasure`-Operation usjeföhrt weede, wann dat Backend et unnerstötzt.
+
+Ongendronger drocke mer die Duration för die `measure_2`-Instruktion un die Standard-`measure`-Instruktion.
+
+```python
+print(
+    f'Mid-circuit measurement `measure_2` duration: {backend.instruction_durations.get('measure_2',0) * backend.dt * 1e9/1e3} μs'
+)
+print(
+    f'Terminal measurement `measure` duration: {backend.instruction_durations.get('measure',0) * backend.dt *1e9/1e3} μs'
+)
+```
+
+```text
+Mid-circuit measurement `measure_2` duration:  1.624 μs
+Terminal measurement `measure` duration: 2.2 μs
+```
+
+```python
+"""Pass, dä terminale Messunge en d'r Meddel vum Schaltkreis met
+MidCircuitMeasure-Instruktione usstuusch."""
+
+class ConvertToMidCircuitMeasure(TransformationPass):
+    """Dä Pass usstuusch terminale Messunge en d'r Meddel vum Schaltkreis met
+    MidCircuitMeasure-Instruktione.
+    """
+
+    def __init__(self, target):
+        super().__init__()
+        self.target = target
+
+    def run(self, dag):
+        """Dä Pass op nem Dag lofe losse."""
+        mid_circ_measure = None
+        for inst in self.target.instructions:
+            if isinstance(inst[0], Instruction) and inst[0].name.startswith(
+                "measure_"
+            ):
+                mid_circ_measure = inst[0]
+                break
+        if not mid_circ_measure:
+            return dag
+
+        final_measure_nodes = calc_final_ops(dag, {"measure"})
+        for node in dag.op_nodes(Measure):
+            if node not in final_measure_nodes:
+                dag.substitute_node(node, mid_circ_measure, inplace=True)
+
+        return dag
+
+pm = PassManager(ConvertToMidCircuitMeasure(backend.target))
+
+dynamic_isa_circuits_meas2 = [pm.run(circ) for circ in dynamic_isa_circuits]
+dynamic_pubs_meas2 = [(circ, params) for circ in dynamic_isa_circuits_meas2]
+
+dynamic_isa_circuits_dd_meas2 = [
+    pm.run(circ) for circ in dynamic_isa_circuits_dd
+]
+dynamic_pubs_dd_meas2 = [
+    (circ, params) for circ in dynamic_isa_circuits_dd_meas2
+]
+```
+
+### Transpilation för unitäre Schaltkreise {#transpilation-for-unitary-circuits}
+
+Öm ne faire Verjlich zwesche d' dynamische Schaltkreise un hör unitär Jegenstöck ze etabliere, bruche mer dieselve Satz vun physikalische Qubits, die en d' dynamische Schaltkreise för die Date-Qubits brucht weede, als Layout för die Transpilation vun d' unitäre Schaltkreise.
+
+```python
+init_layout = [
+    dynamic_layout[ind] for ind in range(circuits_unitary[0].num_qubits)
+]
+
+pm = generate_preset_pass_manager(
+    target=backend.target,
+    initial_layout=init_layout,
+    optimization_level=3,
+)
+
+def transpile_minimize(circ: QuantumCircuit, pm: PassManager, iterations=10):
+    """Schaltkreise för spezifizeet Aanzahl vun Iteratione transpiliere un dä met d'r kleinste Two-Qubit-Gate-Deepde zeröckjevve"""
+    circs = [pm.run(circ) for i in range(iterations)]
+    circs_sorted = sorted(
+        circs,
+        key=lambda x: x.depth(lambda x: x.operation.num_qubits == 2),
+    )
+    return circs_sorted[0]
+
+unitary_isa_circuits = []
+for circ in circuits_unitary:
+    circ_t = transpile_minimize(circ, pm, iterations=100)
+    unitary_isa_circuits.append(circ_t)
+
+unitary_pubs = [(circ, params) for circ in unitary_isa_circuits]
+```
+
+Mer visualisiere dat Qubit-Layout vun d' transpiliertе unitäre Schaltkreise. Die schwatze Kreise zeije die physikalische Qubits, die för die Transpilation vun d' unitäre Schaltkreise brucht weede, un hör Indizes entspreche d' virtuele Qubit-Indizes. Wann mer dat met däm Layout verjliche, dat för die dynamische Schaltkreise jeplottet weed, künne mer beschtätije, dat die unitäre Schaltkreise dieselve Satz vun physikalische Qubits wie die Date-Qubits en d' dynamische Schaltkreise bruche.
+
+```python
+plot_circuit_layout(
+    unitary_isa_circuits[-1],
+    backend,
+    qubit_coordinates=_heron_coords_r2(),
+    view="virtual",
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/8c3c633f-0.avif)
+
+Mer fööge jetz die DD-Sequenz zu d' transpiliertе Schaltkreise dobei un konstruiere die entsprechend PUBs för Job-Submission.
+
+```python
+pm_dd = PassManager(
+    [
+        ALAPScheduleAnalysis(target=backend.target),
+        PadDynamicalDecoupling(
+            dd_sequence=[
+                XGate(),
+                RZGate(np.pi),
+                XGate(),
+                RZGate(-np.pi),
+            ],
+            spacing=[1 / 4, 1 / 2, 0, 0, 1 / 4],
+            target=backend.target,
+        ),
+    ]
+)
+
+unitary_isa_circuits_dd = pm_dd.run(unitary_isa_circuits)
+unitary_pubs_dd = [(circ, params) for circ in unitary_isa_circuits_dd]
+```
+
+### Two-Qubit-Gate-Deepde vun unitäre un dynamische Schaltkreise verjliche {#compare-two-qubit-gate-depth-of-unitary-and-dynamic-circuits}
+
+```python
+# Schaltkreis-Deepde vun unitäre un Dynamic-Circuit-Implementierunge verjliche
+unitary_depth = [
+    unitary_isa_circuits[i].depth(lambda x: x.operation.num_qubits == 2)
+    for i in range(len(unitary_isa_circuits))
+]
+
+dynamic_depth = [
+    dynamic_isa_circuits[i].depth(lambda x: x.operation.num_qubits == 2)
+    for i in range(len(dynamic_isa_circuits))
+]
+
+plt.plot(
+    list(range(len(unitary_depth))),
+    unitary_depth,
+    label="unitary circuits",
+    color="#be95ff",
+)
+plt.plot(
+    list(range(len(dynamic_depth))),
+    dynamic_depth,
+    label="dynamic circuits",
+    color="#ff7eb6",
+)
+plt.xlabel("Trotter steps")
+plt.ylabel("Two-qubit depth")
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x374225760>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/36f1d72d-1.avif)
+
+Dä Hauptvordeel vum messungsbasiertе Schaltkreis es, dat beim Implementiere vun mehrere ZZ-Interaktione die CX-Schichte paralleliseet weede künne, un Messunge gleichzickig opträdde künne. Dat es esu, weil all ZZ-Interaktione kommutiere, esu dat die Berechnung met Messungs-Deepde 1 durchjeföhrt weede kann. Nohdem mer die Schaltkreise transpileet han, beobachte mer, dat dä Dynamic-Circuit-Aangang ne bedötend körzere Two-Qubit-Deepde wie dä Standard-Unitär-Aangang ergitt, met däm Vorbehalt, dat die zusätzlich Mid-Circuit-Messung un dat klassische Feedforward selwer Zick bruche un hör eije Fehlerquellen enföhre.
+## Schrett 3: Met Qiskit-Primitives usföhre {#step-3-execute-using-qiskit-primitives}
+#### Lokale Test-Modus {#local-testing-mode}
+
+Bevör mer die Jobs op die Hardware schigge, künne mer ne klein Test-Simulation vum dynamische Schaltkreis met däm [lokale Test-Modus](/guides/local-testing-mode) lofe losse.
+
+```python
+aer_sim = AerSimulator()
+pm = generate_preset_pass_manager(backend=aer_sim, optimization_level=1)
+circuit_dynamic_test.measure_all()
+isa_qc = pm.run(circuit_dynamic_test)
+with Batch(backend=aer_sim) as batch:
+    sampler = Sampler(mode=batch)
+    result = sampler.run([(isa_qc, params)]).result()
+
+print(
+    "Simulierte dörchnettliche Magnetisierung beim Trotter-Schrett = 1 bei dree Theta-Werte"
+)
+result[0].data["meas"].expectation_values(obs_dynamic_test[0])
+```
+
+```text
+Simulierte dörchnettliche Magnetisierung beim Trotter-Schrett = 1 bei dree Theta-Werte
+```
+
+```text
+array([ 0.16666667,  0.01855469, -0.13476562])
+```
+
+#### MPS-Simulation {#mps-simulation}
+
+För jrußе Schaltkreise künne mer dä `matrix_product_state`-(MPS)-Simulator bruche, dä ne approximatives Resultat zum Erwartungswärt jenohch d'r jewählte Bond-Dimension liefert. Mer bruche spääder die MPS-Simulationsresultate als Baseline, öm die Resultate vun d'r Hardware ze verjliche.
+
+```python
+# Die MPS-Simulation ongendronger hät ungefähr 7 Minute jebrucht op nem Laptop met Apple-M1-Chip
+
+mps_backend = AerSimulator(
+    method="matrix_product_state",
+    matrix_product_state_truncation_threshold=1e-5,
+    matrix_product_state_max_bond_dimension=100,
+)
+mps_sampler = Aer_Sampler.from_backend(mps_backend)
+
+shots = 4096
+
+data_sim = []
+for j in range(points):
+    circ_list = [
+        circ.assign_parameters([params[j]]) for circ in circuits_unitary
+    ]
+
+    mps_job = mps_sampler.run(circ_list, shots=shots)
+    result = mps_job.result()
+
+    point_data = [
+        result[d].data["meas"].expectation_values(observables_unitary)
+        for d in depths
+    ]
+
+    data_sim.append(point_data)  # Date bei einem Theta-Wärt
+
+data_sim = np.array(data_sim)
+```
+
+Met d' Schaltkreise un Observables vörbereit, föhre mer se jetz op Hardware met däm Sampler-Primitive us.
+
+Hee schigge mer dree Jobs för `unitary_pubs`, `dynamic_pubs` un `dynamic_pubs_dd`. Jedes es ne Leß vun parametrisiertе Schaltkreise, die neun verschiedene Trotter-Schredde met dree verschiedene $\theta$-Parametere entspreche.
+
+```python
+shots = 10000
+
+with Batch(backend=backend) as batch:
+    sampler = Sampler(mode=batch)
+
+    sampler.options.experimental = {
+        "execution": {
+            "scheduler_timing": True
+        },  # op True setze, öm Schaltkreis-Timing-Info ze krijje
+    }
+
+    job_unitary = sampler.run(unitary_pubs, shots=shots)
+    print(f"unitary: {job_unitary.job_id()}")
+
+    job_unitary_dd = sampler.run(unitary_pubs_dd, shots=shots)
+    print(f"unitary_dd: {job_unitary_dd.job_id()}")
+
+    job_dynamic = sampler.run(dynamic_pubs, shots=shots)
+    print(f"dynamic: {job_dynamic.job_id()}")
+
+    job_dynamic_dd = sampler.run(dynamic_pubs_dd, shots=shots)
+    print(f"dynamic_dd: {job_dynamic_dd.job_id()}")
+
+    job_dynamic_meas2 = sampler.run(dynamic_pubs_meas2, shots=shots)
+    print(f"dynamic_meas2: {job_dynamic_meas2.job_id()}")
+
+    job_dynamic_dd_meas2 = sampler.run(dynamic_pubs_dd_meas2, shots=shots)
+    print(f"dynamic_dd_meas2: {job_dynamic_dd_meas2.job_id()}")
+```
+
+```text
+unitary: d5dtt0ldq8ts73fvbhj0
+unitary: d5dtt11smlfc739onuag
+dynamic: d5dtt1hsmlfc739onuc0
+dynamic_dd: d5dtt25jngic73avdne0
+dynamic_meas2: d5dtt2ldq8ts73fvbhm0
+dynamic_dd_meas2: d5dtt2tjngic73avdnf0
+```
+
+## Schrett 4: Nachbereidung un Zeröckjevve vun Resultate em gewönschte klassische Format {#step-4-post-process-and-return-results-in-desired-classical-format}
+
+Nohdem die Jobs afjeschloss sin, künne mer die Schaltkreis-Duration us d' Job-Resultats-Metadata ophale un die Schaltkreis-Schedule-Information visualisiere. Öm mih övver dat Visualisiere vun d'r Scheduling-Information vun nem Schaltkreis ze lesse, luurt op [dä Sigg](/guides/visualize-circuit-timing#qiskit-runtime-support).
+
+```python
+# Schaltkreis-Durations weed en d'r Einheit vun `dt` berichtet, wat vum `Backend`-Objekt opjehaalt weede kann
+unitary_durations = [
+    job_unitary.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+dynamic_durations = [
+    job_dynamic.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+dynamic_durations_meas2 = [
+    job_dynamic_meas2.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+result_dd = job_dynamic_dd.result()[1]
+circuit_schedule_dd = result_dd.metadata["compilation"]["scheduler_timing"][
+    "timing"
+]
+
+# öm dä Schaltkreis-Schedule ze visualisiere, kann mer die Figur ongendronger zeije
+fig_dd = draw_circuit_schedule_timing(
+    circuit_schedule=circuit_schedule_dd,
+    included_channels=None,
+    filter_readout_channels=False,
+    filter_barriers=False,
+    width=1000,
+)
+
+# En ne Datei speichere, weil die Figur jrooß es
+fig_dd.write_html("scheduler_timing_dd.html")
+```
+
+Mer plotte die Schaltkreis-Durations för unitäre Schaltkreise un die dynamische Schaltkreise. Us däm Plot ongendronger künne mer sinn, dat trotz d'r Zick, die för Mid-Circuit-Messunge un klassische Operatione nödig es, die Dynamic-Circuit-Implementierung met `measure_2` en verjlichbare Schaltkreis-Durations wie die unitäre Implementierung resulteert.
+
+```python
+# Schaltkreis-Durations visualisiere
+
+def convert_dt_to_microseconds(circ_duration: List, backend_dt: float):
+    dt = backend_dt * 1e6  # dt en Mikrosekunde
+    return list(map(lambda x: x * dt, circ_duration))
+
+dt = backend.target.dt
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(unitary_durations, dt),
+    color="#be95ff",
+    linestyle=":",
+    label="unitary",
+)
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(dynamic_durations, dt),
+    color="#ff7eb6",
+    linestyle="-.",
+    label="dynamic",
+)
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(dynamic_durations_meas2, dt),
+    color="#ff7eb6",
+    linestyle="-.",
+    marker="s",
+    mfc="none",
+    label="dynamic w/ meas2",
+)
+
+plt.xlabel("Trotter steps")
+plt.ylabel(r"Circuit durations in $\mu$s")
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x17f73c6e0>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/639221e6-1.avif)
+
+Nohdem die Jobs afjeschloss sin, hale mer die Date ongendronger op un berechne die dörchnettliche Magnetisierung, jeschätzt durch die Observables `observables_unitary` oder `observables_dynamic`, die mer vürher konstrueet han.
+
+```python
+runs = {
+    "unitary": (
+        job_unitary,
+        [observables_unitary] * len(circuits_unitary),
+    ),
+    "unitary_dd": (
+        job_unitary_dd,
+        [observables_unitary] * len(circuits_unitary),
+    ),
+    # Dyn ohne DD un Dynamic met DD-Plots för bessere Lesbarkeit usjelosse
+    # "dynamic": (job_dynamic, observables_dynamic),
+    # "dynamic_dd": (job_dynamic_dd, observables_dynamic),
+    "dynamic_meas2": (job_dynamic_meas2, observables_dynamic),
+    "dynamic_dd_meas2": (
+        job_dynamic_dd_meas2,
+        observables_dynamic,
+    ),
+}
+```
+
+```python
+data_dict = {}
+for key, (job, obs) in runs.items():
+    data = []
+    for i in range(points):
+        data.append(
+            [
+                job.result()[ind].data["meas"].expectation_values(obs[ind])[i]
+                for ind in depths
+            ]
+        )
+    data_dict[key] = data
+```
+
+Ongendronger plotte mer die Spin-Magnetisierung als Funktion vun d' Trotter-Schredde bei verschiedene $\theta$-Werte, entsprechend verschiedene Stärke vum lokale Manetfeld. Mer plotte sowohl die vörberechnete MPS-Simulationsresultate för die unitäre ideale Schaltkreise, zosamme met d' experimentelle Resultate vum Folgende:
+
+1. die unitäre Schaltkreise met DD lofe losse
+3. die dynamische Schaltkreise met DD un `MidCircuitMeasure` lofe losse
+
+```python
+plt.figure(figsize=(10, 6))
+
+colors = ["#0f62fe", "#be95ff", "#ff7eb6"]
+for i in range(points):
+    plt.plot(
+        depths,
+        data_sim[i],
+        color=colors[i],
+        linestyle="solid",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (MPS)",
+    )
+    # plt.plot(
+    #     depths,
+    #     data_dict["unitary"][i],
+    #     color=colors[i],
+    #     linestyle=":",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Unitary)",
+    # )
+
+    plt.plot(
+        depths,
+        data_dict["unitary_dd"][i],
+        color=colors[i],
+        marker="o",
+        mfc="none",
+        linestyle=":",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (Unitary w/DD)",
+    )
+
+    # Dyn ohne DD un Dynamic w/ DD-Plots för bessere Lesbarkeit usjelosse
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic"][i],
+    #     color=colors[i],
+    #     linestyle="-.",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dyn w/o DD)",
+    # )
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic_dd"][i],
+    #     marker="D",
+    #     mfc="none",
+    #     color=colors[i],
+    #     linestyle="-.",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ DD)",
+    # )
+
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic_meas2"][i],
+    #     color=colors[i],
+    #     marker="s",
+    #     mfc="none",
+    #     linestyle=':',
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ MidCircuitMeas)",
+    # )
+
+    plt.plot(
+        depths,
+        data_dict["dynamic_dd_meas2"][i],
+        color=colors[i],
+        marker="*",
+        markersize=8,
+        linestyle=":",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ DD & MidCircuitMeas)",
+    )
+
+plt.xlabel("Trotter steps", fontsize=16)
+plt.ylabel("Average magnetization", fontsize=16)
+plt.xticks(rotation=45)
+handles, labels = plt.gca().get_legend_handles_labels()
+plt.legend(
+    handles,
+    labels,
+    loc="upper right",
+    bbox_to_anchor=(1.46, 1.0),
+    shadow=True,
+    ncol=1,
+)
+plt.title(
+    f"{hex_rows}x{hex_cols} hex ring, {num_qubits} data qubits, {len(ancilla)} ancilla qubits \n{backend.name}: Sampler"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/dc-hex-ising/extracted-outputs/662239cf-0.avif)
+
+Wann mer die experimentelle Resultate met d'r Simulation verjliche, sinn mer, dat die Dynamic-Circuit-Implementierung (jestrichelte Linie met Sterne) insjesamt bessere Performance hät wie die Standard-Unitär-Implementierung (jestrichelte Linie met Kreise). Zosammejefass präsentiere mer dynamische Schaltkreise als Lösung för dat Simuliere vun Ising-Spin-Modelle op nem Honeycomb-Jitter, ne Topologie, die nit nativ op d'r Hardware es. Die Dynamic-Circuit-Lösung erlöwt ZZ-Interaktione zwesche Qubits, die nit Nöchste-Nohbere sin, met ner körzere Two-Qubit-Gate-Deepde wie beim Bruche vun SWAP-Gates, op Koste dodurch, dat extra Ancilla-Qubits un klassische Feedforward-Operatione enjeföhrt weede.
+## Referenze {#references}
+[1] Quantum computing with Qiskit, vun Javadi-Abhari, A., Treinish, M., Krsulich, K., Wood, C.J., Lishman, J., Gacon, J., Martiel, S., Nation, P.D., Bishop, L.S., Cross, A.W. un Johnson, B.R., 2024. arXiv preprint [arXiv:2405.08810 (2024)](https://arxiv.org/abs/2405.08810)

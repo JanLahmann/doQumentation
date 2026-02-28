@@ -1,0 +1,228 @@
+---
+title: "אימון ליבת קוונטים"
+sidebar_label: "אימון ליבת קוונטים"
+description: "בניית תבנית Qiskit להערכת ערכים במטריצת ליבת קוונטים המשמשת לסיווג בינארי."
+notebook_path: "docs/tutorials/quantum-kernel-training.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/quantum-kernel-training.ipynb" />
+
+
+
+*אומדן זמן שימוש: פחות מדקה על מעבד Eagle r3 (הערה: זהו אומדן בלבד. זמן הריצה שלך עשוי להשתנות.)*
+## רקע {#background}
+
+מדריך זה מראה כיצד לבנות `תבנית Qiskit` להערכת ערכים במטריצת ליבת קוונטים המשמשת לסיווג בינארי. למידע נוסף על `תבניות Qiskit` וכיצד ניתן להשתמש ב-`Qiskit Serverless` לפרוס אותן לענן לביצוע מנוהל, בקרו ב[דף התיעוד שלנו על IBM Quantum&reg; Platform](/guides/serverless).
+## דרישות {#requirements}
+
+לפני תחילת מדריך זה, וודאו שיש לכם את הדברים הבאים מותקנים:
+- Qiskit SDK v1.0 ומעלה, עם תמיכה ב-[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 ומעלה (`pip install qiskit-ibm-runtime`)
+## הכנה {#setup}
+
+```python
+!wget https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv
+
+# General Imports and helper functions
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.circuit.library import UnitaryOverlap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
+
+# from qiskit_serverless import IBMServerlessClient, QiskitFunction
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+
+def visualize_counts(res_counts, num_qubits, num_shots):
+    """Visualize the outputs from the Qiskit Sampler primitive."""
+    zero_prob = res_counts.get(0, 0.0)
+    top_10 = dict(
+        sorted(res_counts.items(), key=lambda item: item[1], reverse=True)[
+            :10
+        ]
+    )
+    top_10.update({0: zero_prob})
+    by_key = dict(sorted(top_10.items(), key=lambda item: item[0]))
+    x_vals, y_vals = list(zip(*by_key.items()))
+    x_vals = [bin(x_val)[2:].zfill(num_qubits) for x_val in x_vals]
+    y_vals_prob = []
+    for t in range(len(y_vals)):
+        y_vals_prob.append(y_vals[t] / num_shots)
+    y_vals = y_vals_prob
+    plt.bar(x_vals, y_vals)
+    plt.xticks(rotation=75)
+    plt.title("Results of sampling")
+    plt.xlabel("Measured bitstring")
+    plt.ylabel("Probability")
+    plt.show()
+
+def get_training_data():
+    """Read the training data."""
+    df = pd.read_csv("dataset_graph7.csv", sep=",", header=None)
+    training_data = df.values[:20, :]
+    ind = np.argsort(training_data[:, -1])
+    X_train = training_data[ind][:, :-1]
+
+    return X_train
+```
+
+```text
+7[1A[1G[27G[Files: 0  Bytes: 0  [0 B/s] Re]87[2A[1G[27G[https://raw.githubusercontent.]87[1S[3A[1G[0JSaving 'dataset_graph7.csv.1'
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1S[3A[1G[0JHTTP response 200  [https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv]
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1A[1G[27G[Files: 1  Bytes: 20.25K [93.33]8[m[m[m[m
+```
+
+## שלב 1: מיפוי קלטים קלאסיים לבעיה קוונטית {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+*   קלט: מערך נתוני אימון.
+*   פלט: מעגל מופשט לחישוב ערך במטריצת ליבה.
+
+צרו את המעגל הקוונטי המשמש להערכת ערך אחד במטריצת הליבה. אנו משתמשים בנתוני הקלט כדי לקבוע את זוויות הסיבוב של השערים הפרמטריים של המעגל. נשתמש בדגימות הנתונים `x1=14` ו-`x2=19`.
+
+***הערה: ניתן להוריד את מערך הנתונים המשמש במדריך זה [כאן](https://github.com/qiskit-community/prototype-quantum-kernel-training/blob/main/data/dataset_graph7.csv).***
+
+```python
+# Prepare training data
+X_train = get_training_data()
+
+# Empty kernel matrix
+num_samples = np.shape(X_train)[0]
+kernel_matrix = np.full((num_samples, num_samples), np.nan)
+
+# Prepare feature map for computing overlap
+num_features = np.shape(X_train)[1]
+num_qubits = int(num_features / 2)
+entangler_map = [[0, 2], [3, 4], [2, 5], [1, 4], [2, 3], [4, 6]]
+fm = QuantumCircuit(num_qubits)
+training_param = Parameter("θ")
+feature_params = ParameterVector("x", num_qubits * 2)
+fm.ry(training_param, fm.qubits)
+for cz in entangler_map:
+    fm.cz(cz[0], cz[1])
+for i in range(num_qubits):
+    fm.rz(-2 * feature_params[2 * i + 1], i)
+    fm.rx(-2 * feature_params[2 * i], i)
+
+# Assign tunable parameter to known optimal value and set the data params for first two samples
+x1 = 14
+x2 = 19
+unitary1 = fm.assign_parameters(list(X_train[x1]) + [np.pi / 2])
+unitary2 = fm.assign_parameters(list(X_train[x2]) + [np.pi / 2])
+
+# Create the overlap circuit
+overlap_circ = UnitaryOverlap(unitary1, unitary2)
+overlap_circ.measure_all()
+overlap_circ.draw("mpl", scale=0.6, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/70d6faff-9a56-44bb-b26f-f573a8c90889-0.avif)
+
+## שלב 2: אופטימיזציה של הבעיה לביצוע על חומרה קוונטית {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+*   קלט: מעגל מופשט, לא מותאם למעבד ספציפי
+*   פלט: מעגל יעד ואובסרבבל, מותאמים ל-QPU שנבחר
+
+השתמשו בפונקציה `generate_preset_pass_manager` מ-Qiskit כדי לציין שגרת אופטימיזציה עבור המעגל שלנו ביחס ל-QPU שעליו אנו מתכננים להריץ את הניסוי. אנו מגדירים `optimization_level=3`, מה שאומר שנשתמש במנהל המעברים המוגדר מראש המספק את רמת האופטימיזציה הגבוהה ביותר.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=overlap_circ.num_qubits
+)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+overlap_ibm = pm.run(overlap_circ)
+overlap_ibm.draw("mpl", scale=0.6, idle_wires=False, fold=-1, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/49607b34-9723-493d-85da-bd97c1351104-0.avif)
+
+## שלב 3: ביצוע באמצעות הפרימיטיבים של Qiskit {#step-3-execute-using-qiskit-primitives}
+
+*   קלט: מעגל יעד
+*   פלט: התפלגות קוואזי-הסתברות
+
+השתמשו בפרימיטיב `Sampler` מ-Qiskit Runtime כדי לשחזר התפלגות קוואזי-הסתברות של מצבים שהתקבלו מדגימת המעגל. למשימה של יצירת מטריצת ליבה, אנו מעוניינים במיוחד בהסתברות למדידת המצב |0>.
+
+עבור הדגמה זו, נריץ על QPU עם פרימיטיבים של `qiskit-ibm-runtime`. להרצה על פרימיטיבים מבוססי-statevector של `qiskit`, החליפו את הבלוק של קוד המשתמש בפרימיטיבים של Qiskit IBM&reg; Runtime עם הבלוק המוערת.
+
+```python
+num_shots = 10_000
+
+## Evaluate the problem using statevector-based primitives from Qiskit
+# from qiskit.primitives import StatevectorSampler
+
+# sampler = StatevectorSampler()
+# results = sampler.run([overlap_circ]).result()
+# counts = results[0].data.meas.get_int_counts()
+
+# Evaluate the problem using a QPU via Qiskit IBM Runtime
+
+sampler = Sampler(mode=backend)
+results = sampler.run([overlap_ibm]).result()
+counts = results[0].data.meas.get_int_counts()
+
+visualize_counts(counts, num_qubits, num_shots)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/d2f4f6cf-067e-4d53-aa04-7ca9c803d3e1-0.avif)
+
+## שלב 4: עיבוד נתונים והחזרת תוצאה בפורמט קלאסי רצוי {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+*   קלט: התפלגות הסתברות
+*   פלט: אלמנט יחיד במטריצת ליבה
+
+חשבו את ההסתברות למדידת |0> במעגל החפיפה, ואכלסו את מטריצת הליבה במיקום המתאים לדגימות המיוצגות על ידי מעגל חפיפה מסוים זה (שורה 15, עמודה 20). בוויזואליזציה זו, אדום כהה יותר מציין נאמנויות קרובות יותר ל-1.0. כדי למלא את כל מטריצת הליבה, עלינו להריץ ניסוי קוונטי עבור כל ערך.
+
+```python
+# Calculate the fidelity, or the probability to measure 0
+kernel_matrix[x1, x2] = counts.get(0, 0.0) / num_shots
+print(f"Fidelity: {kernel_matrix[x1, x2]}")
+```
+
+```text
+Fidelity: 0.1279
+```
+
+![kernel_matrix.png](/docs/images/tutorials/quantum-kernel-training/kernel_matrix.avif)
+## פריסת תבנית Qiskit לענן {#deploy-the-qiskit-pattern-to-the-cloud}
+
+לשם כך, העבירו את קוד המקור לעיל לקובץ, `./source/generate_kernel_entry.py`, עטפו את הקוד בסקריפט שמקבל קלטים ומחזיר את הפתרון הסופי, ולבסוף העלו אותו לאשכול מרוחק באמצעות המחלקה `QiskitFunction` מ-`Qiskit Serverless`. להדרכה על ציון תלויות חיצוניות, העברת ארגומנטים קלט ועוד, בדקו את ה-[מדריכי Qiskit Serverless](https://qiskit.github.io/qiskit-serverless/getting_started/index.html).
+
+הקלט לתבנית הוא זוג דגימות נתונים, `x1` ו-`x2`. הפלט הוא הנאמנות בין שתי הדגימות. ערך זה ישמש לאכלוס ערך מטריצת הליבה המתאים לשתי הדגימות הללו.
+
+```python
+serverless = QiskitServerless()
+
+kernel_entry_pattern = QiskitFunction(
+    title="generate-kernel-entry",
+    entrypoint="generate_kernel_entry.py",
+    working_dir="./source/",
+)
+
+serverless.upload(kernel_entry_pattern)
+```
+
+## הרצת תבנית Qiskit כשירות מנוהל {#run-the-qiskit-pattern-as-a-managed-service}
+
+ברגע שהעלינו את התבנית לענן, נוכל להריץ אותה בקלות באמצעות הלקוח `IBMServerlessProvider`. לשם פשטות, נשתמש בסימולטור קוונטי מדויק בסביבת הענן, כך שהנאמנות שנחשב תהיה מדויקת.
+
+```python
+generate_kernel_entry = serverless.load("generate-kernel-entry")
+job = generate_kernel_entry.run(
+    sample1=list(X_train[x1]), sample2=list(X_train[x2])
+)
+
+kernel_matrix[x1, x2] = job.result()["fidelity"]
+print(f"fidelity: {kernel_matrix[x1, x2]}")
+```
+
+## סקר המדריך {#tutorial-survey}
+
+אנא מלאו סקר קצר זה כדי לספק משוב על מדריך זה. התובנות שלכם יעזרו לנו לשפר את הצעות התוכן והחוויה המשתמש שלנו.
+
+[קישור לסקר](https://your.feedback.ibm.com/jfe/form/SV_6xsFvUYV1pNHCqW)

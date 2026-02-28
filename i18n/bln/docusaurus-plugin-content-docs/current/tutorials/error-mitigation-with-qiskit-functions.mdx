@@ -1,0 +1,224 @@
+---
+title: "Fehlerminderung mit de IBM Circuit-Funktion"
+sidebar_label: "Fehlerminderung mit de IBM Circuit-Funktion"
+description: "Loof durch 'n Beispiel vom Bauen un Ausführn von 'nem Workflow mit de IBM Circuit-Funktion."
+notebook_path: "docs/tutorials/error-mitigation-with-qiskit-functions.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/error-mitigation-with-qiskit-functions.ipynb" />
+
+
+
+<Admonition type="note" title="Achtung">
+Qiskit Functions sind 'ne experimentelle Funktionalität, de nur für IBM Quantum&reg; Premium Plan, Flex Plan un On-Prem (über IBM Quantum Platform API) Plan Benutzer verfügbar is. Se sind im Preview-Status un könn' sich ändern.
+</Admonition>
+
+*Verbrauchsschätzung: 26 Minuten uff 'nem Eagle-Prozessor (ACHTUNG: Dit is nur 'ne Schätzung. Deine Laufzeit kann anders sein.)*
+Dit Tutorial jeht durch 'n Beispiel vom Bauen un Ausführn von 'nem Workflow mit de IBM Circuit-Funktion. Diese Funktion nimmt [Primitive Unified Blocs](/guides/primitive-input-output) (PUBs) als Einjänge un jibt fehlerjeminderte Erwartungswerte als Ausjänge zurück. Se liefert 'ne automatisierte un anjpasste Pipeline für de Optimierung von Schaltkreisen un de Ausführung uff Quantenhardware, sodass Forscher sich uff Algorithmus- un Anwendungsentdeckung konzentriern könn'.
+
+Besuch de Doku für 'ne [Einführung in Qiskit Functions](/guides/functions) un lern, wie de mit de [IBM Circuit-Funktion](/guides/ibm-circuit-function) anfängst.
+## Hintergrund {#background}
+
+Dit Tutorial betrachtet 'n allgemein hardware-effizienten trotterisierten Zeitevolutionsschaltkreis für't 2D Transversal-Feld Ising-Modell un berechnet de globale Magnetisierung. So 'n Schaltkreis is nützlich in verschiedene Anwendungsbereiche wie Festkörperphysik, Chemie un maschinellet Lern'. Für mehr Informationen über de Struktur von dem Modell kiek bei [Nature 618, 500–505 (2023)](https://www.nature.com/articles/s41586-023-06096-3).
+
+De IBM Circuit-Funktion kombiniert Fähigkeiten vom Qiskit-Transpiler-Service un Qiskit Runtime Estimator für 'ne vereinfachte Schnittstelle für't Ausführn von Schaltkreisen. De Funktion macht Transpilation, Fehlerunderdrückung, Fehlerminderung un Schaltkreisausführung innerhalb von 'nem einzeln verwalteten Service, sodass wa uns uff de Zuordnung vom Problem zu Schaltkreisen konzentriern könn', anstatt jeden Schritt vom Muster selber uffzubauen.
+## Voraussetzungen {#requirements}
+
+Bevor de mit dem Tutorial anfängst, stell secher, datt de Foljendet installiert hast:
+
+- Qiskit SDK v1.2 oder neuer (`pip install qiskit`)
+- Qiskit Runtime v0.28 oder neuer (`pip install qiskit-ibm-runtime`)
+- IBM Qiskit Functions Catalog client v0.0.0 oder neuer (`pip install qiskit-ibm-catalog`)
+- Qiskit Aer v0.15.0 oder neuer (`pip install qiskit-aer`)
+## Einrichtung {#setup}
+
+```python
+import rustworkx
+from collections import defaultdict
+from numpy import pi, mean
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.quantum_info import SparsePauliOp
+```
+
+## Schritt 1: Klassische Einjänge uff 'n Quantenproblem abbilden {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+<ul>
+    <li>Eingang: Parameter für't Erstellen vom Quantenschaltkreis</li>
+    <li>Ausgang: Abstrakter Schaltkreis un Observabeln</li>
+</ul>
+#### Den Schaltkreis konstruiern
+Der Schaltkreis, den wa bauen, is 'n hardware-effizienter, trotterisierter Zeitevolutionsschaltkreis für't 2D Transversal-Feld Ising-Modell. Wa fang' mit de Auswahl von 'nem Backend an. Eigenschaften von dem Backend (also seine Kopplungskarte) werd'n jebraucht, für't Quantenproblem zu definiern un sicherzustellen, datt et hardware-effizient is.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Als Nächstet holn wa de Kopplungskarte vom Backend.
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+layer_couplings = defaultdict(list)
+```
+
+Wa wolln vorsichtig sein, wie wa de Schichten von unsern Schaltkreis designen. Wa machen dit, indem wa de Kanten von de Kopplungskarte färben (also de disjunkten Kanten gruppieren) un de Färbung nutzen, für Gatter effizienter im Schaltkreis zu platzieren. Dit führt zu 'nem flachern Schaltkreis mit Schichten von Gattern, de jleichzeitich uff de Hardware ausjeführt werd'n könn'.
+
+```python
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+
+for edge_idx, color in edge_coloring.items():
+    layer_couplings[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layer_couplings = [
+    sorted(layer_couplings[i]) for i in sorted(layer_couplings.keys())
+]
+```
+
+Als Nächstet schreiben wa 'ne einfache Helferfunktion, de den hardware-effizienten, trotterisierten Zeitevolutionsschaltkreis für't 2D Transversal-Feld Ising-Modell mit de objenannten Kantenfärbung implementiert.
+
+```python
+def construct_trotter_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    layer_couplings: list,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    theta, phi = Parameter("theta"), Parameter("phi")
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(theta, range(num_qubits))
+        for layer in layer_couplings:
+            for edge in layer:
+                if edge[0] < num_qubits and edge[1] < num_qubits:
+                    circuit.rzz(phi, edge[0], edge[1])
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+```
+
+Wa wählen de Anzahl von Qubits un Trotterschritten aus un konstruiern dann den Schaltkreis.
+
+```python
+num_qubits = 100
+num_trotter_steps = 2
+
+circuit = construct_trotter_circuit(
+    num_qubits, num_trotter_steps, layer_couplings
+)
+circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/error-mitigation-with-qiskit-functions/extracted-outputs/18eefa99-f1c4-41b5-90b8-7fd8723cac84-0.avif)
+
+För de Qualität von de Ausführung zu benchmarken, müssen wa se mit dem idealen Ergebnis vergleichen. Der jewählte Schaltkreis is über de brute force klassische Simulation raus. Darum fixieren wa de Parameter von alle `Rx`-Gattern im Schaltkreis uff $0$, un de von alle `Rzz`-Gattern uff $\pi$. Dit macht den Schaltkreis zu 'nem Clifford, wat et möglich macht, de ideale Simulation durchzuführn un't ideale Ergebnis für'n Vergleich zu kriegen. In dem Fall wisst wa, datt dit Ergebnis `1.0` sein wird.
+
+```python
+parameters = [0, pi]
+```
+
+#### Dit Observable konstruiern
+Zuerst berechn' wa de globale Magnetisierung längs $\hat{z}$ für't $N$-Qubit-Problem: $M_z = \sum_{i=1}^N \langle Z_i \rangle / N$. Dit erfordert zuerst de Berechnung von de Einzelplatz-Magnetisierung $\langle Z_i \rangle$ für jedes Qubit $i$, wat im folgnden Code definiert is.
+
+```python
+observables = []
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(SparsePauliOp(obs))
+
+print(observables[0])
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## Schritte 2 un 3: Problem für Quantenhardware-Ausführung optimiern un mit de IBM Circuit-Funktion ausführn {#steps-2-and-3-optimize-problem-for-quantum-hardware-execution-and-execute-with-the-ibm-circuit-function}
+
+<ul>
+    <li>Eingang: Abstrakter Schaltkreis un Observabeln</li>
+    <li>Ausgang: Jeminderte Erwartungswerte</li>
+</ul>
+Jetzt könn' wa den abstrakten Schaltkreis un Observabeln an de IBM Circuit-Funktion übergeben. Se wird Transpilation un Ausführung uff Quantenhardware für uns erledigen un jeminderte Erwartungswerte zurückgeben. Zuerst laden wa de Funktion aus dem [IBM Qiskit Functions Catalog](/guides/functions).
+
+```python
+catalog = QiskitFunctionsCatalog(
+    token="<YOUR_API_KEY>"
+)  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+function = catalog.load("ibm/circuit-function")
+```
+
+De IBM Circuit-Funktion nimmt `pubs`, `backend_name`, sowie optionale Einjänge für de Konfiguration von Transpilation, Fehlerminderung usw. Wa erstellen den `pub` aus dem abstrakten Schaltkreis, Observabeln un Schaltkreisparametern. Der Name vom Backend sollte als String anjegeben werd'n.
+
+```python
+pubs = [(circuit, observables, parameters)]
+backend_name = backend.name
+```
+
+Wa könn' auch de `options` für Transpilation, Fehlerunderdrückung un Fehlerminderung konfiguriern. Standardeinstellungen werd'n jebraucht, wenn wa de nich anjeben wolln. De IBM Circuit-Funktion kommt mit häufig jebrauchten Optionen für `optimization_level`, wat steuert, wie viel Schaltkreisoptimierung durchjeführt wird, un `mitigation_level`, wat anjibt, wie viel Fehlerunderdrückung un -minderung anjewendet wird. Pass uff, datt dit `mitigation_level` von de IBM Circuit-Funktion anders is als dit `resilience_level`, wat im [Qiskit Runtime Estimator](/guides/configure-error-mitigation) jebraucht wird. Für 'ne detaillierte Beschreibung von den häufig jebrauchten Optionen sowie andre erweiterte Optionen besuch de [Doku für de IBM Circuit-Funktion](/guides/ibm-circuit-function).
+
+In dem Tutorial setzen wa `default_precision`, `optimization_level: 3` un `mitigation_level: 3`, wat Gate Twirling un Zero Noise Extrapolation (ZNE) über Probabilistic Error Amplification (PEA) uff de Standard-Level-1-Einstellungen anschalten wird.
+
+```python
+options = {
+    "default_precision": 0.011,
+    "optimization_level": 3,
+    "mitigation_level": 3,
+}
+```
+
+Mit den anjegeben Einjängen übergeben wa den Job an de IBM Circuit-Funktion für Optimierung un Ausführung.
+
+```python
+job = function.run(backend_name=backend_name, pubs=pubs, options=options)
+```
+
+## Schritt 4: Nachbehandlung un Ergebnis im jewünschten klassischen Format zurückgeben {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+<ul>
+    <li>Eingang: Ergebnisse von de IBM Circuit-Funktion</li>
+    <li>Ausgang: Globale Magnetisierung</li>
+</ul>
+#### De globale Magnetisierung berechnen
+Dit Ergebnis vom Ausführn von de Funktion hat dit jleiche Format wie der [Estimator](/guides/primitive-input-output#estimator-output).
+
+```python
+result = job.result()[0]
+```
+
+Wa kriegen de jeminderten un nich-jeminderten Erwartungswerte aus dem Ergebnis. Diese Erwartungswerte stellen de Einzelplatz-Magnetisierung längs de $\hat{z}$-Richtung dar. Wa mitteln diese, för zur globalen Magnetisierung zu kommen un vergleichen se mit dem idealen Wert von `1.0` für diese Probleminstanz.
+
+```python
+mitigated_expvals = result.data.evs
+magnetization_mitigated = mean(mitigated_expvals)
+
+print("mitigated:", magnetization_mitigated)
+
+unmitigated_expvals = [
+    result.data.evs_extrapolated[i][0][1] for i in range(num_qubits)
+]
+magnetization_unmitigated = mean(unmitigated_expvals)
+
+print("unmitigated:", magnetization_unmitigated)
+```
+
+```text
+mitigated: 0.9749883476088692
+unmitigated: 0.7832977198447583
+```
+
+## Tutorial-Umfrage {#tutorial-survey}
+
+Bitte mach diese kurze Umfrage, för Feedback zu dem Tutorial zu geben. Deine Einsichten helfen uns, unser Inhaltsangebot un Benutzererfahrung zu verbessern.
+
+[Link zur Umfrage](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

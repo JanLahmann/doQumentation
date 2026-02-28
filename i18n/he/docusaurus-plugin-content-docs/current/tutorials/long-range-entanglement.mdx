@@ -1,0 +1,966 @@
+---
+title: "שזירה ארוכת טווח עם מעגלים דינמיים"
+sidebar_label: "שזירה ארוכת טווח עם מעגלים דינמיים"
+description: "מדריך זה מממש שער CNOT ארוך טווח באמצעות מעגלים דינמיים עם זוגות Bell, מדידה והזנה קדימה, ומשווה אותו לגישה יוניטרית ישירה."
+notebook_path: "docs/tutorials/long-range-entanglement.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/long-range-entanglement.ipynb" />
+
+
+
+{/* cspell:ignore fontsize hcords, ycords, xcords, ecolor, elinewidth, allcr, braket, frameon */}
+
+*אומדן שימוש: 4 דקות על מעבד Heron r2. (הערה: זהו אומדן בלבד. זמן הריצה שלך עשוי להשתנות.)*
+## רקע {#background}
+
+שזירה ארוכת טווח בין qubits מרוחקים היא אתגר במכשירים עם קישוריות מוגבלת. מדריך זה מראה כיצד מעגלים דינמיים יכולים ליצור שזירה כזו על ידי מימוש שער controlled-X ארוך טווח (LRCX) באמצעות פרוטוקול מבוסס מדידה.
+
+בעקבות הגישה של Elisa Bäumer ועמיתיה ב-[1](#ref-1), השיטה משתמשת במדידה בתוך המעגל והזנה קדימה כדי להשיג שערים בעומק קבוע ללא קשר למרחק בין ה-qubits. היא יוצרת זוגות Bell ביניים, מודדת qubit אחד מכל זוג, ומפעילה שערים מותנים קלאסית כדי להפיץ את השזירה על פני ההתקן. זה נמנע משרשראות SWAP ארוכות, ומפחית גם את עומק המעגל וגם את החשיפה לשגיאות שערים דו-qubit.
+
+במחברת זו, אנו מתאימים את הפרוטוקול לחומרה של IBM Quantum&reg; ומרחיבים אותו להפעלת פעולות LRCX מרובות במקביל, מה שמאפשר לנו לחקור כיצד הביצועים משתנים עם מספר הפעולות המותנות המתבצעות בו-זמנית.
+## דרישות {#requirements}
+
+לפני התחלת מדריך זה, ודא שיש לך את המותקנים הבאים:
+
+- Qiskit SDK v2.0 או מאוחר יותר, עם תמיכה ב-[visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime ( `pip install qiskit-ibm-runtime` ) v0.37 או מאוחר יותר
+## הגדרה {#setup}
+
+```python
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.classical import expr
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.visualization import plot_circuit_layout
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Batch,
+    SamplerV2 as Sampler,
+)
+import matplotlib.pyplot as plt
+import numpy as np
+```
+
+## שלב 1: מיפוי קלטים קלאסיים לבעיה קוונטית {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+כעת נממש שער CNOT ארוך טווח בין שני qubits מרוחקים, בעקבות בניית המעגל הדינמי המוצגת להלן (מותאם מאיור 1a בהפניה [1](#ref-1)). הרעיון המרכזי הוא להשתמש ב-"אפיק" של qubits עזר, מאותחלים ל-$|0\rangle$, כדי לתווך טלפורטציית שער ארוכת טווח.
+
+![מעגל CNOT ארוך טווח](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+כפי שמודגם באיור, התהליך פועל באופן הבא:
+1. הכנת שרשרת של זוגות Bell המחברת את ה-qubits של הבקרה והמטרה דרך עזרים ביניים.
+2. ביצוע מדידות Bell בין qubits שכנים לא-משוזרים, החלפת שזירה צעד אחר צעד עד שהבקרה והמטרה חולקות זוג Bell.
+3. שימוש בזוג Bell זה לטלפורטציית שער, הפיכת CNOT מקומי ל-CNOT ארוך טווח דטרמיניסטי בעומק קבוע.
+
+גישה זו מחליפה שרשראות SWAP ארוכות בפרוטוקול בעומק קבוע, מפחיתה חשיפה לשגיאות שערים דו-qubit והופכת את הפעולה לסקלבילית עם גודל ההתקן.
+
+בהמשך, נעבור תחילה על המימוש הדינמי של מעגל LRCX. בסוף, נספק גם מימוש מבוסס יוניטרי להשוואה, כדי להדגיש את היתרונות של מעגלים דינמיים בהקשר זה.
+### (i) אתחול מעגל {#i-initialize-circuit}
+
+נתחיל עם בעיה קוונטית פשוטה שתשמש כבסיס להשוואה. באופן ספציפי, נאתחל מעגל עם qubit בקרה באינדקס 0 ונחיל עליו שער Hadamard. זה מייצר מצב סופרפוזיציה שכאשר הוא מלווה בפעולת controlled-X, מייצר מצב Bell $(|00\rangle + |11\rangle)/\sqrt{2}$ בין ה-qubits של הבקרה והמטרה.
+
+בשלב זה, אנחנו עדיין לא בונים את ה-LRCX עצמו. במקום זאת, המטרה שלנו היא להגדיר מעגל התחלתי ברור ומינימלי המדגיש את תפקיד ה-LRCX. בשלב 2, נראה כיצד ניתן למימש את ה-LRCX כאופטימיזציה באמצעות מעגלים דינמיים, ונשווה את הביצועים שלו ליוניטרי שווה ערך. חשוב לציין שפרוטוקול ה-LRCX ניתן ליישום על כל מעגל התחלתי. כאן אנו משתמשים בהגדרת Hadamard פשוטה זו לצורך הבהרה.
+
+```python
+distance = 6  # The distance of the CNOT gate, with the convention that a distance of zero is a nearest-neighbor CNOT.
+
+def initialize_circuit(distance):
+    assert distance >= 0
+    control = 0  # control qubit
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    k = int(n / 2)  # Number of Bell States to be used
+
+    allcr = [cr]
+    if (
+        distance > 1
+    ):  # This classical register will be used to store ZZ measurements. It is only used for long-range CX gates with distance > 1
+        c1 = ClassicalRegister(
+            k, name="c1"
+        )  # Classical register needed for post processing
+        allcr.append(c1)
+    if (
+        distance > 0
+    ):  # This classical register will be used to store XX measurements. It is only used if distance > 0
+        c2 = ClassicalRegister(
+            n - k, name="c2"
+        )  # Classical register needed for post processing
+        allcr.append(c2)
+
+    qc = QuantumCircuit(qr, *allcr, name="CNOT")
+
+    # Apply a Hadamard gate to the control qubit such that the long-range CNOT gate will prepare a Bell state (|00> + |11>)/sqrt(2)
+    qc.h(control)
+
+    return qc
+
+qc = initialize_circuit(distance)
+qc.draw(fold=-1, output="mpl", scale=0.5)
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/0446b8e8-0.avif)
+
+## שלב 2: אופטימיזציה של הבעיה להפעלה על חומרה קוונטית {#step-2-optimize-problem-for-quantum-hardware-execution}
+בשלב זה, נראה כיצד לבנות את מעגל LRCX באמצעות מעגלים דינמיים. המטרה היא לבצע אופטימיזציה של המעגל להפעלה על חומרה על ידי הפחתת העומק בהשוואה למימוש יוניטרי טהור. כדי להמחיש את היתרונות, נציג את הבנייה הדינמית של LRCX ואת היוניטרי השווה ערך שלו, ומאוחר יותר נשווה את הביצועים שלהם לאחר transpilation. חשוב לציין שבעוד שכאן אנו מיישמים את ה-LRCX על בעיה פשוטה מאותחלת ב-Hadamard, הפרוטוקול ניתן ליישום על כל מעגל שבו נדרש CNOT ארוך טווח.
+
+### (ii) הכנת זוגות Bell {#ii-prepare-bell-pairs}
+נתחיל ביצירת שרשרת של זוגות Bell לאורך הנתיב בין ה-qubits של הבקרה והמטרה. אם המרחק הוא אי-זוגי, נחיל תחילה CNOT מהבקרה לשכן שלה, שהוא ה-CNOT שיטלפורט. עבור מרחק זוגי, CNOT זה יוחל לאחר שלב הכנת זוגות ה-Bell. שרשרת זוגות ה-Bell משזרת אז זוגות עוקבים של qubits, מקימה את המשאב הדרוש להעברת מידע הבקרה על פני ההתקן.
+
+```python
+# Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+def check_even(n: int) -> int:
+    """Return 1 if n is even, else 2."""
+    return 1 if n % 2 == 0 else 2
+
+def prepare_bell_pairs(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if add_barriers:
+        qc.barrier()
+
+    x0 = check_even(n)
+    if n % 2 != 0:
+        qc.cx(0, 1)
+
+    # Create k Bell pairs
+    for i in range(k):
+        qc.h(x0 + 2 * i)
+        qc.cx(x0 + 2 * i, x0 + 2 * i + 1)
+    return qc
+
+qc = prepare_bell_pairs(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4df8ebba-0.avif)
+
+### (iii) מדידת זוגות qubits שכנים בבסיס Bell {#iii-measure-neighboring-qubit-pairs-in-the-bell-basis}
+לאחר מכן, נמדוד qubits שכנים *לא-משוזרים* בבסיס Bell (מדידות דו-qubit של $XX$ ו-$ZZ$). זה יוצר זוג Bell ארוך טווח בין qubit המטרה וה-qubit הסמוך לבקרה (עד לתיקוני Pauli, שיוטמעו באמצעות הזנה קדימה בשלב הבא). במקביל, נממש את המדידה המשזרת שמטלפורטת את שער CNOT לפעול על qubit המטרה המיועד.
+
+```python
+def measure_bell_basis(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+    x0 = 1 if n % 2 == 0 else 2
+
+    # Entangling layer that implements the Bell measurement (and additionally adds the CNOT to be teleported, if n is even)
+    for i in range(k + 1):
+        qc.cx(x0 - 1 + 2 * i, x0 + 2 * i)
+
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.h(2 * i + 1 - x0)
+        else:
+            qc.h(2 * i + 1 - x0)
+
+    if add_barriers:
+        qc.barrier()
+
+    # Map the ZZ measurements onto classical register c1
+    for i in range(k):
+        if i == 0:
+            qc.measure(2 * i + x0, c1[i])
+        else:
+            qc.measure(2 * i + x0, c1[i])
+
+    # Map the XX measurements onto classical register c2
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+        else:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+    return qc
+
+qc = measure_bell_basis(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/8eed9e57-0.avif)
+
+### (iv) לאחר מכן, החלת תיקוני הזנה קדימה לתיקון אופרטורי תוצר לוואי של Pauli {#iv-next-apply-feedforward-corrections-to-correct-pauli-byproduct-operators}
+
+מדידות בסיס Bell מכניסות תוצרי לוואי של Pauli שיש לתקן באמצעות התוצאות המתועדות. זה נעשה בשני שלבים. ראשית, אנחנו צריכים לחשב את הזוגיות של כל מדידות ה-$ZZ$, שמשמשת אז להחלת מותנית של שער $X$ על qubit המטרה. באופן דומה, הזוגיות של מדידות ה-$XX$ מחושבת ומשמשת להחלת מותנית של שער $Z$ על qubit הבקרה.
+
+עם מסגרת הביטוי הקלאסי החדשה ב-Qiskit, זוגיות אלה ניתנות לחישוב ישירות בשכבת העיבוד הקלאסית של המעגל. במקום להחיל רצף של שערים מותנים בודדים עבור כל ביט מדידה, נוכל לבנות ביטוי קלאסי יחיד המייצג את ה-XOR (זוגיות) של כל תוצאות המדידה הרלוונטיות. ביטוי זה משמש אז כתנאי בבלוק `if_test` יחיד, מה שמאפשר להחיל את שערי התיקון בעומק קבוע. גישה זו גם מפשטת את המעגל וגם מבטיחה שתיקוני ההזנה קדימה לא מכניסים עיכוב נוסף מיותר.
+
+```python
+def apply_ffwd_corrections(qc):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+    n = qc.num_qubits - 2  # number of qubits between target and control
+
+    k = int(n / 2)
+    x0 = check_even(n)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # First, let's compute the parity of all ZZ measurements
+    for i in range(k):
+        if i == 0:
+            parity_ZZ = expr.lift(
+                c1[i]
+            )  # Store the value of the first ZZ measurement in parity_ZZ
+        else:
+            parity_ZZ = expr.bit_xor(
+                c1[i], parity_ZZ
+            )  # Successively compute the parity via XOR operations
+
+    for i in range(1, k + x0):
+        if i == 1:
+            parity_XX = expr.lift(
+                c2[i - 1]
+            )  # Store the value of the first XX measurement in parity_XX
+        else:
+            parity_XX = expr.bit_xor(
+                c2[i - 1], parity_XX
+            )  # Successively compute the parity via XOR operations
+
+    if n > 0:
+        with qc.if_test(parity_XX):
+            qc.z(control)
+
+    if n > 1:
+        with qc.if_test(parity_ZZ):
+            qc.x(target)
+    return qc
+
+qc = apply_ffwd_corrections(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4915791a-0.avif)
+
+### (v) לבסוף, מדידת qubits הבקרה והמטרה {#v-finally-measure-control-and-target-qubits}
+נגדיר פונקציית עזר המאפשרת מדידה של qubits הבקרה והמטרה בבסיסים $XX$, $YY$, או $ZZ$. לאימות מצב Bell $(|00\rangle + |11\rangle)/\sqrt{2}$, ערכי הציפייה של $XX$ ו-$ZZ$ שניהם צריכים להיות $+1$, מכיוון שהם מייצבים של המצב. מדידת $YY$ נתמכת גם כאן ותשמש להלן בעת חישוב הנאמנות.
+
+```python
+def measure_in_basis(qc, basis="XX", add_barrier=True):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+
+    assert basis in ["XX", "YY", "ZZ"]
+
+    qc = (
+        qc.copy()
+    )  # We copy the circuit because we want to measure in different bases
+    cr = qc.cregs[0]
+
+    if add_barrier:
+        qc.barrier()
+
+    if basis == "XX":
+        qc.h(control)
+        qc.h(target)
+    elif basis == "YY":
+        qc.sdg(control)
+        qc.sdg(target)
+        qc.h(control)
+        qc.h(target)
+
+    qc.measure(control, cr[0])
+    qc.measure(target, cr[1])
+    return qc
+
+qc_YY = measure_in_basis(qc.copy(), basis="YY")
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d087d7c1-0.avif)
+
+### הרכבת הכל ביחד {#put-it-all-together}
+נשלב את השלבים השונים שהוגדרו לעיל כדי ליצור שער CX ארוך טווח על שני קצוות של קו 1D. השלבים כוללים
+- אתחול qubit הבקרה ב-$\\ket{+}$
+- הכנת זוגות Bell
+- מדידת זוגות qubits שכנים
+- החלת תיקוני הזנה קדימה התלויים ב-MCMs
+
+```python
+def lrcx(distance, prep_barrier=True, pre_measure_barrier=True):
+    qc = initialize_circuit(distance)
+    qc = prepare_bell_pairs(qc, prep_barrier)
+    qc = measure_bell_basis(qc, pre_measure_barrier)
+    qc = apply_ffwd_corrections(qc)
+    return qc
+
+qc = lrcx(distance)
+# Apply the measurement in the XX, YY, and ZZ bases
+qc_XX, qc_YY, qc_ZZ = [
+    measure_in_basis(qc, basis=basis) for basis in ["XX", "YY", "ZZ"]
+]
+
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/11fc8adc-0.avif)
+
+### יצירת מעגלים למרחקים שונים {#generate-circuits-for-different-distances}
+
+כעת ניצור מעגלי CX ארוכי טווח עבור טווח של הפרדות qubit. עבור כל מרחק, נבנה מעגלים שמודדים בבסיסים $XX$, $YY$, ו-$ZZ$, שישמשו מאוחר יותר לחישוב נאמנויות.
+
+רשימת המרחקים כוללת הפרדות קצרות וארוכות טווח, כאשר `distance = 0` מתאים ל-CX שכן-קרוב. אותם מרחקים ישמשו גם ליצירת המעגלים היוניטריים המתאימים מאוחר יותר להשוואה.
+
+```python
+distances = [
+    0,
+    1,
+    2,
+    3,
+    6,
+    11,
+    16,
+    21,
+    28,
+    35,
+    44,
+    55,
+    60,
+]  # Distances for long range CX. distance of 0 is a nearest-neighbor CX
+distances.sort()
+assert (
+    min(distances) >= 0
+)  # Only works for distance larger than 2 because classical register cannot be empty
+basis_list = ["XX", "YY", "ZZ"]
+
+circuits_dyn = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_dyn.append(
+            measure_in_basis(lrcx(distance, prep_barrier=False), basis=basis)
+        )
+print(f"Number of circuits: {len(circuits_dyn)}")
+circuits_dyn[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/72c70b11-1.avif)
+
+#### מימוש מבוסס יוניטרי המחליף את ה-qubits לאמצע {#unitary-based-implementation-swapping-the-qubits-to-the-middle}
+
+להשוואה, נבחן תחילה את המקרה שבו שער CNOT ארוך טווח מיושם באמצעות חיבורים בין שכנים קרובים ושערים יוניטריים. באיור הבא, בצד שמאל מעגל לשער CNOT ארוך טווח המשתרע על שרשרת 1D של n-qubits הכפופה לחיבורים בין שכנים קרובים בלבד. באמצע פירוק יוניטרי שווה ערך הניתן למימוש עם שערי CNOT מקומיים, עומק מעגל $O(n)$.
+
+![מעגל CNOT ארוך טווח](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+המעגל באמצע יכול להיות מיושם באופן הבא:
+
+```python
+def cnot_unitary(distance):
+    """Generate a long range CNOT gate using local CNOTs on a 1D chain of qubits subject to n
+    nearest-neighbor connections only.
+
+    Args:
+        distance (int) : The distance of the CNOT gate, with the convention that a distance of 0 is a nearest-neighbor CNOT.
+
+    Returns:
+        QuantumCircuit: A Quantum Circuit implementing a long-range CNOT gate between qubit 0 and qubit distance+1
+    """
+    assert distance >= 0
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    qc = QuantumCircuit(qr, cr, name="CNOT_unitary")
+
+    control_qubit = 0
+
+    qc.h(control_qubit)  # Prepare the control qubit in the |+> state
+
+    k = int(n / 2)
+    qc.barrier()
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(i, i + 1)
+        qc.cx(i + 1, i)
+        qc.cx(-i - 1, -i - 2)
+        qc.cx(-i - 2, -i - 1)
+    if n % 2 == 1:
+        qc.cx(k + 2, k + 1)
+        qc.cx(k + 1, k + 2)
+    qc.barrier()
+    qc.cx(k, k + 1)
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(k - i, k - 1 - i)
+        qc.cx(k - 1 - i, k - i)
+        qc.cx(k + i + 1, k + i + 2)
+        qc.cx(k + i + 2, k + i + 1)
+    if n % 2 == 1:
+        qc.cx(-2, -1)
+        qc.cx(-1, -2)
+
+    return qc
+```
+
+כעת נבנה את כל המעגלים היוניטריים, ונבנה את המעגלים שמודדים בבסיסים $XX$, $YY$, ו-$ZZ$, בדיוק כפי שעשינו עבור המעגלים הדינמיים לעיל.
+
+```python
+circuits_uni = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_uni.append(
+            measure_in_basis(cnot_unitary(distance), basis=basis)
+        )
+
+print(f"Number of circuits: {len(circuits_uni)}")
+circuits_uni[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d6154b1c-1.avif)
+
+כעת שיש לנו גם מעגלים דינמיים וגם יוניטריים עבור טווח של מרחקים, אנחנו מוכנים ל-transpilation. ראשית עלינו לבחור התקן backend.
+
+```python
+# Set up access to IBM Quantum devices
+from qiskit.circuit import IfElseOp
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=156
+)
+```
+
+השלב הבא מבטיח שה-backend תומך בהוראת `if_else`, הנדרשת לגרסה החדשה יותר של מעגלים דינמיים. מכיוון שתכונה זו עדיין בגישה מוקדמת, אנו מוסיפים במפורש את `IfElseOp` ליעד ה-backend אם הוא עדיין לא זמין.
+
+```python
+if "if_else" not in backend.target.operation_names:
+    backend.target.add_instruction(IfElseOp, name="if_else")
+```
+
+#### שימוש במחרוזת נאמנות שכבה לבחירת שרשרת 1D {#use-layer-fidelity-string-for-selecting-1d-chain}
+מכיוון שאנו רוצים להשוות את הביצועים של מעגלים דינמיים ויוניטריים על שרשרת 1D, אנו משתמשים במחרוזת נאמנות שכבה כדי לבחור טופולוגיה ליניארית של השרשרת הטובה ביותר של qubits מההתקן. זה מבטיח ששני סוגי המעגלים מ-transpiled תחת אותם אילוצי קישוריות, מה שמאפשר השוואה הוגנת של הביצועים שלהם.
+
+```python
+# This selects best qubits for longest distance and uses the same control for all lengths
+lf_qubits = backend.properties().to_dict()[
+    "general_qlists"
+]  # best linear chain qubits
+chosen_layouts = {
+    distance: [
+        val["qubits"]
+        for val in lf_qubits
+        if val["name"] == f"lf_{distances[-1] + 2}"
+    ][0][: distance + 2]
+    for distance in distances
+}
+print(chosen_layouts[max(distances)])  # best qubits at each distance
+```
+
+```text
+[10, 11, 12, 13, 14, 15, 19, 35, 34, 33, 39, 53, 54, 55, 59, 75, 74, 73, 72, 71, 58, 51, 50, 49, 48, 47, 46, 45, 44, 43, 56, 63, 62, 61, 76, 81, 82, 83, 84, 85, 77, 65, 66, 67, 68, 69, 78, 89, 90, 91, 98, 111, 110, 109, 108, 107, 106, 105, 104, 103, 102, 101]
+```
+
+```python
+isa_circuits_dyn = []
+isa_circuits_uni = []
+
+# Using the same initial layouts for both circuits for better apples to apples comparison
+for qc in circuits_dyn:
+    pm = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        initial_layout=chosen_layouts[qc.num_qubits - 2],
+    )
+    isa_circuits_dyn.append(pm.run(qc))
+
+for qc in circuits_uni:
+    pm = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        initial_layout=chosen_layouts[qc.num_qubits - 2],
+    )
+    isa_circuits_uni.append(pm.run(qc))
+```
+
+```python
+print(
+    f"2Q depth: {isa_circuits_dyn[14].depth(lambda x: x.operation.num_qubits == 2)}"
+)
+isa_circuits_dyn[14].draw("mpl", fold=-1, idle_wires=0)
+```
+
+```text
+2Q depth: 2
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/c77c3fd3-1.avif)
+
+```python
+print(
+    f"2Q depth: {isa_circuits_uni[14].depth(lambda x: x.operation.num_qubits == 2)}"
+)
+isa_circuits_uni[14].draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+2Q depth: 13
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/7e5fc240-1.avif)
+
+### הצגה חזותית של qubits המשמשים למעגל LRCX {#visualize-qubits-used-for-the-lrcx-circuit}
+
+בסעיף זה, נבחן כיצד מעגל LRCX ממופה על החומרה. נתחיל בהצגה חזותית של ה-qubits הפיזיים המשמשים במעגל ואז נלמד כיצד מרחק הבקרה-מטרה בפריסה משפיע על מספר הפעולות.
+
+```python
+# Note: the qubit coordinates must be hard-coded.
+# The backend API does not currently provide this information directly.
+# If using a different backend, you will need to adjust the coordinates accordingly,
+# or set the qubit_coordinates = None to use the default layout coordinates.
+
+def _heron_coords_r2():
+    """Generate coordinates for the Heron layout in R2. Note"""
+    cord_map = np.array(
+        [
+            [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+            ],
+            -1
+            * np.array([j for i in range(15) for j in [i] * [16, 4][i % 2]]),
+        ],
+        dtype=int,
+    )
+
+    hcords = []
+    ycords = cord_map[0]
+    xcords = cord_map[1]
+    for i in range(156):
+        hcords.append([xcords[i] + 1, np.abs(ycords[i]) + 1])
+
+    return hcords
+
+# Visualize the active qubits in the circuit layout
+plot_circuit_layout(
+    circuit=isa_circuits_uni[-1],
+    backend=backend,
+    view="physical",
+    qubit_coordinates=_heron_coords_r2(),
+)
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/2d090f8a-0.avif)
+
+## שלב 3: ביצוע באמצעות פרימיטיבים של Qiskit {#step-3-execute-using-qiskit-primitives}
+
+בשלב זה, אנו מבצעים את הניסוי על ה-backend שצוין. אנו גם עושים שימוש באצווה כדי להפעיל ביעילות את הניסוי על פני ניסיונות מרובים. הרצת ניסיונות חוזרים מאפשרת לנו לחשב ממוצעים להשוואה מדויקת יותר בין השיטות היוניטרית והדינמית, כמו גם לכמת את השונות שלהן על ידי השוואת הסטיות בין הריצות.
+
+```python
+print(backend.name)
+```
+
+```text
+ibm_kingston
+```
+
+בחירת מספר ניסיונות וביצוע ביצוע באצווה.
+
+```python
+num_trials = 10
+jobs_uni = []
+jobs_dyn = []
+with Batch(backend=backend) as batch:
+    sampler = Sampler(mode=batch)
+    for _ in range(num_trials):
+        jobs_uni.append(sampler.run(isa_circuits_uni, shots=1024))
+        jobs_dyn.append(sampler.run(isa_circuits_dyn, shots=1024))
+```
+
+## שלב 4: עיבוד לאחר והחזרת תוצאה בפורמט קלאסי רצוי {#step-4-post-process-and-return-result-in-desired-classical-format}
+לאחר שהניסויים הופעלו בהצלחה, כעת נעבד את ספירות המדידה כדי לחלץ מדדים משמעותיים.
+בשלב זה, אנו:
+
+- מגדירים מדדי איכות להערכת הביצועים של ה-CX ארוך הטווח.
+- מחשבים ערכי ציפייה של אופרטורי Pauli מתוצאות מדידה גולמיות.
+- משתמשים בהם כדי לחשב את נאמנות מצב ה-Bell שנוצר.
+
+ניתוח זה מספק תמונה ברורה של עד כמה המעגלים הדינמיים מתפקדים בהשוואה למימוש היוניטרי הבסיסי.
+### מדדי איכות {#quality-metrics}
+
+כדי להעריך את ההצלחה של פרוטוקול CX ארוך הטווח, אנו מודדים עד כמה מצב הפלט קרוב למצב Bell האידיאלי. דרך נוחה לכמת זאת היא על ידי חישוב נאמנות המצב באמצעות ערכי ציפייה של אופרטורי Pauli. נאמנות למצב Bell על מצב הבקרה והמטרה ניתן לחישוב לאחר ידיעת $\braket{XX}$, $\braket{YY}$, ו-$\braket{ZZ}$. באופן ספציפי,
+
+$$ F = \frac{1}{4} (1 + \braket{XX} - \braket{YY} + \braket{ZZ})$$
+
+כדי לחשב את ערכי הציפייה הללו מנתוני מדידה גולמיים, נגדיר קבוצה של פונקציות עזר:
+
+- **`compute_ZZ_expectation`**: בהינתן ספירות מדידה, מחשבת את ערך הציפייה של אופרטור Pauli דו-qubit בבסיס $Z$.
+- **`compute_fidelity`**: משלבת את ערכי הציפייה של $XX$, $YY$, ו-$ZZ$ לביטוי הנאמנות לעיל.
+- **`get_counts_from_bitarray`**: כלי עזר לחילוץ ספירות מאובייקטי תוצאות backend.
+
+```python
+def compute_ZZ_expectation(counts):
+    total = sum(counts.values())
+    expectation = 0
+    for bitstring, count in counts.items():
+        # Ensure bitstring is 2 bits
+        z1 = (-1) ** (int(bitstring[-1]))
+        z2 = (-1) ** (int(bitstring[-2]))
+        expectation += z1 * z2 * count
+    return expectation / total
+
+def compute_fidelity(counts_xx, counts_yy, counts_zz):
+    xx, yy, zz = [
+        compute_ZZ_expectation(c) for c in [counts_xx, counts_yy, counts_zz]
+    ]
+    return 1 / 4 * (1 + xx - yy + zz)
+```
+
+נחשב את הנאמנות עבור מעגלי CX ארוכי הטווח הדינמיים. עבור כל מרחק, נחלץ תוצאות מדידה בבסיסים $\braket{XX}$, $\braket{YY}$, ו-$\braket{ZZ}$. תוצאות אלה משולבות באמצעות פונקציות העזר שהוגדרו קודם לחישוב הנאמנות לפי $F = \tfrac{1}{4} \big( 1 + \langle XX \rangle - \langle YY \rangle + \langle ZZ \rangle \big)$. זה מספק את הנאמנות הנצפית של הפרוטוקול המבוצע באופן דינמי בכל מרחק.
+
+```python
+fidelities_dyn = []
+
+# loop over trials
+for job in jobs_dyn:
+    result_dyn = job.result()
+    trial_fidelities = []
+    # loop over all distances
+    for ind, dist in enumerate(distances):
+        counts_xx = result_dyn[ind * 3].data.cr.get_counts()
+        counts_yy = result_dyn[ind * 3 + 1].data.cr.get_counts()
+        counts_zz = result_dyn[ind * 3 + 2].data.cr.get_counts()
+        trial_fidelities.append(
+            compute_fidelity(counts_xx, counts_yy, counts_zz)
+        )
+    fidelities_dyn.append(trial_fidelities)
+# average over trials for each distance
+avg_fidelities_dyn = np.mean(fidelities_dyn, axis=0)
+std_fidelities_dyn = np.std(fidelities_dyn, axis=0)
+```
+
+כעת נחשב את הנאמנות עבור מעגלי CX ארוכי הטווח היוניטריים, ונעשה זאת באותו אופן כפי שעשינו עבור המעגלים הדינמיים לעיל.
+
+```python
+fidelities_uni = []
+
+# loop over trials
+for job in jobs_uni:
+    result_uni = job.result()
+    trial_fidelities = []
+    # loop over all distances
+    for ind, dist in enumerate(distances):
+        counts_xx = result_uni[ind * 3].data.cr.get_counts()
+        counts_yy = result_uni[ind * 3 + 1].data.cr.get_counts()
+        counts_zz = result_uni[ind * 3 + 2].data.cr.get_counts()
+        trial_fidelities.append(
+            compute_fidelity(counts_xx, counts_yy, counts_zz)
+        )
+    fidelities_uni.append(trial_fidelities)
+# average over trials for each distance
+avg_fidelities_uni = np.mean(fidelities_uni, axis=0)
+std_fidelities_uni = np.std(fidelities_uni, axis=0)
+```
+
+### הצגת התוצאות {#plot-the-results}
+כדי להעריך את התוצאות באופן ויזואלי, התא שלהלן מציג את נאמנויות השער המוערכות שנמדדו במרחקים משתנים בין qubits משוזרים עבור השיטות.
+
+```python
+fig, ax = plt.subplots()
+
+# Unitary with error bars
+ax.errorbar(
+    distances,
+    avg_fidelities_uni,
+    yerr=std_fidelities_uni,
+    fmt="o-.",
+    color="c",
+    ecolor="c",
+    elinewidth=1,
+    capsize=4,
+    label="Unitary",
+)
+# Dynamic with error bars
+ax.errorbar(
+    distances,
+    avg_fidelities_dyn,
+    yerr=std_fidelities_dyn,
+    fmt="o-.",
+    color="m",
+    ecolor="m",
+    elinewidth=1,
+    capsize=4,
+    label="Dynamic",
+)
+# Random gate baseline
+ax.axhline(y=1 / 4, linestyle="--", color="gray", label="Random gate")
+
+legend = ax.legend(frameon=True)
+for text in legend.get_texts():
+    text.set_color("black")
+legend.get_frame().set_facecolor("white")
+legend.get_frame().set_edgecolor("black")
+ax.set_title(
+    "Bell State Fidelity vs Control–Target Separation", color="black"
+)
+ax.set_xlabel("Distance", color="black")
+ax.set_ylabel("Bell state fidelity", color="black")
+ax.grid(linestyle=":", linewidth=0.6, alpha=0.4, color="gray")
+ax.set_ylim((0.2, 1))
+ax.set_facecolor("white")
+fig.patch.set_facecolor("white")
+for spine in ax.spines.values():
+    spine.set_visible(True)
+    spine.set_color("black")
+ax.tick_params(axis="x", colors="black")
+ax.tick_params(axis="y", colors="black")
+plt.show()
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/724da22d-0.avif)
+
+מגרף הנאמנות לעיל, ה-LRCX לא עלה בעקביות על המימוש היוניטרי הישיר. למעשה, עבור הפרדות בקרה-מטרה קצרות, המעגל היוניטרי השיג נאמנות גבוהה יותר. עם זאת, בהפרדות גדולות יותר, המעגל הדינמי מתחיל להשיג נאמנות טובה יותר מהמימוש היוניטרי. התנהגות זו אינה בלתי צפויה בחומרה נוכחית: בעוד שמעגלים דינמיים מפחיתים את עומק המעגל על ידי הימנעות משרשראות SWAP ארוכות, הם מכניסים זמן מעגל נוסף ממדידות בתוך המעגל, הזנה קדימה קלאסית ועיכובי נתיב בקרה. האיחור הנוסף מגביר את הדה-קוהרנטיות ושגיאות הקריאה, שיכולות לעלות על החיסכון בעומק במרחקים קצרים.
+
+עם זאת, אנו צופים בנקודת מעבר שבה הגישה הדינמית עולה על היוניטרית. זוהי תוצאה ישירה של הסקלה השונה: העומק של המעגל היוניטרי גדל באופן לינארי עם המרחק בין qubits, בעוד שעומק המעגל הדינמי נשאר קבוע.
+
+**נקודות מרכזיות:**
+- **יתרון מיידי של מעגלים דינמיים:** המוטיבציה העיקרית כיום היא הפחתת *עומק דו-qubit*, לא בהכרח שיפור נאמנות.
+- **מדוע נאמנות יכולה להיות גרועה יותר היום:** זמן מעגל מוגבר ממדידה ופעולות קלאסיות לעתים קרובות שולט, במיוחד כאשר הפרדת הבקרה-מטרה קטנה.
+- **מבט קדימה:** ככל שהחומרה משתפרת, במיוחד קריאה מהירה יותר, איחור בקרה קלאסי קצר יותר ותקורת מעגל-ביניים מופחתת, אנו צריכים לצפות שהפחתות העומק והמשך הללו יתורגמו לשיפורי נאמנות מדידים.
+
+```python
+# Compute metrics for each distance, skipping the basis circuits since they are identical for each distance
+depths_2q_dyn = [
+    c.depth(lambda x: x.operation.num_qubits == 2)
+    for c in isa_circuits_dyn[::3]
+]
+meas_dyn = [
+    sum(1 for instr in c.data if instr.operation.name == "measure")
+    for c in isa_circuits_dyn[::3]
+]
+
+depths_2q_uni = [
+    c.depth(lambda x: x.operation.num_qubits == 2)
+    for c in isa_circuits_uni[::3]
+]
+meas_uni = [
+    sum(1 for instr in c.data if instr.operation.name == "measure")
+    for c in isa_circuits_uni[::3]
+]
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+axes[0].plot(
+    distances, depths_2q_uni, "o-.", color="c", label="Unitary (2Q depth)"
+)
+axes[0].plot(
+    distances, depths_2q_dyn, "o-.", color="m", label="Dynamic (2Q depth)"
+)
+axes[0].set_xlabel("Number of qubits between control and target")
+axes[0].set_ylabel("Two-qubit depth")
+axes[0].grid(True, linestyle=":", linewidth=0.6, alpha=0.4)
+axes[0].legend()
+
+axes[1].plot(
+    distances, meas_uni, "o-.", color="c", label="Unitary (# measurements)"
+)
+axes[1].plot(
+    distances, meas_dyn, "o-.", color="m", label="Dynamic (# measurements)"
+)
+axes[1].set_xlabel("Number of qubits between control and target")
+axes[1].set_ylabel("Number of measurements")
+axes[1].grid(True, linestyle=":", linewidth=0.6, alpha=0.4)
+axes[1].legend()
+
+fig.suptitle("Scaling of Unitary vs Dynamic LRCX with Distance", fontsize=12)
+
+plt.tight_layout()
+plt.show()
+```
+
+![פלט של תא הקוד הקודם](/docs/images/tutorials/long-range-entanglement/extracted-outputs/3dcff343-0.avif)
+
+גרף עומק דו-qubit זה מדגיש את היתרון העיקרי של LRCX המיושם עם מעגלים דינמיים: הביצועים נשארים בעצם קבועים ככל שההפרדה בין qubits הבקרה והמטרה גדלה. לעומת זאת, המימוש היוניטרי גדל באופן לינארי עם המרחק עקב שרשראות ה-SWAP הנדרשות. העומק לוכד את הסקלה הלוגית של פעולות דו-qubit, בעוד שספירת המדידה משקפת את התקורה הנוספת עבור מעגלים דינמיים. מדידות אלה יעילות, מכיוון שהן מתבצעות במקביל, אך הן עדיין מכניסות עלות קבועה בחומרה של היום.
+
+מדוע נאמנות יכולה להיות גרועה יותר היום: זמן מעגל מוגבר ממדידה ופעולות קלאסיות לעתים קרובות שולט, במיוחד כאשר הפרדת הבקרה-מטרה קטנה. לדוגמה, אורך הקריאה הממוצע במעבד Heron r2 הוא 2,280 ns, בעוד שאורך שער 2Q שלו הוא רק 68 ns.
+
+ככל שאיחורי המדידה והקלאסיים משתפרים, אנו צופים שהסקלה של עומק קבוע ומדידות קבועות של מעגלים דינמיים תניב יתרונות נאמנות וזמן ריצה ברורים במעגלים גדולים יותר.
+## הפניות {#references}
+
+<a id="ref-1"></a>
+[1] Efficient Long-Range Entanglement using Dynamic Circuits, by
+*Elisa Bäumer, Vinay Tripathi, Derek S. Wang, Patrick Rall, Edward H. Chen, Swarnadeep Majumder, Alireza Seif, Zlatko K. Minev*. IBM Quantum, (2023).
+https://arxiv.org/abs/2308.13065

@@ -1,0 +1,618 @@
+---
+title: "Molecular geometry"
+sidebar_label: "Molecular geometry"
+description: "In this lesson we vary the geometry of a simple molecule, minimizing the energy at each step."
+notebook_path: "learning/courses/quantum-chem-with-vqe/geometry.ipynb"
+---
+{/* doqumentation-untranslated-fallback */}
+
+:::note[未翻訳]
+このページはまだ翻訳されていません。英語の原文を表示しています。
+:::
+
+
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-chem-with-vqe/geometry.ipynb" />
+
+
+
+{/* cspell:ignore pxxr prqs nelecas mcscf chmax Dmax vmax ecore ncas Excp disp */}
+
+# Determining a molecular geometry
+
+In the previous section, we implemented VQE to determine the ground state energy of a molecule. That is a valid use of quantum computing, but even more useful would be to determine the structure of a molecule.
+
+## Step 1: Map classical inputs to a quantum problem
+
+Remaining with our basic example of diatomic hydrogen, the only geometric parameter to vary is the bond length. To accomplish this, we proceed as before, but using a variable in our initial molecule construction (a bond length, *x*, in the argument). This is a fairly simple change, but it does require that the variable be included in functions throughout the process, since it starts in the fermionic Hamiltonian construction and propagates through the mapping and finally to the cost function.
+
+First, we load some of the packages we used before and define the Cholesky function.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+import matplotlib.pyplot as plt
+import numpy as np
+
+#!pip install pyscf==2.4.0
+from pyscf import ao2mo, gto, mcscf, scf
+
+def cholesky(V, eps):
+    # see https://arxiv.org/pdf/1711.02242.pdf section B2
+    # see https://arxiv.org/abs/1808.02625
+    # see https://arxiv.org/abs/2104.08957
+    no = V.shape[0]
+    chmax, ng = 20 * no, 0
+    W = V.reshape(no**2, no**2)
+    L = np.zeros((no**2, chmax))
+    Dmax = np.diagonal(W).copy()
+    nu_max = np.argmax(Dmax)
+    vmax = Dmax[nu_max]
+    while vmax > eps:
+        L[:, ng] = W[:, nu_max]
+        if ng > 0:
+            L[:, ng] -= np.dot(L[:, 0:ng], (L.T)[0:ng, nu_max])
+        L[:, ng] /= np.sqrt(vmax)
+        Dmax[: no**2] -= L[: no**2, ng] ** 2
+        ng += 1
+        nu_max = np.argmax(Dmax)
+        vmax = Dmax[nu_max]
+    L = L[:, :ng].reshape((no, no, ng))
+    print(
+        "accuracy of Cholesky decomposition ",
+        np.abs(np.einsum("prg,qsg->prqs", L, L) - V).max(),
+    )
+    return L, ng
+
+def identity(n):
+    return SparsePauliOp.from_list([("I" * n, 1)])
+
+def creators_destructors(n, mapping="jordan_wigner"):
+    c_list = []
+    if mapping == "jordan_wigner":
+        for p in range(n):
+            if p == 0:
+                ell, r = "I" * (n - 1), ""
+            elif p == n - 1:
+                ell, r = "", "Z" * (n - 1)
+            else:
+                ell, r = "I" * (n - p - 1), "Z" * p
+            cp = SparsePauliOp.from_list([(ell + "X" + r, 0.5), (ell + "Y" + r, -0.5j)])
+            c_list.append(cp)
+    else:
+        raise ValueError("Unsupported mapping.")
+    d_list = [cp.adjoint() for cp in c_list]
+    return c_list, d_list
+```
+
+Now to define our Hamiltonian, we will use PySCF exactly as in the previous example, but now we will include a variable, `x`, to play the role of our interatomic distance. This will return the core energy, single-electron energy, and two-electron energies as before.
+
+```python
+def ham_terms(x: float):
+    distance = x
+    a = distance / 2
+    mol = gto.Mole()
+    mol.build(
+        verbose=0,
+        atom=[
+            ["H", (0, 0, -a)],
+            ["H", (0, 0, a)],
+        ],
+        basis="sto-6g",
+        spin=0,
+        charge=0,
+        symmetry="Dooh",
+    )
+
+    # mf = scf.RHF(mol)
+    # mx = mcscf.CASCI(mf, ncas=2, nelecas=(1, 1))
+    # mx.kernel()
+
+    mf = scf.RHF(mol)
+    mf.kernel()
+    if not mf.converged:
+        raise RuntimeError(f"SCF did not converge for distance {x}")
+
+    mx = mcscf.CASCI(mf, ncas=2, nelecas=(1, 1))
+    casci_energy = mx.kernel()
+    if casci_energy is None:
+        raise RuntimeError(f"CASCI failed for distance {x}")
+
+    # Other variables that might come in handy:
+    # active_space = range(mol.nelectron // 2 - 1, mol.nelectron // 2 + 1)
+    #    E1 = mf.kernel()
+    # mo = mx.sort_mo(active_space, base=0)
+    #    E2 = mx.kernel(mo)[:2]
+
+    h1e, ecore = mx.get_h1eff()
+    h2e = ao2mo.restore(1, mx.get_h2eff(), mx.ncas)
+    return ecore, h1e, h2e
+```
+
+Recall that the construction above is making a fermionic Hamiltonian based on the atomic species, geometry, and electronic orbitals. Below, we map this fermionic Hamiltonian onto Pauli operators. This `build_hamiltonian` function will also include a geometric variable as an argument.
+
+```python
+def build_hamiltonian(distx: float) -> SparsePauliOp:
+    ecore = ham_terms(distx)[0]
+    h1e = ham_terms(distx)[1]
+    h2e = ham_terms(distx)[2]
+
+    ncas, _ = h1e.shape
+
+    C, D = creators_destructors(2 * ncas, mapping="jordan_wigner")
+    Exc = []
+    for p in range(ncas):
+        Excp = [C[p] @ D[p] + C[ncas + p] @ D[ncas + p]]
+        for r in range(p + 1, ncas):
+            Excp.append(
+                C[p] @ D[r]
+                + C[ncas + p] @ D[ncas + r]
+                + C[r] @ D[p]
+                + C[ncas + r] @ D[ncas + p]
+            )
+        Exc.append(Excp)
+
+    # low-rank decomposition of the Hamiltonian
+    Lop, ng = cholesky(h2e, 1e-6)
+    t1e = h1e - 0.5 * np.einsum("pxxr->pr", h2e)
+
+    H = ecore * identity(2 * ncas)
+    # one-body term
+    for p in range(ncas):
+        for r in range(p, ncas):
+            H += t1e[p, r] * Exc[p][r - p]
+    # two-body term
+    for g in range(ng):
+        Lg = 0 * identity(2 * ncas)
+        for p in range(ncas):
+            for r in range(p, ncas):
+                Lg += Lop[p, r, g] * Exc[p][r - p]
+        H += 0.5 * Lg @ Lg
+
+    return H.chop().simplify()
+```
+
+We will load the remaining packages for running VQE itself, such as the efficient_su2 ansatz, and SciPy minimizers:
+
+```python
+# General imports
+
+# Pre-defined ansatz circuit and operator class for Hamiltonian
+from qiskit.circuit.library import efficient_su2
+from qiskit.quantum_info import SparsePauliOp
+
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+# Plotting functions
+
+# Qiskit Runtime tools
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+```
+
+We will again define the cost function, but this always took a fully-built and mapped Hamiltonian as an argument, so nothing changes about this function.
+
+```python
+def cost_func(params, ansatz, H, estimator):
+    pub = (ansatz, [H], [params])
+    result = estimator.run(pubs=[pub]).result()
+    energy = result[0].data.evs[0]
+    return energy
+
+# def cost_func_sim(params, ansatz, H, estimator):
+#    energy = estimator.run(ansatz, H, parameter_values=params).result().values[0]
+#    return energy
+```
+
+## Step 2: Optimize problem for quantum execution
+
+Because the Hamiltonian will change with each new geometry, the transpiling of the operator will change at each step. We can nevertheless define a general pass manager to be applied at each step, specific to the hardware we want to use.
+
+Here we will use the least busy backend available. We will use that backend as a model for our AerSimulator, allowing our simulator to mimic, for example, the noise behavior of the real backend. These noise models are not perfect, but they may help you know what to expect from real hardware.
+
+```python
+# Here, we select the least busy backend available:
+backend = service.least_busy(operational=True, simulator=False)
+print(backend)
+# Or to select a specific real backend use the line below, and substitute 'ibm_strasbourg' for your chosen device.
+# backend = service.get_backend('ibm_strasbourg')
+```
+
+```python
+# To run on a simulator:
+# -----------
+from qiskit_aer import AerSimulator
+
+backend_sim = AerSimulator.from_backend(backend)
+```
+
+We import the pass manager and related packages to help us optimize our circuit. This step, and the one above it, are independent of the Hamiltonian, and so are unchanged from the previous lesson.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+    ConstrainedReschedule,
+)
+from qiskit.circuit.library import XGate
+
+target = backend.target
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+## Step 3: Execute using Qiskit primitives.
+
+In the code block below, we set up an array to store our outputs from each step in our interatomic distance $x$. We have chosen the range of $x$ based on our knowledge of the experimental value for the equilibrium bond length: 0.74 Angstrom. We will run this first on a simulator, and will thus be importing our estimator (BackendEstimator) from `qiskit.primitives`. For each geometry step, we build the Hamiltonian and allow a certain number of optimization steps (here 500) using the optimizer "cobyla". At each geometry step, we store both the total energy and the electronic energy. Because of the high number of optimizer steps, this may take an hour or more. You may wish to modify the inputs below to reduce the required time.
+
+```python
+from qiskit.primitives import BackendEstimatorV2
+
+estimator = BackendEstimatorV2(backend=backend_sim)
+
+distances_sim = np.arange(0.3, 1.3, 0.1)
+vqe_energies_sim = []
+vqe_elec_energies_sim = []
+
+for dist in distances_sim:
+    xx = dist
+
+    # Random initial state and efficient_su2 ansatz
+    H = build_hamiltonian(xx)
+    ansatz = efficient_su2(H.num_qubits)
+    ansatz_isa = pm.run(ansatz)
+    x0 = 2 * np.pi * np.random.random(ansatz_isa.num_parameters)
+    H_isa = H.apply_layout(ansatz_isa.layout)
+    nuclear_repulsion = ham_terms(xx)[0]
+
+    res = minimize(
+        cost_func,
+        x0,
+        args=(ansatz_isa, H_isa, estimator),
+        method="cobyla",
+        options={"maxiter": 20, "disp": True},
+    )
+
+    # Note this returns the total energy, and we are often interested in the electronic energy
+    tot_energy = getattr(res, "fun")
+    electron_energy = getattr(res, "fun") - nuclear_repulsion
+    print(electron_energy)
+    vqe_energies_sim.append(tot_energy)
+    vqe_elec_energies_sim.append(electron_energy)
+
+    # Print all results
+    print(res)
+
+print("All energies have been calculated")
+```
+
+```text
+accuracy of Cholesky decomposition  1.1102230246251565e-15
+```
+
+```text
+/home/porter284/.pyenv/versions/3.11.12/lib/python3.11/site-packages/scipy/_lib/pyprima/common/preproc.py:68: UserWarning: COBYLA: Invalid MAXFUN; it should be at least num_vars + 2; it is set to 34
+  warn(f'{solver}: Invalid MAXFUN; it should be at least {min_maxfun_str}; it is set to {maxfun}')
+```
+
+```text
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = 1.316011435623847
+The corresponding X is:
+[2.32948769 5.39918229 3.03787975 4.11789904 4.97130735 2.68662232
+ 1.76573151 2.48982571 5.40431972 3.65780829 1.33792786 5.48472494
+ 6.18738702 1.78741883 0.78195251 2.96658955 1.35827677 5.599321
+ 4.54850148 1.0939048  4.26158726 0.52100721 0.82318    4.76796961
+ 3.75795507 3.8526447  5.51100375 5.91023075 2.61494836 1.79908918
+ 2.65937756 5.53964148]
+
+-0.44791260077615314
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: 1.316011435623847
+       x: [ 2.329e+00  5.399e+00 ...  2.659e+00  5.540e+00]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  5.551115123125783e-16
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = 0.7235003672327549
+The corresponding X is:
+[2.56282915 5.63369524 5.58059887 4.049643   4.2021266  3.06866011
+ 6.01619635 1.52520776 4.35403161 0.33673958 0.32623161 1.2179545
+ 2.84001371 3.98956684 4.89632562 1.38303588 1.96194695 2.13182089
+ 0.29739166 1.77895165 3.29151585 3.54355374 4.49626674 0.95756626
+ 0.87103927 4.53068385 1.31051302 0.37103108 1.02961355 3.13342311
+ 5.65815319 2.24770604]
+
+-0.5994426600672451
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: 0.7235003672327549
+       x: [ 2.563e+00  5.634e+00 ...  5.658e+00  2.248e+00]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  5.551115123125783e-16
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = 0.34960914928810116
+The corresponding X is:
+[5.44143165 6.75955835 1.56836472 3.09522093 4.67873235 1.67071481
+ 0.3056494  0.65998337 1.02197668 5.21162959 0.43690354 3.56522934
+ 4.56033119 1.90736037 0.40863891 2.87007312 3.2516952  5.90360196
+ 1.99057799 5.20726456 0.74710237 6.03179202 3.80685028 0.03844391
+ 5.88580196 3.62233258 3.98723567 2.50591888 5.44020267 2.2792993
+ 5.57102303 4.46548617]
+
+-0.7087452725518989
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: 0.34960914928810116
+       x: [ 5.441e+00  6.760e+00 ...  5.571e+00  4.465e+00]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  2.220446049250313e-16
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = 0.10594558882184543
+The corresponding X is:
+[5.35675483 2.26629567 1.45430546 5.56758296 5.76309509 0.73239338
+ 5.1216998  3.03258872 4.33624828 1.93197674 0.5292902  3.32274987
+ 3.43247633 0.81490741 0.48060245 1.9944799  5.67519646 5.12534057
+ 0.06510627 2.52989834 6.1699519  0.94828957 5.91634548 1.5994961
+ 4.27902164 2.3129213  1.82353095 2.10634209 1.43740426 4.06988733
+ 0.59624074 4.93925418]
+
+-0.7760164293781545
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: 0.10594558882184543
+       x: [ 5.357e+00  2.266e+00 ...  5.962e-01  4.939e+00]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  1.1102230246251565e-16
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = -0.06473600797229297
+The corresponding X is:
+[6.07735568 0.18019501 0.20743128 4.15445985 3.59388894 5.10047555
+ 6.09938474 6.54707528 3.36251167 2.05475223 3.67078456 5.96010605
+ 2.58589996 5.2723619  3.26352977 2.47432334 3.50289983 2.06620525
+ 6.0946056  1.22751903 0.97320057 2.19564095 5.73174941 2.05127682
+ 5.73805165 3.84046105 1.84816963 2.1247504  3.11106736 2.44136052
+ 3.39002685 0.81596991]
+
+-0.8207034521437214
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: -0.06473600797229297
+       x: [ 6.077e+00  1.802e-01 ...  3.390e+00  8.160e-01]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  5.551115123125783e-17
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = -0.19562982094782935
+The corresponding X is:
+[-0.02184462  3.67041038  7.25918653  5.89799546  0.63583624  1.84214506
+  2.84059837  5.31485182  1.6053784   0.04556618  0.32018993 -0.03884066
+  0.69131496  0.24203727  1.97397262  3.59723495  0.43355775  2.30131056
+  4.63482292  3.9857415   4.32320753  4.55388437  2.18753433  5.99034987
+  2.50489913  0.90650534  4.82518088  2.32954849  2.29901832  5.33658863
+  5.91246716  3.2405013 ]
+
+-0.8571013345978292
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: -0.19562982094782935
+       x: [-2.184e-02  3.670e+00 ...  5.912e+00  3.241e+00]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  1.1102230246251565e-16
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = -0.2833766309947055
+The corresponding X is:
+[ 3.1700088   5.05055456  1.2545611   4.28751811  0.6255103   1.67526577
+  5.48201473  4.83820497  7.34880059  5.99705431  4.2502643   0.32066274
+  0.41001404  0.27271241  4.15682546  4.22393693  4.35148115  0.64538137
+  5.26288622  5.03810489  4.62426621  4.74997689  1.09603919  0.34752466
+  1.8116275   0.7474807   5.31754143  4.11181763  1.58797998  5.6299796
+  3.0109383  -0.19062772]
+
+-0.8713513097947054
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: -0.2833766309947055
+       x: [ 3.170e+00  5.051e+00 ...  3.011e+00 -1.906e-01]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  1.1102230246251565e-16
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = -0.3527503628484244
+The corresponding X is:
+[3.90513622 4.61398739 5.92552705 1.99953405 4.82157369 1.35702441
+ 2.77701782 5.73612247 4.22710527 1.83463189 0.45796297 4.62509318
+ 0.98998668 0.11666217 3.0234641  4.54298546 0.14034033 4.15635797
+ 1.41257357 4.48719602 2.39365535 0.19672041 5.0763044  1.86357581
+ 3.657757   4.60298344 2.49769577 1.88086199 3.00108725 1.84475841
+ 5.24047385 4.91142914]
+
+-0.8819275737684243
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: -0.3527503628484244
+       x: [ 3.905e+00  4.614e+00 ...  5.240e+00  4.911e+00]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  2.7755575615628914e-17
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = -0.4022181851996095
+The corresponding X is:
+[6.09453981 3.5109422  3.37216019 4.94732621 1.25662002 5.89645164
+ 5.06403334 2.68073141 4.40385083 1.13638366 1.73347762 6.82932871
+ 1.15265014 2.07145964 4.36520459 1.14960341 1.62288871 4.32315915
+ 5.45622821 0.93554005 3.17418483 0.47230243 1.31535502 5.77698726
+ 2.04927925 2.50663538 5.9706002  5.4984681  2.9421232  1.56636313
+ 1.09394523 4.62582   ]
+
+-0.8832883769450639
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: -0.4022181851996095
+       x: [ 6.095e+00  3.511e+00 ...  1.094e+00  4.626e+00]
+    nfev: 34
+   maxcv: 0.0
+accuracy of Cholesky decomposition  1.1102230246251565e-16
+Return from COBYLA because the objective function has been evaluated MAXFUN times.
+Number of function values = 34   Least value of F = -0.44423031870708934
+The corresponding X is:
+[4.05765050e+00 3.99144950e+00 3.13287593e+00 3.28855137e+00
+ 4.32613515e+00 4.91104512e+00 1.86521867e+00 2.18822879e+00
+ 6.01336171e+00 1.82501276e+00 2.64830637e+00 5.53045823e+00
+ 2.36110093e+00 3.98821703e+00 4.69013438e-01 4.38996815e+00
+ 7.78103801e-04 1.72994378e+00 2.24970934e+00 1.11978200e+00
+ 2.24846445e+00 4.90745512e+00 5.38474921e+00 5.03587994e+00
+ 3.54297277e+00 4.78147533e+00 1.25990218e+00 1.99168068e+00
+ 5.89203503e+00 1.77673987e+00 5.37848357e+00 5.60245198e-01]
+
+-0.8852113278070892
+ message: Return from COBYLA because the objective function has been evaluated MAXFUN times.
+ success: False
+  status: 3
+     fun: -0.44423031870708934
+       x: [ 4.058e+00  3.991e+00 ...  5.378e+00  5.602e-01]
+    nfev: 34
+   maxcv: 0.0
+All energies have been calculated
+```
+
+```python
+xx
+```
+
+```text
+np.float64(1.2000000000000004)
+```
+
+The results of this output are discussed below in the post-processing section; for now, simply note that the simulation was successful. Now you are ready to run on real hardware. We will set the resilience to `1`, indicating that TREX error mitigation will be used. Now that we are working with real hardware, we will use Qiskit Runtime, and Runtime primitives. Note that both the for loop related to geometry and also the multiple variational trials are inside the session.
+
+Because there are costs and time limits associated with real hardware runs, we have reduced the number of geometry steps and optimizer steps below. Be sure to tailor these steps according to your precision goals and time limits.
+
+```python
+# To continue running on real hardware use
+from qiskit_ibm_runtime import Session
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import EstimatorOptions
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=2000)
+
+distances = np.arange(0.5, 0.9, 0.1)
+vqe_energies = []
+vqe_elec_energies = []
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    for dist in distances:
+        xx = dist
+
+        # Random initial state and efficient_su2 ansatz
+
+        H = build_hamiltonian(xx)
+        ansatz = efficient_su2(H.num_qubits)
+        ansatz_isa = pm.run(ansatz)
+        H_isa = H.apply_layout(ansatz_isa.layout)
+        nuclear_repulsion = ham_terms(xx)[0]
+        x0 = 2 * np.pi * np.random.random(ansatz_isa.num_parameters)
+
+        res = minimize(
+            cost_func,
+            x0,
+            args=(ansatz_isa, H_isa, estimator),
+            method="cobyla",
+            options={"maxiter": 50, "disp": True},
+        )
+
+        # Note this returns the total energy, and we are often interested in the electronic energy
+        tot_energy = getattr(res, "fun")
+        electron_energy = getattr(res, "fun") - nuclear_repulsion
+        print(electron_energy)
+        vqe_energies.append(tot_energy)
+        vqe_elec_energies.append(electron_energy)
+
+        # Print all results
+        print(res)
+
+print("All energies have been calculated")
+```
+
+## Step 4: Post-processing
+
+For both the simulator and real hardware, we can plot the ground state energies calculated for each inter-atomic distance and see where the lowest energy is achieved. That should be the inter-atomic distance found in nature, and indeed it is close. A smoother curve might be obtained by trying other ansaetze, optimizers, and running the calculation multiple times at each geometry step and averaging over several random initial conditions.
+
+```python
+# Here we can plot the results from this simulation.
+plt.plot(distances_sim, vqe_energies_sim, label="VQE Energy")
+plt.xlabel("Atomic distance (Angstrom)")
+plt.ylabel("Energy")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-chem-with-vqe/geometry/extracted-outputs/e81f3ead-27ac-415e-a9f2-64a51d4b7aa3-0.avif)
+
+Note that simply increasing the number of optimization steps is not likely to improve the results from the simulator, since all optimizations actually converged to the required tolerance in fewer than the maximum number of iterations.
+
+The results from the real hardware are comparable, aside from a slightly different range of values sampled.
+
+```python
+plt.plot(distances, vqe_energies, label="VQE Energy")
+plt.xlabel("Atomic distance (Angstrom)")
+plt.ylabel("Energy")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-chem-with-vqe/geometry/extracted-outputs/de8f53cf-9547-4578-b6cb-20d2b5602ee0-0.avif)
+
+In addition to expecting an H2 bond length of 0.74 Angstrom, the total energy should be -1.17 Hartrees. We see that the real hardware results came closer to these values than the simulator. This is likely because noise was present (or simulated) in both cases, but only in the case of real hardware was error mitigation employed.
+
+### Closing
+
+This concludes our course on VQE for quantum chemistry. If you are interested in understanding some of the underlying information theory used in quantum computing, check out John Watrous's course on the [Basics of Quantum Information](/learning/courses/basics-of-quantum-information). For an additional short-form example of a VQE workflow, see our [Ground-state energy estimation of the Heisenberg chain with VQE tutorial](/tutorials/spin-chain-vqe). Or browse the [tutorials](https://docs.quantum.ibm.com/tutorials) and [courses](/learning) to find more educational materials about the latest technology in quantum computing.
+
+Don't forget to take this course's exam. A score of 80% or higher will earn you a Credly badge, which will automatically be emailed to you. Thank you for being a part of the IBM Quantum&reg; Network!
+
+```python
+import qiskit
+import qiskit_ibm_runtime
+
+print(qiskit.version.get_version_info())
+print(qiskit_ibm_runtime.version.get_version_info())
+```
+
+```text
+1.3.2
+0.35.0
+```

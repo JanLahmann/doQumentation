@@ -1,0 +1,465 @@
+---
+title: "Krylov-Quantendiagonaliseren vun Gitterhamiltonianen"
+sidebar_label: "Krylov-Quantendiagonaliseren vun Gitterhamiltonianen"
+description: "Sett den Krylov Quantum Diagonalization Algorithm (KQD) binnen dat Qiskit-Muster üm."
+notebook_path: "docs/tutorials/krylov-quantum-diagonalization.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/krylov-quantum-diagonalization.ipynb" />
+
+
+
+{/* cspell:ignore prefactors */}
+
+*Bruukschattung: 20 Minuten op'n Heron r2 (HENWIES: Dit is blot'n Schattung. Dien Looptied kann anners sien.)*
+
+```python
+# This cell is hidden from users – it disables some lint rules
+# ruff: noqa: E402 E722 F601
+```
+
+## Achtergrund {#background}
+
+Dit Tutorial wiest, wo man den Krylov Quantum Diagonalization Algorithm (KQD) binnen dat Qiskit-Muster ümsetten kann. Du lehrst toeerst över de Theorie achter den Algorithmus un denn seehst 'ne Vörföhrung vun sien Utföhren op'n QPU.
+
+Över all Disziplinen sünd wi daran interesseert, Grundtostandseigenschappen vun Quantensystemen to lehren. Biespelen ümfaten dat Verstahn vun de fundamentale Natur vun Partikeln un Kräften, dat Vörütseggen un Verstahn vun dat Verholten vun komplexe Materialien un dat Verstahn vun biochemische Interaktionen un Reaktionen. Wegen dat exponentielle Wassen vun den Hilbert-Ruum un de Korrelation, de in verschränkte Systemen optreden, hebbt klassische Algorithmen Swierigkeden, dit Problem för Quantensystemen vun wassende Grött to lösen. An een Enn vun dat Spektrum is de bestahnde Angang, de vun de Quantenhardware profiteert un sik op variationelle Quantenmethoden konzentriert (to'n Bispill [variational quantum eigensolver](/tutorials/spin-chain-vqe)). Disse Techniken stahn vör Rutforderns mit aktuelle Geräten wegen de hoge Antall vun Funktioneopropen, de in'n Optimerungsprozess nödig sünd, wat 'n groten Overhead an Ressourcen bringt, wenn moderne Fehlerminnerungstechniken infohrt warrt, un dormit ehr Warksamkeit op lütte Systemen begrenzt. An dat anner Enn vun dat Spektrum gifft dat fehlertoleranteQuantenmethoden mit Leistungsgarantien (to'n Bispill [quantum phase estimation](https://arxiv.org/abs/quant-ph/0604193)), de deep Schaltkreisen bruken, de blot op'n fehlertoleranten Gerät utfohrt warrn köönt. Ut disse Grünn stellt wi hier'n Quantenalgorithmus vör, de op Deelruummethoden baseert (as beschreven in dit [Översichtsppapier](https://arxiv.org/abs/2312.00178)), den Krylov-Quantendiagonaliserungsalgorithmus (KQD). Disse Algorithmus warkt good bi groten Matstav [\[1\]](#references) op bestahnde Quantenhardware, deelt ähnliche [Leistungsgarantien](https://arxiv.org/abs/2110.07492) as Phase Estimation, is kompatibel mit moderne Fehlerminnerungstechniken un künn Resultaten levern, de klassisch nich togänglich sünd.
+## Vöruttösettungen {#requirements}
+Bevör du mit dit Tutorial anfängst, sörg dafür, dat du Folgendes installeert hest:
+
+- Qiskit SDK v2.0 oder neger, mit [Visualiseren](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 oder neger ( `pip install qiskit-ibm-runtime` )
+## Opbau {#setup}
+
+```python
+import numpy as np
+import scipy as sp
+import matplotlib.pylab as plt
+from typing import Union, List
+import itertools as it
+import copy
+from sympy import Matrix
+import warnings
+
+warnings.filterwarnings("ignore")
+
+from qiskit.quantum_info import SparsePauliOp, Pauli, StabilizerState
+from qiskit.circuit import Parameter, IfElseOp
+from qiskit import QuantumCircuit, QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+from qiskit.transpiler import Target, CouplingMap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    EstimatorV2 as Estimator,
+)
+
+def solve_regularized_gen_eig(
+    h: np.ndarray,
+    s: np.ndarray,
+    threshold: float,
+    k: int = 1,
+    return_dimn: bool = False,
+) -> Union[float, List[float]]:
+    """
+    Method for solving the generalized eigenvalue problem with regularization
+
+    Args:
+        h (numpy.ndarray):
+            The effective representation of the matrix in the Krylov subspace
+        s (numpy.ndarray):
+            The matrix of overlaps between vectors of the Krylov subspace
+        threshold (float):
+            Cut-off value for the eigenvalue of s
+        k (int):
+            Number of eigenvalues to return
+        return_dimn (bool):
+            Whether to return the size of the regularized subspace
+
+    Returns:
+        lowest k-eigenvalue(s) that are the solution of the regularized generalized eigenvalue problem
+
+    """
+    s_vals, s_vecs = sp.linalg.eigh(s)
+    s_vecs = s_vecs.T
+    good_vecs = np.array(
+        [vec for val, vec in zip(s_vals, s_vecs) if val > threshold]
+    )
+    h_reg = good_vecs.conj() @ h @ good_vecs.T
+    s_reg = good_vecs.conj() @ s @ good_vecs.T
+    if k == 1:
+        if return_dimn:
+            return sp.linalg.eigh(h_reg, s_reg)[0][0], len(good_vecs)
+        else:
+            return sp.linalg.eigh(h_reg, s_reg)[0][0]
+    else:
+        if return_dimn:
+            return sp.linalg.eigh(h_reg, s_reg)[0][:k], len(good_vecs)
+        else:
+            return sp.linalg.eigh(h_reg, s_reg)[0][:k]
+
+def single_particle_gs(H_op, n_qubits):
+    """
+    Find the ground state of the single particle(excitation) sector
+    """
+    H_x = []
+    for p, coeff in H_op.to_list():
+        H_x.append(set([i for i, v in enumerate(Pauli(p).x) if v]))
+
+    H_z = []
+    for p, coeff in H_op.to_list():
+        H_z.append(set([i for i, v in enumerate(Pauli(p).z) if v]))
+
+    H_c = H_op.coeffs
+
+    print("n_sys_qubits", n_qubits)
+
+    n_exc = 1
+    sub_dimn = int(sp.special.comb(n_qubits + 1, n_exc))
+    print("n_exc", n_exc, ", subspace dimension", sub_dimn)
+
+    few_particle_H = np.zeros((sub_dimn, sub_dimn), dtype=complex)
+
+    sparse_vecs = [
+        set(vec) for vec in it.combinations(range(n_qubits + 1), r=n_exc)
+    ]  # list all of the possible sets of n_exc indices of 1s in n_exc-particle states
+
+    m = 0
+    for i, i_set in enumerate(sparse_vecs):
+        for j, j_set in enumerate(sparse_vecs):
+            m += 1
+
+            if len(i_set.symmetric_difference(j_set)) <= 2:
+                for p_x, p_z, coeff in zip(H_x, H_z, H_c):
+                    if i_set.symmetric_difference(j_set) == p_x:
+                        sgn = ((-1j) ** len(p_x.intersection(p_z))) * (
+                            (-1) ** len(i_set.intersection(p_z))
+                        )
+                    else:
+                        sgn = 0
+
+                    few_particle_H[i, j] += sgn * coeff
+
+    gs_en = min(np.linalg.eigvalsh(few_particle_H))
+    print("single particle ground state energy: ", gs_en)
+    return gs_en
+```
+
+## Schritt 1: Kart klassische Ingänge op'n Quantenproblem {#step-1-map-classical-inputs-to-a-quantum-problem}
+### De Krylov-Ruum {#the-krylov-space}
+
+De Krylov-Ruum $\mathcal{K}^r$ vun Ordnung $r$ is de Ruum, de vun Vektoren opspannt warrt, de wi kriegt, indem wi högere Potenzen vun'ne Matrix $A$, bet to $r-1$, mit'n Referenzvekter $\vert v \rangle$ multiplizeren.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+Wenn de Matrix $A$ de Hamiltonian $H$ is, warrt wi den tohörigen Ruum as Potenz-Krylov-Ruum $\mathcal{K}_P$ bezeeken. In't Fall, wenn $A$ de Tiedentwikkelungsoperator is, de vun den Hamiltonian $U=e^{-iHt}$ erzeugt warrt, warrt wi den Ruum as unitären Krylov-Ruum $\mathcal{K}_U$ bezeeken. De Potenz-Krylov-Deelruum, den wi klassisch bruken, kann nich direkt op'n Quantencomputer erzeugt warrn, wieldat $H$ keen unitären Operator is. In steed darvun köön wi den Tiedentwikkelungsoperator $U = e^{-iHt}$ bruken, vun den man wiesen kann, dat he ähnliche [Konvergenzgarantien](https://arxiv.org/abs/2110.07492) as de Potenzmethode gifft. Potenzen vun $U$ warrt denn verscheden Tiedschritte $U^k = e^{-iH(kt)}$.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+
+Seeh in'n Anhang för'ne detailleerte Herlieden, wo de unitäre Krylov-Ruum dat tolaten deit, neederenergetische Eigentostänn genau dartostelln.
+### Krylov-Quantendiagonaliserungsalgorithmus {#krylov-quantum-diagonalization-algorithm}
+
+Geven'n Hamiltonian $H$, den wi diagonaliseren wüllt, betrachten wi toeerst den tohörigen unitären Krylov-Ruum $\mathcal{K}_U$. Dat Teel is dat, 'ne kompakte Darstellen vun den Hamiltonian in $\mathcal{K}_U$ to finnen, de wi as $\tilde{H}$ bezeeken warrt. De Matrixelemente vun $\tilde{H}$, de Projektion vun den Hamiltonian in'n Krylov-Ruum, köön berekent warrn, indem wi de folgenden Verwachtungsweerten berekenen
+
+$$
+\tilde{H}_{mn} = \langle \psi_m \vert H \vert \psi_n \rangle =
+$$
+$$
+= \langle \psi \vert  e^{i H t_m}   H e^{-i H t_n} \vert \psi \rangle
+$$
+$$
+= \langle \psi \vert  e^{i H m dt}   H e^{-i H n dt} \vert \psi \rangle
+$$
+
+Wo $\vert \psi_n \rangle = e^{-i H t_n} \vert \psi \rangle$ de Vektoren vun den unitären Krylov-Ruum sünd un $t_n = n dt$ de Veelfachen vun den Tiedschritt $dt$ sünd, de wählt wurrn. Op'n Quantencomputer kann de Bereknung vun jedes Matrixelement mit jeden Algorithmus makt warrn, de dat tolaten deit, Överlappungen twüschen Quantentostänn to kregen. Dit Tutorial konzentreert sik op den Hadamard-Test. Geven dat $\mathcal{K}_U$ de Dimension $r$ hett, hett de Hamiltonian, projizeert in den Deelruum, Dimensionen $r \times r$. Mit $r$ lütt noog (normalerwies langt $r<<100$ för de Konvergenz vun Schattungen vun Eigenenergien) köön wi denn eenfach den projizierten Hamiltonian $\tilde{H}$ diagonaliseren. Aber wi köön $\tilde{H}$ nich direkt diagonaliseren wegen de Nich-Orthogonalität vun de Krylov-Ruum-Vektoren. Wi mööt ehr Överlappungen meten un 'ne Matrix $\tilde{S}$ konstrueren
+
+$$
+\tilde{S}_{mn} = \langle \psi_m \vert \psi_n \rangle
+$$
+
+Dat erlööft uns, dat Eigenweertproblem in'n nich-orthogonalen Ruum to lösen (ook verallgemeinert Eigenweertproblem neemt)
+
+$$
+\tilde{H} \ \vec{c} = E \ \tilde{S} \ \vec{c}
+$$
+
+Man kann denn Schattungen vun de Eigenweerten un Eigentostänn vun $H$ kregen, indem man op de vun $\tilde{H}$ kiekt. To'n Bispill kriggt man de Schatting vun de Grundtostandsenergie, indem man den lüttstesten Eigenweert $c$ nimmt un den Grundtostand ut den tohörigen Eigenvekter $\vec{c}$. De Koeffizienten in $\vec{c}$ bestimmen den Bidrag vun de verschedenen Vektoren, de $\mathcal{K}_U$ opspannen.
+
+![fig1.png](/docs/images/tutorials/krylov-subspace-diagonalization/fc662b76-8ad7-4a6c-8c49-5f08c125aee8.avif)
+
+De Figur wiest 'ne Schaltkreisdarstellen vun den modifizierten Hadamard-Test, 'ne Methode, de bruukt warrt, üm de Överlappung twüschen verschedene Quantentostänn to berekenen. För jedes Matrixelement $\tilde{H}_{i,j}$ warrt'n Hadamard-Test twüschen den Tostand $\vert \psi_i \rangle$, $\vert \psi_j \rangle$ dörchmakt. Dat warrt in de Figur dörch dat Farvenschema för de Matrixelemente un de tohörigen $\text{Prep} \; \psi_i$, $\text{Prep} \; \psi_j$ Operationen hervörhaven. Also is'ne Menge vun Hadamard-Tests för all möglichen Kombinationen vun Krylov-Ruum-Vektoren nödig, üm all Matrixelemente vun den projizierten Hamiltonian $\tilde{H}$ to berekenen. De bovenste Lien in'n Hadamard-Test-Schaltkreis is'n Ancilla-Qubit, dat entweder in de X- oder Y-Basis meten warrt, sien Verwachtungsweert bestimmt den Weert vun de Överlappung twüschen de Tostänn. De unnerste Lien stellt all Qubits vun den System-Hamiltonian dar. De $\text{Prep} \; \psi_i$ Operation bereit dat System-Qubit in'n Tostand $\vert \psi_i \rangle$ vör, stüürt dörch den Tostand vun dat Ancilla-Qubit (ähnlich för $\text{Prep} \; \psi_j$) un de Operation $P$ stellt de Pauli-Zerleggen vun den System-Hamiltonian $H = \sum_i P_i$ dar. 'Ne detailleerte Herlieden vun de Operationen, de vun den Hadamard-Test berekent warrt, is ünnen geven.
+#### Hamiltonian defineren {#define-hamiltonian}
+
+Lot uns den Heisenberg-Hamiltonian för $N$ Qubits op'ne lineere Kette betrachten: $H= \sum_{i,j}^N X_i X_j + Y_i Y_j - J Z_i Z_j$
+
+```python
+# Define problem Hamiltonian.
+n_qubits = 30
+J = 1  # coupling strength for ZZ interaction
+
+# Define the Hamiltonian:
+H_int = [["I"] * n_qubits for _ in range(3 * (n_qubits - 1))]
+for i in range(n_qubits - 1):
+    H_int[i][i] = "Z"
+    H_int[i][i + 1] = "Z"
+for i in range(n_qubits - 1):
+    H_int[n_qubits - 1 + i][i] = "X"
+    H_int[n_qubits - 1 + i][i + 1] = "X"
+for i in range(n_qubits - 1):
+    H_int[2 * (n_qubits - 1) + i][i] = "Y"
+    H_int[2 * (n_qubits - 1) + i][i + 1] = "Y"
+H_int = ["".join(term) for term in H_int]
+H_tot = [(term, J) if term.count("Z") == 2 else (term, 1) for term in H_int]
+
+# Get operator
+H_op = SparsePauliOp.from_list(H_tot)
+print(H_tot)
+```
+
+```text
+[('ZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIZZIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIZZIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIZZIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIZZIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIZZIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 1), ('XXIIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IXXIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIXXIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIXXIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIXXIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIXXIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIXXIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIXXIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIXXIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIXXIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIXXIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIXXIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIXXIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIXXIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIXXIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIXXIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIXXIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIXXIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIXXIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIXXIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIXXIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIXXIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIXXIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIXXIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIXXIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIXXIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIXXII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIXXI', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIIXX', 1), ('YYIIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IYYIIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIYYIIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIYYIIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIYYIIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIYYIIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIYYIIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIYYIIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIYYIIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIYYIIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIYYIIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIYYIIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIYYIIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIYYIIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIYYIIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIYYIIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIYYIIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIYYIIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIYYIIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIYYIIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIYYIIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIYYIIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIYYIIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIYYIIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIYYIIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIYYIII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIYYII', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIYYI', 1), ('IIIIIIIIIIIIIIIIIIIIIIIIIIIIYY', 1)]
+```
+
+#### Parameter för den Algorithmus fastleggen {#set-parameters-for-the-algorithm}
+Wi wählen heuristisch'n Weert för den Tiedschritt `dt` (baseert op bovenste Grenzen vun de Hamiltonian-Norm). Ref [\[2\]](#references) hett wiest, dat'n genoog lütten Tiedschritt $\pi/\vert \vert H \vert \vert$ is, un dat dat bet to'n Punkt beter is, dissen Weert to ünnerschatten in steed vun överschatten, wieldat Överschatten Bidräg vun hoogenenergetische Tostänn tolatenlaten kann, de sölfst den optimalen Tostand in'n Krylov-Ruum verdarven köön. Annerersied föhrt de Wahl vun $dt$ to lütt darto, dat de Konditioneren vun den Krylov-Deelruum slechter warrt, wieldat de Krylov-Basisvektoren sik weniger vun Tiedschritt to Tiedschritt ünnerscheden.
+
+```python
+# Get Hamiltonian restricted to single-particle states
+single_particle_H = np.zeros((n_qubits, n_qubits))
+for i in range(n_qubits):
+    for j in range(i + 1):
+        for p, coeff in H_op.to_list():
+            p_x = Pauli(p).x
+            p_z = Pauli(p).z
+            if all(
+                p_x[k] == ((i == k) + (j == k)) % 2 for k in range(n_qubits)
+            ):
+                sgn = (
+                    (-1j) ** sum(p_z[k] and p_x[k] for k in range(n_qubits))
+                ) * ((-1) ** p_z[i])
+            else:
+                sgn = 0
+            single_particle_H[i, j] += sgn * coeff
+for i in range(n_qubits):
+    for j in range(i + 1, n_qubits):
+        single_particle_H[i, j] = np.conj(single_particle_H[j, i])
+
+# Set dt according to spectral norm
+dt = np.pi / np.linalg.norm(single_particle_H, ord=2)
+dt
+```
+
+```text
+np.float64(0.10833078115826875)
+```
+
+Un sett anner Parameter vun den Algorithmus. För dat Tutorial beschränken wi uns op de Nutzung vun'n Krylov-Ruum mit blot fief Dimensionen, wat temlich beschränkend is.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of Krylov subspace
+num_trotter_steps = 6
+dt_circ = dt / num_trotter_steps
+```
+
+#### Tostandsvörbereeden {#state-preparation}
+Wähl'n Referenztostand $\vert \psi \rangle$, de irgendwie Överlappung mit den Grundtostand hett. För dissen Hamiltonian bruken wi den Tostand mit'ne Anregung in't middelste Qubit $\vert 00..010...00 \rangle$ as unsen Referenztostand.
+
+```python
+qc_state_prep = QuantumCircuit(n_qubits)
+qc_state_prep.x(int(n_qubits / 2) + 1)
+qc_state_prep.draw("mpl", scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/70161afe-8ace-4642-894a-cd21ed77a3b9-0.avif)
+
+#### Tiedentwikkelung {#time-evolution}
+
+Wi köön den Tiedentwikkelungsoperator, de vun'n geven Hamiltonian erzeugt warrt, realiseren: $U=e^{-iHt}$ över de [Lie-Trotter-Approximation](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter).
+
+```python
+t = Parameter("t")
+
+## Create the time-evo op circuit
+evol_gate = PauliEvolutionGate(
+    H_op, time=t, synthesis=LieTrotter(reps=num_trotter_steps)
+)
+
+qr = QuantumRegister(n_qubits)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+```
+
+```text
+<qiskit.circuit.instructionset.InstructionSet at 0x11eef9be0>
+```
+
+#### Hadamard-Test {#hadamard-test}
+
+![fig2.png](/docs/images/tutorials/krylov-subspace-diagonalization/c5263851-6067-4ca2-8e0c-a835631cdc7f.avif)
+
+$$
+\begin{equation*}
+    |0\rangle|0\rangle^N \quad\longrightarrow\quad \frac{1}{\sqrt{2}}\Big(|0\rangle + |1\rangle \Big)|0\rangle^N \quad\longrightarrow\quad \frac{1}{\sqrt{2}}\Big(|0\rangle|0\rangle^N+|1\rangle |\psi_i\rangle\Big) \quad\longrightarrow\quad \frac{1}{\sqrt{2}}\Big(|0\rangle |0\rangle^N+|1\rangle P |\psi_i\rangle\Big) \quad\longrightarrow\quad\frac{1}{\sqrt{2}}\Big(|0\rangle |\psi_j\rangle+|1\rangle P|\psi_i\rangle\Big)
+\end{equation*}
+$$
+
+Wo $P$ een vun de Termen in de Zerleggen vun den Hamiltonian $H=\sum P$ is un $\text{Prep} \; \psi_i$, $\text{Prep} \; \psi_j$ stüürte Operationen sünd, de $|\psi_i\rangle$, $|\psi_j\rangle$ Vektoren vun den unitären Krylov-Ruum vörbereeden, mit $|\psi_k\rangle = e^{-i H k dt } \vert \psi \rangle = e^{-i H k dt } U_{\psi} \vert 0 \rangle^N$. Üm $X$ to meten, wendt toeerst $H$ an...
+
+$$
+\begin{equation*}
+    \longrightarrow\quad\frac{1}{2}|0\rangle\Big( |\psi_j\rangle + P|\psi_i\rangle\Big) + \frac{1}{2}|1\rangle\Big(|\psi_j\rangle - P|\psi_i\rangle\Big)
+\end{equation*}
+$$
+
+... denn meet:
+
+$$
+\begin{equation*}
+\begin{split}
+    \Rightarrow\quad\langle X\rangle &= \frac{1}{4}\Bigg(\Big\|| \psi_j\rangle + P|\psi_i\rangle \Big\|^2-\Big\||\psi_j\rangle - P|\psi_i\rangle\Big\|^2\Bigg) \\
+    &= \text{Re}\Big[\langle\psi_j| P|\psi_i\rangle\Big].
+\end{split}
+\end{equation*}
+$$
+
+Ut de Identität $|a + b\|^2 = \langle a + b | a + b \rangle = \|a\|^2 + \|b\|^2 + 2\text{Re}\langle a | b \rangle$. Ähnlich levvt de Metung vun $Y$
+$$
+\begin{equation*}
+    \langle Y\rangle = \text{Im}\Big[\langle\psi_j| P|\psi_i\rangle\Big].
+\end{equation*}
+$$
+
+```python
+## Create the time-evo op circuit
+evol_gate = PauliEvolutionGate(
+    H_op, time=dt, synthesis=LieTrotter(reps=num_trotter_steps)
+)
+
+## Create the time-evo op dagger circuit
+evol_gate_d = PauliEvolutionGate(
+    H_op, time=dt, synthesis=LieTrotter(reps=num_trotter_steps)
+)
+evol_gate_d = evol_gate_d.inverse()
+
+# Put pieces together
+qc_reg = QuantumRegister(n_qubits)
+qc_temp = QuantumCircuit(qc_reg)
+qc_temp.compose(qc_state_prep, inplace=True)
+for _ in range(num_trotter_steps):
+    qc_temp.append(evol_gate, qargs=qc_reg)
+for _ in range(num_trotter_steps):
+    qc_temp.append(evol_gate_d, qargs=qc_reg)
+qc_temp.compose(qc_state_prep.inverse(), inplace=True)
+
+# Create controlled version of the circuit
+controlled_U = qc_temp.to_gate().control(1)
+
+# Create hadamard test circuit for real part
+qr = QuantumRegister(n_qubits + 1)
+qc_real = QuantumCircuit(qr)
+qc_real.h(0)
+qc_real.append(controlled_U, list(range(n_qubits + 1)))
+qc_real.h(0)
+
+print(
+    "Schaltkreis för de Bereknung vun den realen Deel vun de Överlappung in S över den Hadamard-Test"
+)
+qc_real.draw("mpl", fold=-1, scale=0.5)
+```
+
+```text
+Schaltkreis för de Bereknung vun den realen Deel vun de Överlappung in S över den Hadamard-Test
+```
+
+![Output of the previous code cell](/docs/images/tutorials/krylov-quantum-diagonalization/extracted-outputs/7c1efca7-7db9-43a9-bcb7-053ba274d6f6-1.avif)
+
+De Hadamard-Test-Schaltkreis kann'n depen Schaltkreis sien, sobold wi in native Gates zerleggen (wat noch mehr tonimmt, wenn wi de Topologie vun dat Gerät berücksichtigen)
+
+```python
+print(
+    "Antall vun Lagen vun 2Q-Operationen",
+    qc_real.decompose(reps=2).depth(lambda x: x[0].num_qubits == 2),
+)
+```
+
+```text
+Antall vun Lagen vun 2Q-Operationen 112753
+```
+
+## Schritt 2: Optimeer dat Problem för de Utföhren op Quantenhardware {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+### Effizienten Hadamard-Test {#efficient-hadamard-test}
+Wi köön de depen Schaltkreisen för den Hadamard-Test optimeren, de wi kregen hebbt, indem wi'n poor Approximationen infohren un uns op'n poor Annahmen över den Modell-Hamiltonian verlaten. To'n Bispill betrach den folgenden Schaltkreis för den Hadamard-Test:
+
+![fig3.png](/docs/images/tutorials/krylov-subspace-diagonalization/35b13797-5a46-486c-b50e-97c205cc9747.avif)
+
+Nimm an, wi köön klassisch $E_0$ berekenen, den Eigenweert vun $|0\rangle^N$ ünner den Hamiltonian $H$.
+Dat is erfüllt, wenn de Hamiltonian de U(1)-Symmetrie erhollt. Obschoonst dat 'ne starke Annahm schinkt, gifft dat vele Fäll, wo dat seker is antonahmen, dat dat'n Vakuumtostand gifft (in dissen Fall kümmt dat to den $|0\rangle^N$ Tostand), de vun de Warken vun den Hamiltonian unberührt blifft. Dat stimmt to'n Bispill för Chemie-Hamiltoniane, de stabiele Moleküle beschrieven (wo de Antall vun Elektronen erholden blifft).
+Geven dat de Poort $\text{Prep} \; \psi$ den wünschten Referenztostand vörbereidt $\ket{psi} = \text{Prep} \; \psi \ket{0} = e^{-i H 0 dt} U_{\psi} \ket{0}$, to'n Bispill üm den HF-Tostand för Chemie vörtobereeden, wör $\text{Prep} \; \psi$'n Produkt vun Enkel-Qubit-NOTs sien, also is stüürt-$\text{Prep} \; \psi$ blot'n Produkt vun CNOTs.
+Denn implementeert de Schaltkreis baven den folgenden Tostand vör de Metung:
+
+$$
+\begin{equation}
+\begin{split}
+    \ket{0} \ket{0}^N\xrightarrow{H}&\frac{1}{\sqrt{2}}
+    \left(
+    \ket{0}\ket{0}^N+ \ket{1} \ket{0}^N
+    \right)\\
+    \xrightarrow{\text{1-ctrl-init}}&\frac{1}{\sqrt{2}}\left(|0\rangle|0\rangle^N+|1\rangle|\psi\rangle\right)\\
+    \xrightarrow{U}&\frac{1}{\sqrt{2}}\left(e^{i\phi}\ket{0}\ket{0}^N+\ket{1} U\ket{\psi}\right)\\
+    \xrightarrow{\text{0-ctrl-init}}&\frac{1}{\sqrt{2}}
+    \left(
+    e^{i\phi}\ket{0} \ket{\psi}
+    +\ket{1} U\ket{\psi}
+    \right)\\
+    =&\frac{1}{2}
+    \left(
+    \ket{+}\left(e^{i\phi}\ket{\psi}+U\ket{\psi}\right)
+    +\ket{-}\left(e^{i\phi}\ket{\psi}-U\ket{\psi}\right)
+    \right)\\
+    =&\frac{1}{2}
+    \left(
+    \ket{+i}\left(e^{i\phi}\ket{\psi}-iU\ket{\psi}\right)
+    +\ket{-i}\left(e^{i\phi}\ket{\psi}+iU\ket{\psi}\right)
+    \right)
+\end{split}
+\end{equation}
+$$
+
+wo wi de klassisch simuleerbare Phasenverschuven $ U\ket{0}^N = e^{i\phi}\ket{0}^N$ in de drütte Reeg bruukt hebbt. Dorher warrt de Verwachtungsweerten kregen as
+
+$$
+\begin{equation}
+\begin{split}
+    \langle X\otimes P\rangle&=\frac{1}{4}
+    \Big(
+    \left(e^{-i\phi}\bra{\psi}+\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}+U\ket{\psi}\right)
+    \\
+    &\qquad-\left(e^{-i\phi}\bra{\psi}-\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}-U\ket{\psi}\right)
+    \Big)\\
+    &=\text{Re}\left[e^{-i\phi}\bra{\psi}PU\ket{\psi}\right],
+\end{split}
+\end{equation}
+$$
+
+$$
+\begin{equation}
+\begin{split}
+    \langle Y\otimes P\rangle&=\frac{1}{4}
+    \Big(
+    \left(e^{-i\phi}\bra{\psi}+i\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}-iU\ket{\psi}\right)
+    \\
+    &\qquad-\left(e^{-i\phi}\bra{\psi}-i\bra{\psi}U^\dagger\right)P\left(e^{i\phi}\ket{\psi}+iU\ket{\psi}\right)
+    \Big)\\
+    &=\text{Im}\left[e^{-i\phi}\bra{\psi}PU\ket{\psi}\right].
+\end{split}
+\end{equation}
+$$
+
+Mit disse Annahmen kunnen wi de Verwachtungsweerten vun Operatoren vun Interesse mit wenijer stüürte Operationen schrieven. Tatsächlich mööt wi blot de stüürte Tostandsvörbereeden $\text{Prep} \; \psi$ implementeren un nich de stüürten Tiedentwikkelungen. Unse Bereknung as baven neü to formuleren erlööft uns, de Deep vun de resultierenden Schaltkreisen stark to reduzerenDe Krylov-Quantendiagonalisierung vun Gitterhamiltonianen tutorial is nu översett na Plattdüütsch. Laat ik nu de övrigen dialekten maken.

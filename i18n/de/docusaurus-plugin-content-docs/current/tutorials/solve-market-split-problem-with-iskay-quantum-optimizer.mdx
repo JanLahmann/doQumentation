@@ -1,0 +1,896 @@
+---
+title: "Solve the Market Split problem with Kipu Quantum's Iskay Quantum Optimizer"
+sidebar_label: "Solve the Market Split problem with Kipu Quantum's Iskay Quantum Optimizer"
+description: "Learn how to solve the Market Split problem using the Iskay Quantum Optimizer with the bf-DCQO algorithm on IBM Quantum hardware"
+notebook_path: "docs/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.ipynb"
+---
+{/* doqumentation-untranslated-fallback */}
+
+:::note[Noch nicht übersetzt]
+Diese Seite wurde noch nicht übersetzt. Sie sehen die englische Originalversion.
+:::
+
+
+
+<OpenInLabBanner notebookPath="docs/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.ipynb" />
+
+
+
+{/* cspell:ignore adiabaticity, HUBO, bitflip, metaheuristic, fontweight, fontsize, QOBLIB, Zuse, Kochenberger, Tramontani, Weninger, edgecolor, nonumber */}
+<Admonition type="note" title="Note">
+Qiskit Functions are an experimental feature available only to IBM Quantum&reg; Premium Plan, Flex Plan, and On-Prem (via IBM Quantum Platform API) Plan users. They are in preview release status and subject to change.
+</Admonition>
+
+*Usage estimate: 20 seconds on a Heron r2 processor. (NOTE: This is an estimate only. Your runtime might vary.)*
+## Background
+
+This tutorial demonstrates how to solve the Market Split problem using [Kipu Quantum's Iskay quantum optimizer](/guides/kipu-optimization) [\[1\]](#references). The Market Split problem represents a real-world resource allocation challenge where markets must be partitioned into balanced sales regions to meet exact demand targets.
+
+### The Market Split challenge
+
+The Market Split problem presents a deceptively simple yet computationally formidable challenge in resource allocation. Consider a company with $m$ products being sold across $n$ different markets, where each market purchases a specific bundle of products (represented by the columns of matrix $A$). The business objective is to partition these markets into two balanced sales regions such that each region receives exactly half the total demand for every product.
+
+**Mathematical formulation:**
+
+We seek a binary assignment vector $x$, where:
+- $x_j = 1$ assigns market $j$ to Region A
+- $x_j = 0$ assigns market $j$ to Region B
+- The constraint $Ax = b$ must be satisfied, where $b$ represents the target sales (typically half the total demand per product)
+
+**Cost function:**
+
+To solve this problem, we minimize the squared constraint violation:
+
+$$C(x) = ||Ax - b||^2 = \sum_{i=1}^{m} \left(\sum_{j=1}^{n} A_{ij}x_j - b_i\right)^2$$
+
+where:
+- $A_{ij}$ represents the sales of product $i$ in market $j$
+- $x_j \in \{0,1\}$ is the binary assignment of market $j$
+- $b_i$ is the target sales for product $i$ in each region
+- The cost equals zero precisely when all constraints are satisfied
+
+Each term in the sum represents the squared deviation from the target sales for a particular product. When we expand this cost function, we get:
+
+$$C(x) = x^T A^T A x - 2b^T A x + b^T b$$
+
+Since $b^T b$ is a constant, minimizing $C(x)$ is equivalent to minimizing the quadratic function $x^T A^T A x - 2b^T A x$, which is exactly a QUBO (Quadratic Unconstrained Binary Optimization) problem.
+
+**Computational complexity:**
+
+Despite its straightforward business interpretation, this problem exhibits remarkable computational intractability:
+- **Small-scale failure**: Conventional Mixed Integer Programming solvers fail on instances with as few as seven products under a timeout of one hour [\[4\]](#references)
+- **Exponential growth**: The solution space grows exponentially ($2^n$ possible assignments), making brute force approaches infeasible
+
+This severe computational barrier, combined with its practical relevance to territory planning and resource allocation, makes the Market Split problem an ideal benchmark for quantum optimization algorithms [\[4\]](#references).
+
+### What makes Iskay's approach unique?
+
+The Iskay optimizer uses the **bf-DCQO (bias-field digitized counterdiabatic quantum optimization)** algorithm [\[1\]](#references), which represents a significant advancement in quantum optimization:
+
+**Circuit efficiency**: The bf-DCQO algorithm achieves remarkable gate reduction [\[1\]](#references):
+- Up to **10 times fewer entangling gates** than Digital Quantum Annealing (DQA)
+- Significantly shallower circuits enable:
+  - Less error accumulation during quantum execution
+  - Ability to tackle larger problems on current quantum hardware
+  - No need for error mitigation techniques
+
+**Non-variational design**: Unlike variational algorithms requiring approximately 100 iterations, bf-DCQO typically needs only **approximately 10 iterations** [\[1\]](#references). This is achieved through:
+- Intelligent bias-field calculations from measured state distributions
+- Starting each iteration from an energy state near the previous solution
+- Integrated classical post-processing with local search
+
+**Counterdiabatic protocols**: The algorithm incorporates counterdiabatic terms that suppress unwanted quantum excitations during short evolution times, enabling the system to remain near the ground state even with rapid transitions [\[1\]](#references).
+## Requirements
+
+Before starting this tutorial, ensure that you have the following installed:
+
+* Qiskit IBM Runtime (`pip install qiskit-ibm-runtime`)
+* Qiskit Functions (`pip install qiskit-ibm-catalog`)
+* NumPy (`pip install numpy`)
+* Requests (`pip install requests`)
+* Opt Mapper Qiskit addon (`pip install qiskit-addon-opt-mapper`)
+
+You will also need to get access to the [Iskay Quantum Optimizer function](https://quantum.cloud.ibm.com/functions?id=kipu-quantum-iskay-quantum-optimizer) from the Qiskit Functions Catalog.
+## Setup
+
+First, import all required packages for this tutorial.
+
+```python
+# Added by doQumentation — installs packages not in the Binder environment
+%pip install -q qiskit-addon-opt-mapper
+```
+
+```python
+import os
+import tempfile
+import time
+from typing import Tuple, Optional
+
+import numpy as np
+import requests
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit_addon_opt_mapper import OptimizationProblem
+from qiskit_addon_opt_mapper.converters import OptimizationProblemToQubo
+
+print("All required libraries imported successfully")
+```
+
+### Configure IBM Quantum credentials
+
+Define your [IBM Quantum&reg; Platform](https://quantum.cloud.ibm.com/) credentials. You will need:
+- **API Token**: Your 44-character API key from IBM Quantum Platform
+- **Instance CRN**: Your IBM Cloud&reg; instance identifier
+
+```python
+token = "<YOUR_API_KEY>"
+instance = "<YOUR_INSTANCE_CRN>"
+```
+
+## Step 1: Map classical inputs to a quantum problem
+
+We begin by mapping our classical problem to a quantum-compatible representation. This step involves:
+
+1. Connecting to the Iskay Quantum Optimizer
+2. Loading and formulating the Market Split problem
+3. Understanding the bf-DCQO algorithm that will solve it
+
+### Connect to Iskay Quantum Optimizer
+
+We begin by establishing a connection to the Qiskit Functions Catalog and loading the Iskay Quantum Optimizer. The Iskay Optimizer is a quantum function provided by Kipu Quantum that implements the bf-DCQO algorithm for solving optimization problems on quantum hardware.
+
+```python
+catalog = QiskitFunctionsCatalog(token=token, instance=instance)
+iskay_solver = catalog.load("kipu-quantum/iskay-quantum-optimizer")
+
+print("Iskay optimizer loaded successfully")
+print("Ready to solve optimization problems using bf-DCQO algorithm")
+```
+
+### Load and formulate the problem
+
+#### Understand the problem data format
+
+Problem instances from QOBLIB (Quantum Optimization Benchmarking Library) [\[2\]](#references) are stored in a simple text format. Let's examine the actual content of our target instance `ms_03_200_177.dat`:
+
+```text
+3 20
+60   92  161   53   97    2   75   81    6  139  132   45  108  112  181   93  152  200  164   51 1002
+176  196   41  143    2   88    0   79   10   71   75  148   82  135   34  187   33  155   58   46  879
+68   68  179  173  127  163   48   49   99   78   44   52  173  131   73  198   84  109  180   95 1040
+```
+
+**Format structure:**
+- **First line:** `3 20`
+  - `3` = number of products (constraints/rows in matrix $A$)
+  - `20` = number of markets (variables/columns in matrix $A$)
+
+- **Next 3 lines:** Coefficient matrix $A$ and target vector $b$
+  - Each line has 21 numbers: first 20 are row coefficients, last is the target
+  - Line 2: `60 92 161 ... 51 | 1002`
+    - First 20 numbers: How much of Product 1 each of the 20 markets sells
+    - Last number (1002): Target sales for Product 1 in one region
+  - Line 3: `176 196 41 ... 46 | 879`
+    - Product 2 sales per market and target (879)
+  - Line 4: `68 68 179 ... 95 | 1040`
+    - Product 3 sales per market and target (1040)
+
+**Business interpretation:**
+- Market 0 sells: 60 units of Product 1, 176 units of Product 2, 68 units of Product 3
+- Market 1 sells: 92 units of Product 1, 196 units of Product 2, 68 units of Product 3
+- And so on for all 20 markets...
+- **Goal**: Split these 20 markets into two regions where each region gets exactly 1002 units of Product 1, 879 units of Product 2, and 1040 units of Product 3
+
+#### QUBO transformation
+
+## From constraints to QUBO: the mathematical transformation
+
+The power of quantum optimization lies in transforming constrained problems into unconstrained quadratic forms [\[4\]](#references). For the Market Split problem, we convert the equality constraints
+
+$$ Ax = b $$
+
+where $x ∈ \{0,1\}^n$, into a QUBO by penalizing constraint violations.
+
+**The penalty method:**
+Since we need $Ax = b$ to hold exactly, we minimize the squared violation:
+$$f(x) = ||Ax - b||^2$$
+
+This equals zero precisely when all constraints are satisfied. Expanding algebraically:
+$$f(x) = (Ax - b)^T(Ax - b) = x^T A^T A x - 2b^T A x + b^T b$$
+
+**QUBO objective:**
+Since $b^T b$ is constant, our optimization becomes:
+$$\text{minimize} \quad Q(x) = x^T(A^T A)x - 2(A^T b)^T x$$
+
+**Key insight:** This transformation is exact, not approximate. Equality constraints naturally square into quadratic form without requiring auxiliary variables or penalty parameters - making this formulation mathematically elegant and computationally efficient for quantum solvers [\[4\]](#references). We'll use the `OptimizationProblem` class to define our constrained problem, then convert it to QUBO format using `OptimizationProblemToQubo`, both from the **qiskit_addon_opt_mapper** package. This automatically handles the penalty-based transformation.
+### Implement data loading and QUBO conversion functions
+
+We now define three utility functions:
+1. `parse_marketsplit_dat()` - Parses the `.dat` file format and extracts matrices $A$ and $b$
+2. `fetch_marketsplit_data()` - Downloads problem instances directly from the QOBLIB repository
+
+```python
+def parse_marketsplit_dat(filename: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Parse a market split problem from a .dat file format.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the .dat file containing the market split problem data.
+
+    Returns
+    -------
+    A : np.ndarray
+        Coefficient matrix of shape (m, n) where m is the number of products
+        and n is the number of markets.
+    b : np.ndarray
+        Target vector of shape (m,) containing the target sales per product.
+    """
+    with open(filename, "r", encoding="utf-8") as f:
+        lines = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.startswith("#")
+        ]
+
+    if not lines:
+        raise ValueError("Empty or invalid .dat file")
+
+    # First line: m n (number of products and markets)
+    m, n = map(int, lines[0].split())
+
+    # Next m lines: each row of A followed by corresponding element of b
+    A, b = [], []
+    for i in range(1, m + 1):
+        values = list(map(int, lines[i].split()))
+        A.append(values[:-1])  # First n values: product sales per market
+        b.append(values[-1])  # Last value: target sales for this product
+
+    return np.array(A, dtype=np.int32), np.array(b, dtype=np.int32)
+
+def fetch_marketsplit_data(
+    instance_name: str = "ms_03_200_177.dat",
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Fetch market split data directly from the QOBLIB repository.
+
+    Parameters
+    ----------
+    instance_name : str
+        Name of the .dat file to fetch (default: "ms_03_200_177.dat").
+
+    Returns
+    -------
+    A : np.ndarray or None
+        Coefficient matrix if successful, None if failed.
+    b : np.ndarray or None
+        Target vector if successful, None if failed.
+    """
+    url = f"https://git.zib.de/qopt/qoblib-quantum-optimization-benchmarking-library/-/raw/main/01-marketsplit/instances/{instance_name}"
+
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".dat", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(response.text)
+            temp_path = f.name
+
+        try:
+            return parse_marketsplit_dat(temp_path)
+        finally:
+            os.unlink(temp_path)
+    except Exception as e:
+        print(f"Error: {e}")
+        return None, None
+```
+
+### Load the problem instance
+
+Now we load the specific problem instance `ms_03_200_177.dat` from QOBLIB [2]. This instance has:
+- 3 products (constraints)
+- 20 markets (binary decision variables)
+- Over 1 million possible market assignments to explore ($2^{20} = 1,048,576$)
+
+```python
+# Load the problem instance
+instance_name = "ms_03_200_177.dat"
+A, b = fetch_marketsplit_data(instance_name=instance_name)
+
+if A is not None:
+    print("Successfully loaded problem instance from QOBLIB")
+    print("\nProblem Instance Analysis:")
+    print("=" * 50)
+    print(f"Coefficient Matrix A: {A.shape[0]} × {A.shape[1]}")
+    print(f"   → {A.shape[0]} products (constraints)")
+    print(f"   → {A.shape[1]} markets (decision variables)")
+    print(f"Target Vector b: {b}")
+    print("   → Target sales per product for each region")
+    print(
+        f"Solution Space: 2^{A.shape[1]} = {2**A.shape[1]:,} possible assignments"
+    )
+```
+
+### Convert to QUBO format
+
+We now transform the constrained optimization problem into QUBO format:
+
+```python
+# Create optimization problem
+ms = OptimizationProblem(instance_name.replace(".dat", ""))
+
+# Add binary variables (one for each market)
+ms.binary_var_list(A.shape[1])
+
+# Add equality constraints (one for each product)
+for idx, rhs in enumerate(b):
+    ms.linear_constraint(A[idx, :], sense="==", rhs=rhs)
+
+# Convert to QUBO with penalty parameter
+qubo = OptimizationProblemToQubo(penalty=1).convert(ms)
+
+print("QUBO Conversion Complete:")
+print("=" * 50)
+print(f"Number of variables: {qubo.get_num_vars()}")
+print(f"Constant term: {qubo.objective.constant}")
+print(f"Linear terms: {len(qubo.objective.linear.to_dict())}")
+print(f"Quadratic terms: {len(qubo.objective.quadratic.to_dict())}")
+```
+
+### Convert QUBO to Iskay format
+
+Now we need to convert the QUBO object into the dictionary format required by Kipu Quantum's Iskay Optimizer.
+
+The `problem` and `problem_type` arguments encode an optimization problem of the form
+
+$$
+\begin{align}
+\min_{(x_1, x_2, \ldots, x_n) \in D} C(x_1, x_2, \ldots, x_n) \nonumber
+\end{align}
+$$
+where
+
+$$
+C(x_1, ... , x_n) = a + \sum_{i} b_i x_i + \sum_{i, j} c_{i, j} x_i x_j + ... + \sum_{k_1, ..., k_m} g_{k_1, ..., k_m} x_{k_1} ... x_{k_m}
+$$
+
+- By choosing `problem_type = "binary"`, you specify that the cost function is in `binary` format, which means that $D = \{0,  1\}^{n}$, as in, the cost function is written in QUBO/HUBO formulation.
+- On the other hand, by choosing `problem_type = "spin"`, the cost function is written in Ising formulation, where $D = \{-1, 1\}^{n}$.
+
+The coefficients of the problem should be encoded in a dictionary as follows:
+$$
+\begin{align} \nonumber
+&\texttt{\{} \\ \nonumber
+&\texttt{"()"}&: \quad &a, \\ \nonumber
+&\texttt{"(i,)"}&: \quad &b_i, \\ \nonumber
+&\texttt{"(i, j)"}&: \quad &c_{i, j}, \quad (i \neq j) \\ \nonumber
+&\quad  \vdots \\ \nonumber
+&\texttt{"(} k_1, ..., k_m  \texttt{)"}&: \quad &g_{k_1, ..., k_m}, \quad (k_1 \neq k_2 \neq \dots \neq k_m) \\ \nonumber
+&\texttt{\}}
+\end{align}
+$$
+
+Note that the keys of the dictionary must be strings containing a valid tuple of non-repeating integers. For binary problems, we know that:
+
+$$
+x_i^2 = x_i
+$$
+
+for $i=j$ (since $x_i \in \{0,1\}$ means $x_i \cdot x_i = x_i$). So, in your QUBO formulation, if you have both linear contributions $b_i x_i$ and diagonal quadratic contributions $c_{i,i} x_i^2$, these terms must be combined into a single linear coefficient:
+
+**Total linear coefficient for variable $x_i$:** $b_i + c_{i,i}$
+
+This means:
+- Linear terms like `"(i, )"` contain: original linear coefficient + diagonal quadratic coefficient
+- Diagonal quadratic terms like `"(i, i)"` should **NOT** appear in the final dictionary
+- Only off-diagonal quadratic terms like `"(i, j)"` where $i \neq j$ should be included as separate entries
+
+**Example:** If your QUBO has $3x_1 + 2x_1^2 + 4x_1 x_2$, the Iskay dictionary should contain:
+- `"(0, )"`: `5.0` (combining $3 + 2 = 5$)
+- `"(0, 1)"`: `4.0` (off-diagonal term)
+
+**NOT** separate entries for `"(0, )"`: `3.0` and `"(0, 0)"`: `2.0`.
+
+```python
+# Convert QUBO to Iskay dictionary format:
+
+# Create empty Iskay input dictionary
+iskay_input_problem = {}
+
+# Convert QUBO to Iskay dictionary format
+iskay_input_problem = {"()": qubo.objective.constant}
+
+for i in range(qubo.get_num_vars()):
+    for j in range(i, qubo.get_num_vars()):
+        if i == j:
+            # Add linear term (including diagonal quadratic contribution)
+            iskay_input_problem[f"({i}, )"] = float(
+                qubo.objective.linear.to_dict().get(i)
+            ) + float(qubo.objective.quadratic.to_dict().get((i, i)))
+        else:
+            # Add off-diagonal quadratic term
+            iskay_input_problem[f"({i}, {j})"] = float(
+                qubo.objective.quadratic.to_dict().get((i, j))
+            )
+
+# Display Iskay dictionary summary
+print("Iskay Dictionary Format:")
+print("=" * 50)
+print(f"Total coefficients: {len(iskay_input_problem)}")
+print(f"  • Constant term: {iskay_input_problem['()']}")
+print(
+    f"  • Linear terms: {sum(1 for k in iskay_input_problem.keys() if k != '()' and ', )' in k)}"
+)
+print(
+    f"  • Quadratic terms: {sum(1 for k in iskay_input_problem.keys() if k != '()' and ', )' not in k)}"
+)
+print("\nSample coefficients:")
+
+# Get first 10 and last 5 items properly
+items = list(iskay_input_problem.items())
+first_10 = list(enumerate(items[:10]))
+last_5 = list(enumerate(items[-5:], start=len(items) - 5))
+
+for i, (key, value) in first_10 + last_5:
+    coeff_type = (
+        "constant"
+        if key == "()"
+        else "linear"
+        if ", )" in key
+        else "quadratic"
+    )
+    print(f"  {key}: {value} ({coeff_type})")
+print("  ...")
+print("\n✓ Problem ready for Iskay optimizer!")
+```
+
+### Understand the bf-DCQO algorithm
+
+Before we run the optimization, let's understand the sophisticated quantum algorithm that powers Iskay: **bf-DCQO (bias-field digitized counterdiabatic quantum optimization)** [\[1\]](#references).
+
+#### What is bf-DCQO?
+
+bf-DCQO is based on the time evolution of a quantum system where the problem solution is encoded in the **ground state** (lowest energy state) of the final quantum Hamiltonian [\[1\]](#references). The algorithm addresses a fundamental challenge in quantum optimization:
+
+**The challenge**: Traditional adiabatic quantum computing requires very slow evolution to maintain ground state conditions according to the adiabatic theorem. This demands increasingly deep quantum circuits as problem complexity grows, leading to more gate operations and accumulated errors.
+
+**The solution**: bf-DCQO uses counterdiabatic protocols to enable rapid evolution while maintaining ground state fidelity, dramatically reducing circuit depth.
+
+#### Mathematical framework
+
+The algorithm minimizes a cost function of the form:
+
+$$\min_{(x_1,x_2,...,x_n) \in D} C(x_1,x_2,...,x_n)$$
+
+where $D = \{0,1\}^n$ for binary variables and:
+
+$$C(x) = a + \sum_i b_i x_i + \sum_{i,j} c_{ij} x_i x_j + ... + \sum g_{k_1,...,k_m} x_{k_1}...x_{k_m}$$
+
+For our Market Split problem, the cost function is:
+
+$$C(x) = ||Ax - b||^2 = x^T A^T A x - 2 b^T A x + b^T b$$
+
+#### The role of counterdiabatic terms
+
+**Counterdiabatic terms** are additional terms introduced into the time-dependent Hamiltonian that suppress unwanted excitations during the quantum evolution. Here's why they're crucial:
+
+In adiabatic quantum optimization, we evolve the system according to a time-dependent Hamiltonian:
+
+$$H(t) = \left(1 - \frac{t}{T}\right) H_{\text{initial}} + \frac{t}{T} H_{\text{problem}}$$
+
+where $H_{\text{problem}}$ encodes our optimization problem. To maintain the ground state during rapid evolution, we add counterdiabatic terms:
+
+$$H_{\text{CD}}(t) = H(t) + H_{\text{counter}}(t)$$
+
+These counterdiabatic terms do the following:
+1. **Suppress unwanted transitions**: Prevent the quantum state from jumping to excited states during fast evolution
+2. **Enable shorter evolution times**: Allow us to reach the final state much faster without violating adiabaticity
+3. **Reduce circuit depth**: Shorter evolution leads to fewer gates and less error
+
+The practical impact is dramatic: bf-DCQO uses up to **10 times fewer entangling gates** than Digital Quantum Annealing [\[1\]](#references), making it practical for today's noisy quantum hardware.
+
+#### Bias-field iterative optimization
+
+Unlike variational algorithms that optimize circuit parameters through many iterations, bf-DCQO uses a **bias-field guided approach** that converges in approximately 10 iterations [1]:
+
+**Iteration process:**
+
+1. **Initial quantum evolution**: Start with a quantum circuit implementing the counterdiabatic evolution protocol
+
+2. **Measurement**: Measure the quantum state to obtain a probability distribution over bitstrings
+
+3. **Bias-field calculation**: Analyze the measurement statistics and calculate an optimal bias-field $h_i$ for each qubit:
+   $$h_i = \text{f}(\text{measurement statistics}, \text{previous solutions})$$
+
+4. **Next iteration**: The bias-field modifies the Hamiltonian for the next iteration:
+   $$H_{\text{next}} = H_{\text{problem}} + \sum_i h_i \sigma_i^z$$
+
+   This allows starting near the previously found good solution, effectively performing a form of "quantum local search"
+
+5. **Convergence**: Repeat until the solution quality stabilizes or a maximum number of iterations is reached
+
+**Key advantage**: Each iteration provides meaningful progress toward the optimal solution by incorporating information from previous measurements, unlike variational methods that must explore the parameter space blindly.
+
+#### Integrated classical post-processing
+
+After the quantum optimization converges, Iskay performs classical **local search** post-processing:
+
+- **Bit-flip exploration**: Systematically or randomly flip bits in the best measured solution
+- **Energy evaluation**: Calculate $C(x)$ for each modified solution
+- **Greedy selection**: Accept improvements that lower the cost function
+- **Multiple passes**: Perform several passes (controlled by `postprocessing_level`)
+
+This hybrid approach compensates for bit-flip errors from hardware imperfections and readout errors, ensuring high-quality solutions even on noisy quantum devices.
+
+#### Why bf-DCQO excels on current hardware
+
+The bf-DCQO algorithm is specifically designed to excel on today's noisy intermediate-scale quantum (NISQ) devices [\[1\]](#references):
+
+1. **Error resilience**: Fewer gates (10 times reduction) means dramatically less error accumulation
+2. **No error mitigation required**: The algorithm's inherent efficiency eliminates the need for expensive error mitigation techniques [\[1\]](#references)
+3. **Scalability**: Can handle problems with up to 156 qubits (156 binary variables) with direct qubit-mapping [\[1\]](#references)
+4. **Proven performance**: Achieves 100% approximation ratios on benchmark MaxCut and HUBO instances [\[1\]](#references)
+
+Now let's see this powerful algorithm in action on our Market Split problem!
+## Step 2: Optimize problem for quantum hardware execution
+
+The bf-DCQO algorithm automatically handles circuit optimization, creating shallow quantum circuits with counterdiabatic terms specifically designed for the target backend.
+
+### Configure the optimization
+
+The Iskay Optimizer requires several key parameters to effectively solve your optimization problem. Let's examine each parameter and its role in the quantum optimization process:
+
+#### Required parameters
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| **problem** | `Dict[str, float]` | QUBO coefficients in string-key format | `{"()": -21.0, "(0,4)": 0.5, "(0,1)": 0.5}` |
+| **problem_type** | `str` | Format specification: `"binary"` for QUBO or `"spin"` for Ising | `"binary"` |
+| **backend_name** | `str` | Target quantum device | `"ibm_fez"` |
+
+#### Essential concepts
+
+- **Problem format**: We use `"binary"` since our variables are binary (0/1), representing market assignments.
+- **Backend selection**: Choose between the available QPUs (for example, `"ibm_fez"`) based on your needs and compute resource instance.
+- **QUBO structure**: Our problem dictionary contains the exact coefficients from the mathematical transformation.
+
+#### Advanced options (optional)
+
+Iskay provides fine-tuning capabilities through optional parameters. While the defaults work well for most problems, you can customize the behavior for specific requirements:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| **shots** | `int` | 10000 | Quantum measurements per iteration (higher = more accurate) |
+| **num_iterations** | `int` | 10 | Algorithm iterations (more iterations can improve solution quality) |
+| **use_session** | `bool` | True | Use IBM sessions for reduced queue times |
+| **seed_transpiler** | `int` | None | Set for reproducible quantum circuit compilation |
+| **direct_qubit_mapping** | `bool` | False | Map virtual qubits directly to physical qubits |
+| **job_tags** | `List[str]` | None | Custom tags for job tracking |
+| **preprocessing_level** | `int` | 0 | Problem preprocessing intensity (0-3) - see details below |
+| **postprocessing_level** | `int` | 2 | Solution refinement level (0-2) - see details below |
+| **transpilation_level** | `int` | 0 | Transpiler optimization trials (0-5) - see details below |
+| **transpile_only** | `bool` | False | Analyze circuit optimization without running full execution |
+
+**Preprocessing Levels (0-3)**: Specially important for larger problems that cannot currently fit on the coherence times of the hardware. Higher preprocessing levels achieve shallower circuit depths by approximations in the problem transpilation:
+- **Level 0**: Exact, longer circuits
+- **Level 1**: Good balance between accuracy and approximation, cutting out only the gates with angles in the lowest 10 percentile
+- **Level 2**: Slightly higher approximation, cutting out the gates with angles in the lowest 20 percentile and using `approximation_degree=0.95` in the transpilation
+- **Level 3**: Maximum approximation level, cutting out the gates in the lowest 30 percentile and using `approximation_degree=0.90` in the transpilation
+
+**Transpilation Levels (0-5)**: Control the advanced transpiler optimization trials for quantum circuit compilation. This can lead to an increase in classical overhead, and for some cases it might not change the circuit depth. The default value `2` in general leads to the smallest circuit and is relatively fast.
+- **Level 0**: Optimization of the decomposed DCQO circuit (layout, routing, scheduling)
+- **Level 1**: Optimization of `PauliEvolutionGate` and then the decomposed DCQO circuit (max_trials=10)
+- **Level 2**: Optimization of `PauliEvolutionGate` and then the decomposed DCQO circuit (max_trials=15)
+- **Level 3**: Optimization of `PauliEvolutionGate` and then the decomposed DCQO circuit (max_trials=20)
+- **Level 4**: Optimization of `PauliEvolutionGate` and then the decomposed DCQO circuit (max_trials=25)
+- **Level 5**: Optimization of `PauliEvolutionGate` and then the decomposed DCQO circuit (max_trials=50)
+
+**Postprocessing Levels (0-2)**: Control how much classical optimization, compensating for bit-flip errors with different number of greedy passes of a local search:
+- **Level 0**: 1 pass
+- **Level 1**: 2 passes
+- **Level 2**: 3 passes
+
+**Transpile-only mode**: Now available for users who want to analyze circuit optimization without running the full quantum algorithm execution.
+
+#### Custom configuration example
+
+Here's how you might configure Iskay with different settings:
+```python
+custom_options = {
+    "shots": 15_000,                                        # Higher shot count for better statistics
+    "num_iterations": 12,                                   # More iterations for solution refinement
+    "preprocessing_level": 1,                               # Light preprocessing for problem simplification
+    "postprocessing_level": 2,                              # Maximum postprocessing for solution quality
+    "transpilation_level": 3,                               # Using higher transpilation level for circuit optimization
+    "seed_transpiler": 42,                                  # Fixed seed for reproducible results
+    "job_tags": ["market_split"]                            # Custom tracking tags
+}
+```
+For this tutorial, we will keep most of the default parameters and will only change the number of bias-field iterations:
+
+```python
+# Specify the target backend
+backend_name = "ibm_fez"
+
+# Set the number of bias-field iterations and set a tag to identify the jobs
+options = {
+    "num_iterations": 3,  # Change number of bias-field iterations
+    "job_tags": ["market_split_example"],  # Tag to identify jobs
+}
+
+# Configure Iskay optimizer
+iskay_input = {
+    "problem": iskay_input_problem,
+    "problem_type": "binary",
+    "backend_name": backend_name,
+    "options": options,
+}
+
+print("Iskay Optimizer Configuration:")
+print("=" * 40)
+print(f"  Backend: {backend_name}")
+print(f"  Problem: {len(iskay_input['problem'])} terms")
+print("  Algorithm: bf-DCQO")
+```
+
+## Step 3: Execute using Qiskit primitives
+
+We now submit our problem to run on IBM Quantum hardware. The bf-DCQO algorithm will:
+1. Construct shallow quantum circuits with counterdiabatic terms
+2. Execute approximately 10 iterations with bias-field optimization
+3. Perform classical post-processing with local search
+4. Return the optimal market assignment
+
+```python
+# Submit the optimization job
+print("Submitting optimization job to Kipu Quantum...")
+print(
+    f"Problem size: {A.shape[1]} variables, {len(iskay_input['problem'])} terms"
+)
+print(
+    "Algorithm: bf-DCQO (bias-field digitized counterdiabatic quantum optimization)"
+)
+
+job = iskay_solver.run(**iskay_input)
+
+print("\nJob successfully submitted!")
+print(f"Job ID: {job.job_id}")
+print("Optimization in progress...")
+print(
+    f"The bf-DCQO algorithm will efficiently explore {2**A.shape[1]:,} possible assignments"
+)
+```
+
+### Monitor job status
+
+You can check the current status of your optimization job. The possible statuses are:
+- `QUEUED`: Job is waiting in the queue
+- `RUNNING`: Job is currently executing on quantum hardware
+- `DONE`: Job completed successfully
+- `CANCELED`: Job was canceled
+- `ERROR`: Job encountered an error
+
+```python
+# Check job status
+print(f"Job status: {job.status()}")
+```
+
+### Wait for completion
+
+This cell will block until the job completes. The optimization process includes:
+- Queue time (waiting for quantum hardware access)
+- Execution time (running the bf-DCQO algorithm with approximately 10 iterations)
+- Post-processing time (classical local search)
+
+Typical completion times range from a few minutes to tens of minutes depending on queue conditions.
+
+```python
+# Wait for job completion
+while True:
+    status = job.status()
+    print(
+        f"Waiting for job {job.job_id} to complete... (status: {status})",
+        end="\r",
+        flush=True,
+    )
+    if status in ["DONE", "CANCELED", "ERROR"]:
+        print(
+            f"\nJob {job.job_id} completed with status: {status}" + " " * 20
+        )
+        break
+    time.sleep(30)
+
+# Retrieve the optimization results
+result = job.result()
+print("\nOptimization complete!")
+```
+
+## Step 4: Post-process and return result in desired classical format
+
+We now post-process the quantum execution results. This includes:
+- Analyzing the solution structure
+- Validating constraint satisfaction
+- Benchmarking against classical approaches
+
+### Analyze results
+
+#### Understand the result structure
+
+Iskay returns a comprehensive result dictionary containing:
+- **`solution`**: A dictionary mapping variable indices to their optimal values (0 or 1)
+- **`solution_info`**: Detailed information including:
+  - `bitstring`: The optimal assignment as a binary string
+  - `cost`: The objective function value (should be 0 for perfect constraint satisfaction)
+  - `mapping`: How bitstring positions map to problem variables
+  - `seed_transpiler`: Seed used for reproducibility
+- **`prob_type`**: Whether the solution is in binary or spin format
+
+Let's examine the solution returned by the quantum optimizer.
+
+```python
+# Display the optimization results
+print("Optimization Results")
+print("=" * 50)
+print(f"Problem Type: {result['prob_type']}")
+print("\nSolution Info:")
+print(f"  Bitstring: {result['solution_info']['bitstring']}")
+print(f"  Cost: {result['solution_info']['cost']}")
+print("\nSolution (first 10 variables):")
+for i, (var, val) in enumerate(list(result["solution"].items())[:10]):
+    print(f"  {var}: {val}")
+print("  ...")
+```
+
+#### Solution validation
+
+Now we validate whether the quantum solution satisfies the Market Split constraints. The validation process checks:
+
+**What is a constraint violation?**
+- For each product $i$, we calculate the actual sales in Region A: $(Ax)_i$
+- We compare this to the target sales $b_i$
+- The **violation** is the absolute difference: $|(Ax)_i - b_i|$
+- A **feasible solution** has zero violations for all products
+
+**What we expect:**
+- **Ideal case**: Total violation = 0 (all constraints perfectly satisfied)
+  - Region A gets exactly 1002 units of Product 1, 879 units of Product 2, and 1040 units of Product 3
+  - Region B gets the remaining units (also 1002, 879, and 1040 respectively)
+- **Good case**: Total violation is small (near-optimal solution)
+- **Poor case**: Large violations indicate the solution doesn't satisfy the business requirements
+
+The validation function will compute:
+1. Actual sales per product in each region
+2. Constraint violations for each product
+3. Market distribution between regions
+
+```python
+def validate_solution(A, b, solution):
+    """Validate market split solution."""
+    x = np.array(solution)
+    region_a = A @ x
+    region_b = A @ (1 - x)
+    violations = np.abs(region_a - b)
+
+    return {
+        "target": b,
+        "region_a": region_a,
+        "region_b": region_b,
+        "violations": violations,
+        "total_violation": np.sum(violations),
+        "is_feasible": np.sum(violations) == 0,
+        "region_a_markets": int(np.sum(x)),
+        "region_b_markets": len(x) - int(np.sum(x)),
+    }
+
+# Convert bitstring to list of integers and validate
+optimal_assignment = [
+    int(bit) for bit in result["solution_info"]["bitstring"]
+]
+validation = validate_solution(A, b, optimal_assignment)
+```
+
+#### Interpret the validation results
+
+The validation results show whether the Quantum Optimizer found a feasible solution. Let's examine the following:
+
+**Feasibility check:**
+- **`is_feasible = True`** means the solution perfectly satisfies all constraints (total violation = 0)
+- **`is_feasible = False`** means some constraints are violated
+
+**Sales analysis:**
+- Compare Target versus Actual sales for each product
+- For a perfect solution: Actual = Target for all products in both regions
+- The difference indicates how close we are to the desired market split
+
+**Market distribution:**
+- Shows how many markets are assigned to each region
+- There's no requirement for equal numbers of markets, only that sales targets are met
+
+```python
+print("Solution Validation")
+print("=" * 50)
+print(f"Feasible solution: {validation['is_feasible']}")
+print(f"Total constraint violation: {validation['total_violation']}")
+
+print("\nSales Analysis (Target vs Actual):")
+for i, (target, actual_a, actual_b) in enumerate(
+    zip(validation["target"], validation["region_a"], validation["region_b"])
+):
+    violation_a = abs(actual_a - target)
+    violation_b = abs(actual_b - target)
+    print(f"  Product {i+1}:")
+    print(f"    Target: {target}")
+    print(f"    Region A: {actual_a} (violation: {violation_a})")
+    print(f"    Region B: {actual_b} (violation: {violation_b})")
+
+print("\nMarket Distribution:")
+print(f"  Region A: {validation['region_a_markets']} markets")
+print(f"  Region B: {validation['region_b_markets']} markets")
+```
+
+#### Solution quality assessment
+
+Based on the validation results above, we can assess the quality of the quantum solution:
+
+**If `is_feasible = True` (Total violation = 0):**
+- The Quantum Optimizer successfully found an optimal solution
+- All business constraints are perfectly satisfied
+- This demonstrates quantum advantage on a problem where classical solvers struggle [\[4\]](#references)
+
+**If `is_feasible = False` (Total violation > 0):**
+- The solution is near-optimal but not perfect
+- Small violations may be acceptable in practice
+- Consider adjusting optimizer parameters:
+  - Increase `num_iterations` for more optimization passes
+  - Increase `postprocessing_level` for more classical refinement
+  - Increase `shots` for better measurement statistics
+
+**Cost function interpretation:**
+- The `cost` value from `solution_info` equals $||Ax - b||^2$
+- Cost = 0 indicates perfect constraint satisfaction
+- Higher cost values indicate larger constraint violations
+## Conclusion
+
+### What we accomplished
+
+In this tutorial, we successfully:
+
+1. **Loaded a real optimization problem**: Obtained a challenging Market Split instance from the QOBLIB benchmark library [2]
+2. **Transformed to QUBO format**: Converted the constrained problem into an unconstrained quadratic formulation [3]
+3. **Leveraged advanced quantum algorithms**: Used Kipu Quantum's bf-DCQO algorithm with counterdiabatic terms [1]
+4. **Obtained optimal solutions**: Found feasible solutions satisfying all constraints
+
+### Key takeaways
+
+**Algorithm innovation**: The bf-DCQO algorithm represents a significant advancement [\[1\]](#references):
+- **10 times fewer gates** than digital quantum annealing
+- **Approximately 10 iterations** instead of approximately 100 for variational methods
+- **Built-in error resilience** through circuit efficiency
+
+**Counterdiabatic terms**: Enable rapid quantum evolution while maintaining ground state fidelity, making quantum optimization practical on today's noisy hardware [\[1\]](#references).
+
+**Bias-field guidance**: The iterative bias-field approach allows each iteration to start near previously found good solutions, providing a form of quantum-enhanced local search [\[1\]](#references).
+
+### Next steps
+
+To deepen your understanding and explore further:
+
+1. **Try different instances**: Experiment with other QOBLIB instances of varying sizes
+2. **Tune parameters**: Adjust `num_iterations`, `preprocessing_level`, `postprocessing_level`
+3. **Compare with classical**: Benchmark against classical optimization solvers
+4. **Try different strategies**: Try to find a better encoding for the problem or formulate it as HUBO (if possible)
+5. **Apply to your domain**: Adapt the QUBO/HUBO formulation techniques to your own optimization problems
+
+### References
+
+[1] IBM Quantum. "[Kipu Quantum Optimization](/guides/kipu-optimization)." *IBM Quantum Documentation*.
+
+[2] QOBLIB - Quantum Optimization Benchmarking Library. Zuse Institute Berlin (ZIB). https://git.zib.de/qopt/qoblib-quantum-optimization-benchmarking-library
+
+[3] Glover, F., Kochenberger, G., & Du, Y. (2019). "Quantum bridge analytics I: a tutorial on formulating and using QUBO models." *4OR: A Quarterly Journal of Operations Research*, 17(4), 335-371.
+
+[4] Lodi, A., Tramontani, A., & Weninger, K. (2023). "The Intractable Decathlon: Benchmarking Hard Combinatorial Problems." *INFORMS Journal on Computing*.

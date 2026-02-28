@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import {translate} from '@docusaurus/Translate';
 import {
   getBookmarks,
   removeBookmark,
@@ -33,7 +34,7 @@ export default function BookmarksList(): JSX.Element | null {
 
   return (
     <div className="dq-bookmarks-list">
-      <div className="dq-bookmarks-list__title">Bookmarks</div>
+      <div className="dq-bookmarks-list__title">{translate({id: 'bookmarksList.title', message: 'Bookmarks'})}</div>
       <div className="dq-bookmarks-list__items">
         {bookmarks.slice(0, 10).map((b) => (
           <a key={b.path} className="dq-bookmark-item" href={b.path}>
@@ -41,8 +42,8 @@ export default function BookmarksList(): JSX.Element | null {
             <button
               className="dq-bookmark-item__remove"
               onClick={(e) => handleRemove(e, b.path)}
-              title="Remove bookmark"
-              aria-label="Remove bookmark"
+              title={translate({id: 'bookmark.remove', message: 'Remove bookmark'})}
+              aria-label={translate({id: 'bookmark.remove', message: 'Remove bookmark'})}
             >
               &times;
             </button>

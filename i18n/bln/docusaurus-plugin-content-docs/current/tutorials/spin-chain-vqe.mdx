@@ -1,0 +1,250 @@
+---
+title: "Grundzustandsenergie-Schätzung von de Heisenberg-Kette mit VQE"
+sidebar_label: "Grundzustandsenergie-Schätzung von de Heisenberg-Kette mit VQE"
+description: "Baut, deployt un lauft een Qiskit-Muster für de Simulation von ne Heisenberg-Kette un schätzt de Grundzustandsenergie."
+notebook_path: "docs/tutorials/spin-chain-vqe.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/spin-chain-vqe.ipynb" />
+
+
+
+# Grundzustandsenergie-Schätzung von de Heisenberg-Kette mit VQE {#ground-state-energy-estimation-of-the-heisenberg-chain-with-vqe}
+*Schätzung für de Nutzung: Zwee Minuten uff een Eagle r3 Prozessor (ANMERKUNG: Det is bloß ne Schätzung. Deine Laufzeit kann anders sein.)*
+## Hintergrund {#background}
+
+Dit Tutorial zeigt, wie man een `Qiskit pattern` baut, deployt un laufen lässt für de Simulation von ne Heisenberg-Kette un für de Schätzung von de Grundzustandsenergie. Mehr Informatjonen über `Qiskit patterns` un wie `Qiskit Serverless` jenutzt wird, um se in de Wolke zu deployen für verwaltete Ausführung, findet ihr uff unsere [Doku-Seite über IBM Quantum&reg; Platform](/guides/serverless).
+## Voraussetzungen {#requirements}
+
+Bevor ma mit dit Tutorial anfängt, stellt sicher, dassde det Folgende installiert hast:
+
+* Qiskit SDK v1.2 oder neuer, mit [Visualisierung](https://docs.quantum.ibm.com/api/qiskit/visualization) Unterstützung
+* Qiskit Runtime v0.28 oder neuer (`pip install qiskit-ibm-runtime`)
+* Qiskit Serverless (pip install qiskit_serverless)
+* IBM Catalog (pip install qiskit-ibm-catalog)
+## Setup {#setup}
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from scipy.optimize import minimize
+from typing import Sequence
+
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.primitives.base import BaseEstimatorV2
+from qiskit.circuit.library import XGate
+from qiskit.circuit.library import efficient_su2
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session, Estimator
+
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+```
+
+```python
+def visualize_results(results):
+    plt.plot(results["cost_history"], lw=2)
+    plt.xlabel("Iteration")
+    plt.ylabel("Energy")
+    plt.show()
+
+def build_callback(
+    ansatz: QuantumCircuit,
+    hamiltonian: SparsePauliOp,
+    estimator: BaseEstimatorV2,
+    callback_dict: dict,
+):
+    def callback(current_vector):
+        # Keep track of the number of iterations
+        callback_dict["iters"] += 1
+        # Set the prev_vector to the latest one
+        callback_dict["prev_vector"] = current_vector
+        # Compute the value of the cost function at the current vector
+        current_cost = (
+            estimator.run([(ansatz, hamiltonian, [current_vector])])
+            .result()[0]
+            .data.evs[0]
+        )
+        callback_dict["cost_history"].append(current_cost)
+        # Print to screen on single line
+        print(
+            "Iters. done: {} [Current cost: {}]".format(
+                callback_dict["iters"], current_cost
+            ),
+            end="\r",
+            flush=True,
+        )
+
+    return callback
+```
+
+## Schritt 1: Klassische Einjabe uff een Quantenproblem mappen {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+*   Einjabe: Anzahl von Spins
+*   Ausjabe: Ansatz un Hamiltonian für de Modellierung von de Heisenberg-Kette
+
+Baut een Ansatz un Hamiltonian, de ne 10-Spin Heisenberg-Kette modellieren. Zuerst importieren wa een paar jenerische Pakete un machen een paar Hilfsfunktjonen.
+
+```python
+num_spins = 10
+ansatz = efficient_su2(num_qubits=num_spins, reps=3)
+
+# Remember to insert your token in the QiskitRuntimeService constructor
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=num_spins, simulator=False
+)
+
+coupling = backend.target.build_coupling_map()
+reduced_coupling = coupling.reduce(list(range(num_spins)))
+
+edge_list = reduced_coupling.graph.edge_list()
+ham_list = []
+
+for edge in edge_list:
+    ham_list.append(("ZZ", edge, 0.5))
+    ham_list.append(("YY", edge, 0.5))
+    ham_list.append(("XX", edge, 0.5))
+
+for qubit in reduced_coupling.physical_qubits:
+    ham_list.append(("Z", [qubit], np.random.random() * 2 - 1))
+
+hamiltonian = SparsePauliOp.from_sparse_list(ham_list, num_qubits=num_spins)
+
+ansatz.draw("mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/spin-chain-vqe/extracted-outputs/7e8d2f10-f1d6-4ec2-bac9-9db23499c9e1-0.avif)
+
+## Schritt 2: Problem für Quantenhardware-Ausführung optimieren {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+*   Einjabe: Abstrakter Schaltkreis, Observable
+*   Ausjabe: Target-Schaltkreis un Observable, optimiert für de ausjesuchtе QPU
+
+Nutzt de `generate_preset_pass_manager` Funksjoon aus Qiskit, um automatisch ne Optimierungsjoutin für unsern Schaltkreis bezüglich de ausjesuchte QPU zu jenerieren. Wa wählen `optimization_level=3`, wat det höchste Level von Optimierung von de Preset-Pass-Manager is. Wa schließen ooch `ALAPScheduleAnalysis` un `PadDynamicalDecoupling` Scheduling-Passes ein, um Dekohärenzfehler zu unterdrücken.
+
+```python
+target = backend.target
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(durations=target.durations()),
+        PadDynamicalDecoupling(
+            durations=target.durations(),
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+ansatz_ibm = pm.run(ansatz)
+observable_ibm = hamiltonian.apply_layout(ansatz_ibm.layout)
+ansatz_ibm.draw("mpl", scale=0.6, style="iqp", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/spin-chain-vqe/extracted-outputs/a0a5f1c8-5c31-4d9f-ae81-37bd67271d44-0.avif)
+
+## Schritt 3: Mit Qiskit Primitives ausführen {#step-3-execute-using-qiskit-primitives}
+
+*   Einjabe: Target-Schaltkreis un Observable
+*   Ausjabe: Erjebnisse von de Optimierung
+
+Minimiert de jeschätzte Grundzustandsenergie von det System durch Optimierung von de Schaltkreis-Parameter. Nutzt de `Estimator` Primitive aus Qiskit Runtime, um de Kostenfunksjoon während de Optimierung zu evaluieren.
+
+Für dit Demo laufen wa uff een QPU mit `qiskit-ibm-runtime` Primitives. Um mit `qiskit` statevector-basierten Primitives zu laufen, ersetzt den Block von det Code, der Qiskit IBM Runtime Primitives nutzt, durch den kommentierten Block.
+
+```python
+# SciPy minimizer routine
+def cost_func(
+    params: Sequence,
+    ansatz: QuantumCircuit,
+    hamiltonian: SparsePauliOp,
+    estimator: BaseEstimatorV2,
+) -> float:
+    """Ground state energy evaluation."""
+    return (
+        estimator.run([(ansatz, hamiltonian, [params])])
+        .result()[0]
+        .data.evs[0]
+    )
+
+num_params = ansatz_ibm.num_parameters
+params = 2 * np.pi * np.random.random(num_params)
+
+callback_dict = {
+    "prev_vector": None,
+    "iters": 0,
+    "cost_history": [],
+}
+
+# Evaluate the problem on a QPU by using Qiskit IBM Runtime
+with Session(backend=backend) as session:
+    estimator = Estimator()
+    callback = build_callback(
+        ansatz_ibm, observable_ibm, estimator, callback_dict
+    )
+    res = minimize(
+        cost_func,
+        x0=params,
+        args=(ansatz_ibm, observable_ibm, estimator),
+        callback=callback,
+        method="cobyla",
+        options={"maxiter": 100},
+    )
+
+visualize_results(callback_dict)
+```
+
+## Schritt 4: Nachbearbeitung un Erjebniss im jewünschten klassischen Format zurückjeben {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+*   Einjabe: Grundzustandsenergie-Schätzungen während de Optimierung
+*   Ausjabe: Jeschätzte Grundzustandsenergie
+
+```python
+print(f'Estimated ground state energy: {res["fun"]}')
+```
+
+## Det Qiskit-Muster in de Wolke deployen {#deploy-the-qiskit-pattern-to-the-cloud}
+
+Um det zu machen, verschiebt den Quellcode oben zu ne Datei, `./source/heisenberg.py`, packt den Code in een Skript, det Einjabe entjejenimmt un de endgültige Lösung zurückjibt, un ladet det denn uff een Remote-Cluster hoch mit de `QiskitFunction` Klasse aus `qiskit-ibm-catalog`. Für Anleitungen über det Spezifizieren von externen Abhängigkeiten, det Übjeben von Einjabe-Argumenten un mehr, kuckt in de [Qiskit Serverless guides](/guides/serverless).
+
+De Einjabe für det Pattern is de Anzahl von Spins in de Kette. De Ausjabe is ne Schätzung von de Grundzustandsenergie von det System.
+
+```python
+# Authenticate to the remote cluster and submit the pattern for remote execution
+serverless = QiskitServerless()
+heisenberg_function = QiskitFunction(
+    title="ibm_heisenberg",
+    entrypoint="heisenberg.py",
+    working_dir="./source/",
+)
+serverless.upload(heisenberg_function)
+```
+
+### Det Qiskit-Muster als verwalteten Service laufen lassen {#run-the-qiskit-pattern-as-a-managed-service}
+
+Wenn wa det Pattern in de Wolke hochjeladen haben, können wa det einfach mit det `QiskitServerless` Client laufen lassen.
+
+```python
+# Run the pattern on the remote cluster
+
+ibm_heisenberg = serverless.load("ibm_heisenberg")
+job = serverless.run(ibm_heisenberg)
+solution = job.result()
+
+print(solution)
+print(job.logs())
+```
+
+## Tutorial-Umfrage {#tutorial-survey}
+
+Bitte macht de kurze Umfrage, um Feedback über dit Tutorial zu jeben. Deine Erkenntnisse helfen uns, unsre Inhaltsanjebote un Benutzererfahrung zu verbessern.
+
+[Link zur Umfrage](https://your.feedback.ibm.com/jfe/form/SV_bfuBwfNeeFBxnim)

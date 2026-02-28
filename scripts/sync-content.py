@@ -150,16 +150,6 @@ def transform_mdx(content: str, source_path: Path) -> str:
     # #41: Tag untagged code blocks with language hints based on content
     content = _tag_untagged_code_blocks(content)
 
-    # Hello World tutorial: warn about save_account cell when credentials/simulator active
-    content = content.replace(
-        "If you haven't saved your credentials yet in this Binder session, run this first:",
-        "**Skip this cell** if you've saved credentials in "
-        "[Settings](/jupyter-settings#ibm-quantum) or enabled Simulator Mode "
-        "\u2014 they're auto-injected when you click Run. "
-        "Running this cell with placeholder values will overwrite your configuration.\n\n"
-        "On other platforms, run this first to save credentials for the session:"
-    )
-
     return content
 
 
@@ -986,6 +976,377 @@ def publish_notebooks_to_static():
         print("  ⚠️  No notebooks/ directory found, skipping")
 
 
+# ---------------------------------------------------------------------------
+# Translated notebook generation
+# ---------------------------------------------------------------------------
+
+FALLBACK_MARKER = '{/* doqumentation-untranslated-fallback */}'
+
+
+def parse_mdx_segments(mdx_text: str) -> list:
+    """Parse MDX into alternating text/code segments.
+
+    Returns a list of dicts: {'type': 'text'|'code', 'content': str, 'lang': str|None}
+    Code segments include the language tag (e.g. 'python').
+    The frontmatter and <OpenInLabBanner> are stripped from the first text segment.
+    """
+    segments = []
+    # Split on code fences: ```lang ... ```
+    # We need to handle ``` with and without language tags
+    parts = re.split(r'^(```\w*)\s*$', mdx_text, flags=re.MULTILINE)
+
+    # parts alternates: [text, fence_open, code_content_until_close, ...]
+    # But the regex split is trickier. Let me use a line-by-line parser instead.
+    segments = []
+    lines = mdx_text.split('\n')
+    current_text = []
+    current_code = []
+    in_code = False
+    code_lang = None
+
+    for line in lines:
+        if not in_code:
+            fence_match = re.match(r'^```(\w+)\s*$', line)
+            if fence_match:
+                # Save accumulated text
+                text = '\n'.join(current_text)
+                if text.strip():
+                    segments.append({'type': 'text', 'content': text})
+                current_text = []
+                in_code = True
+                code_lang = fence_match.group(1)
+                current_code = []
+            else:
+                current_text.append(line)
+        else:
+            if line.strip() == '```':
+                # End of code block
+                code = '\n'.join(current_code)
+                segments.append({'type': 'code', 'content': code, 'lang': code_lang})
+                in_code = False
+                current_code = []
+                code_lang = None
+            else:
+                current_code.append(line)
+
+    # Remaining text
+    text = '\n'.join(current_text)
+    if text.strip():
+        segments.append({'type': 'text', 'content': text})
+
+    # Strip frontmatter and OpenInLabBanner from first text segment
+    if segments and segments[0]['type'] == 'text':
+        content = segments[0]['content']
+        # Remove YAML frontmatter
+        content = re.sub(r'^---\n.*?\n---\n?', '', content, count=1, flags=re.DOTALL)
+        # Remove OpenInLabBanner
+        content = re.sub(r'<OpenInLabBanner[^>]*/>\s*\n?', '', content)
+        # Remove fallback marker
+        content = content.replace(FALLBACK_MARKER, '')
+        segments[0]['content'] = content
+
+    return segments
+
+
+def clean_notebook_markdown(text: str) -> str:
+    """Clean translated MDX text for use in a Jupyter notebook markdown cell.
+
+    Strips Docusaurus-specific syntax and reverses MDX escaping.
+    """
+    # Strip heading anchors: ## Title {#english-anchor} → ## Title
+    text = re.sub(r'\s*\{#[a-z0-9_-]+\}\s*$', '', text, flags=re.MULTILINE)
+
+    # Unescape MDX characters
+    text = text.replace('\\{', '{').replace('\\}', '}')
+
+    # Remove JSX comments
+    text = re.sub(r'\{/\*.*?\*/\}', '', text)
+
+    # Convert <Admonition> to blockquote
+    def admonition_to_blockquote(m):
+        atype = m.group(1) or 'note'
+        body = m.group(2).strip()
+        label = atype.capitalize()
+        # Indent body lines with >
+        lines = body.split('\n')
+        quoted = '\n'.join(f'> {l}' for l in lines)
+        return f'> **{label}:** {quoted.lstrip("> ")}'
+
+    text = re.sub(
+        r'<Admonition\s+type="(\w+)"[^>]*>\s*(.*?)\s*</Admonition>',
+        admonition_to_blockquote, text, flags=re.DOTALL
+    )
+    # Handle <Admonition> without type
+    text = re.sub(
+        r'<Admonition[^>]*>\s*(.*?)\s*</Admonition>',
+        lambda m: f'> **Note:** {m.group(1).strip()}', text, flags=re.DOTALL
+    )
+
+    # Strip <OpenInLabBanner> if somehow still present
+    text = re.sub(r'<OpenInLabBanner[^/]*/>\s*', '', text)
+
+    return text.strip()
+
+
+def _is_output_content(text: str) -> bool:
+    """Check if a text segment looks like code cell output rather than markdown."""
+    stripped = text.strip()
+    if not stripped:
+        return True
+    # Image output: ![alt](./output_N.png)
+    if re.match(r'^!\[.*\]\(.*output.*\)$', stripped):
+        return True
+    # LaTeX block output
+    if stripped.startswith('$$') and stripped.endswith('$$'):
+        return True
+    return False
+
+
+def generate_translated_notebook(english_ipynb_path: Path,
+                                  translated_mdx_path: Path,
+                                  output_path: Path,
+                                  nb_rel_path: Path) -> bool:
+    """Generate a translated notebook by merging English .ipynb with translated MDX.
+
+    Uses the English notebook as a skeleton: code cells and outputs stay unchanged,
+    markdown cells are replaced with translated text from the MDX.
+
+    Args:
+        english_ipynb_path: Path to the original English .ipynb
+        translated_mdx_path: Path to the translated .mdx file
+        output_path: Where to write the translated .ipynb
+        nb_rel_path: Notebook path relative to notebooks root (for image path rewriting)
+    """
+    try:
+        nb = json.loads(english_ipynb_path.read_text())
+        mdx_text = translated_mdx_path.read_text()
+        cells = nb.get('cells', [])
+        if not cells:
+            return False
+
+        # Extract translated title from MDX frontmatter
+        title_match = re.search(r'^title:\s*"(.+)"', mdx_text, re.MULTILINE)
+        translated_title = title_match.group(1).replace('\\"', '"') if title_match else None
+
+        # Parse MDX into segments
+        segments = parse_mdx_segments(mdx_text)
+        mdx_code_blocks = [s for s in segments if s['type'] == 'code']
+        mdx_text_blocks = [s for s in segments if s['type'] == 'text']
+
+        # Filter out pip install blocks from MDX code blocks (injected by sync-content.py)
+        mdx_code_blocks = [
+            b for b in mdx_code_blocks
+            if 'Added by doQumentation' not in b['content']
+        ]
+
+        # Group notebook cells into spans between code cells
+        # Each span: (start_idx, end_idx) of markdown cells, followed by a code cell
+        nb_code_indices = [i for i, c in enumerate(cells) if c.get('cell_type') == 'code']
+
+        # Build text segments between code blocks from MDX
+        # Walk segments in order, collecting text blocks between code blocks
+        text_spans = []  # list of joined text for each gap between code blocks
+        current_texts = []
+
+        for seg in segments:
+            if seg['type'] == 'text':
+                cleaned = seg['content'].strip()
+                if cleaned and not _is_output_content(cleaned):
+                    current_texts.append(cleaned)
+            elif seg['type'] == 'code':
+                # Skip pip install blocks
+                if 'Added by doQumentation' in seg['content']:
+                    continue
+                text_spans.append('\n\n'.join(current_texts) if current_texts else '')
+                current_texts = []
+
+        # Trailing text after last code block
+        text_spans.append('\n\n'.join(current_texts) if current_texts else '')
+
+        # Now map text_spans to markdown cells between code cells in the notebook
+        # Span 0: before first code cell
+        # Span i: between code cell i-1 and code cell i
+        # Last span: after last code cell
+        boundaries = [-1] + nb_code_indices + [len(cells)]
+
+        for span_idx in range(len(boundaries) - 1):
+            start = boundaries[span_idx] + 1
+            end = boundaries[span_idx + 1]
+
+            # Collect markdown cells in this span
+            md_indices = [i for i in range(start, end)
+                          if cells[i].get('cell_type') == 'markdown']
+
+            if not md_indices or span_idx >= len(text_spans):
+                continue
+
+            translated_text = text_spans[span_idx]
+            if not translated_text:
+                continue
+
+            translated_text = clean_notebook_markdown(translated_text)
+
+            if len(md_indices) == 1:
+                # Simple case: one markdown cell ↔ one text block
+                cell_text = translated_text
+                # For the very first cell, prepend the title if it was stripped
+                if span_idx == 0 and translated_title:
+                    # Check if the original cell started with a heading
+                    orig_src = cell_source(cells[md_indices[0]])
+                    if orig_src.lstrip().startswith('#'):
+                        cell_text = f'# {translated_title}\n\n{translated_text}'
+                cells[md_indices[0]]['source'] = cell_text
+            else:
+                # Multiple markdown cells → split by heading boundaries
+                heading_pattern = re.compile(r'^(#{1,4}\s+.+)$', re.MULTILINE)
+                parts = heading_pattern.split(translated_text)
+
+                # Reconstruct: group heading + following text
+                chunks = []
+                current_chunk = []
+                for part in parts:
+                    if heading_pattern.match(part):
+                        if current_chunk:
+                            chunks.append('\n'.join(current_chunk).strip())
+                        current_chunk = [part]
+                    else:
+                        current_chunk.append(part)
+                if current_chunk:
+                    chunks.append('\n'.join(current_chunk).strip())
+
+                # Remove empty chunks
+                chunks = [c for c in chunks if c.strip()]
+
+                # For the first cell in span 0, prepend title
+                if span_idx == 0 and translated_title and chunks:
+                    orig_src = cell_source(cells[md_indices[0]])
+                    if orig_src.lstrip().startswith('#'):
+                        chunks[0] = f'# {translated_title}\n\n{chunks[0]}'
+
+                if len(chunks) == len(md_indices):
+                    # Perfect match — assign 1:1
+                    for i, idx in enumerate(md_indices):
+                        cells[idx]['source'] = chunks[i]
+                else:
+                    # Can't split cleanly — merge all into first cell
+                    cells[md_indices[0]]['source'] = translated_text
+                    if span_idx == 0 and translated_title:
+                        orig_src = cell_source(cells[md_indices[0]])
+                        if not translated_text.lstrip().startswith('#'):
+                            cells[md_indices[0]]['source'] = f'# {translated_title}\n\n{translated_text}'
+                    for idx in md_indices[1:]:
+                        cells[idx]['source'] = ''
+
+        # Apply the same post-processing as copy_notebook_with_rewrite():
+        # image path rewriting, pip install injection, Colab metadata
+        content = json.dumps(nb, indent=1, ensure_ascii=False)
+        content = rewrite_notebook_image_paths(content, nb_rel_path)
+        nb = json.loads(content)
+        cells = nb.get('cells', [])
+
+        # Inject pip install cells (same as copy_notebook_with_rewrite)
+        init_cell = {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# Setup: install Qiskit (runs automatically in Colab, no-op in Binder)\n",
+                f"!pip install -q {' '.join(COLAB_BASE_PKGS)}"
+            ]
+        }
+        extra_pkgs = analyze_notebook_imports(cells)
+        extra_pkgs = [p for p in extra_pkgs if p not in COLAB_BASE_PKGS]
+
+        injected = [init_cell]
+        if extra_pkgs:
+            extras_cell = {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Additional dependencies for this notebook\n",
+                    f"!pip install -q {' '.join(extra_pkgs)}"
+                ]
+            }
+            injected.append(extras_cell)
+
+        nb['cells'] = injected + cells
+
+        # Colab metadata
+        colab_meta = nb.setdefault('metadata', {}).setdefault('colab', {})
+        colab_meta['cell_execution_strategy'] = 'setup'
+
+        # Write output
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(nb, indent=1, ensure_ascii=False))
+        return True
+
+    except Exception as e:
+        print(f"    Error generating translated notebook: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def generate_locale_notebooks(locale: str):
+    """Generate translated notebooks for a locale from its translated MDX files.
+
+    For each translated MDX that has a notebook_path in frontmatter (and is not
+    an untranslated fallback), merge the translated text into the English notebook
+    to produce a translated .ipynb in static/notebooks/.
+    """
+    i18n_dir = PROJECT_ROOT / "i18n" / locale / "docusaurus-plugin-content-docs" / "current"
+    static_nb = STATIC_DIR / "notebooks"
+
+    if not i18n_dir.exists():
+        print(f"  ⚠️  No i18n directory for locale '{locale}'")
+        return
+
+    print(f"\n📓 Generating translated notebooks for '{locale}'...")
+    count = 0
+    skipped = 0
+    errors = 0
+
+    for mdx_path in sorted(i18n_dir.rglob('*.mdx')):
+        mdx_text = mdx_path.read_text()
+
+        # Skip untranslated fallbacks
+        if FALLBACK_MARKER in mdx_text:
+            continue
+
+        # Extract notebook_path from frontmatter
+        nb_match = re.search(r'^notebook_path:\s*"(.+)"', mdx_text, re.MULTILINE)
+        if not nb_match:
+            continue  # Not a notebook-based page
+
+        notebook_path = nb_match.group(1)  # e.g. "docs/tutorials/foo.ipynb"
+
+        # Find the upstream English notebook
+        english_nb = UPSTREAM_DIR / notebook_path
+        if not english_nb.exists():
+            # hello-world.ipynb is at the repo root
+            english_nb = UPSTREAM_DIR / Path(notebook_path).name
+            if not english_nb.exists():
+                skipped += 1
+                continue
+
+        # Determine output path from MDX location (mirrors the docs/ structure)
+        # e.g. i18n/de/.../tutorials/hello-world.mdx → tutorials/hello-world.ipynb
+        mdx_rel = mdx_path.relative_to(i18n_dir)
+        nb_rel = mdx_rel.with_suffix('.ipynb')
+        output_path = static_nb / nb_rel
+        nb_rel_path = nb_rel
+
+        if generate_translated_notebook(english_nb, mdx_path, output_path, nb_rel_path):
+            count += 1
+        else:
+            errors += 1
+
+    print(f"  ✓ {count} translated notebooks generated, {skipped} skipped, {errors} errors")
+
+
 def sync_upstream_images():
     """Copy upstream images from public/ to static/ for Docusaurus.
 
@@ -1696,6 +2057,10 @@ def main():
                         help="Skip specific content types (can be repeated)")
     parser.add_argument("--scan-deps", action="store_true",
                         help="Scan notebooks for missing deps (report only, no conversion)")
+    parser.add_argument("--generate-locale-notebooks", action="store_true",
+                        help="Generate translated notebooks for a locale")
+    parser.add_argument("--locale", type=str, default=None,
+                        help="Locale code for --generate-locale-notebooks (e.g. de, ja)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -1704,6 +2069,13 @@ def main():
 
     if args.scan_deps:
         scan_notebook_deps()
+        return
+
+    if args.generate_locale_notebooks:
+        if not args.locale:
+            print("Error: --locale is required with --generate-locale-notebooks")
+            sys.exit(1)
+        generate_locale_notebooks(args.locale)
         return
 
     if args.sample_only:

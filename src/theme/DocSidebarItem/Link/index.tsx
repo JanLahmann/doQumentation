@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import OriginalLink from '@theme-original/DocSidebarItem/Link';
+import {translate} from '@docusaurus/Translate';
 import {
   isPageVisited,
   isPageExecuted,
@@ -60,8 +61,8 @@ export default function DocSidebarItemLink(props: Props): JSX.Element {
         <button
           className={`dq-sidebar-indicator${executed ? ' dq-sidebar-indicator--executed' : ''}`}
           onClick={handleUnmark}
-          title="Click to clear visited status"
-          aria-label="Clear visited status"
+          title={translate({id: 'sidebar.clearVisited', message: 'Click to clear visited status'})}
+          aria-label={translate({id: 'sidebar.clearVisited', message: 'Click to clear visited status'})}
         >
           {executed ? '\u25B6' : '\u2713'}
         </button>
