@@ -133,7 +133,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
-├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (8), swg/bad/bar (31 each), ksh/nds/gsw/sax/bln/aut (UI only)
+├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (48), ar (44), he (47), swg/bad/bar (31 each), ksh/nds/gsw/sax/bln/aut (UI only)
 ├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
@@ -200,9 +200,9 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | IT | [it.doqumentation.org](https://it.doqumentation.org) | 48 + UI | Live |
 | PT | [pt.doqumentation.org](https://pt.doqumentation.org) | 48 + UI | Live |
 | JA | [ja.doqumentation.org](https://ja.doqumentation.org) | 60 + UI | Live |
-| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 13 + UI | Live |
+| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 48 + UI | Live |
 | AR | [ar.doqumentation.org](https://ar.doqumentation.org) | 44 + UI | Live (RTL) |
-| HE | [he.doqumentation.org](https://he.doqumentation.org) | 9 + UI | Live (RTL) |
+| HE | [he.doqumentation.org](https://he.doqumentation.org) | 47 + UI | Live (RTL) |
 | SWG | [swg.doqumentation.org](https://swg.doqumentation.org) | 31 + UI | Live |
 | BAD | [bad.doqumentation.org](https://bad.doqumentation.org) | 31 + UI | Live |
 | BAR | [bar.doqumentation.org](https://bar.doqumentation.org) | 31 + UI | Live |
