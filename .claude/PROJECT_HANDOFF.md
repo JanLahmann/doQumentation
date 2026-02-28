@@ -48,6 +48,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - **Binder tab reuse**: "Open in Lab" uses named window target `binder-lab` to reuse the same tab
 - **Interception transparency**: All kernel modifications print `[doQumentation]` messages (simulator intercepts, credential injection, warning suppression, pip install cells)
 - **save_account() protection**: Blue "Skip this cell" banners when credentials/simulator active, prevents overwriting injected values
+- **Full i18n**: All toolbar buttons, status messages, legend, conflict banner, settings link, and Binder hint wrapped with `translate()`/`<Translate>`
 
 ### IBM Quantum Integration (`src/config/jupyter.ts`)
 - **Credentials** — API token + CRN in localStorage with adjustable auto-expiry (1/3/7 days). Auto-injected at kernel start. Embedded execution only.
@@ -215,7 +216,7 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 19 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL,AR,HE,SWG,BAD,BAR,KSH,NDS,GSW,SAX,BLN,AUT}`).
 - **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,fr,it,pt,ja,tl,ar,he}` + `doqumentation-{swg,bad,bar,ksh,nds,gsw,sax,bln,aut}` — each has `main` branch (README + LICENSE + LICENSE-DOCS + NOTICE) and `gh-pages` branch (build output). GitHub Pages + custom domains configured. Setup script: `.claude/scripts/setup-satellite-repo.sh`.
 - **German dialects**: 9 dialect locales (SWG, BAD, BAR, KSH, NDS, GSW, SAX, BLN, AUT) with "Deutsche Dialekte" separator in locale dropdown. Desktop: CSS `li:has(> a[href*="swg.doqumentation.org"])::before` targets first dialect. Mobile: `dialectLocales` Set in `Navbar/MobileSidebar/Header` renders separator `<li>`. To add a new dialect: add to `dialectLocales` Set + `locales`/`localeConfigs` in config + CI matrix + `BANNER_TEMPLATES` + `locale_label` in translate-content.py.
-- **React page translations** (`code.json`): The Settings and Features pages use Docusaurus `<Translate>` and `translate()` APIs. All user-visible strings (~175) are extracted into `code.json` alongside ~92 theme strings. When adding a new language, `npm run write-translations -- --locale {XX}` auto-generates entries with English defaults; translate the `message` values for keys starting with `features.*` and `settings.*`. Technical terms (Qiskit, Binder, AerSimulator, etc.) and code snippets stay in English. Placeholders like `{binder}`, `{saveAccount}`, `{url}` must be preserved exactly.
+- **Full UI i18n** (`code.json`): All user-visible strings across React pages and components use Docusaurus `<Translate>` and `translate()` APIs. This covers Settings page (~90 keys), Features page (~39 keys), ExecutableCode toolbar (Run/Back/Lab/Colab buttons, status messages, legend, conflict banner), EditThisPage bookmarks, BookmarksList, DocSidebarItem/Link, BetaNotice, and MobileSidebar header. Total: ~308 keys per locale (~92 theme + ~216 custom). When adding a new language, `npm run write-translations -- --locale {XX}` auto-generates entries with English defaults; translate all `message` values. Technical terms (Qiskit, Binder, AerSimulator, etc.) and code snippets stay in English. Placeholders like `{binder}`, `{saveAccount}`, `{url}`, `{pipCode}`, `{issueLink}`, `{mode}` must be preserved exactly.
 - **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 20 banner templates defined in `scripts/translate-content.py`.
 - **Translation**: `.claude/translation-prompt.md` — Sonnet model, 1 file/agent, 20+ parallel agents. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
 - **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `scripts/fix-heading-anchors.py` for batch fixing.
@@ -234,7 +235,7 @@ npm run write-translations -- --locale {XX}
 
 This creates `i18n/{XX}/code.json` and `i18n/{XX}/docusaurus-plugin-content-docs/current.json`. Then create:
 
-- `i18n/{XX}/code.json` — theme UI (~92 strings) + Settings & Features page strings (~175 strings, keys `features.*` and `settings.*`). Total ~267 strings.
+- `i18n/{XX}/code.json` — theme UI (~92 strings) + custom UI strings (~216 strings: `features.*`, `settings.*`, `executable.*`, `bookmark.*`, `bookmarksList.*`, `betaNotice.*`, `sidebar.*`, `navbar.mobile.*`). Total ~308 strings.
 - `i18n/{XX}/docusaurus-plugin-content-docs/current.json` — sidebar category labels (~60 strings)
 - `i18n/{XX}/docusaurus-theme-classic/navbar.json` — navbar items (Tutorials, Guides, Courses, etc.)
 - `i18n/{XX}/docusaurus-theme-classic/footer.json` — footer labels + copyright disclaimer
@@ -318,9 +319,9 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ### TODO
 - **Translation expansion** — DE at 79/387, ES/UK at 55/387, others at 44-48. All key index pages translated across all 8 active locales. Use `.claude/translation-prompt.md` (Sonnet, 20+ parallel agents, 1 file each).
+- **New dialect locales** — KSH, NDS, GSW, SAX, BLN, AUT have full UI strings + CI matrix entries but no content translations yet. Satellite repos need first deploy (deploy keys + GitHub Pages setup).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
-- **Homepage beta notice** — ✅ Done (5037c92). Dismissible banner above hero, session-scoped (`sessionStorage`), i18n-ready.
 
 ### Testing (Feb 2026)
 - 180+ comprehensive tests, ~200 Chrome browser tests — 99.5% pass, zero real bugs
