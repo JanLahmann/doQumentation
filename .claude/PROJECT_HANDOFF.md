@@ -47,17 +47,17 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - Execution mode indicator badge + injection toast. "Open in JupyterLab" button on all tiers. "Open in Colab" button always available.
 - **Binder tab reuse**: "Open in Lab" uses named window target `binder-lab` to reuse the same tab
 - **Interception transparency**: All kernel modifications print `[doQumentation]` messages (simulator intercepts, credential injection, warning suppression, pip install cells)
-- **save_account() protection**: Blue "Skip this cell" banners when credentials/simulator active, prevents overwriting injected values
+- **save_account() protection**: Dynamic blue "Skip this cell" banners (runtime-injected via `annotateSaveAccountCells()`, translated via `code.json`) when credentials/simulator active, prevents overwriting injected values
 - **Full i18n**: All toolbar buttons, status messages, legend, conflict banner, settings link, and Binder hint wrapped with `translate()`/`<Translate>`
 
 ### IBM Quantum Integration (`src/config/jupyter.ts`)
-- **Credentials** — API token + CRN in localStorage with adjustable auto-expiry (1/3/7 days). Auto-injected at kernel start. Embedded execution only.
-- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` (AerSimulator or FakeBackend). Fake backend discovery cached in localStorage, 55-backend fallback list.
+- **Credentials** — API token + CRN with adjustable auto-expiry (1/3/7 days). Auto-injected at kernel start. Embedded execution only. Shared across locale subdomains via cookies.
+- **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` (AerSimulator or FakeBackend). Fake backend discovery cached, 55-backend fallback list.
 - **Conflict resolution** — Radio buttons when both configured; defaults to simulator.
 - **Colab URLs** — `getColabUrl()` generates Colab links pointing to dependency-ready notebook copies on gh-pages. `getBinderLabUrl()` updated to point to the same copies (with install cells).
 
 ### User Preferences
-All localStorage access centralized in `src/config/preferences.ts` (SSR guards, `clearAllPreferences()`). Cross-component reactivity via custom events: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
+All storage access centralized in `src/config/preferences.ts` and `src/config/jupyter.ts`, backed by `src/config/storage.ts`. **Cross-subdomain sharing**: on `*.doqumentation.org`, all 28 keys are dual-written to cookies (`Domain=.doqumentation.org`) + localStorage. Values > 3.8KB auto-chunked across multiple cookies. On localhost/Docker, pure localStorage (no cookies). One-time migration copies existing localStorage to cookies on first page load (`pageTracker.ts`). Cross-component reactivity via custom events: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
 
 - **Learning progress** — Auto-tracks visits (`pageTracker.ts`). Sidebar indicators: ✓ visited, ▶ executed (swizzled `DocSidebarItem`). Category badges ("3/10"). Resume card on homepage. Granular clearing per page/section/category.
 - **Bookmarks** — ☆/★ toggle in swizzled `EditThisPage`. Homepage widget. Max 50.
@@ -128,7 +128,7 @@ doQumentation/
 ├── src/
 │   ├── clientModules/          # pageTracker, displayPrefs, onboarding
 │   ├── components/             # ExecutableCode, ResumeCard, RecentPages, BookmarksList, OpenInLabBanner, BetaNotice, CourseComponents, GuideComponents
-│   ├── config/                 # jupyter.ts (env detection, credentials), preferences.ts (localStorage)
+│   ├── config/                 # storage.ts (cookie+localStorage), jupyter.ts (env detection, credentials), preferences.ts (user prefs)
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
