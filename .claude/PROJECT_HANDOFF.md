@@ -37,6 +37,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - `docs/index.mdx` is preserved — all other `docs/` content is regenerated on each sync
 - **Dependency scan**: `analyze_notebook_imports()` injects `%pip install -q` cells into 46/260 notebooks missing packages. `--scan-deps` flag for report only.
 - **Colab/Binder notebook copies**: `copy_notebook_with_rewrite()` injects 1–2 pip install cells (base Qiskit + per-notebook extras) and Colab `cell_execution_strategy: "setup"` metadata. `publish_notebooks_to_static()` copies ~1,650 dependency-ready notebooks to `static/notebooks/` for gh-pages serving.
+- **Translated notebooks**: `generate_translated_notebook()` merges an English `.ipynb` skeleton with translated `.mdx` text — code cells/outputs stay unchanged, markdown cells get translated text. Uses code blocks as alignment anchors. Handles consecutive markdown cells via heading-boundary splitting. Cleans Docusaurus syntax (heading anchors, MDX escapes, `<Admonition>` → blockquotes). `generate_locale_notebooks(locale)` orchestrates all notebooks for a locale, skipping untranslated fallbacks. CLI: `--generate-locale-notebooks --locale XX`.
 - **Custom Hello World**: `hello-world.ipynb` from fork root imported as first tutorial with custom `OpenInLabBanner` description
 
 ### Code Execution (`src/components/ExecutableCode/index.tsx`)
@@ -54,7 +55,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - **Credentials** — API token + CRN with adjustable auto-expiry (1/3/7 days). Auto-injected at kernel start. Embedded execution only. Shared across locale subdomains via cookies.
 - **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` (AerSimulator or FakeBackend). Fake backend discovery cached, 55-backend fallback list.
 - **Conflict resolution** — Radio buttons when both configured; defaults to simulator.
-- **Colab URLs** — `getColabUrl()` generates Colab links pointing to dependency-ready notebook copies on gh-pages. `getBinderLabUrl()` updated to point to the same copies (with install cells).
+- **Colab URLs** — `getColabUrl(notebookPath, locale?)` generates locale-aware Colab links. On locale sites (e.g. `de.doqumentation.org`), points to translated notebook copies; on English site, points to `doqumentation.org/notebooks/`. Both `OpenInLabBanner` and `ExecutableCode` pass `currentLocale` from Docusaurus context. `getBinderLabUrl()` points to dependency-ready copies (with install cells); Binder always opens English (notebooks live in the Binder repo).
 
 ### User Preferences
 All storage access centralized in `src/config/preferences.ts` and `src/config/jupyter.ts`, backed by `src/config/storage.ts`. **Cross-subdomain sharing**: on `*.doqumentation.org`, all 28 keys are dual-written to cookies (`Domain=.doqumentation.org`) + localStorage. Values > 3.8KB auto-chunked across multiple cookies. On localhost/Docker, pure localStorage (no cookies). One-time migration copies existing localStorage to cookies on first page load (`pageTracker.ts`). Cross-component reactivity via custom events: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
@@ -98,7 +99,7 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 
 ### CI/CD
 - `deploy.yml` — Sync → build → GitHub Pages (English only)
-- `deploy-locales.yml` — Matrix build per locale → push to satellite repos (DE/ES/UK subdomains)
+- `deploy-locales.yml` — Matrix build per locale: sync content → populate fallbacks → generate translated notebooks → build → push to satellite repos
 - `docker.yml` — Multi-arch Docker → ghcr.io (EN only via `--locale en`)
 - `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies
 - Binder repo: daily cache-warming workflow (warms all 3 federation members: 2i2c, BIDS, GESIS)
@@ -156,6 +157,7 @@ npm start                          # Dev server (hot reload)
 npm run build                      # Production build (needs NODE_OPTIONS="--max-old-space-size=8192")
 python scripts/sync-content.py     # Sync all content from upstream
 python scripts/sync-content.py --sample-only  # Sample content only
+python scripts/sync-content.py --generate-locale-notebooks --locale de  # Generate translated notebooks
 ```
 
 **Docker:**
