@@ -1,10 +1,13 @@
 /**
- * User Preferences — localStorage-backed settings for learning progress,
- * bookmarks, display preferences, and other user state.
+ * User Preferences — settings for learning progress, bookmarks,
+ * display preferences, and other user state.
  *
  * Separate from jupyter.ts (which handles execution config).
  * All functions include SSR guards for Docusaurus static builds.
+ * Storage is backed by cookies (cross-subdomain) + localStorage via storage.ts.
  */
+
+import { getItem, setItem, removeItem } from './storage';
 
 // ── Storage keys ──
 
@@ -22,25 +25,24 @@ const KEY_HIDE_STATIC_OUTPUTS = 'dq-hide-static-outputs';
 const KEY_SIDEBAR_COLLAPSED = 'dq-sidebar-collapsed';
 const KEY_RECENT_PAGES = 'dq-recent-pages';
 
+/** All preference storage keys, exported for migration. */
+export const ALL_PREFERENCE_KEYS = [
+  KEY_VISITED_PAGES, KEY_EXECUTED_PAGES, KEY_LAST_PAGE, KEY_LAST_PAGE_TITLE,
+  KEY_LAST_PAGE_TS, KEY_BINDER_HINT, KEY_ONBOARDING_COMPLETED, KEY_ONBOARDING_VISITS,
+  KEY_BOOKMARKS, KEY_CODE_FONT_SIZE, KEY_HIDE_STATIC_OUTPUTS, KEY_SIDEBAR_COLLAPSED,
+  KEY_RECENT_PAGES,
+];
+
 // ── Helpers ──
 
 function isBrowser(): boolean {
   return typeof window !== 'undefined';
 }
 
-/** Wrapper for localStorage.setItem that silently handles QuotaExceededError. */
-function safeSave(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // QuotaExceededError or SecurityError — silently fail rather than crash
-  }
-}
-
 function getJsonSet(key: string): Set<string> {
   if (!isBrowser()) return new Set();
   try {
-    const raw = localStorage.getItem(key);
+    const raw = getItem(key);
     return raw ? new Set(JSON.parse(raw)) : new Set();
   } catch {
     return new Set();
@@ -49,7 +51,7 @@ function getJsonSet(key: string): Set<string> {
 
 function saveJsonSet(key: string, set: Set<string>): void {
   if (!isBrowser()) return;
-  safeSave(key, JSON.stringify([...set]));
+  setItem(key, JSON.stringify([...set]));
 }
 
 // ── Page visit tracking ──
@@ -96,7 +98,7 @@ export function clearVisitedByPrefix(prefix: string): void {
 /** Clear all visited pages. */
 export function clearAllVisited(): void {
   if (!isBrowser()) return;
-  localStorage.removeItem(KEY_VISITED_PAGES);
+  removeItem(KEY_VISITED_PAGES);
 }
 
 // ── Execution history ──
@@ -122,7 +124,7 @@ export function getExecutedPages(): Set<string> {
 /** Clear all execution history. */
 export function clearAllExecuted(): void {
   if (!isBrowser()) return;
-  localStorage.removeItem(KEY_EXECUTED_PAGES);
+  removeItem(KEY_EXECUTED_PAGES);
 }
 
 /** Clear executed pages matching a path prefix. */
@@ -152,17 +154,17 @@ export function setLastPage(path: string, title: string): void {
   const norm = normalizePath(path);
   // Only track content pages, not the homepage or settings
   if (norm === '/' || norm === '/jupyter-settings') return;
-  safeSave(KEY_LAST_PAGE, norm);
-  safeSave(KEY_LAST_PAGE_TITLE, title);
-  safeSave(KEY_LAST_PAGE_TS, String(Date.now()));
+  setItem(KEY_LAST_PAGE, norm);
+  setItem(KEY_LAST_PAGE_TITLE, title);
+  setItem(KEY_LAST_PAGE_TS, String(Date.now()));
 }
 
 /** Get the last visited page info, or null if none. */
 export function getLastPage(): LastPage | null {
   if (!isBrowser()) return null;
-  const path = localStorage.getItem(KEY_LAST_PAGE);
-  const title = localStorage.getItem(KEY_LAST_PAGE_TITLE);
-  const ts = localStorage.getItem(KEY_LAST_PAGE_TS);
+  const path = getItem(KEY_LAST_PAGE);
+  const title = getItem(KEY_LAST_PAGE_TITLE);
+  const ts = getItem(KEY_LAST_PAGE_TS);
   if (!path || !ts) return null;
   return { path, title: title || path, timestamp: Number(ts) };
 }
@@ -171,41 +173,41 @@ export function getLastPage(): LastPage | null {
 
 export function isBinderHintDismissed(): boolean {
   if (!isBrowser()) return false;
-  return localStorage.getItem(KEY_BINDER_HINT) === 'true';
+  return getItem(KEY_BINDER_HINT) === 'true';
 }
 
 export function dismissBinderHint(): void {
   if (!isBrowser()) return;
-  safeSave(KEY_BINDER_HINT, 'true');
+  setItem(KEY_BINDER_HINT, 'true');
 }
 
 // ── Onboarding ──
 
 export function isOnboardingCompleted(): boolean {
   if (!isBrowser()) return true; // SSR: treat as completed
-  return localStorage.getItem(KEY_ONBOARDING_COMPLETED) === 'true';
+  return getItem(KEY_ONBOARDING_COMPLETED) === 'true';
 }
 
 export function completeOnboarding(): void {
   if (!isBrowser()) return;
-  safeSave(KEY_ONBOARDING_COMPLETED, 'true');
+  setItem(KEY_ONBOARDING_COMPLETED, 'true');
 }
 
 /** Increment visit count and return the new value. Auto-completes after 3 visits. */
 export function incrementOnboardingVisits(): number {
   if (!isBrowser()) return 99;
-  const count = Number(localStorage.getItem(KEY_ONBOARDING_VISITS) || '0') + 1;
-  safeSave(KEY_ONBOARDING_VISITS, String(count));
+  const count = Number(getItem(KEY_ONBOARDING_VISITS) || '0') + 1;
+  setItem(KEY_ONBOARDING_VISITS, String(count));
   if (count >= 3) {
-    safeSave(KEY_ONBOARDING_COMPLETED, 'true');
+    setItem(KEY_ONBOARDING_COMPLETED, 'true');
   }
   return count;
 }
 
 export function resetOnboarding(): void {
   if (!isBrowser()) return;
-  localStorage.removeItem(KEY_ONBOARDING_COMPLETED);
-  localStorage.removeItem(KEY_ONBOARDING_VISITS);
+  removeItem(KEY_ONBOARDING_COMPLETED);
+  removeItem(KEY_ONBOARDING_VISITS);
 }
 
 // ── Bookmarks ──
@@ -221,7 +223,7 @@ const MAX_BOOKMARKS = 50;
 function getBookmarksArray(): Bookmark[] {
   if (!isBrowser()) return [];
   try {
-    const raw = localStorage.getItem(KEY_BOOKMARKS);
+    const raw = getItem(KEY_BOOKMARKS);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -230,7 +232,7 @@ function getBookmarksArray(): Bookmark[] {
 
 function saveBookmarksArray(bookmarks: Bookmark[]): void {
   if (!isBrowser()) return;
-  safeSave(KEY_BOOKMARKS, JSON.stringify(bookmarks));
+  setItem(KEY_BOOKMARKS, JSON.stringify(bookmarks));
 }
 
 export function addBookmark(path: string, title: string): void {
@@ -258,7 +260,7 @@ export function getBookmarks(): Bookmark[] {
 
 export function clearAllBookmarks(): void {
   if (!isBrowser()) return;
-  localStorage.removeItem(KEY_BOOKMARKS);
+  removeItem(KEY_BOOKMARKS);
 }
 
 // ── Display preferences ──
@@ -267,24 +269,24 @@ const DEFAULT_CODE_FONT_SIZE = 14;
 
 export function getCodeFontSize(): number {
   if (!isBrowser()) return DEFAULT_CODE_FONT_SIZE;
-  const val = Number(localStorage.getItem(KEY_CODE_FONT_SIZE));
+  const val = Number(getItem(KEY_CODE_FONT_SIZE));
   return val >= 10 && val <= 22 ? val : DEFAULT_CODE_FONT_SIZE;
 }
 
 export function setCodeFontSize(size: number): void {
   if (!isBrowser()) return;
   const clamped = Math.max(10, Math.min(22, Math.round(size)));
-  safeSave(KEY_CODE_FONT_SIZE, String(clamped));
+  setItem(KEY_CODE_FONT_SIZE, String(clamped));
 }
 
 export function getHideStaticOutputs(): boolean {
   if (!isBrowser()) return false;
-  return localStorage.getItem(KEY_HIDE_STATIC_OUTPUTS) === 'true';
+  return getItem(KEY_HIDE_STATIC_OUTPUTS) === 'true';
 }
 
 export function setHideStaticOutputs(hide: boolean): void {
   if (!isBrowser()) return;
-  safeSave(KEY_HIDE_STATIC_OUTPUTS, String(hide));
+  setItem(KEY_HIDE_STATIC_OUTPUTS, String(hide));
 }
 
 // ── Sidebar collapse memory ──
@@ -292,7 +294,7 @@ export function setHideStaticOutputs(hide: boolean): void {
 function getCollapseMap(): Record<string, boolean> {
   if (!isBrowser()) return {};
   try {
-    const raw = localStorage.getItem(KEY_SIDEBAR_COLLAPSED);
+    const raw = getItem(KEY_SIDEBAR_COLLAPSED);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -308,12 +310,12 @@ export function setSidebarCollapseState(label: string, collapsed: boolean): void
   if (!isBrowser()) return;
   const map = getCollapseMap();
   map[label] = collapsed;
-  safeSave(KEY_SIDEBAR_COLLAPSED, JSON.stringify(map));
+  setItem(KEY_SIDEBAR_COLLAPSED, JSON.stringify(map));
 }
 
 export function clearSidebarCollapseStates(): void {
   if (!isBrowser()) return;
-  localStorage.removeItem(KEY_SIDEBAR_COLLAPSED);
+  removeItem(KEY_SIDEBAR_COLLAPSED);
 }
 
 // ── Recently viewed pages ──
@@ -332,20 +334,20 @@ export function addRecentPage(path: string, title: string): void {
   // Skip homepage and settings
   if (norm === '/' || norm === '/jupyter-settings') return;
   try {
-    const raw = localStorage.getItem(KEY_RECENT_PAGES);
+    const raw = getItem(KEY_RECENT_PAGES);
     const pages: RecentPage[] = raw ? JSON.parse(raw) : [];
     // Remove duplicate, add to front
     const filtered = pages.filter(p => p.path !== norm);
     filtered.unshift({ path: norm, title, ts: Date.now() });
     if (filtered.length > MAX_RECENT_PAGES) filtered.length = MAX_RECENT_PAGES;
-    safeSave(KEY_RECENT_PAGES, JSON.stringify(filtered));
+    setItem(KEY_RECENT_PAGES, JSON.stringify(filtered));
   } catch { /* ignore */ }
 }
 
 export function getRecentPages(): RecentPage[] {
   if (!isBrowser()) return [];
   try {
-    const raw = localStorage.getItem(KEY_RECENT_PAGES);
+    const raw = getItem(KEY_RECENT_PAGES);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -354,10 +356,10 @@ export function getRecentPages(): RecentPage[] {
 
 export function clearRecentPages(): void {
   if (!isBrowser()) return;
-  localStorage.removeItem(KEY_RECENT_PAGES);
-  localStorage.removeItem(KEY_LAST_PAGE);
-  localStorage.removeItem(KEY_LAST_PAGE_TITLE);
-  localStorage.removeItem(KEY_LAST_PAGE_TS);
+  removeItem(KEY_RECENT_PAGES);
+  removeItem(KEY_LAST_PAGE);
+  removeItem(KEY_LAST_PAGE_TITLE);
+  removeItem(KEY_LAST_PAGE_TS);
 }
 
 // ── Bulk clear ──
@@ -365,19 +367,19 @@ export function clearRecentPages(): void {
 /** Clear all user preferences (visited, executed, last page, bookmarks, display, etc.). Does NOT touch Jupyter/credential settings. */
 export function clearAllPreferences(): void {
   if (!isBrowser()) return;
-  localStorage.removeItem(KEY_VISITED_PAGES);
-  localStorage.removeItem(KEY_EXECUTED_PAGES);
-  localStorage.removeItem(KEY_LAST_PAGE);
-  localStorage.removeItem(KEY_LAST_PAGE_TITLE);
-  localStorage.removeItem(KEY_LAST_PAGE_TS);
-  localStorage.removeItem(KEY_BINDER_HINT);
-  localStorage.removeItem(KEY_ONBOARDING_COMPLETED);
-  localStorage.removeItem(KEY_ONBOARDING_VISITS);
-  localStorage.removeItem(KEY_BOOKMARKS);
-  localStorage.removeItem(KEY_CODE_FONT_SIZE);
-  localStorage.removeItem(KEY_HIDE_STATIC_OUTPUTS);
-  localStorage.removeItem(KEY_SIDEBAR_COLLAPSED);
-  localStorage.removeItem(KEY_RECENT_PAGES);
+  removeItem(KEY_VISITED_PAGES);
+  removeItem(KEY_EXECUTED_PAGES);
+  removeItem(KEY_LAST_PAGE);
+  removeItem(KEY_LAST_PAGE_TITLE);
+  removeItem(KEY_LAST_PAGE_TS);
+  removeItem(KEY_BINDER_HINT);
+  removeItem(KEY_ONBOARDING_COMPLETED);
+  removeItem(KEY_ONBOARDING_VISITS);
+  removeItem(KEY_BOOKMARKS);
+  removeItem(KEY_CODE_FONT_SIZE);
+  removeItem(KEY_HIDE_STATIC_OUTPUTS);
+  removeItem(KEY_SIDEBAR_COLLAPSED);
+  removeItem(KEY_RECENT_PAGES);
 }
 
 // ── Stats ──

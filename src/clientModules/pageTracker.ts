@@ -6,14 +6,24 @@
  * Runs on every client-side route change.
  */
 
-import { markPageVisited, setLastPage, addRecentPage } from '../config/preferences';
+import { markPageVisited, setLastPage, addRecentPage, ALL_PREFERENCE_KEYS } from '../config/preferences';
+import { ALL_JUPYTER_KEYS } from '../config/jupyter';
+import { migrateLocalStorageToCookies } from '../config/storage';
 
 /** Custom event name broadcast after a page visit is recorded. */
 export const PAGE_VISITED_EVENT = 'dq:page-visited';
 
+// One-time migration: copy existing localStorage values to cookies
+// for cross-subdomain sharing. Runs once per page-load session.
+let migrationDone = false;
+
 // Docusaurus client module lifecycle hook:
 // Called on every client-side route change (including initial load).
 export function onRouteDidUpdate({ location }: { location: Location }): void {
+  if (!migrationDone) {
+    migrationDone = true;
+    migrateLocalStorageToCookies([...ALL_PREFERENCE_KEYS, ...ALL_JUPYTER_KEYS]);
+  }
   const path = location.pathname;
 
   // Track the visit
