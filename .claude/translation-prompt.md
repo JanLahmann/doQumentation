@@ -3,8 +3,8 @@
 Translates English MDX content to other languages using Claude Code CLI with parallel Sonnet Task agents.
 
 **Model**: Sonnet (always — via `model: "sonnet"` in Task calls)
-**Batch size**: 1 file per agent
-**Parallelism**: 10+ agents per round (launch as many as possible in a single message)
+**Batch size**: 1 file or chunk per agent
+**Parallelism**: 3 agents per round
 
 ---
 
@@ -28,9 +28,11 @@ Read .claude/translation-prompt.md. Translate these files to Spanish (es): guide
 
 ## How to Launch Translation Agents
 
-Launch **one agent per file**, all simultaneously using parallel Task tool calls in a single message. Use `model: "sonnet"` and `subagent_type: "general-purpose"` for each agent.
+Launch **one agent per file**, up to **3 agents in parallel** per round. Use `model: "sonnet"` and `subagent_type: "general-purpose"` for each agent.
 
-Example: 20 files → 20 agents → all 20 launched in one message.
+Example: 9 files → 3 rounds of 3 agents each.
+
+**Large files (>400 lines)**: The orchestrator handles chunking — see "Large File Chunking" section below. Do NOT include chunking instructions in the per-agent prompt.
 
 Each agent gets this prompt (with variables filled in):
 
@@ -61,22 +63,34 @@ Rules:
 - Use {FORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
 - **Use proper Unicode characters** — NEVER use ASCII digraph substitutes. For German: use ä ö ü Ä Ö Ü ß directly, NEVER ae oe ue ss. For other languages: use the native script characters, never romanized approximations.
-
-### Large file chunking (>400 lines)
-
-Files over ~400 lines should be **split into chunks** for translation to avoid output token limits:
-
-1. Read the source file and identify section boundaries (e.g., `## Part I`, `## Step 3`)
-2. Split into chunks of **~400 lines each**, always at a section heading boundary (500 upper limit)
-3. Translate each chunk in a **separate parallel agent** — write to temp files (`/tmp/{filename}-part1.mdx`, etc.)
-4. First chunk includes frontmatter; subsequent chunks start at their section heading
-5. After all chunks complete, concatenate with a **blank line between chunks**
-6. **Verify integrity**: total line count vs source (should match), section heading count, code block count (triple backticks), LaTeX block count (`$$` pairs), last 5 lines of each chunk (truncation is the most common failure)
-7. **Verify Unicode** — grep for ASCII digraph patterns (e.g., `koennen`, `fuer` for German) and fix any found
-
-Files under 400 lines: translate in a single pass.
 ```
 
+
+---
+
+## Large File Chunking (>400 lines) — Orchestrator Responsibility
+
+The **orchestrator** (not the sub-agent) handles chunking for large files. Sub-agents always receive a single chunk or a complete small file — they never need to split anything themselves.
+
+### How the orchestrator handles a large file
+
+1. Read the source file and count lines
+2. If ≤400 lines → assign to a single agent as normal
+3. If >400 lines → split into chunks:
+   a. Identify section boundaries (e.g., `## Part I`, `## Step 3`)
+   b. Split into chunks of **~400 lines each**, always at a section heading boundary (500 upper limit)
+   c. Launch one agent per chunk (up to 3 in parallel), each with this modified prompt:
+      - "Translate this **chunk** of `{file}` (lines {start}–{end})"
+      - Agent reads the full source file but translates only its assigned line range
+      - First chunk agent includes frontmatter; subsequent chunk agents start at their section heading
+      - Each agent writes to a temp file: `/tmp/{filename}-part{N}.mdx`
+   d. After all chunk agents complete, the orchestrator concatenates temp files with a **blank line between chunks**
+   e. The orchestrator writes the final result to `i18n/{LOCALE}/.../current/{path}`
+
+### Post-concatenation verification (orchestrator)
+
+4. **Verify integrity**: total line count vs source (should be similar), section heading count, code block count (triple backticks), LaTeX block count (`$$` pairs), last 5 lines of each chunk (truncation is the most common failure)
+5. **Verify Unicode** — grep for ASCII digraph patterns (e.g., `koennen`, `fuer` for German) and fix any found
 
 ---
 
@@ -96,7 +110,7 @@ When NO explicit file list is given, discover files to translate:
 
 ### Step 2: Launch parallel agents
 
-Launch one agent per file, all in a **single message** (all parallel). Each agent uses `model: "sonnet"`.
+Launch up to **3 agents in parallel** per round. Each agent uses `model: "sonnet"`. For files >400 lines, use the chunking workflow from the "Large File Chunking" section above.
 
 Process in this order: tutorials → guides → courses → modules
 
@@ -171,6 +185,6 @@ Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add
 |---------|-------|
 | Model | `sonnet` |
 | Subagent type | `general-purpose` |
-| Files per agent | 1 (use chunking for files >400 lines) |
-| Parallel agents | 20+ per round |
-| Rounds for full locale | ~19 rounds (371 files ÷ 20 agents per round) |
+| Unit per agent | 1 file or 1 chunk (orchestrator splits files >400 lines) |
+| Parallel agents | 3 per round |
+| Rounds for full locale | ~124 rounds (371 files ÷ 3 agents per round) |
