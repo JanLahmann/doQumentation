@@ -16,6 +16,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Translate, {translate} from '@docusaurus/Translate';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import CodeBlock from '@theme-original/CodeBlock';
 import {
   detectJupyterConfig,
@@ -752,6 +753,7 @@ export default function ExecutableCode({
   title,
   showLineNumbers = true,
 }: ExecutableCodeProps): JSX.Element {
+  const { i18n: { currentLocale } } = useDocusaurusContext();
   const [mode, setMode] = useState<'read' | 'run'>('read');
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
@@ -943,7 +945,7 @@ export default function ExecutableCode({
           {notebookPath && (
             <a
               className="executable-code__button"
-              href={getColabUrl(notebookPath)}
+              href={getColabUrl(notebookPath, currentLocale)}
               target="_blank"
               rel="noopener noreferrer"
               title={translate({id: 'executable.button.colabTitle', message: 'Open notebook in Google Colab'})}

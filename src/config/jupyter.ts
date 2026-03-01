@@ -367,10 +367,22 @@ export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): st
 
 /**
  * Get the Google Colab URL for a notebook.
- * Uses the GitHub URL scheme which lets Colab fetch directly from the repo
- * (more reliable than the /url/ scheme which requires Google to fetch from our site).
+ * Uses the /url/ scheme so Colab fetches the notebook from our site,
+ * which serves translated notebooks on locale subdomains.
  * notebookPath matches the Binder repo structure, e.g. "docs/tutorials/foo.ipynb".
  */
-export function getColabUrl(notebookPath: string): string {
-  return `https://colab.research.google.com/github/JanLahmann/Qiskit-documentation/blob/main/${notebookPath}`;
+export function getColabUrl(notebookPath: string, locale?: string): string {
+  // Map Binder-repo path to site path:
+  //   "docs/tutorials/foo.ipynb" → "tutorials/foo.ipynb"
+  //   "learning/courses/bar.ipynb" → "learning/courses/bar.ipynb"
+  //   "hello-world.ipynb" → "tutorials/hello-world.ipynb" (bare filename → tutorials/)
+  let nbPath = notebookPath.replace(/^docs\//, '');
+  if (!nbPath.includes('/')) {
+    nbPath = `tutorials/${nbPath}`;
+  }
+  const baseUrl = locale && locale !== 'en'
+    ? `https://${locale}.doqumentation.org`
+    : 'https://doqumentation.org';
+  const nbUrl = `${baseUrl}/notebooks/${nbPath}`;
+  return `https://colab.research.google.com/url/${encodeURIComponent(nbUrl)}`;
 }
