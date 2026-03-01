@@ -10,6 +10,24 @@ You are an expert technical translator and reviewer specializing in quantum comp
 - **Source Text:** The original English `.mdx` file.
 - **Translated Text:** The translated Spanish `.mdx` file.
 
+## Pre-Review: MDX Lint (run before submitting for review)
+
+Before linguistic review, run the MDX lint script to catch build-breaking syntax errors:
+
+```bash
+python translation/scripts/lint-translation.py --file <translated.mdx> --en-file <source.mdx>
+```
+
+Fix all **ERROR** findings first — they cause `docusaurus build` failures. The lint checks for:
+- Duplicate heading anchors (`{#a} {#b}` on same line)
+- Garbled XML namespace tags (`<word:word`)
+- Headings without preceding blank line
+- Invalid characters in heading anchors (`.`, `:`, `?`, `(`, `)`)
+- Unmatched code fences
+- Missing `import` statements from the EN source
+
+This is separate from `validate-translation.py` (structural checks like heading count, code blocks, image paths) and the Gemini review below (linguistic quality).
+
 ## Review Checklist
 
 Please review the translated text against the source text and check for the following strict criteria:

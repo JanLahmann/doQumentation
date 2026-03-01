@@ -5,7 +5,8 @@ Use this prompt AFTER running `translation/scripts/validate-translation.py` (whi
 ## Usage
 
 1. Run structural validation first: `python translation/scripts/validate-translation.py --locale {LOCALE} --file {FILE}`
-2. If structural checks pass, paste the prompt below into Haiku / Gemini Flash with both files
+2. Run MDX lint: `python translation/scripts/lint-translation.py --file {FILE} --en-file {EN_FILE}`
+3. If both pass, paste the prompt below into Haiku / Gemini Flash with both files
 3. Replace `{LANGUAGE}` and the register section for your target language
 
 ---
