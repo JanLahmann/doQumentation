@@ -132,7 +132,7 @@ doQumentation/
 │   ├── config/                 # storage.ts (cookie+localStorage), jupyter.ts (env detection, credentials), preferences.ts (user prefs)
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
-│   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
+│   └── theme/                  # Swizzled: Root (global BetaNotice), CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
 ├── i18n/                       # Translations: de (81), es (76), uk (56), ja (56), fr/it/pt/tl (48 each), he (47), ar (44), swg/bad/bar (31 each), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34)
 ├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
 ├── translation/                # Translation infrastructure
@@ -349,7 +349,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Translation validation improvements** — Fixed 3 false-positive categories: code block trailing whitespace tolerance, frontmatter title allowlist (`FRONTMATTER_SAME_ALLOWED`), dialect locales in `ALL_LOCALES`. Overall pass rate improved from 53% to 63%. Fixed 130 missing heading anchors across 13 locales.
 - **Translation build fixes** — Fixed 3+1 locale build failures: KSH garbled `<bcp47:` heading artifact, HE missing newlines before headings (×2), SAX image path `tutorial` → `tutorials`. All pre-existing from translation agents.
 - **Locale dropdown separator** — "Deutsche Dialekte" CSS separator wasn't rendering. Root cause: Docusaurus applies navbar `className` to the `<a>` trigger, not the wrapper `<div>`. Fixed by changing descendant selector to sibling combinator (`~`).
-- **BetaNotice missing on locale sites** — All 19 locale `index.mdx` files were missing `import BetaNotice` + `<BetaNotice />`. Added to all locales. Root cause: genuine translations don't auto-inherit EN source changes.
+- **BetaNotice global via Root wrapper** — Originally only on homepage `index.mdx` (missing from locale sites). Moved to swizzled `src/theme/Root.tsx` so it renders on every page (docs, homepage, settings, features) without per-file imports. Removed manual imports from EN + 19 locale `index.mdx` files. Session-based dismissal via sessionStorage.
 - **Translation freshness system** — Built `check-translation-freshness.py` with embedded source hashes (`{/* doqumentation-source-hash: XXXX */}`) in all 885 genuine translations. Daily CI workflow (`check-translations.yml`) detects CRITICAL (missing imports/components) and STALE (content changed) translations. Prevents future BetaNotice-type regressions.
 
 ### Testing (Feb 2026)
