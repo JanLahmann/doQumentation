@@ -368,21 +368,20 @@ export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): st
 /**
  * Get the Google Colab URL for a notebook.
  * Uses the /github/ scheme (Colab's /url/ scheme blocks non-GitHub domains).
- * EN: points to canonical Binder repo. Translated: points to locale satellite repo.
+ * Points to processed notebooks with pip install cells injected.
+ * EN: main repo notebooks branch. Translated: satellite repo gh-pages branch.
  */
 export function getColabUrl(notebookPath: string, locale?: string): string {
+  // Map Binder-repo path → site notebooks/ path:
+  //   "docs/tutorials/foo.ipynb" → "tutorials/foo.ipynb"
+  //   "hello-world.ipynb" → "tutorials/hello-world.ipynb"
+  //   "learning/courses/bar.ipynb" → "learning/courses/bar.ipynb"
+  let nbPath = notebookPath.replace(/^docs\//, '');
+  if (!nbPath.includes('/')) {
+    nbPath = `tutorials/${nbPath}`;
+  }
   if (locale && locale !== 'en') {
-    // Translated notebooks: satellite repo gh-pages branch
-    // Map Binder-repo path → site path under notebooks/:
-    //   "docs/tutorials/foo.ipynb" → "tutorials/foo.ipynb"
-    //   "hello-world.ipynb" → "tutorials/hello-world.ipynb"
-    //   "learning/courses/bar.ipynb" → "learning/courses/bar.ipynb"
-    let nbPath = notebookPath.replace(/^docs\//, '');
-    if (!nbPath.includes('/')) {
-      nbPath = `tutorials/${nbPath}`;
-    }
     return `https://colab.research.google.com/github/JanLahmann/doqumentation-${locale}/blob/gh-pages/notebooks/${nbPath}`;
   }
-  // EN: Binder repo has canonical notebooks (notebookPath matches repo layout)
-  return `https://colab.research.google.com/github/JanLahmann/Qiskit-documentation/blob/main/${notebookPath}`;
+  return `https://colab.research.google.com/github/JanLahmann/doQumentation/blob/notebooks/${nbPath}`;
 }
