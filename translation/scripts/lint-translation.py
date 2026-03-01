@@ -17,8 +17,10 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -34,10 +36,26 @@ ALL_LOCALES = [
     "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
 
+STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 
 ERROR = "ERROR"
 WARN = "WARN"
+
+
+def load_status() -> dict:
+    """Load translation/status.json."""
+    if STATUS_FILE.exists():
+        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_status(status: dict) -> None:
+    """Write translation/status.json with sorted keys."""
+    STATUS_FILE.write_text(
+        json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -244,12 +262,45 @@ def lint_file(
     return findings
 
 
-def run_lint(locales: list[str], verbose: bool = False) -> int:
+def record_lint_results(
+    results: dict[str, dict[str, tuple[int, int]]],
+) -> None:
+    """Record lint results to status.json.
+
+    results: {locale: {rel_path: (error_count, warning_count)}}
+    """
+    status = load_status()
+    today = date.today().isoformat()
+
+    for locale, files in results.items():
+        if locale not in status:
+            status[locale] = {}
+        for rel, (errors, warnings) in files.items():
+            entry = status[locale].get(rel, {})
+            entry["linted"] = today
+            if errors > 0:
+                entry["lint"] = "ERRORS"
+            elif warnings > 0:
+                entry["lint"] = "WARNINGS"
+            else:
+                entry["lint"] = "CLEAN"
+            entry["lint_errors"] = errors
+            entry["lint_warnings"] = warnings
+            if "status" not in entry:
+                entry["status"] = "promoted"
+            status[locale][rel] = entry
+
+    save_status(status)
+
+
+def run_lint(locales: list[str], verbose: bool = False,
+             record: bool = False) -> int:
     """Lint translations for given locales. Returns exit code."""
     total_errors = 0
     total_warnings = 0
     total_files = 0
     error_files = []
+    all_results: dict[str, dict[str, tuple[int, int]]] = {}
 
     for locale in locales:
         pairs = find_genuine_translations(locale)
@@ -257,6 +308,7 @@ def run_lint(locales: list[str], verbose: bool = False) -> int:
             continue
 
         locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+        locale_results: dict[str, tuple[int, int]] = {}
 
         for en_path, tr_path in pairs:
             rel = str(tr_path.relative_to(locale_dir))
@@ -265,6 +317,8 @@ def run_lint(locales: list[str], verbose: bool = False) -> int:
 
             errors = [f for f in findings if f[0] == ERROR]
             warnings = [f for f in findings if f[0] == WARN]
+
+            locale_results[rel] = (len(errors), len(warnings))
 
             if errors:
                 total_errors += len(errors)
@@ -278,6 +332,9 @@ def run_lint(locales: list[str], verbose: bool = False) -> int:
             if verbose and not findings:
                 print(f"OK    {locale:4s} {rel}")
 
+        if locale_results:
+            all_results[locale] = locale_results
+
     # Summary
     print(f"\n--- Summary: {total_files} files linted ---")
     print(f"  Errors:   {total_errors}")
@@ -287,9 +344,12 @@ def run_lint(locales: list[str], verbose: bool = False) -> int:
         print(f"\n{len(error_files)} file(s) with errors:")
         for loc, rel in error_files:
             print(f"  {loc}/{rel}")
-        return 1
 
-    return 0
+    if record and all_results:
+        record_lint_results(all_results)
+        print(f"\n  Recorded lint results for {total_files} files to status.json")
+
+    return 1 if error_files else 0
 
 
 def run_single_file(tr_path: Path, en_path: Path | None) -> int:
@@ -327,6 +387,10 @@ def main():
         "--en-file", type=Path, help="EN source file (for --file mode)"
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Show all files")
+    parser.add_argument(
+        "--record", action="store_true",
+        help="Record lint results to translation/status.json"
+    )
 
     args = parser.parse_args()
 
@@ -340,7 +404,7 @@ def main():
         parser.error("Specify --locale XX, --all-locales, or --file PATH")
 
     locales = ALL_LOCALES if args.all_locales else [args.locale]
-    sys.exit(run_lint(locales, verbose=args.verbose))
+    sys.exit(run_lint(locales, verbose=args.verbose, record=args.record))
 
 
 if __name__ == "__main__":
