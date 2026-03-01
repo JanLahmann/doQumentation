@@ -304,39 +304,16 @@ IMPORT_TO_PIP = {
     'oqs': 'liboqs-python',
 }
 
-# Packages available in the Binder baseline environment.
-# Verified against actual `pip list` from a running Binder instance (2026-02-11).
-# Binder image: repo2docker from JanLahmann/Qiskit-documentation
-BINDER_PROVIDED = {
-    # --- Direct Binder packages ---
-    'qiskit', 'qiskit_aer', 'qiskit_ibm_runtime', 'pylatexenc',
-    'qiskit_ibm_catalog', 'qiskit_addon_utils', 'pyscf',
-    # --- Transitive deps (verified in Binder pip list) ---
-    'numpy', 'scipy', 'matplotlib', 'rustworkx', 'stevedore',
-    'dill', 'symengine', 'psutil', 'PIL', 'Pillow', 'pillow',
-    'pydot', 'seaborn', 'pandas', 'sympy', 'mpmath',
-    'pydantic', 'pydantic_core', 'cryptography', 'cffi',
-    'contourpy', 'cycler', 'fonttools', 'kiwisolver', 'pyparsing',
-    'jwt', 'requests', 'urllib3', 'idna', 'charset_normalizer',
-    'dateutil', 'six', 'packaging', 'typing_extensions',
-    # --- repo2docker Jupyter environment ---
-    'IPython', 'ipywidgets', 'ipykernel', 'notebook', 'nbformat',
-    'nbconvert', 'traitlets', 'tornado', 'jinja2', 'markupsafe',
-    'pygments', 'certifi', 'setuptools', 'pip', 'wheel',
-    'pytz', 'platformdirs', 'decorator', 'lark',
-    'yaml', 'bs4', 'attrs', 'oauthlib',
-}
-
-
 def analyze_notebook_imports(cells: list[dict]) -> list[str]:
-    """Extract third-party imports from notebook code cells.
+    """Extract all third-party imports from notebook code cells.
 
     Scans code cells for import statements, filters out:
     - Python stdlib modules
-    - Packages provided by the Binder baseline
     - Packages the notebook itself installs (via !pip install / %pip install)
 
-    Returns a sorted list of pip package names not in the Binder baseline.
+    Returns a sorted list of pip package names (stdlib-only filtering — no
+    platform-specific baseline). This ensures the prerequisites cell is
+    complete for both Colab and Binder.
     """
     import_names: set[str] = set()
     already_installed: set[str] = set()
@@ -381,11 +358,7 @@ def analyze_notebook_imports(cells: list[dict]) -> list[str]:
 
     missing: list[str] = []
     for name in sorted(import_names):
-        # Skip stdlib
         if name in stdlib:
-            continue
-        # Skip Binder-provided
-        if name in BINDER_PROVIDED:
             continue
         # Map import name → pip name
         pip_name = IMPORT_TO_PIP.get(name, name)
@@ -473,10 +446,10 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
             elif cell_type == 'raw':
                 body_parts.append(f'\n```\n{source}\n```\n')
 
-        # Inject %pip install cell for missing dependencies
+        # Inject %pip install cell for all third-party dependencies
         missing_pkgs = analyze_notebook_imports(cells)
         if missing_pkgs:
-            install_line = f'# Added by doQumentation — installs packages not in the Binder environment\n%pip install -q {" ".join(missing_pkgs)}'
+            install_line = f'# Added by doQumentation — required packages for this notebook\n%pip install -q {" ".join(missing_pkgs)}'
             install_block = f'\n```python\n{install_line}\n```\n'
             # Insert before the first code block
             first_code_idx = None
@@ -900,54 +873,38 @@ COLAB_BASE_PKGS = ['qiskit', 'qiskit-aer', 'qiskit-ibm-runtime', 'pylatexenc']
 
 
 def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path):
-    """Copy a notebook, rewriting image paths and injecting dependency cells.
+    """Copy a notebook, rewriting image paths and injecting a prerequisites cell.
 
-    Injects up to two cells at the top of the notebook:
-    - Cell 0 (init): installs the base Qiskit stack. Auto-runs on Colab via
-      cell_execution_strategy metadata; fast no-op on Binder.
-    - Cell 1 (extras, optional): per-notebook dependencies detected by
-      analyze_notebook_imports(). Visible to the user, not auto-run.
-
-    Also sets Colab notebook metadata so the init cell runs on open.
+    Injects a single comprehensive cell at the top listing ALL required
+    packages (base Qiskit stack + per-notebook extras detected by import
+    scanning). Auto-runs on Colab via cell_execution_strategy metadata;
+    fast no-op on Binder where packages are pre-installed.
     """
     content = src_path.read_text()
     content = rewrite_notebook_image_paths(content, nb_rel_path)
 
-    # Parse notebook JSON to inject install cells + Colab metadata
+    # Parse notebook JSON to inject install cell + Colab metadata
     nb = json.loads(content)
     cells = nb.get('cells', [])
 
-    # Cell 0: Initialization cell (auto-runs on Colab)
-    init_cell = {
+    # Build complete package list: base + all detected third-party imports
+    all_pkgs = list(COLAB_BASE_PKGS)
+    for p in analyze_notebook_imports(cells):
+        if p not in all_pkgs:
+            all_pkgs.append(p)
+
+    prereq_cell = {
         "cell_type": "code",
         "execution_count": None,
         "metadata": {},
         "outputs": [],
         "source": [
-            "# Setup: install Qiskit (runs automatically in Colab, no-op in Binder)\n",
-            f"!pip install -q {' '.join(COLAB_BASE_PKGS)}"
+            "# Install required packages (runs automatically in Colab, fast no-op in Binder)\n",
+            f"!pip install -q {' '.join(all_pkgs)}"
         ]
     }
 
-    # Cell 1 (optional): Extras cell for per-notebook dependencies
-    extra_pkgs = analyze_notebook_imports(cells)
-    extra_pkgs = [p for p in extra_pkgs if p not in COLAB_BASE_PKGS]
-
-    injected = [init_cell]
-    if extra_pkgs:
-        extras_cell = {
-            "cell_type": "code",
-            "execution_count": None,
-            "metadata": {},
-            "outputs": [],
-            "source": [
-                "# Additional dependencies for this notebook\n",
-                f"!pip install -q {' '.join(extra_pkgs)}"
-            ]
-        }
-        injected.append(extras_cell)
-
-    nb['cells'] = injected + cells
+    nb['cells'] = [prereq_cell] + cells
 
     # Colab notebook metadata: auto-run the first cell on open
     colab_meta = nb.setdefault('metadata', {}).setdefault('colab', {})
@@ -1244,35 +1201,24 @@ def generate_translated_notebook(english_ipynb_path: Path,
         nb = json.loads(content)
         cells = nb.get('cells', [])
 
-        # Inject pip install cells (same as copy_notebook_with_rewrite)
-        init_cell = {
+        # Inject single prerequisites cell (same as copy_notebook_with_rewrite)
+        all_pkgs = list(COLAB_BASE_PKGS)
+        for p in analyze_notebook_imports(cells):
+            if p not in all_pkgs:
+                all_pkgs.append(p)
+
+        prereq_cell = {
             "cell_type": "code",
             "execution_count": None,
             "metadata": {},
             "outputs": [],
             "source": [
-                "# Setup: install Qiskit (runs automatically in Colab, no-op in Binder)\n",
-                f"!pip install -q {' '.join(COLAB_BASE_PKGS)}"
+                "# Install required packages (runs automatically in Colab, fast no-op in Binder)\n",
+                f"!pip install -q {' '.join(all_pkgs)}"
             ]
         }
-        extra_pkgs = analyze_notebook_imports(cells)
-        extra_pkgs = [p for p in extra_pkgs if p not in COLAB_BASE_PKGS]
 
-        injected = [init_cell]
-        if extra_pkgs:
-            extras_cell = {
-                "cell_type": "code",
-                "execution_count": None,
-                "metadata": {},
-                "outputs": [],
-                "source": [
-                    "# Additional dependencies for this notebook\n",
-                    f"!pip install -q {' '.join(extra_pkgs)}"
-                ]
-            }
-            injected.append(extras_cell)
-
-        nb['cells'] = injected + cells
+        nb['cells'] = [prereq_cell] + cells
 
         # Colab metadata
         colab_meta = nb.setdefault('metadata', {}).setdefault('colab', {})
