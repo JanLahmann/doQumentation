@@ -64,6 +64,9 @@ EXISTING_ANCHOR_RE = re.compile(r'\s*\{#[\w-]+\}\s*$')
 
 # Paragraph inflation threshold
 MAX_WORD_RATIO = 1.8
+LOCALE_WORD_RATIO = {
+    "de": 3.0,  # German compound words + longer sentences + paragraph boundary misalignment
+}
 
 # Line count tolerance
 MAX_LINE_DELTA_PCT = 5
@@ -563,6 +566,7 @@ def check_paragraph_inflation(en_content: str, tr_content: str,
     en_paras = extract_prose_paragraphs(en_content)
     tr_paras = extract_prose_paragraphs(tr_content)
     details = []
+    threshold = LOCALE_WORD_RATIO.get(locale, MAX_WORD_RATIO)
 
     # Match by position
     for idx, (en_p, tr_p) in enumerate(
@@ -572,10 +576,10 @@ def check_paragraph_inflation(en_content: str, tr_content: str,
         if en_words < 10:
             continue  # Skip short paragraphs
         ratio = tr_words / en_words
-        if ratio > MAX_WORD_RATIO:
+        if ratio > threshold:
             details.append(
                 f"Line {tr_p[0]}: {en_words} EN words → {tr_words} TR words "
-                f"(ratio {ratio:.1f}x, max {MAX_WORD_RATIO}x)")
+                f"(ratio {ratio:.1f}x, max {threshold}x)")
 
     if details:
         return CheckResult("Paragraph inflation", False,

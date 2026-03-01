@@ -13,6 +13,7 @@ Usage:
     python translation/scripts/translation-status.py --markdown               # markdown table
     python translation/scripts/translation-status.py --json                   # JSON output
     python translation/scripts/translation-status.py --update-contributing    # update CONTRIBUTING table
+    python translation/scripts/translation-status.py --write-status           # write translation/STATUS.md
     python translation/scripts/translation-status.py --all                    # include dialect locales
 """
 
@@ -33,6 +34,7 @@ I18N_DIR = REPO_ROOT / "i18n"
 DRAFTS_DIR = REPO_ROOT / "translation" / "drafts"
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 CONTRIBUTING_FILE = REPO_ROOT / "CONTRIBUTING-TRANSLATIONS.md"
+STATUS_MD = REPO_ROOT / "translation" / "STATUS.md"
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 
@@ -561,6 +563,120 @@ def update_contributing(en_files: dict, locales: list[str]) -> bool:
     return True
 
 
+def write_status_file(en_files: dict, status: dict) -> None:
+    """Write translation/STATUS.md with overview + per-locale detail."""
+    today = date.today().isoformat()
+    lines = [
+        f"# Translation Status",
+        f"",
+        f"*Auto-generated on {today} by `translation-status.py --write-status`.*",
+        f"*Do not edit manually — regenerate with:*",
+        f"",
+        f"```bash",
+        f"python translation/scripts/translation-status.py --write-status",
+        f"```",
+        f"",
+    ]
+
+    # --- Overview table ---
+    lines.append("## Overview")
+    lines.append("")
+    lines.append(format_markdown(en_files, ALL_LOCALES))
+    lines.append("")
+
+    # --- Per-locale detail ---
+    lines.append("## Per-Locale Detail")
+    lines.append("")
+
+    for locale in ALL_LOCALES:
+        lines.append(f"### {LOCALE_NAMES.get(locale, locale)} (`{locale}`)")
+        lines.append("")
+
+        trans = get_locale_translations(locale)
+        drafts = get_locale_drafts(locale)
+        locale_status = status.get(locale, {})
+
+        totals = {k: len(en_files.get(k, [])) for k in
+                  ["tutorials", "guides", "courses", "modules", "other"]}
+
+        section_keys = [("tutorials", "Tutorials"), ("guides", "Guides"),
+                        ("courses", "Courses"), ("modules", "Modules")]
+
+        lines.append("| Section | Translated | Drafts | PASS | FAIL | Remaining |")
+        lines.append("|---------|-----------|--------|------|------|-----------|")
+
+        grand = {"trans": 0, "drafts": 0, "pass": 0, "fail": 0,
+                 "remaining": 0, "total": 0}
+
+        for key, label in section_keys:
+            en_count = totals.get(key, 0)
+            t_count = len(trans.get(key, []))
+            d_count = len(drafts.get(key, []))
+            remaining = en_count - t_count
+
+            # Count PASS/FAIL from status.json for this section
+            p_count = f_count = 0
+            for rel_path, entry in locale_status.items():
+                in_section = False
+                if key == "tutorials" and rel_path.startswith("tutorials/"):
+                    in_section = True
+                elif key == "guides" and rel_path.startswith("guides/"):
+                    in_section = True
+                elif key == "courses" and rel_path.startswith("learning/courses/"):
+                    in_section = True
+                elif key == "modules" and rel_path.startswith("learning/modules/"):
+                    in_section = True
+                if in_section:
+                    v = entry.get("validation")
+                    if v == "PASS":
+                        p_count += 1
+                    elif v == "FAIL":
+                        f_count += 1
+
+            p_str = str(p_count) if p_count else "—"
+            f_str = str(f_count) if f_count else "—"
+
+            lines.append(
+                f"| {label} | {t_count}/{en_count} | {d_count} "
+                f"| {p_str} | {f_str} | {remaining} |"
+            )
+
+            grand["trans"] += t_count
+            grand["drafts"] += d_count
+            grand["pass"] += p_count
+            grand["fail"] += f_count
+            grand["remaining"] += remaining
+            grand["total"] += en_count
+
+        gp = str(grand["pass"]) if grand["pass"] else "—"
+        gf = str(grand["fail"]) if grand["fail"] else "—"
+        lines.append(
+            f"| **Total** | **{grand['trans']}/{grand['total']}** "
+            f"| **{grand['drafts']}** | **{gp}** | **{gf}** "
+            f"| **{grand['remaining']}** |"
+        )
+        lines.append("")
+
+        # Pipeline history from status.json
+        if locale_status:
+            lines.append("<details>")
+            lines.append(f"<summary>Pipeline history ({len(locale_status)} files in status.json)</summary>")
+            lines.append("")
+            lines.append("| File | Status | Validation | Date |")
+            lines.append("|------|--------|------------|------|")
+            for rel_path in sorted(locale_status.keys()):
+                entry = locale_status[rel_path]
+                s = entry.get("status", "—")
+                v = entry.get("validation", "—")
+                d = entry.get("promoted") or entry.get("validated") or "—"
+                lines.append(f"| `{rel_path}` | {s} | {v} | {d} |")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+
+    STATUS_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -583,6 +699,8 @@ def main():
                         help="Output JSON")
     parser.add_argument("--update-contributing", action="store_true",
                         help="Update the table in CONTRIBUTING-TRANSLATIONS.md")
+    parser.add_argument("--write-status", action="store_true",
+                        help="Write translation/STATUS.md with full report")
     args = parser.parse_args()
 
     # Check docs/ exists
@@ -623,13 +741,15 @@ def main():
     elif args.markdown:
         print(format_markdown(en_files, locales))
     elif args.update_contributing:
-        # Always use main locales for CONTRIBUTING table
-        if update_contributing(en_files, MAIN_LOCALES):
+        if update_contributing(en_files, ALL_LOCALES):
             print(f"Updated {CONTRIBUTING_FILE}")
         else:
             print("Error: Marker comments not found in CONTRIBUTING-TRANSLATIONS.md")
             print("Add <!-- translation-status-start --> and <!-- translation-status-end -->")
             sys.exit(1)
+    elif args.write_status:
+        write_status_file(en_files, status)
+        print(f"Written {STATUS_MD}")
     elif args.backlog:
         if not args.locale:
             print("Error: --backlog requires --locale", file=sys.stderr)
