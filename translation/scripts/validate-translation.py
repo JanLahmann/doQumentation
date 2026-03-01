@@ -15,10 +15,13 @@ Usage:
 """
 
 import argparse
+import hashlib
+import json
 import re
 import sys
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -731,6 +734,66 @@ def write_feedback_report(reports: list[FileReport], locale: str,
     print(f"Feedback report written to: {output_path}")
 
 
+STATUS_FILE = REPO_ROOT / "translation" / "status.json"
+
+
+def load_status() -> dict:
+    """Load translation/status.json."""
+    if STATUS_FILE.exists():
+        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_status(status: dict) -> None:
+    """Write translation/status.json with sorted keys."""
+    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATUS_FILE.write_text(
+        json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def compute_source_hash(content: str) -> str:
+    """Return first 8 hex chars of SHA-256 of content."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
+
+
+def record_results(reports: list["FileReport"], locale: str,
+                   is_drafts: bool = False) -> None:
+    """Record validation results to status.json."""
+    status = load_status()
+    if locale not in status:
+        status[locale] = {}
+
+    today = date.today().isoformat()
+
+    for report in reports:
+        rel = report.rel_path
+        entry = status[locale].get(rel, {})
+
+        entry["validation"] = "PASS" if report.passed else "FAIL"
+        entry["validated"] = today
+
+        if report.passed:
+            entry.pop("failures", None)
+        else:
+            entry["failures"] = [c.name for c in report.checks if not c.passed]
+
+        # Set status if not already tracked
+        if "status" not in entry:
+            entry["status"] = "draft" if is_drafts else "promoted"
+
+        # Compute source hash from EN file
+        en_path = DOCS_DIR / rel
+        if en_path.exists():
+            en_content = en_path.read_text(encoding="utf-8")
+            entry["source_hash"] = compute_source_hash(en_content)
+
+        status[locale][rel] = entry
+
+    save_status(status)
+
+
 def resolve_locale_dir(locale: str, custom_dir: str = None) -> Path:
     """Resolve the locale directory from --dir flag or default i18n/ path."""
     if custom_dir:
@@ -753,6 +816,8 @@ def main():
                              "learning/modules")
     parser.add_argument("--report", action="store_true",
                         help="Write markdown feedback report to {dir}/{locale}/_feedback.md")
+    parser.add_argument("--record", action="store_true",
+                        help="Record validation results to translation/status.json")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Show details for passing checks too")
     args = parser.parse_args()
@@ -776,6 +841,9 @@ def main():
 
         report = validate_file(en_path, tr_path, args.locale, locale_dir)
         print_report(report, args.verbose)
+        if args.record:
+            record_results([report], args.locale,
+                           is_drafts=bool(args.dir))
         sys.exit(0 if report.passed else 1)
     else:
         pairs = find_genuine_translations(args.locale, locale_dir, args.section)
@@ -792,6 +860,10 @@ def main():
             print_report(report, args.verbose)
 
         print_summary(reports, args.locale)
+
+        if args.record:
+            record_results(reports, args.locale,
+                           is_drafts=bool(args.dir))
 
         if args.report:
             report_dir = (REPO_ROOT / args.dir / args.locale

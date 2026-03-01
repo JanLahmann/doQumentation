@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -144,6 +145,11 @@ def promote_file(draft_path: Path, locale: str, force: bool = False,
     return result
 
 
+def compute_source_hash(content: str) -> str:
+    """Return first 8 hex chars of SHA-256 of content."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
+
+
 def update_status(status: dict, locale: str, results: list[dict]) -> None:
     """Update status.json with promote results."""
     if locale not in status:
@@ -164,6 +170,12 @@ def update_status(status: dict, locale: str, results: list[dict]) -> None:
             entry["validation"] = r["validation"] or "FAIL"
             entry["failures"] = r["failures"]
             entry["validated"] = today
+
+        # Compute source hash from EN file
+        en_path = DOCS_DIR / r["rel_path"]
+        if en_path.exists():
+            en_content = en_path.read_text(encoding="utf-8")
+            entry["source_hash"] = compute_source_hash(en_content)
 
         # Preserve existing fields (contributor, drafted)
         status[locale][r["rel_path"]] = entry

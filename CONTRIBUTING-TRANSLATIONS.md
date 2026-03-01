@@ -24,18 +24,20 @@ If `docs/` is empty or missing, run the command above. Otherwise you're ready to
 
 All locales have complete tutorial coverage (44/44). **Guides are the biggest gap.** Translate in this order: **Guides → Courses → Modules**.
 
+<!-- translation-status-start -->
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 18/44 | 55/172 | 3/154 | 2/15 | 79/387 |
-| Spanish | `es` | 44/44 | 6/172 | 3/154 | 2/15 | 56/387 |
+| German | `de` | 18/44 | 57/172 | 3/154 | 2/15 | 81/387 |
+| Spanish | `es` | 44/44 | 26/172 | 3/154 | 2/15 | 76/387 |
 | Ukrainian | `uk` | 44/44 | 6/172 | 3/154 | 2/15 | 56/387 |
 | Japanese | `ja` | 44/44 | 6/172 | 3/154 | 2/15 | 56/387 |
 | French | `fr` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
 | Italian | `it` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
 | Portuguese | `pt` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
 | Tagalog | `tl` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
-| Hebrew | `he` | 44/44 | 1/172 | 1/154 | 0/15 | 47/387 |
 | Arabic | `ar` | 44/44 | 0/172 | 0/154 | 0/15 | 44/387 |
+| Hebrew | `he` | 44/44 | 1/172 | 1/154 | 0/15 | 47/387 |
+<!-- translation-status-end -->
 
 ---
 
