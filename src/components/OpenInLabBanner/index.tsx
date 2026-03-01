@@ -1,6 +1,4 @@
-import React from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl } from '../../config/jupyter';
 
 interface OpenInLabBannerProps {
@@ -18,7 +16,6 @@ interface OpenInLabBannerProps {
  * - Unknown: Colab only (always available)
  */
 export default function OpenInLabBanner({ notebookPath, description }: OpenInLabBannerProps) {
-  const { i18n: { currentLocale } } = useDocusaurusContext();
   return (
     <BrowserOnly>
       {() => {
@@ -36,8 +33,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
           ? 'Open in Binder JupyterLab'
           : 'Open in JupyterLab';
 
-        // Colab URL points to translated notebook on locale sites
-        const colabUrl = getColabUrl(notebookPath, currentLocale);
+        const colabUrl = getColabUrl(notebookPath);
 
         return (
           <div

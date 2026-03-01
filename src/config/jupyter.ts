@@ -367,13 +367,10 @@ export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): st
 
 /**
  * Get the Google Colab URL for a notebook.
- * Points to the dependency-ready copy served from static/notebooks/ (has install cells + Colab metadata).
+ * Uses the GitHub URL scheme which lets Colab fetch directly from the repo
+ * (more reliable than the /url/ scheme which requires Google to fetch from our site).
+ * notebookPath matches the Binder repo structure, e.g. "docs/tutorials/foo.ipynb".
  */
-export function getColabUrl(notebookPath: string, locale?: string): string {
-  const nbPath = notebookPath.replace(/^docs\//, '');
-  const baseUrl = locale && locale !== 'en'
-    ? `https://${locale}.doqumentation.org`
-    : 'https://doqumentation.org';
-  const nbUrl = `${baseUrl}/notebooks/${nbPath}`;
-  return `https://colab.research.google.com/url/${encodeURIComponent(nbUrl)}`;
+export function getColabUrl(notebookPath: string): string {
+  return `https://colab.research.google.com/github/JanLahmann/Qiskit-documentation/blob/main/${notebookPath}`;
 }
