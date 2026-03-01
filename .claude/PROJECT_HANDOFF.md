@@ -133,7 +133,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
-├── i18n/                       # Translations: de (79), es (55), uk (55), fr/it/pt (44 each), ja (59), tl (48), ar (44), he (47), swg/bad/bar (31 each), ksh/nds/gsw/sax/bln/aut (UI only)
+├── i18n/                       # Translations: de (82), es (55), uk (55), fr/it/pt (48 each), ja (60), tl (48), ar (44), he (47), swg/bad/bar (31 each), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34)
 ├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
@@ -321,8 +321,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation expansion** — DE at 82/387 (active contributor translating guides), ES/UK at 55/387, others at 44-48. External contributor onboarded via `CONTRIBUTING-TRANSLATIONS.md` (tool-agnostic, any LLM). Verified: handles files up to 1,935 lines without chunking. For Claude Code automation: `.claude/translation-prompt.md`.
-- **New dialect locales** — KSH, NDS, GSW, SAX, BLN, AUT have full UI strings + CI matrix entries but no content translations yet. Satellite repos need first deploy (deploy keys + GitHub Pages setup).
+- **Translation expansion** — DE at 82/387 (active contributor translating guides), ES/UK at 55/387, others at 44-48. German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34) — all at SWG parity (14 tutorials + indexes + homepage). 30 tutorials remain untranslated across all 9 dialects. External contributor onboarded via `CONTRIBUTING-TRANSLATIONS.md` (tool-agnostic, any LLM). For Claude Code automation: `.claude/translation-prompt.md`.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
@@ -349,4 +348,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: February 28, 2026*
+*Last updated: March 1, 2026*
