@@ -135,7 +135,12 @@ doQumentation/
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
 ├── i18n/                       # Translations: de (82), es (55), uk (55), fr/it/pt (48 each), ja (60), tl (48), ar (44), he (47), swg/bad/bar (31 each), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34)
 ├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
-├── translation/                # Translation prompts + scripts (see CONTRIBUTING-TRANSLATIONS.md)
+├── translation/                # Translation infrastructure
+│   ├── drafts/{locale}/{path}  # Staging area for new translations (git-tracked)
+│   ├── status.json             # Per-file tracking (draft → promoted)
+│   ├── translation-prompt.md   # Claude Code automation prompt
+│   ├── review-prompt.md        # LLM review prompt (Haiku/Gemini Flash)
+│   └── scripts/                # validate, fix-anchors, promote, populate
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
 ├── Dockerfile.jupyter          # Full stack
@@ -222,10 +227,11 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **Full UI i18n** (`code.json`): All user-visible strings across React pages and components use Docusaurus `<Translate>` and `translate()` APIs. This covers Settings page (~90 keys), Features page (~39 keys), ExecutableCode toolbar (Run/Back/Lab/Colab buttons, status messages, legend, conflict banner), EditThisPage bookmarks, BookmarksList, DocSidebarItem/Link, BetaNotice, and MobileSidebar header. Total: ~308 keys per locale (~92 theme + ~216 custom). When adding a new language, `npm run write-translations -- --locale {XX}` auto-generates entries with English defaults; translate all `message` values. Technical terms (Qiskit, Binder, AerSimulator, etc.) and code snippets stay in English. Placeholders like `{binder}`, `{saveAccount}`, `{url}`, `{pipCode}`, `{issueLink}`, `{mode}` must be preserved exactly.
 - **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 20 banner templates defined in `translation/scripts/translate-content.py`.
 - **Translation freshness**: Genuine translations embed `{/* doqumentation-source-hash: XXXX */}` (SHA-256 first 8 chars of EN source). Daily CI workflow (`check-translations.yml`) compares embedded hashes against current EN files. CRITICAL = missing imports/components (features broken); STALE = content changed. After propagating EN changes, run `check-translation-freshness.py --stamp` to update hashes. **Key rule**: Any change to EN source files (imports, components, content) must be manually propagated to genuine translations — `populate-locale` only refreshes fallbacks, not genuine translations.
+- **Draft pipeline**: Translations go through `translation/drafts/{locale}/{path}` → validate → fix → promote to `i18n/`. Scripts: `validate-translation.py` (12 structural checks, `--dir`/`--section`/`--report` flags), `fix-heading-anchors.py` (`--dir` flag), `promote-drafts.py` (`--locale`/`--section`/`--file`/`--force`/`--keep` flags). Status tracked in `translation/status.json`. Direct-to-i18n still works (all scripts default to `i18n/` without `--dir`).
 - **Translation**: See [`CONTRIBUTING-TRANSLATIONS.md`](../CONTRIBUTING-TRANSLATIONS.md) for contributor guide (any tool/LLM). For Claude Code automation: `translation/translation-prompt.md` (Sonnet, 3 parallel agents, 1 file or chunk each). One-liner: `Read translation/translation-prompt.md. Translate all untranslated pages to French (fr).`
-- **Translation validation**: Two-step QA system. Step 1: `translation/scripts/validate-translation.py` — automated structural checks (12 binary PASS/FAIL checks: line count, code blocks byte-identical, LaTeX, headings, anchors, image paths, frontmatter, JSX tags, URLs, paragraph inflation). Step 2: `translation/review-prompt.md` — LLM review prompt (Haiku / Gemini Flash) for linguistic quality (register, word salad, verbosity, accuracy). Gemini-specific variant: `translation/gemini-review-instructions.md`.
+- **Translation validation**: Two-step QA. Step 1: `validate-translation.py` — 12 binary PASS/FAIL structural checks (line count, code blocks byte-identical, LaTeX, headings, anchors, image paths, frontmatter, JSX tags, URLs, paragraph inflation). Supports `--dir translation/drafts` for staging, `--section` for filtering, `--report` for markdown feedback. Step 2: `translation/review-prompt.md` — LLM review (Haiku / Gemini Flash) for linguistic quality. Gemini-specific variant: `translation/gemini-review-instructions.md`.
 - **Register**: Informal/familiar (du/tu/tú/ти — not Sie/vous/usted/Ви). The Qiskit community uses informal address.
-- **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `translation/scripts/fix-heading-anchors.py` for batch fixing.
+- **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `fix-heading-anchors.py` for batch fixing (supports `--dir` for drafts).
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 - **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) included in all repos and CI deploy output.
 
@@ -298,17 +304,20 @@ DNS: The wildcard CNAME `*` → `janlahmann.github.io` at IONOS covers all subdo
 #### 6. Translate content
 
 ```bash
-# Translate pages (via Claude Code — see translation/translation-prompt.md)
+# Translate pages to drafts (via Claude Code — see translation/translation-prompt.md)
 Read translation/translation-prompt.md. Translate all untranslated pages to {LANGUAGE} ({XX}).
 
-# Populate English fallbacks for untranslated pages
+# Validate drafts
+python translation/scripts/validate-translation.py --locale {XX} --dir translation/drafts
+
+# Fix heading anchors in drafts
+python translation/scripts/fix-heading-anchors.py --locale {XX} --dir translation/drafts --apply
+
+# Promote passing drafts to i18n/
+python translation/scripts/promote-drafts.py --locale {XX}
+
+# Populate English fallbacks for remaining untranslated pages
 python translation/scripts/translate-content.py populate-locale --locale {XX}
-
-# Fix heading anchors
-python translation/scripts/fix-heading-anchors.py --locale {XX} --apply
-
-# Validate translations (structural checks)
-python translation/scripts/validate-translation.py --locale {XX}
 
 # Verify build
 DQ_LOCALE_URL=https://{XX}.doqumentation.org npx docusaurus build --locale {XX}
@@ -332,6 +341,8 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
 ### Resolved (Mar 2026)
+- **Translation draft pipeline** — Added `translation/drafts/` staging area with validate → fix → promote workflow. New scripts: `promote-drafts.py` (with `--section`/`--file`/`--force`/`--keep` flags), `validate-translation.py` (added `--dir`/`--section`/`--report`), `fix-heading-anchors.py` (added `--dir`). Status tracking in `translation/status.json`. Backward compatible — all scripts default to `i18n/` without `--dir`.
+- **Translation validation improvements** — Fixed 3 false-positive categories: code block trailing whitespace tolerance, frontmatter title allowlist (`FRONTMATTER_SAME_ALLOWED`), dialect locales in `ALL_LOCALES`. Overall pass rate improved from 53% to 63%. Fixed 130 missing heading anchors across 13 locales.
 - **Translation build fixes** — Fixed 3+1 locale build failures: KSH garbled `<bcp47:` heading artifact, HE missing newlines before headings (×2), SAX image path `tutorial` → `tutorials`. All pre-existing from translation agents.
 - **Locale dropdown separator** — "Deutsche Dialekte" CSS separator wasn't rendering. Root cause: Docusaurus applies navbar `className` to the `<a>` trigger, not the wrapper `<div>`. Fixed by changing descendant selector to sibling combinator (`~`).
 - **BetaNotice missing on locale sites** — All 19 locale `index.mdx` files were missing `import BetaNotice` + `<BetaNotice />`. Added to all locales. Root cause: genuine translations don't auto-inherit EN source changes.
