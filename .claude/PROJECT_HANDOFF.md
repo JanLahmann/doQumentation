@@ -134,7 +134,8 @@ doQumentation/
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, MDXComponents
 ├── i18n/                       # Translations: de (82), es (55), uk (55), fr/it/pt (48 each), ja (60), tl (48), ar (44), he (47), swg/bad/bar (31 each), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34)
-├── scripts/                    # sync-content.py, sync-deps.py, translate-content.py, docker-entrypoint.sh, setup-pi.sh
+├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
+├── translation/                # Translation prompts + scripts (see CONTRIBUTING-TRANSLATIONS.md)
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
 ├── Dockerfile.jupyter          # Full stack
@@ -217,12 +218,14 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **RTL support**: AR and HE have `direction: 'rtl'` in `localeConfigs`. CSS uses logical properties (`border-inline-start`, `margin-inline-start`, `inset-inline-end`) throughout — direction-agnostic for both LTR and RTL. Noto Sans Arabic/Hebrew fonts loaded via Google Fonts. `[dir="rtl"]` overrides in `custom.css`.
 - **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 19 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL,AR,HE,SWG,BAD,BAR,KSH,NDS,GSW,SAX,BLN,AUT}`).
 - **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,fr,it,pt,ja,tl,ar,he}` + `doqumentation-{swg,bad,bar,ksh,nds,gsw,sax,bln,aut}` — each has `main` branch (README + LICENSE + LICENSE-DOCS + NOTICE) and `gh-pages` branch (build output). GitHub Pages + custom domains configured. Setup script: `.claude/scripts/setup-satellite-repo.sh`.
-- **German dialects**: 9 dialect locales (SWG, BAD, BAR, KSH, NDS, GSW, SAX, BLN, AUT) with "Deutsche Dialekte" separator in locale dropdown. Desktop: CSS `li:has(> a[href*="swg.doqumentation.org"])::before` targets first dialect. Mobile: `dialectLocales` Set in `Navbar/MobileSidebar/Header` renders separator `<li>`. To add a new dialect: add to `dialectLocales` Set + `locales`/`localeConfigs` in config + CI matrix + `BANNER_TEMPLATES` + `locale_label` in translate-content.py.
+- **German dialects**: 9 dialect locales (SWG, BAD, BAR, KSH, NDS, GSW, SAX, BLN, AUT) with "Deutsche Dialekte" separator in locale dropdown. Desktop: CSS `li:has(> a[href*="swg.doqumentation.org"])::before` targets first dialect. Mobile: `dialectLocales` Set in `Navbar/MobileSidebar/Header` renders separator `<li>`. To add a new dialect: add to `dialectLocales` Set + `locales`/`localeConfigs` in config + CI matrix + `BANNER_TEMPLATES` + `locale_label` in `translation/scripts/translate-content.py`.
 - **Full UI i18n** (`code.json`): All user-visible strings across React pages and components use Docusaurus `<Translate>` and `translate()` APIs. This covers Settings page (~90 keys), Features page (~39 keys), ExecutableCode toolbar (Run/Back/Lab/Colab buttons, status messages, legend, conflict banner), EditThisPage bookmarks, BookmarksList, DocSidebarItem/Link, BetaNotice, and MobileSidebar header. Total: ~308 keys per locale (~92 theme + ~216 custom). When adding a new language, `npm run write-translations -- --locale {XX}` auto-generates entries with English defaults; translate all `message` values. Technical terms (Qiskit, Binder, AerSimulator, etc.) and code snippets stay in English. Placeholders like `{binder}`, `{saveAccount}`, `{url}`, `{pipCode}`, `{issueLink}`, `{mode}` must be preserved exactly.
-- **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 20 banner templates defined in `scripts/translate-content.py`.
-- **Translation**: See [`CONTRIBUTING-TRANSLATIONS.md`](../CONTRIBUTING-TRANSLATIONS.md) for contributor guide (any tool/LLM). For Claude Code automation: `.claude/translation-prompt.md` (Sonnet, 3 parallel agents, 1 file or chunk each). One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 20 banner templates defined in `translation/scripts/translate-content.py`.
+- **Translation freshness**: Genuine translations embed `{/* doqumentation-source-hash: XXXX */}` (SHA-256 first 8 chars of EN source). Daily CI workflow (`check-translations.yml`) compares embedded hashes against current EN files. CRITICAL = missing imports/components (features broken); STALE = content changed. After propagating EN changes, run `check-translation-freshness.py --stamp` to update hashes. **Key rule**: Any change to EN source files (imports, components, content) must be manually propagated to genuine translations — `populate-locale` only refreshes fallbacks, not genuine translations.
+- **Translation**: See [`CONTRIBUTING-TRANSLATIONS.md`](../CONTRIBUTING-TRANSLATIONS.md) for contributor guide (any tool/LLM). For Claude Code automation: `translation/translation-prompt.md` (Sonnet, 3 parallel agents, 1 file or chunk each). One-liner: `Read translation/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Translation validation**: Two-step QA system. Step 1: `translation/scripts/validate-translation.py` — automated structural checks (12 binary PASS/FAIL checks: line count, code blocks byte-identical, LaTeX, headings, anchors, image paths, frontmatter, JSX tags, URLs, paragraph inflation). Step 2: `translation/review-prompt.md` — LLM review prompt (Haiku / Gemini Flash) for linguistic quality (register, word salad, verbosity, accuracy). Gemini-specific variant: `translation/gemini-review-instructions.md`.
 - **Register**: Informal/familiar (du/tu/tú/ти — not Sie/vous/usted/Ви). The Qiskit community uses informal address.
-- **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `scripts/fix-heading-anchors.py` for batch fixing.
+- **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `translation/scripts/fix-heading-anchors.py` for batch fixing.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 - **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) included in all repos and CI deploy output.
 
@@ -247,7 +250,7 @@ Use `i18n/de/` as reference for all files.
 
 #### 2. Banner template
 
-Add a `{XX}` entry to `BANNER_TEMPLATES` in `scripts/translate-content.py` — an admonition with "This page has not been translated yet" in the target language.
+Add a `{XX}` entry to `BANNER_TEMPLATES` in `translation/scripts/translate-content.py` — an admonition with "This page has not been translated yet" in the target language.
 
 #### 3. Config (`docusaurus.config.ts`)
 
@@ -295,14 +298,17 @@ DNS: The wildcard CNAME `*` → `janlahmann.github.io` at IONOS covers all subdo
 #### 6. Translate content
 
 ```bash
-# Translate pages (via Claude Code — see .claude/translation-prompt.md)
-Read .claude/translation-prompt.md. Translate all untranslated pages to {LANGUAGE} ({XX}).
+# Translate pages (via Claude Code — see translation/translation-prompt.md)
+Read translation/translation-prompt.md. Translate all untranslated pages to {LANGUAGE} ({XX}).
 
 # Populate English fallbacks for untranslated pages
-python scripts/translate-content.py populate-locale --locale {XX}
+python translation/scripts/translate-content.py populate-locale --locale {XX}
 
 # Fix heading anchors
-python scripts/fix-heading-anchors.py --locale {XX} --apply
+python translation/scripts/fix-heading-anchors.py --locale {XX} --apply
+
+# Validate translations (structural checks)
+python translation/scripts/validate-translation.py --locale {XX}
 
 # Verify build
 DQ_LOCALE_URL=https://{XX}.doqumentation.org npx docusaurus build --locale {XX}
@@ -321,7 +327,8 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation expansion** — DE at 82/387 (active contributor translating guides), ES/UK at 55/387, others at 44-48. German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34) — all at SWG parity (14 tutorials + indexes + homepage). 30 tutorials remain untranslated across all 9 dialects. External contributor onboarded via `CONTRIBUTING-TRANSLATIONS.md` (tool-agnostic, any LLM). For Claude Code automation: `.claude/translation-prompt.md`.
+- **Translation expansion** — DE at 82/387 (active contributor translating guides), ES at ~76/387 (23 guides, external contributor using Gemini/Antigravity), UK at 55/387, others at 44-48. German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34). External contributor onboarded via `CONTRIBUTING-TRANSLATIONS.md` (tool-agnostic, any LLM). Gemini quality note: degrades on longer files (word salad at end), caught by `translation/scripts/validate-translation.py` paragraph inflation check.
+- **Translation build fixes (Mar 2026)** — Fixed 3 locale build failures: KSH garbled `<bcp47:` heading artifact, HE missing newline before `####` heading, SAX image path `tutorial` → `tutorials`. All pre-existing from translation agents.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
@@ -348,4 +355,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 1, 2026*
+*Last updated: March 2, 2026*
