@@ -98,11 +98,12 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 - **Jupyter auth**: nginx injects `Authorization` header server-side. Browser never sees token. `docker-entrypoint.sh` generates random token (or accepts `JUPYTER_TOKEN` env var). Jupyter runs as non-root `jupyter` user.
 
 ### CI/CD
-- `deploy.yml` — Sync → build → GitHub Pages (English only)
-- `deploy-locales.yml` — Matrix build per locale: sync content → populate fallbacks → generate translated notebooks → build → push to satellite repos
+- `deploy.yml` — Sync → build → GitHub Pages (English only). Also pushes EN notebooks + Binder config to `notebooks` branch (preserves locale subdirs).
+- `deploy-locales.yml` — Matrix build per locale: sync content → populate fallbacks → generate translated notebooks → build → push to satellite repos. Consolidation job merges all locale notebooks into `notebooks` branch subdirectories.
 - `docker.yml` — Multi-arch Docker → ghcr.io (EN only via `--locale en`)
 - `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies
-- Binder repo: daily cache-warming workflow (warms all 3 federation members: 2i2c, BIDS, GESIS)
+- `check-translations.yml` — Daily translation freshness check + STATUS.md update
+- `binder.yml` — Daily cache warming for 3 Binder federation members (2i2c, BIDS, GESIS). Triggers on `notebooks` branch push.
 
 ### Other
 - **Homepage**: Beta notice banner (session-scoped, dismissible), hero with stats bar, Getting Started cards (category-tagged), simulator callout, code execution section. No sidebar on homepage itself.
@@ -122,7 +123,7 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 
 ```
 doQumentation/
-├── .github/workflows/          # deploy, deploy-locales, docker, sync-deps, check-translations
+├── .github/workflows/          # deploy, deploy-locales, docker, sync-deps, check-translations, binder
 ├── binder/                     # Jupyter requirements (cross-platform + amd64-only)
 ├── docs/                       # Content (gitignored except index.mdx)
 ├── notebooks/                  # Original .ipynb for JupyterLab (generated)
@@ -338,7 +339,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ### TODO
 - **Translation expansion** — DE at 81/387 (69 PASS, 11 FAIL — tutorials 18/18 100%), ES at 76/387 (26 guides, external contributor using Gemini/Antigravity), UK at 56/387, JA at 56/387, FR at 48 (36 PASS, 12 FAIL), IT/PT/TL at 48, HE at 47, AR at 44. German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34). Run `python translation/scripts/translation-status.py` for current counts, or see `translation/STATUS.md`. Gemini quality note: degrades on longer files (word salad at end), caught by paragraph inflation check.
-- **Binder-enable this repo** — Switch from sister repo (`Qiskit-documentation`) to unified `notebooks` branch with enhanced (pip install cells) + translated notebooks + Binder config. One Binder image for both thebelab and "Open in JupyterLab". Includes daily cache warming workflow. Plan: `.claude/plans/binder-enable-notebooks.md`.
+- **Binder-enable this repo (Phase 4 pending)** — CI infra done: `deploy.yml` pushes EN notebooks + Binder config to `notebooks` branch, `deploy-locales.yml` consolidates locale notebooks into subdirs, `binder.yml` warms 3 federation members. **Pending**: verify Binder builds from `notebooks` branch, then switch URLs in `jupyter.ts` (Phase 4). Plan: `.claude/plans/binder-enable-notebooks.md`.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Upstream sync strategy** — Plan how to pull upstream changes from [Qiskit/documentation](https://github.com/Qiskit/documentation) weekly. Currently `sync-content.py` clones from the fork (`JanLahmann/Qiskit-documentation`), which must be manually synced with upstream. Need: automated fork sync (GitHub Actions or scheduled script), handling of merge conflicts in modified files (`hello-world.ipynb`, `_toc.json`), freshness checks for translated content after EN changes, and a rollback strategy if upstream breaks the build.
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
@@ -378,4 +379,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 6, 2026*
+*Last updated: March 1, 2026*
