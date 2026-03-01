@@ -7,10 +7,10 @@ extracts headings from both, and appends {#english-anchor} to
 translated headings that differ from the English ones.
 
 Usage:
-    python scripts/fix-heading-anchors.py                    # dry-run
-    python scripts/fix-heading-anchors.py --apply            # apply changes
-    python scripts/fix-heading-anchors.py --locale de        # single locale
-    python scripts/fix-heading-anchors.py --file guides/bit-ordering.mdx --locale de  # single file
+    python translation/scripts/fix-heading-anchors.py                    # dry-run
+    python translation/scripts/fix-heading-anchors.py --apply            # apply changes
+    python translation/scripts/fix-heading-anchors.py --locale de        # single locale
+    python translation/scripts/fix-heading-anchors.py --file guides/bit-ordering.mdx --locale de  # single file
 """
 
 import argparse
@@ -19,12 +19,15 @@ import re
 import unicodedata
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
 I18N_DIR = REPO_ROOT / "i18n"
 
 # Locales to process
-ALL_LOCALES = ["de", "es", "uk", "ja", "fr", "it", "pt", "tl"]
+ALL_LOCALES = [
+    "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "th", "ar", "he",
+    "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
+]
 
 # Regex to match markdown headings (not inside code blocks)
 HEADING_RE = re.compile(r'^(#{1,6})\s+(.+)$', re.MULTILINE)
@@ -220,6 +223,9 @@ def main():
     parser.add_argument('--apply', action='store_true', help='Apply changes (default: dry-run)')
     parser.add_argument('--locale', type=str, help='Process single locale (e.g., de)')
     parser.add_argument('--file', type=str, help='Process single file (relative to docs/)')
+    parser.add_argument('--dir', type=str,
+                        help='Translation source directory (default: i18n/). '
+                             'E.g. --dir translation/drafts')
     parser.add_argument('--verbose', '-v', action='store_true', help='Show per-file details')
     args = parser.parse_args()
 
@@ -228,7 +234,10 @@ def main():
     total_stats = {"fixed": 0, "skipped": 0, "already_anchored": 0, "files": 0, "errors": []}
 
     for locale in locales:
-        locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+        if args.dir:
+            locale_dir = REPO_ROOT / args.dir / locale
+        else:
+            locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
 
         if not locale_dir.exists():
             print(f"  Skipping {locale}: directory not found")

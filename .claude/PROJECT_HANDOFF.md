@@ -328,9 +328,14 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ### TODO
 - **Translation expansion** — DE at 82/387 (active contributor translating guides), ES at ~76/387 (23 guides, external contributor using Gemini/Antigravity), UK at 55/387, others at 44-48. German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34). External contributor onboarded via `CONTRIBUTING-TRANSLATIONS.md` (tool-agnostic, any LLM). Gemini quality note: degrades on longer files (word salad at end), caught by `translation/scripts/validate-translation.py` paragraph inflation check.
-- **Translation build fixes (Mar 2026)** — Fixed 3 locale build failures: KSH garbled `<bcp47:` heading artifact, HE missing newline before `####` heading, SAX image path `tutorial` → `tutorials`. All pre-existing from translation agents.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
+
+### Resolved (Mar 2026)
+- **Translation build fixes** — Fixed 3+1 locale build failures: KSH garbled `<bcp47:` heading artifact, HE missing newlines before headings (×2), SAX image path `tutorial` → `tutorials`. All pre-existing from translation agents.
+- **Locale dropdown separator** — "Deutsche Dialekte" CSS separator wasn't rendering. Root cause: Docusaurus applies navbar `className` to the `<a>` trigger, not the wrapper `<div>`. Fixed by changing descendant selector to sibling combinator (`~`).
+- **BetaNotice missing on locale sites** — All 19 locale `index.mdx` files were missing `import BetaNotice` + `<BetaNotice />`. Added to all locales. Root cause: genuine translations don't auto-inherit EN source changes.
+- **Translation freshness system** — Built `check-translation-freshness.py` with embedded source hashes (`{/* doqumentation-source-hash: XXXX */}`) in all 885 genuine translations. Daily CI workflow (`check-translations.yml`) detects CRITICAL (missing imports/components) and STALE (content changed) translations. Prevents future BetaNotice-type regressions.
 
 ### Testing (Feb 2026)
 - 180+ comprehensive tests, ~200 Chrome browser tests — 99.5% pass, zero real bugs
@@ -355,4 +360,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 2, 2026*
+*Last updated: March 3, 2026*

@@ -47,12 +47,12 @@ File (path relative to docs/): {file}
 
 1. Read the English source from `docs/{path}`
 2. Translate following the rules below
-3. Write the translation to `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}`
+3. Write the translation to `translation/drafts/{LOCALE}/{path}`
 
 Rules:
 - Use the Read tool to read files and the Write tool to write files. Do NOT use Bash for file operations.
-- If the target file exists and contains `{/* doqumentation-untranslated-fallback */}`, it's a fallback — overwrite it completely
-- If the target file exists WITHOUT that marker, it's already translated — SKIP it
+- If `translation/drafts/{LOCALE}/{path}` already exists — SKIP it (draft already in progress)
+- If `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}` exists and does NOT contain `{/* doqumentation-untranslated-fallback */}` — SKIP it (already promoted)
 - Preserve ALL frontmatter keys exactly — translate ONLY values of `title`, `description`, `sidebar_label`
 - **Source hash**: After the frontmatter closing `---`, add a source hash comment: `{/* doqumentation-source-hash: XXXX */}` where XXXX is the first 8 hex chars of SHA-256 of the EN source file content. Compute with: `python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"`. This lets the freshness checker detect when the EN source changes.
 - Preserve ALL code blocks (` ```python `, ` ```bash `, ` ```text `, etc.) completely unchanged
@@ -89,7 +89,7 @@ The **orchestrator** (not the sub-agent) handles chunking for large files. Sub-a
       - First chunk agent includes frontmatter; subsequent chunk agents start at their section heading
       - Each agent writes to a temp file: `/tmp/{filename}-part{N}.mdx`
    d. After all chunk agents complete, the orchestrator concatenates temp files with a **blank line between chunks**
-   e. The orchestrator writes the final result to `i18n/{LOCALE}/.../current/{path}`
+   e. The orchestrator writes the final result to `translation/drafts/{LOCALE}/{path}`
 
 ### Post-concatenation verification (orchestrator)
 
@@ -105,12 +105,13 @@ When NO explicit file list is given, discover files to translate:
 ### Step 1: Discover untranslated files
 
 1. `Glob docs/**/*.mdx` → all English source files
-2. `Glob i18n/{LOCALE}/docusaurus-plugin-content-docs/current/**/*.mdx` → existing locale files
-3. For each existing locale file, Read and check:
-   - Contains `{/* doqumentation-untranslated-fallback */}` → needs translation
-   - Does NOT contain the marker → genuine translation, SKIP
-   - File doesn't exist → needs translation
-4. Build the list of files needing translation
+2. `Glob i18n/{LOCALE}/docusaurus-plugin-content-docs/current/**/*.mdx` → existing promoted translations
+3. `Glob translation/drafts/{LOCALE}/**/*.mdx` → existing drafts (in progress)
+4. For each English source, check:
+   - Draft exists in `translation/drafts/{LOCALE}/{path}` → SKIP (draft in progress)
+   - Promoted file exists in `i18n/` and does NOT contain `{/* doqumentation-untranslated-fallback */}` → SKIP (already translated)
+   - Promoted file has fallback marker or doesn't exist → needs translation
+5. Build the list of files needing translation
 
 ### Step 2: Launch parallel agents
 
@@ -121,14 +122,28 @@ Process in this order: tutorials → guides → courses → modules
 ### Step 3: After all agents complete
 
 Report summary:
-- Total files translated
-- Files skipped (already translated)
+- Total files translated (written to `translation/drafts/`)
+- Files skipped (already translated or draft exists)
 - Any errors
 
-Remind the user to run:
+Remind the user to validate, fix, and promote:
 ```bash
+# Validate drafts
+python translation/scripts/validate-translation.py --locale {LOCALE} --dir translation/drafts
+
+# Fix heading anchors in drafts
+python translation/scripts/fix-heading-anchors.py --locale {LOCALE} --dir translation/drafts --apply
+
+# Generate feedback report (optional — for contributor review)
+python translation/scripts/validate-translation.py --locale {LOCALE} --dir translation/drafts --report
+
+# Promote passing drafts to i18n/
+python translation/scripts/promote-drafts.py --locale {LOCALE}
+
+# Populate English fallbacks for remaining untranslated pages
 python translation/scripts/translate-content.py populate-locale --locale {LOCALE}
-python translation/scripts/fix-heading-anchors.py --locale {LOCALE} --apply
+
+# Stage promoted translations
 git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 ```
 
