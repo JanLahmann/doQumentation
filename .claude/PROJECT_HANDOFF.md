@@ -55,7 +55,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - **Credentials** — API token + CRN with adjustable auto-expiry (1/3/7 days). Auto-injected at kernel start. Embedded execution only. Shared across locale subdomains via cookies.
 - **Simulator mode** — Monkey-patches `QiskitRuntimeService` with `_DQ_MockService` (AerSimulator or FakeBackend). Fake backend discovery cached, 55-backend fallback list.
 - **Conflict resolution** — Radio buttons when both configured; defaults to simulator.
-- **Colab URLs** — `getColabUrl(notebookPath, locale?)` generates locale-aware Colab links. On locale sites (e.g. `de.doqumentation.org`), points to translated notebook copies; on English site, points to `doqumentation.org/notebooks/`. Both `OpenInLabBanner` and `ExecutableCode` pass `currentLocale` from Docusaurus context. `getBinderLabUrl()` points to dependency-ready copies (with install cells); Binder always opens English (notebooks live in the Binder repo).
+- **Colab URLs** — `getColabUrl(notebookPath, locale?)` generates locale-aware Colab links via the `/url/` scheme (Colab fetches notebook from our site). On locale sites (e.g. `de.doqumentation.org`), points to translated notebook copies; on English site, points to `doqumentation.org/notebooks/`. Both `OpenInLabBanner` and `ExecutableCode` pass `currentLocale` from Docusaurus context. Path mapping: strips `docs/` prefix; bare filenames (no `/`) get `tutorials/` prefix (fixes `hello-world.ipynb` which lives at repo root for Binder but `static/notebooks/tutorials/` on site). `getBinderLabUrl()` is separate — points to dependency-ready copies in the Binder repo; always English.
 
 ### User Preferences
 All storage access centralized in `src/config/preferences.ts` and `src/config/jupyter.ts`, backed by `src/config/storage.ts`. **Cross-subdomain sharing**: on `*.doqumentation.org`, all 28 keys are dual-written to cookies (`Domain=.doqumentation.org`) + localStorage. Values > 3.8KB auto-chunked across multiple cookies. On localhost/Docker, pure localStorage (no cookies). One-time migration copies existing localStorage to cookies on first page load (`pageTracker.ts`). Cross-component reactivity via custom events: `dq:page-visited`, `dq:bookmarks-changed`, `dq:display-prefs-changed`.
@@ -341,6 +341,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
 ### Resolved (Mar 2026)
+- **Colab "Open in Colab" 403 fix** — Root cause: `hello-world.ipynb` (bare filename, no directory) mapped to `/notebooks/hello-world.ipynb` (404) instead of `/notebooks/tutorials/hello-world.ipynb`. Colab's `/url/` scheme showed Google's 403 page for the 404. Fixed with `!nbPath.includes('/')` guard that prefixes `tutorials/`. Also restored locale-aware `/url/` scheme (was temporarily switched to `/github/` scheme in `b83cb8c`).
 - **Translation draft pipeline** — Added `translation/drafts/` staging area with validate → fix → promote workflow. New scripts: `promote-drafts.py` (with `--section`/`--file`/`--force`/`--keep` flags), `validate-translation.py` (added `--dir`/`--section`/`--report`), `fix-heading-anchors.py` (added `--dir`). Status tracking in `translation/status.json`. Backward compatible — all scripts default to `i18n/` without `--dir`.
 - **Translation validation improvements** — Fixed 3 false-positive categories: code block trailing whitespace tolerance, frontmatter title allowlist (`FRONTMATTER_SAME_ALLOWED`), dialect locales in `ALL_LOCALES`. Overall pass rate improved from 53% to 63%. Fixed 130 missing heading anchors across 13 locales.
 - **Translation build fixes** — Fixed 3+1 locale build failures: KSH garbled `<bcp47:` heading artifact, HE missing newlines before headings (×2), SAX image path `tutorial` → `tutorials`. All pre-existing from translation agents.
@@ -371,4 +372,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 3, 2026*
+*Last updated: March 4, 2026*
