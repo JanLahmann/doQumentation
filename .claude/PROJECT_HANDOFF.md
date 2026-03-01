@@ -338,6 +338,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ### TODO
 - **Translation expansion** — DE at 81/387 (69 PASS, 11 FAIL — tutorials 18/18 100%), ES at 76/387 (26 guides, external contributor using Gemini/Antigravity), UK at 56/387, JA at 56/387, FR at 48 (36 PASS, 12 FAIL), IT/PT/TL at 48, HE at 47, AR at 44. German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34). Run `python translation/scripts/translation-status.py` for current counts, or see `translation/STATUS.md`. Gemini quality note: degrades on longer files (word salad at end), caught by paragraph inflation check.
+- **Binder-enable this repo** — Switch from sister repo (`Qiskit-documentation`) to unified `notebooks` branch with enhanced (pip install cells) + translated notebooks + Binder config. One Binder image for both thebelab and "Open in JupyterLab". Includes daily cache warming workflow. Plan: `.claude/plans/binder-enable-notebooks.md`.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
