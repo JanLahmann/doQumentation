@@ -1,6 +1,6 @@
-# Translation Review Instructions (Gemini Flash)
+# Translation Review Instructions
 
-These instructions are designed to be used as a system prompt or core instruction set for a Gemini Flash model to review translated Qiskit `.mdx` documentation.
+These instructions are designed to be used as a system prompt or core instruction set for any LLM to review translated Qiskit `.mdx` documentation.
 
 ## Objective
 
