@@ -193,7 +193,7 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 
 | Locale | URL | Pages | Status |
 |--------|-----|-------|--------|
-| DE | [de.doqumentation.org](https://de.doqumentation.org) | 79 + UI | Live |
+| DE | [de.doqumentation.org](https://de.doqumentation.org) | 82 + UI | Live |
 | ES | [es.doqumentation.org](https://es.doqumentation.org) | 55 + UI | Live |
 | UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 55 + UI | Live |
 | FR | [fr.doqumentation.org](https://fr.doqumentation.org) | 48 + UI | Live |
@@ -206,12 +206,12 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | SWG | [swg.doqumentation.org](https://swg.doqumentation.org) | 31 + UI | Live |
 | BAD | [bad.doqumentation.org](https://bad.doqumentation.org) | 31 + UI | Live |
 | BAR | [bar.doqumentation.org](https://bar.doqumentation.org) | 31 + UI | Live |
-| KSH | [ksh.doqumentation.org](https://ksh.doqumentation.org) | UI | Deploying |
-| NDS | [nds.doqumentation.org](https://nds.doqumentation.org) | UI | Deploying |
-| GSW | [gsw.doqumentation.org](https://gsw.doqumentation.org) | UI | Deploying |
-| SAX | [sax.doqumentation.org](https://sax.doqumentation.org) | UI | Deploying |
-| BLN | [bln.doqumentation.org](https://bln.doqumentation.org) | UI | Deploying |
-| AUT | [aut.doqumentation.org](https://aut.doqumentation.org) | UI | Deploying |
+| KSH | [ksh.doqumentation.org](https://ksh.doqumentation.org) | 46 + UI | Live |
+| NDS | [nds.doqumentation.org](https://nds.doqumentation.org) | 43 + UI | Live |
+| GSW | [gsw.doqumentation.org](https://gsw.doqumentation.org) | 42 + UI | Live |
+| SAX | [sax.doqumentation.org](https://sax.doqumentation.org) | 39 + UI | Live |
+| BLN | [bln.doqumentation.org](https://bln.doqumentation.org) | 36 + UI | Live |
+| AUT | [aut.doqumentation.org](https://aut.doqumentation.org) | 34 + UI | Live |
 
 - **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links natively. hreflang tags auto-generated.
 - **RTL support**: AR and HE have `direction: 'rtl'` in `localeConfigs`. CSS uses logical properties (`border-inline-start`, `margin-inline-start`, `inset-inline-end`) throughout — direction-agnostic for both LTR and RTL. Noto Sans Arabic/Hebrew fonts loaded via Google Fonts. `[dir="rtl"]` overrides in `custom.css`.
@@ -220,7 +220,8 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **German dialects**: 9 dialect locales (SWG, BAD, BAR, KSH, NDS, GSW, SAX, BLN, AUT) with "Deutsche Dialekte" separator in locale dropdown. Desktop: CSS `li:has(> a[href*="swg.doqumentation.org"])::before` targets first dialect. Mobile: `dialectLocales` Set in `Navbar/MobileSidebar/Header` renders separator `<li>`. To add a new dialect: add to `dialectLocales` Set + `locales`/`localeConfigs` in config + CI matrix + `BANNER_TEMPLATES` + `locale_label` in translate-content.py.
 - **Full UI i18n** (`code.json`): All user-visible strings across React pages and components use Docusaurus `<Translate>` and `translate()` APIs. This covers Settings page (~90 keys), Features page (~39 keys), ExecutableCode toolbar (Run/Back/Lab/Colab buttons, status messages, legend, conflict banner), EditThisPage bookmarks, BookmarksList, DocSidebarItem/Link, BetaNotice, and MobileSidebar header. Total: ~308 keys per locale (~92 theme + ~216 custom). When adding a new language, `npm run write-translations -- --locale {XX}` auto-generates entries with English defaults; translate all `message` values. Technical terms (Qiskit, Binder, AerSimulator, etc.) and code snippets stay in English. Placeholders like `{binder}`, `{saveAccount}`, `{url}`, `{pipCode}`, `{issueLink}`, `{mode}` must be preserved exactly.
 - **Fallback system**: `populate-locale` fills untranslated pages with English + "not yet translated" banner. ~372 fallbacks per locale. 20 banner templates defined in `scripts/translate-content.py`.
-- **Translation**: `.claude/translation-prompt.md` — Sonnet model, 1 file or chunk per agent, 3 parallel agents per round. Orchestrator handles chunking for files >400 lines. One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Translation**: See [`CONTRIBUTING-TRANSLATIONS.md`](../CONTRIBUTING-TRANSLATIONS.md) for contributor guide (any tool/LLM). For Claude Code automation: `.claude/translation-prompt.md` (Sonnet, 3 parallel agents, 1 file or chunk each). One-liner: `Read .claude/translation-prompt.md. Translate all untranslated pages to French (fr).`
+- **Register**: Informal/familiar (du/tu/tú/ти — not Sie/vous/usted/Ви). The Qiskit community uses informal address.
 - **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `scripts/fix-heading-anchors.py` for batch fixing.
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 - **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) included in all repos and CI deploy output.
@@ -320,7 +321,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation expansion** — DE at 79/387, ES/UK at 55/387, others at 44-48. All key index pages translated across all 8 active locales. Use `.claude/translation-prompt.md` (Sonnet, 3 parallel agents, 1 file or chunk each).
+- **Translation expansion** — DE at 82/387 (active contributor translating guides), ES/UK at 55/387, others at 44-48. External contributor onboarded via `CONTRIBUTING-TRANSLATIONS.md` (tool-agnostic, any LLM). Verified: handles files up to 1,935 lines without chunking. For Claude Code automation: `.claude/translation-prompt.md`.
 - **New dialect locales** — KSH, NDS, GSW, SAX, BLN, AUT have full UI strings + CI matrix entries but no content translations yet. Satellite repos need first deploy (deploy keys + GitHub Pages setup).
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware

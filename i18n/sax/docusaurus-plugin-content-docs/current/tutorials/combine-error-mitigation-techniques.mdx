@@ -1,0 +1,362 @@
+---
+title: "Fehlerminnerungsoptschjoon'n mit'm Estimator-Primitiv kombiniern"
+sidebar_label: "Fehlerminnerungsoptschjoon'n mit'm Estimator-Primitiv kombiniern"
+description: "Fehlerminnerungsoptschjoon'n fier Experimente im Utility-Maßstab mit 100+-Qubit-IBM-Quantum-QPUs un dem Qiskit-Runtime-Estimator-Primitiv kombiniern."
+notebook_path: "docs/tutorials/combine-error-mitigation-techniques.ipynb"
+---
+
+<OpenInLabBanner notebookPath="docs/tutorials/combine-error-mitigation-techniques.ipynb" />
+
+
+
+*Zeiddschätzung: Sieb'n Minud'n uff nem Heron-r2-Brozessor (ACHTUNG: Des is nur e Schätzung. Eiern Ausfierungszeide gann variier'n.)*
+
+## Hintergrund {#background}
+
+Dieses Walkthrough untersuchd de Optschjoon'n zur Fehlerunterdrieggung un Fehlerminnerung, de mit'm Estimator-Primitiv von Qiskit Runtime verfiegbar sin. Ihr werded e Circuit un e Observable bauen un Jobs mit'm Estimator-Primitiv mit verschiedene Kombinatschjoon'n von Fehlerminnerungseinstellungen einreichn. Dann werdet ihr de Ergebnisse blottier'n, um de Auswirgungen von de verschiedenen Einstellungen zu beobach'n. De meisten Beispiele verwend'n en 10-Qubit-Circuit, damitt de Visualisierungen einfacher sin, un am Ende genn ihr den Workflow auf 50 Qubits hochskalier'n.
+
+Des sin de Fehlerunterdrieggung- un Fehlerminnerungsoptschjoon'n, de ihr verwend'n wered:
+
+- Dynamisches Deggoubling
+- Messfehlerminnrung
+- Gate-Twirling
+- Nullrauschen-Extrabolatschjoon (ZNE)
+## Voraussetzungen {#requirements}
+
+Bevor ihr mit dem Walkthrough anfangt, stellt sicher, dass ihr folg'ndes installiert habbt:
+
+- Qiskit SDK v2.1 oder neier, mit [Visualisierungs](https://docs.quantum.ibm.com/api/qiskit/visualization)-Unterstützung
+- Qiskit Runtime v0.40 oder neier (`pip install qiskit-ibm-runtime`)
+## Einrichtung {#setup}
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+from qiskit.circuit.library import efficient_su2, unitary_overlap
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Batch, EstimatorV2 as Estimator
+```
+
+## Schritt 1: Klassische Eingaben uff e Quantenbrobblem abbildn {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Dieses Walkthrough geht davon aus, dass des klassische Brobblem bereits uff Quanten abgebilet wurn is. Fangt damitt an, en Circuit un e Observable zum Mess'n zu bauen. Obwohl de hier verwendeten Dechniken uff viele verschiedene Arten von Circuits anwendbar sin, verwend't dieses Walkthrough der Einfachheit halber den [`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2)-Circuit aus der Qiskit-Circuit-Bibljotheeg.
+
+`efficient_su2` is e parametrisierter Quantencircuit, der darauf ausgelecht is, uff Quantenhardware mit begrenzter Qubit-Verbindung effizient ausfierbar zu sein, un dabei ausdrugksstarg genug bleibt, um Brobblem in Anwendungsgebieten wie Optimierung un Chemie zu lees'n. Er wern durch Abwechs'ln von Schicht'n mit parametrisierten Einzel-Qubit-Gates un ner Schicht mit nem festen Muster von Zwei-Qubit-Gates fier e gewählde Anzahl von Wiederholungen aufgebaut. Des Muster der Zwei-Qubit-Gates gann vom Benutzer festgelecht wern. Hier genn ihr des eingebaute `pairwise`-Muster verwend'n, weil's de Circuit-Tiefe minimiert, indem's de Zwei-Qubit-Gates so dichd wie meeglich packt. Dieses Muster gann mit nur linearer Qubit-Verbindung ausgefiert wern.
+
+```python
+n_qubits = 10
+reps = 1
+
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+
+circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/24abd7ba-bbb8-443b-9e81-866795d39a6c-1.avif)
+
+Fier unsere Observable nehm'n mer den Pauli-$Z$-Operator, der uff dem letzten Qubit wirkt, $Z I \cdots I$.
+
+```python
+# Z on the last qubit (index -1) with coefficient 1.0
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+```
+
+An diesem Bungd genn'd ihr diregd damit loslech'n, eiern Circuit auszufier'n un de Observable zu mess'n. Ihr wollt aber auch de Ausgabe von dem Quantengerät mit der richtigen Antwort verglichn — also dem theoretischen Wert der Observable, wenn der Circuit ohne Fehler ausgefiert word'n wäre. Fier kleine Quantencircuits genn'd ihr diesen Wert durch Simulatschjoon des Circuits uff nem klassischen Computer berechnm, aber des is fier größere, Utility-Maßstab-Circuits nich meeglich. Ihr gennt dieses Brobblem mit der "Spiegelcircuit"-Dechnik umgeh'n (auch als "Compute-Uncompute" begannd), de zum Benchmarkn der Leistung von Quantengeräten nitzlich is.
+
+#### Spiegelcircuit {#mirror-circuit}
+
+Bei der Spiegelcircuit-Dechnik verknipft ihr den Circuit mit seinem inversen Circuit, der durch Umgehren jedes Gates des Circuits in umgekehrder Reihenfolge gebildet wern. Der resultierend'ne Circuit implementiert den Identitätsoperator, der trivial simuliert wern gann. Weil de Struggdur des ursprinchlichen Circuits im Spiegelcircuit erhalten bleibt, gibt de Ausfierung des Spiegelcircuits immer noch ne Vorstellung davon, wie des Quantengerät beim ursprinchlichen Circuit abschneiden wirde.
+
+Der folg'nde Codeblock weist dem Circuit zufällige Parameter zu un baut dann den Spiegelcircuit mit der [`unitary_overlap`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.unitary_overlap)-Klasse. Bevor der Circuit gespiegelt wern, wird ne [Barrier](https://docs.quantum.ibm.com/api/qiskit/circuit#qiskit.circuit.Barrier)-Anweisung hinzugeficht, damitt der Transpiler de beiden Teile des Circuits uff beeden Seiten der Barrier nich zusammenfihrt. Ohne de Barrier wirde der Transpiler den ursprinchlichen Circuit mit seinem Inversen zusammenfier'n, sodass e transpilierter Circuit ohne Gates rauskommde.
+
+```python
+# Generate random parameters
+rng = np.random.default_rng(1234)
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+
+# Assign the parameters to the circuit
+assigned_circuit = circuit.assign_parameters(params)
+
+# Add a barrier to prevent circuit optimization of mirrored operators
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+mirror_circuit.decompose().draw("mpl", scale=0.7)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/4dbde811-1ba9-47a8-85a0-dcaff054ed60-1.avif)
+
+## Schritt 2: Brobblem fier de Quantenhardware-Ausfierung optimier'n {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+Ihr misst eiern Circuit optimier'n, bevor ihr ihn uff der Hardware ausfiert. Dieser Brozess umfasst e paar Schritte:
+
+- En Qubit-Layout wähln, das de virtuellen Qubits eures Circuits uff physische Qubits uff der Hardware abbilet.
+- Swap-Gates nach Bedarf einfig'n, um Wechselwirgungen zwischen Qubits zu routen, de nich verbund'n sin.
+- De Gates in eurem Circuit in [Instruction Set Architecture (ISA)](/guides/transpile#instruction-set-architecture)-Anweisungen iebersetz'n, de diregd uff der Hardware ausgefiert wern genn.
+- Circuit-Optimierungen durchfier'n, um de Circuit-Tiefe un de Gate-Anzahl zu minimier'n.
+
+Der in Qiskit eingebaute Transpiler gann all diese Schritte fier eich ausfier'n. Weil dieses Beispiel nen hardwareeffizienten Circuit verwend'd, sollt der Transpiler en Qubit-Layout wähln gennn, das gee Swap-Gates zum Routing von Wechselwirgungen erforderd.
+
+Ihr muss't das Hardwaregerät wähl'n, bevor ihr eiern Circuit optimiert. Der folg'nde Codeblock forderd des am wenigsten beschäftichte Gerät mit mindestens 127 Qubits an.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Ihr gennt eiern Circuit fier euer gewähldes Backend transpilier'n, indem ihr nen Pass Manager erstellt un dann den Pass Manager uff dem Circuit ausfierd. En einfacher Weg, nen Pass Manager zu erstell'n, is de Funggsjoon [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager) zu verwend'n. Guggt eich [Transpilier'n mit Pass Managers](/guides/transpile-with-pass-managers) fier ne detailliertere Erglärung zum Transpilier'n mit Pass Managers an.
+
+```python
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=1234
+)
+ isa_circuit = pass_manager.run(mirror_circuit)
+
+isa_circuit.draw("mpl", idle_wires=False, scale=0.7, fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/027e829a-44d3-455e-b2bf-8ce0d7e26b9b-1.avif)
+
+Der transpilierte Circuit enthält jetzt nur noch ISA-Anweisungen. De Einzel-Qubit-Gates worn in $\sqrt{X}$-Gates un $R_z$-Rotatschjoon'n zerlecht, un de CX-Gates worn in [ECR-Gates](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.ECRGate#ecrgate) un Einzel-Qubit-Rotatschjoon'n zerlecht.
+
+Der Transpilierungsbrozess hat de virtuellen Qubits des Circuits uff physische Qubits uff der Hardware abgebilet. De Information ieeber das Qubit-Layout is im `layout`-Attribut des transpilierten Circuits gspeiecherd. De Observable wurn ebenfalls in Bezug uff de virtuellen Qubits definiert, also misst ihr dieses Layout uff de Observable anwend'n, was ihr mit der [`apply_layout`](https://docs.quantum.ibm.com/api/qiskit/qiskit.quantum_info.SparsePauliOp#apply_layout)-Methode von `SparsePauliOp` mach'n gennt.
+
+```python
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+print("Original observable:")
+print(observable)
+print()
+print("Observable with layout applied:")
+print(isa_observable)
+```
+
+```text
+Original observable:
+SparsePauliOp(['ZIIIIIIIII'],
+              coeffs=[1.+0.j])
+
+Observable with layout applied:
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## Schritt 3: Mit Qiskit-Primitiven ausfiern {#step-3-execute-using-qiskit-primitives}
+
+Jetzt seit ihr bereit, eiern Circuit mit'm Estimator-Primitiv auszufier'n.
+
+Hier werdet ihr fienf separate Jobs einreichn, fangend ohne Fehlerunterdrieggung oder -minnerung an, un sukzessive verschiedene Fehlerunterdrieggung- un Fehlerminnerungsoptschjoon'n aktiviern, de in Qiskit Runtime verfiegbar sin. Fier Information'n zu den Optschjoon'n guggt in de folg'nden Seiten:
+
+- [Ieebersicht aller Optschjoon'n](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options)
+- [Dynamisches Deggoubling](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-dynamical-decoupling-options)
+- [Resilienz, inklusive Messfehlerminnrung un Nullrauschen-Extrabolatschjoon (ZNE)](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-resilience-options-v2)
+- [Twirling](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-twirling-options)
+
+Weil diese Jobs unabhängich voneinander lauf'n genn, gennt ihr den [Batch-Modus](/guides/run-jobs-batch) verwend'n, um Qiskit Runtime zu erlauben, des Timing ihrer Ausfierung zu optimier'n.
+
+```python
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+```
+
+## Schritt 4: Nachverarbeid'n un Ergebnis im gewinscht'n klassischen Format zurigggeb'n {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+Zum Schluss gennt ihr de Dat'n analysier'n. Hier werdet ihr de Job-Ergebnisse abrufen, de gemessenen Erwartungswerte herauslees'n un de Werte inklusive Fehlerbalken von ner Standardabweichung blottier'n.
+
+```python
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/eef38976-0ca2-429a-b2dc-41aac69605f7-0.avif)
+
+In diesem kleenen Maßstab is's schwer, den Effeggt von de meisten Fehlerminnerungsdechniken zu seh'n, aber de Nullrauschen-Extrabolatschjoon gibt ne bemerkbare Verbesserung. Beachtet aber, dass diese Verbesserung nich umsonst gommde, weil des ZNE-Ergebnis auch nen größern Fehlerbalken hat.
+## Des Experiment hochskalier'n {#scale-the-experiment-up}
+
+Wenn mer en Experiment entwickelt, is's nitzlich, mit nem kleenen Circuit anzufang'n, um Visualisierungen un Simulatschjoon'n einfacher zu mach'n. Jetzt, wo mer eiern Workflow uff nem 10-Qubit-Circuit entwickelt un gedestet habben, gennt ihr ihn uff 50 Qubits hochskalier'n. Der folg'nde Codeblock wiederholt alle Schritte in diesem Walkthrough, wendet sie aber jetzt uff nen 50-Qubit-Circuit an.
+
+```python
+n_qubits = 50
+reps = 1
+
+# Construct circuit and observable
+circuit = efficient_su2(n_qubits, entanglement="pairwise", reps=reps)
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [-1], 1.0)], num_qubits=n_qubits
+)
+
+# Assign parameters to circuit
+params = rng.uniform(-np.pi, np.pi, size=circuit.num_parameters)
+assigned_circuit = circuit.assign_parameters(params)
+assigned_circuit.barrier()
+
+# Construct mirror circuit
+mirror_circuit = unitary_overlap(assigned_circuit, assigned_circuit)
+
+# Transpile circuit and observable
+isa_circuit = pass_manager.run(mirror_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+# Run jobs
+pub = (isa_circuit, isa_observable)
+
+jobs = []
+
+with Batch(backend=backend) as batch:
+    estimator = Estimator(mode=batch)
+    # Set number of shots
+    estimator.options.default_shots = 100_000
+    # Disable runtime compilation and error mitigation
+    estimator.options.resilience_level = 0
+
+    # Run job with no error mitigation
+    job0 = estimator.run([pub])
+    jobs.append(job0)
+
+    # Add dynamical decoupling (DD)
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XpXm"
+    job1 = estimator.run([pub])
+    jobs.append(job1)
+
+    # Add readout error mitigation (DD + TREX)
+    estimator.options.resilience.measure_mitigation = True
+    job2 = estimator.run([pub])
+    jobs.append(job2)
+
+    # Add gate twirling (DD + TREX + Gate Twirling)
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+    job3 = estimator.run([pub])
+    jobs.append(job3)
+
+    # Add zero-noise extrapolation (DD + TREX + Gate Twirling + ZNE)
+    estimator.options.resilience.zne_mitigation = True
+    estimator.options.resilience.zne.noise_factors = (1, 3, 5)
+    estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+    job4 = estimator.run([pub])
+    jobs.append(job4)
+
+# Retrieve the job results
+results = [job.result() for job in jobs]
+
+# Unpack the PUB results (there's only one PUB result in each job result)
+pub_results = [result[0] for result in results]
+
+# Unpack the expectation values and standard errors
+expectation_vals = np.array(
+    [float(pub_result.data.evs) for pub_result in pub_results]
+)
+standard_errors = np.array(
+    [float(pub_result.data.stds) for pub_result in pub_results]
+)
+
+# Plot the expectation values
+fig, ax = plt.subplots()
+labels = ["No mitigation", "+ DD", "+ TREX", "+ Twirling", "+ ZNE"]
+ax.bar(
+    range(len(labels)),
+    expectation_vals,
+    yerr=standard_errors,
+    label="experiment",
+)
+ax.axhline(y=1.0, color="gray", linestyle="--", label="ideal")
+ax.set_xticks(range(len(labels)))
+ax.set_xticklabels(labels)
+ax.set_ylabel("Expectation value")
+ax.legend(loc="upper left")
+
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/combine-error-mitigation-techniques/extracted-outputs/d7d8408b-faf1-4eda-ab9c-bdeaab01ff53-0.avif)
+
+Wenn ihr de 50-Qubit-Ergebnisse mit den 10-Qubit-Ergebnissen von vorhin verglichn, gennt ihr vielleicht folg'ndes feststelln (eiern Ergebnisse genn zwischen de Durchläufe abweichn):
+
+- De Ergebnisse ohne Fehlerminnerung sin schlechder. Beim Ausfier'n des größern Circuits werd'n mehr Gates ausgefiert, also gibt's mehr Meelichkeiten, dass Fehler sich anhäufn.
+- Des Hinzufieg'n von dynamischem Deggoubling kann de Leistung meelicherweis verschlechterd habben. Des is nich ieberraschend, weil der Circuit sehr dichd is. Dynamisches Deggoubling is primarily nitzlich, wenn's große Lieggn im Circuit gibt, während denen Qubits ohne Gates idle dasitz'n. Wenn diese Lieggn nich vorhanden sin, is dynamisches Deggoubling nich effektiv un gann de Leistung sogar verschlechtern, weil de dynamischen Deggoubling-Pulse selber Fehler hab'n. Der 10-Qubit-Circuit war meelicherweis zu klein, um diesen Effeggt zu beobach'n.
+- Mit Nullrauschen-Extrabolatschjoon is des Ergebnis genauso guud, oder nahezu genauso guud, wie des 10-Qubit-Ergebnis, obwohl der Fehlerbalken viel größer is. Des zeicht de Kraft von der ZNE-Dechnik!
+
+## Schlussfolgerung {#conclusion}
+
+In diesem Walkthrough habbt ihr verschiedene Fehlerminnerungsoptschjoon'n untersucht, de fier des Qiskit-Runtime-Estimator-Primitiv verfiegbar sin. Ihr habbt nen Workflow mit nem 10-Qubit-Circuit entwickelt un ihn dann uff 50 Qubits hochskaliert. Ihr habbt meelicherweis festgestellt, dass des Aktivier'n von mehr Fehlerunterdrieggung- un Fehlerminnerungsoptschjoon'n nich immer de Leistung verbesserd (insbesondere des Aktivier'n von dynamischem Deggoubling in diesem Fall). De meisten Optschjoon'n akzeptier'n zusätzliche Konfiguration, de ihr in eurer eigenen Arbeit ausprobbier'n gennt!

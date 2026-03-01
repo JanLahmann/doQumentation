@@ -1,5 +1,7 @@
 # Translation Prompt — doQumentation
 
+> For a tool-agnostic contributor guide (any LLM, no Claude Code required), see [`CONTRIBUTING-TRANSLATIONS.md`](../CONTRIBUTING-TRANSLATIONS.md) in the repo root.
+
 Translates English MDX content to other languages using Claude Code CLI with parallel Sonnet Task agents.
 
 **Model**: Sonnet (always — via `model: "sonnet"` in Task calls)
@@ -54,13 +56,14 @@ Rules:
 - Preserve ALL frontmatter keys exactly — translate ONLY values of `title`, `description`, `sidebar_label`
 - Preserve ALL code blocks (` ```python `, ` ```bash `, ` ```text `, etc.) completely unchanged
 - Preserve ALL math/LaTeX (`$...$`, `$$...$$`) completely unchanged
-- Preserve ALL JSX components, imports, and HTML tags unchanged (e.g., `<Admonition>`, `<Tabs>`, `<OpenInLabBanner>`)
+- Preserve ALL JSX/HTML tag names, imports, and structural attributes unchanged (e.g., `<Admonition>`, `<Tabs>`, `<OpenInLabBanner>`)
 - Preserve ALL URLs/links and image paths unchanged
 - Preserve ALL inline code backticks unchanged (e.g., `Statevector`, `QuantumCircuit`, `numpy`)
-- Translate ONLY prose: paragraphs, headings, list items, admonition text content
+- Translate prose: paragraphs, headings, list items, admonition text content
+- **Also translate display text inside HTML/JSX attributes**: `title="..."` on `<Admonition>`, text inside `<summary>`/`<details>`/`<b>` blocks. These contain readable prose even though they're inside tags.
 - **Heading anchors**: When translating headings, pin the original English anchor using Docusaurus syntax: `## Translated Heading {#original-english-anchor}`. This ensures internal `#anchor` links keep working. Example: `## Change ordering in Qiskit` → `## Reihenfolge in Qiskit ändern {#change-ordering-in-qiskit}`
 - Keep standard quantum computing terms (Qubit, Gate, Circuit, Backend, Transpiler)
-- Use {FORMAL_FORM}
+- Use {INFORMAL_FORM}
 - Write natural, fluent {LANGUAGE} — not word-for-word translation
 - **Use proper Unicode characters** — NEVER use ASCII digraph substitutes. For German: use ä ö ü Ä Ö Ü ß directly, NEVER ae oe ue ss. For other languages: use the native script characters, never romanized approximations.
 ```
@@ -124,6 +127,7 @@ Report summary:
 Remind the user to run:
 ```bash
 python scripts/translate-content.py populate-locale --locale {LOCALE}
+python scripts/fix-heading-anchors.py --locale {LOCALE} --apply
 git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 ```
 
@@ -135,7 +139,7 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | LOCALE | de | ja | uk | es | fr | it | pt | tl | th | ar | he |
 | LANGUAGE | German | Japanese | Ukrainian | Spanish | French | Italian | Portuguese | Tagalog/Filipino | Thai | Arabic | Hebrew |
-| FORMAL_FORM | formal ("Sie" not "du") | polite (です/ます form) | formal ("Ви" not "ти") | formal ("usted" not "tú") | formal ("vous" not "tu") | formal ("Lei" not "tu") | formal ("você" formal) | formal ("po/opo" forms) | polite (ครับ/ค่ะ forms) | formal (فصحى) | professional register |
+| INFORMAL_FORM | informal ("du" not "Sie") | polite (です/ます) but not overly formal | informal ("ти" not "Ви") | informal ("tú" not "usted") | informal ("tu" not "vous") | informal ("tu" not "Lei") | informal ("você" casual) | casual (no po/opo) | casual (no ครับ/ค่ะ) | informal register | informal register |
 
 **New locales**: Before using `populate-locale` for a new locale, ensure its banner template exists in `BANNER_TEMPLATES` dict in `scripts/translate-content.py`. Currently defined: de, ja, uk, es, fr, it, pt, tl, th, ar, he.
 
@@ -178,6 +182,15 @@ Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add
 | TL | 48/387 | 44 tutorials, 1 homepage, 3 index pages + UI strings |
 | AR | 44/387 | 44 tutorials + UI strings (RTL) |
 | HE | 47/387 | 44 tutorials, 1 homepage, 2 index pages + UI strings (RTL) |
+| SWG | 31/387 | 14 tutorials, homepage, 16 indexes + UI strings |
+| BAD | 31/387 | 14 tutorials, homepage, 16 indexes + UI strings |
+| BAR | 31/387 | 14 tutorials, homepage, 16 indexes + UI strings |
+| KSH | 46/387 | 28 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
+| NDS | 43/387 | 25 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
+| GSW | 42/387 | 24 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
+| SAX | 39/387 | 21 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
+| BLN | 36/387 | 18 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
+| AUT | 34/387 | 16 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
 
 ## Agent Configuration Summary
 
