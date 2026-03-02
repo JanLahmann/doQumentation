@@ -86,7 +86,7 @@ export function detectJupyterConfig(): JupyterConfig {
       token: '',
       thebeEnabled: true, // Can use Binder
       labEnabled: false,  // No direct Lab access
-      binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/Qiskit-documentation/main',
+      binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks',
       environment: 'github-pages',
     };
   }
@@ -353,16 +353,28 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
 
 /**
  * Get the Binder JupyterLab URL for a specific notebook.
- * Opens the original notebook in the Binder repo (JanLahmann/Qiskit-documentation).
+ * Opens enhanced notebooks from the doQumentation notebooks branch.
+ * Locale-aware: translated notebooks live under {locale}/ prefix.
  */
-export function getBinderLabUrl(config: JupyterConfig, notebookPath: string): string | null {
+export function getBinderLabUrl(config: JupyterConfig, notebookPath: string, locale?: string): string | null {
   if (!config.binderUrl) {
     return null;
   }
 
-  // notebookPath matches the Binder repo structure directly,
-  // e.g. "docs/tutorials/foo.ipynb", "learning/courses/bar.ipynb", "hello-world.ipynb"
-  return `${config.binderUrl}?labpath=${encodeURIComponent(notebookPath)}`;
+  // Map source path → notebooks branch path (same logic as getColabUrl):
+  //   "docs/tutorials/foo.ipynb" → "tutorials/foo.ipynb"
+  //   "hello-world.ipynb" → "tutorials/hello-world.ipynb"
+  //   "learning/courses/bar.ipynb" → "learning/courses/bar.ipynb"
+  let nbPath = notebookPath.replace(/^docs\//, '');
+  if (!nbPath.includes('/')) {
+    nbPath = `tutorials/${nbPath}`;
+  }
+
+  const fullPath = locale && locale !== 'en'
+    ? `${locale}/${nbPath}`
+    : nbPath;
+
+  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
 }
 
 /**

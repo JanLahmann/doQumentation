@@ -28,7 +28,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         if (config.labEnabled) {
           labUrl = getLabUrl(config, notebookPath);
         } else if (config.binderUrl) {
-          labUrl = getBinderLabUrl(config, notebookPath);
+          labUrl = getBinderLabUrl(config, notebookPath, currentLocale);
         }
 
         const labLabel = config.binderUrl && !config.labEnabled
