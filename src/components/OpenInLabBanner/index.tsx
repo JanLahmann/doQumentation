@@ -9,7 +9,7 @@ interface OpenInLabBannerProps {
 }
 
 const PHASE_LABELS: Record<string, string> = {
-  connecting: 'Starting Binder...',
+  connecting: 'Starting Binder (may take 1\u20132 min on first run)...',
   fetching: 'Fetching repo...',
   building: 'Building image (1\u20132 min on first run)...',
   pushing: 'Pushing image...',

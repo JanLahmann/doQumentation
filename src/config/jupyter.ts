@@ -403,6 +403,10 @@ export function touchBinderSession(): void {
   }
 }
 
+export function clearBinderSession(): void {
+  sessionStorage.removeItem(BINDER_SESSION_KEY);
+}
+
 /** Map notebookPath to the notebooks branch layout (shared with getBinderLabUrl). */
 export function mapBinderNotebookPath(notebookPath: string, locale?: string): string {
   let nbPath = notebookPath.replace(/^docs\//, '');
@@ -459,9 +463,13 @@ export function ensureBinderSession(
 /**
  * Open a notebook in Binder JupyterLab, reusing an existing session if available.
  *
+ * Opens a blank tab immediately (to avoid popup blockers — window.open must be
+ * called synchronously from the user click handler), then navigates it to
+ * JupyterLab when the Binder session is ready.
+ *
  * First call: starts a Binder build via SSE, stores the session URL + token,
- * and opens JupyterLab in a new tab when ready.
- * Subsequent calls (within 8 min): opens directly in a new tab on the same server.
+ * and navigates the tab to JupyterLab when ready.
+ * Subsequent calls (within 8 min): navigates directly (session already exists).
  */
 export function openBinderLab(
   config: JupyterConfig,
@@ -471,11 +479,30 @@ export function openBinderLab(
 ): void {
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
 
+  // Open tab synchronously from click handler to avoid popup blockers.
+  // Show a minimal loading page while the Binder session starts.
+  const tab = window.open('about:blank', '_blank');
+  if (tab) {
+    tab.document.title = 'Starting Binder\u2026';
+    tab.document.body.innerHTML =
+      '<p style="font-family:system-ui;padding:2rem;color:#555">' +
+      'Starting Binder\u2026 this may take 1\u20132 minutes on first run.</p>';
+  }
+
   ensureBinderSession(config, onProgress).then((session) => {
     const labUrl = `${session.url}lab/tree/${nbPath}?token=${session.token}`;
-    window.open(labUrl, '_blank');
+    if (tab && !tab.closed) {
+      tab.location.href = labUrl;
+    } else {
+      // Tab was closed by user or blocked despite our efforts — try again
+      window.open(labUrl, '_blank');
+    }
     onProgress?.('ready');
-  }).catch(() => { /* onProgress('failed') already called by ensureBinderSession */ });
+  }).catch(() => {
+    // Close the blank tab on failure so user isn't left with an empty tab
+    if (tab && !tab.closed) tab.close();
+    /* onProgress('failed') already called by ensureBinderSession */
+  });
 }
 
 /**

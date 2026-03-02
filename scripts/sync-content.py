@@ -900,7 +900,15 @@ def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path
         "outputs": [],
         "source": [
             "# Install required packages (runs automatically in Colab, fast no-op in Binder)\n",
-            f"!pip install -q {' '.join(all_pkgs)}"
+            f"!pip install -q {' '.join(all_pkgs)}\n",
+            "\n",
+            "# To run on real quantum hardware, uncomment and fill in your credentials:\n",
+            "# from qiskit_ibm_runtime import QiskitRuntimeService\n",
+            "# QiskitRuntimeService.save_account(\n",
+            '#     token="<your-api-key>",\n',
+            '#     instance="<your-crn>",\n',
+            "#     overwrite=True\n",
+            "# )"
         ]
     }
 
@@ -1214,7 +1222,15 @@ def generate_translated_notebook(english_ipynb_path: Path,
             "outputs": [],
             "source": [
                 "# Install required packages (runs automatically in Colab, fast no-op in Binder)\n",
-                f"!pip install -q {' '.join(all_pkgs)}"
+                f"!pip install -q {' '.join(all_pkgs)}\n",
+                "\n",
+                "# To run on real quantum hardware, uncomment and fill in your credentials:\n",
+                "# from qiskit_ibm_runtime import QiskitRuntimeService\n",
+                "# QiskitRuntimeService.save_account(\n",
+                '#     token="<your-api-key>",\n',
+                '#     instance="<your-crn>",\n',
+                "#     overwrite=True\n",
+                "# )"
             ]
         }
 

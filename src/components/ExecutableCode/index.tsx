@@ -32,6 +32,7 @@ import {
   getSuppressWarnings,
   ensureBinderSession,
   touchBinderSession,
+  clearBinderSession,
   type JupyterConfig,
   type BinderSession,
 } from '../../config/jupyter';
@@ -57,6 +58,7 @@ let thebelabEventsHooked = false;
 const ACTIVATE_EVENT = 'executablecode:activate';
 const STATUS_EVENT = 'executablecode:status';
 const RESET_EVENT = 'executablecode:reset';
+const RESTART_EVENT = 'executablecode:restart';
 const INJECTION_EVENT = 'executablecode:injection';
 const BINDER_PHASE_EVENT = 'executablecode:binderphase';
 
@@ -792,6 +794,60 @@ function bootstrapOnce(config: JupyterConfig): void {
   doBootstrap(options);
 }
 
+/**
+ * Restart the active kernel — clears all cell outputs, resets feedback state,
+ * and re-injects credentials/simulator setup. The kernel stays connected
+ * to the same Binder session (no rebuild).
+ */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+async function restartKernel(): Promise<boolean> {
+  if (!activeKernel) return false;
+
+  const k = activeKernel as Record<string, any>;
+  const realKernel = k?.restart ? k : k?.kernel;
+  if (!realKernel?.restart) {
+    console.warn('[ExecutableCode] kernel.restart() not available');
+    return false;
+  }
+
+  try {
+    broadcastStatus('connecting');
+    await realKernel.restart();
+    if (DEBUG) console.log('[ExecutableCode] kernel restarted');
+
+    // Clear cell outputs and feedback classes
+    document.querySelectorAll('.thebelab-cell').forEach(cell => {
+      cell.classList.remove('thebelab-cell--running', 'thebelab-cell--done', 'thebelab-cell--error');
+      const output = cell.querySelector('.thebelab-output, .output_area');
+      if (output) output.textContent = '';
+    });
+
+    // Reset feedback state
+    executingCell = null;
+    lastKernelBusy = false;
+    if (feedbackFallbackTimer) {
+      clearTimeout(feedbackFallbackTimer);
+      feedbackFallbackTimer = null;
+    }
+    if (feedbackIdleDebounceTimer) {
+      clearTimeout(feedbackIdleDebounceTimer);
+      feedbackIdleDebounceTimer = null;
+    }
+
+    // Re-inject credentials/simulator setup
+    await injectKernelSetup(activeKernel);
+    broadcastStatus('ready');
+    // Notify cells to clear their UI state
+    window.dispatchEvent(new CustomEvent(RESTART_EVENT));
+    return true;
+  } catch (err) {
+    console.error('[ExecutableCode] kernel restart failed:', err);
+    broadcastStatus('error');
+    return false;
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 export default function ExecutableCode({
   children,
   language = 'python',
@@ -950,6 +1006,32 @@ export default function ExecutableCode({
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
   };
 
+  const handleRestart = useCallback(() => {
+    if (!window.confirm(translate({
+      id: 'executable.restart.confirm',
+      message: 'Restart kernel? All variables and outputs will be cleared.',
+    }))) return;
+    restartKernel();
+  }, []);
+
+  const handleClearSession = useCallback(() => {
+    if (!window.confirm(translate({
+      id: 'executable.clearSession.confirm',
+      message: 'Clear Binder session? You will need to wait for a new server on next Run.',
+    }))) return;
+    clearBinderSession();
+    // Also reset execution state so next Run triggers fresh bootstrap
+    thebelabBootstrapped = false;
+    kernelDead = false;
+    activeKernel = null;
+    executingCell = null;
+    lastKernelBusy = false;
+    feedbackCleanupFns.forEach(fn => fn());
+    feedbackCleanupFns = [];
+    document.body.classList.remove('dq-hide-static-outputs');
+    window.dispatchEvent(new CustomEvent(RESET_EVENT));
+  }, []);
+
   const handleOpenLab = () => {
     if (!jupyterConfig || !notebookPath) return;
     const labUrl = getLabUrl(jupyterConfig, notebookPath);
@@ -1004,6 +1086,27 @@ export default function ExecutableCode({
                 : mode === 'run'
                   ? translate({id: 'executable.button.back', message: 'Back'})
                   : translate({id: 'executable.button.run', message: 'Run'})}
+            </button>
+          )}
+
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' && (
+            <button
+              className="executable-code__button"
+              onClick={handleRestart}
+              title={translate({id: 'executable.button.restartTitle', message: 'Restart kernel (clears all variables and outputs)'})}
+            >
+              {translate({id: 'executable.button.restart', message: 'Restart Kernel'})}
+            </button>
+          )}
+
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' &&
+            jupyterConfig?.environment === 'github-pages' && (
+            <button
+              className="executable-code__button"
+              onClick={handleClearSession}
+              title={translate({id: 'executable.button.clearSessionTitle', message: 'Clear Binder session and return to static view (next Run starts a new server)'})}
+            >
+              {translate({id: 'executable.button.clearSession', message: 'Clear Session'})}
             </button>
           )}
 
