@@ -37,10 +37,10 @@ Binder URLs:
 
 ### 1. `.github/workflows/deploy.yml` — Binder config + preserve locale dirs [DONE]
 
-Replaced the orphan-branch force-push with a selective update that preserves locale subdirectories and adds Binder config. Packages are split across two Docker layers to avoid an ~8.4 GB single layer that fails during registry push:
+Replaced the orphan-branch force-push with a selective update that preserves locale subdirectories and adds Binder config. Packages split across two Docker layers with cleanup to reduce size:
 
-- **`binder/requirements.txt`** (Layer 1 — heaviest): `qiskit[visualization]~=2.3.0`, `qiskit-aer~=0.17`
-- **`binder/postBuild`** (Layer 2 — lighter): `qiskit-ibm-runtime`, `qiskit-ibm-catalog`, `qiskit-ibm-transpiler`, `qiskit-addon-cutting`, `pylatexenc`
+- **`binder/requirements.txt`** (Layer 1 — core, Docker-cached): `qiskit[visualization]~=2.3.0`, `qiskit-aer~=0.17`, `qiskit-ibm-runtime~=0.43.1`
+- **`binder/postBuild`** (Layer 2 — lighter + cleanup): `qiskit-ibm-catalog`, `qiskit-ibm-transpiler`, `qiskit-addon-cutting`, `pylatexenc` + aggressive cleanup (remove test dirs, .pyc, strip .so, remove docs)
 
 See `.github/workflows/deploy.yml` lines 43–83 for the implementation.
 
