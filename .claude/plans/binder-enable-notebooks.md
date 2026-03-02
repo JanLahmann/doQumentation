@@ -15,7 +15,8 @@ All notebooks (EN + 19 locales) + Binder config on one `notebooks` branch. One B
 
 ```
 notebooks branch:
-├── binder/requirements.txt    # Qiskit deps (downloaded from sister repo)
+├── binder/requirements.txt    # Heavy Qiskit deps (Layer 1)
+├── binder/postBuild           # Lighter packages (Layer 2)
 ├── runtime.txt                # python-3.12
 ├── tutorials/                 # EN enhanced notebooks
 ├── guides/
@@ -34,132 +35,22 @@ Binder URLs:
 
 ## Changes
 
-### 1. `.github/workflows/deploy.yml` — Binder config + preserve locale dirs
+### 1. `.github/workflows/deploy.yml` — Binder config + preserve locale dirs [DONE]
 
-Replace the orphan-branch force-push (lines 43–51) with a selective update that preserves locale subdirectories and adds Binder config:
+Replaced the orphan-branch force-push with a selective update that preserves locale subdirectories and adds Binder config. Packages are split across two Docker layers to avoid an ~8.4 GB single layer that fails during registry push:
 
-```yaml
-      - name: Push notebooks to notebooks branch
-        run: |
-          # Clone existing notebooks branch (preserves locale dirs)
-          git clone --depth 1 --branch notebooks \
-            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
-            notebooks-repo 2>/dev/null || {
-              mkdir notebooks-repo && cd notebooks-repo && git init && git checkout -b notebooks && cd ..
-            }
-          cd notebooks-repo
+- **`binder/requirements.txt`** (Layer 1 — heaviest): `qiskit[visualization]~=2.3.0`, `qiskit-aer~=0.17`
+- **`binder/postBuild`** (Layer 2 — lighter): `qiskit-ibm-runtime`, `qiskit-ibm-catalog`, `qiskit-ibm-transpiler`, `qiskit-addon-cutting`, `pylatexenc`
 
-          # Remove EN content but keep locale subdirs (2-3 letter dirs)
-          for d in tutorials guides learning; do rm -rf "$d" 2>/dev/null; done
+See `.github/workflows/deploy.yml` lines 43–83 for the implementation.
 
-          # Copy fresh EN notebooks
-          cp -r ../build/notebooks/* .
+### 2. `.github/workflows/deploy-locales.yml` — Upload notebooks + consolidation job [DONE]
 
-          # Download Binder config from sister repo (stays in sync)
-          mkdir -p binder
-          curl -sL "https://raw.githubusercontent.com/JanLahmann/Qiskit-documentation/main/binder/requirements.txt" \
-            -o binder/requirements.txt
-          curl -sL "https://raw.githubusercontent.com/JanLahmann/Qiskit-documentation/main/runtime.txt" \
-            -o runtime.txt
+Added `permissions: contents: write`, artifact upload per matrix job, and `update-notebooks` consolidation job. See `.github/workflows/deploy-locales.yml` for the implementation.
 
-          git add -A
-          git diff --cached --quiet && echo "No changes" && exit 0
-          git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" \
-            commit -m "Update EN notebooks + Binder config from ${{ github.sha }}"
-          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" notebooks
-```
+### 3. `.github/workflows/binder.yml` — New cache warming workflow [DONE]
 
-### 2. `.github/workflows/deploy-locales.yml` — Upload notebooks + consolidation job
-
-Add `permissions: contents: write` at workflow level.
-
-In each matrix job, add after the build step (before satellite deploy):
-```yaml
-      - name: Upload locale notebooks
-        uses: actions/upload-artifact@v4
-        with:
-          name: notebooks-${{ matrix.locale }}
-          path: build/notebooks/
-          retention-days: 1
-```
-
-New post-matrix consolidation job:
-```yaml
-  update-notebooks-branch:
-    needs: build-and-deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all locale notebook artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: notebooks-*
-          path: locale-notebooks/
-
-      - name: Push locale notebooks to notebooks branch
-        run: |
-          git clone --depth 1 --branch notebooks \
-            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
-            notebooks-repo 2>/dev/null || {
-              mkdir notebooks-repo && cd notebooks-repo && git init && git checkout -b notebooks && cd ..
-            }
-          cd notebooks-repo
-          for dir in ../locale-notebooks/notebooks-*; do
-            locale=$(basename "$dir" | sed 's/^notebooks-//')
-            rm -rf "$locale"
-            cp -r "$dir" "$locale"
-          done
-          git add -A
-          git diff --cached --quiet && echo "No changes" && exit 0
-          git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" \
-            commit -m "Update translated notebooks ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
-          git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" notebooks
-```
-
-### 3. `.github/workflows/binder.yml` — New cache warming workflow
-
-Modeled on the sister repo's `binder.yml`. Hits all 3 federation members daily + on notebooks branch changes:
-
-```yaml
-name: Binder Cache
-
-on:
-  schedule:
-    - cron: "0 6 * * *"
-  push:
-    branches: [notebooks]
-  workflow_dispatch:
-
-jobs:
-  warm:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        binder:
-          - name: 2i2c
-            url: https://2i2c.mybinder.org/build/gh/JanLahmann/doQumentation/notebooks
-          - name: BIDS
-            url: https://bids.mybinder.org/build/gh/JanLahmann/doQumentation/notebooks
-          - name: GESIS
-            url: https://notebooks.gesis.org/binder/build/gh/JanLahmann/doQumentation/notebooks
-    name: Warm ${{ matrix.binder.name }}
-    steps:
-      - name: Trigger Binder build on ${{ matrix.binder.name }}
-        run: |
-          curl -s --max-time 1200 \
-            "${{ matrix.binder.url }}" \
-          | while IFS= read -r line; do
-              echo "$line"
-              if echo "$line" | grep -q '"phase": "ready"'; then
-                echo "Binder image is ready on ${{ matrix.binder.name }}."
-                exit 0
-              fi
-              if echo "$line" | grep -q '"phase": "failed"'; then
-                echo "::error::Binder build failed on ${{ matrix.binder.name }}."
-                exit 1
-              fi
-            done
-```
+Hits all 3 federation members (2i2c, BIDS, GESIS) daily + on notebooks branch push. See `.github/workflows/binder.yml`.
 
 ### 4. `src/config/jupyter.ts` — Unified Binder URL + locale-aware functions
 
@@ -200,14 +91,9 @@ binderOptions: {
 
 **Line 31**: `labUrl = getBinderLabUrl(config, notebookPath, currentLocale);`
 
-### 6. `binder/requirements.txt` — Update stub note
+### 6. `binder/requirements.txt` — Update stub note [DONE]
 
-Replace stub with:
-```
-# Binder config lives on the `notebooks` branch (auto-pushed by CI).
-# The active requirements are downloaded from JanLahmann/Qiskit-documentation.
-# See .github/workflows/deploy.yml for details.
-```
+Updated to point to `notebooks` branch and `deploy.yml`. See `binder/requirements.txt`.
 
 ## CI Timing
 
@@ -219,12 +105,12 @@ Both workflows trigger on `push: main`:
 
 ## Files Modified
 
-1. `.github/workflows/deploy.yml` — Binder config in notebooks push, preserve locale dirs
-2. `.github/workflows/deploy-locales.yml` — Artifact upload + consolidation job + permissions
-3. `.github/workflows/binder.yml` — **New** cache warming workflow
-4. `src/config/jupyter.ts` — `binderUrl`, `getBinderLabUrl()`, `getThebelabOptions()`
-5. `src/components/OpenInLabBanner/index.tsx` — Pass locale to `getBinderLabUrl()`
-6. `binder/requirements.txt` — Update stub note
+1. `.github/workflows/deploy.yml` — Binder config (split layers) in notebooks push, preserve locale dirs **[DONE]**
+2. `.github/workflows/deploy-locales.yml` — Artifact upload + consolidation job + permissions **[DONE]**
+3. `.github/workflows/binder.yml` — **New** cache warming workflow **[DONE]**
+4. `src/config/jupyter.ts` — `binderUrl`, `getBinderLabUrl()`, `getThebelabOptions()` **[Phase 4 — pending verification]**
+5. `src/components/OpenInLabBanner/index.tsx` — Pass locale to `getBinderLabUrl()` **[Phase 4 — pending verification]**
+6. `binder/requirements.txt` — Update stub note **[DONE]**
 
 ## Verification
 
