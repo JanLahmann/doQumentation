@@ -449,7 +449,7 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
         # Inject %pip install cell for all third-party dependencies
         missing_pkgs = analyze_notebook_imports(cells)
         if missing_pkgs:
-            install_line = f'# Added by doQumentation — required packages for this notebook\n%pip install -q {" ".join(missing_pkgs)}'
+            install_line = f'# Added by doQumentation — required packages for this notebook\n!pip install -q {" ".join(missing_pkgs)}'
             install_block = f'\n```python\n{install_line}\n```\n'
             # Insert before the first code block
             first_code_idx = None

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab } from '../../config/jupyter';
+import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab, getRawBinderUrl } from '../../config/jupyter';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
@@ -48,6 +48,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
 
         const labLabel = isBinder ? 'Open in Binder JupyterLab' : 'Open in JupyterLab';
         const colabUrl = getColabUrl(notebookPath, currentLocale);
+        const rawBinderUrl = isBinder ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
 
         const handleBinderClick = (e: React.MouseEvent) => {
           if (!isBinder) return; // let non-Binder links work normally
@@ -102,6 +103,25 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               >
                 Open in Colab &#8599;
               </a>
+              {rawBinderUrl && (
+                <a
+                  href={rawBinderUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open the mybinder.org build page directly"
+                  style={{
+                    padding: '0.25rem 0.75rem',
+                    border: '1px solid var(--ifm-color-primary)',
+                    color: 'var(--ifm-color-primary)',
+                    borderRadius: '4px',
+                    fontWeight: 600,
+                    textDecoration: 'none',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Launch Raw Binder &#8599;
+                </a>
+              )}
               {labUrl && (
                 <a
                   href={labUrl}

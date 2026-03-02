@@ -35,7 +35,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - Sparse-clones [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation), transforms MDX, converts notebooks (custom converter, no nbconvert), generates sidebars from `_toc.json`
 - Rewrites image paths (IBM URLs → local `static/`) and link paths (markdown `(/docs/...)` + JSX `href="/docs/..."` → local or upstream)
 - `docs/index.mdx` is preserved — all other `docs/` content is regenerated on each sync
-- **Dependency scan**: `analyze_notebook_imports()` injects `%pip install -q` cells into 46/260 notebooks missing packages. `--scan-deps` flag for report only.
+- **Dependency scan**: `analyze_notebook_imports()` injects `!pip install -q` cells into 46/260 notebooks missing packages (uses `!pip` not `%pip` to avoid misleading "restart kernel" note). `--scan-deps` flag for report only.
 - **Colab/Binder notebook copies**: `copy_notebook_with_rewrite()` injects a prerequisites cell (pip install + commented-out `save_account()` template for IBM Quantum credentials) and Colab `cell_execution_strategy: "setup"` metadata. `publish_notebooks_to_static()` copies ~1,650 dependency-ready notebooks to `static/notebooks/` for gh-pages serving.
 - **Translated notebooks**: `generate_translated_notebook()` merges an English `.ipynb` skeleton with translated `.mdx` text — code cells/outputs stay unchanged, markdown cells get translated text. Uses code blocks as alignment anchors. Handles consecutive markdown cells via heading-boundary splitting. Cleans Docusaurus syntax (heading anchors, MDX escapes, `<Admonition>` → blockquotes). `generate_locale_notebooks(locale)` orchestrates all notebooks for a locale, skipping untranslated fallbacks. CLI: `--generate-locale-notebooks --locale XX`.
 - **Custom Hello World**: `hello-world.ipynb` from fork root imported as first tutorial with custom `OpenInLabBanner` description
@@ -46,6 +46,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - Cell feedback: amber (running), green (done), red (error) left borders. Error detection for `ModuleNotFoundError` (with clickable Install button), `NameError`, tracebacks.
 - Cell completion uses `kernel.statusChanged` signal (not thebelab events) with 1500ms debounce to avoid premature green borders
 - Execution mode indicator badge + injection toast. "Open in JupyterLab" button on all tiers. "Open in Colab" button always available.
+- **Launch Raw Binder**: "Launch Raw Binder" button in `OpenInLabBanner` (GitHub Pages only) opens the standard mybinder.org build page directly — no session interception, no JavaScript handling. Users see the native Binder build log and get redirected to JupyterLab by Binder itself. Uses `getRawBinderUrl()` from `jupyter.ts`.
 - **Binder tab reuse**: "Open in Lab" uses named window target `binder-lab` to reuse the same tab
 - **Kernel restart**: "Restart Kernel" button (visible when kernel is ready) calls `kernel.restart()`, clears all cell outputs/feedback, re-injects credentials/simulator setup. Same Binder session, fresh kernel state.
 - **Clear Binder Session**: "Clear Session" button (GitHub Pages only, visible when kernel is ready) clears `sessionStorage` session and resets to static view. Next Run starts a fresh Binder build.
