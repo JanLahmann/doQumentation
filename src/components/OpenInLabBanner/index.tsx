@@ -1,11 +1,23 @@
+import { useState } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl } from '../../config/jupyter';
+import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab } from '../../config/jupyter';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
   description?: string;
 }
+
+const PHASE_LABELS: Record<string, string> = {
+  connecting: 'Connecting...',
+  fetching: 'Fetching repo...',
+  building: 'Building image...',
+  pushing: 'Pushing image...',
+  built: 'Image ready...',
+  launching: 'Launching server...',
+  ready: '',
+  failed: 'Binder failed',
+};
 
 /**
  * Page-level banner that links to the original .ipynb in JupyterLab and/or Colab.
@@ -18,6 +30,8 @@ interface OpenInLabBannerProps {
  */
 export default function OpenInLabBanner({ notebookPath, description }: OpenInLabBannerProps) {
   const { i18n: { currentLocale } } = useDocusaurusContext();
+  const [binderPhase, setBinderPhase] = useState<string | null>(null);
+
   return (
     <BrowserOnly>
       {() => {
@@ -25,17 +39,33 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
 
         // Build the Lab/Binder URL based on environment
         let labUrl: string | null = null;
+        const isBinder = config.binderUrl && !config.labEnabled;
         if (config.labEnabled) {
           labUrl = getLabUrl(config, notebookPath);
         } else if (config.binderUrl) {
           labUrl = getBinderLabUrl(config, notebookPath, currentLocale);
         }
 
-        const labLabel = config.binderUrl && !config.labEnabled
-          ? 'Open in Binder JupyterLab'
-          : 'Open in JupyterLab';
-
+        const labLabel = isBinder ? 'Open in Binder JupyterLab' : 'Open in JupyterLab';
         const colabUrl = getColabUrl(notebookPath, currentLocale);
+
+        const handleBinderClick = (e: React.MouseEvent) => {
+          if (!isBinder) return; // let non-Binder links work normally
+          e.preventDefault();
+          if (binderPhase && binderPhase !== 'failed') return; // build in progress
+          setBinderPhase(null);
+          openBinderLab(config, notebookPath, currentLocale, (phase) => {
+            setBinderPhase(phase);
+            if (phase === 'ready') {
+              setTimeout(() => setBinderPhase(null), 1000);
+            }
+            if (phase === 'failed') {
+              setTimeout(() => setBinderPhase(null), 3000);
+            }
+          });
+        };
+
+        const phaseText = binderPhase ? PHASE_LABELS[binderPhase] || binderPhase : null;
 
         return (
           <div
@@ -54,7 +84,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
           >
             <span>&#128221;</span>
             <span>{description || 'This page was generated from a Jupyter notebook.'}</span>
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <a
                 href={colabUrl}
                 target="_blank"
@@ -75,19 +105,24 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               {labUrl && (
                 <a
                   href={labUrl}
-                  target="binder-lab"
+                  target={isBinder ? '_blank' : 'binder-lab'}
+                  onClick={handleBinderClick}
                   title="Opens the full Jupyter notebook for editing and advanced use"
                   style={{
                     padding: '0.25rem 0.75rem',
-                    backgroundColor: 'var(--ifm-color-primary)',
+                    backgroundColor: binderPhase === 'failed'
+                      ? 'var(--ifm-color-danger)'
+                      : 'var(--ifm-color-primary)',
                     color: '#fff',
                     borderRadius: '4px',
                     fontWeight: 600,
                     textDecoration: 'none',
                     whiteSpace: 'nowrap',
+                    opacity: (binderPhase && binderPhase !== 'ready' && binderPhase !== 'failed') ? 0.8 : 1,
+                    cursor: (binderPhase && binderPhase !== 'ready' && binderPhase !== 'failed') ? 'wait' : 'pointer',
                   }}
                 >
-                  {labLabel} &#8599;
+                  {phaseText || `${labLabel} \u2197`}
                 </a>
               )}
             </div>

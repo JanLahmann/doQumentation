@@ -357,24 +357,111 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
  * Locale-aware: translated notebooks live under {locale}/ prefix.
  */
 export function getBinderLabUrl(config: JupyterConfig, notebookPath: string, locale?: string): string | null {
-  if (!config.binderUrl) {
+  if (!config.binderUrl) return null;
+  const fullPath = mapBinderNotebookPath(notebookPath, locale);
+  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
+}
+
+// ── Binder session reuse ──
+
+interface BinderSession {
+  url: string;      // e.g. "https://hub.2i2c.mybinder.org/user/janlahmann-doqumentation-HASH/"
+  token: string;
+  lastUsed: number; // Date.now()
+}
+
+const BINDER_SESSION_KEY = 'dq-binder-session';
+const BINDER_IDLE_LIMIT = 8 * 60 * 1000; // 8 min (safety margin before 10 min Binder timeout)
+
+function getBinderSession(): BinderSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = sessionStorage.getItem(BINDER_SESSION_KEY);
+    if (!raw) return null;
+    const session: BinderSession = JSON.parse(raw);
+    if (Date.now() - session.lastUsed > BINDER_IDLE_LIMIT) {
+      sessionStorage.removeItem(BINDER_SESSION_KEY);
+      return null;
+    }
+    return session;
+  } catch {
     return null;
   }
+}
 
-  // Map source path → notebooks branch path (same logic as getColabUrl):
-  //   "docs/tutorials/foo.ipynb" → "tutorials/foo.ipynb"
-  //   "hello-world.ipynb" → "tutorials/hello-world.ipynb"
-  //   "learning/courses/bar.ipynb" → "learning/courses/bar.ipynb"
+function saveBinderSession(url: string, token: string): void {
+  sessionStorage.setItem(BINDER_SESSION_KEY, JSON.stringify({
+    url, token, lastUsed: Date.now(),
+  }));
+}
+
+function touchBinderSession(): void {
+  const session = getBinderSession();
+  if (session) {
+    session.lastUsed = Date.now();
+    sessionStorage.setItem(BINDER_SESSION_KEY, JSON.stringify(session));
+  }
+}
+
+/** Map notebookPath to the notebooks branch layout (shared with getBinderLabUrl). */
+export function mapBinderNotebookPath(notebookPath: string, locale?: string): string {
   let nbPath = notebookPath.replace(/^docs\//, '');
   if (!nbPath.includes('/')) {
     nbPath = `tutorials/${nbPath}`;
   }
+  return locale && locale !== 'en' ? `${locale}/${nbPath}` : nbPath;
+}
 
-  const fullPath = locale && locale !== 'en'
-    ? `${locale}/${nbPath}`
-    : nbPath;
+/**
+ * Open a notebook in Binder JupyterLab, reusing an existing session if available.
+ *
+ * First call: starts a Binder build via SSE, stores the session URL + token,
+ * and opens JupyterLab in a new tab when ready.
+ * Subsequent calls (within 8 min): opens directly in a new tab on the same server.
+ */
+export function openBinderLab(
+  config: JupyterConfig,
+  notebookPath: string,
+  locale?: string,
+  onProgress?: (phase: string) => void,
+): void {
+  const nbPath = mapBinderNotebookPath(notebookPath, locale);
 
-  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
+  // Reuse existing session — instant new tab
+  const session = getBinderSession();
+  if (session) {
+    const labUrl = `${session.url}lab/tree/${nbPath}?token=${session.token}`;
+    window.open(labUrl, '_blank');
+    touchBinderSession();
+    onProgress?.('ready');
+    return;
+  }
+
+  // No active session — start build via Binder API
+  if (!config.binderUrl) return;
+  const buildUrl = config.binderUrl.replace('/v2/', '/build/');
+
+  onProgress?.('connecting');
+  const es = new EventSource(buildUrl);
+  es.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.phase) onProgress?.(data.phase);
+      if (data.phase === 'ready' && data.url && data.token) {
+        saveBinderSession(data.url, data.token);
+        const labUrl = `${data.url}lab/tree/${nbPath}?token=${data.token}`;
+        window.open(labUrl, '_blank');
+        es.close();
+      }
+      if (data.phase === 'failed') {
+        es.close();
+      }
+    } catch { /* ignore parse errors from heartbeat comments */ }
+  };
+  es.onerror = () => {
+    onProgress?.('failed');
+    es.close();
+  };
 }
 
 /**
