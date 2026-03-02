@@ -364,7 +364,7 @@ export function getBinderLabUrl(config: JupyterConfig, notebookPath: string, loc
 
 // ── Binder session reuse ──
 
-interface BinderSession {
+export interface BinderSession {
   url: string;      // e.g. "https://hub.2i2c.mybinder.org/user/janlahmann-doqumentation-HASH/"
   token: string;
   lastUsed: number; // Date.now()
@@ -373,7 +373,7 @@ interface BinderSession {
 const BINDER_SESSION_KEY = 'dq-binder-session';
 const BINDER_IDLE_LIMIT = 8 * 60 * 1000; // 8 min (safety margin before 10 min Binder timeout)
 
-function getBinderSession(): BinderSession | null {
+export function getBinderSession(): BinderSession | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = sessionStorage.getItem(BINDER_SESSION_KEY);
@@ -395,7 +395,7 @@ function saveBinderSession(url: string, token: string): void {
   }));
 }
 
-function touchBinderSession(): void {
+export function touchBinderSession(): void {
   const session = getBinderSession();
   if (session) {
     session.lastUsed = Date.now();
@@ -413,6 +413,50 @@ export function mapBinderNotebookPath(notebookPath: string, locale?: string): st
 }
 
 /**
+ * Ensure a Binder session exists — return existing or start a new build.
+ * Shared by both "Open in Binder JupyterLab" and thebelab code execution.
+ */
+export function ensureBinderSession(
+  config: JupyterConfig,
+  onProgress?: (phase: string) => void,
+): Promise<BinderSession> {
+  const existing = getBinderSession();
+  if (existing) {
+    touchBinderSession();
+    onProgress?.('ready');
+    return Promise.resolve(existing);
+  }
+
+  if (!config.binderUrl) return Promise.reject(new Error('No Binder URL'));
+
+  return new Promise((resolve, reject) => {
+    const buildUrl = config.binderUrl!.replace('/v2/', '/build/');
+    onProgress?.('connecting');
+    const es = new EventSource(buildUrl);
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.phase) onProgress?.(data.phase);
+        if (data.phase === 'ready' && data.url && data.token) {
+          saveBinderSession(data.url, data.token);
+          es.close();
+          resolve({ url: data.url, token: data.token, lastUsed: Date.now() });
+        }
+        if (data.phase === 'failed') {
+          es.close();
+          reject(new Error('Binder build failed'));
+        }
+      } catch { /* ignore parse errors from heartbeat comments */ }
+    };
+    es.onerror = () => {
+      onProgress?.('failed');
+      es.close();
+      reject(new Error('Binder connection error'));
+    };
+  });
+}
+
+/**
  * Open a notebook in Binder JupyterLab, reusing an existing session if available.
  *
  * First call: starts a Binder build via SSE, stores the session URL + token,
@@ -427,41 +471,11 @@ export function openBinderLab(
 ): void {
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
 
-  // Reuse existing session — instant new tab
-  const session = getBinderSession();
-  if (session) {
+  ensureBinderSession(config, onProgress).then((session) => {
     const labUrl = `${session.url}lab/tree/${nbPath}?token=${session.token}`;
     window.open(labUrl, '_blank');
-    touchBinderSession();
     onProgress?.('ready');
-    return;
-  }
-
-  // No active session — start build via Binder API
-  if (!config.binderUrl) return;
-  const buildUrl = config.binderUrl.replace('/v2/', '/build/');
-
-  onProgress?.('connecting');
-  const es = new EventSource(buildUrl);
-  es.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.phase) onProgress?.(data.phase);
-      if (data.phase === 'ready' && data.url && data.token) {
-        saveBinderSession(data.url, data.token);
-        const labUrl = `${data.url}lab/tree/${nbPath}?token=${data.token}`;
-        window.open(labUrl, '_blank');
-        es.close();
-      }
-      if (data.phase === 'failed') {
-        es.close();
-      }
-    } catch { /* ignore parse errors from heartbeat comments */ }
-  };
-  es.onerror = () => {
-    onProgress?.('failed');
-    es.close();
-  };
+  }).catch(() => { /* onProgress('failed') already called by ensureBinderSession */ });
 }
 
 /**

@@ -30,7 +30,10 @@ import {
   getActiveMode,
   setCachedFakeBackends,
   getSuppressWarnings,
+  ensureBinderSession,
+  touchBinderSession,
   type JupyterConfig,
+  type BinderSession,
 } from '../../config/jupyter';
 import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
 
@@ -55,6 +58,7 @@ const ACTIVATE_EVENT = 'executablecode:activate';
 const STATUS_EVENT = 'executablecode:status';
 const RESET_EVENT = 'executablecode:reset';
 const INJECTION_EVENT = 'executablecode:injection';
+const BINDER_PHASE_EVENT = 'executablecode:binderphase';
 
 type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 
@@ -610,13 +614,28 @@ interface ExecutableCodeProps {
 }
 
 /** Build thebelab bootstrap options for the current environment. */
-function getThebelabOptions(config: JupyterConfig): Record<string, unknown> {
+function getThebelabOptions(config: JupyterConfig, session?: BinderSession | null): Record<string, unknown> {
   if (config.environment === 'github-pages') {
+    if (session) {
+      // Reuse existing Binder server — connect via serverSettings (same as local/Docker)
+      return {
+        requestKernel: true,
+        kernelOptions: {
+          name: 'python3',
+          serverSettings: {
+            baseUrl: session.url,
+            wsUrl: session.url.replace(/^http/, 'ws'),
+            token: session.token,
+          },
+        },
+      };
+    }
+    // Fallback: let thebelab start its own Binder build (same repo as "Open in Binder")
     return {
       requestKernel: true,
       binderOptions: {
-        repo: 'JanLahmann/Qiskit-documentation',
-        ref: 'main',
+        repo: 'JanLahmann/doQumentation',
+        ref: 'notebooks',
         binderUrl: 'https://mybinder.org',
       },
       kernelOptions: {
@@ -644,19 +663,10 @@ function broadcastStatus(status: ThebeStatus): void {
 }
 
 /**
- * Wait for thebelab to load, then bootstrap all [data-executable] cells.
- * Called once — subsequent activations are no-ops.
- * The kernel Promise from bootstrap() drives the status updates:
- *   connecting → (Binder launches, kernel starts) → ready | error
+ * Wait for thebelab CDN to load, then call bootstrap() with the given options.
+ * Handles kernel promise, status events, and credential injection.
  */
-function bootstrapOnce(config: JupyterConfig): void {
-  if (thebelabBootstrapped) {
-    broadcastStatus('ready');
-    return;
-  }
-
-  const thebelabOptions = getThebelabOptions(config);
-
+function doBootstrap(thebelabOptions: Record<string, unknown>): void {
   const tryBootstrap = () => {
     if (!window.thebelab) {
       if (DEBUG) console.log('[ExecutableCode] waiting for thebelab CDN...');
@@ -710,6 +720,10 @@ function bootstrapOnce(config: JupyterConfig): void {
                 (_sender: unknown, kernelStatus: string) => {
                   if (DEBUG) console.log(`[ExecutableCode] kernel.statusChanged: ${kernelStatus}`);
                   handleKernelStatusForFeedback(kernelStatus);
+                  // Keep Binder session alive during active code execution
+                  if (kernelStatus === 'busy' || kernelStatus === 'idle') {
+                    touchBinderSession();
+                  }
                 }
               );
               if (DEBUG) console.log('[ExecutableCode] Subscribed to kernel.statusChanged');
@@ -746,6 +760,38 @@ function bootstrapOnce(config: JupyterConfig): void {
   setTimeout(tryBootstrap, 100);
 }
 
+/**
+ * Bootstrap thebelab with Binder session reuse.
+ * Called once — subsequent activations are no-ops.
+ *
+ * For GitHub Pages: ensures a Binder session exists (reuses or starts build),
+ * then connects thebelab via serverSettings. This shares the Binder server
+ * with "Open in Binder JupyterLab" — one build serves both.
+ */
+function bootstrapOnce(config: JupyterConfig): void {
+  if (thebelabBootstrapped) {
+    broadcastStatus('ready');
+    return;
+  }
+
+  if (config.environment === 'github-pages' && config.binderUrl) {
+    // Build (or reuse) Binder session, then connect thebelab via serverSettings
+    ensureBinderSession(config, (phase) => {
+      if (DEBUG) console.log(`[ExecutableCode] Binder phase: ${phase}`);
+      window.dispatchEvent(new CustomEvent(BINDER_PHASE_EVENT, { detail: phase }));
+    }).then((session) => {
+      const options = getThebelabOptions(config, session);
+      doBootstrap(options);
+    }).catch(() => {
+      broadcastStatus('error');
+    });
+    return;
+  }
+
+  const options = getThebelabOptions(config);
+  doBootstrap(options);
+}
+
 export default function ExecutableCode({
   children,
   language = 'python',
@@ -763,6 +809,7 @@ export default function ExecutableCode({
   const [injectionToast, setInjectionToast] = useState<string | null>(null);
   const [binderHintDismissed, setBinderHintDismissed] = useState(false);
   const [hideStaticOutputs, setHideStaticOutputs] = useState(false);
+  const [binderPhase, setBinderPhase] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const thebeContainerRef = useRef<HTMLDivElement>(null);
 
@@ -794,6 +841,7 @@ export default function ExecutableCode({
     const onReset = () => {
       setMode('read');
       setThebeStatus('idle');
+      setBinderPhase(null);
       setInjectionInfo(null);
       setInjectionToast(null);
     };
@@ -806,9 +854,24 @@ export default function ExecutableCode({
     const onStatus = (e: Event) => {
       const status = (e as CustomEvent<ThebeStatus>).detail;
       setThebeStatus(status);
+      if (status === 'ready' || status === 'error') setBinderPhase(null);
     };
     window.addEventListener(STATUS_EVENT, onStatus);
     return () => window.removeEventListener(STATUS_EVENT, onStatus);
+  }, []);
+
+  // Listen for Binder build phase updates (GitHub Pages only)
+  useEffect(() => {
+    const onPhase = (e: Event) => {
+      const phase = (e as CustomEvent<string>).detail;
+      if (phase === 'ready' || phase === 'failed') {
+        setBinderPhase(null);
+      } else {
+        setBinderPhase(phase);
+      }
+    };
+    window.addEventListener(BINDER_PHASE_EVENT, onPhase);
+    return () => window.removeEventListener(BINDER_PHASE_EVENT, onPhase);
   }, []);
 
   // Listen for conflict banner (both credentials + simulator configured, no explicit choice)
@@ -895,11 +958,23 @@ export default function ExecutableCode({
     }
   };
 
+  // Binder phase labels for the toolbar status text
+  const binderPhaseLabels: Record<string, string> = {
+    connecting: translate({id: 'executable.status.binderConnecting', message: 'Starting Binder (this may take 1\u20132 minutes on first run)...'}),
+    fetching: translate({id: 'executable.status.binderFetching', message: 'Fetching repo...'}),
+    building: translate({id: 'executable.status.binderBuilding', message: 'Building image (this may take 1\u20132 minutes on first run)...'}),
+    pushing: translate({id: 'executable.status.binderPushing', message: 'Pushing image...'}),
+    built: translate({id: 'executable.status.binderBuilt', message: 'Image ready...'}),
+    launching: translate({id: 'executable.status.binderLaunching', message: 'Launching server...'}),
+  };
+
+  const connectingText = jupyterConfig?.environment === 'github-pages'
+    ? (binderPhase && binderPhaseLabels[binderPhase]) || binderPhaseLabels.connecting
+    : translate({id: 'executable.status.connecting', message: 'Connecting...'});
+
   const statusText: Record<ThebeStatus, string> = {
     idle: '',
-    connecting: jupyterConfig?.environment === 'github-pages'
-      ? translate({id: 'executable.status.binderConnecting', message: 'Starting Binder (this may take 1\u20132 minutes on first run)...'})
-      : translate({id: 'executable.status.connecting', message: 'Connecting...'}),
+    connecting: connectingText,
     ready: '',
     error: translate({id: 'executable.status.error', message: 'Disconnected \u2014 click Back, then Run to retry'}),
   };
