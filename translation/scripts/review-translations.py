@@ -62,7 +62,7 @@ SKIP_LOCALES = {"ar"}  # Known broken, needs full re-translation
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 
-VALID_VERDICTS = {"PASS", "MINOR_ISSUES", "FAIL", "SKIPPED"}
+VALID_VERDICTS = {"PASS", "MINOR_ISSUES", "FAIL", "SKIPPED", "FIXED"}
 
 # ---------------------------------------------------------------------------
 # Status I/O

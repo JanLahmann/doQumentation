@@ -140,8 +140,9 @@ doQumentation/
 │   ├── drafts/{locale}/{path}  # Staging area for new translations (git-tracked)
 │   ├── status.json             # Per-file tracking (status, validation, source hash, dates)
 │   ├── translation-prompt.md   # Claude Code automation prompt
+│   ├── register-fix-prompt.md  # Claude Code register rewrite prompt
 │   ├── review-prompt.md        # LLM review prompt (Haiku/Gemini Flash)
-│   └── scripts/                # validate, lint, review, fix-anchors, promote, populate, status dashboard
+│   └── scripts/                # validate, lint, review, fix-anchors, promote, populate, get-register-fails, status dashboard
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
 ├── Dockerfile                  # Static site only
 ├── Dockerfile.jupyter          # Full stack
@@ -233,7 +234,7 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **Translation**: See [`CONTRIBUTING-TRANSLATIONS.md`](../CONTRIBUTING-TRANSLATIONS.md) for contributor guide (any tool/LLM). For Claude Code automation: `translation/translation-prompt.md` (Sonnet, 3 parallel agents, 1 file or chunk each). One-liner: `Read translation/translation-prompt.md. Translate all untranslated pages to French (fr).`
 - **Translation validation**: Three-step QA. Step 1: `validate-translation.py` — 12 binary PASS/FAIL structural checks (line count, code blocks byte-identical, LaTeX, headings, anchors, image paths, frontmatter, JSX tags, URLs, paragraph inflation). Locale-specific inflation thresholds (`LOCALE_WORD_RATIO`: de=3.0x, default=1.8x). Supports `--dir translation/drafts` for staging, `--section` for filtering, `--report` for markdown feedback, `--record` for writing results to `status.json`. Step 2: `lint-translation.py` — MDX syntax lint for build-breaking errors (duplicate heading anchors, garbled XML tags, heading markers mid-line, invalid anchor chars, unmatched code fences, missing imports). Both have `--record` for status.json. Step 3: linguistic review (register, word salad, verbosity, accuracy) — tracked via `review-translations.py` (`--record-review`). Review prompt: `translation/review-prompt.md`.
 - **Review orchestration**: `review-translations.py` manages systematic review across sessions. `--auto-check` runs structural validation + lint for all locales in bulk. `--progress` shows per-locale dashboard (struct/lint/review counts). `--next-chunk [--size N]` returns prioritized batch of files needing linguistic review. `--record-review` persists verdicts (PASS/MINOR_ISSUES/FAIL/SKIPPED) to status.json. Baseline: 885 files, 456 structural PASS, 440 ready for review, AR auto-skipped (needs re-translation).
-- **Register**: Informal/familiar (du/tu/tú/ти — not Sie/vous/usted/Ви). The Qiskit community uses informal address.
+- **Register**: Informal/familiar (du/tu/tú/ти — not Sie/vous/usted/Ви). The Qiskit community uses informal address. Register fix automation: `translation/register-fix-prompt.md` (targeted rewrite, Sonnet agents). Helper: `translation/scripts/get-register-fails.py` lists FAIL files from status.json by locale.
 - **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `fix-heading-anchors.py` for batch fixing (supports `--dir` for drafts).
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
 - **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) included in all repos and CI deploy output.
@@ -339,8 +340,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation review — COMPLETE** — All 456 structurally-passing files reviewed across 19 locales (44 AR auto-skipped). Results: 217 PASS, 29 MINOR_ISSUES, 194 FAIL, 44 SKIPPED. Primary failure cause: formal register (Sie/vous/usted/Ві/voi) instead of informal (du/tu/tú/ти/tu). Locales by quality: PT (17/17 PASS), HE (34/34 PASS), JA (25/26 PASS), BAR (12/13 PASS), AUT (12/13 PASS), TL (22/28 PASS), SAX (14/18 PASS), GSW (15/16 PASS). Worst: DE (64/69 FAIL — Sie), FR (36/36 FAIL — vous), SWG (10/13 FAIL — Se). Run `review-translations.py --progress` for dashboard.
-- **Translation register fix** — 194 files need register fix across DE, ES, FR, UK, IT, SWG, BAD, SAX, and partially BLN/AUT. Could be automated with a targeted re-translation prompt specifying informal register. Priority: DE (64 FAIL), FR (36 FAIL), ES (35 FAIL), UK (18 FAIL), IT (17 FAIL).
+- **Translation review + register fix — COMPLETE** — All 456 structurally-passing files reviewed across 19 locales. 194 files failed due to formal register (Sie/vous/usted/Ві/voi). All 194 fixed via targeted LLM register rewrite (140 FIXED, 27 MINOR_ISSUES, 271 PASS, 2 non-register FAIL skipped, 44 AR SKIPPED). Run `review-translations.py --progress` for dashboard.
 - **Translation expansion** — DE at 81/387 (69 PASS, 12 FAIL), ES at 76/387 (49 PASS, 27 FAIL), UK at 56/387, JA at 56/387, FR at 48 (36 PASS, 12 FAIL), IT/PT/TL at 48, HE at 47, AR at 44 (needs re-translation). German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34). Run `python translation/scripts/translation-status.py` for current counts, or see `translation/STATUS.md`.
 - **Binder-enable this repo (Phase 4 pending)** — CI infra done: `deploy.yml` pushes EN notebooks + Binder config to `notebooks` branch (packages split across `requirements.txt` + `postBuild` for two smaller Docker layers — single ~8.4 GB layer was failing during registry push), `deploy-locales.yml` consolidates locale notebooks into subdirs, `binder.yml` warms 3 federation members. **Pending**: verify Binder builds from `notebooks` branch, then switch URLs in `jupyter.ts` (Phase 4). Plan: `.claude/plans/binder-enable-notebooks.md`.
 - **Fork testing** — Verify the repo can be forked with Binder still working
@@ -350,6 +350,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 
 ### Resolved (Mar 2026)
+- **Translation register fix (194 files)** — Linguistic review found 194 files across 10 locales using formal register instead of required informal. All fixed via targeted LLM register rewrite (`translation/register-fix-prompt.md`): DE (64), FR (36), ES (36), UK (18), IT (17), SWG (10), BAD (8), SAX (3), AUT (1). 2 non-register FAILs skipped (NDS soft hyphens, TL structural). Added `FIXED` verdict to `review-translations.py`. Helper: `translation/scripts/get-register-fails.py`.
 - **Comprehensive prerequisites cell** — Merged two pip install cells (base + extras) into single comprehensive cell per notebook. Deleted stale `BINDER_PROVIDED` set; now uses stdlib-only filtering so ALL third-party imports appear in the prerequisites cell. Fixes bug where 26 notebooks with `qiskit-ibm-catalog` (and others like `pyscf`, `ffsim`) were missing packages on Colab. Zero maintenance — no platform-specific package list to keep updated.
 - **DE tutorial fixes (18/18 PASS)** — Fixed 8 failing DE tutorials: added 3 missing IBM survey links, restored EN code comments in 5 code blocks, fixed truncated code output, restored missing internal link, fixed 2 paragraph boundary misalignments. Added locale-specific paragraph inflation threshold (`de: 3.0x`). Added `--write-status` to daily CI workflow and German dialect locales to CONTRIBUTING-TRANSLATIONS.md table.
 - **Translation status dashboard** — New `translation-status.py` script: overview of all locales with section breakdown, `--locale` detail view, `--backlog` (prioritized untranslated files), `--validate` (run + record to status.json), `--markdown`/`--json` output, `--update-contributing` (auto-updates CONTRIBUTING-TRANSLATIONS.md table). `validate-translation.py` gained `--record` flag to persist results. `status.json` expanded with source hash, dates, failures. Hybrid approach: status.json grows over time as files are validated/promoted; existing i18n/ translations counted on-the-fly.
@@ -386,4 +387,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 1, 2026*
+*Last updated: March 2, 2026*
