@@ -1147,9 +1147,14 @@ export default function ExecutableCode({
           )}
 
           {thebeStatus === 'ready' && injectionInfo && injectionInfo.mode !== 'none' && (
-            <span className={`executable-code__mode-badge executable-code__mode-badge--${injectionInfo.mode}`}>
+            <a
+              href="/jupyter-settings#simulator-mode"
+              className={`executable-code__mode-badge executable-code__mode-badge--${injectionInfo.mode}`}
+              style={{ textDecoration: 'none', color: 'inherit' }}
+              title={translate({id: 'executable.badge.settingsTitle', message: 'Go to Settings to change execution mode'})}
+            >
               {injectionInfo.label}
-            </span>
+            </a>
           )}
 
           <a
