@@ -891,7 +891,7 @@ export default function ExecutableCode({
     if (!jupyterConfig || !notebookPath) return;
     const labUrl = getLabUrl(jupyterConfig, notebookPath);
     if (labUrl) {
-      window.open(labUrl, 'binder-lab', 'noopener,noreferrer');
+      window.open(labUrl, 'binder-lab');
     }
   };
 
