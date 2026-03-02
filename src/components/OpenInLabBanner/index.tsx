@@ -46,7 +46,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
           labUrl = getBinderLabUrl(config, notebookPath, currentLocale);
         }
 
-        const labLabel = isBinder ? 'Open in Binder JupyterLab' : 'Open in JupyterLab';
+        const labLabel = 'JupyterLab';
         const colabUrl = getColabUrl(notebookPath, currentLocale);
         const rawBinderUrl = isBinder ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
 
@@ -86,48 +86,13 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
             <span>&#128221;</span>
             <span>{description || 'This page was generated from a Jupyter notebook.'}</span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <a
-                href={colabUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Open notebook in Google Colab"
-                style={{
-                  padding: '0.25rem 0.75rem',
-                  border: '1px solid var(--ifm-color-primary)',
-                  color: 'var(--ifm-color-primary)',
-                  borderRadius: '4px',
-                  fontWeight: 600,
-                  textDecoration: 'none',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                Open in Colab &#8599;
-              </a>
-              {rawBinderUrl && (
-                <a
-                  href={rawBinderUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="Open the mybinder.org build page directly"
-                  style={{
-                    padding: '0.25rem 0.75rem',
-                    border: '1px solid var(--ifm-color-primary)',
-                    color: 'var(--ifm-color-primary)',
-                    borderRadius: '4px',
-                    fontWeight: 600,
-                    textDecoration: 'none',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  Launch Raw Binder &#8599;
-                </a>
-              )}
+              <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Open in:</span>
               {labUrl && (
                 <a
                   href={labUrl}
                   target={isBinder ? '_blank' : 'binder-lab'}
                   onClick={handleBinderClick}
-                  title="Opens the full Jupyter notebook for editing and advanced use"
+                  title="JupyterLab via Binder — full notebook editing environment"
                   style={{
                     padding: '0.25rem 0.75rem',
                     backgroundColor: binderPhase === 'failed'
@@ -143,6 +108,42 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                   }}
                 >
                   {phaseText || `${labLabel} \u2197`}
+                </a>
+              )}
+              <a
+                href={colabUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Google Colab — run in the cloud, no setup needed"
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  border: '1px solid var(--ifm-color-primary)',
+                  color: 'var(--ifm-color-primary)',
+                  borderRadius: '4px',
+                  fontWeight: 600,
+                  textDecoration: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Colab &#8599;
+              </a>
+              {rawBinderUrl && (
+                <a
+                  href={rawBinderUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="mybinder.org — standard build page, no modifications"
+                  style={{
+                    padding: '0.25rem 0.75rem',
+                    border: '1px solid var(--ifm-color-primary)',
+                    color: 'var(--ifm-color-primary)',
+                    borderRadius: '4px',
+                    fontWeight: 600,
+                    textDecoration: 'none',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Binder &#8599;
                 </a>
               )}
             </div>

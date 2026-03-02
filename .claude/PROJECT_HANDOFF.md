@@ -45,8 +45,8 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - Environment auto-detection: GitHub Pages → Binder, localhost/Docker → local Jupyter, custom → user-configured
 - Cell feedback: amber (running), green (done), red (error) left borders. Error detection for `ModuleNotFoundError` (with clickable Install button), `NameError`, tracebacks.
 - Cell completion uses `kernel.statusChanged` signal (not thebelab events) with 1500ms debounce to avoid premature green borders
-- Execution mode indicator badge (links to Settings → Simulator Mode) + injection toast. "Open in JupyterLab" button on all tiers. "Open in Colab" button always available.
-- **Launch Raw Binder**: "Launch Raw Binder" button in `OpenInLabBanner` (GitHub Pages only) opens the standard mybinder.org build page directly — no session interception, no JavaScript handling. Users see the native Binder build log and get redirected to JupyterLab by Binder itself. Uses `getRawBinderUrl()` from `jupyter.ts`.
+- Execution mode indicator badge (links to Settings → Simulator Mode) + injection toast.
+- **OpenInLabBanner buttons**: "Open in: JupyterLab | Colab | Binder" — ordered by recommendation. JupyterLab (filled/primary, session-managed via `ensureBinderSession()`), Colab (outlined, always available), Binder (outlined, GitHub Pages only — raw mybinder.org build page, no session interception). Descriptive tooltips on hover. Uses `getRawBinderUrl()`, `getColabUrl()`, `getBinderLabUrl()` from `jupyter.ts`.
 - **Binder tab reuse**: "Open in Lab" uses named window target `binder-lab` to reuse the same tab
 - **Kernel restart**: "Restart Kernel" button (visible when kernel is ready) calls `kernel.restart()`, clears all cell outputs/feedback, re-injects credentials/simulator setup. Same Binder session, fresh kernel state.
 - **Clear Binder Session**: "Clear Session" button (GitHub Pages only, visible when kernel is ready) clears `sessionStorage` session and resets to static view. Next Run starts a fresh Binder build.
