@@ -916,6 +916,21 @@ def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path
         ]
     }
 
+    # Strip MDX-specific syntax from markdown cells (frontmatter, JSX comments,
+    # heading anchors, <Admonition> blocks) so notebooks render cleanly in
+    # JupyterLab/Colab without raw Docusaurus directives showing as literal text.
+    first_md = True
+    for cell in cells:
+        if cell.get('cell_type') != 'markdown':
+            continue
+        src = cell_source(cell)
+        if first_md:
+            # Remove YAML frontmatter block at top of first markdown cell
+            src = re.sub(r'^---\n.*?\n---\n?', '', src, count=1, flags=re.DOTALL)
+            first_md = False
+        src = clean_notebook_markdown(src)
+        cell['source'] = src
+
     nb['cells'] = [prereq_cell] + cells
 
     # Colab notebook metadata: auto-run the first cell on open
@@ -1028,8 +1043,8 @@ def clean_notebook_markdown(text: str) -> str:
     # Unescape MDX characters
     text = text.replace('\\{', '{').replace('\\}', '}')
 
-    # Remove JSX comments
-    text = re.sub(r'\{/\*.*?\*/\}', '', text)
+    # Remove JSX comments (single- and multi-line)
+    text = re.sub(r'\{/\*.*?\*/\}', '', text, flags=re.DOTALL)
 
     # Convert <Admonition> to blockquote
     def admonition_to_blockquote(m):
