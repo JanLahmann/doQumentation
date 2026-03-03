@@ -486,7 +486,7 @@ export function openBinderLab(
     tab.document.title = 'Starting Binder\u2026';
     tab.document.body.innerHTML =
       '<p style="font-family:system-ui;padding:2rem;color:#555">' +
-      'Starting Binder\u2026 this may take 1\u20132 minutes on first run.</p>';
+      'Starting Binder\u2026 this may take up to 10 minutes on first run.</p>';
   }
 
   ensureBinderSession(config, onProgress).then((session) => {

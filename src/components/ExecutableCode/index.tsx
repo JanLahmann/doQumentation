@@ -1042,9 +1042,9 @@ export default function ExecutableCode({
 
   // Binder phase labels for the toolbar status text
   const binderPhaseLabels: Record<string, string> = {
-    connecting: translate({id: 'executable.status.binderConnecting', message: 'Starting Binder (this may take 1\u20132 minutes on first run)...'}),
+    connecting: translate({id: 'executable.status.binderConnecting', message: 'Starting Binder (this may take up to 10 minutes on first run)...'}),
     fetching: translate({id: 'executable.status.binderFetching', message: 'Fetching repo...'}),
-    building: translate({id: 'executable.status.binderBuilding', message: 'Building image (this may take 1\u20132 minutes on first run)...'}),
+    building: translate({id: 'executable.status.binderBuilding', message: 'Building image (this may take up to 10 minutes on first run)...'}),
     pushing: translate({id: 'executable.status.binderPushing', message: 'Pushing image...'}),
     built: translate({id: 'executable.status.binderBuilt', message: 'Image ready...'}),
     launching: translate({id: 'executable.status.binderLaunching', message: 'Launching server...'}),
