@@ -493,9 +493,13 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
         fm_lines.append('---\n')
         frontmatter = '\n'.join(fm_lines)
 
-        # Inject OpenInLabBanner after frontmatter if notebook_path is set
+        # Inject OpenInLabBanner only if notebook has executable code cells
         banner = ''
-        if notebook_path:
+        has_code_cells = any(
+            c.get('cell_type') == 'code' and cell_source(c).strip()
+            for c in cells
+        )
+        if notebook_path and has_code_cells:
             desc_prop = f' description="{banner_description}"' if banner_description else ''
             banner = f'\n<OpenInLabBanner notebookPath="{notebook_path}"{desc_prop} />\n'
 
