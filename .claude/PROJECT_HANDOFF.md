@@ -98,12 +98,12 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 | `<Card>`, `<CardGroup>`, `<Image>`, etc. | Component stubs |
 
 ### Docker & Authentication
-- `Dockerfile` — Static site only (nginx, ~60 MB). `Dockerfile.jupyter` — Full stack (~3 GB).
+- `binder/Dockerfile` (main branch) — Minimal (`FROM quay.io/jupyter/base-notebook:python-3.12`) for mybinder.org pull-speed testing. `Dockerfile.web` — Static site only (nginx, ~60 MB). `Dockerfile.jupyter` — Full stack (~3 GB).
 - Multi-arch: `linux/amd64` gets full Qiskit; `linux/arm64` excludes some packages
 - **Jupyter auth**: nginx injects `Authorization` header server-side. Browser never sees token. `docker-entrypoint.sh` generates random token (or accepts `JUPYTER_TOKEN` env var). Jupyter runs as non-root `jupyter` user.
 
 ### CI/CD
-- `deploy.yml` — Sync → build → GitHub Pages (English only). Also pushes EN notebooks + Binder config to `notebooks` branch (preserves locale subdirs). Binder packages split across `binder/requirements.txt` (core: qiskit, aer, ibm-runtime — Docker-cached) + `binder/postBuild` (6 packages: ibm-catalog, ibm-transpiler, addon-cutting, pylatexenc, scikit-learn, networkx + cleanup to reduce layer size). All Binder config inside `binder/` dir (requirements.txt, postBuild, runtime.txt) — repo2docker ignores config files outside `binder/` when that dir exists.
+- `deploy.yml` — Sync → build → GitHub Pages (English only). Also pushes EN notebooks + Binder config to `notebooks` branch (preserves locale subdirs). Binder config: single `binder/Dockerfile` (`FROM quay.io/jupyter/base-notebook:python-3.12` + pip install all 9 packages + cleanup — all in one RUN layer). Bypasses repo2docker's conda solver (repo2docker uses binder/Dockerfile as-is). No `requirements.txt`, `postBuild`, or `runtime.txt` needed.
 - `deploy-locales.yml` — Matrix build per locale: sync content → populate fallbacks → generate translated notebooks → build → push to satellite repos. Consolidation job merges all locale notebooks into `notebooks` branch subdirectories.
 - `docker.yml` — Multi-arch Docker → ghcr.io (EN only via `--locale en`). **Push trigger disabled** — only `workflow_dispatch` (re-enable `push: branches: [main]` when needed).
 - `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies
@@ -149,8 +149,8 @@ doQumentation/
 │   ├── review-prompt.md        # LLM review prompt (Haiku/Gemini Flash)
 │   └── scripts/                # validate, lint, review, fix-anchors, promote, populate, get-register-fails, status dashboard
 ├── static/                     # logo.svg (favicon), CNAME, robots.txt, docs/ + learning/images/ (gitignored)
-├── Dockerfile                  # Static site only
-├── Dockerfile.jupyter          # Full stack
+├── Dockerfile.web              # Static site only (nginx, ~60 MB)
+├── Dockerfile.jupyter          # Full stack (~3 GB)
 ├── docker-compose.yml          # web + jupyter profiles
 ├── nginx.conf                  # SPA routing + Jupyter proxy
 ├── docusaurus.config.ts
@@ -399,4 +399,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 3, 2026*
+*Last updated: March 4, 2026*
