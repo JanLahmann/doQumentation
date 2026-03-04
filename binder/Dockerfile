@@ -15,3 +15,5 @@ RUN pip install --no-cache-dir --no-compile \
     find ${CONDA_DIR}/lib -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
     find ${CONDA_DIR}/lib -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true && \
     rm -rf ${CONDA_DIR}/share/{doc,man,gtk-doc} 2>/dev/null || true
+COPY --chown=1000:100 . /home/jovyan/
+WORKDIR /home/jovyan
