@@ -138,7 +138,7 @@ doQumentation/
 │   ├── deploy.yml                 # Sync → build → deploy to GitHub Pages
 │   ├── docker.yml                 # Multi-arch Docker → ghcr.io
 │   └── sync-deps.yml              # Weekly Jupyter dependency sync auto-PR
-├── Dockerfile                     # Static site only (nginx, ~60 MB)
+├── Dockerfile.web                 # Static site only (nginx, ~60 MB)
 ├── Dockerfile.jupyter             # Full stack: site + Jupyter + Qiskit (~3 GB)
 ├── docker-compose.yml             # web + jupyter services
 ├── nginx.conf                     # SPA routing + Jupyter proxy
