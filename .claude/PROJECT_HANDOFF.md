@@ -357,6 +357,8 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Binder layer caching — Option C deployed, pending verification** — `deploy.yml` now generates `binder/Dockerfile` (Option C) instead of `requirements.txt + postBuild + runtime.txt`. Uses `FROM quay.io/jupyter/base-notebook:python-3.12` — bypasses repo2docker's conda solver. Expected: ~3–3.5 GB image, <5 min cold build vs ~10 min. If cold builds are still slow, upgrade to Option B (pre-built GHCR base image, plan in `.claude/plans/binder-layer-cache.md`).
 - **IBM Quantum Ecosystem listing** — Submit doQumentation.org to https://www.ibm.com/quantum/ecosystem to increase visibility.
 - **"Run All" button** — Add page-level "Run All Cells" button (visible when kernel is ready, next to "Restart Kernel"). Sequentially executes all thebelab cells in DOM order, waiting for kernel idle between each. Plan in `.claude/plans/run-all-cells.md`.
+- **Mobile side navigation not working** — FIXED (Mar 5): `custom.css` had `transform: translateX(0) !important` on `.navbar-sidebar__items` which locked the sidebar to the primary panel. Removed. Also fixed invisible arrows: Infima renders them as a dark SVG background-image; overrode `--ifm-menu-link-sublist-icon-filter` on `.navbar-sidebar` with the invert filter so arrows are visible on the always-dark sidebar. `Back to main menu` button styled dark. Note: `to:` items (Guides, Courses, Modules) navigate directly on tap (standard Docusaurus behavior); `type: 'docSidebar'` items (Tutorials) slide to secondary panel.
+- **Binder startup UX** — During Binder build/connect phases, show more informative messages: typical duration per phase (e.g. "fetching ~10s", "building ~3–5 min cold / ~30s cached", "launching ~20s"), a recommendation when a phase is way over time ("Taking longer than usual? Try refreshing or check mybinder.org status"), and distinguish cold vs warm cache. Currently just shows generic phase names from the Binder EventSource.
 
 ### Resolved (Mar 2026)
 - **Notebook MDX corruption in JupyterLab/Colab** — All 128 EN notebooks (86 guides + 42 tutorials) showed raw Docusaurus frontmatter (`---\ntitle: ...---`) and JSX comments (`{/* cspell:ignore... */}`, `{/* DO NOT EDIT THIS CELL */}`) as literal text when opened in JupyterLab or Colab. Fixed in `copy_notebook_with_rewrite()`: strip YAML frontmatter from first markdown cell + apply `clean_notebook_markdown()` to all markdown cells. Also added `re.DOTALL` to JSX comment regex in `clean_notebook_markdown()` for multi-line comments. Translated notebooks were unaffected (different pipeline already strips frontmatter). All 261 static notebooks scanned clean. Build: exit 0.
@@ -399,4 +401,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 4, 2026*
+*Last updated: March 5, 2026*
