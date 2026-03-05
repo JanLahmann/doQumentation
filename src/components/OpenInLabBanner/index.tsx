@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab, getRawBinderUrl } from '../../config/jupyter';
@@ -8,16 +8,36 @@ interface OpenInLabBannerProps {
   description?: string;
 }
 
+// Short label shown inside the button while building
 const PHASE_LABELS: Record<string, string> = {
-  connecting: 'Starting Binder (may take 1\u20132 min on first run)...',
-  fetching: 'Fetching repo...',
-  building: 'Building image (1\u20132 min on first run)...',
-  pushing: 'Pushing image...',
-  built: 'Image ready...',
-  launching: 'Launching server...',
-  ready: '',
-  failed: 'Binder failed',
+  connecting: 'Connecting...',
+  waiting:    'In queue...',
+  fetching:   'Fetching...',
+  building:   'Building...',
+  pushing:    'Pushing...',
+  built:      'Launching...',
+  launching:  'Launching...',
+  ready:      '',
+  failed:     'Binder failed',
 };
+
+// Longer hint shown below the banner while building
+const PHASE_HINTS: Record<string, string> = {
+  connecting: 'Connecting to mybinder.org...',
+  waiting:    'Waiting in queue...',
+  fetching:   'Fetching repository (2–5 min)',
+  building:   'Building Docker image (5–10 min)',
+  pushing:    'Pushing image to registry (2–5 min)',
+  built:      'Image ready — launching JupyterLab...',
+  launching:  'Starting JupyterLab server (2–5 min)',
+};
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
 
 /**
  * Page-level banner that links to the original .ipynb in JupyterLab and/or Colab.
@@ -31,13 +51,28 @@ const PHASE_LABELS: Record<string, string> = {
 export default function OpenInLabBanner({ notebookPath, description }: OpenInLabBannerProps) {
   const { i18n: { currentLocale } } = useDocusaurusContext();
   const [binderPhase, setBinderPhase] = useState<string | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [showCacheMissWarning, setShowCacheMissWarning] = useState(false);
+  const buildStartRef = useRef<number | null>(null);
+
+  const isActive = !!binderPhase && binderPhase !== 'ready' && binderPhase !== 'failed';
+
+  // Elapsed timer — runs while a build is in progress
+  useEffect(() => {
+    if (!isActive) return;
+    const interval = setInterval(() => {
+      if (buildStartRef.current !== null) {
+        setElapsedSeconds(Math.floor((Date.now() - buildStartRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isActive]);
 
   return (
     <BrowserOnly>
       {() => {
         const config = detectJupyterConfig();
 
-        // Build the Lab/Binder URL based on environment
         let labUrl: string | null = null;
         const isBinder = config.binderUrl && !config.labEnabled;
         if (config.labEnabled) {
@@ -46,27 +81,47 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
           labUrl = getBinderLabUrl(config, notebookPath, currentLocale);
         }
 
-        const labLabel = 'JupyterLab';
         const colabUrl = getColabUrl(notebookPath, currentLocale);
         const rawBinderUrl = isBinder ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
 
         const handleBinderClick = (e: React.MouseEvent) => {
-          if (!isBinder) return; // let non-Binder links work normally
+          if (!isBinder) return;
           e.preventDefault();
-          if (binderPhase && binderPhase !== 'failed') return; // build in progress
+          if (binderPhase && binderPhase !== 'failed') return;
+
+          buildStartRef.current = Date.now();
+          setElapsedSeconds(0);
+          setShowCacheMissWarning(false);
           setBinderPhase(null);
+
           openBinderLab(config, notebookPath, currentLocale, (phase) => {
             setBinderPhase(phase);
+            // Entering 'building' means no warm cache — show warning immediately
+            if (phase === 'building') {
+              setShowCacheMissWarning(true);
+            }
             if (phase === 'ready') {
-              setTimeout(() => setBinderPhase(null), 1000);
+              setTimeout(() => {
+                setBinderPhase(null);
+                setShowCacheMissWarning(false);
+                setElapsedSeconds(0);
+                buildStartRef.current = null;
+              }, 1000);
             }
             if (phase === 'failed') {
-              setTimeout(() => setBinderPhase(null), 3000);
+              setTimeout(() => {
+                setBinderPhase(null);
+                setShowCacheMissWarning(false);
+              }, 3000);
             }
           });
         };
 
-        const phaseText = binderPhase ? PHASE_LABELS[binderPhase] || binderPhase : null;
+        const phaseLabel = binderPhase ? (PHASE_LABELS[binderPhase] ?? binderPhase) : null;
+        const hint = isActive ? (PHASE_HINTS[binderPhase!] ?? null) : null;
+        const buttonText = isActive
+          ? `${phaseLabel} ${formatElapsed(elapsedSeconds)}`
+          : phaseLabel || `JupyterLab \u2197`;
 
         return (
           <div
@@ -103,11 +158,11 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                     fontWeight: 600,
                     textDecoration: 'none',
                     whiteSpace: 'nowrap',
-                    opacity: (binderPhase && binderPhase !== 'ready' && binderPhase !== 'failed') ? 0.8 : 1,
-                    cursor: (binderPhase && binderPhase !== 'ready' && binderPhase !== 'failed') ? 'wait' : 'pointer',
+                    opacity: isActive ? 0.8 : 1,
+                    cursor: isActive ? 'wait' : 'pointer',
                   }}
                 >
-                  {phaseText || `${labLabel} \u2197`}
+                  {buttonText}
                 </a>
               )}
               <a
@@ -147,6 +202,17 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 </a>
               )}
             </div>
+            {isActive && (
+              <div style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.8rem' }}>
+                {showCacheMissWarning ? (
+                  <span style={{ color: 'var(--ifm-color-warning-dark, #b45309)' }}>
+                    ⚠ Cache not warmed — total build time 10–25 min. Use the <strong>Colab</strong> button above, or come back later.
+                  </span>
+                ) : hint ? (
+                  <span style={{ color: 'var(--ifm-color-emphasis-600)' }}>{hint}</span>
+                ) : null}
+              </div>
+            )}
           </div>
         );
       }}
