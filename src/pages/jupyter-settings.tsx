@@ -21,6 +21,11 @@ import {
   getCredentialDaysRemaining,
   saveIBMQuantumCredentials,
   clearIBMQuantumCredentials,
+  getCodeEngineUrl,
+  getCodeEngineToken,
+  getCEDaysRemaining,
+  saveCodeEngineCredentials,
+  clearCodeEngineCredentials,
   getSimulatorMode,
   setSimulatorMode,
   getSimulatorBackend,
@@ -147,6 +152,12 @@ export default function JupyterSettings(): JSX.Element {
   const [ibmExpiredNotice, setIbmExpiredNotice] = useState(false);
   const [ibmSaveResult, setIbmSaveResult] = useState<string | null>(null);
 
+  // Code Engine credentials state
+  const [ceUrl, setCeUrl] = useState('');
+  const [ceToken, setCeToken] = useState('');
+  const [ceDaysRemaining, setCeDaysRemaining] = useState(-1);
+  const [ceSaveResult, setCeSaveResult] = useState<string | null>(null);
+
   // Learning progress state
   const [progressStats, setProgressStats] = useState<ProgressStats | null>(null);
 
@@ -188,6 +199,14 @@ export default function JupyterSettings(): JSX.Element {
       setIbmToken(savedToken);
       setIbmCrn(getIBMQuantumCRN());
     }
+
+    // Load Code Engine credentials state
+    const savedCeUrl = getCodeEngineUrl();
+    if (savedCeUrl) {
+      setCeUrl(savedCeUrl);
+      setCeToken(getCodeEngineToken());
+    }
+    setCeDaysRemaining(getCEDaysRemaining());
 
     // Load simulator mode state
     setSimEnabled(getSimulatorMode());
@@ -272,6 +291,42 @@ export default function JupyterSettings(): JSX.Element {
     setActiveMode(null);
   };
 
+  // Code Engine credential handlers
+  const handleCeSave = () => {
+    if (!ceUrl) return;
+    saveCodeEngineCredentials(ceUrl, ceToken);
+    setCeDaysRemaining(getCEDaysRemaining());
+    setConfig(detectJupyterConfig());
+    setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'Code Engine URL saved! Refresh the page to connect.'}));
+  };
+
+  const handleCeDelete = () => {
+    clearCodeEngineCredentials();
+    setCeUrl('');
+    setCeToken('');
+    setCeDaysRemaining(-1);
+    setConfig(detectJupyterConfig());
+    setCeSaveResult(translate({id: 'settings.ce.deleteSuccess', message: 'Code Engine settings cleared. Falling back to mybinder.org.'}));
+  };
+
+  const handleCeTest = async () => {
+    if (!ceUrl) return;
+    setIsTesting(true);
+    setCeSaveResult(null);
+    const base = ceUrl.replace(/\/+$/, '');
+    try {
+      const res = await fetch(`${base}/health`, { mode: 'cors' });
+      if (res.ok) {
+        setCeSaveResult(translate({id: 'settings.ce.testOk', message: 'Health check passed — container is running.'}));
+      } else {
+        setCeSaveResult(translate({id: 'settings.ce.testFail', message: 'Health check failed — is the container running?'}));
+      }
+    } catch {
+      setCeSaveResult(translate({id: 'settings.ce.testError', message: 'Could not reach the URL. Check that the container is running and CORS is configured.'}));
+    }
+    setIsTesting(false);
+  };
+
   // Simulator mode handlers
   const handleSimToggle = () => {
     const newVal = !simEnabled;
@@ -330,6 +385,14 @@ export default function JupyterSettings(): JSX.Element {
                 values={{binder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">Binder</a>}}
               >
                 {'GitHub Pages - Code execution uses {binder} (may take a moment to start)'}
+              </Translate>
+            )}
+            {config?.environment === 'code-engine' && (
+              <Translate
+                id="settings.env.codeEngine"
+                values={{url: config.baseUrl}}
+              >
+                {'IBM Cloud Code Engine - Connected to {url}'}
               </Translate>
             )}
             {config?.environment === 'rasqberry' && (
@@ -560,6 +623,134 @@ QiskitRuntimeService.save_account(
     overwrite=True
 )`}</code></pre>
           </details>
+
+          {/* Code Engine (Serverless Jupyter) */}
+          <h2 id="code-engine" style={{ marginTop: '2rem' }}>
+            <Translate id="settings.ce.heading">IBM Cloud Code Engine (Optional)</Translate>
+          </h2>
+
+          <p>
+            <Translate
+              id="settings.ce.desc"
+              values={{
+                strong: <strong><Translate id="settings.ce.descStrong">your own serverless Jupyter kernel</Translate></strong>,
+              }}
+            >
+              {'Connect to {strong} on IBM Cloud Code Engine for faster startup and persistent sessions — no mybinder.org queue. This is optional; without it, notebooks use mybinder.org (free, but slower).'}
+            </Translate>
+          </p>
+
+          <details style={{ marginBottom: '1rem' }}>
+            <summary><strong><Translate id="settings.ce.setupSummary">Setup instructions</Translate></strong></summary>
+            <ol style={{ marginTop: '0.5rem' }}>
+              <li>
+                <Translate
+                  id="settings.ce.step1"
+                  values={{
+                    link: <a href="https://cloud.ibm.com/codeengine/overview" target="_blank" rel="noopener noreferrer">IBM Cloud Code Engine</a>,
+                  }}
+                >
+                  {'Create a Code Engine project at {link} (Lite plan is free)'}
+                </Translate>
+              </li>
+              <li>
+                <Translate
+                  id="settings.ce.step2"
+                  values={{
+                    image: <code>quay.io/janlahmann/doqumentation-jupyter:latest</code>,
+                  }}
+                >
+                  {'Create an Application with container image {image}'}
+                </Translate>
+              </li>
+              <li>
+                <Translate
+                  id="settings.ce.step3"
+                  values={{
+                    port: <code>8080</code>,
+                    env: <code>JUPYTER_TOKEN</code>,
+                  }}
+                >
+                  {'Set listening port to {port} and add environment variable {env} with a secret value'}
+                </Translate>
+              </li>
+              <li>
+                <Translate id="settings.ce.step4">
+                  Copy the Application URL below and the token you chose
+                </Translate>
+              </li>
+            </ol>
+          </details>
+
+          {ceDaysRemaining >= 0 && (
+            <div className="alert alert--info margin-bottom--md">
+              <Translate
+                id="settings.ce.expiryNotice"
+                values={{days: <strong>{ceDaysRemaining} {ceDaysRemaining !== 1 ? translate({id: 'settings.ce.days', message: 'days'}) : translate({id: 'settings.ce.day', message: 'day'})}</strong>}}
+              >
+                {'Code Engine settings expire in {days}.'}
+              </Translate>
+            </div>
+          )}
+
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__label" htmlFor="ce-url">
+              <Translate id="settings.ce.urlLabel">Application URL</Translate>
+            </label>
+            <input
+              id="ce-url"
+              type="url"
+              className="jupyter-settings__input"
+              placeholder="https://my-jupyter.us-south.codeengine.appdomain.cloud"
+              value={ceUrl}
+              onChange={(e) => setCeUrl(e.target.value)}
+            />
+          </div>
+
+          <div className="jupyter-settings__field">
+            <label className="jupyter-settings__label" htmlFor="ce-token">
+              <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate>
+            </label>
+            <input
+              id="ce-token"
+              type="password"
+              className="jupyter-settings__input"
+              placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'The JUPYTER_TOKEN you set in Code Engine'})}
+              value={ceToken}
+              onChange={(e) => setCeToken(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--primary"
+              onClick={handleCeSave}
+              disabled={!ceUrl}
+            >
+              <Translate id="settings.ce.saveBtn">Save</Translate>
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={handleCeTest}
+              disabled={!ceUrl || isTesting}
+            >
+              {isTesting
+                ? translate({id: 'settings.ce.testing', message: 'Testing…'})
+                : translate({id: 'settings.ce.testBtn', message: 'Test Connection'})}
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={handleCeDelete}
+            >
+              <Translate id="settings.ce.deleteBtn">Clear</Translate>
+            </button>
+          </div>
+
+          {ceSaveResult && (
+            <div className={`alert margin-top--md ${ceSaveResult.includes('passed') || ceSaveResult.includes('saved') ? 'alert--success' : ceSaveResult.includes('cleared') || ceSaveResult.includes('Falling') ? 'alert--info' : 'alert--warning'}`}>
+              {ceSaveResult}
+            </div>
+          )}
 
           {/* Simulator Mode */}
           <h2 id="simulator-mode" style={{ marginTop: '2rem' }}><Translate id="settings.simulator.heading">Simulator Mode</Translate></h2>
