@@ -15,113 +15,168 @@ execution on the GitHub Pages deployment. It suffers from:
 
 Replace mybinder with **IBM Cloud Code Engine** — a fully managed serverless
 container platform that can run our existing Jupyter kernel Docker image.
+**Users bring their own IBM Cloud account** and configure it via the Settings
+page, similar to how IBM Quantum credentials work today.
 
 ### Architecture
 
 ```
-┌─────────────────┐     HTTPS (SSE build events)      ┌──────────────────────┐
-│  Browser         │ ──────────────────────────────────▶│  Code Engine App     │
-│  (thebelab 0.4)  │     WebSocket (kernel protocol)   │  (Jupyter container) │
-│                  │ ◀────────────────────────────────▶│                      │
+┌─────────────────┐                                    ┌──────────────────────┐
+│  Browser         │     SSE (launch progress)         │  Code Engine App     │
+│  (thebelab 0.4)  │ ────────────────────────────────▶ │  (user's account)    │
+│                  │     WebSocket (kernel protocol)    │  Jupyter container   │
+│                  │ ◀──────────────────────────────▶  │                      │
 └─────────────────┘                                    └──────────────────────┘
-                                                              │
-                                                              │ scales 0→N
-                                                              │ per request
-                                                              ▼
-                                                       ┌──────────────────────┐
-                                                       │  Container Registry  │
-                                                       │  (IBM CR / quay.io)  │
-                                                       └──────────────────────┘
+        │                                                      │
+        │  Settings page                                       │ scales 0→N
+        │  ┌──────────────┐                                    │ per request
+        └─▶│ CE endpoint  │                                    ▼
+           │ CE API key   │                             ┌──────────────────────┐
+           │ CE project   │                             │  Container Registry  │
+           └──────────────┘                             │  (IBM CR / quay.io)  │
+                                                        └──────────────────────┘
 ```
 
-### How It Works
+### User-Owned IBM Cloud Account Model
 
-1. **Container image** — Reuse the existing `binder/Dockerfile` (based on
-   `quay.io/jupyter/base-notebook:python-3.12` + `jupyter-requirements.txt`).
-   Push the built image to IBM Container Registry or quay.io.
+Each user deploys the Jupyter kernel to **their own** IBM Cloud Code Engine
+project. This means:
 
-2. **Code Engine App** — Deploy as a Code Engine "Application" (HTTP-triggered,
-   auto-scaling). Configure:
-   - Min instances: **0** (scale to zero when idle → no cost)
-   - Max instances: **10** (cap concurrent users)
-   - CPU: **2 vCPU**, Memory: **4 GB** (sufficient for Qiskit workloads)
-   - Timeout: **600s** (10 min idle before scale-down)
-   - Port: **8888** (Jupyter default)
+- **No shared infrastructure cost** for the doQumentation project
+- **Users control their own spending** and can set budget alerts
+- **IBM Cloud free tier** covers ~14 hours/month at no cost
+- **IBM Quantum users already have IBM Cloud accounts** — low friction
+- **Isolation** — each user gets their own container, no cross-user concerns
 
-3. **Binder-compatible API shim** — Two integration paths (see below).
+#### Setup Flow (Settings Page)
 
-4. **CI/CD** — GitHub Actions builds & pushes the image on notebook changes
-   (replaces the current `notebooks` branch + Binder cache warming).
+The existing Settings page (`src/pages/jupyter-settings.tsx`) gets a new
+"IBM Cloud Code Engine" section, following the same UX pattern as the
+IBM Quantum credentials section:
+
+1. User enters their **Code Engine app URL** (e.g.,
+   `https://my-jupyter.<region>.codeengine.appdomain.cloud`)
+2. Optionally enters a **Jupyter token** for their deployment
+3. doQumentation tests the connection (like the existing `testJupyterConnection`)
+4. Credentials stored with TTL (same pattern as IBM Quantum credentials)
+
+#### One-Click Deploy (Stretch Goal)
+
+Provide a **"Deploy to Code Engine"** button/guide that:
+- Links to IBM Cloud with a pre-configured Code Engine app template
+- Uses our published container image from quay.io
+- Pre-fills CPU (2 vCPU), memory (4 GB), scale-to-zero settings
 
 ### Integration with thebelab
 
-thebelab 0.4 currently connects via Binder's build-event SSE protocol. There
-are two integration approaches:
+thebelab 0.4 currently connects via Binder's SSE build-event protocol
+(`ensureBinderSession` in `jupyter.ts:423`). The integration approach depends
+on whether we keep the SSE protocol.
 
-#### Option A: Direct Jupyter Server (Recommended)
+#### Option A: Binder-Compatible SSE Wrapper (Recommended)
 
-Skip the Binder protocol entirely. Code Engine provides a stable URL that
-already has the kernel ready (no build step needed). Configure thebelab to
-connect directly:
+Deploy a **thin SSE endpoint** alongside the Jupyter server in the Code Engine
+container that mimics the Binder `/build/` protocol. This is the better choice
+because:
+
+- **Zero frontend changes** to `ExecutableCode/index.tsx` — the existing
+  `ensureBinderSession()` → `getThebelabOptions()` → `doBootstrap()` flow
+  works unchanged
+- **Progress feedback preserved** — users see the same connecting → launching →
+  ready phases during cold start (5–15s), which is important UX feedback
+- **"Open in JupyterLab" works unchanged** — `openBinderLab()` uses the same
+  SSE protocol and session reuse
+- **Session reuse works unchanged** — `getBinderSession()`/`saveBinderSession()`
+  with 8-min idle timeout works as-is
+- **Minimal container change** — add a small Python endpoint to the Jupyter
+  container (or a sidecar) that responds to `/build/` with SSE events
+
+The SSE endpoint in the container would be ~30 lines of Python:
+
+```python
+# /build/ SSE endpoint — responds immediately since image is pre-built
+async def build_sse(request):
+    async def event_stream():
+        yield sse_event({"phase": "connecting"})
+        yield sse_event({"phase": "launching"})
+        # Jupyter is already running in this container
+        url = f"https://{request.host}/"
+        token = os.environ.get("JUPYTER_TOKEN", "")
+        yield sse_event({"phase": "ready", "url": url, "token": token})
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+```
+
+The only frontend change: detect when the user has configured a Code Engine
+endpoint and use that as the `binderUrl` instead of `mybinder.org`:
 
 ```typescript
-// In src/config/jupyter.ts — new environment case
-if (hostname.endsWith('doqumentation.org')) {
+// In detectJupyterConfig() — Code Engine configured by user
+const ceUrl = getItem(STORAGE_KEY_CE_URL);
+if (ceUrl) {
   return {
     enabled: true,
-    baseUrl: 'https://doqumentation-kernel.<region>.codeengine.appdomain.cloud',
-    wsUrl:  'wss://doqumentation-kernel.<region>.codeengine.appdomain.cloud',
-    token: '<rotated-token>',
+    baseUrl: ceUrl,
+    wsUrl: ceUrl.replace(/^http/, 'ws'),
+    token: getItem(STORAGE_KEY_CE_TOKEN) || '',
     thebeEnabled: true,
-    labEnabled: false,
-    environment: 'github-pages',  // or new 'code-engine' environment
+    labEnabled: true,  // user's own server — Lab access OK
+    binderUrl: ceUrl,  // SSE endpoint lives at same origin
+    environment: 'code-engine',
   };
 }
 ```
 
-In `ExecutableCode/index.tsx`, when `baseUrl` is already set (non-empty), bypass
-the Binder SSE launch flow and bootstrap thebelab directly with the server URL.
-thebelab 0.4 supports this — its `bootstrap()` accepts `serverSettings` with
-`baseUrl` and `token`.
+#### Option B: Direct Jupyter Server (Skip SSE)
 
-**Pros:** Simpler, faster startup (no SSE build phase), fewer moving parts.
-**Cons:** Requires token management (can use a read-only token or IBM IAM).
+Configure thebelab to connect directly via `serverSettings`, bypassing the
+Binder SSE flow entirely.
 
-#### Option B: Binder-Compatible Wrapper
-
-Deploy a thin API layer that mimics the Binder `/build/` SSE endpoint but
-actually just returns the Code Engine app URL. This requires zero changes to
-the existing thebelab integration code.
-
-**Pros:** No frontend changes at all.
-**Cons:** Extra component to maintain, unnecessary complexity.
-
-**Recommendation:** Option A. The frontend changes are minimal (~20 lines in
-`jupyter.ts` + ~10 lines in `ExecutableCode/index.tsx`), and we eliminate the
-SSE build protocol entirely.
+**Pros:** No SSE wrapper needed in the container.
+**Cons:** Requires changes to `ExecutableCode/index.tsx` bootstrap flow (~30
+lines), loses progress feedback during cold start, "Open in JupyterLab" needs
+a separate code path.
 
 ### Changes Required
 
 | File | Change |
 |------|--------|
-| `src/config/jupyter.ts` | Add Code Engine URL for `github-pages` environment |
-| `src/components/ExecutableCode/index.tsx` | Skip Binder SSE when `baseUrl` is set |
-| `docusaurus.config.ts` | Remove Binder URL from site config (optional) |
-| `.github/workflows/deploy.yml` | Add image build + push to IBM CR |
-| `.github/workflows/binder.yml` | Remove (no longer needed) |
-| `binder/Dockerfile` | Minor: add CORS headers for Code Engine |
+| `src/config/jupyter.ts` | Add CE storage keys, detect CE config in `detectJupyterConfig()` |
+| `src/pages/jupyter-settings.tsx` | Add "IBM Cloud Code Engine" section (URL + token input) |
+| `binder/Dockerfile` | Add SSE `/build/` endpoint (small Python script or nginx location) |
+| `.github/workflows/deploy.yml` | Add image build + push to quay.io/IBM CR |
+| `docusaurus.config.ts` | Add CE docs link (optional) |
+
+**Not changed:** `ExecutableCode/index.tsx` — works as-is with SSE wrapper.
 
 ### Session Management
 
-The existing session-reuse logic (`ensureBinderSession`, 8-min idle timeout)
-can be simplified. Code Engine handles scaling automatically — each user gets a
-container instance that stays warm for the configured timeout. The session
-token can be stored the same way (sessionStorage).
+The existing session-reuse logic works unchanged:
 
-For multi-user isolation, each request gets routed to a container instance.
-Code Engine handles this natively via its Knative-based routing.
+- `ensureBinderSession()` checks `sessionStorage` for `dq-binder-session`
+- If session exists and < 8 min old → reuse (no SSE call)
+- If expired → new SSE call to Code Engine `/build/` → instant response
+- `touchBinderSession()` on each cell execution extends the idle timer
 
-## Cost Estimate
+The 8-min idle timeout in the frontend aligns with Code Engine's configurable
+scale-down timeout (set to 600s / 10 min to provide buffer).
+
+### Execution Priority Chain
+
+**mybinder.org remains the default** — no change for users who don't configure
+anything. IBM Cloud Code Engine is presented as the **(recommended) alternative**
+in the Settings page for users who want faster, more reliable kernel access.
+
+Priority order:
+
+1. **Custom Jupyter server** — if configured (existing, unchanged)
+2. **IBM Cloud Code Engine** — if configured (new, recommended)
+3. **mybinder.org** — default for everyone else (existing, unchanged)
+4. **Google Colab** — always available as escape hatch (existing, unchanged)
+
+The Settings page promotes Code Engine with a "(Recommended)" badge and a
+short explanation: faster startup, more reliable, free tier covers casual use.
+
+## Cost Estimate (User's IBM Cloud Account)
 
 ### Per-Instance Pricing (2 vCPU, 4 GB RAM)
 
@@ -131,7 +186,7 @@ Code Engine handles this natively via its Knative-based routing.
 | Memory | $0.00000356/GB-s | 4 × 3600 × $0.00000356 = **$0.051** | $37.40 |
 | **Total per instance** | | **$0.298/hr** | **$217.70** |
 
-### Free Tier (per month)
+### Free Tier (per IBM Cloud account, per month)
 
 - 100,000 vCPU-seconds = **~13.9 hours** at 2 vCPU
 - 200,000 GB-seconds = **~13.9 hours** at 4 GB RAM
@@ -139,16 +194,17 @@ Code Engine handles this natively via its Knative-based routing.
 
 **The free tier covers ~14 hours of kernel time per month at no cost.**
 
-### Realistic Usage Scenarios
+### Realistic User Scenarios
 
-| Scenario | Active hrs/month | Instances | Monthly Cost |
-|----------|-----------------|-----------|-------------|
-| Light (docs dev) | 20 hrs | 1 | **~$1.78** (after free tier) |
-| Moderate (10 users/day) | 100 hrs | 1-2 avg | **~$25.70** |
-| Heavy (launch/workshop) | 300 hrs | 3-5 avg | **~$250–440** |
+| User Profile | Active hrs/month | Monthly Cost |
+|-------------|-----------------|-------------|
+| Casual learner | 5 hrs | **$0** (free tier) |
+| Active student | 15 hrs | **~$0.30** (barely over free tier) |
+| Power user / developer | 40 hrs | **~$7.75** |
+| Workshop instructor | 100 hrs | **~$25.70** |
 
-**Key insight:** Scale-to-zero means you only pay when someone is actually
-running code. Most of the time, the site serves static content at zero cost.
+**Key insight:** Scale-to-zero means cost only accrues when running code. A
+typical learner stays well within the free tier.
 
 ### Comparison with Alternatives
 
@@ -156,47 +212,56 @@ running code. Most of the time, the site serves static content at zero cost.
 |---------|-------------------|---------------|------------|
 | **IBM Code Engine** | **$0.30** | Yes | ~5-15s |
 | mybinder.org | Free | N/A | 30s–5min |
-| AWS Lambda + EFS | ~$0.20 | Yes | 10-30s |
 | Google Cloud Run | ~$0.25 | Yes | 5-15s |
+| AWS Lambda + EFS | ~$0.20 | Yes | 10-30s |
 | Self-hosted (EC2/VM) | ~$0.10 | No (always on) | 0s |
 
 ## Cold Start Mitigation
 
-Code Engine cold starts are 5–15 seconds (pulling a ~3 GB Qiskit image). To
-reduce this:
+Code Engine cold starts are 5–15 seconds (pulling a ~3 GB Qiskit image).
+Users who want zero cold start can set min-scale=1 in their CE project
+(~$0.30/hr / ~$217/month always-on). For most users, the 5–15s cold start
+is acceptable — far better than Binder's 30s–5min.
 
-1. **Min instances = 1** during business hours via scheduled scaling — adds
-   ~$0.30/hr but eliminates cold starts. Could be toggled via cron.
-2. **Smaller image** — strip unused packages, use multi-stage build. Could
-   reduce to ~1.5 GB.
-3. **Pre-warmed pool** — set min-scale=1 permanently (~$217/month) for
-   instant response. Only justified at high traffic.
+To reduce image size (and cold start):
+1. Multi-stage build — install only runtime dependencies
+2. Strip unused Qiskit extras — amd64-only packages, optional addons
+3. Target ~1.5 GB image (down from ~3 GB)
 
 ## Security Considerations
 
-- **Token rotation** — Jupyter token should be rotated periodically and stored
-  as a GitHub secret / IBM Secrets Manager value.
-- **CORS** — Configure `Access-Control-Allow-Origin` for `*.doqumentation.org`.
-- **Network policy** — Code Engine supports private networking; the Jupyter
-  server should only accept connections from the site's domain.
-- **Resource limits** — CPU/memory caps prevent abuse. Code Engine enforces
-  these at the container level.
-- **No persistent storage** — Each container is ephemeral (matching current
-  Binder behavior). User notebooks are not saved server-side.
+- **User-owned accounts** — credentials never leave the user's browser
+  (same as IBM Quantum token pattern: stored in localStorage with TTL)
+- **CORS** — Code Engine apps support custom CORS headers; users configure
+  their CE app to allow `*.doqumentation.org`
+- **No persistent storage** — each container is ephemeral (matching Binder)
+- **Token in localStorage** — same security model as existing IBM Quantum
+  credentials, with configurable TTL (default 7 days)
 
-## Migration Path
+## Implementation Plan
 
-1. **Phase 1** — Deploy Code Engine app alongside Binder (A/B or fallback).
-   Add `environment: 'code-engine'` detection in `jupyter.ts`.
-2. **Phase 2** — Make Code Engine the default for `github-pages`. Keep Binder
-   as fallback (configurable in Settings page).
-3. **Phase 3** — Remove Binder integration and `binder.yml` workflow once
-   stable.
+### Phase 1: Container + Settings UI
+1. Add SSE `/build/` endpoint to `binder/Dockerfile`
+2. Add Code Engine section to Settings page
+3. Add `code-engine` environment to `jupyter.ts`
+4. Publish image to quay.io via CI
+
+### Phase 2: Documentation + Deploy Guide
+1. Add setup guide: "Use your IBM Cloud account for interactive code"
+2. Optional: IBM Cloud "Deploy to Code Engine" template
+3. Add CE option to the onboarding/first-run experience
+
+### Phase 3: Optimize
+1. Reduce image size for faster cold starts
+2. Add health-check / connection test in Settings
+3. Consider shared/sponsored CE instance for anonymous users
 
 ## Open Questions
 
-- [ ] IBM Cloud account — use existing org account or create dedicated one?
-- [ ] Region selection — `us-south`, `eu-de`, or multi-region?
-- [ ] Authentication — simple token vs. IBM IAM-based per-user auth?
-- [ ] Should we keep Binder as a permanent fallback or remove it entirely?
-- [ ] Budget cap — set a monthly spending alert/limit?
+- [ ] Should we also offer a **project-sponsored** CE instance as default
+      (for users without IBM Cloud accounts)?
+- [ ] Image registry: quay.io (public, free) vs. IBM Container Registry
+      (private, user's account)?
+- [ ] Minimum image: can we make a "lite" image with just core Qiskit
+      (~500 MB) for faster cold starts?
+- [ ] Should the Settings page offer a guided IBM Cloud signup flow?
