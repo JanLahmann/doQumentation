@@ -23,17 +23,17 @@ page, similar to how IBM Quantum credentials work today.
 ```
 ┌─────────────────┐                                    ┌──────────────────────┐
 │  Browser         │     SSE (launch progress)         │  Code Engine App     │
-│  (thebelab 0.4)  │ ────────────────────────────────▶ │  (user's account)    │
-│                  │     WebSocket (kernel protocol)    │  Jupyter container   │
-│                  │ ◀──────────────────────────────▶  │                      │
+│  (thebelab 0.4)  │ ────────────────────────────────▶ │  (user's own account │
+│                  │     WebSocket (kernel protocol)    │   or teacher-shared) │
+│                  │ ◀──────────────────────────────▶  │  Jupyter container   │
 └─────────────────┘                                    └──────────────────────┘
         │                                                      │
         │  Settings page                                       │ scales 0→N
         │  ┌──────────────┐                                    │ per request
         └─▶│ CE endpoint  │                                    ▼
-           │ CE API key   │                             ┌──────────────────────┐
-           │ CE project   │                             │  Container Registry  │
-           └──────────────┘                             │  (IBM CR / quay.io)  │
+           │ Jupyter token│                             ┌──────────────────────┐
+           └──────────────┘                             │  quay.io             │
+                                                        │  (public image)      │
                                                         └──────────────────────┘
 ```
 
@@ -48,50 +48,114 @@ project. This means:
 - **IBM Quantum users already have IBM Cloud accounts** — low friction
 - **Isolation** — each user gets their own container, no cross-user concerns
 
-#### Setup Flow (Settings Page)
+### Teacher / Classroom Mode
 
-The existing Settings page (`src/pages/jupyter-settings.tsx`) gets a new
-"IBM Cloud Code Engine" section, following the same UX pattern as the
-IBM Quantum credentials section:
+A teacher or workshop instructor can deploy **one** Code Engine instance and
+share it with their entire class. This enables:
 
-1. User enters their **Code Engine app URL** (e.g.,
-   `https://my-jupyter.<region>.codeengine.appdomain.cloud`)
-2. Optionally enters a **Jupyter token** for their deployment
-3. doQumentation tests the connection (like the existing `testJupyterConnection`)
-4. Credentials stored with TTL (same pattern as IBM Quantum credentials)
+- **One-time setup** — teacher deploys the container, shares the URL + token
+- **Students just paste the URL** — no IBM Cloud account needed for students
+- **Teacher controls the budget** — set max-instances and budget alerts
+- **Workshop-friendly** — pre-warm with min-scale=1 before the session
 
-#### One-Click Deploy (Stretch Goal)
+#### Settings Page UX
 
-Provide a **"Deploy to Code Engine"** button/guide that:
-- Links to IBM Cloud with a pre-configured Code Engine app template
-- Uses our published container image from quay.io
-- Pre-fills CPU (2 vCPU), memory (4 GB), scale-to-zero settings
+The Settings page Code Engine section has two tabs:
+
+**"Own Account" tab:**
+1. Guided setup wizard (see below)
+2. User enters their Code Engine app URL
+3. Optionally enters a Jupyter token
+4. Connection test + save
+
+**"Classroom" tab:**
+1. Student enters a **shared URL** provided by their teacher
+2. Enters the **shared token** (teacher distributes this)
+3. Connection test + save
+4. Hint: "Ask your instructor for the Code Engine URL and token"
+
+The teacher sees the same "Own Account" flow, but with additional guidance on
+sharing: "Share this URL and token with your students so they can connect."
+
+#### Teacher Deployment Guide
+
+The Settings page includes a collapsible **"Setup Guide for Instructors"**:
+
+1. Sign up / log in to [IBM Cloud](https://cloud.ibm.com)
+2. Create a Code Engine project
+3. Create an Application:
+   - Image: `quay.io/janlahmann/doqumentation-jupyter:latest`
+   - CPU: 2 vCPU, Memory: 4 GB
+   - Min instances: 0 (or 1 for workshops)
+   - Max instances: 10 (adjust for class size)
+   - Port: 8888
+4. Set environment variable: `JUPYTER_TOKEN=<your-chosen-token>`
+5. Copy the app URL → share with students
+6. (Optional) Set a budget alert under IBM Cloud → Billing
+
+#### Max Instances Guidance for Teachers
+
+| Class Size | Recommended Max Instances | Est. Cost/hr (all active) |
+|-----------|--------------------------|--------------------------|
+| 5–10      | 3                        | ~$0.90/hr                |
+| 10–25     | 5                        | ~$1.50/hr                |
+| 25–50     | 10                       | ~$3.00/hr                |
+
+Code Engine routes multiple concurrent users to the same instance when
+possible (each Jupyter server handles one kernel). For workshops, set
+min-scale equal to expected concurrent users to eliminate cold starts.
+
+### Guided Setup Flow (Settings Page)
+
+The Settings page provides a **step-by-step wizard** for individual users:
+
+#### Step 1: IBM Cloud Account
+- "You need an IBM Cloud account. Most IBM Quantum users already have one."
+- Link: **[Sign up for IBM Cloud](https://cloud.ibm.com/registration)**
+  (opens in new tab)
+- "Already have an account? Continue →"
+
+#### Step 2: Create Code Engine App
+- "Create a Code Engine application using our pre-built image."
+- Option A: **Quick Deploy link** — pre-fills the IBM Cloud console with:
+  - Image: `quay.io/janlahmann/doqumentation-jupyter:latest`
+  - CPU: 2 vCPU, Memory: 4 GB, Port: 8888
+  - Scale: min 0, max 3
+- Option B: Manual steps (collapsible) with screenshots
+
+#### Step 3: Configure Token
+- "Set a Jupyter token for your deployment (environment variable)."
+- Explains: `JUPYTER_TOKEN=<your-token>` in Code Engine app settings
+
+#### Step 4: Connect
+- Paste the Code Engine app URL
+- Paste the Jupyter token
+- **[Test Connection]** button (reuses existing `testJupyterConnection`)
+- On success: "Connected! Code Engine is now your kernel provider."
+- Credentials saved with TTL (same as IBM Quantum credentials, default 7 days)
 
 ### Integration with thebelab
 
 thebelab 0.4 currently connects via Binder's SSE build-event protocol
-(`ensureBinderSession` in `jupyter.ts:423`). The integration approach depends
-on whether we keep the SSE protocol.
+(`ensureBinderSession` in `jupyter.ts:423`). We keep the SSE protocol via a
+thin wrapper in the container.
 
-#### Option A: Binder-Compatible SSE Wrapper (Recommended)
+#### Binder-Compatible SSE Wrapper
 
 Deploy a **thin SSE endpoint** alongside the Jupyter server in the Code Engine
-container that mimics the Binder `/build/` protocol. This is the better choice
-because:
+container that mimics the Binder `/build/` protocol:
 
 - **Zero frontend changes** to `ExecutableCode/index.tsx` — the existing
   `ensureBinderSession()` → `getThebelabOptions()` → `doBootstrap()` flow
   works unchanged
-- **Progress feedback preserved** — users see the same connecting → launching →
-  ready phases during cold start (5–15s), which is important UX feedback
+- **Progress feedback preserved** — users see connecting → launching →
+  ready phases during cold start (5–15s)
 - **"Open in JupyterLab" works unchanged** — `openBinderLab()` uses the same
   SSE protocol and session reuse
 - **Session reuse works unchanged** — `getBinderSession()`/`saveBinderSession()`
   with 8-min idle timeout works as-is
-- **Minimal container change** — add a small Python endpoint to the Jupyter
-  container (or a sidecar) that responds to `/build/` with SSE events
 
-The SSE endpoint in the container would be ~30 lines of Python:
+The SSE endpoint in the container (~30 lines of Python):
 
 ```python
 # /build/ SSE endpoint — responds immediately since image is pre-built
@@ -126,24 +190,14 @@ if (ceUrl) {
 }
 ```
 
-#### Option B: Direct Jupyter Server (Skip SSE)
-
-Configure thebelab to connect directly via `serverSettings`, bypassing the
-Binder SSE flow entirely.
-
-**Pros:** No SSE wrapper needed in the container.
-**Cons:** Requires changes to `ExecutableCode/index.tsx` bootstrap flow (~30
-lines), loses progress feedback during cold start, "Open in JupyterLab" needs
-a separate code path.
-
 ### Changes Required
 
 | File | Change |
 |------|--------|
 | `src/config/jupyter.ts` | Add CE storage keys, detect CE config in `detectJupyterConfig()` |
-| `src/pages/jupyter-settings.tsx` | Add "IBM Cloud Code Engine" section (URL + token input) |
-| `binder/Dockerfile` | Add SSE `/build/` endpoint (small Python script or nginx location) |
-| `.github/workflows/deploy.yml` | Add image build + push to quay.io/IBM CR |
+| `src/pages/jupyter-settings.tsx` | Add "Code Engine" section with Own Account / Classroom tabs, guided wizard |
+| `binder/Dockerfile` | Add SSE `/build/` endpoint (small Python script) |
+| `.github/workflows/deploy.yml` | Add image build + push to quay.io |
 | `docusaurus.config.ts` | Add CE docs link (optional) |
 
 **Not changed:** `ExecutableCode/index.tsx` — works as-is with SSE wrapper.
@@ -201,10 +255,11 @@ short explanation: faster startup, more reliable, free tier covers casual use.
 | Casual learner | 5 hrs | **$0** (free tier) |
 | Active student | 15 hrs | **~$0.30** (barely over free tier) |
 | Power user / developer | 40 hrs | **~$7.75** |
-| Workshop instructor | 100 hrs | **~$25.70** |
+| Workshop instructor (class of 25) | 50 hrs × 5 instances | **~$70** |
 
 **Key insight:** Scale-to-zero means cost only accrues when running code. A
-typical learner stays well within the free tier.
+typical learner stays well within the free tier. A teacher running a 2-hour
+workshop with 25 students pays ~$3.00 total.
 
 ### Comparison with Alternatives
 
@@ -223,45 +278,59 @@ Users who want zero cold start can set min-scale=1 in their CE project
 (~$0.30/hr / ~$217/month always-on). For most users, the 5–15s cold start
 is acceptable — far better than Binder's 30s–5min.
 
-To reduce image size (and cold start):
-1. Multi-stage build — install only runtime dependencies
-2. Strip unused Qiskit extras — amd64-only packages, optional addons
-3. Target ~1.5 GB image (down from ~3 GB)
+**For teachers/workshops:** Set min-scale to expected concurrent users 15
+minutes before the session starts. Reset to 0 after. This keeps cost to the
+actual workshop duration.
 
 ## Security Considerations
 
 - **User-owned accounts** — credentials never leave the user's browser
   (same as IBM Quantum token pattern: stored in localStorage with TTL)
+- **Classroom mode** — teacher distributes a read/execute-only token; students
+  cannot modify the Code Engine deployment or access the teacher's IBM Cloud
+  console
 - **CORS** — Code Engine apps support custom CORS headers; users configure
   their CE app to allow `*.doqumentation.org`
 - **No persistent storage** — each container is ephemeral (matching Binder)
 - **Token in localStorage** — same security model as existing IBM Quantum
   credentials, with configurable TTL (default 7 days)
+- **Multi-user on shared instance** — each WebSocket connection gets its own
+  Jupyter kernel; kernel isolation is handled by Jupyter's built-in
+  multi-kernel architecture
+
+## Container Image
+
+Published to **quay.io** (public, free, no auth needed to pull):
+
+- Registry: `quay.io/janlahmann/doqumentation-jupyter`
+- Tags: `latest`, `<git-sha>`, `<date>`
+- Built by: GitHub Actions on notebook/dependency changes
+- Base: `quay.io/jupyter/base-notebook:python-3.12`
+- Contents: full Qiskit stack from `binder/jupyter-requirements.txt`
+- Addition: SSE `/build/` endpoint for Binder protocol compatibility
+
+The same image works for:
+- Individual users (own Code Engine account)
+- Teachers (shared instance for classroom)
+- Local Docker (`docker-compose.yml` — existing, unchanged)
 
 ## Implementation Plan
 
-### Phase 1: Container + Settings UI
-1. Add SSE `/build/` endpoint to `binder/Dockerfile`
-2. Add Code Engine section to Settings page
-3. Add `code-engine` environment to `jupyter.ts`
-4. Publish image to quay.io via CI
+### Phase 1: Container + SSE Endpoint
+1. Add SSE `/build/` endpoint to container (Python script + supervisor config)
+2. Set up quay.io repository and CI image push in `deploy.yml`
+3. Test: container starts, SSE responds, thebelab connects
 
-### Phase 2: Documentation + Deploy Guide
-1. Add setup guide: "Use your IBM Cloud account for interactive code"
-2. Optional: IBM Cloud "Deploy to Code Engine" template
-3. Add CE option to the onboarding/first-run experience
+### Phase 2: Settings UI + Guided Setup
+1. Add `code-engine` environment to `jupyter.ts` (storage keys, detection)
+2. Add Code Engine section to Settings page:
+   - "Own Account" tab with guided wizard (4 steps)
+   - "Classroom" tab with URL + token input
+3. Connection test + credential persistence with TTL
+4. Teacher setup guide (collapsible, in Settings page)
 
-### Phase 3: Optimize
-1. Reduce image size for faster cold starts
-2. Add health-check / connection test in Settings
-3. Consider shared/sponsored CE instance for anonymous users
-
-## Open Questions
-
-- [ ] Should we also offer a **project-sponsored** CE instance as default
-      (for users without IBM Cloud accounts)?
-- [ ] Image registry: quay.io (public, free) vs. IBM Container Registry
-      (private, user's account)?
-- [ ] Minimum image: can we make a "lite" image with just core Qiskit
-      (~500 MB) for faster cold starts?
-- [ ] Should the Settings page offer a guided IBM Cloud signup flow?
+### Phase 3: Polish
+1. Add max-instances guidance for teachers
+2. Add CORS setup instructions to the guide
+3. Add health-check endpoint for better connection testing
+4. Quick Deploy link for IBM Cloud console (pre-filled template)
