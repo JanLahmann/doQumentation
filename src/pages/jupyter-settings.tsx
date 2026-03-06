@@ -382,9 +382,12 @@ export default function JupyterSettings(): JSX.Element {
             {config?.environment === 'github-pages' && (
               <Translate
                 id="settings.env.githubPages"
-                values={{binder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">Binder</a>}}
+                values={{
+                  binder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">Binder</a>,
+                  ceLink: <a href="#code-engine"><Translate id="settings.env.githubPages.ceLink">Code Engine</Translate></a>,
+                }}
               >
-                {'GitHub Pages - Code execution uses {binder} (may take a moment to start)'}
+                {'GitHub Pages - Code execution uses {binder} (may take a moment to start). For faster startup, configure {ceLink} below.'}
               </Translate>
             )}
             {config?.environment === 'code-engine' && (
@@ -626,7 +629,7 @@ QiskitRuntimeService.save_account(
 
           {/* Code Engine (Serverless Jupyter) */}
           <h2 id="code-engine" style={{ marginTop: '2rem' }}>
-            <Translate id="settings.ce.heading">IBM Cloud Code Engine (Optional)</Translate>
+            <Translate id="settings.ce.heading">IBM Cloud Code Engine (Recommended)</Translate>
           </h2>
 
           <p>
@@ -636,7 +639,7 @@ QiskitRuntimeService.save_account(
                 strong: <strong><Translate id="settings.ce.descStrong">your own serverless Jupyter kernel</Translate></strong>,
               }}
             >
-              {'Connect to {strong} on IBM Cloud Code Engine for faster startup and persistent sessions — no mybinder.org queue. This is optional; without it, notebooks use mybinder.org (free, but slower).'}
+              {'Connect to {strong} on IBM Cloud Code Engine for instant startup and persistent sessions — no mybinder.org queue. Recommended for the best experience. Without it, notebooks fall back to mybinder.org (free, but slower).'}
             </Translate>
           </p>
 
