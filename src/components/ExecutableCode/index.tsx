@@ -866,6 +866,9 @@ export default function ExecutableCode({
   const [binderHintDismissed, setBinderHintDismissed] = useState(false);
   const [hideStaticOutputs, setHideStaticOutputs] = useState(false);
   const [binderPhase, setBinderPhase] = useState<string | null>(null);
+  const [binderElapsed, setBinderElapsed] = useState(0);
+  const [binderCacheMiss, setBinderCacheMiss] = useState(false);
+  const binderStartRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const thebeContainerRef = useRef<HTMLDivElement>(null);
 
@@ -898,6 +901,9 @@ export default function ExecutableCode({
       setMode('read');
       setThebeStatus('idle');
       setBinderPhase(null);
+      setBinderElapsed(0);
+      setBinderCacheMiss(false);
+      binderStartRef.current = null;
       setInjectionInfo(null);
       setInjectionToast(null);
     };
@@ -920,8 +926,17 @@ export default function ExecutableCode({
   useEffect(() => {
     const onPhase = (e: Event) => {
       const phase = (e as CustomEvent<string>).detail;
+      if (phase === 'connecting' && binderStartRef.current === null) {
+        binderStartRef.current = Date.now();
+      }
+      if (phase === 'building') {
+        setBinderCacheMiss(true);
+      }
       if (phase === 'ready' || phase === 'failed') {
         setBinderPhase(null);
+        binderStartRef.current = null;
+        setBinderElapsed(0);
+        if (phase === 'ready') setBinderCacheMiss(false);
       } else {
         setBinderPhase(phase);
       }
@@ -929,6 +944,17 @@ export default function ExecutableCode({
     window.addEventListener(BINDER_PHASE_EVENT, onPhase);
     return () => window.removeEventListener(BINDER_PHASE_EVENT, onPhase);
   }, []);
+
+  // Elapsed timer for Binder build
+  useEffect(() => {
+    if (!binderPhase) return;
+    const interval = setInterval(() => {
+      if (binderStartRef.current !== null) {
+        setBinderElapsed(Math.floor((Date.now() - binderStartRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [binderPhase]);
 
   // Listen for conflict banner (both credentials + simulator configured, no explicit choice)
   useEffect(() => {
@@ -1042,16 +1068,21 @@ export default function ExecutableCode({
 
   // Binder phase labels for the toolbar status text
   const binderPhaseLabels: Record<string, string> = {
-    connecting: translate({id: 'executable.status.binderConnecting', message: 'Starting Binder (this may take up to 10 minutes on first run)...'}),
-    fetching: translate({id: 'executable.status.binderFetching', message: 'Fetching repo...'}),
-    building: translate({id: 'executable.status.binderBuilding', message: 'Building image (this may take up to 10 minutes on first run)...'}),
-    pushing: translate({id: 'executable.status.binderPushing', message: 'Pushing image...'}),
-    built: translate({id: 'executable.status.binderBuilt', message: 'Image ready...'}),
-    launching: translate({id: 'executable.status.binderLaunching', message: 'Launching server...'}),
+    connecting: translate({id: 'executable.status.binderConnecting', message: 'Connecting...'}),
+    waiting: translate({id: 'executable.status.binderWaiting', message: 'In queue...'}),
+    fetching: translate({id: 'executable.status.binderFetching', message: 'Fetching repo (2\u20135 min)...'}),
+    building: translate({id: 'executable.status.binderBuilding', message: 'Building image (5\u201310 min)...'}),
+    pushing: translate({id: 'executable.status.binderPushing', message: 'Pushing image (2\u20135 min)...'}),
+    built: translate({id: 'executable.status.binderBuilt', message: 'Launching...'}),
+    launching: translate({id: 'executable.status.binderLaunching', message: 'Launching server (2\u20135 min)...'}),
   };
 
-  const connectingText = jupyterConfig?.environment === 'github-pages'
+  const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  const phaseLabel = jupyterConfig?.environment === 'github-pages'
     ? (binderPhase && binderPhaseLabels[binderPhase]) || binderPhaseLabels.connecting
+    : null;
+  const connectingText = jupyterConfig?.environment === 'github-pages'
+    ? (phaseLabel || '') + (binderElapsed > 0 ? ` ${formatElapsed(binderElapsed)}` : '')
     : translate({id: 'executable.status.connecting', message: 'Connecting...'});
 
   const statusText: Record<ThebeStatus, string> = {
@@ -1164,6 +1195,12 @@ export default function ExecutableCode({
           >
             {translate({id: 'executable.settingsLink', message: 'Settings'})}
           </a>
+        </div>
+      )}
+
+      {isFirstCell && binderCacheMiss && binderPhase && (
+        <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
+          {translate({id: 'executable.status.binderCacheMiss', message: '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Use Colab (above) or come back later.'})}
         </div>
       )}
 
