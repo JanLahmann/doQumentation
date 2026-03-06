@@ -471,6 +471,39 @@ export function ensureBinderSession(
  * and navigates the tab to JupyterLab when ready.
  * Subsequent calls (within 8 min): navigates directly (session already exists).
  */
+/** Phase hints with durations for the Binder loading tab */
+const TAB_PHASE_HINTS: Record<string, string> = {
+  connecting: 'Connecting to mybinder.org\u2026',
+  waiting:    'Waiting in queue\u2026',
+  fetching:   'Fetching repository (2\u20135 min)\u2026',
+  building:   'Building Docker image (5\u201310 min)\u2026',
+  pushing:    'Pushing image to registry (2\u20135 min)\u2026',
+  built:      'Image ready \u2014 launching JupyterLab\u2026',
+  launching:  'Starting JupyterLab server (2\u20135 min)\u2026',
+};
+
+const BINDER_TAB_HTML = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Starting Binder\u2026</title>
+<style>
+  body { font-family: system-ui, sans-serif; padding: 2rem; color: #333; background: #fafafa; }
+  #phase { font-size: 1.1rem; margin-bottom: 0.5rem; }
+  #elapsed { font-size: 0.9rem; color: #888; }
+  #warning { margin-top: 1rem; padding: 0.75rem 1rem; border-radius: 6px;
+    background: #fff8e1; border: 1px solid #ffe082; color: #b45309; display: none; }
+</style></head><body>
+  <div id="phase">Connecting to mybinder.org\u2026</div>
+  <div id="elapsed"></div>
+  <div id="warning">\u26a0 Cache not warmed \u2014 total build time 10\u201325 min.
+    Close this tab and use <strong>Colab</strong> instead, or come back later.</div>
+</body></html>`;
+
+function formatElapsedCompact(s: number): string {
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r > 0 ? `${m}m ${r}s` : `${m}m`;
+}
+
 export function openBinderLab(
   config: JupyterConfig,
   notebookPath: string,
@@ -480,28 +513,58 @@ export function openBinderLab(
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
 
   // Open tab synchronously from click handler to avoid popup blockers.
-  // Show a minimal loading page while the Binder session starts.
   const tab = window.open('about:blank', '_blank');
   if (tab) {
-    tab.document.title = 'Starting Binder\u2026';
-    tab.document.body.innerHTML =
-      '<p style="font-family:system-ui;padding:2rem;color:#555">' +
-      'Starting Binder\u2026 this may take up to 10 minutes on first run.</p>';
+    tab.document.open();
+    tab.document.write(BINDER_TAB_HTML);
+    tab.document.close();
   }
 
-  ensureBinderSession(config, onProgress).then((session) => {
+  const startTime = Date.now();
+  let timerInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Start elapsed timer in the tab
+  if (tab) {
+    timerInterval = setInterval(() => {
+      if (tab.closed) { if (timerInterval) clearInterval(timerInterval); return; }
+      try {
+        const el = tab.document.getElementById('elapsed');
+        if (el) el.textContent = formatElapsedCompact(Math.floor((Date.now() - startTime) / 1000));
+      } catch { /* tab navigated away or closed */ }
+    }, 1000);
+  }
+
+  ensureBinderSession(config, (phase) => {
+    onProgress?.(phase);
+    if (!tab || tab.closed) return;
+    try {
+      const phaseEl = tab.document.getElementById('phase');
+      if (phaseEl) phaseEl.textContent = TAB_PHASE_HINTS[phase] || phase;
+      if (phase === 'building') {
+        const warn = tab.document.getElementById('warning');
+        if (warn) warn.style.display = 'block';
+      }
+    } catch { /* tab navigated away */ }
+  }).then((session) => {
+    if (timerInterval) clearInterval(timerInterval);
     const labUrl = `${session.url}lab/tree/${nbPath}?token=${session.token}`;
     if (tab && !tab.closed) {
       tab.location.href = labUrl;
     } else {
-      // Tab was closed by user or blocked despite our efforts — try again
       window.open(labUrl, '_blank');
     }
     onProgress?.('ready');
   }).catch(() => {
-    // Close the blank tab on failure so user isn't left with an empty tab
-    if (tab && !tab.closed) tab.close();
-    /* onProgress('failed') already called by ensureBinderSession */
+    if (timerInterval) clearInterval(timerInterval);
+    if (tab && !tab.closed) {
+      try {
+        const phaseEl = tab.document.getElementById('phase');
+        if (phaseEl) {
+          phaseEl.textContent = 'Binder build failed. Close this tab and try again, or use Colab.';
+          phaseEl.style.color = '#d32f2f';
+        }
+      } catch { tab.close(); }
+    }
   });
 }
 
