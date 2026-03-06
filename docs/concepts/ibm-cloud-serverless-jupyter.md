@@ -85,25 +85,58 @@ The Settings page includes a collapsible **"Setup Guide for Instructors"**:
 2. Create a Code Engine project
 3. Create an Application:
    - Image: `quay.io/janlahmann/doqumentation-jupyter:latest`
-   - CPU: 2 vCPU, Memory: 4 GB
-   - Min instances: 0 (or 1 for workshops)
-   - Max instances: 10 (adjust for class size)
+   - CPU: 2 vCPU, Memory: 4 GB (or 4 vCPU / 8 GB for shared instances)
+   - Concurrency: 1 (or 3 with larger instance — see scaling guidance)
+   - Min instances: 0 (or N for workshops — set before session starts)
+   - Max instances: adjust for class size (see table below)
    - Port: 8888
 4. Set environment variable: `JUPYTER_TOKEN=<your-chosen-token>`
 5. Copy the app URL → share with students
 6. (Optional) Set a budget alert under IBM Cloud → Billing
 
+#### Scaling Model: Instances, Not Bigger Instances
+
+Each Jupyter kernel holds user state (variables, imports, circuit objects) —
+**users cannot share a kernel**. Code Engine's `--concurrency` setting controls
+how many users are routed to one container instance:
+
+- **`concurrency=1` (recommended):** Each user gets their own dedicated
+  container (2 vCPU, 4 GB). Full isolation, matches Binder's model exactly.
+  Scaling = more identical instances.
+- **`concurrency=2–3` (cost-saving option):** Multiple Jupyter kernels run in
+  one container. Jupyter natively supports multiple independent kernels per
+  server. Requires a larger instance (4 vCPU, 8 GB) so each kernel gets
+  sufficient memory for Qiskit workloads (~2 GB per kernel).
+
+**Why not one big instance?** A single Qiskit kernel doesn't benefit from
+more than ~2 vCPU (quantum circuit simulation is memory-bound, not CPU-bound
+at the sizes used in tutorials). Scaling up a single instance to 8 vCPU / 16 GB
+would serve ~4 users but costs the same as 4 separate 2 vCPU / 4 GB instances
+— no savings, and a crash takes down all users instead of one.
+
 #### Max Instances Guidance for Teachers
 
-| Class Size | Recommended Max Instances | Est. Cost/hr (all active) |
-|-----------|--------------------------|--------------------------|
-| 5–10      | 3                        | ~$0.90/hr                |
-| 10–25     | 5                        | ~$1.50/hr                |
-| 25–50     | 10                       | ~$3.00/hr                |
+**Option 1: `concurrency=1`, 2 vCPU / 4 GB per instance (recommended)**
 
-Code Engine routes multiple concurrent users to the same instance when
-possible (each Jupyter server handles one kernel). For workshops, set
-min-scale equal to expected concurrent users to eliminate cold starts.
+| Class Size | Max Instances | Est. Cost/hr (all active) |
+|-----------|--------------|--------------------------|
+| 5–10      | 10           | ~$3.00/hr                |
+| 10–25     | 25           | ~$7.50/hr                |
+| 25–50     | 50           | ~$15.00/hr               |
+
+**Option 2: `concurrency=3`, 4 vCPU / 8 GB per instance (budget-friendly)**
+
+| Class Size | Max Instances | Est. Cost/hr (all active) |
+|-----------|--------------|--------------------------|
+| 5–10      | 4            | ~$2.40/hr                |
+| 10–25     | 9            | ~$5.40/hr                |
+| 25–50     | 17           | ~$10.20/hr               |
+
+*Option 2 instance cost: 4 vCPU × $0.00003431 + 8 GB × $0.00000356 =
+$0.597/hr per instance, serving up to 3 concurrent users each.*
+
+For workshops, set min-scale equal to the number of instances needed to
+eliminate cold starts. Reset to 0 after the session.
 
 ### Guided Setup Flow (Settings Page)
 
@@ -120,7 +153,7 @@ The Settings page provides a **step-by-step wizard** for individual users:
 - Option A: **Quick Deploy link** — pre-fills the IBM Cloud console with:
   - Image: `quay.io/janlahmann/doqumentation-jupyter:latest`
   - CPU: 2 vCPU, Memory: 4 GB, Port: 8888
-  - Scale: min 0, max 3
+  - Concurrency: 1, Scale: min 0, max 3
 - Option B: Manual steps (collapsible) with screenshots
 
 #### Step 3: Configure Token
@@ -252,14 +285,14 @@ short explanation: faster startup, more reliable, free tier covers casual use.
 
 | User Profile | Active hrs/month | Monthly Cost |
 |-------------|-----------------|-------------|
-| Casual learner | 5 hrs | **$0** (free tier) |
-| Active student | 15 hrs | **~$0.30** (barely over free tier) |
-| Power user / developer | 40 hrs | **~$7.75** |
-| Workshop instructor (class of 25) | 50 hrs × 5 instances | **~$70** |
+| Casual learner | 5 hrs × 1 instance | **$0** (free tier) |
+| Active student | 15 hrs × 1 instance | **~$0.30** (barely over free tier) |
+| Power user / developer | 40 hrs × 1 instance | **~$7.75** |
+| Workshop (class of 25, concurrency=1) | 2 hrs × 25 instances | **~$15.00** per session |
+| Workshop (class of 25, concurrency=3) | 2 hrs × 9 instances | **~$10.80** per session |
 
 **Key insight:** Scale-to-zero means cost only accrues when running code. A
-typical learner stays well within the free tier. A teacher running a 2-hour
-workshop with 25 students pays ~$3.00 total.
+typical learner stays well within the free tier.
 
 ### Comparison with Alternatives
 
