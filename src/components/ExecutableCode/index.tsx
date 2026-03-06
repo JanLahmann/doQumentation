@@ -617,9 +617,9 @@ interface ExecutableCodeProps {
 
 /** Build thebelab bootstrap options for the current environment. */
 function getThebelabOptions(config: JupyterConfig, session?: BinderSession | null): Record<string, unknown> {
-  if (config.environment === 'github-pages') {
+  if (config.environment === 'github-pages' || config.environment === 'code-engine') {
     if (session) {
-      // Reuse existing Binder server — connect via serverSettings (same as local/Docker)
+      // Reuse existing Binder/CE server — connect via serverSettings (same as local/Docker)
       return {
         requestKernel: true,
         kernelOptions: {
@@ -776,8 +776,8 @@ function bootstrapOnce(config: JupyterConfig): void {
     return;
   }
 
-  if (config.environment === 'github-pages' && config.binderUrl) {
-    // Build (or reuse) Binder session, then connect thebelab via serverSettings
+  if ((config.environment === 'github-pages' || config.environment === 'code-engine') && config.binderUrl) {
+    // Build (or reuse) Binder/CE session, then connect thebelab via serverSettings
     ensureBinderSession(config, (phase) => {
       if (DEBUG) console.log(`[ExecutableCode] Binder phase: ${phase}`);
       window.dispatchEvent(new CustomEvent(BINDER_PHASE_EVENT, { detail: phase }));

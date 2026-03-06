@@ -20,7 +20,7 @@ export interface JupyterConfig {
   thebeEnabled: boolean;
   labEnabled: boolean;
   binderUrl?: string;
-  environment: 'github-pages' | 'rasqberry' | 'custom' | 'unknown';
+  environment: 'github-pages' | 'code-engine' | 'rasqberry' | 'custom' | 'unknown';
 }
 
 const STORAGE_KEY_URL = 'rasqberry_jupyter_url';
@@ -39,6 +39,10 @@ const STORAGE_KEY_IBM_TTL_DAYS = 'doqumentation_ibm_ttl_days';
 const STORAGE_KEY_SUPPRESS_WARNINGS = 'doqumentation_suppress_warnings';
 const DEFAULT_TTL_DAYS = 7;
 
+const STORAGE_KEY_CE_URL = 'doqumentation_ce_url';
+const STORAGE_KEY_CE_TOKEN = 'doqumentation_ce_token';
+const STORAGE_KEY_CE_SAVED_AT = 'doqumentation_ce_saved_at';
+
 /** All Jupyter storage keys, exported for migration. */
 export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_URL, STORAGE_KEY_TOKEN,
@@ -46,6 +50,7 @@ export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_IBM_TTL_DAYS, STORAGE_KEY_SIM_MODE, STORAGE_KEY_SIM_BACKEND,
   STORAGE_KEY_FAKE_DEVICE, STORAGE_KEY_FAKE_BACKENDS_CACHE,
   STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
+  STORAGE_KEY_CE_URL, STORAGE_KEY_CE_TOKEN, STORAGE_KEY_CE_SAVED_AT,
 ];
 
 /**
@@ -70,6 +75,23 @@ export function detectJupyterConfig(): JupyterConfig {
       thebeEnabled: true,
       labEnabled: true,
       environment: 'custom',
+    };
+  }
+
+  // IBM Cloud Code Engine — user-configured serverless Jupyter kernel
+  const ceUrl = getItem(STORAGE_KEY_CE_URL);
+  if (ceUrl) {
+    const ceBase = ceUrl.replace(/\/+$/, '');
+    return {
+      enabled: true,
+      baseUrl: ceBase,
+      wsUrl: ceBase.replace(/^http/, 'ws'),
+      token: getItem(STORAGE_KEY_CE_TOKEN) || '',
+      thebeEnabled: true,
+      labEnabled: true,
+      // Append /v2/ so ensureBinderSession's .replace('/v2/', '/build/') works
+      binderUrl: ceBase + '/v2/',
+      environment: 'code-engine',
     };
   }
 
@@ -229,6 +251,50 @@ export function clearIBMQuantumCredentials(): void {
   removeItem(STORAGE_KEY_IBM_TOKEN);
   removeItem(STORAGE_KEY_IBM_CRN);
   removeItem(STORAGE_KEY_IBM_SAVED_AT);
+}
+
+// ── Code Engine credentials ──
+
+export function getCodeEngineUrl(): string {
+  if (typeof window === 'undefined') return '';
+  checkCEExpiry();
+  return getItem(STORAGE_KEY_CE_URL) || '';
+}
+
+export function getCodeEngineToken(): string {
+  if (typeof window === 'undefined') return '';
+  return getItem(STORAGE_KEY_CE_TOKEN) || '';
+}
+
+export function saveCodeEngineCredentials(url: string, token: string): void {
+  if (typeof window === 'undefined') return;
+  setItem(STORAGE_KEY_CE_URL, url.replace(/\/+$/, ''));
+  if (token) setItem(STORAGE_KEY_CE_TOKEN, token);
+  setItem(STORAGE_KEY_CE_SAVED_AT, String(Date.now()));
+}
+
+export function clearCodeEngineCredentials(): void {
+  if (typeof window === 'undefined') return;
+  removeItem(STORAGE_KEY_CE_URL);
+  removeItem(STORAGE_KEY_CE_TOKEN);
+  removeItem(STORAGE_KEY_CE_SAVED_AT);
+}
+
+/** Auto-clear CE credentials after TTL (reuses IBM Quantum TTL setting). */
+function checkCEExpiry(): void {
+  const savedAt = getItem(STORAGE_KEY_CE_SAVED_AT);
+  if (!savedAt) return;
+  if (Date.now() - Number(savedAt) > getCredentialTTLMs()) {
+    clearCodeEngineCredentials();
+  }
+}
+
+export function getCEDaysRemaining(): number {
+  if (typeof window === 'undefined') return -1;
+  const savedAt = getItem(STORAGE_KEY_CE_SAVED_AT);
+  if (!savedAt) return -1;
+  const remaining = getCredentialTTLMs() - (Date.now() - Number(savedAt));
+  return Math.max(0, Math.ceil(remaining / (24 * 60 * 60 * 1000)));
 }
 
 // ── Simulator mode ──
