@@ -1078,10 +1078,11 @@ export default function ExecutableCode({
   };
 
   const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-  const phaseLabel = jupyterConfig?.environment === 'github-pages'
+  const usesBinder = jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine';
+  const phaseLabel = usesBinder
     ? (binderPhase && binderPhaseLabels[binderPhase]) || binderPhaseLabels.connecting
     : null;
-  const connectingText = jupyterConfig?.environment === 'github-pages'
+  const connectingText = usesBinder
     ? (phaseLabel || '') + (binderElapsed > 0 ? ` ${formatElapsed(binderElapsed)}` : '')
     : translate({id: 'executable.status.connecting', message: 'Connecting...'});
 
@@ -1107,9 +1108,11 @@ export default function ExecutableCode({
               title={
                 mode === 'run'
                   ? translate({id: 'executable.button.backTitle', message: 'Back to static view'})
-                  : jupyterConfig?.environment === 'github-pages'
-                    ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
-                    : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
+                  : jupyterConfig?.environment === 'code-engine'
+                    ? translate({id: 'executable.button.runCETitle', message: 'Execute via Code Engine'})
+                    : jupyterConfig?.environment === 'github-pages'
+                      ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
+                      : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
               }
             >
               {thebeStatus === 'connecting'
@@ -1131,7 +1134,7 @@ export default function ExecutableCode({
           )}
 
           {isExecutable && mode === 'run' && thebeStatus === 'ready' &&
-            jupyterConfig?.environment === 'github-pages' && (
+            (jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine') && (
             <button
               className="executable-code__button"
               onClick={handleClearSession}
@@ -1228,7 +1231,8 @@ export default function ExecutableCode({
         </div>
       )}
 
-      {isFirstCell && thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' &&
+      {isFirstCell && thebeStatus === 'ready' &&
+        (jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine') &&
         !binderHintDismissed && (
         <div className="executable-code__binder-hint">
           <Translate

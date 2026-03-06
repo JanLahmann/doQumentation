@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab, getRawBinderUrl } from '../../config/jupyter';
+import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab, getRawBinderUrl, getMyBinderUrl } from '../../config/jupyter';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
@@ -72,6 +72,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
     <BrowserOnly>
       {() => {
         const config = detectJupyterConfig();
+        const isCodeEngine = config.environment === 'code-engine';
 
         let labUrl: string | null = null;
         const isBinder = config.binderUrl && !config.labEnabled;
@@ -82,7 +83,12 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         }
 
         const colabUrl = getColabUrl(notebookPath, currentLocale);
-        const rawBinderUrl = isBinder ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
+        // Show mybinder.org link: for github-pages (standard Binder) or code-engine (as fallback)
+        const rawBinderUrl = isBinder
+          ? getRawBinderUrl(config, notebookPath, currentLocale)
+          : isCodeEngine
+            ? getMyBinderUrl(notebookPath, currentLocale)
+            : null;
 
         const handleBinderClick = (e: React.MouseEvent) => {
           if (!isBinder) return;
@@ -146,8 +152,10 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 <a
                   href={labUrl}
                   target={isBinder ? '_blank' : 'binder-lab'}
-                  onClick={handleBinderClick}
-                  title="JupyterLab via Binder — full notebook editing environment"
+                  onClick={isBinder ? handleBinderClick : undefined}
+                  title={isCodeEngine
+                    ? 'JupyterLab on Code Engine — fast serverless kernel'
+                    : 'JupyterLab via Binder — full notebook editing environment'}
                   style={{
                     padding: '0.25rem 0.75rem',
                     backgroundColor: binderPhase === 'failed'

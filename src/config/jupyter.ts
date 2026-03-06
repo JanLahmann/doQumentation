@@ -644,6 +644,12 @@ export function getRawBinderUrl(config: JupyterConfig, notebookPath: string, loc
   return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
 }
 
+/** Always returns the mybinder.org URL for a notebook, regardless of environment. */
+export function getMyBinderUrl(notebookPath: string, locale?: string): string {
+  const fullPath = mapBinderNotebookPath(notebookPath, locale);
+  return `https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks?labpath=${encodeURIComponent(fullPath)}`;
+}
+
 /**
  * Get the Google Colab URL for a notebook.
  * Uses the /github/ scheme (Colab's /url/ scheme blocks non-GitHub domains).
