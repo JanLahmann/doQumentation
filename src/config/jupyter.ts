@@ -88,7 +88,7 @@ export function detectJupyterConfig(): JupyterConfig {
       wsUrl: ceBase.replace(/^http/, 'ws'),
       token: getItem(STORAGE_KEY_CE_TOKEN) || '',
       thebeEnabled: true,
-      labEnabled: true,
+      labEnabled: false,
       // Append /v2/ so ensureBinderSession's .replace('/v2/', '/build/') works
       binderUrl: ceBase + '/v2/',
       environment: 'code-engine',
@@ -538,7 +538,7 @@ export function ensureBinderSession(
  * Subsequent calls (within 8 min): navigates directly (session already exists).
  */
 /** Phase hints with durations for the Binder loading tab */
-const TAB_PHASE_HINTS: Record<string, string> = {
+const BINDER_TAB_PHASE_HINTS: Record<string, string> = {
   connecting: 'Connecting to mybinder.org\u2026',
   waiting:    'Waiting in queue\u2026',
   fetching:   'Fetching repository (2\u20135 min)\u2026',
@@ -548,8 +548,15 @@ const TAB_PHASE_HINTS: Record<string, string> = {
   launching:  'Starting JupyterLab server (2\u20135 min)\u2026',
 };
 
-const BINDER_TAB_HTML = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Starting Binder\u2026</title>
+const CE_TAB_PHASE_HINTS: Record<string, string> = {
+  connecting: 'Connecting to Code Engine\u2026',
+  launching:  'Starting JupyterLab server\u2026',
+  ready:      'Launching JupyterLab\u2026',
+};
+
+function makeTabHtml(title: string, initialPhase: string): string {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>${title}</title>
 <style>
   body { font-family: system-ui, sans-serif; padding: 2rem; color: #333; background: #fafafa; }
   #phase { font-size: 1.1rem; margin-bottom: 0.5rem; }
@@ -557,11 +564,12 @@ const BINDER_TAB_HTML = `<!DOCTYPE html>
   #warning { margin-top: 1rem; padding: 0.75rem 1rem; border-radius: 6px;
     background: #fff8e1; border: 1px solid #ffe082; color: #b45309; display: none; }
 </style></head><body>
-  <div id="phase">Connecting to mybinder.org\u2026</div>
+  <div id="phase">${initialPhase}</div>
   <div id="elapsed"></div>
   <div id="warning">\u26a0 Cache not warmed \u2014 total build time 10\u201325 min.
     Close this tab and use <strong>Colab</strong> instead, or come back later.</div>
 </body></html>`;
+}
 
 function formatElapsedCompact(s: number): string {
   if (s < 60) return `${s}s`;
@@ -577,12 +585,17 @@ export function openBinderLab(
   onProgress?: (phase: string) => void,
 ): void {
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
+  const isCE = config.environment === 'code-engine';
+  const phaseHints = isCE ? CE_TAB_PHASE_HINTS : BINDER_TAB_PHASE_HINTS;
 
   // Open tab synchronously from click handler to avoid popup blockers.
   const tab = window.open('about:blank', '_blank');
   if (tab) {
     tab.document.open();
-    tab.document.write(BINDER_TAB_HTML);
+    tab.document.write(makeTabHtml(
+      isCE ? 'Starting Code Engine\u2026' : 'Starting Binder\u2026',
+      isCE ? 'Connecting to Code Engine\u2026' : 'Connecting to mybinder.org\u2026',
+    ));
     tab.document.close();
   }
 
@@ -605,7 +618,7 @@ export function openBinderLab(
     if (!tab || tab.closed) return;
     try {
       const phaseEl = tab.document.getElementById('phase');
-      if (phaseEl) phaseEl.textContent = TAB_PHASE_HINTS[phase] || phase;
+      if (phaseEl) phaseEl.textContent = phaseHints[phase] || phase;
       if (phase === 'building') {
         const warn = tab.document.getElementById('warning');
         if (warn) warn.style.display = 'block';
@@ -626,7 +639,9 @@ export function openBinderLab(
       try {
         const phaseEl = tab.document.getElementById('phase');
         if (phaseEl) {
-          phaseEl.textContent = 'Binder build failed. Close this tab and try again, or use Colab.';
+          phaseEl.textContent = isCE
+            ? 'Code Engine connection failed. Close this tab and try again, or use Colab.'
+            : 'Binder build failed. Close this tab and try again, or use Colab.';
           phaseEl.style.color = '#d32f2f';
         }
       } catch { tab.close(); }
@@ -644,11 +659,6 @@ export function getRawBinderUrl(config: JupyterConfig, notebookPath: string, loc
   return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
 }
 
-/** Always returns the mybinder.org URL for a notebook, regardless of environment. */
-export function getMyBinderUrl(notebookPath: string, locale?: string): string {
-  const fullPath = mapBinderNotebookPath(notebookPath, locale);
-  return `https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks?labpath=${encodeURIComponent(fullPath)}`;
-}
 
 /**
  * Get the Google Colab URL for a notebook.

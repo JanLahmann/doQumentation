@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab, getRawBinderUrl, getMyBinderUrl } from '../../config/jupyter';
+import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab, getRawBinderUrl } from '../../config/jupyter';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
@@ -18,11 +18,11 @@ const PHASE_LABELS: Record<string, string> = {
   built:      'Launching...',
   launching:  'Launching...',
   ready:      '',
-  failed:     'Binder failed',
+  failed:     'Failed',
 };
 
-// Longer hint shown below the banner while building
-const PHASE_HINTS: Record<string, string> = {
+// Longer hint shown below the banner while building (mybinder.org)
+const BINDER_PHASE_HINTS: Record<string, string> = {
   connecting: 'Connecting to mybinder.org...',
   waiting:    'Waiting in queue...',
   fetching:   'Fetching repository (2–5 min)',
@@ -30,6 +30,12 @@ const PHASE_HINTS: Record<string, string> = {
   pushing:    'Pushing image to registry (2–5 min)',
   built:      'Image ready — launching JupyterLab...',
   launching:  'Starting JupyterLab server (2–5 min)',
+};
+
+// Longer hint shown below the banner while building (Code Engine)
+const CE_PHASE_HINTS: Record<string, string> = {
+  connecting: 'Connecting to Code Engine...',
+  launching:  'Starting JupyterLab server...',
 };
 
 function formatElapsed(seconds: number): string {
@@ -83,12 +89,10 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         }
 
         const colabUrl = getColabUrl(notebookPath, currentLocale);
-        // Show mybinder.org link: for github-pages (standard Binder) or code-engine (as fallback)
-        const rawBinderUrl = isBinder
+        // Show raw binder link for github-pages; CE doesn't need it (it IS the replacement)
+        const rawBinderUrl = (isBinder && !isCodeEngine)
           ? getRawBinderUrl(config, notebookPath, currentLocale)
-          : isCodeEngine
-            ? getMyBinderUrl(notebookPath, currentLocale)
-            : null;
+          : null;
 
         const handleBinderClick = (e: React.MouseEvent) => {
           if (!isBinder) return;
@@ -124,7 +128,8 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         };
 
         const phaseLabel = binderPhase ? (PHASE_LABELS[binderPhase] ?? binderPhase) : null;
-        const hint = isActive ? (PHASE_HINTS[binderPhase!] ?? null) : null;
+        const phaseHints = isCodeEngine ? CE_PHASE_HINTS : BINDER_PHASE_HINTS;
+        const hint = isActive ? (phaseHints[binderPhase!] ?? null) : null;
         const buttonText = isActive
           ? `${phaseLabel} ${formatElapsed(elapsedSeconds)}`
           : phaseLabel || `JupyterLab \u2197`;
@@ -154,7 +159,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                   target={isBinder ? '_blank' : 'binder-lab'}
                   onClick={isBinder ? handleBinderClick : undefined}
                   title={isCodeEngine
-                    ? 'JupyterLab on Code Engine — fast serverless kernel'
+                    ? 'JupyterLab via Code Engine — fast serverless kernel'
                     : 'JupyterLab via Binder — full notebook editing environment'}
                   style={{
                     padding: '0.25rem 0.75rem',
