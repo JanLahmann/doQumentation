@@ -31,16 +31,23 @@ export JUPYTER_TOKEN
 # Default: allow doqumentation.org; override with CORS_ORIGIN env var.
 CORS_ORIGIN="${CORS_ORIGIN:-https://janlahmann.github.io}"
 
+# Validate CORS_ORIGIN: must be an https:// URL with safe characters only
+if [[ ! "$CORS_ORIGIN" =~ ^https://[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
+  echo "ERROR: CORS_ORIGIN must be an https:// URL with safe characters (got: '$CORS_ORIGIN')."
+  exit 1
+fi
+
 # ── Write Jupyter config ──
 JUPYTER_DIR="/home/jovyan/.jupyter"
 mkdir -p "$JUPYTER_DIR"
-cat > "$JUPYTER_DIR/jupyter_server_config.py" << PYEOF
+cat > "$JUPYTER_DIR/jupyter_server_config.py" << 'PYEOF'
 # doQumentation — Jupyter Server Configuration (Code Engine)
 # Generated at container startup by codeengine-entrypoint.sh
+import os
 
-c.ServerApp.token = "${JUPYTER_TOKEN}"
+c.ServerApp.token = os.environ.get("JUPYTER_TOKEN", "")
 c.ServerApp.password = ""
-c.ServerApp.allow_origin = "${CORS_ORIGIN}"
+c.ServerApp.allow_origin = os.environ.get("CORS_ORIGIN", "https://janlahmann.github.io")
 c.ServerApp.allow_remote_access = True
 c.ServerApp.ip = "127.0.0.1"
 c.ServerApp.port = 8888

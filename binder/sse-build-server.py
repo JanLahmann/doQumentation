@@ -17,7 +17,25 @@ Runs on port 9090; nginx reverse-proxies /build/ here.
 import json
 import os
 import time
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+
+CORS_ORIGIN = os.environ.get('CORS_ORIGIN', 'https://janlahmann.github.io')
+JUPYTER_PORT = int(os.environ.get('JUPYTER_PORT', '8888'))
+JUPYTER_READY_TIMEOUT = 30  # seconds to wait for Jupyter to become ready
+JUPYTER_POLL_INTERVAL = 0.5  # seconds between readiness checks
+
+
+def _jupyter_is_ready():
+    """Check if Jupyter server is responding on its local port."""
+    try:
+        url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status'
+        req = urllib.request.Request(url, method='GET')
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 class SSEBuildHandler(BaseHTTPRequestHandler):
@@ -32,7 +50,7 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('Connection', 'keep-alive')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
         self.end_headers()
 
         token = os.environ.get('JUPYTER_TOKEN', '')
@@ -47,26 +65,34 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
             scheme = self.headers.get('X-Forwarded-Proto', 'http')
             base_url = f'{scheme}://{host}'
 
-        phases = [
-            {'phase': 'connecting'},
-            {'phase': 'launching'},
-            {'phase': 'ready', 'url': base_url + '/', 'token': token},
-        ]
+        # Emit connecting phase
+        self._send_event({'phase': 'connecting'})
+        time.sleep(0.3)
 
-        for event in phases:
-            line = f'data: {json.dumps(event)}\n\n'
-            self.wfile.write(line.encode())
-            self.wfile.flush()
-            # Small delay between phases so the UI can show progress
-            if event['phase'] != 'ready':
-                time.sleep(0.3)
+        # Emit launching phase, then wait for Jupyter to be ready
+        self._send_event({'phase': 'launching'})
+        deadline = time.monotonic() + JUPYTER_READY_TIMEOUT
+        while not _jupyter_is_ready():
+            if time.monotonic() > deadline:
+                self._send_event({'phase': 'failed', 'message': 'Jupyter server did not become ready in time'})
+                return
+            time.sleep(JUPYTER_POLL_INTERVAL)
+
+        # Jupyter confirmed ready — emit ready phase
+        self._send_event({'phase': 'ready', 'url': base_url + '/', 'token': token})
+
+    def _send_event(self, event):
+        """Write a single SSE event."""
+        line = f'data: {json.dumps(event)}\n\n'
+        self.wfile.write(line.encode())
+        self.wfile.flush()
 
     def do_OPTIONS(self):
         """Handle CORS preflight."""
         self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         self.end_headers()
 
     def log_message(self, format, *args):
