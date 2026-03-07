@@ -775,6 +775,8 @@ function bootstrapOnce(config: JupyterConfig): void {
     broadcastStatus('ready');
     return;
   }
+  // Set guard synchronously to prevent duplicate bootstrap from rapid clicks
+  thebelabBootstrapped = true;
 
   if ((config.environment === 'github-pages' || config.environment === 'code-engine') && config.binderUrl) {
     // Build (or reuse) Binder/CE session, then connect thebelab via serverSettings
@@ -785,6 +787,7 @@ function bootstrapOnce(config: JupyterConfig): void {
       const options = getThebelabOptions(config, session);
       doBootstrap(options);
     }).catch(() => {
+      thebelabBootstrapped = false; // allow retry on failure
       broadcastStatus('error');
     });
     return;
@@ -958,27 +961,37 @@ export default function ExecutableCode({
 
   // Listen for conflict banner (both credentials + simulator configured, no explicit choice)
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const onConflict = (e: Event) => {
       const usingMode = (e as CustomEvent<string>).detail;
       setConflictBanner(usingMode);
-      setTimeout(() => setConflictBanner(null), 5000);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setConflictBanner(null), 5000);
     };
     window.addEventListener(CONFLICT_EVENT, onConflict);
-    return () => window.removeEventListener(CONFLICT_EVENT, onConflict);
+    return () => {
+      window.removeEventListener(CONFLICT_EVENT, onConflict);
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   // Listen for injection feedback (simulator or credentials applied)
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const onInjection = (e: Event) => {
       const info = (e as CustomEvent<InjectionInfo>).detail;
       setInjectionInfo(info);
       if (info.message) {
         setInjectionToast(info.message);
-        setTimeout(() => setInjectionToast(null), 4000);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => setInjectionToast(null), 4000);
       }
     };
     window.addEventListener(INJECTION_EVENT, onInjection);
-    return () => window.removeEventListener(INJECTION_EVENT, onInjection);
+    return () => {
+      window.removeEventListener(INJECTION_EVENT, onInjection);
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const isExecutable = language === 'python' && jupyterConfig?.thebeEnabled;

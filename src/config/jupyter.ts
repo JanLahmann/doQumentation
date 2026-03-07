@@ -509,22 +509,40 @@ export function ensureBinderSession(
     const buildUrl = config.binderUrl!.replace('/v2/', '/build/');
     onProgress?.('connecting');
     const es = new EventSource(buildUrl);
+    let settled = false;
+
+    // 20-minute timeout — Binder builds can be slow but shouldn't hang forever
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      onProgress?.('failed');
+      es.close();
+      reject(new Error('Binder build timed out after 20 minutes'));
+    }, 20 * 60 * 1000);
+
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         if (data.phase) onProgress?.(data.phase);
         if (data.phase === 'ready' && data.url && data.token) {
+          settled = true;
+          clearTimeout(timeout);
           saveBinderSession(data.url, data.token);
           es.close();
           resolve({ url: data.url, token: data.token, lastUsed: Date.now() });
         }
         if (data.phase === 'failed') {
+          settled = true;
+          clearTimeout(timeout);
           es.close();
           reject(new Error('Binder build failed'));
         }
       } catch { /* ignore parse errors from heartbeat comments */ }
     };
     es.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       onProgress?.('failed');
       es.close();
       reject(new Error('Binder connection error'));

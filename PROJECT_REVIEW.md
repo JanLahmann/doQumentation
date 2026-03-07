@@ -24,7 +24,7 @@
 ### 1.1  SSE Build Server (`binder/sse-build-server.py`)
 
 - [ ] **HIGH** SSE-1: Token sent in plaintext over SSE `ready` event (line 82). If the CORS origin site is XSS'd, the token is exfiltrated immediately. *Consider short-lived scoped tokens instead of the main Jupyter token.*
-- [ ] **MEDIUM** SSE-2: `HTTPServer` is single-threaded (line 105). One slow/malicious client blocks all other SSE requests for up to 30s (the health-poll timeout). *Switch to `ThreadingHTTPServer`.*
+- [x] **MEDIUM** SSE-2: `HTTPServer` is single-threaded (line 105). One slow/malicious client blocks all other SSE requests for up to 30s (the health-poll timeout). *Switch to `ThreadingHTTPServer`.* **FIXED**
 - [ ] **LOW** SSE-3: `BrokenPipeError` not caught in `_send_event` / `do_GET`. Client disconnect mid-stream produces unhandled traceback. *Wrap writes in try/except for `BrokenPipeError`, `ConnectionResetError`.*
 - [ ] **LOW** SSE-4: `do_OPTIONS` responds with CORS headers for any path (line 90), unlike `do_GET` which checks `/build`. *Add the same path check.*
 - [ ] **LOW** SSE-5: No graceful shutdown handler. SIGTERM from supervisord abruptly kills in-flight SSE connections. *Add `signal.signal(SIGTERM, lambda: server.shutdown())`.*
@@ -43,7 +43,7 @@
 
 ### 1.4  Dockerfile (`binder/Dockerfile.codeengine`)
 
-- [ ] **MEDIUM** DOC-1: No `autorestart=true` in supervisord config (lines 67-88). If nginx, Jupyter, or SSE crashes, the process stays dead while the container continues running. *Add `autorestart=true` and `startretries=3` to each `[program:*]`.*
+- [x] **MEDIUM** DOC-1: No `autorestart=true` in supervisord config (lines 67-88). If nginx, Jupyter, or SSE crashes, the process stays dead while the container continues running. *Add `autorestart=true` and `startretries=3` to each `[program:*]`.* **FIXED**
 - [ ] **LOW** DOC-2: Binder Dockerfile (`binder/Dockerfile`) uses rolling `python-3.12` tag while Code Engine Dockerfile uses pinned `2025-01-27`. Environments can silently diverge. *Pin both to the same date-based tag.*
 - [ ] **LOW** DOC-3: `COPY . /home/jovyan/` in `binder/Dockerfile` (line 13) copies entire build context. If `.dockerignore` is missing or incomplete, `.git`, secrets, etc. end up in the image. *Verify `.dockerignore` excludes `.git`, `.env`, `*.key`.*
 
@@ -67,7 +67,7 @@
 
 - [x] **MEDIUM** CFG-6: Private IP range `172.*` detection is too broad (line 124). RFC 1918 is `172.16.0.0/12` (172.16-172.31), but `hostname.startsWith('172.')` matches all of `172.0.0.0/8`. Public IPs in `172.0-172.15` would falsely trigger rasqberry mode. *Parse second octet and check `>= 16 && <= 31`.* **FIXED**
 - [x] **MEDIUM** CFG-7: `getIBMQuantumCRN` does not call `checkCredentialExpiry()` (line 230), unlike `getIBMQuantumToken` which does (line 225). Callers reading CRN without first reading token can get expired CRN. *Add `checkCredentialExpiry()` call.* **FIXED**
-- [ ] **MEDIUM** CFG-8: `ensureBinderSession` EventSource has no timeout (lines 507-531). If the Binder build hangs indefinitely, the Promise never resolves/rejects. *Add a 20-minute timeout that closes EventSource and rejects.*
+- [x] **MEDIUM** CFG-8: `ensureBinderSession` EventSource has no timeout (lines 507-531). If the Binder build hangs indefinitely, the Promise never resolves/rejects. *Add a 20-minute timeout that closes EventSource and rejects.* **FIXED**
 - [ ] **LOW** CFG-9: `getCredentialTTLDays` doesn't validate stored value (line 200). `Number(stored)` can return NaN, Infinity, or negative. *Clamp: `isFinite(n) && n >= 1 && n <= 365 ? n : DEFAULT`.*
 - [ ] **LOW** CFG-10: `saveCodeEngineCredentials` silently drops empty token (line 273). `if (token)` means passing `''` leaves a stale old token in storage. *Always write or explicitly `removeItem` when falsy.*
 - [ ] **LOW** CFG-11: `testJupyterConnection` fetch has no `AbortController` timeout (line 386). Misconfigured URL hangs for browser default (5+ min). *Add 15s abort.*
@@ -103,9 +103,9 @@
 
 ### 3.1  React / Lifecycle
 
-- [ ] **MEDIUM** EXE-1: `setTimeout` in conflict/injection event handlers (lines 964, 977) never cleaned up on unmount. Causes `setState` on unmounted component. *Store timer IDs in refs, clear in useEffect cleanup.*
+- [x] **MEDIUM** EXE-1: `setTimeout` in conflict/injection event handlers (lines 964, 977) never cleaned up on unmount. Causes `setState` on unmounted component. *Store timer IDs in refs, clear in useEffect cleanup.* **FIXED**
 - [ ] **MEDIUM** EXE-2: Module-level mutable state (`thebelabBootstrapped`, `activeKernel`, etc., lines 54-85) persists across SPA navigations. No reset on page change. *Add page-navigation cleanup hook or wrap in singleton class.*
-- [ ] **MEDIUM** EXE-3: Race condition in `bootstrapOnce` (line 773). `thebelabBootstrapped` is set inside deferred `doBootstrap` after `setTimeout`. Two rapid clicks can trigger duplicate Binder builds. *Set "in-progress" flag synchronously at start of `bootstrapOnce`.*
+- [x] **MEDIUM** EXE-3: Race condition in `bootstrapOnce` (line 773). `thebelabBootstrapped` is set inside deferred `doBootstrap` after `setTimeout`. Two rapid clicks can trigger duplicate Binder builds. *Set "in-progress" flag synchronously at start of `bootstrapOnce`.* **FIXED**
 - [ ] **LOW** EXE-4: `handleReset` not wrapped in `useCallback` (line 1005), unlike all other handlers. Causes unnecessary button re-renders. *Wrap in `useCallback([], ...)`.*
 - [ ] **LOW** EXE-5: `isFirstCell` determined once on mount via DOM query (line 882), never updated. If components mount/unmount dynamically, it goes stale. *Use shared React context or MutationObserver.*
 - [ ] **LOW** EXE-6: `doBootstrap` retries via `setTimeout(tryBootstrap, 500)` with no max retry limit (line 675). If CDN never loads, polls indefinitely. *Add retry counter or 30s total timeout.*

@@ -19,6 +19,7 @@ import os
 import time
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 
 
 CORS_ORIGIN = os.environ.get('CORS_ORIGIN', 'https://janlahmann.github.io')
@@ -100,9 +101,13 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         pass
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 def main():
     port = int(os.environ.get('SSE_PORT', '9090'))
-    server = HTTPServer(('127.0.0.1', port), SSEBuildHandler)
+    server = ThreadingHTTPServer(('127.0.0.1', port), SSEBuildHandler)
     print(f'[SSE] Binder-compatible build endpoint on port {port}')
     server.serve_forever()
 
