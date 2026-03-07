@@ -37,8 +37,8 @@
 
 ### 1.3  nginx (`binder/nginx-codeengine.conf`)
 
-- [ ] **MEDIUM** NGX-1: No rate limiting on `/lab`, `/terminals/`, `/user/`, `/static/`, or default `/` locations. Only `/build/` and `/api/` are protected. *Add rate limits to at least `/lab` and `/terminals/`.*
-- [ ] **MEDIUM** NGX-2: Missing `Content-Security-Policy` and `Strict-Transport-Security` headers (lines 10-12 only have X-Content-Type-Options, X-Frame-Options, Referrer-Policy). *Add CSP and HSTS (if HTTPS guaranteed by Code Engine).*
+- [x] **MEDIUM** NGX-1: No rate limiting on `/lab`, `/terminals/`, `/user/`, `/static/`, or default `/` locations. Only `/build/` and `/api/` are protected. *Add rate limits to at least `/lab` and `/terminals/`.* **FIXED**
+- [x] **MEDIUM** NGX-2: Missing `Content-Security-Policy` and `Strict-Transport-Security` headers (lines 10-12 only have X-Content-Type-Options, X-Frame-Options, Referrer-Policy). *Add CSP and HSTS (if HTTPS guaranteed by Code Engine).* **FIXED**
 - [ ] **LOW** NGX-3: `client_max_body_size` not set. Default is 1MB — may silently reject large notebook uploads. *Set explicitly (e.g. `10m`) to make the limit intentional.*
 
 ### 1.4  Dockerfile (`binder/Dockerfile.codeengine`)
@@ -49,7 +49,7 @@
 
 ### 1.5  Dependencies (`binder/jupyter-requirements.txt`)
 
-- [ ] **MEDIUM** DEP-1: `pylatexenc` and `pandas` have no version pins (lines 29-30). Non-reproducible builds. *Add version pins: `pylatexenc~=2.10`, `pandas~=2.2`.*
+- [x] **MEDIUM** DEP-1: `pylatexenc` and `pandas` have no version pins (lines 29-30). Non-reproducible builds. *Add version pins: `pylatexenc~=2.10`, `pandas~=2.2`.* **FIXED**
 
 ---
 
@@ -57,11 +57,11 @@
 
 ### 2.1  Security
 
-- [ ] **HIGH** CFG-1: XSS in `makeTabHtml` (jupyter.ts:563). `title` and `initialPhase` are interpolated into raw HTML via template literals. Currently only called with hardcoded strings, but one future caller with user input = XSS. *HTML-escape inputs, or use `textContent` assignment.*
+- [x] **HIGH** CFG-1: XSS in `makeTabHtml` (jupyter.ts:563). `title` and `initialPhase` are interpolated into raw HTML via template literals. Currently only called with hardcoded strings, but one future caller with user input = XSS. *HTML-escape inputs, or use `textContent` assignment.* **FIXED**
 - [ ] **MEDIUM** CFG-2: Token exposed in URL query string (`?token=...`) in `getLabUrl` (line 421) and `openBinderLab` (line 635). Tokens in URLs leak via browser history, Referer headers, and proxy logs. *Document as accepted risk or pass token via header.*
 - [ ] **MEDIUM** CFG-3: Hardcoded default token `'rasqberry'` (line 136). Anyone on the same LAN can access the Jupyter server. *Prompt user to set a custom token on first use.*
 - [ ] **MEDIUM** CFG-4: Tokens stored in localStorage in plaintext (lines 243-246, 272-273). Any XSS or browser extension can exfiltrate. *Consider `SubtleCrypto` encryption at rest, or `HttpOnly` cookies.*
-- [ ] **MEDIUM** CFG-5: No URL validation on URLs loaded from storage for `customUrl`/`ceUrl` (lines 69, 83). A stored XSS could inject `javascript:` URLs. *Validate protocol is `http://` or `https://`.*
+- [x] **MEDIUM** CFG-5: No URL validation on URLs loaded from storage for `customUrl`/`ceUrl` (lines 69, 83). A stored XSS could inject `javascript:` URLs. *Validate protocol is `http://` or `https://`.* **FIXED**
 
 ### 2.2  Logic Bugs
 

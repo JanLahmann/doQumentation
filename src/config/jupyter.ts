@@ -66,7 +66,7 @@ export function detectJupyterConfig(): JupyterConfig {
 
   // Check for user-configured custom Jupyter server
   const customUrl = getItem(STORAGE_KEY_URL);
-  if (customUrl) {
+  if (customUrl && /^https?:\/\//i.test(customUrl)) {
     return {
       enabled: true,
       baseUrl: customUrl,
@@ -80,7 +80,7 @@ export function detectJupyterConfig(): JupyterConfig {
 
   // IBM Cloud Code Engine — user-configured serverless Jupyter kernel
   const ceUrl = getItem(STORAGE_KEY_CE_URL);
-  if (ceUrl) {
+  if (ceUrl && /^https?:\/\//i.test(ceUrl)) {
     const ceBase = ceUrl.replace(/\/+$/, '');
     return {
       enabled: true,
@@ -578,9 +578,13 @@ const CE_TAB_PHASE_HINTS: Record<string, string> = {
   ready:      'Launching JupyterLab\u2026',
 };
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function makeTabHtml(title: string, initialPhase: string): string {
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>${title}</title>
+<html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
   body { font-family: system-ui, sans-serif; padding: 2rem; color: #333; background: #fafafa; }
   #phase { font-size: 1.1rem; margin-bottom: 0.5rem; }
@@ -588,7 +592,7 @@ function makeTabHtml(title: string, initialPhase: string): string {
   #warning { margin-top: 1rem; padding: 0.75rem 1rem; border-radius: 6px;
     background: #fff8e1; border: 1px solid #ffe082; color: #b45309; display: none; }
 </style></head><body>
-  <div id="phase">${initialPhase}</div>
+  <div id="phase">${escapeHtml(initialPhase)}</div>
   <div id="elapsed"></div>
   <div id="warning">\u26a0 Cache not warmed \u2014 total build time 10\u201325 min.
     Close this tab and use <strong>Colab</strong> instead, or come back later.</div>
