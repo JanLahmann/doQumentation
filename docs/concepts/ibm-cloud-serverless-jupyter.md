@@ -154,7 +154,7 @@ CE is detected when `STORAGE_KEY_CE_URL` is set. Returns:
 {
   enabled: true,
   baseUrl: ceBase,                    // trailing slash stripped
-  wsUrl: ceBase.replace(/^http/, 'ws'),
+  wsUrl: ceBase.replace(/^http(s?):\/\//, 'ws$1://'),
   token: getItem(STORAGE_KEY_CE_TOKEN) || '',
   thebeEnabled: true,
   labEnabled: false,                  // uses SSE flow, same as github-pages

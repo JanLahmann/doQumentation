@@ -70,7 +70,7 @@ export function detectJupyterConfig(): JupyterConfig {
     return {
       enabled: true,
       baseUrl: customUrl,
-      wsUrl: customUrl.replace(/^http/, 'ws'),
+      wsUrl: customUrl.replace(/^http(s?):\/\//, 'ws$1://'),
       token: getItem(STORAGE_KEY_TOKEN) || '',
       thebeEnabled: true,
       labEnabled: true,
@@ -85,7 +85,7 @@ export function detectJupyterConfig(): JupyterConfig {
     return {
       enabled: true,
       baseUrl: ceBase,
-      wsUrl: ceBase.replace(/^http/, 'ws'),
+      wsUrl: ceBase.replace(/^http(s?):\/\//, 'ws$1://'),
       token: getItem(STORAGE_KEY_CE_TOKEN) || '',
       thebeEnabled: true,
       labEnabled: false,
@@ -132,7 +132,7 @@ export function detectJupyterConfig(): JupyterConfig {
     return {
       enabled: true,
       baseUrl: isDocker ? origin : `http://${hostname}:8888`,
-      wsUrl: isDocker ? origin.replace(/^http/, 'ws') : `ws://${hostname}:8888`,
+      wsUrl: isDocker ? origin.replace(/^http(s?):\/\//, 'ws$1://') : `ws://${hostname}:8888`,
       token: isDocker ? '' : 'rasqberry',
       thebeEnabled: true,
       labEnabled: true,

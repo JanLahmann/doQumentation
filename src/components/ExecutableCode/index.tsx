@@ -626,7 +626,7 @@ function getThebelabOptions(config: JupyterConfig, session?: BinderSession | nul
           name: 'python3',
           serverSettings: {
             baseUrl: session.url,
-            wsUrl: session.url.replace(/^http/, 'ws'),
+            wsUrl: session.url.replace(/^http(s?):\/\//, 'ws$1://'),
             token: session.token,
           },
         },
