@@ -277,6 +277,10 @@ export default function JupyterSettings(): JSX.Element {
   // IBM Quantum credential handlers
   const handleIbmSave = () => {
     if (!ibmToken) return;
+    if (ibmCrn && !ibmCrn.startsWith('crn:')) {
+      setIbmSaveResult(translate({id: 'settings.ibm.invalidCrn', message: 'CRN must start with "crn:" (e.g. crn:v1:bluemix:...). Leave blank if unsure.'}));
+      return;
+    }
     saveIBMQuantumCredentials(ibmToken, ibmCrn);
     setIbmDaysRemaining(ttlDays);
     setIbmSaveResult(translate({id: 'settings.ibm.saveSuccess', message: 'Credentials saved! They will be auto-injected when the kernel starts.'}));
@@ -296,6 +300,18 @@ export default function JupyterSettings(): JSX.Element {
   // Code Engine credential handlers
   const handleCeSave = () => {
     if (!ceUrl) return;
+    try {
+      const parsed = new URL(ceUrl);
+      if (parsed.protocol !== 'https:') {
+        setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'Code Engine URL must use https://.'}));
+        setCeSaveResultType('warning');
+        return;
+      }
+    } catch {
+      setCeSaveResult(translate({id: 'settings.ce.invalidUrl', message: 'Invalid URL format. Please enter a valid https:// URL.'}));
+      setCeSaveResultType('warning');
+      return;
+    }
     saveCodeEngineCredentials(ceUrl, ceToken);
     setCeDaysRemaining(getCEDaysRemaining());
     setConfig(detectJupyterConfig());

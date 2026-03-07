@@ -1066,7 +1066,7 @@ export default function ExecutableCode({
     }
   };
 
-  // Binder phase labels for the toolbar status text
+  // Phase labels for the toolbar status text (environment-aware)
   const binderPhaseLabels: Record<string, string> = {
     connecting: translate({id: 'executable.status.binderConnecting', message: 'Connecting...'}),
     waiting: translate({id: 'executable.status.binderWaiting', message: 'In queue...'}),
@@ -1076,11 +1076,19 @@ export default function ExecutableCode({
     built: translate({id: 'executable.status.binderBuilt', message: 'Launching...'}),
     launching: translate({id: 'executable.status.binderLaunching', message: 'Launching server (2\u20135 min)...'}),
   };
+  const cePhaseLabels: Record<string, string> = {
+    connecting: translate({id: 'executable.status.ceConnecting', message: 'Connecting to Code Engine...'}),
+    launching: translate({id: 'executable.status.ceLaunching', message: 'Starting server...'}),
+    ready: translate({id: 'executable.status.ceReady', message: 'Launching...'}),
+    failed: translate({id: 'executable.status.ceFailed', message: 'Server failed to start'}),
+  };
 
   const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   const usesRemoteSession = jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine';
+  const isCodeEngine = jupyterConfig?.environment === 'code-engine';
+  const activePhaseLabels = isCodeEngine ? cePhaseLabels : binderPhaseLabels;
   const phaseLabel = usesRemoteSession
-    ? (binderPhase && binderPhaseLabels[binderPhase]) || binderPhaseLabels.connecting
+    ? (binderPhase && activePhaseLabels[binderPhase]) || activePhaseLabels.connecting
     : null;
   const connectingText = usesRemoteSession
     ? (phaseLabel || '') + (binderElapsed > 0 ? ` ${formatElapsed(binderElapsed)}` : '')
