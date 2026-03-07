@@ -38,8 +38,8 @@ if [[ ! "$CORS_ORIGIN" =~ ^https://[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
 fi
 
 # ── Write Jupyter config ──
+# Note: /home/jovyan/.jupyter is pre-created in the Dockerfile
 JUPYTER_DIR="/home/jovyan/.jupyter"
-mkdir -p "$JUPYTER_DIR"
 cat > "$JUPYTER_DIR/jupyter_server_config.py" << 'PYEOF'
 # doQumentation — Jupyter Server Configuration (Code Engine)
 # Generated at container startup by codeengine-entrypoint.sh
@@ -63,7 +63,6 @@ c.MappingKernelManager.cull_idle_timeout = 600
 c.MappingKernelManager.cull_interval = 120
 c.MappingKernelManager.cull_connected = False
 PYEOF
-chown jovyan:users "$JUPYTER_DIR/jupyter_server_config.py"
 
 # ── Print startup info ──
 echo ""

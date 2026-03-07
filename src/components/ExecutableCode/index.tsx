@@ -1116,15 +1116,15 @@ export default function ExecutableCode({
               title={
                 mode === 'run'
                   ? translate({id: 'executable.button.backTitle', message: 'Back to static view'})
-                  : jupyterConfig?.environment === 'code-engine'
+                  : isCodeEngine
                     ? translate({id: 'executable.button.runCETitle', message: 'Execute via Code Engine'})
-                    : jupyterConfig?.environment === 'github-pages'
+                    : usesRemoteSession
                       ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
                       : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
               }
             >
               {thebeStatus === 'connecting'
-                ? translate({id: 'executable.status.connecting', message: 'Connecting...'})
+                ? translate({id: 'executable.button.connecting', message: 'Connecting...'})
                 : mode === 'run'
                   ? translate({id: 'executable.button.back', message: 'Back'})
                   : translate({id: 'executable.button.run', message: 'Run'})}
@@ -1141,8 +1141,7 @@ export default function ExecutableCode({
             </button>
           )}
 
-          {isExecutable && mode === 'run' && thebeStatus === 'ready' &&
-            (jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine') && (
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' && usesRemoteSession && (
             <button
               className="executable-code__button"
               onClick={handleClearSession}
@@ -1239,8 +1238,7 @@ export default function ExecutableCode({
         </div>
       )}
 
-      {isFirstCell && thebeStatus === 'ready' &&
-        (jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine') &&
+      {isFirstCell && thebeStatus === 'ready' && usesRemoteSession &&
         !binderHintDismissed && (
         <div className="executable-code__binder-hint">
           <Translate

@@ -150,7 +150,6 @@ export default function JupyterSettings(): JSX.Element {
   const [ibmToken, setIbmToken] = useState('');
   const [ibmCrn, setIbmCrn] = useState('');
   const [ibmDaysRemaining, setIbmDaysRemaining] = useState(-1);
-  const [ibmExpiredNotice, setIbmExpiredNotice] = useState(false);
   const [ibmSaveResult, setIbmSaveResult] = useState<string | null>(null);
 
   // Code Engine credentials state
@@ -188,15 +187,11 @@ export default function JupyterSettings(): JSX.Element {
     }
 
     // Load IBM credentials state
-    const days = getCredentialDaysRemaining();
-    if (days === -1 && getIBMQuantumToken() === '') {
-      // Check if credentials were just expired (token gone but we had them)
-      // We detect this by checking if days is -1 but there was a saved_at that got cleared
-      // Actually: if token is empty AND days is -1, it could be expired or never set.
-      // We'll show expired notice only if localStorage still has a stale saved_at
-    }
-    setIbmDaysRemaining(days);
+    // getIBMQuantumToken() calls checkCredentialExpiry() internally,
+    // which auto-clears expired credentials before returning ''.
     const savedToken = getIBMQuantumToken();
+    const days = getCredentialDaysRemaining();
+    setIbmDaysRemaining(days);
     if (savedToken) {
       setIbmToken(savedToken);
       setIbmCrn(getIBMQuantumCRN());
@@ -284,7 +279,6 @@ export default function JupyterSettings(): JSX.Element {
     saveIBMQuantumCredentials(ibmToken, ibmCrn);
     setIbmDaysRemaining(ttlDays);
     setIbmSaveResult(translate({id: 'settings.ibm.saveSuccess', message: 'Credentials saved! They will be auto-injected when the kernel starts.'}));
-    setIbmExpiredNotice(false);
   };
 
   const handleIbmDelete = () => {
@@ -537,15 +531,6 @@ export default function JupyterSettings(): JSX.Element {
               {'For detailed steps, see IBM\'s {link} guide (step 2).'}
             </Translate>
           </p>
-
-          {ibmExpiredNotice && (
-            <div className="alert alert--warning margin-bottom--md">
-              <Translate id="settings.ibm.expiredNotice">
-                Your IBM Quantum credentials have expired and were deleted.
-                Please re-enter them below.
-              </Translate>
-            </div>
-          )}
 
           {ibmDaysRemaining >= 0 && (
             <div className="alert alert--info margin-bottom--md" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
