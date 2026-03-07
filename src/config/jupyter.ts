@@ -263,6 +263,7 @@ export function getCodeEngineUrl(): string {
 
 export function getCodeEngineToken(): string {
   if (typeof window === 'undefined') return '';
+  checkCEExpiry();
   return getItem(STORAGE_KEY_CE_TOKEN) || '';
 }
 
@@ -337,8 +338,12 @@ export function setFakeDevice(name: string): void {
 
 export function getCachedFakeBackends(): Array<{name: string; qubits: number}> | null {
   if (typeof window === 'undefined') return null;
-  const cached = getItem(STORAGE_KEY_FAKE_BACKENDS_CACHE);
-  return cached ? JSON.parse(cached) : null;
+  try {
+    const cached = getItem(STORAGE_KEY_FAKE_BACKENDS_CACHE);
+    return cached ? JSON.parse(cached) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function setCachedFakeBackends(backends: Array<{name: string; qubits: number}>): void {
@@ -626,7 +631,8 @@ export function openBinderLab(
     } catch { /* tab navigated away */ }
   }).then((session) => {
     if (timerInterval) clearInterval(timerInterval);
-    const labUrl = `${session.url}lab/tree/${nbPath}?token=${session.token}`;
+    const encodedNbPath = nbPath.split('/').map(encodeURIComponent).join('/');
+    const labUrl = `${session.url}lab/tree/${encodedNbPath}?token=${encodeURIComponent(session.token)}`;
     if (tab && !tab.closed) {
       tab.location.href = labUrl;
     } else {

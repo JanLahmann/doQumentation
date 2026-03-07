@@ -1043,7 +1043,7 @@ export default function ExecutableCode({
   const handleClearSession = useCallback(() => {
     if (!window.confirm(translate({
       id: 'executable.clearSession.confirm',
-      message: 'Clear Binder session? You will need to wait for a new server on next Run.',
+      message: 'Clear session? You will need to wait for a new server on next Run.',
     }))) return;
     clearBinderSession();
     // Also reset execution state so next Run triggers fresh bootstrap
@@ -1078,11 +1078,11 @@ export default function ExecutableCode({
   };
 
   const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-  const usesBinder = jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine';
-  const phaseLabel = usesBinder
+  const usesRemoteSession = jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine';
+  const phaseLabel = usesRemoteSession
     ? (binderPhase && binderPhaseLabels[binderPhase]) || binderPhaseLabels.connecting
     : null;
-  const connectingText = usesBinder
+  const connectingText = usesRemoteSession
     ? (phaseLabel || '') + (binderElapsed > 0 ? ` ${formatElapsed(binderElapsed)}` : '')
     : translate({id: 'executable.status.connecting', message: 'Connecting...'});
 
@@ -1138,7 +1138,7 @@ export default function ExecutableCode({
             <button
               className="executable-code__button"
               onClick={handleClearSession}
-              title={translate({id: 'executable.button.clearSessionTitle', message: 'Clear Binder session and return to static view (next Run starts a new server)'})}
+              title={translate({id: 'executable.button.clearSessionTitle', message: 'Clear session and return to static view (next Run starts a new server)'})}
             >
               {translate({id: 'executable.button.clearSession', message: 'Clear Session'})}
             </button>

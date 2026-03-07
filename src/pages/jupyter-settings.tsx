@@ -144,6 +144,7 @@ export default function JupyterSettings(): JSX.Element {
     message: string;
   } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
+  const [ceIsTesting, setCeIsTesting] = useState(false);
 
   // IBM Quantum credentials state
   const [ibmToken, setIbmToken] = useState('');
@@ -157,6 +158,7 @@ export default function JupyterSettings(): JSX.Element {
   const [ceToken, setCeToken] = useState('');
   const [ceDaysRemaining, setCeDaysRemaining] = useState(-1);
   const [ceSaveResult, setCeSaveResult] = useState<string | null>(null);
+  const [ceSaveResultType, setCeSaveResultType] = useState<'success' | 'info' | 'warning'>('info');
 
   // Learning progress state
   const [progressStats, setProgressStats] = useState<ProgressStats | null>(null);
@@ -298,6 +300,7 @@ export default function JupyterSettings(): JSX.Element {
     setCeDaysRemaining(getCEDaysRemaining());
     setConfig(detectJupyterConfig());
     setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'Code Engine URL saved! Refresh the page to connect.'}));
+    setCeSaveResultType('success');
   };
 
   const handleCeDelete = () => {
@@ -307,24 +310,28 @@ export default function JupyterSettings(): JSX.Element {
     setCeDaysRemaining(-1);
     setConfig(detectJupyterConfig());
     setCeSaveResult(translate({id: 'settings.ce.deleteSuccess', message: 'Code Engine settings cleared. Falling back to mybinder.org.'}));
+    setCeSaveResultType('info');
   };
 
   const handleCeTest = async () => {
     if (!ceUrl) return;
-    setIsTesting(true);
+    setCeIsTesting(true);
     setCeSaveResult(null);
     const base = ceUrl.replace(/\/+$/, '');
     try {
       const res = await fetch(`${base}/health`, { mode: 'cors' });
       if (res.ok) {
         setCeSaveResult(translate({id: 'settings.ce.testOk', message: 'Health check passed — container is running.'}));
+        setCeSaveResultType('success');
       } else {
         setCeSaveResult(translate({id: 'settings.ce.testFail', message: 'Health check failed — is the container running?'}));
+        setCeSaveResultType('warning');
       }
     } catch {
       setCeSaveResult(translate({id: 'settings.ce.testError', message: 'Could not reach the URL. Check that the container is running and CORS is configured.'}));
+      setCeSaveResultType('warning');
     }
-    setIsTesting(false);
+    setCeIsTesting(false);
   };
 
   // Simulator mode handlers
@@ -735,9 +742,9 @@ QiskitRuntimeService.save_account(
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
               onClick={handleCeTest}
-              disabled={!ceUrl || isTesting}
+              disabled={!ceUrl || ceIsTesting}
             >
-              {isTesting
+              {ceIsTesting
                 ? translate({id: 'settings.ce.testing', message: 'Testing…'})
                 : translate({id: 'settings.ce.testBtn', message: 'Test Connection'})}
             </button>
@@ -750,7 +757,7 @@ QiskitRuntimeService.save_account(
           </div>
 
           {ceSaveResult && (
-            <div className={`alert margin-top--md ${ceSaveResult.includes('passed') || ceSaveResult.includes('saved') ? 'alert--success' : ceSaveResult.includes('cleared') || ceSaveResult.includes('Falling') ? 'alert--info' : 'alert--warning'}`}>
+            <div className={`alert margin-top--md alert--${ceSaveResultType}`}>
               {ceSaveResult}
             </div>
           )}
