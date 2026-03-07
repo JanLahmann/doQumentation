@@ -65,8 +65,8 @@
 
 ### 2.2  Logic Bugs
 
-- [ ] **MEDIUM** CFG-6: Private IP range `172.*` detection is too broad (line 124). RFC 1918 is `172.16.0.0/12` (172.16-172.31), but `hostname.startsWith('172.')` matches all of `172.0.0.0/8`. Public IPs in `172.0-172.15` would falsely trigger rasqberry mode. *Parse second octet and check `>= 16 && <= 31`.*
-- [ ] **MEDIUM** CFG-7: `getIBMQuantumCRN` does not call `checkCredentialExpiry()` (line 230), unlike `getIBMQuantumToken` which does (line 225). Callers reading CRN without first reading token can get expired CRN. *Add `checkCredentialExpiry()` call.*
+- [x] **MEDIUM** CFG-6: Private IP range `172.*` detection is too broad (line 124). RFC 1918 is `172.16.0.0/12` (172.16-172.31), but `hostname.startsWith('172.')` matches all of `172.0.0.0/8`. Public IPs in `172.0-172.15` would falsely trigger rasqberry mode. *Parse second octet and check `>= 16 && <= 31`.* **FIXED**
+- [x] **MEDIUM** CFG-7: `getIBMQuantumCRN` does not call `checkCredentialExpiry()` (line 230), unlike `getIBMQuantumToken` which does (line 225). Callers reading CRN without first reading token can get expired CRN. *Add `checkCredentialExpiry()` call.* **FIXED**
 - [ ] **MEDIUM** CFG-8: `ensureBinderSession` EventSource has no timeout (lines 507-531). If the Binder build hangs indefinitely, the Promise never resolves/rejects. *Add a 20-minute timeout that closes EventSource and rejects.*
 - [ ] **LOW** CFG-9: `getCredentialTTLDays` doesn't validate stored value (line 200). `Number(stored)` can return NaN, Infinity, or negative. *Clamp: `isFinite(n) && n >= 1 && n <= 365 ? n : DEFAULT`.*
 - [ ] **LOW** CFG-10: `saveCodeEngineCredentials` silently drops empty token (line 273). `if (token)` means passing `''` leaves a stale old token in storage. *Always write or explicitly `removeItem` when falsy.*
@@ -156,14 +156,14 @@
 
 ### 5.1  Supply Chain
 
-- [ ] **HIGH** CI-1: `aquasecurity/trivy-action@master` in `codeengine-image.yml:53` — pinned to mutable `master` branch. Most dangerous: any commit to that repo's main branch runs in your CI. *Pin to SHA.*
-- [ ] **MEDIUM** CI-2: All 7 workflows use tag-only action refs (`@v4`, `@v3`, etc.) — no SHA pinning. Third-party `peter-evans/create-pull-request@v7` in `sync-deps.yml:31` is highest risk. *Pin all to full commit SHAs.*
+- [x] **HIGH** CI-1: `aquasecurity/trivy-action@master` in `codeengine-image.yml:53` — pinned to mutable `master` branch. Most dangerous: any commit to that repo's main branch runs in your CI. *Pin to SHA.* **FIXED**
+- [x] **MEDIUM** CI-2: All 7 workflows use tag-only action refs (`@v4`, `@v3`, etc.) — no SHA pinning. Third-party `peter-evans/create-pull-request@v7` in `sync-deps.yml:31` is highest risk. *Pin all to full commit SHAs.* **FIXED**
 - [ ] **MEDIUM** CI-3: thebelab loaded from unpkg.com CDN at runtime without SRI hash (docusaurus.config.ts:133). KaTeX stylesheet has SRI — thebelab should too. *Add `integrity` attribute or self-host.*
 
 ### 5.2  Permissions & Config
 
-- [ ] **MEDIUM** CI-4: `binder.yml` and `codeengine-image.yml` have no `permissions` block. Default token gets broad permissions on push triggers. *Add explicit least-privilege `permissions: {}`.*
-- [ ] **MEDIUM** CI-5: Trivy scan `exit-code: 0` (codeengine-image.yml:57) — vulnerabilities never fail the build. *Change to `exit-code: '1'`.*
+- [x] **MEDIUM** CI-4: `binder.yml` and `codeengine-image.yml` have no `permissions` block. Default token gets broad permissions on push triggers. *Add explicit least-privilege `permissions: {}`.*  **FIXED**
+- [x] **MEDIUM** CI-5: Trivy scan `exit-code: 0` (codeengine-image.yml:57) — vulnerabilities never fail the build. *Change to `exit-code: '1'`.*  **FIXED**
 - [ ] **LOW** CI-6: `onBrokenLinks: 'warn'` (docusaurus.config.ts:20) — broken links ship silently. *Change to `'throw'`.*
 - [ ] **LOW** CI-7: `onBrokenMarkdownLinks` not set — defaults to `'warning'`. *Add `onBrokenMarkdownLinks: 'throw'`.*
 - [ ] **LOW** CI-8: `git push --force` to `notebooks` branch (deploy.yml:69). Overlapping runs can lose history. *Accepted if concurrency controls are sufficient.*

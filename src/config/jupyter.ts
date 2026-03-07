@@ -121,7 +121,7 @@ export function detectJupyterConfig(): JupyterConfig {
     hostname.endsWith('.local') ||
     hostname.startsWith('192.168.') ||
     hostname.startsWith('10.') ||
-    hostname.startsWith('172.')
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
   ) {
     const port = window.location.port;
     // Docker container: nginx proxies /api/ to Jupyter on same origin
@@ -228,6 +228,7 @@ export function getIBMQuantumToken(): string {
 
 export function getIBMQuantumCRN(): string {
   if (typeof window === 'undefined') return '';
+  checkCredentialExpiry();
   return getItem(STORAGE_KEY_IBM_CRN) || '';
 }
 
