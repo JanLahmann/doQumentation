@@ -1,6 +1,6 @@
 FROM quay.io/jupyter/base-notebook:python-3.12
 # Install from requirements file (single source of truth for all Qiskit deps)
-COPY --chown=1000:100 jupyter-requirements.txt /tmp/jupyter-requirements.txt
+COPY --chown=1000:100 binder/jupyter-requirements.txt /tmp/jupyter-requirements.txt
 RUN pip install --no-cache-dir --no-compile -r /tmp/jupyter-requirements.txt && \
     rm /tmp/jupyter-requirements.txt && \
     find ${CONDA_DIR}/lib -type d -name tests -exec rm -rf {} + 2>/dev/null || true && \
