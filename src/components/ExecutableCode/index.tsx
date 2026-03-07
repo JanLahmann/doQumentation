@@ -114,27 +114,27 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     div.className = 'thebelab-cell__error-hint';
 
     const text = document.createElement('span');
-    text.append('Package ');
+    text.append(translate({id: 'executable.errorHint.packagePrefix', message: 'Package '}));
     const pkgCode = document.createElement('code');
     pkgCode.textContent = pkg;
     text.appendChild(pkgCode);
-    text.append(' is not installed.');
+    text.append(translate({id: 'executable.errorHint.notInstalled', message: ' is not installed.'}));
     div.appendChild(text);
 
     if (activeKernel && !kernelDead) {
       const btn = document.createElement('button');
       btn.className = 'thebelab-cell__install-btn';
-      btn.textContent = `Install ${pkg}`;
-      btn.title = `Run !pip install -q ${pkg}`;
+      btn.textContent = translate({id: 'executable.errorHint.installBtn', message: 'Install {pkg}'}).replace('{pkg}', pkg);
+      btn.title = translate({id: 'executable.errorHint.installTitle', message: 'Run !pip install -q {pkg}'}).replace('{pkg}', pkg);
       btn.addEventListener('click', () => handlePipInstall(cell, pkg, btn));
       div.appendChild(btn);
     } else {
       const fallback = document.createElement('span');
-      fallback.append(' Run ');
+      fallback.append(translate({id: 'executable.errorHint.runPrefix', message: ' Run '}));
       const fallbackCode = document.createElement('code');
       fallbackCode.textContent = `!pip install -q ${pkg}`;
       fallback.appendChild(fallbackCode);
-      fallback.append(' in a cell.');
+      fallback.append(translate({id: 'executable.errorHint.inACell', message: ' in a cell.'}));
       div.appendChild(fallback);
     }
 
@@ -146,21 +146,21 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
   div.className = 'thebelab-cell__error-hint';
 
   if (error.type === 'kernel') {
-    div.append('Kernel disconnected. Click ');
+    div.append(translate({id: 'executable.errorHint.kernelDisconnected', message: 'Kernel disconnected. Click '}));
     const back = document.createElement('strong');
-    back.textContent = 'Back';
+    back.textContent = translate({id: 'executable.errorHint.back', message: 'Back'});
     div.appendChild(back);
-    div.append(' then ');
+    div.append(translate({id: 'executable.errorHint.then', message: ' then '}));
     const run = document.createElement('strong');
-    run.textContent = 'Run';
+    run.textContent = translate({id: 'executable.errorHint.run', message: 'Run'});
     div.appendChild(run);
-    div.append(' to reconnect.');
+    div.append(translate({id: 'executable.errorHint.toReconnect', message: ' to reconnect.'}));
     cell.appendChild(div);
   } else if (error.type === 'name' && error.name) {
     const nameCode = document.createElement('code');
     nameCode.textContent = error.name;
     div.appendChild(nameCode);
-    div.append(' is not defined. Run the cells above first \u2014 notebooks must be executed in order.');
+    div.append(translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
     cell.appendChild(div);
   }
 }
@@ -173,7 +173,7 @@ async function handlePipInstall(
 ): Promise<void> {
   if (!/^[a-zA-Z0-9._-]+$/.test(pkg)) return;
   btn.disabled = true;
-  btn.textContent = `Installing ${pkg}...`;
+  btn.textContent = translate({id: 'executable.pip.installing', message: 'Installing {pkg}...'}).replace('{pkg}', pkg);
   btn.classList.add('thebelab-cell__install-btn--installing');
   cell.classList.remove('thebelab-cell--error');
   cell.classList.add('thebelab-cell--running');
@@ -181,7 +181,7 @@ async function handlePipInstall(
   const ok = await executeOnKernel(activeKernel, `!pip install -q ${pkg}`);
 
   if (ok) {
-    btn.textContent = 'Installed \u2713';
+    btn.textContent = translate({id: 'executable.pip.installed', message: 'Installed \u2713'});
     btn.classList.remove('thebelab-cell__install-btn--installing');
     btn.classList.add('thebelab-cell__install-btn--done');
 
@@ -199,7 +199,7 @@ async function handlePipInstall(
       }
     }, 500);
   } else {
-    btn.textContent = 'Install failed';
+    btn.textContent = translate({id: 'executable.pip.failed', message: 'Install failed'});
     btn.classList.remove('thebelab-cell__install-btn--installing');
     btn.classList.add('thebelab-cell__install-btn--failed');
     cell.classList.remove('thebelab-cell--running');
@@ -1019,7 +1019,7 @@ export default function ExecutableCode({
     // Check if any cells have been executed (have done/error state)
     const executedCells = document.querySelectorAll('.thebelab-cell--done, .thebelab-cell--error');
     if (executedCells.length > 0) {
-      if (!window.confirm('This will clear all execution results and return to static view. Continue?')) {
+      if (!window.confirm(translate({id: 'executable.reset.confirm', message: 'This will clear all execution results and return to static view. Continue?'}))) {
         return;
       }
     }
@@ -1228,7 +1228,7 @@ export default function ExecutableCode({
       )}
 
       {isFirstCell && conflictBanner && (
-        <div className="executable-code__conflict-banner">
+        <div className="executable-code__conflict-banner" role="alert">
           <Translate
             id="executable.conflict"
             values={{
@@ -1246,7 +1246,7 @@ export default function ExecutableCode({
       )}
 
       {isFirstCell && injectionToast && (
-        <div className="executable-code__injection-toast">
+        <div className="executable-code__injection-toast" role="status" aria-live="polite">
           {injectionToast}
         </div>
       )}

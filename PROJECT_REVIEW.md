@@ -112,14 +112,14 @@
 
 ### 3.2  Accessibility
 
-- [ ] **MEDIUM** EXE-7: Conflict banner and injection toast (lines 1218, 1236) lack `role="alert"` or `aria-live`. Screen readers won't announce these dynamic notifications. *Add `role="alert"` or `aria-live="assertive"`.*
+- [x] **MEDIUM** EXE-7: Conflict banner and injection toast (lines 1218, 1236) lack `role="alert"` or `aria-live`. Screen readers won't announce these dynamic notifications. *Add `role="alert"` or `aria-live="assertive"`.* **FIXED**
 - [ ] **LOW** EXE-8: Cell execution status indicated only by border color (running=amber, done=green, error=red). No text/icon on the cell itself. Toolbar legend has text labels which is good. *Consider adding subtle icons to cells.*
 
 ### 3.3  i18n
 
-- [ ] **MEDIUM** EXE-9: `window.confirm` at line 1009 uses hardcoded English string. Other confirms at 1036 and 1044 correctly use `translate()`. *Wrap in `translate()`.*
-- [ ] **MEDIUM** EXE-10: `showErrorHint` (lines 149-164) builds DOM with hardcoded English: "Kernel disconnected", "Back", "Run", "to reconnect", "is not defined. Run the cells above first...". *Use `translate()` for each fragment.*
-- [ ] **MEDIUM** EXE-11: `handlePipInstall` button text (lines 176, 184, 202) — "Installing...", "Installed", "Install failed" — hardcoded English. *Use `translate()`.*
+- [x] **MEDIUM** EXE-9: `window.confirm` at line 1009 uses hardcoded English string. Other confirms at 1036 and 1044 correctly use `translate()`. *Wrap in `translate()`.* **FIXED**
+- [x] **MEDIUM** EXE-10: `showErrorHint` (lines 149-164) builds DOM with hardcoded English: "Kernel disconnected", "Back", "Run", "to reconnect", "is not defined. Run the cells above first...". *Use `translate()` for each fragment.* **FIXED**
+- [x] **MEDIUM** EXE-11: `handlePipInstall` button text (lines 176, 184, 202) — "Installing...", "Installed", "Install failed" — hardcoded English. *Use `translate()`.* **FIXED**
 
 ### 3.4  Code Quality
 
@@ -145,7 +145,7 @@
 
 ### 4.3  CSS / Accessibility
 
-- [ ] **MEDIUM** CSS-1: Toggle checkbox has no `:focus-visible` style on the track element (`custom.css` line 818). Hidden input with `opacity: 0` loses keyboard focus indicator. *Add focus-visible outline on `.jupyter-settings__toggle-track`.*
+- [x] **MEDIUM** CSS-1: Toggle checkbox has no `:focus-visible` style on the track element (`custom.css` line 818). Hidden input with `opacity: 0` loses keyboard focus indicator. *Add focus-visible outline on `.jupyter-settings__toggle-track`.* **FIXED**
 - [ ] **LOW** CSS-2: Hardcoded hex colors for mode badges/toast/banner (custom.css lines 738-795) instead of CSS custom properties. *Define as `:root` variables.*
 - [ ] **LOW** CSS-3: `.jupyter-settings { max-width: none }` (custom.css line 660) — text lines too long on wide screens. *Add `max-width: 900px`.*
 - [ ] **LOW** CSS-4: No `@media` mobile breakpoints for settings form inputs. Button containers use inline `flexWrap` which provides basic wrapping. *Add explicit mobile styles.*
