@@ -71,7 +71,7 @@
 - [x] **LOW** CFG-9: `getCredentialTTLDays` doesn't validate stored value (line 200). `Number(stored)` can return NaN, Infinity, or negative. *Clamp: `isFinite(n) && n >= 1 && n <= 365 ? n : DEFAULT`.* **FIXED**
 - [x] **LOW** CFG-10: `saveCodeEngineCredentials` silently drops empty token (line 273). `if (token)` means passing `''` leaves a stale old token in storage. *Always write or explicitly `removeItem` when falsy.* **FIXED**
 - [x] **LOW** CFG-11: `testJupyterConnection` fetch has no `AbortController` timeout (line 386). Misconfigured URL hangs for browser default (5+ min). *Add 15s abort.* **FIXED**
-- [ ] **LOW** CFG-12: `getColabUrl` duplicates path-mapping logic from `mapBinderNotebookPath` (lines 680-681). If one is updated without the other, URLs diverge. *Refactor to share.*
+- [x] **LOW** CFG-12: `getColabUrl` duplicates path-mapping logic from `mapBinderNotebookPath` (lines 680-681). If one is updated without the other, URLs diverge. *Refactor to share.* **FIXED**
 
 ### 2.3  Type Safety
 
@@ -106,7 +106,7 @@
 - [x] **MEDIUM** EXE-1: `setTimeout` in conflict/injection event handlers (lines 964, 977) never cleaned up on unmount. Causes `setState` on unmounted component. *Store timer IDs in refs, clear in useEffect cleanup.* **FIXED**
 - [ ] **MEDIUM** EXE-2: Module-level mutable state (`thebelabBootstrapped`, `activeKernel`, etc., lines 54-85) persists across SPA navigations. No reset on page change. *Add page-navigation cleanup hook or wrap in singleton class.*
 - [x] **MEDIUM** EXE-3: Race condition in `bootstrapOnce` (line 773). `thebelabBootstrapped` is set inside deferred `doBootstrap` after `setTimeout`. Two rapid clicks can trigger duplicate Binder builds. *Set "in-progress" flag synchronously at start of `bootstrapOnce`.* **FIXED**
-- [ ] **LOW** EXE-4: `handleReset` not wrapped in `useCallback` (line 1005), unlike all other handlers. Causes unnecessary button re-renders. *Wrap in `useCallback([], ...)`.*
+- [x] **LOW** EXE-4: `handleReset` not wrapped in `useCallback` (line 1005), unlike all other handlers. Causes unnecessary button re-renders. *Wrap in `useCallback([], ...)`.* **FIXED**
 - [ ] **LOW** EXE-5: `isFirstCell` determined once on mount via DOM query (line 882), never updated. If components mount/unmount dynamically, it goes stale. *Use shared React context or MutationObserver.*
 - [x] **LOW** EXE-6: `doBootstrap` retries via `setTimeout(tryBootstrap, 500)` with no max retry limit (line 675). If CDN never loads, polls indefinitely. *Add retry counter or 30s total timeout.* **FIXED**
 
@@ -125,7 +125,7 @@
 
 - [x] **LOW** EXE-12: `handleReset` and `handleClearSession` (lines 1005-1033 vs 1043-1058) duplicate cleanup of module-level state. *Extract `resetModuleState()` helper.* **FIXED**
 - [x] **LOW** EXE-13: Safety-net timer uses magic number `60000` (line 324). *Extract to named constant.* **FIXED**
-- [ ] **LOW** EXE-14: `discoverFakeBackends` swallows all errors silently (line 606). *Add `console.debug` for dev troubleshooting.*
+- [x] **LOW** EXE-14: `discoverFakeBackends` swallows all errors silently (line 606). *Add `console.debug` for dev troubleshooting.* **FIXED**
 - [x] **LOW** EXE-15: `thebeContainerRef` created at line 873 but never read. *Remove if unused.* **FIXED**
 - [x] **LOW** EXE-16: pip install validation duplicated in two places (lines 112, 174). *Extract single `isValidPackageName()` helper.* **FIXED**
 
@@ -135,12 +135,12 @@
 
 ### 4.1  Security
 
-- [ ] **LOW** SET-1: `handleCeTest` (line 326) doesn't validate URL protocol before `fetch()`. The `handleCeSave` function validates HTTPS but the test button doesn't. *Share the URL validator.*
+- [x] **LOW** SET-1: `handleCeTest` (line 326) doesn't validate URL protocol before `fetch()`. The `handleCeSave` function validates HTTPS but the test button doesn't. *Share the URL validator.* **FIXED**
 
 ### 4.2  React / UX
 
 - [ ] **MEDIUM** SET-2: Component has ~18 `useState` hooks (lines 138-177). Should be broken into sub-components (IBMQuantumSection, CodeEngineSection, SimulatorSection, etc.) for maintainability and render performance. *Refactor into sections.*
-- [ ] **LOW** SET-3: `backendsByQubits` Map recomputed on every render (lines 370-377). *Wrap in `useMemo(() => ..., [fakeBackends])`.*
+- [x] **LOW** SET-3: `backendsByQubits` Map recomputed on every render (lines 370-377). *Wrap in `useMemo(() => ..., [fakeBackends])`.* **FIXED**
 - [ ] **LOW** SET-4: Category capitalization at line 943 (`cat.charAt(0).toUpperCase()`) assumes English. *Use locale-aware methods or i18n.*
 
 ### 4.3  CSS / Accessibility

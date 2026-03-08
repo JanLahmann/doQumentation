@@ -626,11 +626,15 @@ print("__DQ_BACKENDS__" + _j.dumps(_bs))`;
             const backends = JSON.parse(json);
             setCachedFakeBackends(backends);
             if (DEBUG) console.log(`[ExecutableCode] Discovered ${backends.length} fake backends`);
-          } catch { /* ignore parse errors */ }
+          } catch (e) {
+            if (DEBUG) console.debug('[ExecutableCode] Failed to parse fake backends response', e);
+          }
         }
       };
     }
-  } catch { /* ignore discovery errors */ }
+  } catch (e) {
+    if (DEBUG) console.debug('[ExecutableCode] Failed to discover fake backends', e);
+  }
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -1050,7 +1054,7 @@ export default function ExecutableCode({
     bootstrapOnce(jupyterConfig);
   }, [jupyterConfig, hideStaticOutputs]);
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     // Check if any cells have been executed (have done/error state)
     const executedCells = document.querySelectorAll('.thebelab-cell--done, .thebelab-cell--error');
     if (executedCells.length > 0) {
@@ -1061,7 +1065,7 @@ export default function ExecutableCode({
     resetModuleState();
     document.body.classList.remove('dq-hide-static-outputs');
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
-  };
+  }, []);
 
   const handleRestart = useCallback(() => {
     if (!window.confirm(translate({

@@ -8,7 +8,7 @@
  * - Providing authentication tokens
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import Layout from '@theme/Layout';
 import Translate, {translate} from '@docusaurus/Translate';
 import {
@@ -325,6 +325,18 @@ export default function JupyterSettings(): JSX.Element {
 
   const handleCeTest = async () => {
     if (!ceUrl) return;
+    try {
+      const parsed = new URL(ceUrl);
+      if (parsed.protocol !== 'https:') {
+        setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'Code Engine URL must use https://.'}));
+        setCeSaveResultType('warning');
+        return;
+      }
+    } catch {
+      setCeSaveResult(translate({id: 'settings.ce.invalidUrl', message: 'Invalid URL format. Please enter a valid https:// URL.'}));
+      setCeSaveResultType('warning');
+      return;
+    }
     setCeIsTesting(true);
     setCeSaveResult(null);
     const base = ceUrl.replace(/\/+$/, '');
@@ -367,14 +379,16 @@ export default function JupyterSettings(): JSX.Element {
   };
 
   // Group fake backends by qubit count for <optgroup>
-  const backendsByQubits = new Map<number, Array<{name: string; qubits: number}>>();
-  for (const b of fakeBackends) {
-    if (!backendsByQubits.has(b.qubits)) {
-      backendsByQubits.set(b.qubits, []);
+  const sortedQubitGroups = useMemo(() => {
+    const byQubits = new Map<number, Array<{name: string; qubits: number}>>();
+    for (const b of fakeBackends) {
+      if (!byQubits.has(b.qubits)) {
+        byQubits.set(b.qubits, []);
+      }
+      byQubits.get(b.qubits)!.push(b);
     }
-    backendsByQubits.get(b.qubits)!.push(b);
-  }
-  const sortedQubitGroups = Array.from(backendsByQubits.entries()).sort((a, b) => a[0] - b[0]);
+    return Array.from(byQubits.entries()).sort((a, b) => a[0] - b[0]);
+  }, [fakeBackends]);
 
   const hasBothConfigured = simEnabled && ibmDaysRemaining >= 0;
 

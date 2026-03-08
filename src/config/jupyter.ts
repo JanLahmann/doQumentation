@@ -716,14 +716,8 @@ export function getRawBinderUrl(config: JupyterConfig, notebookPath: string, loc
  * EN: main repo notebooks branch. Translated: satellite repo gh-pages branch.
  */
 export function getColabUrl(notebookPath: string, locale?: string): string {
-  // Map Binder-repo path → site notebooks/ path:
-  //   "docs/tutorials/foo.ipynb" → "tutorials/foo.ipynb"
-  //   "hello-world.ipynb" → "tutorials/hello-world.ipynb"
-  //   "learning/courses/bar.ipynb" → "learning/courses/bar.ipynb"
-  let nbPath = notebookPath.replace(/^docs\//, '');
-  if (!nbPath.includes('/')) {
-    nbPath = `tutorials/${nbPath}`;
-  }
+  // Reuse shared path mapping (strips docs/ prefix, adds tutorials/ for bare names)
+  const nbPath = mapBinderNotebookPath(notebookPath);
   if (locale && locale !== 'en') {
     return `https://colab.research.google.com/github/JanLahmann/doqumentation-${locale}/blob/gh-pages/notebooks/${nbPath}`;
   }
