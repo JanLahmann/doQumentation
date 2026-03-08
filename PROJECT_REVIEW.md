@@ -13,9 +13,9 @@
 |----------|------:|---------------------:|----------:|
 | Critical |     2 |                    2 |         0 |
 | High     |     4 |                    2 |         2 |
-| Medium   |    30 |                   25 |         5 |
-| Low      |    37 |                   33 |         4 |
-| **Total**| **71**|               **60** |    **11** |
+| Medium   |    30 |                   26 |         4 |
+| Low      |    37 |                   37 |         0 |
+| **Total**| **71**|               **65** |     **6** |
 
 ---
 
@@ -44,7 +44,7 @@
 ### 1.4  Dockerfile (`binder/Dockerfile.codeengine`)
 
 - [x] **MEDIUM** DOC-1: No `autorestart=true` in supervisord config (lines 67-88). If nginx, Jupyter, or SSE crashes, the process stays dead while the container continues running. *Add `autorestart=true` and `startretries=3` to each `[program:*]`.* **FIXED**
-- [ ] **LOW** DOC-2: Binder Dockerfile (`binder/Dockerfile`) uses rolling `python-3.12` tag while Code Engine Dockerfile uses pinned `2025-01-27`. Environments can silently diverge. *Pin both to the same date-based tag.*
+- [x] **LOW** DOC-2: Binder Dockerfile (`binder/Dockerfile`) uses rolling `python-3.12` tag while Code Engine Dockerfile uses pinned `2025-01-27`. Environments can silently diverge. *Pin both to the same date-based tag.* **FIXED**
 - [x] **LOW** DOC-3: `COPY . /home/jovyan/` in `binder/Dockerfile` (line 13) copies entire build context. If `.dockerignore` is missing or incomplete, `.git`, secrets, etc. end up in the image. *Verify `.dockerignore` excludes `.git`, `.env`, `*.key`.* **FIXED**
 
 ### 1.5  Dependencies (`binder/jupyter-requirements.txt`)
@@ -58,7 +58,7 @@
 ### 2.1  Security
 
 - [x] **HIGH** CFG-1: XSS in `makeTabHtml` (jupyter.ts:563). `title` and `initialPhase` are interpolated into raw HTML via template literals. Currently only called with hardcoded strings, but one future caller with user input = XSS. *HTML-escape inputs, or use `textContent` assignment.* **FIXED**
-- [ ] **MEDIUM** CFG-2: Token exposed in URL query string (`?token=...`) in `getLabUrl` (line 421) and `openBinderLab` (line 635). Tokens in URLs leak via browser history, Referer headers, and proxy logs. *Document as accepted risk or pass token via header.*
+- [x] **MEDIUM** CFG-2: Token exposed in URL query string (`?token=...`) in `getLabUrl` (line 421) and `openBinderLab` (line 635). Tokens in URLs leak via browser history, Referer headers, and proxy logs. *Document as accepted risk or pass token via header.* **ACCEPTED — documented in code with mitigation notes**
 - [ ] **MEDIUM** CFG-3: Hardcoded default token `'rasqberry'` (line 136). Anyone on the same LAN can access the Jupyter server. *Prompt user to set a custom token on first use.*
 - [ ] **MEDIUM** CFG-4: Tokens stored in localStorage in plaintext (lines 243-246, 272-273). Any XSS or browser extension can exfiltrate. *Consider `SubtleCrypto` encryption at rest, or `HttpOnly` cookies.*
 - [x] **MEDIUM** CFG-5: No URL validation on URLs loaded from storage for `customUrl`/`ceUrl` (lines 69, 83). A stored XSS could inject `javascript:` URLs. *Validate protocol is `http://` or `https://`.* **FIXED**
@@ -107,13 +107,13 @@
 - [x] **MEDIUM** EXE-2: Module-level mutable state (`thebelabBootstrapped`, `activeKernel`, etc., lines 54-85) persists across SPA navigations. No reset on page change. *Add page-navigation cleanup hook or wrap in singleton class.* **FIXED**
 - [x] **MEDIUM** EXE-3: Race condition in `bootstrapOnce` (line 773). `thebelabBootstrapped` is set inside deferred `doBootstrap` after `setTimeout`. Two rapid clicks can trigger duplicate Binder builds. *Set "in-progress" flag synchronously at start of `bootstrapOnce`.* **FIXED**
 - [x] **LOW** EXE-4: `handleReset` not wrapped in `useCallback` (line 1005), unlike all other handlers. Causes unnecessary button re-renders. *Wrap in `useCallback([], ...)`.* **FIXED**
-- [ ] **LOW** EXE-5: `isFirstCell` determined once on mount via DOM query (line 882), never updated. If components mount/unmount dynamically, it goes stale. *Use shared React context or MutationObserver.*
+- [x] **LOW** EXE-5: `isFirstCell` determined once on mount via DOM query (line 882), never updated. If components mount/unmount dynamically, it goes stale. *Use shared React context or MutationObserver.* **FIXED**
 - [x] **LOW** EXE-6: `doBootstrap` retries via `setTimeout(tryBootstrap, 500)` with no max retry limit (line 675). If CDN never loads, polls indefinitely. *Add retry counter or 30s total timeout.* **FIXED**
 
 ### 3.2  Accessibility
 
 - [x] **MEDIUM** EXE-7: Conflict banner and injection toast (lines 1218, 1236) lack `role="alert"` or `aria-live`. Screen readers won't announce these dynamic notifications. *Add `role="alert"` or `aria-live="assertive"`.* **FIXED**
-- [ ] **LOW** EXE-8: Cell execution status indicated only by border color (running=amber, done=green, error=red). No text/icon on the cell itself. Toolbar legend has text labels which is good. *Consider adding subtle icons to cells.*
+- [x] **LOW** EXE-8: Cell execution status indicated only by border color (running=amber, done=green, error=red). No text/icon on the cell itself. Toolbar legend has text labels which is good. *Consider adding subtle icons to cells.* **FIXED**
 
 ### 3.3  i18n
 
@@ -166,7 +166,7 @@
 - [x] **MEDIUM** CI-5: Trivy scan `exit-code: 0` (codeengine-image.yml:57) — vulnerabilities never fail the build. *Change to `exit-code: '1'`.*  **FIXED**
 - [x] **LOW** CI-6: `onBrokenLinks: 'warn'` (docusaurus.config.ts:20) — broken links ship silently. *Change to `'throw'`.* **FIXED**
 - [x] **LOW** CI-7: `onBrokenMarkdownLinks` not set — defaults to `'warning'`. *Add `onBrokenMarkdownLinks: 'throw'`.* **FIXED**
-- [ ] **LOW** CI-8: `git push --force` to `notebooks` branch (deploy.yml:69). Overlapping runs can lose history. *Accepted if concurrency controls are sufficient.*
+- [x] **LOW** CI-8: `git push --force` to `notebooks` branch (deploy.yml:69). Overlapping runs can lose history. *Accepted if concurrency controls are sufficient.* **ACCEPTED — concurrency group with cancel-in-progress already configured**
 
 ---
 

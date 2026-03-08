@@ -933,11 +933,18 @@ export default function ExecutableCode({
     setHideStaticOutputs(getHideStaticOutputs());
   }, []);
 
-  // Determine if this is the first executable cell on the page (toolbar owner)
+  // Determine if this is the first executable cell on the page (toolbar owner).
+  // Re-evaluate when cells mount/unmount dynamically via MutationObserver.
   useEffect(() => {
     if (!containerRef.current) return;
-    const allCells = document.querySelectorAll('.executable-code');
-    setIsFirstCell(allCells[0] === containerRef.current);
+    const check = () => {
+      const allCells = document.querySelectorAll('.executable-code');
+      setIsFirstCell(allCells.length > 0 && allCells[0] === containerRef.current);
+    };
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, []);
 
   // Listen for the global activate event (fired when ANY cell's Run is clicked)

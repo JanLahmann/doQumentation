@@ -1,4 +1,4 @@
-FROM quay.io/jupyter/base-notebook:python-3.12
+FROM quay.io/jupyter/base-notebook:2025-01-27
 # Install from requirements file (single source of truth for all Qiskit deps)
 COPY --chown=1000:100 jupyter-requirements.txt /tmp/jupyter-requirements.txt
 RUN pip install --no-cache-dir --no-compile -r /tmp/jupyter-requirements.txt && \

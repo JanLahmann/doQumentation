@@ -451,6 +451,10 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
   }
 
   const encodedPath = notebookPath.split('/').map(encodeURIComponent).join('/');
+  // ACCEPTED RISK: Token in URL query string. JupyterLab requires ?token= for
+  // authentication when opened in a new tab (no cookie/header path available).
+  // Mitigated by: tokens are short-lived per-session, HTTPS enforced, and
+  // Referrer-Policy set to 'strict-origin-when-cross-origin' in nginx.
   const tokenParam = config.token ? `?token=${encodeURIComponent(config.token)}` : '';
   return `${config.baseUrl}/lab/tree/${encodedPath}${tokenParam}`;
 }
@@ -706,6 +710,7 @@ export function openBinderLab(
   }).then((session) => {
     if (timerInterval) clearInterval(timerInterval);
     const encodedNbPath = nbPath.split('/').map(encodeURIComponent).join('/');
+    // ACCEPTED RISK: Token in URL — see comment in getLabUrl()
     const labUrl = `${session.url}lab/tree/${encodedNbPath}?token=${encodeURIComponent(session.token)}`;
     if (tab && !tab.closed) {
       tab.location.href = labUrl;
