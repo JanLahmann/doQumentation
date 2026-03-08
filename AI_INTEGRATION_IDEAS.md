@@ -289,6 +289,52 @@ No Sentry or equivalent. Production kernel crashes and build failures are invisi
 - Progress stats are just raw counts (pages visited, notebooks executed)
 - **Suggestion**: Add a "My Learning" dashboard with charts: topics explored over time, execution success/failure ratio, study streaks
 
+### Discovery & Content Navigation
+
+#### UX-39. No Cross-References or Related Content Links
+- No "Related Topics", "See Also", or content graph between the 381 pages
+- Users finish a tutorial and have no suggested next step beyond linear sidebar order
+- Content exists in isolated silos (Tutorials, Guides, Courses, Modules) with no bridges between them
+- **Suggestion**: Add frontmatter `related: ["/guides/foo", "/tutorials/bar"]` and render a "Related" section at page bottom
+
+#### UX-40. Search Has No Filters or Facets
+- Full-text search returns flat results with no ability to filter by content type (Tutorial vs Guide vs Course), difficulty, or topic
+- With 381 pages, unfiltered results can be overwhelming
+- **Suggestion**: Add search facets: content type, section, and optionally difficulty/prerequisite level
+
+#### UX-41. No Content Breadcrumb Trails
+- Docusaurus provides breadcrumbs but they only show the sidebar hierarchy (e.g., Tutorials > Get Started > Page)
+- No topical breadcrumbs showing *learning context* (e.g., "Prerequisite: Basics of Qubits → This Page → Next: Entanglement")
+- **Suggestion**: Add optional `prerequisites` and `leads_to` frontmatter fields; render a learning path breadcrumb above page content
+
+#### UX-42. Beta Notice Dismissed Per-Session Only
+- `BetaNotice` component uses `sessionStorage` — dismissed state is lost when browser tab closes
+- Users see the beta banner on every new session, which becomes annoying for returning users
+- **Suggestion**: Use localStorage with a version key so it stays dismissed until the next significant release
+
+#### UX-43. No In-App Feedback Mechanism
+- Feedback funnels entirely to GitHub Issues (link in beta notice and footer)
+- No "Was this page helpful?" widget, no thumbs up/down, no inline comment system
+- Barrier to feedback is high (requires GitHub account)
+- **Suggestion**: Add a lightweight "Was this helpful? Yes/No" widget at page bottom; store locally or post to a simple endpoint
+
+#### UX-44. Sidebar Label Deduplication Is Invisible to Users
+- `sidebars.ts` appends "(Guides)" suffix when categories collide across sections (e.g., "Get Started" appears in both Tutorials and Guides)
+- This creates inconsistent naming: users see "Get Started" in Tutorials but "Get Started (Guides)" in Guides
+- The suffix is a build-time i18n workaround, not a user-facing design choice
+- **Suggestion**: Use distinct, intentional category names across sections rather than auto-suffixing
+
+#### UX-45. No Difficulty or Complexity Indicators
+- 381 pages with no visual cue for beginner/intermediate/advanced content
+- Users exploring freely may hit advanced material without prerequisites
+- Courses section has implicit ordering but Tutorials and Guides don't
+- **Suggestion**: Add difficulty badges (Beginner/Intermediate/Advanced) to sidebar items and page headers via frontmatter
+
+#### UX-46. Language Switching Loses Scroll Position
+- Locale switch triggers full page reload to a different subdomain (`window.location.href = baseUrl + location.pathname`)
+- User loses scroll position, any in-progress code execution, and active kernel
+- **Suggestion**: At minimum, warn users with active kernels before switching; consider preserving scroll position via URL hash
+
 ---
 
 ## Remaining PROJECT_REVIEW Items (6)
