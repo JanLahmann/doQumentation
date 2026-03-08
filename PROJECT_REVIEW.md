@@ -12,10 +12,10 @@
 | Severity | Count | Fixed in this branch | Remaining |
 |----------|------:|---------------------:|----------:|
 | Critical |     2 |                    2 |         0 |
-| High     |     7 |                    4 |         3 |
-| Medium   |    23 |                    6 |        17 |
-| Low      |    37 |                    5 |        32 |
-| **Total**| **69**|               **17** |    **52** |
+| High     |     4 |                    2 |         2 |
+| Medium   |    30 |                   21 |         9 |
+| Low      |    37 |                   33 |         4 |
+| **Total**| **71**|               **56** |    **15** |
 
 ---
 
@@ -33,7 +33,7 @@
 ### 1.2  Entrypoint (`binder/codeengine-entrypoint.sh`)
 
 - [ ] **HIGH** ENT-1: XSRF protection globally disabled (generated config line 59: `disable_check_xsrf = True`). Comment says thebelab 0.4.0 requires it. *Investigate thebe >=0.5 XSRF support, or scope exemption to specific API paths.*
-- [ ] **MEDIUM** ENT-2: `allow_remote_access = True` + empty password (lines 49-51). Security relies entirely on the token. Minimum token length is only 8 chars. *Consider raising minimum to 32 chars for user-supplied tokens.*
+- [x] **MEDIUM** ENT-2: `allow_remote_access = True` + empty password (lines 49-51). Security relies entirely on the token. Minimum token length is only 8 chars. *Consider raising minimum to 32 chars for user-supplied tokens.* **FIXED**
 
 ### 1.3  nginx (`binder/nginx-codeengine.conf`)
 
@@ -45,7 +45,7 @@
 
 - [x] **MEDIUM** DOC-1: No `autorestart=true` in supervisord config (lines 67-88). If nginx, Jupyter, or SSE crashes, the process stays dead while the container continues running. *Add `autorestart=true` and `startretries=3` to each `[program:*]`.* **FIXED**
 - [ ] **LOW** DOC-2: Binder Dockerfile (`binder/Dockerfile`) uses rolling `python-3.12` tag while Code Engine Dockerfile uses pinned `2025-01-27`. Environments can silently diverge. *Pin both to the same date-based tag.*
-- [ ] **LOW** DOC-3: `COPY . /home/jovyan/` in `binder/Dockerfile` (line 13) copies entire build context. If `.dockerignore` is missing or incomplete, `.git`, secrets, etc. end up in the image. *Verify `.dockerignore` excludes `.git`, `.env`, `*.key`.*
+- [x] **LOW** DOC-3: `COPY . /home/jovyan/` in `binder/Dockerfile` (line 13) copies entire build context. If `.dockerignore` is missing or incomplete, `.git`, secrets, etc. end up in the image. *Verify `.dockerignore` excludes `.git`, `.env`, `*.key`.* **FIXED**
 
 ### 1.5  Dependencies (`binder/jupyter-requirements.txt`)
 
@@ -92,7 +92,7 @@
 
 ### 2.6  Preferences (`src/config/preferences.ts`)
 
-- [ ] **MEDIUM** PRF-1: Unbounded growth of `visited-pages` and `executed-pages` sets (lines 62-64). On a large site with long-lived users, this can exceed cookie chunk limits or localStorage quotas. *Add max size with LRU eviction.*
+- [x] **MEDIUM** PRF-1: Unbounded growth of `visited-pages` and `executed-pages` sets (lines 62-64). On a large site with long-lived users, this can exceed cookie chunk limits or localStorage quotas. *Add max size with LRU eviction.* **FIXED**
 - [x] **LOW** PRF-2: `normalizePath` docstring says "lowercase" but implementation doesn't (line 413). *Fix docstring.* **FIXED**
 - [x] **LOW** PRF-3: `JSON.parse` of storage data at lines 46, 227, 297, 338, 350 lacks schema validation. Corrupted storage can cause runtime errors. *Add `Array.isArray()` checks after parsing.* **FIXED**
 - [x] **LOW** PRF-4: `clearRecentPages` also clears `KEY_LAST_PAGE` data (line 360). Name doesn't reflect this. *Rename or split.* **FIXED**
@@ -146,9 +146,9 @@
 ### 4.3  CSS / Accessibility
 
 - [x] **MEDIUM** CSS-1: Toggle checkbox has no `:focus-visible` style on the track element (`custom.css` line 818). Hidden input with `opacity: 0` loses keyboard focus indicator. *Add focus-visible outline on `.jupyter-settings__toggle-track`.* **FIXED**
-- [ ] **LOW** CSS-2: Hardcoded hex colors for mode badges/toast/banner (custom.css lines 738-795) instead of CSS custom properties. *Define as `:root` variables.*
+- [x] **LOW** CSS-2: Hardcoded hex colors for mode badges/toast/banner (custom.css lines 738-795) instead of CSS custom properties. *Define as `:root` variables.* **FIXED**
 - [x] **LOW** CSS-3: `.jupyter-settings { max-width: none }` (custom.css line 660) — text lines too long on wide screens. *Add `max-width: 900px`.* **FIXED**
-- [ ] **LOW** CSS-4: No `@media` mobile breakpoints for settings form inputs. Button containers use inline `flexWrap` which provides basic wrapping. *Add explicit mobile styles.*
+- [x] **LOW** CSS-4: No `@media` mobile breakpoints for settings form inputs. Button containers use inline `flexWrap` which provides basic wrapping. *Add explicit mobile styles.* **FIXED**
 
 ---
 

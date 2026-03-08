@@ -14,13 +14,13 @@ if [ -z "$JUPYTER_TOKEN" ]; then
   JUPYTER_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
 fi
 
-# Validate token: safe characters only, minimum 8 chars
+# Validate token: safe characters only, minimum 32 chars
 if [[ ! "$JUPYTER_TOKEN" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   echo "ERROR: JUPYTER_TOKEN must contain only letters, numbers, dashes, and underscores."
   exit 1
 fi
-if [ ${#JUPYTER_TOKEN} -lt 8 ]; then
-  echo "ERROR: JUPYTER_TOKEN must be at least 8 characters long."
+if [ ${#JUPYTER_TOKEN} -lt 32 ]; then
+  echo "ERROR: JUPYTER_TOKEN must be at least 32 characters long."
   exit 1
 fi
 

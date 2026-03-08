@@ -35,6 +35,8 @@ export const ALL_PREFERENCE_KEYS = [
 
 // ── Helpers ──
 
+const MAX_TRACKED_PAGES = 2000;
+
 function isBrowser(): boolean {
   return typeof window !== 'undefined';
 }
@@ -53,7 +55,12 @@ function getJsonSet(key: string): Set<string> {
 
 function saveJsonSet(key: string, set: Set<string>): void {
   if (!isBrowser()) return;
-  setItem(key, JSON.stringify([...set]));
+  let arr = [...set];
+  // Cap unbounded growth — keep most recent entries
+  if (arr.length > MAX_TRACKED_PAGES) {
+    arr = arr.slice(arr.length - MAX_TRACKED_PAGES);
+  }
+  setItem(key, JSON.stringify(arr));
 }
 
 // ── Page visit tracking ──
