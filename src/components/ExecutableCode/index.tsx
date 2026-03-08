@@ -84,6 +84,30 @@ let kernelDead = false;
 let feedbackCleanupFns: (() => void)[] = [];
 let activeKernel: unknown = null;
 
+/** Reset all module-level mutable state so next Run triggers a fresh bootstrap. */
+function resetModuleState(): void {
+  thebelabBootstrapped = false;
+  kernelDead = false;
+  activeKernel = null;
+  executingCell = null;
+  lastKernelBusy = false;
+  if (feedbackFallbackTimer) {
+    clearTimeout(feedbackFallbackTimer);
+    feedbackFallbackTimer = null;
+  }
+  if (feedbackIdleDebounceTimer) {
+    clearTimeout(feedbackIdleDebounceTimer);
+    feedbackIdleDebounceTimer = null;
+  }
+  feedbackCleanupFns.forEach(fn => fn());
+  feedbackCleanupFns = [];
+}
+
+/** Validate a Python package name for pip install. */
+function isValidPackageName(name: string): boolean {
+  return /^[a-zA-Z0-9._-]+$/.test(name);
+}
+
 /** Detect execution errors in a cell's output. */
 function detectCellError(cell: Element): { type: string; name?: string } | null {
   const output = cell.querySelector('.thebelab-output, .output_area');
@@ -109,7 +133,7 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
   // Module errors get a clickable Install button when kernel is available
   if (error.type === 'module' && error.name) {
     const pkg = error.name.split('.')[0];
-    if (!/^[a-zA-Z0-9._-]+$/.test(pkg)) return; // validate package name
+    if (!isValidPackageName(pkg)) return;
     const div = document.createElement('div');
     div.className = 'thebelab-cell__error-hint';
 
@@ -171,7 +195,7 @@ async function handlePipInstall(
   pkg: string,
   btn: HTMLButtonElement
 ): Promise<void> {
-  if (!/^[a-zA-Z0-9._-]+$/.test(pkg)) return;
+  if (!isValidPackageName(pkg)) return;
   btn.disabled = true;
   btn.textContent = translate({id: 'executable.pip.installing', message: 'Installing {pkg}...'}).replace('{pkg}', pkg);
   btn.classList.add('thebelab-cell__install-btn--installing');
@@ -668,9 +692,18 @@ function broadcastStatus(status: ThebeStatus): void {
  * Wait for thebelab CDN to load, then call bootstrap() with the given options.
  * Handles kernel promise, status events, and credential injection.
  */
+const BOOTSTRAP_MAX_RETRIES = 60; // 60 × 500ms = 30s total timeout
+
 function doBootstrap(thebelabOptions: Record<string, unknown>): void {
+  let retryCount = 0;
   const tryBootstrap = () => {
     if (!window.thebelab) {
+      retryCount++;
+      if (retryCount > BOOTSTRAP_MAX_RETRIES) {
+        console.error('[ExecutableCode] thebelab CDN failed to load after 30s');
+        broadcastStatus('error');
+        return;
+      }
       if (DEBUG) console.log('[ExecutableCode] waiting for thebelab CDN...');
       setTimeout(tryBootstrap, 500);
       return;
@@ -1023,25 +1056,8 @@ export default function ExecutableCode({
         return;
       }
     }
-    // Reset module-level state so next Run triggers a fresh bootstrap
-    thebelabBootstrapped = false;
-    kernelDead = false;
-    activeKernel = null;
-    executingCell = null;
-    lastKernelBusy = false;
-    if (feedbackFallbackTimer) {
-      clearTimeout(feedbackFallbackTimer);
-      feedbackFallbackTimer = null;
-    }
-    if (feedbackIdleDebounceTimer) {
-      clearTimeout(feedbackIdleDebounceTimer);
-      feedbackIdleDebounceTimer = null;
-    }
-    feedbackCleanupFns.forEach(fn => fn());
-    feedbackCleanupFns = [];
-    // Restore static outputs
+    resetModuleState();
     document.body.classList.remove('dq-hide-static-outputs');
-    // Tell ALL cells on the page to switch back to read mode
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
   };
 
@@ -1059,14 +1075,7 @@ export default function ExecutableCode({
       message: 'Clear session? You will need to wait for a new server on next Run.',
     }))) return;
     clearBinderSession();
-    // Also reset execution state so next Run triggers fresh bootstrap
-    thebelabBootstrapped = false;
-    kernelDead = false;
-    activeKernel = null;
-    executingCell = null;
-    lastKernelBusy = false;
-    feedbackCleanupFns.forEach(fn => fn());
-    feedbackCleanupFns = [];
+    resetModuleState();
     document.body.classList.remove('dq-hide-static-outputs');
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
   }, []);

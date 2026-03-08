@@ -105,8 +105,15 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        """Suppress per-request logging (supervisord captures stdout)."""
-        pass
+        """Log errors only; suppress routine request logging."""
+        # args[1] is the status code string (e.g. '200', '404')
+        if args and len(args) >= 2:
+            try:
+                code = int(args[1])
+                if code >= 400:
+                    super().log_message(format, *args)
+            except (ValueError, IndexError):
+                super().log_message(format, *args)
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):

@@ -28,7 +28,7 @@
 - [x] **LOW** SSE-3: `BrokenPipeError` not caught in `_send_event` / `do_GET`. Client disconnect mid-stream produces unhandled traceback. *Wrap writes in try/except for `BrokenPipeError`, `ConnectionResetError`.* **FIXED**
 - [x] **LOW** SSE-4: `do_OPTIONS` responds with CORS headers for any path (line 90), unlike `do_GET` which checks `/build`. *Add the same path check.* **FIXED**
 - [x] **LOW** SSE-5: No graceful shutdown handler. SIGTERM from supervisord abruptly kills in-flight SSE connections. *Add `signal.signal(SIGTERM, lambda: server.shutdown())`.* **FIXED**
-- [ ] **LOW** SSE-6: `log_message` overridden to no-op (line 98). All HTTP logging silently dropped — makes debugging and auditing impossible. *At minimum log errors; suppress only health-check GETs.*
+- [x] **LOW** SSE-6: `log_message` overridden to no-op (line 98). All HTTP logging silently dropped — makes debugging and auditing impossible. *At minimum log errors; suppress only health-check GETs.* **FIXED**
 
 ### 1.2  Entrypoint (`binder/codeengine-entrypoint.sh`)
 
@@ -39,7 +39,7 @@
 
 - [x] **MEDIUM** NGX-1: No rate limiting on `/lab`, `/terminals/`, `/user/`, `/static/`, or default `/` locations. Only `/build/` and `/api/` are protected. *Add rate limits to at least `/lab` and `/terminals/`.* **FIXED**
 - [x] **MEDIUM** NGX-2: Missing `Content-Security-Policy` and `Strict-Transport-Security` headers (lines 10-12 only have X-Content-Type-Options, X-Frame-Options, Referrer-Policy). *Add CSP and HSTS (if HTTPS guaranteed by Code Engine).* **FIXED**
-- [ ] **LOW** NGX-3: `client_max_body_size` not set. Default is 1MB — may silently reject large notebook uploads. *Set explicitly (e.g. `10m`) to make the limit intentional.*
+- [x] **LOW** NGX-3: `client_max_body_size` not set. Default is 1MB — may silently reject large notebook uploads. *Set explicitly (e.g. `10m`) to make the limit intentional.* **FIXED**
 
 ### 1.4  Dockerfile (`binder/Dockerfile.codeengine`)
 
@@ -108,7 +108,7 @@
 - [x] **MEDIUM** EXE-3: Race condition in `bootstrapOnce` (line 773). `thebelabBootstrapped` is set inside deferred `doBootstrap` after `setTimeout`. Two rapid clicks can trigger duplicate Binder builds. *Set "in-progress" flag synchronously at start of `bootstrapOnce`.* **FIXED**
 - [ ] **LOW** EXE-4: `handleReset` not wrapped in `useCallback` (line 1005), unlike all other handlers. Causes unnecessary button re-renders. *Wrap in `useCallback([], ...)`.*
 - [ ] **LOW** EXE-5: `isFirstCell` determined once on mount via DOM query (line 882), never updated. If components mount/unmount dynamically, it goes stale. *Use shared React context or MutationObserver.*
-- [ ] **LOW** EXE-6: `doBootstrap` retries via `setTimeout(tryBootstrap, 500)` with no max retry limit (line 675). If CDN never loads, polls indefinitely. *Add retry counter or 30s total timeout.*
+- [x] **LOW** EXE-6: `doBootstrap` retries via `setTimeout(tryBootstrap, 500)` with no max retry limit (line 675). If CDN never loads, polls indefinitely. *Add retry counter or 30s total timeout.* **FIXED**
 
 ### 3.2  Accessibility
 
@@ -123,11 +123,11 @@
 
 ### 3.4  Code Quality
 
-- [ ] **LOW** EXE-12: `handleReset` and `handleClearSession` (lines 1005-1033 vs 1043-1058) duplicate cleanup of module-level state. *Extract `resetModuleState()` helper.*
+- [x] **LOW** EXE-12: `handleReset` and `handleClearSession` (lines 1005-1033 vs 1043-1058) duplicate cleanup of module-level state. *Extract `resetModuleState()` helper.* **FIXED**
 - [ ] **LOW** EXE-13: Safety-net timer uses magic number `60000` (line 324). *Extract to named constant.*
 - [ ] **LOW** EXE-14: `discoverFakeBackends` swallows all errors silently (line 606). *Add `console.debug` for dev troubleshooting.*
 - [ ] **LOW** EXE-15: `thebeContainerRef` created at line 873 but never read. *Remove if unused.*
-- [ ] **LOW** EXE-16: pip install validation duplicated in two places (lines 112, 174). *Extract single `isValidPackageName()` helper.*
+- [x] **LOW** EXE-16: pip install validation duplicated in two places (lines 112, 174). *Extract single `isValidPackageName()` helper.* **FIXED**
 
 ---
 
