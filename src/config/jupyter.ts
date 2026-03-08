@@ -197,7 +197,9 @@ export function setSuppressWarnings(suppress: boolean): void {
 export function getCredentialTTLDays(): number {
   if (typeof window === 'undefined') return DEFAULT_TTL_DAYS;
   const stored = getItem(STORAGE_KEY_IBM_TTL_DAYS);
-  return stored ? Number(stored) : DEFAULT_TTL_DAYS;
+  if (!stored) return DEFAULT_TTL_DAYS;
+  const n = Number(stored);
+  return isFinite(n) && n >= 1 && n <= 365 ? n : DEFAULT_TTL_DAYS;
 }
 
 export function setCredentialTTLDays(days: number): void {
@@ -384,11 +386,15 @@ export async function testJupyterConnection(url: string, token: string): Promise
       headers['Authorization'] = `token ${token}`;
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const response = await fetch(apiUrl, {
       method: 'GET',
       headers,
       mode: 'cors',
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
 
     if (response.ok) {
       const data = await response.json();

@@ -25,9 +25,9 @@
 
 - [ ] **HIGH** SSE-1: Token sent in plaintext over SSE `ready` event (line 82). If the CORS origin site is XSS'd, the token is exfiltrated immediately. *Consider short-lived scoped tokens instead of the main Jupyter token.*
 - [x] **MEDIUM** SSE-2: `HTTPServer` is single-threaded (line 105). One slow/malicious client blocks all other SSE requests for up to 30s (the health-poll timeout). *Switch to `ThreadingHTTPServer`.* **FIXED**
-- [ ] **LOW** SSE-3: `BrokenPipeError` not caught in `_send_event` / `do_GET`. Client disconnect mid-stream produces unhandled traceback. *Wrap writes in try/except for `BrokenPipeError`, `ConnectionResetError`.*
-- [ ] **LOW** SSE-4: `do_OPTIONS` responds with CORS headers for any path (line 90), unlike `do_GET` which checks `/build`. *Add the same path check.*
-- [ ] **LOW** SSE-5: No graceful shutdown handler. SIGTERM from supervisord abruptly kills in-flight SSE connections. *Add `signal.signal(SIGTERM, lambda: server.shutdown())`.*
+- [x] **LOW** SSE-3: `BrokenPipeError` not caught in `_send_event` / `do_GET`. Client disconnect mid-stream produces unhandled traceback. *Wrap writes in try/except for `BrokenPipeError`, `ConnectionResetError`.* **FIXED**
+- [x] **LOW** SSE-4: `do_OPTIONS` responds with CORS headers for any path (line 90), unlike `do_GET` which checks `/build`. *Add the same path check.* **FIXED**
+- [x] **LOW** SSE-5: No graceful shutdown handler. SIGTERM from supervisord abruptly kills in-flight SSE connections. *Add `signal.signal(SIGTERM, lambda: server.shutdown())`.* **FIXED**
 - [ ] **LOW** SSE-6: `log_message` overridden to no-op (line 98). All HTTP logging silently dropped — makes debugging and auditing impossible. *At minimum log errors; suppress only health-check GETs.*
 
 ### 1.2  Entrypoint (`binder/codeengine-entrypoint.sh`)
@@ -68,9 +68,9 @@
 - [x] **MEDIUM** CFG-6: Private IP range `172.*` detection is too broad (line 124). RFC 1918 is `172.16.0.0/12` (172.16-172.31), but `hostname.startsWith('172.')` matches all of `172.0.0.0/8`. Public IPs in `172.0-172.15` would falsely trigger rasqberry mode. *Parse second octet and check `>= 16 && <= 31`.* **FIXED**
 - [x] **MEDIUM** CFG-7: `getIBMQuantumCRN` does not call `checkCredentialExpiry()` (line 230), unlike `getIBMQuantumToken` which does (line 225). Callers reading CRN without first reading token can get expired CRN. *Add `checkCredentialExpiry()` call.* **FIXED**
 - [x] **MEDIUM** CFG-8: `ensureBinderSession` EventSource has no timeout (lines 507-531). If the Binder build hangs indefinitely, the Promise never resolves/rejects. *Add a 20-minute timeout that closes EventSource and rejects.* **FIXED**
-- [ ] **LOW** CFG-9: `getCredentialTTLDays` doesn't validate stored value (line 200). `Number(stored)` can return NaN, Infinity, or negative. *Clamp: `isFinite(n) && n >= 1 && n <= 365 ? n : DEFAULT`.*
+- [x] **LOW** CFG-9: `getCredentialTTLDays` doesn't validate stored value (line 200). `Number(stored)` can return NaN, Infinity, or negative. *Clamp: `isFinite(n) && n >= 1 && n <= 365 ? n : DEFAULT`.* **FIXED**
 - [ ] **LOW** CFG-10: `saveCodeEngineCredentials` silently drops empty token (line 273). `if (token)` means passing `''` leaves a stale old token in storage. *Always write or explicitly `removeItem` when falsy.*
-- [ ] **LOW** CFG-11: `testJupyterConnection` fetch has no `AbortController` timeout (line 386). Misconfigured URL hangs for browser default (5+ min). *Add 15s abort.*
+- [x] **LOW** CFG-11: `testJupyterConnection` fetch has no `AbortController` timeout (line 386). Misconfigured URL hangs for browser default (5+ min). *Add 15s abort.* **FIXED**
 - [ ] **LOW** CFG-12: `getColabUrl` duplicates path-mapping logic from `mapBinderNotebookPath` (lines 680-681). If one is updated without the other, URLs diverge. *Refactor to share.*
 
 ### 2.3  Type Safety

@@ -16,6 +16,7 @@ Runs on port 9090; nginx reverse-proxies /build/ here.
 
 import json
 import os
+import signal
 import time
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -66,21 +67,25 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
             scheme = self.headers.get('X-Forwarded-Proto', 'http')
             base_url = f'{scheme}://{host}'
 
-        # Emit connecting phase
-        self._send_event({'phase': 'connecting'})
-        time.sleep(0.3)
+        try:
+            # Emit connecting phase
+            self._send_event({'phase': 'connecting'})
+            time.sleep(0.3)
 
-        # Emit launching phase, then wait for Jupyter to be ready
-        self._send_event({'phase': 'launching'})
-        deadline = time.monotonic() + JUPYTER_READY_TIMEOUT
-        while not _jupyter_is_ready():
-            if time.monotonic() > deadline:
-                self._send_event({'phase': 'failed', 'message': 'Jupyter server did not become ready in time'})
-                return
-            time.sleep(JUPYTER_POLL_INTERVAL)
+            # Emit launching phase, then wait for Jupyter to be ready
+            self._send_event({'phase': 'launching'})
+            deadline = time.monotonic() + JUPYTER_READY_TIMEOUT
+            while not _jupyter_is_ready():
+                if time.monotonic() > deadline:
+                    self._send_event({'phase': 'failed', 'message': 'Jupyter server did not become ready in time'})
+                    return
+                time.sleep(JUPYTER_POLL_INTERVAL)
 
-        # Jupyter confirmed ready — emit ready phase
-        self._send_event({'phase': 'ready', 'url': base_url + '/', 'token': token})
+            # Jupyter confirmed ready — emit ready phase
+            self._send_event({'phase': 'ready', 'url': base_url + '/', 'token': token})
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected mid-stream — nothing to do
+            pass
 
     def _send_event(self, event):
         """Write a single SSE event."""
@@ -89,7 +94,10 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_OPTIONS(self):
-        """Handle CORS preflight."""
+        """Handle CORS preflight for /build paths only."""
+        if not self.path.startswith('/build'):
+            self.send_error(404)
+            return
         self.send_response(204)
         self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
@@ -108,6 +116,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 def main():
     port = int(os.environ.get('SSE_PORT', '9090'))
     server = ThreadingHTTPServer(('127.0.0.1', port), SSEBuildHandler)
+    signal.signal(signal.SIGTERM, lambda sig, frame: server.shutdown())
     print(f'[SSE] Binder-compatible build endpoint on port {port}')
     server.serve_forever()
 
