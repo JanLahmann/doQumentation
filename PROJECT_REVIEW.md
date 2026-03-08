@@ -88,14 +88,14 @@
 ### 2.5  Storage Layer (`src/config/storage.ts`)
 
 - [ ] **LOW** STO-1: Module-level mutable `cache` (line 19) goes stale if another tab modifies localStorage. *Listen for `storage` events to invalidate.*
-- [ ] **LOW** STO-2: `migrateLocalStorageToCookies` logs untranslated English via `console.debug` (line 212). *Gate behind `__DEV__` check.*
+- [x] **LOW** STO-2: `migrateLocalStorageToCookies` logs untranslated English via `console.debug` (line 212). *Gate behind `__DEV__` check.* **FIXED**
 
 ### 2.6  Preferences (`src/config/preferences.ts`)
 
 - [ ] **MEDIUM** PRF-1: Unbounded growth of `visited-pages` and `executed-pages` sets (lines 62-64). On a large site with long-lived users, this can exceed cookie chunk limits or localStorage quotas. *Add max size with LRU eviction.*
-- [ ] **LOW** PRF-2: `normalizePath` docstring says "lowercase" but implementation doesn't (line 413). *Fix docstring.*
+- [x] **LOW** PRF-2: `normalizePath` docstring says "lowercase" but implementation doesn't (line 413). *Fix docstring.* **FIXED**
 - [ ] **LOW** PRF-3: `JSON.parse` of storage data at lines 46, 227, 297, 338, 350 lacks schema validation. Corrupted storage can cause runtime errors. *Add `Array.isArray()` checks after parsing.*
-- [ ] **LOW** PRF-4: `clearRecentPages` also clears `KEY_LAST_PAGE` data (line 360). Name doesn't reflect this. *Rename or split.*
+- [x] **LOW** PRF-4: `clearRecentPages` also clears `KEY_LAST_PAGE` data (line 360). Name doesn't reflect this. *Rename or split.* **FIXED**
 
 ---
 
@@ -164,8 +164,8 @@
 
 - [x] **MEDIUM** CI-4: `binder.yml` and `codeengine-image.yml` have no `permissions` block. Default token gets broad permissions on push triggers. *Add explicit least-privilege `permissions: {}`.*  **FIXED**
 - [x] **MEDIUM** CI-5: Trivy scan `exit-code: 0` (codeengine-image.yml:57) — vulnerabilities never fail the build. *Change to `exit-code: '1'`.*  **FIXED**
-- [ ] **LOW** CI-6: `onBrokenLinks: 'warn'` (docusaurus.config.ts:20) — broken links ship silently. *Change to `'throw'`.*
-- [ ] **LOW** CI-7: `onBrokenMarkdownLinks` not set — defaults to `'warning'`. *Add `onBrokenMarkdownLinks: 'throw'`.*
+- [x] **LOW** CI-6: `onBrokenLinks: 'warn'` (docusaurus.config.ts:20) — broken links ship silently. *Change to `'throw'`.* **FIXED**
+- [x] **LOW** CI-7: `onBrokenMarkdownLinks` not set — defaults to `'warning'`. *Add `onBrokenMarkdownLinks: 'throw'`.* **FIXED**
 - [ ] **LOW** CI-8: `git push --force` to `notebooks` branch (deploy.yml:69). Overlapping runs can lose history. *Accepted if concurrency controls are sufficient.*
 
 ---

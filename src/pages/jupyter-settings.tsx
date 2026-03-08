@@ -57,7 +57,7 @@ import {
   getBookmarks,
   clearAllBookmarks,
   resetOnboarding,
-  clearRecentPages,
+  clearRecentAndLastPage,
   clearSidebarCollapseStates,
   type ProgressStats,
 } from '../config/preferences';
@@ -1137,7 +1137,7 @@ QiskitRuntimeService.save_account(
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
               onClick={() => {
-                clearRecentPages();
+                clearRecentAndLastPage();
               }}
             >
               <Translate id="settings.other.clearRecent">Clear Recent History</Translate>

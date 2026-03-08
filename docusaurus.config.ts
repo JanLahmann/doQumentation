@@ -17,7 +17,8 @@ const config: Config = {
   projectName: 'doQumentation',
   trailingSlash: false,
 
-  onBrokenLinks: 'warn',
+  onBrokenLinks: 'throw',
+  onBrokenMarkdownLinks: 'throw',
 
   headTags: [
     // Preconnect hints for external resources

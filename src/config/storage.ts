@@ -209,7 +209,7 @@ export function migrateLocalStorageToCookies(keys: string[]): void {
         migrated++;
       }
     }
-    if (migrated > 0 && typeof console !== 'undefined' && console.debug) {
+    if (migrated > 0 && typeof process !== 'undefined' && process.env.NODE_ENV === 'development') {
       console.debug(`[doQumentation] Migrated ${migrated} settings to cross-subdomain storage`);
     }
   } catch {

@@ -354,7 +354,7 @@ export function getRecentPages(): RecentPage[] {
   }
 }
 
-export function clearRecentPages(): void {
+export function clearRecentAndLastPage(): void {
   if (!isBrowser()) return;
   removeItem(KEY_RECENT_PAGES);
   removeItem(KEY_LAST_PAGE);
@@ -410,11 +410,9 @@ export function getProgressStats(): ProgressStats {
 
 // ── Path utilities ──
 
-/** Normalize a path: strip trailing slash, lowercase. */
+/** Normalize a path: strip trailing slash. */
 function normalizePath(path: string): string {
-  let p = path.replace(/\/+$/, '') || '/';
-  // Don't lowercase — paths are case-sensitive
-  return p;
+  return path.replace(/\/+$/, '') || '/';
 }
 
 /** Extract the content category from a path. */
