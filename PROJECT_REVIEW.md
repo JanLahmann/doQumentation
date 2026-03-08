@@ -69,14 +69,14 @@
 - [x] **MEDIUM** CFG-7: `getIBMQuantumCRN` does not call `checkCredentialExpiry()` (line 230), unlike `getIBMQuantumToken` which does (line 225). Callers reading CRN without first reading token can get expired CRN. *Add `checkCredentialExpiry()` call.* **FIXED**
 - [x] **MEDIUM** CFG-8: `ensureBinderSession` EventSource has no timeout (lines 507-531). If the Binder build hangs indefinitely, the Promise never resolves/rejects. *Add a 20-minute timeout that closes EventSource and rejects.* **FIXED**
 - [x] **LOW** CFG-9: `getCredentialTTLDays` doesn't validate stored value (line 200). `Number(stored)` can return NaN, Infinity, or negative. *Clamp: `isFinite(n) && n >= 1 && n <= 365 ? n : DEFAULT`.* **FIXED**
-- [ ] **LOW** CFG-10: `saveCodeEngineCredentials` silently drops empty token (line 273). `if (token)` means passing `''` leaves a stale old token in storage. *Always write or explicitly `removeItem` when falsy.*
+- [x] **LOW** CFG-10: `saveCodeEngineCredentials` silently drops empty token (line 273). `if (token)` means passing `''` leaves a stale old token in storage. *Always write or explicitly `removeItem` when falsy.* **FIXED**
 - [x] **LOW** CFG-11: `testJupyterConnection` fetch has no `AbortController` timeout (line 386). Misconfigured URL hangs for browser default (5+ min). *Add 15s abort.* **FIXED**
 - [ ] **LOW** CFG-12: `getColabUrl` duplicates path-mapping logic from `mapBinderNotebookPath` (lines 680-681). If one is updated without the other, URLs diverge. *Refactor to share.*
 
 ### 2.3  Type Safety
 
-- [ ] **LOW** CFG-13: `getSimulatorBackend` casts any string from storage to `SimulatorBackend` without validation (line 321). *Validate against known values.*
-- [ ] **LOW** CFG-14: `getActiveMode` same issue (line 360). *Validate against known values.*
+- [x] **LOW** CFG-13: `getSimulatorBackend` casts any string from storage to `SimulatorBackend` without validation (line 321). *Validate against known values.* **FIXED**
+- [x] **LOW** CFG-14: `getActiveMode` same issue (line 360). *Validate against known values.* **FIXED**
 
 ### 2.4  i18n
 
@@ -124,9 +124,9 @@
 ### 3.4  Code Quality
 
 - [x] **LOW** EXE-12: `handleReset` and `handleClearSession` (lines 1005-1033 vs 1043-1058) duplicate cleanup of module-level state. *Extract `resetModuleState()` helper.* **FIXED**
-- [ ] **LOW** EXE-13: Safety-net timer uses magic number `60000` (line 324). *Extract to named constant.*
+- [x] **LOW** EXE-13: Safety-net timer uses magic number `60000` (line 324). *Extract to named constant.* **FIXED**
 - [ ] **LOW** EXE-14: `discoverFakeBackends` swallows all errors silently (line 606). *Add `console.debug` for dev troubleshooting.*
-- [ ] **LOW** EXE-15: `thebeContainerRef` created at line 873 but never read. *Remove if unused.*
+- [x] **LOW** EXE-15: `thebeContainerRef` created at line 873 but never read. *Remove if unused.* **FIXED**
 - [x] **LOW** EXE-16: pip install validation duplicated in two places (lines 112, 174). *Extract single `isValidPackageName()` helper.* **FIXED**
 
 ---

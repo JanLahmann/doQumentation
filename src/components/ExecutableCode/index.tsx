@@ -74,6 +74,9 @@ type InjectionInfo = {
 const DEBUG = typeof process !== 'undefined' && process.env.NODE_ENV === 'development';
 
 // ── Cell execution feedback ──
+// Safety-net timeout (ms) — if kernel.statusChanged never fires idle after a cell
+// execution, force-settle the cell feedback after this duration.
+const FEEDBACK_SAFETY_NET_MS = 60000;
 // Tracks which cell is currently executing so we can show "Done" for no-output cells.
 
 let executingCell: Element | null = null;
@@ -345,7 +348,7 @@ function markCellExecuting(cell: Element): void {
       console.warn('[ExecutableCode] Safety-net timer fired — kernel.statusChanged may not be working');
       settleCellFeedback(cell);
     }
-  }, 60000);
+  }, FEEDBACK_SAFETY_NET_MS);
 }
 
 /** After thebelab cells are rendered, attach listeners for execution feedback. */
@@ -906,7 +909,6 @@ export default function ExecutableCode({
   const [binderCacheMiss, setBinderCacheMiss] = useState(false);
   const binderStartRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const thebeContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
@@ -1304,7 +1306,7 @@ export default function ExecutableCode({
 
       {/* Run mode: thebelab-managed interactive cell */}
       {mode === 'run' && (
-        <div ref={thebeContainerRef} className="executable-code__thebe">
+        <div className="executable-code__thebe">
           <pre data-executable="true" data-language="python">
             {code}
           </pre>

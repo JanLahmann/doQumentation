@@ -273,7 +273,11 @@ export function getCodeEngineToken(): string {
 export function saveCodeEngineCredentials(url: string, token: string): void {
   if (typeof window === 'undefined') return;
   setItem(STORAGE_KEY_CE_URL, url.replace(/\/+$/, ''));
-  if (token) setItem(STORAGE_KEY_CE_TOKEN, token);
+  if (token) {
+    setItem(STORAGE_KEY_CE_TOKEN, token);
+  } else {
+    removeItem(STORAGE_KEY_CE_TOKEN);
+  }
   setItem(STORAGE_KEY_CE_SAVED_AT, String(Date.now()));
 }
 
@@ -319,9 +323,14 @@ export function setSimulatorMode(enabled: boolean): void {
   }
 }
 
+const VALID_SIMULATOR_BACKENDS: readonly SimulatorBackend[] = ['aer', 'fake'];
+
 export function getSimulatorBackend(): SimulatorBackend {
   if (typeof window === 'undefined') return 'aer';
-  return (getItem(STORAGE_KEY_SIM_BACKEND) as SimulatorBackend) || 'aer';
+  const stored = getItem(STORAGE_KEY_SIM_BACKEND);
+  return stored && VALID_SIMULATOR_BACKENDS.includes(stored as SimulatorBackend)
+    ? (stored as SimulatorBackend)
+    : 'aer';
 }
 
 export function setSimulatorBackend(backend: SimulatorBackend): void {
@@ -358,9 +367,14 @@ export function setCachedFakeBackends(backends: Array<{name: string; qubits: num
 
 export type ActiveMode = 'credentials' | 'simulator';
 
+const VALID_ACTIVE_MODES: readonly ActiveMode[] = ['credentials', 'simulator'];
+
 export function getActiveMode(): ActiveMode | null {
   if (typeof window === 'undefined') return null;
-  return getItem(STORAGE_KEY_ACTIVE_MODE) as ActiveMode | null;
+  const stored = getItem(STORAGE_KEY_ACTIVE_MODE);
+  return stored && VALID_ACTIVE_MODES.includes(stored as ActiveMode)
+    ? (stored as ActiveMode)
+    : null;
 }
 
 export function setActiveMode(mode: ActiveMode | null): void {
