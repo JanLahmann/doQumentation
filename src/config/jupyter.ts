@@ -593,7 +593,7 @@ export function ensureBinderSession(
  * and navigates the tab to JupyterLab when ready.
  * Subsequent calls (within 8 min): navigates directly (session already exists).
  */
-/** Phase hints with durations for the Binder loading tab */
+/** Default English phase hints for the Binder loading tab */
 const BINDER_TAB_PHASE_HINTS: Record<string, string> = {
   connecting: 'Connecting to mybinder.org\u2026',
   waiting:    'Waiting in queue\u2026',
@@ -610,11 +610,27 @@ const CE_TAB_PHASE_HINTS: Record<string, string> = {
   ready:      'Launching JupyterLab\u2026',
 };
 
+/** Translatable labels for the Binder/CE popup tab. Pass translated values from the UI layer. */
+export interface BinderTabLabels {
+  /** Phase hint overrides — keys match phase names from the SSE stream */
+  phaseHints?: Record<string, string>;
+  /** Title shown in the tab's title bar while loading */
+  tabTitle?: string;
+  /** Initial phase text shown in the tab body */
+  initialPhase?: string;
+  /** Warning text shown when build cache is not warmed */
+  cacheWarning?: string;
+  /** Error message shown when the build/connection fails */
+  errorMessage?: string;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function makeTabHtml(title: string, initialPhase: string): string {
+function makeTabHtml(title: string, initialPhase: string, cacheWarning?: string): string {
+  const warningText = cacheWarning
+    ?? '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Close this tab and use Colab instead, or come back later.';
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
@@ -626,8 +642,7 @@ function makeTabHtml(title: string, initialPhase: string): string {
 </style></head><body>
   <div id="phase">${escapeHtml(initialPhase)}</div>
   <div id="elapsed"></div>
-  <div id="warning">\u26a0 Cache not warmed \u2014 total build time 10\u201325 min.
-    Close this tab and use <strong>Colab</strong> instead, or come back later.</div>
+  <div id="warning">${escapeHtml(warningText)}</div>
 </body></html>`;
 }
 
@@ -643,19 +658,23 @@ export function openBinderLab(
   notebookPath: string,
   locale?: string,
   onProgress?: (phase: string) => void,
+  labels?: BinderTabLabels,
 ): void {
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
   const isCE = config.environment === 'code-engine';
-  const phaseHints = isCE ? CE_TAB_PHASE_HINTS : BINDER_TAB_PHASE_HINTS;
+  const defaultHints = isCE ? CE_TAB_PHASE_HINTS : BINDER_TAB_PHASE_HINTS;
+  const phaseHints = labels?.phaseHints ? { ...defaultHints, ...labels.phaseHints } : defaultHints;
+
+  const tabTitle = labels?.tabTitle
+    ?? (isCE ? 'Starting Code Engine\u2026' : 'Starting Binder\u2026');
+  const initialPhase = labels?.initialPhase
+    ?? (isCE ? 'Connecting to Code Engine\u2026' : 'Connecting to mybinder.org\u2026');
 
   // Open tab synchronously from click handler to avoid popup blockers.
   const tab = window.open('about:blank', '_blank');
   if (tab) {
     tab.document.open();
-    tab.document.write(makeTabHtml(
-      isCE ? 'Starting Code Engine\u2026' : 'Starting Binder\u2026',
-      isCE ? 'Connecting to Code Engine\u2026' : 'Connecting to mybinder.org\u2026',
-    ));
+    tab.document.write(makeTabHtml(tabTitle, initialPhase, labels?.cacheWarning));
     tab.document.close();
   }
 
@@ -700,9 +719,10 @@ export function openBinderLab(
       try {
         const phaseEl = tab.document.getElementById('phase');
         if (phaseEl) {
-          phaseEl.textContent = isCE
+          const defaultError = isCE
             ? 'Code Engine connection failed. Close this tab and try again, or use Colab.'
             : 'Binder build failed. Close this tab and try again, or use Colab.';
+          phaseEl.textContent = labels?.errorMessage ?? defaultError;
           phaseEl.style.color = '#d32f2f';
         }
       } catch { tab.close(); }

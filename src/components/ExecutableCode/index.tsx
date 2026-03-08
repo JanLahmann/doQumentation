@@ -17,6 +17,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Translate, {translate} from '@docusaurus/Translate';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import {useLocation} from '@docusaurus/router';
 import CodeBlock from '@theme-original/CodeBlock';
 import {
   detectJupyterConfig,
@@ -899,6 +900,18 @@ export default function ExecutableCode({
   showLineNumbers = true,
 }: ExecutableCodeProps): JSX.Element {
   const { i18n: { currentLocale } } = useDocusaurusContext();
+  const location = useLocation();
+
+  // Reset module-level state on SPA page navigation so stale kernel/bootstrap
+  // state from the previous page doesn't leak into the new page.
+  const prevPathRef = useRef(location.pathname);
+  useEffect(() => {
+    if (location.pathname !== prevPathRef.current) {
+      prevPathRef.current = location.pathname;
+      resetModuleState();
+    }
+  }, [location.pathname]);
+
   const [mode, setMode] = useState<'read' | 'run'>('read');
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);

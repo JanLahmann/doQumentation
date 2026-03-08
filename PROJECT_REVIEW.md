@@ -13,9 +13,9 @@
 |----------|------:|---------------------:|----------:|
 | Critical |     2 |                    2 |         0 |
 | High     |     4 |                    2 |         2 |
-| Medium   |    30 |                   21 |         9 |
+| Medium   |    30 |                   25 |         5 |
 | Low      |    37 |                   33 |         4 |
-| **Total**| **71**|               **56** |    **15** |
+| **Total**| **71**|               **60** |    **11** |
 
 ---
 
@@ -80,9 +80,9 @@
 
 ### 2.4  i18n
 
-- [ ] **MEDIUM** CFG-15: `BINDER_TAB_PHASE_HINTS` and `CE_TAB_PHASE_HINTS` (lines 546-560) are hardcoded English. *Accept translated strings or locale parameter.*
-- [ ] **MEDIUM** CFG-16: `makeTabHtml` warning text and tab title (lines 574-576) are hardcoded English. *Pass translated strings.*
-- [ ] **MEDIUM** CFG-17: `openBinderLab` error messages written to popup tab DOM (lines 648-650) are hardcoded English. *Pass translated strings.*
+- [x] **MEDIUM** CFG-15: `BINDER_TAB_PHASE_HINTS` and `CE_TAB_PHASE_HINTS` (lines 546-560) are hardcoded English. *Accept translated strings or locale parameter.* **FIXED**
+- [x] **MEDIUM** CFG-16: `makeTabHtml` warning text and tab title (lines 574-576) are hardcoded English. *Pass translated strings.* **FIXED**
+- [x] **MEDIUM** CFG-17: `openBinderLab` error messages written to popup tab DOM (lines 648-650) are hardcoded English. *Pass translated strings.* **FIXED**
 - [x] **LOW** CFG-18: `testJupyterConnection` result messages (lines 395-407) are hardcoded English. *Return structured data, let UI translate.* **FIXED**
 
 ### 2.5  Storage Layer (`src/config/storage.ts`)
@@ -104,7 +104,7 @@
 ### 3.1  React / Lifecycle
 
 - [x] **MEDIUM** EXE-1: `setTimeout` in conflict/injection event handlers (lines 964, 977) never cleaned up on unmount. Causes `setState` on unmounted component. *Store timer IDs in refs, clear in useEffect cleanup.* **FIXED**
-- [ ] **MEDIUM** EXE-2: Module-level mutable state (`thebelabBootstrapped`, `activeKernel`, etc., lines 54-85) persists across SPA navigations. No reset on page change. *Add page-navigation cleanup hook or wrap in singleton class.*
+- [x] **MEDIUM** EXE-2: Module-level mutable state (`thebelabBootstrapped`, `activeKernel`, etc., lines 54-85) persists across SPA navigations. No reset on page change. *Add page-navigation cleanup hook or wrap in singleton class.* **FIXED**
 - [x] **MEDIUM** EXE-3: Race condition in `bootstrapOnce` (line 773). `thebelabBootstrapped` is set inside deferred `doBootstrap` after `setTimeout`. Two rapid clicks can trigger duplicate Binder builds. *Set "in-progress" flag synchronously at start of `bootstrapOnce`.* **FIXED**
 - [x] **LOW** EXE-4: `handleReset` not wrapped in `useCallback` (line 1005), unlike all other handlers. Causes unnecessary button re-renders. *Wrap in `useCallback([], ...)`.* **FIXED**
 - [ ] **LOW** EXE-5: `isFirstCell` determined once on mount via DOM query (line 882), never updated. If components mount/unmount dynamically, it goes stale. *Use shared React context or MutationObserver.*
@@ -158,7 +158,7 @@
 
 - [x] **HIGH** CI-1: `aquasecurity/trivy-action@master` in `codeengine-image.yml:53` — pinned to mutable `master` branch. Most dangerous: any commit to that repo's main branch runs in your CI. *Pin to SHA.* **FIXED**
 - [x] **MEDIUM** CI-2: All 7 workflows use tag-only action refs (`@v4`, `@v3`, etc.) — no SHA pinning. Third-party `peter-evans/create-pull-request@v7` in `sync-deps.yml:31` is highest risk. *Pin all to full commit SHAs.* **FIXED**
-- [ ] **MEDIUM** CI-3: thebelab loaded from unpkg.com CDN at runtime without SRI hash (docusaurus.config.ts:133). KaTeX stylesheet has SRI — thebelab should too. *Add `integrity` attribute or self-host.*
+- [x] **MEDIUM** CI-3: thebelab loaded from unpkg.com CDN at runtime without SRI hash (docusaurus.config.ts:133). KaTeX stylesheet has SRI — thebelab should too. *Add `integrity` attribute or self-host.* **FIXED**
 
 ### 5.2  Permissions & Config
 

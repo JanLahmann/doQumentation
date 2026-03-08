@@ -129,10 +129,10 @@ const config: Config = {
     },
   },
 
-  // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
+  // Enable Thebe for Jupyter execution (thebelab 0.4.x - self-hosted to avoid CDN supply-chain risk)
   scripts: [
     {
-      src: 'https://unpkg.com/thebelab@0.4.0/lib/index.js',
+      src: '/js/thebelab-0.4.0.js',
       async: true,
     },
   ],
