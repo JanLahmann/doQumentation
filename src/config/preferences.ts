@@ -43,7 +43,9 @@ function getJsonSet(key: string): Set<string> {
   if (!isBrowser()) return new Set();
   try {
     const raw = getItem(key);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed) : new Set();
   } catch {
     return new Set();
   }
@@ -224,7 +226,9 @@ function getBookmarksArray(): Bookmark[] {
   if (!isBrowser()) return [];
   try {
     const raw = getItem(KEY_BOOKMARKS);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -295,7 +299,9 @@ function getCollapseMap(): Record<string, boolean> {
   if (!isBrowser()) return {};
   try {
     const raw = getItem(KEY_SIDEBAR_COLLAPSED);
-    return raw ? JSON.parse(raw) : {};
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
   }
@@ -335,7 +341,8 @@ export function addRecentPage(path: string, title: string): void {
   if (norm === '/' || norm === '/jupyter-settings') return;
   try {
     const raw = getItem(KEY_RECENT_PAGES);
-    const pages: RecentPage[] = raw ? JSON.parse(raw) : [];
+    const parsed = raw ? JSON.parse(raw) : [];
+    const pages: RecentPage[] = Array.isArray(parsed) ? parsed : [];
     // Remove duplicate, add to front
     const filtered = pages.filter(p => p.path !== norm);
     filtered.unshift({ path: norm, title, ts: Date.now() });
@@ -348,7 +355,9 @@ export function getRecentPages(): RecentPage[] {
   if (!isBrowser()) return [];
   try {
     const raw = getItem(KEY_RECENT_PAGES);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }

@@ -389,10 +389,18 @@ export function setActiveMode(mode: ActiveMode | null): void {
 /**
  * Test connection to a Jupyter server
  */
-export async function testJupyterConnection(url: string, token: string): Promise<{
+export type ConnectionResultKind = 'ok' | 'http_error' | 'network_error';
+
+export interface ConnectionResult {
   success: boolean;
-  message: string;
-}> {
+  kind: ConnectionResultKind;
+  version?: string;
+  status?: number;
+  statusText?: string;
+  error?: string;
+}
+
+export async function testJupyterConnection(url: string, token: string): Promise<ConnectionResult> {
   try {
     const apiUrl = `${url}/api/status`;
     const headers: HeadersInit = {};
@@ -414,18 +422,22 @@ export async function testJupyterConnection(url: string, token: string): Promise
       const data = await response.json();
       return {
         success: true,
-        message: `Connected! Jupyter version: ${data.version || 'unknown'}`,
+        kind: 'ok',
+        version: data.version || 'unknown',
       };
     } else {
       return {
         success: false,
-        message: `Connection failed: ${response.status} ${response.statusText}`,
+        kind: 'http_error',
+        status: response.status,
+        statusText: response.statusText,
       };
     }
   } catch (error) {
     return {
       success: false,
-      message: `Connection error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      kind: 'network_error',
+      error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
 }

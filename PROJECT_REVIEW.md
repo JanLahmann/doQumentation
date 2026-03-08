@@ -83,18 +83,18 @@
 - [ ] **MEDIUM** CFG-15: `BINDER_TAB_PHASE_HINTS` and `CE_TAB_PHASE_HINTS` (lines 546-560) are hardcoded English. *Accept translated strings or locale parameter.*
 - [ ] **MEDIUM** CFG-16: `makeTabHtml` warning text and tab title (lines 574-576) are hardcoded English. *Pass translated strings.*
 - [ ] **MEDIUM** CFG-17: `openBinderLab` error messages written to popup tab DOM (lines 648-650) are hardcoded English. *Pass translated strings.*
-- [ ] **LOW** CFG-18: `testJupyterConnection` result messages (lines 395-407) are hardcoded English. *Return structured data, let UI translate.*
+- [x] **LOW** CFG-18: `testJupyterConnection` result messages (lines 395-407) are hardcoded English. *Return structured data, let UI translate.* **FIXED**
 
 ### 2.5  Storage Layer (`src/config/storage.ts`)
 
-- [ ] **LOW** STO-1: Module-level mutable `cache` (line 19) goes stale if another tab modifies localStorage. *Listen for `storage` events to invalidate.*
+- [x] **LOW** STO-1: Module-level mutable `cache` (line 19) goes stale if another tab modifies localStorage. *Listen for `storage` events to invalidate.* **FIXED**
 - [x] **LOW** STO-2: `migrateLocalStorageToCookies` logs untranslated English via `console.debug` (line 212). *Gate behind `__DEV__` check.* **FIXED**
 
 ### 2.6  Preferences (`src/config/preferences.ts`)
 
 - [ ] **MEDIUM** PRF-1: Unbounded growth of `visited-pages` and `executed-pages` sets (lines 62-64). On a large site with long-lived users, this can exceed cookie chunk limits or localStorage quotas. *Add max size with LRU eviction.*
 - [x] **LOW** PRF-2: `normalizePath` docstring says "lowercase" but implementation doesn't (line 413). *Fix docstring.* **FIXED**
-- [ ] **LOW** PRF-3: `JSON.parse` of storage data at lines 46, 227, 297, 338, 350 lacks schema validation. Corrupted storage can cause runtime errors. *Add `Array.isArray()` checks after parsing.*
+- [x] **LOW** PRF-3: `JSON.parse` of storage data at lines 46, 227, 297, 338, 350 lacks schema validation. Corrupted storage can cause runtime errors. *Add `Array.isArray()` checks after parsing.* **FIXED**
 - [x] **LOW** PRF-4: `clearRecentPages` also clears `KEY_LAST_PAGE` data (line 360). Name doesn't reflect this. *Rename or split.* **FIXED**
 
 ---
@@ -141,13 +141,13 @@
 
 - [ ] **MEDIUM** SET-2: Component has ~18 `useState` hooks (lines 138-177). Should be broken into sub-components (IBMQuantumSection, CodeEngineSection, SimulatorSection, etc.) for maintainability and render performance. *Refactor into sections.*
 - [x] **LOW** SET-3: `backendsByQubits` Map recomputed on every render (lines 370-377). *Wrap in `useMemo(() => ..., [fakeBackends])`.* **FIXED**
-- [ ] **LOW** SET-4: Category capitalization at line 943 (`cat.charAt(0).toUpperCase()`) assumes English. *Use locale-aware methods or i18n.*
+- [x] **LOW** SET-4: Category capitalization at line 943 (`cat.charAt(0).toUpperCase()`) assumes English. *Use locale-aware methods or i18n.* **FIXED**
 
 ### 4.3  CSS / Accessibility
 
 - [x] **MEDIUM** CSS-1: Toggle checkbox has no `:focus-visible` style on the track element (`custom.css` line 818). Hidden input with `opacity: 0` loses keyboard focus indicator. *Add focus-visible outline on `.jupyter-settings__toggle-track`.* **FIXED**
 - [ ] **LOW** CSS-2: Hardcoded hex colors for mode badges/toast/banner (custom.css lines 738-795) instead of CSS custom properties. *Define as `:root` variables.*
-- [ ] **LOW** CSS-3: `.jupyter-settings { max-width: none }` (custom.css line 660) — text lines too long on wide screens. *Add `max-width: 900px`.*
+- [x] **LOW** CSS-3: `.jupyter-settings { max-width: none }` (custom.css line 660) — text lines too long on wide screens. *Add `max-width: 900px`.* **FIXED**
 - [ ] **LOW** CSS-4: No `@media` mobile breakpoints for settings form inputs. Button containers use inline `flexWrap` which provides basic wrapping. *Add explicit mobile styles.*
 
 ---

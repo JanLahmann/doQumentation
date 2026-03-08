@@ -42,6 +42,7 @@ import {
   type JupyterConfig,
   type SimulatorBackend,
   type ActiveMode,
+  type ConnectionResult,
 } from '../config/jupyter';
 import {
   getProgressStats,
@@ -139,10 +140,7 @@ export default function JupyterSettings(): JSX.Element {
   const [config, setConfig] = useState<JupyterConfig | null>(null);
   const [customUrl, setCustomUrl] = useState('');
   const [customToken, setCustomToken] = useState('');
-  const [testResult, setTestResult] = useState<{
-    success: boolean;
-    message: string;
-  } | null>(null);
+  const [testResult, setTestResult] = useState<ConnectionResult | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [ceIsTesting, setCeIsTesting] = useState(false);
 
@@ -954,7 +952,7 @@ QiskitRuntimeService.save_account(
                 {Object.entries(progressStats.visitedByCategory).map(([cat, count]) => (
                   <div className="dq-progress-stat" key={cat}>
                     <span className="dq-progress-stat__number">{count}</span>
-                    <span className="dq-progress-stat__label">{cat.charAt(0).toUpperCase() + cat.slice(1)}</span>
+                    <span className="dq-progress-stat__label">{cat.charAt(0).toLocaleUpperCase() + cat.slice(1)}</span>
                   </div>
                 ))}
               </div>
@@ -974,7 +972,7 @@ QiskitRuntimeService.save_account(
                       setProgressStats(getProgressStats());
                     }}
                   >
-                    {translate({id: 'settings.progress.clearCategory', message: 'Clear {category}'}, {category: cat.charAt(0).toUpperCase() + cat.slice(1)})}
+                    {translate({id: 'settings.progress.clearCategory', message: 'Clear {category}'}, {category: cat.charAt(0).toLocaleUpperCase() + cat.slice(1)})}
                   </button>
                 ))}
                 <button
@@ -1267,7 +1265,11 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
                 testResult.success ? 'alert--success' : 'alert--danger'
               }`}
             >
-              {testResult.message}
+              {testResult.kind === 'ok'
+                ? translate({id: 'settings.test.connected', message: 'Connected! Jupyter version: {version}'}, {version: testResult.version ?? 'unknown'})
+                : testResult.kind === 'http_error'
+                  ? translate({id: 'settings.test.httpError', message: 'Connection failed: {status} {statusText}'}, {status: String(testResult.status ?? ''), statusText: testResult.statusText ?? ''})
+                  : translate({id: 'settings.test.networkError', message: 'Connection error: {error}'}, {error: testResult.error ?? 'Unknown error'})}
             </div>
           )}
 
