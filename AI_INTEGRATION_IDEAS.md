@@ -40,6 +40,84 @@ Track which pages/cells a user has visited/executed (already stored in preferenc
 
 ---
 
+## NotebookLM Integration Ideas
+
+> Based on [NotebookLM's latest features (March 2026)](https://blog.google/innovation-and-ai/products/notebooklm/generate-your-own-cinematic-video-overviews-in-notebooklm/) including Cinematic Video Overviews, Interactive Audio, Custom Personas, Data Tables, Deep Research, and Slide Generation.
+
+### NLM-1. Audio Overviews for Quantum Tutorials (highest impact)
+
+NotebookLM generates podcast-style audio explanations from source documents. Audio Overviews now support [80+ languages](https://workspaceupdates.googleblog.com/2025/04/language-expansion-audio-overviews-notebooklm.html), aligning with doQumentation's 20 locales.
+
+- **Difficulty tiers**: Generate audio at beginner/intermediate/advanced levels for the same tutorial (addresses UX-45)
+- **Multi-language**: Generate audio in German, Spanish, Japanese, Arabic etc. — serves users on all 20 locale subdomains
+- **Format variety**: Use [customizable tones](https://techcrunch.com/2025/09/03/googles-notebooklm-now-lets-you-customize-the-tone-of-its-ai-podcasts/) — "Deep Dive" for courses, "Brief" for guides, "Debate" for conceptual topics, "Critique" for common Qiskit pitfalls
+- **Implementation**: Pre-generate audio files at build time via [NotebookLM Enterprise API](https://docs.google.com/gemini/enterprise/notebooklm-enterprise/docs/api-notebooks), embed as `<audio>` elements alongside code blocks
+
+### NLM-2. Cinematic Video Overviews for Complex Concepts
+
+The brand-new (March 2026) [Cinematic Video Overviews](https://blog.google/innovation-and-ai/products/notebooklm/generate-your-own-cinematic-video-overviews-in-notebooklm/) generates documentary-style animated explainer videos from source material, powered by Gemini 3 and Veo 3.
+
+- Visualize quantum gates, circuit diagrams, and Bloch sphere rotations as animations rather than static images
+- Synthesize multiple related tutorials into a single video narrative (addresses UX-39, no cross-references)
+- Replace or supplement existing IBM Video embeds (`src/components/CourseComponents/IBMVideo.tsx`) with AI-generated content specific to doQumentation's curriculum
+- Currently English-only, available to Google AI Ultra subscribers
+
+### NLM-3. Interactive "Join" Mode as a Tutor
+
+NotebookLM's [Interactive Audio](https://blog.google/innovation-and-ai/models-and-research/google-labs/notebooklm-custom-personas-engine-upgrade/) lets users interrupt AI hosts mid-conversation to ask clarifying questions.
+
+- Users "raise their hand" during an audio overview to ask about quantum concepts (addresses UX-43, no in-app feedback)
+- AI hosts can suggest what to study next based on user questions (addresses UX-41, learning path guidance)
+- Lightweight alternative to building a full chatbot (compared to idea #4 "AI Tutor / Chat Sidebar")
+
+### NLM-4. Custom Persona as Quantum Tutor
+
+NotebookLM now supports [custom chat personas](https://blog.google/innovation-and-ai/models-and-research/google-labs/notebooklm-custom-personas-engine-upgrade/) with the full 1M token context window via Gemini 3.
+
+- Create a "Qiskit Expert" persona loaded with all 381 pages — answers grounded in doQumentation's actual content
+- Create a "Quantum Beginner" persona that simplifies explanations and avoids jargon
+- Natural language Q&A as an alternative to keyword search (addresses UX-40, no search facets)
+- Set notebook goals like "Help users understand quantum error correction" for focused tutoring
+
+### NLM-5. Data Tables for Backend & Feature Comparisons
+
+NotebookLM's [Data Tables](https://www.lbsocial.net/post/notebooklm-2026-update-knowledge-database) converts qualitative text into structured comparison grids.
+
+- Compare quantum backends (simulators vs. real hardware) — relevant to Settings page's 30+ FakeBackend options
+- Compare Qiskit primitives (Sampler vs. Estimator) across tutorials
+- Generate transpiler optimization level comparison tables
+- Pre-generate as MDX tables at build time and commit to the docs
+
+### NLM-6. Slide Generation for Course Content
+
+NotebookLM generates presentation slides from source documents with per-slide editing.
+
+- Auto-generate lecture slides from the 154 course pages
+- Complement existing `CourseComponents` (IBMVideo, Figure, DefinitionTooltip)
+- Enable educators to create teaching materials from doQumentation content without starting from scratch
+
+### NLM-7. Deep Research for Content Graph & Prerequisites
+
+NotebookLM's [Deep Research](https://medium.com/@jimmisound/the-cognitive-engine-a-comprehensive-analysis-of-notebooklms-evolution-2023-2026-90b7a7c2df36) (Gemini 3) searches both your sources and the web to synthesize findings.
+
+- Automatically identify prerequisites between pages (addresses UX-41, learning path breadcrumbs)
+- Generate "Related Topics" sections (addresses UX-39, cross-references)
+- Build a content graph connecting tutorials, guides, courses, and modules
+- Output as frontmatter fields (`related`, `prerequisites`, `leads_to`) for build-time rendering
+
+### Integration Approach Summary
+
+| Approach | Effort | Best For |
+|---|---|---|
+| **Pre-generated audio files** via NotebookLM API at build time | Medium | NLM-1: Audio overviews, multi-language audio |
+| **Link to shared NotebookLM notebooks** | Low | NLM-4: Interactive Q&A persona |
+| **Pre-generated video embeds** | Medium | NLM-2: Cinematic overviews for key topics |
+| **Build-time data tables** generated and committed as MDX | Low | NLM-5: Backend comparison pages |
+| **One-time Deep Research** to generate frontmatter | Low | NLM-7: Content graph, prerequisites |
+| **[Open Notebook](https://github.com/lfnovo/open-notebook) self-hosted** | High | Full API control, custom integration |
+
+---
+
 ## Broader Project Improvements
 
 ### 9. Test Coverage (Currently Zero)
