@@ -72,6 +72,142 @@ No Sentry or equivalent. Production kernel crashes and build failures are invisi
 
 ---
 
+## User Experience Improvements
+
+### Critical UX Issues
+
+#### UX-1. Onboarding Is Too Minimal
+- Only 2 static contextual tips shown on first 3 page visits (`src/clientModules/onboarding.ts`)
+- Tips appear on content pages, not on the homepage where users first land
+- No guided workflow, no "Get Started" path, no feature walkthrough
+- **Suggestion**: Add a guided tour (Shepherd.js / Intro.js) covering: navigate content → open Settings → configure credentials → run first cell
+
+#### UX-2. Binder Launch Wait Is Opaque
+- First code execution triggers a 1–2 minute Binder launch with vague phase text ("In queue...", "Building...")
+- No ETA, no progress bar, no percentage — just elapsed time
+- Cache-miss warning ("10–25 min") appears late and may cause abandonment
+- **Suggestion**: Show estimated time per phase, add a progress bar, and surface the Colab alternative more prominently upfront
+
+#### UX-3. Settings Page Information Overload
+- 7 major sections (IBM Quantum, Code Engine, Advanced, Simulator, Display, Progress, Bookmarks) on a single scrolling page (~1333 lines in `jupyter-settings.tsx`)
+- No tabs, accordion, or jump links beyond `#ibm-quantum` and `#code-engine`
+- Mobile users must scroll extensively
+- **Suggestion**: Refactor into a tabbed interface or collapsible accordion with section anchors
+
+#### UX-4. Icon-Only Navbar Controls
+- Settings gear, Language globe, and Dark Mode toggle are icon-only on desktop
+- First-time users may not recognize them; no tooltips (only `aria-label`)
+- **Suggestion**: Add `title` attributes and optional text labels (at least on first visit)
+
+### High-Priority UX Improvements
+
+#### UX-5. Credential Expiry Goes Unnoticed
+- IBM token TTL countdown only visible on Settings page
+- No banner or notification when credentials are about to expire or have expired
+- Users discover expiry only when code execution fails
+- **Suggestion**: Show a dismissible warning banner on content pages when credentials expire within 24 hours
+
+#### UX-6. No Confirmation Before Destructive Actions
+- "Clear All Progress", "Delete Credentials", "Reset All" execute immediately on click
+- One accidental click loses all tracked progress or saved credentials
+- **Suggestion**: Add a confirmation dialog ("Are you sure? This will remove X items")
+
+#### UX-7. Kernel Death Recovery Is Unclear
+- When the kernel crashes mid-session, cells show red borders but no actionable prompt
+- The error hint "Click Back then Run to reconnect" only appears for specific error patterns
+- **Suggestion**: Show a persistent banner with a "Reconnect" button when kernel status changes to `dead`
+
+#### UX-8. Error Hints Have Low Contrast in Dark Mode
+- Red error text on dark background (~3:1 contrast ratio) fails WCAG AA
+- Error hints below cells can be missed
+- **Suggestion**: Use a high-contrast error card (red background, white text) instead of inline colored text
+
+#### UX-9. No Success Feedback After Cell Execution
+- When a cell completes successfully, only feedback is a subtle green left border
+- No toast, no checkmark animation, no "Done" indicator
+- **Suggestion**: Brief "Executed successfully" fade-out indicator or checkmark icon in the cell toolbar
+
+### Medium-Priority UX Enhancements
+
+#### UX-10. Simulator Device Picker Is Overwhelming
+- Dropdown lists 50+ fake backends in a flat `<select>` with `<optgroup>` by qubit count
+- Hard to search or filter on mobile
+- **Suggestion**: Replace with a searchable combobox or grouped card picker showing device specs
+
+#### UX-11. No Pip Install Progress Indicator
+- "Installing..." text with no spinner, no progress bar, no elapsed time
+- For large packages this can take 30+ seconds with no visual feedback
+- **Suggestion**: Add an animated spinner and elapsed time counter
+
+#### UX-12. Code Block Toolbar Overlaps on Mobile
+- Run/Back buttons positioned relative to code block may overlap content on narrow screens
+- Touch targets are ~36px (below the recommended 48×48px minimum)
+- **Suggestion**: Stack toolbar buttons vertically on mobile; increase touch target size
+
+#### UX-13. No Keyboard Shortcut Documentation
+- Shift+Enter for cell execution is a thebelab/CodeMirror convention, undocumented
+- No keyboard shortcut overlay or help modal
+- **Suggestion**: Add a "Keyboard Shortcuts" help button (?) or footer link showing available shortcuts
+
+#### UX-14. Learning Progress Lacks Completion Percentage
+- Sidebar badges show "3/10 visited" per category but no overall course completion indicator
+- No summary dashboard beyond the Settings page stats cards
+- **Suggestion**: Add a progress bar or percentage to the sidebar header and/or homepage
+
+#### UX-15. No User Data Export/Import
+- Bookmarks, progress, and preferences stored only in browser localStorage/cookies
+- Switching browsers or clearing data loses everything
+- **Suggestion**: Add Export/Import buttons on Settings page (JSON download/upload)
+
+### Accessibility Gaps
+
+#### UX-16. No Skip Links
+- No "Skip to main content" link at the top of the page for keyboard/screen reader users
+- Standard WCAG 2.1 Level A requirement
+
+#### UX-17. Settings Form Lacks Fieldset Grouping
+- Related inputs (e.g., IBM Token + CRN + TTL) are not wrapped in `<fieldset>` with `<legend>`
+- Screen readers can't announce section context when navigating form fields
+
+#### UX-18. Thebelab CodeMirror Accessibility Unknown
+- Third-party CodeMirror editor accessibility with screen readers is untested
+- Mobile keyboard/touch editing likely poor
+- **Suggestion**: Test with VoiceOver/NVDA; consider adding a plain `<textarea>` fallback
+
+#### UX-19. Onboarding Tip Injected via innerHTML
+- `innerHTML` insertion in `onboarding.ts` bypasses `aria-live` announcements
+- Screen reader users won't hear the onboarding message appear
+- **Suggestion**: Use React portal or `aria-live="polite"` region
+
+### Content & Navigation UX
+
+#### UX-20. No "Related Pages" or "Next Steps" Suggestions
+- Pages end abruptly after content; no "You might also like..." or "Continue to..." links
+- Docusaurus pagination (prev/next) exists but is limited to sidebar order
+- **Suggestion**: Add a "Related Topics" section at the bottom of each page, curated or AI-generated
+
+#### UX-21. Search Is Keyword-Only
+- `@easyops-cn/docusaurus-search-local` does full-text search but no semantic/fuzzy matching
+- Searching "how to entangle qubits" won't find "Bell state" or "CNOT gate" pages
+- **Suggestion**: See AI idea #3 (semantic search) — this is also a core UX gap
+
+#### UX-22. No Offline Support
+- No service worker or PWA configuration
+- Users on flaky connections (workshops, conferences) lose access entirely
+- **Suggestion**: Add Docusaurus PWA plugin for offline reading of static content
+
+#### UX-23. No Reading Time Estimates
+- Pages don't show estimated reading time (common in education platforms)
+- Users can't plan their learning sessions
+- **Suggestion**: Add `plugin-content-docs` `showLastUpdateTime` + a reading time plugin
+
+#### UX-24. Recent Pages Widget Limited
+- Homepage shows 5 most recent pages but no way to pin, filter, or search history
+- No "Resume where you left off" prominent CTA
+- **Suggestion**: Add a "Continue Reading" hero card on the homepage showing last visited page with a prominent button
+
+---
+
 ## Remaining PROJECT_REVIEW Items (6)
 
 | ID | Severity | Issue |
