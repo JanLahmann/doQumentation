@@ -34,6 +34,11 @@ import {
   setCredentialTTLDays,
   getSuppressWarnings,
   setSuppressWarnings,
+  getCodeEngineUrl,
+  getCodeEngineToken,
+  getCEDaysRemaining,
+  saveCodeEngineCredentials,
+  clearCodeEngineCredentials,
   type JupyterConfig,
   type SimulatorBackend,
   type ActiveMode,
@@ -163,6 +168,13 @@ export default function JupyterSettings(): JSX.Element {
   const [activeMode, setActiveModeState] = useState<ActiveMode | null>(null);
   const [ttlDays, setTtlDaysState] = useState(7);
 
+  // Code Engine state
+  const [ceUrl, setCeUrl] = useState('');
+  const [ceToken, setCeToken] = useState('');
+  const [ceDaysRemaining, setCeDaysRemaining] = useState(-1);
+  const [ceSaveResult, setCeSaveResult] = useState<string | null>(null);
+  const [ceSaveResultType, setCeSaveResultType] = useState<'success' | 'warning'>('success');
+
   // Load current config on mount
   useEffect(() => {
     const currentConfig = detectJupyterConfig();
@@ -195,6 +207,14 @@ export default function JupyterSettings(): JSX.Element {
     const cached = getCachedFakeBackends();
     if (cached && cached.length > 0) {
       setFakeBackends(cached);
+    }
+
+    // Load Code Engine credentials
+    const savedCeUrl = getCodeEngineUrl();
+    if (savedCeUrl) {
+      setCeUrl(savedCeUrl);
+      setCeToken(getCodeEngineToken());
+      setCeDaysRemaining(getCEDaysRemaining());
     }
 
     // Load learning progress
@@ -270,6 +290,44 @@ export default function JupyterSettings(): JSX.Element {
     setActiveMode(null);
   };
 
+  // Code Engine handlers
+  const handleCeSave = () => {
+    if (!ceUrl) return;
+    if (!/^https:\/\//i.test(ceUrl)) {
+      setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'URL must start with https://'}));
+      setCeSaveResultType('warning');
+      return;
+    }
+    saveCodeEngineCredentials(ceUrl, ceToken);
+    setCeDaysRemaining(ttlDays);
+    setConfig(detectJupyterConfig());
+    setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'Code Engine settings saved! Code will now execute via your CE instance.'}));
+    setCeSaveResultType('success');
+  };
+
+  const handleCeDelete = () => {
+    clearCodeEngineCredentials();
+    setCeUrl('');
+    setCeToken('');
+    setCeDaysRemaining(-1);
+    setConfig(detectJupyterConfig());
+    setCeSaveResult(translate({id: 'settings.ce.deleteSuccess', message: 'Code Engine settings cleared. Falling back to Binder.'}));
+    setCeSaveResultType('success');
+  };
+
+  const handleCeTest = async () => {
+    if (!ceUrl) return;
+    if (!/^https:\/\//i.test(ceUrl)) {
+      setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'URL must start with https://'}));
+      setCeSaveResultType('warning');
+      return;
+    }
+    setCeSaveResult(null);
+    const result = await testJupyterConnection(ceUrl.replace(/\/+$/, ''), ceToken);
+    setCeSaveResult(result.message);
+    setCeSaveResultType(result.success ? 'success' : 'warning');
+  };
+
   // Simulator mode handlers
   const handleSimToggle = () => {
     const newVal = !simEnabled;
@@ -322,12 +380,23 @@ export default function JupyterSettings(): JSX.Element {
           {/* Current Environment Status */}
           <div className="alert alert--info margin-bottom--md">
             <strong><Translate id="settings.env.label">Current Environment:</Translate></strong>{' '}
+            {config?.environment === 'code-engine' && (
+              <Translate
+                id="settings.env.codeEngine"
+                values={{url: config.baseUrl}}
+              >
+                {'IBM Cloud Code Engine — Connected to {url}'}
+              </Translate>
+            )}
             {config?.environment === 'github-pages' && (
               <Translate
                 id="settings.env.githubPages"
-                values={{binder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">Binder</a>}}
+                values={{
+                  binder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">Binder</a>,
+                  ceLink: <a href="#code-engine"><Translate id="settings.env.ceLink">Code Engine</Translate></a>,
+                }}
               >
-                {'GitHub Pages - Code execution uses {binder} (may take a moment to start)'}
+                {'GitHub Pages — Code execution uses {binder}. For faster startup, configure {ceLink} below.'}
               </Translate>
             )}
             {config?.environment === 'rasqberry' && (
@@ -352,6 +421,92 @@ export default function JupyterSettings(): JSX.Element {
               </Translate>
             )}
           </div>
+
+          {/* Code Engine */}
+          <h2 id="code-engine" style={{ marginTop: '2rem' }}>
+            <Translate id="settings.ce.heading">IBM Cloud Code Engine</Translate>
+          </h2>
+
+          <p>
+            <Translate id="settings.ce.description">
+              Code Engine provides a fast, serverless Jupyter kernel powered by your own IBM Cloud account.
+              Startup takes seconds instead of minutes. Free tier covers ~14 hours/month.
+            </Translate>
+          </p>
+
+          <details className="margin-bottom--md">
+            <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+              <Translate id="settings.ce.setupTitle">Setup Instructions</Translate>
+            </summary>
+            <ol style={{ marginTop: '0.5rem' }}>
+              <li><Translate id="settings.ce.step1">Create an IBM Cloud account at cloud.ibm.com (free tier available)</Translate></li>
+              <li><Translate id="settings.ce.step2">Create a Code Engine project in your preferred region</Translate></li>
+              <li>
+                <Translate
+                  id="settings.ce.step3"
+                  values={{image: <code>ghcr.io/janlahmann/doqumentation-codeengine:latest</code>}}
+                >
+                  {'Deploy a new application with image {image}, port 8080'}
+                </Translate>
+              </li>
+              <li><Translate id="settings.ce.step4">Set environment variable JUPYTER_TOKEN to a secure token (min 32 characters) and CORS_ORIGIN to your domain</Translate></li>
+            </ol>
+          </details>
+
+          {ceDaysRemaining >= 0 && (
+            <div className="alert alert--info margin-bottom--md">
+              <Translate
+                id="settings.ce.daysRemaining"
+                values={{days: ceDaysRemaining}}
+              >
+                {'Code Engine settings will auto-delete in {days} day(s).'}
+              </Translate>
+            </div>
+          )}
+
+          <div className="margin-bottom--sm">
+            <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+              <Translate id="settings.ce.urlLabel">Code Engine URL</Translate>
+            </label>
+            <input
+              type="url"
+              value={ceUrl}
+              onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
+              placeholder="https://your-app.region.codeengine.appdomain.cloud"
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
+            />
+          </div>
+
+          <div className="margin-bottom--md">
+            <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+              <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate>
+            </label>
+            <input
+              type="password"
+              value={ceToken}
+              onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
+              placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+            <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
+              <Translate id="settings.ce.save">Save</Translate>
+            </button>
+            <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
+              <Translate id="settings.ce.test">Test Connection</Translate>
+            </button>
+            <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
+              <Translate id="settings.ce.clear">Clear</Translate>
+            </button>
+          </div>
+
+          {ceSaveResult && (
+            <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
+              {ceSaveResult}
+            </div>
+          )}
 
           {/* IBM Quantum Account */}
           <h2 id="ibm-quantum"><Translate id="settings.ibm.heading">IBM Quantum Account</Translate></h2>

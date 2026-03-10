@@ -8,8 +8,8 @@ interface OpenInLabBannerProps {
   description?: string;
 }
 
-// Short label shown inside the button while building
-const PHASE_LABELS: Record<string, string> = {
+// Short label shown inside the button while building (Binder)
+const BINDER_PHASE_LABELS: Record<string, string> = {
   connecting: 'Connecting...',
   waiting:    'In queue...',
   fetching:   'Fetching...',
@@ -21,8 +21,16 @@ const PHASE_LABELS: Record<string, string> = {
   failed:     'Binder failed',
 };
 
-// Longer hint shown below the banner while building
-const PHASE_HINTS: Record<string, string> = {
+// Short label for CE phases
+const CE_PHASE_LABELS: Record<string, string> = {
+  connecting: 'Connecting...',
+  launching:  'Starting...',
+  ready:      '',
+  failed:     'CE failed',
+};
+
+// Longer hint shown below the banner while building (Binder)
+const BINDER_PHASE_HINTS: Record<string, string> = {
   connecting: 'Connecting to mybinder.org...',
   waiting:    'Waiting in queue...',
   fetching:   'Fetching repository (2–5 min)',
@@ -30,6 +38,12 @@ const PHASE_HINTS: Record<string, string> = {
   pushing:    'Pushing image to registry (2–5 min)',
   built:      'Image ready — launching JupyterLab...',
   launching:  'Starting JupyterLab server (2–5 min)',
+};
+
+// CE hints — fast startup, minimal phases
+const CE_PHASE_HINTS: Record<string, string> = {
+  connecting: 'Connecting to Code Engine...',
+  launching:  'Starting Jupyter server...',
 };
 
 function formatElapsed(seconds: number): string {
@@ -72,9 +86,13 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
     <BrowserOnly>
       {() => {
         const config = detectJupyterConfig();
+        const isCodeEngine = config.environment === 'code-engine';
+        const isBinder = config.environment === 'github-pages' && !!config.binderUrl;
+        const usesRemoteSession = isBinder || isCodeEngine;
+        const phaseLabels = isCodeEngine ? CE_PHASE_LABELS : BINDER_PHASE_LABELS;
+        const phaseHintMap = isCodeEngine ? CE_PHASE_HINTS : BINDER_PHASE_HINTS;
 
         let labUrl: string | null = null;
-        const isBinder = config.binderUrl && !config.labEnabled;
         if (config.labEnabled) {
           labUrl = getLabUrl(config, notebookPath);
         } else if (config.binderUrl) {
@@ -82,10 +100,11 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         }
 
         const colabUrl = getColabUrl(notebookPath, currentLocale);
-        const rawBinderUrl = isBinder ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
+        // Hide raw Binder link when CE is active (CE replaces Binder)
+        const rawBinderUrl = isBinder && !isCodeEngine ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
 
         const handleBinderClick = (e: React.MouseEvent) => {
-          if (!isBinder) return;
+          if (!usesRemoteSession) return;
           e.preventDefault();
           if (binderPhase && binderPhase !== 'failed') return;
 
@@ -117,8 +136,8 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
           });
         };
 
-        const phaseLabel = binderPhase ? (PHASE_LABELS[binderPhase] ?? binderPhase) : null;
-        const hint = isActive ? (PHASE_HINTS[binderPhase!] ?? null) : null;
+        const phaseLabel = binderPhase ? (phaseLabels[binderPhase] ?? binderPhase) : null;
+        const hint = isActive ? (phaseHintMap[binderPhase!] ?? null) : null;
         const buttonText = isActive
           ? `${phaseLabel} ${formatElapsed(elapsedSeconds)}`
           : phaseLabel || `JupyterLab \u2197`;
@@ -145,9 +164,12 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               {labUrl && (
                 <a
                   href={labUrl}
-                  target={isBinder ? '_blank' : 'binder-lab'}
+                  target={usesRemoteSession ? '_blank' : 'binder-lab'}
                   onClick={handleBinderClick}
-                  title="JupyterLab via Binder — full notebook editing environment"
+                  title={isCodeEngine
+                    ? 'JupyterLab via Code Engine — fast serverless kernel'
+                    : 'JupyterLab via Binder — full notebook editing environment'
+                  }
                   style={{
                     padding: '0.25rem 0.75rem',
                     backgroundColor: binderPhase === 'failed'

@@ -649,9 +649,9 @@ interface ExecutableCodeProps {
 
 /** Build thebelab bootstrap options for the current environment. */
 function getThebelabOptions(config: JupyterConfig, session?: BinderSession | null): Record<string, unknown> {
-  if (config.environment === 'github-pages') {
+  if (config.environment === 'github-pages' || config.environment === 'code-engine') {
     if (session) {
-      // Reuse existing Binder server — connect via serverSettings (same as local/Docker)
+      // Reuse existing Binder/CE server — connect via serverSettings (same as local/Docker)
       return {
         requestKernel: true,
         kernelOptions: {
@@ -820,10 +820,10 @@ function bootstrapOnce(config: JupyterConfig): void {
   // Set guard synchronously to prevent duplicate bootstrap from rapid clicks
   thebelabBootstrapped = true;
 
-  if (config.environment === 'github-pages' && config.binderUrl) {
-    // Build (or reuse) Binder session, then connect thebelab via serverSettings
+  if ((config.environment === 'github-pages' || config.environment === 'code-engine') && config.binderUrl) {
+    // Build (or reuse) Binder/CE session, then connect thebelab via serverSettings
     ensureBinderSession(config, (phase) => {
-      if (DEBUG) console.log(`[ExecutableCode] Binder phase: ${phase}`);
+      if (DEBUG) console.log(`[ExecutableCode] ${config.environment === 'code-engine' ? 'CE' : 'Binder'} phase: ${phase}`);
       window.dispatchEvent(new CustomEvent(BINDER_PHASE_EVENT, { detail: phase }));
     }).then((session) => {
       const options = getThebelabOptions(config, session);
@@ -1126,11 +1126,23 @@ export default function ExecutableCode({
     launching: translate({id: 'executable.status.binderLaunching', message: 'Launching server (2\u20135 min)...'}),
   };
 
+  // CE phase labels — faster startup, fewer phases
+  const cePhaseLabels: Record<string, string> = {
+    connecting: translate({id: 'executable.status.ceConnecting', message: 'Connecting to Code Engine...'}),
+    launching: translate({id: 'executable.status.ceLaunching', message: 'Starting server...'}),
+    ready: translate({id: 'executable.status.ceReady', message: 'Connected!'}),
+    failed: translate({id: 'executable.status.ceFailed', message: 'Code Engine connection failed'}),
+  };
+
+  const isCodeEngine = jupyterConfig?.environment === 'code-engine';
+  const usesRemoteSession = jupyterConfig?.environment === 'github-pages' || isCodeEngine;
+  const activePhaseLabels = isCodeEngine ? cePhaseLabels : binderPhaseLabels;
+
   const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-  const phaseLabel = jupyterConfig?.environment === 'github-pages'
-    ? (binderPhase && binderPhaseLabels[binderPhase]) || binderPhaseLabels.connecting
+  const phaseLabel = usesRemoteSession
+    ? (binderPhase && activePhaseLabels[binderPhase]) || activePhaseLabels.connecting
     : null;
-  const connectingText = jupyterConfig?.environment === 'github-pages'
+  const connectingText = usesRemoteSession
     ? (phaseLabel || '') + (binderElapsed > 0 ? ` ${formatElapsed(binderElapsed)}` : '')
     : translate({id: 'executable.status.connecting', message: 'Connecting...'});
 
@@ -1156,9 +1168,11 @@ export default function ExecutableCode({
               title={
                 mode === 'run'
                   ? translate({id: 'executable.button.backTitle', message: 'Back to static view'})
-                  : jupyterConfig?.environment === 'github-pages'
-                    ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
-                    : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
+                  : isCodeEngine
+                    ? translate({id: 'executable.button.runCeTitle', message: 'Execute via Code Engine'})
+                    : jupyterConfig?.environment === 'github-pages'
+                      ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
+                      : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
               }
             >
               {thebeStatus === 'connecting'
@@ -1179,12 +1193,11 @@ export default function ExecutableCode({
             </button>
           )}
 
-          {isExecutable && mode === 'run' && thebeStatus === 'ready' &&
-            jupyterConfig?.environment === 'github-pages' && (
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' && usesRemoteSession && (
             <button
               className="executable-code__button"
               onClick={handleClearSession}
-              title={translate({id: 'executable.button.clearSessionTitle', message: 'Clear Binder session and return to static view (next Run starts a new server)'})}
+              title={translate({id: 'executable.button.clearSessionTitle', message: 'Clear session and return to static view (next Run starts a new server)'})}
             >
               {translate({id: 'executable.button.clearSession', message: 'Clear Session'})}
             </button>
@@ -1277,7 +1290,7 @@ export default function ExecutableCode({
         </div>
       )}
 
-      {isFirstCell && thebeStatus === 'ready' && jupyterConfig?.environment === 'github-pages' &&
+      {isFirstCell && thebeStatus === 'ready' && usesRemoteSession &&
         !binderHintDismissed && (
         <div className="executable-code__binder-hint">
           <Translate

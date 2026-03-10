@@ -20,7 +20,7 @@ export interface JupyterConfig {
   thebeEnabled: boolean;
   labEnabled: boolean;
   binderUrl?: string;
-  environment: 'github-pages' | 'rasqberry' | 'custom' | 'unknown';
+  environment: 'github-pages' | 'code-engine' | 'rasqberry' | 'custom' | 'unknown';
 }
 
 const STORAGE_KEY_URL = 'rasqberry_jupyter_url';
@@ -39,6 +39,11 @@ const STORAGE_KEY_IBM_TTL_DAYS = 'doqumentation_ibm_ttl_days';
 const STORAGE_KEY_SUPPRESS_WARNINGS = 'doqumentation_suppress_warnings';
 const DEFAULT_TTL_DAYS = 7;
 
+// Code Engine credential storage
+const STORAGE_KEY_CE_URL = 'doqumentation_ce_url';
+const STORAGE_KEY_CE_TOKEN = 'doqumentation_ce_token';
+const STORAGE_KEY_CE_SAVED_AT = 'doqumentation_ce_saved_at';
+
 /** All Jupyter storage keys, exported for migration. */
 export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_URL, STORAGE_KEY_TOKEN,
@@ -46,6 +51,7 @@ export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_IBM_TTL_DAYS, STORAGE_KEY_SIM_MODE, STORAGE_KEY_SIM_BACKEND,
   STORAGE_KEY_FAKE_DEVICE, STORAGE_KEY_FAKE_BACKENDS_CACHE,
   STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
+  STORAGE_KEY_CE_URL, STORAGE_KEY_CE_TOKEN, STORAGE_KEY_CE_SAVED_AT,
 ];
 
 /**
@@ -71,6 +77,27 @@ export function detectJupyterConfig(): JupyterConfig {
       labEnabled: true,
       environment: 'custom',
     };
+  }
+
+  // Check for Code Engine server (user-configured, like custom but with CE env type)
+  const ceUrl = getItem(STORAGE_KEY_CE_URL);
+  if (ceUrl && /^https?:\/\//i.test(ceUrl)) {
+    checkCEExpiry();
+    // Re-check after possible expiry clear
+    const ceUrlAfterCheck = getItem(STORAGE_KEY_CE_URL);
+    if (ceUrlAfterCheck) {
+      const ceBase = ceUrlAfterCheck.replace(/\/+$/, '');
+      return {
+        enabled: true,
+        baseUrl: ceBase,
+        wsUrl: ceBase.replace(/^http(s?):\/\//, 'ws$1://'),
+        token: getItem(STORAGE_KEY_CE_TOKEN) || '',
+        thebeEnabled: true,
+        labEnabled: false,  // CE is for code execution, not direct Lab editing
+        binderUrl: ceBase + '/build/gh/placeholder',  // SSE server handles /build/* paths
+        environment: 'code-engine',
+      };
+    }
   }
 
   // GitHub Pages / custom domain detection
@@ -232,6 +259,53 @@ export function clearIBMQuantumCredentials(): void {
   removeItem(STORAGE_KEY_IBM_TOKEN);
   removeItem(STORAGE_KEY_IBM_CRN);
   removeItem(STORAGE_KEY_IBM_SAVED_AT);
+}
+
+// ── Code Engine credential storage ──
+
+/** Check if CE credentials have expired. Auto-clears if expired. Uses same TTL as IBM credentials. */
+function checkCEExpiry(): boolean {
+  const savedAt = getItem(STORAGE_KEY_CE_SAVED_AT);
+  if (!savedAt) return false;
+  if (Date.now() - Number(savedAt) > getCredentialTTLMs()) {
+    clearCodeEngineCredentials();
+    return true;
+  }
+  return false;
+}
+
+export function getCodeEngineUrl(): string {
+  if (typeof window === 'undefined') return '';
+  checkCEExpiry();
+  return getItem(STORAGE_KEY_CE_URL) || '';
+}
+
+export function getCodeEngineToken(): string {
+  if (typeof window === 'undefined') return '';
+  checkCEExpiry();
+  return getItem(STORAGE_KEY_CE_TOKEN) || '';
+}
+
+export function saveCodeEngineCredentials(url: string, token: string): void {
+  if (typeof window === 'undefined') return;
+  setItem(STORAGE_KEY_CE_URL, url.replace(/\/+$/, ''));
+  setItem(STORAGE_KEY_CE_TOKEN, token);
+  setItem(STORAGE_KEY_CE_SAVED_AT, String(Date.now()));
+}
+
+export function clearCodeEngineCredentials(): void {
+  if (typeof window === 'undefined') return;
+  removeItem(STORAGE_KEY_CE_URL);
+  removeItem(STORAGE_KEY_CE_TOKEN);
+  removeItem(STORAGE_KEY_CE_SAVED_AT);
+}
+
+export function getCEDaysRemaining(): number {
+  if (typeof window === 'undefined') return -1;
+  const savedAt = getItem(STORAGE_KEY_CE_SAVED_AT);
+  if (!savedAt) return -1;
+  const remaining = getCredentialTTLMs() - (Date.now() - Number(savedAt));
+  return Math.max(0, Math.ceil(remaining / (24 * 60 * 60 * 1000)));
 }
 
 // ── Simulator mode ──
@@ -510,6 +584,13 @@ export function ensureBinderSession(
  * and navigates the tab to JupyterLab when ready.
  * Subsequent calls (within 8 min): navigates directly (session already exists).
  */
+/** Default English phase hints for the CE loading tab */
+const CE_TAB_PHASE_HINTS: Record<string, string> = {
+  connecting: 'Connecting to Code Engine\u2026',
+  launching:  'Starting Jupyter server\u2026',
+  ready:      'Connected!',
+};
+
 /** Default English phase hints for the Binder loading tab */
 const BINDER_TAB_PHASE_HINTS: Record<string, string> = {
   connecting: 'Connecting to mybinder.org\u2026',
@@ -556,12 +637,16 @@ export function openBinderLab(
   onProgress?: (phase: string) => void,
 ): void {
   const nbPath = mapBinderNotebookPath(notebookPath, locale);
+  const isCE = config.environment === 'code-engine';
+  const phaseHints = isCE ? CE_TAB_PHASE_HINTS : BINDER_TAB_PHASE_HINTS;
+  const tabTitle = isCE ? 'Starting Code Engine\u2026' : 'Starting Binder\u2026';
+  const initialPhase = isCE ? 'Connecting to Code Engine\u2026' : 'Connecting to mybinder.org\u2026';
 
   // Open tab synchronously from click handler to avoid popup blockers.
   const tab = window.open('about:blank', '_blank');
   if (tab) {
     tab.document.open();
-    tab.document.write(makeTabHtml('Starting Binder\u2026', 'Connecting to mybinder.org\u2026'));
+    tab.document.write(makeTabHtml(tabTitle, initialPhase));
     tab.document.close();
   }
 
@@ -584,7 +669,7 @@ export function openBinderLab(
     if (!tab || tab.closed) return;
     try {
       const phaseEl = tab.document.getElementById('phase');
-      if (phaseEl) phaseEl.textContent = BINDER_TAB_PHASE_HINTS[phase] || phase;
+      if (phaseEl) phaseEl.textContent = phaseHints[phase] || phase;
       if (phase === 'building') {
         const warn = tab.document.getElementById('warning');
         if (warn) warn.style.display = 'block';
@@ -606,7 +691,9 @@ export function openBinderLab(
       try {
         const phaseEl = tab.document.getElementById('phase');
         if (phaseEl) {
-          phaseEl.textContent = 'Binder build failed. Close this tab and try again, or use Colab.';
+          phaseEl.textContent = isCE
+            ? 'Code Engine connection failed. Close this tab and check your settings.'
+            : 'Binder build failed. Close this tab and try again, or use Colab.';
           phaseEl.style.color = '#d32f2f';
         }
       } catch { tab.close(); }

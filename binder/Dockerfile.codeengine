@@ -1,0 +1,105 @@
+# IBM Cloud Code Engine Jupyter kernel image
+#
+# Extends the Binder base image with:
+#   - nginx reverse proxy (port 8080) for single-port exposure
+#   - SSE /build/ endpoint for Binder-compatible thebelab integration
+#   - supervisord to manage nginx + Jupyter + SSE server
+#
+# Usage:
+#   docker build -f binder/Dockerfile.codeengine -t doqumentation-codeengine .
+#   docker run -p 8080:8080 -e JUPYTER_TOKEN=mytoken doqumentation-codeengine
+#
+# Code Engine:
+#   Image: ghcr.io/janlahmann/doqumentation-codeengine:latest
+#   Port:  8080
+#   Env:   JUPYTER_TOKEN=<your-token>
+
+# Pin to a specific tag to avoid silent base-image drift.
+# To update: check https://quay.io/repository/jupyter/base-notebook for new tags.
+FROM quay.io/jupyter/base-notebook:2025-01-27
+
+USER root
+
+# Install nginx and supervisor (base image is Debian-based)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        nginx \
+        supervisor \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/nginx/sites-enabled/default
+
+# Install Qiskit dependencies (same as Binder image)
+COPY binder/jupyter-requirements.txt /tmp/jupyter-requirements.txt
+RUN pip install --no-cache-dir --no-compile -r /tmp/jupyter-requirements.txt && \
+    rm /tmp/jupyter-requirements.txt && \
+    find ${CONDA_DIR}/lib -type d -name tests -exec rm -rf {} + 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -type d -name test  -exec rm -rf {} + 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -name '*.pyc' -delete 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true && \
+    rm -rf ${CONDA_DIR}/share/{doc,man,gtk-doc} 2>/dev/null || true
+
+# nginx config — reverse proxy for Jupyter + SSE
+COPY binder/nginx-codeengine.conf /etc/nginx/sites-enabled/default
+
+# SSE build server — Binder-compatible /build/ endpoint
+COPY binder/sse-build-server.py /opt/sse-build-server.py
+
+# Entrypoint script
+COPY binder/codeengine-entrypoint.sh /codeengine-entrypoint.sh
+RUN chmod +x /codeengine-entrypoint.sh
+
+# Pre-create Jupyter config dir so entrypoint doesn't need root
+RUN mkdir -p /home/jovyan/.jupyter && chown jovyan:users /home/jovyan/.jupyter
+
+# Allow nginx to run as non-root: writable pid/tmp dirs + no "user" directive
+RUN sed -i '/^user /d' /etc/nginx/nginx.conf && \
+    mkdir -p /tmp/nginx && \
+    chown -R jovyan:users /var/log/nginx /var/lib/nginx /tmp/nginx && \
+    sed -i 's|/run/nginx.pid|/tmp/nginx/nginx.pid|' /etc/nginx/nginx.conf
+
+# supervisord config: nginx, Jupyter, and SSE server (all as jovyan)
+RUN cat > /etc/supervisor/conf.d/services.conf << 'CONF'
+[supervisord]
+nodaemon=true
+logfile=/dev/stdout
+logfile_maxbytes=0
+
+[program:nginx]
+command=nginx -g "daemon off;"
+autorestart=true
+startretries=3
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:jupyter]
+command=jupyter server --config=/home/jovyan/.jupyter/jupyter_server_config.py
+directory=/home/jovyan
+autorestart=true
+startretries=3
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:sse]
+command=python3 /opt/sse-build-server.py
+autorestart=true
+startretries=3
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+CONF
+
+# Drop to non-root user for runtime
+USER jovyan
+
+# Code Engine exposes a single port
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget -qO /dev/null http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["/codeengine-entrypoint.sh"]
