@@ -142,6 +142,22 @@ function ensureCache(): Map<string, string> {
   return cache;
 }
 
+// ── Cross-tab cache invalidation ──
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e: StorageEvent) => {
+    if (!cache) return;
+    if (e.key === null) {
+      // localStorage.clear() was called
+      cache = null;
+    } else if (e.newValue === null) {
+      cache.delete(e.key);
+    } else {
+      cache.set(e.key, e.newValue);
+    }
+  });
+}
+
 // ── Public API ──
 
 export function getItem(key: string): string | null {
@@ -209,7 +225,7 @@ export function migrateLocalStorageToCookies(keys: string[]): void {
         migrated++;
       }
     }
-    if (migrated > 0 && typeof console !== 'undefined' && console.debug) {
+    if (migrated > 0 && typeof process !== 'undefined' && process.env.NODE_ENV === 'development') {
       console.debug(`[doQumentation] Migrated ${migrated} settings to cross-subdomain storage`);
     }
   } catch {

@@ -17,6 +17,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Translate, {translate} from '@docusaurus/Translate';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import {useLocation} from '@docusaurus/router';
 import CodeBlock from '@theme-original/CodeBlock';
 import {
   detectJupyterConfig,
@@ -74,6 +75,9 @@ type InjectionInfo = {
 const DEBUG = typeof process !== 'undefined' && process.env.NODE_ENV === 'development';
 
 // ── Cell execution feedback ──
+// Safety-net timeout (ms) — if kernel.statusChanged never fires idle after a cell
+// execution, force-settle the cell feedback after this duration.
+const FEEDBACK_SAFETY_NET_MS = 60000;
 // Tracks which cell is currently executing so we can show "Done" for no-output cells.
 
 let executingCell: Element | null = null;
@@ -83,6 +87,30 @@ let feedbackIdleDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let kernelDead = false;
 let feedbackCleanupFns: (() => void)[] = [];
 let activeKernel: unknown = null;
+
+/** Reset all module-level mutable state so next Run triggers a fresh bootstrap. */
+function resetModuleState(): void {
+  thebelabBootstrapped = false;
+  kernelDead = false;
+  activeKernel = null;
+  executingCell = null;
+  lastKernelBusy = false;
+  if (feedbackFallbackTimer) {
+    clearTimeout(feedbackFallbackTimer);
+    feedbackFallbackTimer = null;
+  }
+  if (feedbackIdleDebounceTimer) {
+    clearTimeout(feedbackIdleDebounceTimer);
+    feedbackIdleDebounceTimer = null;
+  }
+  feedbackCleanupFns.forEach(fn => fn());
+  feedbackCleanupFns = [];
+}
+
+/** Validate a Python package name for pip install. */
+function isValidPackageName(name: string): boolean {
+  return /^[a-zA-Z0-9._-]+$/.test(name);
+}
 
 /** Detect execution errors in a cell's output. */
 function detectCellError(cell: Element): { type: string; name?: string } | null {
@@ -109,32 +137,32 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
   // Module errors get a clickable Install button when kernel is available
   if (error.type === 'module' && error.name) {
     const pkg = error.name.split('.')[0];
-    if (!/^[a-zA-Z0-9._-]+$/.test(pkg)) return; // validate package name
+    if (!isValidPackageName(pkg)) return;
     const div = document.createElement('div');
     div.className = 'thebelab-cell__error-hint';
 
     const text = document.createElement('span');
-    text.append('Package ');
+    text.append(translate({id: 'executable.errorHint.packagePrefix', message: 'Package '}));
     const pkgCode = document.createElement('code');
     pkgCode.textContent = pkg;
     text.appendChild(pkgCode);
-    text.append(' is not installed.');
+    text.append(translate({id: 'executable.errorHint.notInstalled', message: ' is not installed.'}));
     div.appendChild(text);
 
     if (activeKernel && !kernelDead) {
       const btn = document.createElement('button');
       btn.className = 'thebelab-cell__install-btn';
-      btn.textContent = `Install ${pkg}`;
-      btn.title = `Run !pip install -q ${pkg}`;
+      btn.textContent = translate({id: 'executable.errorHint.installBtn', message: 'Install {pkg}'}).replace('{pkg}', pkg);
+      btn.title = translate({id: 'executable.errorHint.installTitle', message: 'Run !pip install -q {pkg}'}).replace('{pkg}', pkg);
       btn.addEventListener('click', () => handlePipInstall(cell, pkg, btn));
       div.appendChild(btn);
     } else {
       const fallback = document.createElement('span');
-      fallback.append(' Run ');
+      fallback.append(translate({id: 'executable.errorHint.runPrefix', message: ' Run '}));
       const fallbackCode = document.createElement('code');
       fallbackCode.textContent = `!pip install -q ${pkg}`;
       fallback.appendChild(fallbackCode);
-      fallback.append(' in a cell.');
+      fallback.append(translate({id: 'executable.errorHint.inACell', message: ' in a cell.'}));
       div.appendChild(fallback);
     }
 
@@ -146,21 +174,21 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
   div.className = 'thebelab-cell__error-hint';
 
   if (error.type === 'kernel') {
-    div.append('Kernel disconnected. Click ');
+    div.append(translate({id: 'executable.errorHint.kernelDisconnected', message: 'Kernel disconnected. Click '}));
     const back = document.createElement('strong');
-    back.textContent = 'Back';
+    back.textContent = translate({id: 'executable.errorHint.back', message: 'Back'});
     div.appendChild(back);
-    div.append(' then ');
+    div.append(translate({id: 'executable.errorHint.then', message: ' then '}));
     const run = document.createElement('strong');
-    run.textContent = 'Run';
+    run.textContent = translate({id: 'executable.errorHint.run', message: 'Run'});
     div.appendChild(run);
-    div.append(' to reconnect.');
+    div.append(translate({id: 'executable.errorHint.toReconnect', message: ' to reconnect.'}));
     cell.appendChild(div);
   } else if (error.type === 'name' && error.name) {
     const nameCode = document.createElement('code');
     nameCode.textContent = error.name;
     div.appendChild(nameCode);
-    div.append(' is not defined. Run the cells above first \u2014 notebooks must be executed in order.');
+    div.append(translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
     cell.appendChild(div);
   }
 }
@@ -171,9 +199,9 @@ async function handlePipInstall(
   pkg: string,
   btn: HTMLButtonElement
 ): Promise<void> {
-  if (!/^[a-zA-Z0-9._-]+$/.test(pkg)) return;
+  if (!isValidPackageName(pkg)) return;
   btn.disabled = true;
-  btn.textContent = `Installing ${pkg}...`;
+  btn.textContent = translate({id: 'executable.pip.installing', message: 'Installing {pkg}...'}).replace('{pkg}', pkg);
   btn.classList.add('thebelab-cell__install-btn--installing');
   cell.classList.remove('thebelab-cell--error');
   cell.classList.add('thebelab-cell--running');
@@ -181,7 +209,7 @@ async function handlePipInstall(
   const ok = await executeOnKernel(activeKernel, `!pip install -q ${pkg}`);
 
   if (ok) {
-    btn.textContent = 'Installed \u2713';
+    btn.textContent = translate({id: 'executable.pip.installed', message: 'Installed \u2713'});
     btn.classList.remove('thebelab-cell__install-btn--installing');
     btn.classList.add('thebelab-cell__install-btn--done');
 
@@ -199,7 +227,7 @@ async function handlePipInstall(
       }
     }, 500);
   } else {
-    btn.textContent = 'Install failed';
+    btn.textContent = translate({id: 'executable.pip.failed', message: 'Install failed'});
     btn.classList.remove('thebelab-cell__install-btn--installing');
     btn.classList.add('thebelab-cell__install-btn--failed');
     cell.classList.remove('thebelab-cell--running');
@@ -321,7 +349,7 @@ function markCellExecuting(cell: Element): void {
       console.warn('[ExecutableCode] Safety-net timer fired — kernel.statusChanged may not be working');
       settleCellFeedback(cell);
     }
-  }, 60000);
+  }, FEEDBACK_SAFETY_NET_MS);
 }
 
 /** After thebelab cells are rendered, attach listeners for execution feedback. */
@@ -599,11 +627,15 @@ print("__DQ_BACKENDS__" + _j.dumps(_bs))`;
             const backends = JSON.parse(json);
             setCachedFakeBackends(backends);
             if (DEBUG) console.log(`[ExecutableCode] Discovered ${backends.length} fake backends`);
-          } catch { /* ignore parse errors */ }
+          } catch (e) {
+            if (DEBUG) console.debug('[ExecutableCode] Failed to parse fake backends response', e);
+          }
         }
       };
     }
-  } catch { /* ignore discovery errors */ }
+  } catch (e) {
+    if (DEBUG) console.debug('[ExecutableCode] Failed to discover fake backends', e);
+  }
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -626,7 +658,7 @@ function getThebelabOptions(config: JupyterConfig, session?: BinderSession | nul
           name: 'python3',
           serverSettings: {
             baseUrl: session.url,
-            wsUrl: session.url.replace(/^http/, 'ws'),
+            wsUrl: session.url.replace(/^http(s?):\/\//, 'ws$1://'),
             token: session.token,
           },
         },
@@ -668,9 +700,18 @@ function broadcastStatus(status: ThebeStatus): void {
  * Wait for thebelab CDN to load, then call bootstrap() with the given options.
  * Handles kernel promise, status events, and credential injection.
  */
+const BOOTSTRAP_MAX_RETRIES = 60; // 60 × 500ms = 30s total timeout
+
 function doBootstrap(thebelabOptions: Record<string, unknown>): void {
+  let retryCount = 0;
   const tryBootstrap = () => {
     if (!window.thebelab) {
+      retryCount++;
+      if (retryCount > BOOTSTRAP_MAX_RETRIES) {
+        console.error('[ExecutableCode] thebelab CDN failed to load after 30s');
+        broadcastStatus('error');
+        return;
+      }
       if (DEBUG) console.log('[ExecutableCode] waiting for thebelab CDN...');
       setTimeout(tryBootstrap, 500);
       return;
@@ -776,6 +817,9 @@ function bootstrapOnce(config: JupyterConfig): void {
     return;
   }
 
+  // Set guard synchronously to prevent duplicate bootstrap from rapid clicks
+  thebelabBootstrapped = true;
+
   if (config.environment === 'github-pages' && config.binderUrl) {
     // Build (or reuse) Binder session, then connect thebelab via serverSettings
     ensureBinderSession(config, (phase) => {
@@ -785,6 +829,7 @@ function bootstrapOnce(config: JupyterConfig): void {
       const options = getThebelabOptions(config, session);
       doBootstrap(options);
     }).catch(() => {
+      thebelabBootstrapped = false; // allow retry on failure
       broadcastStatus('error');
     });
     return;
@@ -856,6 +901,18 @@ export default function ExecutableCode({
   showLineNumbers = true,
 }: ExecutableCodeProps): JSX.Element {
   const { i18n: { currentLocale } } = useDocusaurusContext();
+  const location = useLocation();
+
+  // Reset module-level state on SPA page navigation so stale kernel/bootstrap
+  // state from the previous page doesn't leak into the new page.
+  const prevPathRef = useRef(location.pathname);
+  useEffect(() => {
+    if (location.pathname !== prevPathRef.current) {
+      prevPathRef.current = location.pathname;
+      resetModuleState();
+    }
+  }, [location.pathname]);
+
   const [mode, setMode] = useState<'read' | 'run'>('read');
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
@@ -870,7 +927,6 @@ export default function ExecutableCode({
   const [binderCacheMiss, setBinderCacheMiss] = useState(false);
   const binderStartRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const thebeContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
@@ -878,11 +934,18 @@ export default function ExecutableCode({
     setHideStaticOutputs(getHideStaticOutputs());
   }, []);
 
-  // Determine if this is the first executable cell on the page (toolbar owner)
+  // Determine if this is the first executable cell on the page (toolbar owner).
+  // Re-evaluate when cells mount/unmount dynamically via MutationObserver.
   useEffect(() => {
     if (!containerRef.current) return;
-    const allCells = document.querySelectorAll('.executable-code');
-    setIsFirstCell(allCells[0] === containerRef.current);
+    const check = () => {
+      const allCells = document.querySelectorAll('.executable-code');
+      setIsFirstCell(allCells.length > 0 && allCells[0] === containerRef.current);
+    };
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, []);
 
   // Listen for the global activate event (fired when ANY cell's Run is clicked)
@@ -958,27 +1021,37 @@ export default function ExecutableCode({
 
   // Listen for conflict banner (both credentials + simulator configured, no explicit choice)
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const onConflict = (e: Event) => {
       const usingMode = (e as CustomEvent<string>).detail;
       setConflictBanner(usingMode);
-      setTimeout(() => setConflictBanner(null), 5000);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setConflictBanner(null), 5000);
     };
     window.addEventListener(CONFLICT_EVENT, onConflict);
-    return () => window.removeEventListener(CONFLICT_EVENT, onConflict);
+    return () => {
+      window.removeEventListener(CONFLICT_EVENT, onConflict);
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   // Listen for injection feedback (simulator or credentials applied)
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const onInjection = (e: Event) => {
       const info = (e as CustomEvent<InjectionInfo>).detail;
       setInjectionInfo(info);
       if (info.message) {
         setInjectionToast(info.message);
-        setTimeout(() => setInjectionToast(null), 4000);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => setInjectionToast(null), 4000);
       }
     };
     window.addEventListener(INJECTION_EVENT, onInjection);
-    return () => window.removeEventListener(INJECTION_EVENT, onInjection);
+    return () => {
+      window.removeEventListener(INJECTION_EVENT, onInjection);
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const isExecutable = language === 'python' && jupyterConfig?.thebeEnabled;
@@ -1002,35 +1075,18 @@ export default function ExecutableCode({
     bootstrapOnce(jupyterConfig);
   }, [jupyterConfig, hideStaticOutputs]);
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     // Check if any cells have been executed (have done/error state)
     const executedCells = document.querySelectorAll('.thebelab-cell--done, .thebelab-cell--error');
     if (executedCells.length > 0) {
-      if (!window.confirm('This will clear all execution results and return to static view. Continue?')) {
+      if (!window.confirm(translate({id: 'executable.reset.confirm', message: 'This will clear all execution results and return to static view. Continue?'}))) {
         return;
       }
     }
-    // Reset module-level state so next Run triggers a fresh bootstrap
-    thebelabBootstrapped = false;
-    kernelDead = false;
-    activeKernel = null;
-    executingCell = null;
-    lastKernelBusy = false;
-    if (feedbackFallbackTimer) {
-      clearTimeout(feedbackFallbackTimer);
-      feedbackFallbackTimer = null;
-    }
-    if (feedbackIdleDebounceTimer) {
-      clearTimeout(feedbackIdleDebounceTimer);
-      feedbackIdleDebounceTimer = null;
-    }
-    feedbackCleanupFns.forEach(fn => fn());
-    feedbackCleanupFns = [];
-    // Restore static outputs
+    resetModuleState();
     document.body.classList.remove('dq-hide-static-outputs');
-    // Tell ALL cells on the page to switch back to read mode
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
-  };
+  }, []);
 
   const handleRestart = useCallback(() => {
     if (!window.confirm(translate({
@@ -1043,17 +1099,10 @@ export default function ExecutableCode({
   const handleClearSession = useCallback(() => {
     if (!window.confirm(translate({
       id: 'executable.clearSession.confirm',
-      message: 'Clear Binder session? You will need to wait for a new server on next Run.',
+      message: 'Clear session? You will need to wait for a new server on next Run.',
     }))) return;
     clearBinderSession();
-    // Also reset execution state so next Run triggers fresh bootstrap
-    thebelabBootstrapped = false;
-    kernelDead = false;
-    activeKernel = null;
-    executingCell = null;
-    lastKernelBusy = false;
-    feedbackCleanupFns.forEach(fn => fn());
-    feedbackCleanupFns = [];
+    resetModuleState();
     document.body.classList.remove('dq-hide-static-outputs');
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
   }, []);
@@ -1205,7 +1254,7 @@ export default function ExecutableCode({
       )}
 
       {isFirstCell && conflictBanner && (
-        <div className="executable-code__conflict-banner">
+        <div className="executable-code__conflict-banner" role="alert">
           <Translate
             id="executable.conflict"
             values={{
@@ -1223,7 +1272,7 @@ export default function ExecutableCode({
       )}
 
       {isFirstCell && injectionToast && (
-        <div className="executable-code__injection-toast">
+        <div className="executable-code__injection-toast" role="status" aria-live="polite">
           {injectionToast}
         </div>
       )}
@@ -1272,7 +1321,7 @@ export default function ExecutableCode({
 
       {/* Run mode: thebelab-managed interactive cell */}
       {mode === 'run' && (
-        <div ref={thebeContainerRef} className="executable-code__thebe">
+        <div className="executable-code__thebe">
           <pre data-executable="true" data-language="python">
             {code}
           </pre>
