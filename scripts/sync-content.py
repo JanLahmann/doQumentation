@@ -599,8 +599,8 @@ def process_tutorials():
 
         elif src_path.suffix == '.ipynb':
             dst_path = tutorials_dst / rel_path.with_suffix('.mdx')
-            # Upstream path for Binder/Lab: docs/tutorials/{name}.ipynb
-            upstream_nb_path = f"docs/tutorials/{rel_path}"
+            # Notebook path matching the notebooks branch layout
+            upstream_nb_path = f"tutorials/{rel_path}"
             if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path):
                 stats["ipynb"] += 1
                 print(f"  ✓ {rel_path} → .mdx")
@@ -720,8 +720,8 @@ def process_guides():
 
         elif src_path.suffix == '.ipynb':
             dst_path = guides_dst / rel_path.with_suffix('.mdx')
-            # Upstream path for Binder/Lab: docs/guides/{name}.ipynb
-            upstream_nb_path = f"docs/guides/{rel_path}"
+            # Notebook path matching the notebooks branch layout
+            upstream_nb_path = f"guides/{rel_path}"
             if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path):
                 stats["ipynb"] += 1
                 print(f"  ✓ {rel_path} → .mdx")
@@ -1302,10 +1302,10 @@ def generate_locale_notebooks(locale: str):
         if not nb_match:
             continue  # Not a notebook-based page
 
-        notebook_path = nb_match.group(1)  # e.g. "docs/tutorials/foo.ipynb"
+        notebook_path = nb_match.group(1)  # e.g. "tutorials/foo.ipynb"
 
-        # Find the upstream English notebook
-        english_nb = UPSTREAM_DIR / notebook_path
+        # Find the upstream English notebook (upstream stores under docs/)
+        english_nb = UPSTREAM_DIR / "docs" / notebook_path
         if not english_nb.exists():
             # hello-world.ipynb is at the repo root
             english_nb = UPSTREAM_DIR / Path(notebook_path).name

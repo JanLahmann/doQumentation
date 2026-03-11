@@ -466,9 +466,9 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
     return null;
   }
 
-  // Notebook files in the container mirror the notebooks branch layout,
-  // which stores files without the docs/ prefix (e.g. tutorials/hello-world.ipynb).
-  const cleanPath = notebookPath.replace(/^docs\//, '');
+  // Notebook path maps directly to the container/notebooks branch layout
+  // (e.g. tutorials/hello-world.ipynb). Bare names get tutorials/ prefix.
+  const cleanPath = mapBinderNotebookPath(notebookPath);
   const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/');
   const tokenParam = config.token ? `?token=${encodeURIComponent(config.token)}` : '';
   return `${config.baseUrl}/lab/tree/${encodedPath}${tokenParam}`;
@@ -530,9 +530,9 @@ export function clearBinderSession(): void {
   sessionStorage.removeItem(BINDER_SESSION_KEY);
 }
 
-/** Map notebookPath to the notebooks branch layout (shared with getBinderLabUrl). */
+/** Map notebookPath to the notebooks branch layout. Bare names get tutorials/ prefix. */
 export function mapBinderNotebookPath(notebookPath: string, locale?: string): string {
-  let nbPath = notebookPath.replace(/^docs\//, '');
+  let nbPath = notebookPath;
   if (!nbPath.includes('/')) {
     nbPath = `tutorials/${nbPath}`;
   }
@@ -746,7 +746,7 @@ export function getRawBinderUrl(config: JupyterConfig, notebookPath: string, loc
  * EN: main repo notebooks branch. Translated: satellite repo gh-pages branch.
  */
 export function getColabUrl(notebookPath: string, locale?: string): string {
-  // Reuse shared path mapping (strips docs/ prefix, adds tutorials/ for bare names)
+  // Reuse shared path mapping (adds tutorials/ prefix for bare names)
   const nbPath = mapBinderNotebookPath(notebookPath);
   if (locale && locale !== 'en') {
     return `https://colab.research.google.com/github/JanLahmann/doqumentation-${locale}/blob/gh-pages/notebooks/${nbPath}`;
