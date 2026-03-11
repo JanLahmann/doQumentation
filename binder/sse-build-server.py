@@ -33,7 +33,8 @@ JUPYTER_POLL_INTERVAL = 0.5  # seconds between readiness checks
 def _jupyter_is_ready():
     """Check if Jupyter server is responding on its local port."""
     try:
-        url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status'
+        token = os.environ.get('JUPYTER_TOKEN', '')
+        url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
         req = urllib.request.Request(url, method='GET')
         with urllib.request.urlopen(req, timeout=2) as resp:
             return resp.status == 200
