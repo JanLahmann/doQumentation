@@ -314,16 +314,13 @@ export type SimulatorBackend = 'aer' | 'fake';
 
 export function getSimulatorMode(): boolean {
   if (typeof window === 'undefined') return false;
-  return getItem(STORAGE_KEY_SIM_MODE) === 'true';
+  const stored = getItem(STORAGE_KEY_SIM_MODE);
+  return stored === null ? true : stored === 'true';
 }
 
 export function setSimulatorMode(enabled: boolean): void {
   if (typeof window === 'undefined') return;
-  if (enabled) {
-    setItem(STORAGE_KEY_SIM_MODE, 'true');
-  } else {
-    removeItem(STORAGE_KEY_SIM_MODE);
-  }
+  setItem(STORAGE_KEY_SIM_MODE, String(enabled));
 }
 
 const VALID_SIMULATOR_BACKENDS: readonly SimulatorBackend[] = ['aer', 'fake'];

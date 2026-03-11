@@ -63,7 +63,7 @@ export function onRouteDidUpdate({ location }: { location: Location }): void {
     }
 
     const count = incrementOnboardingVisits();
-    if (count > 3) {
+    if (count > 2) {
       removeTip();
       return;
     }
@@ -71,8 +71,8 @@ export function onRouteDidUpdate({ location }: { location: Location }): void {
     // Choose tip based on page content
     const hasCode = document.querySelector('.executable-code');
     const message = hasCode
-      ? 'Click <strong>Run</strong> on any code block to execute it. The first run starts a free Jupyter kernel (1\u20132 min). Configure IBM Quantum credentials or simulator mode in <a href="/jupyter-settings">Settings</a>.'
-      : 'Your progress is tracked automatically \u2014 visited pages show \u2713 in the sidebar. Explore <a href="/jupyter-settings">Settings</a> to configure code execution.';
+      ? 'Click <strong>Run</strong> on any code block to execute it live \u2014 no setup needed.'
+      : 'Your progress is tracked automatically \u2014 visited pages show \u2713 in the sidebar.';
 
     createTip(message);
   }, 300);
