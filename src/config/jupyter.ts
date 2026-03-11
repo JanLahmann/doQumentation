@@ -392,45 +392,70 @@ export function setActiveMode(mode: ActiveMode | null): void {
 /**
  * Test connection to a Jupyter server
  */
-export async function testJupyterConnection(url: string, token: string): Promise<{
+export async function testJupyterConnection(
+  url: string,
+  token: string,
+  onStatus?: (message: string) => void,
+): Promise<{
   success: boolean;
   message: string;
 }> {
-  try {
-    const apiUrl = `${url}/api/status`;
-    const headers: HeadersInit = {};
-    if (token) {
-      headers['Authorization'] = `token ${token}`;
-    }
+  const headers: HeadersInit = {};
+  if (token) {
+    headers['Authorization'] = `token ${token}`;
+  }
+  const apiUrl = `${url}/api/status`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    const response = await fetch(apiUrl, {
-      method: 'GET',
-      headers,
-      mode: 'cors',
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+  // Retry up to 4 times (total ~60s) to handle CE cold starts.
+  // First attempt: 15s timeout. Retries: 15s each with status updates.
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (attempt === 1) {
+        onStatus?.('Connecting...');
+      } else {
+        onStatus?.(`Server is starting up... (attempt ${attempt}/${maxAttempts})`);
+      }
 
-    if (response.ok) {
-      const data = await response.json();
-      return {
-        success: true,
-        message: `Connected! Jupyter version: ${data.version || 'unknown'}`,
-      };
-    } else {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      const response = await fetch(apiUrl, {
+        method: 'GET',
+        headers,
+        mode: 'cors',
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          success: true,
+          message: `Connected! Jupyter version: ${data.version || 'unknown'}`,
+        };
+      } else if (response.status === 502 || response.status === 503) {
+        // Server starting up — retry
+        if (attempt < maxAttempts) continue;
+        return {
+          success: false,
+          message: `Server not ready after ${maxAttempts} attempts (${response.status}). Try again in a moment.`,
+        };
+      } else {
+        return {
+          success: false,
+          message: `Connection failed: ${response.status} ${response.statusText}`,
+        };
+      }
+    } catch (error) {
+      // Timeout or network error — retry on cold start
+      if (attempt < maxAttempts) continue;
       return {
         success: false,
-        message: `Connection failed: ${response.status} ${response.statusText}`,
+        message: `Connection error: ${error instanceof Error ? error.message : 'Unknown error'}`,
       };
     }
-  } catch (error) {
-    return {
-      success: false,
-      message: `Connection error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-    };
   }
+  return { success: false, message: 'Connection failed after all attempts.' };
 }
 
 /**

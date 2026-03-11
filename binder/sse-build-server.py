@@ -71,9 +71,10 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         token = os.environ.get('JUPYTER_TOKEN', '')
 
         # Determine the public URL for this server from the Host header.
+        # Always use https — CE terminates TLS at the edge, so internal
+        # X-Forwarded-Proto may be 'http' even though clients use https.
         host = self.headers.get('Host', 'localhost:8080')
-        scheme = self.headers.get('X-Forwarded-Proto', 'https')
-        base_url = f'{scheme}://{host}'
+        base_url = f'https://{host}'
 
         try:
             # Emit connecting phase

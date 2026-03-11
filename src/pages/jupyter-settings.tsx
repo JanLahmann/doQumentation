@@ -173,7 +173,7 @@ export default function JupyterSettings(): JSX.Element {
   const [ceToken, setCeToken] = useState('');
   const [ceDaysRemaining, setCeDaysRemaining] = useState(-1);
   const [ceSaveResult, setCeSaveResult] = useState<string | null>(null);
-  const [ceSaveResultType, setCeSaveResultType] = useState<'success' | 'warning'>('success');
+  const [ceSaveResultType, setCeSaveResultType] = useState<'success' | 'warning' | 'info'>('success');
 
   // Load current config on mount
   useEffect(() => {
@@ -323,7 +323,15 @@ export default function JupyterSettings(): JSX.Element {
       return;
     }
     setCeSaveResult(null);
-    const result = await testJupyterConnection(ceUrl.replace(/\/+$/, ''), ceToken);
+    setCeSaveResultType('info');
+    const result = await testJupyterConnection(
+      ceUrl.replace(/\/+$/, ''),
+      ceToken,
+      (status) => {
+        setCeSaveResult(status);
+        setCeSaveResultType('info');
+      },
+    );
     setCeSaveResult(result.message);
     setCeSaveResultType(result.success ? 'success' : 'warning');
   };
