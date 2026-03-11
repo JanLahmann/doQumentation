@@ -25,6 +25,7 @@ from socketserver import ThreadingMixIn
 
 CORS_ORIGIN = os.environ.get('CORS_ORIGIN', 'https://doqumentation.org')
 JUPYTER_PORT = int(os.environ.get('JUPYTER_PORT', '8888'))
+SSE_DEFAULT_PORT = '9091'  # Avoid 9090 — Jupyter extensions may bind it
 JUPYTER_READY_TIMEOUT = 30  # seconds to wait for Jupyter to become ready
 JUPYTER_POLL_INTERVAL = 0.5  # seconds between readiness checks
 
@@ -133,7 +134,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main():
-    port = int(os.environ.get('SSE_PORT', '9090'))
+    port = int(os.environ.get('SSE_PORT', SSE_DEFAULT_PORT))
     server = ThreadingHTTPServer(('127.0.0.1', port), SSEBuildHandler)
     signal.signal(signal.SIGTERM, lambda sig, frame: server.shutdown())
     print(f'[SSE] Binder-compatible build endpoint on port {port}')
