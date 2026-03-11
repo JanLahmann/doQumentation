@@ -67,7 +67,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - **Architecture** — Single-port container (8080): nginx reverse proxy + Jupyter server (8888) + SSE build server (9091), managed by supervisord. SSE server (`sse-build-server.py`) mimics mybinder.org's `/build/` SSE protocol so `ensureBinderSession()` works unchanged — only 3 phases (connecting/launching/ready) instead of 7+. SSE server also handles `/health` endpoint (checks Jupyter readiness with token, no external auth needed). Uses port 9091 (not 9090 — Jupyter extensions bind that) and `allow_reuse_address`. Public URL in SSE ready event derived from `Host` header + `X-Forwarded-Proto`. Cold start ~12s (container start + Jupyter init); health returns 503 until Jupyter is ready, then 200.
 - **Deployed app** — `ce-doqumentation-01.27boe8ie8nv4.eu-de.codeengine.appdomain.cloud` (eu-de region), project `ce-doqumentation-01`. Min scale 0 (scales to zero when idle), max scale 1, 4G memory, 1 CPU. Token must be 32+ chars.
 - **Container image** — `ghcr.io/janlahmann/doqumentation-codeengine:latest`, built by `.github/workflows/codeengine-image.yml` on `binder/**` changes. Base: `quay.io/jupyter/base-notebook:2025-01-27` + Qiskit deps from `jupyter-requirements.txt` + security pins from `jupyter-requirements-security.txt`. `linux/amd64` only. Trivy security scan (fails on HIGH/CRITICAL).
-- **Security** — Token auth (min 32 chars), CORS origin validation (`CORS_ORIGIN` env var, default `https://doqumentation.org`), XSRF disabled (thebelab 0.4.0 limitation), rate limiting on all nginx endpoints, security headers (HSTS, CSP, nosniff).
+- **Security** — Token auth (min 32 chars), CORS origin validation (`CORS_ORIGIN` env var, default `https://doqumentation.org`), XSRF disabled (thebelab 0.4.0 limitation), rate limiting on nginx endpoints (except `/lab` — JupyterLab loads dozens of JS/CSS chunks on first view, token auth is sufficient), security headers (HSTS, CSP, nosniff).
 - **User flow** — Settings page (`/jupyter-settings#code-engine`) → enter CE URL + token → Save. Environment detected as `'code-engine'` in `detectJupyterConfig()` (priority: Custom > CE > Binder). Credentials stored with same TTL as IBM Quantum (1/3/7 days). All frontend components (ExecutableCode, OpenInLabBanner) CE-aware with fast phase labels.
 - **Storage keys** — `doqumentation_ce_url`, `doqumentation_ce_token`, `doqumentation_ce_saved_at`
 - **Files** — `binder/Dockerfile.codeengine`, `binder/sse-build-server.py`, `binder/nginx-codeengine.conf`, `binder/codeengine-entrypoint.sh`, `binder/jupyter-requirements-security.txt`, `.github/workflows/codeengine-image.yml`
@@ -420,4 +420,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 6, 2026*
+*Last updated: March 11, 2026*
