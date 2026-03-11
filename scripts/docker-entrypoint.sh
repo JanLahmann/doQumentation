@@ -25,8 +25,8 @@ if [ ${#JUPYTER_TOKEN} -lt 8 ]; then
 fi
 
 # ── Write Jupyter config with real token ──
-JUPYTER_DIR="/home/jupyter/.jupyter"
-mkdir -p "$JUPYTER_DIR"
+# Note: /home/jovyan/.jupyter is pre-created in the Dockerfile
+JUPYTER_DIR="/home/jovyan/.jupyter"
 cat > "$JUPYTER_DIR/jupyter_server_config.py" << PYEOF
 # doQumentation — Jupyter Server Configuration
 # Generated at container startup by docker-entrypoint.sh
@@ -38,7 +38,7 @@ c.ServerApp.allow_remote_access = True
 c.ServerApp.ip = "0.0.0.0"
 c.ServerApp.port = 8888
 c.ServerApp.open_browser = False
-c.ServerApp.root_dir = "/home/jupyter/notebooks"
+c.ServerApp.root_dir = "/home/jovyan/notebooks"
 
 # XSRF disabled — thebelab 0.4.0 cannot send XSRF cookies/headers.
 # Token auth via Authorization header is the security boundary instead.
@@ -49,7 +49,6 @@ c.MappingKernelManager.cull_idle_timeout = 600
 c.MappingKernelManager.cull_interval = 120
 c.MappingKernelManager.cull_connected = False
 PYEOF
-chown jupyter:jupyter "$JUPYTER_DIR/jupyter_server_config.py"
 
 # ── Inject token into nginx proxy config ──
 # Replace placeholder comments with real Authorization headers

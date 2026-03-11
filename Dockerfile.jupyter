@@ -1,5 +1,20 @@
-# Stage 1: Build the Docusaurus site
-FROM node:20-alpine AS build
+# Unified Jupyter Dockerfile — two build targets from a shared base
+#
+# Targets:
+#   jupyter-local       Full stack: Docusaurus site + Jupyter + Qiskit (~3 GB)
+#   jupyter-codeengine  IBM Cloud Code Engine: Jupyter + Qiskit + SSE server (~3 GB)
+#
+# Usage:
+#   docker build --target jupyter-local      -f Dockerfile.jupyter -t doqumentation:jupyter .
+#   docker build --target jupyter-codeengine -f Dockerfile.jupyter -t doqumentation-codeengine .
+#
+# Code Engine:
+#   Image: ghcr.io/janlahmann/doqumentation-codeengine:latest
+#   Port:  8080
+#   Env:   JUPYTER_TOKEN=<your-token>
+
+# ── Stage: site-build (only consumed by jupyter-local) ───────────────
+FROM node:20-alpine AS site-build
 
 RUN apk add --no-cache python3 git
 
@@ -15,70 +30,91 @@ RUN NODE_OPTIONS="--max-old-space-size=8192" npm run build -- --locale en
 # Remove GitHub Pages CNAME from build output
 RUN rm -f build/CNAME
 
-# Stage 2: Python + nginx + Jupyter + Qiskit
-FROM python:3.12-slim
+# ── Stage: jupyter-base (shared by both targets) ─────────────────────
+FROM quay.io/jupyter/base-notebook:python-3.12 AS jupyter-base
 
+USER root
+
+# Install nginx and supervisor (base image is Debian-based)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx \
         supervisor \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/nginx/sites-enabled/default
 
-# Create non-root jupyter user (S2: don't run Jupyter as root)
-RUN useradd -m -s /bin/bash jupyter
+# Install Qiskit dependencies (single source of truth: jupyter-requirements.txt)
+COPY binder/jupyter-requirements.txt /tmp/jupyter-requirements.txt
+RUN pip install --no-cache-dir --no-compile -r /tmp/jupyter-requirements.txt && \
+    rm /tmp/jupyter-requirements.txt && \
+    find ${CONDA_DIR}/lib -type d -name tests -exec rm -rf {} + 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -type d -name test  -exec rm -rf {} + 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -name '*.pyc' -delete 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
+    find ${CONDA_DIR}/lib -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true && \
+    rm -rf ${CONDA_DIR}/share/{doc,man,gtk-doc} 2>/dev/null || true
 
-# Install Qiskit and Jupyter
-COPY binder/jupyter-requirements.txt binder/jupyter-requirements-amd64.txt /tmp/
-RUN pip install --no-cache-dir jupyter \
-    && pip install --no-cache-dir -r /tmp/jupyter-requirements.txt \
-    && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-         pip install --no-cache-dir -r /tmp/jupyter-requirements-amd64.txt; \
-       fi \
-    && rm /tmp/jupyter-requirements*.txt
+# Pre-create Jupyter config dir so entrypoint doesn't need root
+RUN mkdir -p /home/jovyan/.jupyter && chown jovyan:users /home/jovyan/.jupyter
 
-# Configure nginx (entrypoint patches auth placeholder at runtime)
+# Allow nginx to run as non-root: writable pid/tmp dirs + no "user" directive
+RUN sed -i '/^user /d' /etc/nginx/nginx.conf && \
+    mkdir -p /tmp/nginx && \
+    chown -R jovyan:users /var/log/nginx /var/lib/nginx /tmp/nginx && \
+    sed -i 's|/run/nginx.pid|/tmp/nginx/nginx.pid|' /etc/nginx/nginx.conf
+
+# ── Target: jupyter-local (site + Jupyter + Qiskit) ──────────────────
+FROM jupyter-base AS jupyter-local
+
+# Conditional amd64-only packages (no arm64 wheels available)
+COPY binder/jupyter-requirements-amd64.txt /tmp/jupyter-requirements-amd64.txt
+RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      pip install --no-cache-dir --no-compile -r /tmp/jupyter-requirements-amd64.txt; \
+    fi && rm -f /tmp/jupyter-requirements-amd64.txt
+
+# nginx config — reverse proxy for Jupyter API
 COPY nginx.conf /etc/nginx/sites-enabled/default
 
-# Copy built site
-COPY --from=build /app/build /usr/share/nginx/html
+# Copy built site from site-build stage
+COPY --from=site-build /app/build /usr/share/nginx/html
 
-# Copy notebooks for Jupyter serving — owned by jupyter user
-COPY --from=build /app/notebooks /home/jupyter/notebooks
-RUN chown -R jupyter:jupyter /home/jupyter/notebooks
+# Copy notebooks for Jupyter serving
+COPY --from=site-build /app/notebooks /home/jovyan/notebooks
+RUN chown -R jovyan:users /home/jovyan/notebooks
 
-WORKDIR /home/jupyter/notebooks
+WORKDIR /home/jovyan/notebooks
 
-# Jupyter config is generated at runtime by docker-entrypoint.sh
-# (token, auth settings, kernel management)
+# supervisord config: nginx + Jupyter
+RUN cat > /etc/supervisor/conf.d/services.conf << 'CONF'
+[supervisord]
+nodaemon=true
+logfile=/dev/stdout
+logfile_maxbytes=0
 
-# Configure supervisord: nginx as root (port 80), Jupyter as jupyter user
-RUN echo '\
-[supervisord]\n\
-nodaemon=true\n\
-user=root\n\
-logfile=/dev/stdout\n\
-logfile_maxbytes=0\n\
-\n\
-[program:nginx]\n\
-command=nginx -g "daemon off;"\n\
-stdout_logfile=/dev/stdout\n\
-stdout_logfile_maxbytes=0\n\
-stderr_logfile=/dev/stderr\n\
-stderr_logfile_maxbytes=0\n\
-\n\
-[program:jupyter]\n\
-command=jupyter server\n\
-user=jupyter\n\
-environment=HOME="/home/jupyter",USER="jupyter"\n\
-directory=/home/jupyter/notebooks\n\
-stdout_logfile=/dev/stdout\n\
-stdout_logfile_maxbytes=0\n\
-stderr_logfile=/dev/stderr\n\
-stderr_logfile_maxbytes=0\n\
-' > /etc/supervisor/conf.d/services.conf
+[program:nginx]
+command=nginx -g "daemon off;"
+autorestart=true
+startretries=3
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
 
-# Copy entrypoint (generates token, writes Jupyter config, patches nginx)
+[program:jupyter]
+command=jupyter server --config=/home/jovyan/.jupyter/jupyter_server_config.py
+directory=/home/jovyan/notebooks
+autorestart=true
+startretries=3
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+CONF
+
+# Entrypoint (generates token, writes Jupyter config, patches nginx)
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
+
+USER jovyan
 
 EXPOSE 80 8888
 
@@ -86,3 +122,80 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO /dev/null http://localhost:80/ || exit 1
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
+
+# ── Target: jupyter-codeengine (CE: Jupyter + SSE server) ────────────
+FROM jupyter-base AS jupyter-codeengine
+
+# Security pins for transitive dependencies with known CVEs
+COPY binder/jupyter-requirements-security.txt /tmp/jupyter-requirements-security.txt
+RUN pip install --no-cache-dir --no-compile \
+        -r /tmp/jupyter-requirements-security.txt && \
+    rm /tmp/jupyter-requirements-security.txt
+
+# Fetch processed notebooks from the notebooks branch so JupyterLab has content.
+# Only copy .ipynb files (tutorials, guides, courses, modules) — skip binder/ config.
+RUN apt-get update && apt-get install -y --no-install-recommends git && \
+    git clone --depth 1 --branch notebooks \
+        https://github.com/JanLahmann/doQumentation.git /tmp/notebooks && \
+    cd /tmp/notebooks && \
+    find . -name '*.ipynb' -exec sh -c 'mkdir -p /home/jovyan/$(dirname "{}") && cp "{}" /home/jovyan/"{}"' \; && \
+    chown -R 1000:100 /home/jovyan && \
+    rm -rf /tmp/notebooks && \
+    apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+# nginx config — reverse proxy for Jupyter + SSE, with rate limiting
+COPY binder/nginx-codeengine.conf /etc/nginx/sites-enabled/default
+
+# SSE build server — Binder-compatible /build/ endpoint
+COPY binder/sse-build-server.py /opt/sse-build-server.py
+
+# supervisord config: nginx + Jupyter + SSE server
+RUN cat > /etc/supervisor/conf.d/services.conf << 'CONF'
+[supervisord]
+nodaemon=true
+logfile=/dev/stdout
+logfile_maxbytes=0
+
+[program:nginx]
+command=nginx -g "daemon off;"
+autorestart=true
+startretries=3
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:jupyter]
+command=jupyter server --config=/home/jovyan/.jupyter/jupyter_server_config.py
+directory=/home/jovyan
+autorestart=true
+startretries=3
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:sse]
+command=python3 /opt/sse-build-server.py
+autorestart=true
+startretries=5
+startsecs=2
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+CONF
+
+# Entrypoint (generates token, writes Jupyter config)
+COPY binder/codeengine-entrypoint.sh /codeengine-entrypoint.sh
+RUN chmod +x /codeengine-entrypoint.sh
+
+USER jovyan
+
+# Code Engine exposes a single port
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget -qO /dev/null http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["/codeengine-entrypoint.sh"]
