@@ -466,7 +466,10 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
     return null;
   }
 
-  const encodedPath = notebookPath.split('/').map(encodeURIComponent).join('/');
+  // Notebook files in the container mirror the notebooks branch layout,
+  // which stores files without the docs/ prefix (e.g. tutorials/hello-world.ipynb).
+  const cleanPath = notebookPath.replace(/^docs\//, '');
+  const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/');
   const tokenParam = config.token ? `?token=${encodeURIComponent(config.token)}` : '';
   return `${config.baseUrl}/lab/tree/${encodedPath}${tokenParam}`;
 }
