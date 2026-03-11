@@ -44,6 +44,17 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
     """Handle GET /build/* with SSE events."""
 
     def do_GET(self):
+        if self.path == '/health':
+            # Lightweight health check — no auth required
+            if _jupyter_is_ready():
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'ok\n')
+            else:
+                self.send_error(503, 'Jupyter not ready')
+            return
+
         if not self.path.startswith('/build'):
             self.send_error(404)
             return
@@ -118,6 +129,7 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
+    allow_reuse_address = True
 
 
 def main():
