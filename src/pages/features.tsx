@@ -34,7 +34,7 @@ export default function Features(): JSX.Element {
   return (
     <Layout
       title={translate({id: 'features.title', message: 'Features'})}
-      description={translate({id: 'features.description', message: 'All features of the doQumentation platform — live code execution, simulator mode, learning progress, and more.'})}
+      description={translate({id: 'features.description', message: 'All features of the doQumentation platform — live code execution, Code Engine, simulator mode, multi-language support, learning progress, and more.'})}
     >
       <main className="container margin-vert--lg">
         <div className="features-page">
@@ -42,8 +42,9 @@ export default function Features(): JSX.Element {
           <p className="features-page__intro">
             <Translate id="features.intro">
               doQumentation turns IBM Quantum's open-source content into an
-              interactive learning platform with live code execution, simulator
-              mode, and learning progress tracking.
+              interactive learning platform with live code execution, IBM Cloud
+              Code Engine, simulator mode, learning progress tracking, and
+              support for 20 languages.
             </Translate>
           </p>
 
@@ -77,10 +78,20 @@ export default function Features(): JSX.Element {
                 description={translate({id: 'features.execution.toggle.desc', message: 'Every notebook page has a Run button that activates all code cells with a live Jupyter kernel. Click Back to return to the static view.'})}
               />
               <FeatureCard
-                title={translate({id: 'features.execution.backends.title', message: 'Three Execution Backends'})}
-                description={translate({id: 'features.execution.backends.desc', message: 'Free remote execution via Binder (no install needed), full offline via Docker, or self-hosted on a RasQberry Pi.'})}
+                title={translate({id: 'features.execution.backends.title', message: 'Four Execution Backends'})}
+                description={translate({id: 'features.execution.backends.desc', message: 'Free remote execution via Binder or Google Colab, fast serverless kernels via IBM Cloud Code Engine, or full offline via Docker and RasQberry Pi.'})}
                 link="/jupyter-settings#advanced"
                 linkLabel={translate({id: 'features.execution.backends.link', message: 'Configure backend'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.execution.ce.title', message: 'IBM Cloud Code Engine'})}
+                description={translate({id: 'features.execution.ce.desc', message: "Serverless Jupyter kernel on your IBM Cloud account. Cold start in seconds instead of Binder's 10–25 minutes. Free tier covers roughly 14 hours per month."})}
+                link="/jupyter-settings#code-engine"
+                linkLabel={translate({id: 'features.execution.ce.link', message: 'Set up Code Engine'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.execution.colab.title', message: 'Open in Google Colab'})}
+                description={translate({id: 'features.execution.colab.desc', message: "Every notebook page has an 'Open in Colab' button for zero-install cloud execution. Opens translated notebooks when browsing in another language."})}
               />
               <FeatureCard
                 title={translate({id: 'features.execution.feedback.title', message: 'Cell Execution Feedback'})}
@@ -96,7 +107,7 @@ export default function Features(): JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.execution.lab.title', message: 'Open in JupyterLab'})}
-                description={translate({id: 'features.execution.lab.desc', message: 'Every notebook page has a button to open the full .ipynb in JupyterLab for advanced editing and exploration.'})}
+                description={translate({id: 'features.execution.lab.desc', message: 'Open any notebook in full JupyterLab. Binder launches show real-time phase tracking with elapsed timer and cache-miss warnings. Subsequent clicks reuse the same server instantly.'})}
               />
             </div>
           </section>
@@ -145,6 +156,39 @@ export default function Features(): JSX.Element {
                 description={translate({id: 'features.progress.resume.desc', message: "The homepage shows a 'Continue where you left off' card with your last visited page and when you were there."})}
                 link="/"
                 linkLabel={translate({id: 'features.progress.resume.link', message: 'Go to homepage'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.progress.bookmarks.title', message: 'Bookmarks'})}
+                description={translate({id: 'features.progress.bookmarks.desc', message: 'Star any page to bookmark it. Bookmarks appear on the homepage. Stored locally, up to 50 pages.'})}
+                link="/"
+                linkLabel={translate({id: 'features.progress.bookmarks.link', message: 'View bookmarks'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.progress.recent.title', message: 'Recent Pages'})}
+                description={translate({id: 'features.progress.recent.desc', message: 'The homepage shows your 5 most recently visited pages for quick access.'})}
+                link="/"
+                linkLabel={translate({id: 'features.progress.recent.link', message: 'Go to homepage'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.progress.display.title', message: 'Display Preferences'})}
+                description={translate({id: 'features.progress.display.desc', message: 'Adjust code font size (10–22px), toggle static cell outputs, and suppress Python warnings for cleaner output.'})}
+                link="/jupyter-settings#display"
+                linkLabel={translate({id: 'features.progress.display.link', message: 'Adjust display'})}
+              />
+            </div>
+          </section>
+
+          {/* ── Multi-Language ── */}
+          <section className="features-page__section">
+            <h2><Translate id="features.i18n.heading">Multi-Language</Translate></h2>
+            <div className="features-page__grid">
+              <FeatureCard
+                title={translate({id: 'features.i18n.locales.title', message: '20 Languages'})}
+                description={translate({id: 'features.i18n.locales.desc', message: 'The full site is available in 20 languages including German, Japanese, Spanish, French, and more. Each locale runs on its own subdomain with translated UI.'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.i18n.fallback.title', message: 'Automatic Fallback'})}
+                description={translate({id: 'features.i18n.fallback.desc', message: "Untranslated pages fall back to English with a banner in the reader's language, so no page is ever missing."})}
               />
             </div>
           </section>
