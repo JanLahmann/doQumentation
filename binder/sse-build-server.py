@@ -70,15 +70,10 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
 
         token = os.environ.get('JUPYTER_TOKEN', '')
 
-        # Determine the public URL for this server.
-        # Code Engine sets CE_APP to the app URL; fall back to Host header.
-        ce_app = os.environ.get('CE_APP', '')
-        if ce_app:
-            base_url = ce_app.rstrip('/')
-        else:
-            host = self.headers.get('Host', 'localhost:8080')
-            scheme = self.headers.get('X-Forwarded-Proto', 'http')
-            base_url = f'{scheme}://{host}'
+        # Determine the public URL for this server from the Host header.
+        host = self.headers.get('Host', 'localhost:8080')
+        scheme = self.headers.get('X-Forwarded-Proto', 'https')
+        base_url = f'{scheme}://{host}'
 
         try:
             # Emit connecting phase
