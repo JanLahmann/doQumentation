@@ -104,6 +104,8 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         const rawBinderUrl = isBinder && !isCodeEngine ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
 
         const handleBinderClick = (e: React.MouseEvent) => {
+          // CE with labEnabled: direct link works, no SSE needed
+          if (config.labEnabled) return;
           if (!usesRemoteSession) return;
           e.preventDefault();
           if (binderPhase && binderPhase !== 'failed') return;

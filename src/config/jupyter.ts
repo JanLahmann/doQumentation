@@ -93,7 +93,7 @@ export function detectJupyterConfig(): JupyterConfig {
         wsUrl: ceBase.replace(/^http(s?):\/\//, 'ws$1://'),
         token: getItem(STORAGE_KEY_CE_TOKEN) || '',
         thebeEnabled: true,
-        labEnabled: false,  // CE is for code execution, not direct Lab editing
+        labEnabled: true,  // CE container includes notebooks from the notebooks branch
         binderUrl: ceBase + '/build/gh/placeholder',  // SSE server handles /build/* paths
         environment: 'code-engine',
       };
