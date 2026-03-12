@@ -297,7 +297,10 @@ async function handlePipInstall(
   cell.classList.remove('thebelab-cell--error');
   cell.classList.add('thebelab-cell--running');
 
-  const ok = await executeOnKernel(activeKernel, `!pip install -q ${pkg}`);
+  // After pip install, invalidate import caches and remove any failed-import
+  // entries from sys.modules so the re-run can find the newly installed package.
+  const ok = await executeOnKernel(activeKernel,
+    `!pip install -q ${pkg}\nimport importlib, sys; importlib.invalidate_caches(); [sys.modules.pop(k, None) for k in list(sys.modules) if k == "${pkg}" or k.startswith("${pkg}.")]`);
 
   if (ok) {
     btn.textContent = translate({id: 'executable.pip.installed', message: 'Installed \u2713'});
