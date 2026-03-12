@@ -1206,6 +1206,21 @@ export default function ExecutableCode({
       if (cell) markCellExecuting(cell);
       runBtns[i].click();
       await waitForKernelIdle();
+      // Settle feedback immediately — the idle debounce in handleKernelStatusForFeedback
+      // won't fire in time because we're about to move executingCell to the next cell.
+      if (cell) {
+        if (feedbackIdleDebounceTimer) {
+          clearTimeout(feedbackIdleDebounceTimer);
+          feedbackIdleDebounceTimer = null;
+        }
+        if (feedbackFallbackTimer) {
+          clearTimeout(feedbackFallbackTimer);
+          feedbackFallbackTimer = null;
+        }
+        executingCell = null;
+        lastKernelBusy = false;
+        settleCellFeedback(cell);
+      }
     }
 
     runAllActive = false;
