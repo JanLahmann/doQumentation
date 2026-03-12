@@ -152,9 +152,14 @@ function isValidPackageName(name: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(name);
 }
 
+/** Selector for thebelab / JupyterLab output containers.
+ *  thebelab 0.4.x uses @jupyterlab/outputarea which renders as .jp-OutputArea,
+ *  NOT .thebelab-output or .output_area. Keep legacy selectors for safety. */
+const OUTPUT_SELECTOR = '.jp-OutputArea, .thebelab-output, .output_area';
+
 /** Detect execution errors in a cell's output. */
 function detectCellError(cell: Element): { type: string; name?: string } | null {
-  const output = cell.querySelector('.thebelab-output, .output_area');
+  const output = cell.querySelector(OUTPUT_SELECTOR);
   if (!output) return null;
   const text = output.textContent || '';
 
@@ -164,7 +169,7 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
   const nameMatch = text.match(/NameError: name '([^']+)' is not defined/);
   if (nameMatch) return { type: 'name', name: nameMatch[1] };
 
-  if (output.querySelector('.output_error, .output_stderr') || text.includes('Traceback')) {
+  if (output.querySelector('.output_error, .output_stderr, [data-mime-type="application/vnd.jupyter.stderr"]') || text.includes('Traceback')) {
     return { type: 'generic' };
   }
   return null;
@@ -172,7 +177,7 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
 
 /** Build a pre-filled GitHub issue URL with error context. */
 function buildReportUrl(cell: Element, error: { type: string; name?: string }): string {
-  const output = cell.querySelector('.thebelab-output, .output_area');
+  const output = cell.querySelector(OUTPUT_SELECTOR);
   const errorText = (output?.textContent || '').slice(0, 1500);
 
   const input = cell.querySelector('.thebelab-input, .CodeMirror');
@@ -338,7 +343,7 @@ function settleCellFeedback(cell: Element): void {
   }
 
   // #28: Fix generic/missing alt text on live-rendered output images
-  cell.querySelectorAll('.thebelab-output img, .output_area img').forEach((img) => {
+  cell.querySelectorAll('.jp-OutputArea img, .thebelab-output img, .output_area img').forEach((img) => {
     const htmlImg = img as HTMLImageElement;
     if (!htmlImg.alt || htmlImg.alt === 'output') {
       htmlImg.alt = 'Code execution output';
@@ -950,7 +955,7 @@ async function restartKernel(): Promise<boolean> {
     // Clear cell outputs and feedback classes
     document.querySelectorAll('.thebelab-cell').forEach(cell => {
       cell.classList.remove('thebelab-cell--running', 'thebelab-cell--done', 'thebelab-cell--error');
-      const output = cell.querySelector('.thebelab-output, .output_area');
+      const output = cell.querySelector(OUTPUT_SELECTOR);
       if (output) output.textContent = '';
     });
 
