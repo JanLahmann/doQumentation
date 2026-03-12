@@ -497,9 +497,8 @@ export async function testJupyterConnection(
   }
   const apiUrl = `${url}/api/status`;
 
-  // Retry up to 4 times (total ~60s) to handle CE cold starts.
-  // First attempt: 15s timeout. Retries: 15s each with status updates.
-  const maxAttempts = 4;
+  // Retry up to 5 times (total ~75s) to handle CE cold starts.
+  const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       if (attempt === 1) {
@@ -519,11 +518,7 @@ export async function testJupyterConnection(
       clearTimeout(timeout);
 
       if (response.ok) {
-        const data = await response.json();
-        return {
-          success: true,
-          message: `Connected! Jupyter version: ${data.version || 'unknown'}`,
-        };
+        return { success: true, message: 'Connected!' };
       } else if (response.status === 502 || response.status === 503) {
         // Server starting up — retry
         if (attempt < maxAttempts) continue;
