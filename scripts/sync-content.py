@@ -769,6 +769,8 @@ def generate_guides_sidebar():
         for item in items:
             if isinstance(item, str):
                 n += 1
+            elif isinstance(item, dict) and item.get('type') == 'doc':
+                n += 1
             elif isinstance(item, dict) and 'items' in item:
                 n += count_docs(item['items'])
         return n
@@ -787,6 +789,31 @@ def url_to_doc_id(url: str) -> str:
     if url.startswith('docs/'):
         url = url[5:]
     return url
+
+
+def is_notebook_page(doc_id: str) -> bool:
+    """Check if a doc ID corresponds to a notebook-derived page (has notebook_path in frontmatter)."""
+    mdx_path = DOCS_OUTPUT / f"{doc_id}.mdx"
+    if not mdx_path.exists():
+        return False
+    # Quick check: read first 20 lines for notebook_path in frontmatter
+    try:
+        with open(mdx_path) as f:
+            for i, line in enumerate(f):
+                if i > 20:
+                    break
+                if line.strip().startswith('notebook_path:'):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def sidebar_doc_item(doc_id: str) -> object:
+    """Return a sidebar item for a doc ID — with customProps.notebook if it's a notebook page."""
+    if is_notebook_page(doc_id):
+        return {'type': 'doc', 'id': doc_id, 'customProps': {'notebook': True}}
+    return doc_id
 
 
 def toc_children_to_sidebar(children: list) -> list:
@@ -842,7 +869,7 @@ def toc_children_to_sidebar(children: list) -> list:
                 continue
             if doc_id.startswith('learning/modules/') and doc_id.count('/') == 2:
                 continue
-            items.append(doc_id)
+            items.append(sidebar_doc_item(doc_id))
     return items
 
 
@@ -1403,7 +1430,7 @@ def generate_sidebar_from_toc():
     # Prepend custom Hello World (doQumentation's own intro, from fork root)
     custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
     if custom_hw.exists():
-        sidebar_items.insert(0, "tutorials/hello-world")
+        sidebar_items.insert(0, sidebar_doc_item("tutorials/hello-world"))
 
     sidebar_json = PROJECT_ROOT / "sidebar-generated.json"
     sidebar_json.write_text(json.dumps(sidebar_items, indent=2))
@@ -1413,6 +1440,8 @@ def generate_sidebar_from_toc():
         n = 0
         for item in items:
             if isinstance(item, str):
+                n += 1
+            elif isinstance(item, dict) and item.get('type') == 'doc':
                 n += 1
             elif isinstance(item, dict) and 'items' in item:
                 n += count_docs(item['items'])
@@ -1433,7 +1462,7 @@ def generate_sidebar_flat():
     for mdx_file in sorted(tutorials_dir.glob("*.mdx")):
         if mdx_file.name == 'index.mdx':
             continue
-        tutorials.append(f"tutorials/{mdx_file.stem}")
+        tutorials.append(sidebar_doc_item(f"tutorials/{mdx_file.stem}"))
 
     print(f"  Found {len(tutorials)} tutorials (flat)")
 
