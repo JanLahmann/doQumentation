@@ -40,9 +40,13 @@ import {
   getCEDaysRemaining,
   saveCodeEngineCredentials,
   clearCodeEngineCredentials,
+  getAvailableBackends,
+  getBackendOverride,
+  setBackendOverride,
   type JupyterConfig,
   type SimulatorBackend,
   type ActiveMode,
+  type AvailableBackend,
 } from '../config/jupyter';
 import {
   getProgressStats,
@@ -176,6 +180,10 @@ export default function JupyterSettings(): JSX.Element {
   const [ceSaveResult, setCeSaveResult] = useState<string | null>(null);
   const [ceSaveResultType, setCeSaveResultType] = useState<'success' | 'warning' | 'info'>('success');
 
+  // Backend selection state
+  const [availableBackends, setAvailableBackends] = useState<AvailableBackend[]>([]);
+  const [backendOverride, setBackendOverrideState] = useState<JupyterConfig['environment'] | null>(null);
+
   // Load current config on mount
   useEffect(() => {
     const currentConfig = detectJupyterConfig();
@@ -218,6 +226,10 @@ export default function JupyterSettings(): JSX.Element {
       setCeDaysRemaining(getCEDaysRemaining());
     }
 
+    // Load backend selection state
+    setAvailableBackends(getAvailableBackends());
+    setBackendOverrideState(getBackendOverride());
+
     // Load learning progress
     setProgressStats(getProgressStats());
 
@@ -257,9 +269,26 @@ export default function JupyterSettings(): JSX.Element {
     setIsTesting(false);
   };
 
+  /** Refresh available backends list and re-detect config after credential changes. */
+  const refreshBackends = (clearedEnv?: JupyterConfig['environment']) => {
+    if (clearedEnv && backendOverride === clearedEnv) {
+      setBackendOverrideState(null);
+      setBackendOverride(null);
+    }
+    setAvailableBackends(getAvailableBackends());
+    setConfig(detectJupyterConfig());
+  };
+
+  const handleBackendChange = (env: JupyterConfig['environment'] | null) => {
+    setBackendOverrideState(env);
+    setBackendOverride(env);
+    setConfig(detectJupyterConfig());
+    setAvailableBackends(getAvailableBackends());
+  };
+
   const handleSave = () => {
     saveJupyterConfig(customUrl, customToken);
-    setConfig(detectJupyterConfig());
+    refreshBackends();
     setTestResult({
       success: true,
       message: translate({id: 'settings.advanced.saveSuccess', message: 'Settings saved! Refresh the page to apply.'}),
@@ -270,7 +299,7 @@ export default function JupyterSettings(): JSX.Element {
     clearJupyterConfig();
     setCustomUrl('');
     setCustomToken('');
-    setConfig(detectJupyterConfig());
+    refreshBackends('custom');
     setTestResult({
       success: true,
       message: translate({id: 'settings.advanced.clearSuccess', message: 'Custom settings cleared. Using auto-detected configuration.'}),
@@ -319,7 +348,7 @@ export default function JupyterSettings(): JSX.Element {
     }
     saveCodeEngineCredentials(ceUrl, ceToken);
     setCeDaysRemaining(ttlDays);
-    setConfig(detectJupyterConfig());
+    refreshBackends();
     setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'Code Engine settings saved! Code will now execute via your CE instance.'}));
     setCeSaveResultType('success');
   };
@@ -329,7 +358,7 @@ export default function JupyterSettings(): JSX.Element {
     setCeUrl('');
     setCeToken('');
     setCeDaysRemaining(-1);
-    setConfig(detectJupyterConfig());
+    refreshBackends('code-engine');
     setCeSaveResult(translate({id: 'settings.ce.deleteSuccess', message: 'Code Engine settings cleared. Falling back to Binder.'}));
     setCeSaveResultType('success');
   };
@@ -448,6 +477,51 @@ export default function JupyterSettings(): JSX.Element {
               </Translate>
             )}
           </div>
+
+          {/* Backend Selection — only shown when multiple backends are available */}
+          {availableBackends.length > 1 && (
+            <>
+              <h3 id="backend-selection" style={{ marginTop: '1.5rem' }}>
+                <Translate id="settings.backend.heading">Execution Backend</Translate>
+              </h3>
+              <p style={{ fontSize: '0.9rem' }}>
+                <Translate id="settings.backend.description">
+                  Multiple execution backends are available. Choose which one to use for code execution:
+                </Translate>
+              </p>
+              <div className="jupyter-settings__radio-group">
+                <label className="jupyter-settings__radio-label">
+                  <input
+                    type="radio"
+                    name="backend-override"
+                    checked={backendOverride === null}
+                    onChange={() => handleBackendChange(null)}
+                  />
+                  <span>
+                    <Translate id="settings.backend.auto">Auto-detect (recommended)</Translate>
+                  </span>
+                </label>
+                {availableBackends.map((b) => (
+                  <label key={b.environment} className="jupyter-settings__radio-label">
+                    <input
+                      type="radio"
+                      name="backend-override"
+                      checked={backendOverride === b.environment}
+                      onChange={() => handleBackendChange(b.environment)}
+                    />
+                    <span>
+                      {b.label}
+                      {b.detail && (
+                        <span style={{ color: 'var(--ifm-color-content-secondary)', fontSize: '0.85rem' }}>
+                          {' — '}{b.detail}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
 
           {/* ═══════════════════════════════════════════════════════════════
               ESSENTIALS — always visible
