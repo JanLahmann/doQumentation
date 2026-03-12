@@ -1356,8 +1356,9 @@ export default function ExecutableCode({
   }
 
   return (
-    <div className="executable-code" ref={containerRef}>
-      {/* Toolbar — only rendered on the first executable cell */}
+    <>
+      {/* Toolbar — rendered outside .executable-code so position:sticky works
+          (.executable-code has overflow:hidden for border-radius clipping) */}
       {isFirstCell && (isExecutable || canOpenLab) && (
         <div className="executable-code__toolbar">
           {isExecutable && (
@@ -1478,6 +1479,7 @@ export default function ExecutableCode({
         </div>
       )}
 
+      <div className="executable-code" ref={containerRef}>
       {isFirstCell && binderCacheMiss && binderPhase && (
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
           {translate({id: 'executable.status.binderCacheMiss', message: '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Use Colab (above) or come back later.'})}
@@ -1565,5 +1567,6 @@ export default function ExecutableCode({
         </div>
       )}
     </div>
+    </>
   );
 }
