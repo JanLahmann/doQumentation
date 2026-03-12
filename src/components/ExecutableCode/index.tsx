@@ -1140,8 +1140,10 @@ export default function ExecutableCode({
     // Tell ALL cells on the page to switch to run mode
     window.dispatchEvent(new CustomEvent(ACTIVATE_EVENT));
 
-    // After all cells have rendered their <pre data-executable>, bootstrap once
-    bootstrapOnce(jupyterConfig);
+    // Defer bootstrap to next frame so React can render <pre data-executable> first
+    requestAnimationFrame(() => {
+      bootstrapOnce(jupyterConfig);
+    });
   }, [jupyterConfig, hideStaticOutputs]);
 
   const handleReset = useCallback(() => {

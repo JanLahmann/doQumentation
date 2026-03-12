@@ -497,8 +497,8 @@ export async function testJupyterConnection(
   }
   const apiUrl = `${url}/api/status`;
 
-  // Retry up to 5 times (total ~75s) to handle CE cold starts.
-  const maxAttempts = 5;
+  // Retry up to 6 times (total ~90s) to handle CE cold starts.
+  const maxAttempts = 6;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       if (attempt === 1) {
