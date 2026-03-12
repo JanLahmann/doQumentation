@@ -297,10 +297,11 @@ async function handlePipInstall(
   cell.classList.remove('thebelab-cell--error');
   cell.classList.add('thebelab-cell--running');
 
-  // After pip install, invalidate import caches and remove any failed-import
+  // After pip install, ensure user site-packages is on sys.path (conda envs
+  // disable it by default), invalidate import caches, and remove any failed-import
   // entries from sys.modules so the re-run can find the newly installed package.
   const ok = await executeOnKernel(activeKernel,
-    `!pip install -q --user ${pkg}\nimport importlib, sys; importlib.invalidate_caches(); [sys.modules.pop(k, None) for k in list(sys.modules) if k == "${pkg}" or k.startswith("${pkg}.")]`);
+    `!pip install -q --user ${pkg}\nimport site, importlib, sys; site.addsitedir(site.getusersitepackages()); importlib.invalidate_caches(); [sys.modules.pop(k, None) for k in list(sys.modules) if k == "${pkg}" or k.startswith("${pkg}.")]`);
 
   if (ok) {
     btn.textContent = translate({id: 'executable.pip.installed', message: 'Installed \u2713'});
