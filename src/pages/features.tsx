@@ -99,7 +99,7 @@ export default function Features(): JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.execution.errors.title', message: 'Contextual Error Hints'})}
-                description={translate({id: 'features.execution.errors.desc', message: 'Automatic detection of ModuleNotFoundError, NameError, and kernel disconnection. Actionable hints appear below the cell with suggested fixes.'})}
+                description={translate({id: 'features.execution.errors.desc', message: 'Automatic detection of ModuleNotFoundError, NameError, and kernel disconnection. Actionable hints appear below the cell with suggested fixes. Every error includes a "Report this error" link that opens a pre-filled GitHub issue.'})}
               />
               <FeatureCard
                 title={translate({id: 'features.execution.pip.title', message: 'One-Click Pip Install'})}
