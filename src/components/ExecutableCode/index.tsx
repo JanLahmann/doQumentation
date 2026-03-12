@@ -92,6 +92,7 @@ let activeKernel: unknown = null;
 // ── Run All state ──
 let runAllActive = false;
 let runAllAbort = false;
+let lastJupyterConfig: JupyterConfig | null = null;
 
 /** Reset all module-level mutable state so next Run triggers a fresh bootstrap. */
 function resetModuleState(): void {
@@ -169,16 +170,67 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
   return null;
 }
 
+/** Build a pre-filled GitHub issue URL with error context. */
+function buildReportUrl(cell: Element, error: { type: string; name?: string }): string {
+  const output = cell.querySelector('.thebelab-output, .output_area');
+  const errorText = (output?.textContent || '').slice(0, 1500);
+
+  const input = cell.querySelector('.thebelab-input, .CodeMirror');
+  const sourceCode = (input?.textContent || '').slice(0, 1000);
+
+  const pagePath = window.location.pathname;
+  const env = lastJupyterConfig?.environment || 'unknown';
+  const simMode = getSimulatorMode();
+
+  const title = `Execution error on ${pagePath}`;
+  const body = [
+    '## Error',
+    '```',
+    errorText,
+    '```',
+    '',
+    '## Cell code',
+    '```python',
+    sourceCode,
+    '```',
+    '',
+    '## Context',
+    `- **Page:** ${window.location.href}`,
+    `- **Environment:** ${env}`,
+    `- **Simulator mode:** ${simMode}`,
+    `- **Error type:** ${error.type}${error.name ? ` (${error.name})` : ''}`,
+    `- **User agent:** ${navigator.userAgent}`,
+    '',
+    '## Additional context',
+    '_Add any other details here._',
+  ].join('\n');
+
+  const params = new URLSearchParams({ title, body, labels: 'execution-error' });
+  return `https://github.com/JanLahmann/doQumentation/issues/new?${params}`;
+}
+
+/** Append a "Report this error" link to an error hint div. */
+function appendReportLink(div: HTMLElement, cell: Element, error: { type: string; name?: string }): void {
+  const reportLink = document.createElement('a');
+  reportLink.href = buildReportUrl(cell, error);
+  reportLink.target = '_blank';
+  reportLink.rel = 'noopener';
+  reportLink.className = 'thebelab-cell__report-link';
+  reportLink.textContent = translate({id: 'executable.errorHint.reportError', message: 'Report this error'});
+  div.appendChild(reportLink);
+}
+
 /** Show contextual hint for common errors. */
 function showErrorHint(cell: Element, error: { type: string; name?: string }): void {
   cell.querySelector('.thebelab-cell__error-hint')?.remove();
+
+  const div = document.createElement('div');
+  div.className = 'thebelab-cell__error-hint';
 
   // Module errors get a clickable Install button when kernel is available
   if (error.type === 'module' && error.name) {
     const pkg = error.name.split('.')[0];
     if (!isValidPackageName(pkg)) return;
-    const div = document.createElement('div');
-    div.className = 'thebelab-cell__error-hint';
 
     const text = document.createElement('span');
     text.append(translate({id: 'executable.errorHint.packagePrefix', message: 'Package '}));
@@ -204,15 +256,7 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
       fallback.append(translate({id: 'executable.errorHint.inACell', message: ' in a cell.'}));
       div.appendChild(fallback);
     }
-
-    cell.appendChild(div);
-    return;
-  }
-
-  const div = document.createElement('div');
-  div.className = 'thebelab-cell__error-hint';
-
-  if (error.type === 'kernel') {
+  } else if (error.type === 'kernel') {
     div.append(translate({id: 'executable.errorHint.kernelDisconnected', message: 'Kernel disconnected. Click '}));
     const back = document.createElement('strong');
     back.textContent = translate({id: 'executable.errorHint.back', message: 'Back'});
@@ -222,14 +266,17 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     run.textContent = translate({id: 'executable.errorHint.run', message: 'Run'});
     div.appendChild(run);
     div.append(translate({id: 'executable.errorHint.toReconnect', message: ' to reconnect.'}));
-    cell.appendChild(div);
   } else if (error.type === 'name' && error.name) {
     const nameCode = document.createElement('code');
     nameCode.textContent = error.name;
     div.appendChild(nameCode);
     div.append(translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
-    cell.appendChild(div);
+  } else {
+    div.append(translate({id: 'executable.errorHint.genericError', message: 'An error occurred.'}));
   }
+
+  appendReportLink(div, cell, error);
+  cell.appendChild(div);
 }
 
 /** Run !pip install on the kernel, update button state, and re-run the failed cell. */
@@ -851,6 +898,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
  * with "Open in Binder JupyterLab" — one build serves both.
  */
 function bootstrapOnce(config: JupyterConfig): void {
+  lastJupyterConfig = config;
   if (thebelabBootstrapped) {
     broadcastStatus('ready');
     return;
