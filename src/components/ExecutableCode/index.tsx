@@ -249,14 +249,14 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
       const btn = document.createElement('button');
       btn.className = 'thebelab-cell__install-btn';
       btn.textContent = translate({id: 'executable.errorHint.installBtn', message: 'Install {pkg}'}).replace('{pkg}', pkg);
-      btn.title = translate({id: 'executable.errorHint.installTitle', message: 'Run !pip install -q {pkg}'}).replace('{pkg}', pkg);
+      btn.title = translate({id: 'executable.errorHint.installTitle', message: 'Run !pip install -q --user {pkg}'}).replace('{pkg}', pkg);
       btn.addEventListener('click', () => handlePipInstall(cell, pkg, btn));
       div.appendChild(btn);
     } else {
       const fallback = document.createElement('span');
       fallback.append(translate({id: 'executable.errorHint.runPrefix', message: ' Run '}));
       const fallbackCode = document.createElement('code');
-      fallbackCode.textContent = `!pip install -q ${pkg}`;
+      fallbackCode.textContent = `!pip install -q --user ${pkg}`;
       fallback.appendChild(fallbackCode);
       fallback.append(translate({id: 'executable.errorHint.inACell', message: ' in a cell.'}));
       div.appendChild(fallback);
@@ -300,7 +300,7 @@ async function handlePipInstall(
   // After pip install, invalidate import caches and remove any failed-import
   // entries from sys.modules so the re-run can find the newly installed package.
   const ok = await executeOnKernel(activeKernel,
-    `!pip install -q ${pkg}\nimport importlib, sys; importlib.invalidate_caches(); [sys.modules.pop(k, None) for k in list(sys.modules) if k == "${pkg}" or k.startswith("${pkg}.")]`);
+    `!pip install -q --user ${pkg}\nimport importlib, sys; importlib.invalidate_caches(); [sys.modules.pop(k, None) for k in list(sys.modules) if k == "${pkg}" or k.startswith("${pkg}.")]`);
 
   if (ok) {
     btn.textContent = translate({id: 'executable.pip.installed', message: 'Installed \u2713'});
