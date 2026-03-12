@@ -1274,6 +1274,13 @@ export default function ExecutableCode({
 
   const code = children.replace(/\n$/, '');
 
+  // Hide injected pip install cell on Binder/CE (packages pre-installed)
+  const isPipInstallCell = children.includes('Added by doQumentation') && children.includes('!pip install');
+  const packagesPreinstalled = jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine';
+  if (isPipInstallCell && packagesPreinstalled) {
+    return null;
+  }
+
   return (
     <div className="executable-code" ref={containerRef}>
       {/* Toolbar — only rendered on the first executable cell */}

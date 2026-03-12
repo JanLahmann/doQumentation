@@ -872,8 +872,38 @@ def rewrite_notebook_image_paths(content: str, nb_rel_path: Path) -> str:
     return content
 
 
-# Base packages always needed for Colab (pre-installed in Binder → no-op there)
+# Base packages always needed for Colab (skipped on Binder/CE where pre-installed)
 COLAB_BASE_PKGS = ['qiskit', 'qiskit-aer', 'qiskit-ibm-runtime', 'pylatexenc']
+
+
+def _make_prereq_cell(all_pkgs: list) -> dict:
+    """Build the prerequisites cell injected at top of notebook copies.
+
+    Uses importlib.util.find_spec to skip pip install when packages are
+    already present (Binder/CE). On Colab/fresh environments, installs normally.
+    """
+    return {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# Install required packages (auto-skipped if already installed)\n",
+            "import importlib\n",
+            f"if importlib.util.find_spec('qiskit') is None:\n",
+            f"    !pip install -q {' '.join(all_pkgs)}\n",
+            "else:\n",
+            '    print("\\u2713 Packages already installed")\n',
+            "\n",
+            "# To run on real quantum hardware, uncomment and fill in your credentials:\n",
+            "# from qiskit_ibm_runtime import QiskitRuntimeService\n",
+            "# QiskitRuntimeService.save_account(\n",
+            '#     token="<your-api-key>",\n',
+            '#     instance="<your-crn>",\n',
+            "#     overwrite=True\n",
+            "# )"
+        ]
+    }
 
 
 def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path):
@@ -882,7 +912,7 @@ def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path
     Injects a single comprehensive cell at the top listing ALL required
     packages (base Qiskit stack + per-notebook extras detected by import
     scanning). Auto-runs on Colab via cell_execution_strategy metadata;
-    fast no-op on Binder where packages are pre-installed.
+    skipped entirely on Binder/CE where packages are pre-installed.
     """
     content = src_path.read_text()
     content = rewrite_notebook_image_paths(content, nb_rel_path)
@@ -897,24 +927,7 @@ def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path
         if p not in all_pkgs:
             all_pkgs.append(p)
 
-    prereq_cell = {
-        "cell_type": "code",
-        "execution_count": None,
-        "metadata": {},
-        "outputs": [],
-        "source": [
-            "# Install required packages (runs automatically in Colab, fast no-op in Binder)\n",
-            f"!pip install -q {' '.join(all_pkgs)}\n",
-            "\n",
-            "# To run on real quantum hardware, uncomment and fill in your credentials:\n",
-            "# from qiskit_ibm_runtime import QiskitRuntimeService\n",
-            "# QiskitRuntimeService.save_account(\n",
-            '#     token="<your-api-key>",\n',
-            '#     instance="<your-crn>",\n',
-            "#     overwrite=True\n",
-            "# )"
-        ]
-    }
+    prereq_cell = _make_prereq_cell(all_pkgs)
 
     # Strip MDX-specific syntax from markdown cells (frontmatter, JSX comments,
     # heading anchors, <Admonition> blocks) so notebooks render cleanly in
@@ -1234,24 +1247,7 @@ def generate_translated_notebook(english_ipynb_path: Path,
             if p not in all_pkgs:
                 all_pkgs.append(p)
 
-        prereq_cell = {
-            "cell_type": "code",
-            "execution_count": None,
-            "metadata": {},
-            "outputs": [],
-            "source": [
-                "# Install required packages (runs automatically in Colab, fast no-op in Binder)\n",
-                f"!pip install -q {' '.join(all_pkgs)}\n",
-                "\n",
-                "# To run on real quantum hardware, uncomment and fill in your credentials:\n",
-                "# from qiskit_ibm_runtime import QiskitRuntimeService\n",
-                "# QiskitRuntimeService.save_account(\n",
-                '#     token="<your-api-key>",\n',
-                '#     instance="<your-crn>",\n',
-                "#     overwrite=True\n",
-                "# )"
-            ]
-        }
+        prereq_cell = _make_prereq_cell(all_pkgs)
 
         nb['cells'] = [prereq_cell] + cells
 
