@@ -792,21 +792,19 @@ def url_to_doc_id(url: str) -> str:
 
 
 def is_notebook_page(doc_id: str) -> bool:
-    """Check if a doc ID corresponds to a notebook-derived page (has notebook_path in frontmatter)."""
+    """Check if a doc ID corresponds to a page with executable code cells.
+
+    Looks for OpenInLabBanner which is only injected when the notebook has
+    non-empty code cells (not just notebook_path frontmatter, which is set
+    for all notebook-derived pages including text-only ones)."""
     mdx_path = DOCS_OUTPUT / f"{doc_id}.mdx"
     if not mdx_path.exists():
         return False
-    # Quick check: read first 20 lines for notebook_path in frontmatter
     try:
-        with open(mdx_path) as f:
-            for i, line in enumerate(f):
-                if i > 20:
-                    break
-                if line.strip().startswith('notebook_path:'):
-                    return True
+        content = mdx_path.read_text()
+        return '<OpenInLabBanner' in content
     except OSError:
-        pass
-    return False
+        return False
 
 
 def sidebar_doc_item(doc_id: str) -> object:
