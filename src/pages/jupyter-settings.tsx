@@ -16,6 +16,7 @@ import {
   saveJupyterConfig,
   clearJupyterConfig,
   clearBinderSession,
+  cancelBinderBuild,
   testJupyterConnection,
   getIBMQuantumToken,
   getIBMQuantumCRN,
@@ -282,6 +283,9 @@ export default function JupyterSettings(): JSX.Element {
   const handleBackendChange = (env: JupyterConfig['environment'] | null) => {
     setBackendOverrideState(env);
     setBackendOverride(env);
+    // Clear any active session so next Run uses the new backend
+    cancelBinderBuild();
+    clearBinderSession();
     setConfig(detectJupyterConfig());
     setAvailableBackends(getAvailableBackends());
   };
