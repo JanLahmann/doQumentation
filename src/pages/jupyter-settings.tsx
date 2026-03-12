@@ -15,6 +15,7 @@ import {
   detectJupyterConfig,
   saveJupyterConfig,
   clearJupyterConfig,
+  clearBinderSession,
   testJupyterConnection,
   getIBMQuantumToken,
   getIBMQuantumCRN,
@@ -824,6 +825,14 @@ export default function JupyterSettings(): JSX.Element {
               }}
             >
               <Translate id="settings.other.resetSidebar">Reset Sidebar Layout</Translate>
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={() => {
+                clearBinderSession();
+              }}
+            >
+              <Translate id="settings.other.clearBinderSession">Clear Binder Session</Translate>
             </button>
           </div>
 

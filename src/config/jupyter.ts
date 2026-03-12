@@ -44,6 +44,9 @@ const STORAGE_KEY_CE_URL = 'doqumentation_ce_url';
 const STORAGE_KEY_CE_TOKEN = 'doqumentation_ce_token';
 const STORAGE_KEY_CE_SAVED_AT = 'doqumentation_ce_saved_at';
 
+// Backend override (user-selected execution backend)
+const STORAGE_KEY_BACKEND_OVERRIDE = 'doqumentation_backend_override';
+
 /** All Jupyter storage keys, exported for migration. */
 export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_URL, STORAGE_KEY_TOKEN,
@@ -52,74 +55,87 @@ export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_FAKE_DEVICE, STORAGE_KEY_FAKE_BACKENDS_CACHE,
   STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
   STORAGE_KEY_CE_URL, STORAGE_KEY_CE_TOKEN, STORAGE_KEY_CE_SAVED_AT,
+  STORAGE_KEY_BACKEND_OVERRIDE,
+];
+
+/** Metadata for an available backend shown in the backend selector UI. */
+export interface AvailableBackend {
+  environment: JupyterConfig['environment'];
+  label: string;
+  detail?: string;
+}
+
+const VALID_OVERRIDE_ENVIRONMENTS: JupyterConfig['environment'][] = [
+  'custom', 'code-engine', 'github-pages', 'rasqberry',
 ];
 
 /**
- * Detect the current environment and return appropriate Jupyter config
+ * Get or set the user's backend override (preferred execution backend).
+ * null means auto-detect (default priority: Custom > CE > Binder > Local).
  */
-export function detectJupyterConfig(): JupyterConfig {
-  // Server-side rendering check
-  if (typeof window === 'undefined') {
-    return getDisabledConfig('unknown');
+export function getBackendOverride(): JupyterConfig['environment'] | null {
+  if (typeof window === 'undefined') return null;
+  const val = getItem(STORAGE_KEY_BACKEND_OVERRIDE);
+  if (val && VALID_OVERRIDE_ENVIRONMENTS.includes(val as JupyterConfig['environment'])) {
+    return val as JupyterConfig['environment'];
   }
+  return null;
+}
 
+export function setBackendOverride(env: JupyterConfig['environment'] | null): void {
+  if (typeof window === 'undefined') return;
+  if (env === null) {
+    removeItem(STORAGE_KEY_BACKEND_OVERRIDE);
+  } else {
+    setItem(STORAGE_KEY_BACKEND_OVERRIDE, env);
+  }
+}
+
+/**
+ * Returns all backends that are currently available (have credentials or match hostname).
+ * Used by the settings page to show the backend selector when multiple are available.
+ */
+export function getAvailableBackends(): AvailableBackend[] {
+  if (typeof window === 'undefined') return [];
+  const backends: AvailableBackend[] = [];
   const hostname = window.location.hostname;
 
-  // Check for user-configured custom Jupyter server
+  // Custom server?
   const customUrl = getItem(STORAGE_KEY_URL);
   if (customUrl && /^https?:\/\//i.test(customUrl)) {
-    return {
-      enabled: true,
-      baseUrl: customUrl,
-      wsUrl: customUrl.replace(/^http(s?):\/\//, 'ws$1://'),
-      token: getItem(STORAGE_KEY_TOKEN) || '',
-      thebeEnabled: true,
-      labEnabled: true,
-      environment: 'custom',
-    };
+    backends.push({ environment: 'custom', label: 'Custom Server', detail: customUrl });
   }
 
-  // Check for Code Engine server (user-configured, like custom but with CE env type)
+  // Code Engine? (check expiry first)
+  checkCEExpiry();
   const ceUrl = getItem(STORAGE_KEY_CE_URL);
-  if (ceUrl && /^https?:\/\//i.test(ceUrl)) {
-    checkCEExpiry();
-    // Re-check after possible expiry clear
-    const ceUrlAfterCheck = getItem(STORAGE_KEY_CE_URL);
-    if (ceUrlAfterCheck) {
-      const ceBase = ceUrlAfterCheck.replace(/\/+$/, '');
-      return {
-        enabled: true,
-        baseUrl: ceBase,
-        wsUrl: ceBase.replace(/^http(s?):\/\//, 'ws$1://'),
-        token: getItem(STORAGE_KEY_CE_TOKEN) || '',
-        thebeEnabled: true,
-        labEnabled: true,  // CE container includes notebooks from the notebooks branch
-        binderUrl: ceBase + '/build/gh/placeholder',  // SSE server handles /build/* paths
-        environment: 'code-engine',
-      };
-    }
+  if (ceUrl) {
+    backends.push({ environment: 'code-engine', label: 'Code Engine', detail: ceUrl });
   }
 
-  // GitHub Pages / custom domain detection
-  if (
+  // GitHub Pages / doqumentation.org?
+  if (isGitHubPagesHostname(hostname)) {
+    backends.push({ environment: 'github-pages', label: 'Binder', detail: 'mybinder.org' });
+  }
+
+  // Local / RasQberry?
+  if (isLocalHostname(hostname)) {
+    backends.push({ environment: 'rasqberry', label: 'Local / RasQberry' });
+  }
+
+  return backends;
+}
+
+function isGitHubPagesHostname(hostname: string): boolean {
+  return (
     hostname.includes('github.io') ||
     hostname.includes('githubusercontent.com') ||
     hostname.endsWith('doqumentation.org')
-  ) {
-    return {
-      enabled: true,
-      baseUrl: '',
-      wsUrl: '',
-      token: '',
-      thebeEnabled: true, // Can use Binder
-      labEnabled: false,  // No direct Lab access
-      binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks',
-      environment: 'github-pages',
-    };
-  }
+  );
+}
 
-  // RasQberry / Local Pi / Docker detection
-  if (
+function isLocalHostname(hostname: string): boolean {
+  return (
     hostname === 'localhost' ||
     hostname === '127.0.0.1' ||
     hostname.includes('rasqberry') ||
@@ -127,26 +143,104 @@ export function detectJupyterConfig(): JupyterConfig {
     hostname.startsWith('192.168.') ||
     hostname.startsWith('10.') ||
     /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
-  ) {
-    const port = window.location.port;
-    // Docker container: nginx proxies /api/ to Jupyter on same origin
-    // (site served on a mapped port like 8080, not the default 80/443)
-    const isDocker = port && port !== '80' && port !== '443' && port !== '8888';
-    const origin = window.location.origin;
+  );
+}
 
-    return {
-      enabled: true,
-      baseUrl: isDocker ? origin : `http://${hostname}:8888`,
-      wsUrl: isDocker ? origin.replace(/^http(s?):\/\//, 'ws$1://') : `ws://${hostname}:8888`,
-      token: isDocker ? '' : 'rasqberry',
-      thebeEnabled: true,
-      labEnabled: true,
-      environment: 'rasqberry',
-    };
+/**
+ * Build a JupyterConfig for a specific environment, or null if that
+ * environment's prerequisites are not met (e.g. credentials expired).
+ */
+function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null {
+  switch (env) {
+    case 'custom': {
+      const customUrl = getItem(STORAGE_KEY_URL);
+      if (!customUrl || !/^https?:\/\//i.test(customUrl)) return null;
+      return {
+        enabled: true,
+        baseUrl: customUrl,
+        wsUrl: customUrl.replace(/^http(s?):\/\//, 'ws$1://'),
+        token: getItem(STORAGE_KEY_TOKEN) || '',
+        thebeEnabled: true,
+        labEnabled: true,
+        environment: 'custom',
+      };
+    }
+    case 'code-engine': {
+      const ceUrl = getItem(STORAGE_KEY_CE_URL);
+      if (!ceUrl || !/^https?:\/\//i.test(ceUrl)) return null;
+      checkCEExpiry();
+      const ceUrlAfterCheck = getItem(STORAGE_KEY_CE_URL);
+      if (!ceUrlAfterCheck) return null;
+      const ceBase = ceUrlAfterCheck.replace(/\/+$/, '');
+      return {
+        enabled: true,
+        baseUrl: ceBase,
+        wsUrl: ceBase.replace(/^http(s?):\/\//, 'ws$1://'),
+        token: getItem(STORAGE_KEY_CE_TOKEN) || '',
+        thebeEnabled: true,
+        labEnabled: true,
+        binderUrl: ceBase + '/build/gh/placeholder',
+        environment: 'code-engine',
+      };
+    }
+    case 'github-pages': {
+      if (!isGitHubPagesHostname(window.location.hostname)) return null;
+      return {
+        enabled: true,
+        baseUrl: '',
+        wsUrl: '',
+        token: '',
+        thebeEnabled: true,
+        labEnabled: false,
+        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks',
+        environment: 'github-pages',
+      };
+    }
+    case 'rasqberry': {
+      const hostname = window.location.hostname;
+      if (!isLocalHostname(hostname)) return null;
+      const port = window.location.port;
+      const isDocker = port && port !== '80' && port !== '443' && port !== '8888';
+      const origin = window.location.origin;
+      return {
+        enabled: true,
+        baseUrl: isDocker ? origin : `http://${hostname}:8888`,
+        wsUrl: isDocker ? origin.replace(/^http(s?):\/\//, 'ws$1://') : `ws://${hostname}:8888`,
+        token: isDocker ? '' : 'rasqberry',
+        thebeEnabled: true,
+        labEnabled: true,
+        environment: 'rasqberry',
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Detect the current environment and return appropriate Jupyter config.
+ * Respects user's backend override if set and still valid.
+ */
+export function detectJupyterConfig(): JupyterConfig {
+  if (typeof window === 'undefined') {
+    return getDisabledConfig('unknown');
   }
 
-  // Unknown environment - read only
-  return getDisabledConfig('unknown');
+  // Check user override first
+  const override = getBackendOverride();
+  if (override) {
+    const config = buildConfigFor(override);
+    if (config) return config;
+    // Override no longer valid (e.g. CE credentials expired) — clear it
+    setBackendOverride(null);
+  }
+
+  // Auto-detect: Custom > Code Engine > GitHub Pages > Local
+  return buildConfigFor('custom')
+    ?? buildConfigFor('code-engine')
+    ?? buildConfigFor('github-pages')
+    ?? buildConfigFor('rasqberry')
+    ?? getDisabledConfig('unknown');
 }
 
 function getDisabledConfig(environment: JupyterConfig['environment']): JupyterConfig {
@@ -536,6 +630,17 @@ export function mapBinderNotebookPath(notebookPath: string, locale?: string): st
   return locale && locale !== 'en' ? `${locale}/${nbPath}` : nbPath;
 }
 
+/** Active Binder EventSource — stored so it can be cancelled externally. */
+let activeBinderES: EventSource | null = null;
+
+/** Cancel an in-progress Binder build. Safe to call when no build is active. */
+export function cancelBinderBuild(): void {
+  if (activeBinderES) {
+    activeBinderES.close();
+    activeBinderES = null;
+  }
+}
+
 /**
  * Ensure a Binder session exists — return existing or start a new build.
  * Shared by both "Open in Binder JupyterLab" and thebelab code execution.
@@ -557,12 +662,18 @@ export function ensureBinderSession(
     const buildUrl = config.binderUrl!.replace('/v2/', '/build/');
     onProgress?.('connecting');
     const es = new EventSource(buildUrl);
+    activeBinderES = es;
     let settled = false;
+
+    const cleanup = () => {
+      activeBinderES = null;
+    };
 
     // 20-minute timeout — Binder builds can be slow but shouldn't hang forever
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
+      cleanup();
       onProgress?.('failed');
       es.close();
       reject(new Error('Binder build timed out after 20 minutes'));
@@ -575,6 +686,7 @@ export function ensureBinderSession(
         if (data.phase === 'ready' && data.url && data.token) {
           settled = true;
           clearTimeout(timeout);
+          cleanup();
           saveBinderSession(data.url, data.token);
           es.close();
           resolve({ url: data.url, token: data.token, lastUsed: Date.now() });
@@ -582,6 +694,7 @@ export function ensureBinderSession(
         if (data.phase === 'failed') {
           settled = true;
           clearTimeout(timeout);
+          cleanup();
           es.close();
           reject(new Error('Binder build failed'));
         }
@@ -591,6 +704,7 @@ export function ensureBinderSession(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      cleanup();
       onProgress?.('failed');
       es.close();
       reject(new Error('Binder connection error'));

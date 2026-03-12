@@ -34,6 +34,7 @@ import {
   ensureBinderSession,
   touchBinderSession,
   clearBinderSession,
+  cancelBinderBuild,
   type JupyterConfig,
   type BinderSession,
 } from '../../config/jupyter';
@@ -88,6 +89,10 @@ let kernelDead = false;
 let feedbackCleanupFns: (() => void)[] = [];
 let activeKernel: unknown = null;
 
+// ── Run All state ──
+let runAllActive = false;
+let runAllAbort = false;
+
 /** Reset all module-level mutable state so next Run triggers a fresh bootstrap. */
 function resetModuleState(): void {
   thebelabBootstrapped = false;
@@ -95,6 +100,8 @@ function resetModuleState(): void {
   activeKernel = null;
   executingCell = null;
   lastKernelBusy = false;
+  runAllActive = false;
+  runAllAbort = true;
   if (feedbackFallbackTimer) {
     clearTimeout(feedbackFallbackTimer);
     feedbackFallbackTimer = null;
@@ -106,6 +113,38 @@ function resetModuleState(): void {
   feedbackCleanupFns.forEach(fn => fn());
   feedbackCleanupFns = [];
 }
+
+/**
+ * Wait for the kernel to go busy then idle (one execution cycle).
+ * Used by Run All to sequence cell executions.
+ */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function waitForKernelIdle(): Promise<void> {
+  return new Promise(resolve => {
+    if (!activeKernel) { resolve(); return; }
+    const k = activeKernel as Record<string, any>;
+    const realKernel = k?.statusChanged ? k : k?.kernel;
+    if (!realKernel?.statusChanged?.connect) { resolve(); return; }
+
+    let sawBusy = false;
+    const handler = (_: unknown, status: string) => {
+      if (status === 'busy') sawBusy = true;
+      if (sawBusy && status === 'idle') {
+        realKernel.statusChanged.disconnect(handler);
+        clearTimeout(fallback);
+        setTimeout(resolve, 200);
+      }
+    };
+    realKernel.statusChanged.connect(handler);
+
+    // Fallback: if kernel never goes busy (empty cell), resolve after 2s
+    const fallback = setTimeout(() => {
+      realKernel.statusChanged.disconnect(handler);
+      resolve();
+    }, 2000);
+  });
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** Validate a Python package name for pip install. */
 function isValidPackageName(name: string): boolean {
@@ -925,7 +964,10 @@ export default function ExecutableCode({
   const [binderPhase, setBinderPhase] = useState<string | null>(null);
   const [binderElapsed, setBinderElapsed] = useState(0);
   const [binderCacheMiss, setBinderCacheMiss] = useState(false);
+  const [binderSlowStartup, setBinderSlowStartup] = useState(false);
+  const [runAllProgress, setRunAllProgress] = useState<{ current: number; total: number } | null>(null);
   const binderStartRef = useRef<number | null>(null);
+  const phaseStartRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -966,9 +1008,14 @@ export default function ExecutableCode({
       setBinderPhase(null);
       setBinderElapsed(0);
       setBinderCacheMiss(false);
+      setBinderSlowStartup(false);
       binderStartRef.current = null;
+      phaseStartRef.current = null;
       setInjectionInfo(null);
       setInjectionToast(null);
+      runAllActive = false;
+      runAllAbort = true;
+      setRunAllProgress(null);
     };
     window.addEventListener(RESET_EVENT, onReset);
     return () => window.removeEventListener(RESET_EVENT, onReset);
@@ -998,22 +1045,44 @@ export default function ExecutableCode({
       if (phase === 'ready' || phase === 'failed') {
         setBinderPhase(null);
         binderStartRef.current = null;
+        phaseStartRef.current = null;
         setBinderElapsed(0);
+        setBinderSlowStartup(false);
         if (phase === 'ready') setBinderCacheMiss(false);
       } else {
         setBinderPhase(phase);
+        phaseStartRef.current = Date.now();
+        setBinderSlowStartup(false);
       }
     };
     window.addEventListener(BINDER_PHASE_EVENT, onPhase);
     return () => window.removeEventListener(BINDER_PHASE_EVENT, onPhase);
   }, []);
 
-  // Elapsed timer for Binder build
+  // Per-phase timeout thresholds (seconds) — exceeding triggers slow startup warning
+  const PHASE_TIMEOUTS: Record<string, number> = {
+    connecting: 60,      // 1 min — should connect quickly
+    waiting: 3 * 60,     // 3 min — queue can be slow
+    fetching: 5 * 60,    // 5 min — "Fetching repo (2–5 min)"
+    building: 12 * 60,   // 12 min — "Building image (5–10 min)" + buffer
+    pushing: 5 * 60,     // 5 min — "Pushing image (2–5 min)"
+    built: 2 * 60,       // 2 min — should be fast
+    launching: 5 * 60,   // 5 min — "Launching server (2–5 min)"
+  };
+
+  // Elapsed timer for Binder build + per-phase slow startup detection
   useEffect(() => {
     if (!binderPhase) return;
     const interval = setInterval(() => {
       if (binderStartRef.current !== null) {
         setBinderElapsed(Math.floor((Date.now() - binderStartRef.current) / 1000));
+      }
+      if (phaseStartRef.current !== null && binderPhase) {
+        const phaseElapsed = Math.floor((Date.now() - phaseStartRef.current) / 1000);
+        const threshold = PHASE_TIMEOUTS[binderPhase] ?? 5 * 60;
+        if (phaseElapsed >= threshold) {
+          setBinderSlowStartup(true);
+        }
       }
     }, 1000);
     return () => clearInterval(interval);
@@ -1076,6 +1145,14 @@ export default function ExecutableCode({
   }, [jupyterConfig, hideStaticOutputs]);
 
   const handleReset = useCallback(() => {
+    // If still connecting, cancel the Binder build without confirmation
+    if (thebeStatus === 'connecting') {
+      cancelBinderBuild();
+      resetModuleState();
+      document.body.classList.remove('dq-hide-static-outputs');
+      window.dispatchEvent(new CustomEvent(RESET_EVENT));
+      return;
+    }
     // Check if any cells have been executed (have done/error state)
     const executedCells = document.querySelectorAll('.thebelab-cell--done, .thebelab-cell--error');
     if (executedCells.length > 0) {
@@ -1086,14 +1163,56 @@ export default function ExecutableCode({
     resetModuleState();
     document.body.classList.remove('dq-hide-static-outputs');
     window.dispatchEvent(new CustomEvent(RESET_EVENT));
-  }, []);
+  }, [thebeStatus]);
 
   const handleRestart = useCallback(() => {
     if (!window.confirm(translate({
       id: 'executable.restart.confirm',
       message: 'Restart kernel? All variables and outputs will be cleared.',
     }))) return;
+    runAllActive = false;
+    runAllAbort = true;
+    setRunAllProgress(null);
     restartKernel();
+  }, []);
+
+  const handleRunAll = useCallback(async () => {
+    if (runAllActive) return;
+    runAllActive = true;
+    runAllAbort = false;
+
+    // Collect all thebelab cells and find their run buttons
+    const cells = document.querySelectorAll('.thebelab-cell');
+    const runBtns: HTMLButtonElement[] = [];
+    cells.forEach(cell => {
+      const btn = Array.from(cell.querySelectorAll('button'))
+        .find(b => b.textContent?.trim().toLowerCase() === 'run');
+      if (btn) runBtns.push(btn as HTMLButtonElement);
+    });
+
+    if (runBtns.length === 0) {
+      runAllActive = false;
+      return;
+    }
+
+    setRunAllProgress({ current: 0, total: runBtns.length });
+
+    for (let i = 0; i < runBtns.length; i++) {
+      if (runAllAbort) break;
+      setRunAllProgress({ current: i + 1, total: runBtns.length });
+      const cell = runBtns[i].closest('.thebelab-cell');
+      if (cell) markCellExecuting(cell);
+      runBtns[i].click();
+      await waitForKernelIdle();
+    }
+
+    runAllActive = false;
+    runAllAbort = false;
+    setRunAllProgress(null);
+  }, []);
+
+  const handleStopRunAll = useCallback(() => {
+    runAllAbort = true;
   }, []);
 
   const handleClearSession = useCallback(() => {
@@ -1164,19 +1283,20 @@ export default function ExecutableCode({
             <button
               className={`executable-code__button ${mode === 'run' ? 'executable-code__button--active' : ''}`}
               onClick={mode === 'run' ? handleReset : handleRun}
-              disabled={thebeStatus === 'connecting'}
               title={
-                mode === 'run'
-                  ? translate({id: 'executable.button.backTitle', message: 'Back to static view'})
-                  : isCodeEngine
-                    ? translate({id: 'executable.button.runCeTitle', message: 'Execute via Code Engine'})
-                    : jupyterConfig?.environment === 'github-pages'
-                      ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
-                      : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
+                thebeStatus === 'connecting'
+                  ? translate({id: 'executable.button.cancelTitle', message: 'Cancel Binder startup and return to static view'})
+                  : mode === 'run'
+                    ? translate({id: 'executable.button.backTitle', message: 'Back to static view'})
+                    : isCodeEngine
+                      ? translate({id: 'executable.button.runCeTitle', message: 'Execute via Code Engine'})
+                      : jupyterConfig?.environment === 'github-pages'
+                        ? translate({id: 'executable.button.runBinderTitle', message: 'Execute via Binder (may take a moment to start)'})
+                        : translate({id: 'executable.button.runLocalTitle', message: 'Execute on local Jupyter server'})
               }
             >
               {thebeStatus === 'connecting'
-                ? translate({id: 'executable.status.connecting', message: 'Connecting...'})
+                ? translate({id: 'executable.button.cancel', message: 'Cancel'})
                 : mode === 'run'
                   ? translate({id: 'executable.button.back', message: 'Back'})
                   : translate({id: 'executable.button.run', message: 'Run'})}
@@ -1190,6 +1310,23 @@ export default function ExecutableCode({
               title={translate({id: 'executable.button.restartTitle', message: 'Restart kernel (clears all variables and outputs)'})}
             >
               {translate({id: 'executable.button.restart', message: 'Restart Kernel'})}
+            </button>
+          )}
+
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' && (
+            <button
+              className="executable-code__button"
+              onClick={runAllProgress ? handleStopRunAll : handleRunAll}
+              title={runAllProgress
+                ? translate({id: 'executable.button.stopRunAllTitle', message: 'Stop after current cell finishes'})
+                : translate({id: 'executable.button.runAllTitle', message: 'Run all cells on this page in order'})}
+            >
+              {runAllProgress
+                ? translate(
+                    {id: 'executable.button.stopRunAll', message: 'Stop ({current}/{total})'},
+                    {current: String(runAllProgress.current), total: String(runAllProgress.total)}
+                  )
+                : translate({id: 'executable.button.runAll', message: 'Run All'})}
             </button>
           )}
 
@@ -1263,6 +1400,12 @@ export default function ExecutableCode({
       {isFirstCell && binderCacheMiss && binderPhase && (
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
           {translate({id: 'executable.status.binderCacheMiss', message: '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Use Colab (above) or come back later.'})}
+        </div>
+      )}
+
+      {isFirstCell && binderSlowStartup && binderPhase && (
+        <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-danger-dark, #dc3545)', color: 'var(--ifm-color-danger-dark, #dc3545)' }}>
+          {translate({id: 'executable.status.binderSlowStartup', message: 'Binder startup is taking longer than expected. You can cancel and try again later, or use one of the other backends (Colab, Docker, or Code Engine).'})}
         </div>
       )}
 
