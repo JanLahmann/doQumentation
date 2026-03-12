@@ -836,16 +836,6 @@ export function openBinderLab(
 }
 
 /**
- * Get the raw mybinder.org launch URL for a notebook.
- * Opens the standard Binder build page directly — no session interception.
- */
-export function getRawBinderUrl(config: JupyterConfig, notebookPath: string, locale?: string): string | null {
-  if (!config.binderUrl) return null;
-  const fullPath = mapBinderNotebookPath(notebookPath, locale);
-  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
-}
-
-/**
  * Get the Google Colab URL for a notebook.
  * Uses the /github/ scheme (Colab's /url/ scheme blocks non-GitHub domains).
  * Points to processed notebooks with pip install cells injected.

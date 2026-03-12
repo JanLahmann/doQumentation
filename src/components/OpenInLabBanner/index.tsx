@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
-import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab, getRawBinderUrl } from '../../config/jupyter';
+import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab } from '../../config/jupyter';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
@@ -87,8 +87,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
       {() => {
         const config = detectJupyterConfig();
         const isCodeEngine = config.environment === 'code-engine';
-        const isBinder = config.environment === 'github-pages' && !!config.binderUrl;
-        const usesRemoteSession = isBinder || isCodeEngine;
+        const usesRemoteSession = (config.environment === 'github-pages' && !!config.binderUrl) || isCodeEngine;
         const phaseLabels = isCodeEngine ? CE_PHASE_LABELS : BINDER_PHASE_LABELS;
         const phaseHintMap = isCodeEngine ? CE_PHASE_HINTS : BINDER_PHASE_HINTS;
 
@@ -100,8 +99,6 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         }
 
         const colabUrl = getColabUrl(notebookPath, currentLocale);
-        // Hide raw Binder link when CE is active (CE replaces Binder)
-        const rawBinderUrl = isBinder && !isCodeEngine ? getRawBinderUrl(config, notebookPath, currentLocale) : null;
 
         const handleBinderClick = (e: React.MouseEvent) => {
           // CE with labEnabled: direct link works, no SSE needed
@@ -140,9 +137,10 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
 
         const phaseLabel = binderPhase ? (phaseLabels[binderPhase] ?? binderPhase) : null;
         const hint = isActive ? (phaseHintMap[binderPhase!] ?? null) : null;
+        const backendSuffix = isCodeEngine ? ' (IBM Cloud)' : usesRemoteSession ? ' (Binder)' : '';
         const buttonText = isActive
           ? `${phaseLabel} ${formatElapsed(elapsedSeconds)}`
-          : phaseLabel || `JupyterLab \u2197`;
+          : phaseLabel || `JupyterLab${backendSuffix} \u2197`;
 
         return (
           <div
@@ -206,25 +204,6 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               >
                 Colab &#8599;
               </a>
-              {rawBinderUrl && (
-                <a
-                  href={rawBinderUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="mybinder.org — standard build page, no modifications"
-                  style={{
-                    padding: '0.25rem 0.75rem',
-                    border: '1px solid var(--ifm-color-primary)',
-                    color: 'var(--ifm-color-primary)',
-                    borderRadius: '4px',
-                    fontWeight: 600,
-                    textDecoration: 'none',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  Binder &#8599;
-                </a>
-              )}
             </div>
             {isActive && (
               <div style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.8rem' }}>
