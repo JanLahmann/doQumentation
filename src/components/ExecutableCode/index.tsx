@@ -92,6 +92,13 @@ let activeKernel: unknown = null;
 // ── Run All state ──
 let runAllActive = false;
 let runAllAbort = false;
+let runAllPaused = false;
+let runAllResume: (() => void) | null = null;
+
+/** Returns a promise that resolves when the user clicks Continue. */
+function waitForRunAllResume(): Promise<void> {
+  return new Promise(resolve => { runAllResume = resolve; });
+}
 let lastJupyterConfig: JupyterConfig | null = null;
 
 /** Reset all module-level mutable state so next Run triggers a fresh bootstrap. */
@@ -103,6 +110,8 @@ function resetModuleState(): void {
   lastKernelBusy = false;
   runAllActive = false;
   runAllAbort = true;
+  runAllPaused = false;
+  if (runAllResume) { runAllResume(); runAllResume = null; }
   if (feedbackFallbackTimer) {
     clearTimeout(feedbackFallbackTimer);
     feedbackFallbackTimer = null;
@@ -1056,6 +1065,7 @@ export default function ExecutableCode({
   const [binderCacheMiss, setBinderCacheMiss] = useState(false);
   const [binderSlowStartup, setBinderSlowStartup] = useState(false);
   const [runAllProgress, setRunAllProgress] = useState<{ current: number; total: number } | null>(null);
+  const [runAllPausedState, setRunAllPausedState] = useState(false);
   const binderStartRef = useRef<number | null>(null);
   const phaseStartRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1105,7 +1115,10 @@ export default function ExecutableCode({
       setInjectionToast(null);
       runAllActive = false;
       runAllAbort = true;
+      runAllPaused = false;
+      if (runAllResume) { runAllResume(); runAllResume = null; }
       setRunAllProgress(null);
+      setRunAllPausedState(false);
     };
     window.addEventListener(RESET_EVENT, onReset);
     return () => window.removeEventListener(RESET_EVENT, onReset);
@@ -1264,7 +1277,10 @@ export default function ExecutableCode({
     }))) return;
     runAllActive = false;
     runAllAbort = true;
+    runAllPaused = false;
+    if (runAllResume) { runAllResume(); runAllResume = null; }
     setRunAllProgress(null);
+    setRunAllPausedState(false);
     restartKernel();
   }, []);
 
@@ -1291,6 +1307,8 @@ export default function ExecutableCode({
 
     for (let i = 0; i < runBtns.length; i++) {
       if (runAllAbort) break;
+      if (runAllPaused) await waitForRunAllResume();
+      if (runAllAbort) break; // re-check after resume (user may have stopped while paused)
       setRunAllProgress({ current: i + 1, total: runBtns.length });
       const cell = runBtns[i].closest('.thebelab-cell');
       if (cell) markCellExecuting(cell);
@@ -1317,11 +1335,28 @@ export default function ExecutableCode({
 
     runAllActive = false;
     runAllAbort = false;
+    runAllPaused = false;
+    runAllResume = null;
     setRunAllProgress(null);
+    setRunAllPausedState(false);
+  }, []);
+
+  const handlePauseRunAll = useCallback(() => {
+    runAllPaused = true;
+    setRunAllPausedState(true);
+  }, []);
+
+  const handleContinueRunAll = useCallback(() => {
+    runAllPaused = false;
+    setRunAllPausedState(false);
+    if (runAllResume) { runAllResume(); runAllResume = null; }
   }, []);
 
   const handleStopRunAll = useCallback(() => {
     runAllAbort = true;
+    runAllPaused = false;
+    setRunAllPausedState(false);
+    if (runAllResume) { runAllResume(); runAllResume = null; }
   }, []);
 
   const handleClearSession = useCallback(() => {
@@ -1430,21 +1465,42 @@ export default function ExecutableCode({
             </button>
           )}
 
-          {isExecutable && mode === 'run' && thebeStatus === 'ready' && (
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' && !runAllProgress && (
             <button
               className="executable-code__button"
-              onClick={runAllProgress ? handleStopRunAll : handleRunAll}
-              title={runAllProgress
-                ? translate({id: 'executable.button.stopRunAllTitle', message: 'Stop after current cell finishes'})
-                : translate({id: 'executable.button.runAllTitle', message: 'Run all cells on this page in order'})}
+              onClick={handleRunAll}
+              title={translate({id: 'executable.button.runAllTitle', message: 'Run all cells on this page in order'})}
             >
-              {runAllProgress
-                ? translate(
-                    {id: 'executable.button.stopRunAll', message: 'Stop ({current}/{total})'},
-                    {current: String(runAllProgress.current), total: String(runAllProgress.total)}
-                  )
-                : translate({id: 'executable.button.runAll', message: 'Run All'})}
+              {translate({id: 'executable.button.runAll', message: 'Run All'})}
             </button>
+          )}
+          {isExecutable && mode === 'run' && thebeStatus === 'ready' && runAllProgress && (
+            <>
+              <button
+                className="executable-code__button"
+                onClick={runAllPausedState ? handleContinueRunAll : handlePauseRunAll}
+                title={runAllPausedState
+                  ? translate({id: 'executable.button.continueRunAllTitle', message: 'Resume running remaining cells'})
+                  : translate({id: 'executable.button.pauseRunAllTitle', message: 'Pause after current cell finishes'})}
+              >
+                {runAllPausedState
+                  ? translate(
+                      {id: 'executable.button.continueRunAll', message: 'Continue ({current}/{total})'},
+                      {current: String(runAllProgress.current), total: String(runAllProgress.total)}
+                    )
+                  : translate(
+                      {id: 'executable.button.pauseRunAll', message: 'Pause ({current}/{total})'},
+                      {current: String(runAllProgress.current), total: String(runAllProgress.total)}
+                    )}
+              </button>
+              <button
+                className="executable-code__button"
+                onClick={handleStopRunAll}
+                title={translate({id: 'executable.button.stopRunAllTitle', message: 'Stop after current cell finishes'})}
+              >
+                {translate({id: 'executable.button.stopRunAll', message: 'Stop'})}
+              </button>
+            </>
           )}
 
           {isExecutable && mode === 'run' && thebeStatus === 'ready' && usesRemoteSession && (
