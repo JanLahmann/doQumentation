@@ -57,6 +57,7 @@ export default function DocSidebarItemLink(props: Props): JSX.Element {
 
   return (
     <div className="dq-sidebar-link">
+      <OriginalLink {...props} />
       {isNotebook && (
         <span
           className="dq-sidebar-notebook-icon"
@@ -64,7 +65,6 @@ export default function DocSidebarItemLink(props: Props): JSX.Element {
           aria-label={translate({id: 'sidebar.notebookPage', message: 'Interactive notebook'})}
         >&lt;/&gt;</span>
       )}
-      <OriginalLink {...props} />
       {showIndicator && (
         <button
           className={`dq-sidebar-indicator${executed ? ' dq-sidebar-indicator--executed' : ''}`}
