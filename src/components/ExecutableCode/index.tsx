@@ -120,6 +120,24 @@ function resetModuleState(): void {
  * Used by Run All to sequence cell executions.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/** Wait for a cell's output DOM to stabilize (no new mutations for `quietMs`). */
+function waitForOutputStable(cell: Element, quietMs = 300, maxMs = 3000): Promise<void> {
+  return new Promise(resolve => {
+    const output = cell.querySelector('.jp-OutputArea, .thebelab-output, .output_area');
+    if (!output) { setTimeout(resolve, quietMs); return; }
+
+    let timer: ReturnType<typeof setTimeout>;
+    const maxTimer = setTimeout(() => { observer.disconnect(); resolve(); }, maxMs);
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { observer.disconnect(); clearTimeout(maxTimer); resolve(); }, quietMs);
+    });
+    observer.observe(output, { childList: true, subtree: true, characterData: true });
+    // If no mutations at all, resolve after quietMs
+    timer = setTimeout(() => { observer.disconnect(); clearTimeout(maxTimer); resolve(); }, quietMs);
+  });
+}
+
 function waitForKernelIdle(): Promise<void> {
   return new Promise(resolve => {
     if (!activeKernel) { resolve(); return; }
@@ -128,21 +146,32 @@ function waitForKernelIdle(): Promise<void> {
     if (!realKernel?.statusChanged?.connect) { resolve(); return; }
 
     let sawBusy = false;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
     const handler = (_: unknown, status: string) => {
-      if (status === 'busy') sawBusy = true;
+      if (status === 'busy') {
+        sawBusy = true;
+        // Kernel went busy again — cancel pending resolve
+        if (debounce) { clearTimeout(debounce); debounce = null; }
+        return;
+      }
       if (sawBusy && status === 'idle') {
-        realKernel.statusChanged.disconnect(handler);
-        clearTimeout(fallback);
-        setTimeout(resolve, 200);
+        // Debounce: only resolve if kernel stays idle for IDLE_DEBOUNCE_MS
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          realKernel.statusChanged.disconnect(handler);
+          clearTimeout(fallback);
+          resolve();
+        }, IDLE_DEBOUNCE_MS);
       }
     };
     realKernel.statusChanged.connect(handler);
 
     // Fallback: if kernel never goes busy (empty cell), resolve after 2s
     const fallback = setTimeout(() => {
+      if (debounce) clearTimeout(debounce);
       realKernel.statusChanged.disconnect(handler);
       resolve();
-    }, 2000);
+    }, FEEDBACK_SAFETY_NET_MS);
   });
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -189,7 +218,13 @@ function buildReportUrl(cell: Element, error: { type: string; name?: string }): 
 
   const title = `Execution error on ${pagePath}`;
   const body = [
-    '## Error',
+    '## Describe the issue',
+    '_What were you trying to do? What happened instead?_',
+    '',
+    '',
+    '---',
+    '',
+    '## Error output',
     '```',
     errorText,
     '```',
@@ -205,9 +240,6 @@ function buildReportUrl(cell: Element, error: { type: string; name?: string }): 
     `- **Simulator mode:** ${simMode}`,
     `- **Error type:** ${error.type}${error.name ? ` (${error.name})` : ''}`,
     `- **User agent:** ${navigator.userAgent}`,
-    '',
-    '## Additional context',
-    '_Add any other details here._',
   ].join('\n');
 
   const params = new URLSearchParams({ title, body, labels: 'execution-error' });
@@ -414,7 +446,8 @@ function handleKernelStatusForFeedback(status: string): void {
           clearTimeout(feedbackFallbackTimer);
           feedbackFallbackTimer = null;
         }
-        settleCellFeedback(cell);
+        // Wait for output DOM to stabilize before marking done/error
+        waitForOutputStable(cell).then(() => settleCellFeedback(cell));
       }
     }, IDLE_DEBOUNCE_MS);
   }
@@ -1263,6 +1296,8 @@ export default function ExecutableCode({
       if (cell) markCellExecuting(cell);
       runBtns[i].click();
       await waitForKernelIdle();
+      // Wait for output DOM to stabilize before marking done/error
+      if (cell) await waitForOutputStable(cell);
       // Settle feedback immediately — the idle debounce in handleKernelStatusForFeedback
       // won't fire in time because we're about to move executingCell to the next cell.
       if (cell) {
