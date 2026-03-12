@@ -79,9 +79,9 @@ export default function Features(): JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.execution.backends.title', message: 'Four Execution Backends'})}
-                description={translate({id: 'features.execution.backends.desc', message: 'Free remote execution via Binder or Google Colab, fast serverless kernels via IBM Cloud Code Engine, or full offline via Docker and RasQberry Pi.'})}
-                link="/jupyter-settings#advanced"
-                linkLabel={translate({id: 'features.execution.backends.link', message: 'Configure backend'})}
+                description={translate({id: 'features.execution.backends.desc', message: 'Free remote execution via Binder or Google Colab, fast serverless kernels via IBM Cloud Code Engine, or full offline via Docker and RasQberry Pi. When multiple backends are available, choose which one to use from the Settings page.'})}
+                link="/jupyter-settings#backend-selection"
+                linkLabel={translate({id: 'features.execution.backends.link', message: 'Choose backend'})}
               />
               <FeatureCard
                 title={translate({id: 'features.execution.ce.title', message: 'IBM Cloud Code Engine'})}
@@ -107,7 +107,11 @@ export default function Features(): JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.execution.lab.title', message: 'Open in JupyterLab'})}
-                description={translate({id: 'features.execution.lab.desc', message: 'Open any notebook in full JupyterLab. Binder launches show real-time phase tracking with elapsed timer and cache-miss warnings. Subsequent clicks reuse the same server instantly.'})}
+                description={translate({id: 'features.execution.lab.desc', message: 'Open any notebook in full JupyterLab. Binder launches show real-time phase tracking with elapsed timer and cache-miss warnings. Cancel anytime or get slow-phase alerts suggesting faster backends. Subsequent clicks reuse the same server instantly.'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.execution.runall.title', message: 'Run All & Restart'})}
+                description={translate({id: 'features.execution.runall.desc', message: "Run All executes every cell in order with a live progress counter. Stop after the current cell anytime. Restart gives you a fresh kernel without losing your Binder session."})}
               />
             </div>
           </section>
@@ -174,6 +178,10 @@ export default function Features(): JSX.Element {
                 description={translate({id: 'features.progress.display.desc', message: 'Adjust code font size (10–22px), toggle static cell outputs, and suppress Python warnings for cleaner output.'})}
                 link="/jupyter-settings#display"
                 linkLabel={translate({id: 'features.progress.display.link', message: 'Adjust display'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.progress.onboarding.title', message: 'Onboarding Tips'})}
+                description={translate({id: 'features.progress.onboarding.desc', message: 'First-time visitors see contextual tips — like "Click Run to execute code live" on notebook pages. Tips auto-dismiss after a few visits.'})}
               />
             </div>
           </section>
