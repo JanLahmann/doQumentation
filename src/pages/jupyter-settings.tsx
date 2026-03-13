@@ -11,6 +11,7 @@
 import React, { useState, useEffect } from 'react';
 import Layout from '@theme/Layout';
 import Translate, {translate} from '@docusaurus/Translate';
+import InfoIcon from '@site/src/components/InfoIcon';
 import {
   detectJupyterConfig,
   saveJupyterConfig,
@@ -532,7 +533,7 @@ export default function JupyterSettings(): JSX.Element {
               ═══════════════════════════════════════════════════════════════ */}
 
           {/* Simulator Mode */}
-          <h2 id="simulator-mode" style={{ marginTop: '2rem' }}><Translate id="settings.simulator.heading">Simulator Mode</Translate></h2>
+          <h2 id="simulator-mode" style={{ marginTop: '2rem' }}><Translate id="settings.simulator.heading">Simulator Mode</Translate><InfoIcon tooltip={translate({id: 'settings.info.simulatorMode', message: 'Run quantum circuits locally without an IBM Quantum account. Results approximate real hardware.'})} /></h2>
 
           <p>
             <Translate
@@ -969,7 +970,7 @@ export default function JupyterSettings(): JSX.Element {
 
               <div className="margin-bottom--sm">
                 <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate>
+                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'The public URL of your Code Engine application (from IBM Cloud console).'})} />
                 </label>
                 <input
                   type="url"
@@ -982,7 +983,7 @@ export default function JupyterSettings(): JSX.Element {
 
               <div className="margin-bottom--md">
                 <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                  <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate>
+                  <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
                 </label>
                 <input
                   type="password"
@@ -1150,7 +1151,7 @@ export default function JupyterSettings(): JSX.Element {
 
               <div className="jupyter-settings__field">
                 <label className="jupyter-settings__label" htmlFor="ibm-token">
-                  <Translate id="settings.ibm.tokenLabel">API Token</Translate>
+                  <Translate id="settings.ibm.tokenLabel">API Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.apiToken', message: 'Find your API token at quantum.cloud.ibm.com under your profile.'})} />
                 </label>
                 <input
                   id="ibm-token"
@@ -1164,7 +1165,7 @@ export default function JupyterSettings(): JSX.Element {
 
               <div className="jupyter-settings__field">
                 <label className="jupyter-settings__label" htmlFor="ibm-crn">
-                  <Translate id="settings.ibm.crnLabel">Cloud Resource Name (CRN) / Instance</Translate>
+                  <Translate id="settings.ibm.crnLabel">Cloud Resource Name (CRN) / Instance</Translate><InfoIcon tooltip={translate({id: 'settings.info.crn', message: 'Cloud Resource Name — copy from the Instances page on IBM Quantum Platform.'})} />
                 </label>
                 <input
                   id="ibm-crn"

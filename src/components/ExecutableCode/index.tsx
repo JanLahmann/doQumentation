@@ -39,6 +39,7 @@ import {
   type BinderSession,
 } from '../../config/jupyter';
 import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
+import InfoIcon from '../InfoIcon';
 
 // thebelab 0.4.x global — bootstrap() returns a Promise that resolves
 // when the kernel is connected (after Binder launch + kernel start).
@@ -1557,6 +1558,7 @@ export default function ExecutableCode({
               title={translate({id: 'executable.badge.settingsTitle', message: 'Go to Settings to change execution mode'})}
             >
               {injectionInfo.label}
+              <InfoIcon tooltip={translate({id: 'executable.info.modeBadge', message: 'Click to change execution mode in Settings'})} position="below" />
             </a>
           )}
 
