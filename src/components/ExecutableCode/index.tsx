@@ -592,6 +592,16 @@ function annotateSaveAccountCells(): void {
         div.appendChild(a);
         div.appendChild(document.createTextNode(credsAfter));
       }
+      // Add InfoIcon (vanilla DOM — not React)
+      const infoSpan = document.createElement('span');
+      infoSpan.className = 'dq-info-icon dq-info-icon--below';
+      infoSpan.setAttribute('data-tooltip', translate({
+        id: 'executable.info.skipCell',
+        message: 'Your credentials are already injected automatically. Running this cell would overwrite them.',
+      }));
+      infoSpan.textContent = '\u24D8'; // ⓘ character
+      div.appendChild(infoSpan);
+
       cell.insertBefore(div, cell.firstChild);
     });
   }, 1200);
@@ -1463,6 +1473,7 @@ export default function ExecutableCode({
               title={translate({id: 'executable.button.restartTitle', message: 'Restart kernel (clears all variables and outputs)'})}
             >
               {translate({id: 'executable.button.restart', message: 'Restart Kernel'})}
+              <InfoIcon tooltip={translate({id: 'executable.info.restartKernel', message: 'Clear all variables and outputs, start fresh. Same server session.'})} position="below" />
             </button>
           )}
 
@@ -1511,6 +1522,7 @@ export default function ExecutableCode({
               title={translate({id: 'executable.button.clearSessionTitle', message: 'Clear session and return to static view (next Run starts a new server)'})}
             >
               {translate({id: 'executable.button.clearSession', message: 'Clear Session'})}
+              <InfoIcon tooltip={translate({id: 'executable.info.clearSession', message: 'End this Jupyter server session. Next Run will start a fresh server.'})} position="below" />
             </button>
           )}
 
@@ -1539,6 +1551,7 @@ export default function ExecutableCode({
           {(thebeStatus === 'connecting' || thebeStatus === 'error') && (
             <span className={`thebe-status thebe-status--${thebeStatus}`} aria-live="polite">
               {statusText[thebeStatus]}
+              <InfoIcon tooltip={translate({id: 'executable.info.binderStatus', message: 'Binder is preparing a free cloud server with all packages. This may take 2\u201325 minutes depending on cache availability.'})} position="below" />
             </span>
           )}
 
@@ -1547,6 +1560,7 @@ export default function ExecutableCode({
               <span className="executable-code__legend-item executable-code__legend-item--running">{translate({id: 'executable.legend.running', message: 'running'})}</span>
               <span className="executable-code__legend-item executable-code__legend-item--done">{translate({id: 'executable.legend.done', message: 'done'})}</span>
               <span className="executable-code__legend-item executable-code__legend-item--error">{translate({id: 'executable.legend.error', message: 'error'})}</span>
+              <InfoIcon tooltip={translate({id: 'executable.info.legend', message: 'Colored bars on the left edge of each code cell show execution status.'})} position="below" />
             </span>
           )}
 
@@ -1576,6 +1590,7 @@ export default function ExecutableCode({
       {isFirstCell && binderCacheMiss && binderPhase && (
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
           {translate({id: 'executable.status.binderCacheMiss', message: '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Use Colab (above) or come back later.'})}
+          <InfoIcon tooltip={translate({id: 'executable.info.cacheMiss', message: 'The Binder Docker image must be rebuilt from scratch. Try Colab for instant access, or come back in ~20 minutes.'})} position="below" />
         </div>
       )}
 

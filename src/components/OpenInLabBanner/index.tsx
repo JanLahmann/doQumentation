@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import BrowserOnly from '@docusaurus/BrowserOnly';
+import {translate} from '@docusaurus/Translate';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab } from '../../config/jupyter';
+import InfoIcon from '../InfoIcon';
 
 interface OpenInLabBannerProps {
   notebookPath: string;
@@ -160,7 +162,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
             <span>&#128221;</span>
             <span>{description || 'This page was generated from a Jupyter notebook.'}</span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Open in:</span>
+              <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Open in:<InfoIcon tooltip={translate({id: 'openInLab.info.openIn', message: 'JupyterLab: full notebook editor with all packages pre-installed. Colab: Google\'s free cloud notebooks (requires a Google account).'})} position="below" /></span>
               {labUrl && (
                 <a
                   href={labUrl}
