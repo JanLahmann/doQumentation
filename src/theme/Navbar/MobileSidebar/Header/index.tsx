@@ -23,6 +23,7 @@ function CloseButton() {
 /** Compact language selector for mobile sidebar header */
 function MobileLocaleSelector() {
   const {
+    siteConfig,
     i18n: {currentLocale, locales, localeConfigs},
   } = useDocusaurusContext();
   const location = useLocation();
@@ -43,7 +44,13 @@ function MobileLocaleSelector() {
 
   const dialectLocales = new Set(['swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut']);
 
-  if (locales.length <= 1) return null;
+  // Filter to visibleLocales (always include current locale)
+  const visibleLocales = siteConfig.customFields?.visibleLocales as string[] | undefined;
+  const filteredLocales = visibleLocales
+    ? locales.filter(l => visibleLocales.includes(l) || l === currentLocale)
+    : locales;
+
+  if (filteredLocales.length <= 1) return null;
 
   const handleSelect = useCallback(
     (locale: string) => {
@@ -70,10 +77,10 @@ function MobileLocaleSelector() {
       </button>
       {open && (
         <ul className="dq-mobile-locale__dropdown">
-          {locales.map((locale, i) => (
+          {filteredLocales.map((locale, i) => (
             <React.Fragment key={locale}>
               {dialectLocales.has(locale) &&
-                (i === 0 || !dialectLocales.has(locales[i - 1])) && (
+                (i === 0 || !dialectLocales.has(filteredLocales[i - 1])) && (
                   <li className="dq-mobile-locale__separator">
                     {translate({id: 'navbar.mobile.germanDialects', message: 'German Dialects'})}
                   </li>

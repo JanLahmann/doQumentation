@@ -128,6 +128,13 @@ const config: Config = {
     },
   },
 
+  // Locales shown in the language selector dropdown.
+  // All locales in i18n.locales are still built and deployed — this only controls UI visibility.
+  // Remove or set to undefined to show all locales.
+  customFields: {
+    visibleLocales: ['en', 'de', 'es'],
+  },
+
   // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
   scripts: [
     {
