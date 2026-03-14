@@ -1,0 +1,1298 @@
+---
+title: "Simulation des gekickten Ising-Hamiltonoperators mit dynamischen Circuits"
+sidebar_label: "Simulation des gekickten Ising-Hamiltonoperators mit dynamischen Circuits"
+description: "Tutorial zur Demonstration von dynamischen Circuits im Utility-Maßstab anhand einer hexagonalen Simulation des gekickten Ising-Modells"
+notebook_path: "tutorials/dc-hex-ising.ipynb"
+---
+
+{/* source-hash: c3b83423 */}
+
+<OpenInLabBanner notebookPath="tutorials/dc-hex-ising.ipynb" />
+
+
+{/* cspell:ignore hcords ycords xcords fontsize ncol Krsulich Lishman */}
+
+*Geschätzte Laufzeit: 7,5 Minuten auf einem Heron-r3-Prozessor. (HINWEIS: Dies ist nur eine Schätzung. Deine tatsächliche Laufzeit kann abweichen.)*
+Dynamische Circuits sind Circuits mit klassischem Feedforward – das heißt, sie bestehen aus Zwischenkreis-Messungen, gefolgt von klassischen Logikoperationen, die Quantenoperationen in Abhängigkeit vom klassischen Ausgabewert bestimmen. In diesem Tutorial simulieren wir das gekickte Ising-Modell auf einem hexagonalen Spingitter und nutzen dynamische Circuits, um Wechselwirkungen zu realisieren, die über die physikalische Konnektivität der Hardware hinausgehen.
+
+Das Ising-Modell wurde in vielen Bereichen der Physik eingehend untersucht. Es modelliert Spins, die Ising-Wechselwirkungen zwischen Gitterpunkten eingehen, sowie Kicks durch das lokale Magnetfeld an jedem Gitterpunkt. Die Trotterisierte Zeitentwicklung der in diesem Tutorial betrachteten Spins, entnommen aus [[1]](#references), ist durch folgendes unitäres Operator gegeben:
+
+$$
+U(\theta)=\left(\prod_{\langle j, k\rangle} \exp \left(i \frac{\pi}{8} Z_j Z_k\right)\right)\left(\prod_j \exp \left(-i \frac{\theta}{2} X_j\right)\right)
+$$
+
+Um die Spindynamik zu untersuchen, betrachten wir die mittlere Magnetisierung der Spins an jedem Gitterpunkt als Funktion der Trotter-Schritte. Wir konstruieren daher folgendes Observable:
+
+$$
+\langle O\rangle =  \frac{1}{N} \sum_i \langle Z_i \rangle
+$$
+
+Zur Realisierung der ZZ-Wechselwirkung zwischen Gitterpunkten stellen wir eine Lösung mit dem dynamischen Circuit-Feature vor, die eine deutlich kürzere Zwei-Qubit-Tiefe im Vergleich zum standardmäßigen Routing-Verfahren mit SWAP-Gates ermöglicht. Andererseits dauern die klassischen Feedforward-Operationen in dynamischen Circuits typischerweise länger als Quantengates; daher unterliegen dynamische Circuits bestimmten Einschränkungen und Kompromissen. Wir zeigen außerdem, wie eine Dynamical-Decoupling-Sequenz auf wartenden Qubits während der klassischen Feedforward-Operation mittels der [stretch](/guides/stretch)-Dauer hinzugefügt werden kann.
+## Voraussetzungen {#requirements}
+Stelle vor Beginn dieses Tutorials sicher, dass Folgendes installiert ist:
+
+* Qiskit SDK v2.0 oder neuer mit [Visualisierungs](https://docs.quantum.ibm.com/api/qiskit/visualization)-Unterstützung
+* Qiskit Runtime v0.37 oder neuer mit Visualisierungsunterstützung (`pip install 'qiskit-ibm-runtime[visualization]'`)
+* Rustworkx-Graphbibliothek (`pip install rustworkx`)
+* Qiskit Aer (`pip install qiskit-aer`)
+## Einrichtung {#set-up}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-aer qiskit-ibm-runtime rustworkx
+```
+
+```python
+import numpy as np
+from typing import List
+import rustworkx as rx
+import matplotlib.pyplot as plt
+from rustworkx.visualization import mpl_draw
+from qiskit.circuit import (
+    Parameter,
+    QuantumCircuit,
+    QuantumRegister,
+    ClassicalRegister,
+)
+from qiskit.transpiler import CouplingMap
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.classical import expr
+from qiskit.transpiler.preset_passmanagers import (
+    generate_preset_pass_manager,
+)
+from qiskit.transpiler import PassManager
+from qiskit.circuit.library import RZGate, XGate
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.circuit.measure import Measure
+from qiskit.transpiler.passes.utils.remove_final_measurements import (
+    calc_final_ops,
+)
+from qiskit.circuit import Instruction
+
+from qiskit.visualization import plot_circuit_layout
+from qiskit.circuit.tools import pi_check
+
+from qiskit_aer import AerSimulator
+from qiskit_aer.primitives import SamplerV2 as Aer_Sampler
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Batch,
+    SamplerV2 as Sampler,
+)
+from qiskit_ibm_runtime.exceptions import QiskitBackendNotFoundError
+from qiskit_ibm_runtime.visualization import (
+    draw_circuit_schedule_timing,
+)
+```
+
+## Schritt 1: Klassische Eingaben auf einen Quanten-Circuit abbilden {#step-1-map-classical-inputs-to-a-quantum-circuit}
+Zunächst definieren wir das zu simulierende Gitter. Wir arbeiten mit dem Wabengitter (auch als hexagonales Gitter bezeichnet), einem planaren Graphen mit Knoten vom Grad 3. Hier legen wir die Gittergröße und die relevanten Circuit-Parameter für die Trotterisierte Dynamik fest. Wir simulieren die Trotterisierte Zeitentwicklung unter dem Ising-Modell für drei verschiedene $\theta$-Werte des lokalen Magnetfelds.
+
+```python
+hex_rows = 3  # specify lattice size
+hex_cols = 5
+depths = range(9)  # specify Trotter steps
+zz_angle = np.pi / 8  # parameter for ZZ interaction
+max_angle = np.pi / 2  # max theta angle
+points = 3  # number of theta parameters
+
+θ = Parameter("θ")
+params = np.linspace(0, max_angle, points)
+```
+
+```python
+def make_hex_lattice(hex_rows=1, hex_cols=1):
+    """Define hexagon lattice."""
+    hex_cmap = CouplingMap.from_hexagonal_lattice(
+        hex_rows, hex_cols, bidirectional=False
+    )
+    data = list(hex_cmap.physical_qubits)
+    graph = hex_cmap.graph.to_undirected(multigraph=False)
+    edge_colors = rx.graph_misra_gries_edge_color(graph)
+    layer_edges = {color: [] for color in edge_colors.values()}
+    for edge_index, color in edge_colors.items():
+        layer_edges[color].append(graph.edge_list()[edge_index])
+    return data, layer_edges, hex_cmap, graph
+```
+
+Beginnen wir mit einem kleinen Testbeispiel:
+
+```python
+hex_rows_test = 1
+hex_cols_test = 2
+
+data_test, layer_edges_test, hex_cmap_test, graph_test = make_hex_lattice(
+    hex_rows=hex_rows_test, hex_cols=hex_cols_test
+)
+
+# display a small example for illustration
+node_colors_test = ["lightblue"] * len(graph_test.node_indices())
+pos = rx.graph_spring_layout(
+    graph_test,
+    k=5 / np.sqrt(len(graph_test.nodes())),
+    repulsive_exponent=1,
+    num_iter=150,
+)
+mpl_draw(graph_test, node_color=node_colors_test, pos=pos)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/c011bc1a-0.avif)
+
+Das kleine Beispiel verwenden wir zur Veranschaulichung und Simulation. Unten konstruieren wir außerdem ein großes Beispiel, um zu zeigen, dass der Workflow auf große Gittergrößen skaliert werden kann.
+
+```python
+data, layer_edges, hex_cmap, graph = make_hex_lattice(
+    hex_rows=hex_rows, hex_cols=hex_cols
+)
+num_qubits = len(data)
+print(f"num_qubits = {num_qubits}")
+
+# display the honeycomb lattice to simulate
+node_colors = ["lightblue"] * len(graph.node_indices())
+pos = rx.graph_spring_layout(
+    graph,
+    k=5 / np.sqrt(num_qubits),
+    repulsive_exponent=1,
+    num_iter=150,
+)
+mpl_draw(graph, node_color=node_colors, pos=pos)
+plt.show()
+```
+
+```text
+num_qubits = 46
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/ba481bd4-1.avif)
+
+### Unitäre Circuits konstruieren {#build-unitary-circuits}
+Nachdem Problemgröße und Parameter festgelegt sind, können wir den parametrisierten Circuit aufbauen, der die Trotterisierte Zeitentwicklung von $U(\theta)$ mit verschiedenen Trotter-Schritten simuliert, angegeben durch das Argument `depth`. Der Circuit hat abwechselnde Schichten aus `Rx`($\theta$)-Gates und `Rzz`-Gates. Die `Rzz`-Gates realisieren die ZZ-Wechselwirkungen zwischen gekoppelten Spins, die zwischen jedem durch das Argument `layer_edges` angegebenen Gitterpunkt platziert werden.
+
+```python
+def gen_hex_unitary(
+    num_qubits=6,
+    zz_angle=np.pi / 8,
+    layer_edges=[
+        [(0, 1), (2, 3), (4, 5)],
+        [(1, 2), (3, 4), (5, 0)],
+    ],
+    θ=Parameter("θ"),
+    depth=1,
+    measure=False,
+    final_rot=True,
+):
+    """Build unitary circuit."""
+    circuit = QuantumCircuit(num_qubits)
+    # Build trotter layers
+    for _ in range(depth):
+        for i in range(num_qubits):
+            circuit.rx(θ, i)
+        circuit.barrier()
+        for coloring in layer_edges.keys():
+            for e in layer_edges[coloring]:
+                circuit.rzz(zz_angle, e[0], e[1])
+        circuit.barrier()
+    # Optional final rotation, set True to be consistent with Ref. [1]
+    if final_rot:
+        for i in range(num_qubits):
+            circuit.rx(θ, i)
+    if measure:
+        circuit.measure_all()
+
+    return circuit
+```
+
+Visualisierung des kleinen Test-Circuits:
+
+```python
+circ_unitary_test = gen_hex_unitary(
+    num_qubits=len(data_test),
+    layer_edges=layer_edges_test,
+    θ=Parameter("θ"),
+    depth=1,
+    measure=True,
+)
+circ_unitary_test.draw(output="mpl", fold=-1)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/268e6999-0.avif)
+
+Auf dieselbe Weise konstruieren wir die unitären Circuits des großen Beispiels für verschiedene Trotter-Schritte sowie das Observable zur Schätzung des Erwartungswerts.
+
+```python
+circuits_unitary = []
+for depth in depths:
+    circ = gen_hex_unitary(
+        num_qubits=num_qubits,
+        layer_edges=layer_edges,
+        θ=Parameter("θ"),
+        depth=depth,
+        measure=True,
+    )
+    circuits_unitary.append(circ)
+```
+
+```python
+observables_unitary = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / num_qubits) for i in range(num_qubits)],
+    num_qubits=num_qubits,
+)
+```
+
+### Implementierung mit dynamischen Circuits konstruieren {#build-dynamic-circuit-implementation}
+
+In diesem Abschnitt wird die wichtigste Implementierung mit dynamischen Circuits vorgestellt, um dieselbe Trotterisierte Zeitentwicklung zu simulieren. Das Wabengitter, das wir simulieren möchten, stimmt nicht mit dem Heavy-Hex-Gitter der Hardware-Qubits überein. Eine einfache Möglichkeit, den Circuit auf die Hardware abzubilden, besteht darin, eine Reihe von SWAP-Operationen einzuführen, um interagierende Qubits nebeneinander zu bringen und so die ZZ-Wechselwirkung zu realisieren. Hier stellen wir einen alternativen Ansatz mit dynamischen Circuits vor, der zeigt, wie wir die Kombination aus Quanten- und klassischer Echtzeit-Berechnung innerhalb eines Circuits in Qiskit nutzen können, um Wechselwirkungen jenseits der nächsten Nachbarn zu realisieren.
+
+Bei der Implementierung mit dynamischen Circuits wird die ZZ-Wechselwirkung effektiv durch den Einsatz von Ancilla-Qubits, Zwischenkreis-Messungen und Feedforward implementiert. Dazu ist folgendes zu beachten: ZZ-Rotationen wenden einen Phasenfaktor $e^{i\theta}$ auf den Zustand entsprechend seiner Parität an. Für zwei Qubits sind die Berechnungsbasisszustände $|00\rangle$, $|01\rangle$, $|10\rangle$ und $|11\rangle$. Das ZZ-Rotationsgate wendet einen Phasenfaktor auf Zustände $|01\rangle$ und $|10\rangle$ an, deren Parität (die Anzahl der Einsen im Zustand) ungerade ist, und lässt Zustände gerader Parität unverändert. Im Folgenden wird beschrieben, wie ZZ-Wechselwirkungen auf zwei Qubits mittels dynamischer Circuits effektiv implementiert werden können.
+
+1. Parität in ein Ancilla-Qubit berechnen: Anstatt ZZ direkt auf zwei Qubits anzuwenden, führen wir ein drittes Qubit ein, das Ancilla-Qubit, um die Paritätsinformation der beiden Daten-Qubits zu speichern. Wir verschränken das Ancilla mit jedem Daten-Qubit durch CX-Gates vom Daten-Qubit zum Ancilla-Qubit.
+
+2. Eine Einzel-Qubit-Z-Rotation auf das Ancilla-Qubit anwenden: Da das Ancilla die Paritätsinformation der beiden Daten-Qubits enthält, implementiert dies effektiv die ZZ-Rotation auf den Daten-Qubits.
+
+3. Das Ancilla-Qubit in der X-Basis messen: Dies ist der entscheidende Schritt, der den Zustand des Ancilla-Qubits kollabiert, und das Messergebnis teilt uns mit, was passiert ist:
+
+    * Messe 0: Bei einem 0-Ergebnis wurde die $ZZ(\theta)$-Rotation korrekt auf unsere Daten-Qubits angewendet.
+
+    * Messe 1: Bei einem 1-Ergebnis wurde stattdessen $ZZ(\theta + \pi)$ angewendet.
+
+4. Korrekturgate bei Messung von 1 anwenden: Falls eine 1 gemessen wurde, werden Z-Gates auf die Daten-Qubits angewendet, um die extra $\pi$-Phase zu „korrigieren".
+
+Der resultierende Circuit ist der folgende:
+
+![dynamische Implementierung](/docs/images/tutorials/dc-hex-ising/circuit-1.avif)
+Wenn wir diesen Ansatz zur Simulation eines Wabengitters verwenden, passt der resultierende Circuit perfekt in die Hardware mit einem Heavy-Hex-Gitter: Alle Daten-Qubits befinden sich auf den Grad-3-Knoten des Gitters, das ein hexagonales Gitter bildet. Jedes Paar von Daten-Qubits teilt sich ein Ancilla-Qubit, das auf einem Grad-2-Knoten sitzt. Unten konstruieren wir das Qubit-Gitter für die Implementierung mit dynamischen Circuits und führen Ancilla-Qubits ein (dargestellt durch die dunkelvioletten Kreise).
+
+```python
+def make_lattice(hex_rows=1, hex_cols=1):
+    """Define heavy-hex lattice and corresponding lists of data and ancilla nodes."""
+    hex_cmap = CouplingMap.from_hexagonal_lattice(
+        hex_rows, hex_cols, bidirectional=False
+    )
+    data = list(hex_cmap.physical_qubits)
+
+    heavyhex_cmap = CouplingMap()
+    for d in data:
+        heavyhex_cmap.add_physical_qubit(d)
+
+    # make coupling map
+    a = len(data)
+    for edge in hex_cmap.get_edges():
+        heavyhex_cmap.add_physical_qubit(a)
+        heavyhex_cmap.add_edge(edge[0], a)
+        heavyhex_cmap.add_edge(edge[1], a)
+        a += 1
+    ancilla = list(range(len(data), a))
+    qubits = data + ancilla
+
+    # color edges
+    graph = heavyhex_cmap.graph.to_undirected(multigraph=False)
+    edge_colors = rx.graph_misra_gries_edge_color(graph)
+    layer_edges = {color: [] for color in edge_colors.values()}
+    for edge_index, color in edge_colors.items():
+        layer_edges[color].append(graph.edge_list()[edge_index])
+
+    # construct observable
+    obs_hex = SparsePauliOp.from_sparse_list(
+        [("Z", [i], 1 / len(data)) for i in data],
+        num_qubits=len(qubits),
+    )
+
+    return (data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex)
+```
+
+Visualisierung des Heavy-Hex-Gitters für Daten-Qubits und Ancilla-Qubits in kleinem Maßstab:
+
+```python
+(data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex) = (
+    make_lattice(hex_rows=hex_rows, hex_cols=hex_cols)
+)
+
+print(f"number of data qubits = {len(data)}")
+print(f"number of ancilla qubits = {len(ancilla)}")
+
+node_colors = []
+for node in graph.node_indices():
+    if node in ancilla:
+        node_colors.append("purple")
+    else:
+        node_colors.append("lightblue")
+
+pos = rx.graph_spring_layout(
+    graph,
+    k=1 / np.sqrt(len(qubits)),
+    repulsive_exponent=2,
+    num_iter=200,
+)
+
+# Visualize the graph, blue circles are data qubits and purple circles are ancillas
+mpl_draw(graph, node_color=node_colors, pos=pos)
+plt.show()
+```
+
+```text
+number of data qubits = 46
+number of ancilla qubits = 60
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/2d7224ef-1.avif)
+
+Im Folgenden konstruieren wir den dynamischen Circuit für die Trotterisierte Zeitentwicklung. Die `RZZ`-Gates werden durch die oben beschriebene Implementierung mit dynamischen Circuits ersetzt.
+
+```python
+def gen_hex_dynamic(
+    depth=1,
+    zz_angle=np.pi / 8,
+    θ=Parameter("θ"),
+    hex_rows=1,
+    hex_cols=1,
+    measure=False,
+    add_dd=True,
+):
+    """Build dynamic circuits."""
+    (data, qubits, ancilla, layer_edges, heavyhex_cmap, graph, obs_hex) = (
+        make_lattice(hex_rows=hex_rows, hex_cols=hex_cols)
+    )
+    # Initialize circuit
+    qr = QuantumRegister(len(qubits), "qr")
+    cr = ClassicalRegister(len(ancilla), "cr")
+    circuit = QuantumCircuit(qr, cr)
+
+    for k in range(depth):
+        # Single-qubit Rx layer
+        for d in data:
+            circuit.rx(θ, d)
+        circuit.barrier()
+
+        # CX gates from data qubits to ancilla qubits
+        for same_color_edges in layer_edges.values():
+            for e in same_color_edges:
+                circuit.cx(e[0], e[1])
+        circuit.barrier()
+
+        # Apply Rz rotation on ancilla qubits and rotate into X basis
+        for a in ancilla:
+            circuit.rz(zz_angle, a)
+            circuit.h(a)
+        # Add barrier to align terminal measurement
+        circuit.barrier()
+
+        # Measure ancilla qubits
+        for i, a in enumerate(ancilla):
+            circuit.measure(a, i)
+        d2ros = {}
+        a2ro = {}
+        # Retrieve ancilla measurement outcomes
+        for a in ancilla:
+            a2ro[a] = cr[ancilla.index(a)]
+
+        # For each data qubit, retrieve measurement outcomes of neighboring ancilla qubits
+        for d in data:
+            ros = [a2ro[a] for a in heavyhex_cmap.neighbors(d)]
+            d2ros[d] = ros
+
+        # Build classical feedforward operations (optionally add DD on idling data qubits)
+        for d in data:
+            if add_dd:
+                circuit = add_stretch_dd(circuit, d, f"data_{d}_depth_{k}")
+
+            # # XOR the neighboring readouts of the data qubit; if True, apply Z to it
+            ros = d2ros[d]
+            parity = ros[0]
+            for ro in ros[1:]:
+                parity = expr.bit_xor(parity, ro)
+            with circuit.if_test(expr.equal(parity, True)):
+                circuit.z(d)
+
+        # Reset the ancilla if its readout is 1
+        for a in ancilla:
+            with circuit.if_test(expr.equal(a2ro[a], True)):
+                circuit.x(a)
+        circuit.barrier()
+
+    # Final single-qubit Rx layer to match the unitary circuits
+    for d in data:
+        circuit.rx(θ, d)
+
+    if measure:
+        circuit.measure_all()
+    return circuit, obs_hex
+
+def add_stretch_dd(qc, q, name):
+    """Add XpXm DD sequence."""
+    s = qc.add_stretch(name)
+    qc.delay(s, q)
+    qc.x(q)
+    qc.delay(s, q)
+    qc.delay(s, q)
+    qc.rz(np.pi, q)
+    qc.x(q)
+    qc.rz(-np.pi, q)
+    qc.delay(s, q)
+    return qc
+```
+
+#### Dynamical Decoupling (DD) und Unterstützung für die `stretch`-Dauer {#dynamical-decoupling-dd-and-support-for-stretch-duration}
+Ein Nachteil der Implementierung mit dynamischen Circuits zur Realisierung der ZZ-Wechselwirkung ist, dass die Zwischenkreis-Messung und die klassischen Feedforward-Operationen typischerweise länger dauern als Quantengates. Um die Qubit-Dekohärenz während der Wartezeit für die klassischen Operationen zu unterdrücken, haben wir nach der Messoperation auf den Ancilla-Qubits und vor der bedingten Z-Operation auf dem Daten-Qubit, vor der `if_test`-Anweisung, eine [Dynamical-Decoupling](/guides/error-mitigation-and-suppression-techniques#dynamical-decoupling)-Sequenz (DD) hinzugefügt.
+
+Die DD-Sequenz wird durch die Funktion `add_stretch_dd()` hinzugefügt, die [`stretch`-Dauern](/guides/stretch) verwendet, um die Zeitintervalle zwischen den DD-Gates zu bestimmen. Eine `stretch`-Dauer ist eine Möglichkeit, eine dehnbare Zeitdauer für die `delay`-Operation festzulegen, sodass die Verzögerungsdauer wachsen kann, um die Qubit-Wartezeit auszufüllen. Die durch `stretch` festgelegten Dauervariablen werden zur Kompilierzeit in die gewünschten Dauern aufgelöst, die eine bestimmte Nebenbedingung erfüllen. Dies ist besonders nützlich, wenn das Timing von DD-Sequenzen entscheidend für eine gute Fehlerunterdrückungsleistung ist. Weitere Details zum `stretch`-Typ findest du in der [OpenQASM](https://openqasm.com/language/delays.html#duration-and-stretch-types)-Dokumentation. Derzeit ist die Unterstützung für den `stretch`-Typ in Qiskit Runtime experimentell. Informationen zu den Nutzungsbeschränkungen findest du im [Abschnitt zu den Einschränkungen](/guides/stretch#qiskit-runtime-limitations) der `stretch`-Dokumentation.
+
+Mit den oben definierten Funktionen erstellen wir die Trotterisierten Zeitentwicklungs-Circuits – mit und ohne DD – sowie die entsprechenden Observablen.
+Zunächst visualisieren wir den dynamischen Circuit eines kleinen Beispiels:
+
+```python
+hex_rows_test = 1
+hex_cols_test = 1
+
+(
+    data_test,
+    qubits_test,
+    ancilla_test,
+    layer_edges_test,
+    heavyhex_cmap_test,
+    graph_test,
+    obs_hex_test,
+) = make_lattice(hex_rows=hex_rows_test, hex_cols=hex_cols_test)
+
+node_colors = []
+for node in graph_test.node_indices():
+    if node in ancilla_test:
+        node_colors.append("purple")
+    else:
+        node_colors.append("lightblue")
+pos = rx.graph_spring_layout(
+    graph_test,
+    k=5 / np.sqrt(len(qubits_test)),
+    repulsive_exponent=2,
+    num_iter=150,
+)
+
+# display a small example for illustration
+node_colors_test = ["lightblue"] * len(graph_test.node_indices())
+mpl_draw(graph_test, node_color=node_colors, pos=pos)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/b6e2e76c-0.avif)
+
+```python
+circuit_dynamic_test, obs_dynamic_test = gen_hex_dynamic(
+    depth=1,
+    θ=Parameter("θ"),
+    hex_rows=hex_rows_test,
+    hex_cols=hex_cols_test,
+    measure=False,
+    add_dd=False,
+)
+circuit_dynamic_test.draw("mpl", fold=-1)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/735e590a-0.avif)
+
+```python
+circuit_dynamic_dd_test, _ = gen_hex_dynamic(
+    depth=1,
+    θ=Parameter("θ"),
+    hex_rows=hex_rows_test,
+    hex_cols=hex_cols_test,
+    measure=False,
+    add_dd=True,
+)
+circuit_dynamic_dd_test.draw("mpl", fold=-1)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/5de9381a-0.avif)
+
+Auf dieselbe Weise konstruieren wir die dynamischen Circuits für das große Beispiel:
+
+```python
+circuits_dynamic = []
+circuits_dynamic_dd = []
+observables_dynamic = []
+for depth in depths:
+    circuit, obs = gen_hex_dynamic(
+        depth=depth,
+        θ=Parameter("θ"),
+        hex_rows=hex_rows,
+        hex_cols=hex_cols,
+        measure=True,
+        add_dd=False,
+    )
+    circuits_dynamic.append(circuit)
+
+    circuit_dd, _ = gen_hex_dynamic(
+        depth=depth,
+        θ=Parameter("θ"),
+        hex_rows=hex_rows,
+        hex_cols=hex_cols,
+        measure=True,
+        add_dd=True,
+    )
+    circuits_dynamic_dd.append(circuit_dd)
+    observables_dynamic.append(obs)
+```
+
+## Schritt 2: Problem für die Hardware-Ausführung optimieren {#step-2-optimize-problem-for-hardware-execution}
+Jetzt können wir den Circuit auf die Hardware transpilieren. Wir transpilieren sowohl die standardmäßige unitäre Implementierung als auch die Implementierung mit dynamischen Circuits auf die Hardware.
+
+Zur Transpilierung auf die Hardware instanziieren wir zunächst das Backend. Falls verfügbar, wählen wir ein Backend, das die [`MidCircuitMeasure`](/guides/measure-qubits)-Anweisung (`measure_2`) unterstützt.
+
+```python
+service = QiskitRuntimeService()
+try:
+    backend = service.least_busy(
+        operational=True,
+        simulator=False,
+        use_fractional_gates=True,
+        filters=lambda b: "measure_2" in b.supported_instructions,
+    )
+except QiskitBackendNotFoundError:
+    backend = service.least_busy(
+        operational=True,
+        simulator=False,
+        use_fractional_gates=True,
+    )
+```
+
+### Transpilierung für dynamische Circuits {#transpilation-for-dynamic-circuits}
+Zunächst transpilieren wir die dynamischen Circuits, mit und ohne DD-Sequenz. Um sicherzustellen, dass in allen Circuits dieselben physikalischen Qubits für konsistentere Ergebnisse verwendet werden, transpilieren wir den Circuit einmal und nutzen das resultierende Layout für alle nachfolgenden Circuits, angegeben durch [`initial_layout`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.TranspileLayout#initial_layout) im Pass-Manager. Anschließend konstruieren wir die [Primitive Unified Blocs](/guides/primitive-input-output) (PUBs) als Sampler-Primitive-Eingabe.
+
+```python
+pm_temp = generate_preset_pass_manager(
+    optimization_level=3,
+    backend=backend,
+)
+isa_temp = pm_temp.run(circuits_dynamic[-1])
+dynamic_layout = isa_temp.layout.initial_index_layout(filter_ancillas=True)
+
+pm = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=dynamic_layout
+)
+
+dynamic_isa_circuits = [pm.run(circ) for circ in circuits_dynamic]
+dynamic_pubs = [(circ, params) for circ in dynamic_isa_circuits]
+
+dynamic_isa_circuits_dd = [pm.run(circ) for circ in circuits_dynamic_dd]
+dynamic_pubs_dd = [(circ, params) for circ in dynamic_isa_circuits_dd]
+```
+
+Unten können wir das Qubit-Layout des transpilierten Circuits visualisieren. Die schwarzen Kreise zeigen die Daten-Qubits und die Ancilla-Qubits, die in der Implementierung mit dynamischen Circuits verwendet werden.
+
+```python
+def _heron_coords_r2():
+    cord_map = np.array(
+        [
+            [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+            ],
+            -1
+            * np.array([j for i in range(15) for j in [i] * [16, 4][i % 2]]),
+        ],
+        dtype=int,
+    )
+
+    hcords = []
+    ycords = cord_map[0]
+    xcords = cord_map[1]
+    for i in range(156):
+        hcords.append([xcords[i] + 1, np.abs(ycords[i]) + 1])
+
+    return hcords
+```
+
+```python
+plot_circuit_layout(
+    dynamic_isa_circuits_dd[8],
+    backend,
+    qubit_coordinates=_heron_coords_r2(),
+    view="virtual",
+)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/98d402e0-0.avif)
+
+<Admonition type="note">
+Falls du Fehler zu `neato not found` von `plot_circuit_layout()` erhältst, stelle sicher, dass das `graphviz`-Paket installiert und in deinem PATH verfügbar ist. Wenn es an einem nicht standardmäßigen Ort installiert wird (zum Beispiel mit `homebrew` auf MacOS), musst du möglicherweise deine `PATH`-Umgebungsvariable aktualisieren. Dies kann innerhalb dieses Notebooks mit dem folgenden Code erledigt werden:
+
+```python
+import os
+os.environ['PATH'] = f"path/to/neato{os.pathsep}{os.environ['PATH']}"
+```
+</Admonition>
+
+```python
+dynamic_isa_circuits[1].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/82fb6fa8-0.avif)
+
+```python
+dynamic_isa_circuits_dd[1].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/99ad295c-0.avif)
+
+#### Transpilierung mit `MidCircuitMeasure` {#transpile-using-midcircuitmeasure}
+
+`MidCircuitMeasure` ist eine Ergänzung der verfügbaren Messoperationen, die speziell für [Zwischenkreis-Messungen](/guides/measure-qubits#mid-circuit-measurements) kalibriert wurde. Die `MidCircuitMeasure`-Anweisung entspricht der `measure_2`-Anweisung, die von den Backends unterstützt wird. Beachte, dass `measure_2` nicht von allen Backends unterstützt wird. Du kannst `service.backends(filters=lambda b: "measure_2" in b.supported_instructions)` verwenden, um Backends zu finden, die es unterstützen. Hier zeigen wir, wie der Circuit transpiliert wird, sodass die im Circuit definierten Zwischenkreis-Messungen mithilfe der `MidCircuitMeasure`-Operation ausgeführt werden, wenn das Backend dies unterstützt.
+
+Unten geben wir die Dauer der `measure_2`-Anweisung und der Standard-`measure`-Anweisung aus.
+
+```python
+print(
+    f'Mid-circuit measurement `measure_2` duration: {backend.instruction_durations.get('measure_2',0) * backend.dt * 1e9/1e3} μs'
+)
+print(
+    f'Terminal measurement `measure` duration: {backend.instruction_durations.get('measure',0) * backend.dt *1e9/1e3} μs'
+)
+```
+
+```text
+Mid-circuit measurement `measure_2` duration:  1.624 μs
+Terminal measurement `measure` duration: 2.2 μs
+```
+
+```python
+"""Pass that replaces terminal measures in the middle of the circuit with
+MidCircuitMeasure instructions."""
+
+class ConvertToMidCircuitMeasure(TransformationPass):
+    """This pass replaces terminal measures in the middle of the circuit with
+    MidCircuitMeasure instructions.
+    """
+
+    def __init__(self, target):
+        super().__init__()
+        self.target = target
+
+    def run(self, dag):
+        """Run the pass on a dag."""
+        mid_circ_measure = None
+        for inst in self.target.instructions:
+            if isinstance(inst[0], Instruction) and inst[0].name.startswith(
+                "measure_"
+            ):
+                mid_circ_measure = inst[0]
+                break
+        if not mid_circ_measure:
+            return dag
+
+        final_measure_nodes = calc_final_ops(dag, {"measure"})
+        for node in dag.op_nodes(Measure):
+            if node not in final_measure_nodes:
+                dag.substitute_node(node, mid_circ_measure, inplace=True)
+
+        return dag
+
+pm = PassManager(ConvertToMidCircuitMeasure(backend.target))
+
+dynamic_isa_circuits_meas2 = [pm.run(circ) for circ in dynamic_isa_circuits]
+dynamic_pubs_meas2 = [(circ, params) for circ in dynamic_isa_circuits_meas2]
+
+dynamic_isa_circuits_dd_meas2 = [
+    pm.run(circ) for circ in dynamic_isa_circuits_dd
+]
+dynamic_pubs_dd_meas2 = [
+    (circ, params) for circ in dynamic_isa_circuits_dd_meas2
+]
+```
+
+### Transpilierung für unitäre Circuits {#transpilation-for-unitary-circuits}
+
+Um einen fairen Vergleich zwischen den dynamischen Circuits und ihrem unitären Gegenstück herzustellen, verwenden wir für die Daten-Qubits dieselben physikalischen Qubits, die in den dynamischen Circuits verwendet werden, als Layout für die Transpilierung der unitären Circuits.
+
+```python
+init_layout = [
+    dynamic_layout[ind] for ind in range(circuits_unitary[0].num_qubits)
+]
+
+pm = generate_preset_pass_manager(
+    target=backend.target,
+    initial_layout=init_layout,
+    optimization_level=3,
+)
+
+def transpile_minimize(circ: QuantumCircuit, pm: PassManager, iterations=10):
+    """Transpile circuits for specified number of iterations and return the one with smallest two-qubit gate depth"""
+    circs = [pm.run(circ) for i in range(iterations)]
+    circs_sorted = sorted(
+        circs,
+        key=lambda x: x.depth(lambda x: x.operation.num_qubits == 2),
+    )
+    return circs_sorted[0]
+
+unitary_isa_circuits = []
+for circ in circuits_unitary:
+    circ_t = transpile_minimize(circ, pm, iterations=100)
+    unitary_isa_circuits.append(circ_t)
+
+unitary_pubs = [(circ, params) for circ in unitary_isa_circuits]
+```
+
+Wir visualisieren das Qubit-Layout der transpilierten unitären Circuits. Die schwarzen Kreise geben die verwendeten physikalischen Qubits an, und ihre Indizes entsprechen den virtuellen Qubit-Indizes. Wenn wir dies mit dem für die dynamischen Circuits dargestellten Layout vergleichen, können wir bestätigen, dass die unitären Circuits dieselben physikalischen Qubits wie die Daten-Qubits der dynamischen Circuits verwenden.
+
+```python
+plot_circuit_layout(
+    unitary_isa_circuits[-1],
+    backend,
+    qubit_coordinates=_heron_coords_r2(),
+    view="virtual",
+)
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/8c3c633f-0.avif)
+
+Jetzt fügen wir die DD-Sequenz zu den transpilierten Circuits hinzu und konstruieren die entsprechenden PUBs für die Job-Übermittlung.
+
+```python
+pm_dd = PassManager(
+    [
+        ALAPScheduleAnalysis(target=backend.target),
+        PadDynamicalDecoupling(
+            dd_sequence=[
+                XGate(),
+                RZGate(np.pi),
+                XGate(),
+                RZGate(-np.pi),
+            ],
+            spacing=[1 / 4, 1 / 2, 0, 0, 1 / 4],
+            target=backend.target,
+        ),
+    ]
+)
+
+unitary_isa_circuits_dd = pm_dd.run(unitary_isa_circuits)
+unitary_pubs_dd = [(circ, params) for circ in unitary_isa_circuits_dd]
+```
+
+### Zwei-Qubit-Gate-Tiefe von unitären und dynamischen Circuits vergleichen {#compare-two-qubit-gate-depth-of-unitary-and-dynamic-circuits}
+
+```python
+# compare circuit depth of unitary and dynamic circuit implementations
+unitary_depth = [
+    unitary_isa_circuits[i].depth(lambda x: x.operation.num_qubits == 2)
+    for i in range(len(unitary_isa_circuits))
+]
+
+dynamic_depth = [
+    dynamic_isa_circuits[i].depth(lambda x: x.operation.num_qubits == 2)
+    for i in range(len(dynamic_isa_circuits))
+]
+
+plt.plot(
+    list(range(len(unitary_depth))),
+    unitary_depth,
+    label="unitary circuits",
+    color="#be95ff",
+)
+plt.plot(
+    list(range(len(dynamic_depth))),
+    dynamic_depth,
+    label="dynamic circuits",
+    color="#ff7eb6",
+)
+plt.xlabel("Trotter steps")
+plt.ylabel("Two-qubit depth")
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x374225760>
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/36f1d72d-1.avif)
+
+Der Hauptvorteil des messungsbasierten Circuits besteht darin, dass bei der Implementierung mehrerer ZZ-Wechselwirkungen die CX-Schichten parallelisiert werden können und Messungen gleichzeitig erfolgen können. Dies ist möglich, weil alle ZZ-Wechselwirkungen kommutieren, sodass die Berechnung mit Messtiefe 1 durchgeführt werden kann. Nach der Transpilierung der Circuits stellen wir fest, dass der dynamische Circuit-Ansatz eine deutlich kürzere Zwei-Qubit-Tiefe als der standardmäßige unitäre Ansatz erzielt – mit dem Vorbehalt, dass die zusätzlichen Zwischenkreis-Messungen und die klassischen Feedforward-Operationen selbst Zeit in Anspruch nehmen und eigene Fehlerquellen einführen.
+## Schritt 3: Mit Qiskit-Primitiven ausführen {#step-3-execute-using-qiskit-primitives}
+#### Lokaler Testmodus {#local-testing-mode}
+
+Bevor wir die Jobs an die Hardware übermitteln, können wir eine kleine Testsimulation des dynamischen Circuits im [lokalen Testmodus](/guides/local-testing-mode) ausführen.
+
+```python
+aer_sim = AerSimulator()
+pm = generate_preset_pass_manager(backend=aer_sim, optimization_level=1)
+circuit_dynamic_test.measure_all()
+isa_qc = pm.run(circuit_dynamic_test)
+with Batch(backend=aer_sim) as batch:
+    sampler = Sampler(mode=batch)
+    result = sampler.run([(isa_qc, params)]).result()
+
+print(
+    "Simulated average magnetization at trotter step = 1 at three theta values"
+)
+result[0].data["meas"].expectation_values(obs_dynamic_test[0])
+```
+
+```text
+Simulated average magnetization at trotter step = 1 at three theta values
+```
+
+```text
+array([ 0.16666667,  0.01855469, -0.13476562])
+```
+
+#### MPS-Simulation {#mps-simulation}
+
+Für große Circuits können wir den `matrix_product_state`-Simulator (MPS) verwenden, der ein Näherungsergebnis für den Erwartungswert entsprechend der gewählten Bindungsdimension liefert. Wir verwenden die MPS-Simulationsergebnisse später als Referenz, um die Ergebnisse von der Hardware zu vergleichen.
+
+```python
+# The MPS simulation below took approximately 7 minutes to run on a laptop with Apple M1 chip
+
+mps_backend = AerSimulator(
+    method="matrix_product_state",
+    matrix_product_state_truncation_threshold=1e-5,
+    matrix_product_state_max_bond_dimension=100,
+)
+mps_sampler = Aer_Sampler.from_backend(mps_backend)
+
+shots = 4096
+
+data_sim = []
+for j in range(points):
+    circ_list = [
+        circ.assign_parameters([params[j]]) for circ in circuits_unitary
+    ]
+
+    mps_job = mps_sampler.run(circ_list, shots=shots)
+    result = mps_job.result()
+
+    point_data = [
+        result[d].data["meas"].expectation_values(observables_unitary)
+        for d in depths
+    ]
+
+    data_sim.append(point_data)  # data at one theta value
+
+data_sim = np.array(data_sim)
+```
+
+Nachdem die Circuits und Observablen vorbereitet sind, führen wir sie jetzt auf der Hardware mit dem Sampler-Primitive aus.
+
+Hier übermitteln wir drei Jobs für `unitary_pubs`, `dynamic_pubs` und `dynamic_pubs_dd`. Jeder davon ist eine Liste parametrisierter Circuits für neun verschiedene Trotter-Schritte mit drei verschiedenen $\theta$-Parametern.
+
+```python
+shots = 10000
+
+with Batch(backend=backend) as batch:
+    sampler = Sampler(mode=batch)
+
+    sampler.options.experimental = {
+        "execution": {
+            "scheduler_timing": True
+        },  # set to True to retrieve circuit timing info
+    }
+
+    job_unitary = sampler.run(unitary_pubs, shots=shots)
+    print(f"unitary: {job_unitary.job_id()}")
+
+    job_unitary_dd = sampler.run(unitary_pubs_dd, shots=shots)
+    print(f"unitary_dd: {job_unitary_dd.job_id()}")
+
+    job_dynamic = sampler.run(dynamic_pubs, shots=shots)
+    print(f"dynamic: {job_dynamic.job_id()}")
+
+    job_dynamic_dd = sampler.run(dynamic_pubs_dd, shots=shots)
+    print(f"dynamic_dd: {job_dynamic_dd.job_id()}")
+
+    job_dynamic_meas2 = sampler.run(dynamic_pubs_meas2, shots=shots)
+    print(f"dynamic_meas2: {job_dynamic_meas2.job_id()}")
+
+    job_dynamic_dd_meas2 = sampler.run(dynamic_pubs_dd_meas2, shots=shots)
+    print(f"dynamic_dd_meas2: {job_dynamic_dd_meas2.job_id()}")
+```
+
+```text
+unitary: d5dtt0ldq8ts73fvbhj0
+unitary: d5dtt11smlfc739onuag
+dynamic: d5dtt1hsmlfc739onuc0
+dynamic_dd: d5dtt25jngic73avdne0
+dynamic_meas2: d5dtt2ldq8ts73fvbhm0
+dynamic_dd_meas2: d5dtt2tjngic73avdnf0
+```
+
+## Schritt 4: Ergebnisse nachbearbeiten und im gewünschten klassischen Format zurückgeben {#step-4-post-process-and-return-results-in-desired-classical-format}
+
+Nachdem die Jobs abgeschlossen sind, können wir die Circuit-Dauer aus den Job-Ergebnis-Metadaten abrufen und die Circuit-Schedule-Informationen visualisieren. Weitere Informationen zur Visualisierung von Scheduling-Informationen eines Circuits findest du auf [dieser Seite](/guides/visualize-circuit-timing#qiskit-runtime-support).
+
+```python
+# Circuit durations is reported in the unit of `dt` which can be retrieved from `Backend` object
+unitary_durations = [
+    job_unitary.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+dynamic_durations = [
+    job_dynamic.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+dynamic_durations_meas2 = [
+    job_dynamic_meas2.result()[i].metadata["compilation"]["scheduler_timing"][
+        "circuit_duration"
+    ]
+    for i in depths
+]
+
+result_dd = job_dynamic_dd.result()[1]
+circuit_schedule_dd = result_dd.metadata["compilation"]["scheduler_timing"][
+    "timing"
+]
+
+# to visualize the circuit schedule, one can show the figure below
+fig_dd = draw_circuit_schedule_timing(
+    circuit_schedule=circuit_schedule_dd,
+    included_channels=None,
+    filter_readout_channels=False,
+    filter_barriers=False,
+    width=1000,
+)
+
+# Save to a file since the figure is large
+fig_dd.write_html("scheduler_timing_dd.html")
+```
+
+Wir stellen die Circuit-Dauern für unitäre Circuits und dynamische Circuits dar. Aus dem folgenden Diagramm ist ersichtlich, dass die Implementierung mit dynamischen Circuits und `measure_2` trotz der Zeit für Zwischenkreis-Messungen und klassische Operationen vergleichbare Circuit-Dauern wie die unitäre Implementierung erreicht.
+
+```python
+# visualize circuit durations
+
+def convert_dt_to_microseconds(circ_duration: List, backend_dt: float):
+    dt = backend_dt * 1e6  # dt in microseconds
+    return list(map(lambda x: x * dt, circ_duration))
+
+dt = backend.target.dt
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(unitary_durations, dt),
+    color="#be95ff",
+    linestyle=":",
+    label="unitary",
+)
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(dynamic_durations, dt),
+    color="#ff7eb6",
+    linestyle="-.",
+    label="dynamic",
+)
+plt.plot(
+    depths,
+    convert_dt_to_microseconds(dynamic_durations_meas2, dt),
+    color="#ff7eb6",
+    linestyle="-.",
+    marker="s",
+    mfc="none",
+    label="dynamic w/ meas2",
+)
+
+plt.xlabel("Trotter steps")
+plt.ylabel(r"Circuit durations in $\mu$s")
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x17f73c6e0>
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/639221e6-1.avif)
+
+Nachdem die Jobs abgeschlossen sind, rufen wir unten die Daten ab und berechnen die mittlere Magnetisierung, die durch die Observablen `observables_unitary` oder `observables_dynamic` geschätzt wird, die wir zuvor konstruiert haben.
+
+```python
+runs = {
+    "unitary": (
+        job_unitary,
+        [observables_unitary] * len(circuits_unitary),
+    ),
+    "unitary_dd": (
+        job_unitary_dd,
+        [observables_unitary] * len(circuits_unitary),
+    ),
+    # Omitting Dyn w/o DD and Dynamic w/ DD plots for better readability
+    # "dynamic": (job_dynamic, observables_dynamic),
+    # "dynamic_dd": (job_dynamic_dd, observables_dynamic),
+    "dynamic_meas2": (job_dynamic_meas2, observables_dynamic),
+    "dynamic_dd_meas2": (
+        job_dynamic_dd_meas2,
+        observables_dynamic,
+    ),
+}
+```
+
+```python
+data_dict = {}
+for key, (job, obs) in runs.items():
+    data = []
+    for i in range(points):
+        data.append(
+            [
+                job.result()[ind].data["meas"].expectation_values(obs[ind])[i]
+                for ind in depths
+            ]
+        )
+    data_dict[key] = data
+```
+
+Unten stellen wir die Spinmagnetisierung als Funktion der Trotter-Schritte für verschiedene $\theta$-Werte dar, die verschiedenen Stärken des lokalen Magnetfelds entsprechen. Wir zeigen sowohl die vorberechneten MPS-Simulationsergebnisse für die unitären idealen Circuits als auch die experimentellen Ergebnisse aus:
+
+1. Ausführung der unitären Circuits mit DD
+3. Ausführung der dynamischen Circuits mit DD und `MidCircuitMeasure`
+
+```python
+plt.figure(figsize=(10, 6))
+
+colors = ["#0f62fe", "#be95ff", "#ff7eb6"]
+for i in range(points):
+    plt.plot(
+        depths,
+        data_sim[i],
+        color=colors[i],
+        linestyle="solid",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (MPS)",
+    )
+    # plt.plot(
+    #     depths,
+    #     data_dict["unitary"][i],
+    #     color=colors[i],
+    #     linestyle=":",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Unitary)",
+    # )
+
+    plt.plot(
+        depths,
+        data_dict["unitary_dd"][i],
+        color=colors[i],
+        marker="o",
+        mfc="none",
+        linestyle=":",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (Unitary w/DD)",
+    )
+
+    # Omitting Dyn w/o DD and Dynamic w/ DD plots for better readability
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic"][i],
+    #     color=colors[i],
+    #     linestyle="-.",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dyn w/o DD)",
+    # )
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic_dd"][i],
+    #     marker="D",
+    #     mfc="none",
+    #     color=colors[i],
+    #     linestyle="-.",
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ DD)",
+    # )
+
+    # plt.plot(
+    #     depths,
+    #     data_dict["dynamic_meas2"][i],
+    #     color=colors[i],
+    #     marker="s",
+    #     mfc="none",
+    #     linestyle=':',
+    #     label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ MidCircuitMeas)",
+    # )
+
+    plt.plot(
+        depths,
+        data_dict["dynamic_dd_meas2"][i],
+        color=colors[i],
+        marker="*",
+        markersize=8,
+        linestyle=":",
+        label=f"θ={pi_check(i*max_angle/(points-1))} (Dynamic w/ DD & MidCircuitMeas)",
+    )
+
+plt.xlabel("Trotter steps", fontsize=16)
+plt.ylabel("Average magnetization", fontsize=16)
+plt.xticks(rotation=45)
+handles, labels = plt.gca().get_legend_handles_labels()
+plt.legend(
+    handles,
+    labels,
+    loc="upper right",
+    bbox_to_anchor=(1.46, 1.0),
+    shadow=True,
+    ncol=1,
+)
+plt.title(
+    f"{hex_rows}x{hex_cols} hex ring, {num_qubits} data qubits, {len(ancilla)} ancilla qubits \n{backend.name}: Sampler"
+)
+plt.show()
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/dc-hex-ising/extracted-outputs/662239cf-0.avif)
+
+Wenn wir die experimentellen Ergebnisse mit der Simulation vergleichen, sehen wir, dass die Implementierung mit dynamischen Circuits (gepunktete Linie mit Sternen) insgesamt besser abschneidet als die standardmäßige unitäre Implementierung (gepunktete Linie mit Kreisen). Zusammenfassend stellen wir dynamische Circuits als eine Lösung zur Simulation von Ising-Spinmodellen auf einem Wabengitter vor – einer Topologie, die nicht nativ für die Hardware ist. Die Lösung mit dynamischen Circuits ermöglicht ZZ-Wechselwirkungen zwischen Qubits, die keine nächsten Nachbarn sind, mit einer kürzeren Zwei-Qubit-Gate-Tiefe als der Einsatz von SWAP-Gates – auf Kosten zusätzlicher Ancilla-Qubits und klassischer Feedforward-Operationen.
+## Referenzen {#references}
+[1] Quantum computing with Qiskit, by Javadi-Abhari, A., Treinish, M., Krsulich, K., Wood, C.J., Lishman, J., Gacon, J., Martiel, S., Nation, P.D., Bishop, L.S., Cross, A.W. and Johnson, B.R., 2024. arXiv preprint [arXiv:2405.08810 (2024)](https://arxiv.org/abs/2405.08810)
