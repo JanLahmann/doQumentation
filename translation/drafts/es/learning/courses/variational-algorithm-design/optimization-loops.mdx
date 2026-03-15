@@ -1,0 +1,223 @@
+---
+title: "Bucles de optimización"
+sidebar_label: "Bucles de optimización"
+description: "Esta lección explica el uso de bucles de optimización clásicos para alimentar parámetros en cálculos cuánticos."
+notebook_path: "learning/courses/variational-algorithm-design/optimization-loops.ipynb"
+---
+{/* doqumentation-source-hash: c584e3d5 */}
+
+<OpenInLabBanner notebookPath="learning/courses/variational-algorithm-design/optimization-loops.ipynb" />
+
+
+
+{/* cspell:ignore nabla */}
+
+En esta lección aprenderemos cómo usar un *optimizador* para explorar iterativamente los estados cuánticos parametrizados de nuestro ansatz:
+
+- Hacer bootstrapping de un bucle de optimización
+- Comprender los compromisos al usar optimizadores locales y globales
+- Explorar los barren plateaus y cómo evitarlos
+
+A alto nivel, los optimizadores son fundamentales para la exploración de nuestro espacio de búsqueda. El optimizador utiliza evaluaciones de la función de costo para seleccionar el siguiente conjunto de parámetros en un bucle variacional, y repite este proceso hasta alcanzar un estado estable. En esta etapa, se devuelve un conjunto óptimo de valores de parámetros $\vec\theta^*$.
+
+![Un diagrama de factores importantes en la optimización, incluyendo barren plateaus, optimizadores basados en gradiente vs. libres de gradiente, y bootstrapping.](/learning/images/courses/variational-algorithm-design/optimization-loops/optimization-workflow.svg)
+## Optimizadores locales y globales {#local-and-global-optimizers}
+
+Primero configuremos nuestro problema antes de explorar cada clase de optimizador. Comenzamos con un circuito que contiene ocho parámetros variacionales:
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit scipy
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import TwoLocal
+import numpy as np
+
+theta_list = (2 * np.pi * np.random.rand(1, 8)).tolist()
+observable = SparsePauliOp.from_list([("XX", 1), ("YY", -3)])
+
+reference_circuit = QuantumCircuit(2)
+reference_circuit.x(0)
+
+variational_form = TwoLocal(
+    2,
+    rotation_blocks=["rz", "ry"],
+    entanglement_blocks="cx",
+    entanglement="linear",
+    reps=1,
+)
+ansatz = reference_circuit.compose(variational_form)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/optimization-loops/extracted-outputs/15cf7810-1d25-4c54-aff0-91d3a0c51cec-0.avif)
+
+```python
+def cost_func_vqe(params, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+    pub = (ansatz, hamiltonian, params)
+    cost = estimator.run([pub]).result()[0].data.evs
+    return cost
+```
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+```
+
+### Optimizadores locales {#local-optimizers}
+
+Los optimizadores locales buscan un punto que minimice la función de costo, partiendo de uno o más puntos iniciales $C(\vec{\theta_0})$, y se desplazan a otros puntos basándose en lo que observan en la región que evalúan en iteraciones sucesivas. Esto significa que la convergencia de estos algoritmos suele ser rápida, pero puede depender fuertemente del punto inicial. Los optimizadores locales no pueden ver más allá de la región que evalúan y son particularmente susceptibles a mínimos locales: reportan convergencia tan pronto como encuentran uno, ignorando otros estados con evaluaciones más favorables.
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+x0 = np.ones(8)
+
+result = minimize(
+    cost_func_vqe, x0, args=(ansatz, observable, estimator), method="SLSQP"
+)
+
+result
+```
+
+```text
+message: Optimization terminated successfully
+ success: True
+  status: 0
+     fun: -3.9999999964520634
+       x: [ 1.000e+00  1.000e+00 -1.571e+00 -4.556e-05 -1.207e+00
+           -1.935e+00  4.079e-01 -4.079e-01]
+     nit: 12
+     jac: [ 0.000e+00  0.000e+00 -7.957e-04  2.543e-04  1.381e-03
+            1.381e-03  5.430e-04  5.431e-04]
+    nfev: 112
+    njev: 12
+```
+
+### Optimizadores globales {#global-optimizers}
+
+Los optimizadores globales buscan el punto que minimiza la función de costo en múltiples regiones de su dominio (es decir, de forma no local), evaluándola iterativamente (es decir, en la iteración $i$) sobre un conjunto de vectores de parámetros $\Theta_i := \\{ {\vec\theta_{i,j} | j \in \mathcal{J}_\text{opt}^i} \\}$ determinados por el optimizador. Esto los hace menos susceptibles a mínimos locales y algo independientes de la inicialización, aunque convergen significativamente más lento hacia una solución propuesta.
+### Bootstrapping de la optimización {#bootstrapping-optimization}
+
+El *bootstrapping*, es decir, establecer el valor inicial de los parámetros $\vec\theta$ basándose en una optimización previa, puede ayudar a nuestro optimizador a converger más rápido hacia una solución. Nos referimos a esto como punto inicial $\vec\theta_0$, y a $|\psi(\vec\theta_0)\rangle = U_V(\vec\theta_0)|\rho\rangle$ como estado inicial. Este estado inicial difiere de nuestro estado de referencia $|\rho\rangle$: el primero se centra en parámetros iniciales que se establecen durante nuestro bucle de optimización, mientras que el segundo se orienta al uso de soluciones "de referencia" conocidas. Pueden coincidir si $U_V(\vec\theta_0) \equiv I$ (es decir, la operación identidad).
+
+Cuando los optimizadores locales convergen a mínimos locales no óptimos, podemos intentar hacer bootstrapping de la optimización globalmente y refinar la convergencia localmente. Aunque esto requiere configurar dos flujos de trabajo variacionales, permite al optimizador encontrar una solución más óptima que el optimizador local por sí solo.
+## Optimizadores basados en gradiente y libres de gradiente {#gradient-based-and-gradient-free-optimizers}
+
+### Basado en gradiente {#gradient-based}
+
+Para nuestra función de costo $C(\vec\theta)$, si tenemos acceso al gradiente de la función $\vec{\nabla} C(\vec\theta)$ desde un punto inicial, la forma más simple de minimizar la función es actualizar los parámetros en la dirección del descenso más pronunciado. Es decir, actualizamos los parámetros como $\vec\theta_{n+1} = \vec\theta_n - \eta \vec{\nabla} C(\vec\theta)$, donde $\eta$ es la tasa de aprendizaje, un pequeño <DefinitionTooltip definition="Un hiperparámetro es un parámetro que usamos para controlar nuestro algoritmo. El término 'hiper' lo distingue de los parámetros (θ) que nuestro algoritmo intenta encontrar.">hiperparámetro</DefinitionTooltip> positivo que controla el tamaño de la actualización. Continuamos esto hasta converger a un <DefinitionTooltip definition="Un mínimo local es el punto más bajo de la función para un pequeño rango de valores de theta. En contraste, un mínimo global es el punto más bajo en toda nuestra función (es decir, para cualquier valor de θ).">mínimo local</DefinitionTooltip> de la función de costo $C({\vec\theta^*})$.
+Podemos usar esta función de costo y un optimizador para calcular los parámetros óptimos.
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+x0 = np.ones(8)
+
+result = minimize(
+    cost_func_vqe, x0, args=(ansatz, observable, estimator), method="BFGS"
+)
+
+result
+```
+
+```text
+message: Optimization terminated successfully.
+  success: True
+   status: 0
+      fun: -3.9999999999997025
+        x: [ 1.000e+00  1.000e+00  1.571e+00  3.220e-07  2.009e-01
+            -2.009e-01  6.342e-01 -6.342e-01]
+      nit: 14
+      jac: [-1.192e-07 -2.980e-08  8.345e-07  1.103e-06  5.960e-08
+             0.000e+00 -5.960e-08  2.980e-08]
+ hess_inv: [[ 1.000e+00  1.872e-10 ...  5.077e-05  3.847e-05]
+            [ 1.872e-10  1.000e+00 ... -5.208e-05 -4.060e-05]
+            ...
+            [ 5.077e-05 -5.208e-05 ...  7.243e-01 -2.604e-01]
+            [ 3.847e-05 -4.060e-05 ... -2.604e-01  8.179e-01]]
+     nfev: 144
+     njev: 16
+```
+
+Las principales desventajas de este tipo de optimización son la velocidad de convergencia, que puede ser muy lenta, y la falta de garantía de alcanzar la solución óptima.
+
+![Gráfico de f(theta) contra theta; varios puntos muestran diferentes estados de un algoritmo de descenso por gradiente al encontrar el mínimo de una curva.](/learning/images/courses/variational-algorithm-design/optimization-loops/optimization-gradient-descent.svg)
+
+### Libre de gradiente {#gradient-free}
+
+Los algoritmos de optimización libres de gradiente no requieren información de gradiente y pueden ser útiles en situaciones donde el cálculo del gradiente es difícil, costoso o demasiado ruidoso. También tienden a ser más robustos en la búsqueda de óptimos globales, mientras que los métodos basados en gradiente tienden a converger a óptimos locales. Exploraremos algunos escenarios en los que un optimizador libre de gradiente puede ayudar a evitar barren plateaus. Sin embargo, los métodos libres de gradiente requieren mayores recursos computacionales, especialmente en problemas con espacios de búsqueda de alta dimensionalidad.
+
+Aquí hay un ejemplo que usa el optimizador [`COBYLA`](https://docs.scipy.org/doc/scipy/reference/optimize.minimize-cobyla.html#optimize-minimize-cobyla) en su lugar:
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+x0 = np.ones(8)
+
+result = minimize(
+    cost_func_vqe, x0, args=(ansatz, observable, estimator), method="COBYLA"
+)
+
+result
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -3.999999973369678
+       x: [ 1.631e+00  1.492e+00  1.571e+00  3.142e+00  1.375e+00
+           -1.767e+00  1.484e+00  1.658e+00]
+    nfev: 137
+   maxcv: 0.0
+```
+
+## Barren plateaus {#barren-plateaus}
+
+En realidad, el paisaje de costos puede ser bastante complejo, como muestran las colinas y valles del siguiente ejemplo. El método de optimización nos navega a través del paisaje de costos en busca del mínimo, representado por los puntos y líneas negros. Podemos ver que dos de las tres búsquedas terminan en un mínimo local del paisaje, en lugar del global.
+
+![Una superficie curva compleja con muchos picos y valles.](/learning/images/courses/variational-algorithm-design/optimization-loops/optimization-loss-landscape.svg)
+
+Independientemente del método de optimización utilizado, puede ser difícil determinar la dirección de búsqueda apropiada cuando el paisaje de costos es relativamente plano. Este escenario se denomina <DefinitionTooltip definition="Cuando los gradientes de circuitos cuánticos parametrizados se vuelven exponencialmente pequeños con respecto al número de qubits, lo que hace que la optimización sea difícil y potencialmente imposible.">barren plateau</DefinitionTooltip>, donde el paisaje de costos se vuelve cada vez más plano (y por lo tanto más difícil determinar la dirección hacia el mínimo). Para una amplia gama de circuitos cuánticos parametrizados, la probabilidad de que el gradiente sea distinto de cero en una dirección razonable (con una precisión determinada) decrece exponencialmente con el número de qubits.
+
+![Un diagrama que muestra una meseta geográfica en comparación con una ladera montañosa para explicar por qué un gradiente nos ayuda a encontrar un mínimo y una meseta obstaculiza nuestros esfuerzos.](/learning/images/courses/variational-algorithm-design/optimization-loops/optimization-barren-plateaus.svg)
+
+Si bien este campo aún se investiga activamente, tenemos algunas recomendaciones para mejorar el rendimiento de la optimización:
+
+- **Bootstrapping** puede ayudar a evitar que el bucle de optimización se quede atrapado en un espacio de parámetros donde el gradiente es pequeño.
+- **Experimentar con ansätze eficientes en hardware**: Dado que usamos un sistema cuántico ruidoso como oráculo de caja negra, la calidad de estas evaluaciones puede afectar el rendimiento del optimizador. El uso de ansätze eficientes en hardware, como [`EfficientSU2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.EfficientSU2), puede evitar la generación de gradientes exponencialmente pequeños.
+- **Experimentar con supresión y mitigación de errores**: Los Qiskit Runtime Primitives ofrecen una interfaz simple para experimentar con diferentes valores de `optimization_level` y `resilience_setting`. Esto puede reducir el impacto del ruido y hacer el proceso de optimización más eficiente.
+- **Experimentar con optimizadores libres de gradiente**: A diferencia de los algoritmos de optimización basados en gradiente, optimizadores como `COBYLA` no dependen de la información de gradiente para la optimización de parámetros y, por lo tanto, son menos susceptibles al problema de los barren plateaus.
+## Resumen {#summary}
+
+En esta lección aprendiste cómo definir tu bucle de optimización:
+
+- Hacer bootstrapping de un bucle de optimización
+- Comprender los compromisos al usar optimizadores locales y globales
+- Explorar los barren plateaus y cómo evitarlos
+
+Nuestro flujo de trabajo variacional de alto nivel está ahora completo:
+
+![Un circuito cuántico con dos operadores unitarios: uno para preparar el estado de referencia y un segundo para variar el estado usando parámetros variacionales.](/learning/images/courses/variational-algorithm-design/optimization-loops/optimization-circuit.svg)
+
+A continuación, exploraremos algoritmos variacionales específicos con este marco de trabajo.
