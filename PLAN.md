@@ -2,51 +2,60 @@
 
 ## Scope
 
-Use YouTube's built-in auto-translated captions to provide translated subtitles on all course videos. YouTube handles transcription, translation, and sync — we just need to configure the embed URL with the correct caption language based on the current Docusaurus locale.
+Two-part approach:
+1. **YouTube auto-translated captions** — configure embeds with locale-aware caption parameters for instant translated subtitles
+2. **Whisper transcription pipeline** — GitHub Actions workflow to generate high-quality English VTT transcripts from course videos
 
 ---
 
-## Step 1: Update IBMVideo Component
+## Part 1: Locale-Aware YouTube Captions (Done)
 
 **File:** `src/components/CourseComponents/IBMVideo.tsx`
 
-Modify the YouTube embed URL to include caption parameters based on the current locale:
+- Uses `useDocusaurusContext()` to get `i18n.currentLocale`
+- YouTube embed URL includes `hl={locale}` (player UI language)
+- For non-English locales, also sets `cc_load_policy=1` and `cc_lang_pref={locale}` to auto-show translated captions
+- Works for all 30+ videos with YouTube mappings, all languages YouTube supports
 
-- Use `useDocusaurusContext()` to get `i18n.currentLocale`
-- For YouTube embeds, append URL parameters:
-  - `cc_load_policy=1` — show captions by default
-  - `cc_lang_pref={locale}` — preferred caption language (YouTube auto-translates if the language isn't natively available)
-  - `hl={locale}` — player interface language
-- For non-English locales, captions are shown automatically in the user's language
-- For English locale, captions are available but not forced on (users can enable them via the CC button)
+## Part 2: Whisper Transcript Generation Pipeline
 
-### Locale Mapping
+### Script: `scripts/generate-transcripts.py`
 
-Docusaurus locale codes map directly to YouTube language codes in most cases (`de` → `de`, `es` → `es`, `ja` → `ja`). No special mapping needed for the active locales (en, de, es).
+- Downloads audio from YouTube via `yt-dlp`
+- Runs OpenAI Whisper to generate timestamped English VTT transcripts
+- Saves to `static/transcripts/{ibm_video_id}/en.vtt`
+- Skips videos that already have transcripts (use `--force` to overwrite)
+- Supports `--video-id` to transcribe a single video, or all videos by default
+- Reads video ID mapping from `scripts/video-map.json`
 
-## Step 2: Verify
+### Workflow: `.github/workflows/generate-transcripts.yml`
 
-- Run `npm start` with different locales and confirm captions appear in the correct language
-- Verify English locale still works as before (no forced captions)
-- Verify IBM Video fallback (no YouTube mapping) still works unchanged
+- **Trigger:** `workflow_dispatch` (manual) with optional inputs:
+  - `video_id` — specific IBM Video ID (empty = all)
+  - `model` — Whisper model (`tiny`, `base`, `small`, `medium`, `large-v3`)
+- **Runner:** `ubuntu-latest` (CPU), 6-hour timeout for long videos
+- **Steps:** checkout → install whisper + yt-dlp → run script → commit VTT files
+- Default model: `medium` (good accuracy/speed balance on CPU)
+
+### Video Map: `scripts/video-map.json`
+
+- JSON mapping of all 32 IBM Video IDs to YouTube IDs
+- Single source of truth used by the generation script
 
 ---
 
-## Files Modified
+## Files Summary
 
 | Action | File |
 |--------|------|
 | Modify | `src/components/CourseComponents/IBMVideo.tsx` |
+| Create | `scripts/generate-transcripts.py` |
+| Create | `scripts/video-map.json` |
+| Create | `.github/workflows/generate-transcripts.yml` |
 
-## What This Gives Us
+## Future Enhancements
 
-- Translated captions on all 50+ course videos with YouTube mappings
-- All languages YouTube supports (far more than our 20 locales)
-- No VTT files to maintain, no translation pipeline, no new components
-- Captions are synced to the video by YouTube automatically
-
-## Future Enhancements (Not in POC)
-
-- Synced transcript panel below the video (interactive, click-to-seek) using YouTube IFrame API
-- Custom VTT files for higher-quality translations of quantum computing terminology
+- LLM-based translation of VTT files (preserving timestamps, quantum computing terminology)
+- Synced transcript panel below the video (interactive, click-to-seek)
 - IBM Video Streaming adapter for videos without YouTube mappings
+- GPU runners for faster Whisper transcription with `large-v3`
