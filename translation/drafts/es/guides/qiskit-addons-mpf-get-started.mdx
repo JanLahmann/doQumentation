@@ -1,0 +1,231 @@
+---
+title: "Primeros pasos con las fórmulas multiproducto (MPF)"
+sidebar_label: "Primeros pasos con las fórmulas multiproducto (MPF)"
+description: "Comienza a usar el complemento MPF utilizando la evolución temporal de una cadena de Ising como ejemplo"
+notebook_path: "guides/qiskit-addons-mpf-get-started.ipynb"
+---
+{/* doqumentation-source-hash: dbcaaa7e */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-mpf-get-started.ipynb" />
+
+
+
+## Primeros pasos con las fórmulas multiproducto (MPF) {#get-started-with-multi-product-formulas-mpfs}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versiones de paquetes</b></summary>
+
+El código de esta página fue desarrollado con los siguientes requisitos.
+Recomendamos usar estas versiones o versiones más recientes.
+
+```
+qiskit[all]~=2.3.0
+qiskit-addon-utils~=0.3.0
+qiskit-addon-mpf~=0.3.0
+scipy~=1.16.3
+```
+</details>
+Esta guía demuestra cómo usar el paquete `qiskit-addon-mpf`, utilizando la evolución temporal de un modelo de Ising como ejemplo. Con este paquete, puedes construir una Fórmula Multiproducto (MPF) que puede lograr un menor error de Trotter en las mediciones de observables. Las herramientas proporcionadas te permiten determinar los pesos de una MPF elegida, que luego se pueden usar para recombinar los valores de expectación estimados de varios circuitos de evolución temporal, cada uno con un número diferente de pasos de Trotter.
+
+Comienza considerando el Hamiltoniano de un modelo de Ising con 10 sitios:
+
+$$ H_{\text{Ising}} = \sum_{i=1}^9 J_{i,(i+1)}Z_iZ_{i+1} + \sum_{i=1}^{10} h_i X_i $$
+
+donde $J_{i,(i+1)}$ es la intensidad del acoplamiento y $h_i$ es la intensidad del campo magnético externo. Para plantear el problema, el observable a medir será la magnetización total del sistema
+
+$$ \langle M \rangle = \sum_{i=1}^{10} \langle Z_i \rangle. $$
+
+El fragmento de código a continuación prepara el Hamiltoniano de la cadena de Ising usando el paquete `qiskit-addon-utils` y define el observable que se medirá.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-mpf qiskit-addon-utils scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit.synthesis import SuzukiTrotter
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.primitives import StatevectorEstimator
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_addon_utils.problem_generators import (
+    generate_xyz_hamiltonian,
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_mpf.costs import (
+    setup_exact_problem,
+    setup_sum_of_squares_problem,
+)
+from qiskit_addon_mpf.static import setup_static_lse
+
+from scipy.linalg import expm
+import numpy as np
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_line(10, bidirectional=False)
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+print(f"Hamiltonian:\n {hamiltonian}\n")
+
+L = coupling_map.size()
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L
+)
+print(f"Observable:\n {observable}")
+```
+
+```text
+Hamiltonian:
+ SparsePauliOp(['IIIIIIIZZI', 'IIIIIZZIII', 'IIIZZIIIII', 'IZZIIIIIII', 'IIIIIIIIZZ', 'IIIIIIZZII', 'IIIIZZIIII', 'IIZZIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIXI', 'IIIIIIIXII', 'IIIIIIXIII', 'IIIIIXIIII', 'IIIIXIIIII', 'IIIXIIIIII', 'IIXIIIIIII', 'IXIIIIIIII', 'XIIIIIIIII'],
+              coeffs=[1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j,
+ 1. +0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j,
+ 0.4+0.j, 0.4+0.j, 0.4+0.j])
+
+Observable:
+ SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j,
+ 0.05+0.j, 0.05+0.j, 0.05+0.j])
+```
+
+A continuación, prepara la MPF. La primera decisión es si los coeficientes serán estáticos (independientes del tiempo) o dinámicos; este tutorial usa una MPF estática. La siguiente decisión es el conjunto de valores $k_j$. Esto determina cuántos términos tendrá la MPF, así como cuántos pasos de Trotter usa cada término para simular la evolución temporal. La elección de los valores $k_j$ es heurística, por lo que debes obtener tu propio conjunto de valores $k_j$ "buenos". Lee las pautas para encontrar un buen conjunto de valores al final de la [página de primeros pasos](/guides/qiskit-addons-mpf#determine-mpf-coefficients).
+
+Luego, una vez determinados los valores $k_j$, puedes preparar el sistema de ecuaciones, $Ax=b$, a resolver. La matriz $A$ también está determinada por la fórmula de producto a usar. Las opciones aquí son su *orden*, que se establece en $2$ en este ejemplo, y si la fórmula de producto debe ser *simétrica* o no, lo cual se establece en `True` para este ejemplo. El fragmento de código a continuación selecciona un tiempo total para evolucionar el sistema, los valores $k_j$ a usar y el conjunto de ecuaciones a resolver usando el método [`qiskit_addon_mpf.static.setup_static_lse`](../api/qiskit-addon-mpf/static).
+
+```python
+time = 8.0
+trotter_steps = (8, 12, 19)
+
+lse = setup_static_lse(trotter_steps, order=2, symmetric=True)
+print(lse)
+```
+
+```text
+LSE(A=array([[1.00000000e+00, 1.00000000e+00, 1.00000000e+00],
+       [1.56250000e-02, 6.94444444e-03, 2.77008310e-03],
+       [2.44140625e-04, 4.82253086e-05, 7.67336039e-06]]), b=array([1., 0., 0.]))
+```
+
+Una vez instanciado el sistema lineal de ecuaciones, se puede resolver exactamente o mediante un modelo aproximado usando una suma de cuadrados (o la norma de Frobenius para coeficientes dinámicos; consulta la [referencia de la API](../api/qiskit-addon-mpf/costs) para más información). La decisión de usar un modelo aproximado suele surgir cuando la norma de los coeficientes para el conjunto de valores $k_j$ elegido se considera demasiado alta y no es posible elegir un conjunto diferente de valores $k_j$. Esta guía demuestra ambos enfoques para comparar los resultados.
+
+```python
+model_exact, coeffs_exact = setup_exact_problem(lse)
+model_approx, coeffs_approx = setup_sum_of_squares_problem(
+    lse, max_l1_norm=3.0
+)
+model_exact.solve()
+model_approx.solve()
+print(f"Exact solution: {coeffs_exact.value}")
+print(f"Approximate solution: {coeffs_approx.value}")
+```
+
+```text
+Exact solution: [ 0.17239057 -1.19447005  2.02207947]
+Approximate solution: [-0.40454257  0.57553173  0.8290123 ]
+```
+
+<Admonition type="note">
+
+El objeto `LSE` también posee un método `LSE.solve()`, que resolverá el sistema de ecuaciones de forma exacta. La razón por la que se usa `setup_exact_problem()` en esta guía es para demostrar la interfaz que ofrecen los demás métodos aproximados.
+
+</Admonition>
+
+## Configurar y ejecutar los circuitos de Trotter {#set-up-and-execute-trotter-circuits}
+
+Ahora que se han obtenido los coeficientes $x_j$, el último paso es generar los circuitos de evolución temporal para el orden y el conjunto de pasos $k_j$ elegidos de la MPF. El paquete `qiskit-addon-utils` puede acelerar este proceso.
+
+```python
+circuits = []
+for k in trotter_steps:
+    circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(order=2, reps=k),
+        time=time,
+    )
+    circuits.append(circ)
+```
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/6edb8bb0-30ee-416e-9804-84372ca091cf-0.svg)
+
+```python
+circuits[1].draw("mpl", fold=-1)
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/b2360c04-d2f8-4cfb-86c6-b05e71b9b708-0.svg)
+
+```python
+circuits[2].draw("mpl", fold=-1)
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/2fbbe105-269e-4fb1-88b1-b0ba5acee229-0.svg)
+
+Una vez construidos estos circuitos, puedes transpilarlos y ejecutarlos usando una QPU. Para este ejemplo, usaremos uno de los simuladores sin ruido para demostrar cómo se reduce el error de Trotter.
+
+```python
+backend = GenericBackendV2(num_qubits=10)
+transpiler = generate_preset_pass_manager(
+    optimization_level=2, backend=backend
+)
+
+transpiled_circuits = [transpiler.run(circ) for circ in circuits]
+
+estimator = StatevectorEstimator()
+job = estimator.run([(circ, observable) for circ in transpiled_circuits])
+result = job.result()
+
+mpf_evs = [res.data.evs for res in result]
+print(mpf_evs)
+```
+
+```text
+[array(0.23799162), array(0.35754312), array(0.38649906)]
+```
+
+## Reconstruir los resultados {#reconstruct-results}
+
+Ahora que los circuitos se han ejecutado, reconstruir los resultados es bastante sencillo. Como se menciona en la página de [descripción general de MPF](./qiskit-addons-mpf#theoretical-background), nuestro observable se reconstruye mediante la suma ponderada
+
+$$ \langle M \rangle = \sum_j x_j \langle M_j \rangle. $$
+
+donde $x_j$ son los coeficientes que encontramos y $\langle M_j \rangle$ es la estimación del observable $\sum_i \langle Z_i \rangle$ para cada circuito. Luego podemos comparar los resultados obtenidos con el valor exacto usando el paquete `scipy.linalg`.
+
+```python
+exp_H = expm(-1j * time * hamiltonian.to_matrix())
+initial_state = np.zeros(exp_H.shape[0])
+initial_state[0] = 1.0
+
+time_evolved_state = exp_H @ initial_state
+exact_obs = (
+    time_evolved_state.conj() @ observable.to_matrix() @ time_evolved_state
+)
+
+# Print out the different observable measurements
+print(f"Exact value: {exact_obs.real}")
+print(f"PF with 19 steps: {mpf_evs[-1]}")
+print(f"MPF using exact solution: {mpf_evs @ coeffs_exact.value}")
+print(f"MPF using approximate solution: {mpf_evs @ coeffs_approx.value}")
+```
+
+```text
+Exact value: 0.4006024248789992
+PF with 19 steps: 0.3864990619977402
+MPF using exact solution: 0.3954847855979902
+MPF using approximate solution: 0.4299121425348959
+```
+
+Aquí puedes ver que la MPF ha reducido el error de Trotter en comparación con el obtenido con una sola PF con $k_j=19$. Sin embargo, el modelo aproximado produjo un valor de expectación peor que el modelo exacto. Esto demuestra la importancia de usar criterios de convergencia estrictos en el modelo aproximado y de encontrar un conjunto "bueno" de valores $k_j$.
