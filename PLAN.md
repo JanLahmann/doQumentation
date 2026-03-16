@@ -26,7 +26,7 @@ Two-part approach:
 - Saves to `static/transcripts/{ibm_video_id}/en.vtt`
 - Skips videos that already have transcripts (use `--force` to overwrite)
 - Supports `--video-id` to transcribe a single video, or all videos by default
-- Reads video ID mapping from `scripts/video-map.json`
+- Reads video ID mapping by parsing `IBMVideo.tsx` (single source of truth)
 
 ### Workflow: `.github/workflows/generate-transcripts.yml`
 
@@ -37,11 +37,6 @@ Two-part approach:
 - **Steps:** checkout → install whisper + yt-dlp → run script → commit VTT files
 - Default model: `medium` (good accuracy/speed balance on CPU)
 
-### Video Map: `scripts/video-map.json`
-
-- JSON mapping of all 32 IBM Video IDs to YouTube IDs
-- Single source of truth used by the generation script
-
 ---
 
 ## Files Summary
@@ -50,7 +45,6 @@ Two-part approach:
 |--------|------|
 | Modify | `src/components/CourseComponents/IBMVideo.tsx` |
 | Create | `scripts/generate-transcripts.py` |
-| Create | `scripts/video-map.json` |
 | Create | `.github/workflows/generate-transcripts.yml` |
 
 ## Future Enhancements

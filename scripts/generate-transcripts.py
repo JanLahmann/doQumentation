@@ -19,7 +19,7 @@ Requirements:
 """
 
 import argparse
-import json
+import re
 import shutil
 import subprocess
 import sys
@@ -27,14 +27,14 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VIDEO_MAP_PATH = REPO_ROOT / "scripts" / "video-map.json"
+IBMVIDEO_TSX = REPO_ROOT / "src" / "components" / "CourseComponents" / "IBMVideo.tsx"
 TRANSCRIPTS_DIR = REPO_ROOT / "static" / "transcripts"
 
 
 def load_video_map() -> dict[str, str]:
-    """Load IBM Video ID → YouTube ID mapping."""
-    with open(VIDEO_MAP_PATH) as f:
-        return json.load(f)
+    """Parse IBM Video ID → YouTube ID mapping from IBMVideo.tsx."""
+    text = IBMVIDEO_TSX.read_text()
+    return dict(re.findall(r"'(\d+)':\s*'([A-Za-z0-9_-]+)'", text))
 
 
 def download_audio(youtube_id: str, output_path: Path) -> Path:
@@ -103,7 +103,7 @@ def main():
 
     if args.video_id:
         if args.video_id not in video_map:
-            print(f"Error: Video ID {args.video_id} not found in {VIDEO_MAP_PATH}", file=sys.stderr)
+            print(f"Error: Video ID {args.video_id} not found in {IBMVIDEO_TSX}", file=sys.stderr)
             sys.exit(1)
         videos = {args.video_id: video_map[args.video_id]}
     else:
