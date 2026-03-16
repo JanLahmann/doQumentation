@@ -1,0 +1,334 @@
+---
+title: "Premiers pas avec AQC-Tensor"
+sidebar_label: "Premiers pas avec AQC-Tensor"
+description: "Exemple de flux de travail pour compresser des circuits à l'aide de la compilation quantique approchée"
+notebook_path: "guides/qiskit-addons-aqc-get-started.ipynb"
+---
+
+{/* doqumentation-source-hash: 5f94ca58 */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-aqc-get-started.ipynb" />
+
+
+
+# Premiers pas avec la compilation quantique approchée par réseaux de tenseurs (AQC-Tensor) {#getting-started-with-approximate-quantum-compilation-with-tensor-networks-aqc-tensor}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versions des packages</b></summary>
+
+Le code de cette page a été développé avec les dépendances suivantes.
+Nous recommandons d'utiliser ces versions ou des versions plus récentes.
+
+```
+qiskit[all]~=2.3.0
+qiskit-aer~=0.17
+qiskit-addon-utils~=0.3.0
+qiskit-addon-aqc-tensor[aer,quimb-jax]~=0.2.0; sys.platform != 'darwin'
+scipy~=1.16.3
+```
+</details>
+Ce guide présente un exemple simple pour démarrer avec AQC-Tensor. Dans cet exemple, tu vas prendre un circuit de Trotter qui simule l'évolution d'un modèle d'Ising en champ transverse et utiliser la méthode AQC-Tensor pour réduire la profondeur du circuit résultant. De plus, cet exemple nécessite le package `qiskit-addon-utils` pour le générateur de problème, `qiskit-aer` pour la simulation par réseau de tenseurs, et `scipy` pour l'optimisation des paramètres.
+
+Pour commencer, rappelons que le Hamiltonien du modèle d'Ising en champ transverse s'écrit
+
+$$ \mathcal{H}_{Ising} = \sum_{i=1}^N J_{i,(i+1)}Z_iZ_{i+1} + h_i X_i $$
+
+où nous supposons des conditions aux limites périodiques, ce qui implique que pour $i=10$ on obtient $i+1=11\rightarrow 1$, $J$ est la constante de couplage entre deux sites et $h$ est l'intensité du champ magnétique externe.
+
+L'extrait de code suivant génère le Hamiltonien d'une chaîne d'Ising à 10 sites avec des conditions aux limites périodiques.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-aer scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_aqc_tensor import generate_ansatz_from_circuit
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+from qiskit_aer import AerSimulator
+from scipy.optimize import OptimizeResult, minimize
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit circle on this coupling map
+reduced_coupling_map = coupling_map.reduce(
+    [0, 13, 1, 14, 10, 16, 4, 15, 3, 9]
+)
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+```
+
+## Diviser l'évolution temporelle en deux parties pour l'exécution classique et quantique {#split-the-time-evolution-into-two-pieces-for-classical-and-quantum-execution}
+
+L'objectif global de cet exemple est de simuler l'évolution temporelle du Hamiltonien modèle. Nous le faisons ici par évolution de Trotter, qui sera divisée en deux parties.
+
+1. Une partie initiale simulable à l'aide d'états produits matriciels (MPS). C'est cette partie qui sera « compilée » avec AQC-Tensor.
+2. Une partie suivante qui sera exécutée sur du matériel quantique.
+
+Nous choisissons de faire évoluer le système jusqu'au temps $t_f=5$ et d'utiliser AQC-Tensor pour comprimer l'évolution temporelle jusqu'au temps $t=4$, puis d'évoluer avec des pas de Trotter ordinaires jusqu'à $t_f$.
+
+À partir de là, nous allons générer deux circuits : l'un sera compressé avec AQC-Tensor et l'autre sera exécuté sur un QPU. Pour le premier circuit, puisqu'il sera simulé classiquement à l'aide d'états produits matriciels, nous utiliserons un nombre généreux de couches afin de minimiser l'erreur de Trotter. Pendant ce temps, le second circuit simulant l'évolution temporelle de $t_i=4$ à $t_f=5$ utilisera beaucoup moins de couches afin de minimiser la profondeur.
+
+```python
+# Generate circuit to be compressed
+aqc_evolution_time = 4.0
+aqc_target_num_trotter_steps = 45
+
+aqc_target_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+
+# Generate circuit to execute on hardware
+subsequent_evolution_time = 1.0
+subsequent_num_trotter_steps = 5
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+```
+
+À des fins de comparaison, nous allons également générer un troisième circuit — celui qui évolue jusqu'à $t=4$, mais avec le même nombre de couches que le second circuit évoluant de $t_i=4$ à $t_f=5$. C'est le circuit que nous *aurions* exécuté si nous n'avions pas utilisé la technique AQC-Tensor. Nous l'appellerons le circuit de *comparaison* pour l'instant.
+
+```python
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps
+    / subsequent_evolution_time
+    * aqc_evolution_time
+)
+aqc_comparison_num_trotter_steps
+
+comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+## Générer l'ansatz et construire la simulation MPS {#generate-ansatz-and-construct-mps-simulation}
+
+Nous allons maintenant générer l'ansatz que nous allons optimiser. Il évoluera jusqu'au même temps d'évolution que notre premier circuit (de $t_i=0$ à $t_f=4$), mais avec moins de pas de Trotter.
+
+Une fois le circuit généré, nous le passons à la fonction `generate_ansatz_from_circuit()` d'AQC-Tensor, qui analyse la connectivité à deux qubits et retourne deux choses. La première est un circuit ansatz généré avec la même connectivité à deux qubits, et la seconde est un ensemble de paramètres qui, lorsqu'ils sont injectés dans l'ansatz, produisent le circuit d'entrée.
+
+```python
+aqc_ansatz_num_trotter_steps = 5
+
+aqc_good_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit, qubits_initially_zero=True
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-aqc-get-started/extracted-outputs/e08edb92-da1f-4131-85f5-f89006f7a2dd-0.svg)
+
+Ensuite, nous allons construire la représentation MPS de l'état à approcher par AQC. Nous calculerons également la fidélité $|\langle\psi_1 | \psi_2 \rangle |^2$ entre l'état préparé par le circuit de comparaison et le circuit qui génère l'état cible (lequel utilisait plus de pas de Trotter).
+
+```python
+# Generate MPS simulator settings and obtain the MPS representation of the target state
+simulator_settings = AerSimulator(
+    method="matrix_product_state",
+    matrix_product_state_max_bond_dimension=100,
+)
+aqc_target_mps = tensornetwork_from_circuit(
+    aqc_target_circuit, simulator_settings
+)
+
+# Compute the fidelity between the MPS representation of the target state and the state produced by the comparison circuit
+comparison_mps = tensornetwork_from_circuit(
+    comparison_circuit, simulator_settings
+)
+comparison_fidelity = (
+    abs(compute_overlap(comparison_mps, aqc_target_mps)) ** 2
+)
+print(f"Comparison fidelity: {comparison_fidelity}")
+```
+
+```text
+Comparison fidelity: 0.9997111919739693
+```
+
+## Optimiser les paramètres de l'ansatz à l'aide du MPS {#optimize-the-parameters-of-the-ansatz-using-the-mps}
+
+Enfin, nous allons optimiser le circuit ansatz de sorte qu'il produise l'état cible avec une fidélité supérieure à celle de notre `comparison_fidelity`. La fonction de coût à minimiser sera `MaximizeStateFidelity` et sera optimisée à l'aide de l'optimiseur L-BFGS de scipy.
+
+```python
+objective = MaximizeStateFidelity(
+    aqc_target_mps, aqc_ansatz, simulator_settings
+)
+
+stopping_point = 1 - comparison_fidelity
+
+def callback(intermediate_result: OptimizeResult):
+    print(f"Intermediate result: Fidelity {1 - intermediate_result.fun:.8}")
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": 100},
+    callback=callback,
+)
+if (
+    result.status
+    not in (
+        0,
+        1,
+        99,
+    )
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+Intermediate result: Fidelity 0.95084365
+```
+
+```text
+Intermediate result: Fidelity 0.98409893
+```
+
+```text
+Intermediate result: Fidelity 0.99142033
+```
+
+```text
+Intermediate result: Fidelity 0.99521405
+```
+
+```text
+Intermediate result: Fidelity 0.99566673
+```
+
+```text
+Intermediate result: Fidelity 0.99650054
+```
+
+```text
+Intermediate result: Fidelity 0.99683487
+```
+
+```text
+Intermediate result: Fidelity 0.99720426
+```
+
+```text
+Intermediate result: Fidelity 0.99761726
+```
+
+```text
+Intermediate result: Fidelity 0.99809073
+```
+
+```text
+Intermediate result: Fidelity 0.99838244
+```
+
+```text
+Intermediate result: Fidelity 0.99861841
+```
+
+```text
+Intermediate result: Fidelity 0.99874617
+```
+
+```text
+Intermediate result: Fidelity 0.99892696
+```
+
+```text
+Intermediate result: Fidelity 0.99908129
+```
+
+```text
+Intermediate result: Fidelity 0.99917737
+```
+
+```text
+Intermediate result: Fidelity 0.99925456
+```
+
+```text
+Intermediate result: Fidelity 0.99933134
+```
+
+```text
+Intermediate result: Fidelity 0.99947173
+```
+
+```text
+Intermediate result: Fidelity 0.99956469
+```
+
+```text
+Intermediate result: Fidelity 0.99964488
+```
+
+```text
+Intermediate result: Fidelity 0.99967419
+```
+
+```text
+Intermediate result: Fidelity 0.99968821
+```
+
+```text
+Intermediate result: Fidelity 0.9997448
+Done after 24 iterations.
+```
+
+À ce stade, nous disposons d'un ensemble de paramètres qui génèrent l'état cible avec une fidélité supérieure à ce que le circuit de comparaison aurait produit sans utiliser AQC. Avec ces paramètres optimaux, le circuit compressé présente désormais moins d'erreur de Trotter *et* moins de profondeur que le circuit original.
+
+En guise de dernière étape, l'extrait de code suivant construit le circuit d'évolution temporelle complet qui peut être passé à un pipeline de transpilation et exécuté sur du matériel quantique.
+
+```python
+final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+final_circuit.compose(subsequent_circuit, inplace=True)
+final_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-aqc-get-started/extracted-outputs/45abbabe-0289-4a09-aa99-89f70bdc535d-0.svg)
+
+## Prochaines étapes {#next-steps}
+
+<Admonition type="tip" title="Recommandations">
+    - Essaie le tutoriel [Compilation quantique approchée pour les circuits d'évolution temporelle](/tutorials/approximate-quantum-compilation-for-time-evolution).
+</Admonition>
