@@ -1,0 +1,813 @@
+---
+title: "2D-Kipfeld-Ising mit der QESEM-Funktion simulieren"
+sidebar_label: "2D-Kipfeld-Ising mit der QESEM-Funktion simulieren"
+description: "Dieses Tutorial zeigt eine Simulation des 2D-Transversalfeld-Ising-Modells mit QESEM-Fehlerminderung in Kombination mit dem Qiskit-Modul für Operator-Rückwärtspropagation."
+notebook_path: "tutorials/qedma-2d-ising-with-qesem.ipynb"
+---
+
+{/* source-hash: 8e34bcfa */}
+
+<OpenInLabBanner notebookPath="tutorials/qedma-2d-ising-with-qesem.ipynb" />
+
+
+
+{/* cspell:ignore bppeps */}
+
+<Admonition type="note">
+Qiskit Functions sind ein experimentelles Feature, das nur Nutzern des IBM Quantum&reg; Premium Plan, Flex Plan und On-Prem (über die IBM Quantum Platform API) Plan zur Verfügung steht. Sie befinden sich im Vorschau-Release-Status und können sich ändern.
+</Admonition>
+
+*Laufzeitschätzung: 20 Minuten auf einem Heron-r2-Prozessor. (HINWEIS: Dies ist nur eine Schätzung. Die tatsächliche Laufzeit kann abweichen.)*
+## Hintergrund {#background}
+
+Dieses Tutorial zeigt, wie du [QESEM](/guides/qedma-qesem), Qedmas Qiskit Function, nutzt, um die Dynamik eines kanonischen Quantenspinmodells zu simulieren – das 2D-Kipfeld-Ising-Modell (TFI) mit nicht-Clifford-Winkeln:
+
+$$
+H = J \sum_{\langle i,j \rangle} Z_i Z_j + g_x \sum_i X_i + g_z \sum_i Z_i ,
+$$
+
+wobei $ \langle i,j \rangle $ nächste Nachbarn auf einem Gitter bezeichnet. Die Simulation der Zeitentwicklung von Vielteilchen-Quantensystemen ist eine rechenintensive Aufgabe für klassische Computer. Quantencomputer hingegen sind von Natur aus darauf ausgelegt, diese Aufgabe effizient zu lösen. Das TFI-Modell ist insbesondere aufgrund seines reichhaltigen physikalischen Verhaltens und seiner hardwarefreundlichen Implementierung zu einem beliebten Benchmark auf Quantenhardware geworden.
+
+Anstatt die zeitkontinuierliche Dynamik zu simulieren, verwenden wir das eng verwandte gekickte Ising-Modell. Die Dynamik lässt sich exakt als periodischer Quantenschaltkreis darstellen, bei dem jeder Evolutionsschritt aus drei Schichten fraktionaler Zwei-Qubit-Gates $ R_{ZZ} (\alpha_{ZZ}) $ besteht, die mit Schichten von Einzel-Qubit-Gates $ R_X (\alpha_X) $ und $ R_Z (\alpha_Z) $ abwechseln.
+
+Wir verwenden generische Winkel, die sowohl für die klassische Simulation als auch für die Fehlerminderung anspruchsvoll sind. Konkret wählen wir $ \alpha_{ZZ} = 1.0 $, $ \alpha_X = 0.53 $ und $ \alpha_Z = 0.1 $, wodurch das Modell weit von jedem integrablen Punkt entfernt ist.
+
+In diesem Tutorial werden wir Folgendes tun:
+* Die erwartete QPU-Laufzeit für die vollständige Fehlerminderung mithilfe der analytischen und empirischen Zeitschätzungsfunktionen von QESEM abschätzen.
+* Das 2D-Kipfeld-Ising-Modell-Circuit mit hardwareinspirierten Qubit-Layouts und Gate-Schichten konstruieren und simulieren.
+* Die Qubit-Konnektivität des Geräts und ausgewählte Teilgraphen für dein Experiment visualisieren.
+* Die Verwendung von [Operator-Rückwärtspropagation (OBP)](/guides/qiskit-addons-obp) demonstrieren, um die Circuit-Tiefe zu reduzieren. Diese Technik kürzt Operationen am Circuit-Ende auf Kosten von mehr Operator-Messungen.
+* Unverzerrte Fehlerminderung (EM) für mehrere Observablen gleichzeitig mit QESEM durchführen und ideale, verrauschte und geminderte Ergebnisse vergleichen.
+* Den Einfluss der Fehlerminderung auf die Magnetisierung über verschiedene Circuit-Tiefen analysieren und darstellen.
+
+Hinweis: OBP gibt im Allgemeinen eine Menge potenziell nicht-kommutierender Observablen zurück. QESEM optimiert automatisch die Messbasen, wenn die Ziel-Observablen nicht-kommutierende Terme enthalten. Es generiert Kandidaten-Messbasensätze mithilfe mehrerer heuristischer Algorithmen und wählt den Satz, der die Anzahl der unterschiedlichen Basen minimiert. Das bedeutet, dass QESEM kompatible Observablen in gemeinsame Basen gruppiert, um die Gesamtzahl der erforderlichen Messkonfigurationen zu reduzieren und damit die Effizienz zu steigern.
+## Über QESEM {#about-qesem}
+
+QESEM ist eine zuverlässige, hochgenaue, charakterisierungsbasierte Software, die eine effiziente, unverzerrte quasi-probabilistische Fehlerminderung implementiert.
+Sie ist für die Minderung von Fehlern in generischen Quantenschaltkreisen ausgelegt und anwendungsunabhängig. Sie wurde auf verschiedenen Hardwareplattformen validiert, einschließlich Experimenten im Utility-Maßstab auf IBM&reg;-Eagle- und Heron-Geräten. Die QESEM-Workflow-Phasen sind wie folgt:
+
+1. Gerätecharakterisierung – kartiert Gate-Treueraten und identifiziert kohärente Fehler und liefert dabei Echtzeit-Kalibrierungsdaten. Diese Phase stellt sicher, dass die Minderung die Operationen mit höchster Treue nutzt.
+2. Rauschbewusste Transpilation – generiert und bewertet alternative Qubit-Zuordnungen, Operationssätze und Messbasen und wählt die Variante, die die geschätzte QPU-Laufzeit minimiert, mit optionaler Parallelisierung zur Beschleunigung der Datenerfassung.
+3. Fehlerunterdrückung – definiert native Gates neu, wendet Pauli-Twirling an und optimiert die Steuerung auf Pulsebene (auf unterstützten Plattformen), um die Treue zu verbessern.
+4. Circuit-Charakterisierung – erstellt ein maßgeschneidertes lokales Fehlermodell und passt es an QPU-Messungen an, um das Restgeräusch zu quantifizieren.
+5. Fehlerminderung – konstruiert Multi-Typ-quasi-probabilistische Zerlegungen und sampelt daraus in einem adaptiven Prozess, der die Minderungs-QPU-Zeit und die Empfindlichkeit gegenüber Hardware-Schwankungen minimiert, und erreicht so hohe Genauigkeiten bei großen Circuit-Volumina.
+
+Weitere Informationen zu QESEM und ein Utility-Scale-Experiment dieses Modells auf einem 103-Qubit-Teilgraphen mit hoher Konnektivität der nativen Heavy-Hex-Geometrie von `ibm_marrakesh` findest du unter [Reliable high-accuracy error mitigation for utility-scale quantum circuits.](https://arxiv.org/abs/2508.10997)
+![QESEM-Workflow.](/docs/images/tutorials/qedma-2d-ising-with-qesem/QESEM_workflow.avif)
+## Voraussetzungen {#requirements}
+
+Installiere die folgenden Python-Pakete, bevor du das Notebook ausführst:
+
+- Qiskit SDK v2.0.0 oder höher (`pip install qiskit`)
+- Qiskit Runtime v0.40.0 oder höher (`pip install qiskit-ibm-runtime`)
+- Qiskit Functions Catalog v0.8.0 oder höher ( `pip install qiskit-ibm-catalog` )
+- Operator Backpropagation Qiskit Addon v0.3.0 oder höher ( `pip install qiskit-addon-obp` )
+- Qiskit Utils Addon v0.1.1 oder höher ( `pip install qiskit-addon-utils` )
+- Qiskit Aer Simulator v0.17.1 oder höher ( `pip install qiskit-aer` )
+- Matplotlib v3.10.3 oder höher ( `pip install matplotlib` )
+## Einrichtung {#setup}
+Importiere zunächst die relevanten Bibliotheken:
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-aer qiskit-ibm-catalog qiskit-ibm-runtime
+```
+
+```python
+%matplotlib inline
+
+from typing import Sequence
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+import qiskit
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_aer import AerSimulator
+from qiskit_addon_utils.slicing import combine_slices, slice_by_gate_types
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.visualization import (
+    plot_gate_map,
+)
+```
+
+Authentifiziere dich als Nächstes mit deinem API-Schlüssel aus dem [IBM Quantum Platform](http://quantum.cloud.ibm.com/)-Dashboard. Wähle dann die Qiskit Function wie folgt aus. (Beachte, dass es aus Sicherheitsgründen am besten ist, [deine Kontodaten zu speichern](/guides/functions#install-qiskit-functions-catalog-client), wenn du auf einem vertrauenswürdigen Gerät arbeitest, damit du deinen API-Schlüssel nicht jedes Mal eingeben musst.)
+
+```python
+# Paste here your instance and token strings
+
+instance = "YOUR_INSTANCE"
+token = "YOUR_TOKEN"
+channel = "ibm_quantum_platform"
+
+catalog = QiskitFunctionsCatalog(
+    channel=channel, token=token, instance=instance
+)
+qesem_function = catalog.load("qedma/qesem")
+```
+
+## Schritt 1: Klassische Eingaben auf ein Quantenproblem abbilden {#step-1-map-classical-inputs-to-a-quantum-problem}
+Wir beginnen damit, eine Funktion zu definieren, die den Trotter-Circuit erstellt:
+
+```python
+def trotter_circuit_from_layers(
+    steps: int,
+    theta_x: float,
+    theta_z: float,
+    theta_zz: float,
+    layers: Sequence[Sequence[tuple[int, int]]],
+    init_state: str | None = None,
+) -> qiskit.QuantumCircuit:
+    """
+    Generates an ising trotter circuit
+    :param steps: trotter steps
+    :param theta_x: RX angle
+    :param theta_z: RZ angle
+    :param theta_zz: RZZ angle
+    :param layers: list of layers (can be list of layers in device)
+    :param init_state: Initial state to prepare. If None, will not prepare any state. If "+", will
+     add Hadamard gates to all qubits.
+    :return: QuantumCircuit
+    """
+    qubits = sorted({i for layer in layers for edge in layer for i in edge})
+    circ = qiskit.QuantumCircuit(max(qubits) + 1)
+
+    if init_state == "+":
+        print("init_state = +")
+        for q in qubits:
+            circ.h(q)
+
+    for _ in range(steps):
+        for q in qubits:
+            circ.rx(theta_x, q)
+            circ.rz(theta_z, q)
+
+        for layer in layers:
+            for edge in layer:
+                circ.rzz(theta_zz, *edge)
+        circ.barrier(qubits)
+
+    return circ
+```
+
+Als Nächstes erstellen wir eine Funktion zur Berechnung idealer Erwartungswerte mit `AerSimulator`.
+
+Beachte, dass wir für große Circuits (30 oder mehr Qubits) die Verwendung vorberechneter Werte aus Belief-Propagation-PEPS-Simulationen (BP) empfehlen. Dieser Code enthält vorberechnete Werte für 35 Qubits als Beispiel, basierend auf dem BP-Ansatz zur Entwicklung eines PEPS-Tensornetzwerks, der [in diesem Paper](https://www.science.org/doi/10.1126/sciadv.adk4321) eingeführt wurde (den wir als PEPS-BP bezeichnen), unter Verwendung des Tensornetzwerk-Python-Pakets [quimb.](https://joss.theoj.org/papers/10.21105/joss.00819)
+
+```python
+def calculate_ideal_evs(circ, obs, num_qubits, step):
+    # Predefined results for large circuits - calculated using bppeps for 3, 5, 7, 9 trotter steps
+    predefined_35 = [
+        0.79537,
+        0.78653,
+        0.79699,
+    ]
+
+    if num_qubits == 35:
+        print(
+            "Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits."
+        )
+        return predefined_35[step]
+
+    else:
+        simulator = AerSimulator()
+
+        # Use Estimator primitive to get expectation value
+        estimator = Estimator(simulator)
+        sim_result = estimator.run([(circ, [obs])], precision=0.0001).result()
+
+        # Extracting the result
+        ideal_values = sim_result[0].data.evs[0]
+        return ideal_values
+```
+
+Wir verwenden eine hardwarebasierte $R_{ZZ}$-Schicht-Zuordnung vom Heron-Gerät, aus der wir die Schichten entsprechend der Anzahl der zu simulierenden Qubits ausschneiden. Wir definieren Teilgraphen für 10, 21, 28 und 35 Qubits, die eine 2D-Struktur beibehalten (du kannst gerne deinen eigenen bevorzugten Teilgraphen verwenden):
+
+```python
+LAYERS_HERON_R2 = [  # the full set of hardware layers for Heron r2
+    [
+        (2, 3),
+        (6, 7),
+        (10, 11),
+        (14, 15),
+        (20, 21),
+        (16, 23),
+        (24, 25),
+        (17, 27),
+        (28, 29),
+        (18, 31),
+        (32, 33),
+        (19, 35),
+        (36, 41),
+        (42, 43),
+        (37, 45),
+        (46, 47),
+        (38, 49),
+        (50, 51),
+        (39, 53),
+        (60, 61),
+        (56, 63),
+        (64, 65),
+        (57, 67),
+        (68, 69),
+        (58, 71),
+        (72, 73),
+        (59, 75),
+        (76, 81),
+        (82, 83),
+        (77, 85),
+        (86, 87),
+        (78, 89),
+        (90, 91),
+        (79, 93),
+        (94, 95),
+        (100, 101),
+        (96, 103),
+        (104, 105),
+        (97, 107),
+        (108, 109),
+        (98, 111),
+        (112, 113),
+        (99, 115),
+        (116, 121),
+        (122, 123),
+        (117, 125),
+        (126, 127),
+        (118, 129),
+        (130, 131),
+        (119, 133),
+        (134, 135),
+        (140, 141),
+        (136, 143),
+        (144, 145),
+        (137, 147),
+        (148, 149),
+        (138, 151),
+        (152, 153),
+        (139, 155),
+    ],
+    [
+        (1, 2),
+        (3, 4),
+        (5, 6),
+        (7, 8),
+        (9, 10),
+        (11, 12),
+        (13, 14),
+        (21, 22),
+        (23, 24),
+        (25, 26),
+        (27, 28),
+        (29, 30),
+        (31, 32),
+        (33, 34),
+        (40, 41),
+        (43, 44),
+        (45, 46),
+        (47, 48),
+        (49, 50),
+        (51, 52),
+        (53, 54),
+        (55, 59),
+        (61, 62),
+        (63, 64),
+        (65, 66),
+        (67, 68),
+        (69, 70),
+        (71, 72),
+        (73, 74),
+        (80, 81),
+        (83, 84),
+        (85, 86),
+        (87, 88),
+        (89, 90),
+        (91, 92),
+        (93, 94),
+        (95, 99),
+        (101, 102),
+        (103, 104),
+        (105, 106),
+        (107, 108),
+        (109, 110),
+        (111, 112),
+        (113, 114),
+        (120, 121),
+        (123, 124),
+        (125, 126),
+        (127, 128),
+        (129, 130),
+        (131, 132),
+        (133, 134),
+        (135, 139),
+        (141, 142),
+        (143, 144),
+        (145, 146),
+        (147, 148),
+        (149, 150),
+        (151, 152),
+        (153, 154),
+    ],
+    [
+        (3, 16),
+        (7, 17),
+        (11, 18),
+        (22, 23),
+        (26, 27),
+        (30, 31),
+        (34, 35),
+        (21, 36),
+        (25, 37),
+        (29, 38),
+        (33, 39),
+        (41, 42),
+        (44, 45),
+        (48, 49),
+        (52, 53),
+        (43, 56),
+        (47, 57),
+        (51, 58),
+        (62, 63),
+        (66, 67),
+        (70, 71),
+        (74, 75),
+        (61, 76),
+        (65, 77),
+        (69, 78),
+        (73, 79),
+        (81, 82),
+        (84, 85),
+        (88, 89),
+        (92, 93),
+        (83, 96),
+        (87, 97),
+        (91, 98),
+        (102, 103),
+        (106, 107),
+        (110, 111),
+        (114, 115),
+        (101, 116),
+        (105, 117),
+        (109, 118),
+        (113, 119),
+        (121, 122),
+        (124, 125),
+        (128, 129),
+        (132, 133),
+        (123, 136),
+        (127, 137),
+        (131, 138),
+        (142, 143),
+        (146, 147),
+        (150, 151),
+        (154, 155),
+        (0, 1),
+        (4, 5),
+        (8, 9),
+        (12, 13),
+        (54, 55),
+        (15, 19),
+    ],
+]
+
+subgraphs = {  # the subgraphs for the different qubit counts such that it's 2D
+    10: list(range(22, 29)) + [16, 17, 37],
+    21: list(range(3, 12)) + list(range(23, 32)) + [16, 17, 18],
+    28: list(range(3, 12))
+    + list(range(23, 32))
+    + list(range(45, 50))
+    + [16, 17, 18, 37, 38],
+    35: list(range(3, 12))
+    + list(range(21, 32))
+    + list(range(41, 50))
+    + [16, 17, 18, 36, 37, 38],
+    42: list(range(3, 12))
+    + list(range(21, 32))
+    + list(range(41, 50))
+    + list(range(63, 68))
+    + [16, 17, 18, 36, 37, 38, 56, 57],
+}
+
+n_qubits = 35  # 21, 28, 35, 42
+```
+
+```python
+layers = [
+    [
+        edge
+        for edge in layer
+        if edge[0] in subgraphs[n_qubits] and edge[1] in subgraphs[n_qubits]
+    ]
+    for layer in LAYERS_HERON_R2
+]
+
+print(layers)
+```
+
+```text
+[[(6, 7), (10, 11), (16, 23), (24, 25), (17, 27), (28, 29), (18, 31), (36, 41), (42, 43), (37, 45), (46, 47), (38, 49)], [(3, 4), (5, 6), (7, 8), (9, 10), (21, 22), (23, 24), (25, 26), (27, 28), (29, 30), (43, 44), (45, 46), (47, 48)], [(3, 16), (7, 17), (11, 18), (22, 23), (26, 27), (30, 31), (21, 36), (25, 37), (29, 38), (41, 42), (44, 45), (48, 49), (4, 5), (8, 9)]]
+```
+
+Jetzt visualisieren wir das Qubit-Layout auf dem Heron-Gerät für den ausgewählten Teilgraphen:
+
+```python
+service = QiskitRuntimeService(
+    channel=channel,
+    token=token,
+    instance=instance,
+)
+backend = service.backend("ibm_fez")  # or any available device
+
+selected_qubits = subgraphs[n_qubits]
+num_qubits = backend.configuration().num_qubits
+qubit_color = [
+    "#ff7f0e" if i in selected_qubits else "#d3d3d3"
+    for i in range(num_qubits)
+]
+
+plot_gate_map(
+    backend=backend,
+    figsize=(15, 10),
+    qubit_color=qubit_color,
+)
+plt.show()
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/4f02995559bb437f-0.avif)
+
+Beachte, dass die Konnektivität des gewählten Qubit-Layouts nicht unbedingt linear ist und je nach ausgewählter Qubit-Anzahl große Bereiche des Heron-Geräts abdecken kann.
+
+Jetzt generieren wir den Trotter-Circuit und die mittlere Magnetisierungs-Observable für die gewählte Qubit-Anzahl und die Parameter:
+
+```python
+# Chosen parameters:
+theta_x = 0.53
+theta_z = 0.1
+theta_zz = 1.0
+steps = 9
+
+circ = trotter_circuit_from_layers(steps, theta_x, theta_z, theta_zz, layers)
+print(
+    f"Circuit 2q layers: {circ.depth(filter_function=lambda instr: len(instr.qubits) == 2)}"
+)
+print("\nCircuit structure:")
+
+circ.draw("mpl", scale=0.8, fold=-1, idle_wires=False)
+plt.show()
+
+observable = qiskit.quantum_info.SparsePauliOp.from_sparse_list(
+    [("Z", [q], 1 / n_qubits) for q in subgraphs[n_qubits]],
+    np.max(subgraphs[n_qubits]) + 1,
+)  # Average magnetization observable
+
+print(observable)
+obs_list = [observable]
+```
+
+```text
+Circuit 2q layers: 27
+
+Circuit structure:
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/1d34dd0d-1.avif)
+
+```text
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j])
+```
+
+## Schritt 2: Problem für die Quantenhardware-Ausführung optimieren {#step-2-optimize-problem-for-quantum-hardware-execution}
+### QPU-Zeitschätzung mit und ohne OBP {#qpu-time-estimation-with-and-without-obp}
+Nutzer möchten in der Regel wissen, wie viel QPU-Zeit ihr Experiment benötigt.
+Dies gilt jedoch als ein schwieriges Problem für klassische Computer.
+
+QESEM bietet zwei Modi der Zeitschätzung, um Nutzer über die Machbarkeit ihrer Experimente zu informieren:
+1. Analytische Zeitschätzung – liefert eine sehr grobe Schätzung und benötigt keine QPU-Zeit. Dies kann verwendet werden, um zu testen, ob ein Transpilations-Pass die QPU-Zeit potenziell reduzieren würde.
+2. Empirische Zeitschätzung (hier demonstriert) – liefert eine ziemlich gute Schätzung und verwendet einige Minuten QPU-Zeit.
+
+In beiden Fällen gibt QESEM die Zeitschätzung für das Erreichen der erforderlichen Präzision für **alle** Observablen aus.
+
+```python
+run_on_real_hardware = True
+
+precision = 0.05
+if run_on_real_hardware:
+    backend_name = "ibm_fez"
+else:
+    backend_name = "fake_fez"
+
+# Start a job for empirical time estimation
+estimation_job_wo_obp = qesem_function.run(
+    pubs=[(circ, obs_list)],
+    instance=instance,
+    backend_name=backend_name,  # E.g. "ibm_brisbane"
+    options={
+        "estimate_time_only": "empirical",  # "empirical" - gets actual time estimates without running full mitigation
+        "max_execution_time": 120,  # Limits the QPU time, specified in seconds.
+        "default_precision": precision,
+    },
+)
+```
+
+```python
+print(estimation_job_wo_obp.job_id)
+print(estimation_job_wo_obp.status())
+```
+
+```text
+17d3828e-9fdb-482e-8e9b-392f3eefe313
+DONE
+```
+
+```python
+# Get the result object (blocking method). Use job.status() in a loop for non-blocking.
+# This takes 1-3 minutes
+result = estimation_job_wo_obp.result()
+```
+
+```python
+print(
+    f"Empirical time estimation (sec): {result[0].metadata['time_estimation_sec']}"
+)
+```
+
+```text
+Empirical time estimation (sec): 1200
+```
+
+Nun verwenden wir Operator-Rückwärtspropagation (OBP). (Weitere Details zum OBP-Qiskit-Addon findest du im [OBP](/guides/qiskit-addons-obp)-Leitfaden.) Wir erstellen eine Funktion, die die Circuit-Scheiben für die Rückwärtspropagation generiert:
+
+```python
+def run_backpropagation(circ_vec, observable, steps_vec, max_qwc_groups=8):
+    """
+    Runs backpropagation for a list of circuits and observables.
+    Returns lists of backpropagated circuits and observables.
+    """
+    op_budget = OperatorBudget(max_qwc_groups=max_qwc_groups)
+    bp_circuit_vec = []
+    bp_observable_vec = []
+
+    for i, circ in enumerate(circ_vec):
+        slices = slice_by_gate_types(circ)
+        bp_observable, remaining_slices, metadata = backpropagate(
+            observable,
+            slices,
+            operator_budget=op_budget,
+        )
+        bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+        bp_circuit_vec.append(bp_circuit)
+        bp_observable_vec.append(bp_observable)
+        print(f"n.o. steps: {steps_vec[i]}")
+        print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+        print(
+            f"New observable has {len(bp_observable.paulis)} terms, which can be combined into "
+            f"{len(bp_observable.group_commuting(qubit_wise=True))} groups.\n"
+            f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+        )
+        print("-----------------")
+    return bp_circuit_vec, bp_observable_vec
+```
+
+Wir rufen die Funktion auf:
+
+```python
+bp_circ_vec, bp_obs_vec = run_backpropagation([circ], observable, [steps])
+```
+
+```text
+n.o. steps: 9
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+```
+
+```python
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circ_vec[-1].draw("mpl", scale=0.8, fold=-1, idle_wires=False)
+None
+```
+
+```text
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/cedb7fa1-1.avif)
+
+Wir sehen, dass die Rückwärtspropagation zwei Schichten des Circuits reduziert hat.
+Da wir nun unseren reduzierten Circuit und die erweiterten Observablen haben, führen wir die Zeitschätzung für den rückwärtspropagerten Circuit durch:
+
+```python
+# Start a job for empirical time estimation
+estimation_job_obp = qesem_function.run(
+    pubs=[(bp_circ_vec[-1], [bp_obs_vec[-1]])],
+    instance=instance,
+    backend_name=backend_name,
+    options={
+        "estimate_time_only": "empirical",
+        "max_execution_time": 120,
+        "default_precision": precision,
+    },
+)
+```
+
+```python
+print(estimation_job_obp.job_id)
+print(estimation_job_obp.status())
+```
+
+```text
+8bae699d-a16b-4d39-bbd9-d123fbcce55d
+DONE
+```
+
+```python
+result_obp = estimation_job_obp.result()
+```
+
+```python
+print(
+    f"Empirical time estimation (sec): {result_obp[0].metadata['time_estimation_sec']}"
+)
+```
+
+```text
+Empirical time estimation (sec): 900
+```
+
+Wir sehen, dass OBP den Zeitaufwand für die Minderung des Circuits reduziert.
+## Schritt 3: Mit Qiskit-Primitiven ausführen {#step-3-execute-using-qiskit-primitives}
+### Mit echtem Backend ausführen {#run-with-real-backend}
+Jetzt führen wir das vollständige Experiment für einige Trotter-Schritte durch. Die Anzahl der Qubits, die erforderliche Präzision und die maximale QPU-Zeit können entsprechend den verfügbaren QPU-Ressourcen angepasst werden. Beachte, dass die Begrenzung der maximalen QPU-Zeit die endgültige Präzision beeinflusst, wie du im abschließenden Plot unten sehen wirst.
+
+Wir analysieren vier Circuits mit 5, 7 und 9 Trotter-Schritten bei einer Präzision von 0,05 und vergleichen ihre idealen, verrauschten und fehlergeminderten Erwartungswerte:
+
+```python
+steps_vec = [5, 7, 9]
+
+circ_vec = []
+for steps in steps_vec:
+    circ = trotter_circuit_from_layers(
+        steps, theta_x, theta_z, theta_zz, layers
+    )
+    circ_vec.append(circ)
+```
+
+Wir führen OBP erneut für jeden Circuit durch, um die Laufzeit zu reduzieren:
+
+```python
+bp_circ_vec_35, bp_obs_vec_35 = run_backpropagation(
+    circ_vec, observable, steps_vec
+)
+```
+
+```text
+n.o. steps: 5
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+n.o. steps: 7
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+n.o. steps: 9
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+```
+
+Jetzt führen wir einen Batch vollständiger QESEM-Jobs aus. Wir begrenzen die maximale QPU-Laufzeit für jeden Punkt, um das QPU-Budget besser kontrollieren zu können.
+
+```python
+run_on_real_hardware = True
+
+precision = 0.05
+if run_on_real_hardware:
+    backend_name = "ibm_marrakesh"
+else:
+    backend_name = "fake_fez"
+```
+
+```python
+# Running full jobs for:
+pubs_list = [
+    [(bp_circ_vec_35[i], bp_obs_vec_35[i])] for i in range(len(bp_obs_vec_35))
+]
+```
+
+```python
+# Initiating multiple jobs for different lengths
+job_list = []
+for pubs in pubs_list:
+    job_obp = qesem_function.run(
+        pubs=pubs,
+        instance=instance,
+        backend_name=backend_name,  # E.g. "ibm_brisbane"
+        options={
+            "max_execution_time": 300,  # Limits the QPU time, specified in seconds.
+            "default_precision": 0.05,
+        },
+    )
+    job_list.append(job_obp)
+```
+
+Hier überprüfen wir den Status jedes Jobs:
+
+```python
+for job in job_list:
+    print(job.status())
+```
+
+```text
+DONE
+DONE
+DONE
+DONE
+```
+
+## Schritt 4: Ergebnisse nachverarbeiten und im gewünschten klassischen Format zurückgeben {#step-4-post-process-and-return-result-in-desired-classical-format}
+Wenn alle Jobs abgeschlossen sind, können wir ihren verrauschten und geminderten Erwartungswert vergleichen.
+
+```python
+ideal_values = []
+noisy_values = []
+error_mitigated_values = []
+error_mitigated_stds = []
+
+for i in range(len(job_list)):
+    job = job_list[i]
+    result = job.result()  # Blocking - takes 3-5 minutes
+    noisy_results = result[0].metadata["noisy_results"]
+
+    ideal_val = calculate_ideal_evs(circ_vec[i], observable, n_qubits, i)
+    print("---------------------------------")
+    print(f"Ideal: {ideal_val}")
+    print(f"Noisy: {noisy_results.evs}")
+    print(f"QESEM: {result[0].data.evs} \u00b1 {result[0].data.stds}")
+
+    ideal_values.append(ideal_val)
+    noisy_values.append(noisy_results.evs)
+    error_mitigated_values.append(result[0].data.evs)
+    error_mitigated_stds.append(result[0].data.stds)
+```
+
+```text
+Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits.
+---------------------------------
+Ideal: 0.79537
+Noisy: 0.7039237951821501
+QESEM: 0.7828018244130982 ± 0.013257266977728376
+Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits.
+---------------------------------
+Ideal: 0.78653
+Noisy: 0.6478583812958806
+QESEM: 0.7875259197423828 ± 0.02703045139248604
+Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits.
+---------------------------------
+Ideal: 0.79699
+Noisy: 0.6171787879868142
+QESEM: 0.6918791909168913 ± 0.0740873782039517
+```
+
+Abschließend können wir die Magnetisierung in Abhängigkeit von der Anzahl der Schritte darstellen. Dies verdeutlicht den Nutzen der Verwendung der QESEM-Qiskit-Funktion für die verzerrungsfreie Fehlerminderung auf verrauschten Quantengeräten.
+
+```python
+plt.plot(steps_vec, ideal_values, "--", label="ideal")
+plt.scatter(steps_vec, noisy_values, label="noisy")
+plt.errorbar(
+    steps_vec,
+    error_mitigated_values,
+    yerr=error_mitigated_stds,
+    fmt="o",
+    capsize=5,
+    label="QESEM mitigation",
+)
+plt.legend()
+plt.xlabel("n.o. steps")
+plt.ylabel("Magnetization")
+```
+
+```text
+Text(0, 0.5, 'Magnetization')
+```
+
+![Ausgabe der vorherigen Codezelle](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/0f1a44d0-1.avif)
+
+<Admonition type="note">
+
+Der neunte Schritt hat einen großen statistischen Fehlerbalken, weil wir die QPU-Zeit auf 5 Minuten begrenzt haben. Wenn du diesen Schritt 15 Minuten lang ausführst (wie die empirische Zeitschätzung vorschlägt), erhältst du einen kleineren Fehlerbalken. Damit wird der geminderte Wert näher an den idealen Wert heranrücken.
+</Admonition>

@@ -1,0 +1,297 @@
+---
+title: "Primeros pasos con el corte de puertas"
+sidebar_label: "Primeros pasos con el corte de puertas"
+description: "Dos ejemplos prácticos de corte de puertas usando el complemento de corte de circuitos para comenzar a trabajar con el paquete"
+notebook_path: "guides/qiskit-addons-cutting-gates.ipynb"
+---
+
+{/* doqumentation-source-hash: 0d7ed334 */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-cutting-gates.ipynb" />
+
+
+
+# Primeros pasos con el corte de circuitos usando cortes de puertas {#get-started-with-circuit-cutting-using-gate-cuts}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versiones de paquetes</b></summary>
+
+El código de esta página fue desarrollado con los siguientes requisitos.
+Recomendamos usar estas versiones o versiones más recientes.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+qiskit-addon-cutting~=0.10.0
+```
+</details>
+Esta guía muestra dos ejemplos prácticos de cortes de puertas con el paquete `qiskit-addon-cutting`. El primer ejemplo muestra cómo reducir la profundidad del circuito (el número de instrucciones del circuito) cortando puertas de entrelazamiento en qubits no adyacentes que de otra manera incurrirían en una sobrecarga de SWAP al transpilar al hardware. El segundo ejemplo cubre cómo usar el corte de puertas para reducir el ancho del circuito (el número de qubits) dividiendo un circuito en varios circuitos con menos qubits.
+
+Ambos ejemplos utilizarán el ansatz [`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2) y reconstruirán el mismo observable.
+## Corte de puertas para reducir la profundidad del circuito {#gate-cutting-to-reduce-circuit-depth}
+
+El siguiente flujo de trabajo reduce la profundidad de un circuito cortando puertas distantes, evitando una larga serie de puertas SWAP que de otro modo se introducirían.
+
+Comienza con el ansatz [`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2), con entrelazamiento "circular" para introducir puertas distantes.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+from qiskit.circuit.library import efficient_su2
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+from qiskit_ibm_runtime import SamplerV2, Batch
+from qiskit_aer.primitives import EstimatorV2
+from qiskit_addon_cutting import (
+    cut_gates,
+    partition_problem,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+circuit = efficient_su2(num_qubits=4, entanglement="circular")
+circuit.assign_parameters([0.4] * len(circuit.parameters), inplace=True)
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+print(f"Observable: {observable}")
+circuit.draw("mpl", scale=0.8)
+```
+
+```text
+Observable: SparsePauliOp(['ZZII', 'IZZI', 'IIZZ', 'XIXI', 'ZIZZ', 'IXIX'],
+              coeffs=[ 1.+0.j,  1.+0.j, -1.+0.j,  1.+0.j,  1.+0.j,  1.+0.j])
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-cutting-gates/extracted-outputs/1551c440-c158-478a-a8fe-86df834c59bd-1.svg)
+
+Cada una de las puertas [`CNOT`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.CXGate) entre los qubits $q_0$ y $q_3$ introduce dos puertas SWAP después de la transpilación (asumiendo que los qubits están conectados en línea recta). Para evitar este aumento en la profundidad, puedes reemplazar estas puertas distantes con objetos [`TwoQubitQPDGate`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qpd-two-qubit-qpd-gate) usando el método [`cut_gates()`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#cut_gates). Esta función también devuelve una lista de instancias de [`QPDBasis`](../api/qiskit-addon-cutting/qpd-qpd-basis) — una por cada descomposición.
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(circuit.data)
+    if {circuit.find_bit(q)[0] for q in instruction.qubits} == {0, 3}
+]
+
+# Decompose distant CNOTs into TwoQubitQPDGate instances
+qpd_circuit, bases = cut_gates(circuit, cut_indices)
+
+qpd_circuit.draw("mpl", scale=0.8)
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-cutting-gates/extracted-outputs/66dc0a14-ab51-4190-9cda-1c0373e91b9e-0.svg)
+
+Ahora que las instrucciones de puertas cortadas han sido añadidas, los subexperimentos tendrán una profundidad menor después de la transpilación que el circuito original. El siguiente fragmento de código genera los subexperimentos usando [`generate_cutting_experiments`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#generate_cutting_experiments), que recibe el circuito y el observable a reconstruir.
+
+<Admonition type="note" title="Nota sobre el número de muestras">
+    El argumento `num_samples` especifica cuántas muestras tomar de la distribución de cuasi-probabilidad y determina la precisión de los coeficientes usados para la reconstrucción. Pasar infinito (`np.inf`) garantizará que todos los coeficientes se calculen de forma exacta. Lee la documentación de la API sobre [generación de pesos](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qpd#generate_qpd_weights) y [generación de experimentos de corte](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#generate_cutting_experiments) para más información.
+</Admonition>
+
+Una vez generados los subexperimentos, puedes transpilarlos y usar el primitivo `Sampler` para muestrear la distribución y reconstruir los valores esperados estimados. El siguiente bloque de código genera, transpila y ejecuta los subexperimentos. Luego reconstruye los resultados y los compara con el valor esperado exacto.
+
+```python
+# Generate the subexperiments and sampling coefficients
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit, observables=observable.paulis, num_samples=np.inf
+)
+
+# Set a backend to use and transpile the subexperiments
+backend = FakeManilaV2()
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, backend=backend
+)
+isa_subexperiments = pass_manager.run(subexperiments)
+
+# Set up the Qiskit Runtime Sampler primitive, submit the subexperiments, and retrieve the results
+sampler = SamplerV2(backend)
+job = sampler.run(isa_subexperiments, shots=4096 * 3)
+results = job.result()
+
+# Reconstruct the results
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    observable.paulis,
+)
+
+# Apply the coefficients of the original observable
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+
+estimator = EstimatorV2()
+exact_expval = (
+    estimator.run([(circuit, observable, [0.4] * len(circuit.parameters))])
+    .result()[0]
+    .data.evs
+)
+print(
+    f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}"
+)
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(
+    f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}"
+)
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.49812826
+Exact expectation value: 0.50497603
+Error in estimation: -0.00684778
+Relative error in estimation: -0.0135606
+```
+
+<Admonition type="caution" title="Nota sobre los coeficientes del observable">
+    Para reconstruir con precisión el valor esperado, los coeficientes del observable original (que son distintos de los coeficientes en la salida de `generate_cutting_experiments()`) deben aplicarse a la salida de la reconstrucción, ya que esta información se pierde cuando se generan los experimentos de corte o cuando se expande el observable.
+
+    Normalmente estos coeficientes se pueden aplicar mediante `numpy.dot()` como se muestra arriba.
+</Admonition>
+## Corte de puertas para reducir el ancho del circuito {#gate-cutting-to-reduce-circuit-width}
+
+Esta sección muestra cómo usar el corte de puertas para reducir el ancho del circuito. Comienza con el mismo [`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2) pero usa entrelazamiento "lineal".
+
+```python
+qc = efficient_su2(4, entanglement="linear", reps=2)
+qc.assign_parameters([0.4] * len(qc.parameters), inplace=True)
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+print(f"Observable: {observable}")
+
+qc.draw("mpl", scale=0.8)
+```
+
+```text
+Observable: SparsePauliOp(['ZZII', 'IZZI', 'IIZZ', 'XIXI', 'ZIZZ', 'IXIX'],
+              coeffs=[ 1.+0.j,  1.+0.j, -1.+0.j,  1.+0.j,  1.+0.j,  1.+0.j])
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-cutting-gates/extracted-outputs/64010a14-8360-47e2-bb77-af9b2e0dbbfc-1.svg)
+
+A continuación, genera los *subcircuitos* y los *subobservables* que ejecutarás usando la función [`partition_problem()`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#partition_problem). Esta función recibe el circuito, el observable y un esquema de partición opcional, y devuelve los circuitos y observables cortados en forma de diccionario.
+
+La partición se define mediante una cadena de etiquetas de la forma `"AABB"`, donde cada etiqueta de la cadena corresponde al qubit en el mismo índice del argumento `circuit`. Los qubits que comparten una etiqueta de partición común se agrupan juntos, y cualquier puerta no local que abarque más de una partición será cortada.
+
+<Admonition type="info" title="Nota">
+   El argumento de palabra clave `observables` en `partition_problem` es de tipo [`PauliList`](https://docs.quantum.ibm.com/api/qiskit/qiskit.quantum_info.PauliList). Los coeficientes y las fases de los términos del observable se ignoran durante la descomposición del problema y la ejecución de los subexperimentos. Pueden volver a aplicarse durante la reconstrucción del valor esperado.
+</Admonition>
+
+```python
+partitioned_problem = partition_problem(
+    circuit=qc, partition_labels="AABB", observables=observable.paulis
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+print(f"Subobservables: {subobservables}")
+subcircuits["A"].draw("mpl", scale=0.8)
+```
+
+```text
+Sampling overhead: 81.0
+Subobservables: {'A': PauliList(['II', 'ZI', 'ZZ', 'XI', 'ZZ', 'IX']), 'B': PauliList(['ZZ', 'IZ', 'II', 'XI', 'ZI', 'IX'])}
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-cutting-gates/extracted-outputs/a5454265-3785-4a54-b423-baf7815b97ec-1.svg)
+
+```python
+subcircuits["B"].draw("mpl", scale=0.8)
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/qiskit-addons-cutting-gates/extracted-outputs/1c527720-0d06-48a1-88b6-9ff95a77a068-0.svg)
+
+El siguiente paso es usar los subcircuitos y subobservables para generar los *subexperimentos* que se ejecutarán en una QPU mediante el método [`generate_cutting_experiments`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#generate_cutting_experiments).
+
+Para estimar el valor esperado del circuito completo, se generan muchos subexperimentos a partir de la distribución de cuasi-probabilidad conjunta de las puertas descompuestas y luego se ejecutan en una o más QPUs. El número de muestras a tomar de esta distribución está controlado por el argumento `num_samples`.
+
+El siguiente bloque de código genera los subexperimentos y los ejecuta usando el primitivo `Sampler` en un simulador local. (Para ejecutarlos en una QPU, cambia el `backend` por el recurso QPU que hayas elegido.)
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits, observables=subobservables, num_samples=np.inf
+)
+
+# Set a backend to use and transpile the subexperiments
+backend = FakeManilaV2()
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, backend=backend
+)
+isa_subexperiments = {
+    label: pass_manager.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+
+# Submit each partition's subexperiments to the Qiskit Runtime Sampler
+# primitive, in a single batch so that the jobs will run back-to-back.
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=4096 * 3)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+Por último, el valor esperado del circuito completo se reconstruye usando el método [`reconstruct_expectation_values`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#reconstruct_expectation_values).
+
+El bloque de código a continuación reconstruye los resultados y los compara con el valor esperado exacto.
+
+```python
+# Get expectation values for each observable term
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+
+estimator = EstimatorV2()
+exact_expval = (
+    estimator.run([(qc, observable, [0.4] * len(qc.parameters))])
+    .result()[0]
+    .data.evs
+)
+print(
+    f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}"
+)
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(
+    f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}"
+)
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.53571896
+Exact expectation value: 0.56254612
+Error in estimation: -0.02682716
+Relative error in estimation: -0.04768882
+```
+
+## Próximos pasos {#next-steps}
+
+<Admonition type="tip" title="Recomendaciones">
+    - Lee la guía [Primeros pasos con el corte de circuitos usando cortes de cables](/guides/qiskit-addons-cutting-wires).
+    - Lee el artículo de arXiv sobre [circuit knitting with classical communication.](https://ieeexplore.ieee.org/document/10236453)
+</Admonition>

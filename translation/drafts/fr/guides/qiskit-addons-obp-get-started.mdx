@@ -1,0 +1,345 @@
+---
+title: "Premiers pas avec OBP"
+sidebar_label: "Premiers pas avec OBP"
+description: "Premiers pas avec l'addon Qiskit de rétropropagation d'opérateurs (OBP)"
+notebook_path: "guides/qiskit-addons-obp-get-started.ipynb"
+---
+
+{/* doqumentation-source-hash: a1ca3d58 */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-obp-get-started.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versions des packages</b></summary>
+
+Le code de cette page a été développé avec les dépendances suivantes.
+Nous recommandons d'utiliser ces versions ou des versions plus récentes.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-addon-utils~=0.3.0
+qiskit-addon-obp~=0.3.0
+```
+</details>
+
+Lorsque tu prépares une charge de travail quantique avec la rétropropagation d'opérateurs (OBP), tu dois d'abord sélectionner des « tranches de circuit » (circuit slices), puis définir un seuil de troncature ou « budget d'erreur » pour éliminer les termes à petits coefficients dans l'opérateur rétropropagé, tout en fixant une borne supérieure à la taille globale de cet opérateur. Lors de la rétropropagation, le nombre de termes dans l'opérateur d'un circuit à $N$ qubits peut rapidement tendre vers $4^N$ dans le pire des cas. Ce guide présente les étapes nécessaires pour appliquer OBP à une charge de travail quantique.
+
+Le composant principal du package `qiskit-addons-obp` est la fonction `backpropagate()`. Elle prend en entrée l'observable final à reconstruire, un ensemble de tranches de circuit à calculer classiquement, et, optionnellement, un `TruncationErrorBudget` ou un `OperatorBudget` pour contraindre la troncature effectuée. Une fois ces paramètres définis, l'opérateur rétropropagé $O'$ calculé classiquement est obtenu de manière itérative en appliquant les portes de chaque tranche $s$ de la façon suivante :
+
+$$ O'^{(s)} = \mathcal{U}_{S-s+1}^\dagger O'^{(s-1)} \mathcal{U}_{S-s+1} $$
+
+où $S$ est le nombre total de tranches et $\mathcal{U}_{s}$ représente une seule tranche du circuit. Cet exemple utilise le package `qiskit-addons-utils` pour préparer les tranches de circuit et générer le circuit d'exemple.
+
+Pour commencer, considère l'évolution temporelle d'une chaîne de Heisenberg XYZ. Ce hamiltonien a la forme
+
+$$ \hat{H} = \sum_{(j,k)} \left( J_xX_jX_k + J_yY_jY_k + J_z Z_jZ_k \right) + \sum_{j} \left(h_xX_j + h_yY_j + h_zZ_j\right)$$
+
+et la valeur d'espérance à mesurer sera $\langle Z_0 \rangle$.
+
+Le code suivant génère le hamiltonien sous la forme d'un `SparsePauliOp` en utilisant le module `qiskit_addons_utils.problem_generators` et une `CouplingMap`. Fixe les constantes de couplage à $J_x=\pi/8$, $J_y=\pi/4$, $J_z=\pi/2$ et les champs magnétiques externes à $h_x=\pi/3$, $h_y=\pi/6$, $h_z=\pi/9$, puis génère un circuit qui modélise son évolution temporelle.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+from qiskit.transpiler import CouplingMap
+from qiskit.synthesis import LieTrotter
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+from qiskit.primitives import StatevectorEstimator
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+    generate_xyz_hamiltonian,
+)
+from qiskit_addon_utils.slicing import slice_by_gate_types
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+from qiskit_addon_obp.utils.truncating import setup_budget
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_utils.slicing import combine_slices
+
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit linear chain on this coupling map
+reduced_coupling_map = coupling_map.reduce(
+    [0, 13, 1, 14, 10, 16, 5, 12, 8, 18]
+)
+
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+
+# we evolve for some time
+circuit = generate_time_evolution_circuit(
+    hamiltonian, synthesis=LieTrotter(reps=2), time=0.2
+)
+
+circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-obp-get-started/extracted-outputs/5b4fd077-2d8f-46e8-9631-40cadbe07879-0.svg)
+
+### Préparer les entrées pour la rétropropagation {#prepare-inputs-to-backpropagate}
+
+Ensuite, génère les tranches de circuit pour la rétropropagation. En général, le choix de la méthode de découpage peut avoir un impact sur l'efficacité de la rétropropagation pour un problème donné. Ici, on regroupe les portes du même type dans des tranches en utilisant la fonction `qiskit_addons_utils.slice_by_gate_types`.
+
+```python
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+Une fois les tranches générées, spécifie un `OperatorBudget` pour fournir à la fonction `backpropagate()` une condition d'arrêt de la rétropropagation de l'opérateur, afin d'éviter que le surcoût classique ne continue de croître. Tu peux également spécifier un budget d'erreur de troncature pour chaque tranche, où les termes de Pauli à petits coefficients seront tronqués jusqu'à épuisement du budget. Tout budget restant sera alors ajouté au budget de la tranche suivante.
+
+Ici, indique que la rétropropagation doit s'arrêter lorsque le nombre de groupes de Pauli commutants par qubit dans l'opérateur dépasse $8$, et alloue un budget d'erreur de $0.005$ pour chaque tranche.
+
+```python
+op_budget = OperatorBudget(max_qwc_groups=8)
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+### Rétropropager les tranches {#backpropagate-slices}
+
+Dans cette étape, tu vas définir l'observable final à mesurer et exécuter la rétropropagation sur chaque tranche. La fonction `backpropagate()` retourne trois sorties : l'observable rétropropagé, les tranches de circuit restantes qui n'ont pas été rétropropagées (et qui doivent être exécutées sur du matériel quantique), ainsi que des métadonnées sur la rétropropagation.
+
+Note que `OperatorBudget` et `TruncationErrorBudget` sont des paramètres optionnels de la méthode `backpropagate()`. En général, le meilleur choix pour les deux doit être déterminé de manière heuristique et nécessite un certain degré d'expérimentation. Dans cet exemple, nous allons rétropropager avec et sans `TruncationErrorBudget`.
+
+<Admonition title="Remarque" type="note">
+  Par défaut, `backpropagate()` utilise la norme $L_1$ des coefficients tronqués pour borner l'erreur totale due à la troncature, mais d'autres normes $L_p$ peuvent être utilisées si tu souhaites modifier la façon dont l'erreur de troncature est calculée.
+</Admonition>
+
+```python
+# Specify a single-qubit observable
+observable = SparsePauliOp("IIIIIIIIIZ")
+
+# Backpropagate without the truncation error budget
+backpropagated_observable, remaining_slices, metadata = backpropagate(
+    observable,
+    slices,
+    operator_budget=op_budget,
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(backpropagated_observable.paulis)} terms, which can be combined into "
+    f"{len(backpropagated_observable.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 18 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+Note that backpropagating one more slice would result in 27 terms across 12 groups.
+```
+
+```python
+print(
+    "The remaining circuit after backpropagation without truncation looks as follows:"
+)
+bp_circuit.draw("mpl", scale=0.6)
+```
+
+```text
+The remaining circuit after backpropagation without truncation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-obp-get-started/extracted-outputs/243681df-1234-4b83-9139-16b2b8c88308-1.svg)
+
+Le code ci-dessous rétropropage le circuit *avec* un budget d'erreur de troncature.
+
+```python
+# Backpropagate *with* the truncation error budget
+backpropagated_observable_trunc, remaining_slices_trunc, metadata_trunc = (
+    backpropagate(
+        observable,
+        slices,
+        operator_budget=op_budget,
+        truncation_error_budget=truncation_error_budget,
+    )
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(
+    remaining_slices_trunc, include_barriers=True
+)
+
+print(f"Backpropagated {metadata_trunc.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(backpropagated_observable_trunc.paulis)} terms, which can be combined into "
+    f"{len(backpropagated_observable_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata_trunc.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata_trunc.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata_trunc.backpropagation_history[-1].num_qwc_groups} groups."
+)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 19 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 4.933e-02
+Note that backpropagating one more slice would result in 27 terms across 13 groups.
+```
+
+```python
+print(
+    "The remaining circuit after backpropagation with truncation looks as follows:"
+)
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+The remaining circuit after backpropagation with truncation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-obp-get-started/extracted-outputs/ab852775-229d-4652-9456-56c4dc8e628c-1.svg)
+
+### Transpiler et exécuter la charge de travail quantique {#transpile-and-execute-quantum-workload}
+
+Maintenant que tu as rétropropagé l'opérateur, tu peux exécuter la partie restante du circuit sur un QPU. La charge de travail quantique, utilisant l'Estimator, doit inclure le circuit `bp_circuit_trunc` et mesurer l'opérateur rétropropagé `backpropagated_observable`.
+
+Pour démontrer l'efficacité d'OBP seul, le code suivant transpile à la fois le circuit original et le circuit rétropropagé (avec et sans troncature), puis simule les circuits classiquement à l'aide du `StatevectorEstimator`.
+
+```python
+# Specify a backend and a pass manager for transpilation
+backend = FakeMelbourneV2()
+# pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment without truncation
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = backpropagated_observable.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = backpropagated_observable_trunc.apply_layout(
+    bp_circuit_trunc_isa.layout
+)
+
+estimator = StatevectorEstimator()
+
+# Run the experiments using the exact statevector estimator
+result_exact = (
+    estimator.run([(circuit, observable)]).result()[0].data.evs.item()
+)
+
+result_bp = (
+    estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+)
+result_bp_trunc = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)])
+    .result()[0]
+    .data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value without truncation: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+print(
+    f"    - Expected Error for truncated observable: {metadata_trunc.accumulated_error(0):.3e}"
+)
+print(
+    f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc):.3e}"
+)
+```
+
+```text
+Exact expectation value: 0.8854160687717517
+Backpropagated expectation value without truncation: 0.8854160687717533
+Backpropagated expectation value with truncation: 0.8850236647156081
+    - Expected Error for truncated observable: 4.933e-02
+    - Observed Error for truncated observable: 3.924e-04
+```
+
+Enfin, le code suivant transpile et exécute le circuit rétropropagé sur un QPU (avec et sans troncature).
+
+```python
+# Specify a backend and a pass manager for transpilation
+service = QiskitRuntimeService()
+backend = service.least_busy()
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+
+# Transpile backpropagated experiment without truncation
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = backpropagated_observable.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = backpropagated_observable_trunc.apply_layout(
+    bp_circuit_trunc_isa.layout
+)
+
+# Run the experiments using Estimator primitive
+estimator = EstimatorV2(mode=backend)
+
+result_bp_qpu = (
+    estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+)
+
+result_bp_trunc_qpu = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)])
+    .result()[0]
+    .data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value without truncation: {result_bp_qpu}")
+print(
+    f"Backpropagated expectation value with truncation: {result_bp_trunc_qpu}"
+)
+print(
+    f"    - Observed Error for observable without truncation: {abs(result_exact - result_bp_qpu):.3e}"
+)
+print(
+    f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc_qpu):.3e}"
+)
+```
+
+```text
+Exact expectation value: 0.8854160687717517
+Backpropagated expectation value without truncation: 0.8790435084647706
+Backpropagated expectation value with truncation: 0.8759838342768448
+    - Observed Error for observable without truncation: 6.373e-03
+    - Observed Error for truncated observable: 9.432e-03
+```
+
+## Prochaines étapes {#next-steps}
+
+<Admonition type="tip" title="Recommandations">
+- Essaie le tutoriel sur l'utilisation d'[OBP pour améliorer les valeurs d'espérance.](/tutorials/operator-back-propagation)
+</Admonition>

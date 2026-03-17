@@ -1,0 +1,307 @@
+---
+title: "Diagonalización cuántica de Krylov basada en muestreo"
+sidebar_label: "Diagonalización cuántica de Krylov basada en muestreo"
+description: "Se combinan los temas de las lecciones anteriores para aprovechar las garantías de convergencia de KQD y la velocidad de SQD en SKQD."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/skqd.ipynb"
+---
+{/* doqumentation-source-hash: c65ad06f */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/skqd.ipynb" />
+
+
+
+{/* cspell:ignore arxiv Neel probs eigenvals Hatano */}
+
+# Diagonalización cuántica de Krylov basada en muestreo (SKQD) {#sample-based-krylov-quantum-diagonalization-skqd}
+Esta lección sobre la diagonalización cuántica de Krylov basada en muestreo (SKQD) combina métodos explicados en lecciones anteriores. Consiste en un único ejemplo que utiliza el marco de patrones de Qiskit:
+
+    - Paso 1: Mapear el problema a circuitos cuánticos y operadores
+    - Paso 2: Optimizar para el hardware objetivo
+    - Paso 3: Ejecutar con primitivas de Qiskit
+    - Paso 4: Posprocesamiento
+
+Un paso importante en la diagonalización cuántica basada en muestreo es la generación de vectores de alta calidad para el subespacio. En la lección anterior, utilizamos el enfoque LUCJ para generar vectores de subespacio para un hamiltoniano de química. En esta lección, utilizaremos estados cuánticos de Krylov[\[1\]](#references), como se discutió en la Lección 2. Primero repasaremos cómo generar el espacio de Krylov en una computadora cuántica mediante operaciones de evolución temporal. Luego muestrearemos a partir de él. Proyectaremos el hamiltoniano del sistema sobre el subespacio muestreado y lo diagonalizaremos para estimar la energía del estado fundamental. Bajo las suposiciones descritas en la Lección 2, se demuestra que el algoritmo converge de manera eficiente al estado fundamental.
+
+## 0. El espacio de Krylov {#0-the-krylov-space}
+
+Como recordatorio: un espacio de Krylov $\mathcal{K}^r$ de orden $r$ es el espacio generado por vectores que se obtienen multiplicando potencias sucesivas de una matriz $A$ hasta $r-1$ por un vector de referencia $\vert v \rangle$.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+Cuando la matriz $A$ es el hamiltoniano $H$, el espacio correspondiente se denomina _espacio de Krylov de potencias_ $\mathcal{K}_P$. Cuando $A$ es el operador de evolución temporal $U=e^{-iH(dt)}$ generado por el hamiltoniano, el espacio se denomina espacio de Krylov unitario $\mathcal{K}_U$. El subespacio de Krylov de potencias no puede generarse directamente en una computadora cuántica, ya que $H$ no es un operador unitario. En su lugar, podemos usar el operador de evolución temporal $U = e^{-iH(dt)}$, para el cual se pueden demostrar [garantías de convergencia](https://arxiv.org/abs/2110.07492) similares a las del espacio de Krylov de potencias. Las potencias de $U$ se convierten entonces en diferentes pasos temporales $U^k = e^{-iH(k dt)}$ con $k = 0, 1, 2, ..., (r-1)$.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+
+## 1. Mapear el problema a circuitos cuánticos y operadores {#1-map-problem-to-quantum-circuits-and-operators}
+En esta lección consideramos el hamiltoniano para la cadena antiferromagnética de espín-1/2 XX-Z con $L = 22$ sitios de red y condiciones de contorno periódicas:
+$$
+    H = \sum_{i, j}^{N} J_{xy} (X_{i} X_{j} + Y_{i} Y_{j}) + Z_{i} Z_{j}
+$$
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-sqd qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+num_spins = 22
+coupling_map = CouplingMap.from_ring(num_spins)
+H_op = generate_xyz_hamiltonian(coupling_map, coupling_constants=(0.3, 0.3, 1.0))
+```
+
+Para construir el espacio de Krylov, necesitamos tres ingredientes esenciales:
+
+1. Una elección de la dimensión de Krylov ($r$) y del paso temporal ($dt$).
+2. Un estado inicial (de referencia) (vector $\vert v \rangle$ arriba) con solapamiento polinomial con el estado objetivo (fundamental), donde el estado objetivo es disperso. Este requisito de solapamiento polinomial es el mismo que en el algoritmo de estimación de fase cuántica.
+3. Operadores de evolución temporal $U^{k}=e^{-iH(k * dt)}$ ($k = 0, 1, 2, ..., r-1$).
+
+Para un valor elegido de $r$ (y $dt$), creamos $r$ circuitos cuánticos separados y muestreamos a partir de ellos. Cada circuito cuántico se crea conectando la representación en circuito cuántico del estado de referencia y el operador de evolución temporal para un valor de $k$.
+
+Una dimensión de Krylov mayor mejora la convergencia de la energía estimada. En esta lección fijamos la dimensión en $5$ para ilustrar la tendencia de convergencia.
+
+La Ref [\[2\]](#references) demostró que un paso temporal suficientemente pequeño para KQD es $\pi / \vert \vert H \vert \vert$, y que es preferible subestimar este valor en lugar de sobreestimarlo. Por otro lado, elegir un $dt$ demasiado pequeño conduce a un peor condicionamiento del subespacio de Krylov, ya que los vectores base de Krylov difieren menos de un paso temporal al siguiente. Además, aunque esta elección de $dt$ es demostrablemente suficiente para la convergencia de SKQD, la elección óptima de $dt$ en la práctica en este contexto basado en muestreo es objeto de investigación en curso. En esta lección fijamos $dt = 0.15$.
+
+Además de la dimensión de Krylov y el paso temporal, debemos establecer el número de pasos de Trotter para la evolución temporal. Muy pocos pasos conducen a errores de trotterización mayores, mientras que demasiados pasos conducen a circuitos más profundos. En esta lección fijamos el número de pasos de Trotter en $6$.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of krylov subspace
+dt = 0.15
+num_trotter_steps = 6
+```
+
+A continuación, debemos elegir un estado de referencia $\vert \psi \rangle$ que tenga cierto solapamiento con el estado fundamental. Para este hamiltoniano, utilizamos el estado _Néel_ con 1s y 0s alternados $\vert ...101...010...101 \rangle$ como nuestro estado de referencia.
+
+```python
+# Prep `Neel` state as the reference state for evolution
+from qiskit import QuantumCircuit
+
+qc_state_prep = QuantumCircuit(num_spins)
+for i in range(num_spins):
+    if i % 2 == 0:
+        qc_state_prep.x(i)
+```
+
+Finalmente, debemos mapear el operador de evolución temporal a un circuito cuántico. Esto se hizo en la Lección 2, pero aquí utilizamos métodos en Qiskit, específicamente un método llamado _síntesis_. Existen diferentes métodos para mapear operadores matemáticos a circuitos cuánticos con compuertas cuánticas. Muchas de estas técnicas están disponibles en el [módulo de síntesis de Qiskit](https://docs.quantum.ibm.com/api/qiskit/synthesis). Utilizamos el enfoque [`LieTrotter`](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter) para la síntesis [\[3\]](#references) [\[4\]](#references).
+
+```python
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+
+evol_gate = PauliEvolutionGate(
+    H_op, time=(dt / num_trotter_steps), synthesis=LieTrotter(reps=num_trotter_steps)
+)  # `U` operator
+
+qr = QuantumRegister(num_spins)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+
+circuits = []
+for rep in range(krylov_dim):
+    circ = qc_state_prep.copy()
+
+    # Repeating the `U` operator to implement U^0, U^1, U^2, and so on, for power Krylov space
+    for _ in range(rep):
+        circ.compose(other=qc_evol, inplace=True)
+
+    circ.measure_all()
+    circuits.append(circ)
+```
+
+```python
+circuits[1].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/7ffc3eaa-9563-4c89-9d7b-808a3a37b275-0.avif)
+
+```python
+circuits[2].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/bdbc0881-06b0-49f2-8919-a376aa7f08e3-0.avif)
+
+## 2. Optimizar para el hardware objetivo {#2-optimize-for-target-hardware}
+Una vez creados los circuitos, podemos optimizarlos para un hardware objetivo. Elegimos una QPU a escala de utilidad.
+
+```python
+import warnings
+
+from qiskit import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+warnings.filterwarnings("ignore")
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+Ahora transpilamos los circuitos al backend objetivo utilizando un pass manager predefinido.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuits = pm.run(circuits=circuits)
+```
+
+## 3. Ejecutar en el hardware objetivo {#3-execute-on-target-hardware}
+Después de optimizar los circuitos para la ejecución en hardware, podemos ejecutarlos en el hardware objetivo y recopilar muestras para la estimación de la energía del estado fundamental.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+job = sampler.run(isa_circuits, shots=100_000)  # Takes approximately 2m 58s of QPU time
+```
+
+```python
+counts_all = [job.result()[k].data.meas.get_counts() for k in range(krylov_dim)]
+```
+
+## 4. Posprocesar resultados {#4-post-process-results}
+A continuación, agregamos los conteos para dimensiones de Krylov crecientes de manera acumulativa. Con los conteos acumulativos, generamos subespacios para dimensiones de Krylov crecientes y analizamos el comportamiento de convergencia.
+
+```python
+from collections import Counter
+
+counts_cumulative = []
+for i in range(krylov_dim):
+    counter = Counter()
+    for d in counts_all[: i + 1]:
+        counter.update(d)
+
+    counts = dict(counter)
+    counts_cumulative.append(counts)
+```
+
+Para proyectar y diagonalizar el hamiltoniano, utilizamos funciones de [`qiskit-addon-sqd`](https://qiskit.github.io/qiskit-addon-sqd/). El addon proporciona funcionalidades para proyectar hamiltonianos basados en cadenas de Pauli sobre un subespacio y resolver valores propios con `SciPy`.
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.qubit import solve_qubit
+```
+
+En principio, podemos filtrar cadenas de bits con patrones incorrectos antes de generar el subespacio. Por ejemplo, el estado fundamental del hamiltoniano antiferromagnético en esta lección tiene típicamente un número igual de espines "arriba" y "abajo", es decir, el número de "1"s en la cadena de bits debe ser exactamente la mitad del número total de bits (espines) en el sistema. La siguiente función filtra cadenas de bits con un número incorrecto de "1"s de los conteos.
+
+```python
+# Filters out bitstrings that do not have specified number (`num_ones`) of `1` bits.
+def postselect_counts(counts, num_ones):
+    filtered_counts = {}
+    for bitstring, freq in counts.items():
+        if bitstring.count("1") == num_ones:
+            filtered_counts[bitstring] = freq
+
+    return filtered_counts
+```
+
+Con cadenas de bits que tienen el número correcto de electrones arriba/abajo, generamos subespacios y calculamos valores propios para dimensiones de Krylov crecientes. Dependiendo del tamaño del problema y los recursos clásicos disponibles, es posible que necesitemos aplicar submuestreo (similar a la [lección sobre SQD](/learning/courses/quantum-diagonalization-algorithms/sqd-implementation)) para mantener la dimensión del subespacio dentro de límites manejables. Además, podemos aplicar el concepto de recuperación de configuración similar a la Lección 4. Podemos calcular la ocupación electrónica por sitio de red a partir de estados propios reconstruidos y utilizar esa información para corregir cadenas de bits con un número incorrecto de electrones arriba/abajo. Dejamos esto como ejercicio para los lectores interesados.
+
+```python
+import numpy as np
+
+num_batches = 10
+rand_seed = 0
+scipy_kwargs = {"k": 2, "which": "SA"}
+
+ground_state_energies = []
+for idx, counts in enumerate(counts_cumulative):
+    counts = postselect_counts(counts, num_ones=num_spins // 2)
+    bitstring_matrix, probs = counts_to_arrays(counts=counts)
+
+    eigenvals, eigenstates = solve_qubit(
+        bitstring_matrix, H_op, verbose=False, **scipy_kwargs
+    )
+    gs_en = np.min(eigenvals)
+    ground_state_energies.append(gs_en)
+```
+
+A continuación, graficamos la energía calculada en función de la dimensión de Krylov y la comparamos con la energía exacta. La energía exacta se calcula por separado con un método clásico de fuerza bruta. Podemos ver que la energía del estado fundamental estimada converge a medida que aumenta la dimensión del espacio de Krylov. Aunque una dimensión de Krylov de $5$ es limitada, los resultados muestran una convergencia impresionante que debería mejorar con una dimensión de Krylov mayor [\[1\]](#references).
+
+```python
+import matplotlib.pyplot as plt
+
+exact_gs_en = -23.934184
+plt.plot(
+    range(1, krylov_dim + 1),
+    ground_state_energies,
+    color="blue",
+    linestyle="-.",
+    label="estimate",
+)
+plt.plot(
+    range(1, krylov_dim + 1),
+    [exact_gs_en] * krylov_dim,
+    color="red",
+    linestyle="-",
+    label="exact",
+)
+plt.xticks(range(1, krylov_dim + 1), range(1, krylov_dim + 1))
+plt.legend()
+plt.xlabel("Krylov space dimension")
+plt.ylabel("Energy")
+plt.ylim([-24, -22.50])
+plt.title(
+    "Estimating Ground state energy with Sample-based Krylov Quantum Diagonalization"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/debca96a-e0e3-4342-a755-8204dba50d74-0.avif)
+
+### Verifica tu comprensión {#check-your-understanding}
+Lee las siguientes preguntas, reflexiona sobre tus respuestas y luego haz clic en los triángulos para ver las soluciones.
+
+<details>
+<summary>
+
+¿Qué se podría hacer para mejorar la convergencia en el gráfico anterior?
+
+</summary>
+
+__Respuesta:__
+
+Aumentar la dimensión de Krylov. En general, también se podría aumentar el número de shots, pero este ya es muy alto en el cálculo anterior.
+
+</details>
+
+<details>
+<summary>
+
+¿Cuáles son las principales ventajas de SKQD frente a (a) SQD y (b) KQD?
+
+</summary>
+
+__Respuesta:__
+
+Puede haber otras respuestas válidas, pero las respuestas completas deberían incluir lo siguiente:
+
+   (a) SKQD ofrece garantías de convergencia que SQD no tiene. Con SQD, es necesario encontrar un ansatz muy bueno que tenga un solapamiento excelente con el soporte del estado fundamental en la base computacional, o se debe introducir un componente variacional en el cálculo para muestrear una familia de ansatze.
+
+   (b) SKQD requiere significativamente menos tiempo de QPU, ya que se elimina el costoso cálculo de elementos de matriz mediante el test de Hadamard.
+
+</details>
+
+## 5. Resumen {#5-summary}
+
+- La estimación de energías del estado fundamental mediante el muestreo de estados base de Krylov es muy adecuada para modelos de red, incluyendo sistemas de espines, problemas de materia condensada y teorías gauge de red. Este enfoque escala significativamente mejor que VQE, ya que no requiere optimización sobre muchos parámetros en un ansatz variacional como en VQE o en un SQD basado en un ansatz heurístico (por ejemplo, el problema de química en la lección anterior).
+    - Para mantener las profundidades de circuito bajas, es conveniente abordar problemas de red que sean adecuados para hardware pre-tolerante a fallos.
+- SKQD no tiene problema de medición cuántica como VQE. No es necesario estimar grupos de operadores de Pauli conmutantes.
+- SKQD es robusto frente a muestras ruidosas, ya que se puede usar una rutina de postselección específica del problema (por ejemplo, filtrar cadenas de bits que no correspondan a patrones específicos del problema) o aceptar un mayor esfuerzo de diagonalización clásica (es decir, diagonalizar en un subespacio más grande) para reducir efectivamente el efecto del ruido.
+
+## Referencias {#references}
+
+\[1] Jeffery Yu et al., "Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization" (2025). [arxiv:quant-ph/2501.09702](https://arxiv.org/abs/2501.09702).
+
+\[2] Ethan N. Epperly, Lin Lin, and Yuji Nakatsukasa. "A theory of quantum subspace diagonalization". SIAM Journal on Matrix Analysis and Applications 43, 1263–1290 (2022).
+
+\[2] N. Hatano and M. Suzuki, "Finding Exponential Product Formulas of Higher Orders" (2005). [arXiv:math-ph/0506007](https://arxiv.org/abs/math-ph/0506007).
+
+\[4] D. Berry, G. Ahokas, R. Cleve and B. Sanders, "Efficient quantum algorithms for simulating sparse Hamiltonians" (2006). [arXiv:quant-ph/0508139](https://arxiv.org/abs/quant-ph/0508139).

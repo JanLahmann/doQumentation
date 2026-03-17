@@ -1,0 +1,1351 @@
+---
+title: "QVCs y QNNs"
+sidebar_label: "QVCs y QNNs"
+description: "Los circuitos cuánticos variacionales se aplican al reconocimiento de patrones en una imagen. Se discuten los paralelismos con las redes neuronales clásicas."
+notebook_path: "learning/courses/quantum-machine-learning/qvc-qnn.ipynb"
+---
+{/* doqumentation-source-hash: 6ce70da8 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-machine-learning/qvc-qnn.ipynb" />
+
+
+
+{/* cspell:ignore yticks hspace VQCs linesize, imshow, minpos, nonumber, zzcircuit, zcircuit, pcircuit, zzcx, Schuld, Francesco, Peruccione, Vojtech, Adrian, Perez, Cervera, Lierta, Elies, Fuster, Jose, Latorre, Sweke, Jakob */}
+
+# Circuitos cuánticos variacionales y redes neuronales cuánticas {#quantum-variational-circuits-and-quantum-neural-networks}
+
+En esta lección, implementamos varios circuitos cuánticos variacionales para una tarea de clasificación de datos, los llamados clasificadores cuánticos variacionales (VQCs, por sus siglas en inglés). En un momento fue común referirse a un subconjunto de los VQCs como redes neuronales cuánticas (QNNs) por analogía con las redes neuronales clásicas. Efectivamente, hay casos en que estructuras tomadas de las redes neuronales clásicas, como las capas de convolución, desempeñan un papel importante en los VQCs. En esos casos donde la analogía es fuerte, QNN puede ser una descripción útil. Pero los circuitos cuánticos parametrizados no tienen por qué seguir la estructura general de una red neuronal; por ejemplo, no todos los datos tienen que cargarse en la primera capa (de entrada): podemos cargar algunos datos en la primera capa, aplicar algunas puertas y luego cargar datos adicionales (un proceso llamado "reuploading" o recarga de datos). Por tanto, debemos pensar en las QNNs como un subconjunto de los circuitos cuánticos parametrizados, y no debemos limitar nuestra exploración de circuitos cuánticos útiles por la analogía con las redes neuronales clásicas.
+
+El conjunto de datos que se aborda en esta lección consiste en imágenes que contienen franjas horizontales y verticales, y nuestro objetivo es etiquetar imágenes no vistas en una de las dos categorías según la orientación de la línea. Lo conseguiremos con un VQC. A medida que avancemos, estudiaremos formas de mejorar y escalar el cálculo. El conjunto de datos aquí es excepcionalmente fácil de clasificar de manera clásica. Se ha elegido por su simplicidad para poder centrarnos en la parte cuántica del problema y ver cómo un atributo del conjunto de datos podría traducirse en una parte de un circuito cuántico. No es razonable esperar una aceleración cuántica para casos tan simples en los que los algoritmos clásicos son tan eficientes.
+
+Al final de esta lección deberías ser capaz de:
+* Cargar datos de una imagen en un circuito cuántico
+* Construir un ansatz para un VQC (o QNN) y ajustarlo a tu problema
+* Entrenar tu VQC/QNN y usarlo para hacer predicciones precisas sobre datos de prueba
+* Escalar el problema y reconocer los límites de los ordenadores cuánticos actuales
+
+## Generación de datos {#data-generation}
+
+Comenzaremos construyendo los datos. Los conjuntos de datos a menudo no se generan explícitamente como parte del marco de patrones de Qiskit. Sin embargo, el tipo y la preparación de los datos son fundamentales para aplicar con éxito la computación cuántica al aprendizaje automático. El código siguiente define un conjunto de datos de imágenes con dimensiones de píxeles fijas. A una fila o columna completa de la imagen se le asigna el valor $\pi/2$, y a los píxeles restantes se les asignan valores aleatorios en el intervalo $(0,\pi/4)$. Los valores aleatorios son ruido en nuestros datos. Revisa el código para asegurarte de entender cómo se generan las imágenes. Más adelante escalaremos las imágenes.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-ibm-runtime scipy scikit-learn
+```
+
+```python
+# This code defines the images to be classified:
+
+import numpy as np
+
+# Total number of "pixels"/qubits
+size = 8
+# One dimension of the image (called vertical, but it doesn't matter). Must be a divisor of `size`
+vert_size = 2
+# The length of the line to be detected (yellow). Must be less than or equal to the smallest dimension of the image (`<=min(vert_size,size/vert_size)`
+line_size = 2
+
+def generate_dataset(num_images):
+    images = []
+    labels = []
+    hor_array = np.zeros((size - (line_size - 1) * vert_size, size))
+    ver_array = np.zeros((round(size / vert_size) * (vert_size - line_size + 1), size))
+
+    j = 0
+    for i in range(0, size - 1):
+        if i % (size / vert_size) <= (size / vert_size) - line_size:
+            for p in range(0, line_size):
+                hor_array[j][i + p] = np.pi / 2
+            j += 1
+
+    # Make two adjacent entries pi/2, then move down to the next row. Careful to avoid the "pixels" at size/vert_size - linesize, because we want to fold this list into a grid.
+
+    j = 0
+    for i in range(0, round(size / vert_size) * (vert_size - line_size + 1)):
+        for p in range(0, line_size):
+            ver_array[j][i + p * round(size / vert_size)] = np.pi / 2
+        j += 1
+
+    # Make entries pi/2, spaced by the length/rows, so that when folded, the entries appear on top of each other.
+
+    for n in range(num_images):
+        rng = np.random.randint(0, 2)
+        if rng == 0:
+            labels.append(-1)
+            random_image = np.random.randint(0, len(hor_array))
+            images.append(np.array(hor_array[random_image]))
+
+        elif rng == 1:
+            labels.append(1)
+            random_image = np.random.randint(0, len(ver_array))
+            images.append(np.array(ver_array[random_image]))
+            # Randomly select 0 or 1 for a horizontal or vertical array, assign the corresponding label.
+
+        # Create noise
+        for i in range(size):
+            if images[-1][i] == 0:
+                images[-1][i] = np.random.rand() * np.pi / 4
+    return images, labels
+
+hor_size = round(size / vert_size)
+```
+
+Nota que el código anterior también ha generado etiquetas que indican si las imágenes contienen una línea vertical (+1) u horizontal (-1). Ahora usaremos sklearn para dividir un conjunto de datos de 100 imágenes en un conjunto de entrenamiento y uno de prueba (junto con sus etiquetas correspondientes). Aquí, usamos el $70\%$ del conjunto de datos para entrenamiento, reservando el $30\%$ restante para pruebas.
+
+```python
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+images, labels = generate_dataset(200)
+
+train_images, test_images, train_labels, test_labels = train_test_split(
+    images, labels, test_size=0.3, random_state=246
+)
+```
+
+Grafiquemos algunos elementos de nuestro conjunto de datos para ver cómo son estas líneas:
+
+```python
+import matplotlib.pyplot as plt
+
+# Make subplot titles so we can identify categories
+titles = []
+for i in range(8):
+    title = "category: " + str(train_labels[i])
+    titles.append(title)
+
+# Generate a figure with nested images using subplots.
+fig, ax = plt.subplots(4, 2, figsize=(10, 6), subplot_kw={"xticks": [], "yticks": []})
+
+for i in range(8):
+    ax[i // 2, i % 2].imshow(
+        train_images[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+    ax[i // 2, i % 2].set_title(titles[i])
+plt.subplots_adjust(wspace=0.1, hspace=0.3)
+```
+
+![Salida de la celda de código anterior](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/ac9e4239-8c1a-4798-a8e7-80347c29150c-0.avif)
+
+Cada una de estas imágenes sigue emparejada con su etiqueta en ```train_labels``` en forma de lista simple:
+
+```python
+print(train_labels[:8])
+```
+
+```text
+[1, 1, 1, 1, -1, 1, 1, 1]
+```
+
+## Clasificador cuántico variacional: un primer intento {#variational-quantum-classifier-a-first-attempt}
+
+### Paso 1 de los patrones de Qiskit: mapear el problema a un circuito cuántico {#qiskit-patterns-step-1-map-the-problem-to-a-quantum-circuit}
+
+El objetivo es encontrar una función $f$ con parámetros $\theta$ que mapee un vector de datos / imagen $\vec{x}$ a la categoría correcta: $f_\theta(\vec{x}) \rightarrow \pm1$. Esto se logrará usando un VQC con pocas capas identificables por sus propósitos distintos:
+$$
+f_\theta(\vec{x}) = \langle 0|U^{\dagger}(\vec{x})W^\dagger(\theta)OW(\theta)U(\vec{x})|0\rangle
+$$
+Aquí, $U(\vec{x})$ es el circuito de codificación, para el cual tenemos muchas opciones como se vio en lecciones anteriores. $W(\theta)$ es un bloque de circuito variacional o entrenable, y $\theta$ es el conjunto de parámetros a entrenar. Esos parámetros serán variados por algoritmos de optimización clásicos para encontrar el conjunto de parámetros que produce la mejor clasificación de imágenes por parte del circuito cuántico. Este circuito variacional se llama a veces el "ansatz". Por último, $O$ es algún observable que se estimará usando la primitiva Estimator. No hay ninguna restricción que obligue a que las capas vengan en este orden, ni siquiera a que estén completamente separadas. Se podrían tener múltiples capas variacionales y/o de codificación en cualquier orden que esté técnicamente motivado.
+
+Comenzamos eligiendo un mapa de características para codificar nuestros datos. Usaremos el ```z_feature_map```, ya que mantiene las profundidades del circuito bajas en comparación con otras codificaciones de características.
+
+```python
+from qiskit.circuit.library import z_feature_map
+
+# One qubit per data feature
+num_qubits = len(train_images[0])
+
+# Data encoding
+# Note that qiskit orders parameters alphabetically. We assign the parameter prefix "a" to ensure our data encoding goes to the first part of the circuit, the feature mapping.
+feature_map = z_feature_map(num_qubits, parameter_prefix="a")
+```
+
+Ahora debemos decidir un ansatz para entrenar. Hay muchas consideraciones al seleccionar un ansatz. Una descripción completa está fuera del alcance de esta introducción; aquí simplemente señalamos algunas categorías de consideraciones.
+
+1. **Hardware:** Todos los ordenadores cuánticos modernos son más propensos a errores y más susceptibles al ruido que sus contrapartes clásicas. Usar un ansatz que sea excesivamente profundo (especialmente en profundidad de puertas de dos qubits transpiladas) no producirá buenos resultados. Un problema relacionado es que los ordenadores cuánticos tienen cierta disposición de qubits, lo que significa que algunos qubits físicos son adyacentes en el ordenador cuántico, y otros pueden estar muy alejados entre sí. Entrelazar qubits adyacentes no aumenta demasiado la profundidad, pero entrelazar qubits muy distantes puede aumentarla sustancialmente, ya que debemos insertar puertas de intercambio (swap) para mover información a qubits que sean adyacentes y así poder entrelazarlos.
+2. **El problema:** Siempre que tengas información sobre tu problema que pueda guiar tu ansatz, úsala. Por ejemplo, los datos en esta lección están compuestos por imágenes de líneas horizontales y verticales. Se podría considerar qué correlación entre colores/valores adyacentes identifica una imagen de una línea horizontal o vertical. ¿Qué atributos de un ansatz corresponderían a esta correlación entre píxeles adyacentes? Revisaremos este punto de forma más técnica más adelante en esta lección. Pero por ahora, digamos simplemente que incluir entrelazamiento y puertas CNOT entre qubits correspondientes a píxeles adyacentes parece una buena idea. En términos más generales, considera si el problema se resuelve mejor realmente usando un circuito cuántico, o si podrían existir algoritmos clásicos que puedan hacer igual de bien.
+3. **Número de parámetros:** Cada puerta cuántica parametrizada de forma independiente en el circuito aumenta el espacio a optimizar clásicamente, y esto resulta en una convergencia más lenta. Pero a medida que los problemas escalan, se puede encontrar con *mesetas áridas* (*barren plateaus*). Este término se refiere a un fenómeno en el que el paisaje de optimización de un algoritmo cuántico variacional se vuelve exponencialmente plano y sin rasgos distintivos a medida que aumenta el tamaño del problema. Esto provoca gradientes que se desvanecen, dificultando el entrenamiento efectivo del algoritmo[\[1\]](#references). Las mesetas áridas son relevantes para los algoritmos cuánticos variacionales como los VQCs/QNNs. Cabe señalar que el número creciente de parámetros no es la única consideración para evitar las mesetas áridas; otras consideraciones incluyen las funciones de coste globales y la inicialización aleatoria de parámetros.
+
+En esta lección veremos algunos ejemplos simples de buenas prácticas en la construcción de ansatz. Primero probemos el ansatz a continuación. Volveremos a revisarlo más adelante.
+
+```python
+# Import the necessary packages
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+
+# Initialize the circuit using the same number of qubits as the image has pixels
+qnn_circuit = QuantumCircuit(size)
+
+# We choose to have two variational parameters for each qubit.
+params = ParameterVector("θ", length=2 * size)
+
+# A first variational layer:
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# Here is a list of qubit pairs between which we want CNOT gates. The choice of these is not yet obvious.
+qnn_cnot_list = [[0, 1], [1, 2], [2, 3]]
+
+for i in range(len(qnn_cnot_list)):
+    qnn_circuit.cx(qnn_cnot_list[i][0], qnn_cnot_list[i][1])
+
+# The second variational layer:
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+
+# Check the circuit depth, and the two-qubit gate depth
+print(qnn_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+
+# Draw the circuit
+qnn_circuit.draw("mpl")
+```
+
+```text
+5
+2+ qubit depth: 3
+```
+
+```text
+┌──────────┐             ┌──────────┐
+q_0: ┤ Ry(θ[0]) ├──────■──────┤ Rx(θ[8]) ├─────────────────────────
+     ├──────────┤    ┌─┴─┐    └──────────┘┌──────────┐
+q_1: ┤ Ry(θ[1]) ├────┤ X ├─────────■──────┤ Rx(θ[9]) ├─────────────
+     ├──────────┤    └───┘       ┌─┴─┐    └──────────┘┌───────────┐
+q_2: ┤ Ry(θ[2]) ├────────────────┤ X ├─────────■──────┤ Rx(θ[10]) ├
+     ├──────────┤                └───┘       ┌─┴─┐    ├───────────┤
+q_3: ┤ Ry(θ[3]) ├────────────────────────────┤ X ├────┤ Rx(θ[11]) ├
+     ├──────────┤┌───────────┐               └───┘    └───────────┘
+q_4: ┤ Ry(θ[4]) ├┤ Rx(θ[12]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤
+q_5: ┤ Ry(θ[5]) ├┤ Rx(θ[13]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤
+q_6: ┤ Ry(θ[6]) ├┤ Rx(θ[14]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤
+q_7: ┤ Ry(θ[7]) ├┤ Rx(θ[15]) ├─────────────────────────────────────
+     └──────────┘└───────────┘
+```
+
+Con la codificación de datos y el circuito variacional preparados, podemos combinarlos para formar nuestro ansatz completo. En este caso, los componentes de nuestro circuito cuántico son bastante análogos a los de las redes neuronales, siendo $U(\vec{x})$ el más similar a la capa que carga los valores de entrada de la imagen, y $W(\theta)$ el que actúa como la capa de "pesos" variables. Dado que esta analogía se cumple en este caso, adoptamos "qnn" en algunas de nuestras convenciones de nomenclatura; pero esta analogía no debería limitar tu exploración de VQCs.
+
+![QML_CR_background_QNN_circuit-2.png](/learning/images/courses/quantum-machine-learning/qvc-qnn/qml-cr-background-qnn-circuit.avif)
+
+```python
+# QNN ansatz
+ansatz = qnn_circuit
+
+# Combine the feature map with the ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Display the circuit
+full_circuit.decompose().draw("mpl", style="clifford", fold=-1)
+```
+
+![Salida de la celda de código anterior](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/e84e5ac1-d5fb-4ec0-8a23-5a2c417a4088-0.avif)
+
+Ahora debemos definir un observable para poder usarlo en nuestra función de coste. Obtendremos un valor esperado para este observable usando Estimator. Si hemos seleccionado un ansatz bueno y motivado por el problema, entonces cada qubit contendrá información relevante para la clasificación. Se pueden añadir capas para combinar información en menos qubits (llamada *capa convolucional*), de forma que las mediciones solo sean necesarias en un subconjunto de los qubits del circuito (como en las redes neuronales convolucionales). O se puede medir algún atributo de cada qubit. Aquí optaremos por lo segundo, por lo que incluimos un operador ```Z``` para cada qubit. No hay nada único en elegir $Z$, pero está bien motivado:
+* Esta es una tarea de clasificación binaria, y una medición de $Z$ puede dar dos posibles resultados.
+* Los valores propios de $Z$ ($\pm 1$) están razonablemente bien separados, y dan lugar a un resultado del estimador en el intervalo [-1, +1], donde 0 puede usarse simplemente como valor de corte.
+* Es sencillo medir en la base de Pauli Z sin sobrecarga adicional de puertas.
+
+Por tanto, Z es una elección muy natural.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("Z" * (num_qubits), 1)])
+```
+
+Tenemos nuestro circuito cuántico y el observable que queremos estimar. Ahora necesitamos algunas cosas para ejecutar y optimizar este circuito. Primero, necesitamos una función para ejecutar un pase hacia adelante (forward pass). Nota que la función de abajo toma ```input_params``` y ```weight_params``` por separado. El primero es el conjunto de parámetros estáticos que describen los datos en una imagen, y el segundo es el conjunto de parámetros variables a optimizar.
+
+```python
+from qiskit.primitives import BaseEstimatorV2
+from qiskit.quantum_info.operators.base_operator import BaseOperator
+
+def forward(
+    circuit: QuantumCircuit,
+    input_params: np.ndarray,
+    weight_params: np.ndarray,
+    estimator: BaseEstimatorV2,
+    observable: BaseOperator,
+) -> np.ndarray:
+    """
+    Forward pass of the neural network.
+
+    Args:
+        circuit: circuit consisting of data loader gates and the neural network ansatz.
+        input_params: data encoding parameters.
+        weight_params: neural network ansatz parameters.
+        estimator: EstimatorV2 primitive.
+        observable: a single observable to compute the expectation over.
+
+    Returns:
+        expectation_values: an array (for one observable) or a matrix (for a sequence of observables) of expectation values.
+        Rows correspond to observables and columns to data samples.
+    """
+    num_samples = input_params.shape[0]
+    weights = np.broadcast_to(weight_params, (num_samples, len(weight_params)))
+    params = np.concatenate((input_params, weights), axis=1)
+    pub = (circuit, observable, params)
+    job = estimator.run([pub])
+    result = job.result()[0]
+    expectation_values = result.data.evs
+
+    return expectation_values
+```
+
+### Función de pérdida {#loss-function}
+
+A continuación, necesitamos una función de pérdida para calcular la diferencia entre los valores predichos y los calculados de las etiquetas. La función tomará las etiquetas predichas por el algoritmo y las etiquetas correctas, y devolverá la diferencia cuadrática media. Hay muchas funciones de pérdida diferentes. Aquí, el MSE es un ejemplo que elegimos.
+
+```python
+def mse_loss(predict: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """
+    Mean squared error (MSE).
+
+    prediction: predictions from the forward pass of neural network.
+    target: true labels.
+
+    output: MSE loss.
+    """
+    if len(predict.shape) <= 1:
+        return ((predict - target) ** 2).mean()
+    else:
+        raise AssertionError("input should be 1d-array")
+```
+
+Definamos también una función de pérdida ligeramente diferente que sea función de los parámetros variables (pesos), para usar con el optimizador clásico. Esta función solo toma los parámetros del ansatz como entrada; las demás variables para el pase hacia adelante y la pérdida se establecen como parámetros globales. El optimizador entrenará el modelo muestreando diferentes pesos e intentando reducir la salida de la función de coste/pérdida.
+
+```python
+def mse_loss_weights(weight_params: np.ndarray) -> np.ndarray:
+    """
+    Cost function for the optimizer to update the ansatz parameters.
+
+    weight_params: ansatz parameters to be updated by the optimizer.
+
+    output: MSE loss.
+    """
+    predictions = forward(
+        circuit=circuit,
+        input_params=input_params,
+        weight_params=weight_params,
+        estimator=estimator,
+        observable=observable,
+    )
+
+    cost = mse_loss(predict=predictions, target=target)
+    objective_func_vals.append(cost)
+
+    global iter
+    if iter % 50 == 0:
+        print(f"Iter: {iter}, loss: {cost}")
+    iter += 1
+
+    return cost
+```
+
+Arriba mencionamos el uso de un optimizador clásico. Cuando lleguemos a buscar entre los pesos para minimizar la función de coste, usaremos el optimizador COBYLA:
+
+```python
+from scipy.optimize import minimize
+```
+
+Estableceremos algunas variables globales iniciales para la función de coste.
+
+```python
+# Globals
+circuit = full_circuit
+observables = observable
+# input_params = train_images_batch
+# target = train_labels_batch
+objective_func_vals = []
+iter = 0
+```
+
+## Paso 2 de Qiskit Patterns: Optimizar el problema para la ejecución cuántica {#qiskit-patterns-step-2-optimize-problem-for-quantum-execution}
+Comenzamos seleccionando un backend para la ejecución. En este caso, usaremos el backend menos ocupado.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+print(backend.name)
+```
+
+```text
+ibm_brisbane
+```
+
+Aquí optimizamos el circuito para ejecutarlo en un backend real especificando el `optimization_level` y añadiendo desacoplamiento dinámico. El código siguiente genera un pass manager usando pass managers preconfigurados de `qiskit.transpiler`.
+
+```python
+from qiskit.circuit.library import XGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    ConstrainedReschedule,
+    PadDynamicalDecoupling,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+Ahora aplicamos el pass manager al circuito. Los cambios de layout resultantes también deben aplicarse al observable. Para circuitos muy grandes, las heurísticas utilizadas en la optimización de circuitos no siempre producen el circuito más eficiente y superficial. En esos casos, tiene sentido ejecutar dichos pass managers varias veces y usar el mejor circuito. Veremos esto más adelante cuando escalemos nuestro cálculo.
+
+```python
+circuit_ibm = pm.run(full_circuit)
+observable_ibm = observable.apply_layout(circuit_ibm.layout)
+```
+
+## Paso 3 de Qiskit Patterns: Ejecutar usando primitivas de Qiskit {#qiskit-patterns-step-3-execute-using-qiskit-primitives}
+
+### Recorrer el conjunto de datos en lotes y épocas {#loop-over-the-dataset-in-batches-and-epochs}
+Primero implementamos el algoritmo completo usando un simulador para depuración preliminar y para estimaciones de error. Ahora podemos recorrer todo el conjunto de datos en lotes durante el número de épocas deseado para entrenar nuestra red neuronal cuántica.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+batch_size = 140
+num_epochs = 1
+num_samples = len(train_images)
+
+# Globals
+circuit = full_circuit
+estimator = Estimator()  # simulator for debugging
+observables = observable
+objective_func_vals = []
+iter = 0
+
+# Random initial weights for the ansatz
+np.random.seed(42)
+weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+
+for epoch in range(num_epochs):
+    for i in range((num_samples - 1) // batch_size + 1):
+        print(f"Epoch: {epoch}, batch: {i}")
+        start_i = i * batch_size
+        end_i = start_i + batch_size
+        train_images_batch = np.array(train_images[start_i:end_i])
+        train_labels_batch = np.array(train_labels[start_i:end_i])
+        input_params = train_images_batch
+        target = train_labels_batch
+        iter = 0
+        res = minimize(
+            mse_loss_weights, weight_params, method="COBYLA", options={"maxiter": 100}
+        )
+        weight_params = res["x"]
+```
+
+```text
+Epoch: 0, batch: 0
+Iter: 0, loss: 1.0002309063537163
+Iter: 50, loss: 0.9434121445008878
+```
+
+## Paso 4 de Qiskit Patterns: Post-procesar, devolver el resultado en formato clásico {#qiskit-patterns-step-4-post-process-return-result-in-classical-format}
+### Prueba y precisión {#testing-and-accuracy}
+Ahora interpretamos los resultados del entrenamiento. Primero evaluamos la precisión del entrenamiento sobre el conjunto de entrenamiento.
+
+```python
+import copy
+from sklearn.metrics import accuracy_score
+from qiskit.primitives import StatevectorEstimator as Estimator  # simulator
+# from qiskit_ibm_runtime import EstimatorV2 as Estimator  # real quantum computer
+
+estimator = Estimator()
+# estimator = Estimator(backend=backend)
+
+pred_train = forward(circuit, np.array(train_images), res["x"], estimator, observable)
+# pred_train = forward(circuit_ibm, np.array(train_images), res['x'], estimator, observable_ibm)
+
+print(pred_train)
+
+pred_train_labels = copy.deepcopy(pred_train)
+pred_train_labels[pred_train_labels >= 0] = 1
+pred_train_labels[pred_train_labels < 0] = -1
+print(pred_train_labels)
+print(train_labels)
+
+accuracy = accuracy_score(train_labels, pred_train_labels)
+print(f"Train accuracy: {accuracy * 100}%")
+```
+
+```text
+[-2.27688499e-02 -1.46227204e-02 -1.73927452e-02  9.93331786e-02
+ -4.85553548e-01  1.43558565e-01  8.34567054e-02 -1.40133992e-02
+  1.52169596e-01 -1.95082515e-01  8.24373578e-03 -9.90696638e-02
+ -3.54268344e-02 -4.77017954e-01  1.38713848e-02 -2.99706215e-01
+ -5.78378029e-02  3.25528779e-02 -4.11354239e-02 -1.06483708e-01
+  1.53095800e-01  2.90110884e-02  1.25745450e-02  6.46323079e-02
+ -1.53538943e-01 -1.57694952e-02 -1.67800067e-02 -1.99820822e-01
+  1.70360075e-01  7.86148038e-03 -2.33373818e-02  6.64233020e-02
+ -1.14895445e-01 -1.11296215e-01  1.15120303e-01 -2.94096140e-01
+ -1.00531392e-03 -1.69209726e-01 -1.26120885e-01  3.26298176e-02
+ -1.33517383e-02 -5.86983444e-02 -4.32341361e-01 -4.36509551e-01
+ -4.17940102e-02  1.76935235e-03  8.14479984e-03  1.86985655e-01
+ -2.75525019e-01 -1.63229907e-03 -1.08571055e-01 -7.37452387e-04
+ -6.44440657e-02  6.72812834e-04  2.16785530e-03  1.41381850e-01
+ -9.82570410e-02  4.35973325e-01 -7.62261965e-02 -1.86193980e-01
+ -1.56971183e-02 -4.02757541e-01 -1.53869367e-01  2.29262129e-02
+ -7.02788246e-03  3.65719683e-02  4.68232163e-01  2.36434668e-02
+ -2.59520939e-02  3.70550137e-01 -1.19630110e-01 -5.79555318e-02
+  2.09554455e-01  5.04689780e-02  7.39494314e-02 -1.77647326e-02
+ -1.45407207e-01 -9.54908878e-02  7.56029640e-02 -2.74049696e-02
+  3.34885873e-01  1.58546171e-03  1.09339091e-01 -8.84693274e-02
+ -2.36450457e-02  1.41892239e-01 -2.34453218e-01 -7.50717757e-02
+ -1.13281310e-01 -1.66649414e-01 -3.17224197e-01 -6.38220597e-02
+  3.28916563e-02  3.04739203e-02  2.67720196e-02 -1.16485785e-01
+ -3.08115732e-02 -2.95372010e-02 -7.54669023e-02  6.20013872e-02
+ -3.85258710e-01 -1.16456443e-01 -7.38548075e-02 -3.20558243e-02
+ -4.22284741e-02  1.01285659e-01 -1.76949246e-01 -2.02767491e-01
+ -1.12407344e-01 -3.81408267e-02 -4.33345231e-01 -9.24507501e-02
+ -4.21765393e-02 -6.06533771e-02 -2.22257783e-01 -1.17312535e-01
+ -6.74132262e-02 -2.76206274e-01 -9.13971800e-02 -2.27653991e-01
+  1.66358563e-01  2.17230774e-04  5.76426304e-02 -2.82079169e-02
+ -1.15482051e-01 -3.46716009e-01 -3.21448755e-01 -5.20041405e-02
+ -2.16833625e-01 -1.06154654e-02 -7.74854811e-02 -3.28257935e-01
+ -7.83242410e-02  1.65547682e-01 -2.55294862e-01 -8.89085025e-02
+  4.47581491e-01  1.92351832e-02  2.74083885e-02 -3.61304571e-01]
+[-1. -1. -1.  1. -1.  1.  1. -1.  1. -1.  1. -1. -1. -1.  1. -1. -1.  1.
+ -1. -1.  1.  1.  1.  1. -1. -1. -1. -1.  1.  1. -1.  1. -1. -1.  1. -1.
+ -1. -1. -1.  1. -1. -1. -1. -1. -1.  1.  1.  1. -1. -1. -1. -1. -1.  1.
+  1.  1. -1.  1. -1. -1. -1. -1. -1.  1. -1.  1.  1.  1. -1.  1. -1. -1.
+  1.  1.  1. -1. -1. -1.  1. -1.  1.  1.  1. -1. -1.  1. -1. -1. -1. -1.
+ -1. -1.  1.  1.  1. -1. -1. -1. -1.  1. -1. -1. -1. -1. -1.  1. -1. -1.
+ -1. -1. -1. -1. -1. -1. -1. -1. -1. -1. -1. -1.  1.  1.  1. -1. -1. -1.
+ -1. -1. -1. -1. -1. -1. -1.  1. -1. -1.  1.  1.  1. -1.]
+[1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, -1, -1, -1, 1, -1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, -1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, -1, -1, 1, -1, 1, 1, -1, -1, -1]
+Train accuracy: 60.0%
+```
+
+La precisión del entrenamiento es solo del $60\%$, lo cual definitivamente no es bueno. Es difícil imaginar que el rendimiento del modelo en el conjunto de prueba pueda ser mejor. Verifiquémoslo.
+
+```python
+pred_test = forward(circuit, np.array(test_images), res["x"], estimator, observable)
+# pred_test = forward(circuit_ibm, np.array(test_images), res['x'], estimator, observable_ibm)
+
+print(pred_test)
+
+pred_test_labels = copy.deepcopy(pred_test)
+pred_test_labels[pred_test_labels >= 0] = 1
+pred_test_labels[pred_test_labels < 0] = -1
+print(pred_test_labels)
+print(test_labels)
+
+accuracy = accuracy_score(test_labels, pred_test_labels)
+print(f"Test accuracy: {accuracy * 100}%")
+```
+
+```text
+[-2.77978120e-01 -2.62194862e-01  4.59636095e-02 -8.09344165e-02
+ -2.97362966e-01  9.22947242e-02  2.06693174e-01  3.31629460e-02
+  1.10971762e-03 -2.14602152e-01 -1.62671993e-01 -6.07179155e-04
+ -1.59948633e-01 -8.55722523e-02 -1.13057027e-01 -3.00187433e-01
+ -2.92832827e-01  7.38580629e-02 -6.03706270e-02 -8.57643552e-02
+ -1.52402062e-02 -3.57505447e-01 -3.54890597e-02  1.36534749e-01
+ -1.54688180e-01 -2.93714726e-01  1.89548513e-02 -6.15715564e-02
+  1.11042670e-01 -2.22861100e-02 -3.84230105e-02  1.67351034e-01
+ -8.38766333e-02  2.56348613e-01 -1.10653111e-01 -1.18989476e-01
+ -6.75723266e-05 -6.88580547e-02  1.02431393e-02 -2.42125353e-01
+ -1.09142367e-01 -1.22540757e-01 -1.63735850e-01  3.93334838e-01
+  2.36705685e-01 -2.34259814e-02 -3.91877756e-02 -1.95106746e-01
+  1.86707523e-01  4.74775215e-02 -4.24907432e-02 -2.06453265e-01
+  4.09184710e-02 -3.54762080e-02 -9.47513112e-02  2.97270112e-01
+ -2.99708696e-02  9.93941064e-03 -1.26760302e-01 -1.36183355e-01]
+[-1. -1.  1. -1. -1.  1.  1.  1.  1. -1. -1. -1. -1. -1. -1. -1. -1.  1.
+ -1. -1. -1. -1. -1.  1. -1. -1.  1. -1.  1. -1. -1.  1. -1.  1. -1. -1.
+ -1. -1.  1. -1. -1. -1. -1.  1.  1. -1. -1. -1.  1.  1. -1. -1.  1. -1.
+ -1.  1. -1.  1. -1. -1.]
+[-1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1, 1, 1, -1, -1]
+Test accuracy: 60.0%
+```
+
+El modelo no está clasificando bien estos datos. Deberíamos preguntarnos por qué ocurre esto y, en particular, deberíamos verificar:
+* ¿Detuvimos el entrenamiento demasiado pronto? ¿Se necesitaban más pasos de optimización?
+* ¿Construimos un ansatz deficiente? Esto puede significar muchas cosas. Cuando trabajamos en computadoras cuánticas reales, la profundidad del circuito es una consideración importante. El número de parámetros también es potencialmente relevante, al igual que el entrelazamiento entre qubits.
+* Combinando los dos puntos anteriores, ¿construimos un ansatz con demasiados parámetros para que sea entrenable?
+
+Podemos comenzar verificando la convergencia en la optimización:
+
+```python
+obj_func_vals_first = objective_func_vals
+# import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(obj_func_vals_first, label="first ansatz")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/6ecfddaa-7bd4-43d0-bfec-bd112854261e-0.avif)
+
+Podríamos intentar extender los pasos de optimización para asegurarnos de que el optimizador no quedó atrapado en un mínimo local en el espacio de parámetros. Pero parece que ha convergido bastante bien. Examinemos más de cerca las imágenes que *no* fueron clasificadas correctamente y veamos si podemos entender qué está pasando.
+
+```python
+missed = []
+for i in range(len(test_labels)):
+    if pred_test_labels[i] != test_labels[i]:
+        missed.append(test_images[i])
+print(len(missed))
+```
+
+```text
+24
+```
+
+```python
+fig, ax = plt.subplots(12, 2, figsize=(6, 6), subplot_kw={"xticks": [], "yticks": []})
+for i in range(len(missed)):
+    ax[i // 2, i % 2].imshow(
+        missed[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+plt.subplots_adjust(wspace=0.02, hspace=0.025)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/81ee504e-1c94-4600-8ab2-6406c473df73-0.avif)
+
+Aquí podemos ver que la gran mayoría de las imágenes clasificadas incorrectamente contienen una línea vertical. Algo en nuestro modelo está fallando a la hora de capturar información sobre ellas. Quizás ya lo intuías al observar el primer circuito variacional. Veámoslo con más detalle.
+
+## Mejorando el modelo {#improving-the-model}
+
+### Paso 1 revisado {#step-1-revisited}
+
+Al mapear nuestro problema a un circuito cuántico, deberíamos haber pensado explícitamente en cómo la información de los píxeles adyacentes determina la clase. Para identificar líneas horizontales, queremos saber "si el píxel $i$ es amarillo, ¿es amarillo el píxel $i+1$?" para todos los píxeles a lo largo de cada fila. También queremos saber sobre las líneas verticales. Pero como la clasificación es binaria, uno podría imaginar simplemente que si no se detecta una línea horizontal, entonces es una línea vertical. Nuestro circuito variacional anterior contenía compuertas CNOT entre los qubits (y por lo tanto los píxeles) 0 y 1, 1 y 2, y 2 y 3. Eso cubre cualquier línea horizontal a lo largo de la parte superior de la imagen, pero no detecta directamente las líneas verticales, ni detecta completamente las líneas horizontales, ya que ignora la fila inferior. Para detectar completamente todas las líneas horizontales, querríamos tener un conjunto similar de compuertas CNOT entre los qubits (píxeles) 4 y 5, 5 y 6, y 6 y 7. Podríamos tener en cuenta que agregar compuertas CNOT entre qubits que corresponden a líneas verticales (como 0 y 4, o 2 y 6) también puede ser útil. Pero primero verificaremos si es suficiente detectar si *hay* o *no hay* una línea horizontal.
+
+```python
+# Initialize the circuit using the same number of qubits as the image has pixels
+qnn_circuit = QuantumCircuit(size)
+
+# We choose to have two variational parameters for each qubit.
+params = ParameterVector("θ", length=2 * size)
+
+# A first variational layer:
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# Here is an extended list of qubit pairs between which we want CNOT gates. This now covers all pixels connected by horizontal lines.
+qnn_cnot_list = [[0, 1], [1, 2], [2, 3], [4, 5], [5, 6], [6, 7]]
+
+for i in range(len(qnn_cnot_list)):
+    qnn_circuit.cx(qnn_cnot_list[i][0], qnn_cnot_list[i][1])
+
+# The second variational layer:
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+
+# Check the circuit depth, and the two-qubit gate depth
+print(qnn_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+
+# Combine the feature map and variational circuit
+ansatz = qnn_circuit
+
+# Combine the feature map with the ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Display the circuit
+full_circuit.decompose().draw("mpl", style="clifford", fold=-1)
+```
+
+```text
+5
+2+ qubit depth: 3
+```
+
+![Salida de la celda de código anterior](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/0f0a7fd1-803a-446e-a761-3c9b41c9e3c6-1.avif)
+
+No hemos aumentado la profundidad del circuito. Veamos si hemos aumentado su capacidad para modelar nuestras imágenes.
+
+### Paso 2 revisado {#step-2-revisited}
+
+Necesitaremos transpilar este nuevo circuito para ejecutarlo en un backend cuántico real. Saltemos este paso por ahora para ver si nuestra revisión del circuito variacional ha tenido el efecto deseado en los simuladores. Profundizaremos en la transpilación en la siguiente subsección.
+
+### Paso 3 revisado {#step-3-revisited}
+
+Ahora aplicamos el modelo actualizado a nuestros datos de entrenamiento.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+batch_size = 140
+num_epochs = 1
+num_samples = len(train_images)
+
+# Globals
+circuit = full_circuit
+estimator = Estimator()  # simulator for debugging
+observables = observable
+objective_func_vals = []
+iter = 0
+
+# Random initial weights for the ansatz
+np.random.seed(42)
+weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+
+for epoch in range(num_epochs):
+    for i in range((num_samples - 1) // batch_size + 1):
+        print(f"Epoch: {epoch}, batch: {i}")
+        start_i = i * batch_size
+        end_i = start_i + batch_size
+        train_images_batch = np.array(train_images[start_i:end_i])
+        train_labels_batch = np.array(train_labels[start_i:end_i])
+        input_params = train_images_batch
+        target = train_labels_batch
+        iter = 0
+        res = minimize(
+            mse_loss_weights, weight_params, method="COBYLA", options={"maxiter": 100}
+        )
+        weight_params = res["x"]
+```
+
+```text
+Epoch: 0, batch: 0
+Iter: 0, loss: 1.0049762969140237
+Iter: 50, loss: 0.8274276543780351
+```
+
+### Paso 4 revisado {#step-4-revisited}
+
+Comencemos verificando si nuestro optimizador convergió completamente.
+
+```python
+obj_func_vals_revised = objective_func_vals
+# import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(obj_func_vals_revised, label="revised ansatz")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.legend()
+plt.show()
+```
+
+![Salida de la celda de código anterior](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/05c6f664-4043-446c-8fcc-11e77d6fe280-0.avif)
+
+Esto no parece haber convergido completamente, ya que la función de pérdida no se ha mantenido aproximadamente estable durante un número significativo de pasos. Pero la función de pérdida ya es aproximadamente un 60% más baja que al usar el circuito variacional anterior. Si esto fuera un proyecto de investigación, querríamos asegurar una convergencia completa. Pero a efectos de exploración, esto es suficiente. Comprobemos la precisión en nuestros datos de entrenamiento y prueba.
+
+```python
+from sklearn.metrics import accuracy_score
+from qiskit.primitives import StatevectorEstimator as Estimator  # simulator
+# from qiskit_ibm_runtime import EstimatorV2 as Estimator  # real quantum computer
+
+estimator = Estimator()
+# estimator = Estimator(backend=backend)
+
+pred_train = forward(circuit, np.array(train_images), res["x"], estimator, observable)
+# pred_train = forward(circuit_ibm, np.array(train_images), res['x'], estimator, observable_ibm)
+
+print(pred_train)
+
+pred_train_labels = copy.deepcopy(pred_train)
+pred_train_labels[pred_train_labels >= 0] = 1
+pred_train_labels[pred_train_labels < 0] = -1
+print(pred_train_labels)
+print(train_labels)
+
+accuracy = accuracy_score(train_labels, pred_train_labels)
+print(f"Train accuracy: {accuracy * 100}%")
+```
+
+```text
+[ 0.46144755  0.42579688  0.35255977  0.55207273 -0.48578418  0.50805845
+  0.44892649  0.6173847  -0.62428139  0.40405121  0.46862421  0.29503395
+ -0.5740469  -0.71794562 -0.45022095 -0.45330418 -0.19795258 -0.46821777
+ -0.5622049  -0.32114059  0.54947838 -0.4889812   0.28327445  0.58149728
+ -0.27026749  0.41328304  0.21119412  0.60108606  0.39204178 -0.24974605
+  0.38496469  0.39867586 -0.38946996  0.62616766  0.61212525 -0.49719567
+  0.30860002  0.68443904 -0.27505907 -0.41508947 -0.49666422  0.67716994
+ -0.54696613 -0.70058779  0.42711815 -0.5285338   0.37678572  0.43888249
+ -0.30844464  0.42347715 -0.4250844   0.67324132  0.59914067 -0.45184567
+  0.13604098  0.65336342  0.26099853  0.60316559 -0.38743183 -0.54784284
+ -0.29549031 -0.45592302  0.41613453 -0.38781528  0.56903087  0.54955451
+  0.55532336 -0.3931852  -0.57599675  0.61246236  0.42014135 -0.38171749
+  0.56760389  0.45383135 -0.50473943 -0.47551181  0.54221517 -0.64987023
+  0.28845851  0.54403865  0.53841148  0.64477078  0.71912049 -0.63178323
+ -0.50764757  0.50304637 -0.38099972 -0.27707127 -0.24353841 -0.52045267
+ -0.61500665  0.65443173  0.31902266 -0.64969037 -0.4814051   0.47980608
+ -0.649786   -0.43048551  0.34562588  0.308998   -0.32454238  0.29558168
+ -0.45410187  0.54600712  0.33204827  0.22627804  0.4283921   0.56191874
+ -0.25400294 -0.6493613  -0.47445293  0.42272138 -0.35472546 -0.52240474
+ -0.45207595  0.40292125 -0.3361856  -0.46620886  0.60202719 -0.56505744
+  0.47169796 -0.43577622  0.40689437  0.48869108 -0.39701189 -0.57698634
+ -0.39236332  0.31294648  0.41797597  0.63004836 -0.52884541 -0.43805812
+ -0.3193499   0.36860211 -0.49190995  0.65000193  0.50260077 -0.56737168
+ -0.29693083 -0.40956432]
+[ 1.  1.  1.  1. -1.  1.  1.  1. -1.  1.  1.  1. -1. -1. -1. -1. -1. -1.
+ -1. -1.  1. -1.  1.  1. -1.  1.  1.  1.  1. -1.  1.  1. -1.  1.  1. -1.
+  1.  1. -1. -1. -1.  1. -1. -1.  1. -1.  1.  1. -1.  1. -1.  1.  1. -1.
+  1.  1.  1.  1. -1. -1. -1. -1.  1. -1.  1.  1.  1. -1. -1.  1.  1. -1.
+  1.  1. -1. -1.  1. -1.  1.  1.  1.  1.  1. -1. -1.  1. -1. -1. -1. -1.
+ -1.  1.  1. -1. -1.  1. -1. -1.  1.  1. -1.  1. -1.  1.  1.  1.  1.  1.
+ -1. -1. -1.  1. -1. -1. -1.  1. -1. -1.  1. -1.  1. -1.  1.  1. -1. -1.
+ -1.  1.  1.  1. -1. -1. -1.  1. -1.  1.  1. -1. -1. -1.]
+[1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, -1, -1, -1, 1, -1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, -1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, -1, -1, 1, -1, 1, 1, -1, -1, -1]
+Train accuracy: 100.0%
+```
+
+```python
+pred_test = forward(circuit, np.array(test_images), res["x"], estimator, observable)
+# pred_test = forward(circuit_ibm, np.array(test_images), res['x'], estimator, observable_ibm)
+
+print(pred_test)
+
+pred_test_labels = copy.deepcopy(pred_test)
+pred_test_labels[pred_test_labels >= 0] = 1
+pred_test_labels[pred_test_labels < 0] = -1
+print(pred_test_labels)
+print(test_labels)
+
+accuracy = accuracy_score(test_labels, pred_test_labels)
+print(f"Test accuracy: {accuracy * 100}%")
+```
+
+```text
+[-0.48396136 -0.57123828  0.28373249  0.38983869 -0.45799092 -0.63643031
+  0.69164877 -0.47749808  0.16965244 -0.39669469  0.39366915  0.44206948
+  0.69733951  0.40445979 -0.33663432  0.54511581 -0.49397081  0.55934553
+  0.69269512  0.38875983  0.39724004 -0.49635863 -0.19131387  0.38813936
+  0.39537369 -0.46262489  0.5307315   0.21783317  0.31949453 -0.49772087
+  0.56409526 -0.66254365 -0.57507262  0.37363552  0.35154205  0.69295687
+ -0.31205475  0.37787066  0.67903997 -0.29984861 -0.46435535 -0.32610974
+  0.4327188   0.64626537  0.37592731 -0.14328906  0.59694745  0.71880638
+  0.32414334  0.42119333 -0.60745236 -0.42520033  0.28334222  0.21699081
+  0.34837252  0.31538989  0.30754545  0.5995197  -0.34678026 -0.46587602]
+[-1. -1.  1.  1. -1. -1.  1. -1.  1. -1.  1.  1.  1.  1. -1.  1. -1.  1.
+  1.  1.  1. -1. -1.  1.  1. -1.  1.  1.  1. -1.  1. -1. -1.  1.  1.  1.
+ -1.  1.  1. -1. -1. -1.  1.  1.  1. -1.  1.  1.  1.  1. -1. -1.  1.  1.
+  1.  1.  1.  1. -1. -1.]
+[-1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1, 1, 1, -1, -1]
+Test accuracy: 100.0%
+```
+
+¡Un $100\%$ de precisión en ambos conjuntos! Nuestra sospecha sobre que la detección precisa de líneas horizontales sería suficiente resultó ser correcta. Además, nuestro mapeo de la información requerida sobre los píxeles a las compuertas CNOT en el circuito cuántico fue efectivo. Veamos ahora cómo escala este proceso para ejecutarse en computadoras cuánticas reales.
+
+## Escalado y ejecución en computadoras cuánticas reales {#scaling-and-running-on-real-quantum-computers}
+
+### Datos {#data}
+
+Comencemos aumentando el tamaño de nuestras imágenes. No hay nada especial en la elección de una cuadrícula de 6x6, excepto que supera el número de qubits (32) que podemos simular para circuitos que usan compuertas no Clifford.
+
+```python
+# This code defines the images to be classified:
+
+import numpy as np
+
+# Total number of "pixels"/qubits
+size = 36
+# One dimension of the image (called vertical, but it doesn't matter). Must be a divisor of `size`
+vert_size = 6
+# The length of the line to be detected (yellow). Must be less than or equal to the smallest dimension of the image (`<=min(vert_size,size/vert_size)`)
+line_size = 6
+
+def generate_dataset(num_images):
+    images = []
+    labels = []
+    hor_array = np.zeros((size - (line_size - 1) * vert_size, size))
+    ver_array = np.zeros((round(size / vert_size) * (vert_size - line_size + 1), size))
+
+    j = 0
+    for i in range(0, size - 1):
+        if i % (size / vert_size) <= (size / vert_size) - line_size:
+            for p in range(0, line_size):
+                hor_array[j][i + p] = np.pi / 2
+            j += 1
+
+    # Make two adjacent entries pi/2, then move down to the next row. Careful to avoid the "pixels" at size/vert_size - linesize, because we want to fold this list into a grid.
+
+    j = 0
+    for i in range(0, round(size / vert_size) * (vert_size - line_size + 1)):
+        for p in range(0, line_size):
+            ver_array[j][i + p * round(size / vert_size)] = np.pi / 2
+        j += 1
+
+    # Make entries pi/2, spaced by the length/rows, so that when folded, the entries appear on top of each other.
+
+    for n in range(num_images):
+        rng = np.random.randint(0, 2)
+        if rng == 0:
+            labels.append(-1)
+            random_image = np.random.randint(0, len(hor_array))
+            images.append(np.array(hor_array[random_image]))
+            # Randomly select one of the several rows you made above.
+        elif rng == 1:
+            labels.append(1)
+            random_image = np.random.randint(0, len(ver_array))
+            images.append(np.array(ver_array[random_image]))
+            # Randomly select one of the several rows you made above.
+
+        # Create noise
+        for i in range(size):
+            if images[-1][i] == 0:
+                images[-1][i] = np.random.rand() * np.pi / 4
+    return images, labels
+
+hor_size = round(size / vert_size)
+```
+
+Como el tiempo de cómputo cuántico es un recurso valioso, usaremos un conjunto de entrenamiento muy pequeño y muy pocos pasos de optimización. Esto será suficiente para demostrar el flujo de trabajo.
+
+```python
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+# Here we specify a very small data set. Increase for realism, but monitor use of quantum computing time.
+images, labels = generate_dataset(10)
+
+train_images, test_images, train_labels, test_labels = train_test_split(
+    images, labels, test_size=0.3, random_state=246
+)
+```
+
+```python
+import matplotlib.pyplot as plt
+
+# Generate a figure with nested images using subplots.
+
+fig, ax = plt.subplots(2, 2, figsize=(10, 6), subplot_kw={"xticks": [], "yticks": []})
+for i in range(4):
+    ax[i // 2, i % 2].imshow(
+        train_images[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+plt.subplots_adjust(wspace=0.1, hspace=0.025)
+```
+
+![Salida de la celda de código anterior](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/b106d32c-cd1f-4463-97fe-2f41695402fb-0.avif)
+
+### Paso 1: Mapear el problema a un circuito cuántico {#step-1-map-the-problem-to-a-quantum-circuit}
+
+```python
+from qiskit.circuit.library import z_feature_map
+
+# One qubit per data feature
+num_qubits = len(train_images[0])
+
+# Data encoding
+# Note that qiskit orders parameters alphabetically. We assign the parameter prefix "a" to ensure our data encoding goes to the first part of the circuit, the feature mapping.
+feature_map = z_feature_map(num_qubits, parameter_prefix="a")
+```
+
+```python
+# This creates a circuit with the cxs in the compressed order.
+
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+
+qnn_circuit = QuantumCircuit(size)
+params = ParameterVector("θ", length=2 * size)
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# CNOT gates between horizontally adjacent qubits.
+for i in range(vert_size):
+    for j in range(hor_size):
+        if j < hor_size - 1:
+            qnn_circuit.cx((i * hor_size) + j, (i * hor_size) + j + 1)
+
+# CNOT gates between vertically adjacent qubits, likely not necessary based on our preliminary simulation.
+#        if i<vert_size-1:
+#            qnn_circuit.cx((i*hor_size)+j,(i*hor_size)+j+hor_size)
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+qnn_circuit_large = qnn_circuit
+
+print(qnn_circuit_large.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit_large.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+# qnn_circuit_large.draw()
+```
+
+```text
+7
+2+ qubit depth: 5
+```
+
+Esta es una profundidad de dos qubits razonable. Deberíamos poder obtener resultados de alta calidad desde una computadora cuántica real.
+
+```python
+# Combine the feature map and variational circuit
+ansatz = qnn_circuit
+
+# Combine the feature map with the ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Check the depth of the full circuit
+print(full_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {full_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+```
+
+```text
+11
+2+ qubit depth: 5
+```
+
+Dado que estamos usando el ```z_feature_map```, que no tiene compuertas CNOT, agregar la capa de codificación no aumenta nuestra profundidad de dos qubits. Podemos visualizar el circuito completo aquí.
+
+```python
+full_circuit.decompose().draw("mpl", style="clifford", idle_wires=False, fold=-1)
+```
+
+![Salida de la celda de código anterior](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/b43806aa-7d41-40b8-9e43-a604f0e42c26-0.avif)
+
+Puede notarse que si minimizar la profundidad de dos qubits fuera de suma importancia, en realidad podríamos reducirla un poco cambiando el orden de las compuertas CNOT. Por ejemplo, las compuertas CNOT en $q_{35}$ y $q_{34}$ podrían moverse hacia la izquierda en el diagrama del circuito anterior, y podrían colocarse directamente debajo de las compuertas CNOT en $q_{30}$ y $q_{31}$, por ejemplo. Para una profundidad de compuerta de dos qubits de 5, no es evidente que esto marque una diferencia después de la transpilación, pero es algo a tener en cuenta. Si el orden de las compuertas CNOT es importante para hacer corresponder lógicamente el problema en cuestión, la profundidad aquí está bien. Si el orden de las compuertas CNOT no es crítico para modelar la estructura de los datos en nuestras imágenes, entonces podríamos escribir un script para reordenar estas compuertas CNOT y minimizar la profundidad.
+
+También necesitamos redefinir nuestro observable con nuestras imágenes más grandes:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("Z" * (num_qubits), 1)])
+```
+
+## Paso 2 de Qiskit Patterns: Optimizar el problema para la ejecución cuántica {#qiskit-patterns-step-2-optimize-problem-for-quantum-execution}
+Empezamos seleccionando un backend para la ejecución. En este caso, usaremos el backend menos ocupado.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+# To run on hardware, select the least busy quantum computer or specify a particular one.
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbaneane")
+
+print(backend.name)
+```
+
+```text
+ibm_brisbane
+```
+
+Una vez más, definimos un pass manager con el nivel de optimización establecido en 3.
+
+```python
+from qiskit.circuit.library import XGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    ConstrainedReschedule,
+    PadDynamicalDecoupling,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+Ahora aplicaremos el pass manager varias veces. Para circuitos muy anchos o muy profundos, puede haber una gran variabilidad en las profundidades de dos qubits transpiladas. En esos circuitos es importante probar el pass manager muchas veces y usar el mejor resultado (el más superficial).
+
+```python
+# Try pass manager several times, since heuristics can return various transpilations on large circuits, and we want the shallowest.
+
+transpiled_qcs = []
+transpiled_depths = []
+transpiled_2q_depths = []
+for i in range(1, 10):
+    circuit_ibm = pm.run(full_circuit)
+    transpiled_qcs.append(circuit_ibm)
+    transpiled_depths.append(circuit_ibm.decompose().depth())
+    transpiled_2q_depths.append(
+        circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)
+    )
+    # print(i)
+
+print(transpiled_depths)
+print(transpiled_2q_depths)
+
+# Use the shallowest
+
+minpos = transpiled_2q_depths.index(min(transpiled_2q_depths))
+```
+
+```text
+[85, 85, 81, 89, 81, 81, 89, 85, 85]
+[10, 10, 10, 10, 10, 10, 10, 10, 10]
+```
+
+Vemos que en este caso, la profundidad de dos qubits transpilada siempre fue 10. Hubo una variación menor en la profundidad de un qubit, y usaremos la más superficial. Pero en este circuito de 36 qubits, esto no supone una mejora crítica. Podemos visualizar este circuito transpilado, aunque a esta escala resulta cada vez más difícil de interpretar visualmente.
+
+```python
+circuit_ibm = transpiled_qcs[2]
+observable_ibm = observable.apply_layout(circuit_ibm.layout)
+print(circuit_ibm.decompose().depth())
+print(
+    f"2+ qubit depth: {circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+```
+
+```text
+81
+2+ qubit depth: 10
+```
+
+## Paso 3 de Qiskit Patterns: Ejecutar usando los Primitivos de Qiskit {#qiskit-patterns-step-3-execute-using-qiskit-primitives}
+
+Para limitar el tiempo de uso en computadoras cuánticas reales, solo llevaremos a cabo unos pocos pasos de optimización aquí, y lo haremos sobre un conjunto de entrenamiento muy pequeño. Pero el escalado de esto a más pasos de optimización y conjuntos de datos de prueba más grandes debería quedar claro a partir de las instrucciones a lo largo de la lección.
+
+```python
+# This was run on an Eagle r3 processor on 10-4-24, and took 7 min.
+
+from qiskit_ibm_runtime import EstimatorV2 as Estimator, Session
+
+batch_size = 7
+num_epochs = 1
+num_samples = len(train_images)
+
+# Globals
+circuit = circuit_ibm
+observable = observable_ibm
+objective_func_vals = []
+iter = 0
+
+# Random initial weights for the ansatz
+np.random.seed(42)
+# weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+# Or re-load weights from a previous calculation
+weight_params = np.array(
+    [
+        3.35330497,
+        5.97351416,
+        4.59925358,
+        3.76148219,
+        0.98029403,
+        0.98014248,
+        0.3649501,
+        6.44234523,
+        3.77691701,
+        4.44895122,
+        0.12933619,
+        6.09412333,
+        5.23039137,
+        1.33416598,
+        1.14243996,
+        1.15236452,
+        1.91161039,
+        3.2971419,
+        3.71399059,
+        1.82984665,
+        3.84438512,
+        0.87646578,
+        1.83559896,
+        2.30191935,
+        2.86557222,
+        4.93340606,
+        1.25458737,
+        3.23103027,
+        3.72225051,
+        0.29185655,
+        3.81731689,
+        1.07143467,
+        0.40873121,
+        5.96202367,
+        6.067245,
+        5.07931034,
+        1.91394476,
+        0.61369199,
+        4.2991629,
+        2.76555968,
+        0.76678884,
+        3.11128829,
+        0.21606945,
+        5.71342859,
+        1.62596258,
+        4.16275028,
+        1.95853845,
+        3.26768375,
+        3.43508199,
+        1.1614748,
+        6.09207989,
+        4.87030317,
+        5.90304595,
+        5.62236606,
+        3.75671636,
+        5.79230665,
+        0.55601479,
+        1.23139664,
+        0.28417144,
+        2.04411075,
+        2.44213144,
+        1.70493625,
+        5.20711134,
+        2.24154726,
+        1.76516358,
+        3.40986006,
+        0.88545302,
+        5.04035228,
+        0.46841551,
+        6.2007935,
+        4.85215699,
+        1.24856745,
+    ]
+)
+
+# Running in a session avoids repeated queuing. This is available to Premium Plan, Flex Plan, and On-Prem (IBM Quantum Platform API) Plan users.
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options={"resilience_level": 1})
+
+    for epoch in range(num_epochs):
+        for i in range((num_samples - 1) // batch_size + 1):
+            print(f"Epoch: {epoch}, batch: {i}")
+            start_i = i * batch_size
+            end_i = start_i + batch_size
+            train_images_batch = np.array(train_images[start_i:end_i])
+            train_labels_batch = np.array(train_labels[start_i:end_i])
+            input_params = train_images_batch
+            target = train_labels_batch
+            iter = 0
+            # We can increase maxiter to do a full optimization.
+            res = minimize(
+                mse_loss_weights,
+                weight_params,
+                method="COBYLA",
+                options={"maxiter": 20},
+            )
+            weight_params = res["x"]
+session.close()
+
+# Open users can carry out the same calculation using a batch, but repeated queuing is possible.
+# from qiskit_ibm_runtime import Batch
+
+# with Batch(backend=backend) as batch:
+#    estimator = Estimator(
+#        mode=batch, options={"resilience_level": 1}
+#    )
+#
+#    for epoch in range(num_epochs):
+#        for i in range((num_samples - 1) // batch_size + 1):
+#            print(f"Epoch: {epoch}, batch: {i}")
+#            start_i = i * batch_size
+#            end_i = start_i + batch_size
+#            train_images_batch = np.array(train_images[start_i:end_i])
+#            train_labels_batch = np.array(train_labels[start_i:end_i])
+#            input_params = train_images_batch
+#            target = train_labels_batch
+#            iter = 0
+#            # We can increase maxiter to do a full optimization.
+#            res = minimize(
+#                mse_loss_weights,
+#                weight_params,
+#                method="COBYLA",
+#                options={"maxiter": 20},
+#            )
+#            weight_params = res["x"]
+# batch.close()
+```
+
+Se recomienda guardar los parámetros de pesos devueltos por este cálculo, por si decides continuar con más iteraciones.
+
+```python
+weight_params
+```
+
+```text
+array([3.35330497, 6.97351416, 5.59925358, 3.76148219, 0.98029403,
+       0.98014248, 0.3649501 , 6.44234523, 3.77691701, 4.44895122,
+       1.12933619, 7.09412333, 5.23039137, 1.33416598, 1.14243996,
+       1.15236452, 1.91161039, 3.2971419 , 3.71399059, 1.82984665,
+       3.84438512, 0.87646578, 1.83559896, 2.30191935, 2.86557222,
+       4.93340606, 1.25458737, 3.23103027, 3.72225051, 0.29185655,
+       3.81731689, 1.07143467, 0.40873121, 5.96202367, 6.067245  ,
+       5.07931034, 1.91394476, 0.61369199, 4.2991629 , 2.76555968,
+       0.76678884, 3.11128829, 0.21606945, 5.71342859, 1.62596258,
+       4.16275028, 1.95853845, 3.26768375, 3.43508199, 1.1614748 ,
+       6.09207989, 4.87030317, 5.90304595, 5.62236606, 3.75671636,
+       5.79230665, 0.55601479, 1.23139664, 0.28417144, 2.04411075,
+       2.44213144, 1.70493625, 5.20711134, 2.24154726, 1.76516358,
+       3.40986006, 0.88545302, 5.04035228, 0.46841551, 6.2007935 ,
+       4.85215699, 1.24856745])
+```
+
+Podemos graficar estos primeros pasos de optimización, aunque no esperaríamos ninguna convergencia después de tan pocos pasos. Estas curvas han sido relativamente planas durante los primeros pasos, incluso usando simuladores. Cabe señalar, sin embargo, que la optimización actualmente tiene 72 parámetros libres. Esto puede reducirse al menos en un factor de 2 a 3 sin comprometer los resultados, por ejemplo, parametrizando qubits con datos correspondientes a un subconjunto de filas y columnas completas. En efecto, el espacio de parámetros debería reducirse antes de invertir más tiempo de cómputo cuántico en minimizar la función de pérdida.
+
+```python
+obj_func_vals_qc = objective_func_vals
+# import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(obj_func_vals_qc, label="revised ansatz")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/d8244ff1-a7c5-46e1-87b1-e20b506ef4d8-0.avif)
+
+### Conclusión {#closing}
+
+En resumen, en esta lección aprendimos el flujo de trabajo para la clasificación binaria de imágenes usando una red neuronal cuántica. Algunas consideraciones clave en cada paso de Qiskit Patterns fueron:
+
+__Paso 1:__ Mapear el problema a un circuito cuántico
+* Cargar los datos de entrenamiento. Esto puede hacerse "a mano" o usando un mapa de características preconstruido como ```z_feature_map```.
+* Construir un ansatz que contenga capas de rotación y entrelazamiento apropiadas para tu problema.
+* Monitorear la profundidad del circuito para garantizar resultados de calidad en las computadoras cuánticas.
+
+__Paso 2:__ Optimizar el problema para la ejecución cuántica
+* Seleccionar un backend, generalmente el menos ocupado.
+* Usar un pass manager para transpilar tanto el circuito como los observables a la arquitectura del backend elegido.
+* Para circuitos muy profundos o anchos, transpilar varias veces y seleccionar el circuito más superficial.
+
+__Paso 3:__ Ejecutar usando los Primitivos de Qiskit (Runtime)
+* Realizar pruebas preliminares en simuladores para depurar y optimizar tu ansatz.
+* Ejecutar en una computadora cuántica de IBM&reg;.
+
+__Paso 4:__ Post-procesar, devolver el resultado en formato clásico
+* Calcular la precisión del modelo sobre los datos de entrenamiento y sobre los datos de prueba.
+* Monitorear la convergencia de la optimización clásica.
+## Referencias {#references}
+
+[1] https://arxiv.org/abs/2405.00781

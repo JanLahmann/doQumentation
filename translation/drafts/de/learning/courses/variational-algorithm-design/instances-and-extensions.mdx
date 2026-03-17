@@ -1,0 +1,605 @@
+---
+title: "Instanzen und Erweiterungen"
+sidebar_label: "Instanzen und Erweiterungen"
+description: "Diese Lektion zeigt den vollständigen Ablauf einiger variationeller Ansätze und beschreibt, wie sie angepasst werden können."
+notebook_path: "learning/courses/variational-algorithm-design/instances-and-extensions.ipynb"
+---
+{/* doqumentation-source-hash: 3e5254e9 */}
+
+<OpenInLabBanner notebookPath="learning/courses/variational-algorithm-design/instances-and-extensions.ipynb" />
+
+{/* cspell: ignore disp SSVQE's forall */}
+
+Dieses Kapitel behandelt mehrere quantenvariationelle Algorithmen, darunter
+
+* [Variational Quantum Eigensolver (VQE)](https://arxiv.org/abs/1304.3061)
+* [Subspace Search VQE (SSVQE)](https://arxiv.org/abs/1810.09434)
+* [Variational Quantum Deflation (VQD)](https://arxiv.org/abs/1805.08138)
+* [Quantum Sampling Regression (QSR)](https://arxiv.org/pdf/2012.02338)
+
+Anhand dieser Algorithmen lernen wir verschiedene Designideen kennen, die in maßgeschneiderte variationelle Algorithmen einfließen können, etwa Gewichte, Strafterme, Over-Sampling und Under-Sampling. Wir laden dich ein, mit diesen Konzepten zu experimentieren und deine Ergebnisse mit der Community zu teilen.
+
+Das Qiskit-Patterns-Framework gilt für all diese Algorithmen – die einzelnen Schritte heben wir jedoch nur beim ersten Beispiel explizit hervor.
+## Variational Quantum Eigensolver (VQE) {#variational-quantum-eigensolver-vqe}
+
+[VQE](https://arxiv.org/abs/1304.3061) ist einer der meistgenutzten variationellen Quantenalgorithmen und dient als Vorlage für viele weitere Algorithmen.
+
+![Ein Diagramm, das zeigt, wie VQE den Referenzzustand und den Ansatz verwendet, um eine Kostenfunktion zu schätzen und dann mithilfe variationeller Parameter zu iterieren.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-vqe.svg)
+### Schritt 1: Klassische Eingaben auf ein Quantenproblem abbilden {#step-1-map-classical-inputs-to-a-quantum-problem}
+### Theoretischer Aufbau {#theoretical-layout}
+
+Der Aufbau von VQE ist einfach:
+
+- Vorbereitung der Referenzoperatoren $U_R$
+  - Wir starten vom Zustand $|0\rangle$ und gehen zum Referenzzustand $|\rho\rangle$ über
+- Anwenden der Variationsform $U_V(\vec\theta_{i,j})$, um einen Ansatz $U_A(\vec\theta_{i,j})$ zu erzeugen
+  - Wir gehen vom Zustand $|\rho\rangle$ zu $U_V(\vec\theta_{i,j})|\rho\rangle = |\psi(\vec\theta_{i,j})\rangle$ über
+- Bootstrapping bei $i=0$, falls ein ähnliches Problem bekannt ist (typischerweise durch klassische Simulation oder Sampling gefunden)
+  - Jeder Optimierer wird unterschiedlich gebootstrapped, was zu einer initialen Menge von Parametervektoren $\Theta_0 := \\{ {\vec\theta_{0,j} | j \in \mathcal{J}_\text{opt}^0} \\}$ führt (zum Beispiel aus einem Startpunkt $\vec\theta_0$).
+- Auswerten der Kostenfunktion $C(\vec\theta_{i,j}) := \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ für alle vorbereiteten Zustände auf einem Quantencomputer.
+- Verwendung eines klassischen Optimierers zur Auswahl des nächsten Parametersatzes $\Theta_{i+1}$.
+- Wiederholung des Prozesses bis zur Konvergenz.
+
+Dies ist eine einfache klassische Optimierungsschleife, in der wir die Kostenfunktion auswerten. Einige Optimierer benötigen möglicherweise mehrere Auswertungen, um einen Gradienten zu berechnen, die nächste Iteration zu bestimmen oder die Konvergenz zu beurteilen.
+
+Hier das Beispiel für den folgenden Operator:
+
+$$
+\hat{O}_1 = 2 II - 2 XX + 3 YY - 3 ZZ,
+$$
+### Implementierung {#implementation}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime scipy
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import TwoLocal
+import numpy as np
+
+theta_list = (2 * np.pi * np.random.rand(1, 8)).tolist()
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+
+reference_circuit = QuantumCircuit(2)
+reference_circuit.x(0)
+
+variational_form = TwoLocal(
+    2,
+    rotation_blocks=["rz", "ry"],
+    entanglement_blocks="cx",
+    entanglement="linear",
+    reps=1,
+)
+
+ansatz = reference_circuit.compose(variational_form)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Ausgabe der vorherigen Code-Zelle](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/db20526e-48d4-44eb-9d2b-6c5d2ce5777e-0.avif)
+
+```python
+def cost_func_vqe(parameters, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+    estimator_result = estimator_job.result()[0]
+
+    cost = estimator_result.data.evs[0]
+    return cost
+```
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+```
+
+Mit dieser Kostenfunktion können wir die optimalen Parameter berechnen:
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+x0 = np.ones(8)
+
+result = minimize(
+    cost_func_vqe, x0, args=(ansatz, observable, estimator), method="COBYLA"
+)
+
+result
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -5.999999982445723
+       x: [ 1.741e+00  9.606e-01  1.571e+00  2.115e-05  1.899e+00
+            1.243e+00  6.063e-01  6.063e-01]
+    nfev: 136
+   maxcv: 0.0
+```
+
+### Schritt 2: Problem für die Quantenausführung optimieren {#step-2-optimize-problem-for-quantum-execution}
+
+Wir wählen das am wenigsten ausgelastete Backend und importieren die notwendigen Komponenten aus `qiskit_ibm_runtime`.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import Session, EstimatorOptions
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_brisbane')>
+```
+
+Wir transpilieren den Circuit mit dem voreingestellten Pass-Manager bei Optimierungslevel 3 und wenden das entsprechende Layout auf den Operator an.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_ansatz = pm.run(ansatz)
+isa_observable = observable.apply_layout(layout=isa_ansatz.layout)
+```
+
+### Schritt 3: Mit Qiskit Runtime Primitives ausführen {#step-3-execute-using-qiskit-runtime-primitives}
+
+Jetzt sind wir bereit, unsere Berechnung auf IBM Quantum&reg;-Hardware auszuführen. Da die Minimierung der Kostenfunktion hochgradig iterativ ist, starten wir eine Runtime-Session. So müssen wir nur einmal in der Warteschlange warten. Sobald der Job läuft, wird jede Iteration mit aktualisierten Parametern sofort ausgeführt.
+
+```python
+x0 = np.ones(8)
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    result = minimize(
+        cost_func_vqe,
+        x0,
+        args=(isa_ansatz, isa_observable, estimator),
+        method="COBYLA",
+        options={"maxiter": 200, "disp": True},
+    )
+session.close()
+print(result)
+```
+
+### Schritt 4: Nachverarbeitung und Rückgabe des Ergebnisses im klassischen Format {#step-4-post-process-return-result-in-classical-format}
+
+Wir sehen, dass die Minimierungsroutine erfolgreich beendet wurde, was bedeutet, dass wir die Standardtoleranz des klassischen COBYLA-Optimierers erreicht haben. Falls ein genaueres Ergebnis benötigt wird, kann eine kleinere Toleranz angegeben werden. Das könnte tatsächlich der Fall sein, da das Ergebnis mehrere Prozent von dem abwich, das der Simulator oben lieferte.
+
+Der Wert von x ist der aktuelle beste Schätzwert für die Parameter, die die Kostenfunktion minimieren. Bei weiterer Iteration für höhere Präzision sollten diese Werte anstelle der anfänglich verwendeten x0 (ein Vektor aus Einsen) eingesetzt werden.
+
+Abschließend sei erwähnt, dass die Funktion im Verlauf der Optimierung 96 Mal ausgewertet wurde. Das kann sich von der Anzahl der Optimierungsschritte unterscheiden, da manche Optimierer in einem einzigen Schritt mehrere Funktionsauswertungen benötigen, etwa bei der Gradientenabschätzung.
+## Subspace Search VQE (SSVQE) {#subspace-search-vqe-ssvqe}
+
+[SSVQE](https://arxiv.org/abs/1810.09434) ist eine Variante von VQE, die es ermöglicht, die ersten $k$ Eigenwerte eines Operators $\hat{H}$ mit Eigenwerten $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$ zu bestimmen, wobei $N\geq k$. Ohne Beschränkung der Allgemeinheit nehmen wir an, dass $\lambda_0<\lambda_1<...<\lambda_{N-1}$. SSVQE führt eine neue Idee ein: das Hinzufügen von Gewichten, um die Optimierung des Terms mit dem größten Gewicht zu priorisieren.
+
+![Ein Diagramm, das zeigt, wie Subspace-Search-VQE die Komponenten des variationellen Algorithmus verwendet.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-ssvqe.svg)
+
+Zur Implementierung dieses Algorithmus benötigen wir $k$ gegenseitig orthogonale Referenzzustände $\{ |\rho_j\rangle \}_{j=0}^{k-1}$, d.h. $\langle \rho_j | \rho_l \rangle = \delta_{jl}$ für $j,l<k$. Diese Zustände können mithilfe von Pauli-Operatoren konstruiert werden. Die Kostenfunktion dieses Algorithmus lautet dann:
+
+$$
+\begin{aligned}
+C(\vec{\theta})
+
+& := \sum_{j=0}^{k-1} w_j \langle \rho_j | U_{V}^{\dagger}(\vec{\theta})\hat{H} U_{V}(\vec{\theta})|\rho_j \rangle \\[1mm]
+
+& := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle \\[1mm]
+
+\end{aligned}
+$$
+
+wobei $w_j$ eine beliebige positive Zahl ist, sodass für $j<l<k$ gilt $w_j>w_l$, und $U_V(\vec{\theta})$ die benutzerdefinierte Variationsform ist.
+
+Der SSVQE-Algorithmus beruht auf der Tatsache, dass Eigenzustände zu verschiedenen Eigenwerten gegenseitig orthogonal sind. Konkret lässt sich das Skalarprodukt von $U_V(\vec{\theta})|\rho_j\rangle$ und $U_V(\vec{\theta})|\rho_l\rangle$ wie folgt ausdrücken:
+
+$$
+\begin{aligned}
+\langle \rho_j | U_{V}^{\dagger}(\vec{\theta})U_{V}(\vec{\theta})|\rho_l \rangle
+
+& = \langle \rho_j | I |\rho_l \rangle \\[1mm]
+
+& = \langle \rho_j | \rho_l \rangle \\[1mm]
+
+& = \delta_{jl}
+
+\end{aligned}
+$$
+
+Die erste Gleichheit gilt, weil $U_{V}(\vec{\theta})$ ein Quantenoperator und daher unitär ist. Die letzte Gleichheit folgt aus der Orthogonalität der Referenzzustände $|\rho_j\rangle$. Die Tatsache, dass Orthogonalität durch unitäre Transformationen erhalten bleibt, hängt tief mit dem Prinzip der Informationserhaltung in der Quanteninformationstheorie zusammen. Aus dieser Perspektive stellen nicht-unitäre Transformationen Prozesse dar, bei denen Information entweder verloren geht oder hinzugefügt wird.
+
+Die Gewichte $w_j$ helfen sicherzustellen, dass alle Zustände Eigenzustände sind. Wenn die Gewichte hinreichend verschieden sind, wird dem Term mit dem größten Gewicht ($w_0$) bei der Optimierung Vorrang vor den anderen eingeräumt. Infolgedessen wird der resultierende Zustand $U_{V}(\vec{\theta})|\rho_0 \rangle$ der Eigenzustand zu $\lambda_0$. Da $\{ U_{V}(\vec{\theta})|\rho_j\rangle \}_{j=0}^{k-1}$ gegenseitig orthogonal sind, sind die verbleibenden Zustände orthogonal zu ihm und liegen daher im Unterraum der Eigenwerte $\{\lambda_1,...,\lambda_{N-1}\}$.
+
+Wendet man das gleiche Argument auf die übrigen Terme an, so hat der Term mit Gewicht $w_1$ die nächste Priorität: $U_{V}(\vec{\theta})|\rho_1 \rangle$ wird der Eigenzustand zu $\lambda_1$, und die anderen Terme liegen im Eigenraum von $\{\lambda_2,...,\lambda_{N-1}\}$.
+
+Durch induktives Schlussfolgern ergibt sich, dass $U_{V}(\vec{\theta})|\rho_j \rangle$ ein näherungsweiser Eigenzustand zu $\lambda_j$ für $0\leq j < k$ ist.
+
+### Theoretischer Aufbau {#theoretical-layout-ssvqe}
+
+SSVQE lässt sich wie folgt zusammenfassen:
+
+- Vorbereitung mehrerer Referenzzustände durch Anwenden eines unitären Operators U_R auf $k$ verschiedene Rechenbasisszustände
+   - Dieser Algorithmus erfordert $k$ gegenseitig orthogonale Referenzzustände $\{ |\rho_j\rangle \}_{j=0}^{k-1}$, sodass $\langle \rho_j | \rho_l \rangle = \delta_{jl}$ für $j,l<k$.
+- Anwenden der Variationsform $U_V(\vec\theta_{i,j})$ auf jeden Referenzzustand, was den folgenden Ansatz $U_A(\vec\theta_{i,j})$ ergibt.
+- Bootstrapping bei $i=0$, falls ein ähnliches Problem verfügbar ist (üblicherweise durch klassische Simulation oder Sampling gefunden).
+- Auswerten der Kostenfunktion $C(\vec\theta_{i,j}) := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ für alle vorbereiteten Zustände auf einem Quantencomputer.
+  - Dies lässt sich aufteilen in die Berechnung des Erwartungswerts für einen Operator $\langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ und die Multiplikation dieses Ergebnisses mit $w_j$.
+  - Anschließend gibt die Kostenfunktion die Summe aller gewichteten Erwartungswerte zurück.
+- Verwendung eines klassischen Optimierers zur Bestimmung des nächsten Parametersatzes $\Theta_{i+1}$.
+- Wiederholung der obigen Schritte bis zur Konvergenz.
+
+Die Kostenfunktion von SSVQE wirst du in der Aufgabe selbst implementieren. Das folgende Snippet soll dir dabei als Orientierung dienen:
+
+```python
+import numpy as np
+
+def cost_func_ssvqe(
+    params, initialized_anastz_list, weights, ansatz, hamiltonian, estimator
+):
+    # """Return estimate of energy from estimator
+
+    # Parameters:
+    #     params (ndarray): Array of ansatz parameters
+    #     initialized_anastz_list (list QuantumCircuit): Array of initialised ansatz with reference
+    #     weights (list): List of weights
+    #     ansatz (QuantumCircuit): Parameterized ansatz circuit
+    #     hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+    #     estimator (Estimator): Estimator primitive instance
+
+    # Returns:
+    #     float: Weighted energy estimate
+    # """
+
+    energies = []
+
+    # Define SSVQE
+
+    weighted_energy_sum = np.dot(energies, weights)
+    return weighted_energy_sum
+```
+
+## Variational Quantum Deflation (VQD) {#variational-quantum-deflation-vqd}
+
+[VQD](https://arxiv.org/abs/1805.08138) ist eine iterative Methode, die VQE erweitert, um die ersten $k$ Eigenwerte eines Operators $\hat{H}$ mit Eigenwerten $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$ zu berechnen (wobei $N\geq k$), anstatt nur den ersten. Für den Rest dieses Abschnitts nehmen wir ohne Beschränkung der Allgemeinheit an, dass $\lambda_0\leq\lambda_1\leq...\leq\lambda_{N-1}$. VQD führt das Konzept eines Strafterms ein, um den Optimierungsprozess zu steuern.
+
+![Ein Diagramm, das zeigt, wie VQD die Komponenten eines variationellen Algorithmus verwendet.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-vqd.svg)
+VQD führt einen Strafterm $\beta$ ein, um den Beitrag jedes Überlappterms zu den Kosten auszubalancieren. Dieser Strafterm bestraft den Optimierungsprozess, wenn Orthogonalität nicht erreicht wird. Wir erzwingen diese Bedingung, weil die Eigenzustände eines Operators (oder eines hermiteschen Operators) zu verschiedenen Eigenwerten stets gegenseitig orthogonal sind – oder im Fall von Entartung so gewählt werden können. Indem wir Orthogonalität zum Eigenzustand von $\lambda_0$ erzwingen, optimieren wir effektiv im Unterraum der übrigen Eigenwerte $\{\lambda_1, \lambda_2,..., \lambda_{N-1}\}$. Dabei ist $\lambda_1$ der kleinste Eigenwert aus dem Rest, und die optimale Lösung des neuen Problems kann mit dem Variationsprinzip gefunden werden.
+
+Die Grundidee hinter VQD ist es, VQE wie gewohnt zu verwenden, um den kleinsten Eigenwert $\lambda_0 := C_0(\vec\theta^0) \equiv C_\text{VQE}(\vec\theta^0)$ zusammen mit dem zugehörigen (näherungsweisen) Eigenzustand $|\psi(\vec{\theta^0})\rangle$ für einen optimalen Parametervektor $\vec{\theta^0}$ zu erhalten. Um dann den nächsten Eigenwert $\lambda_1 > \lambda_0$ zu erhalten, minimieren wir statt $C_0(\vec{\theta}) := \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ die folgende Kostenfunktion:
+
+$$
+C_1(\vec{\theta}) :=
+C_0(\vec{\theta})+ \beta_0 |\langle \psi(\vec{\theta})| \psi(\vec{\theta^0})\rangle  |^2
+$$
+
+Der positive Wert $\beta_0$ sollte idealerweise größer als $\lambda_1-\lambda_0$ sein.
+
+Dies führt zu einer neuen Kostenfunktion, die als eingeschränktes Problem betrachtet werden kann, bei dem wir $C_\text{VQE}(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ unter der Bedingung minimieren, dass der Zustand orthogonal zum zuvor erhaltenen $|\psi(\vec{\theta^0})\rangle$ sein muss, wobei $\beta_0$ als Strafterm wirkt, falls die Bedingung nicht erfüllt ist.
+
+Alternativ kann dieses neue Problem als VQE mit dem neuen Operator interpretiert werden:
+
+$$
+\hat{H_1} := \hat{H} + \beta_0 |\psi(\vec{\theta^0})\rangle \langle \psi(\vec{\theta^0})|
+\quad \Rightarrow \quad
+C_1(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H_1} | \psi(\vec{\theta})\rangle,
+$$
+
+Wenn die Lösung des neuen Problems $|\psi(\vec{\theta^1})\rangle$ ist, sollte der Erwartungswert von $\hat{H}$ (nicht $\hat{H_1}$) gleich $ \langle \psi(\vec{\theta^1}) | \hat{H} | \psi(\vec{\theta^1})\rangle = \lambda_1$ sein.
+Um den dritten Eigenwert $\lambda_2$ zu erhalten, lautet die zu minimierende Kostenfunktion:
+
+$$
+C_2(\vec{\theta}) :=
+C_1(\vec{\theta}) + \beta_1 |\langle \psi(\vec{\theta})| \psi(\vec{\theta^1})\rangle  |^2
+$$
+
+wobei $\beta_1$ eine positive Konstante ist, die groß genug ist, um die Orthogonalität des Lösungszustands zu sowohl $|\psi(\vec{\theta^0})\rangle$ als auch $|\psi(\vec{\theta^1})\rangle$ zu erzwingen. Dies bestraft Zustände im Suchraum, die diese Bedingung nicht erfüllen, und schränkt den Suchraum dadurch effektiv ein. Die optimale Lösung des neuen Problems sollte also der Eigenzustand zu $\lambda_2$ sein.
+
+Wie im vorherigen Fall kann dieses neue Problem ebenfalls als VQE mit dem Operator interpretiert werden:
+
+$$
+\hat{H_2} := \hat{H_1} + \beta_1 |\psi(\vec{\theta^1})\rangle \langle \psi(\vec{\theta^1})|
+\quad \Rightarrow \quad
+C_2(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H_2} | \psi(\vec{\theta})\rangle.
+$$
+
+Ist die Lösung dieses neuen Problems $|\psi(\vec{\theta^2})\rangle$, so sollte der Erwartungswert von $\hat{H}$ (nicht $\hat{H_2}$) gleich $ \langle \psi(\vec{\theta^2}) | \hat{H} | \psi(\vec{\theta^2})\rangle = \lambda_2$ sein.
+Analog dazu würde man zur Berechnung des $k$-ten Eigenwerts $\lambda_{k-1}$ die folgende Kostenfunktion minimieren:
+
+$$
+C_{k-1}(\vec{\theta}) :=
+C_{k-2}(\vec{\theta}) + \beta_{k-2} |\langle \psi(\vec{\theta})| \psi(\vec{\theta^{k-2}})\rangle  |^2,
+$$
+
+Zur Erinnerung: Wir haben $\vec{\theta^j}$ so definiert, dass $\langle \psi(\vec{\theta^j}) | \hat{H} | \psi(\vec{\theta^j})\rangle = \lambda_j, \forall j<k$. Dieses Problem ist äquivalent zur Minimierung von $C(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ unter der Bedingung, dass der Zustand orthogonal zu $|\psi(\vec{\theta^j})\rangle ; \forall j \in {0, \cdots, k-1}$ ist, und schränkt damit den Suchraum auf den Unterraum der Eigenwerte $\{\lambda_{k-1},\cdots,\lambda_{N-1}\}$ ein.
+
+Dieses Problem ist äquivalent zu VQE mit dem Operator:
+
+$$
+\hat{H}_{k-1} :=
+\hat{H}_{k-2} + \beta_{k-2} |\psi(\vec{\theta^{k-2}})\rangle \langle \psi(\vec{\theta^{k-2}})|
+\quad \Rightarrow \quad
+C_{k-1}(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H}_{k-1} | \psi(\vec{\theta})\rangle,
+$$
+
+Wie aus dem Prozess ersichtlich wird, benötigt man zur Berechnung des $k$-ten Eigenwerts die (näherungsweisen) Eigenzustände der vorherigen $k-1$ Eigenwerte, d.h. VQE muss insgesamt $k$ Mal ausgeführt werden. Die Kostenfunktion von VQD lautet daher:
+
+$$
+C_k(\vec{\theta}) =
+\langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle +
+\sum_{j=0}^{k-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle |^2
+$$
+### Theoretischer Aufbau {#theoretical-layout-vqd}
+
+Der Aufbau von VQD lässt sich wie folgt zusammenfassen:
+
+- Vorbereitung eines Referenzoperators $U_R$
+- Anwenden der Variationsform $U_V(\vec\theta_{i,j})$ auf den Referenzzustand, wodurch die folgenden Ansätze $U_A(\vec\theta_{i,j})$ entstehen
+- Bootstrapping bei $i=0$, falls ein ähnliches Problem bekannt ist (typischerweise durch klassische Simulation oder Sampling gefunden).
+- Auswerten der Kostenfunktion $C_k(\vec{\theta})$, die die Berechnung von $k$ angeregten Zuständen und ein Array von $\beta$-Werten für den Überlapp-Strafterm jedes Überlappterms umfasst.
+  - Berechnung des Erwartungswerts für einen Operator $\langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ für jedes $k$
+  - Berechnung des Strafterms $\sum_{j=0}^{k-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle |^2$.
+  - Die Kostenfunktion gibt dann die Summe dieser beiden Terme zurück
+- Verwendung eines klassischen Optimierers zur Auswahl des nächsten Parametersatzes $\Theta_{i+1}$.
+- Wiederholung dieses Prozesses bis zur Konvergenz.
+### Implementierung {#implementation-vqd}
+
+Für diese Implementierung erstellen wir eine Funktion für einen Überlapp-Strafterm. Dieser Strafterm wird in der Kostenfunktion bei jeder Iteration verwendet. Dieser Prozess wird für jeden angeregten Zustand wiederholt.
+
+```python
+from qiskit.circuit.library import TwoLocal
+
+ansatz = TwoLocal(2, rotation_blocks=["ry", "rz"], entanglement_blocks="cz", reps=1)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Ausgabe der vorherigen Code-Zelle](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/9d368de5-d512-4fe8-8842-9c735944b22b-0.avif)
+
+Zunächst erstellen wir eine Funktion, die die Zustandstreue berechnet – einen prozentualen Überlapp zwischen zwei Zuständen, den wir als Strafterm für VQD verwenden:
+
+```python
+import numpy as np
+
+def calculate_overlaps(ansatz, prev_circuits, parameters, sampler):
+    def create_fidelity_circuit(circuit_1, circuit_2):
+        """
+        Constructs the list of fidelity circuits to be evaluated.
+        These circuits represent the state overlap between pairs of input circuits,
+        and their construction depends on the fidelity method implementations.
+        """
+
+        if len(circuit_1.clbits) > 0:
+            circuit_1.remove_final_measurements()
+        if len(circuit_2.clbits) > 0:
+            circuit_2.remove_final_measurements()
+
+        circuit = circuit_1.compose(circuit_2.inverse())
+        circuit.measure_all()
+        return circuit
+
+    overlaps = []
+
+    for prev_circuit in prev_circuits:
+        fidelity_circuit = create_fidelity_circuit(ansatz, prev_circuit)
+        sampler_job = sampler.run([(fidelity_circuit, parameters)])
+        meas_data = sampler_job.result()[0].data.meas
+
+        counts_0 = meas_data.get_int_counts().get(0, 0)
+        shots = meas_data.num_shots
+        overlap = counts_0 / shots
+        overlaps.append(overlap)
+
+    return np.array(overlaps)
+```
+
+Jetzt ist es Zeit, die Kostenfunktion von VQD zu schreiben. Wie zuvor bei der Berechnung nur des Grundzustands bestimmen wir den niedrigsten Energiezustand mit dem Estimator-Primitive. Wie oben beschrieben fügen wir nun jedoch einen Strafterm hinzu, um die Orthogonalität höherenergetischer Zustände sicherzustellen. Das heißt, für jeden neuen angeregten Zustand wird ein Strafterm für jeden Überlapp zwischen dem aktuellen variationellen Zustand und den bereits gefundenen niederenergetischen Eigenzuständen hinzugefügt.
+
+```python
+def cost_func_vqd(
+    parameters, ansatz, prev_states, step, betas, estimator, sampler, hamiltonian
+):
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+
+    total_cost = 0
+
+    if step > 1:
+        overlaps = calculate_overlaps(ansatz, prev_states, parameters, sampler)
+        total_cost = np.sum(
+            [np.real(betas[state] * overlap) for state, overlap in enumerate(overlaps)]
+        )
+
+    estimator_result = estimator_job.result()[0]
+
+    value = estimator_result.data.evs[0] + total_cost
+
+    return value
+```
+
+Beachte insbesondere, dass die obige Kostenfunktion auf die `calculate_overlaps`-Funktion verweist, die tatsächlich einen neuen Quantencircuit erstellt. Wenn wir auf echter Hardware ausführen möchten, muss auch dieser neue Circuit transpiliert werden – idealerweise auf optimale Weise für das gewählte Backend. Beachte, dass die Transpilierung nicht in die Funktionen `calculate_overlaps` oder `cost_func_vqd` eingebaut wurde. Du kannst versuchen, den Code selbst anzupassen, um diese zusätzliche (bedingte) Transpilierung einzubauen – das wird aber auch in der nächsten Lektion für dich erledigt.
+
+In dieser Lektion führen wir den VQD-Algorithmus mit dem Statevector Sampler und Statevector Estimator aus:
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+sampler = Sampler()
+estimator = Estimator()
+```
+
+Wir führen einen zu schätzenden Operator ein. In der nächsten Lektion werden wir diesem einen physikalischen Kontext geben, etwa den angeregten Zustand eines Moleküls. Es kann hilfreich sein, sich diesen Operator als den Hamiltonoperator eines Systems mit angeregten Zuständen vorzustellen, auch wenn er keinem bestimmten Molekül oder Atom entspricht.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+```
+
+Hier legen wir die Gesamtanzahl der zu berechnenden Zustände fest (Grundzustand und angeregte Zustände, k) sowie die Strafterme (betas) für den Überlapp zwischen Zustandsvektoren, die orthogonal sein sollten. Die Folgen einer zu hohen oder zu niedrigen Wahl der betas werden in der nächsten Lektion etwas näher untersucht. Vorerst verwenden wir einfach die unten angegebenen Werte. Wir starten mit lauter Nullen als Parameter. In eigenen Berechnungen möchtest du vielleicht geschicktere Startparameter wählen, die auf deinem Wissen über das System oder auf vorherigen Berechnungen basieren.
+
+```python
+k = 3
+betas = [33, 33, 33]
+x0 = np.zeros(8)
+```
+
+Jetzt können wir die Berechnung starten:
+
+```python
+from scipy.optimize import minimize
+
+prev_states = []
+prev_opt_parameters = []
+eigenvalues = []
+
+for step in range(1, k + 1):
+    if step > 1:
+        prev_states.append(ansatz.assign_parameters(prev_opt_parameters))
+
+    result = minimize(
+        cost_func_vqd,
+        x0,
+        args=(ansatz, prev_states, step, betas, estimator, sampler, observable),
+        method="COBYLA",
+        options={
+            "maxiter": 200,
+        },
+    )
+    print(result)
+
+    prev_opt_parameters = result.x
+    eigenvalues.append(result.fun)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -5.999999979545955
+       x: [-5.150e-01 -5.452e-02 -1.571e+00 -2.853e-05  2.671e-01
+           -2.672e-01 -8.509e-01 -8.510e-01]
+    nfev: 131
+   maxcv: 0.0
+ message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: 4.024550284767612
+       x: [-3.745e-01  1.041e+00  8.637e-01  1.202e+00 -8.847e-02
+            1.181e-02  7.611e-01 -3.006e-01]
+    nfev: 110
+   maxcv: 0.0
+ message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: 5.608925562838559
+       x: [-2.670e-01  1.280e+00  1.070e+00 -8.031e-01 -1.524e-01
+           -6.956e-02  7.018e-01  1.514e+00]
+    nfev: 90
+   maxcv: 0.0
+```
+
+Die aus der Kostenfunktion erhaltenen Werte sind ungefähr -6,00; 4,02 und 5,61. Das Wichtige an diesen Ergebnissen ist, dass die Funktionswerte ansteigen. Hätten wir einen ersten angeregten Zustand erhalten, der energetisch niedriger liegt als unsere anfängliche, unbeschränkte Berechnung des Grundzustands, hätte das auf einen Fehler irgendwo in unserem Code hingedeutet.
+
+Die Werte von x sind die Parameter, die zu einem Zustandsvektor geführt haben, der jeweils diesen Kosten (Energien) entspricht.
+
+Abschließend sei erwähnt, dass alle drei Minimierungen innerhalb der Standardtoleranz des klassischen Optimierers (hier COBYLA) konvergiert sind. Sie erforderten 131, 110 bzw. 90 Funktionsauswertungen.
+## Quantum Sampling Regression (QSR) {#quantum-sampling-regression-qsr}
+
+Eines der Hauptprobleme von VQE sind die vielen Aufrufe eines Quantencomputers, die zur Bestimmung der Parameter für jeden Schritt benötigt werden – beispielsweise $k$, $k-1$ und so weiter. Dies ist besonders problematisch, wenn der Zugang zu Quantengeräten in einer Warteschlange organisiert ist. Zwar kann eine [`Session`](/guides/run-jobs-session) verwendet werden, um mehrere iterative Aufrufe zu bündeln, aber ein alternativer Ansatz ist Sampling. Durch den Einsatz mehr klassischer Ressourcen lässt sich der gesamte Optimierungsprozess in einem einzigen Aufruf abschließen. Hier kommt [Quantum Sampling Regression](https://arxiv.org/pdf/2012.02338) ins Spiel. Da der Zugang zu Quantencomputern nach wie vor ein knappes Gut ist, halten wir diesen Trade-off für viele aktuelle Studien für sinnvoll und praktikabel. Dieser Ansatz nutzt alle verfügbaren klassischen Möglichkeiten voll aus und erfasst dennoch viele der inneren Abläufe und intrinsischen Eigenschaften von Quantenberechnungen, die in Simulationen nicht auftreten.
+
+![Ein Diagramm, das zeigt, wie QSR die Komponenten eines variationellen Algorithmus verwendet.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-qsr.svg)
+
+Die Idee hinter QSR ist, dass die Kostenfunktion $C(\theta) := \langle \psi(\theta) | \hat{H} | \psi(\theta)\rangle$ als Fourier-Reihe folgendermaßen dargestellt werden kann:
+
+$$
+\begin{aligned}
+C(\vec{\theta})
+
+& := \langle \psi(\theta) | \hat{H} | \psi(\theta)\rangle \\[1mm]
+
+& := a_0 + \sum_{k=1}^S[a_k\cos(k\theta)+ b_k\sin(k\theta)] \\[1mm]
+
+\end{aligned}
+$$
+
+Je nach Periodizität und Bandbreite der ursprünglichen Funktion kann die Menge $S$ endlich oder unendlich sein. Für diese Diskussion nehmen wir an, dass sie unendlich ist. Der nächste Schritt besteht darin, die Kostenfunktion $C(\theta)$ mehrfach zu sampeln, um die Fourier-Koeffizienten $\{a_0, a_k, b_k\}_{k=1}^S$ zu erhalten. Da wir $2S+1$ Unbekannte haben, müssen wir die Kostenfunktion genau $2S+1$ Mal sampeln.
+
+Wenn wir die Kostenfunktion für $2S+1$ Parameterwerte $\{\theta_1,...,\theta_{2S+1}\}$ sampeln, erhalten wir folgendes Gleichungssystem:
+
+$$
+\begin{pmatrix} 1 & \cos(\theta_1) & \sin(\theta_1) & \cos(2\theta_1) & ... & \sin(S\theta_1) \\
+1 & \cos(\theta_2) & \sin(\theta_2) & \cos(2\theta_2) & \cdots & \sin(S\theta_2)\\
+\vdots & \vdots & \vdots & \vdots & \ddots & \vdots\\
+1 & \cos(\theta_{2S+1}) & \sin(\theta_{2S+1}) & \cos(2\theta_{2S+1}) & \cdots & \sin(S\theta_{2S+1})
+\end{pmatrix} \begin{pmatrix} a_0 \\ a_1 \\ b_1 \\ a_2 \\ \vdots \\ b_S \end{pmatrix} = \begin{pmatrix} C(\theta_1) \\ C(\theta_2) \\ \vdots \\ C(\theta_{2S+1}) \end{pmatrix},
+$$
+
+das wir als
+
+$$
+Fa=c.
+$$
+
+umschreiben.
+
+In der Praxis ist dieses System im Allgemeinen nicht konsistent, da die Kostenfunktionswerte $c$ nicht exakt sind. Daher ist es in der Regel sinnvoll, sie zu normieren, indem man sie von links mit $F^\dagger$ multipliziert, was zu folgendem Ergebnis führt:
+
+$$
+F^\dagger Fa = F^\dagger c.
+$$
+
+Dieses neue System ist stets konsistent, und seine Lösung ist eine Kleinste-Quadrate-Lösung des ursprünglichen Problems. Wenn wir $k$ Parameter statt nur einen haben und jeder Parameter $\theta^i$ sein eigenes $S_i$ für $i \in {1,...,k}$ besitzt, beträgt die Gesamtzahl der benötigten Samples:
+
+$$
+T=\prod_{i=1}^k(2S_i+1)\leq \prod_{i=1}^k(2S_{max}+1) = (2S_{max}+1)^n,
+$$
+
+wobei $S_{\max} = \max_i(S_i)$. Darüber hinaus eröffnet die Anpassung von $S_{\max}$ als einstellbaren Parameter (anstatt ihn zu inferieren) neue Möglichkeiten, beispielsweise:
+
+- **Over-Sampling** zur Genauigkeitssteigerung.
+- **Under-Sampling** zur Leistungssteigerung durch Reduzierung des Laufzeit-Overheads oder Eliminierung lokaler Minima.
+### Theoretischer Aufbau {#theoretical-layout-qsr}
+
+Der Aufbau von QSR lässt sich wie folgt zusammenfassen:
+
+- Vorbereitung der Referenzoperatoren $U_R$.
+  - Wir gehen vom Zustand $|0\rangle$ zum Referenzzustand $|\rho\rangle$ über
+- Anwenden der Variationsform $U_V(\vec\theta_{i,j})$, um einen Ansatz $U_A(\vec\theta_{i,j})$ zu erzeugen.
+  - Bestimmung der Bandbreite jedes Parameters im Ansatz. Eine obere Schranke ist ausreichend.
+- Bootstrapping bei $i=0$, falls ein ähnliches Problem bekannt ist (typischerweise durch klassische Simulation oder Sampling gefunden).
+- Sampeln der Kostenfunktion $C(\vec\theta) := a_0 + \sum_{k=1}^S[a_k\cos(k\theta)+ b_k\sin(k\theta)]$ mindestens $T$ Mal.
+  - $T=\prod_{i=1}^k(2S_i+1)\leq \prod_{i=1}^k(2S_{max}+1) = (2S_{max}+1)^n$
+  - Entscheidung, ob Over-Sampling/Under-Sampling genutzt werden soll, um Geschwindigkeit und Genauigkeit durch Anpassung von $T$ abzuwägen.
+- Berechnung der Fourier-Koeffizienten aus den Samples (d.h. Lösung des normierten linearen Gleichungssystems).
+- Lösung des globalen Minimums der resultierenden Regressionsfunktion auf einem klassischen Rechner.
+## Zusammenfassung {#summary}
+
+In dieser Lektion hast du mehrere variationelle Instanzen kennengelernt:
+
+- Allgemeiner Aufbau
+- Einführung von Gewichten und Straftermen zur Anpassung einer Kostenfunktion
+- Exploration von Under-Sampling vs. Over-Sampling für den Trade-off zwischen Geschwindigkeit und Genauigkeit
+
+Diese Ideen lassen sich zu einem maßgeschneiderten variationellen Algorithmus kombinieren, der zu deinem Problem passt. Wir laden dich ein, deine Ergebnisse mit der Community zu teilen. Die nächste Lektion zeigt, wie man einen variationellen Algorithmus zur Lösung einer konkreten Anwendung einsetzt.

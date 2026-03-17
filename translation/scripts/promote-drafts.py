@@ -26,6 +26,7 @@ from pathlib import Path
 
 # Import validation functions from sibling script (hyphenated filename)
 import importlib
+import importlib.util
 _script_dir = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location(
     "validate_translation", _script_dir / "validate-translation.py")

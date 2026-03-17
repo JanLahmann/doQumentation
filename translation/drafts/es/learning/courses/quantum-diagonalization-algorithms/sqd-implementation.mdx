@@ -1,0 +1,577 @@
+---
+title: "Implementación de SQD"
+sidebar_label: "Implementación de SQD"
+description: "La diagonalización cuántica basada en muestreo (SQD) se implementa en el contexto del cálculo del estado fundamental de una molécula de nitrógeno."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb"
+---
+{/* doqumentation-source-hash: 3541e7f6 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb" />
+
+{/* cspell:ignore fontdict fontsize milli hcore ccsd Motta */}
+
+# SQD para la estimación de energía de un hamiltoniano químico {#sqd-for-energy-estimation-of-a-chemistry-hamiltonian}
+En esta lección aplicamos SQD para estimar la energía del estado fundamental de una molécula.
+
+Para ello, discutiremos los siguientes temas utilizando el enfoque de patrones de Qiskit de $4$ pasos:
+
+1. Paso 1: Mapear el problema a circuitos cuánticos y operadores
+    - Construir el hamiltoniano molecular para $N_2$.
+    - Explicar el ansatz Local Unitary Cluster Jastrow (LUCJ) [\[1\]](#references), inspirado en la química y compatible con el hardware
+2. Paso 2: Optimizar para el hardware objetivo
+    - Optimizar el conteo de compuertas y la disposición del ansatz para la ejecución en hardware
+3. Paso 3: Ejecutar en el hardware objetivo
+    - Ejecutar el circuito optimizado en una QPU real para generar muestras del subespacio
+4. Paso 4: Posprocesar resultados
+    - Introducir el bucle autoconsistente de recuperación de configuración [\[2\]](#references)
+        - Posprocesar el conjunto completo de muestras de cadenas de bits, utilizando conocimiento previo sobre el número de partículas y la ocupación orbital promedio de la iteración más reciente
+        - Crear lotes de submuestras probabilísticamente a partir de cadenas de bits recuperadas
+        - Proyectar y diagonalizar el hamiltoniano molecular sobre cada subespacio muestreado
+        - Almacenar la energía del estado fundamental más baja entre todos los lotes y actualizar la ocupación orbital promedio
+
+En esta lección utilizamos varios paquetes de software.
+- `PySCF` para definir la molécula y construir el hamiltoniano
+- Paquete `ffsim` para construir el ansatz LUCJ
+- `Qiskit` para transpilar el ansatz para la ejecución en hardware
+- `Qiskit IBM Runtime` para ejecutar el circuito en una QPU y recopilar muestras
+- `Qiskit addon SQD` para la recuperación de configuración y la estimación de la energía del estado fundamental mediante proyección de subespacios y diagonalización de matrices
+## 1. Mapear el problema a circuitos cuánticos y operadores {#1-map-problem-to-quantum-circuits-and-operators}
+### Hamiltoniano molecular {#molecular-hamiltonian}
+Un hamiltoniano molecular tiene la forma general:
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \,
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+$\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$ son los operadores de creación/aniquilación fermiónicos asociados al $p$-ésimo elemento del conjunto de bases y al espín $\sigma$. $h_{pr}$ y $(pr|qs)$ son las integrales electrónicas de uno y dos cuerpos. Con PySCF definimos la molécula y calculamos las integrales de uno y dos cuerpos del hamiltoniano para el conjunto de bases `6-31g`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+warnings.filterwarnings("ignore")
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],  # Two N atoms 1 angstrom apart
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)  # hcore: one-body integrals
+ eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)  # eri: two-body integrals
+
+# Compute exact energy for comparison
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570774
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+En esta lección utilizamos la transformación de Jordan-Wigner (JW) para mapear una función de onda fermiónica a una función de onda de qubits, de modo que pueda prepararse con un circuito cuántico. La transformación JW mapea el espacio de Fock de fermiones en M orbitales espaciales al espacio de Hilbert de 2M qubits, es decir, un orbital espacial se divide en dos _orbitales de espín_: uno para un electrón de espín arriba ($\alpha$) y otro para espín abajo ($\beta$). Un orbital de espín puede estar ocupado o desocupado. Cuando hablamos del número de orbitales, generalmente nos referimos al número de orbitales _espaciales_; el número de orbitales de espín es el doble. En circuitos cuánticos, representamos cada orbital de espín con un qubit. Así, un grupo de qubits representa orbitales de espín arriba o $\alpha$, y otro grupo representa orbitales de espín abajo o $\beta$. La molécula $N_2$, por ejemplo, tiene $16$ orbitales espaciales para el conjunto de bases `6-31g` (es decir, $16$ $\alpha$ + $16$ $\beta$ = $32$ orbitales de espín). Por lo tanto, necesitamos un circuito cuántico de $32$ qubits (eventualmente se pueden necesitar qubits auxiliares adicionales, como se discute más adelante). Los qubits se miden en la base computacional para generar cadenas de bits que representan configuraciones electrónicas o determinantes (de Slater). En esta lección usamos los términos cadenas de bits, configuraciones y determinantes de forma intercambiable. Las cadenas de bits indican la ocupación electrónica en los orbitales de espín: un $1$ en una posición de bit significa que el orbital de espín correspondiente está ocupado, mientras que un $0$ significa que está vacío. Dado que los problemas de estructura electrónica conservan el número de partículas, un número fijo de orbitales de espín debe estar ocupado. La molécula $N_2$ tiene $5$ electrones de espín arriba ($\alpha$) y $5$ de espín abajo ($\beta$). Por lo tanto, cada cadena de bits que representa los orbitales $\alpha$ y $\beta$ debe tener cinco $1\text{s}$ cada una para la molécula $N_2$.
+### 1.1 Circuito cuántico para la generación de muestras: El ansatz LUCJ {#11-quantum-circuit-for-sample-generation-the-lucj-ansatz}
+En esta lección utilizamos el ansatz Local Unitary Coupled Cluster Jastrow (LUCJ) [\\[1\\]](#references) para la preparación del estado cuántico y el posterior muestreo. Primero explicamos los diferentes bloques de construcción del ansatz UCJ completo y las aproximaciones realizadas en la variante local. Luego construimos el ansatz LUCJ con el paquete ffsim y lo optimizamos con el transpilador de Qiskit para la ejecución en hardware.
+
+El ansatz UCJ tiene la siguiente forma (para un producto de $L$ capas o repeticiones del operador UCJ):
+
+$$
+|\psi\rangle = \prod_{\mu=1}^{L}{(e^{K^{\mu}} \times {e^{iJ^{\mu}}} \times {e^{-K^{\mu}}})} |\Phi_{0}\rangle
+$$
+
+donde $\vert \Phi_{0} \rangle$ es un estado de referencia, típicamente el estado de Hartree-Fock (HF). Dado que el estado de Hartree-Fock se define con los orbitales más bajos ocupados, la preparación del estado HF implica aplicar compuertas X para poner a uno los qubits de los orbitales ocupados. Por ejemplo, el bloque de preparación del estado HF para 4 orbitales espaciales y 2 electrones de espín arriba y espín abajo cada uno podría verse así:
+![A circuit diagram showing 8 qubits, 4 called alpha orbitals and 4 called beta orbitals. The top two alpha and the top two beta have a "not" gate.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig1.avif)
+Una sola repetición del operador UCJ ${(e^{K^{(\mu)}} \times {e^{iJ^{(\mu)}}} \times {e^{-K^{(\mu)}}})}$ consiste en una evolución diagonal de Coulomb ($e^{iJ^{(\mu)}}$), encapsulada entre rotaciones orbitales ($e^{K^{(\mu)}}$ y $e^{-K^{(\mu)}}$).
+![A circuit diagram showing that the UCJ circuit can be broken down into rotation layers and a diagonal Coulomb evolution layer.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig2.avif)
+Los bloques de rotación orbital actúan sobre una única especie de espín ($\alpha$ (espín arriba)/$\beta$ (espín abajo)). Para cada especie de electrón, la rotación orbital consiste en una capa de compuertas $R_{z}$ de un qubit, seguida de una secuencia de compuertas de rotación de Givens de dos qubits (compuertas $XX + YY$).
+
+Las compuertas de dos qubits actúan sobre orbitales de espín adyacentes (qubits vecinos más cercanos) y, por lo tanto, son implementables en QPUs de IBM&reg; sin compuertas SWAP.
+![A circuit diagram showing 4 alpha orbital qubits and 4 beta orbital qubits. The circuits start with R-Z gates, and then have a series of Given's rotation gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig3.avif)
+El operador $e^{iJ^{(\mu)}}$, también conocido como operador diagonal de Coulomb, consiste en tres bloques. Dos de ellos actúan sobre regiones de espín iguales ($e^{iJ_{\alpha \alpha}^{(\mu)}}$ y $e^{iJ_{\beta \beta}^{(\mu)}}$), y uno actúa entre dos regiones de espín ($e^{iJ_{\alpha \beta}^{(\mu)}}$).
+
+Todos los bloques en $e^{iJ^{(\mu)}}$ consisten en compuertas número-número $U_{nn}(\phi)$ [\[1\]](#references). Una compuerta $U_{nn}(\phi)$ puede descomponerse en una compuerta $R_{ZZ}(\frac{\phi}{2})$, seguida de dos compuertas $Rz(-\frac{\phi}{2})$ de un qubit sobre dos qubits separados.
+
+Los componentes de espín igual ($J_{\alpha \alpha}$ y $J_{\beta \beta}$) tienen compuertas $U_{nn}$ entre todos los pares de qubits posibles. Sin embargo, dado que las QPUs superconductoras tienen conectividad limitada, los qubits deben intercambiarse (SWAP) para realizar compuertas entre qubits no adyacentes.
+
+Consideremos, por ejemplo, el siguiente bloque $e^{iJ_{\alpha \alpha}^{(\mu)}}$ (o $e^{iJ_{\beta \beta}^{(\mu)}}$) para $N = 4$ orbitales espaciales. Con una conectividad de qubits lineal, las tres últimas compuertas no son directamente implementables ya que actúan entre qubits no adyacentes (por ejemplo, Q0 y Q2 no están conectados directamente). Por lo tanto, necesitamos compuertas SWAP para hacerlos adyacentes (la siguiente figura muestra un ejemplo con $3$ compuertas SWAP).
+![A circuit diagram showing linearly-coupled qubits and corresponding alpha/beta circuits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig4.avif)
+A continuación, el bloque $J_{\alpha \beta}$ implementa compuertas entre orbitales con el mismo índice de diferentes regiones de espín (por ejemplo, entre $0\alpha$ y $0\beta$). De manera similar, estas compuertas requieren SWAPs cuando los qubits no son físicamente adyacentes en una QPU.
+![A circuit diagram showing 4 alpha qubits connected to the 4 beta qubits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig5.avif)
+De la discusión anterior se deduce que el ansatz UCJ encuentra obstáculos en la ejecución en hardware ya que requiere compuertas SWAP debido a interacciones entre qubits no adyacentes. La variante local del ansatz UCJ, LUCJ, aborda este desafío eliminando algunas compuertas $U_{nn}$ del operador diagonal de Coulomb.
+
+En los bloques de espín igual ($J_{\alpha \alpha}$ y $J_{\beta \beta}$), en la versión LUCJ solo conservamos las compuertas $U_{nn}$ compatibles con conectividad de vecinos más cercanos y eliminamos las compuertas entre qubits no adyacentes. La siguiente figura muestra el bloque LUCJ después de eliminar las compuertas no adyacentes.
+![A circuit diagram showing 4 alpha qubits and 4 beta qubits each with R-Z gates, followed by two-qubit gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig6.avif)
+A continuación, la versión LUCJ del bloque $J_{\alpha \beta}$, que actúa entre diferentes especies de electrones, puede tomar diferentes formas dependiendo de la topología del dispositivo.
+
+También aquí la versión LUCJ elimina compuertas incompatibles. La siguiente figura muestra variantes del bloque $J_{\alpha \beta}$ para diferentes topologías de qubits, incluyendo cuadrícula, hexagonal, Heavy-Hex y lineal.
+
+- **Cuadrada**: Podemos tener compuertas $U_{nn}$ entre todos los orbitales $\alpha$ y $\beta$ sin SWAPs y, por lo tanto, no necesitamos eliminar ninguna compuerta $U_{nn}$.
+- **Heavy-Hex**: Las interacciones $\alpha$-$\beta$ se mantienen entre cada $4$-to orbital de espín indexado (por ejemplo, el 0.o, 4.o y 8.o) y son _mediadas por qubits auxiliares_, es decir, necesitamos qubits auxiliares entre las cadenas lineales que representan los orbitales $\alpha$ y $\beta$. Esta disposición requiere un número limitado de SWAPs.
+- **Hexagonal**: Cada segundo orbital, por ejemplo el 0.o, 2.o y 4.o orbital indexado, se convierte en vecino más cercano cuando $\alpha$ y $\beta$ se disponen en dos cadenas lineales adyacentes.
+- **Lineal**: Solo un orbital $\alpha$ y uno $\beta$ están conectados, lo que significa que el bloque $J_{\alpha \beta}$ tiene solo una compuerta.
+![Connectivity diagrams for different qubit layouts. They show qubits arranged on a square grid, a hexagonal lattice, a heavy-hex lattice (hexagonal lattice with one extra qubit along each side of the hexagon), and a linear chain.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig7.avif)
+Eliminar compuertas del ansatz UCJ para crear la versión LUCJ lo hace más compatible con el hardware, pero el ansatz pierde algo de expresividad. Por lo tanto, pueden ser necesarias más repeticiones ($L$) del operador UCJ modificado en el ansatz LUCJ.
+### 1.2 Inicialización del ansatz LUCJ {#12-lucj-ansatz-initialization}
+El LUCJ es un ansatz parametrizado y debemos inicializar los parámetros antes de la ejecución en hardware. Una forma de inicializar el ansatz es usar amplitudes `t1` y `t2` del método clásico Coupled Cluster Singles and Doubles (CCSD), donde las amplitudes `t1` son los coeficientes de los operadores de excitación simple y las amplitudes `t2` los de los operadores de excitación doble.
+
+Nótese que, aunque la inicialización del ansatz LUCJ con amplitudes `t1` y `t2` produce resultados aceptables, los parámetros del ansatz pueden requerir optimización adicional.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(
+    scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]
+)
+ccsd.run()
+
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929733  E_corr = -0.20458912219883
+```
+
+### 1.3 Construcción del ansatz LUCJ con `ffsim` {#13-constructing-the-lucj-ansatz-using-ffsim}
+Utilizamos el paquete [ffsim](https://github.com/qiskit-community/ffsim/tree/main) para crear el ansatz e inicializarlo con las amplitudes `t1` y `t2` calculadas anteriormente. Dado que nuestra molécula tiene un estado de Hartree-Fock de capa cerrada, usamos la variante con equilibrio de espín del ansatz UCJ, [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced).
+
+Dado que el hardware de IBM tiene topología Heavy-Hex, adoptamos el patrón _zigzag_ utilizado en [\[1\]](#references) y explicado anteriormente para las interacciones de qubits. En este patrón, los orbitales (qubits) con el mismo espín están conectados con una topología de línea (círculos rojos y azules). Debido a la topología Heavy-Hex, los orbitales de diferentes espines tienen conexiones entre cada 4.o orbital, es decir, el 0.o, 4.o, 8.o, y así sucesivamente (círculos morados).
+
+![A zig-zag pattern traced out along a heavy-hex lattice.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig8.avif)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 2
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+# circuit.decompose().draw("mpl", scale=0.5, fold=-1)
+```
+
+El ansatz LUCJ con capas repetidas puede optimizarse fusionando bloques adyacentes. Consideremos el caso `n_reps=2`: los dos bloques de rotación orbital en el centro pueden fusionarse en un único bloque de rotación orbital. El paquete `ffsim` tiene un Pass Manager llamado `ffsim.qiskit.PRE_INIT` para optimizar el circuito fusionando dichos bloques adyacentes.
+![A diagram showing layers of the LUCJ ansatz.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig9.avif)
+## 2. Optimizar para el hardware objetivo {#2-optimize-for-target-hardware}
+Primero obtenemos un backend de nuestra elección. Optimizamos nuestro circuito para el backend y luego ejecutamos el circuito optimizado en el mismo backend para generar muestras del subespacio.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+A continuación, recomendamos los siguientes pasos para optimizar el ansatz y hacerlo compatible con el hardware.
+
+- Seleccionar qubits físicos (`initial_layout`) del hardware objetivo que correspondan al patrón zigzag descrito anteriormente (dos cadenas lineales con qubit auxiliar intermedio). La disposición de los qubits en este patrón produce un circuito eficiente y compatible con el hardware con menos compuertas.
+- Crear un pass manager escalonado con la función [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager) de Qiskit con el `backend` e `initial_layout` elegidos.
+- Establecer la etapa `pre_init` del pass manager escalonado en `ffsim.qiskit.PRE_INIT`. `ffsim.qiskit.PRE_INIT` contiene pases del transpilador de Qiskit que descomponen compuertas en rotaciones orbitales y luego las fusionan, lo que resulta en menos compuertas en el circuito final.
+- Aplicar el pass manager a tu circuito.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+spin_a_layout = [0, 14, 18, 19, 20, 33, 39, 40, 41, 53, 60, 61, 62, 72, 81, 82]
+spin_b_layout = [2, 3, 4, 15, 22, 23, 24, 34, 43, 44, 45, 54, 64, 65, 66, 73]
+
+initial_layout = spin_a_layout + spin_b_layout
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=initial_layout
+)
+
+# without PRE_INIT passes
+ isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/o pre-init passes): {isa_circuit.count_ops()}")
+
+# with PRE_INIT passes
+# We will use the circuit generated by this pass manager for hardware execution
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+ isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
+```
+
+```text
+Gate counts (w/o pre-init passes): OrderedDict({'rz': 7579, 'sx': 6106, 'ecr': 2316, 'x': 336, 'measure': 32, 'barrier': 1})
+Gate counts (w/ pre-init passes): OrderedDict({'rz': 4088, 'sx': 3125, 'ecr': 1262, 'x': 201, 'measure': 32, 'barrier': 1})
+```
+
+## 3. Ejecutar en el hardware objetivo {#3-execute-on-target-hardware}
+Después de optimizar el circuito para la ejecución en hardware, estamos listos para ejecutarlo en el hardware objetivo y recopilar muestras para la estimación de la energía del estado fundamental. Dado que tenemos un solo circuito, utilizamos el [modo de ejecución de trabajos](/guides/execution-modes) de Qiskit Runtime y ejecutamos nuestro circuito.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+sampler.options.dynamical_decoupling.enable = True
+
+job = sampler.run([isa_circuit], shots=10_000)  # Takes approximately 5sec of QPU time
+```
+
+```python
+# Run cell after IQX job completion
+primitive_result = job.result()
+pub_result = primitive_result[0]
+counts = pub_result.data.meas.get_counts()
+```
+
+## 4. Posprocesar resultados {#4-post-process-results}
+La parte de posprocesamiento del flujo de trabajo de SQD se puede resumir con el siguiente diagrama.
+
+![A flow chart showing how sampled states are used to determine ground state eigenvalues and eigenvectors.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig10.avif)
+El muestreo del ansatz LUCJ en la base computacional genera un conjunto de configuraciones ruidosas $\tilde{\mathcal{\chi}}$, que se utilizan en la rutina de posprocesamiento. Esta incluye un método llamado _recuperación de configuración_ (detalles a continuación), para corregir probabilísticamente configuraciones con un número incorrecto de electrones. Las configuraciones con el número correcto de electrones $\tilde{\mathcal{\chi}}_{R}$ se dividen entonces en múltiples lotes y se distribuyen según la frecuencia de cada configuración única. Cada lote de muestras define un subespacio ($\mathcal{S^{(k)}}$). Luego, el hamiltoniano molecular $H$ se proyecta sobre los subespacios:
+$$
+H_{\mathcal{S}^{(k)}} = P_{\mathcal{S}^{(k)}} H _{\mathcal{S}^{(k)}} \text{ with } P_{\mathcal{S}^{(k)}} = \sum_{x \in \mathcal{S}^{(k)}} \vert x \rangle \langle x \vert
+$$
+
+Cada hamiltoniano proyectado $H_{\mathcal{S}^{(k)}}$ se pasa luego a un solucionador de valores propios que lo diagonaliza para calcular valores propios y vectores propios para reconstruir un estado propio. En esta lección, proyectamos y diagonalizamos el hamiltoniano con el paquete `qiskit-addon-sqd`, que utiliza el método de Davidson de PySCF para la diagonalización.
+
+$$
+H_{\mathcal{S}^{(k)}} \vert \psi^{(k)} \rangle = E^{(k)} \vert \psi^{(k)} \rangle
+$$
+
+Luego recopilamos el valor propio (energía) más bajo de los lotes y también calculamos la ocupación orbital promedio $\text{n}$. La información sobre la ocupación promedio se utiliza en el paso de recuperación de configuración para corregir probabilísticamente configuraciones ruidosas.
+
+A continuación, explicamos el bucle autoconsistente de recuperación de configuración en detalle y mostramos ejemplos concretos de código para implementar los pasos mencionados anteriormente para estimar la energía del estado fundamental del hamiltoniano de $N_2$.
+### 4.1 Recuperación de configuración: Descripción general {#41-configuration-recovery-overview}
+Cada bit en una cadena de bits (determinante de Slater) representa un orbital de espín. La mitad derecha de una cadena de bits representa orbitales de espín arriba, y la mitad izquierda representa orbitales de espín abajo. Un `1` significa que el orbital está ocupado por un electrón, y un `0` significa que el orbital está vacío. Conocemos el número correcto de partículas (tanto electrones de espín arriba como de espín abajo) a priori. Supongamos que tenemos un determinante $x$ con $N_x$ electrones (es decir, $N_x$ unos en la cadena de bits). El número correcto de partículas es $N$. Si $N_x \neq N$, sabemos que la cadena de bits fue corrompida por el ruido. La rutina autoconsistente de configuración intenta corregir la cadena de bits invirtiendo probabilísticamente $|N_x - N|$ bits utilizando información sobre la ocupación orbital promedio. La ocupación orbital promedio ($n$) indica qué tan probable es que un orbital esté ocupado por un electrón. Si $N_x < N$, tenemos muy pocos electrones y necesitamos invertir algunos $0$s a $1$s, y viceversa.
+
+La probabilidad de inversión puede ser $|x[i] - avg\_occupancy[i]|$ para el $i$-ésimo orbital de espín. En [\[2\]](#references), los autores utilizaron una probabilidad de inversión ponderada con una función ReLU modificada.
+
+$$
+\begin{align}
+    w(y) = \begin{cases}
+
+    \delta \frac{y}{h} & \text{if }  y \leq h\\ \nonumber
+
+    \delta + (1 - \delta) \frac{y - h}{1 - h} & \text{if } y > h
+
+\end{cases}
+\end{align}
+$$
+
+Aquí, $h$ define la posición de la "esquina" de la función ReLU, y el parámetro $\delta$ define el valor de la función ReLU en la esquina. Para $\delta = 0$, $w$ se convierte en la verdadera función ReLU, y para $\delta > 0$ en la ReLU _modificada_. En la publicación, los autores utilizaron $\delta = 0.01$ y $h =$ número de partículas alfa (o beta) / número de orbitales de espín alfa (o beta) $= N/M$ (factor de llenado).
+
+La ocupación orbital promedio ($n$) no se conoce a priori. La primera iteración de la estimación del estado fundamental comienza con configuraciones que solo tienen números correctos de partículas en ambas especies de espín. Después de la primera iteración, tenemos una estimación del estado fundamental, y a partir de ella podemos construir la primera estimación de $n$. Esta estimación de $n$ se utiliza para recuperar configuraciones, realizar la siguiente iteración de la estimación del estado fundamental y refinar la estimación de $n$ de forma autoconsistente. El proceso se repite hasta que se cumple un criterio de terminación.
+
+Consideremos el siguiente ejemplo para $N = 2$ y $x = |1000\rangle$ ($N_x = 1$). Necesitamos invertir uno de los ceros a uno para corregir el número de partículas, y las posibilidades son `1100`, `1010` y `1001`. Basándose en la probabilidad de inversión, una de las posibilidades se selecciona como la _configuración recuperada_ (o cadena de bits con el número correcto de partículas).
+
+Supongamos que en la primera iteración ejecutamos dos lotes, y los estados fundamentales estimados a partir de ellos son:
+
+$$
+\begin{align}\nonumber
+    \text{Batch0: } \vert \psi \rangle &= 0.8 \times \vert 1001 \rangle + 0.6 \times \vert 0110 \rangle \\ \nonumber
+    \text{Batch1: } \vert \psi \rangle &= \frac{1}{\sqrt{3}} \left( \vert 1001 \rangle + \vert 0101 \rangle + \vert 0110 \rangle \right) \nonumber
+\end{align}
+$$
+
+A partir de los estados de la base computacional y sus amplitudes, podemos calcular la probabilidad de ocupación electrónica (abreviada _ocupación_) por orbital de espín (qubit) (nótese: probabilidad = |amplitud|$^2$). A continuación, tabulamos las ocupaciones por qubit para cada cadena de bits en el estado fundamental estimado y calculamos la ocupación orbital total para un lote. Nótese que el bit más a la derecha representa qubit-0 (Q0) y el bit más a la izquierda Q3, según la convención de Qiskit.
+
+Ocupación (Batch0):
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |   0.64   |    0.0   |    0.0   |   0.64   |
+|    0110   |    0.0   |   0.36   |   0.36   |    0.0   |
+| **n** _(Batch0)_ | **0.64** | **0.36** | **0.36** | **0.64** |
+
+Ocupación (Batch1)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |    0.33   |   0.00   |   0.00   |    0.33   |
+|    0101   |    0.0   |   0.33   |   0.00   |    0.33   |
+|    0110   |    0.0   |   0.33   |   0.33   |    0.00   |
+| **n** _(Batch1)_ | **0.33** | **0.66** | **0.33** | **0.66** |
+
+Ocupación (Promedio sobre todos los lotes)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| **n** _(Batch0)_ | 0.64 | 0.36 | 0.36 | 0.64 |
+| **n** _(Batch1)_ | 0.33 | 0.66 | 0.33 | 0.66 |
+| **n** _(average)_ | **0.49** | **0.51** | **0.35** | **0.65** |
+
+A partir de la ocupación orbital promedio calculada anteriormente, podemos determinar las probabilidades de inversión para diferentes orbitales en la configuración $x = \vert 1000 \rangle$. Dado que el orbital representado por Q3 ya está ocupado y no necesita invertirse, establecemos su p(flip) en $0$. Para los orbitales desocupados restantes, la probabilidad de inversión es respectivamente $\vert x[i] - \text{n}[i] \vert$. Junto con p(flip), también calculamos el peso de probabilidad de la inversión con la función ReLU modificada descrita anteriormente.
+
+Probabilidad de inversión ($x = \vert 1000 \rangle$, $\delta = 0.01$, $h = N/M = 2/4 = 0.50$)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| p(flip) ($\vert x[i] - \text{n}[i] \vert$) | 0 | 0.51 | 0.35 | 0.65 |
+| w(p(flip)) | 0 | 0.03 | 0.007 | 0.31 |
+
+Finalmente, con las probabilidades ponderadas anteriores, podemos invertir uno de los orbitales desocupados Q2, Q1 y Q0. Según los valores anteriores, Q0 tiene la mayor probabilidad de ser invertido, y una posible configuración recuperada sería $\vert \text{1001} \rangle$.
+![A diagram of configuration recovery.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig11.avif)
+El proceso completo de recuperación de configuración autoconsistente se puede resumir de la siguiente manera:
+
+**Primera iteración:** Supongamos que las cadenas de bits (configuraciones o determinantes de Slater) generadas por la computadora cuántica forman un conjunto $\widetilde{\chi}$, que contiene tanto configuraciones con número de partículas correcto ($\widetilde{\chi}_{correct}$) como incorrecto ($\widetilde{\chi}_{incorrect}$) en cada región de espín.
+1. Las configuraciones de ($\widetilde{\chi}_{correct}$) se ensamblan aleatoriamente en lotes $(\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)})$ de vectores para la proyección de subespacios. El número de lotes y el número de muestras en cada lote son parámetros definidos por el usuario. Cuantas más muestras en cada lote, mayor es la dimensión del subespacio y más costosa computacionalmente la diagonalización. Por otro lado, muy pocas muestras pueden resultar en la ausencia de vectores de soporte del estado fundamental y una estimación incorrecta.
+2. Aplicar el solucionador de estados propios (es decir, proyección sobre el subespacio y diagonalización) a los lotes y obtener estados propios aproximados $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+3. A partir de los estados propios aproximados, construir la primera estimación de $n$.
+
+**Iteraciones siguientes:**
+1. Con $n$, corregir las configuraciones con número incorrecto de partículas en $\widetilde{\chi}_{incorrect}$. Las llamamos $\widetilde{\chi}_{correct\_new}$. Entonces $\widetilde{\chi}_{recovered} (\widetilde{\chi}_{R}) = \widetilde{\chi}_{correct} \cup \widetilde{\chi}_{correct\_new}$ forma el nuevo conjunto de configuraciones con número correcto de partículas.
+2. $\widetilde{\chi}_{R}$ se muestrea para crear lotes $\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)}$.
+3. El solucionador de estados propios se ejecuta con nuevos lotes y genera nuevas estimaciones de los estados fundamentales $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+4. A partir de los estados propios aproximados, construir la estimación refinada de $n$.
+5. Si no se cumple el criterio de terminación, volver al paso `2.1`.
+### 4.2 Estimación del estado fundamental {#42-ground-state-estimation}
+Primero transformamos los conteos en una matriz de cadenas de bits y un array de probabilidades para el posprocesamiento.
+
+Cada fila en la matriz representa una cadena de bits única. Dado que los qubits en Qiskit se indexan desde la derecha en la cadena de bits, la columna ``0`` representa el qubit ``N-1`` y la columna ``N-1`` representa el qubit ``0``, donde ``N`` es el número de qubits.
+
+Los orbitales alfa se representan en el rango de índices de columna ``(N, N/2]`` (mitad derecha), y los orbitales beta en el rango ``(N/2, 0]`` (mitad izquierda).
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+
+# Convert counts into bitstring and probability arrays
+bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts)
+```
+
+Hay algunas opciones controlables por el usuario que son importantes para este método:
+
+- ``iterations``: Número de iteraciones de recuperación de configuración autoconsistente
+- ``n_batches``: Número de lotes de configuraciones utilizados por las diferentes invocaciones del solucionador de estados propios
+- ``samples_per_batch``: Número de configuraciones únicas en cada lote
+- ``max_davidson_cycles``: Número máximo de ciclos de Davidson ejecutados por cada solucionador de valores propios
+
+```python
+import numpy as np
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_fermion,
+)
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+
+rng = np.random.default_rng(24)
+# SQD options
+iterations = 5
+
+# Eigenstate solver options
+n_batches = 5
+samples_per_batch = 500
+max_davidson_cycles = 300
+
+# Self-consistent configuration recovery loop
+e_hist = np.zeros((iterations, n_batches))  # energy history
+s_hist = np.zeros((iterations, n_batches))  # spin history
+occupancy_hist = []
+avg_occupancy = None
+for i in range(iterations):
+    print(f"Starting configuration recovery iteration {i}")
+    # On the first iteration, we have no orbital occupancy information from the
+    # solver, so we begin with the full set of noisy configurations.
+    if avg_occupancy is None:
+        bs_mat_tmp = bitstring_matrix_full
+        probs_arr_tmp = probs_arr_full
+
+    # If we have average orbital occupancy information, we use it to refine the full set of noisy configurations
+    else:
+        bs_mat_tmp, probs_arr_tmp = recover_configurations(
+            bitstring_matrix_full,
+            probs_arr_full,
+            avg_occupancy,
+            num_elec_a,
+            num_elec_b,
+            rand_seed=rng,
+        )
+
+    # Create batches of subsamples. We post-select here to remove configurations
+    # with incorrect hamming weight during iteration 0, since no config recovery was performed.
+    batches = postselect_and_subsample(
+        bs_mat_tmp,
+        probs_arr_tmp,
+        hamming_right=num_elec_a,
+        hamming_left=num_elec_b,
+        samples_per_batch=samples_per_batch,
+        num_batches=n_batches,
+        rand_seed=rng,
+    )
+
+    # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
+    e_tmp = np.zeros(n_batches)
+    s_tmp = np.zeros(n_batches)
+    occs_tmp = []
+    coeffs = []
+    for j in range(n_batches):
+        strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+        print(f"  Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+        energy_sci, coeffs_sci, avg_occs, spin = solve_fermion(
+            batches[j],
+            hcore,
+            eri,
+            open_shell=open_shell,
+            spin_sq=spin_sq,
+            max_davidson=max_davidson_cycles,
+        )
+        energy_sci += nuclear_repulsion_energy
+        e_tmp[j] = energy_sci
+        s_tmp[j] = spin
+        occs_tmp.append(avg_occs)
+        coeffs.append(coeffs_sci)
+
+    # Combine batch results
+    avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+    # Track optimization history
+    e_hist[i, :] = e_tmp
+    s_hist[i, :] = s_tmp
+    occupancy_hist.append(avg_occupancy)
+```
+
+```text
+Starting configuration recovery iteration 0
+  Batch 0 subspace dimension: 21609
+  Batch 1 subspace dimension: 21609
+  Batch 2 subspace dimension: 21609
+  Batch 3 subspace dimension: 21609
+  Batch 4 subspace dimension: 21609
+Starting configuration recovery iteration 1
+  Batch 0 subspace dimension: 609961
+  Batch 1 subspace dimension: 616225
+  Batch 2 subspace dimension: 627264
+  Batch 3 subspace dimension: 633616
+  Batch 4 subspace dimension: 624100
+Starting configuration recovery iteration 2
+  Batch 0 subspace dimension: 564001
+  Batch 1 subspace dimension: 605284
+  Batch 2 subspace dimension: 582169
+  Batch 3 subspace dimension: 559504
+  Batch 4 subspace dimension: 591361
+Starting configuration recovery iteration 3
+  Batch 0 subspace dimension: 550564
+  Batch 1 subspace dimension: 549081
+  Batch 2 subspace dimension: 531441
+  Batch 3 subspace dimension: 527076
+  Batch 4 subspace dimension: 531441
+Starting configuration recovery iteration 4
+  Batch 0 subspace dimension: 544644
+  Batch 1 subspace dimension: 580644
+  Batch 2 subspace dimension: 527076
+  Batch 3 subspace dimension: 531441
+  Batch 4 subspace dimension: 537289
+```
+
+### 4.3 Discusión de los resultados {#43-discussion-of-results}
+La primera gráfica muestra que después de algunas iteraciones estimamos la energía del estado fundamental con una precisión de aproximadamente ~24 mH (la precisión química se establece típicamente en 1 kcal/mol $\approx$ 1.6 mH). La segunda gráfica muestra la ocupación promedio de cada orbital espacial después de la última iteración. Vemos que tanto los electrones de espín arriba como los de espín abajo en nuestras soluciones ocupan con alta probabilidad los primeros cinco orbitales.
+
+Aunque la energía del estado fundamental estimada es razonable, no está dentro del rango de precisión química ($\pm \approx 1.6$ mH). Esta desviación puede atribuirse a la pequeña dimensión del subespacio que utilizamos anteriormente para la proyección y diagonalización. Dado que usamos `samples_per_batch=500`, el subespacio está generado por un máximo de $500$ vectores, a los que les faltan vectores de soporte del estado fundamental. Aumentar el parámetro `samples_per_batch` debería mejorar la precisión a costa de más recursos computacionales clásicos y tiempo de ejecución.
+
+```python
+# Data for energies plot
+x1 = range(iterations)
+min_e = [np.min(e) for e in e_hist]
+e_diff = [abs(e - exact_energy) for e in min_e]
+ yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = occupancy_hist[-1][0] + occupancy_hist[-1][1]
+x2 = range(len(y2))
+```
+
+```python
+import matplotlib.pyplot as plt
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-6)
+axs[0].axhline(
+    y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy"
+)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.02234 Ha
+Absolute error: 0.02434 Ha
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-4-sqd-implementation/extracted-outputs/8cd90034-6ef3-41bd-a847-c115cade82f7-1.avif)
+
+#### Ejercicio para el lector {#exercise-for-the-reader}
+Aumenta el parámetro `samples_per_batch` gradualmente (por ejemplo, de $1000$ a $10000$ en pasos de $1000$, en la medida que lo permita la memoria de tu computadora) y compara las energías del estado fundamental estimadas.
+## Referencias {#references}
+
+\[1] M. Motta et al., "Bridging physical intuition and hardware efficiency for correlated electronic states: the local unitary cluster Jastrow ansatz for electronic structure" (2023). [Chem. Sci., 2023, 14, 11213](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k).
+
+\[2] J. Robledo-Moreno et al., "Chemistry Beyond Exact Solutions on a Quantum-Centric Supercomputer" (2024). [arXiv:quant-ph/2405.05068](https://arxiv.org/abs/2405.05068).

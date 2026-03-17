@@ -1,0 +1,321 @@
+---
+title: Resolución de temporización diferida con stretch
+description: Cómo usar stretch para diferir la resolución de temporización en circuitos dinámicos
+---
+{/* doqumentation-source-hash: e1844ec9 */}
+
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+
+# Resolución de temporización diferida con stretch {#deferred-timing-resolution-using-stretch}
+
+La especificación del lenguaje OpenQASM 3 incluye un tipo `stretch` con el que puedes especificar la temporización relativa de las operaciones en lugar de la temporización absoluta. El soporte de `stretch` como duraciones para las instrucciones [`Delay`](https://docs.quantum.ibm.com/api/qiskit/circuit#qiskit.circuit.Delay) se añadió en [Qiskit v2.0.0.](https://docs.quantum.ibm.com/api/qiskit/release-notes/2.0#200) El valor concreto de una duración stretch se resuelve en tiempo de compilación, una vez que se conocen las duraciones exactas de las puertas calibradas. El compilador intenta minimizar la duración del stretch, sujeto a las restricciones de temporización en uno o más qubits. Esto te permite expresar diseños de puertas como el espaciado uniforme de puertas (por ejemplo, para implementar una secuencia de desacoplamiento de eco de orden superior), la alineación izquierda de una secuencia de puertas, o la aplicación de una puerta durante la duración de algún subcircuito, sin necesidad de conocer la temporización exacta.
+
+## Ejemplos {#examples}
+
+### Desacoplamiento dinámico {#dynamical-decoupling}
+
+Un caso de uso común de `stretch` es aplicar desacoplamiento dinámico a un qubit inactivo mientras otro qubit realiza operaciones condicionales.
+
+Por ejemplo, podemos usar `stretch` para aplicar una secuencia de desacoplamiento dinámico XX al qubit 1, durante la duración del bloque condicional aplicado al qubit 0, tal como se ilustra en el siguiente diagrama:
+
+![Imagen que ilustra el siguiente circuito](/docs/images/guides/stretch/stretch.avif)
+
+El circuito correspondiente tendría el siguiente aspecto. Ten en cuenta que se necesita un par de barreras para definir los límites de esta temporización relativa.
+
+```python
+from qiskit.circuit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.classical import expr
+
+qubits = QuantumRegister(2)
+clbits = ClassicalRegister(2)
+circuit = QuantumCircuit(qubits, clbits)
+(q0, q1) = qubits
+(c0, c1) = clbits
+
+# Add barriers to define the boundaries
+circuit.barrier()
+circuit.h(q0)
+circuit.measure(q0, c0)
+with circuit.if_test((c0, 1)) as else_:
+    circuit.h(q0)
+with else_:
+    circuit.x(q0)
+
+# Apply an XX DD sequence with stretch on qubit 1
+s = circuit.add_stretch("s")
+circuit.delay(s, q1)
+circuit.x(q1)
+circuit.delay(expr.mul(s, 2), q1)
+circuit.x(q1)
+circuit.delay(s, q1)
+circuit.barrier()
+```
+
+### Alineación de planificación {#scheduling-alignment}
+
+Este ejemplo usa `stretch` para asegurar que una secuencia de puertas entre dos barreras quede alineada a la izquierda, independientemente de sus duraciones reales:
+
+```python
+from qiskit import QuantumCircuit
+from numpy import pi
+
+qc = QuantumCircuit(5)
+qc.barrier()
+qc.cx(0, 1)
+qc.u(pi/4, 0, pi/2, 2)
+qc.cx(3, 4)
+
+a = qc.add_stretch("a")
+b = qc.add_stretch("b")
+c = qc.add_stretch("c")
+
+# Use the stretches as Delay duration.
+qc.delay(a, [0, 1])
+qc.delay(b, 2)
+qc.delay(c, [3, 4])
+qc.barrier()
+```
+
+<Admonition type="note">
+ Al usar `stretch` con Qiskit Runtime, cualquier resto resultante de una resolución de stretch se añade al primer delay que usa el stretch.
+
+    Ejemplo:
+
+        ```python
+        a = circuit.add_stretch("a")
+        circuit.barrier(q0, q1)
+        circuit.delay(100, q0)
+        circuit.delay(a, q1)  # resolve to 26
+        circuit.x(q1)  # duration: 8
+        circuit.delay(a, q1)  # resolve to 25
+        circuit.x(q1)  # duration: 8
+        circuit.delay(a, q1)  # resolve to 25
+        circuit.x(q1)  # duration: 8
+        circuit.barrier(q0, q1)
+         ```
+
+    El código anterior se resuelve con un valor de 25 y un resto de 1. El primer delay`[a]` tendrá el resto añadido.
+
+    Ecuación de resolución de stretch:  $a + 8 + a + 8 + a + 8 = 100   =   3*a + 24$
+</Admonition>
+
+## Ver los valores de stretch en Qiskit Runtime {#view-stretch-values-in-qiskit-runtime}
+
+El valor real de una duración stretch se resuelve en tiempo de compilación, después de que el circuito haya sido planificado. Al ejecutar un trabajo Sampler en Qiskit Runtime, puedes ver los valores de stretch resueltos en los metadatos del resultado del trabajo. El soporte de `stretch` en Qiskit Runtime es actualmente experimental, por lo que primero debes establecer una opción experimental para habilitarlo, y luego acceder a los datos directamente desde los metadatos de la siguiente manera:
+
+```python
+# Enable stretch value retrieval.
+sampler.options.experimental = {
+    "execution": {
+        "stretch_values": True,
+        "scheduler_timing": True,
+    },
+}
+
+# Access the stretch values from the metadata.
+job_result = job.result()
+circuit_stretch_values = job_result[0].metadata["compilation"]["stretch_values"]
+
+# Visualize the timing.
+# Use the sliders at the bottom, the controls at the top, and the legend on the side
+# of the output to customize the view.
+draw_circuit_schedule_timing(ob.result()[0].metadata['compilation']['scheduler_timing']['timing'])
+```
+
+<Admonition type="note">
+Aunque el tiempo total del circuito se devuelve en los metadatos de "compilation", este NO es el tiempo usado para la facturación (quantum time).
+</Admonition>
+
+### Entender la salida de metadatos {#understand-the-metadata-output}
+
+Los metadatos `stretch_values` devuelven la siguiente información:
+
+- **Name:** El nombre del stretch aplicado.
+- **Value:** El valor objetivo solicitado.
+- **Remainder:** El resto de la resolución del stretch, que se añade al primer delay que usa el stretch.
+- **Expanded values:** Conjuntos de valores que especifican el inicio del stretch y su duración.
+
+### Ejemplo {#example}
+
+``` python
+# Define the circuit
+circuit = QuantumCircuit(4)
+foo = circuit.add_stretch("foo")
+bar = circuit.add_stretch("bar")
+circuit.barrier()
+circuit.cz(0, 1)
+circuit.cz(0, 1)
+circuit.cz(0, 1)
+circuit.cz(0, 1)
+
+circuit.delay(foo, 2)
+circuit.x(2)
+# 3*foo
+circuit.delay(expr.mul(3, foo), 2)
+circuit.x(2)
+# 2*foo
+circuit.delay(expr.mul(2, foo), 2)
+
+circuit.delay(bar, 3)
+circuit.x(3)
+circuit.delay(bar, 3)
+
+circuit.measure_all()
+```
+
+#### Salida de metadatos {#metadata-output}
+
+``` python
+ [{'name': 'bar',
+  'value': 29,
+  'remainder': 1,
+  'expanded_values': [[1365, 30], [1404, 29]]},
+ {'name': 'foo',
+  'value': 8,
+  'remainder': 2,
+  'expanded_values': [[1365, 10], [1384, 24], [1417, 16]]}
+  ]
+```
+
+Los valores devueltos para la duración dependen del valor objetivo y del resto calculado. Por ejemplo, estas son las duraciones devueltas para foo:
+
+- `foo value` + `remainder` (8+2 = 10)
+- `foo value` * 3 (8 x 3 = 24)
+- `foo value` * 2 (8 x 2 = 16)
+
+Puedes usar una visualización para ayudar a entender y verificar la temporización.
+
+```python
+draw_circuit_schedule_timing(job.result()[0].metadata['compilation']['scheduler_timing']['timing'])
+```
+
+En la siguiente imagen, basada en la salida del ejemplo, `foo` corresponde a los stretches en el Qubit 2. El primer stretch delay que usa `foo` comienza al final de `init_play` (1365). La duración del stretch es 10, por lo que ese delay termina cuando comienza la puerta `x` (1365+10=1375). Puedes interpretar el segundo y tercer stretches de manera similar.
+
+![Se muestra la salida del comando `draw_circuit_schedule_timing`.](/docs/images/guides/stretch/stretch-visualization.avif)
+
+Usa los controles deslizantes de la parte inferior, los controles de la parte superior (pasa el cursor sobre la imagen de salida para mostrarlos) y la leyenda del lateral para personalizar la vista. Pasa el cursor sobre la imagen para ver los datos exactos.
+
+Para obtener más detalles, consulta el tema [Visualizar la temporización del circuito](/guides/visualize-circuit-timing#visualize-timings).
+
+## Limitaciones de Qiskit Runtime {#qiskit-runtime-limitations}
+
+El soporte de `stretch` en Qiskit Runtime es actualmente experimental y tiene las siguientes restricciones:
+
+- Como máximo una variable stretch por _conjunto de qubits_ entre barreras (implícitas y explícitas). Un conjunto de qubits es uno o más qubits; estos conjuntos deben ser mutuamente excluyentes.
+    <Tabs>
+    <TabItem value="Invalid" label="No válido">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        circuit.delay(a, (q0, q1))
+        circuit.delay(b, q0)  # Invalid because 2 stretches are applied on q0
+        ```
+     </TabItem>
+     <TabItem value="Valid" label="Válido">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        circuit.delay(a, (q0, q1))
+        circuit.delay(b, q2)
+        ```
+     </TabItem>
+    </Tabs>
+
+- El área rodeada por un conjunto de barreras se denomina _región de barrera_. Una variable stretch no puede usarse en múltiples regiones de barrera.
+    <Tabs>
+         <TabItem value="Invalid" label="No válido">
+        ```python
+        # Stretch a is used in two barrier regions
+        a = circuit.add_stretch("a")
+        circuit.barrier((q0, q1))
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+         ```
+
+        ![Ilustración de la salida del código anterior](/docs/images/guides/stretch/bad-barrier-region.avif 'Uso no válido de stretch en regiones de barrera')
+
+     </TabItem>
+     <TabItem value="Valid" label="Válido">
+        ```python
+        # Stretch a is used inside a barrier region that is on q0 and q1
+        a = circuit.add_stretch("a")
+        circuit.barrier((q0, q1))
+        circuit.delay(a, q0)
+        circuit.barrier(q2)
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+        ```
+
+        ![Ilustración de la salida del código anterior](/docs/images/guides/stretch/good-barrier-region.avif 'Uso válido de stretch en una región de barrera')
+
+     </TabItem>
+    </Tabs>
+
+- Las expresiones stretch están limitadas a las de la forma `X*stretch + Y` donde `X` e `Y` son constantes de punto flotante o enteras.
+    <Tabs>
+         <TabItem value="Invalid" label="No válido">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        c = circuit.add_stretch("c")
+
+        # (a /  b) * c is not supported
+        circuit.delay(expr.mul(expr.div(a, b), c), q1)
+         ```
+     </TabItem>
+     <TabItem value="Valid" label="Válido">
+        ```python
+        from qiskit.circuit import Duration
+
+        a = circuit.add_stretch("a")
+        circuit.delay(expr.add(expr.mul(a, 2), Duration.dt(3)), 0)
+        ```
+     </TabItem>
+    </Tabs>
+
+- Las expresiones stretch solo pueden incluir una única variable stretch.
+    <Tabs>
+        <TabItem value="Invalid" label="No válido">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        circuit.delay(expr.add(a, b), 0)
+         ```
+     </TabItem>
+         <TabItem value="Valid" label="Válido">
+        ```python
+        a = circuit.add_stretch("a")
+        circuit.delay(expr.add(a, a), 0)
+        ```
+     </TabItem>
+
+    </Tabs>
+
+- Las expresiones stretch no pueden resolverse a valores de delay negativos. El solucionador actual no infiere restricciones de no negatividad.
+    <Tabs>
+         <TabItem value="Invalid" label="No válido">
+        ```python
+        from qiskit.circuit import Duration
+
+        circuit.barrier((q0, q1))
+        circuit.delay(20, q1)
+        # The length of this barrier region is 20dt, meaning the
+        # equation for solving stretch 'a' is a + 40dt = 20dt, giving a = -20dt.
+        circuit.delay(expr.add(a, Duration.dt(40)), q0)
+        circuit.barrier((q0, q1))
+         ```
+     </TabItem>
+     <TabItem value="Valid" label="Válido">
+        ```python
+        circuit.barrier((q0, q1))
+        circuit.delay(20, q1)
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+        ```
+     </TabItem>
+    </Tabs>
