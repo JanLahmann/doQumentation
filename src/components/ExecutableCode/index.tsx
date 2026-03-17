@@ -1309,21 +1309,27 @@ export default function ExecutableCode({
       if (btn) runBtns.push(btn as HTMLButtonElement);
     });
 
-    if (runBtns.length === 0) {
+    // Filter out save_account cells that have a skip hint (credentials/simulator active)
+    const execBtns = runBtns.filter(btn => {
+      const cell = btn.closest('.thebelab-cell');
+      return !cell?.querySelector('.thebelab-cell__skip-hint');
+    });
+
+    if (execBtns.length === 0) {
       runAllActive = false;
       return;
     }
 
-    setRunAllProgress({ current: 0, total: runBtns.length });
+    setRunAllProgress({ current: 0, total: execBtns.length });
 
-    for (let i = 0; i < runBtns.length; i++) {
+    for (let i = 0; i < execBtns.length; i++) {
       if (runAllAbort) break;
       if (runAllPaused) await waitForRunAllResume();
       if (runAllAbort) break; // re-check after resume (user may have stopped while paused)
-      setRunAllProgress({ current: i + 1, total: runBtns.length });
-      const cell = runBtns[i].closest('.thebelab-cell');
+      setRunAllProgress({ current: i + 1, total: execBtns.length });
+      const cell = execBtns[i].closest('.thebelab-cell');
       if (cell) markCellExecuting(cell);
-      runBtns[i].click();
+      execBtns[i].click();
       await waitForKernelIdle();
       // Wait for output DOM to stabilize before marking done/error
       if (cell) await waitForOutputStable(cell);
