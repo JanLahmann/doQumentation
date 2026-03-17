@@ -91,9 +91,23 @@ def run_command(cmd: list[str], cwd: Optional[Path] = None) -> subprocess.Comple
 
 
 def clone_or_update_upstream():
-    """Clone or update the upstream repository."""
+    """Clone or update the upstream repository (submodule or sparse clone)."""
     print("\n📥 Syncing upstream repository...")
 
+    # Prefer submodule if configured
+    gitmodules = PROJECT_ROOT / ".gitmodules"
+    if gitmodules.exists() and UPSTREAM_DIR.exists() and (UPSTREAM_DIR / ".git").exists():
+        print("  Updating submodule...")
+        result = run_command(
+            ["git", "submodule", "update", "--remote", "upstream-docs"],
+            cwd=PROJECT_ROOT,
+        )
+        if result.returncode != 0:
+            print("  Warning: submodule update failed, using current state")
+        print("  ✓ Upstream sync complete (submodule)")
+        return
+
+    # Fallback: sparse clone (for forks without the submodule)
     if UPSTREAM_DIR.exists():
         print("  Updating existing clone...")
         result = run_command(["git", "pull", "--ff-only"], cwd=UPSTREAM_DIR)

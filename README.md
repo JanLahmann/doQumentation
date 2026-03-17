@@ -1,7 +1,8 @@
 # doQumentation — Open-source website for IBM Quantum's tutorials and learning content
 
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
-[![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
+[![License: Apache 2.0](https://img.shields.io/badge/Code-Apache%202.0-blue.svg)](LICENSE)
+[![License: CC BY-SA 4.0](https://img.shields.io/badge/Content-CC%20BY--SA%204.0-lightgrey.svg)](LICENSE-DOCS)
 
 ## IBM Quantum's open-source content
 
@@ -71,7 +72,7 @@ Access at `http://rasqberry.local` or your Pi's IP address.
 **Prerequisites:** Node.js 18+, Python 3.9+
 
 ```bash
-git clone https://github.com/JanLahmann/doQumentation.git
+git clone --recurse-submodules https://github.com/JanLahmann/doQumentation.git
 cd doQumentation
 npm install
 python scripts/sync-content.py --sample-only  # or without flag for full sync
@@ -109,6 +110,7 @@ python scripts/sync-content.py --no-clone     # Use existing upstream clone
 
 ```
 doQumentation/
+├── upstream-docs/                 # Git submodule → JanLahmann/Qiskit-documentation (CC BY-SA 4.0)
 ├── docs/                          # Tutorial content (MDX, mostly generated)
 │   └── index.mdx                  # Homepage (source of truth, preserved by sync)
 ├── notebooks/                     # Original .ipynb for JupyterLab (generated)
@@ -152,8 +154,12 @@ Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arc
 
 ## License
 
-- **Tutorial content:** © IBM Corp, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
-- **Site code:** [Apache 2.0](LICENSE)
+This repository is dual-licensed:
+
+- **Code** (scripts, source files, configuration) — [Apache License 2.0](LICENSE)
+- **Content** (tutorials, guides, courses, media, translations) — [CC BY-SA 4.0](LICENSE-DOCS)
+
+Upstream content from [Qiskit/documentation](https://github.com/Qiskit/documentation) © IBM Corp is tracked as a git submodule in `upstream-docs/`. Translations in `i18n/` are adapted material under CC BY-SA 4.0. See [NOTICE](NOTICE) for full attribution.
 
 ## Acknowledgments
 
@@ -164,5 +170,5 @@ Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arc
 
 ---
 
-[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0.
+[Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under [Apache 2.0](LICENSE); content (tutorials, courses, media, translations) under [CC BY-SA 4.0](LICENSE-DOCS). See [NOTICE](NOTICE) for full attribution.
 IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://rasqberry.org/) project and is not affiliated with, endorsed by, or sponsored by IBM Corporation.

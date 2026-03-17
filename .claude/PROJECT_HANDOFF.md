@@ -32,7 +32,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 ## Features
 
 ### Content Sync (`scripts/sync-content.py`)
-- Sparse-clones [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation), transforms MDX, converts notebooks (custom converter, no nbconvert), generates sidebars from `_toc.json`
+- Upstream content tracked as a git submodule (`upstream-docs/` → [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation)). Falls back to sparse-clone for forks without the submodule. Transforms MDX, converts notebooks (custom converter, no nbconvert), generates sidebars from `_toc.json`
 - Rewrites image paths (IBM URLs → local `static/`) and link paths (markdown `(/docs/...)` + JSX `href="/docs/..."` → local or upstream)
 - `docs/index.mdx` is preserved — all other `docs/` content is regenerated on each sync
 - **Dependency scan**: `analyze_notebook_imports()` injects `!pip install -q` cells into 46/260 notebooks missing packages (uses `!pip` not `%pip` to avoid misleading "restart kernel" note). `--scan-deps` flag for report only.
@@ -141,6 +141,7 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 ```
 doQumentation/
 ├── .github/workflows/          # deploy, deploy-locales, docker, sync-deps, check-translations, binder
+├── upstream-docs/              # Git submodule → JanLahmann/Qiskit-documentation (CC BY-SA 4.0)
 ├── binder/                     # Jupyter requirements (cross-platform + amd64-only)
 ├── docs/                       # Content (gitignored except index.mdx)
 ├── notebooks/                  # Original .ipynb for JupyterLab (generated)
@@ -254,7 +255,7 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **Register**: Informal/familiar (du/tu/tú/ти — not Sie/vous/usted/Ви). The Qiskit community uses informal address. Register fix automation: `translation/register-fix-prompt.md` (targeted rewrite, Sonnet agents). Helper: `translation/scripts/get-register-fails.py` lists FAIL files from status.json by locale.
 - **Heading anchors**: Translated headings get `{#english-anchor}` pins to preserve cross-reference links. `fix-heading-anchors.py` for batch fixing (supports `--dir` for drafts).
 - **Build**: ~320 MB per single-locale build. Each fits GitHub Pages 1 GB limit independently.
-- **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) included in all repos and CI deploy output.
+- **Attribution**: `NOTICE` file in main repo and all satellite repos credits IBM/Qiskit as upstream content source and documents dual-license structure. `LICENSE` (Apache 2.0) + `LICENSE-DOCS` (CC BY-SA 4.0) are clean template files (no custom preamble) so GitHub's Licensee detection works correctly. Upstream content tracked as git submodule (`upstream-docs/`) for clear license boundary separation.
 
 ### How to Add a New Language
 
@@ -406,6 +407,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Error submission for contextual help** — "Report this error" link on all cell errors (module, name, kernel, generic). Opens pre-filled GitHub issue with "Describe the issue" section at top for user input, then auto-populated sections: error text (1500 char cap), cell source code (1000 char cap), page path, environment, simulator mode, and user agent. Zero infrastructure — uses `github.com/.../issues/new` URL parameters. Also added generic error hint ("An error occurred.") for tracebacks that don't match specific patterns.
 - **Homepage Code execution section** — Added IBM Code Engine to backends list (3→4), updated deployment options table, added backend selection link.
 - **Branch integration Phase 1 (A–E)** — Cherry-picked ~40 non-CE improvements from `claude/ibm-cloud-serverless-concept-UP0PJ` (52 commits, manually applied due to interleaved CE code). Changes across 7 files: `storage.ts` (cross-tab cache sync, dev-gated logging), `preferences.ts` (Array.isArray guards, LRU cap 2000, schema guards, rename `clearRecentAndLastPage`), `jupyter.ts` (12 fixes: URL validation, ws URL regex, RFC 1918, TTL/backend/mode validation, 15s AbortController timeout, 20-min EventSource timeout+settled guard, encodeURIComponent on paths/tokens, escapeHtml+makeTabHtml for popup tabs, getColabUrl dedup), `jupyter-settings.tsx` (CRN validation, removed stale ibmExpiredNotice), `ExecutableCode/index.tsx` (resetModuleState consolidation, isValidPackageName helper, 15 i18n translate() keys, SPA cleanup via useLocation, MutationObserver for first-cell, timer leak fixes, bootstrap race fix, a11y roles, BOOTSTRAP_MAX_RETRIES), `custom.css` (6 CSS variables for badge/toast/conflict colors, cell execution icons ▶✓✗ via ::after, settings max-width 900px, mobile responsive, focus-visible toggle), `.dockerignore` (*.key, *.pem). Phase 2 (CE feature) deferred. Reference docs: `.claude/PROJECT_REVIEW.md`, `.claude/AI_INTEGRATION_IDEAS.md`.
+- **License detection + content submodule** — Fixed GitHub "Unknown" license by removing custom preamble from `LICENSE` and `LICENSE-DOCS` (Licensee needs clean template text). Moved dual-license explanation to `NOTICE`. Added git submodule (`upstream-docs/` → `JanLahmann/Qiskit-documentation`) for clear Apache 2.0 / CC BY-SA 4.0 boundary separation. `sync-content.py` updated to prefer submodule with sparse-clone fallback for forks. All CI workflows updated with `submodules: true`.
 
 ### Testing (Feb 2026)
 - 180+ comprehensive tests, ~200 Chrome browser tests — 99.5% pass, zero real bugs
@@ -430,4 +432,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 12, 2026 (TODOs cleaned up)*
+*Last updated: March 17, 2026 (license detection + content submodule)*
