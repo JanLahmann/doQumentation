@@ -28,13 +28,35 @@ Read translation/translation-prompt.md. Translate these files to Spanish (es): g
 
 ---
 
+## Source File Paths — IMPORTANT
+
+Content files are NOT all at the top level of `docs/`. The four sections have different directory structures:
+
+| Section | English source path | Example file |
+|---------|-------------------|--------------|
+| Tutorials | `docs/tutorials/{file}.mdx` | `docs/tutorials/hello-world.mdx` |
+| Guides | `docs/guides/{file}.mdx` | `docs/guides/install-qiskit.mdx` |
+| Courses | `docs/learning/courses/{course}/{section}/{file}.mdx` | `docs/learning/courses/basics-of-quantum-information/single-systems/introduction.mdx` |
+| Modules | `docs/learning/modules/{module}/{file}.mdx` | `docs/learning/modules/computer-science/deutsch-jozsa.mdx` |
+
+**Courses are nested**: each course is a directory under `docs/learning/courses/` containing an `index.mdx`, optional `exam.mdx`, and section subdirectories with lesson files. There are 13 courses with ~154 pages total.
+
+**Modules are flat**: each module is a directory under `docs/learning/modules/` containing an `index.mdx` and lesson files. There are 2 modules with ~14 pages total.
+
+**Translation output paths mirror the source paths** relative to `docs/`:
+- Source: `docs/learning/courses/basics-of-quantum-information/single-systems/introduction.mdx`
+- Draft: `translation/drafts/{LOCALE}/learning/courses/basics-of-quantum-information/single-systems/introduction.mdx`
+- Promoted: `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/learning/courses/basics-of-quantum-information/single-systems/introduction.mdx`
+
+---
+
 ## How to Launch Translation Agents
 
 Launch **one agent per file**, up to **3 agents in parallel** per round. Use `model: "sonnet"` and `subagent_type: "general-purpose"` for each agent.
 
 Example: 9 files → 3 rounds of 3 agents each.
 
-**Large files (>400 lines)**: The orchestrator handles chunking — see "Large File Chunking" section below. Do NOT include chunking instructions in the per-agent prompt.
+**Large files (>400 lines)**: The orchestrator MUST handle chunking — see "Large File Chunking" section below. Do NOT assign files >400 lines to a single agent. Do NOT include chunking instructions in the per-agent prompt. Do NOT ask agents to "handle chunking themselves."
 
 Each agent gets this prompt (with variables filled in):
 
@@ -72,29 +94,58 @@ Rules:
 
 ---
 
-## Large File Chunking (>400 lines) — Orchestrator Responsibility
+## Large File Chunking (>400 lines) — Orchestrator MUST Do This
 
-The **orchestrator** (not the sub-agent) handles chunking for large files. Sub-agents always receive a single chunk or a complete small file — they never need to split anything themselves.
+**CRITICAL**: The orchestrator (you) MUST handle chunking. Sub-agents always receive a single chunk or a complete small file — they NEVER split files themselves. Do NOT assign a file >400 lines to a single agent. Do NOT tell an agent "if the file is large, chunk it." YOU do the chunking.
 
-### How the orchestrator handles a large file
+### Step-by-step procedure for EVERY file
 
-1. Read the source file and count lines
-2. If ≤400 lines → assign to a single agent as normal
-3. If >400 lines → split into chunks:
-   a. Identify section boundaries (e.g., `## Part I`, `## Step 3`)
-   b. Split into chunks of **~400 lines each**, always at a section heading boundary (500 upper limit)
-   c. Launch one agent per chunk (up to 3 in parallel), each with this modified prompt:
-      - "Translate this **chunk** of `{file}` (lines {start}–{end})"
-      - Agent reads the full source file but translates only its assigned line range
-      - First chunk agent includes frontmatter; subsequent chunk agents start at their section heading
-      - Each agent writes to a temp file: `/tmp/{filename}-part{N}.mdx`
-   d. After all chunk agents complete, the orchestrator concatenates temp files with a **blank line between chunks**
-   e. The orchestrator writes the final result to `translation/drafts/{LOCALE}/{path}`
+Before assigning any file to an agent:
 
-### Post-concatenation verification (orchestrator)
+1. **Read the file** yourself: `Read docs/{path}` — note the total line count
+2. **If ≤400 lines** → assign to one agent as normal (use the standard prompt above)
+3. **If >400 lines** → YOU must chunk it. Follow steps 3a–3e below:
 
-4. **Verify integrity**: total line count vs source (should be similar), section heading count, code block count (triple backticks), LaTeX block count (`$$` pairs), last 5 lines of each chunk (truncation is the most common failure)
-5. **Verify Unicode** — grep for ASCII digraph patterns (e.g., `koennen`, `fuer` for German) and fix any found
+   **3a. Find section boundaries**: Scan the file for `## ` headings (level 2). Note each heading's line number.
+
+   **3b. Plan chunks**: Group consecutive sections into chunks of ~300–400 lines each. Never exceed 500 lines per chunk. Always split at a `## ` heading boundary. Write down: chunk 1 = lines 1–N, chunk 2 = lines (N+1)–M, etc.
+
+   **3c. Launch chunk agents** (up to 3 in parallel). Each chunk agent gets this prompt:
+
+   ```
+   You are a {LANGUAGE} translator for doQumentation.
+
+   Translate ONLY lines {START}–{END} of this file to {LANGUAGE}:
+
+   File: docs/{path}
+
+   Instructions:
+   1. Read `docs/{path}` (the full file)
+   2. Translate ONLY lines {START} through {END}
+   3. Write ONLY the translated chunk to `/tmp/{filename}-part{N}.mdx`
+
+   [FIRST CHUNK ONLY: Include the frontmatter block. Add source hash after `---`.]
+   [SUBSEQUENT CHUNKS: Start directly at the section heading on line {START}. No frontmatter.]
+
+   Translation rules: [same rules as the standard prompt above]
+   ```
+
+   **3d. Concatenate**: After ALL chunk agents finish, read each `/tmp/{filename}-part{N}.mdx` in order. Concatenate them with a blank line between chunks. Write the result to `translation/drafts/{LOCALE}/{path}`.
+
+   **3e. Verify integrity**: Check the concatenated file:
+   - Total line count is within ±20% of source
+   - Count `## ` headings — must match source exactly
+   - Count triple backtick fences (` ``` `) — must match source exactly
+   - Count `$$` pairs — must match source exactly
+   - Read the last 5 lines — verify no truncation
+   - For German: grep for ASCII digraphs (`koennen`, `fuer`, `ue`, `ae`, `oe`) and fix if found
+
+### Common mistakes to AVOID
+
+- **DO NOT** assign a 600-line file to one agent and say "translate this file"
+- **DO NOT** tell an agent "if the file is too large, split it into chunks"
+- **DO NOT** tell an agent "handle chunking as needed"
+- **DO** read the file yourself first, count the lines, plan the chunks, then launch chunk agents
 
 ---
 
@@ -104,22 +155,51 @@ When NO explicit file list is given, discover files to translate:
 
 ### Step 1: Discover untranslated files
 
-1. `Glob docs/**/*.mdx` → all English source files
-2. `Glob i18n/{LOCALE}/docusaurus-plugin-content-docs/current/**/*.mdx` → existing promoted translations
-3. `Glob translation/drafts/{LOCALE}/**/*.mdx` → existing drafts (in progress)
-4. For each English source, check:
-   - Draft exists in `translation/drafts/{LOCALE}/{path}` → SKIP (draft in progress)
-   - Promoted file exists in `i18n/` and does NOT contain `{/* doqumentation-untranslated-fallback */}` → SKIP (already translated)
-   - Promoted file has fallback marker or doesn't exist → needs translation
-5. Build the list of files needing translation
+Use the status script for an accurate count (it checks both drafts and promoted files):
 
-### Step 2: Launch parallel agents
+```bash
+python translation/scripts/translation-status.py --locale {LOCALE} --backlog
+```
 
-Launch up to **3 agents in parallel** per round. Each agent uses `model: "sonnet"`. For files >400 lines, use the chunking workflow from the "Large File Chunking" section above.
+If the status script is unavailable or you prefer manual discovery, follow these steps:
+
+1. **Glob ALL four source directories** (not just `docs/*.mdx` — courses and modules are nested):
+   ```
+   Glob docs/tutorials/**/*.mdx
+   Glob docs/guides/**/*.mdx
+   Glob docs/learning/courses/**/*.mdx
+   Glob docs/learning/modules/**/*.mdx
+   Glob docs/index.mdx
+   ```
+
+2. **Glob existing translations** (both promoted AND drafts):
+   ```
+   Glob i18n/{LOCALE}/docusaurus-plugin-content-docs/current/**/*.mdx
+   Glob translation/drafts/{LOCALE}/**/*.mdx
+   ```
+
+3. **For each English source file**, derive the relative path (strip `docs/` prefix) and check:
+   - Draft exists at `translation/drafts/{LOCALE}/{path}` → **SKIP** (draft in progress)
+   - Promoted file exists at `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}` AND does NOT contain `{/* doqumentation-untranslated-fallback */}` → **SKIP** (already translated)
+   - Otherwise → **needs translation**
+
+4. **Report the count** before starting: "Found N files to translate: X tutorials, Y guides, Z course pages, W module pages"
+
+### Step 2: Check file sizes and plan chunking
+
+**Before launching any agents**, read each file to translate and note its line count. Group them into:
+- **Small files** (≤400 lines): assign one agent per file
+- **Large files** (>400 lines): plan chunks per the "Large File Chunking" section above
+
+### Step 3: Launch parallel agents
+
+Launch up to **3 agents in parallel** per round. Each agent uses `model: "sonnet"`.
 
 Process in this order: tutorials → guides → courses → modules
 
-### Step 3: After all agents complete
+For large files, each chunk counts as one agent slot (a 900-line file split into 3 chunks uses all 3 parallel slots for that round).
+
+### Step 4: After all agents complete
 
 Report summary:
 - Total files translated (written to `translation/drafts/`)
@@ -186,27 +266,7 @@ Add locale to `locales` array and `localeConfigs` in `docusaurus.config.ts`. Add
 
 ## Current Translation State
 
-| Locale | Pages | Status |
-|--------|-------|--------|
-| DE | 79/387 | 54 guides, 18 tutorials, 5 courses/modules, homepage, 2 indexes + UI strings |
-| ES | 55/387 | 43 tutorials, 5 guides, 3 courses, 2 modules, homepage + UI strings |
-| UK | 55/387 | 43 tutorials, 5 guides, 3 courses, 2 modules, homepage + UI strings |
-| FR | 44/387 | 44 tutorials + UI strings |
-| IT | 44/387 | 44 tutorials + UI strings |
-| PT | 44/387 | 44 tutorials + UI strings |
-| JA | 59/387 | 44 tutorials, 5 guides, 3 courses, 2 modules, homepage, 2 indexes + UI strings |
-| TL | 48/387 | 44 tutorials, 1 homepage, 3 index pages + UI strings |
-| AR | 44/387 | 44 tutorials + UI strings (RTL) |
-| HE | 47/387 | 44 tutorials, 1 homepage, 2 index pages + UI strings (RTL) |
-| SWG | 31/387 | 14 tutorials, homepage, 16 indexes + UI strings |
-| BAD | 31/387 | 14 tutorials, homepage, 16 indexes + UI strings |
-| BAR | 31/387 | 14 tutorials, homepage, 16 indexes + UI strings |
-| KSH | 46/387 | 28 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
-| NDS | 43/387 | 25 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
-| GSW | 42/387 | 24 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
-| SAX | 39/387 | 21 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
-| BLN | 36/387 | 18 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
-| AUT | 34/387 | 16 tutorials, homepage, 16 indexes, tutorials/index + UI strings |
+Run `python translation/scripts/translation-status.py` for live counts, or see `translation/STATUS.md`.
 
 ## Agent Configuration Summary
 
