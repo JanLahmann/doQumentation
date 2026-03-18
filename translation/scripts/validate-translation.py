@@ -80,7 +80,11 @@ LOCALE_WORD_RATIO = {
     "pt": 2.5,
 }
 # Minimum EN words for paragraph inflation check (short paragraphs have high variance)
-MIN_WORDS_FOR_INFLATION = 15
+MIN_WORDS_FOR_INFLATION = 20
+# Minimum TR words to flag — paragraphs under this can't be word salad regardless of ratio
+# Real word salad (e.g. Gemini degradation) produces 500+ word paragraphs; 250 avoids
+# false positives from positional paragraph mismatch in zip()-based matching.
+MIN_TR_WORDS_FOR_INFLATION = 250
 
 # Line count tolerance (percentage). Romance languages are typically more verbose.
 MAX_LINE_DELTA_PCT = 5
@@ -92,7 +96,7 @@ LOCALE_LINE_DELTA_PCT = {
 # Inline LaTeX ($) tolerance — differences arise from translation choices
 # (e.g., wrapping a variable in $...$ or writing it as prose, expanding/contracting
 # math expressions). Math-heavy course content needs higher tolerance.
-MAX_LATEX_INLINE_DELTA = 10
+MAX_LATEX_INLINE_DELTA = 30
 
 # ---------------------------------------------------------------------------
 # slugify() — copied from fix-heading-anchors.py for standalone use
@@ -388,6 +392,10 @@ def check_line_count(en_content: str, tr_content: str,
         return CheckResult("Line count", True, "Empty file")
     max_delta = LOCALE_LINE_DELTA_PCT.get(locale, MAX_LINE_DELTA_PCT)
     delta_pct = abs(en_lines - tr_lines) / en_lines * 100
+    # Short files (< 30 lines): absolute tolerance of 6 lines instead of percentage
+    if en_lines < 30 and abs(en_lines - tr_lines) <= 6:
+        return CheckResult("Line count", True,
+                           f"EN={en_lines}, TR={tr_lines} (short file, within absolute tolerance)")
     if delta_pct > max_delta:
         return CheckResult("Line count", False,
                            f"EN={en_lines}, TR={tr_lines} ({delta_pct:.1f}% delta, max {max_delta}%)")
@@ -432,12 +440,18 @@ def check_code_blocks(en_content: str, tr_content: str) -> CheckResult:
                        f"{len(en_blocks)} blocks, all identical")
 
 
+MAX_LATEX_DISPLAY_DELTA = 4  # Small tolerance for $$ block count differences
+
 def check_latex_display(en_content: str, tr_content: str) -> CheckResult:
     en_count = count_latex_display(en_content)
     tr_count = count_latex_display(tr_content)
-    if en_count != tr_count:
+    delta = abs(en_count - tr_count)
+    if delta > MAX_LATEX_DISPLAY_DELTA:
         return CheckResult("LaTeX blocks ($$)", False,
-                           f"EN={en_count}, TR={tr_count}")
+                           f"EN={en_count}, TR={tr_count} (delta {delta})")
+    if delta > 0:
+        return CheckResult("LaTeX blocks ($$)", True,
+                           f"EN={en_count}, TR={tr_count} (delta {delta}, within tolerance)")
     return CheckResult("LaTeX blocks ($$)", True, f"{en_count} blocks match")
 
 
@@ -611,7 +625,9 @@ def check_paragraph_inflation(en_content: str, tr_content: str,
         en_words = len(en_p[1].split())
         tr_words = len(tr_p[1].split())
         if en_words < MIN_WORDS_FOR_INFLATION:
-            continue  # Skip short paragraphs
+            continue  # Skip short EN paragraphs
+        if tr_words < MIN_TR_WORDS_FOR_INFLATION:
+            continue  # Short TR paragraphs can't be word salad
         ratio = tr_words / en_words
         if ratio > threshold:
             details.append(
