@@ -1,7 +1,11 @@
 /**
  * Swizzled DocSidebarItem/Link — wraps the original to add
- * visited (checkmark) and executed (play icon) indicators.
- * Clicking the indicator unmarks the page.
+ * a single unified progress indicator per sidebar item.
+ *
+ * Pure MDX pages:    nothing (unvisited) | ✓ gray (visited)
+ * Notebook pages:    </> gray (unvisited) | </> blue (visited) | </> green (executed)
+ *
+ * Clicking the indicator (when clickable) clears visited/executed status.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -30,12 +34,8 @@ export default function DocSidebarItemLink(props: Props): JSX.Element {
     }
   }, [href]);
 
-  // Check on mount
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  useEffect(() => { refresh(); }, [refresh]);
 
-  // Re-check whenever any page is visited (fired by pageTracker client module)
   useEffect(() => {
     const onPageVisited = () => refresh();
     window.addEventListener(PAGE_VISITED_EVENT, onPageVisited);
@@ -48,33 +48,59 @@ export default function DocSidebarItemLink(props: Props): JSX.Element {
     if (href) {
       unmarkPageVisited(href);
       setVisited(false);
-      // Notify parent category badges to update their counts
+      setExecuted(false);
       window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
     }
   };
 
-  const showIndicator = visited && !props.activePath?.endsWith(href || '__none__');
+  const isActive = props.activePath?.endsWith(href || '__none__');
+
+  // Determine indicator state
+  let indicator: JSX.Element | null = null;
+
+  if (isNotebook) {
+    if (executed) {
+      indicator = (
+        <button
+          className="dq-sidebar-indicator dq-sidebar-indicator--nb-executed"
+          onClick={handleUnmark}
+          title={translate({id: 'sidebar.notebookExecuted', message: 'Executed — click to clear'})}
+          aria-label={translate({id: 'sidebar.notebookExecuted', message: 'Executed — click to clear'})}
+        >&lt;/&gt;</button>
+      );
+    } else if (visited && !isActive) {
+      indicator = (
+        <button
+          className="dq-sidebar-indicator dq-sidebar-indicator--nb-visited"
+          onClick={handleUnmark}
+          title={translate({id: 'sidebar.notebookVisited', message: 'Visited — click to clear'})}
+          aria-label={translate({id: 'sidebar.notebookVisited', message: 'Visited — click to clear'})}
+        >&lt;/&gt;</button>
+      );
+    } else {
+      indicator = (
+        <span
+          className="dq-sidebar-indicator dq-sidebar-indicator--nb-unvisited"
+          title={translate({id: 'sidebar.notebookPage', message: 'Interactive notebook'})}
+          aria-label={translate({id: 'sidebar.notebookPage', message: 'Interactive notebook'})}
+        >&lt;/&gt;</span>
+      );
+    }
+  } else if (visited && !isActive) {
+    indicator = (
+      <button
+        className="dq-sidebar-indicator dq-sidebar-indicator--visited"
+        onClick={handleUnmark}
+        title={translate({id: 'sidebar.clearVisited', message: 'Visited — click to clear'})}
+        aria-label={translate({id: 'sidebar.clearVisited', message: 'Visited — click to clear'})}
+      >{'\u2713'}</button>
+    );
+  }
 
   return (
     <div className="dq-sidebar-link">
       <OriginalLink {...props} />
-      {isNotebook && (
-        <span
-          className="dq-sidebar-notebook-icon"
-          title={translate({id: 'sidebar.notebookPage', message: 'Interactive notebook — click Run to execute code'})}
-          aria-label={translate({id: 'sidebar.notebookPage', message: 'Interactive notebook'})}
-        >&lt;/&gt;</span>
-      )}
-      {showIndicator && (
-        <button
-          className={`dq-sidebar-indicator${executed ? ' dq-sidebar-indicator--executed' : ''}`}
-          onClick={handleUnmark}
-          title={translate({id: 'sidebar.clearVisited', message: 'Click to clear visited status'})}
-          aria-label={translate({id: 'sidebar.clearVisited', message: 'Click to clear visited status'})}
-        >
-          {executed ? '\u25B6' : '\u2713'}
-        </button>
-      )}
+      {indicator}
     </div>
   );
 }
