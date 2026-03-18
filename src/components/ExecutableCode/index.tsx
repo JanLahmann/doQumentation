@@ -35,6 +35,7 @@ import {
   touchBinderSession,
   clearBinderSession,
   cancelBinderBuild,
+  getIBMQuantumPlan,
   type JupyterConfig,
   type BinderSession,
 } from '../../config/jupyter';
@@ -208,6 +209,10 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
   const nameMatch = text.match(/NameError: name '([^']+)' is not defined/);
   if (nameMatch) return { type: 'name', name: nameMatch[1] };
 
+  if (text.match(/not authorized to run a session/i)) {
+    return { type: 'session' };
+  }
+
   if (output.querySelector('.output_error, .output_stderr, [data-mime-type="application/vnd.jupyter.stderr"]') || text.includes('Traceback')) {
     return { type: 'generic' };
   }
@@ -318,6 +323,14 @@ function showErrorHint(cell: Element, error: { type: string; name?: string }): v
     nameCode.textContent = error.name;
     div.appendChild(nameCode);
     div.append(translate({id: 'executable.errorHint.notDefined', message: ' is not defined. Run the cells above first \u2014 notebooks must be executed in order.'}));
+  } else if (error.type === 'session') {
+    div.append(translate({id: 'executable.error.sessionNotSupported', message: 'Sessions are not available on the IBM Quantum Open Plan. '}));
+    const settingsLink = document.createElement('a');
+    settingsLink.href = '/jupyter-settings#ibm-quantum';
+    settingsLink.textContent = translate({id: 'executable.error.sessionSettingsLink', message: 'Set your plan type to "Open" in Settings'});
+    settingsLink.style.textDecoration = 'underline';
+    div.appendChild(settingsLink);
+    div.append(translate({id: 'executable.error.sessionSettingsAfter', message: ' to automatically convert Session calls to job mode.'}));
   } else {
     div.append(translate({id: 'executable.errorHint.genericError', message: 'An error occurred.'}));
   }
@@ -607,6 +620,31 @@ function annotateSaveAccountCells(): void {
   }, 1200);
 }
 
+function annotateSessionCells(): void {
+  if (getIBMQuantumPlan() !== 'open') return;
+  if (!getIBMQuantumToken() || getSimulatorMode()) return;
+
+  setTimeout(() => {
+    const cells = document.querySelectorAll('.thebelab-cell');
+    cells.forEach((cell) => {
+      const code = cell.querySelector('.CodeMirror')?.textContent ||
+                   cell.querySelector('pre')?.textContent || '';
+      if (!code.includes('Session(')) return;
+      if (cell.querySelector('.thebelab-cell__session-hint')) return;
+
+      const div = document.createElement('div');
+      div.className = 'thebelab-cell__session-hint';
+      const strong = document.createElement('strong');
+      strong.textContent = translate({
+        id: 'executable.openPlan.sessionPatched',
+        message: 'Open Plan: Session automatically replaced with job mode',
+      });
+      div.appendChild(strong);
+      cell.insertBefore(div, cell.firstChild);
+    });
+  }, 1200);
+}
+
 // ── Kernel injection for IBM credentials / simulator mode ──
 
 const CONFLICT_EVENT = 'executablecode:conflict';
@@ -701,6 +739,26 @@ if _m: _m.QiskitRuntimeService = _DQ_MockService
 print(f"[doQumentation] Simulator mode — using {type(_dq_backend).__name__}")`;
 }
 
+function getOpenPlanPatchCode(): string {
+  return `import qiskit_ibm_runtime as _qir
+
+class _DQ_JobModeSession:
+    """Drop-in Session replacement for Open Plan (job mode)."""
+    def __init__(self, backend=None, **kwargs):
+        self._backend = backend
+        print("[doQumentation] Open Plan \\u2014 using job mode (Session not available)")
+    def __enter__(self):
+        return self._backend
+    def __exit__(self, *args):
+        pass
+
+_qir.Session = _DQ_JobModeSession
+import sys
+_m = sys.modules.get('qiskit_ibm_runtime')
+if _m: _m.Session = _DQ_JobModeSession
+print("[doQumentation] Session patched for Open Plan (job mode)")`;
+}
+
 function broadcastConflictBanner(usingMode: string): void {
   window.dispatchEvent(new CustomEvent(CONFLICT_EVENT, { detail: usingMode }));
 }
@@ -737,10 +795,17 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
     const crn = getIBMQuantumCRN();
     const ok = await executeOnKernel(kernelObj, getSaveAccountCode(token, crn));
     if (ok) {
+      const plan = getIBMQuantumPlan();
+      const isOpenPlan = plan === 'open';
+      if (isOpenPlan) {
+        await executeOnKernel(kernelObj, getOpenPlanPatchCode());
+      }
       broadcastInjection({
         mode: 'credentials',
         label: 'IBM Quantum',
-        message: 'IBM Quantum credentials applied',
+        message: isOpenPlan
+          ? 'IBM Quantum credentials applied \u00B7 Session \u2192 job mode'
+          : 'IBM Quantum credentials applied',
       });
     }
   }
@@ -930,6 +995,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
               broadcastStatus('ready');
               setupCellFeedback();
               annotateSaveAccountCells();
+              annotateSessionCells();
             });
           },
           (err) => {

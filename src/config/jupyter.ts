@@ -47,6 +47,11 @@ const STORAGE_KEY_CE_SAVED_AT = 'doqumentation_ce_saved_at';
 // Backend override (user-selected execution backend)
 const STORAGE_KEY_BACKEND_OVERRIDE = 'doqumentation_backend_override';
 
+// IBM Quantum plan type
+const STORAGE_KEY_IBM_PLAN = 'doqumentation_ibm_plan';
+const VALID_IBM_PLANS = ['open', 'payg', 'premium'] as const;
+export type IBMQuantumPlan = typeof VALID_IBM_PLANS[number];
+
 /** All Jupyter storage keys, exported for migration. */
 export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_URL, STORAGE_KEY_TOKEN,
@@ -55,7 +60,7 @@ export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_FAKE_DEVICE, STORAGE_KEY_FAKE_BACKENDS_CACHE,
   STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
   STORAGE_KEY_CE_URL, STORAGE_KEY_CE_TOKEN, STORAGE_KEY_CE_SAVED_AT,
-  STORAGE_KEY_BACKEND_OVERRIDE,
+  STORAGE_KEY_BACKEND_OVERRIDE, STORAGE_KEY_IBM_PLAN,
 ];
 
 /** Metadata for an available backend shown in the backend selector UI. */
@@ -304,6 +309,19 @@ export function getCredentialTTLDays(): number {
 export function setCredentialTTLDays(days: number): void {
   if (typeof window === 'undefined') return;
   setItem(STORAGE_KEY_IBM_TTL_DAYS, String(days));
+}
+
+export function getIBMQuantumPlan(): IBMQuantumPlan {
+  if (typeof window === 'undefined') return 'open';
+  const stored = getItem(STORAGE_KEY_IBM_PLAN);
+  return stored && (VALID_IBM_PLANS as readonly string[]).includes(stored)
+    ? (stored as IBMQuantumPlan)
+    : 'open';
+}
+
+export function setIBMQuantumPlan(plan: IBMQuantumPlan): void {
+  if (typeof window === 'undefined') return;
+  setItem(STORAGE_KEY_IBM_PLAN, plan);
 }
 
 function getCredentialTTLMs(): number {

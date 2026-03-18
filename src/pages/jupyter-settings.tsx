@@ -49,6 +49,9 @@ import {
   type SimulatorBackend,
   type ActiveMode,
   type AvailableBackend,
+  getIBMQuantumPlan,
+  setIBMQuantumPlan,
+  type IBMQuantumPlan,
 } from '../config/jupyter';
 import {
   getProgressStats,
@@ -157,6 +160,7 @@ export default function JupyterSettings(): JSX.Element {
   const [ibmCrn, setIbmCrn] = useState('');
   const [ibmDaysRemaining, setIbmDaysRemaining] = useState(-1);
   const [ibmSaveResult, setIbmSaveResult] = useState<string | null>(null);
+  const [ibmPlan, setIbmPlanState] = useState<IBMQuantumPlan>('open');
 
   // Learning progress state
   const [progressStats, setProgressStats] = useState<ProgressStats | null>(null);
@@ -213,6 +217,7 @@ export default function JupyterSettings(): JSX.Element {
     setFakeDeviceState(getFakeDevice());
     setActiveModeState(getActiveMode());
     setTtlDaysState(getCredentialTTLDays());
+    setIbmPlanState(getIBMQuantumPlan());
 
     // Load cached fake backends
     const cached = getCachedFakeBackends();
@@ -1175,6 +1180,33 @@ export default function JupyterSettings(): JSX.Element {
                   value={ibmCrn}
                   onChange={(e) => setIbmCrn(e.target.value)}
                 />
+              </div>
+
+              <div className="jupyter-settings__field">
+                <label className="jupyter-settings__label" htmlFor="ibm-plan">
+                  <Translate id="settings.ibm.planLabel">Plan type</Translate><InfoIcon tooltip={translate({id: 'settings.info.ibmPlan', message: 'Open Plan does not support Sessions. When set to Open, Session calls are automatically converted to job mode so tutorials run without errors.'})} />
+                </label>
+                <select
+                  id="ibm-plan"
+                  value={ibmPlan}
+                  onChange={(e) => {
+                    const plan = e.target.value as IBMQuantumPlan;
+                    setIbmPlanState(plan);
+                    setIBMQuantumPlan(plan);
+                  }}
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    borderRadius: '4px',
+                    border: '1px solid var(--ifm-color-emphasis-300)',
+                    background: 'var(--ifm-background-color)',
+                    fontSize: '0.85rem',
+                    maxWidth: '200px',
+                  }}
+                >
+                  <option value="open">{translate({id: 'settings.ibm.plan.open', message: 'Open (free)'})}</option>
+                  <option value="payg">{translate({id: 'settings.ibm.plan.payg', message: 'Pay-as-you-go'})}</option>
+                  <option value="premium">{translate({id: 'settings.ibm.plan.premium', message: 'Premium'})}</option>
+                </select>
               </div>
 
               <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
