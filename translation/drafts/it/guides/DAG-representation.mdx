@@ -1,0 +1,269 @@
+---
+title: "Lavorare con i DAG nei pass del transpiler"
+sidebar_label: "Lavorare con i DAG nei pass del transpiler"
+description: "Come usare i grafi aciclici diretti (DAG) per analizzare e trasformare i circuiti quantistici nei pass del transpiler di Qiskit"
+notebook_path: "guides/DAG-representation.ipynb"
+---
+
+{/* source-hash: 31d81c47bc70e4b8 */}
+
+<OpenInLabBanner notebookPath="guides/DAG-representation.ipynb" />
+
+
+
+{/* cspell:ignore subdag DAGOpNode qargs cargs dag_drawer couplinglist */}
+
+In Qiskit, durante le fasi di transpilazione, i circuiti sono rappresentati tramite un DAG. In generale, un DAG è composto da vertici (detti anche "nodi") e da archi diretti che collegano coppie di vertici in una direzione specifica. Questa rappresentazione viene memorizzata usando oggetti `qiskit.dagcircuit.DAGCircuit`, composti da singoli oggetti `DagNode`. Il vantaggio di questa rappresentazione rispetto a una semplice lista di gate (cioè una netlist) è che il flusso di informazioni tra le operazioni è esplicito, rendendo più facile prendere decisioni di trasformazione.
+
+Questa guida mostra come lavorare con i DAG e come usarli per scrivere pass personalizzati del transpiler. Si parte dalla costruzione di un circuito semplice e dall'esame della sua rappresentazione DAG, per poi esplorare le operazioni di base sui DAG e implementare un pass `BasicMapper` personalizzato.
+
+## Costruire un circuito ed esaminare il suo DAG {#build-a-circuit-and-examine-its-dag}
+
+Il frammento di codice seguente illustra il DAG creando un circuito semplice che prepara uno stato di Bell e applica una rotazione $R_Z$ in base al risultato della misura.
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versioni dei pacchetti</b></summary>
+
+Il codice in questa pagina è stato sviluppato usando i seguenti requisiti.
+Si consiglia di usare queste versioni o versioni più recenti.
+
+```
+qiskit[all]~=2.3.0
+```
+</details>
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit
+```
+
+```python
+from qiskit import QuantumRegister, ClassicalRegister, QuantumCircuit
+from qiskit.converters import circuit_to_dag
+from qiskit.visualization import circuit_drawer
+from qiskit.visualization.dag_visualization import dag_drawer
+
+# Create circuit
+q = QuantumRegister(3, "q")
+c = ClassicalRegister(3, "c")
+circ = QuantumCircuit(q, c)
+circ.h(q[0])
+circ.cx(q[0], q[1])
+circ.measure(q[0], c[0])
+
+# Qiskit 2.0 uses if_test instead of c_if
+with circ.if_test((c, 2)):
+    circ.rz(0.5, q[1])
+
+circuit_drawer(circ, output="mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/1d16892a-0.svg)
+
+Nel DAG esistono tre tipi di nodi del grafo: nodi di input per qubit/clbit (verdi), nodi di operazione (blu) e nodi di output (rossi). Ogni arco indica il flusso di dati (o dipendenza) tra due nodi. Usa la funzione `qiskit.tools.visualization.dag_drawer()` per visualizzare il DAG di questo circuito. (Per eseguirlo, installa la [libreria Graphviz](https://graphviz.org/download/).)
+
+```python
+# Convert to DAG
+dag = circuit_to_dag(circ)
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/e498faa3-0.avif)
+
+## Operazioni di base sui DAG {#basic-dag-operations}
+
+Gli esempi di codice seguenti mostrano le operazioni più comuni sui DAG, tra cui l'accesso ai nodi, l'aggiunta di operazioni e la sostituzione di sottocircuiti. Queste operazioni costituiscono la base per la costruzione di pass del transpiler.
+
+## Ottenere tutti i nodi di operazione del DAG {#get-all-operation-nodes-in-the-dag}
+Il metodo `op_nodes()` restituisce una lista iterabile di oggetti `DAGOpNode` presenti nel circuito:
+
+```python
+dag.op_nodes()
+```
+
+```text
+[DAGOpNode(op=Instruction(name='h', num_qubits=1, num_clbits=0, params=[]), qargs=(<Qubit register=(3, "q"), index=0>,), cargs=()),
+ DAGOpNode(op=Instruction(name='cx', num_qubits=2, num_clbits=0, params=[]), qargs=(<Qubit register=(3, "q"), index=0>, <Qubit register=(3, "q"), index=1>), cargs=()),
+ DAGOpNode(op=Instruction(name='measure', num_qubits=1, num_clbits=1, params=[]), qargs=(<Qubit register=(3, "q"), index=0>,), cargs=(<Clbit register=(3, "c"), index=0>,)),
+ DAGOpNode(op=Instruction(name='if_else', num_qubits=1, num_clbits=3, params=[<qiskit.circuit.quantumcircuit.QuantumCircuit object at 0x7f912f47db10>, None]), qargs=(<Qubit register=(3, "q"), index=1>,), cargs=(<Clbit register=(3, "c"), index=0>, <Clbit register=(3, "c"), index=1>, <Clbit register=(3, "c"), index=2>))]
+```
+
+Ogni nodo è un'istanza della classe `DAGOpNode`:
+
+```python
+node = dag.op_nodes()[3]
+print("node name:", node.name)
+print("op:", node.op)
+print("qargs:", node.qargs)
+print("cargs:", node.cargs)
+print("condition:", node.op.condition)
+```
+
+```text
+node name: if_else
+op: Instruction(name='if_else', num_qubits=1, num_clbits=3, params=[<qiskit.circuit.quantumcircuit.QuantumCircuit object at 0x7f912f4ceed0>, None])
+qargs: (<Qubit register=(3, "q"), index=1>,)
+cargs: (<Clbit register=(3, "c"), index=0>, <Clbit register=(3, "c"), index=1>, <Clbit register=(3, "c"), index=2>)
+condition: (ClassicalRegister(3, 'c'), 2)
+```
+
+## Aggiungere un'operazione in fondo {#add-an-operation-to-the-back}
+Un'operazione viene aggiunta alla fine del `DAGCircuit` usando il metodo `apply_operation_back()`. Questo accoda il gate specificato in modo che agisca sui qubit indicati dopo tutte le operazioni già presenti nel circuito.
+
+```python
+from qiskit.circuit.library import HGate
+
+dag.apply_operation_back(HGate(), qargs=[q[0]])
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/3c144b49-0.avif)
+
+## Aggiungere un'operazione in testa {#add-an-operation-to-the-front}
+Un'operazione viene aggiunta all'inizio del `DAGCircuit` usando il metodo `apply_operation_front()`. Questo inserisce il gate specificato prima di tutte le operazioni già presenti nel circuito, rendendola di fatto la prima operazione eseguita.
+
+```python
+from qiskit.circuit.library import CCXGate
+
+dag.apply_operation_front(CCXGate(), qargs=[q[0], q[1], q[2]])
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/ed80a69f-0.avif)
+
+## Sostituire un nodo con un sottocircuito {#substitute-a-node-with-a-subcircuit}
+Un nodo che rappresenta un'operazione specifica nel `DAGCircuit` viene sostituito con un sottocircuito. Prima si costruisce un nuovo sub-DAG con la sequenza di gate desiderata, poi il nodo target viene sostituito da questo sub-DAG tramite `substitute_node_with_dag()`, preservando le connessioni con il resto del circuito.
+
+```python
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.circuit.library import CHGate, U2Gate, CXGate
+
+# Build sub-DAG
+mini_dag = DAGCircuit()
+p = QuantumRegister(2, "p")
+mini_dag.add_qreg(p)
+mini_dag.apply_operation_back(CHGate(), qargs=[p[1], p[0]])
+mini_dag.apply_operation_back(U2Gate(0.1, 0.2), qargs=[p[1]])
+
+# Replace CX with mini_dag
+cx_node = dag.op_nodes(op=CXGate).pop()
+dag.substitute_node_with_dag(cx_node, mini_dag, wires=[p[0], p[1]])
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/fdb3dd70-0.avif)
+
+Completate tutte le trasformazioni, il DAG può essere riconvertito in un normale oggetto `QuantumCircuit`. È così che funziona la pipeline del transpiler: viene preso un circuito, elaborato in forma DAG, e come output viene prodotto un circuito trasformato.
+
+```python
+from qiskit.converters import dag_to_circuit
+
+new_circ = dag_to_circuit(dag)
+circuit_drawer(new_circ, output="mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/786571f7-0.svg)
+
+## Implementare un pass BasicMapper {#implement-a-basicmapper-pass}
+La struttura DAG può essere sfruttata per scrivere pass del transpiler. Nell'esempio seguente viene implementato un pass `BasicMapper` per mappare un circuito arbitrario su un dispositivo con connettività dei qubit limitata. Per ulteriori indicazioni, consulta la guida sulla [scrittura di pass personalizzati del transpiler](/guides/custom-transpiler-pass).
+
+Il pass è definito come `TransformationPass`, il che significa che modifica il circuito. Lo fa scorrendo il DAG strato per strato, verificando se ogni istruzione soddisfa i vincoli imposti dalla coupling map del dispositivo. Se viene rilevata una violazione, viene determinato un percorso di swap e i gate SWAP necessari vengono inseriti di conseguenza.
+
+Quando si crea un pass del transpiler, la prima decisione riguarda la scelta tra far ereditare il pass da `TransformationPass` o da `AnalysisPass`. I pass di trasformazione sono progettati per modificare il circuito, mentre i pass di analisi servono solo a estrarre informazioni da usare nei pass successivi. La funzionalità principale viene poi implementata nel metodo `run(dag)`. Infine, il pass dovrebbe essere registrato all'interno del modulo `qiskit.transpiler.passes`.
+
+In questo pass specifico, il DAG viene percorso strato per strato (dove ogni strato contiene operazioni che agiscono su insiemi disgiunti di qubit e possono quindi essere eseguite in modo indipendente). Per ogni operazione, se i vincoli della coupling map non sono rispettati, viene identificato un percorso di swap adeguato e gli swap necessari vengono inseriti per portare i qubit coinvolti in adiacenza.
+
+```python
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.transpiler import Layout
+from qiskit.circuit.library import SwapGate
+
+class BasicSwap(TransformationPass):
+    def __init__(self, coupling_map, initial_layout=None):
+        super().__init__()
+        self.coupling_map = coupling_map
+        self.initial_layout = initial_layout
+
+    def run(self, dag):
+        new_dag = DAGCircuit()
+        for qreg in dag.qregs.values():
+            new_dag.add_qreg(qreg)
+        for creg in dag.cregs.values():
+            new_dag.add_creg(creg)
+
+        if self.initial_layout is None:
+            self.initial_layout = Layout.generate_trivial_layout(
+                *dag.qregs.values()
+            )
+
+        current_layout = self.initial_layout.copy()
+
+        for layer in dag.serial_layers():
+            subdag = layer["graph"]
+            for gate in subdag.two_qubit_ops():
+                q0, q1 = gate.qargs
+                p0 = current_layout[q0]
+                p1 = current_layout[q1]
+
+                if self.coupling_map.distance(p0, p1) != 1:
+                    path = self.coupling_map.shortest_undirected_path(p0, p1)
+                    for i in range(len(path) - 2):
+                        wire1, wire2 = path[i], path[i + 1]
+                        qubit1 = current_layout[wire1]
+                        qubit2 = current_layout[wire2]
+                        new_dag.apply_operation_back(
+                            SwapGate(), qargs=[qubit1, qubit2]
+                        )
+                        current_layout.swap(wire1, wire2)
+
+            new_dag.compose(
+                subdag, qubits=current_layout.reorder_bits(new_dag.qubits)
+            )
+
+        return new_dag
+```
+
+Il pass può ora essere testato su un piccolo circuito di esempio. Viene costruito un pass manager con il pass appena definito. Il circuito di esempio viene poi fornito a questo pass manager, e come output si ottiene un nuovo circuito trasformato.
+
+```python
+from qiskit.transpiler import CouplingMap, PassManager
+from qiskit import QuantumRegister, QuantumCircuit
+
+q = QuantumRegister(7, "q")
+in_circ = QuantumCircuit(q)
+in_circ.h(q[0])
+in_circ.cx(q[0], q[4])
+in_circ.cx(q[2], q[3])
+in_circ.cx(q[6], q[1])
+in_circ.cx(q[5], q[0])
+in_circ.rz(0.1, q[2])
+in_circ.cx(q[5], q[0])
+
+coupling = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]]
+coupling_map = CouplingMap(couplinglist=coupling)
+
+pm = PassManager()
+pm.append(BasicSwap(coupling_map))
+
+out_circ = pm.run(in_circ)
+
+in_circ.draw(output="mpl")
+out_circ.draw(output="mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/2f35375f-0.svg)
+
+## Passi successivi {#next-steps}
+
+<Admonition type="tip" title="Raccomandazioni">
+    - Consulta la guida sulla creazione di un [pass personalizzato del transpiler](./custom-transpiler-pass)
+    - Scopri come [creare e transpilare su backend personalizzati](./custom-backend)
+    - Prova la guida [Confrontare le impostazioni del transpiler](/guides/circuit-transpilation-settings).
+    - Consulta la [documentazione API di DAG Circuit.](https://docs.quantum.ibm.com/api/qiskit/dagcircuit)
+</Admonition>

@@ -1,0 +1,247 @@
+---
+title: "Rappresentare i computer quantistici"
+sidebar_label: "Rappresentare i computer quantistici"
+description: "Scopri le coupling map, i basis gate e gli errori del processore per la transpilazione"
+notebook_path: "guides/represent-quantum-computers.ipynb"
+---
+
+{/* source-hash: 879b7bff27abd43f */}
+
+<OpenInLabBanner notebookPath="guides/represent-quantum-computers.ipynb" />
+
+
+
+# Rappresentare i computer quantistici per il transpiler
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versioni dei pacchetti</b></summary>
+
+Il codice in questa pagina è stato sviluppato usando i seguenti requisiti.
+Ti consigliamo di usare queste versioni o versioni più recenti.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+
+Per convertire un circuito astratto in un circuito ISA eseguibile su una QPU (quantum processing unit) specifica, il transpiler ha bisogno di alcune informazioni sulla QPU. Queste informazioni si trovano in due posti: l'oggetto `BackendV2` (o il legacy `BackendV1`) a cui intendi inviare i job, e l'attributo `Target` del backend.
+
+- Il [`Target`](../api/qiskit/qiskit.transpiler.Target) contiene tutti i vincoli rilevanti del dispositivo, come i basis gate nativi, la connettività dei qubit e le informazioni su pulse o temporizzazione.
+- Il [`Backend`](../api/qiskit/qiskit.providers.BackendV2) possiede un `Target` di default, contiene informazioni aggiuntive — come la [`InstructionScheduleMap`](https://docs.quantum.ibm.com/api/qiskit/1.4/qiskit.pulse.InstructionScheduleMap) — e fornisce l'interfaccia per inviare job di circuiti quantistici.
+
+Puoi anche fornire esplicitamente informazioni da usare per il transpiler, ad esempio se hai un caso d'uso specifico oppure se ritieni che tali informazioni aiutino il transpiler a generare un circuito più ottimizzato.
+
+La precisione con cui il transpiler produce il circuito più adatto all'hardware specifico dipende da quante informazioni sui vincoli sono presenti nel `Target` o nel `Backend`.
+
+<Admonition type="note">
+Poiché molti degli algoritmi di transpilazione sottostanti sono stocastici, non è garantito che venga trovato un circuito migliore.
+</Admonition>
+
+Questa pagina mostra diversi esempi di come passare informazioni sulla QPU al transpiler. Questi esempi usano il target del mock backend [`FakeSherbrooke`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/fake-provider-fake-sherbrooke#fakesherbrooke).
+
+<span id="default-config"></span>
+## Configurazione predefinita
+
+L'utilizzo più semplice del transpiler consiste nel fornire tutte le informazioni sulla QPU tramite il `Backend` o il `Target`. Per capire meglio come funziona il transpiler, costruisci un circuito e transpilalo con diverse informazioni, come segue.
+
+Importa le librerie necessarie e istanzia la QPU:
+Per convertire un circuito astratto in un circuito ISA eseguibile su un processore specifico, il transpiler ha bisogno di alcune informazioni sul processore. Di norma, queste informazioni sono memorizzate nel [`Backend`](https://docs.quantum.ibm.com/api/qiskit/qiskit.providers.Backend#backend) o nel [`Target`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.Target#target) forniti al transpiler e non servono ulteriori informazioni. Tuttavia, puoi anche fornire informazioni esplicitamente al transpiler, ad esempio se hai un caso d'uso specifico oppure se ritieni che tali informazioni aiutino il transpiler a generare un circuito più ottimizzato.
+
+Questo argomento mostra diversi esempi di come passare informazioni al transpiler. Questi esempi usano il target del mock backend [`FakeSherbrooke`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/fake-provider-fake-sherbrooke#fakesherbrooke).
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeSherbrooke
+
+backend = FakeSherbrooke()
+target = backend.target
+```
+
+Il circuito di esempio usa un'istanza di [`efficient_su2`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.efficient_su2) dalla libreria di circuiti di Qiskit.
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(12, entanglement="circular", reps=1)
+
+qc.draw("mpl")
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/97f9acc1-ac53-4025-b413-485777932a9b-0.svg)
+
+Questo esempio usa le impostazioni predefinite per transpilare verso il `target` del `backend`, che fornisce tutte le informazioni necessarie per convertire il circuito in uno eseguibile sul backend.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, target=target, seed_transpiler=12345
+)
+qc_t_target = pass_manager.run(qc)
+qc_t_target.draw("mpl", idle_wires=False, fold=-1)
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/4b81fb9d-d199-45c5-b119-c1f0b973afe9-0.svg)
+
+Questo esempio viene usato nelle sezioni successive di questo argomento per illustrare che la coupling map e i basis gate sono le informazioni essenziali da passare al transpiler per una costruzione ottimale del circuito. La QPU di solito può selezionare le impostazioni predefinite per le altre informazioni non fornite, come la temporizzazione e la schedulazione.
+
+## Coupling map {#coupling-map}
+
+La coupling map è un grafo che mostra quali qubit sono connessi e quindi hanno gate a due qubit tra di loro. A volte questo grafo è direzionale, il che significa che i gate a due qubit possono andare in una sola direzione. Tuttavia, il transpiler può sempre invertire la direzione di un gate aggiungendo gate a singolo qubit aggiuntivi. Un circuito quantistico astratto può sempre essere rappresentato su questo grafo, anche se la sua connettività è limitata, introducendo gate SWAP per spostare le informazioni quantistiche.
+
+I qubit dei nostri circuiti astratti si chiamano _qubit virtuali_ e quelli sulla coupling map sono _qubit fisici_. Il transpiler fornisce una mappatura tra qubit virtuali e qubit fisici. Una delle prime fasi della transpilazione, la fase di _layout_, esegue questa mappatura.
+
+<Admonition type="note">
+Sebbene la fase di routing sia intrecciata con la fase di _layout_ — che seleziona i qubit effettivi — per default questo argomento le tratta come fasi separate per semplicità. La combinazione di routing e layout si chiama _qubit mapping_. Scopri di più su queste fasi nell'argomento [Fasi del transpiler](transpiler-stages).
+</Admonition>
+
+Passa l'argomento keyword `coupling_map` per vedere il suo effetto sul transpiler:
+
+```python
+coupling_map = target.build_coupling_map()
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=0, coupling_map=coupling_map, seed_transpiler=12345
+)
+qc_t_cm_lv0 = pass_manager.run(qc)
+qc_t_cm_lv0.draw("mpl", idle_wires=False, fold=-1)
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/ec354bee-e06b-42ea-a117-6c1a9308ca73-0.svg)
+
+Come mostrato sopra, sono stati inseriti diversi gate SWAP (ognuno composto da tre gate CX), che causeranno molti errori sui dispositivi attuali. Per vedere quali qubit sono selezionati sulla topologia effettiva dei qubit, usa `plot_circuit_layout` da Qiskit Visualizations:
+
+```python
+from qiskit.visualization import plot_circuit_layout
+
+plot_circuit_layout(qc_t_cm_lv0, backend, view="physical")
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/9be74535-ed36-4d51-afeb-ee53c3f8a046-0.svg)
+
+Questo mostra che i nostri qubit virtuali 0-11 sono stati mappati banalmente sulla linea di qubit fisici 0-11. Torniamo al default (`optimization_level=1`), che usa `VF2Layout` se è richiesto del routing.
+
+```python
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, coupling_map=coupling_map, seed_transpiler=12345
+)
+qc_t_cm_lv1 = pass_manager.run(qc)
+qc_t_cm_lv1.draw("mpl", idle_wires=False, fold=-1)
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/8035fd05-f7cd-4151-b19a-4968202246e6-0.svg)
+
+Ora non sono stati inseriti gate SWAP e i qubit fisici selezionati sono gli stessi di quando si usa la classe `target`.
+
+```python
+from qiskit.visualization import plot_circuit_layout
+
+plot_circuit_layout(qc_t_cm_lv1, backend, view="physical")
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/25d9fac3-abda-4b2d-81b4-351dc0772722-0.svg)
+
+Ora il layout è ad anello. Poiché questo layout rispetta la connettività del circuito, non ci sono gate SWAP, il che fornisce un circuito molto migliore per l'esecuzione.
+
+## Basis gate {#basis-gates}
+
+Ogni computer quantistico supporta un insieme limitato di istruzioni, detto _basis gate_. Ogni gate nel circuito deve essere tradotto negli elementi di questo insieme. Questo insieme deve essere composto da gate a singolo qubit e a due qubit che forniscono un insieme di gate universale, il che significa che qualsiasi operazione quantistica può essere decomposta in quei gate. Questa operazione è svolta dal [BasisTranslator](../api/qiskit/qiskit.transpiler.passes.BasisTranslator), e i basis gate possono essere specificati come argomento keyword al transpiler per fornire questa informazione.
+
+```python
+basis_gates = list(target.operation_names)
+print(basis_gates)
+```
+
+```text
+['sx', 'switch_case', 'x', 'if_else', 'measure', 'for_loop', 'delay', 'ecr', 'id', 'reset', 'rz']
+```
+
+I gate predefiniti a singolo qubit su _ibm_sherbrooke_ sono `rz`, `x` e `sx`, e il gate predefinito a due qubit è `ecr` (echoed cross-resonance). I gate CX sono costruiti a partire dai gate `ecr`, quindi su alcune QPU `ecr` è specificato come basis gate a due qubit, mentre su altre il default è `cx`. Il gate `ecr` è la parte _entangling_ del gate `cx`. Oltre ai gate di controllo, sono presenti anche le istruzioni `delay` e `measurement`.
+
+<Admonition type="note">
+    Le QPU hanno basis gate predefiniti, ma puoi scegliere i gate che preferisci, purché tu fornisca l'istruzione o aggiunga pulse gate (vedi [Creare pass del transpiler.](custom-transpiler-pass)). I basis gate predefiniti sono quelli per cui sono state eseguite le calibrazioni sulla QPU, quindi non è necessario fornire ulteriori istruzioni o pulse gate. Ad esempio, su alcune QPU `cx` è il gate a due qubit predefinito e su altre lo è `ecr`. Consulta l'elenco dei possibili [gate e operazioni nativi](/guides/qpu-information#native-gates) per maggiori dettagli.
+</Admonition>
+
+```python
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1,
+    coupling_map=coupling_map,
+    basis_gates=basis_gates,
+    seed_transpiler=12345,
+)
+qc_t_cm_bg = pass_manager.run(qc)
+qc_t_cm_bg.draw("mpl", idle_wires=False, fold=-1)
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/313e4743-0.svg)
+
+Nota che gli oggetti `CXGate` sono stati decomposti in gate `ecr` e basis gate a singolo qubit.
+
+## Tassi di errore del dispositivo {#device-error-rates}
+
+La classe `Target` può contenere informazioni sui tassi di errore per le operazioni sul dispositivo.
+Ad esempio, il seguente codice recupera le proprietà per il gate echoed cross-resonance (ECR) tra il qubit 1 e il qubit 0 (nota che il gate ECR è direzionale):
+
+```python
+target["ecr"][(1, 0)]
+```
+
+```text
+InstructionProperties(duration=5.333333333333332e-07, error=0.007494257741828603)
+```
+
+L'output mostra la durata del gate (in secondi) e il suo tasso di errore. Per rendere visibili le informazioni sugli errori al transpiler, costruisci un modello target con i `basis_gates` e la `coupling_map` di sopra e popolalo con i valori di errore del backend `FakeSherbrooke`.
+
+```python
+from qiskit.transpiler import Target
+from qiskit.circuit.controlflow import IfElseOp, SwitchCaseOp, ForLoopOp
+
+err_targ = Target.from_configuration(
+    basis_gates=basis_gates,
+    coupling_map=coupling_map,
+    num_qubits=target.num_qubits,
+    custom_name_mapping={
+        "if_else": IfElseOp,
+        "switch_case": SwitchCaseOp,
+        "for_loop": ForLoopOp,
+    },
+)
+
+for i, (op, qargs) in enumerate(target.instructions):
+    if op.name in basis_gates:
+        err_targ[op.name][qargs] = target.instruction_properties(i)
+```
+
+Transpila con il nostro nuovo target `err_targ` come target:
+
+```python
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, target=err_targ, seed_transpiler=12345
+)
+qc_t_cm_bg_et = pass_manager.run(qc)
+qc_t_cm_bg_et.draw("mpl", idle_wires=False, fold=-1)
+```
+
+![Output della cella di codice precedente](/docs/images/guides/represent-quantum-computers/extracted-outputs/f1e270c4-e2cc-487e-a050-4180bc321b0b-0.svg)
+
+Poiché il target include informazioni sugli errori, il pass `VF2PostLayout` tenta di trovare i qubit ottimali da usare, ottenendo lo stesso circuito trovato originariamente con gli stessi qubit fisici.
+
+## Passi successivi {#next-steps}
+
+<Admonition type="tip" title="Consigli">
+    - Scopri le [Impostazioni predefinite e le opzioni di configurazione della transpilazione.](defaults-and-configuration-options)
+    - Consulta l'argomento [Parametri comunemente usati per la transpilazione](common-parameters).
+    - Prova la guida [Confronta le impostazioni del transpiler](/guides/circuit-transpilation-settings#compare-transpiler-settings).
+    - Consulta la [documentazione dell'API Transpile.](https://docs.quantum.ibm.com/api/qiskit/transpiler)
+</Admonition>

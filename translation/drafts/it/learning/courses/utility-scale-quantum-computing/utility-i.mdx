@@ -1,0 +1,500 @@
+---
+title: "Utility I"
+sidebar_label: "Utility I"
+description: "In questa lezione, eseguiamo un Circuit su scala utility che compare in quello che chiamiamo informalmente il \"paper sull'utility\", pubblicato su Nature Vol 618, 15 giugno 2023."
+notebook_path: "learning/courses/utility-scale-quantum-computing/utility-i.ipynb"
+---
+{/* doqumentation-source-hash: e5432ed2 */}
+
+<OpenInLabBanner notebookPath="learning/courses/utility-scale-quantum-computing/utility-i.ipynb" />
+
+
+
+# Esperimento su scala utility I
+
+<Admonition type="note">
+
+Tamiya Onodera (5 luglio 2024)
+
+[Scarica il PDF](https://ibm.ent.box.com/public/static/k38xhk5yaqy9b3gjdmu0ynhnd9i4c3e1.zip) della lezione originale. Tieni presente che alcuni frammenti di codice potrebbero diventare obsoleti, poiché si tratta di immagini statiche.
+
+*Il tempo QPU approssimativo per eseguire questo esperimento è di 45 secondi.*
+
+</Admonition>
+
+## 1. Introduzione al paper sull'utility {#1-introduction-to-the-utility-paper}
+
+In questa lezione eseguiamo un Circuit su scala utility che compare in quello che chiamiamo informalmente ["il paper sull'utility"](https://www.nature.com/articles/s41586-023-06096-3), pubblicato su Nature Vol 618, 15 giugno 2023. Il paper tratta dell'evoluzione temporale del modello di Ising 2D in campo trasverso. In particolare, si considera la dinamica temporale dell'Hamiltoniano,
+$$
+H = H_{ZZ} + H_X = - J \sum_{(i,j)} Z_i Z_j + h \sum_{i} X_i
+$$
+in cui $J > 0$ è l'accoppiamento degli spin vicini più prossimi con $i < j$ e $h$ è il campo trasverso globale.
+Si simula la dinamica degli spin a partire da uno stato iniziale mediante la decomposizione di Trotter al primo ordine dell'operatore di evoluzione temporale,
+
+$$
+\begin{aligned}
+ \exp(-i H_{ZZ} \delta t) &= \prod_{(i,j)} \exp (i J \delta t Z_i Z_j)  = \prod_{(i,j)} \mathrm{R}_{Z_i Z_j} ( - 2 J \delta t) \\
+ \exp(-i H_X \delta t) &= \prod_{i} \exp (-i h \delta t X_i )  = \prod_{i} \mathrm{R}_{X_i} ( 2 h \delta t)
+\end{aligned}
+$$
+in cui il tempo di evoluzione $T$ viene discretizzato in $T / \delta t$ passi di Trotter, mentre $\mathrm{R}_{Z_i Z_j}(\theta_J)$ e $\mathrm{R}_{X_i}(\theta_h)$
+sono rispettivamente i Gate di rotazione $ZZ$ e $X$.
+
+Gli esperimenti sono stati eseguiti su un processore IBM Quantum&reg; Eagle, un dispositivo a 127 Qubit con connettività heavy-hex, applicando le interazioni $X$ a tutti i Qubit e le interazioni $ZZ$ per tutti gli archi della mappa di accoppiamento. Si noti che non tutte le interazioni $ZZ$ possono essere applicate simultaneamente a causa delle "dipendenze sui dati". Pertanto, si **colora la mappa di accoppiamento** per raggruppare i Gate in layer. Quelli in un layer ricevono lo stesso colore e possono essere applicati in parallelo.
+
+Inoltre, per semplicità sperimentale, ci si è concentrati sul caso $\theta_J=-\pi /2$.
+
+Il contributo originale del paper consiste nell'aver costruito Circuit quantistici a una scala oltre la simulazione statevector, averli eseguiti su computer quantistici rumorosi e aver ottenuto risultati affidabili. In questo modo, gli autori hanno dimostrato l'utilità dei computer quantistici rumorosi. Per farlo, hanno applicato l'extrapolazione a rumore zero (ZNE) con amplificazione probabilistica degli errori (PEA) per mitigare gli errori dei dispositivi rumorosi.
+
+Da allora, abbiamo chiamato questi esperimenti e questi Circuit "su scala utility".
+
+### 1.1 Il tuo obiettivo {#11-your-goal}
+
+Il tuo obiettivo in questa lezione è costruire un Circuit su scala utility ed eseguirlo su un processore Eagle. Esula dagli scopi di questo notebook estrarre risultati affidabili, in parte perché PEA è una funzionalità sperimentale di Qiskit al momento della stesura e in parte perché applicare ZNE con PEA richiede un tempo considerevole.
+
+Concretamente, ti viene chiesto di costruire ed eseguire il Circuit corrispondente alla Figura 4b del paper e di tracciare i punti "non mitigati" in modo autonomo. Come puoi vedere, si tratta di un Circuit a 127 Qubit × 60 layer (20 passi di Trotter) con $\langle Z_{62} \rangle$ come osservabile.
+![image.png](/learning/images/courses/utility-scale-quantum-computing/utility-i/utility1.avif)
+Sembra un'impresa difficile? &nbsp; Non preoccuparti. Le ultime tre lezioni di questo corso forniscono i passi necessari. Per iniziare, dimostreremo un esperimento su scala ridotta: costruire ed eseguire su un dispositivo simulato un Circuit a 27 Qubit × 6 layer (2 passi di Trotter) con $\langle Z_{13} \rangle$ come osservabile.
+
+È tutto per l'introduzione. Partiamo per un'avventura su scala utility!
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-aer qiskit-ibm-runtime rustworkx
+```
+
+```python
+import qiskit
+
+qiskit.__version__
+```
+
+```text
+'2.0.2'
+```
+
+```python
+#!pip install qiskit_ibm_runtime
+#!pip install qiskit_aer
+```
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+import rustworkx as rx
+
+from qiskit import QuantumCircuit, transpile
+from qiskit.circuit import Parameter
+from qiskit.circuit.library import YGate
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    fake_provider,
+    EstimatorV2 as Estimator,
+)
+from qiskit_aer import AerSimulator
+```
+
+```python
+service = QiskitRuntimeService()
+```
+
+## 2. Preparazione {#2-preparation}
+
+### 2.1 Costruire RZZ(-$\pi$ / 2) {#21-construct-rzz--pi--2}
+
+Prima di tutto, osserva che il Gate RZZ in generale richiede due Gate $CX$.
+
+```python
+from qiskit.circuit.library import RZZGate
+
+θ_h = Parameter("$\\theta_h$")
+qc1 = QuantumCircuit(2)
+qc1.append(RZZGate(θ_h), [0, 1])
+qc1.decompose(reps=1).draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/d0b96520-3a4b-43c4-ade8-85cec68e3e09-0.avif)
+
+Come accennato in precedenza, per questo esperimento ci concentriamo sul Gate RZZ con un angolo specifico, -$\pi$ / 2. Come mostrato nel paper, può essere realizzato con un solo Gate $CX$.
+
+```python
+qc2 = QuantumCircuit(2)
+
+qc2.sdg([0, 1])
+qc2.append(YGate().power(1 / 2), [1])
+qc2.cx(0, 1)
+qc2.append(YGate().power(1 / 2).adjoint(), [1])
+
+qc2.draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/14b0ecb2-a8da-484a-bf49-606450bb074a-0.avif)
+
+Definiamo un Gate a partire da questo Circuit per riferimento futuro.
+
+```python
+rzz = qc2.to_gate(label="RZZ")
+```
+
+Facciamo un uso di prova del `rzz` appena definito.
+
+```python
+qc3 = QuantumCircuit(3)
+qc3.append(rzz, [0, 1])
+qc3.append(rzz, [0, 2])
+display(qc3.draw("mpl"))
+# display(qc.decompose(reps=1).draw("mpl"))
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/6753b9a4-90b1-4981-82b2-8177ac258af2-0.avif)
+
+Prima di procedere, verifichiamo l'equivalenza logica di `qc1` (il Gate RZZ) per -pi/2 e il nostro `rzz` o `qc2` appena definito:
+
+```python
+from qiskit.quantum_info import Operator
+
+op1 = Operator(qc1.assign_parameters([-np.pi / 2]))
+op2 = Operator(qc2)
+
+op1.equiv(op2)
+```
+
+```text
+True
+```
+
+### 2.2 Colorare la mappa di accoppiamento {#22-color-the-coupling-map}
+
+Studiamo come colorare la mappa di accoppiamento di un Backend. Questo passaggio è necessario per raggruppare le interazioni $ZZ$ in layer.
+
+Per iniziare, visualizziamo la mappa di accoppiamento di un Backend. Nota che le mappe di accoppiamento sono di tipo heavy-hexagonal per tutti gli attuali dispositivi IBM Quantum.
+
+```python
+backend = service.least_busy(operational=True, simulator=False)
+
+backend.coupling_map.draw()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/84e11b8e-bc74-4f3a-8538-d4d34d069e0f-0.avif)
+
+Per colorare una mappa di accoppiamento, usiamo [rustworkx](https://www.rustworkx.org/), un pacchetto Python per lavorare con grafi e reti complesse. Mette a disposizione diversi algoritmi di colorazione, tutti euristici e quindi non garantiti a trovare una colorazione minimale.
+
+Detto ciò, poiché i grafi heavy-hex sono bipartiti, scegliamo [graph_bipartite_edge_color](https://www.rustworkx.org/apiref/rustworkx.graph_bipartite_edge_color.html), che dovrebbe trovare una colorazione minimale per questi grafi.
+
+```python
+def color_coupling_map(backend):
+    graph = backend.coupling_map.graph
+    undirected_graph = graph.to_undirected(multigraph=False)
+    edge_color_map = rx.graph_bipartite_edge_color(undirected_graph)
+    if edge_color_map is None:
+        edge_color_map = rx.graph_greedy_edge_color(undirected_graph)
+    # build a map from color to a list of edges
+    edge_index_map = undirected_graph.edge_index_map()
+    color_edges_map = {color: [] for color in edge_color_map.values()}
+    for edge_index, color in edge_color_map.items():
+        color_edges_map[color].append(
+            (edge_index_map[edge_index][0], edge_index_map[edge_index][1])
+        )
+    return edge_color_map, color_edges_map
+```
+
+I grafi heavy-hexagonal dovrebbero essere colorati con tre colori. Verifichiamolo per la mappa di accoppiamento di cui sopra.
+
+```python
+edge_color_map, color_edges_map = color_coupling_map(backend)
+print(
+    f"{backend.name}, {backend.num_qubits}-qubit device, {len(color_edges_map.keys())} colors assigned."
+)
+```
+
+```text
+ibm_strasbourg, 127-qubit device, 3 colors assigned.
+```
+
+Esatto!
+
+Per divertimento, coloriamo la mappa di accoppiamento con i colori ottenuti, usando le funzionalità di visualizzazione di rustworkx.
+
+```python
+color_str_map = {0: "green", 1: "red", 2: "blue"}
+
+undirected_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+for i in undirected_graph.edge_indices():
+    undirected_graph.get_edge_data_by_index(i)["color"] = color_str_map[
+        edge_color_map[i]
+    ]
+
+rx.visualization.graphviz_draw(
+    undirected_graph, method="neato", edge_attr_fn=lambda edge: {"color": edge["color"]}
+)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/fb9b6915-5ace-4104-b81d-91666e689f0d-0.avif)
+
+## 3. Risolvere l'evoluzione temporale trotterizzata di un modello di Ising 2D {#3-solve-the-trotterized-time-evolution-of-a-2d-ising-model}
+
+Definiamo una routine per costruire il Circuit del paper sull'utility per l'evoluzione temporale di un modello di Ising 2D. La routine accetta tre parametri: un Backend, un intero che indica il numero di passi di Trotter e un booleano che controlla l'inserimento delle barriere.
+
+```python
+def get_utility_circuit(backend, num_steps: int, barrier: bool = False):
+    num_qubits = backend.num_qubits
+    _, color_edges_map = color_coupling_map(backend)
+    θ_h = Parameter("$\\theta_h$")
+    qc = QuantumCircuit(num_qubits)
+
+    for i in range(num_steps):
+        qc.rx(θ_h, range(num_qubits))
+
+        for _, edge_list in color_edges_map.items():
+            for edge in edge_list:
+                qc.append(rzz, edge)
+
+        if barrier:
+            qc.barrier()
+    return qc
+```
+
+Nota che abbiamo già eseguito manualmente il mapping e il routing dei Qubit per il Circuit costruito. Pertanto, quando traspiiliamo il Circuit in seguito, non dobbiamo (e __non dobbiamo__) chiedere al Transpiler di eseguire il mapping e il routing dei Qubit. Come vedrai a breve, lo invochiamo con il livello di ottimizzazione 1 e il metodo di layout "trivial".
+
+Definiamo poi una semplice routine per ottenere informazioni sul Circuit costruito, come verifica rapida.
+
+```python
+def get_circuit_info(qc: QuantumCircuit, reps: int = 0):
+    qc0 = qc.decompose(reps=reps)
+    return (
+        f"{qc0.num_qubits} qubits × {qc0.depth(lambda x: x.operation.num_qubits == 2)} layers ({qc0.depth()}-depth)"
+        + ",  "
+        + f"""Gate breakdown: {", ".join([f"{k.upper()} {v}" for k, v in qc0.count_ops().items()])}"""
+    )
+```
+
+Proviamo queste routine. Dovresti vedere un Circuit di 27 Qubit × 15 layer (5 passi di Trotter). Poiché il dispositivo simulato ha 28 archi, dovrebbero esserci 28*5 Gate di entanglement.
+
+```python
+backend = fake_provider.FakeTorontoV2()
+num_steps = 5
+qc = get_utility_circuit(backend, num_steps, True)
+
+display(qc.draw(output="mpl", fold=-1))
+print(get_circuit_info(qc, reps=0))
+print(get_circuit_info(qc, reps=1))
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/af7bdb29-3bdb-4f6e-a53c-76ce935dff03-0.avif)
+
+```text
+27 qubits × 15 layers (20-depth),  Gate breakdown: CIRCUIT-165 140, RX 135, BARRIER 5
+27 qubits × 15 layers (60-depth),  Gate breakdown: SDG 280, UNITARY 280, CX 140, R 135, BARRIER 5
+```
+
+## 4. Risolvere la versione a 27 Qubit del problema {#4-solve-the-27-qubit-version-of-the-problem}
+
+Dimostriamo ora una versione su scala ridotta dell'esperimento utility. Costruiamo un Circuit a 27 Qubit × 6 layer (2 passi di Trotter) con $\langle Z_{13} \rangle$ come osservabile, e lo eseguiamo sia su AerSimulator che su un dispositivo simulato.
+
+Seguiamo naturalmente il nostro flusso di lavoro in quattro fasi, il "Qiskit pattern", che consiste in: Map, Optimize, Execute e Post-Process. Più concretamente:
+- Trasforma gli input classici in un calcolo quantistico.
+- Ottimizza i Circuit per il calcolo quantistico.
+- Esegui i Circuit usando le primitive.
+- Post-elabora e restituisci i risultati in formato classico.
+
+Di seguito, abbiamo la fase Map per creare un Circuit per l'esperimento su scala ridotta. Seguono poi una coppia Optimize-Execute per AerSimulator e un'altra per il dispositivo simulato. Infine, la fase Post-Process traccia i risultati.
+
+### 4.1 Fase 1: Map {#41-step-1-map}
+
+```python
+backend = fake_provider.FakeTorontoV2()  # a 27 qubit fake device.
+num_steps = 2
+qc = get_utility_circuit(backend, num_steps)
+obs = SparsePauliOp.from_sparse_list(
+    [("Z", [13], 1)], num_qubits=backend.num_qubits
+)  # Falcon
+angles = [
+    0,
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    1.0,
+    np.pi / 2,
+]  # We try 11 angles for theta_h.
+```
+
+### 4.2 Fasi 2 e 3: Optimize ed Execute (Simulatore) {#42-steps-2-and-3-optimize-and-execute-simulator}
+
+```python
+backend_sim = AerSimulator()
+transpiled_qc_sim = transpile(
+    qc, backend_sim, optimization_level=1, layout_method="trivial"
+)
+transpiled_obs_sim = obs.apply_layout(layout=transpiled_qc_sim.layout)
+
+print(get_circuit_info(qc, reps=1))
+print(get_circuit_info(transpiled_qc_sim, reps=1))
+```
+
+```text
+27 qubits × 6 layers (23-depth),  Gate breakdown: SDG 112, UNITARY 112, CX 56, R 54
+27 qubits × 6 layers (16-depth),  Gate breakdown: U3 80, CX 56, R 54, U1 32, U 28
+```
+
+Un utente ha eseguito la cella successiva su un MacBook Pro con processore Intel Core i7 quad-core a 2,3 GHz e 32 GB di RAM 3LPDDR4X, con macOS 14.5. Il tempo di esecuzione è stato di 161 ms. Il tempo varierà leggermente a seconda del computer.
+
+```python
+%%time
+params = [[p] for p in angles]
+estimator = Estimator(mode=backend_sim)
+pub = (transpiled_qc_sim, transpiled_obs_sim, params)
+result_sim = estimator.run([pub]).result()
+```
+
+```text
+CPU times: user 231 ms, sys: 186 ms, total: 417 ms
+Wall time: 111 ms
+```
+
+### 4.3 Fasi 2 e 3: Optimize ed Execute (dispositivo simulato) {#43-steps-2-and-3-optimize-and-execute-fake-device}
+
+```python
+backend_fake = fake_provider.FakeTorontoV2()
+transpiled_qc_fake = transpile(
+    qc, backend_fake, optimization_level=1, layout_method="trivial"
+)
+transpiled_obs_fake = obs.apply_layout(layout=transpiled_qc_fake.layout)
+
+print(get_circuit_info(qc, reps=1))
+print(get_circuit_info(transpiled_qc_fake, reps=1))
+```
+
+```text
+27 qubits × 6 layers (23-depth),  Gate breakdown: SDG 112, UNITARY 112, CX 56, R 54
+27 qubits × 6 layers (49-depth),  Gate breakdown: SDG 324, U1 274, H 162, CX 56, U3 14
+```
+
+Quando lo stesso utente ha eseguito la cella successiva nello stesso ambiente, il tempo di esecuzione è stato di 2 min 19 s. L'esecuzione di un Circuit su un dispositivo simulato avvia una simulazione rumorosa, che richiede molto più tempo di una simulazione esatta. Ti consigliamo di non eseguire Circuit più grandi (come quello a 27 Qubit × 9 layer con 3 passi di Trotter) su un dispositivo simulato.
+
+```python
+%%time
+params = [[p] for p in angles]
+estimator = Estimator(mode=backend_fake)
+pub = (transpiled_qc_fake, transpiled_obs_fake, params)
+result_fake = estimator.run([pub]).result()
+```
+
+```text
+CPU times: user 4min 42s, sys: 9.35 s, total: 4min 51s
+Wall time: 38.3 s
+```
+
+### 4.4 Fase 4: Post-process {#44-step-4-post-process}
+
+Tracciamo i risultati delle simulazioni esatte e rumorose. Si vedono chiaramente gli effetti severi del rumore su FakeToronto.
+
+```python
+plt.plot(angles, result_fake[0].data.evs, "o", label="Fake Device")
+plt.plot(angles, result_sim[0].data.evs, "o", label="AerSimulator")
+plt.xlabel("$\\mathrm{R_x}$ angle $\\theta_h$")
+plt.title("$\\langle Z_{13} \\rangle$")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/4cf3cad0-e720-469c-a9ed-e397dae0f2f6-0.avif)
+
+## 5. Risolvere la versione a 127 Qubit del problema {#5-solve-the-127-qubit-version-of-the-problem}
+
+Il tuo obiettivo è eseguire l'esperimento su scala utility come menzionato all'inizio. Dovrai creare ed eseguire un Circuit a 127 Qubit e 60 layer (20 passi di Trotter) con $\langle Z_{62} \rangle$ come osservabile. Ti consigliamo di provare a farlo da solo, usando il codice per la versione a 27 Qubit dove opportuno. La soluzione è comunque fornita qui di seguito.
+
+__Soluzione:__
+
+### 5.1 Fase 1: Map {#51-step-1-map}
+
+```python
+# backend_map = service.backend("ibm_brisbane")
+backend_map = service.least_busy(operational=True, simulator=False)
+
+num_steps = 20
+qc = get_utility_circuit(backend_map, num_steps)
+obs = SparsePauliOp.from_sparse_list(
+    [("Z", [62], 1)], num_qubits=backend_map.num_qubits
+)  # Eagle
+angles = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0, np.pi / 2]
+```
+
+### 5.2 Fasi 2 e 3: Optimize ed Execute {#52-steps-2-and-3-optimize-and-execute}
+
+Nota che la mappa di accoppiamento del processore Eagle ha 144 archi.
+
+```python
+# backend = service.backend("ibm_brisbane")
+backend = backend_map
+
+transpiled_qc = transpile(qc, backend, optimization_level=1, layout_method="trivial")
+transpiled_obs = obs.apply_layout(layout=transpiled_qc.layout)
+
+print(get_circuit_info(qc, reps=1))
+print(get_circuit_info(transpiled_qc))
+```
+
+```text
+156 qubits × 60 layers (221-depth),  Gate breakdown: SDG 7040, UNITARY 7040, CX 3520, R 3120
+156 qubits × 60 layers (201-depth),  Gate breakdown: RZ 11933, SX 6240, CZ 3520
+```
+
+```python
+params = [[p] for p in angles]
+estimator = Estimator(mode=backend)
+pub = (transpiled_qc, transpiled_obs, params)
+job = estimator.run([pub])
+
+job_id = job.job_id()
+print(f"job id={job_id}")
+```
+
+```text
+job id=d1479n6qf56g0081sxa0
+```
+
+### 5.3 Post-process {#53-post-process}
+
+Forniamo i valori per i punti "mitigati" della Figura 4b del paper sull'utility. Traccia questi valori insieme ai tuoi risultati.
+
+```python
+result_paper = [
+    1.0171,
+    1.0044,
+    0.9563,
+    0.9602,
+    0.8394,
+    0.8120,
+    0.5466,
+    0.4556,
+    0.1953,
+    0.0141,
+    0.0117,
+]
+
+# REPLACE WITH YOUR OWN JOB ID
+job = service.job(job_id)
+
+plt.plot(angles, job.result()[0].data.evs, "o", label=f"{job.backend().name}")
+plt.plot(angles, result_paper, "o", label="Utility Paper")
+plt.xlabel("$\\mathrm{R_x}$ angle $\\theta_h$")
+plt.title("$\\langle Z_{62} \\rangle$")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-i/extracted-outputs/1c4ede0c-e865-41fe-9b38-8ecf39afa64f-0.avif)
+
+I tuoi risultati sono simili agli "unmitigated" della Figura 4b? &nbsp; Potrebbero essere molto diversi, a seconda del dispositivo e delle sue condizioni al momento dell'esperimento. Non preoccuparti dei risultati in sé. Quello che verificheremo è se hai scritto il codice correttamente. Se l'hai fatto, congratulazioni: hai raggiunto la linea di partenza dell'era dell'utility.
+
+Come nel paper sull'utility, scienziati di tutto il mondo hanno profuso un'ingegnosità straordinaria per estrarre risultati significativi anche in presenza di rumore. L'obiettivo finale di questo sforzo collettivo è il vantaggio quantistico: una condizione in cui i computer quantistici riescono a risolvere alcuni problemi di interesse industriale più velocemente, con maggiore fedeltà o a costi inferiori rispetto ai computer classici. Difficilmente si tratterà di un evento singolo, ma piuttosto di un'era in cui la riproduzione classica dei risultati quantistici richiederà progressivamente più tempo, finché a un certo punto quel vantaggio temporale diventerà decisivo. Una cosa è chiara riguardo al vantaggio quantistico: ci arriviamo solo attraverso esperimenti su scala utility. Se questo corso dovesse portarti a unirti a questa sfida — piena di difficoltà e soddisfazioni — ne saremmo più che felici.
+
+## Riferimenti {#reference}
+
+- Kim, Y., Eddins, A., Anand, S. et al. Evidence for the utility of quantum computing before fault tolerance. Nature 618, 500–505 (2023). https://doi.org/10.1038/s41586-023-06096-3
