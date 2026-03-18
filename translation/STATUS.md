@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-03-17 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-03-18 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -11,25 +11,25 @@ python translation/scripts/translation-status.py --write-status
 
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 18/44 | 57/172 | 3/154 | 2/15 | 81/387 |
-| Spanish | `es` | 44/44 | 26/172 | 3/154 | 2/15 | 76/387 |
-| Ukrainian | `uk` | 44/44 | 6/172 | 3/154 | 2/15 | 56/387 |
-| Japanese | `ja` | 44/44 | 6/172 | 3/154 | 2/15 | 56/387 |
-| French | `fr` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
-| Italian | `it` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
-| Portuguese | `pt` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
-| Tagalog | `tl` | 44/44 | 1/172 | 1/154 | 1/15 | 48/387 |
-| Arabic | `ar` | 44/44 | 0/172 | 0/154 | 0/15 | 44/387 |
-| Hebrew | `he` | 44/44 | 1/172 | 1/154 | 0/15 | 47/387 |
-| Swabian | `swg` | 14/44 | 1/172 | 13/154 | 2/15 | 31/387 |
-| Badisch | `bad` | 14/44 | 1/172 | 13/154 | 2/15 | 31/387 |
-| Bavarian | `bar` | 14/44 | 1/172 | 13/154 | 2/15 | 31/387 |
-| Kölsch | `ksh` | 29/44 | 1/172 | 13/154 | 2/15 | 46/387 |
-| Low German | `nds` | 26/44 | 1/172 | 13/154 | 2/15 | 43/387 |
-| Swiss German | `gsw` | 25/44 | 1/172 | 13/154 | 2/15 | 42/387 |
-| Saxon | `sax` | 22/44 | 1/172 | 13/154 | 2/15 | 39/387 |
-| Berlinerisch | `bln` | 19/44 | 1/172 | 13/154 | 2/15 | 36/387 |
-| Austrian | `aut` | 17/44 | 1/172 | 13/154 | 2/15 | 34/387 |
+| German | `de` | 18/44 | 57/172 | 3/0 | 2/0 | 81/217 |
+| Spanish | `es` | 44/44 | 26/172 | 3/0 | 2/0 | 76/217 |
+| Ukrainian | `uk` | 44/44 | 6/172 | 3/0 | 2/0 | 56/217 |
+| Japanese | `ja` | 44/44 | 6/172 | 3/0 | 2/0 | 56/217 |
+| French | `fr` | 44/44 | 1/172 | 1/0 | 1/0 | 48/217 |
+| Italian | `it` | 44/44 | 1/172 | 1/0 | 1/0 | 48/217 |
+| Portuguese | `pt` | 44/44 | 1/172 | 1/0 | 1/0 | 48/217 |
+| Tagalog | `tl` | 44/44 | 1/172 | 1/0 | 1/0 | 48/217 |
+| Arabic | `ar` | 44/44 | 0/172 | 0/0 | 0/0 | 44/217 |
+| Hebrew | `he` | 44/44 | 1/172 | 1/0 | 0/0 | 47/217 |
+| Swabian | `swg` | 14/44 | 1/172 | 13/0 | 2/0 | 31/217 |
+| Badisch | `bad` | 14/44 | 1/172 | 13/0 | 2/0 | 31/217 |
+| Bavarian | `bar` | 14/44 | 1/172 | 13/0 | 2/0 | 31/217 |
+| Kölsch | `ksh` | 29/44 | 1/172 | 13/0 | 2/0 | 46/217 |
+| Low German | `nds` | 26/44 | 1/172 | 13/0 | 2/0 | 43/217 |
+| Swiss German | `gsw` | 25/44 | 1/172 | 13/0 | 2/0 | 42/217 |
+| Saxon | `sax` | 22/44 | 1/172 | 13/0 | 2/0 | 39/217 |
+| Berlinerisch | `bln` | 19/44 | 1/172 | 13/0 | 2/0 | 36/217 |
+| Austrian | `aut` | 17/44 | 1/172 | 13/0 | 2/0 | 34/217 |
 
 ## Per-Locale Detail
 
@@ -39,9 +39,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 18/44 | 0 | 1 | 17 | 26 |
 | Guides | 57/172 | 0 | 27 | 30 | 115 |
-| Courses | 3/154 | 0 | 2 | 1 | 151 |
-| Modules | 2/15 | 0 | 1 | 1 | 13 |
-| **Total** | **80/385** | **0** | **31** | **49** | **305** |
+| Courses | 3/0 | 0 | 2 | 1 | -3 |
+| Modules | 2/0 | 0 | 1 | 1 | -2 |
+| **Total** | **80/216** | **0** | **31** | **49** | **136** |
 
 <details>
 <summary>Pipeline history (81 files in status.json)</summary>
@@ -138,9 +138,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 33 | 11 | 0 |
 | Guides | 26/172 | 0 | 12 | 14 | 146 |
-| Courses | 3/154 | 0 | 3 | — | 151 |
-| Modules | 2/15 | 0 | 1 | 1 | 13 |
-| **Total** | **75/385** | **0** | **49** | **26** | **310** |
+| Courses | 3/0 | 0 | 3 | — | -3 |
+| Modules | 2/0 | 0 | 1 | 1 | -2 |
+| **Total** | **75/216** | **0** | **49** | **26** | **141** |
 
 <details>
 <summary>Pipeline history (76 files in status.json)</summary>
@@ -232,9 +232,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 15 | 29 | 0 |
 | Guides | 6/172 | 0 | 5 | 1 | 166 |
-| Courses | 3/154 | 0 | 3 | — | 151 |
-| Modules | 2/15 | 0 | 1 | 1 | 13 |
-| **Total** | **55/385** | **0** | **24** | **31** | **330** |
+| Courses | 3/0 | 0 | 3 | — | -3 |
+| Modules | 2/0 | 0 | 1 | 1 | -2 |
+| **Total** | **55/216** | **0** | **24** | **31** | **161** |
 
 <details>
 <summary>Pipeline history (56 files in status.json)</summary>
@@ -306,9 +306,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 21 | 23 | 0 |
 | Guides | 6/172 | 0 | 1 | 5 | 166 |
-| Courses | 3/154 | 0 | 3 | — | 151 |
-| Modules | 2/15 | 0 | 1 | 1 | 13 |
-| **Total** | **55/385** | **0** | **26** | **29** | **330** |
+| Courses | 3/0 | 0 | 3 | — | -3 |
+| Modules | 2/0 | 0 | 1 | 1 | -2 |
+| **Total** | **55/216** | **0** | **26** | **29** | **161** |
 
 <details>
 <summary>Pipeline history (56 files in status.json)</summary>
@@ -380,9 +380,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 33 | 11 | 0 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 1/154 | 0 | 1 | — | 153 |
-| Modules | 1/15 | 0 | 1 | — | 14 |
-| **Total** | **47/385** | **0** | **36** | **11** | **338** |
+| Courses | 1/0 | 0 | 1 | — | -1 |
+| Modules | 1/0 | 0 | 1 | — | -1 |
+| **Total** | **47/216** | **0** | **36** | **11** | **169** |
 
 <details>
 <summary>Pipeline history (48 files in status.json)</summary>
@@ -446,9 +446,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 16 | 28 | 0 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 1/154 | 0 | 1 | — | 153 |
-| Modules | 1/15 | 0 | 1 | — | 14 |
-| **Total** | **47/385** | **0** | **19** | **28** | **338** |
+| Courses | 1/0 | 0 | 1 | — | -1 |
+| Modules | 1/0 | 0 | 1 | — | -1 |
+| **Total** | **47/216** | **0** | **19** | **28** | **169** |
 
 <details>
 <summary>Pipeline history (48 files in status.json)</summary>
@@ -512,9 +512,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 14 | 30 | 0 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 1/154 | 0 | 1 | — | 153 |
-| Modules | 1/15 | 0 | 1 | — | 14 |
-| **Total** | **47/385** | **0** | **17** | **30** | **338** |
+| Courses | 1/0 | 0 | 1 | — | -1 |
+| Modules | 1/0 | 0 | 1 | — | -1 |
+| **Total** | **47/216** | **0** | **17** | **30** | **169** |
 
 <details>
 <summary>Pipeline history (48 files in status.json)</summary>
@@ -578,9 +578,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 25 | 19 | 0 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 1/154 | 0 | 1 | — | 153 |
-| Modules | 1/15 | 0 | 1 | — | 14 |
-| **Total** | **47/385** | **0** | **28** | **19** | **338** |
+| Courses | 1/0 | 0 | 1 | — | -1 |
+| Modules | 1/0 | 0 | 1 | — | -1 |
+| **Total** | **47/216** | **0** | **28** | **19** | **169** |
 
 <details>
 <summary>Pipeline history (48 files in status.json)</summary>
@@ -644,9 +644,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 16 | 28 | 0 |
 | Guides | 0/172 | 0 | — | — | 172 |
-| Courses | 0/154 | 0 | — | — | 154 |
-| Modules | 0/15 | 0 | — | — | 15 |
-| **Total** | **44/385** | **0** | **16** | **28** | **341** |
+| Courses | 0/0 | 0 | — | — | 0 |
+| Modules | 0/0 | 0 | — | — | 0 |
+| **Total** | **44/216** | **0** | **16** | **28** | **172** |
 
 <details>
 <summary>Pipeline history (44 files in status.json)</summary>
@@ -706,9 +706,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 32 | 12 | 0 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 1/154 | 0 | 1 | — | 153 |
-| Modules | 0/15 | 0 | — | — | 15 |
-| **Total** | **46/385** | **0** | **34** | **12** | **339** |
+| Courses | 1/0 | 0 | 1 | — | -1 |
+| Modules | 0/0 | 0 | — | — | 0 |
+| **Total** | **46/216** | **0** | **34** | **12** | **170** |
 
 <details>
 <summary>Pipeline history (47 files in status.json)</summary>
@@ -771,9 +771,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 9 | 5 | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 3 | 10 | 141 |
-| Modules | 2/15 | 0 | — | 2 | 13 |
-| **Total** | **30/385** | **0** | **13** | **17** | **355** |
+| Courses | 13/0 | 0 | 3 | 10 | -13 |
+| Modules | 2/0 | 0 | — | 2 | -2 |
+| **Total** | **30/216** | **0** | **13** | **17** | **186** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -820,9 +820,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 9 | 5 | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 3 | 10 | 141 |
-| Modules | 2/15 | 0 | — | 2 | 13 |
-| **Total** | **30/385** | **0** | **13** | **17** | **355** |
+| Courses | 13/0 | 0 | 3 | 10 | -13 |
+| Modules | 2/0 | 0 | — | 2 | -2 |
+| **Total** | **30/216** | **0** | **13** | **17** | **186** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -869,9 +869,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 9 | 5 | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 3 | 10 | 141 |
-| Modules | 2/15 | 0 | — | 2 | 13 |
-| **Total** | **30/385** | **0** | **13** | **17** | **355** |
+| Courses | 13/0 | 0 | 3 | 10 | -13 |
+| Modules | 2/0 | 0 | — | 2 | -2 |
+| **Total** | **30/216** | **0** | **13** | **17** | **186** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -918,9 +918,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 29/44 | 0 | 12 | 17 | 15 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 5 | 8 | 141 |
-| Modules | 2/15 | 0 | — | 2 | 13 |
-| **Total** | **45/385** | **0** | **18** | **27** | **340** |
+| Courses | 13/0 | 0 | 5 | 8 | -13 |
+| Modules | 2/0 | 0 | — | 2 | -2 |
+| **Total** | **45/216** | **0** | **18** | **27** | **171** |
 
 <details>
 <summary>Pipeline history (46 files in status.json)</summary>
@@ -982,9 +982,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 26/44 | 0 | 11 | 15 | 18 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 3 | 10 | 141 |
-| Modules | 2/15 | 0 | — | 2 | 13 |
-| **Total** | **42/385** | **0** | **15** | **27** | **343** |
+| Courses | 13/0 | 0 | 3 | 10 | -13 |
+| Modules | 2/0 | 0 | — | 2 | -2 |
+| **Total** | **42/216** | **0** | **15** | **27** | **174** |
 
 <details>
 <summary>Pipeline history (43 files in status.json)</summary>
@@ -1043,9 +1043,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 25/44 | 0 | 10 | 15 | 19 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 4 | 9 | 141 |
-| Modules | 2/15 | 0 | 1 | 1 | 13 |
-| **Total** | **41/385** | **0** | **16** | **25** | **344** |
+| Courses | 13/0 | 0 | 4 | 9 | -13 |
+| Modules | 2/0 | 0 | 1 | 1 | -2 |
+| **Total** | **41/216** | **0** | **16** | **25** | **175** |
 
 <details>
 <summary>Pipeline history (42 files in status.json)</summary>
@@ -1103,9 +1103,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 22/44 | 0 | 12 | 10 | 22 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 5 | 8 | 141 |
-| Modules | 2/15 | 0 | — | 2 | 13 |
-| **Total** | **38/385** | **0** | **18** | **20** | **347** |
+| Courses | 13/0 | 0 | 5 | 8 | -13 |
+| Modules | 2/0 | 0 | — | 2 | -2 |
+| **Total** | **38/216** | **0** | **18** | **20** | **178** |
 
 <details>
 <summary>Pipeline history (39 files in status.json)</summary>
@@ -1160,9 +1160,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 19/44 | 0 | 11 | 8 | 25 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 6 | 7 | 141 |
-| Modules | 2/15 | 0 | 1 | 1 | 13 |
-| **Total** | **35/385** | **0** | **19** | **16** | **350** |
+| Courses | 13/0 | 0 | 6 | 7 | -13 |
+| Modules | 2/0 | 0 | 1 | 1 | -2 |
+| **Total** | **35/216** | **0** | **19** | **16** | **181** |
 
 <details>
 <summary>Pipeline history (36 files in status.json)</summary>
@@ -1214,9 +1214,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 17/44 | 0 | 9 | 8 | 27 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/154 | 0 | 3 | 10 | 141 |
-| Modules | 2/15 | 0 | — | 2 | 13 |
-| **Total** | **33/385** | **0** | **13** | **20** | **352** |
+| Courses | 13/0 | 0 | 3 | 10 | -13 |
+| Modules | 2/0 | 0 | — | 2 | -2 |
+| **Total** | **33/216** | **0** | **13** | **20** | **183** |
 
 <details>
 <summary>Pipeline history (34 files in status.json)</summary>
