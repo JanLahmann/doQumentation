@@ -169,7 +169,7 @@ const config: Config = {
         hashed: true,
         indexBlog: false,
         docsRouteBasePath: '/',
-        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he', 'th'],
+        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he'],
       },
     ],
   ],
