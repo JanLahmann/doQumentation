@@ -1,0 +1,1349 @@
+---
+title: "QVC та QNN"
+sidebar_label: "QVC та QNN"
+description: "Квантові варіаційні схеми застосовуються для розпізнавання патернів на зображеннях. Обговорюються паралелі з класичними нейронними мережами."
+notebook_path: "learning/courses/quantum-machine-learning/qvc-qnn.ipynb"
+---
+{/* doqumentation-source-hash: 514ab13a */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-machine-learning/qvc-qnn.ipynb" />
+
+
+
+{/* cspell:ignore yticks hspace VQCs linesize, imshow, minpos, nonumber, zzcircuit, zcircuit, pcircuit, zzcx, Schuld, Francesco, Peruccione, Vojtech, Adrian, Perez, Cervera, Lierta, Elies, Fuster, Jose, Latorre, Sweke, Jakob */}
+
+# Квантові варіаційні схеми та квантові нейронні мережі
+
+У цьому уроці ми реалізуємо кілька варіаційних квантових схем для задачі класифікації даних — так звані варіаційні квантові класифікатори (VQC). Колись було прийнято називати певну підмножину VQC квантовими нейронними мережами (QNN) за аналогією з класичними нейронними мережами. Справді, існують випадки, коли структури, запозичені з класичних нейронних мереж — наприклад, шари згортки — відіграють важливу роль у VQC. Там, де ця аналогія є сильною, термін QNN може бути корисним. Однак параметризовані квантові схеми не обов'язково мають слідувати загальній структурі нейронної мережі; наприклад, не всі дані потрібно завантажувати на першому (вхідному) шарі — можна завантажити частину даних на першому шарі, застосувати кілька вентилів і потім завантажити додаткові дані (цей процес називається «перезавантаженням» даних, або data reuploading). Тому варто сприймати QNN як підмножину параметризованих квантових схем і не обмежувати своє дослідження корисних квантових схем аналогією до класичних нейронних мереж.
+
+Набір даних, з яким ми працюємо в цьому уроці, складається із зображень, що містять горизонтальні та вертикальні смуги. Наша мета — класифікувати нові зображення на одну з двох категорій залежно від орієнтації лінії. Ми досягнемо цього за допомогою VQC. У процесі роботи ми розглянемо способи покращення та масштабування обчислень. Цей набір даних надзвичайно легко класифікувати класично. Він обраний через свою простоту, щоб ми могли зосередитись на квантовій частині задачі та побачити, як атрибут набору даних може перетворитись на частину квантової схеми. Не варто очікувати квантового прискорення для таких простих випадків, де класичні алгоритми є настільки ефективними.
+
+Після цього уроку ти зможеш:
+* Завантажувати дані із зображення в квантову схему
+* Будувати анзац для VQC (або QNN) та налаштовувати його під свою задачу
+* Навчати свій VQC/QNN і використовувати його для точних передбачень на тестових даних
+* Масштабувати задачу та розпізнавати обмеження сучасних квантових комп'ютерів
+## Генерація даних {#data-generation}
+
+Почнемо з побудови даних. Набори даних зазвичай не генеруються явно в рамках фреймворку Qiskit patterns. Але тип і підготовка даних є критично важливими для успішного застосування квантових обчислень до машинного навчання. Код нижче визначає набір зображень із заданими розмірами пікселів. Одному повному рядку або стовпцю зображення присвоюється значення $\pi/2$, а решті пікселів — випадкові значення на інтервалі $(0,\pi/4)$. Випадкові значення — це шум у наших даних. Перегляньте код, щоб переконатися, що ти розумієш, як генеруються зображення. Пізніше ми масштабуємо зображення.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-ibm-runtime scipy scikit-learn
+```
+
+```python
+# This code defines the images to be classified:
+
+import numpy as np
+
+# Total number of "pixels"/qubits
+size = 8
+# One dimension of the image (called vertical, but it doesn't matter). Must be a divisor of `size`
+vert_size = 2
+# The length of the line to be detected (yellow). Must be less than or equal to the smallest dimension of the image (`<=min(vert_size,size/vert_size)`
+line_size = 2
+
+def generate_dataset(num_images):
+    images = []
+    labels = []
+    hor_array = np.zeros((size - (line_size - 1) * vert_size, size))
+    ver_array = np.zeros((round(size / vert_size) * (vert_size - line_size + 1), size))
+
+    j = 0
+    for i in range(0, size - 1):
+        if i % (size / vert_size) <= (size / vert_size) - line_size:
+            for p in range(0, line_size):
+                hor_array[j][i + p] = np.pi / 2
+            j += 1
+
+    # Make two adjacent entries pi/2, then move down to the next row. Careful to avoid the "pixels" at size/vert_size - linesize, because we want to fold this list into a grid.
+
+    j = 0
+    for i in range(0, round(size / vert_size) * (vert_size - line_size + 1)):
+        for p in range(0, line_size):
+            ver_array[j][i + p * round(size / vert_size)] = np.pi / 2
+        j += 1
+
+    # Make entries pi/2, spaced by the length/rows, so that when folded, the entries appear on top of each other.
+
+    for n in range(num_images):
+        rng = np.random.randint(0, 2)
+        if rng == 0:
+            labels.append(-1)
+            random_image = np.random.randint(0, len(hor_array))
+            images.append(np.array(hor_array[random_image]))
+
+        elif rng == 1:
+            labels.append(1)
+            random_image = np.random.randint(0, len(ver_array))
+            images.append(np.array(ver_array[random_image]))
+            # Randomly select 0 or 1 for a horizontal or vertical array, assign the corresponding label.
+
+        # Create noise
+        for i in range(size):
+            if images[-1][i] == 0:
+                images[-1][i] = np.random.rand() * np.pi / 4
+    return images, labels
+
+hor_size = round(size / vert_size)
+```
+
+Зверни увагу, що код вище також згенерував мітки, що вказують, чи містять зображення вертикальну (+1) або горизонтальну (-1) лінію. Тепер використаємо sklearn, щоб розділити набір із 100 зображень на навчальну та тестову вибірки (разом з відповідними мітками). Тут ми використовуємо $70\%$ набору даних для навчання, а решту $30\%$ залишаємо для тестування.
+
+```python
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+images, labels = generate_dataset(200)
+
+train_images, test_images, train_labels, test_labels = train_test_split(
+    images, labels, test_size=0.3, random_state=246
+)
+```
+
+Давай побудуємо кілька елементів нашого набору даних, щоб побачити, як виглядають ці лінії:
+
+```python
+import matplotlib.pyplot as plt
+
+# Make subplot titles so we can identify categories
+titles = []
+for i in range(8):
+    title = "category: " + str(train_labels[i])
+    titles.append(title)
+
+# Generate a figure with nested images using subplots.
+fig, ax = plt.subplots(4, 2, figsize=(10, 6), subplot_kw={"xticks": [], "yticks": []})
+
+for i in range(8):
+    ax[i // 2, i % 2].imshow(
+        train_images[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+    ax[i // 2, i % 2].set_title(titles[i])
+plt.subplots_adjust(wspace=0.1, hspace=0.3)
+```
+
+![Вивід попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/ac9e4239-8c1a-4798-a8e7-80347c29150c-0.avif)
+
+Кожне з цих зображень все ще пов'язане зі своєю міткою в ```train_labels``` у простій формі списку:
+
+```python
+print(train_labels[:8])
+```
+
+```text
+[1, 1, 1, 1, -1, 1, 1, 1]
+```
+
+## Варіаційний квантовий класифікатор: перша спроба {#variational-quantum-classifier-a-first-attempt}
+
+### Крок 1 шаблонів Qiskit: відображення задачі на квантову схему {#qiskit-patterns-step-1-map-the-problem-to-a-quantum-circuit}
+
+Мета — знайти функцію $f$ з параметрами $\theta$, яка відображає вектор даних / зображення $\vec{x}$ на правильну категорію: $f_\theta(\vec{x}) \rightarrow \pm1$. Це буде досягнуто за допомогою VQC з кількома шарами, кожен з яких має чітке призначення:
+$$
+f_\theta(\vec{x}) = \langle 0|U^{\dagger}(\vec{x})W^\dagger(\theta)OW(\theta)U(\vec{x})|0\rangle
+$$
+Тут $U(\vec{x})$ — схема кодування, для якої є багато варіантів, як показано в попередніх уроках. $W(\theta)$ — варіаційний, або навчуваний блок схеми, а $\theta$ — набір параметрів для навчання. Ці параметри варіюватимуться класичними алгоритмами оптимізації для пошуку набору параметрів, що дає найкращу класифікацію зображень квантовою схемою. Цей варіаційний блок іноді називають «анзацом». Нарешті, $O$ — деякий оператор спостереження, значення якого буде оцінюватись за допомогою примітиву Estimator. Немає жодного обмеження, що змушує шари йти саме в такому порядку або бути повністю відокремленими. Можна мати кілька варіаційних та/або кодуючих шарів у будь-якому технічно обґрунтованому порядку.
+
+Почнемо з вибору карти ознак для кодування даних. Використаємо ```z_feature_map```, оскільки вона забезпечує меншу глибину схеми порівняно з деякими іншими відображеннями ознак.
+
+```python
+from qiskit.circuit.library import z_feature_map
+
+# One qubit per data feature
+num_qubits = len(train_images[0])
+
+# Data encoding
+# Note that qiskit orders parameters alphabetically. We assign the parameter prefix "a" to ensure our data encoding goes to the first part of the circuit, the feature mapping.
+feature_map = z_feature_map(num_qubits, parameter_prefix="a")
+```
+
+Тепер нам потрібно вибрати анзац для навчання. При виборі анзацу є багато міркувань. Повний опис виходить за межі цього введення; тут ми лише вкажемо на кілька категорій міркувань.
+
+1. **Апаратне забезпечення:** Усі сучасні квантові комп'ютери більш схильні до помилок і більш чутливі до шумів, ніж їхні класичні аналоги. Використання надмірно глибокого анзацу (особливо за транспільованою глибиною двокубітних вентилів) не дасть хороших результатів. Пов'язана проблема полягає в тому, що квантові комп'ютери мають певну топологію кубітів, тобто одні фізичні кубіти є сусідніми на квантовому комп'ютері, а інші можуть бути дуже далеко один від одного. Заплутування сусідніх кубітів не сильно збільшує глибину, але заплутування дуже віддалених кубітів може суттєво її збільшити, оскільки необхідно вставляти вентилі swap для переміщення інформації на сусідні кубіти, щоб їх можна було заплутати.
+2. **Задача:** Коли ти маєш деяку інформацію про свою задачу, яка могла б спрямувати вибір анзацу, скористайся нею. Наприклад, дані в цьому уроці складаються із зображень горизонтальних і вертикальних ліній. Можна розглянути, яка кореляція між сусідніми кольорами/значеннями ідентифікує зображення горизонтальної або вертикальної лінії. Які атрибути анзацу відповідали б цій кореляції між сусідніми пікселями? Ми повернемось до цього питання більш технічно пізніше в цьому уроці. Але наразі просто скажемо, що включення заплутування і вентилів CNOT між кубітами, що відповідають сусіднім пікселям, видається гарною ідеєю. У більш широкому контексті варто розглянути, чи справді задача найкраще вирішується за допомогою квантової схеми, або чи існують класичні алгоритми, що можуть впоратись не гірше.
+3. **Кількість параметрів:** Кожен незалежно параметризований квантовий вентиль у схемі збільшує простір для класичної оптимізації, що призводить до повільнішої збіжності. Але зі збільшенням масштабу задачі можна натрапити на *пологі плато* (barren plateaus). Цей термін означає явище, при якому ландшафт оптимізації варіаційного квантового алгоритму стає експоненційно пласким і монотонним зі збільшенням розміру задачі. Це спричиняє загасання градієнтів, ускладнюючи ефективне навчання алгоритму[\[1\]](#references). Пологі плато стосуються варіаційних квантових алгоритмів, таких як VQC/QNN. Варто зазначити, що зростання кількості параметрів — не єдиний фактор при уникненні пологих плато; інші фактори включають глобальні функції вартості та випадкову ініціалізацію параметрів.
+
+У цьому уроці ми розглянемо кілька простих прикладів хорошої практики побудови анзацу. Спочатку спробуємо анзац нижче. Пізніше ми повернемось до його перегляду.
+
+```python
+# Import the necessary packages
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+
+# Initialize the circuit using the same number of qubits as the image has pixels
+qnn_circuit = QuantumCircuit(size)
+
+# We choose to have two variational parameters for each qubit.
+params = ParameterVector("θ", length=2 * size)
+
+# A first variational layer:
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# Here is a list of qubit pairs between which we want CNOT gates. The choice of these is not yet obvious.
+qnn_cnot_list = [[0, 1], [1, 2], [2, 3]]
+
+for i in range(len(qnn_cnot_list)):
+    qnn_circuit.cx(qnn_cnot_list[i][0], qnn_cnot_list[i][1])
+
+# The second variational layer:
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+
+# Check the circuit depth, and the two-qubit gate depth
+print(qnn_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+
+# Draw the circuit
+qnn_circuit.draw("mpl")
+```
+
+```text
+5
+2+ qubit depth: 3
+```
+
+```text
+┌──────────┐             ┌──────────┐
+q_0: ┤ Ry(θ[0]) ├──────■──────┤ Rx(θ[8]) ├─────────────────────────
+     ├──────────┤    ┌─┴─┐    └──────────┘┌──────────┐
+q_1: ┤ Ry(θ[1]) ├────┤ X ├─────────■──────┤ Rx(θ[9]) ├─────────────
+     ├──────────┤    └───┘       ┌─┴─┐    └──────────┘┌───────────┐
+q_2: ┤ Ry(θ[2]) ├────────────────┤ X ├─────────■──────┤ Rx(θ[10]) ├
+     ├──────────┤                └───┘       ┌─┴─┐    ├───────────┤
+q_3: ┤ Ry(θ[3]) ├────────────────────────────┤ X ├────┤ Rx(θ[11]) ├
+     ├──────────┤┌───────────┐               └───┘    └───────────┘
+q_4: ┤ Ry(θ[4]) ├┤ Rx(θ[12]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤
+q_5: ┤ Ry(θ[5]) ├┤ Rx(θ[13]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤
+q_6: ┤ Ry(θ[6]) ├┤ Rx(θ[14]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤
+q_7: ┤ Ry(θ[7]) ├┤ Rx(θ[15]) ├─────────────────────────────────────
+     └──────────┘└───────────┘
+```
+
+Маючи готові схему кодування даних і варіаційну схему, можемо об'єднати їх у повний анзац. У цьому випадку компоненти нашої квантової схеми досить точно аналогічні компонентам нейронних мереж: $U(\vec{x})$ найближче нагадує шар, що завантажує вхідні значення із зображення, а $W(\theta)$ — шар змінних «ваг». Оскільки в цьому випадку аналогія виправдана, ми використовуємо «qnn» у деяких наших назвах, однак ця аналогія не повинна обмежувати твоє дослідження VQC.
+
+![QML_CR_background_QNN_circuit-2.png](/learning/images/courses/quantum-machine-learning/qvc-qnn/qml-cr-background-qnn-circuit.avif)
+
+```python
+# QNN ansatz
+ansatz = qnn_circuit
+
+# Combine the feature map with the ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Display the circuit
+full_circuit.decompose().draw("mpl", style="clifford", fold=-1)
+```
+
+![Вивід попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/e84e5ac1-d5fb-4ec0-8a23-5a2c417a4088-0.avif)
+
+Тепер нам потрібно визначити оператор спостереження, щоб використовувати його у функції вартості. Ми отримаємо очікуване значення цього оператора за допомогою Estimator. Якщо обраний анзац добре відповідає задачі, кожен кубіт міститиме інформацію, що стосується класифікації. Можна додати шари для об'єднання інформації на менше кубітів (так званий *шар згортки*), щоб вимірювання потрібно було виконувати лише на підмножині кубітів схеми (як у згорткових нейронних мережах). Або можна виміряти деякий атрибут кожного кубіту. Тут ми обираємо другий варіант, тому включаємо оператор ```Z``` для кожного кубіту. Вибір $Z$ не є унікальним, але він добре обґрунтований:
+* Це задача бінарної класифікації, і вимірювання $Z$ може дати два можливі результати.
+* Власні значення $Z$ ($\pm 1$) достатньо розділені і дають результат Estimator в інтервалі [-1, +1], де 0 можна просто використовувати як граничне значення.
+* Вимірювання в базисі Паулі Z є простим і не вимагає додаткових вентилів.
+
+Отже, Z є дуже природним вибором.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("Z" * (num_qubits), 1)])
+```
+
+Маємо квантову схему та оператор спостереження, значення якого хочемо оцінити. Тепер нам потрібно кілька речей для запуску та оптимізації цієї схеми. По-перше, потрібна функція для виконання прямого проходу. Зверни увагу, що функція нижче приймає ```input_params``` і ```weight_params``` окремо. Перший — це набір статичних параметрів, що описують дані в зображенні, а другий — набір змінних параметрів для оптимізації.
+
+```python
+from qiskit.primitives import BaseEstimatorV2
+from qiskit.quantum_info.operators.base_operator import BaseOperator
+
+def forward(
+    circuit: QuantumCircuit,
+    input_params: np.ndarray,
+    weight_params: np.ndarray,
+    estimator: BaseEstimatorV2,
+    observable: BaseOperator,
+) -> np.ndarray:
+    """
+    Forward pass of the neural network.
+
+    Args:
+        circuit: circuit consisting of data loader gates and the neural network ansatz.
+        input_params: data encoding parameters.
+        weight_params: neural network ansatz parameters.
+        estimator: EstimatorV2 primitive.
+        observable: a single observable to compute the expectation over.
+
+    Returns:
+        expectation_values: an array (for one observable) or a matrix (for a sequence of observables) of expectation values.
+        Rows correspond to observables and columns to data samples.
+    """
+    num_samples = input_params.shape[0]
+    weights = np.broadcast_to(weight_params, (num_samples, len(weight_params)))
+    params = np.concatenate((input_params, weights), axis=1)
+    pub = (circuit, observable, params)
+    job = estimator.run([pub])
+    result = job.result()[0]
+    expectation_values = result.data.evs
+
+    return expectation_values
+```
+
+### Функція втрат {#loss-function}
+Далі нам потрібна функція втрат для обчислення різниці між передбаченими та правильними значеннями міток. Функція прийматиме мітки, передбачені алгоритмом, і правильні мітки, та повертатиме середньоквадратичну різницю. Існує багато різних функцій втрат. Тут MSE — приклад, який ми обрали.
+
+```python
+def mse_loss(predict: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """
+    Mean squared error (MSE).
+
+    prediction: predictions from the forward pass of neural network.
+    target: true labels.
+
+    output: MSE loss.
+    """
+    if len(predict.shape) <= 1:
+        return ((predict - target) ** 2).mean()
+    else:
+        raise AssertionError("input should be 1d-array")
+```
+
+Визначимо також дещо іншу функцію втрат, яка є функцією змінних параметрів (ваг), для використання класичним оптимізатором. Ця функція приймає лише параметри анзацу як вхід; інші змінні для прямого проходу та втрат встановлені як глобальні параметри. Оптимізатор навчатиме модель, перебираючи різні ваги і намагаючись зменшити вихід функції вартості/втрат.
+
+```python
+def mse_loss_weights(weight_params: np.ndarray) -> np.ndarray:
+    """
+    Cost function for the optimizer to update the ansatz parameters.
+
+    weight_params: ansatz parameters to be updated by the optimizer.
+
+    output: MSE loss.
+    """
+    predictions = forward(
+        circuit=circuit,
+        input_params=input_params,
+        weight_params=weight_params,
+        estimator=estimator,
+        observable=observable,
+    )
+
+    cost = mse_loss(predict=predictions, target=target)
+    objective_func_vals.append(cost)
+
+    global iter
+    if iter % 50 == 0:
+        print(f"Iter: {iter}, loss: {cost}")
+    iter += 1
+
+    return cost
+```
+
+Вище ми згадали про використання класичного оптимізатора. Коли будемо шукати ваги для мінімізації функції вартості, використаємо оптимізатор COBYLA:
+
+```python
+from scipy.optimize import minimize
+```
+
+Встановимо кілька початкових глобальних змінних для функції вартості.
+
+```python
+# Globals
+circuit = full_circuit
+observables = observable
+# input_params = train_images_batch
+# target = train_labels_batch
+objective_func_vals = []
+iter = 0
+```
+
+## Крок 2 шаблонів Qiskit: оптимізація задачі для квантового виконання {#qiskit-patterns-step-2-optimize-problem-for-quantum-execution}
+Починаємо з вибору бекенду для виконання. У цьому випадку використаємо найменш завантажений бекенд.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+print(backend.name)
+```
+
+```text
+ibm_brisbane
+```
+
+Тут ми оптимізуємо схему для запуску на реальному бекенді, задаючи optimization_level і додаючи динамічне роз'єднання. Код нижче генерує менеджер проходів за допомогою попередньо визначених менеджерів проходів із qiskit.transpiler.
+
+```python
+from qiskit.circuit.library import XGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    ConstrainedReschedule,
+    PadDynamicalDecoupling,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+Тепер застосуємо менеджер проходів до схеми. Зміни розташування, що виникають у результаті, необхідно застосувати і до оператора спостереження. Для дуже великих схем евристики, що використовуються в оптимізації схем, не завжди дають найкращу та найбільш поверхневу схему. У таких випадках є сенс запускати такі менеджери проходів кілька разів і використовувати найкращу схему. Ми побачимо це пізніше, коли масштабуємо наше обчислення.
+
+```python
+circuit_ibm = pm.run(full_circuit)
+observable_ibm = observable.apply_layout(circuit_ibm.layout)
+```
+
+## Крок 3 патернів Qiskit: виконання за допомогою Qiskit Primitives {#qiskit-patterns-step-3-execute-using-qiskit-primitives}
+
+### Цикл по датасету батчами та епохами {#loop-over-the-dataset-in-batches-and-epochs}
+Спочатку реалізуємо повний алгоритм на симуляторі — для базового відлагодження та оцінки похибок. Тепер можна проходити весь датасет батчами за потрібну кількість епох, щоб навчити нашу квантову нейронну мережу.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+batch_size = 140
+num_epochs = 1
+num_samples = len(train_images)
+
+# Globals
+circuit = full_circuit
+estimator = Estimator()  # simulator for debugging
+observables = observable
+objective_func_vals = []
+iter = 0
+
+# Random initial weights for the ansatz
+np.random.seed(42)
+weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+
+for epoch in range(num_epochs):
+    for i in range((num_samples - 1) // batch_size + 1):
+        print(f"Epoch: {epoch}, batch: {i}")
+        start_i = i * batch_size
+        end_i = start_i + batch_size
+        train_images_batch = np.array(train_images[start_i:end_i])
+        train_labels_batch = np.array(train_labels[start_i:end_i])
+        input_params = train_images_batch
+        target = train_labels_batch
+        iter = 0
+        res = minimize(
+            mse_loss_weights, weight_params, method="COBYLA", options={"maxiter": 100}
+        )
+        weight_params = res["x"]
+```
+
+```text
+Epoch: 0, batch: 0
+Iter: 0, loss: 1.0002309063537163
+Iter: 50, loss: 0.9434121445008878
+```
+
+## Крок 4 патернів Qiskit: постобробка, повернення результату в класичному форматі {#qiskit-patterns-step-4-post-process-return-result-in-classical-format}
+### Тестування та точність {#testing-and-accuracy}
+Тепер інтерпретуємо результати навчання. Спочатку перевіримо точність на навчальній вибірці.
+
+```python
+import copy
+from sklearn.metrics import accuracy_score
+from qiskit.primitives import StatevectorEstimator as Estimator  # simulator
+# from qiskit_ibm_runtime import EstimatorV2 as Estimator  # real quantum computer
+
+estimator = Estimator()
+# estimator = Estimator(backend=backend)
+
+pred_train = forward(circuit, np.array(train_images), res["x"], estimator, observable)
+# pred_train = forward(circuit_ibm, np.array(train_images), res['x'], estimator, observable_ibm)
+
+print(pred_train)
+
+pred_train_labels = copy.deepcopy(pred_train)
+pred_train_labels[pred_train_labels >= 0] = 1
+pred_train_labels[pred_train_labels < 0] = -1
+print(pred_train_labels)
+print(train_labels)
+
+accuracy = accuracy_score(train_labels, pred_train_labels)
+print(f"Train accuracy: {accuracy * 100}%")
+```
+
+```text
+[-2.27688499e-02 -1.46227204e-02 -1.73927452e-02  9.93331786e-02
+ -4.85553548e-01  1.43558565e-01  8.34567054e-02 -1.40133992e-02
+  1.52169596e-01 -1.95082515e-01  8.24373578e-03 -9.90696638e-02
+ -3.54268344e-02 -4.77017954e-01  1.38713848e-02 -2.99706215e-01
+ -5.78378029e-02  3.25528779e-02 -4.11354239e-02 -1.06483708e-01
+  1.53095800e-01  2.90110884e-02  1.25745450e-02  6.46323079e-02
+ -1.53538943e-01 -1.57694952e-02 -1.67800067e-02 -1.99820822e-01
+  1.70360075e-01  7.86148038e-03 -2.33373818e-02  6.64233020e-02
+ -1.14895445e-01 -1.11296215e-01  1.15120303e-01 -2.94096140e-01
+ -1.00531392e-03 -1.69209726e-01 -1.26120885e-01  3.26298176e-02
+ -1.33517383e-02 -5.86983444e-02 -4.32341361e-01 -4.36509551e-01
+ -4.17940102e-02  1.76935235e-03  8.14479984e-03  1.86985655e-01
+ -2.75525019e-01 -1.63229907e-03 -1.08571055e-01 -7.37452387e-04
+ -6.44440657e-02  6.72812834e-04  2.16785530e-03  1.41381850e-01
+ -9.82570410e-02  4.35973325e-01 -7.62261965e-02 -1.86193980e-01
+ -1.56971183e-02 -4.02757541e-01 -1.53869367e-01  2.29262129e-02
+ -7.02788246e-03  3.65719683e-02  4.68232163e-01  2.36434668e-02
+ -2.59520939e-02  3.70550137e-01 -1.19630110e-01 -5.79555318e-02
+  2.09554455e-01  5.04689780e-02  7.39494314e-02 -1.77647326e-02
+ -1.45407207e-01 -9.54908878e-02  7.56029640e-02 -2.74049696e-02
+  3.34885873e-01  1.58546171e-03  1.09339091e-01 -8.84693274e-02
+ -2.36450457e-02  1.41892239e-01 -2.34453218e-01 -7.50717757e-02
+ -1.13281310e-01 -1.66649414e-01 -3.17224197e-01 -6.38220597e-02
+  3.28916563e-02  3.04739203e-02  2.67720196e-02 -1.16485785e-01
+ -3.08115732e-02 -2.95372010e-02 -7.54669023e-02  6.20013872e-02
+ -3.85258710e-01 -1.16456443e-01 -7.38548075e-02 -3.20558243e-02
+ -4.22284741e-02  1.01285659e-01 -1.76949246e-01 -2.02767491e-01
+ -1.12407344e-01 -3.81408267e-02 -4.33345231e-01 -9.24507501e-02
+ -4.21765393e-02 -6.06533771e-02 -2.22257783e-01 -1.17312535e-01
+ -6.74132262e-02 -2.76206274e-01 -9.13971800e-02 -2.27653991e-01
+  1.66358563e-01  2.17230774e-04  5.76426304e-02 -2.82079169e-02
+ -1.15482051e-01 -3.46716009e-01 -3.21448755e-01 -5.20041405e-02
+ -2.16833625e-01 -1.06154654e-02 -7.74854811e-02 -3.28257935e-01
+ -7.83242410e-02  1.65547682e-01 -2.55294862e-01 -8.89085025e-02
+  4.47581491e-01  1.92351832e-02  2.74083885e-02 -3.61304571e-01]
+[-1. -1. -1.  1. -1.  1.  1. -1.  1. -1.  1. -1. -1. -1.  1. -1. -1.  1.
+ -1. -1.  1.  1.  1.  1. -1. -1. -1. -1.  1.  1. -1.  1. -1. -1.  1. -1.
+ -1. -1. -1.  1. -1. -1. -1. -1. -1.  1.  1.  1. -1. -1. -1. -1. -1.  1.
+  1.  1. -1.  1. -1. -1. -1. -1. -1.  1. -1.  1.  1.  1. -1.  1. -1. -1.
+  1.  1.  1. -1. -1. -1.  1. -1.  1.  1.  1. -1. -1.  1. -1. -1. -1. -1.
+ -1. -1.  1.  1.  1. -1. -1. -1. -1.  1. -1. -1. -1. -1. -1.  1. -1. -1.
+ -1. -1. -1. -1. -1. -1. -1. -1. -1. -1. -1. -1.  1.  1.  1. -1. -1. -1.
+ -1. -1. -1. -1. -1. -1. -1.  1. -1. -1.  1.  1.  1. -1.]
+[1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, -1, -1, -1, 1, -1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, -1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, -1, -1, 1, -1, 1, 1, -1, -1, -1]
+Train accuracy: 60.0%
+```
+
+Точність на навчальній вибірці лише $60\%$ — це явно погано. Важко уявити, що на тестовій вибірці результат буде кращим. Перевіримо.
+
+```python
+pred_test = forward(circuit, np.array(test_images), res["x"], estimator, observable)
+# pred_test = forward(circuit_ibm, np.array(test_images), res['x'], estimator, observable_ibm)
+
+print(pred_test)
+
+pred_test_labels = copy.deepcopy(pred_test)
+pred_test_labels[pred_test_labels >= 0] = 1
+pred_test_labels[pred_test_labels < 0] = -1
+print(pred_test_labels)
+print(test_labels)
+
+accuracy = accuracy_score(test_labels, pred_test_labels)
+print(f"Test accuracy: {accuracy * 100}%")
+```
+
+```text
+[-2.77978120e-01 -2.62194862e-01  4.59636095e-02 -8.09344165e-02
+ -2.97362966e-01  9.22947242e-02  2.06693174e-01  3.31629460e-02
+  1.10971762e-03 -2.14602152e-01 -1.62671993e-01 -6.07179155e-04
+ -1.59948633e-01 -8.55722523e-02 -1.13057027e-01 -3.00187433e-01
+ -2.92832827e-01  7.38580629e-02 -6.03706270e-02 -8.57643552e-02
+ -1.52402062e-02 -3.57505447e-01 -3.54890597e-02  1.36534749e-01
+ -1.54688180e-01 -2.93714726e-01  1.89548513e-02 -6.15715564e-02
+  1.11042670e-01 -2.22861100e-02 -3.84230105e-02  1.67351034e-01
+ -8.38766333e-02  2.56348613e-01 -1.10653111e-01 -1.18989476e-01
+ -6.75723266e-05 -6.88580547e-02  1.02431393e-02 -2.42125353e-01
+ -1.09142367e-01 -1.22540757e-01 -1.63735850e-01  3.93334838e-01
+  2.36705685e-01 -2.34259814e-02 -3.91877756e-02 -1.95106746e-01
+  1.86707523e-01  4.74775215e-02 -4.24907432e-02 -2.06453265e-01
+  4.09184710e-02 -3.54762080e-02 -9.47513112e-02  2.97270112e-01
+ -2.99708696e-02  9.93941064e-03 -1.26760302e-01 -1.36183355e-01]
+[-1. -1.  1. -1. -1.  1.  1.  1.  1. -1. -1. -1. -1. -1. -1. -1. -1.  1.
+ -1. -1. -1. -1. -1.  1. -1. -1.  1. -1.  1. -1. -1.  1. -1.  1. -1. -1.
+ -1. -1.  1. -1. -1. -1. -1.  1.  1. -1. -1. -1.  1.  1. -1. -1.  1. -1.
+ -1.  1. -1.  1. -1. -1.]
+[-1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1, 1, 1, -1, -1]
+Test accuracy: 60.0%
+```
+
+Модель погано класифікує ці дані. Варто запитати себе, чому так відбувається. Зокрема, слід перевірити:
+* Чи зупинили ми навчання завчасно? Можливо, потрібно більше кроків оптимізації?
+* Чи побудували ми поганий ансатц? Це може означати багато чого. При роботі на реальних квантових комп'ютерах глибина схеми є ключовим чинником. Важливою може бути також кількість параметрів і заплутаність між кубітами.
+* Поєднуючи обидва пункти: чи не містить наш ансатц надто багато параметрів, щоб його можна було навчити?
+
+Почнемо з перевірки збіжності оптимізації:
+
+```python
+obj_func_vals_first = objective_func_vals
+# import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(obj_func_vals_first, label="first ansatz")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.legend()
+plt.show()
+```
+
+![Вихідні дані попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/6ecfddaa-7bd4-43d0-bfec-bd112854261e-0.avif)
+
+Можна спробувати збільшити кількість кроків оптимізатора, щоб переконатися, що він не застряг у локальному мінімумі в просторі параметрів. Але графік виглядає досить збіжним. Подивімося уважніше на зображення, які *не* були класифіковані правильно, і спробуємо зрозуміти, що відбувається.
+
+```python
+missed = []
+for i in range(len(test_labels)):
+    if pred_test_labels[i] != test_labels[i]:
+        missed.append(test_images[i])
+print(len(missed))
+```
+
+```text
+24
+```
+
+```python
+fig, ax = plt.subplots(12, 2, figsize=(6, 6), subplot_kw={"xticks": [], "yticks": []})
+for i in range(len(missed)):
+    ax[i // 2, i % 2].imshow(
+        missed[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+plt.subplots_adjust(wspace=0.02, hspace=0.025)
+```
+
+![Вихідні дані попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/81ee504e-1c94-4600-8ab2-6406c473df73-0.avif)
+
+Тут видно, що переважна більшість неправильно класифікованих зображень містить вертикальну лінію. Щось у нашій моделі не дозволяє вловити інформацію про них. Можливо, ти вже здогадувався про це, дивлячись на першу варіаційну схему. Розглянемо її уважніше.
+
+## Покращення моделі {#improving-the-model}
+
+### Крок 1 переглянутий {#step-1-revisited}
+
+Відображаючи задачу на квантову схему, нам слід було явно подумати про те, як інформація в сусідніх пікселях визначає клас. Щоб виявити горизонтальні лінії, нам потрібно знати: «якщо піксель $i$ жовтий, чи жовтий піксель $i+1$» — для всіх пікселів у кожному рядку. Нам також потрібно знати про вертикальні лінії. Але оскільки класифікація бінарна, можна уявити логіку: якщо горизонтальна лінія *не* виявлена, то це вертикальна лінія. Наша попередня варіаційна схема містила вентилі CNOT між кубітами (і відповідно пікселями) 0 і 1, 1 і 2, 2 і 3. Це охоплює будь-які горизонтальні лінії у верхній частині зображення, але не виявляє безпосередньо вертикальні лінії і не повністю виявляє горизонтальні, оскільки ігнорує нижній рядок. Щоб повністю виявляти всі горизонтальні лінії, нам потрібен аналогічний набір вентилів CNOT між кубітами (пікселями) 4 і 5, 5 і 6, 6 і 7. Також варто мати на увазі, що додавання вентилів CNOT між кубітами, які відповідають вертикальним лініям (наприклад, 0 і 4 або 2 і 6), теж може бути корисним. Але спочатку перевіримо, чи достатньо виявляти наявність або відсутність горизонтальної лінії.
+
+```python
+# Initialize the circuit using the same number of qubits as the image has pixels
+qnn_circuit = QuantumCircuit(size)
+
+# We choose to have two variational parameters for each qubit.
+params = ParameterVector("θ", length=2 * size)
+
+# A first variational layer:
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# Here is an extended list of qubit pairs between which we want CNOT gates. This now covers all pixels connected by horizontal lines.
+qnn_cnot_list = [[0, 1], [1, 2], [2, 3], [4, 5], [5, 6], [6, 7]]
+
+for i in range(len(qnn_cnot_list)):
+    qnn_circuit.cx(qnn_cnot_list[i][0], qnn_cnot_list[i][1])
+
+# The second variational layer:
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+
+# Check the circuit depth, and the two-qubit gate depth
+print(qnn_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+
+# Combine the feature map and variational circuit
+ansatz = qnn_circuit
+
+# Combine the feature map with the ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Display the circuit
+full_circuit.decompose().draw("mpl", style="clifford", fold=-1)
+```
+
+```text
+5
+2+ qubit depth: 3
+```
+
+![Вихідні дані попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/0f0a7fd1-803a-446e-a761-3c9b41c9e3c6-1.avif)
+
+Ми не збільшили глибину схеми. Подивімося, чи покращили ми її здатність моделювати наші зображення.
+
+### Крок 2 переглянутий {#step-2-revisited}
+
+Нам потрібно буде транспілювати цю нову схему для запуску на реальному квантовому бекенді. Поки що пропустимо цей крок, щоб перевірити, чи дала наша доопрацьована варіаційна схема бажаний ефект на симуляторах. Детальніше транспіляцію розглянемо в наступному підрозділі.
+
+### Крок 3 переглянутий {#step-3-revisited}
+
+Тепер застосуємо оновлену модель до навчальних даних.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+batch_size = 140
+num_epochs = 1
+num_samples = len(train_images)
+
+# Globals
+circuit = full_circuit
+estimator = Estimator()  # simulator for debugging
+observables = observable
+objective_func_vals = []
+iter = 0
+
+# Random initial weights for the ansatz
+np.random.seed(42)
+weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+
+for epoch in range(num_epochs):
+    for i in range((num_samples - 1) // batch_size + 1):
+        print(f"Epoch: {epoch}, batch: {i}")
+        start_i = i * batch_size
+        end_i = start_i + batch_size
+        train_images_batch = np.array(train_images[start_i:end_i])
+        train_labels_batch = np.array(train_labels[start_i:end_i])
+        input_params = train_images_batch
+        target = train_labels_batch
+        iter = 0
+        res = minimize(
+            mse_loss_weights, weight_params, method="COBYLA", options={"maxiter": 100}
+        )
+        weight_params = res["x"]
+```
+
+```text
+Epoch: 0, batch: 0
+Iter: 0, loss: 1.0049762969140237
+Iter: 50, loss: 0.8274276543780351
+```
+
+### Крок 4 переглянутий {#step-4-revisited}
+
+Почнемо з перевірки того, чи повністю збіжся наш оптимізатор.
+
+```python
+obj_func_vals_revised = objective_func_vals
+# import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(obj_func_vals_revised, label="revised ansatz")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.legend()
+plt.show()
+```
+
+![Вихідні дані попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/05c6f664-4043-446c-8fcc-11e77d6fe280-0.avif)
+
+Схоже, що повної збіжності немає, оскільки функція втрат не залишалася приблизно на одному рівні впродовж достатньо великої кількості кроків. Проте функція втрат уже приблизно на 60% нижча, ніж при використанні попередньої варіаційної схеми. Якби це був дослідницький проєкт, ми б обов'язково досягли повної збіжності. Але для цілей дослідження цього достатньо. Перевіримо точність на навчальній та тестовій вибірках.
+
+```python
+from sklearn.metrics import accuracy_score
+from qiskit.primitives import StatevectorEstimator as Estimator  # simulator
+# from qiskit_ibm_runtime import EstimatorV2 as Estimator  # real quantum computer
+
+estimator = Estimator()
+# estimator = Estimator(backend=backend)
+
+pred_train = forward(circuit, np.array(train_images), res["x"], estimator, observable)
+# pred_train = forward(circuit_ibm, np.array(train_images), res['x'], estimator, observable_ibm)
+
+print(pred_train)
+
+pred_train_labels = copy.deepcopy(pred_train)
+pred_train_labels[pred_train_labels >= 0] = 1
+pred_train_labels[pred_train_labels < 0] = -1
+print(pred_train_labels)
+print(train_labels)
+
+accuracy = accuracy_score(train_labels, pred_train_labels)
+print(f"Train accuracy: {accuracy * 100}%")
+```
+
+```text
+[ 0.46144755  0.42579688  0.35255977  0.55207273 -0.48578418  0.50805845
+  0.44892649  0.6173847  -0.62428139  0.40405121  0.46862421  0.29503395
+ -0.5740469  -0.71794562 -0.45022095 -0.45330418 -0.19795258 -0.46821777
+ -0.5622049  -0.32114059  0.54947838 -0.4889812   0.28327445  0.58149728
+ -0.27026749  0.41328304  0.21119412  0.60108606  0.39204178 -0.24974605
+  0.38496469  0.39867586 -0.38946996  0.62616766  0.61212525 -0.49719567
+  0.30860002  0.68443904 -0.27505907 -0.41508947 -0.49666422  0.67716994
+ -0.54696613 -0.70058779  0.42711815 -0.5285338   0.37678572  0.43888249
+ -0.30844464  0.42347715 -0.4250844   0.67324132  0.59914067 -0.45184567
+  0.13604098  0.65336342  0.26099853  0.60316559 -0.38743183 -0.54784284
+ -0.29549031 -0.45592302  0.41613453 -0.38781528  0.56903087  0.54955451
+  0.55532336 -0.3931852  -0.57599675  0.61246236  0.42014135 -0.38171749
+  0.56760389  0.45383135 -0.50473943 -0.47551181  0.54221517 -0.64987023
+  0.28845851  0.54403865  0.53841148  0.64477078  0.71912049 -0.63178323
+ -0.50764757  0.50304637 -0.38099972 -0.27707127 -0.24353841 -0.52045267
+ -0.61500665  0.65443173  0.31902266 -0.64969037 -0.4814051   0.47980608
+ -0.649786   -0.43048551  0.34562588  0.308998   -0.32454238  0.29558168
+ -0.45410187  0.54600712  0.33204827  0.22627804  0.4283921   0.56191874
+ -0.25400294 -0.6493613  -0.47445293  0.42272138 -0.35472546 -0.52240474
+ -0.45207595  0.40292125 -0.3361856  -0.46620886  0.60202719 -0.56505744
+  0.47169796 -0.43577622  0.40689437  0.48869108 -0.39701189 -0.57698634
+ -0.39236332  0.31294648  0.41797597  0.63004836 -0.52884541 -0.43805812
+ -0.3193499   0.36860211 -0.49190995  0.65000193  0.50260077 -0.56737168
+ -0.29693083 -0.40956432]
+[ 1.  1.  1.  1. -1.  1.  1.  1. -1.  1.  1.  1. -1. -1. -1. -1. -1. -1.
+ -1. -1.  1. -1.  1.  1. -1.  1.  1.  1.  1. -1.  1.  1. -1.  1.  1. -1.
+  1.  1. -1. -1. -1.  1. -1. -1.  1. -1.  1.  1. -1.  1. -1.  1.  1. -1.
+  1.  1.  1.  1. -1. -1. -1. -1.  1. -1.  1.  1.  1. -1. -1.  1.  1. -1.
+  1.  1. -1. -1.  1. -1.  1.  1.  1.  1.  1. -1. -1.  1. -1. -1. -1. -1.
+ -1.  1.  1. -1. -1.  1. -1. -1.  1.  1. -1.  1. -1.  1.  1.  1.  1.  1.
+ -1. -1. -1.  1. -1. -1. -1.  1. -1. -1.  1. -1.  1. -1.  1.  1. -1. -1.
+ -1.  1.  1.  1. -1. -1. -1.  1. -1.  1.  1. -1. -1. -1.]
+[1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, -1, 1, 1, -1, 1, 1, 1, 1, -1, -1, -1, -1, 1, -1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, -1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, 1, -1, -1, 1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, -1, -1, 1, -1, 1, 1, -1, -1, -1]
+Train accuracy: 100.0%
+```
+
+```python
+pred_test = forward(circuit, np.array(test_images), res["x"], estimator, observable)
+# pred_test = forward(circuit_ibm, np.array(test_images), res['x'], estimator, observable_ibm)
+
+print(pred_test)
+
+pred_test_labels = copy.deepcopy(pred_test)
+pred_test_labels[pred_test_labels >= 0] = 1
+pred_test_labels[pred_test_labels < 0] = -1
+print(pred_test_labels)
+print(test_labels)
+
+accuracy = accuracy_score(test_labels, pred_test_labels)
+print(f"Test accuracy: {accuracy * 100}%")
+```
+
+```text
+[-0.48396136 -0.57123828  0.28373249  0.38983869 -0.45799092 -0.63643031
+  0.69164877 -0.47749808  0.16965244 -0.39669469  0.39366915  0.44206948
+  0.69733951  0.40445979 -0.33663432  0.54511581 -0.49397081  0.55934553
+  0.69269512  0.38875983  0.39724004 -0.49635863 -0.19131387  0.38813936
+  0.39537369 -0.46262489  0.5307315   0.21783317  0.31949453 -0.49772087
+  0.56409526 -0.66254365 -0.57507262  0.37363552  0.35154205  0.69295687
+ -0.31205475  0.37787066  0.67903997 -0.29984861 -0.46435535 -0.32610974
+  0.4327188   0.64626537  0.37592731 -0.14328906  0.59694745  0.71880638
+  0.32414334  0.42119333 -0.60745236 -0.42520033  0.28334222  0.21699081
+  0.34837252  0.31538989  0.30754545  0.5995197  -0.34678026 -0.46587602]
+[-1. -1.  1.  1. -1. -1.  1. -1.  1. -1.  1.  1.  1.  1. -1.  1. -1.  1.
+  1.  1.  1. -1. -1.  1.  1. -1.  1.  1.  1. -1.  1. -1. -1.  1.  1.  1.
+ -1.  1.  1. -1. -1. -1.  1.  1.  1. -1.  1.  1.  1.  1. -1. -1.  1.  1.
+  1.  1.  1.  1. -1. -1.]
+[-1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1, -1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1, 1, 1, -1, -1]
+Test accuracy: 100.0%
+```bash
+
+$100\%$ точності на обох вибірках! Наше припущення про те, що точного виявлення горизонтальних ліній достатньо, виявилося правильним! Більш того, наше відображення необхідної інформації про пікселі на вентилі CNOT у квантовій схемі спрацювало ефективно. Тепер розглянемо, як цей процес масштабується для запуску на реальних квантових комп'ютерах.
+
+## Масштабування та запуск на реальних квантових комп'ютерах {#scaling-and-running-on-real-quantum-computers}
+
+### Дані {#data}
+
+Почнемо зі збільшення розміру зображень. У виборі сітки 6×6 немає нічого особливого, крім того, що вона перевищує кількість кубітів (32), які ми можемо симулювати для схем з не-Кліффордівськими вентилями.
+
+```python
+# Цей код визначає зображення для класифікації:
+
+import numpy as np
+
+# Загальна кількість "пікселів"/кубітів
+size = 36
+# Один вимір зображення (називається вертикальним, але це не принципово). Має бути дільником `size`
+vert_size = 6
+# Довжина лінії, яку потрібно виявити (жовта). Має бути меншою або рівною найменшому виміру зображення (`<=min(vert_size,size/vert_size)`)
+line_size = 6
+
+def generate_dataset(num_images):
+    images = []
+    labels = []
+    hor_array = np.zeros((size - (line_size - 1) * vert_size, size))
+    ver_array = np.zeros((round(size / vert_size) * (vert_size - line_size + 1), size))
+
+    j = 0
+    for i in range(0, size - 1):
+        if i % (size / vert_size) <= (size / vert_size) - line_size:
+            for p in range(0, line_size):
+                hor_array[j][i + p] = np.pi / 2
+            j += 1
+
+    # Робимо два сусідніх елементи рівними pi/2, потім переходимо на наступний рядок. Обережно уникаємо "пікселів" на позиції size/vert_size - linesize, бо хочемо скласти цей список у сітку.
+
+    j = 0
+    for i in range(0, round(size / vert_size) * (vert_size - line_size + 1)):
+        for p in range(0, line_size):
+            ver_array[j][i + p * round(size / vert_size)] = np.pi / 2
+        j += 1
+
+    # Робимо елементи рівними pi/2, з кроком, рівним довжині/рядкам, щоб після складання елементи опинилися один над одним.
+
+    for n in range(num_images):
+        rng = np.random.randint(0, 2)
+        if rng == 0:
+            labels.append(-1)
+            random_image = np.random.randint(0, len(hor_array))
+            images.append(np.array(hor_array[random_image]))
+            # Випадково вибираємо один із кількох рядків, створених вище.
+        elif rng == 1:
+            labels.append(1)
+            random_image = np.random.randint(0, len(ver_array))
+            images.append(np.array(ver_array[random_image]))
+            # Випадково вибираємо один із кількох рядків, створених вище.
+
+        # Додаємо шум
+        for i in range(size):
+            if images[-1][i] == 0:
+                images[-1][i] = np.random.rand() * np.pi / 4
+    return images, labels
+
+hor_size = round(size / vert_size)
+```
+
+Оскільки квантовий обчислювальний час — цінний ресурс, використаємо дуже малий навчальний набір і дуже мало кроків оптимізації. Цього буде достатньо, щоб продемонструвати робочий процес.
+
+```python
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+# Тут задаємо дуже малий набір даних. Збільш для реалістичності, але стеж за використанням квантового обчислювального часу.
+images, labels = generate_dataset(10)
+
+train_images, test_images, train_labels, test_labels = train_test_split(
+    images, labels, test_size=0.3, random_state=246
+)
+```
+
+```python
+import matplotlib.pyplot as plt
+
+# Генеруємо фігуру з вкладеними зображеннями за допомогою subplots.
+
+fig, ax = plt.subplots(2, 2, figsize=(10, 6), subplot_kw={"xticks": [], "yticks": []})
+for i in range(4):
+    ax[i // 2, i % 2].imshow(
+        train_images[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+plt.subplots_adjust(wspace=0.1, hspace=0.025)
+```
+
+![Вихід попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/b106d32c-cd1f-4463-97fe-2f41695402fb-0.avif)
+
+### Крок 1: Відображення задачі на квантову схему {#step-1-map-the-problem-to-a-quantum-circuit}
+
+```python
+from qiskit.circuit.library import z_feature_map
+
+# Один кубіт на кожну ознаку даних
+num_qubits = len(train_images[0])
+
+# Кодування даних
+# Зауваж, що qiskit сортує параметри за алфавітом. Призначаємо префікс параметра "a", щоб кодування даних потрапило в першу частину схеми — feature map.
+feature_map = z_feature_map(num_qubits, parameter_prefix="a")
+```
+
+```python
+# Це створює схему з CX-вентилями у стиснутому порядку.
+
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+
+qnn_circuit = QuantumCircuit(size)
+params = ParameterVector("θ", length=2 * size)
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# CNOT-вентилі між горизонтально сусідніми кубітами.
+for i in range(vert_size):
+    for j in range(hor_size):
+        if j < hor_size - 1:
+            qnn_circuit.cx((i * hor_size) + j, (i * hor_size) + j + 1)
+
+# CNOT-вентилі між вертикально сусідніми кубітами — за попередньою симуляцією, мабуть, не потрібні.
+#        if i<vert_size-1:
+#            qnn_circuit.cx((i*hor_size)+j,(i*hor_size)+j+hor_size)
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+qnn_circuit_large = qnn_circuit
+
+print(qnn_circuit_large.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit_large.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+# qnn_circuit_large.draw()
+```
+
+```text
+7
+2+ qubit depth: 5
+```
+
+Це прийнятна глибина за двокубітними вентилями. Ми повинні отримати якісні результати на реальному квантовому комп'ютері.
+
+```python
+# Об'єднуємо feature map і варіаційну схему
+ansatz = qnn_circuit
+
+# Об'єднуємо feature map з ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Перевіряємо глибину повної схеми
+print(full_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {full_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+```
+
+```text
+11
+2+ qubit depth: 5
+```
+
+Оскільки ми використовуємо `z_feature_map`, який не має CNOT-вентилів, додавання шару кодування не збільшує нашу двокубітну глибину. Повну схему можна візуалізувати тут.
+
+```python
+full_circuit.decompose().draw("mpl", style="clifford", idle_wires=False, fold=-1)
+```
+
+![Вихід попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/b43806aa-7d41-40b8-9e43-a604f0e42c26-0.avif)
+
+Можливо, ти помітиш, що якби мінімізація двокубітної глибини була вкрай важливою, її можна було б дещо зменшити, змінивши порядок CNOT-вентилів. Наприклад, CNOT-вентилі на $q_{35}$ і $q_{34}$ можна було б зсунути ліворуч на діаграмі схеми вище та розмістити безпосередньо під CNOT-вентилями на $q_{30}$ і $q_{31}$. Для двокубітної глибини 5 не очевидно, що це матиме значення після транспіляції, але це варто мати на увазі. Якщо порядок CNOT-вентилів важливий для логічного відображення задачі — поточна глибина цілком підходить. Якщо ж порядок CNOT-вентилів не критичний для моделювання структури даних у наших зображеннях, можна написати скрипт для переупорядкування цих вентилів з метою мінімізації глибини.
+
+Також нам потрібно перевизначити наш оператор спостереження для більших зображень:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("Z" * (num_qubits), 1)])
+```
+
+## Крок 2 патернів Qiskit: Оптимізація задачі для квантового виконання {#qiskit-patterns-step-2-optimize-problem-for-quantum-execution}
+
+Почнемо з вибору бекенду для виконання. У цьому випадку ми використаємо найменш завантажений бекенд.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+# Щоб запустити на залізі, вибираємо найменш завантажений квантовий комп'ютер або вказуємо конкретний.
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbaneane")
+
+print(backend.name)
+```
+
+```text
+ibm_brisbane
+```
+
+Знову визначаємо менеджер проходів із рівнем оптимізації 3.
+
+```python
+from qiskit.circuit.library import XGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    ConstrainedReschedule,
+    PadDynamicalDecoupling,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+Тепер застосуємо менеджер проходів кілька разів. Для дуже широких або дуже глибоких схем транспільована двокубітна глибина може суттєво варіюватися. Для таких схем важливо запускати менеджер проходів багато разів і використовувати найкращий (найменш глибокий) результат.
+
+```python
+# Запускаємо менеджер проходів кілька разів, оскільки евристики можуть повертати різні транспіляції для великих схем, а нам потрібна найменш глибока.
+
+transpiled_qcs = []
+transpiled_depths = []
+transpiled_2q_depths = []
+for i in range(1, 10):
+    circuit_ibm = pm.run(full_circuit)
+    transpiled_qcs.append(circuit_ibm)
+    transpiled_depths.append(circuit_ibm.decompose().depth())
+    transpiled_2q_depths.append(
+        circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)
+    )
+    # print(i)
+
+print(transpiled_depths)
+print(transpiled_2q_depths)
+
+# Використовуємо найменш глибокий варіант
+
+minpos = transpiled_2q_depths.index(min(transpiled_2q_depths))
+```
+
+```text
+[85, 85, 81, 89, 81, 81, 89, 85, 85]
+[10, 10, 10, 10, 10, 10, 10, 10, 10]
+```
+
+Бачимо, що в цьому випадку транспільована двокубітна глибина завжди дорівнювала 10. Однокубітна глибина дещо варіювалася, і ми використаємо найменшу. Але для цієї 36-кубітної схеми це не критичне покращення. Транспільовану схему можна візуалізувати, хоча в такому масштабі її стає дедалі важче розібрати візуально.
+
+```python
+circuit_ibm = transpiled_qcs[2]
+observable_ibm = observable.apply_layout(circuit_ibm.layout)
+print(circuit_ibm.decompose().depth())
+print(
+    f"2+ qubit depth: {circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+```
+
+```text
+81
+2+ qubit depth: 10
+```
+
+## Крок 3 патернів Qiskit: Виконання за допомогою примітивів Qiskit {#qiskit-patterns-step-3-execute-using-qiskit-primitives}
+
+Щоб обмежити використання часу на реальних квантових комп'ютерах, виконаємо лише кілька кроків оптимізації на дуже малому навчальному наборі. Але масштабування цього процесу до більшої кількості кроків оптимізації та більших тестових наборів даних має бути зрозумілим з інструкцій протягом усього уроку.
+
+```python
+# Це виконувалося на процесорі Eagle r3 04.10.24 і зайняло 7 хв.
+
+from qiskit_ibm_runtime import EstimatorV2 as Estimator, Session
+
+batch_size = 7
+num_epochs = 1
+num_samples = len(train_images)
+
+# Глобальні змінні
+circuit = circuit_ibm
+observable = observable_ibm
+objective_func_vals = []
+iter = 0
+
+# Випадкові початкові ваги для ansatz
+np.random.seed(42)
+# weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+# Або завантажуємо ваги з попереднього розрахунку
+weight_params = np.array(
+    [
+        3.35330497,
+        5.97351416,
+        4.59925358,
+        3.76148219,
+        0.98029403,
+        0.98014248,
+        0.3649501,
+        6.44234523,
+        3.77691701,
+        4.44895122,
+        0.12933619,
+        6.09412333,
+        5.23039137,
+        1.33416598,
+        1.14243996,
+        1.15236452,
+        1.91161039,
+        3.2971419,
+        3.71399059,
+        1.82984665,
+        3.84438512,
+        0.87646578,
+        1.83559896,
+        2.30191935,
+        2.86557222,
+        4.93340606,
+        1.25458737,
+        3.23103027,
+        3.72225051,
+        0.29185655,
+        3.81731689,
+        1.07143467,
+        0.40873121,
+        5.96202367,
+        6.067245,
+        5.07931034,
+        1.91394476,
+        0.61369199,
+        4.2991629,
+        2.76555968,
+        0.76678884,
+        3.11128829,
+        0.21606945,
+        5.71342859,
+        1.62596258,
+        4.16275028,
+        1.95853845,
+        3.26768375,
+        3.43508199,
+        1.1614748,
+        6.09207989,
+        4.87030317,
+        5.90304595,
+        5.62236606,
+        3.75671636,
+        5.79230665,
+        0.55601479,
+        1.23139664,
+        0.28417144,
+        2.04411075,
+        2.44213144,
+        1.70493625,
+        5.20711134,
+        2.24154726,
+        1.76516358,
+        3.40986006,
+        0.88545302,
+        5.04035228,
+        0.46841551,
+        6.2007935,
+        4.85215699,
+        1.24856745,
+    ]
+)
+
+# Виконання в сесії дозволяє уникнути повторного поставлення в чергу. Це доступно користувачам тарифних планів Premium Plan, Flex Plan та On-Prem (IBM Quantum Platform API).
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options={"resilience_level": 1})
+
+    for epoch in range(num_epochs):
+        for i in range((num_samples - 1) // batch_size + 1):
+            print(f"Epoch: {epoch}, batch: {i}")
+            start_i = i * batch_size
+            end_i = start_i + batch_size
+            train_images_batch = np.array(train_images[start_i:end_i])
+            train_labels_batch = np.array(train_labels[start_i:end_i])
+            input_params = train_images_batch
+            target = train_labels_batch
+            iter = 0
+            # Можна збільшити maxiter для повної оптимізації.
+            res = minimize(
+                mse_loss_weights,
+                weight_params,
+                method="COBYLA",
+                options={"maxiter": 20},
+            )
+            weight_params = res["x"]
+session.close()
+
+# Користувачі відкритого доступу можуть виконати той самий розрахунок за допомогою batch, але повторне поставлення в чергу можливе.
+# from qiskit_ibm_runtime import Batch
+
+# with Batch(backend=backend) as batch:
+#    estimator = Estimator(
+#        mode=batch, options={"resilience_level": 1}
+#    )
+#
+#    for epoch in range(num_epochs):
+#        for i in range((num_samples - 1) // batch_size + 1):
+#            print(f"Epoch: {epoch}, batch: {i}")
+#            start_i = i * batch_size
+#            end_i = start_i + batch_size
+#            train_images_batch = np.array(train_images[start_i:end_i])
+#            train_labels_batch = np.array(train_labels[start_i:end_i])
+#            input_params = train_images_batch
+#            target = train_labels_batch
+#            iter = 0
+#            # Можна збільшити maxiter для повної оптимізації.
+#            res = minimize(
+#                mse_loss_weights,
+#                weight_params,
+#                method="COBYLA",
+#                options={"maxiter": 20},
+#            )
+#            weight_params = res["x"]
+# batch.close()
+```
+
+Рекомендується зберегти параметри ваг, повернуті з цього розрахунку, якщо ти вирішиш продовжити ітерації.
+
+```python
+weight_params
+```
+
+```text
+array([3.35330497, 6.97351416, 5.59925358, 3.76148219, 0.98029403,
+       0.98014248, 0.3649501 , 6.44234523, 3.77691701, 4.44895122,
+       1.12933619, 7.09412333, 5.23039137, 1.33416598, 1.14243996,
+       1.15236452, 1.91161039, 3.2971419 , 3.71399059, 1.82984665,
+       3.84438512, 0.87646578, 1.83559896, 2.30191935, 2.86557222,
+       4.93340606, 1.25458737, 3.23103027, 3.72225051, 0.29185655,
+       3.81731689, 1.07143467, 0.40873121, 5.96202367, 6.067245  ,
+       5.07931034, 1.91394476, 0.61369199, 4.2991629 , 2.76555968,
+       0.76678884, 3.11128829, 0.21606945, 5.71342859, 1.62596258,
+       4.16275028, 1.95853845, 3.26768375, 3.43508199, 1.1614748 ,
+       6.09207989, 4.87030317, 5.90304595, 5.62236606, 3.75671636,
+       5.79230665, 0.55601479, 1.23139664, 0.28417144, 2.04411075,
+       2.44213144, 1.70493625, 5.20711134, 2.24154726, 1.76516358,
+       3.40986006, 0.88545302, 5.04035228, 0.46841551, 6.2007935 ,
+       4.85215699, 1.24856745])
+```
+
+Ми можемо побудувати графік перших кількох кроків оптимізації, хоча після лише кількох кроків не варто очікувати жодної збіжності. Ці криві залишалися відносно пласкими протягом перших кроків навіть на симуляторах. Варто зазначити, що оптимізація наразі має 72 вільних параметри. Їх можна зменшити принаймні в 2–3 рази без погіршення результатів, наприклад, параметризувавши кубіти з даними, що відповідають підмножині повних рядків і стовпців. Справді, простір параметрів слід зменшити перед тим, як витрачати більше квантового обчислювального часу на мінімізацію функції втрат.
+
+```python
+obj_func_vals_qc = objective_func_vals
+# import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(obj_func_vals_qc, label="revised ansatz")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.legend()
+plt.show()
+```
+
+![Вихід попередньої комірки коду](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/d8244ff1-a7c5-46e1-87b1-e20b506ef4d8-0.avif)
+
+### Підсумок {#closing}
+
+Підбиваючи підсумки, у цьому уроці ми вивчили робочий процес бінарної класифікації зображень за допомогою квантової нейронної мережі. Ключові міркування на кожному кроці патернів Qiskit:
+
+__Крок 1:__ Відображення задачі на квантову схему
+* Завантаж навчальні дані. Це можна зробити «вручну» або використовуючи готову feature map, наприклад `z_feature_map`.
+* Побудуй ansatz із шарами обертання та заплутування, які підходять для твоєї задачі.
+* Стеж за глибиною схеми, щоб забезпечити якісні результати на квантових комп'ютерах.
+
+__Крок 2:__ Оптимізація задачі для квантового виконання
+* Вибери бекенд, зазвичай найменш завантажений.
+* Використай менеджер проходів для транспіляції як схеми, так і операторів спостереження до архітектури обраного бекенду.
+* Для дуже глибоких або широких схем транспілюй кілька разів і вибирай найменш глибоку схему.
+
+__Крок 3:__ Виконання за допомогою примітивів Qiskit (Runtime)
+* Спочатку проведи попередні випробування на симуляторах для налагодження та оптимізації ansatz.
+* Виконай на квантовому комп'ютері IBM&reg;.
+
+__Крок 4:__ Постобробка, повернення результату в класичному форматі
+* Розрахуй точність моделі на навчальних даних і на тестових даних.
+* Стеж за збіжністю класичної оптимізації.
+
+## Джерела {#references}

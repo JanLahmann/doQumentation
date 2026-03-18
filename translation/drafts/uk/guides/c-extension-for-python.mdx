@@ -1,0 +1,180 @@
+---
+title: Розширення Qiskit у Python за допомогою C
+description: Як зібрати C-розширення для свого Qiskit-воркфлоу у Python
+---
+{/* doqumentation-source-hash: afebf203 */}
+
+# Розширення Qiskit у Python за допомогою C
+
+Щоб пришвидшити свої Python-програми на Qiskit за допомогою C, можна скористатися C-розширенням Qiskit для Python.
+Це потребує додаткових кроків порівняно зі standalone-використанням C; детальніше дивись у [керівництві зі встановлення Qiskit C API](/guides/install-c-api).
+
+<Admonition type="warning">
+  Qiskit C API досі є експериментальним і ще не зафіксував стабільний програмний або бінарний інтерфейс. Модулі розширень, зібрані проти Qiskit, гарантовано працюють лише з тією версією Qiskit, яка використовувалась під час збірки.
+</Admonition>
+
+<Admonition type="note">
+  Ці інструкції перевірено лише на UNIX-подібних системах. Інструкції для Windows наразі в розробці.
+</Admonition>
+
+## Вимоги {#requirements}
+
+Спершу переконайся, що [Qiskit C API](/guides/install-c-api) встановлено. Потім встанови Python-інтерфейс Qiskit:
+```bash
+pip install -r requirements.txt -c constraints.txt
+pip install .
+```
+
+## Визначення C-розширення {#define-the-c-extension}
+
+Існує кілька способів написати C-розширення для Python. Для простоти цей посібник починає з підходу, що використовує вбудований модуль Python [`ctypes`](https://docs.python.org/3/library/ctypes.html). У наступному розділі — [Ручне C-розширення](#manual-c-extension) — наведено приклад збірки C-розширення через C API Python для зменшення накладних витрат під час виконання.
+
+Як приклад: припустимо, ти написав C-функцію для побудови спостережуваної (observable) і хочеш повернути її в Python. Можна перетворити `QkObs*` на стороні C у Python-об'єкт `SparseObservable`, скориставшись конвертером `qk_obs_to_python`:
+```c
+// file: extension.c
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>  // include Python header for access to PyObject
+#define QISKIT_C_PYTHON_INTERFACE  // enable C->Python conversion functions
+#include <qiskit.h>
+
+PyObject *build_observable(void) {
+    QkObs *obs = qk_obs_zero(100);
+    // build the observable ...
+    PyObject *pyobj = qk_obs_to_python(obs); // convert to Qiskit's Python ``SparseObservable``
+    qk_obs_free(obs);
+    return pyobj;
+}
+```
+
+Нижче показано, як скомпілювати це у спільну бібліотеку — наприклад, `qiskit_cextension.so`.
+Після цього можна викликати C-програму з Python:
+```python
+# file: main.py
+import qiskit
+import ctypes
+
+# Load the extension, ensuring the global interpreter lock (GIL) is acquired for function calls,
+# which you need for the C->Python object conversion.
+lib = ctypes.PyDLL("/path/to/qiskit_cextension.so")
+lib.build_observable.argtypes = None  # set argument types to the function
+lib.build_observable.restype = ctypes.py_object  # set return type
+
+# now you can directly call the function
+obs = lib.build_observable()
+print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
+print(obs)
+```
+
+## Збірка {#build}
+
+Спочатку потрібно зібрати Python-розширення Qiskit. Воно містить C-символи, тому обидва інтерфейси доступні через одну спільну бібліотеку. Це важливо для коректної передачі даних між C і Python.
+```bash
+python setup.py build_rust --inplace --release
+```
+Спільна бібліотека називається ``_accelerate.<platform-specific-part>``. Знайди її розташування і назву так:
+```bash
+QKLIB=$(python -c "import os; import qiskit; print(os.path.dirname(qiskit._accelerate.__file__))")
+QKNAME=$(python -c "import os; import qiskit; print(os.path.basename(qiskit._accelerate.__file__))")
+```
+
+Тобі також знадобиться знати розташування заголовних файлів Python (``Python.h``) і бібліотек (``libpython.<suffix>``).
+Їх можна визначити, наприклад, так:
+```bash
+PYINCLUDE=$(python -c "import sysconfig; print(sysconfig.get_path('include'))")
+PYLIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+PYNAME=$(find $PYLIB -maxdepth 1 -name "libpython*" | grep -oE "[^/]+$" | grep -oE "python[0-9]+\.[0-9]+" || echo "python")
+```
+(Якщо тобі ці шляхи вже відомі — можна задати їх напряму.)
+
+### Лінкування {#link}
+
+Лінкування може відрізнятися залежно від платформи та лінкера. Нижче описано рішення для лінкерів, що підтримують бібліотеки з довільними іменами за допомогою прапорця `-l:` (наприклад, GNU-лінкер `ld`). Якщо твій лінкер вимагає, щоб бібліотека мала вигляд `lib<щось>` (як-от `ldd` на macOS) — дивись нижче.
+
+Можна зібрати розширення, вказавши повну назву бібліотеки `_accelerate`:
+```bash
+gcc extension.c -fpic -shared -o cextension.so \
+  -I/path/to/dist/c/include -L$QKLIB -l:$QKNAME \
+  -I$PYINCLUDE -L$PYLIB -l$PYNAME
+```
+Після цього просто виконай ``python main.py``, щоб запустити Python-програму.
+
+Альтернативою до використання точної назви бібліотеки з `-l:` є створення символічного посилання на `_accelerate`.
+Щоб підключити спільну бібліотеку `_accelerate`, зроби симлінк у форматі, якого очікує лінкер: `lib<назва бібліотеки>.<суфікс>`:
+```bash
+ln -s $QKLIB/$QKNAME $QKLIB/libqiskit.<suffix>
+```
+де `<suffix>` — це, наприклад, `so` на Linux або `dylib` на macOS. Це дозволяє використовувати `qiskit` як ім'я бібліотеки:
+```bash
+gcc extension.c -fpic -shared -o qiskit_cextension.so \
+  -I/path/to/dist/c/include -L$QKLIB -lqiskit \
+  -I$PYINCLUDE -L$PYLIB -l$PYNAME
+```
+Після цього просто виконай ``python main.py``, щоб запустити Python-програму.
+
+## Ручне C-розширення {#manual-c-extension}
+
+Замість `ctypes` можна вручну зібрати розширення для Python, використовуючи [C API Python](https://docs.python.org/3/c-api/intro.html) безпосередньо. Це може бути швидше за `ctypes`, хоча й потребує більше зусиль для реалізації.
+Нижче наведено короткий приклад того, як це зробити.
+
+```c
+// file: extension.c
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
+#include <stdio.h>
+#define QISKIT_C_PYTHON_INTERFACE
+#include <qiskit.h>
+
+QkObs *build_observable() {
+    // build a 100-qubit empty observable
+    u_int32_t num_qubits = 100;
+    QkObs *obs = qk_obs_zero(num_qubits);
+
+    // add the term 2 * (X0 Y1 Z2) to the observable
+    complex double coeff = 2;  // the coefficient
+    QkBitTerm bit_terms[3] = {QkBitTerm_X, QkBitTerm_Y, QkBitTerm_Z};  // bit terms: X Y Z
+    uint32_t indices[3] = {0, 1, 2};  // indices: 0 1 2
+    QkObsTerm term = {coeff, 3, bit_terms, indices, num_qubits};
+    qk_obs_add_term(obs, &term);  // append the term
+
+    return obs;
+}
+
+/// Define the Python function, which will internally build the QkObs using the
+/// C function defined above, and then convert the C object to the Python equivalent:
+/// a SparseObservable, handled as PyObject.
+static PyObject *cextension_build_observable(PyObject *self, PyObject *args) {
+    // At this point, ``args`` could be parsed for arguments. See PyArg_ParseTuple for details.
+    QkObs *obs = build_observable();  // call the C function to build the observable
+    PyObject *py_obs = qk_obs_to_python(obs);  // convert QkObs to the Python-equivalent
+    return py_obs;
+}
+
+/// Define the module methods.
+static PyMethodDef CExtMethods[] = {
+    {"build_observable", cextension_build_observable, METH_VARARGS, "Build an observable."},
+    {NULL, NULL, 0, NULL}, // sentinel
+};
+
+/// Define the module, which here is called ``cextension``.
+static struct PyModuleDef cextension = {
+    PyModuleDef_HEAD_INIT,
+    "cextension", // module name
+    NULL,         // docs
+    -1,           // keep the module state in global variables
+    CExtMethods,
+};
+
+PyMODINIT_FUNC PyInit_cextension(void) { return PyModule_Create(&cextension); }
+```
+Щоб скомпілювати спільну бібліотеку, прилінкуй бібліотеки Python і Qiskit, як описано в розділі [Збірка](#build) вище. Python-скрипт при цьому не потребує `ctypes` — він може безпосередньо імпортувати модуль `cextension` (переконайся, що він є у твоєму Python path):
+```python
+# file: main.py
+import qiskit
+import cextension
+
+# directly call the function
+obs = cextension.build_observable()
+print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
+print(obs)
+```

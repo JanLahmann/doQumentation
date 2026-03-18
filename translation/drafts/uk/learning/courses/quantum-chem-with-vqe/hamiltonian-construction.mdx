@@ -1,0 +1,552 @@
+---
+title: "Гамільтоніани"
+sidebar_label: "Гамільтоніани"
+description: "Розглядається побудова та відображення гамільтоніанів для застосунків квантової хімії. Використовуємо власний маппер Джордана–Вігнера та бібліотеку PySCF."
+notebook_path: "learning/courses/quantum-chem-with-vqe/hamiltonian-construction.ipynb"
+---
+
+{/* doqumentation-source-hash: 3ed18488 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-chem-with-vqe/hamiltonian-construction.ipynb" />
+
+
+
+{/* cspell:ignore pxxr prqs nelecas Lipinska mcscf chmax Dmax vmax ecore ncas Excp disp antisymmetry Coov irrep IIZZ ZZII workstreams openfermion webkitallowfullscreen allowfullscreen frameborder referrerpolicy Kassal Tranter Ardle Seeley */}
+
+# Гамільтоніани для квантової хімії {#hamiltonians-for-quantum-chemistry}
+
+Почнемо з короткого огляду ролі гамільтоніанів у VQE.
+
+## Огляд гамільтоніана у VQE {#the-hamiltonian-in-vqe-overview}
+
+Доктор Вікторія Ліпінська розповідає нам про гамільтоніани та про те, як їх відображати для використання у квантових обчисленнях.
+
+<IBMVideo id="132414924" title="Вікторія Ліпінська нагадує, що таке гамільтоніан і як він використовується у VQE. Зокрема, вона описує необхідність відображення ферміонного гамільтоніана, який описує нерозрізнювані ферміони, на кубітний гамільтоніан."/>
+
+### Посилання {#references}
+
+Наступні статті згадуються у відео вище.
+* [Quantum Algorithms for Fermionic Simulations, Ortiz, et al.](https://arxiv.org/pdf/cond-mat/0012334.pdf)
+* [Simulating Chemistry using Quantum Computers, Kassal et al.](https://arxiv.org/pdf/1007.2648.pdf)
+* [A Comparison of the Bravyi–Kitaev and Jordan–Wigner Transformations for the Quantum Simulation of Quantum Chemistry, Tranter, et al.](https://pubs.acs.org/doi/full/10.1021/acs.jctc.8b00450)
+* [Quantum Chemistry in the Age of Quantum Computing, Cao, et al.](https://arxiv.org/pdf/1812.09976.pdf)
+* [Quantum computational chemistry, McArdle, et al.](https://arxiv.org/pdf/1808.10402.pdf)
+* [The Bravyi-Kitaev transformation for quantum computation of electronic structure, Seeley, et al., McArdle, et al.](https://arxiv.org/pdf/1812.09976.pdf)
+
+## Підготовка гамільтоніанів для квантової хімії {#preparing-hamiltonians-for-quantum-chemistry}
+
+Гарним першим кроком у застосуванні квантових обчислень до хімічної задачі є визначення гамільтоніана для досліджуваної системи. Тут ми обмежимо обговорення гамільтоніанами квантової хімії, оскільки вони вимагають певного відображення, специфічного для систем ідентичних ферміонів.
+
+Якщо ти вже працюєш у квантовій хімії, у тебе, мабуть, є улюблене програмне забезпечення для моделювання молекул, яке може генерувати гамільтоніан, що описує твою систему. Тут ми використовуватимемо код, побудований виключно на PySCF, numpy та Qiskit. Але процес підготовки гамільтоніана застосовується і до готових рішень. Єдина відмінність між цим підходом та іншим програмним забезпеченням — незначні синтаксичні відмінності; деякі з них розглянуто в підрозділі «Стороннє програмне забезпечення», щоб полегшити інтеграцію з наявними робочими процесами.
+
+Генерація гамільтоніана квантової хімії для використання на QPU IBM Quantum&reg; включає такі кроки:
+
+1. Визначити молекулу (геометрія, спін, активний простір тощо)
+2. Генерувати ферміонний гамільтоніан (оператори народження та знищення)
+3. Відобразити ферміонний гамільтоніан на бозонний оператор (у цьому контексті — за допомогою операторів Паулі)
+4. Якщо використовується стороннє програмне забезпечення: обробити будь-які синтаксичні невідповідності між програмою-генератором та Qiskit
+
+Ферміонний гамільтоніан записується через ферміонні оператори і, зокрема, враховує, що електрони є нерозрізнюваними ферміонами. Це означає, що вони підкоряються зовсім іншій статистиці, ніж розрізнювані, бозонні кубіти. Звідси й потреба у процедурі відображення.
+
+Ті з вас, хто вже знайомий із цими процесами, можуть сміливо пропустити цей розділ.
+Мета:
+
+Кінцева мета — отримати гамільтоніан вигляду:
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy openfermion pyscf qiskit
+```
+
+```python
+H = [(1, "XX"), (1, "YY"), (1, "ZZ")]
+print(H)
+```
+
+```text
+[(1, 'XX'), (1, 'YY'), (1, 'ZZ')]
+```
+
+Або
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+H = SparsePauliOp(["XX", "YY", "ZZ"], coeffs=[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j])
+print(H)
+```
+
+```text
+SparsePauliOp(['XX', 'YY', 'ZZ'],
+              coeffs=[1.+0.j, 1.+0.j, 1.+0.j])
+```
+
+Почнемо з імпорту деяких пакетів:
+
+```python
+import numpy as np
+from pyscf import ao2mo, gto, mcscf, scf
+```
+
+1. Визначити молекулу
+
+Тут ми вкажемо характеристики молекули, що нас цікавить. У цьому прикладі обрано двохатомний водень (оскільки отримані гамільтоніани досить короткі, щоб їх відобразити).
+Фреймворк Python-based Simulations of Chemistry ([PySCF](https://pyscf.org/)) має широкий набір модулів електронної структури, які можна використовувати, серед іншого, для генерації молекулярних гамільтоніанів, придатних для квантових обчислень. Посібник [PySCF Quickstart](https://pyscf.org/quickstart.html) — чудовий ресурс із повним описом усіх змінних і функціональності. Ми дамо лише найкоротший огляд, оскільки багатьом із вас це вже знайомо. Щоб краще зрозуміти їх, відвідай [PySCF.](https://pyscf.org/)
+Коротко:
+
+__distance__ можна використовувати для двохатомних молекул або просто вказати декартові координати для кожного атома. Відстані вказуються в ангстремах.
+
+__gto__ генерує гаусівські орбіталі.
+
+__basis__ стосується функцій, що використовуються для моделювання молекулярних орбіталей. Тут `'sto-6g'` — поширений мінімальний базис, названий на честь апроксимації орбіталей типу Слейтера (Slater-Type Orbitals) шістьма примітивними гаусівськими орбіталями.
+
+__spin__ — ціле число, що вказує кількість непарних електронів (рівне $2S$). Зауваж, що деяке програмне забезпечення використовує мультиплетність ($2S+1$).
+
+__charge__ — заряд молекули.
+
+__symmetry__ — група точкової симетрії молекули, яка вказується рядком або автоматично визначається при встановленні `"symmetry = True"`. Тут `"Dooh"` — відповідна група симетрії для двохатомних молекул із двома однаковими атомами.
+
+```python
+distance = 0.735
+a = distance / 2
+mol = gto.Mole()
+mol.build(
+    verbose=0,
+    atom=[
+        ["H", (0, 0, -a)],
+        ["H", (0, 0, a)],
+    ],
+    basis="sto-6g",
+    spin=0,
+    charge=0,
+    symmetry="Dooh",
+)
+```
+
+```text
+<pyscf.gto.mole.Mole at 0x7fc718f07610>
+```
+
+Майте на увазі, що можна описувати повну енергію (яка включає енергію ядерного відштовхування та електронну), повну електронну орбітальну енергію або енергію деякої підмножини електронних орбіталей (при «замороженому» доповненні). У конкретному випадку $\text{H}_2$ зверни увагу на різні енергії нижче, а також на те, що повна енергія за вирахуванням енергії ядерного відштовхування справді дає електронну енергію:
+
+```python
+mf = scf.RHF(mol)
+mf.scf()
+
+print(
+    mf.energy_nuc(),
+    mf.energy_elec()[0],
+    mf.energy_tot(),
+    mf.energy_tot() - mol.energy_nuc(),
+)
+```
+
+```text
+0.7199689944489797 -1.8455976628764188 -1.125628668427439 -1.8455976628764188
+```
+
+```python
+active_space = range(mol.nelectron // 2 - 1, mol.nelectron // 2 + 1)
+```
+
+2. Генерувати ферміонний гамільтоніан
+
+__scf__ стосується широкого кола методів самоузгодженого поля.
+
+__rhf__ як у __mf__ = scf.RHF(mol) — це розв'язувач, що використовує обмежений розрахунок Хартрі–Фока. Ядро цього методу (E нижче) — це повна енергія, включаючи ядерне відштовхування та молекулярні орбіталі.
+
+__mcscf__ — пакет для методу самоузгодженого поля з мультиконфігураційним підходом.
+
+__ao2mo__ — перетворення від атомних орбіталей до молекулярних орбіталей.
+
+Ми також використовуємо такі змінні:
+
+__ncas__: кількість орбіталей у повному активному просторі
+
+__nelecas__: кількість електронів у повному активному просторі
+
+```python
+E1 = mf.kernel()
+mx = mcscf.CASCI(mf, ncas=2, nelecas=(1, 1))
+mo = mx.sort_mo(active_space, base=0)
+E2 = mx.kernel(mo)[:2]
+```
+
+Нам потрібен гамільтоніан, і його зазвичай розбивають на енергію електронного кору (ecore, що не бере участі в мінімізації), одноелектронні оператори (h1e) та двоелектронні енергії (h2e). Вони явно витягуються нижче в останніх двох рядках.
+
+```python
+h1e, ecore = mx.get_h1eff()
+h2e = ao2mo.restore(1, mx.get_h2eff(), mx.ncas)
+```
+
+Ці гамільтоніани наразі є ферміонними операторами (народження та знищення), що застосовуються до систем (нерозрізнюваних) ферміонів і, відповідно, підпорядковуються антисиметрії при обміні. Це призводить до іншої статистики порівняно з тією, що застосовується до розрізнюваних або бозонних систем. Для запуску розрахунків на QPU IBM Quantum нам потрібен бозонний оператор, що описує енергію. Результат такого відображення традиційно записується через оператори Паулі, оскільки вони є одночасно ермітовими та унітарними. Існує кілька відображень, які можна використовувати. Одним із найпростіших є перетворення Джордана–Вігнера.
+
+3. Відображення гамільтоніана
+
+Варто зазначити, що існує багато інструментів для відображення хімічного гамільтоніана на придатний для запуску на квантовому комп'ютері. Тут ми реалізуємо відображення Джордана–Вігнера безпосередньо, використовуючи лише PySCF, numpy та Qiskit. Нижче ми коментуємо синтаксичні міркування для інших рішень.
+Функція Холецького допомагає нам отримати низькорангове розкладання двоелектронних членів гамільтоніана.
+
+```python
+def cholesky(V, eps):
+    # see https://arxiv.org/pdf/1711.02242.pdf section B2
+    # see https://arxiv.org/abs/1808.02625
+    # see https://arxiv.org/abs/2104.08957
+    no = V.shape[0]
+    chmax, ng = 20 * no, 0
+    W = V.reshape(no**2, no**2)
+    L = np.zeros((no**2, chmax))
+    Dmax = np.diagonal(W).copy()
+    nu_max = np.argmax(Dmax)
+    vmax = Dmax[nu_max]
+    while vmax > eps:
+        L[:, ng] = W[:, nu_max]
+        if ng > 0:
+            L[:, ng] -= np.dot(L[:, 0:ng], (L.T)[0:ng, nu_max])
+        L[:, ng] /= np.sqrt(vmax)
+        Dmax[: no**2] -= L[: no**2, ng] ** 2
+        ng += 1
+        nu_max = np.argmax(Dmax)
+        vmax = Dmax[nu_max]
+    L = L[:, :ng].reshape((no, no, ng))
+    print(
+        "accuracy of Cholesky decomposition ",
+        np.abs(np.einsum("prg,qsg->prqs", L, L) - V).max(),
+    )
+    return L, ng
+```
+
+Функції `identity` та `creators_destructors` замінюють оператори народження та знищення у ферміонному гамільтоніані операторами Паулі; `creators_destructors` використовує відображення Джордана–Вігнера.
+
+```python
+def identity(n):
+    return SparsePauliOp.from_list([("I" * n, 1)])
+
+def creators_destructors(n, mapping="jordan_wigner"):
+    c_list = []
+    if mapping == "jordan_wigner":
+        for p in range(n):
+            if p == 0:
+                ell, r = "I" * (n - 1), ""
+            elif p == n - 1:
+                ell, r = "", "Z" * (n - 1)
+            else:
+                ell, r = "I" * (n - p - 1), "Z" * p
+            cp = SparsePauliOp.from_list([(ell + "X" + r, 0.5), (ell + "Y" + r, -0.5j)])
+            c_list.append(cp)
+    else:
+        raise ValueError("Unsupported mapping.")
+    d_list = [cp.adjoint() for cp in c_list]
+    return c_list, d_list
+```
+
+Нарешті, `build_hamiltonian` використовує функції `cholesky`, `identity` та `creators_destructors` для створення фінального гамільтоніана, придатного для запуску на квантовому комп'ютері.
+
+```python
+def build_hamiltonian(ecore: float, h1e: np.ndarray, h2e: np.ndarray) -> SparsePauliOp:
+    ncas, _ = h1e.shape
+
+    C, D = creators_destructors(2 * ncas, mapping="jordan_wigner")
+    Exc = []
+    for p in range(ncas):
+        Excp = [C[p] @ D[p] + C[ncas + p] @ D[ncas + p]]
+        for r in range(p + 1, ncas):
+            Excp.append(
+                C[p] @ D[r]
+                + C[ncas + p] @ D[ncas + r]
+                + C[r] @ D[p]
+                + C[ncas + r] @ D[ncas + p]
+            )
+        Exc.append(Excp)
+
+    # low-rank decomposition of the Hamiltonian
+    Lop, ng = cholesky(h2e, 1e-6)
+    t1e = h1e - 0.5 * np.einsum("pxxr->pr", h2e)
+
+    H = ecore * identity(2 * ncas)
+    # one-body term
+    for p in range(ncas):
+        for r in range(p, ncas):
+            H += t1e[p, r] * Exc[p][r - p]
+    # two-body term
+    for g in range(ng):
+        Lg = 0 * identity(2 * ncas)
+        for p in range(ncas):
+            for r in range(p, ncas):
+                Lg += Lop[p, r, g] * Exc[p][r - p]
+        H += 0.5 * Lg @ Lg
+
+    return H.chop().simplify()
+```
+
+Нарешті, ми використовуємо `build_hamiltonian` для побудови нашого кубітного гамільтоніана з операторів Паулі за допомогою перетворення Джордана–Вігнера. Це також дає нам точність використаного розкладання Холецького.
+
+```python
+H = build_hamiltonian(ecore, h1e, h2e)
+print(H)
+```
+
+```text
+accuracy of Cholesky decomposition  2.220446049250313e-16
+SparsePauliOp(['IIII', 'IIIZ', 'IZII', 'IIZI', 'ZIII', 'IZIZ', 'IIZZ', 'ZIIZ', 'IZZI', 'ZZII', 'ZIZI', 'YYYY', 'XXYY', 'YYXX', 'XXXX'],
+              coeffs=[-0.09820182+0.j, -0.1740751 +0.j, -0.1740751 +0.j,  0.2242933 +0.j,
+  0.2242933 +0.j,  0.16891402+0.j,  0.1210099 +0.j,  0.16631441+0.j,
+  0.16631441+0.j,  0.1210099 +0.j,  0.17504456+0.j,  0.04530451+0.j,
+  0.04530451+0.j,  0.04530451+0.j,  0.04530451+0.j])
+```
+
+Ось [зошит із прикладами молекул](https://ibm.ent.box.com/public/static/59c2kjqefvjy5wy5lct099thr4y0ry8c.zip), що показує налаштування та гамільтоніани для кількох молекул різної складності; з невеликими змінами це дасть тобі змогу дослідити більшість невеликих молекул.
+
+Варто коротко відзначити два важливі моменти при побудові ферміонних операторів для молекули. Зі зміною типу молекули змінюватиметься і симетрія. Так само змінюватиметься кількість орбіталей із різними симетріями, наприклад циліндрично симетричної «A1». Ці зміни помітні навіть при простому переході до LiH, як видно тут:
+
+```python
+distance = 1.56
+mol = gto.Mole()
+mol.build(
+    verbose=0,
+    atom=[["Li", (0, 0, 0)], ["H", (0, 0, distance)]],
+    basis="sto-6g",
+    spin=0,
+    charge=0,
+    symmetry="Coov",
+)
+mf = scf.RHF(mol)
+E1 = mf.kernel()
+
+# %% ----------------------------------------------------------------------------------------------
+
+mx = mcscf.CASCI(mf, ncas=5, nelecas=(1, 1))
+cas_space_symmetry = {"A1": 3, "E1x": 1, "E1y": 1}
+mo = mcscf.sort_mo_by_irrep(mx, mf.mo_coeff, cas_space_symmetry)
+E2 = mx.kernel(mo)[:2]
+h1e, ecore = mx.get_h1eff()
+h2e = ao2mo.restore(1, mx.get_h2eff(), mx.ncas)
+```
+
+Також варто зазначити, що інтуїція щодо фінального гамільтоніана швидко втрачається. Гамільтоніан для LiH (з використанням маппера Джордана–Вігнера) вже складається з 276 членів.
+
+```python
+len(build_hamiltonian(ecore, h1e, h2e))
+```
+
+```text
+accuracy of Cholesky decomposition  1.1102230246251565e-16
+```
+
+```text
+276
+```
+
+Якщо є сумніви щодо симетрій, можна також отримати деяку інформацію про симетрію молекули, встановивши `symmetry = True` та `verbose = 4`:
+
+```python
+distance = 1.56
+mol = gto.Mole()
+mol.build(
+    verbose=4,
+    atom=[["Li", (0, 0, 0)], ["H", (0, 0, distance)]],
+    basis="sto-6g",
+    spin=0,
+    charge=0,
+    symmetry=True,
+)
+```
+
+```text
+System: uname_result(system='Linux', node='IBM-R912JTRT', release='5.10.102.1-microsoft-standard-WSL2', version='#1 SMP Wed Mar 2 00:30:59 UTC 2022', machine='x86_64')  Threads 16
+Python 3.11.12 (main, May 16 2025, 02:33:32) [GCC 11.4.0]
+numpy 2.3.1  scipy 1.16.0  h5py 3.14.0
+Date: Mon Jun 30 12:56:55 2025
+PySCF version 2.9.0
+PySCF path  /home/porter284/.pyenv/versions/3.11.12/lib/python3.11/site-packages/pyscf
+
+[CONFIG] conf_file None
+[INPUT] verbose = 4
+[INPUT] num. atoms = 2
+[INPUT] num. electrons = 4
+[INPUT] charge = 0
+[INPUT] spin (= nelec alpha-beta = 2S) = 0
+[INPUT] symmetry True subgroup None
+[INPUT] Mole.unit = angstrom
+[INPUT] Symbol           X                Y                Z      unit          X                Y                Z       unit  Magmom
+[INPUT]  1 Li     0.000000000000   0.000000000000   0.000000000000 AA    0.000000000000   0.000000000000   0.000000000000 Bohr   0.0
+[INPUT]  2 H      0.000000000000   0.000000000000   1.560000000000 AA    0.000000000000   0.000000000000   2.947972754321 Bohr   0.0
+
+nuclear repulsion = 1.01764848253846
+point group symmetry = Coov
+symmetry origin: [0.         0.         0.73699319]
+symmetry axis x: [1. 0. 0.]
+symmetry axis y: [0. 1. 0.]
+symmetry axis z: [0. 0. 1.]
+num. orbitals of irrep A1 = 4
+num. orbitals of irrep E1x = 1
+num. orbitals of irrep E1y = 1
+number of shells = 4
+number of NR pGTOs = 36
+number of NR cGTOs = 6
+basis = sto-6g
+ecp = {}
+CPU time:         9.85
+```
+
+```text
+<pyscf.gto.mole.Mole at 0x7fc719f94850>
+```
+
+Серед іншої корисної інформації це повертає як `point group symmetry = Coov`, так і кількість орбіталей у кожному незвідному поданні.
+
+```
+point group symmetry = Coov
+num. orbitals of irrep A1 = 4
+num. orbitals of irrep E1x = 1
+num. orbitals of irrep E1y = 1
+number of shells = 4
+```
+
+Це не обов'язково говорить тобі, скільки орбіталей ти хочеш включити до активного простору, але допомагає побачити, які орбіталі присутні та їх симетрії.
+
+Задання симетрії та орбіталей часто корисне, але можна також вказати кількість орбіталей, які ти хочеш включити. Розглянемо випадок етену нижче. Використовуючи `verbose = 4`, ми можемо виводити симетрії різних орбіталей:
+
+```python
+# Replace these variables with correct distances:
+a = 1
+b = 1
+c = 1
+
+# Build
+mol = gto.Mole()
+mol.build(
+    verbose=4,
+    atom=[
+        ["C", (0, 0, a)],
+        ["C", (0, 0, -a)],
+        ["H", (0, c, b)],
+        ["H", (0, -c, b)],
+        ["H", (0, c, -b)],
+        ["H", (0, -c, -b)],
+    ],
+    basis="sto-6g",
+    spin=0,
+    charge=0,
+    symmetry=True,
+)
+```
+
+```text
+System: uname_result(system='Linux', node='IBM-R912JTRT', release='5.10.102.1-microsoft-standard-WSL2', version='#1 SMP Wed Mar 2 00:30:59 UTC 2022', machine='x86_64')  Threads 16
+Python 3.11.12 (main, May 16 2025, 02:33:32) [GCC 11.4.0]
+numpy 2.3.1  scipy 1.16.0  h5py 3.14.0
+Date: Mon Jun 30 12:57:07 2025
+PySCF version 2.9.0
+PySCF path  /home/porter284/.pyenv/versions/3.11.12/lib/python3.11/site-packages/pyscf
+
+[CONFIG] conf_file None
+[INPUT] verbose = 4
+[INPUT] num. atoms = 6
+[INPUT] num. electrons = 16
+[INPUT] charge = 0
+[INPUT] spin (= nelec alpha-beta = 2S) = 0
+[INPUT] symmetry True subgroup None
+[INPUT] Mole.unit = angstrom
+[INPUT] Symbol           X                Y                Z      unit          X                Y                Z       unit  Magmom
+[INPUT]  1 C      0.000000000000   0.000000000000   1.000000000000 AA    0.000000000000   0.000000000000   1.889726124565 Bohr   0.0
+[INPUT]  2 C      0.000000000000   0.000000000000  -1.000000000000 AA    0.000000000000   0.000000000000  -1.889726124565 Bohr   0.0
+[INPUT]  3 H      0.000000000000   1.000000000000   1.000000000000 AA    0.000000000000   1.889726124565   1.889726124565 Bohr   0.0
+[INPUT]  4 H      0.000000000000  -1.000000000000   1.000000000000 AA    0.000000000000  -1.889726124565   1.889726124565 Bohr   0.0
+[INPUT]  5 H      0.000000000000   1.000000000000  -1.000000000000 AA    0.000000000000   1.889726124565  -1.889726124565 Bohr   0.0
+[INPUT]  6 H      0.000000000000  -1.000000000000  -1.000000000000 AA    0.000000000000  -1.889726124565  -1.889726124565 Bohr   0.0
+
+nuclear repulsion = 29.3377079104231
+point group symmetry = D2h
+symmetry origin: [0. 0. 0.]
+symmetry axis x: [0. 1. 0.]
+symmetry axis y: [1. 0. 0.]
+symmetry axis z: [-0. -0. -1.]
+num. orbitals of irrep Ag = 4
+num. orbitals of irrep B2g = 2
+num. orbitals of irrep B3g = 1
+num. orbitals of irrep B1u = 4
+num. orbitals of irrep B2u = 1
+num. orbitals of irrep B3u = 2
+number of shells = 10
+number of NR pGTOs = 84
+number of NR cGTOs = 14
+basis = sto-6g
+ecp = {}
+CPU time:         9.92
+```
+
+```text
+<pyscf.gto.mole.Mole at 0x7fc719fa9290>
+```
+
+Отримуємо:
+
+num. orbitals of irrep Ag = 4
+
+num. orbitals of irrep B2g = 2
+
+num. orbitals of irrep B3g = 1
+
+num. orbitals of irrep B1u = 4
+
+num. orbitals of irrep B2u = 1
+
+num. orbitals of irrep B3u = 2
+
+Але замість того, щоб вказувати всі орбіталі за симетрією, можна просто написати:
+
+```python
+active_space = range(mol.nelectron // 2 - 2, mol.nelectron // 2 + 2)
+```
+
+У цьому підході ми беремо кілька орбіталей поблизу рівня заповнення (валентні та незайняті). Тут для включення в активний простір обрано 5 орбіталей (з 6-ї по 10-ту).
+
+```python
+print(
+    mol.nelectron // 2 - 2,
+    mol.nelectron // 2 + 2,
+)
+```
+
+```text
+6 10
+```
+
+4. Стороннє програмне забезпечення
+
+Існує кілька програмних пакетів, розроблених для квантової хімії, деякі з яких пропонують кілька мепперів та інструменти для обмеження активних просторів. Описані вище кроки є загальними і застосовуються до стороннього програмного забезпечення також. Але це інше програмне забезпечення може повертати гамільтоніани у форматі, який не приймається Qiskit. Наприклад, деяке програмне забезпечення повертає гамільтоніани вигляду:
+
+`H = -0.042 [] + -0.045 [X0 X1 Y2 Y3] + ... + 0.178 [Z0] + ... + 0.176 [Z2 Z3] + -0.243 [Z3]`
+Зверни увагу, що гейти пронумеровані, а оператори тотожності не відображаються. Це контрастує з гамільтоніанами у Qiskit, де член `[Z2 Z3]` записується як `ZZII` (кубіти 0 і 1 діяться оператором тотожності, кубіти 2 і 3 — оператором Z, при цьому кубіт 0 знаходиться крайньому праворуч).
+
+Щоб підтримати будь-які наявні робочі процеси, блок коду нижче перетворює один синтаксис на інший. Функція `convert_openfermion_to_qiskit` приймає як аргументи гамільтоніан, згенерований в OpenFermion або Tangelo (вже відображений на оператори Паулі за допомогою будь-якого доступного маппера), та кількість кубітів, необхідних для молекули.
+
+```python
+from openfermion import QubitOperator
+from qiskit.quantum_info import SparsePauliOp
+
+def convert_openfermion_to_qiskit(
+    openfermion_operator: QubitOperator, num_qubits: int
+) -> SparsePauliOp:
+    terms = openfermion_operator.terms
+
+    labels = []
+    coefficients = []
+
+    for term, constant in terms.items():
+        # Default set to identity
+        operator = list("I" * num_qubits)
+
+        # Iterate through PauliSum and replace I with Pauli
+        for index, pauli in term:
+            operator[index] = pauli
+        label = "".join(operator)
+        labels.append(label)
+        coefficients.append(constant)
+
+    return SparsePauliOp(labels, coefficients)
+```
+
+Крім того, [цей зошит Python](https://ibm.ent.box.com/s/fh3xele1e7k0nrgd1imivvq52hy3wz9c) містить повний зразковий код для міграції гамільтоніанів з інших програмних робочих процесів у Qiskit, включаючи наведене вище перетворення.
+
+Тепер у тебе є цілий арсенал інструментів для отримання гамільтоніана, необхідного для виконання розрахунків квантової хімії на квантових комп'ютерах IBM&reg;.

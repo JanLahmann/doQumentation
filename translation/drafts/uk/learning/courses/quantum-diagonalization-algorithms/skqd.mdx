@@ -1,0 +1,311 @@
+---
+title: "Вибіркова квантова діагоналізація Крилова"
+sidebar_label: "Вибіркова квантова діагоналізація Крилова"
+description: "Теми попередніх уроків об'єднуються для використання гарантій збіжності QKD та швидкодії SQD у методі SKQD."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/skqd.ipynb"
+---
+{/* doqumentation-source-hash: 175856b0 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/skqd.ipynb" />
+
+{/* cspell:ignore arxiv Neel probs eigenvals Hatano */}
+
+# Вибіркова квантова діагоналізація Крилова (SKQD) {#sample-based-krylov-quantum-diagonalization-skqd}
+
+Цей урок про вибіркову квантову діагоналізацію Крилова (SKQD) поєднує методи, пояснені в попередніх уроках. Він складається з одного прикладу, що використовує фреймворк Qiskit patterns:
+
+    - Крок 1: Відображення задачі на квантові схеми та оператори
+    - Крок 2: Оптимізація для цільового апаратного забезпечення
+    - Крок 3: Виконання за допомогою примітивів Qiskit
+    - Крок 4: Постобробка
+
+Важливим кроком у методі вибіркової квантової діагоналізації є формування якісних векторів для підпростору. У попередньому уроці ми використовували анзац LUCJ для генерації векторів підпростору хімічного гамільтоніана. У цьому уроці ми використаємо квантові стани Крилова[\[1\]](#references), як обговорювалося в уроці 2. Спочатку ми розглянемо, як побудувати простір Крилова на квантовому комп'ютері за допомогою операцій часової еволюції. Потім ми зробимо вибірку з нього. Ми спроєктуємо гамільтоніан системи на вибраний підпростір і діагоналізуємо його, щоб оцінити енергію основного стану. Алгоритм довідно і ефективно збігається до основного стану за умов, описаних в уроці 2.
+
+## 0. Простір Крилова {#the-krylov-space}
+
+Нагадаємо, що простір Крилова $\mathcal{K}^r$ порядку $r$ — це простір, натягнутий векторами, отриманими множенням матриці $A$ у зростаючих ступенях аж до $r-1$ на референтний вектор $\vert v \rangle$.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+Якщо матриця $A$ є гамільтоніаном $H$, відповідний простір називається _степеневим простором Крилова_ $\mathcal{K}_P$. Якщо ж $A$ — оператор часової еволюції, породжений гамільтоніаном $U=e^{-iH(dt)}$, то простір називається унітарним простором Крилова $\mathcal{K}_U$. Степеневий підпростір Крилова не можна безпосередньо побудувати на квантовому комп'ютері, оскільки $H$ — не унітарний оператор. Натомість можна використати оператор часової еволюції $U = e^{-iH(dt)}$, який дає аналогічні [гарантії збіжності](https://arxiv.org/abs/2110.07492). Степені $U$ стають різними часовими кроками $U^k = e^{-iH(k dt)}$, де $k = 0, 1, 2, ..., (r-1)$.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+
+## 1. Відображення задачі на квантові схеми та оператори {#map-problem-to-quantum-circuits-and-operators}
+
+У цьому уроці ми розглядаємо гамільтоніан антиферомагнітного XX-Z спінового ланцюжка 1/2 з $L = 22$ вузлами та периодичними граничними умовами:
+$$
+    H = \sum_{i, j}^{N} J_{xy} (X_{i} X_{j} + Y_{i} Y_{j}) + Z_{i} Z_{j}
+$$
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-sqd qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+num_spins = 22
+coupling_map = CouplingMap.from_ring(num_spins)
+H_op = generate_xyz_hamiltonian(coupling_map, coupling_constants=(0.3, 0.3, 1.0))
+```
+
+Для побудови простору Крилова потрібні три основні складові:
+
+1. Вибір розмірності Крилова ($r$) та часового кроку ($dt$).
+2. Початковий (референтний) стан (вектор $\vert v \rangle$ вище) з поліноміальним перекриттям з цільовим (основним) станом, де цільовий стан є розрідженим. Ця вимога поліноміального перекриття аналогічна вимозі алгоритму квантової оцінки фази.
+3. Оператори часової еволюції $U^{k}=e^{-iH(k * dt)}$ ($k = 0, 1, 2, ..., r-1$).
+
+Для вибраного значення $r$ (та $dt$) ми створимо $r$ окремих квантових схем і зробимо вибірку з них. Кожна квантова схема будується шляхом об'єднання квантової схеми для підготовки референтного стану та оператора часової еволюції для значення $k$.
+
+Більша розмірність Крилова покращує збіжність оціненої енергії. У цьому уроці ми встановлюємо розмірність $5$, щоб проілюструвати тенденцію збіжності.
+
+Посилання [\[2\]](#references) показало, що достатньо малий часовий крок для KQD дорівнює $\pi / \vert \vert H \vert \vert$, і що краще недооцінити це значення, ніж переоцінити. З іншого боку, занадто малий $dt$ призводить до гіршого обумовлення підпростору Крилова, оскільки базисні вектори Крилова відрізняються менше між часовими кроками. Крім того, хоча цей вибір $dt$ довідно достатній для збіжності SKQD, оптимальний вибір $dt$ на практиці у цьому контексті вибіркового підходу — тема поточних досліджень. У цьому уроці ми встановлюємо $dt = 0.15$.
+
+Крім розмірності Крилова та часового кроку, потрібно задати кількість кроків Троттера для часової еволюції. Занадто мала кількість кроків призводить до більших помилок троттеризації, а занадто велика — до глибших схем. У цьому уроці ми встановлюємо кількість кроків Троттера рівною $6$.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of krylov subspace
+dt = 0.15
+num_trotter_steps = 6
+```
+
+Далі нам потрібно вибрати референтний стан $\vert \psi \rangle$, що має деяке перекриття з основним станом. Для цього гамільтоніана ми використовуємо стан _Ніля_ з чергуванням одиниць та нулів $\vert ...101...010...101 \rangle$ як наш референтний стан.
+
+```python
+# Prep `Neel` state as the reference state for evolution
+from qiskit import QuantumCircuit
+
+qc_state_prep = QuantumCircuit(num_spins)
+for i in range(num_spins):
+    if i % 2 == 0:
+        qc_state_prep.x(i)
+```
+
+Нарешті, нам потрібно відобразити оператор часової еволюції на квантову схему. Це було зроблено в уроці 2, але тут ми використаємо методи Qiskit, зокрема метод _synthesis_. Існують різні методи синтезу математичних операторів у квантові схеми з квантовими вентилями. Багато таких технік доступні у [модулі синтезу Qiskit](https://docs.quantum.ibm.com/api/qiskit/synthesis). Ми використаємо підхід [`LieTrotter`](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter) для синтезу [\[3\]](#references) [\[4\]](#references).
+
+```python
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+
+evol_gate = PauliEvolutionGate(
+    H_op, time=(dt / num_trotter_steps), synthesis=LieTrotter(reps=num_trotter_steps)
+)  # `U` operator
+
+qr = QuantumRegister(num_spins)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+
+circuits = []
+for rep in range(krylov_dim):
+    circ = qc_state_prep.copy()
+
+    # Repeating the `U` operator to implement U^0, U^1, U^2, and so on, for power Krylov space
+    for _ in range(rep):
+        circ.compose(other=qc_evol, inplace=True)
+
+    circ.measure_all()
+    circuits.append(circ)
+```
+
+```python
+circuits[1].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/7ffc3eaa-9563-4c89-9d7b-808a3a37b275-0.avif)
+
+```python
+circuits[2].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/bdbc0881-06b0-49f2-8919-a376aa7f08e3-0.avif)
+
+## 2. Оптимізація для цільового апаратного забезпечення {#optimize-for-target-hardware}
+
+Після створення схем ми можемо оптимізувати їх для цільового апаратного забезпечення. Ми вибираємо QPU масштабу утиліти.
+
+```python
+import warnings
+
+from qiskit import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+warnings.filterwarnings("ignore")
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+Тепер транспілюємо схеми для цільового бекенду за допомогою менеджера проходів.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuits = pm.run(circuits=circuits)
+```
+
+## 3. Виконання на цільовому апаратному забезпеченні {#execute-on-target-hardware}
+
+Після оптимізації схем для виконання на апаратному забезпеченні ми готові запустити їх на цільовому обладнанні та зібрати вибірки для оцінки енергії основного стану.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+job = sampler.run(isa_circuits, shots=100_000)  # Takes approximately 2m 58s of QPU time
+```
+
+```python
+counts_all = [job.result()[k].data.meas.get_counts() for k in range(krylov_dim)]
+```
+
+## 4. Постобробка результатів {#post-process-results}
+
+Далі ми агрегуємо підрахунки для зростаючих розмірностей Крилова накопиченим чином. Використовуючи накопичені підрахунки, ми будуватимемо підпростори для зростаючої розмірності Крилова та аналізуватимемо поведінку збіжності.
+
+```python
+from collections import Counter
+
+counts_cumulative = []
+for i in range(krylov_dim):
+    counter = Counter()
+    for d in counts_all[: i + 1]:
+        counter.update(d)
+
+    counts = dict(counter)
+    counts_cumulative.append(counts)
+```
+
+Для проєкції та діагоналізації гамільтоніана ми використовуємо можливості з [`qiskit-addon-sqd`](https://qiskit.github.io/qiskit-addon-sqd/). Додаток пропонує функціональність для проєкції гамільтоніанів на основі рядків Паулі на підпростір і розв'язку задачі власних значень за допомогою `SciPy`.
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.qubit import solve_qubit
+```
+
+Ми можемо відфільтровувати бітові рядки з неправильним патерном перед натягуванням підпростору. Наприклад, основний стан антиферомагнітного гамільтоніана в цьому уроці зазвичай має рівну кількість спінів «вгору» та «вниз», тобто кількість «1» у бітовому рядку має бути рівно половиною від загальної кількості бітів (спінів) у системі. Наступна функція відфільтровує бітові рядки з неправильною кількістю «1».
+
+```python
+# Filters out bitstrings that do not have specified number (`num_ones`) of `1` bits.
+def postselect_counts(counts, num_ones):
+    filtered_counts = {}
+    for bitstring, freq in counts.items():
+        if bitstring.count("1") == num_ones:
+            filtered_counts[bitstring] = freq
+
+    return filtered_counts
+```
+
+Використовуючи бітові рядки з правильною кількістю електронів вгору/вниз, ми натягуємо підпростори та обчислюємо власні значення для зростаючої розмірності Крилова. Залежно від розміру задачі та доступних класичних ресурсів нам може знадобитися субвибірка (аналогічно до [уроку про SQD](/learning/courses/quantum-diagonalization-algorithms/sqd-implementation)), щоб контролювати розмірність підпростору. Крім того, ми можемо застосувати концепцію відновлення конфігурації аналогічно до Уроку 4. Ми можемо обчислити заповненість електронів на вузол зі відновлених власних станів і використати цю інформацію для виправлення бітових рядків з неправильною кількістю електронів вгору/вниз. Ми залишаємо це як вправу для зацікавлених читачів.
+
+```python
+import numpy as np
+
+num_batches = 10
+rand_seed = 0
+scipy_kwargs = {"k": 2, "which": "SA"}
+
+ground_state_energies = []
+for idx, counts in enumerate(counts_cumulative):
+    counts = postselect_counts(counts, num_ones=num_spins // 2)
+    bitstring_matrix, probs = counts_to_arrays(counts=counts)
+
+    eigenvals, eigenstates = solve_qubit(
+        bitstring_matrix, H_op, verbose=False, **scipy_kwargs
+    )
+    gs_en = np.min(eigenvals)
+    ground_state_energies.append(gs_en)
+```
+
+Далі ми будуємо графік обчисленої енергії як функції від розмірності Крилова та порівнюємо з точною енергією. Точна енергія обчислюється окремо класичним методом повного перебору. Ми бачимо, що оцінена енергія основного стану збігається зі зростанням розмірності простору Крилова. Хоча розмірність Крилова $5$ є обмежувальною, результати все одно демонструють вражаючу збіжність, яка, як очікується, покращиться з більшою розмірністю Крилова [\[1\]](#references).
+
+```python
+import matplotlib.pyplot as plt
+
+exact_gs_en = -23.934184
+plt.plot(
+    range(1, krylov_dim + 1),
+    ground_state_energies,
+    color="blue",
+    linestyle="-.",
+    label="estimate",
+)
+plt.plot(
+    range(1, krylov_dim + 1),
+    [exact_gs_en] * krylov_dim,
+    color="red",
+    linestyle="-",
+    label="exact",
+)
+plt.xticks(range(1, krylov_dim + 1), range(1, krylov_dim + 1))
+plt.legend()
+plt.xlabel("Krylov space dimension")
+plt.ylabel("Energy")
+plt.ylim([-24, -22.50])
+plt.title(
+    "Estimating Ground state energy with Sample-based Krylov Quantum Diagonalization"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/debca96a-e0e3-4342-a755-8204dba50d74-0.avif)
+
+### Перевір своє розуміння {#check-your-understanding}
+
+Прочитай запитання нижче, поміркуй над відповідями, а потім натисни трикутники, щоб побачити рішення.
+
+<details>
+<summary>
+
+Що можна зробити, щоб покращити збіжність на графіку вище?
+
+</summary>
+
+__Відповідь:__
+
+Збільшити розмірність Крилова. Загалом, можна також збільшити кількість вимірювань (shots), але у наведеному обчисленні вона вже досить велика.
+
+</details>
+
+<details>
+<summary>
+
+Які основні переваги SKQD порівняно з (a) SQD та (b) KQD?
+
+</summary>
+
+__Відповідь:__
+
+Можуть бути й інші правильні відповіді, але повні відповіді мають включати наступне:
+
+   (a) SKQD має гарантії збіжності, яких немає в SQD. У SQD потрібно або зробити дуже вдале припущення щодо анзацу з відмінним перекриттям з підтримкою основного стану в обчислювальному базисі, або ввести варіаційний компонент у обчислення для вибірки сімейства анзаців.
+
+   (b) SKQD потребує значно менше часу QPU, оскільки уникає дорогого обчислення матричних елементів через тест Адамара.
+
+</details>
+
+## 5. Підсумок {#summary}
+
+- Оцінка енергії основного стану через вибірку базисних станів Крилова дуже добре підходить для ґраткових моделей, включаючи спінові системи, задачі фізики конденсованого стану та ґраткові калібрувальні теорії. Цей підхід масштабується значно краще, ніж VQE, оскільки не потребує оптимізації великої кількості параметрів у варіаційному анзаці, як у VQE або евристичному SQD на основі анзацу (наприклад, хімічна задача з попереднього уроку).
+    - Для зменшення глибини схем доцільно розглядати ґраткові задачі, придатні для апаратного забезпечення до ери відмовостійкості.
+- SKQD не має проблеми квантового вимірювання, як у VQE. Немає груп операторів Паулі, що комутують, які потрібно оцінювати.
+- SKQD стійкий до шумних вибірок, оскільки можна використовувати пост-вибірку з урахуванням задачі (наприклад, фільтрувати бітові рядки, що не відповідають патернам задачі) або нести накладні витрати класичної діагоналізації (тобто діагоналізувати в більшому підпросторі), щоб ефективно усунути вплив шуму.
+
+## Посилання {#references}
+
+\[1\] Jeffery Yu et al., "Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization" (2025). [arxiv:quant-ph/2501.09702](https://arxiv.org/abs/2501.09702).
+
+\[2\] Ethan N. Epperly, Lin Lin, and Yuji Nakatsukasa. "A theory of quantum subspace diagonalization". SIAM Journal on Matrix Analysis and Applications 43, 1263–1290 (2022).
+
+\[2\] N. Hatano and M. Suzuki, "Finding Exponential Product Formulas of Higher Orders" (2005). [arXiv:math-ph/0506007](https://arxiv.org/abs/math-ph/0506007).
+
+\[4\] D. Berry, G. Ahokas, R. Cleve and B. Sanders, "Efficient quantum algorithms for simulating sparse Hamiltonians" (2006). [arXiv:quant-ph/0508139](https://arxiv.org/abs/quant-ph/0508139)

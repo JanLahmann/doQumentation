@@ -1,0 +1,229 @@
+---
+title: "Напиши власний прохід транспілятора"
+sidebar_label: "Напиши власний прохід транспілятора"
+description: "Дізнайся, як написати власний прохід транспілятора за допомогою Qiskit, включно з представленням схем у вигляді DAG"
+notebook_path: "guides/custom-transpiler-pass.ipynb"
+---
+
+{/* doqumentation-source-hash: b4430d9c */}
+
+<OpenInLabBanner notebookPath="guides/custom-transpiler-pass.ipynb" />
+
+
+
+# Напиши власний прохід транспілятора
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Версії пакетів</b></summary>
+
+Код на цій сторінці розроблено з використанням наступних вимог.
+Рекомендуємо використовувати ці версії або новіші.
+
+```
+qiskit[all]~=2.3.0
+```
+</details>
+Qiskit SDK дозволяє створювати власні проходи транспіляції та запускати їх через об'єкт `PassManager` або додавати до `StagedPassManager`. Тут ми покажемо, як написати прохід транспілятора, зосередившись на побудові проходу, який виконує [Pauli twirling](https://arxiv.org/abs/quant-ph/0606161) на шумних квантових вентилях у квантовій схемі. У цьому прикладі використовується DAG — об'єкт, яким маніпулює тип проходу `TransformationPass`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit
+```
+
+<details>
+  <summary>
+    Передумови: представлення у вигляді DAG
+  </summary>
+
+Перш ніж будувати прохід, важливо ознайомитися з внутрішнім представленням квантових схем у Qiskit — [направленим ациклічним графом (DAG)](../api/qiskit/qiskit.dagcircuit.DAGCircuit) (дивись [цей посібник](https://qiskit.org/ecosystem/rustworkx/tutorial/dags.html) для огляду). Щоб виконати ці кроки, встанови бібліотеку [`graphviz`](https://graphviz.org/download/) для функцій відображення DAG.
+
+У Qiskit під час етапів транспіляції схеми представляються у вигляді DAG. Загалом DAG складається з *вершин* (також відомих як «вузли») та направлених *ребер*, що з'єднують пари вершин у певній орієнтації. Це представлення зберігається у вигляді об'єктів `qiskit.dagcircuit.DAGCircuit`, що складаються з окремих об'єктів `DagNode`. Перевага цього представлення над простим списком вентилів (тобто *netlist*) полягає в тому, що потік інформації між операціями є явним, що полегшує прийняття рішень щодо перетворень.
+
+У цьому прикладі DAG ілюструється шляхом створення простої схеми, яка готує стан Белла та застосовує поворот $R_Z$ залежно від результату вимірювання.
+
+```python
+  from qiskit import QuantumRegister, ClassicalRegister, QuantumCircuit
+  import numpy as np
+
+  qr = QuantumRegister(3, 'qr')
+  cr = ClassicalRegister(3, 'cr')
+  qc = QuantumCircuit(qr, cr)
+
+  qc.h(qr[0])
+  qc.cx(qr[0], qr[1])
+  qc.measure(qr[0], cr[0])
+  qc.rz(np.pi/2, qr[1]).c_if(cr, 2)
+  qc.draw(output='mpl')
+
+```
+![Схема, яка готує стан Белла та застосовує поворот $R_Z$ залежно від результату вимірювання.](/docs/images/guides/custom-transpiler-pass/DAG_circ.avif "Схема")
+
+Використай функцію `qiskit.tools.visualization.dag_drawer()`, щоб переглянути DAG цієї схеми. Існує три види вузлів графа: вузли кубіт/класичного біту (зелені), вузли операцій (сині) та вихідні вузли (червоні). Кожне ребро показує потік даних (або залежність) між двома вузлами.
+
+```python
+from qiskit.converters import circuit_to_dag
+from qiskit.tools.visualization import dag_drawer
+
+dag = circuit_to_dag(qc)
+dag_drawer(dag)
+```
+![DAG схеми складається з вузлів, з'єднаних направленими ребрами. Це наочний спосіб відобразити кубіти або класичні біти, операції та потік даних.](/docs/images/guides/custom-transpiler-pass/DAG.avif "DAG")
+</details>
+## Проходи транспілятора {#transpiler-passes}
+
+Проходи транспілятора класифікуються як [`AnalysisPass`](../api/qiskit/qiskit.transpiler.AnalysisPass) або [`TransformationPass`](../api/qiskit/qiskit.transpiler.TransformationPass). Проходи загалом працюють з [DAG](../api/qiskit/qiskit.dagcircuit.DAGCircuit) і `property_set` — словникоподібним об'єктом для зберігання властивостей, визначених аналітичними проходами. Аналітичні проходи працюють як з DAG, так і з його `property_set`. Вони не можуть модифікувати DAG, але можуть змінювати `property_set`. Це відрізняє їх від проходів перетворення, які модифікують DAG і можуть читати (але не записувати) `property_set`. Наприклад, проходи перетворення транслюють схему до її [ISA](./transpile#instruction-set-architecture) або виконують маршрутизацію, вставляючи вентилі SWAP там, де потрібно.
+## Створи прохід транспілятора `PauliTwirl` {#create-a-paulitwirl-transpiler-pass}
+
+У наступному прикладі будується прохід транспілятора, який додає Pauli twirls. [Pauli twirling](https://arxiv.org/abs/quant-ph/0606161) — це стратегія придушення помилок, що рандомізує взаємодію кубітів із шумними каналами, якими в цьому прикладі вважаються двокубітні вентилі (оскільки вони набагато більш схильні до помилок, ніж однокубітні вентилі). Pauli twirls не впливають на роботу двокубітних вентилів. Вони підібрані так, що ті, що застосовуються *до* двокубітного вентиля (зліва), компенсуються тими, що застосовуються *після* нього (справа). У цьому сенсі двокубітні операції ідентичні, але спосіб їхнього виконання відрізняється. Одна з переваг Pauli twirling полягає в тому, що він перетворює когерентні помилки на стохастичні, які можна зменшити шляхом усереднення за більшою кількістю вимірювань.
+
+Проходи транспілятора діють на [DAG](../api/qiskit/qiskit.dagcircuit.DAGCircuit), тому важливим методом для перевизначення є `.run()`, який приймає DAG як вхід. Ініціалізація пар Паулі, як показано нижче, зберігає операцію кожного двокубітного вентиля. Це робиться за допомогою допоміжного методу `build_twirl_set`, який перебирає кожен двокубітний Паулі (отриманий з `pauli_basis(2)`) і знаходить інший Паулі, що зберігає операцію.
+
+З DAG використовуй метод `op_nodes()`, щоб повернути всі його вузли. DAG також можна використовувати для збирання «серій» — послідовностей вузлів, що виконуються безперервно на кубіті. Їх можна зібрати як однокубітні серії за допомогою `collect_1q_runs`, двокубітні серії — за допомогою `collect_2q_runs`, а серії вузлів, де назви інструкцій є у списку імен, — за допомогою `collect_runs`. `DAGCircuit` має багато методів для пошуку та обходу графа. Один із часто використовуваних методів — `topological_op_nodes`, який повертає вузли у порядку залежностей. Інші методи, наприклад `bfs_successors`, використовуються переважно для визначення того, як вузли взаємодіють із наступними операціями в DAG.
+
+У прикладі ми хочемо замінити кожен вузол, що представляє інструкцію, підсхемою, побудованою як міні-DAG. До міні-DAG додається двокубітний квантовий регістр. Операції додаються до міні-DAG за допомогою `apply_operation_back`, що розміщує `Instruction` на виході міні-DAG (тоді як `apply_operation_front` розміщував би її на вході). Потім вузол замінюється міні-DAG за допомогою `substitute_node_with_dag`, і процес продовжується для кожного екземпляра `CXGate` та `ECRGate` у DAG (що відповідає двокубітним базовим вентилям на backend-ах IBM&reg;).
+
+```python
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.circuit import QuantumCircuit, QuantumRegister, Gate
+from qiskit.circuit.library import CXGate, ECRGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.quantum_info import Operator, pauli_basis
+
+import numpy as np
+
+from typing import Iterable, Optional
+```
+
+```python
+class PauliTwirl(TransformationPass):
+    """Add Pauli twirls to two-qubit gates."""
+
+    def __init__(
+        self,
+        gates_to_twirl: Optional[Iterable[Gate]] = None,
+    ):
+        """
+        Args:
+            gates_to_twirl: Names of gates to twirl. The default behavior is to twirl all
+                two-qubit basis gates, `cx` and `ecr` for IBM backends.
+        """
+        if gates_to_twirl is None:
+            gates_to_twirl = [CXGate(), ECRGate()]
+        self.gates_to_twirl = gates_to_twirl
+        self.build_twirl_set()
+        super().__init__()
+
+    def build_twirl_set(self):
+        """
+        Build a set of Paulis to twirl for each gate and store internally as .twirl_set.
+        """
+        self.twirl_set = {}
+
+        # iterate through gates to be twirled
+        for twirl_gate in self.gates_to_twirl:
+            twirl_list = []
+
+            # iterate through Paulis on left of gate to twirl
+            for pauli_left in pauli_basis(2):
+                # iterate through Paulis on right of gate to twirl
+                for pauli_right in pauli_basis(2):
+                    # save pairs that produce identical operation as gate to twirl
+                    if (Operator(pauli_left) @ Operator(twirl_gate)).equiv(
+                        Operator(twirl_gate) @ pauli_right
+                    ):
+                        twirl_list.append((pauli_left, pauli_right))
+
+            self.twirl_set[twirl_gate.name] = twirl_list
+
+    def run(
+        self,
+        dag: DAGCircuit,
+    ) -> DAGCircuit:
+        # collect all nodes in DAG and proceed if it is to be twirled
+        twirling_gate_classes = tuple(
+            gate.base_class for gate in self.gates_to_twirl
+        )
+        for node in dag.op_nodes():
+            if not isinstance(node.op, twirling_gate_classes):
+                continue
+
+            # random integer to select Pauli twirl pair
+            pauli_index = np.random.randint(
+                0, len(self.twirl_set[node.op.name])
+            )
+            twirl_pair = self.twirl_set[node.op.name][pauli_index]
+
+            # instantiate mini_dag and attach quantum register
+            mini_dag = DAGCircuit()
+            register = QuantumRegister(2)
+            mini_dag.add_qreg(register)
+
+            # apply left Pauli, gate to twirl, and right Pauli to empty mini-DAG
+            mini_dag.apply_operation_back(
+                twirl_pair[0].to_instruction(), [register[0], register[1]]
+            )
+            mini_dag.apply_operation_back(node.op, [register[0], register[1]])
+            mini_dag.apply_operation_back(
+                twirl_pair[1].to_instruction(), [register[0], register[1]]
+            )
+
+            # substitute gate to twirl node with twirling mini-DAG
+            dag.substitute_node_with_dag(node, mini_dag)
+
+        return dag
+```
+
+## Використай прохід транспілятора `PauliTwirl` {#use-the-paulitwirl-transpiler-pass}
+
+Наступний код використовує створений вище прохід для транспіляції схеми. Розглянемо просту схему з вентилями `cx` та `ecr`.
+
+```python
+qc = QuantumCircuit(3)
+qc.cx(0, 1)
+qc.ecr(1, 2)
+qc.ecr(1, 0)
+qc.cx(2, 1)
+qc.draw("mpl")
+```
+
+![Вивід попереднього блоку коду](/docs/images/guides/custom-transpiler-pass/extracted-outputs/9123905d-b4cb-4ae9-9695-4ad77e70bdab-0.svg)
+
+Щоб застосувати власний прохід, побудуй менеджер проходів із проходом `PauliTwirl` і запусти його на 50 схемах.
+
+```python
+pm = PassManager([PauliTwirl()])
+twirled_qcs = [pm.run(qc) for _ in range(50)]
+```
+
+Тепер кожен двокубітний вентиль оточений двома Паулі.
+
+```python
+twirled_qcs[-1].draw("mpl")
+```
+
+![Вивід попереднього блоку коду](/docs/images/guides/custom-transpiler-pass/extracted-outputs/e2515cf3-f8d9-4281-9673-d5a955d7aab9-0.svg)
+
+Оператори однакові, якщо використати `Operator` з `qiskit.quantum_info`:
+
+```python
+np.all([Operator(twirled_qc).equiv(qc) for twirled_qc in twirled_qcs])
+```
+
+```text
+np.True_
+```
+
+## Наступні кроки {#next-steps}
+
+<Admonition type="tip" title="Рекомендації">
+    - Щоб дізнатися, як використовувати функцію `generate_preset_passmanager` замість написання власних проходів, почни з теми [Налаштування транспіляції за замовчуванням і параметри конфігурації](defaults-and-configuration-options).
+    - Спробуй посібник [Порівняння налаштувань транспілятора](/guides/circuit-transpilation-settings).
+    - Ознайомся з [документацією API транспілятора.](https://docs.quantum.ibm.com/api/qiskit/transpiler)
+</Admonition>
