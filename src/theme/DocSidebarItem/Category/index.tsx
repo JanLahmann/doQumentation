@@ -4,7 +4,7 @@
  * Clicking the badge clears visited + executed status for all pages in the group.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import OriginalCategory from '@theme-original/DocSidebarItem/Category';
 import {
   isPageVisited,
@@ -78,14 +78,8 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
     return () => window.removeEventListener(PAGE_VISITED_EVENT, onPageVisited);
   }, [refresh]);
 
-  // Inject badge into the collapsible's flex flow (left of twistie).
-  // Direct DOM because the badge must be a flex child of the collapsible
-  // or the link, which are rendered by OriginalCategory.
+  // Create badge element once — stable across re-renders.
   useEffect(() => {
-    if (!wrapperRef.current) return;
-    const collapsible = wrapperRef.current.querySelector('.menu__list-item-collapsible');
-    if (!collapsible) return;
-
     const badge = document.createElement('button');
     badge.className = 'dq-category-badge';
     badgeRef.current = badge;
@@ -100,18 +94,32 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
       window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
     });
 
+    return () => { badge.remove(); badgeRef.current = null; };
+  }, [allHrefs]);
+
+  // (Re-)inject badge into the collapsible's flex flow after every render.
+  // Must survive React re-renders of OriginalCategory (e.g. collapse restore).
+  useLayoutEffect(() => {
+    const badge = badgeRef.current;
+    if (!badge || !wrapperRef.current) return;
+
+    const collapsible = wrapperRef.current.querySelector('.menu__list-item-collapsible');
+    if (!collapsible) return;
+
+    // Already in the right place — skip.
+    if (badge.parentNode === collapsible) return;
+    const link = collapsible.querySelector(':scope > .menu__link');
+    if (badge.parentNode === link) return;
+
     // href categories: .menu__caret button is a sibling — insert before it.
-    // no-href categories: caret is ::after on the link — append inside link.
+    // no-href categories: append to collapsible (not inside the <a> link).
     const caretButton = collapsible.querySelector(':scope > .menu__caret');
     if (caretButton) {
       collapsible.insertBefore(badge, caretButton);
     } else {
-      const link = collapsible.querySelector(':scope > .menu__link');
-      if (link) link.appendChild(badge);
+      collapsible.appendChild(badge);
     }
-
-    return () => badge.remove();
-  }, [allHrefs]);
+  });
 
   // Update badge text and visibility when counts change
   useEffect(() => {
