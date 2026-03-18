@@ -1,0 +1,510 @@
+---
+title: "Mitigação de erros"
+sidebar_label: "Mitigação de erros"
+description: "Ao longo desta lição, vamos examinar o ruído e como ele pode ser mitigado em computadores quânticos."
+notebook_path: "learning/courses/utility-scale-quantum-computing/error-mitigation.ipynb"
+---
+
+{/* source-hash: ca878ee81913ab074cf054d8c383d7375b2fda94daa67e67eb5d6b28f670f7be */}
+
+<OpenInLabBanner notebookPath="learning/courses/utility-scale-quantum-computing/error-mitigation.ipynb" />
+
+
+
+  # Ruído quântico e mitigação de erros
+
+<Admonition type="note">
+
+Toshinari Itoko (28 de junho de 2024)
+
+[Baixe o PDF](https://ibm.ent.box.com/public/static/a0zgies7bh91hm2lwev9o0bfeybxc6n6.zip) da aula original. Note que alguns trechos de código podem estar desatualizados, pois são imagens estáticas.
+
+*O tempo aproximado de QPU para executar este experimento é de 1 min 40 s.*
+
+</Admonition>
+
+## 1. Introdução {#1-introduction}
+
+Ao longo desta lição, vamos examinar o ruído e como ele pode ser mitigado em computadores quânticos. Vamos começar observando os efeitos do ruído usando um simulador que consegue simular ruído de diversas formas, incluindo perfis de ruído de computadores quânticos reais. Em seguida, passaremos para computadores quânticos reais, nos quais o ruído é inerente. Vamos ver os efeitos da mitigação de erros, incluindo combinações de técnicas como extrapolação de ruído zero (ZNE) e gate-twirling.
+
+Vamos começar carregando alguns pacotes.
+
+```python
+# Adicionado pelo doQumentation — pacotes necessários para este notebook
+!pip install -q matplotlib qiskit qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+# !pip install qiskit qiskit_aer qiskit_ibm_runtime
+# !pip install jupyter
+# !pip install matplotlib pylatexenc
+```
+
+```python
+import qiskit
+
+qiskit.__version__
+```
+
+```text
+'2.0.2'
+```
+
+```python
+import qiskit_aer
+
+qiskit_aer.__version__
+```
+
+```text
+'0.17.1'
+```
+
+```python
+import qiskit_ibm_runtime
+
+qiskit_ibm_runtime.__version__
+```
+
+```text
+'0.40.1'
+```
+
+## 2. Simulação ruidosa sem mitigação de erros {#2-noisy-simulation-without-error-mitigation}
+
+O Qiskit Aer é um simulador clássico para computação quântica. Ele consegue simular não só a execução ideal, mas também a execução ruidosa de circuitos quânticos. Este notebook demonstra como executar simulações ruidosas usando o Qiskit Aer:
+
+1. Construir um modelo de ruído
+2. Construir um sampler ruidoso (simulador) com o modelo de ruído
+3. Executar um circuito quântico no sampler ruidoso
+
+```
+noise_model = NoiseModel()
+...
+noisy_sampler = Sampler(options={"backend_options": {"noise_model": noise_model}})
+job = noisy_sampler.run([circuit])
+```
+
+### 2.1 Construir um circuito de teste {#21-build-a-test-circuit}
+
+Vamos considerar circuitos de 1 qubit simples que apenas repetem portas X `d` vezes (`d`=0 ... 100) e medem o observável `Z`.
+
+```python
+from qiskit.circuit import QuantumCircuit
+
+MAX_DEPTH = 100
+circuits = []
+for d in range(MAX_DEPTH + 1):
+    circ = QuantumCircuit(1)
+    for _ in range(d):
+        circ.x(0)
+        circ.barrier(0)
+    circ.measure_all()
+    circuits.append(circ)
+
+display(circuits[3].draw(output="mpl"))
+```
+
+![Saída da célula de código anterior](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/extracted-outputs/b4863c66-0.avif)
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+obs = SparsePauliOp.from_list([("Z", 1.0)])
+obs
+```
+
+```text
+SparsePauliOp(['Z'],
+              coeffs=[1.+0.j])
+```
+
+### 2.2 Construir um modelo de ruído {#22-build-a-noise-model}
+
+Para fazer simulação ruidosa, precisamos especificar um `NoiseModel`. Nesta seção, mostramos como construir o `NoiseModel`.
+Primeiro precisamos definir erros quânticos (ou de leitura) para adicionar ao modelo de ruído.
+
+```python
+from qiskit_aer.noise.errors import (
+    coherent_unitary_error,
+    amplitude_damping_error,
+    ReadoutError,
+)
+from qiskit.circuit.library import RXGate
+
+# Erro coerente (unitário): erro de sobre-rotação em X
+# https://qiskit.github.io/qiskit-aer/stubs/qiskit_aer.noise.coherent_unitary_error.html#qiskit_aer.noise.coherent_unitary_error
+OVER_ROTATION_ANGLE = 0.05
+coherent_error = coherent_unitary_error(RXGate(OVER_ROTATION_ANGLE).to_matrix())
+
+# Erro incoerente: erro de amortecimento de amplitude
+# https://qiskit.github.io/qiskit-aer/stubs/qiskit_aer.noise.amplitude_damping_error.html#qiskit_aer.noise.amplitude_damping_error
+AMPLITUDE_DAMPING_PARAM = 0.02  # em [0, 1] (0: sem erro)
+incoherent_error = amplitude_damping_error(AMPLITUDE_DAMPING_PARAM)
+
+# Erro de leitura (medição): erro de readout
+# https://qiskit.github.io/qiskit-aer/stubs/qiskit_aer.noise.ReadoutError.html#qiskit_aer.noise.ReadoutError
+PREP0_MEAS1 = 0.03  # P(1|0): Probabilidade de preparar 0 e medir 1
+PREP1_MEAS0 = 0.08  # P(0|1): Probabilidade de preparar 1 e medir 0
+readout_error = ReadoutError(
+    [[1 - PREP0_MEAS1, PREP0_MEAS1], [PREP1_MEAS0, 1 - PREP1_MEAS0]]
+)
+```
+
+```python
+from qiskit_aer.noise import NoiseModel
+
+noise_model = NoiseModel()
+noise_model.add_quantum_error(coherent_error.compose(incoherent_error), "x", (0,))
+noise_model.add_readout_error(readout_error, (0,))
+```
+
+### 2.3 Construir um sampler ruidoso com o modelo de ruído {#23-build-a-noisy-sampler-with-the-noise-model}
+
+```python
+from qiskit_aer.primitives import SamplerV2 as Sampler
+
+noisy_sampler = Sampler(options={"backend_options": {"noise_model": noise_model}})
+```
+
+### 2.4 Executar circuitos quânticos no sampler ruidoso {#24-run-quantum-circuits-on-the-noisy-sampler}
+
+```python
+job = noisy_sampler.run(circuits, shots=400)
+```
+
+```python
+result = job.result()
+```
+
+```python
+result[0].data.meas.get_counts()
+```
+
+```text
+{'0': 389, '1': 11}
+```
+
+### 2.5 Visualizar resultados {#25-plot-results}
+
+```python
+import matplotlib.pyplot as plt
+
+plt.title("Simulação ruidosa")
+ds = list(range(MAX_DEPTH + 1))
+plt.plot(
+    ds,
+    [result[d].data.meas.expectation_values(["Z"]) for d in ds],
+    color="gray",
+    linestyle="-",
+)
+plt.scatter(ds, [result[d].data.meas.expectation_values(["Z"]) for d in ds], marker="o")
+plt.hlines(0, xmin=0, xmax=MAX_DEPTH, colors="black")
+plt.ylim(-1, 1)
+plt.xlabel("Profundidade do circuito")
+plt.ylabel("Valor medido <Z>")
+plt.show()
+```
+
+### 2.6 Simulação ideal {#26-ideal-simulation}
+
+```python
+ideal_sampler = Sampler()
+job_ideal = ideal_sampler.run(circuits)
+result_ideal = job_ideal.result()
+plt.title("Simulação ideal")
+ds = list(range(MAX_DEPTH + 1))
+plt.plot(
+    ds,
+    [result_ideal[d].data.meas.expectation_values(["Z"]) for d in ds],
+    color="gray",
+    linestyle="-",
+)
+plt.scatter(
+    ds, [result_ideal[d].data.meas.expectation_values(["Z"]) for d in ds], marker="o"
+)
+plt.hlines(0, xmin=0, xmax=MAX_DEPTH, colors="black")
+plt.xlabel("Profundidade do circuito")
+plt.ylabel("Valor medido <Z>")
+plt.show()
+```
+
+![Saída da célula de código anterior](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/extracted-outputs/041abc81-0.avif)
+
+### 2.7 Exercício {#27-exercise}
+
+Ajustando o código abaixo:
+- [ ] Tente 25x o número de shots (= 10_000 shots) e confirme que um gráfico mais suave é obtido
+- [ ] Mude os parâmetros de ruído (OVER_ROTATION_ANGLE, AMPLITUDE_DAMPING_PARAM, PREP0_MEAS1 ou PREP1_MEAS0) e veja como o gráfico muda
+
+```python
+OVER_ROTATION_ANGLE = 0.05
+coherent_error = coherent_unitary_error(RXGate(OVER_ROTATION_ANGLE).to_matrix())
+AMPLITUDE_DAMPING_PARAM = 0.02  # em [0, 1] (0: sem erro)
+incoherent_error = amplitude_damping_error(AMPLITUDE_DAMPING_PARAM)
+PREP0_MEAS1 = 0.1  # P(1|0): Probabilidade de preparar 0 e medir 1
+PREP1_MEAS0 = 0.05  # P(0|1): Probabilidade de preparar 1 e medir 0
+readout_error = ReadoutError(
+    [[1 - PREP0_MEAS1, PREP0_MEAS1], [PREP1_MEAS0, 1 - PREP1_MEAS0]]
+)
+noise_model = NoiseModel()
+noise_model.add_quantum_error(coherent_error.compose(incoherent_error), "x", (0,))
+noise_model.add_readout_error(readout_error, (0,))
+options = {
+    "backend_options": {"noise_model": noise_model},
+}
+noisy_sampler = Sampler(options=options)
+job = noisy_sampler.run(circuits, shots=400)
+result = job.result()
+plt.title("Simulação ruidosa")
+ds = list(range(MAX_DEPTH + 1))
+plt.plot(
+    ds,
+    [result[d].data.meas.expectation_values(["Z"]) for d in ds],
+    marker="o",
+    linestyle="-",
+)
+plt.hlines(0, xmin=0, xmax=MAX_DEPTH, colors="black")
+plt.ylim(-1, 1)
+plt.xlabel("Profundidade")
+plt.ylabel("Valor medido <Z>")
+plt.show()
+```
+
+![Saída da célula de código anterior](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/extracted-outputs/502b9cfe-0.avif)
+
+### 2.8 Simulação ruidosa mais realista {#28-more-realistic-noisy-simulation}
+
+```python
+from qiskit_aer import AerSimulator
+from qiskit_ibm_runtime import SamplerV2 as Sampler, QiskitRuntimeService
+
+service = QiskitRuntimeService()
+real_backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)  # Eagle
+```
+
+```text
+<IBMBackend('ibm_strasbourg')>
+```
+
+```python
+aer = AerSimulator.from_backend(real_backend)
+noisy_sampler = Sampler(mode=aer)
+job = noisy_sampler.run(circuits)
+result = job.result()
+plt.title("Simulação ruidosa com modelo de ruído de backend real")
+ds = list(range(MAX_DEPTH + 1))
+plt.plot(
+    ds,
+    [result[d].data.meas.expectation_values(["Z"]) for d in ds],
+    marker="o",
+    linestyle="-",
+)
+plt.hlines(0, xmin=0, xmax=MAX_DEPTH, colors="black")
+plt.ylim(-1, 1)
+plt.xlabel("Profundidade")
+plt.ylabel("Valor medido <Z>")
+plt.show()
+```
+
+![Saída da célula de código anterior](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/extracted-outputs/81a67f2f-0.avif)
+
+## 3. Computação quântica real com mitigação de erros {#3-real-quantum-computation-with-error-mitigation}
+
+Nesta parte, demonstramos como obter resultados com mitigação de erros (valores esperados) usando o Qiskit Estimator.
+Consideramos circuitos Trotterizados de 6 qubits para simular a evolução temporal do modelo de Ising unidimensional e observamos como o erro escala em relação ao número de passos de tempo.
+
+```python
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)  # Eagle
+backend
+```
+
+```text
+<IBMBackend('ibm_strasbourg')>
+```
+
+```python
+NUM_QUBITS = 6
+NUM_TIME_STEPS = list(range(8))
+RX_ANGLE = 0.1
+RZZ_ANGLE = 0.1
+```
+
+### 3.1 Construir os circuitos {#31-build-circuits}
+
+```python
+# Construir circuitos com diferentes números de passos de tempo
+circuits = []
+for n_steps in NUM_TIME_STEPS:
+    circ = QuantumCircuit(NUM_QUBITS)
+    for i in range(n_steps):
+        # camada rx
+        for q in range(NUM_QUBITS):
+            circ.rx(RX_ANGLE, q)
+        # 1ª camada rzz
+        for q in range(1, NUM_QUBITS - 1, 2):
+            circ.rzz(RZZ_ANGLE, q, q + 1)
+        # 2ª camada rzz
+        for q in range(0, NUM_QUBITS - 1, 2):
+            circ.rzz(RZZ_ANGLE, q, q + 1)
+    circ.barrier()  # necessário para não otimizar o circuito
+    # Etapa de descomputo
+    for i in range(n_steps):
+        for q in range(0, NUM_QUBITS - 1, 2):
+            circ.rzz(-RZZ_ANGLE, q, q + 1)
+        for q in range(1, NUM_QUBITS - 1, 2):
+            circ.rzz(-RZZ_ANGLE, q, q + 1)
+        for q in range(NUM_QUBITS):
+            circ.rx(-RX_ANGLE, q)
+    circuits.append(circ)
+```
+
+Para conhecer a saída ideal com antecedência, usamos circuitos de computo-descomputo, que consistem em uma primeira etapa onde o circuito original $U$ é aplicado, e uma segunda etapa onde ele é revertido $U^\dagger$.
+Observe que o resultado ideal de tais circuitos será trivialmente o estado de entrada $|000000\rangle$, que tem valores esperados triviais para qualquer observável de Pauli, por exemplo, $\langle IIIIIZ \rangle = 1$.
+
+```python
+# Exibir o circuito com 2 passos de tempo
+circuits[2].draw(output="mpl")
+```
+
+![Saída da célula de código anterior](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/extracted-outputs/20296b5a-0.avif)
+
+Nota: Como mostrado acima, o circuito com $k$ passos de tempo terá $4k$ camadas de portas de dois qubits.
+
+```python
+obs = SparsePauliOp.from_sparse_list([("Z", [0], 1.0)], num_qubits=NUM_QUBITS)
+obs
+```
+
+```text
+SparsePauliOp(['IIIIIZ'],
+              coeffs=[1.+0.j])
+```
+
+### 3.2 Transpilar os circuitos {#32-transpile-the-circuits}
+
+Transpilamos os circuitos para o backend com otimização (`optimization_level=1`).
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_circuits = pm.run(circuits)
+display(isa_circuits[2].draw("mpl", idle_wires=False, fold=-1))
+```
+
+![Saída da célula de código anterior](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/extracted-outputs/87b861e2-0.avif)
+
+### 3.3 Executar com o Estimator (com diferentes níveis de resiliência) {#33-execute-using-estimator-with-different-resilience-levels}
+
+Definir o nível de resiliência (`estimator.options.resilience_level`) é a forma mais simples de aplicar mitigação de erros ao usar o Qiskit Estimator. O Estimator suporta os seguintes níveis de resiliência (a partir de 28/06/2024). Veja mais detalhes no guia [Configurar mitigação de erros](/guides/configure-error-mitigation).
+
+![image.png](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/res_level.avif)
+
+```python
+from qiskit_ibm_runtime import Batch
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+jobs = []
+job_ids = []
+with Batch(backend=backend):
+    for resilience_level in [0, 1, 2]:
+        estimator = Estimator()
+        estimator.options.resilience_level = resilience_level
+        job = estimator.run(
+            [(circ, obs.apply_layout(circ.layout)) for circ in isa_circuits]
+        )
+        job_ids.append(job.job_id())
+        print(f"Job ID (rl={resilience_level}): {job.job_id()}")
+        jobs.append(job)
+```
+
+```text
+Job ID (rl=0): d146vcnmya70008emprg
+Job ID (rl=1): d146vdnqf56g0081sva0
+Job ID (rl=2): d146ven5z6q00087c61g
+```
+
+```python
+# verificar status dos jobs
+for job in jobs:
+    print(job.status())
+```
+
+```text
+DONE
+DONE
+DONE
+```
+
+```python
+# SUBSTITUA PELOS SEUS PRÓPRIOS IDs DE JOB
+jobs = [service.job(job_id) for job_id in job_ids]
+```
+
+```python
+# Obter resultados
+results = [job.result() for job in jobs]
+```
+
+### 3.4 Plotar os resultados {#34-plot-results}
+
+```python
+plt.title("Mitigação de erros com diferentes níveis de resiliência")
+labels = ["0 (Sem mitigação)", "1 (TREX)", "2 (ZNE + Gate twirling)"]
+steps = NUM_TIME_STEPS
+for result, label in zip(results, labels):
+    plt.errorbar(
+        x=steps,
+        y=[result[s].data.evs for s in steps],
+        yerr=[result[s].data.stds for s in steps],
+        marker="o",
+        linestyle="-",
+        capsize=4,
+        label=label,
+    )
+plt.hlines(
+    1.0, min(steps), max(steps), linestyle="dashed", label="Ideal", colors="black"
+)
+plt.xlabel("Passos de tempo")
+plt.ylabel("<IIIIIZ> mitigado")
+plt.legend()
+plt.show()
+```
+
+![Saída da célula de código anterior](/learning/images/courses/utility-scale-quantum-computing/error-mitigation/extracted-outputs/7527976e-0.avif)
+
+## 4. (Opcional) Personalizar as opções de mitigação de erros {#4-optional-customize-error-mitigation-options}
+
+Podemos personalizar a aplicação das técnicas de mitigação de erros via opções, como mostrado abaixo.
+
+```python
+# TREX
+estimator.options.twirling.enable_measure = True
+estimator.options.twirling.num_randomizations = "auto"
+estimator.options.twirling.shots_per_randomization = "auto"
+
+# Gate twirling
+estimator.options.twirling.enable_gates = True
+# ZNE
+estimator.options.resilience.zne_mitigation = True
+estimator.options.resilience.zne.noise_factors = [1, 3, 5]
+estimator.options.resilience.zne.extrapolator = ("exponential", "linear")
+
+# Desacoplamento dinâmico
+estimator.options.dynamical_decoupling.enable = True  # Padrão: False
+estimator.options.dynamical_decoupling.sequence_type = "XX"
+
+# Outras opções
+estimator.options.default_shots = 10_000
+```
+
+Consulte os guias e a referência de API a seguir para detalhes sobre as opções de mitigação de erros.
+- [Configurar mitigação de erros](/guides/configure-error-mitigation)
+- [Introdução às opções](/guides/runtime-options-overview)
+- [EstimatorOptions](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-estimator-options)
+- [SamplerOptions](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-sampler-options)

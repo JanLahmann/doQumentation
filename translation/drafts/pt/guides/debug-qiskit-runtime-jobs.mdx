@@ -1,0 +1,408 @@
+---
+title: "Depurar jobs do Qiskit Runtime"
+sidebar_label: "Depurar jobs do Qiskit Runtime"
+description: "Use o módulo de ferramentas de depuração do Qiskit Runtime e a classe `Neat` para depurar e analisar jobs."
+notebook_path: "guides/debug-qiskit-runtime-jobs.ipynb"
+---
+
+{/* doqumentation-source-hash: e27fb401 */}
+
+<OpenInLabBanner notebookPath="guides/debug-qiskit-runtime-jobs.ipynb" />
+
+
+
+{/* cspell:ignore ZIIIII, IZIIII,IIZIII, IIIZII, IIIIZI, IIIIIZ, rdiff */}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versões dos pacotes</b></summary>
+
+O código nesta página foi desenvolvido com os seguintes requisitos.
+Recomendamos usar estas versões ou mais recentes.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+```
+</details>
+Antes de enviar uma carga de trabalho intensiva do Qiskit Runtime para execução em hardware, você pode usar a classe [`Neat` (Noisy Estimator Analyzer Tool)](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#neat) do Qiskit Runtime para verificar se a sua carga de trabalho do Estimator está configurada corretamente, é provável que retorne resultados precisos, usa as opções mais adequadas para o problema especificado e muito mais.
+
+`Neat` Cliffordiza os circuitos de entrada para uma simulação eficiente, mantendo sua estrutura e profundidade. Circuitos de Clifford sofrem níveis semelhantes de ruído e são um bom substituto para estudar o circuito original de interesse.
+
+Os exemplos a seguir ilustram situações em que `Neat` pode ser um recurso útil.
+Primeiro, importe os pacotes relevantes e [autentique-se no serviço Qiskit Runtime.](/guides/cloud-setup)
+## Preparar o ambiente {#prepare-the-environment}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+import random
+
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import SparsePauliOp
+
+from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2 as Estimator
+from qiskit_ibm_runtime.debug_tools import Neat
+
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+```
+
+```python
+# Choose the least busy backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Generate a preset pass manager
+# This will be used to convert the abstract circuit to an equivalent Instruction Set Architecture (ISA) circuit.
+pm = generate_preset_pass_manager(backend=backend, optimization_level=0)
+
+# Set the random seed
+random.seed(10)
+```
+
+## Inicializar um circuito alvo {#initialize-a-target-circuit}
+
+Considere um circuito de seis qubits com as seguintes propriedades:
+
+* Alterna entre rotações `RZ` aleatórias e camadas de gates `CNOT`.
+* Possui uma estrutura espelhada, ou seja, aplica um unitário `U` seguido de seu inverso.
+
+```python
+def generate_circuit(n_qubits, n_layers):
+    r"""
+    A function to generate a pseudo-random a circuit with ``n_qubits`` qubits and
+    ``2*n_layers`` entangling layers of the type used in this notebook.
+    """
+    # An array of random angles
+    angles = [
+        [random.random() for q in range(n_qubits)] for s in range(n_layers)
+    ]
+
+    qc = QuantumCircuit(n_qubits)
+    qubits = list(range(n_qubits))
+
+    # do random circuit
+    for layer in range(n_layers):
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(angles[layer][q_idx], qubit)
+
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+    # undo random circuit
+    for layer in range(n_layers)[::-1]:
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(-angles[layer][q_idx], qubit)
+
+    return qc
+
+# Generate a random circuit
+qc = generate_circuit(6, 3)
+# Convert the abstract circuit to an equivalent ISA circuit.
+ isa_qc = pm.run(qc)
+
+qc.draw("mpl", idle_wires=0)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/df19af55-897d-4b1f-baf8-fac2641ae87d-0.svg)
+
+Escolha operadores `Z` de Pauli único como observáveis e use-os para inicializar os blocos unificados primitivos (PUBs).
+
+```python
+# Initialize the observables
+obs = ["ZIIIII", "IZIIII", "IIZIII", "IIIZII", "IIIIZI", "IIIIIZ"]
+print(f"Observables: {obs}")
+
+# Map the observables to the backend's layout
+isa_obs = [SparsePauliOp(o).apply_layout(isa_qc.layout) for o in obs]
+
+# Initialize the PUBs, which consist of six-qubit circuits with `n_layers` 1, ..., 6
+all_n_layers = [1, 2, 3, 4, 5, 6]
+
+pubs = [(pm.run(generate_circuit(6, n)), isa_obs) for n in all_n_layers]
+```
+
+```text
+Observables: ['ZIIIII', 'IZIIII', 'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']
+```
+
+## Cliffordizar os circuitos {#cliffordize-the-circuits}
+
+Os circuitos PUB definidos anteriormente não são de Clifford, o que torna sua simulação clássica difícil. No entanto, você pode usar o método [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) do `Neat` para mapeá-los a circuitos de Clifford para uma simulação mais eficiente. O método [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) é um invólucro em torno do passo de Transpiler [`ConvertISAToClifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-convert-isa-to-clifford), que também pode ser usado de forma independente. Em particular, ele substitui os gates de qubit único não Clifford do circuito original por gates de qubit único de Clifford, mas não altera os gates de dois qubits, o número de qubits ou a profundidade do circuito.
+
+Consulte [Simulação eficiente de circuitos estabilizadores com as primitivas do Qiskit Aer](/guides/simulate-stabilizer-circuits) para obter mais informações sobre simulação de circuitos de Clifford.
+Primeiro, inicialize o `Neat`.
+
+```python
+# You could specify a custom `NoiseModel` here. If `None`, `Neat`
+# pulls the noise model from the given backend
+noise_model = None
+
+# Initialize `Neat`
+analyzer = Neat(backend, noise_model)
+```
+
+Em seguida, Cliffordize os PUBs.
+
+```python
+clifford_pubs = analyzer.to_clifford(pubs)
+
+clifford_pubs[0].circuit.draw("mpl", idle_wires=0)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/3ad78f41-a2f8-4381-826a-ae728e081ad6-0.svg)
+
+## Aplicação 1: Analisar o impacto do ruído nas saídas do circuito {#application-1-analyze-the-impact-of-noise-on-the-circuit-outputs}
+
+Este exemplo mostra como usar o `Neat` para estudar o impacto de diferentes modelos de ruído nos PUBs em função da profundidade do circuito, executando simulações em condições ideais ([`ideal_sim`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#ideal_sim)) e com ruído ([`noisy_sim`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#noisy_sim)). Isso pode ser útil para estabelecer expectativas sobre a qualidade dos resultados experimentais antes de executar um job em um QPU. Para saber mais sobre modelos de ruído, consulte [Simulação exata e com ruído com as primitivas do Qiskit Aer.](/guides/simulate-with-qiskit-aer#exact-and-noisy-simulation-with-qiskit-aer-primitives)
+
+Os resultados simulados suportam operações matemáticas e, portanto, podem ser comparados entre si (ou com resultados experimentais) para calcular métricas de qualidade.
+
+<Admonition type="caution">
+Um QPU pode ser afetado por diferentes tipos de ruído. O modelo de ruído do Qiskit Aer usado aqui simula apenas alguns deles e, portanto, provavelmente será menos severo do que o ruído em um QPU real.
+
+Para detalhes sobre quais erros são incluídos ao inicializar um modelo de ruído a partir de um QPU, consulte a referência da API [`NoiseModel`](https://qiskit.github.io/qiskit-aer/stubs/qiskit_aer.noise.NoiseModel.html#qiskit_aer.noise.NoiseModel.from_backend) do Aer.
+</Admonition>
+
+Comece realizando simulações clássicas ideais e com ruído.
+
+```python
+# Perform a noiseless simulation
+ideal_results = analyzer.ideal_sim(clifford_pubs)
+print(f"Ideal results:\n {ideal_results}\n")
+
+# Perform a noisy simulation with the backend's noise model
+noisy_results = analyzer.noisy_sim(clifford_pubs)
+print(f"Noisy results:\n {noisy_results}\n")
+```
+
+```text
+Ideal results:
+ NeatResult([NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.]))])
+```
+
+```text
+Noisy results:
+ NeatResult([NeatPubResult(vals=array([0.99023438, 0.99609375, 0.9921875 , 0.99023438, 0.99414062,
+       0.99414062])), NeatPubResult(vals=array([0.984375  , 0.99414062, 0.98242188, 0.98828125, 0.98632812,
+       0.99414062])), NeatPubResult(vals=array([0.96679688, 0.97070312, 0.95898438, 0.97851562, 0.98046875,
+       0.98828125])), NeatPubResult(vals=array([0.9453125 , 0.953125  , 0.97070312, 0.96875   , 0.98242188,
+       0.99023438])), NeatPubResult(vals=array([0.93164062, 0.9375    , 0.953125  , 0.96875   , 0.96484375,
+       0.98046875])), NeatPubResult(vals=array([0.92578125, 0.921875  , 0.93359375, 0.953125  , 0.95898438,
+       0.9765625 ]))])
+```
+
+Em seguida, aplique operações matemáticas para calcular a diferença absoluta. O restante do guia usa a diferença absoluta como métrica de qualidade para comparar resultados ideais com resultados com ruído ou experimentais, mas métricas semelhantes podem ser configuradas.
+
+A diferença absoluta mostra que o impacto do ruído cresce com o tamanho dos circuitos.
+
+```python
+# Figure of merit: Absolute difference
+def rdiff(res1, re2):
+    r"""The absolute difference between `res1` and re2`.
+
+    --> The closer to `0`, the better.
+    """
+    d = abs(res1 - re2)
+    return np.round(d.vals * 100, 2)
+
+for idx, (ideal_res, noisy_res) in enumerate(
+    zip(ideal_results, noisy_results)
+):
+    vals = rdiff(ideal_res, noisy_res)
+
+    # Print the mean absolute difference for the observables
+    mean_vals = np.round(np.mean(vals), 2)
+    print(
+        f"Mean absolute difference between ideal and noisy results for circuits with {all_n_layers[idx]} layers:\n  {mean_vals}%\n"
+    )
+```
+
+```text
+Mean absolute difference between ideal and noisy results for circuits with 1 layers:
+  0.72%
+
+Mean absolute difference between ideal and noisy results for circuits with 2 layers:
+  1.17%
+
+Mean absolute difference between ideal and noisy results for circuits with 3 layers:
+  2.6%
+
+Mean absolute difference between ideal and noisy results for circuits with 4 layers:
+  3.16%
+
+Mean absolute difference between ideal and noisy results for circuits with 5 layers:
+  4.4%
+
+Mean absolute difference between ideal and noisy results for circuits with 6 layers:
+  5.5%
+```
+
+Você pode seguir estas diretrizes simplificadas para melhorar circuitos deste tipo:
+
+- Se a diferença absoluta média for maior que 90%, a mitigação provavelmente não ajudará.
+- Se a diferença absoluta média for menor que 90%, o [Probabilistic Error Amplification (PEA)](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-amplification-pea) provavelmente conseguirá melhorar os resultados.
+- Se a diferença absoluta média for menor que 80%, o [ZNE com dobramento de gates](/guides/error-mitigation-and-suppression-techniques#zero-noise-extrapolation-zne) também provavelmente conseguirá melhorar os resultados.
+
+Como todas as diferenças absolutas acima são menores que 90%, aplicar PEA ao circuito original deverá melhorar a qualidade dos seus resultados.
+Você pode especificar diferentes modelos de ruído no analisador. O exemplo a seguir realiza o mesmo teste, mas adiciona um modelo de ruído personalizado.
+
+```python
+# Set up a noise model with strength 0.02 on every two-qubit gate
+noise_model = NoiseModel()
+for qubits in backend.coupling_map:
+    noise_model.add_quantum_error(
+        depolarizing_error(0.02, 2), ["ecr", "cx"], qubits
+    )
+
+# Update the analyzer's noise model
+analyzer.noise_model = noise_model
+
+# Perform a noiseless simulation
+ideal_results = analyzer.ideal_sim(clifford_pubs)
+
+# Perform a noisy simulation with the backend's noise model
+noisy_results = analyzer.noisy_sim(clifford_pubs)
+
+# Compare the results
+for idx, (ideal_res, noisy_res) in enumerate(
+    zip(ideal_results, noisy_results)
+):
+    values = rdiff(ideal_res, noisy_res)
+
+    # Print the mean absolute difference for the observables
+    mean_values = np.round(np.mean(values), 2)
+    print(
+        f"Mean absolute difference between ideal and noisy results for circuits with {all_n_layers[idx]} layers:\n  {mean_values}%\n"
+    )
+```
+
+```text
+Mean absolute difference between ideal and noisy results for circuits with 1 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 2 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 3 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 4 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 5 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 6 layers:
+  0.0%
+```
+
+Como mostrado, dado um modelo de ruído, você pode tentar quantificar o impacto do ruído nos PUBs de interesse (na versão Cliffordizada) antes de executá-los em um QPU.
+## Aplicação 2: Comparar diferentes estratégias {#application-2-benchmark-different-strategies}
+
+Este exemplo usa o `Neat` para ajudar a identificar as melhores opções para seus PUBs. Para isso, considere executar um problema de estimativa com PEA, que não pode ser simulado com `qiskit_aer`. Você pode usar o `Neat` para ajudar a determinar quais fatores de amplificação de ruído funcionarão melhor, e então usar esses fatores ao executar o experimento original em um QPU.
+
+```python
+# Generate a circuit with six qubits and six layers
+ isa_qc = pm.run(generate_circuit(6, 3))
+
+# Use the same observables as previously
+pubs = [(isa_qc, isa_obs)]
+clifford_pubs = analyzer.to_clifford(pubs)
+```
+
+```python
+noise_factors = [
+    [1, 1.1],
+    [1, 1.1, 1.2],
+    [1, 1.5, 2],
+    [1, 1.5, 2, 2.5, 3],
+    [1, 4],
+]
+```
+
+```python
+# Run the PUBs on a QPU
+estimator = Estimator(backend)
+estimator.options.default_shots = 100000
+estimator.options.twirling.enable_gates = True
+estimator.options.twirling.enable_measure = True
+estimator.options.twirling.shots_per_randomization = 100
+estimator.options.resilience.measure_mitigation = True
+estimator.options.resilience.zne_mitigation = True
+estimator.options.resilience.zne.amplifier = "pea"
+
+jobs = []
+for factors in noise_factors:
+    estimator.options.resilience.zne.noise_factors = factors
+    jobs.append(estimator.run(clifford_pubs))
+
+results = [job.result() for job in jobs]
+```
+
+```python
+# Perform a noiseless simulation
+ideal_results = analyzer.ideal_sim(clifford_pubs)
+```
+
+```python
+# Look at the mean absolute difference to quickly tell the best choice for your options
+for factors, res in zip(noise_factors, results):
+    d = rdiff(ideal_results[0], res[0])
+    print(
+        f"Mean absolute difference for factors {factors}:\n  {np.round(np.mean(d), 2)}%\n"
+    )
+```
+
+```text
+Mean absolute difference for factors [1, 1.1]:
+  6.83%
+
+Mean absolute difference for factors [1, 1.1, 1.2]:
+  8.76%
+
+Mean absolute difference for factors [1, 1.5, 2]:
+  8.03%
+
+Mean absolute difference for factors [1, 1.5, 2, 2.5, 3]:
+  10.17%
+
+Mean absolute difference for factors [1, 4]:
+  8.02%
+```
+
+O resultado com a menor diferença sugere quais opções escolher.
+## Próximos passos {#next-steps}
+
+<Admonition type="tip" title="Recomendações">
+    - Saiba mais sobre [Simulação exata e com ruído com as primitivas do Qiskit Aer.](/guides/simulate-with-qiskit-aer)
+    - Saiba mais sobre as [opções disponíveis do Qiskit Runtime.](/guides/runtime-options-overview)
+    - Saiba mais sobre [técnicas de mitigação e supressão de erros.](/guides/error-mitigation-and-suppression-techniques)
+    - Visite o tópico [Transpile com pass managers](transpile-with-pass-managers).
+    - Saiba [como transpilar circuitos](/guides/circuit-transpilation-settings#compare-transpiler-settings) como parte dos fluxos de trabalho de padrões do Qiskit usando o Qiskit Runtime.
+    - Revise a [documentação da API de ferramentas de depuração.](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools)
+</Admonition>

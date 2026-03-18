@@ -1,0 +1,433 @@
+---
+title: "SQD e SKQD"
+sidebar_label: "SQD e SKQD"
+description: "Esta lição usa um algoritmo de exemplo (SQD) para demonstrar como recursos clássicos e quânticos podem ser combinados."
+notebook_path: "learning/courses/integrating-quantum-and-high-performance-computing/sqd-skqd.ipynb"
+---
+
+{/* source-hash: 2005d5e2 */}
+
+{/* cspell:ignore VQAsgres sinfo SBATCH ntasks cpus srun Sbatch sbatch squeue subseteq Utar nocc gres Iskandar Sitdikov */}
+
+Neste capítulo, vamos explorar como computadores quânticos e clássicos trabalham juntos para resolver um dos desafios mais importantes da ciência: estimar com precisão a energia de moléculas e materiais.
+
+Iskandar Sitdikov descreve a abordagem algorítmica no vídeo a seguir.
+
+<IBMVideo id="134680646" title="Neste vídeo, Iskandar Sitdikov implementa um cálculo híbrido clássico-quântico usando um ambiente HPC simulado."/>
+
+## Hamiltoniano {#hamiltonian}
+
+A chave para esse problema é um operador matemático — o Hamiltoniano, que representa a energia total de um sistema. Para fins computacionais, podemos pensar nesse Hamiltoniano como uma grande matriz. As soluções que buscamos — especificamente o estado fundamental do sistema — são os menores autovalores dessa matriz. O desafio, porém, é que para problemas práticos, essa matriz Hamiltoniana é muito grande. Ela cresce exponencialmente com o tamanho do sistema, tornando-se rapidamente grande demais ($2^n$, onde $n$ é o número de qubits) para que até os supercomputadores mais poderosos consigam armazená-la ou resolvê-la diretamente.
+
+$$
+H = \begin{pmatrix}
+H_{0,0} & H_{0,1} & \cdots & H_{0,N-1} \\
+H_{1,0} & H_{1,1} & \cdots & H_{1,N-1} \\
+\vdots & \vdots & \ddots & \vdots \\
+H_{N-1,0} & H_{N-1,1} & \cdots & H_{N-1,N-1}
+\end{pmatrix} \quad (N=2^n)
+$$
+
+Para contornar isso, usamos uma estratégia poderosa conhecida como método de subespaço. Em vez de lidar com a matriz inteira, selecionamos de forma inteligente uma fatia pequena e relevante — um "subespaço" — que acreditamos conter as informações mais importantes sobre a solução de baixa energia que estamos buscando.
+
+$$
+\underset{\text{Full Hamiltonian}}{\begin{pmatrix}
+\ddots & \vdots \\
+\cdots & H_{i,j} & \cdots \\
+& \vdots & \ddots
+\end{pmatrix}}
+\quad \xrightarrow{\text{Project}} \quad
+\underset{\text{Projected Hamiltonian}}{\tilde{H}}
+= \begin{pmatrix}
+\langle b_1 | H | b_1 \rangle & \cdots & \langle b_1 | H | b_L \rangle \\
+\vdots & \ddots & \vdots \\
+\langle b_L | H | b_1 \rangle & \cdots & \langle b_L | H | b_L \rangle
+\end{pmatrix}
+\quad \xrightarrow{\text{Diagonalize}} \quad
+\underset{\text{Eigenvalues}}{\begin{pmatrix}
+E_0 & & 0 \\
+& \ddots & \\
+0 & & E_{L-1}
+\end{pmatrix}}
+$$
+
+Uma vez que esse subespaço pequeno é definido por um conjunto de estados de base $\{|b_i\rangle\}$, o Hamiltoniano completo é projetado sobre ele para criar a nova matriz menor $\tilde{H}$. Cada elemento dessa matriz é calculado a partir dos estados de base do subespaço e do Hamiltoniano original, como em $\langle b_i | H | b_j \rangle$. Essa matriz pequena pode então ser facilmente diagonalizada em um computador clássico, e os autovalores resultantes são nossas energias estimadas.
+
+Como você pode imaginar, o sucesso de toda essa abordagem depende muito de escolher um "bom" subespaço. Se o nosso subespaço não representar com precisão o verdadeiro estado fundamental, a resposta final será incorreta. É aqui que os computadores quânticos entram: eles nos permitem preparar e amostrar estados quânticos complexos projetados para identificar esses subespaços importantes. Para problemas verdadeiramente massivos, como estruturas químicas complexas ou sítios de ligação, até a matriz projetada pode ser desafiadora de diagonalizar. Assim, esses problemas são idealmente adequados para aproveitar os pontos fortes tanto dos recursos de computação quântica quanto dos clássicos.
+
+Nas seções a seguir, vamos explorar dois algoritmos avançados, SQD e SKQD, que utilizam mecânica quântica para encontrar e construir esses subespaços. Para um mergulho mais profundo, há um [curso completo](/learning/courses/quantum-diagonalization-algorithms) no IBM Quantum Learning dedicado a esses tópicos em detalhes. Para nossos propósitos neste curso, manteremos a explicação em um nível alto.
+
+## Diagonalização Quântica Baseada em Amostras {#sample-based-quantum-diagonalization}
+
+A Diagonalização Quântica Baseada em Amostras (SQD, do inglês *Sample-based Quantum Diagonalization*) é um poderoso algoritmo variacional que implementa o método de subespaço de forma quântica. Ele evita procedimentos custosos e complexos como os testes de Hadamard, usando um computador quântico para preparar um estado de teste e amostrar *bitstrings*, que definem o subespaço para a diagonalização clássica.
+
+![Um esquema do fluxo de trabalho específico para a diagonalização quântica baseada em amostras. As etapas incluem um circuito quântico variacional, o uso de medições para projetar o Hamiltoniano em um subespaço, e depois um otimizador clássico para atualizar os parâmetros variacionais no circuito e repetir.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/sqd-cycle.svg)
+
+O algoritmo SQD pode ser dividido nas seguintes etapas:
+
+#### Etapa 1: Preparar o estado Ansatz
+
+Seja $H = \sum_{j=1}^Q \alpha_j P_j$ o Hamiltoniano em $n$ qubits. Embora o verdadeiro estado fundamental possa ser suportado em todos os $2^n$ estados de base, o SQD é mais eficaz em casos onde o estado fundamental pode ser bem aproximado por um subespaço esparso (um conjunto de bitstrings de tamanho polinomial).
+
+Para construir esse subespaço, começamos com um estado de entrada $|\phi_0\rangle$, como o estado de Hartree-Fock (HF) em química. Em seguida, aplicamos um circuito quântico parametrizado, $U(\theta)$, conhecido como ansatz.
+
+![Um diagrama mostrando a sobreposição dos estados de base computacionais que compõem o ansatz e os que compõem o verdadeiro estado fundamental. Especificamente, a imagem mostra que as duas regiões terão alguma sobreposição, mas podem não corresponder perfeitamente.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/ansatz.svg)
+
+Esse diagrama ilustra o objetivo de um bom ansatz. O ansatz prepara um estado quântico cujo suporte (o conjunto de estados de base que o compõem) deve, idealmente, ter uma grande sobreposição com o suporte do verdadeiro estado fundamental. Esse circuito nos permite projetar rapidamente o ansatz nos estados de base computacionais, que serão usados na diagonalização clássica. Em outras palavras: não precisamos adivinhar um ansatz que seja o estado fundamental; só precisamos que ele contenha os mesmos estados de base. Então, a diagonalização clássica do Hamiltoniano projetado nos dará a superposição de estados de base que melhor aproxima o estado fundamental.
+
+#### Etapa 2: Amostrar o subespaço
+
+Ao amostrar do circuito preparado pelo ansatz, obtemos uma coleção de bitstrings, $\{b_j\}_{j=1}^L$. Essas bitstrings definem a base do nosso subespaço escolhido. O tempo de execução quântico para essa etapa é determinado pela profundidade do circuito e pelo número de amostras coletadas.
+
+#### Etapa 3: Projetar e diagonalizar classicamente
+
+Usando as bitstrings amostradas, projetamos o Hamiltoniano no subespaço que elas abrangem. Para cada par de bitstrings $(j, k)$, calculamos classicamente o elemento de matriz $\tilde{H}_{jk} = \langle b_j | H | b_k \rangle$. Como os operadores de Pauli são esparsos, essa etapa é classicamente eficiente para Hamiltonianos físicos. A matriz pequena resultante $\tilde{H}$ é então diagonalizada em um processador clássico para estimar o estado fundamental e sua energia.
+
+#### Etapa 4: Otimizar o ansatz (opcional)
+
+O processo pode ser tornado iterativo. Tratando a energia do estado fundamental estimada como uma função de custo, podemos otimizar os parâmetros do circuito ($\theta$) usando métodos como gradiente descendente para melhorar o ansatz e, por sua vez, a aproximação de energia na próxima iteração.
+
+### Principais vantagens do SQD {#key-advantages-of-sqd}
+
+O SQD oferece várias funcionalidades poderosas que o tornam um forte candidato para demonstrar vantagem quântica:
+
+* Forte robustez ao ruído: Suponha que o verdadeiro estado fundamental seja suportado em apenas duas bitstrings. Se essas forem amostradas, mesmo que a sobreposição com nosso ansatz seja pequena, a diagonalização atribuirá a elas os pesos apropriados e ignorará efetivamente todas as outras bitstrings ruidosas e desnecessárias que também possam ter sido amostradas. Essa filtragem inerente torna o SQD particularmente tolerante a ruído.
+* Verificabilidade clássica: Ao contrário do QPE ou VQAs, o SQD produz uma aproximação clássica do estado fundamental. Isso significa que qualquer pessoa com acesso à lista de bitstrings e seus pesos pode recalcular e verificar a estimativa de energia diretamente em um computador clássico.
+
+O SQD já foi usado para estimar a energia de dissociação do estado fundamental do N$_2$ e as propriedades eletrônicas dos clusters [2Fe-2S] e [4Fe-4S] [[2]](#references), com circuitos de até 77 qubits e 10.570 portas.
+
+### Verifique seu entendimento {#check-your-understanding}
+<details>
+<summary>
+
+Verdadeiro ou Falso: o SQD pode ser aplicado a sistemas químicos.
+
+</summary>
+
+__Resposta:__
+
+Verdadeiro
+</details>
+
+### Verifique seu entendimento {#check-your-understanding-2}
+<details>
+<summary>
+
+Chame de $A$ o conjunto de todos os estados de base computacionais que compõem seu ansatz. Chame de $G$ o conjunto de todos os estados de base computacionais que compõem o verdadeiro estado fundamental do seu sistema. Qual das alternativas a seguir corresponde a um "bom" ansatz? Selecione todas que se aplicam.
+
+(a) $A \subset G \\$
+(b) $A \subseteq G\\$
+(c) $G \subset A\\$
+(d) $G \subseteq A\\$
+</summary>
+
+__Resposta:__
+
+(c) e (d)
+</details>
+
+## SKQD (Diagonalização Quântica de Krylov Baseada em Amostras) {#skqd-sample-based-krylov-quantum-diagonalization}
+
+A Diagonalização Quântica de Krylov Baseada em Amostras (SKQD, do inglês *Sample-based Krylov Quantum Diagonalization*) é outro poderoso algoritmo quântico baseado em amostras que se baseia nos princípios do SQD. Embora seu objetivo seja o mesmo — encontrar um bom subespaço para diagonalização — o SKQD emprega um método mais estruturado para gerar as bitstrings, especialmente para problemas como Hamiltonianos de rede.
+
+A ideia central do SKQD é que, em vez de otimizar um circuito parametrizado para encontrar um bom ansatz, é possível convergir comprovadamente para o estado fundamental amostrando de um conjunto de estados gerados pela própria evolução temporal natural do sistema — o subespaço de Krylov. O algoritmo SKQD pode ser dividido nas seguintes etapas:
+
+#### Etapa 1: Construir o subespaço de Krylov com evolução temporal
+
+O processo começa com um estado inicial $|\phi_0\rangle.$ É importante destacar que não precisamos que esse estado inicial tenha uma "boa" sobreposição com o estado fundamental. Ele só precisa ser "polinomialmente grande", ou seja, descrito por um polinômio no tamanho do sistema. O próprio algoritmo vai então aproximar o estado cada vez mais do estado fundamental do sistema. O SKQD aplica o operador de evolução temporal, $e^{-iHt}$, para diferentes durações de tempo. Isso cria um conjunto de $d$ estados quânticos diferentes, definidos como:
+
+$$
+|\phi_j\rangle = e^{-i \,\delta t j H}|\phi_0\rangle,  \quad \text{para } j = 0, 1, \dots, d-1 \quad \text{}
+$$
+
+Essa coleção de estados com evolução temporal forma uma base de Krylov. Essa etapa é particularmente eficaz para Hamiltonianos de rede, onde o número de termos no Hamiltoniano não é grande. Para problemas de química, essa evolução temporal pode resultar em circuitos muito profundos, razão pela qual o SQD é frequentemente recomendado nesses casos.
+
+#### Etapa 2: Amostrar dos estados da base de Krylov
+
+Em seguida, amostras de bitstrings são coletadas de cada um dos $d$ estados diferentes ($|\phi_0\rangle, |\phi_1\rangle, \dots, |\phi_{d-1}\rangle$) preparados na etapa anterior. Todas essas bitstrings são então agrupadas para formar a base do subespaço.
+
+#### Etapa 3: Projetar e diagonalizar classicamente
+
+Essa etapa é idêntica à do SQD. As bitstrings coletadas são usadas para projetar o Hamiltoniano completo no subespaço que elas abrangem. A matriz pequena resultante, $\tilde{H}$, é então diagonalizada em um computador clássico para encontrar a energia do estado fundamental.
+
+### Principais vantagens e garantias do SKQD {#key-advantages-and-guarantees-of-skqd}
+
+A abordagem estruturada do SKQD oferece benefícios únicos:
+
+* Convergência comprovável: A principal vantagem do SKQD é sua garantia teórica de convergência sob condições específicas e bem definidas. Se o verdadeiro estado fundamental for esparso (puder ser bem aproximado por um número polinomial de bitstrings) e a lacuna de energia para o primeiro estado excitado não for muito pequena, o método está comprovadamente para funcionar com eficiência. Sob essas condições, o SKQD garante que encontrará as bitstrings cruciais que compõem o estado fundamental e pode aproximar a energia do estado fundamental com alta precisão. Isso requer apenas um número polinomial de experimentos e shots quânticos. Essa garantia coloca a abordagem baseada em amostras em uma base teórica rigorosa, semelhante a métodos estabelecidos como a estimativa de fase quântica.
+
+* Benefícios compartilhados com o SQD: Assim como o SQD, o SKQD também possui a propriedade de robustez ao ruído. Ou seja, desde que se tenha todas as boas bitstrings no conjunto de bitstrings amostradas, a diagonalização atribui peso quase nulo às bitstrings incorretas, tornando o procedimento robusto ao ruído. Além disso, como a solução é produzida a partir de um HPC clássico, a energia da solução é classicamente verificável.
+
+Em experimentos, o SKQD foi usado com até 70 qubits e milhares de portas para estudar o estado fundamental de complexos modelos de Anderson com 4 impurezas, alcançando excelente concordância com métodos clássicos de ponta como o DMRG.[[1]](#references)
+
+### Verifique seu entendimento {#check-your-understanding-3}
+<details>
+<summary>
+
+Qual parte do algoritmo SKQD o torna mais adequado para problemas físicos como redes de spin do que para problemas químicos? Por quê?
+
+</summary>
+
+__Resposta:__
+
+A evolução temporal requer circuitos de Trotter, que são muito profundos para Hamiltonianos complicados e não esparsos. As interações em redes de spin são governadas por matrizes de spin, equivalentes às matrizes de Pauli. Assim, os Hamiltonianos para redes de spin tendem a ser mais compactamente expressíveis em matrizes de Pauli, especialmente aquelas com interações entre vizinhos mais próximos.
+
+</details>
+
+## SQD e SKQD como computação heterogênea {#sqd-and-skqd-as-heterogeneous-computing}
+
+Para conectar tudo, podemos representar os algoritmos baseados em amostras como uma combinação de diferentes modelos de programação em um conjunto de recursos heterogêneos. Por exemplo, podemos representar nosso algoritmo como um fluxo de tarefas.
+
+![Um esquema do fluxo de trabalho específico para a diagonalização quântica baseada em amostras. As etapas incluem um circuito quântico variacional, o uso de medições para projetar o Hamiltoniano em um subespaço, e depois um otimizador clássico para atualizar os parâmetros variacionais no circuito e repetir.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/sqd-workflow.svg)
+
+Esta figura ilustra o fluxo de trabalho fundamental de quatro etapas. Primeiro, teremos uma tarefa para a preparação do circuito quântico que se sobreponha ao nosso estado alvo, seguida de uma tarefa de transpilação, que requer apenas recursos clássicos para ser executada. Em seguida, haverá uma tarefa que usa primitivos para executar nosso circuito quântico, exigindo recursos quânticos. Por fim, temos uma tarefa de pós-processamento, que por si só pode ser um algoritmo de diagonalização paralela rodando em múltiplos nós.
+
+Além disso, podemos querer executar um desses algoritmos muitas vezes enquanto variamos nosso ansatz, ou podemos querer executá-los completamente em paralelo com populações diferentes.
+
+![Um esquema de uma carga de trabalho SQD sendo distribuída entre vários recursos. Mostra vários processos rodando sequencialmente, usando os resultados de uma iteração para informar a próxima, mas também executando muitos desses processos em paralelo.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/sqd-complex.svg)
+
+Como ilustrado acima, você pode executar múltiplos fluxos de trabalho simultaneamente enquanto faz o seguinte:
+
+* Varia os parâmetros ou a estrutura do ansatz para encontrar o mais eficaz.
+* Começa com diferentes estados ou configurações iniciais ("populações") para evitar mínimos locais e garantir um resultado mais robusto.
+
+Essa abordagem em múltiplas camadas, combinando heterogeneidade baseada em tarefas com paralelismo no nível do fluxo de trabalho, é fundamental para liberar todo o potencial desses algoritmos.
+
+## Prática de programação {#programming-practice}
+
+Vamos praticar o algoritmo SKQD, demonstrando o fluxo de trabalho heterogêneo descrito anteriormente. O processo é dividido em quatro etapas distintas, cada uma com seu próprio script Python e um script shell correspondente para submissão de jobs.
+
+### Mapeamento (`mapping.py` e `mapping.sh`) {#mapping-mappingpy-and-mappingsh}
+
+O primeiro passo no nosso fluxo de trabalho é definir o problema físico e mapeá-lo para um conjunto de circuitos quânticos.
+
+O `mapping.py` define os parâmetros para um problema físico específico — neste caso, um modelo de impureza de Anderson com sete sítios de banho (`n_bath = 7`). Ele constrói as integrais de um corpo (`h1e`) e dois corpos (`h2e`) que representam o Hamiltoniano do sistema.
+
+```python
+
+...
+
+n_bath = 7  # number of bath sites
+
+...
+
+# One body matrix elements in the "position" basis
+h1e = -t * np.diag(np.ones(n_bath), k=1) - t * np.diag(np.ones(n_bath), k=-1)
+h1e[impurity_index, impurity_index + 1] = -V
+h1e[impurity_index + 1, impurity_index] = -V
+h1e[impurity_index, impurity_index] = eps
+
+# Two body matrix elements in the "position" basis
+h2e = np.zeros((n_bath + 1, n_bath + 1, n_bath + 1, n_bath + 1))
+h2e[impurity_index, impurity_index, impurity_index, impurity_index] = U
+
+...
+
+# The one-body time evolution
+free_fermion_evolution = ffsim.qiskit.OrbitalRotationJW(n_modes, Utar)
+
+# The two-body time evolution
+def append_diagonal_evolution(dt, U, impurity_qubit, num_orb, q_circuit):
+    """Append two-body time evolution to a quantum circuit."""
+    if U != 0:
+        q_circuit.append(
+            CPhaseGate(-dt / 2 * U),
+            [impurity_qubit, impurity_qubit + num_orb],
+        )
+
+```
+Em seguida, o script gera os circuitos quânticos necessários para o algoritmo SKQD. Ele começa criando um estado inicial (`initial_state`) e depois aplica operadores de evolução temporal para diferentes números de passos (`d = 8`) a fim de gerar os diferentes estados da base de Krylov, $|\phi_j\rangle = (e^{-iHt})^j |\phi_0\rangle$.
+
+```python
+
+# The reference state
+def initial_state(q_circuit, norb, nocc):
+    """Prepare an initial state."""
+    for i in range(nocc):
+        q_circuit.append(XGate(), [i])
+        q_circuit.append(XGate(), [norb + i])
+    rot = XXPlusYYGate(np.pi / 2, -np.pi / 2)
+
+    for i in range(3):
+        for j in range(nocc - i - 1, nocc + i, 2):
+            q_circuit.append(rot, [j, j + 1])
+            q_circuit.append(rot, [norb + j, norb + j + 1])
+    q_circuit.append(rot, [j + 1, j + 2])
+    q_circuit.append(rot, [norb + j + 1, norb + j + 2])
+
+...
+
+# Generate the initial state
+qubits = QuantumRegister(2 * n_modes, name="q")
+init_state = QuantumCircuit(qubits)
+initial_state(init_state, n_modes, n_modes // 2)
+
+...
+
+d = 8  # Number of Krylov basis states
+circuits = []
+for i in range(d):
+    circ = init_state.copy()
+    circuits.append(circ)
+    for _ in range(i):
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+        circ.append(free_fermion_evolution, qubits)
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+    circ.measure_all()
+
+print(circuits[0].draw(scale=0.4, fold=-1))
+
+```
+O script salva a lista de 8 circuitos gerados (cada um com medições anexadas) em um arquivo chamado `circuits.qpy`.
+
+O `mapping.sh` é um script em lote do Slurm usado para submeter o job `mapping.py`. Como se trata de um cálculo clássico, ele solicita recursos de uma partição de CPU padrão (`--partition=normal`).
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+### Otimização (`optimization.py` e `optimization.sh`) {#optimization-optimizationpy-and-optimizationsh}
+
+Depois que temos nossos circuitos, eles precisam ser otimizados e compilados para rodar de forma eficiente no hardware quântico de destino.
+
+No `optimization.py`, o script primeiro carrega o arquivo `circuits.qpy` criado na etapa de mapeamento e obtém informações sobre os recursos quânticos disponíveis através do `QRMI()`, um gerenciador de recursos quânticos. Em seguida, usa o `generate_preset_pass_manager` do Qiskit com um alto nível de otimização (`optimization_level=3`) para converter os circuitos abstratos e lógicos em circuitos ISA (Instruction Set Architecture). Esse processo reescreve os circuitos usando as portas nativas do hardware e os otimiza para reduzir a profundidade e minimizar erros.
+
+```python
+
+...
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+target = quantum_resource.target
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3,
+    target=target
+)
+isa_circuits = pass_manager.run(circuits)
+
+```
+
+Os circuitos transpilados e prontos para o hardware são salvos em um novo arquivo, `isa_circuits.qpy`.
+
+De forma similar ao script de mapeamento, esse job do Slurm também roda em uma partição de CPU clássica (`--partition=normal`), pois a transpilação é uma tarefa clássica.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+
+### Execução (`execution.py` e `execution.sh`) {#execution-executionpy-and-executionsh}
+
+Esta é a única etapa em que um computador quântico é utilizado. Aqui, executamos os circuitos otimizados e coletamos amostras de medição.
+
+O `execution.py` carrega o arquivo `isa_circuits.qpy` otimizado, depois inicializa uma primitiva `SamplerV2` conectada a um recurso quântico. Em seguida, chama `sampler.run()` para executar os circuitos na QPU por um número especificado de shots (`shots=500`).
+
+```python
+
+...
+
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+
+# Sample from the circuits
+noisy_sampler = Sampler(quantum_resource)
+job = noisy_sampler.run(isa_circuits, shots=500)
+
+```
+Ao final da execução, os resultados medidos (bitstrings) de todos os circuitos são coletados e combinados, e suas contagens são salvas em um arquivo `counts.json`.
+
+O script Slurm `execution.sh` é diferente dos outros nesta etapa. Ele solicita ser executado na partição quântica (`--partition=quantum`) e especificamente requisita uma QPU (`--gres=qpu:1`).
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-execution
+#SBATCH --output=sqd-execution.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=quantum
+#SBATCH --gres=qpu:1
+
+srun python /data/ch4/sqd/execution.py
+```
+
+### Pós-processamento (`postprocessing.py` e `postprocessing.sh`) {#post-processing-postprocessingpy-and-postprocessingsh}
+
+Na etapa final, voltamos ao computador clássico para analisar os dados do experimento quântico e calcular o resultado final: a energia do estado fundamental do nosso sistema de interesse.
+
+O programa `postprocessing.py` primeiro lê o arquivo `counts.json` contendo os resultados das medições. Em seguida, reconstrói o Hamiltoniano do modelo de Anderson (usando os mesmos parâmetros que em `mapping.py`). Depois passa as bitstrings medidas e a definição do Hamiltoniano para a função `diagonalize_fermionic_hamiltonian`. Essa função executa a lógica central do SKQD: usa as bitstrings para construir o Hamiltoniano projetado $\tilde{H}$ e o diagonaliza para encontrar a energia do estado fundamental.
+
+```python
+
+...
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=300,
+    norb=n_modes,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=10,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+
+```
+
+Por fim, o script imprime a energia SKQD calculada e a compara com a energia exata conhecida para esse problema, mostrando o erro absoluto final do cálculo.
+
+O script de job final roda em uma partição clássica (`--partition=normal`), já que toda a análise é clássica. Para subespaços grandes, essa etapa pode exigir mais recursos de HPC clássico.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-postprocessing
+#SBATCH --output=sqd-postprocessing.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/postprocessing.py
+```
+## Resumo {#summary}
+
+E é isso! Percorremos vários conceitos e exemplos que podem te ajudar a dar os primeiros passos no gerenciamento de programas híbridos complexos. Claro, isso é só o começo de tudo que você pode fazer com a combinação de recursos quânticos e de HPC clássico.
+
+Para explorar mais casos de uso e algoritmos, navegue pela nossa [documentação](https://docs.quantum.ibm.com/guides) e pelos [tutoriais](https://docs.quantum.ibm.com/tutorials) na IBM Quantum Platform, e não deixe de conferir os recursos compartilhados na próxima lição para mais informações sobre algoritmos e software tanto para cientistas computacionais quanto para administradores de data centers.
+
+## Referências {#references}
+
+[1] Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization. https://arxiv.org/abs/2501.09702

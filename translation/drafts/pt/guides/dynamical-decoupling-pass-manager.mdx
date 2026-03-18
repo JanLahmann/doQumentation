@@ -1,0 +1,159 @@
+---
+title: "Criar um pass manager para desacoplamento dinâmico"
+sidebar_label: "Criar um pass manager para desacoplamento dinâmico"
+description: "Como criar um pass manager para desacoplamento dinâmico no Qiskit."
+notebook_path: "guides/dynamical-decoupling-pass-manager.ipynb"
+---
+
+{/* doqumentation-source-hash: d395a730 */}
+
+<OpenInLabBanner notebookPath="guides/dynamical-decoupling-pass-manager.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versões dos pacotes</b></summary>
+
+O código nesta página foi desenvolvido usando os seguintes requisitos.
+Recomendamos usar essas versões ou mais recentes.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+Esta página demonstra como usar o pass [`PadDynamicalDecoupling`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling) para adicionar uma técnica de supressão de erros chamada _desacoplamento dinâmico_ ao Circuit.
+
+O desacoplamento dinâmico funciona adicionando sequências de pulsos (conhecidas como _sequências de desacoplamento dinâmico_) a Qubits ociosos para girá-los ao redor da esfera de Bloch, o que cancela o efeito dos canais de ruído, suprimindo assim a decoerência. Essas sequências de pulsos são semelhantes aos pulsos de refocalização usados em ressonância magnética nuclear. Para uma descrição completa, consulte [A Quantum Engineer's Guide to Superconducting Qubits](https://arxiv.org/abs/1904.06560).
+
+Como o pass `PadDynamicalDecoupling` opera apenas em Circuits agendados e envolve Gates que não são necessariamente Gates de base do nosso alvo, você também precisará dos passes [`ALAPScheduleAnalysis`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis) e [`BasisTranslator`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.BasisTranslator).
+
+Este exemplo usa `ibm_fez`, que foi inicializado anteriormente. Obtenha as informações de `target` do `backend` e salve os nomes das operações como `basis_gates`, pois o `target` precisará ser modificado para adicionar informações de temporização para os Gates usados no desacoplamento dinâmico.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.backend("ibm_fez")
+
+target = backend.target
+basis_gates = list(target.operation_names)
+```
+
+Crie um Circuit `efficient_su2` como exemplo. Primeiro, transpile o Circuit para o Backend, pois os pulsos de desacoplamento dinâmico precisam ser adicionados após o Circuit ter sido transpilado e agendado. O desacoplamento dinâmico geralmente funciona melhor quando há muito tempo ocioso nos Circuits quânticos — ou seja, há Qubits que não estão sendo usados enquanto outros estão ativos. Esse é o caso neste Circuit porque os Gates `ecr` de dois Qubits são aplicados sequencialmente neste ansatz.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(12, entanglement="circular", reps=1)
+pm = generate_preset_pass_manager(1, target=target, seed_transpiler=12345)
+qc_t = pm.run(qc)
+qc_t.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/8228f889-806a-4873-b1da-27c9795d5f5c-0.svg)
+
+Uma sequência de desacoplamento dinâmico é uma série de Gates que se compõem à identidade e são espaçados regularmente no tempo. Por exemplo, comece criando uma sequência simples chamada XY4, composta por quatro Gates.
+
+```python
+from qiskit.circuit.library import XGate, YGate
+
+X = XGate()
+Y = YGate()
+
+dd_sequence = [X, Y, X, Y]
+```
+
+Devido ao espaçamento temporal regular das sequências de desacoplamento dinâmico, as informações sobre o `YGate` devem ser adicionadas ao `target`, pois ele *não* é um Gate de base, enquanto o `XGate` é. No entanto, sabemos *a priori* que o `YGate` tem a mesma duração e erro que o `XGate`, portanto, podemos simplesmente recuperar essas propriedades do `target` e adicioná-las de volta para os objetos `YGate`. É por isso também que os `basis_gates` foram salvos separadamente, já que estamos adicionando a instrução `YGate` ao `target`, embora ele não seja um Gate de base real do `ibm_fez`.
+
+```python
+from qiskit.transpiler import InstructionProperties
+
+y_gate_properties = {}
+for qubit in range(target.num_qubits):
+    y_gate_properties.update(
+        {
+            (qubit,): InstructionProperties(
+                duration=target["x"][(qubit,)].duration,
+                error=target["x"][(qubit,)].error,
+            )
+        }
+    )
+
+target.add_instruction(YGate(), y_gate_properties)
+```
+
+Circuits ansatz como `efficient_su2` são parametrizados, portanto, precisam ter valores vinculados a eles antes de serem enviados ao Backend. Aqui, atribua parâmetros aleatórios.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1234)
+qc_t.assign_parameters(
+    rng.uniform(-np.pi, np.pi, qc_t.num_parameters), inplace=True
+)
+```
+
+Em seguida, execute os passes personalizados. Instancie o `PassManager` com `ALAPScheduleAnalysis` e `PadDynamicalDecoupling`. Execute `ALAPScheduleAnalysis` primeiro para adicionar informações de temporização sobre o Circuit quântico antes que as sequências de desacoplamento dinâmico regularmente espaçadas possam ser adicionadas. Esses passes são executados no Circuit com `.run()`.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+dd_pm = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        PadDynamicalDecoupling(target=target, dd_sequence=dd_sequence),
+    ]
+)
+qc_dd = dd_pm.run(qc_t)
+```
+
+Use a ferramenta de visualização [`timeline_drawer`](https://docs.quantum.ibm.com/api/qiskit/qiskit.visualization.timeline_drawer) para ver o tempo do Circuit e confirmar que uma sequência regularmente espaçada de objetos `XGate` e `YGate` aparece no Circuit.
+
+```python
+from qiskit.visualization import timeline_drawer
+
+timeline_drawer(qc_dd, idle_wires=False, target=target)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/cb73e2c4-ab05-4f15-91ae-2fab64028d6e-0.svg)
+
+Por fim, como o `YGate` não é um Gate de base real do nosso Backend, aplique manualmente o pass `BasisTranslator` (este é um pass padrão, mas é executado antes do agendamento, por isso precisa ser aplicado novamente). A biblioteca de equivalências de sessão é uma biblioteca de equivalências de Circuit que permite ao Transpiler decompor Circuits em Gates de base, conforme também especificado como argumento.
+
+```python
+from qiskit.circuit.equivalence_library import (
+    SessionEquivalenceLibrary as sel,
+)
+from qiskit.transpiler.passes import BasisTranslator
+
+qc_dd = BasisTranslator(sel, basis_gates)(qc_dd)
+qc_dd.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/aaa27ee4-1965-41bf-abd2-1d9176af6dc4-0.svg)
+
+Agora, os objetos `YGate` estão ausentes do nosso Circuit e há informações explícitas de temporização na forma de Gates `Delay`. Este Circuit transpilado com desacoplamento dinâmico está agora pronto para ser enviado ao Backend.
+## Próximos passos {#next-steps}
+
+<Admonition type="tip" title="Recomendações">
+    - Para aprender a usar a função `generate_preset_passmanager` em vez de escrever seus próprios passes, comece com o tópico [Configurações padrão e opções de configuração da transpilação](defaults-and-configuration-options).
+    - Experimente o guia [Comparar configurações do Transpiler](/guides/circuit-transpilation-settings#compare-transpiler-settings).
+    - Consulte a [documentação da API do Transpile.](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler)
+</Admonition>

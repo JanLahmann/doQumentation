@@ -1,0 +1,270 @@
+---
+title: "Estágios do Transpiler"
+sidebar_label: "Estágios do Transpiler"
+description: "Os estágios padrão do pipeline de transpilação de circuitos quânticos no Qiskit."
+notebook_path: "guides/transpiler-stages.ipynb"
+---
+
+{/* doqumentation-source-hash: 4cbc569d */}
+
+<OpenInLabBanner notebookPath="guides/transpiler-stages.ipynb" />
+
+
+
+{/* cspell:ignore fontsize */}
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versões dos pacotes</b></summary>
+
+O código nesta página foi desenvolvido usando os seguintes requisitos.
+Recomendamos usar estas versões ou mais recentes.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+Esta página descreve os estágios do pipeline de transpilação pré-configurado no Qiskit SDK. Existem seis estágios:
+
+1. `init`
+2. `layout`
+3. `routing`
+4. `translation`
+5. `optimization`
+6. `scheduling`
+
+A função [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager#qiskit.transpiler.generate_preset_pass_manager) cria um [staged pass manager](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.StagedPassManager) pré-configurado composto por esses estágios. Os passes específicos que compõem cada estágio dependem dos argumentos passados para `generate_preset_pass_manager`. O `optimization_level` é um argumento posicional que deve ser especificado; é um inteiro que pode ser 0, 1, 2 ou 3. Valores mais altos indicam uma otimização mais intensa, porém mais custosa (veja [Configurações padrão e opções de configuração do Transpiler](defaults-and-configuration-options)).
+
+A forma recomendada de transpilar um circuito é criar um staged pass manager pré-configurado e então executá-lo no circuito, conforme descrito em [Transpilar com pass managers](transpile-with-pass-managers). No entanto, uma alternativa mais simples, porém menos customizável, é usar a função [`transpile`](https://docs.quantum.ibm.com/api/qiskit/compiler#qiskit.compiler.transpile). Essa função aceita o circuito diretamente como argumento. Assim como com `generate_preset_pass_manager`, os passes específicos do transpiler usados dependem dos argumentos, como `optimization_level`, passados para `transpile`. Na prática, internamente a função `transpile` chama `generate_preset_pass_manager` para criar um staged pass manager pré-configurado e o executa no circuito.
+## Estágio Init {#init-stage}
+
+Este primeiro estágio faz muito pouco por padrão e é principalmente útil se você quiser incluir suas próprias otimizações iniciais. Como a maioria dos algoritmos de layout e roteamento foi projetada apenas para trabalhar com portas de um e dois qubits, este estágio também é usado para traduzir qualquer porta que opere em mais de dois qubits em portas que operem apenas em um ou dois qubits.
+
+Para mais informações sobre como implementar suas próprias otimizações iniciais para este estágio, consulte a seção sobre plugins e personalização de pass managers.
+## Estágio Layout {#layout-stage}
+O próximo estágio envolve o layout ou a conectividade do Backend ao qual um circuito será enviado. Em geral, circuitos quânticos são entidades abstratas cujos Qubits são representações "virtuais" ou "lógicas" de Qubits reais usados em computações. Para executar uma sequência de Gates, é necessário um mapeamento um-para-um dos Qubits "virtuais" para os Qubits "físicos" em um dispositivo quântico real. Esse mapeamento é armazenado como um objeto `Layout` e faz parte das restrições definidas dentro da [arquitetura do conjunto de instruções (ISA)](./transpile#instruction-set-architecture) de um Backend.
+
+![Esta imagem ilustra Qubits sendo mapeados da representação em fios para um diagrama que representa como os Qubits estão conectados na QPU.](/docs/images/guides/transpiler-stages/layout-mapping.avif "Mapeamento de Qubits")
+
+A escolha do mapeamento é extremamente importante para minimizar o número de operações SWAP necessárias para mapear o circuito de entrada na topologia do dispositivo e garantir que os Qubits com melhor calibração sejam usados. Devido à importância deste estágio, os pass managers pré-configurados tentam alguns métodos diferentes para encontrar o melhor layout. Tipicamente, isso envolve dois passos: primeiro, tentar encontrar um layout "perfeito" (um layout que não requer nenhuma operação SWAP) e, em seguida, um passo heurístico que tenta encontrar o melhor layout caso um layout perfeito não possa ser encontrado. Existem dois `Passes` tipicamente usados para este primeiro passo:
+
+- `TrivialLayout`: Mapeia de forma ingênua cada Qubit virtual para o Qubit físico de mesmo número no dispositivo (ou seja, [`0`,`1`,`1`,`3`] -> [`0`,`1`,`1`,`3`]). Esse é o comportamento histórico usado apenas em `optimzation_level=1` para tentar encontrar um layout perfeito. Se falhar, `VF2Layout` é tentado a seguir.
+- `VF2Layout`: Este é um `AnalysisPass` que seleciona um layout ideal tratando este estágio como um problema de isomorfismo de subgrafos, resolvido pelo algoritmo VF2++. Se mais de um layout for encontrado, uma heurística de pontuação é executada para selecionar o mapeamento com o menor erro médio.
+
+Em seguida, para o estágio heurístico, dois passes são usados por padrão:
+
+- `DenseLayout`: Encontra o subgrafo do dispositivo com maior conectividade e que tem o mesmo número de Qubits que o circuito (usado para o nível de otimização 1 se houver operações de fluxo de controle, como `IfElseOp`, presentes no circuito).
+- `SabreLayout`: Este passe seleciona um layout começando a partir de um layout aleatório inicial e executando o algoritmo `SabreSwap` repetidamente. Este passe é usado apenas nos níveis de otimização 1, 2 e 3 quando um layout perfeito não é encontrado via o passe `VF2Layout`. Para mais detalhes sobre esse algoritmo, consulte o artigo [arXiv:1809.02573.](https://arxiv.org/abs/1809.02573)
+## Estágio Routing {#routing-stage}
+
+Para implementar uma porta de dois Qubits entre Qubits que não estão diretamente conectados em um dispositivo quântico, uma ou mais portas SWAP precisam ser inseridas no circuito para mover os estados dos Qubits até que fiquem adjacentes no mapa de portas do dispositivo. Cada porta SWAP representa uma operação cara e ruidosa de se executar. Portanto, encontrar o número mínimo de portas SWAP necessárias para mapear um circuito em um determinado dispositivo é uma etapa importante no processo de transpilação. Por eficiência, este estágio é tipicamente calculado em conjunto com o estágio Layout por padrão, mas eles são logicamente distintos um do outro. O estágio *Layout* seleciona os Qubits de hardware a serem usados, enquanto o estágio *Routing* insere a quantidade adequada de portas SWAP para executar os circuitos usando o layout selecionado.
+
+No entanto, encontrar o mapeamento SWAP ótimo é difícil. Na verdade, é um problema NP-difícil, sendo portanto proibitivamente caro de calcular para todos, exceto os menores dispositivos quânticos e circuitos de entrada. Para contornar isso, o Qiskit usa um algoritmo heurístico estocástico chamado `SabreSwap` para calcular um bom mapeamento SWAP, embora não necessariamente ótimo. O uso de um método estocástico significa que os circuitos gerados não têm garantia de ser os mesmos em execuções repetidas. De fato, executar o mesmo circuito repetidamente resulta em uma distribuição de profundidades de circuito e contagens de portas na saída. Por essa razão, muitos usuários optam por executar a função de roteamento (ou o `StagedPassManager` inteiro) muitas vezes e selecionar os circuitos de menor profundidade da distribuição de saídas.
+
+Por exemplo, vamos pegar um circuito GHZ de 15 Qubits executado 100 vezes, usando um `initial_layout` "ruim" (desconectado).
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib qiskit qiskit-ibm-runtime
+```
+
+```python
+import matplotlib.pyplot as plt
+from qiskit import QuantumCircuit
+from qiskit_ibm_runtime.fake_provider import FakeAuckland, FakeWashingtonV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+backend = FakeAuckland()
+
+ghz = QuantumCircuit(15)
+ghz.h(0)
+ghz.cx(0, range(1, 15))
+
+depths = []
+for seed in range(100):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        layout_method="trivial",  # Fixed layout mapped in circuit order
+        seed_transpiler=seed,  # For reproducible results
+    )
+    depths.append(pass_manager.run(ghz).depth())
+
+plt.figure(figsize=(8, 6))
+plt.hist(depths, align="left", color="#AC557C")
+plt.xlabel("Depth", fontsize=14)
+plt.ylabel("Counts", fontsize=14)
+```
+
+```text
+Text(0, 0.5, 'Counts')
+```
+
+![Saída da célula de código anterior](/docs/images/guides/transpiler-stages/extracted-outputs/358cfb50-02fc-48f2-a4ec-657837e0c304-1.svg)
+
+Essa ampla distribuição demonstra o quão difícil é para o mapeador SWAP calcular o melhor mapeamento. Para obter algum entendimento, vamos analisar tanto o circuito sendo executado quanto os Qubits que foram escolhidos no hardware.
+
+```python
+ghz.draw("mpl", idle_wires=False)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/transpiler-stages/extracted-outputs/bb3b8c1f-69fd-4e0c-9b78-9ee67f3361bb-0.svg)
+
+```python
+from qiskit.visualization import plot_circuit_layout
+
+# Plot the hardware graph and indicate which hardware qubits were chosen to run the circuit
+transpiled_circ = pass_manager.run(ghz)
+plot_circuit_layout(transpiled_circ, backend)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/transpiler-stages/extracted-outputs/e4cd49ef-5b3e-4ee0-82f8-c83e1f0ae755-0.svg)
+
+Como você pode ver, este circuito precisa executar uma porta de dois Qubits entre os Qubits 0 e 14, que estão muito distantes no grafo de conectividade. Executar esse circuito, portanto, requer inserir portas SWAP para executar todas as portas de dois Qubits usando o passe `SabreSwap`.
+
+Note também que o algoritmo `SabreSwap` é diferente do método maior `SabreLayout` do estágio anterior. Por padrão, `SabreLayout` executa tanto o layout quanto o roteamento, e retorna o circuito transformado. Isso é feito por algumas razões técnicas específicas descritas na [página de referência da API](../api/qiskit/qiskit.transpiler.passes.SabreLayout) do passe.
+## Estágio Translation {#translation-stage}
+
+Ao escrever um circuito quântico, você tem liberdade para usar qualquer porta quântica (operação unitária) que desejar, junto com uma coleção de operações não-porta, como instruções de medição ou reset de Qubits. No entanto, a maioria dos dispositivos quânticos suporta nativamente apenas um punhado de operações de porta quântica e não-porta. Essas portas nativas fazem parte da definição da [ISA](./transpile#instruction-set-architecture) de um alvo, e este estágio dos `PassManagers` pré-configurados traduz (ou *desdobra*) as portas especificadas em um circuito para as portas base nativas de um Backend especificado. Esta é uma etapa importante, pois permite que o circuito seja executado pelo Backend, mas tipicamente leva a um aumento na profundidade e no número de portas.
+
+Dois casos especiais são especialmente importantes para destacar e ajudam a ilustrar o que este estágio faz.
+
+1. Se uma porta SWAP não é uma porta nativa do Backend alvo, isso requer três portas CNOT:
+
+```python
+print("native gates:" + str(sorted(backend.operation_names)))
+qc = QuantumCircuit(2)
+qc.swap(0, 1)
+qc.decompose().draw("mpl")
+```
+
+```text
+native gates:['cx', 'delay', 'for_loop', 'id', 'if_else', 'measure', 'reset', 'rz', 'switch_case', 'sx', 'x']
+```
+
+![Saída da célula de código anterior](/docs/images/guides/transpiler-stages/extracted-outputs/31fcf8b6-4f3a-460e-90fd-446813bd4f28-1.svg)
+
+Como produto de três portas CNOT, um SWAP é uma operação cara de se executar em dispositivos quânticos ruidosos. No entanto, tais operações geralmente são necessárias para incorporar um circuito nas conectividades de portas limitadas de muitos dispositivos. Portanto, minimizar o número de portas SWAP em um circuito é um objetivo primário no processo de transpilação.
+
+2. Uma porta Toffoli, ou porta controlled-controlled-not (`ccx`), é uma porta de três Qubits. Dado que nosso conjunto de portas base inclui apenas portas de um e dois Qubits, esta operação deve ser decomposta. No entanto, isso é bastante custoso:
+
+```python
+qc = QuantumCircuit(3)
+qc.ccx(0, 1, 2)
+qc.decompose().draw("mpl")
+```
+
+![Saída da célula de código anterior](/docs/images/guides/transpiler-stages/extracted-outputs/8a2c1913-3324-44b0-859e-d7fd348161c3-0.svg)
+
+Para cada porta Toffoli em um circuito quântico, o hardware pode executar até seis portas CNOT e algumas portas de um único Qubit. Este exemplo demonstra que qualquer algoritmo que faça uso de múltiplas portas Toffoli resultará em um circuito com grande profundidade e, portanto, será consideravelmente afetado pelo ruído.
+## Estágio Optimization {#optimization-stage}
+
+Este estágio se concentra em decompor circuitos quânticos no conjunto de portas base do dispositivo alvo e deve combater o aumento de profundidade proveniente dos estágios de layout e roteamento. Felizmente, existem muitas rotinas para otimizar circuitos combinando ou eliminando portas. Em alguns casos, esses métodos são tão eficazes que os circuitos de saída têm menor profundidade que os de entrada, mesmo após o layout e o roteamento para a topologia do hardware. Em outros casos, não há muito que possa ser feito, e a computação pode ser difícil de executar em dispositivos ruidosos. É neste estágio que os diferentes níveis de otimização começam a se distinguir.
+
+- Para `optimization_level=1`, este estágio prepara [`Optimize1qGatesDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition) e [`CXCancellation`](https://docs.quantum.ibm.com/api/qiskit/1.4/qiskit.transpiler.passes.CXCancellation), que combinam cadeias de portas de um único Qubit e cancelam qualquer par back-to-back de portas CNOT.
+- Para `optimization_level=2`, este estágio usa o passe [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation) em vez de `CXCancellation`, que remove portas redundantes explorando relações de comutação.
+- Para `optimization_level=3`, este estágio prepara os seguintes passes:
+  - [`Collect2qBlocks`](../api/qiskit/qiskit.transpiler.passes.Collect2qBlocks)
+  - [`ConsolidateBlocks`](../api/qiskit/qiskit.transpiler.passes.ConsolidateBlocks)
+  - [`UnitarySynthesis`](../api/qiskit/qiskit.transpiler.passes.UnitarySynthesis)
+  - [`Optimize1qGateDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition)
+  - [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation)
+
+Além disso, este estágio também executa algumas verificações finais para garantir que todas as instruções do circuito sejam compostas pelas portas base disponíveis no Backend alvo.
+
+O exemplo abaixo usando um estado GHZ demonstra os efeitos de diferentes configurações de nível de otimização na profundidade do circuito e na contagem de portas.
+
+<Admonition type="note">
+  A saída da transpilação varia devido ao mapeador SWAP estocástico. Portanto, os números abaixo provavelmente serão diferentes cada vez que você executar o código.
+</Admonition>
+
+![Estado GHZ de 15 Qubits](/docs/images/guides/transpiler-stages/transpiler-11.avif "Estado GHZ de 15 Qubits antes da transpilação")
+
+O código a seguir constrói um estado GHZ de 15 Qubits e compara os `optimization_levels` de transpilação em termos de profundidade do circuito resultante, contagens de portas e contagens de portas multi-qubit.
+
+```python
+ghz = QuantumCircuit(15)
+ghz.h(0)
+ghz.cx(0, range(1, 15))
+
+depths = []
+gate_counts = []
+multiqubit_gate_counts = []
+levels = [str(x) for x in range(4)]
+for level in range(4):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=level,
+        backend=backend,
+        seed_transpiler=1234,
+    )
+    circ = pass_manager.run(ghz)
+    depths.append(circ.depth())
+    gate_counts.append(sum(circ.count_ops().values()))
+    multiqubit_gate_counts.append(circ.count_ops()["cx"])
+
+fig, (ax1, ax2) = plt.subplots(2, 1)
+ax1.bar(levels, depths, label="Depth")
+ax1.set_xlabel("Optimization Level")
+ax1.set_ylabel("Depth")
+ax1.set_title("Output Circuit Depth")
+ax2.bar(levels, gate_counts, label="Number of Circuit Operations")
+ax2.bar(levels, multiqubit_gate_counts, label="Number of CX gates")
+ax2.set_xlabel("Optimization Level")
+ax2.set_ylabel("Number of gates")
+ax2.legend()
+ax2.set_title("Number of output circuit gates")
+fig.tight_layout()
+plt.show()
+```
+
+![Saída da célula de código anterior](/docs/images/guides/transpiler-stages/extracted-outputs/2507de9c-1b94-4d56-b5a6-0b2bb1719a80-0.svg)
+
+## Scheduling {#scheduling}
+
+Este último estágio só é executado se for explicitamente solicitado (semelhante ao estágio Init) e não é executado por padrão (embora um método possa ser especificado definindo o argumento `scheduling_method` ao chamar `generate_preset_pass_manager`). O estágio de scheduling é tipicamente usado depois que o circuito foi traduzido para a base alvo, mapeado no dispositivo e otimizado. Esses passes se concentram em contabilizar todo o tempo ocioso em um circuito. Em alto nível, o passe de scheduling pode ser pensado como a inserção explícita de instruções de delay para contabilizar o tempo ocioso entre execuções de portas e inspecionar por quanto tempo o circuito estará sendo executado no Backend.
+
+Aqui está um exemplo:
+
+```python
+ghz = QuantumCircuit(5)
+ghz.h(0)
+ghz.cx(0, range(1, 5))
+
+# Use fake backend
+backend = FakeWashingtonV2()
+
+# Run with optimization level 3 and 'asap' scheduling pass
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3,
+    backend=backend,
+    scheduling_method="asap",
+    seed_transpiler=1234,
+)
+
+circ = pass_manager.run(ghz)
+circ.draw(output="mpl", idle_wires=False)
+```
+
+![Saída da célula de código anterior](/docs/images/guides/transpiler-stages/extracted-outputs/4339deb5-4947-493b-8940-e68c91311631-0.svg)
+
+![Circuito com instruções de delay](/docs/images/guides/transpiler-stages/transpiler-16.avif)
+
+O Transpiler inseriu instruções `Delay` para contabilizar o tempo ocioso em cada Qubit. Para ter uma ideia melhor do timing do circuito, também podemos observá-lo com a função `timeline.draw()`:
+
+![Visão do timeline.draw() do mesmo circuito](/docs/images/guides/transpiler-stages/transpiler-17.avif)
+O scheduling de um circuito envolve duas partes: análise e mapeamento de restrições, seguidos por um passe de preenchimento. A primeira parte requer a execução de um passe de análise de scheduling (por padrão, é o [`ALAPSchedulingAnalysis`](../api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis)), que analisa o circuito e registra o tempo de início de cada instrução no circuito em um schedule. Uma vez que o circuito possui um schedule inicial, passes adicionais podem ser executados para levar em conta quaisquer restrições de timing no Backend alvo. Por fim, um passe de preenchimento como [`PadDelay`](../api/qiskit/qiskit.transpiler.passes.PadDelay) ou [`PadDynamicalDecoupling`](../api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling) pode ser executado.
+## Próximas etapas {#next-steps}
+
+<Admonition type="tip" title="Recomendações">
+    - Para aprender como usar a função `generate_preset_passmanager`, comece com o tópico [Configurações padrão e opções de configuração do Transpiler](defaults-and-configuration-options).
+    - Continue aprendendo sobre transpilação com o tópico [Transpiler com pass managers](transpile-with-pass-managers).
+    - Experimente o guia [Comparar configurações do Transpiler](/guides/circuit-transpilation-settings).
+    - Veja a [documentação da API do Transpile.](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler)
+</Admonition>
