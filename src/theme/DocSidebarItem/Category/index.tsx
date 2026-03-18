@@ -53,7 +53,7 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
   const [visitedCount, setVisitedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const badgeRef = useRef<HTMLButtonElement | null>(null);
+  const badgeRef = useRef<HTMLSpanElement | null>(null);
 
   const items = (props.item?.items || []) as SidebarItem[];
   const allHrefs = React.useMemo(() => collectHrefs(items), [items]);
@@ -79,12 +79,15 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
   }, [refresh]);
 
   // Create badge element once — stable across re-renders.
+  // Uses <span role="button"> so it can be placed inside <a> links (valid HTML).
   useEffect(() => {
-    const badge = document.createElement('button');
+    const badge = document.createElement('span');
     badge.className = 'dq-category-badge';
+    badge.setAttribute('role', 'button');
+    badge.setAttribute('tabindex', '0');
     badgeRef.current = badge;
 
-    badge.addEventListener('click', (e) => {
+    const handleClear = (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       const prefix = commonPrefix(allHrefs);
@@ -92,6 +95,12 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
       clearExecutedByPrefix(prefix);
       setVisitedCount(0);
       window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
+    };
+    badge.addEventListener('click', handleClear);
+    badge.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter' || (e as KeyboardEvent).key === ' ') {
+        handleClear(e);
+      }
     });
 
     return () => { badge.remove(); badgeRef.current = null; };
@@ -106,18 +115,19 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
     const collapsible = wrapperRef.current.querySelector('.menu__list-item-collapsible');
     if (!collapsible) return;
 
-    // Already in the right place — skip.
-    if (badge.parentNode === collapsible) return;
-    const link = collapsible.querySelector(':scope > .menu__link');
-    if (badge.parentNode === link) return;
-
-    // href categories: .menu__caret button is a sibling — insert before it.
-    // no-href categories: append to collapsible (not inside the <a> link).
+    // href categories: .menu__caret is a separate <button> sibling — badge before it.
+    // no-href categories: caret is ::after on the link — badge inside the link (flex).
     const caretButton = collapsible.querySelector(':scope > .menu__caret');
     if (caretButton) {
+      // Already in the right place — skip.
+      if (badge.parentNode === collapsible) return;
       collapsible.insertBefore(badge, caretButton);
     } else {
-      collapsible.appendChild(badge);
+      const link = collapsible.querySelector(':scope > .menu__link');
+      if (!link) return;
+      // Already in the right place — skip.
+      if (badge.parentNode === link) return;
+      link.appendChild(badge);
     }
   });
 
