@@ -57,6 +57,14 @@ FRONTMATTER_TRANSLATE_KEYS = ["title", "description", "sidebar_label"]
 FRONTMATTER_SAME_ALLOWED = {
     "doqumentation", "hello world", "guides", "tutorials", "courses", "modules",
     "overview",
+    # Brand names and proper nouns
+    "ibm quantum composer", "qiskit code assistant", "open source", "support",
+    # Technical/scientific terms used as-is internationally
+    "ansatz", "hardware", "teleportation", "purifications",
+    "sample-based quantum diagonalization", "variational quantum eigensolver",
+    "quantum key distribution",
+    # Course section titles identical across languages
+    "introduction", "circuits", "utility i", "utility ii", "utility iii",
 }
 
 # Regex from fix-heading-anchors.py
@@ -68,8 +76,16 @@ LOCALE_WORD_RATIO = {
     "de": 3.0,  # German compound words + longer sentences + paragraph boundary misalignment
 }
 
-# Line count tolerance
+# Line count tolerance (percentage). Romance languages are typically more verbose.
 MAX_LINE_DELTA_PCT = 5
+LOCALE_LINE_DELTA_PCT = {
+    "fr": 10, "es": 10, "it": 10, "pt": 10,  # Romance languages
+    "de": 10,  # German compound words expand line count
+}
+
+# Inline LaTeX ($) tolerance — small differences (±4) are normal translation choices
+# (e.g., wrapping a variable in $...$ or writing it as prose)
+MAX_LATEX_INLINE_DELTA = 4
 
 # ---------------------------------------------------------------------------
 # slugify() — copied from fix-heading-anchors.py for standalone use
@@ -357,15 +373,17 @@ def check_fallback_marker(tr_content: str) -> CheckResult:
     return CheckResult("Fallback marker", True, "No fallback marker")
 
 
-def check_line_count(en_content: str, tr_content: str) -> CheckResult:
+def check_line_count(en_content: str, tr_content: str,
+                     locale: str = "") -> CheckResult:
     en_lines = en_content.count('\n') + 1
     tr_lines = tr_content.count('\n') + 1
     if en_lines == 0:
         return CheckResult("Line count", True, "Empty file")
+    max_delta = LOCALE_LINE_DELTA_PCT.get(locale, MAX_LINE_DELTA_PCT)
     delta_pct = abs(en_lines - tr_lines) / en_lines * 100
-    if delta_pct > MAX_LINE_DELTA_PCT:
+    if delta_pct > max_delta:
         return CheckResult("Line count", False,
-                           f"EN={en_lines}, TR={tr_lines} ({delta_pct:.1f}% delta, max {MAX_LINE_DELTA_PCT}%)")
+                           f"EN={en_lines}, TR={tr_lines} ({delta_pct:.1f}% delta, max {max_delta}%)")
     return CheckResult("Line count", True,
                        f"EN={en_lines}, TR={tr_lines} ({delta_pct:.1f}% delta)")
 
@@ -419,9 +437,13 @@ def check_latex_display(en_content: str, tr_content: str) -> CheckResult:
 def check_latex_inline(en_content: str, tr_content: str) -> CheckResult:
     en_count = count_latex_inline(en_content)
     tr_count = count_latex_inline(tr_content)
-    if en_count != tr_count:
+    delta = abs(en_count - tr_count)
+    if delta > MAX_LATEX_INLINE_DELTA:
         return CheckResult("Inline LaTeX ($)", False,
-                           f"EN={en_count}, TR={tr_count}")
+                           f"EN={en_count}, TR={tr_count} (delta {delta}, max {MAX_LATEX_INLINE_DELTA})")
+    if delta > 0:
+        return CheckResult("Inline LaTeX ($)", True,
+                           f"EN={en_count}, TR={tr_count} (delta {delta}, within tolerance)")
     return CheckResult("Inline LaTeX ($)", True, f"{en_count} delimiters match")
 
 
@@ -607,7 +629,7 @@ def validate_file(en_path: Path, tr_path: Path, locale: str,
     if not report.checks[-1].passed:
         return report
 
-    report.checks.append(check_line_count(en_content, tr_content))
+    report.checks.append(check_line_count(en_content, tr_content, locale))
     report.checks.append(check_code_blocks(en_content, tr_content))
     report.checks.append(check_latex_display(en_content, tr_content))
     report.checks.append(check_latex_inline(en_content, tr_content))
