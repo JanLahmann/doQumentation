@@ -1,0 +1,232 @@
+---
+title: "マルチプロダクト公式 (MPF) を使ってみる"
+sidebar_label: "マルチプロダクト公式 (MPF) を使ってみる"
+description: "Ising 鎖の時間発展を例として、MPF アドオンの使い方を学ぶ"
+notebook_path: "guides/qiskit-addons-mpf-get-started.ipynb"
+---
+
+{/* source_hash: dbcaaa7e */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-mpf-get-started.ipynb" />
+
+
+
+## マルチプロダクト公式 (MPF) を使ってみる {#get-started-with-multi-product-formulas-mpfs}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Package versions</b></summary>
+
+このページのコードは、以下の要件を使って開発されました。
+これらのバージョン以降を使用することをお勧めします。
+
+```
+qiskit[all]~=2.3.0
+qiskit-addon-utils~=0.3.0
+qiskit-addon-mpf~=0.3.0
+scipy~=1.16.3
+```
+</details>
+このガイドでは、Ising モデルの時間発展を例として、`qiskit-addon-mpf` パッケージの使い方を説明します。このパッケージを使うことで、観測量測定における Trotter 誤差を低減するマルチプロダクト公式 (MPF) を構築できます。提供されるツールにより、選択した MPF の重みを決定でき、それを用いて異なる Trotter ステップ数を持つ複数の時間発展回路から推定した期待値を再結合できます。
+
+まず、10 サイトの Ising モデルのハミルトニアンを考えます：
+
+$$ H_{\text{Ising}} = \sum_{i=1}^9 J_{i,(i+1)}Z_iZ_{i+1} + \sum_{i=1}^{10} h_i X_i $$
+
+ここで、$J_{i,(i+1)}$ は結合強度、$h_i$ は外部磁場強度です。問題を設定するために、測定する観測量としてシステムの全磁化を使用します：
+
+$$ \langle M \rangle = \sum_{i=1}^{10} \langle Z_i \rangle. $$
+
+以下のコードスニペットは、`qiskit-addon-utils` パッケージを使って Ising 鎖のハミルトニアンを準備し、測定する観測量を定義します。
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-mpf qiskit-addon-utils scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit.synthesis import SuzukiTrotter
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.primitives import StatevectorEstimator
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_addon_utils.problem_generators import (
+    generate_xyz_hamiltonian,
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_mpf.costs import (
+    setup_exact_problem,
+    setup_sum_of_squares_problem,
+)
+from qiskit_addon_mpf.static import setup_static_lse
+
+from scipy.linalg import expm
+import numpy as np
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_line(10, bidirectional=False)
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+print(f"Hamiltonian:\n {hamiltonian}\n")
+
+L = coupling_map.size()
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L
+)
+print(f"Observable:\n {observable}")
+```
+
+```text
+Hamiltonian:
+ SparsePauliOp(['IIIIIIIZZI', 'IIIIIZZIII', 'IIIZZIIIII', 'IZZIIIIIII', 'IIIIIIIIZZ', 'IIIIIIZZII', 'IIIIZZIIII', 'IIZZIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIXI', 'IIIIIIIXII', 'IIIIIIXIII', 'IIIIIXIIII', 'IIIIXIIIII', 'IIIXIIIIII', 'IIXIIIIIII', 'IXIIIIIIII', 'XIIIIIIIII'],
+              coeffs=[1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j,
+ 1. +0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j,
+ 0.4+0.j, 0.4+0.j, 0.4+0.j])
+
+Observable:
+ SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j,
+ 0.05+0.j, 0.05+0.j, 0.05+0.j])
+```
+
+次に、MPF を準備します。最初に選択するのは、係数が静的（時間非依存）か動的かです。このチュートリアルでは静的な MPF を使用します。次に選択するのは $k_j$ 値のセットです。これにより、MPF の項数と、各項が時間発展をシミュレートするために使用する Trotter ステップ数が決まります。$k_j$ 値の選択はヒューリスティックであるため、「良い」$k_j$ 値のセットを自分で求める必要があります。良い値のセットを見つけるためのガイドラインは、[入門ページ](/guides/qiskit-addons-mpf#determine-mpf-coefficients)の末尾をお読みください。
+
+$k_j$ 値が決まったら、解くべき連立方程式 $Ax=b$ を準備できます。行列 $A$ は使用するプロダクト公式によっても決まります。ここでの選択肢は、その*次数*（この例では $2$ に設定）と、プロダクト公式を*対称*にするかどうか（この例では `True` に設定）です。以下のコードスニペットでは、システムを発展させる合計時間、使用する $k_j$ 値、および [`qiskit_addon_mpf.static.setup_static_lse`](../api/qiskit-addon-mpf/static) メソッドを使って解くべき連立方程式を選択します。
+
+```python
+time = 8.0
+trotter_steps = (8, 12, 19)
+
+lse = setup_static_lse(trotter_steps, order=2, symmetric=True)
+print(lse)
+```
+
+```text
+LSE(A=array([[1.00000000e+00, 1.00000000e+00, 1.00000000e+00],
+       [1.56250000e-02, 6.94444444e-03, 2.77008310e-03],
+       [2.44140625e-04, 4.82253086e-05, 7.67336039e-06]]), b=array([1., 0., 0.]))
+```
+
+連立方程式が準備できたら、厳密に解くか、二乗和を使った近似モデル（または動的係数の場合は Frobenius ノルム。詳しくは [API リファレンス](../api/qiskit-addon-mpf/costs)をご参照ください）で解くことができます。近似モデルの使用は、選択した $k_j$ 値の係数のノルムが高すぎると判断され、別の $k_j$ 値のセットを選択できない場合に通常発生します。このガイドでは、結果を比較するために両方を示します。
+
+```python
+model_exact, coeffs_exact = setup_exact_problem(lse)
+model_approx, coeffs_approx = setup_sum_of_squares_problem(
+    lse, max_l1_norm=3.0
+)
+model_exact.solve()
+model_approx.solve()
+print(f"Exact solution: {coeffs_exact.value}")
+print(f"Approximate solution: {coeffs_approx.value}")
+```
+
+```text
+Exact solution: [ 0.17239057 -1.19447005  2.02207947]
+Approximate solution: [-0.40454257  0.57553173  0.8290123 ]
+```
+
+<Admonition type="note">
+
+`LSE` オブジェクトには `LSE.solve()` メソッドもあり、これを使うと連立方程式を厳密に解くことができます。このガイドで `setup_exact_problem()` を使用しているのは、他の近似メソッドが提供するインターフェイスを示すためです。
+
+</Admonition>
+
+## Trotter 回路のセットアップと実行 {#set-up-and-execute-trotter-circuits}
+
+係数 $x_j$ が得られたので、最後のステップは MPF の次数と選択したステップセット $k_j$ に対して時間発展回路を生成することです。`qiskit-addon-utils` パッケージを使うとこのプロセスを効率化できます。
+
+```python
+circuits = []
+for k in trotter_steps:
+    circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(order=2, reps=k),
+        time=time,
+    )
+    circuits.append(circ)
+```
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/6edb8bb0-30ee-416e-9804-84372ca091cf-0.svg)
+
+```python
+circuits[1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/b2360c04-d2f8-4cfb-86c6-b05e71b9b708-0.svg)
+
+```python
+circuits[2].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/2fbbe105-269e-4fb1-88b1-b0ba5acee229-0.svg)
+
+これらの回路が構築されたら、QPU を使ってトランスパイルおよび実行できます。この例では、Trotter 誤差がどのように低減されるかを示すために、ノイズのないシミュレータのひとつを使用します。
+
+```python
+backend = GenericBackendV2(num_qubits=10)
+transpiler = generate_preset_pass_manager(
+    optimization_level=2, backend=backend
+)
+
+transpiled_circuits = [transpiler.run(circ) for circ in circuits]
+
+estimator = StatevectorEstimator()
+job = estimator.run([(circ, observable) for circ in transpiled_circuits])
+result = job.result()
+
+mpf_evs = [res.data.evs for res in result]
+print(mpf_evs)
+```
+
+```text
+[array(0.23799162), array(0.35754312), array(0.38649906)]
+```
+
+## 結果の再構成 {#reconstruct-results}
+
+回路が実行されたので、結果の再構成は比較的簡単です。[MPF の概要](./qiskit-addons-mpf#theoretical-background)ページで説明したように、観測量は加重和によって再構成されます：
+
+$$ \langle M \rangle = \sum_j x_j \langle M_j \rangle. $$
+
+ここで、$x_j$ は求めた係数であり、$\langle M_j \rangle$ は各回路における観測量 $\sum_i \langle Z_i \rangle$ の推定値です。次に、`scipy.linalg` パッケージを使って厳密値と結果を比較できます。
+
+```python
+exp_H = expm(-1j * time * hamiltonian.to_matrix())
+initial_state = np.zeros(exp_H.shape[0])
+initial_state[0] = 1.0
+
+time_evolved_state = exp_H @ initial_state
+exact_obs = (
+    time_evolved_state.conj() @ observable.to_matrix() @ time_evolved_state
+)
+
+# Print out the different observable measurements
+print(f"Exact value: {exact_obs.real}")
+print(f"PF with 19 steps: {mpf_evs[-1]}")
+print(f"MPF using exact solution: {mpf_evs @ coeffs_exact.value}")
+print(f"MPF using approximate solution: {mpf_evs @ coeffs_approx.value}")
+```
+
+```text
+Exact value: 0.4006024248789992
+PF with 19 steps: 0.3864990619977402
+MPF using exact solution: 0.3954847855979902
+MPF using approximate solution: 0.4299121425348959
+```
+
+ここで、MPF が $k_j=19$ の単一の PF のみで得られた値と比較して Trotter 誤差を低減していることがわかります。ただし、近似モデルは厳密モデルよりも悪い期待値をもたらしています。これは、近似モデルに対して厳しい収束基準を使用し、「良い」$k_j$ 値のセットを見つけることの重要性を示しています。

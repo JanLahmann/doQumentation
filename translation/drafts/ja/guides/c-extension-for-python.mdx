@@ -1,0 +1,182 @@
+---
+title: CでQiskitをPython向けに拡張する
+description: QiskitワークフローのPython向けC拡張モジュールの構築方法
+---
+
+{/* doqumentation-source-hash: afebf203 */}
+
+# CでQiskitをPython向けに拡張する
+
+Qiskit PythonプログラムをCで高速化するには、Python向けQiskit C拡張モジュールを使用します。
+これはスタンドアロンのC利用に対して追加の手順が必要です。詳細は[Qiskit C APIインストールガイド](/guides/install-c-api)を参照してください。
+
+<Admonition type="warning">
+  Qiskit C APIはまだ実験的なものであり、安定したプログラミングインターフェースやバイナリインターフェースへのコミットは完了していません。Qiskitに対してビルドされた拡張モジュールは、ビルド時に使用したQiskitのバージョンでのみ動作が保証されます。
+</Admonition>
+
+<Admonition type="note">
+  これらの手順はUNIX系システムでのみテスト済みです。Windowsの手順は現在作成中です。
+</Admonition>
+
+## 必要条件 {#requirements}
+
+まず[Qiskit C API](/guides/install-c-api)がインストール済みであることを確認してください。次に、以下の手順でQiskit Pythonインターフェースをインストールします：
+```bash
+pip install -r requirements.txt -c constraints.txt
+pip install .
+```
+
+## C拡張モジュールの定義 {#define-the-c-extension}
+
+PythonのC拡張モジュールを記述するにはさまざまな方法があります。このガイドでは簡単のため、Pythonに組み込みの[`ctypes`](https://docs.python.org/3/library/ctypes.html)モジュールを使うアプローチから始めます。次のセクション「[手動C拡張モジュール](#manual-c-extension)」では、PythonのC APIを使ってランタイムオーバーヘッドを削減するC拡張モジュールのビルド例を紹介します。
+
+例として、オブザーバブルを構築するC関数を作成し、それをPythonに返したいとします。C側の`QkObs*`をPython側の`SparseObservable`オブジェクトに変換するには、提供されているコンバーター`qk_obs_to_python`を使用します：
+```c
+// file: extension.c
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>  // include Python header for access to PyObject
+#define QISKIT_C_PYTHON_INTERFACE  // enable C->Python conversion functions
+#include <qiskit.h>
+
+PyObject *build_observable(void) {
+    QkObs *obs = qk_obs_zero(100);
+    // build the observable ...
+    PyObject *pyobj = qk_obs_to_python(obs); // convert to Qiskit's Python ``SparseObservable``
+    qk_obs_free(obs);
+    return pyobj;
+}
+```
+
+以下は、これを共有ライブラリ（例：`qiskit_cextension.so`）にコンパイルする方法を示しています。
+完了後、PythonからCプログラムを呼び出すことができます：
+```python
+# file: main.py
+import qiskit
+import ctypes
+
+# Load the extension, ensuring the global interpreter lock (GIL) is acquired for function calls,
+# which you need for the C->Python object conversion.
+lib = ctypes.PyDLL("/path/to/qiskit_cextension.so")
+lib.build_observable.argtypes = None  # set argument types to the function
+lib.build_observable.restype = ctypes.py_object  # set return type
+
+# now you can directly call the function
+obs = lib.build_observable()
+print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
+print(obs)
+```
+
+## ビルド {#build}
+
+まず、Qiskit Python拡張モジュールをビルドします。これにはCのシンボルも含まれており、同一の共有ライブラリを通じて両方のインターフェースにアクセスできます。CとPython間でデータが正しく受け渡されるようにするために重要です。
+```bash
+python setup.py build_rust --inplace --release
+```
+共有ライブラリは``_accelerate.<プラットフォーム固有の部分>``という名前になっています。以下のコマンドでその場所と名前を確認できます：
+```bash
+QKLIB=$(python -c "import os; import qiskit; print(os.path.dirname(qiskit._accelerate.__file__))")
+QKNAME=$(python -c "import os; import qiskit; print(os.path.basename(qiskit._accelerate.__file__))")
+```
+
+環境のPythonインクルードファイル（``Python.h``）とライブラリ（``libpython.<suffix>``）の場所も確認する必要があります。
+たとえば、以下のコマンドで特定できます：
+```bash
+PYINCLUDE=$(python -c "import sysconfig; print(sysconfig.get_path('include'))")
+PYLIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+PYNAME=$(find $PYLIB -maxdepth 1 -name "libpython*" | grep -oE "[^/]+$" | grep -oE "python[0-9]+\.[0-9]+" || echo "python")
+```
+（これらの場所や名前が既にわかっている場合は、直接設定することもできます。）
+
+### リンク {#link}
+
+リンクの方法はプラットフォームやリンカーによって異なります。以下は、`-l:`フラグを使って任意の名前のライブラリをサポートするリンカー（GNU の`ld`リンカーなど）向けの方法です。
+MacOSでよく使われる`ldd`リンカーのようにライブラリ名が`lib<something>`形式でなければならないリンカーを使用している場合は、以下を参照してください。
+
+`_accelerate`ライブラリの完全名を指定して拡張モジュールをビルドできます：
+```bash
+gcc extension.c -fpic -shared -o cextension.so \
+  -I/path/to/dist/c/include -L$QKLIB -l:$QKNAME \
+  -I$PYINCLUDE -L$PYLIB -l$PYNAME
+```
+その後、``python main.py``と入力するだけでPythonプログラムを実行できます。
+
+`-l:`による正確なライブラリ名指定の代替手段として、`_accelerate`ライブラリをシンボリックリンクで任意の名前に変換する方法もあります。
+`_accelerate`共有ライブラリを含めるには、リンカーが期待する`lib<ライブラリ名>.<suffix>`の形式でシンボリックリンクを作成します：
+```bash
+ln -s $QKLIB/$QKNAME $QKLIB/libqiskit.<suffix>
+```
+ここで`<suffix>`はLinuxでは`so`、MacOSでは`dylib`などです。これにより`qiskit`をライブラリ名として使用できます：
+```bash
+gcc extension.c -fpic -shared -o qiskit_cextension.so \
+  -I/path/to/dist/c/include -L$QKLIB -lqiskit \
+  -I$PYINCLUDE -L$PYLIB -l$PYNAME
+```
+その後、``python main.py``と入力するだけでPythonプログラムを実行できます。
+
+## 手動C拡張モジュール {#manual-c-extension}
+
+`ctypes`を使用する代わりに、[PythonのC API](https://docs.python.org/3/c-api/intro.html)を直接使って手動でPython拡張モジュールをビルドすることも可能です。これは`ctypes`を使う場合より高速になる可能性がありますが、実装にはより多くの手間がかかります。
+以下のコードはその実現方法の簡単な例です。
+
+```c
+// file: extension.c
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
+#include <stdio.h>
+#define QISKIT_C_PYTHON_INTERFACE
+#include <qiskit.h>
+
+QkObs *build_observable() {
+    // build a 100-qubit empty observable
+    u_int32_t num_qubits = 100;
+    QkObs *obs = qk_obs_zero(num_qubits);
+
+    // add the term 2 * (X0 Y1 Z2) to the observable
+    complex double coeff = 2;  // the coefficient
+    QkBitTerm bit_terms[3] = {QkBitTerm_X, QkBitTerm_Y, QkBitTerm_Z};  // bit terms: X Y Z
+    uint32_t indices[3] = {0, 1, 2};  // indices: 0 1 2
+    QkObsTerm term = {coeff, 3, bit_terms, indices, num_qubits};
+    qk_obs_add_term(obs, &term);  // append the term
+
+    return obs;
+}
+
+/// Define the Python function, which will internally build the QkObs using the
+/// C function defined above, and then convert the C object to the Python equivalent:
+/// a SparseObservable, handled as PyObject.
+static PyObject *cextension_build_observable(PyObject *self, PyObject *args) {
+    // At this point, ``args`` could be parsed for arguments. See PyArg_ParseTuple for details.
+    QkObs *obs = build_observable();  // call the C function to build the observable
+    PyObject *py_obs = qk_obs_to_python(obs);  // convert QkObs to the Python-equivalent
+    return py_obs;
+}
+
+/// Define the module methods.
+static PyMethodDef CExtMethods[] = {
+    {"build_observable", cextension_build_observable, METH_VARARGS, "Build an observable."},
+    {NULL, NULL, 0, NULL}, // sentinel
+};
+
+/// Define the module, which here is called ``cextension``.
+static struct PyModuleDef cextension = {
+    PyModuleDef_HEAD_INIT,
+    "cextension", // module name
+    NULL,         // docs
+    -1,           // keep the module state in global variables
+    CExtMethods,
+};
+
+PyMODINIT_FUNC PyInit_cextension(void) { return PyModule_Create(&cextension); }
+```
+共有ライブラリをコンパイルするには、上記の[ビルド](#build)セクションで説明したとおり、PythonとQiskitの両ライブラリをリンクします。Pythonスクリプトでは`ctypes`は不要で、`cextension`モジュールを直接インポートできます（Pythonパス上に配置してください）：
+```python
+# file: main.py
+import qiskit
+import cextension
+
+# directly call the function
+obs = cextension.build_observable()
+print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
+print(obs)
+```

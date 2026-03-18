@@ -1,0 +1,320 @@
+---
+title: stretchを使用した遅延タイミング解決
+description: 動的回路でstretchを使用してタイミング解決を遅延させる方法
+---
+{/* doqumentation-source-hash: e1844ec9 */}
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+
+# stretchを使用した遅延タイミング解決 {#deferred-timing-resolution-using-stretch}
+
+OpenQASM 3言語仕様には`stretch`型が含まれており、絶対タイミングの代わりに操作の相対タイミングを指定することができます。[`Delay`](https://docs.quantum.ibm.com/api/qiskit/circuit#qiskit.circuit.Delay)命令のdurationとして`stretch`をサポートする機能は[Qiskit v2.0.0](https://docs.quantum.ibm.com/api/qiskit/release-notes/2.0#200)で追加されました。stretch durationの具体的な値は、キャリブレーションされたゲートの正確なdurationが判明した後、コンパイル時に解決されます。コンパイラは、1つ以上の量子ビットのタイミング制約に従い、stretch durationを最小化しようとします。これにより、正確なタイミングを知らなくても、ゲートを均等に配置する（例えば、高次エコーデカップリングシーケンスを実装する）、ゲートのシーケンスを左揃えにする、またはあるサブ回路のdurationの間ゲートを適用するといったゲート設計を表現できます。
+
+## 例 {#examples}
+
+### 動的デカップリング {#dynamical-decoupling}
+
+`stretch`の一般的なユースケースは、別の量子ビットが条件付き操作を行っている間、アイドル状態の量子ビットに動的デカップリングを適用することです。
+
+例えば、次の図に示すように、`stretch`を使用して、量子ビット0に適用される条件付きブロックのdurationの間、量子ビット1にXX動的デカップリングシーケンスを適用できます：
+
+![以下の回路を示す画像](/docs/images/guides/stretch/stretch.avif)
+
+対応する回路は以下のようになります。この相対タイミングの境界を定義するために、バリアのペアが必要であることに注意してください。
+
+```python
+from qiskit.circuit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.classical import expr
+
+qubits = QuantumRegister(2)
+clbits = ClassicalRegister(2)
+circuit = QuantumCircuit(qubits, clbits)
+(q0, q1) = qubits
+(c0, c1) = clbits
+
+# Add barriers to define the boundaries
+circuit.barrier()
+circuit.h(q0)
+circuit.measure(q0, c0)
+with circuit.if_test((c0, 1)) as else_:
+    circuit.h(q0)
+with else_:
+    circuit.x(q0)
+
+# Apply an XX DD sequence with stretch on qubit 1
+s = circuit.add_stretch("s")
+circuit.delay(s, q1)
+circuit.x(q1)
+circuit.delay(expr.mul(s, 2), q1)
+circuit.x(q1)
+circuit.delay(s, q1)
+circuit.barrier()
+```
+
+### スケジューリングのアライメント {#scheduling-alignment}
+
+この例では、`stretch`を使用して、2つのバリア間のゲートのシーケンスを、実際のdurationに関わらず左揃えにしています：
+
+```python
+from qiskit import QuantumCircuit
+from numpy import pi
+
+qc = QuantumCircuit(5)
+qc.barrier()
+qc.cx(0, 1)
+qc.u(pi/4, 0, pi/2, 2)
+qc.cx(3, 4)
+
+a = qc.add_stretch("a")
+b = qc.add_stretch("b")
+c = qc.add_stretch("c")
+
+# Use the stretches as Delay duration.
+qc.delay(a, [0, 1])
+qc.delay(b, 2)
+qc.delay(c, [3, 4])
+qc.barrier()
+```
+
+<Admonition type="note">
+ Qiskit Runtimeで`stretch`を使用する場合、stretch解決の結果として生じる余りは、そのstretchを使用する最初のdelayに追加されます。
+
+    例：
+
+        ```python
+        a = circuit.add_stretch("a")
+        circuit.barrier(q0, q1)
+        circuit.delay(100, q0)
+        circuit.delay(a, q1)  # resolve to 26
+        circuit.x(q1)  # duration: 8
+        circuit.delay(a, q1)  # resolve to 25
+        circuit.x(q1)  # duration: 8
+        circuit.delay(a, q1)  # resolve to 25
+        circuit.x(q1)  # duration: 8
+        circuit.barrier(q0, q1)
+         ```
+
+    上記のコードは値25に解決され、余りは1です。最初のdelay`[a]`に余りが追加されます。
+
+    Stretch解決の方程式：  $a + 8 + a + 8 + a + 8 = 100   =   3*a + 24$
+</Admonition>
+
+## Qiskit RuntimeでのStretch値の確認 {#view-stretch-values-in-qiskit-runtime}
+
+stretch durationの実際の値は、回路がスケジュールされた後、コンパイル時に解決されます。Qiskit RuntimeでSamplerジョブを実行する際、ジョブ結果のメタデータで解決されたstretch値を確認できます。Qiskit Runtimeにおける`stretch`のサポートは現在実験的なため、まず実験的オプションを設定して取得を有効にし、次のようにメタデータから直接データにアクセスする必要があります：
+
+```python
+# Enable stretch value retrieval.
+sampler.options.experimental = {
+    "execution": {
+        "stretch_values": True,
+        "scheduler_timing": True,
+    },
+}
+
+# Access the stretch values from the metadata.
+job_result = job.result()
+circuit_stretch_values = job_result[0].metadata["compilation"]["stretch_values"]
+
+# Visualize the timing.
+# Use the sliders at the bottom, the controls at the top, and the legend on the side
+# of the output to customize the view.
+draw_circuit_schedule_timing(ob.result()[0].metadata['compilation']['scheduler_timing']['timing'])
+```
+
+<Admonition type="note">
+回路の総時間は「compilation」メタデータで返されますが、これは課金（量子時間）に使用される時間ではありません。
+</Admonition>
+
+### メタデータ出力の理解 {#understand-the-metadata-output}
+
+`stretch_values`メタデータは以下の情報を返します：
+
+- **Name（名前）：** 適用されたstretchの名前。
+- **Value（値）：** 要求された目標値。
+- **Remainder（余り）：** stretchの解決から生じる余りで、そのstretchを使用する最初のdelayに追加されます。
+- **Expanded values（展開値）：** stretchの開始とその持続時間を指定する値のセット。
+
+### 例 {#example}
+
+``` python
+# Define the circuit
+circuit = QuantumCircuit(4)
+foo = circuit.add_stretch("foo")
+bar = circuit.add_stretch("bar")
+circuit.barrier()
+circuit.cz(0, 1)
+circuit.cz(0, 1)
+circuit.cz(0, 1)
+circuit.cz(0, 1)
+
+circuit.delay(foo, 2)
+circuit.x(2)
+# 3*foo
+circuit.delay(expr.mul(3, foo), 2)
+circuit.x(2)
+# 2*foo
+circuit.delay(expr.mul(2, foo), 2)
+
+circuit.delay(bar, 3)
+circuit.x(3)
+circuit.delay(bar, 3)
+
+circuit.measure_all()
+```
+
+#### メタデータ出力 {#metadata-output}
+
+``` python
+ [{'name': 'bar',
+  'value': 29,
+  'remainder': 1,
+  'expanded_values': [[1365, 30], [1404, 29]]},
+ {'name': 'foo',
+  'value': 8,
+  'remainder': 2,
+  'expanded_values': [[1365, 10], [1384, 24], [1417, 16]]}
+  ]
+```
+
+durationとして返される値は、目標値と計算された余りによって決まります。例えば、fooについて返されるdurationは以下の通りです：
+
+- `foo value` + `remainder` (8+2 = 10)
+- `foo value` * 3 (8 x 3 = 24)
+- `foo value` * 2 (8 x 2 = 16)
+
+タイミングの理解と検証には、可視化ツールを使用できます。
+
+```python
+draw_circuit_schedule_timing(job.result()[0].metadata['compilation']['scheduler_timing']['timing'])
+```
+
+次の画像は、サンプル出力に基づいており、`foo`は量子ビット2のstretchに対応しています。`foo`を使用する最初のstretch delayは`init_play`の終了時（1365）に始まります。stretch durationは10なので、そのdelayは`x`ゲートが開始するとき（1365+10=1375）に終わります。2番目と3番目のstretchも同様に解釈できます。
+
+![`draw_circuit_schedule_timing`コマンドの出力が表示されています。](/docs/images/guides/stretch/stretch-visualization.avif)
+
+下のスライダー、上のコントロール（出力画像にカーソルを合わせると表示されます）、および側面の凡例を使用してビューをカスタマイズしてください。画像にカーソルを合わせると正確なデータを確認できます。
+
+詳細については、[回路タイミングの可視化](/guides/visualize-circuit-timing#visualize-timings)トピックを参照してください。
+
+## Qiskit Runtimeの制限事項 {#qiskit-runtime-limitations}
+
+Qiskit Runtimeにおける`stretch`のサポートは現在実験的であり、以下の制約があります：
+
+- バリア間（暗黙的および明示的）の _量子ビットセット_ ごとに最大1つのstretch変数。量子ビットセットとは1つ以上の量子ビットであり、これらのセットは互いに排他的でなければなりません。
+    <Tabs>
+    <TabItem value="Invalid" label="Invalid">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        circuit.delay(a, (q0, q1))
+        circuit.delay(b, q0)  # Invalid because 2 stretches are applied on q0
+        ```
+     </TabItem>
+     <TabItem value="Valid" label="Valid">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        circuit.delay(a, (q0, q1))
+        circuit.delay(b, q2)
+        ```
+     </TabItem>
+    </Tabs>
+
+- バリアのセットに囲まれた領域を _バリア領域_ と呼びます。stretch変数は複数のバリア領域で使用することはできません。
+    <Tabs>
+         <TabItem value="Invalid" label="Invalid">
+        ```python
+        # Stretch a is used in two barrier regions
+        a = circuit.add_stretch("a")
+        circuit.barrier((q0, q1))
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+         ```
+
+        ![前のコード出力の図](/docs/images/guides/stretch/bad-barrier-region.avif 'Invalid use of stretch in barrier regions')
+
+     </TabItem>
+     <TabItem value="Valid" label="Valid">
+        ```python
+        # Stretch a is used inside a barrier region that is on q0 and q1
+        a = circuit.add_stretch("a")
+        circuit.barrier((q0, q1))
+        circuit.delay(a, q0)
+        circuit.barrier(q2)
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+        ```
+
+        ![前のコード出力の図](/docs/images/guides/stretch/good-barrier-region.avif 'Valid use of stretch in a barrier region')
+
+     </TabItem>
+    </Tabs>
+
+- Stretch式は`X*stretch + Y`（`X`と`Y`は浮動小数点または整数定数）の形式に限定されます。
+    <Tabs>
+         <TabItem value="Invalid" label="Invalid">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        c = circuit.add_stretch("c")
+
+        # (a /  b) * c is not supported
+        circuit.delay(expr.mul(expr.div(a, b), c), q1)
+         ```
+     </TabItem>
+     <TabItem value="Valid" label="Valid">
+        ```python
+        from qiskit.circuit import Duration
+
+        a = circuit.add_stretch("a")
+        circuit.delay(expr.add(expr.mul(a, 2), Duration.dt(3)), 0)
+        ```
+     </TabItem>
+    </Tabs>
+
+- Stretch式には単一のstretch変数のみを含めることができます。
+    <Tabs>
+        <TabItem value="Invalid" label="Invalid">
+        ```python
+        a = circuit.add_stretch("a")
+        b = circuit.add_stretch("b")
+        circuit.delay(expr.add(a, b), 0)
+         ```
+     </TabItem>
+         <TabItem value="Valid" label="Valid">
+        ```python
+        a = circuit.add_stretch("a")
+        circuit.delay(expr.add(a, a), 0)
+        ```
+     </TabItem>
+
+    </Tabs>
+
+- Stretch式は負のdelay値に解決することはできません。現在のソルバーは非負性制約を推論しません。
+    <Tabs>
+         <TabItem value="Invalid" label="Invalid">
+        ```python
+        from qiskit.circuit import Duration
+
+        circuit.barrier((q0, q1))
+        circuit.delay(20, q1)
+        # The length of this barrier region is 20dt, meaning the
+        # equation for solving stretch 'a' is a + 40dt = 20dt, giving a = -20dt.
+        circuit.delay(expr.add(a, Duration.dt(40)), q0)
+        circuit.barrier((q0, q1))
+         ```
+     </TabItem>
+     <TabItem value="Valid" label="Valid">
+        ```python
+        circuit.barrier((q0, q1))
+        circuit.delay(20, q1)
+        circuit.delay(a, q0)
+        circuit.barrier((q0, q1))
+        ```
+     </TabItem>
+    </Tabs>

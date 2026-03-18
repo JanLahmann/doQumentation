@@ -1,0 +1,316 @@
+---
+title: "ワイヤーカットを始める"
+sidebar_label: "ワイヤーカットを始める"
+description: "circuit cutting アドオンを使ったワイヤーカットの実践例を通じてパッケージの使い方を学ぶ"
+notebook_path: "guides/qiskit-addons-cutting-wires.ipynb"
+---
+{/* doqumentation-source-hash: fcf102b5 */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-cutting-wires.ipynb" />
+
+
+
+# ワイヤーカットを使った回路カッティングを始める
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>パッケージバージョン</b></summary>
+
+このページのコードは以下の要件を使用して開発されました。
+これらのバージョン以降を使用することをお勧めします。
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+qiskit-addon-cutting~=0.10.0
+```
+</details>
+このガイドでは、`qiskit-addon-cutting` パッケージを使ったワイヤーカットの実践例を示します。ワイヤーカットを使って7量子ビット回路の期待値を再構築する方法について説明します。
+
+このパッケージにおけるワイヤーカットは、2量子ビットの [`Move`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/instructions-move) 命令として表現されます。この命令は、対象の2番目の量子ビットをリセットし、その後両量子ビットをスワップする操作として定義されます。この操作は、1番目の量子ビットの状態を2番目の量子ビットへ転送しながら、同時に2番目の量子ビットの入力状態を破棄することと等価です。
+
+このパッケージは、物理量子ビットを操作する際のワイヤーカットの扱い方と整合するよう設計されています。たとえば、ワイヤーカットにより物理量子ビット $n$ の状態をカット後の物理量子ビット $m$ として継続させることができます。「命令カッティング」はワイヤーカットとゲートカットの両方を同じ形式で考える統一フレームワークとして捉えることができます（ワイヤーカットはカットされた [`Move`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/instructions-move) 命令に過ぎないため）。このフレームワークによるワイヤーカットでは量子ビットの再利用も可能です。詳細は[低レベルのMove命令を使ったワイヤーカット](#cut-wires-using-the-low-level-move-instruction)のセクションで説明しています。
+
+単一量子ビットの [`CutWire`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/instructions-cut-wire) 命令は、ワイヤーカットを扱うためのより抽象化されたシンプルなインターフェースです。この命令を使うと、回路のどこでワイヤーを切断するかを高レベルで指定でき、circuit cutting アドオンが適切な [`Move`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/instructions-move) 命令を自動的に挿入してくれます。
+
+以下の例では、ワイヤーカット後の期待値再構築を示します。複数の非局所ゲートを持つ回路を作成し、推定する観測量を定義します。
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+from qiskit_ibm_runtime import SamplerV2, Batch
+from qiskit_aer.primitives import EstimatorV2
+
+from qiskit_addon_cutting.instructions import Move, CutWire
+from qiskit_addon_cutting import (
+    partition_problem,
+    generate_cutting_experiments,
+    cut_wires,
+    expand_observables,
+    reconstruct_expectation_values,
+)
+
+qc_0 = QuantumCircuit(7)
+for i in range(7):
+    qc_0.rx(np.pi / 4, i)
+qc_0.cx(0, 3)
+qc_0.cx(1, 3)
+qc_0.cx(2, 3)
+qc_0.cx(3, 4)
+qc_0.cx(3, 5)
+qc_0.cx(3, 6)
+qc_0.cx(0, 3)
+qc_0.cx(1, 3)
+qc_0.cx(2, 3)
+
+# Define observable
+observable = SparsePauliOp(["ZIIIIII", "IIIZIII", "IIIIIIZ"])
+
+# Draw circuit
+qc_0.draw("mpl")
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/b481ef2d-3912-4eac-9755-335e8f5db886-0.svg)
+
+## 高レベルの`CutWire`命令を使ったワイヤーカット {#cut-wires-using-the-high-level-cutwire-instruction}
+
+次に、量子ビット $q_3$ に対して単一量子ビットの [`CutWire`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/instructions-cut-wire) 命令を使ってワイヤーカットを行います。サブ実験を実行準備する際には、[`cut_wires()`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#cut_wires) 関数を使って `CutWire` を新しく割り当てられた量子ビット上の [`Move`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/instructions-move) 命令に変換します。
+
+```python
+qc_1 = QuantumCircuit(7)
+for i in range(7):
+    qc_1.rx(np.pi / 4, i)
+qc_1.cx(0, 3)
+qc_1.cx(1, 3)
+qc_1.cx(2, 3)
+qc_1.append(CutWire(), [3])
+qc_1.cx(3, 4)
+qc_1.cx(3, 5)
+qc_1.cx(3, 6)
+qc_1.append(CutWire(), [3])
+qc_1.cx(0, 3)
+qc_1.cx(1, 3)
+qc_1.cx(2, 3)
+
+qc_1.draw("mpl")
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/9bac1915-316b-49d0-a1a1-145047679530-0.svg)
+
+<Admonition type="info" title="観測量の展開に関する注意">
+    回路が1つ以上のワイヤーカットによって展開される場合、導入される追加量子ビットを考慮して観測量を更新する必要があります。`qiskit-addon-cutting` パッケージには便利な関数 [`expand_observables()`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#expand_observables) があり、`PauliList` オブジェクトと元の回路および展開後の回路を引数として受け取り、新しい `PauliList` を返します。
+
+    返される `PauliList` には元の観測量の係数に関する情報は含まれませんが、最終的な期待値の再構築まではこれを無視できます。
+</Admonition>
+
+```python
+# Transform CutWire instructions to Move instructions
+qc_2 = cut_wires(qc_1)
+
+# Expand the observable to match the new circuit size
+expanded_observable = expand_observables(observable.paulis, qc_0, qc_2)
+print(f"Expanded Observable: {expanded_observable}")
+qc_2.draw("mpl")
+```
+
+```text
+Expanded Observable: ['ZIIIIIIII', 'IIIZIIIII', 'IIIIIIIIZ']
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/d398b397-0167-4db9-97ae-6ea502dc43e3-1.svg)
+
+### 回路と観測量のパーティション分割 {#partition-the-circuit-and-observable}
+
+これで問題をパーティションに分割できます。これは [`partition_problem()`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#partition_problem) 関数に、回路の分割方法を指定するオプションのパーティションラベルセットを指定して行います。共通のパーティションラベルを持つ量子ビットはグループ化され、複数のパーティションにまたがる非局所ゲートはカットされます。
+
+パーティションラベルが指定されない場合、パーティション分割は回路の接続性に基づいて自動的に決定されます。パーティションラベルを含める方法の詳細については、次の[低レベルのMove命令を使ったワイヤーカット](#cut-wires-using-the-low-level-move-instruction)のセクションを参照してください。
+
+```python
+partitioned_problem = partition_problem(
+    circuit=qc_2,
+    observables=expanded_observable,
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+
+print(f"Subobservables to measure: \n{subobservables}\n")
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+subcircuits[0].draw("mpl")
+```
+
+```text
+Subobservables to measure:
+{0: PauliList(['IIIII', 'ZIIII', 'IIIIZ']), 1: PauliList(['ZIII', 'IIII', 'IIII'])}
+
+Sampling overhead: 256.0
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/5fb034f2-da8a-4f4d-ab9b-c990593e04fc-1.svg)
+
+```python
+subcircuits[1].draw("mpl")
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/d0e86f81-7c7e-4ccf-951c-9cd039135dc9-0.svg)
+
+このパーティション分割スキームでは、2本のワイヤーをカットしており、サンプリングオーバーヘッドは $4^4$ になります。
+### サブ実験の生成・実行と結果の後処理 {#generate-subexperiments-to-execute-and-post-process-results}
+
+フルサイズの回路の期待値を推定するために、分解されたゲートの結合準確率分布から複数のサブ実験が生成され、1つ（または複数）のQPU上で実行されます。[`generate_cutting_experiments`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#generate_cutting_experiments) メソッドは、上で作成した `subcircuits` と `subobservables` の辞書、および分布からのサンプル数を引数として受け取り、これを行います。
+
+<Admonition type="note" title="サンプル数に関する注意">
+    `num_samples` 引数は準確率分布から取得するサンプル数を指定し、再構築に使用される係数の精度を決定します。無限大（`np.inf`）を渡すと、すべての係数が正確に計算されます。詳細については、[重みの生成](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qpd#generate_qpd_weights)と[カッティング実験の生成](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#generate_cutting_experiments)に関するAPIドキュメントをご覧ください。
+</Admonition>
+
+```python
+# Generate subexperiments
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits, observables=subobservables, num_samples=np.inf
+)
+
+# Set a backend to use and transpile the subexperiments
+backend = FakeManilaV2()
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, backend=backend
+)
+isa_subexperiments = {
+    label: pass_manager.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+
+# Submit each partition's subexperiments to the Qiskit Runtime Sampler
+# primitive, in a single batch so that the jobs will run back-to-back.
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+    # Retrieve results
+    results = {label: job.result() for label, job in jobs.items()}
+```
+
+最後に、[`reconstruct_expectation_values()`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/qiskit-addon-cutting#reconstruct_expectation_values) メソッドを使って、フル回路の期待値を再構築できます。
+
+以下のコードブロックは結果を再構築し、正確な期待値と比較します。
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+# Apply the coefficients of the original observable
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+
+# Compute the exact expectation value using the `qiskit_aer` package.
+estimator = EstimatorV2()
+exact_expval = estimator.run([(qc_0, observable)]).result()[0].data.evs
+print(
+    f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}"
+)
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(
+    f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}"
+)
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 1.45965266
+Exact expectation value: 1.59099026
+Error in estimation: -0.1313376
+Relative error in estimation: -0.08255085
+```
+
+<Admonition type="caution" title="観測量の係数に関する注意">
+    期待値を正確に再構築するためには、元の観測量の係数（`generate_cutting_experiments()` の出力とは異なります）を再構築の出力に適用する必要があります。これは、カッティング実験の生成時または観測量の展開時にこの情報が失われるためです。
+
+    通常、これらの係数は前述のように `numpy.dot()` を通じて適用できます。
+</Admonition>
+## 低レベルの`Move`命令を使ったワイヤーカット {#cut-wires-using-the-low-level-move-instruction}
+
+高レベルの `CutWire` 命令を使う場合の制限の1つは、量子ビットの再利用ができないことです。これがカッティング実験に必要な場合は、代わりに [`Move`](https://docs.quantum.ibm.com/api/qiskit-addon-cutting/instructions-move) 命令を手動で配置できます。ただし、`Move` 命令は宛先量子ビットの状態を破棄するため、この量子ビットがシステムの残りの部分と量子もつれを持っていないことが重要です。そうでない場合、リセット操作によってワイヤーカット後に回路の状態が部分的に崩壊してしまいます。
+
+以下のコードブロックは、前述と同じ例回路の量子ビット $q_3$ に対してワイヤーカットを行います。ここでの違いは、2回目のワイヤーカットが行われた場所で `Move` 操作を逆にすることで量子ビットを再利用できる点です（ただし、これが常に可能であるとは限らず、カットされる回路に依存します）。
+
+```python
+qc_1 = QuantumCircuit(8)
+for i in [*range(4), *range(5, 8)]:
+    qc_1.rx(np.pi / 4, i)
+qc_1.cx(0, 3)
+qc_1.cx(1, 3)
+qc_1.cx(2, 3)
+qc_1.append(Move(), [3, 4])
+qc_1.cx(4, 5)
+qc_1.cx(4, 6)
+qc_1.cx(4, 7)
+qc_1.append(Move(), [4, 3])
+qc_1.cx(0, 3)
+qc_1.cx(1, 3)
+qc_1.cx(2, 3)
+
+# Expand observable
+observable_expanded = SparsePauliOp(["ZIIIIIII", "IIIIZIII", "IIIIIIIZ"])
+qc_1.draw("mpl")
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/15461a2c-85a9-4cb2-a632-b9597ccbc4bd-0.svg)
+
+上の回路はパーティション分割してカッティング実験を生成できます。回路のパーティション分割方法を明示的に指定するには、`partition_problem()` 関数にパーティションラベルを追加できます。共通のパーティションラベルを持つ量子ビットはグループ化され、複数のパーティションにまたがる非局所ゲートはカットされます。`partition_problem()` が出力する辞書のキーは、ラベル文字列で指定したものと一致します。
+
+```python
+partitioned_problem = partition_problem(
+    circuit=qc_1,
+    partition_labels="AAAABBBB",
+    observables=observable_expanded.paulis,
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+
+print(f"Subobservables to measure: \n{subobservables}\n")
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+subcircuits["A"].draw("mpl")
+```
+
+```text
+Subobservables to measure:
+{'A': PauliList(['IIII', 'ZIII', 'IIIZ']), 'B': PauliList(['ZIII', 'IIII', 'IIII'])}
+
+Sampling overhead: 256.0
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/2139745a-bdc3-40bd-bd6f-d26d2a5b5b14-1.svg)
+
+```python
+subcircuits["B"].draw("mpl")
+```
+
+![前のコードセルの出力](/docs/images/guides/qiskit-addons-cutting-wires/extracted-outputs/4aeb3f1f-a55e-49c4-a7bd-837132429ee1-0.svg)
+
+これで、カッティング実験を生成し、前のセクションと同じ方法で期待値を再構築できます。
+
+## 次のステップ {#next-steps}
+
+<Admonition type="tip" title="推奨事項">
+    - [ゲートカットを使った回路カッティングを始める](/guides/qiskit-addons-cutting-gates)ガイドを読む。
+    - ワイヤーカットとゲートカットの等価性をより深く理解するために、[最適なワイヤーカット](https://arxiv.org/abs/2302.03366)に関するarXivの論文を読む。
+</Admonition>

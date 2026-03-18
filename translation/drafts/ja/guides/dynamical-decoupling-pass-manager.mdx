@@ -1,0 +1,159 @@
+---
+title: "ダイナミカルデカップリング用のパスマネージャーを作成する"
+sidebar_label: "ダイナミカルデカップリング用のパスマネージャーを作成する"
+description: "Qiskitでダイナミカルデカップリング用のパスマネージャーを作成する方法。"
+notebook_path: "guides/dynamical-decoupling-pass-manager.ipynb"
+---
+
+{/* doqumentation-source-hash: d395a730 */}
+
+<OpenInLabBanner notebookPath="guides/dynamical-decoupling-pass-manager.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>パッケージのバージョン</b></summary>
+
+このページのコードは、以下の要件を使用して開発されました。
+これらのバージョン以上を使用することをお勧めします。
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+このページでは、[`PadDynamicalDecoupling`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling) パスを使用して、_ダイナミカルデカップリング_と呼ばれるエラー抑制手法をCircuitに追加する方法を説明します。
+
+ダイナミカルデカップリングは、アイドル状態のQubitに対してパルス列（_ダイナミカルデカップリングシーケンス_と呼ばれる）を追加し、Bloch球上でQubitを反転させることで、ノイズチャネルの影響を打ち消し、デコヒーレンスを抑制する手法です。これらのパルス列は、核磁気共鳴で使用されるリフォーカシングパルスと類似しています。詳細については、[A Quantum Engineer's Guide to Superconducting Qubits](https://arxiv.org/abs/1904.06560) を参照してください。
+
+`PadDynamicalDecoupling` パスはスケジュール済みのCircuitにのみ動作し、対象のバックエンドの基底Gateとは限らないGateを含むため、[`ALAPScheduleAnalysis`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis) および [`BasisTranslator`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.BasisTranslator) パスも必要になります。
+
+この例では、事前に初期化された `ibm_fez` を使用します。`backend` から `target` 情報を取得し、操作名を `basis_gates` として保存してください。ダイナミカルデカップリングで使用するGateにタイミング情報を追加するために `target` を変更する必要があるためです。
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.backend("ibm_fez")
+
+target = backend.target
+basis_gates = list(target.operation_names)
+```
+
+例として `efficient_su2` Circuitを作成します。まず、ダイナミカルデカップリングのパルスはCircuitがトランスパイルおよびスケジュールされた後に追加する必要があるため、BackendにCircuitをトランスパイルします。ダイナミカルデカップリングは、量子回路にアイドル時間が多い場合、つまり一部のQubitが動作している間に他のQubitが使用されていない場合に最も効果的です。このCircuitでは、2QubitのGate `ecr` がこのansatzにおいて順次適用されるため、そのような状況になっています。
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(12, entanglement="circular", reps=1)
+pm = generate_preset_pass_manager(1, target=target, seed_transpiler=12345)
+qc_t = pm.run(qc)
+qc_t.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/8228f889-806a-4873-b1da-27c9795d5f5c-0.svg)
+
+ダイナミカルデカップリングシーケンスとは、恒等演算に合成され、時間的に等間隔に配置されたGateの列です。例えば、4つのGateから構成されるXY4という単純なシーケンスを作成することから始めましょう。
+
+```python
+from qiskit.circuit.library import XGate, YGate
+
+X = XGate()
+Y = YGate()
+
+dd_sequence = [X, Y, X, Y]
+```
+
+ダイナミカルデカップリングシーケンスは等間隔のタイミングで実行されるため、`YGate` に関する情報を `target` に追加する必要があります。`XGate` は基底Gateですが、`YGate` はそうでは*ありません*。ただし、`YGate` は `XGate` と同じ持続時間とエラーを持つことが*事前に*わかっているため、`target` からそれらのプロパティを取得して `YGate` オブジェクト用に追加するだけで済みます。`ibm_fez` の実際の基底Gateではないにもかかわらず `YGate` 命令を `target` に追加しているため、`basis_gates` を別途保存しておいた理由もここにあります。
+
+```python
+from qiskit.transpiler import InstructionProperties
+
+y_gate_properties = {}
+for qubit in range(target.num_qubits):
+    y_gate_properties.update(
+        {
+            (qubit,): InstructionProperties(
+                duration=target["x"][(qubit,)].duration,
+                error=target["x"][(qubit,)].error,
+            )
+        }
+    )
+
+target.add_instruction(YGate(), y_gate_properties)
+```
+
+`efficient_su2` などのansatz Circuitはパラメータ化されているため、Backendに送信する前に値をバインドする必要があります。ここではランダムなパラメータを割り当てます。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1234)
+qc_t.assign_parameters(
+    rng.uniform(-np.pi, np.pi, qc_t.num_parameters), inplace=True
+)
+```
+
+次に、カスタムパスを実行します。`ALAPScheduleAnalysis` と `PadDynamicalDecoupling` を使用して `PassManager` をインスタンス化します。等間隔のダイナミカルデカップリングシーケンスを追加する前に、量子回路のタイミング情報を追加するために `ALAPScheduleAnalysis` を最初に実行します。これらのパスは `.run()` でCircuit上で実行されます。
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+dd_pm = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        PadDynamicalDecoupling(target=target, dd_sequence=dd_sequence),
+    ]
+)
+qc_dd = dd_pm.run(qc_t)
+```
+
+可視化ツール [`timeline_drawer`](https://docs.quantum.ibm.com/api/qiskit/qiskit.visualization.timeline_drawer) を使用してCircuitのタイミングを確認し、等間隔の `XGate` オブジェクトと `YGate` オブジェクトのシーケンスがCircuit内に現れていることを確認します。
+
+```python
+from qiskit.visualization import timeline_drawer
+
+timeline_drawer(qc_dd, idle_wires=False, target=target)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/cb73e2c4-ab05-4f15-91ae-2fab64028d6e-0.svg)
+
+最後に、`YGate` はBackendの実際の基底Gateではないため、`BasisTranslator` パスを手動で適用します（これはデフォルトのパスですが、スケジューリングの前に実行されるため、再度適用する必要があります）。セッション等価ライブラリは、Transpilerが引数として指定された基底GateにCircuitを分解できるようにするための回路等価性ライブラリです。
+
+```python
+from qiskit.circuit.equivalence_library import (
+    SessionEquivalenceLibrary as sel,
+)
+from qiskit.transpiler.passes import BasisTranslator
+
+qc_dd = BasisTranslator(sel, basis_gates)(qc_dd)
+qc_dd.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/aaa27ee4-1965-41bf-abd2-1d9176af6dc4-0.svg)
+
+これで、`YGate` オブジェクトはCircuitから除かれ、`Delay` Gateの形式で明示的なタイミング情報が含まれています。ダイナミカルデカップリングが適用されたこのトランスパイル済みCircuitは、Backendに送信できる状態になりました。
+## 次のステップ {#next-steps}
+
+<Admonition type="tip" title="推奨事項">
+    - 独自のパスを記述する代わりに `generate_preset_passmanager` 関数を使用する方法については、[トランスパイルのデフォルト設定と構成オプション](defaults-and-configuration-options) トピックから始めてください。
+    - [トランスパイラー設定の比較](/guides/circuit-transpilation-settings#compare-transpiler-settings) ガイドを試してみてください。
+    - [Transpile API ドキュメント](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler) をご覧ください。
+</Admonition>

@@ -1,0 +1,619 @@
+---
+title: "インスタンスと拡張"
+sidebar_label: "インスタンスと拡張"
+description: "このレッスンでは、いくつかの変分アプローチの完全なワークフローを示し、それらをどのように修正できるかを説明します。"
+notebook_path: "learning/courses/variational-algorithm-design/instances-and-extensions.ipynb"
+---
+{/* doqumentation-source-hash: cd8c269c */}
+
+<OpenInLabBanner notebookPath="learning/courses/variational-algorithm-design/instances-and-extensions.ipynb" />
+
+
+
+{/* cspell: ignore disp SSVQE's forall */}
+
+この章では、以下を含むいくつかの量子変分アルゴリズムを取り上げます。
+
+* [変分量子固有値ソルバー (VQE)](https://arxiv.org/abs/1304.3061)
+* [部分空間探索 VQE (SSVQE)](https://arxiv.org/abs/1810.09434)
+* [変分量子デフレーション (VQD)](https://arxiv.org/abs/1805.08138)
+* [量子サンプリング回帰 (QSR)](https://arxiv.org/pdf/2012.02338)
+
+これらのアルゴリズムを用いることで、重み付け、ペナルティ、過剰サンプリング、過少サンプリングなど、カスタム変分アルゴリズムに組み込むことができる設計アイデアについて学びます。これらの概念を実際に試し、発見した内容をコミュニティと共有することをお勧めします。
+
+Qiskit パターンフレームワークはこれらすべてのアルゴリズムに適用されますが、最初の例でのみステップを明示的に示します。
+
+## 変分量子固有値ソルバー (VQE) {#variational-quantum-eigensolver-vqe}
+
+[VQE](https://arxiv.org/abs/1304.3061) は最も広く使用されている変分量子アルゴリズムの一つであり、他のアルゴリズムが構築するためのテンプレートを提供しています。
+
+![VQE が参照状態とアンザッツを使用してコスト関数を推定し、変分パラメーターを用いて反復する様子を示す図。](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-vqe.svg)
+
+### ステップ 1: 古典的な入力を量子問題にマッピングする {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+### 理論的な構成 {#theoretical-layout}
+
+VQE の構成はシンプルです。
+
+- 参照演算子 $U_R$ を準備する
+  - 状態 $|0\rangle$ から参照状態 $|\rho\rangle$ へ移行します
+- 変分形式 $U_V(\vec\theta_{i,j})$ を適用してアンザッツ $U_A(\vec\theta_{i,j})$ を作成する
+  - 状態 $|\rho\rangle$ から $U_V(\vec\theta_{i,j})|\rho\rangle = |\psi(\vec\theta_{i,j})\rangle$ へ移行します
+- 類似の問題がある場合は $i=0$ でブートストラップする（通常は古典シミュレーションまたはサンプリングによって得られる）
+  - 各オプティマイザーはそれぞれ異なる方法でブートストラップされ、初期パラメーターベクトルの集合 $\Theta_0 := \\{ {\vec\theta_{0,j} | j \in \mathcal{J}_\text{opt}^0} \\}$ が生成されます（例えば、初期点 $\vec\theta_0$ から）。
+- 量子コンピューター上で準備されたすべての状態についてコスト関数 $C(\vec\theta_{i,j}) := \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ を評価する。
+- 古典オプティマイザーを使用して次のパラメーターセット $\Theta_{i+1}$ を選択する。
+- 収束するまでこのプロセスを繰り返す。
+
+これはコスト関数を評価するシンプルな古典最適化ループです。一部のオプティマイザーでは、勾配の計算、次の反復の決定、または収束の評価のために複数の評価が必要になる場合があります。
+
+以下の観測可能量に対する例を示します。
+
+$$
+\hat{O}_1 = 2 II - 2 XX + 3 YY - 3 ZZ,
+$$
+
+### 実装 {#implementation}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime scipy
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import TwoLocal
+import numpy as np
+
+theta_list = (2 * np.pi * np.random.rand(1, 8)).tolist()
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+
+reference_circuit = QuantumCircuit(2)
+reference_circuit.x(0)
+
+variational_form = TwoLocal(
+    2,
+    rotation_blocks=["rz", "ry"],
+    entanglement_blocks="cx",
+    entanglement="linear",
+    reps=1,
+)
+
+ansatz = reference_circuit.compose(variational_form)
+
+ansatz.decompose().draw("mpl")
+```
+
+![前のコードセルの出力](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/db20526e-48d4-44eb-9d2b-6c5d2ce5777e-0.avif)
+
+```python
+def cost_func_vqe(parameters, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+    estimator_result = estimator_job.result()[0]
+
+    cost = estimator_result.data.evs[0]
+    return cost
+```
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+```
+
+このコスト関数を使用して最適なパラメーターを計算することができます。
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+x0 = np.ones(8)
+
+result = minimize(
+    cost_func_vqe, x0, args=(ansatz, observable, estimator), method="COBYLA"
+)
+
+result
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -5.999999982445723
+       x: [ 1.741e+00  9.606e-01  1.571e+00  2.115e-05  1.899e+00
+            1.243e+00  6.063e-01  6.063e-01]
+    nfev: 136
+   maxcv: 0.0
+```
+
+### ステップ 2: 量子実行のために問題を最適化する {#step-2-optimize-problem-for-quantum-execution}
+
+最も空いている Backend を選択し、`qiskit_ibm_runtime` から必要なコンポーネントをインポートします。
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import Session, EstimatorOptions
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_brisbane')>
+```
+
+最適化レベル 3 のプリセットパスマネージャーを使用して Circuit をトランスパイルし、対応するレイアウトを観測可能量に適用します。
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_ansatz = pm.run(ansatz)
+isa_observable = observable.apply_layout(layout=isa_ansatz.layout)
+```
+
+### ステップ 3: Qiskit Runtime プリミティブを使用して実行する {#step-3-execute-using-qiskit-runtime-primitives}
+
+IBM Quantum&reg; ハードウェア上での計算を実行する準備が整いました。コスト関数の最小化は非常に反復的なプロセスであるため、Runtime セッションを開始します。こうすることで、キューで待機するのは一度だけで済みます。ジョブの実行が開始されると、パラメーターを更新した各反復が直ちに実行されます。
+
+```python
+x0 = np.ones(8)
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    result = minimize(
+        cost_func_vqe,
+        x0,
+        args=(isa_ansatz, isa_observable, estimator),
+        method="COBYLA",
+        options={"maxiter": 200, "disp": True},
+    )
+session.close()
+print(result)
+```
+
+### ステップ 4: 後処理を行い、結果を古典的な形式で返す {#step-4-post-process-return-result-in-classical-format}
+
+最小化ルーティンが正常に終了したことが確認できます。これは、COBYLA 古典オプティマイザーのデフォルト許容誤差に達したことを意味します。より精度の高い結果が必要な場合は、より小さい許容誤差を指定することができます。上記のシミュレーターで得られた結果と比較して数パーセントの誤差があるため、実際にその対応が必要になることがあります。
+
+得られた x の値は、コスト関数を最小化するパラメーターに対する現在の最良推定値です。より高い精度を求めてさらに反復する場合は、最初に使用した x0（すべて 1 のベクトル）の代わりにその値を使用してください。
+
+最後に、最適化のプロセスにおいて関数が 96 回評価されたことに注目します。これは最適化ステップの回数と異なる場合があります。例えば、勾配を推定する際など、一部のオプティマイザーでは 1 ステップに複数の関数評価が必要になるためです。
+
+## 部分空間探索 VQE (SSVQE) {#subspace-search-vqe-ssvqe}
+
+[SSVQE](https://arxiv.org/abs/1810.09434) は VQE の派生手法であり、固有値 $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$ を持つ観測可能量 $\hat{H}$ の最初の $k$ 個の固有値（$N\geq k$）を取得することができます。一般性を失わずに、$\lambda_0<\lambda_1<...<\lambda_{N-1}$ と仮定します。SSVQE は、最大の重みを持つ項の最適化を優先するために重みを加えるという新しいアイデアを導入しています。
+
+![部分空間探索 VQE が変分アルゴリズムのコンポーネントをどのように使用するかを示す図。](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-ssvqe.svg)
+
+このアルゴリズムを実装するには、$k$ 個の互いに直交する参照状態 $\{ |\rho_j\rangle \}_{j=0}^{k-1}$（すなわち $j,l<k$ に対して $\langle \rho_j | \rho_l \rangle = \delta_{jl}$）が必要です。これらの状態はパウリ演算子を使用して構成することができます。このアルゴリズムのコスト関数は次のようになります。
+
+$$
+\begin{aligned}
+C(\vec{\theta})
+
+& := \sum_{j=0}^{k-1} w_j \langle \rho_j | U_{V}^{\dagger}(\vec{\theta})\hat{H} U_{V}(\vec{\theta})|\rho_j \rangle \\[1mm]
+
+& := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle \\[1mm]
+
+\end{aligned}
+$$
+
+ここで $w_j$ は、$j<l<k$ のとき $w_j>w_l$ となる任意の正の数であり、$U_V(\vec{\theta})$ はユーザー定義の変分形式です。
+
+SSVQE アルゴリズムは、異なる固有値に対応する固有状態が互いに直交するという事実に基づいています。具体的には、$U_V(\vec{\theta})|\rho_j\rangle$ と $U_V(\vec{\theta})|\rho_l\rangle$ の内積は次のように表すことができます。
+
+$$
+\begin{aligned}
+\langle \rho_j | U_{V}^{\dagger}(\vec{\theta})U_{V}(\vec{\theta})|\rho_l \rangle
+
+& = \langle \rho_j | I |\rho_l \rangle \\[1mm]
+
+& = \langle \rho_j | \rho_l \rangle \\[1mm]
+
+& = \delta_{jl}
+
+\end{aligned}
+$$
+
+最初の等式は $U_{V}(\vec{\theta})$ が量子演算子でありユニタリーであるために成立します。最後の等式は参照状態 $|\rho_j\rangle$ の直交性によって成立します。ユニタリー変換によって直交性が保存されるという事実は、量子情報科学における情報保存の原理と深く関わっています。この観点から見ると、非ユニタリー変換は情報が失われるか注入されるプロセスを表します。
+
+重み $w_j$ は、すべての状態が固有状態になることを保証するのに役立ちます。重みが十分に異なる場合、最大の重みを持つ項（すなわち $w_0$）が最適化において他の項よりも優先されます。その結果、得られる状態 $U_{V}(\vec{\theta})|\rho_0 \rangle$ は $\lambda_0$ に対応する固有状態になります。$\{ U_{V}(\vec{\theta})|\rho_j\rangle \}_{j=0}^{k-1}$ は互いに直交しているため、残りの状態はこれと直交し、固有値 $\{\lambda_1,...,\lambda_{N-1}\}$ に対応する部分空間に含まれます。
+
+同じ論理を残りの項に適用すると、次に優先されるのは重み $w_1$ を持つ項となり、$U_{V}(\vec{\theta})|\rho_1 \rangle$ は $\lambda_1$ に対応する固有状態になります。そして残りの項は $\{\lambda_2,...,\lambda_{N-1}\}$ の固有空間に含まれます。
+
+帰納的に推論すると、$0\leq j < k$ に対して $U_{V}(\vec{\theta})|\rho_j \rangle$ が $\lambda_j$ の近似固有状態になることが導かれます。
+
+### 理論的な構成 {#theoretical-layout-ssvqe}
+
+SSVQE は以下のようにまとめられます。
+
+- $k$ 個の異なる計算基底状態にユニタリー $U_R$ を適用することで、いくつかの参照状態を準備する
+   - このアルゴリズムでは、$j,l<k$ に対して $\langle \rho_j | \rho_l \rangle = \delta_{jl}$ となる $k$ 個の互いに直交する参照状態 $\{ |\rho_j\rangle \}_{j=0}^{k-1}$ が必要です。
+- 各参照状態に変分形式 $U_V(\vec\theta_{i,j})$ を適用し、アンザッツ $U_A(\vec\theta_{i,j})$ を得る。
+- 類似の問題が利用可能であれば $i=0$ でブートストラップする（通常は古典シミュレーションまたはサンプリングによって得られる）。
+- 量子コンピューター上で準備されたすべての状態についてコスト関数 $C(\vec\theta_{i,j}) := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ を評価する。
+  - これは観測可能量の期待値 $\langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ を計算し、その結果に $w_j$ を掛けることに分解できます。
+  - その後、コスト関数はすべての重み付き期待値の和を返します。
+- 古典オプティマイザーを使用して次のパラメーターセット $\Theta_{i+1}$ を決定する。
+- 収束するまで上記のステップを繰り返す。
+
+アセスメントでは SSVQE のコスト関数を再実装していただきますが、以下のスニペットでその解の方向性を示します。
+
+```python
+import numpy as np
+
+def cost_func_ssvqe(
+    params, initialized_anastz_list, weights, ansatz, hamiltonian, estimator
+):
+    # """Return estimate of energy from estimator
+
+    # Parameters:
+    #     params (ndarray): Array of ansatz parameters
+    #     initialized_anastz_list (list QuantumCircuit): Array of initialised ansatz with reference
+    #     weights (list): List of weights
+    #     ansatz (QuantumCircuit): Parameterized ansatz circuit
+    #     hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+    #     estimator (Estimator): Estimator primitive instance
+
+    # Returns:
+    #     float: Weighted energy estimate
+    # """
+
+    energies = []
+
+    # Define SSVQE
+
+    weighted_energy_sum = np.dot(energies, weights)
+    return weighted_energy_sum
+```
+
+## 変分量子デフレーション (VQD) {#variational-quantum-deflation-vqd}
+
+[VQD](https://arxiv.org/abs/1805.08138) は VQE を拡張した反復的手法であり、固有値 $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$ を持つ観測可能量 $\hat{H}$ の最初の $k$ 個の固有値（$N\geq k$）を、最初の一つだけでなく取得することができます。この節の残りでは、一般性を失わずに $\lambda_0\leq\lambda_1\leq...\leq\lambda_{N-1}$ と仮定します。VQD は最適化プロセスを誘導するためのペナルティコストという概念を導入しています。
+
+![VQD が変分アルゴリズムのコンポーネントをどのように使用するかを示す図。](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-vqd.svg)
+
+VQD はペナルティ項 $\beta$ を導入し、各オーバーラップ項のコストへの寄与のバランスを取ります。このペナルティ項は、直交性が達成されない場合に最適化プロセスにペナルティを課す役割を果たします。この制約を課す理由は、観測可能量（エルミート演算子）の異なる固有値に対応する固有状態は常に互いに直交するか、縮退または重複固有値の場合には互いに直交するよう作ることができるためです。したがって、$\lambda_0$ に対応する固有状態との直交性を強制することで、残りの固有値 $\{\lambda_1, \lambda_2,..., \lambda_{N-1}\}$ に対応する部分空間上で最適化を行っていることになります。ここで $\lambda_1$ は残りの固有値の中で最小であり、変分定理によって新しい問題の最適解を得ることができます。
+
+VQD の基本的な考え方は、まず通常の VQE を使用して最小固有値 $\lambda_0 := C_0(\vec\theta^0) \equiv C_\text{VQE}(\vec\theta^0)$ と、ある最適パラメーターベクトル $\vec{\theta^0}$ に対応する（近似）固有状態 $|\psi(\vec{\theta^0})\rangle$ を取得することです。次に、次の固有値 $\lambda_1 > \lambda_0$ を得るために、コスト関数 $C_0(\vec{\theta}) := \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ を最小化する代わりに、以下を最適化します。
+
+$$
+C_1(\vec{\theta}) :=
+C_0(\vec{\theta})+ \beta_0 |\langle \psi(\vec{\theta})| \psi(\vec{\theta^0})\rangle  |^2
+$$
+
+正の値 $\beta_0$ は $\lambda_1-\lambda_0$ より大きくなるのが理想的です。
+
+これにより、制約付き問題として見ることができる新しいコスト関数が導入されます。状態が以前に得られた $|\psi(\vec{\theta^0})\rangle$ と直交しなければならないという制約のもとで $C_\text{VQE}(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ を最小化する問題であり、$\beta_0$ は制約が満たされない場合のペナルティ項として機能します。
+
+あるいは、この新しい問題は次の観測可能量に対する VQE の実行として解釈することもできます。
+
+$$
+\hat{H_1} := \hat{H} + \beta_0 |\psi(\vec{\theta^0})\rangle \langle \psi(\vec{\theta^0})|
+\quad \Rightarrow \quad
+C_1(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H_1} | \psi(\vec{\theta})\rangle,
+$$
+
+新しい問題の解を $|\psi(\vec{\theta^1})\rangle$ とすると、$\hat{H}$（$\hat{H_1}$ ではなく）の期待値は $ \langle \psi(\vec{\theta^1}) | \hat{H} | \psi(\vec{\theta^1})\rangle = \lambda_1$ となるはずです。
+
+第 3 の固有値 $\lambda_2$ を得るために最適化するコスト関数は次のようになります。
+
+$$
+C_2(\vec{\theta}) :=
+C_1(\vec{\theta}) + \beta_1 |\langle \psi(\vec{\theta})| \psi(\vec{\theta^1})\rangle  |^2
+$$
+
+ここで $\beta_1$ は、解の状態を $|\psi(\vec{\theta^0})\rangle$ と $|\psi(\vec{\theta^1})\rangle$ の両方に対して直交させるのに十分な大きさの正の定数です。これにより、この要件を満たさない探索空間内の状態にペナルティが課され、探索空間が効果的に制限されます。したがって、新しい問題の最適解は $\lambda_2$ に対応する固有状態となるはずです。
+
+前の場合と同様に、この新しい問題も次の観測可能量を持つ VQE として解釈できます。
+
+$$
+\hat{H_2} := \hat{H_1} + \beta_1 |\psi(\vec{\theta^1})\rangle \langle \psi(\vec{\theta^1})|
+\quad \Rightarrow \quad
+C_2(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H_2} | \psi(\vec{\theta})\rangle.
+$$
+
+この新しい問題の解が $|\psi(\vec{\theta^2})\rangle$ であれば、$\hat{H}$（$\hat{H_2}$ ではなく）の期待値は $ \langle \psi(\vec{\theta^2}) | \hat{H} | \psi(\vec{\theta^2})\rangle = \lambda_2$ となるはずです。
+
+同様に、$k$ 番目の固有値 $\lambda_{k-1}$ を得るには、次のコスト関数を最小化します。
+
+$$
+C_{k-1}(\vec{\theta}) :=
+C_{k-2}(\vec{\theta}) + \beta_{k-2} |\langle \psi(\vec{\theta})| \psi(\vec{\theta^{k-2}})\rangle  |^2,
+$$
+
+$\langle \psi(\vec{\theta^j}) | \hat{H} | \psi(\vec{\theta^j})\rangle = \lambda_j, \forall j<k$ となるように $\vec{\theta^j}$ を定義したことを思い出してください。この問題は $C(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ を最小化することと等価ですが、状態が $|\psi(\vec{\theta^j})\rangle ; \forall j \in {0, \cdots, k-1}$ と直交しなければならないという制約が付いており、これにより探索空間が固有値 $\{\lambda_{k-1},\cdots,\lambda_{N-1}\}$ に対応する部分空間に制限されます。
+
+この問題は次の観測可能量を持つ VQE と等価です。
+
+$$
+\hat{H}_{k-1} :=
+\hat{H}_{k-2} + \beta_{k-2} |\psi(\vec{\theta^{k-2}})\rangle \langle \psi(\vec{\theta^{k-2}})|
+\quad \Rightarrow \quad
+C_{k-1}(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H}_{k-1} | \psi(\vec{\theta})\rangle,
+$$
+
+このプロセスから分かるように、$k$ 番目の固有値を得るためには、前の $k-1$ 個の固有値の（近似）固有状態が必要であるため、VQE を合計 $k$ 回実行する必要があります。したがって、VQD のコスト関数は以下のようになります。
+
+$$
+C_k(\vec{\theta}) =
+\langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle +
+\sum_{j=0}^{k-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle |^2
+$$
+
+
+### 理論的なレイアウト {#theoretical-layout-vqd}
+
+VQDのレイアウトは以下のようにまとめられます：
+
+- 参照演算子 $U_R$ を準備します。
+- 変分形式 $U_V(\vec\theta_{i,j})$ を参照状態に適用し、次のアンサッツ $U_A(\vec\theta_{i,j})$ を生成します。
+- 類似の問題がある場合（通常は古典シミュレーションまたはサンプリングにより求められます）、$i=0$ でブートストラップします。
+- コスト関数 $C_k(\vec{\theta})$ を評価します。これは $k$ 個の励起状態と、各オーバーラップ項に対するオーバーラップペナルティを定義する $\beta$ の配列を計算することを含みます。
+  - 各 $k$ について、オブザーバブルの期待値 $\langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ を計算します。
+  - ペナルティ $\sum_{j=0}^{k-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle |^2$ を計算します。
+  - コスト関数はこれら2つの項の和を返す必要があります。
+- 古典オプティマイザーを使用して、次のパラメータセット $\Theta_{i+1}$ を選択します。
+- 収束に達するまでこのプロセスを繰り返します。
+
+### 実装 {#implementation-vqd}
+
+この実装では、オーバーラップペナルティのための関数を作成します。このペナルティは各イテレーションのコスト関数で使用されます。このプロセスは各励起状態に対して繰り返されます。
+
+```python
+from qiskit.circuit.library import TwoLocal
+
+ansatz = TwoLocal(2, rotation_blocks=["ry", "rz"], entanglement_blocks="cz", reps=1)
+
+ansatz.decompose().draw("mpl")
+```
+
+![前のコードセルの出力](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/9d368de5-d512-4fe8-8842-9c735944b22b-0.avif)
+
+まず、状態フィデリティを計算する関数を設定します。これは2つの状態間のオーバーラップの割合であり、VQDのペナルティとして使用します：
+
+```python
+import numpy as np
+
+def calculate_overlaps(ansatz, prev_circuits, parameters, sampler):
+    def create_fidelity_circuit(circuit_1, circuit_2):
+        """
+        Constructs the list of fidelity circuits to be evaluated.
+        These circuits represent the state overlap between pairs of input circuits,
+        and their construction depends on the fidelity method implementations.
+        """
+
+        if len(circuit_1.clbits) > 0:
+            circuit_1.remove_final_measurements()
+        if len(circuit_2.clbits) > 0:
+            circuit_2.remove_final_measurements()
+
+        circuit = circuit_1.compose(circuit_2.inverse())
+        circuit.measure_all()
+        return circuit
+
+    overlaps = []
+
+    for prev_circuit in prev_circuits:
+        fidelity_circuit = create_fidelity_circuit(ansatz, prev_circuit)
+        sampler_job = sampler.run([(fidelity_circuit, parameters)])
+        meas_data = sampler_job.result()[0].data.meas
+
+        counts_0 = meas_data.get_int_counts().get(0, 0)
+        shots = meas_data.num_shots
+        overlap = counts_0 / shots
+        overlaps.append(overlap)
+
+    return np.array(overlaps)
+```
+
+次はVQDのコスト関数を記述します。基底状態のみを計算した以前と同様に、Estimatorプリミティブを使用して最低エネルギー状態を求めます。ただし、上述のとおり、高エネルギー状態の直交性を確保するためにペナルティ項を追加します。つまり、新しい励起状態ごとに、現在の変分状態とすでに求められた低エネルギー固有状態との間のオーバーラップに対してペナルティが加算されます。
+
+```python
+def cost_func_vqd(
+    parameters, ansatz, prev_states, step, betas, estimator, sampler, hamiltonian
+):
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+
+    total_cost = 0
+
+    if step > 1:
+        overlaps = calculate_overlaps(ansatz, prev_states, parameters, sampler)
+        total_cost = np.sum(
+            [np.real(betas[state] * overlap) for state, overlap in enumerate(overlaps)]
+        )
+
+    estimator_result = estimator_job.result()[0]
+
+    value = estimator_result.data.evs[0] + total_cost
+
+    return value
+```
+
+上記のコスト関数が `calculate_overlaps` 関数を参照しており、この関数が実際に新しい量子Circuit を作成している点に特に注意してください。実際のハードウェアで実行する場合、その新しいCircuitも選択したBackendで動作するように最適な方法でトランスパイルする必要があります。トランスパイルは `calculate_overlaps` や `cost_func_vqd` 関数には組み込まれていないことに注意してください。この追加の（条件付き）トランスパイルを組み込むようにコードを自由に修正してみてください — ただし、次のレッスンでもこれが行われます。
+
+このレッスンでは、Statevector SamplerとStatevector EstimatorをつかってVQDアルゴリズムを実行します：
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+sampler = Sampler()
+estimator = Estimator()
+```
+
+推定するオブザーバブルを導入します。次のレッスンでは、分子の励起状態など、物理的な文脈を加えます。このオブザーバブルは特定の分子や原子に対応するよう選ばれているわけではありませんが、励起状態を持てる系のハミルトニアンとして考えると理解しやすいかもしれません。
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+```
+
+ここでは、計算したい状態の総数（基底状態と励起状態、k）と、直交すべき状態ベクトル間のオーバーラップに対するペナルティ（betas）を設定します。betasを大きすぎる値や小さすぎる値に設定した場合の影響については、次のレッスンで少し探ります。ここでは、以下に示すものをそのまま使用します。パラメータの初期値にはすべてゼロを使用します。実際の計算では、系の知識や以前の計算に基づいて、より賢い初期パラメータを使用することをお勧めします。
+
+```python
+k = 3
+betas = [33, 33, 33]
+x0 = np.zeros(8)
+```
+
+これで計算を実行できます：
+
+```python
+from scipy.optimize import minimize
+
+prev_states = []
+prev_opt_parameters = []
+eigenvalues = []
+
+for step in range(1, k + 1):
+    if step > 1:
+        prev_states.append(ansatz.assign_parameters(prev_opt_parameters))
+
+    result = minimize(
+        cost_func_vqd,
+        x0,
+        args=(ansatz, prev_states, step, betas, estimator, sampler, observable),
+        method="COBYLA",
+        options={
+            "maxiter": 200,
+        },
+    )
+    print(result)
+
+    prev_opt_parameters = result.x
+    eigenvalues.append(result.fun)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -5.999999979545955
+       x: [-5.150e-01 -5.452e-02 -1.571e+00 -2.853e-05  2.671e-01
+           -2.672e-01 -8.509e-01 -8.510e-01]
+    nfev: 131
+   maxcv: 0.0
+ message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: 4.024550284767612
+       x: [-3.745e-01  1.041e+00  8.637e-01  1.202e+00 -8.847e-02
+            1.181e-02  7.611e-01 -3.006e-01]
+    nfev: 110
+   maxcv: 0.0
+ message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: 5.608925562838559
+       x: [-2.670e-01  1.280e+00  1.070e+00 -8.031e-01 -1.524e-01
+           -6.956e-02  7.018e-01  1.514e+00]
+    nfev: 90
+   maxcv: 0.0
+```
+
+コスト関数から得られた値は、おおよそ -6.00、4.02、5.61 です。これらの結果において重要なのは、関数値が増加していることです。もし最初の励起状態が、制約なしで計算した基底状態よりも低いエネルギーとして得られた場合、コードのどこかに誤りがあることを示しています。
+
+x の値は、これらのコスト（エネルギー）のそれぞれに対応する状態ベクトルをもたらしたパラメータです。
+
+最後に、3つすべての最小化が古典オプティマイザー（ここではCOBYLA）のデフォルト許容誤差内で収束したことを確認します。それぞれ131、110、90回の関数評価を必要としました。
+
+## 量子サンプリング回帰（QSR） {#quantum-sampling-regression-qsr}
+
+VQEの主な問題の一つは、各ステップのパラメータを取得するために量子コンピュータへの複数回の呼び出しが必要になることです（例えば $k$、$k-1$ など）。これは量子デバイスへのアクセスがキュー方式である場合に特に問題となります。[`Session`](/guides/run-jobs-session) を使用して複数の反復呼び出しをグループ化することもできますが、代替アプローチとしてサンプリングを使用する方法があります。より多くの古典リソースを活用することで、最適化プロセス全体を1回の呼び出しで完了させることができます。ここで登場するのが [Quantum Sampling Regression](https://arxiv.org/pdf/2012.02338) です。量子コンピュータへのアクセスはまだ供給が少なく需要が高い貴重なリソースであるため、このトレードオフは現在の多くの研究において可能かつ便利です。このアプローチは利用可能なすべての古典的な能力を活用しながら、シミュレーションには現れない量子計算の内部動作や固有の特性の多くを取り込みます。
+
+![QSRが変分アルゴリズムのコンポーネントをどのように使用するかを示す図](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-qsr.svg)
+
+QSRの背景にある考え方は、コスト関数 $C(\theta) := \langle \psi(\theta) | \hat{H} | \psi(\theta)\rangle$ が次のようなフーリエ級数として表せるというものです：
+
+$$
+\begin{aligned}
+C(\vec{\theta})
+
+& := \langle \psi(\theta) | \hat{H} | \psi(\theta)\rangle \\[1mm]
+
+& := a_0 + \sum_{k=1}^S[a_k\cos(k\theta)+ b_k\sin(k\theta)] \\[1mm]
+
+\end{aligned}
+$$
+
+元の関数の周期性と帯域幅によって、集合 $S$ は有限または無限となる場合があります。ここでの議論では無限であると仮定します。次のステップは、フーリエ係数 $\{a_0, a_k, b_k\}_{k=1}^S$ を求めるために、コスト関数 $C(\theta)$ を複数回サンプリングすることです。具体的には、未知数が $2S+1$ 個あるため、コスト関数を $2S+1$ 回サンプリングする必要があります。
+
+$2S+1$ 個のパラメータ値 $\{\theta_1,...,\theta_{2S+1}\}$ でコスト関数をサンプリングすると、次の連立方程式が得られます：
+
+$$
+\begin{pmatrix} 1 & \cos(\theta_1) & \sin(\theta_1) & \cos(2\theta_1) & ... & \sin(S\theta_1) \\
+1 & \cos(\theta_2) & \sin(\theta_2) & \cos(2\theta_2) & \cdots & \sin(S\theta_2)\\
+\vdots & \vdots & \vdots & \vdots & \ddots & \vdots\\
+1 & \cos(\theta_{2S+1}) & \sin(\theta_{2S+1}) & \cos(2\theta_{2S+1}) & \cdots & \sin(S\theta_{2S+1})
+\end{pmatrix} \begin{pmatrix} a_0 \\ a_1 \\ b_1 \\ a_2 \\ \vdots \\ b_S \end{pmatrix} = \begin{pmatrix} C(\theta_1) \\ C(\theta_2) \\ \vdots \\ C(\theta_{2S+1}) \end{pmatrix},
+$$
+
+これを次のように書き直します：
+
+$$
+Fa=c.
+$$
+
+実際には、コスト関数の値 $c$ が正確ではないため、この連立方程式は一般的に整合しません。そのため、左から $F^\dagger$ を掛けて正規化するのが通常良い方法です。これにより次のようになります：
+
+$$
+F^\dagger Fa = F^\dagger c.
+$$
+
+この新しい連立方程式は常に整合しており、その解は元の問題の最小二乗解です。パラメータが1つではなく $k$ 個あり、各パラメータ $\theta^i$ が $i \in {1,...,k}$ に対して独自の $S_i$ を持つ場合、必要なサンプル数の合計は次のようになります：
+
+$$
+T=\prod_{i=1}^k(2S_i+1)\leq \prod_{i=1}^k(2S_{max}+1) = (2S_{max}+1)^n,
+$$
+
+ここで $S_{\max} = \max_i(S_i)$ です。さらに、$S_{\max}$ を（推定するのではなく）チューニング可能なパラメータとして調整することで、次のような新たな可能性が開かれます：
+
+- **オーバーサンプリング**による精度の向上。
+- **アンダーサンプリング**によるランタイムオーバーヘッドの削減やローカルミニマムの排除によるパフォーマンスの向上。
+
+### 理論的なレイアウト {#theoretical-layout-qsr}
+
+QSRのレイアウトは以下のようにまとめられます：
+
+- 参照演算子 $U_R$ を準備します。
+  - 状態 $|0\rangle$ から参照状態 $|\rho\rangle$ に移行します。
+- 変分形式 $U_V(\vec\theta_{i,j})$ を適用してアンサッツ $U_A(\vec\theta_{i,j})$ を作成します。
+  - アンサッツの各パラメータに関連する帯域幅を求めます。上限で十分です。
+- 類似の問題がある場合（通常は古典シミュレーションまたはサンプリングによって求められます）、$i=0$ でブートストラップします。
+- コスト関数 $C(\vec\theta) := a_0 + \sum_{k=1}^S[a_k\cos(k\theta)+ b_k\sin(k\theta)]$ を少なくとも $T$ 回サンプリングします。
+  - $T=\prod_{i=1}^k(2S_i+1)\leq \prod_{i=1}^k(2S_{max}+1) = (2S_{max}+1)^n$
+  - $T$ を調整してオーバーサンプリング／アンダーサンプリングを選択し、速度と精度のバランスを決めます。
+- サンプルからフーリエ係数を計算します（つまり、正規化された線形連立方程式を解きます）。
+- 得られた回帰関数のグローバル最小値を古典マシン上で求めます。
+
+## まとめ {#summary}
+
+このレッスンでは、利用可能な複数の変分インスタンスについて学びました：
+
+- 一般的なレイアウト
+- コスト関数を調整するための重みとペナルティの導入
+- 速度と精度のトレードオフのためのアンダーサンプリングとオーバーサンプリングの探求
+
+これらのアイデアは、問題に合ったカスタム変分アルゴリズムを形成するために応用できます。ぜひ結果をコミュニティと共有してください。次のレッスンでは、変分アルゴリズムを使用してアプリケーションを解く方法を探求します。

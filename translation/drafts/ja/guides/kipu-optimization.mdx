@@ -1,0 +1,501 @@
+---
+title: "Iskay Quantum Optimizer - Kipu QuantumによるQiskit Function"
+sidebar_label: "Iskay Quantum Optimizer - Kipu QuantumによるQiskit Function"
+description: "IBM Qiskit Functions CatalogでKipu QuantumのIskay Quantum Optimizerを使用して、最適化問題を効率的に解決します"
+notebook_path: "guides/kipu-optimization.ipynb"
+---
+
+{/* source_hash: 15616dbc */}
+
+<OpenInLabBanner notebookPath="guides/kipu-optimization.ipynb" />
+
+
+
+{/* cspell:ignore Kipu, DCQO, QUBO, HUBO, counterdiabatic, Iskay, bitflips, Cadavid, Chandarana */}
+<Admonition type="note" title="注記">
+* Qiskit Functionsは、IBM Quantum&reg; Premium Plan、Flex Plan、およびOn-Prem（IBM Quantum Platform API経由）Planのユーザーのみが利用できる試験的な機能です。プレビューリリースの状態にあり、変更される場合があります。
+</Admonition>
+
+## 概要 {#overview}
+
+Kipu QuantumのIskay Quantum Optimizerを使用すると、IBM&reg;量子コンピューターを利用して複雑な最適化問題に取り組むことができます。このソルバーはKipuの最先端の[bf-DCQOアルゴリズム](https://doi.org/10.48550/arXiv.2409.04477)を活用しており、目的関数のみを入力として受け取り、問題の解を自動的に提供します。最大156量子ビットを含む最適化問題を処理でき、IBMの量子デバイスの全量子ビットを活用することが可能です。OptimizerはClassical変数と量子ビット間の1対1マッピングを使用するため、最大156個のバイナリ変数を持つ最適化問題に取り組むことができます。
+
+Optimizerは制約なしバイナリ最適化問題を解くことができます。一般的に使用されるQUBO（Quadratic Unconstrained Binary Optimization）定式化に加えて、高次（HUBO）最適化問題もサポートしています。このソルバーは非変分量子アルゴリズムを使用し、大部分の計算を量子デバイス上で実行します。
+
+以下では、使用されているアルゴリズムの詳細と関数の使用方法に関する簡単なガイド、さらにさまざまな規模と複雑さの問題インスタンスに対するベンチマーク結果を説明します。
+
+## 説明 {#description}
+
+Optimizerは最先端の量子最適化アルゴリズムのすぐに使える実装です。量子ハードウェア上で高度に圧縮された量子回路を実行することで最適化問題を解きます。この圧縮は、量子システムの基本的な時間発展にcounterdiabatic項を導入することで実現されています。アルゴリズムは複数回のハードウェア実行を行って最終的な解を取得し、後処理と組み合わせます。これらのステップはOptimizerのワークフローにシームレスに統合されており、自動的に実行されます。
+
+### Quantum Optimizerはどのように機能しますか？ {#how-does-the-quantum-optimizer-work}
+
+このセクションでは、実装されているbf-DCQOアルゴリズムの基本を説明します。アルゴリズムの入門として[Qiskit YouTubeチャンネル](https://www.youtube.com/watch?v=33QmsXhIlpU&t=1223s)もご覧いただけます。
+
+このアルゴリズムは量子システムの時間発展に基づいており、時間とともに変換されていきます。問題の解は、発展の最後において量子システムの基底状態に符号化されています。[断熱定理](https://en.wikipedia.org/wiki/Adiabatic_theorem)によれば、システムが基底状態に留まるためにはこの発展がゆっくりである必要があります。この発展をデジタル化したものがデジタル量子断熱計算（DQA）および有名なQAOAアルゴリズムの基礎となっています。しかし、必要とされるゆっくりとした発展は、問題サイズが大きくなるにつれて回路深度が増加するため、実現が困難になります。counteradiabaticプロトコルを使用することで、短い発展時間の間に生じる望ましくない励起を抑制しながら基底状態に留まることができます。この短い発展時間をデジタル化することで、より短い深度とより少ないエンタングリングゲートを持つ量子回路が得られます。
+
+bf-DCQOアルゴリズムの回路は、DQAと比べてエンタングリングゲートが通常10倍少なく、標準的なQAOA実装と比べて3〜4倍少ないです。ゲート数が少ないため、ハードウェア上での回路実行中に発生するエラーが少なくなります。そのため、このOptimizerはエラー抑制やエラー軽減といった手法を必要としません。将来のバージョンにこれらを実装することで、解の品質をさらに向上させることができます。
+
+bf-DCQOアルゴリズムは反復を使用しますが、非変分型です。アルゴリズムの各反復後、状態の分布が測定されます。得られた分布は、いわゆるバイアス場の計算に使用されます。バイアス場を利用することで、次の反復を以前に見つかった解の近くのエネルギー状態から開始することができます。このようにして、アルゴリズムは各反復でより低いエネルギーの解へと移行していきます。通常、約10回の反復で解に収束するのに十分であり、変分アルゴリズムの約100回程度と比べて、全体として必要な反復回数がはるかに少なくなります。
+
+Optimizerはbf-DCQOアルゴリズムと古典的な後処理を組み合わせています。状態の分布を測定した後、局所探索が行われます。局所探索では、測定された解のビットがランダムに反転されます。反転後、新しいビット列のエネルギーが評価されます。エネルギーが低い場合、そのビット列が新しい解として採用されます。局所探索は量子ビット数に対して線形にスケールするため、計算コストが低くなっています。後処理が局所的なビット反転を修正するため、ハードウェアの不完全さや読み出しエラーによってしばしば引き起こされるビット反転エラーを補償します。
+
+### ワークフロー {#workflow}
+
+Quantum Optimizerのワークフローの模式図を以下に示します。
+
+![ワークフロー](/docs/images/guides/kipu-optimization/workflow.svg "Quantum Optimizerのワークフロー")
+
+Quantum Optimizerを使用することで、量子ハードウェア上での最適化問題の解法を以下のように簡略化できます。
+* 問題の目的関数を定式化する
+* Qiskit FunctionsからOptimizerにアクセスする
+* Optimizerを実行して結果を収集する
+
+## ベンチマーク {#benchmarks}
+
+以下のベンチマーク指標は、Optimizerが最大156量子ビットの問題を効果的に扱えることを示しており、さまざまな問題タイプにおけるOptimizerの精度とスケーラビリティの概要を示しています。実際のパフォーマンス指標は、変数の数、目的関数における項の密度や局所性、多項式の次数など、特定の問題の特性によって異なる場合があることにご注意ください。
+
+以下の表には近似比（AR）が含まれており、その指標は次のように定義されます：
+$$
+AR = \frac{C^{*} - C_\textrm{max}}{C_{\textrm{min}} - C_{\textrm{max}}},
+$$
+ここで$C$は目的関数、$C_{\textrm{min}}$、$C_{\textrm{max}}$はそれぞれその最小値と最大値、$C^{*}$は見つかった最良の解のコストです。したがって、AR=100\%は問題の基底状態が得られたことを意味します。
+
+| 例                | 量子ビット数 | 近似比 | 合計時間（秒） | ランタイム使用量（秒） | ショット数合計 | 反復回数 |
+| ----------------- | :--------------: | :------: | :------------: | :---------------: | :-------------------: | :------------------: |
+| 重みなしMaxCut |        28        |   100%   |      180       |        30         |          30k          |          5           |
+| 重みなしMaxCut |        30        |   100%   |      180       |        30         |          30k          |          5           |
+| 重みなしMaxCut |        32        |   100%   |      180       |        30         |          30k          |          5           |
+| 重みなしMaxCut |        80        |   100%   |      480       |        60         |          90k          |          9           |
+| 重みなしMaxCut |       100        |   100%   |      330       |        60         |          60k          |          6           |
+| 重みなしMaxCut |       120        |   100%   |      370       |        60         |          60k          |          6           |
+| HUBO 1            |       156        |   100%   |      600       |        70         |         100k          |          10          |
+| HUBO 2            |       156        |   100%   |      600       |        70         |         100k          |          10          |
+
+- 28、30、32量子ビットのMaxCutインスタンスはibm_sherbrookeで実行されました。80、100、120量子ビットのインスタンスはHeron r2プロセッサーで実行されました。
+- HUBOインスタンスもHeron r2プロセッサーで実行されました。
+
+すべてのベンチマークインスタンスはGitHubで入手可能です（[Kipuベンチマークインスタンス](https://github.com/Kipu-Quantum-GmbH/benchmark-instances)を参照）。これらのインスタンスを実行する例は[例3：ベンチマークインスタンス](#example-3-benchmark-instances)に記載されています。
+
+## 入力と出力 {#inputs-and-outputs}
+
+### 入力 {#input}
+
+Quantum Optimizerが受け付けるすべての入力パラメーターについては、以下の表を参照してください。続く**オプション**セクションでは、利用可能な`options`についてさらに詳しく説明します。
+
+| 名前         | 型               | 説明                                                                                                                                                                                            | 必須 | デフォルト                                                                                       | 例                                                                                                                              |
+| ------------ | ------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| problem      | `Dict[str, float]` | QUBO/HUBOまたはスピン形式で定式化された最適化問題の係数。問題の仕様については[受け付ける問題形式](#accepted-problem-formats)を参照してください。                                       | はい      | N/A                                                                                           | `{"()": -21.0, "(0, 4)": 0.5,"(0, 2)": 0.5,"(0, 1)": 0.5,"(1, 3)": 0.5}`                                             |
+| problem_type | `str`              | 問題の係数がバイナリ（QUBO/HUBO）形式かスピン形式かを指定します。`"spin"`または`"binary"`の2つの選択肢があります。                                                   | はい      | N/A                                                                                           | `"spin"`                                                                                                             |
+| backend_name | `str`              | クエリを実行するバックエンドの名前                                                                                                                                                  | はい       | N/A                                                      | `"ibm_fez"`                                                                                                          |                                                                                         |
+| options      | `Dict[str, Any]`   | ショット数などのハードウェア送信を処理するためのオプション。オプション設定の詳細については[オプション](#options)セクションを参照してください。 | いいえ       | オプション設定のデフォルト値については[オプション](#options)セクションを参照してください。                                                         | `{"shots": 5000, "num_iterations": 3, "use_session": True, "seed_transpiler": 42}` |
+
+#### 受け付ける問題形式 {#accepted-problem-formats}
+
+`problem`および`problem_type`引数は、以下の形式の最適化問題をエンコードします。
+
+$$
+\begin{align}
+\min_{(x_1, x_2, \ldots, x_n) \in D} C(x_1, x_2, \ldots, x_n) \nonumber
+\end{align}
+$$
+ここで
+
+$$
+C(x_1, ... , x_n) = a + \sum_{i} b_i x_i + \sum_{i, j} c_{i, j} x_i x_j + ... + \sum_{k_1, ..., k_m} g_{k_1, ..., k_m} x_{k_1} ... x_{k_m}
+$$
+
+- `problem_type = "binary"`を選択すると、コスト関数が`binary`形式であることを指定します。つまり$D = \{0,  1\}^{n}$であり、コスト関数がQUBO/HUBO定式化で記述されていることを意味します。
+- 一方、`problem_type = "spin"`を選択すると、コスト関数はIsing定式化で記述され、$D = \{-1, 1\}^{n}$となります。
+
+問題の係数は以下のように辞書としてエンコードする必要があります：
+$$
+\begin{align} \nonumber
+&\texttt{\{} \\ \nonumber
+&\texttt{"()"}&: \quad &a, \\ \nonumber
+&\texttt{"(i,)"}&: \quad &b_i, \\ \nonumber
+&\texttt{"(i, j)"}&: \quad &c_{i, j}, \\ \nonumber
+&\quad  \vdots \\ \nonumber
+&\texttt{"(} k_1, ..., k_m  \texttt{)"} &: \quad &g_{k_1, ..., k_m}, \\ \nonumber
+&\texttt{\}}
+\end{align}
+$$
+
+- 辞書のキーは、重複しない整数の有効なタプルを含む文字列でなければなりません。
+
+#### オプション {#options}
+
+Iskayはオプションパラメーターを通じてファインチューニング機能を提供します。デフォルト値はほとんどの問題に対して適切に機能しますが、特定の要件に合わせて動作をカスタマイズすることができます：
+
+| パラメーター | 型 | デフォルト | 説明 |
+|-----------|------|---------|-------------|
+| **shots** | `int` | 10000 | 1回の反復あたりの量子測定数（値が大きいほど精度が上がる） |
+| **num_iterations** | `int` | 10 | アルゴリズムの反復回数（反復が多いほど解の品質が向上する可能性がある） |
+| **use_session** | `bool` | True | キュー時間を短縮するためにIBMセッションを使用する |
+| **seed_transpiler** | `int` | None | 量子回路コンパイルの再現性確保のために設定する |
+| **direct_qubit_mapping** | `bool` | False | 仮想量子ビットを物理量子ビットに直接マッピングする |
+| **job_tags** | `List[str]` | None | ジョブ追跡用のカスタムタグ |
+| **preprocessing_level** | `int` | 0 | 問題の前処理強度（0〜3）- 詳細は以下を参照 |
+| **postprocessing_level** | `int` | 2 | 解の精緻化レベル（0〜2）- 詳細は以下を参照 |
+| **transpilation_level** | `int` | 0 | トランスパイラーの最適化トライアル数（0〜5）- 詳細は以下を参照 |
+| **transpile_only** | `bool` | False | 完全な実行を行わずに回路最適化を分析する |
+
+**前処理レベル（0〜3）**：現在のハードウェアのコヒーレンス時間に収まらない大規模な問題に対して特に重要です。高い前処理レベルは、問題のトランスパイルにおける近似によってより浅い回路深度を実現します：
+- **レベル0**：正確で、より長い回路
+- **レベル1**：精度と近似のバランスが良く、最低10パーセンタイルの角度を持つゲートのみを除去する
+- **レベル2**：やや高い近似で、最低20パーセンタイルの角度を持つゲートを除去し、トランスパイルで`approximation_degree=0.95`を使用する
+- **レベル3**：最大近似レベルで、最低30パーセンタイルのゲートを除去し、`approximation_degree=0.90`をトランスパイルで使用する
+
+**トランスパイルレベル（0〜5）**：量子回路コンパイルのための高度なトランスパイラー最適化トライアルを制御します。これにより古典的なオーバーヘッドが増加する可能性があり、場合によっては回路深度が変化しないこともあります。デフォルト値`2`は一般的に最小の回路を生成し、比較的高速です：
+- **レベル0**：分解されたDCQO回路の最適化（レイアウト、ルーティング、スケジューリング）
+- **レベル1**：`PauliEvolutionGate`と分解されたDCQO回路の最適化（max_trials=10）
+- **レベル2**：`PauliEvolutionGate`と分解されたDCQO回路の最適化（max_trials=15）
+- **レベル3**：`PauliEvolutionGate`と分解されたDCQO回路の最適化（max_trials=20）
+- **レベル4**：`PauliEvolutionGate`と分解されたDCQO回路の最適化（max_trials=25）
+- **レベル5**：`PauliEvolutionGate`と分解されたDCQO回路の最適化（max_trials=50）
+
+**後処理レベル（0〜2）**：局所探索の異なるグリーディパス数によるビット反転エラーを補償する古典的最適化の量を制御します：
+- **レベル0**：1パス
+- **レベル1**：2パス
+- **レベル2**：3パス
+
+**トランスパイル専用モード**：完全な量子アルゴリズムの実行を行わずに回路最適化を分析したいユーザーが利用できます。
+
+**カスタム設定の例**：異なる設定でIskayを構成する方法を以下に示します：
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q PyGithub networkx qiskit-ibm-catalog
+```
+
+```python
+custom_options = {
+    "shots": 15_000,  # Higher shot count for better statistics
+    "num_iterations": 12,  # More iterations for solution refinement
+    "preprocessing_level": 1,  # Light preprocessing for problem simplification
+    "postprocessing_level": 2,  # Maximum postprocessing for solution quality
+    "transpilation_level": 3,  # Using higher transpilation level for circuit optimization
+    "seed_transpiler": 42,  # Fixed seed for reproducible results
+    "job_tags": ["custom_config"],  # Custom tracking tags
+}
+```
+
+**シード最適化**：`seed_transpiler`はデフォルトで`None`に設定されていることにご注意ください。これにより、トランスパイラーの自動最適化プロセスが有効になります。`None`の場合、システムは複数のシードでトライアルを開始し、最良の回路深度を生成するシードを選択します。これにより、各トランスパイルレベルの`max_trials`パラメーターのフル機能を活用できます。
+
+**トランスパイルレベルのパフォーマンス**：`transpilation_level`の値を高くして`max_trials`の数を増やすと、トランスパイル時間が不可避的に長くなりますが、最終的な回路が変化しない場合もあります。これは特定の回路の構造や複雑さに大きく依存します。ただし、一部の回路や問題では、10トライアル（レベル1）と50トライアル（レベル5）の差が大きくなることがあるため、これらのパラメーターを探索することが解を正常に見つけるための鍵となる可能性があります。
+
+### 出力 {#output}
+
+| 名前   | 型               | 説明                                                           | 例                                                                |
+| ------ | ------------------ | ----------------------------------------------------------------------| ---------------------------------------------------------------------- |
+| result | `Dict[str, Any]` | 解とメタデータ。構造は`transpile_only`オプションによって異なります。 |   下記「結果辞書の内容」を参照      |
+
+### 結果辞書の内容 {#result-dictionary-contents}
+
+結果辞書の構造は実行モードによって異なります：
+
+| フィールド         | 型               | モード | 説明                                                                                                             | 例 |
+| ------------ | :------------------: | :--: | ----------------------------------------------------------------------------------------------------------------------- | ------- |
+| **solution**     | `Dict[str, int]` | **Standard** | キーが数値順にソートされた変数インデックス（文字列として）で、値が対応する変数の値（スピン問題では1/-1、バイナリ問題では1/0）である、ソート済みマッピング解。| `{'0': -1, '1': -1, '2': -1, '3': 1, '4': 1}` |
+| **solution_info**      | `Dict[str, Any]`   | **Standard** | 解に関する詳細情報（詳細は下記を参照）                                           | `{'bitstring': '11100', 'cost': -13.8, 'seed_transpiler': 42, 'mapping': {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}}` |
+| **prob_type** | `str`             | **Standard** | 最適化問題のタイプ（'spin'または'binary'）                                                           | `'spin'` |
+| **transpilation_info** | `Dict[str, Any]` | **Transpile-only** | 回路分析とトランスパイルの詳細（詳細は下記を参照） | `{'best_seed': 42, 'transpilation_time_seconds': 50.06, 'transpiled_circuit': {'depth': 576, 'gate_count': 4177, 'num_qubits': 156, 'width': 176, 'operations': {'sx': 1325, 'rx': 891, 'cz': 783, 'rz': 650, 'rzz': 466, 'x': 42, 'measure': 20}}}` |
+
+#### 標準実行 {#standard-execution}
+
+オプションパラメーター`transpile_only=False`の場合：
+
+**solution_info辞書：**
+- **"bitstring"** (`str`)：解のビット列表現。
+- **"cost"** (`float`)：解に関連するコスト/エネルギー値。
+- **"seed_transpiler"** (`int`)：この結果を生成したトランスパイラーに使用されたランダムシード。
+- **"mapping"** (`Dict[int, int]`)：計算で使用された元の量子ビットから変数へのマッピング。
+- **"qpu_time"** (`float`, オプション)：QPUの実行時間（秒）。
+
+**変数マッピングの注記：**
+- `solution`辞書は`mapping`オブジェクトを使用して変数のインデックスを付けることで、解のビット列から取得されます。
+- `problem_type=spin`の場合、$1 \rightarrow -1, \quad 0 \rightarrow 1$の割り当てを使用します。
+- 解辞書のキーは、文字列として数値順にソートされた変数インデックスです。
+
+#### トランスパイル分析 {#transpilation-analysis}
+
+オプションパラメーター`transpile_only=True`の場合：
+
+**transpilation_info辞書：**
+- **"best_seed"** (`int`)：トランスパイルに見つかった最適シード
+- **"transpilation_time_seconds"** (`float`)：トランスパイルプロセスにかかった時間
+- **"transpiled_circuit"** (`Dict`)：以下を含む回路分析：
+  - **"depth"** (`int`)：回路深度（レイヤー数）
+  - **"gate_count"** (`int`)：回路内のゲートの総数
+  - **"num_qubits"** (`int`)：使用された量子ビット数
+  - **"width"** (`int`)：回路の幅
+  - **"operations"** (`Dict[str, int]`)：使用された各ゲートタイプの数
+
+**トランスパイル専用モードの使用：**
+- 完全な量子アルゴリズムの実行を行わずに回路最適化を分析したいユーザーが利用できます。
+- 回路分析、深度最適化の研究、および完全な実行を行う前にトランスパイルの効果を理解するのに役立ちます。
+
+## はじめに {#get-started}
+
+このドキュメントでは、Iskay Quantum Optimizerの使用手順を説明します。その過程で、カタログから関数を読み込む方法や、問題を有効な入力に変換する方法を簡単に示しながら、さまざまなオプションパラメーターを試す方法についても説明します。
+
+より詳細な例については、チュートリアル[Kipu QuantumのIskay Quantum OptimizerでMarket Split問題を解く](/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer)をご覧ください。そこでは、Iskay SolverをMarket Split問題に適用する全プロセスを詳しく説明しています。Market Split問題は、厳密な需要目標を満たすためにマーケットをバランスの取れた販売地域に分割しなければならない現実世界のリソース配分の課題を表しています。
+
+[IBM Quantum Platformダッシュボード](http://quantum.cloud.ibm.com/)で見つかるAPIキーを使用して認証し、Qiskit Functionを以下のように選択してください：
+
+```python
+# ruff: noqa: F821
+```
+
+<Admonition type="note">
+以下のコードは、認証情報が保存されていることを前提としています。まだ保存していない場合は、[IBM Cloudアカウントを保存する](/guides/functions#install-qiskit-functions-catalog-client)の指示に従ってAPIキーで認証してください。
+</Admonition>
+
+```python
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+catalog = QiskitFunctionsCatalog(
+    channel="ibm_quantum_platform",
+    instance="INSTANCE_CRN",
+    token="YOUR_API_KEY",  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+)
+
+# Access Function
+optimizer = catalog.load("kipu-quantum/iskay-quantum-optimizer")
+```
+
+## 例1：シンプルなコスト関数 {#example-1-simple-cost-function}
+
+スピン定式化でのコスト関数を考えます：
+$$
+C(x_0, x_1, x_2, x_3, x_4) = 1 + 1.5x_0 + 2x_1 + 1.3x_2 + 2.5x_0x_3 + 3.5x_1x_4 + 4x_0x_1x_2
+$$
+
+ここで$(x_0, ..., x_4) \in \{-1, 1\}^5$です。
+
+このシンプルなコスト関数の解は
+$$
+(x_0, x_1, x_2, x_3, x_4) = (-1, -1, -1, 1, 1)
+$$
+であり、最小値は$C^{*} = -6$です。
+
+### 1. 目的関数を作成する {#1-create-the-objective-function}
+
+まず、次のように目的関数の係数を含む辞書を作成します：
+
+```python
+objective_func = {
+    "()": 1,
+    "(0,)": 1.5,
+    "(1,)": 2,
+    "(2,)": 1.3,
+    "(0, 3)": 2.5,
+    "(1, 4)": 3.5,
+    "(0, 1, 2)": 4,
+}
+```
+
+### 2. Optimizerを実行する {#2-run-the-optimizer}
+
+Optimizerを実行して問題を解きます。$(x_0, ..., x_4) \in \{-1, 1\}^5$であるため、`problem_type=spin`を設定する必要があります。
+
+```python
+# Setup options to run the optimizer
+options = {"shots": 5000, "num_iterations": 5, "use_session": True}
+
+arguments = {
+    "problem": objective_func,
+    "problem_type": "spin",
+    "backend_name": backend_name,  # such as "ibm_fez"
+    "options": options,
+}
+
+job = optimizer.run(**arguments)
+```
+
+### 3. 結果を取得する {#3-retrieve-the-result}
+
+最適化問題の解はOptimizerから直接提供されます。
+
+```python
+print(job.result())
+```
+
+これにより、次の形式の辞書が表示されます：
+
+```
+{'solution': {'0': -1, '1': -1, '2': -1, '3': 1, '4': 1},
+ 'solution_info': {'bitstring': '11100',
+  'cost': -13.8,
+  'seed_transpiler': 42,
+  'mapping': {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}},
+ 'prob_type': 'spin'}
+```
+
+辞書`solution`が結果ベクトル$(x_0, x_1, x_2, x_3, x_4) = (-1, -1, -1, 1, 1)$を表示していることに注目してください。
+
+## 例2：MaxCut {#example-2-maxcut}
+
+MaxCutや最大独立集合などの多くのグラフ問題はNP困難問題であり、量子アルゴリズムとハードウェアをテストするのに理想的な候補です。この例では、Quantum OptimizerでMaxCut問題を3正則グラフで解く方法を示します。
+
+この例を実行するには、`qiskit-ibm-catalog`に加えて`networkx`パッケージをインストールする必要があります。インストールするには、次のコマンドを実行してください：
+
+```python
+# %pip install networkx numpy
+```
+
+### 1. 目的関数を作成する {#1-create-the-objective-function-2}
+
+まずランダムな3正則グラフを生成します。このグラフに対してMaxCut問題の目的関数を定義します。
+
+```python
+import networkx as nx
+
+# Create a random 3-regular graph
+G = nx.random_regular_graph(3, 10, seed=42)
+
+# Create the objective function for MaxCut in Ising formulation
+def graph_to_ising_maxcut(G):
+    """
+    Convert a NetworkX graph to an Ising Hamiltonian for the Max-Cut problem.
+    Args:
+        G (networkx.Graph): The input graph.
+    Returns:
+        dict: The objective function of the Ising model
+    """
+    # Initialize the linear and quadratic coefficients
+    objective_func = {}
+    # Populate the coefficients
+    for i, j in G.edges:
+        objective_func[f"({i}, {j})"] = 0.5
+    return objective_func
+
+objective_func = graph_to_ising_maxcut(G)
+```
+
+### 2. Optimizerを実行する {#2-run-the-optimizer-2}
+
+Optimizerを実行して問題を解きます。
+
+```python
+options = {"shots": 5000, "num_iterations": 5, "use_session": True}
+
+arguments = {
+    "problem": objective_func,
+    "problem_type": "spin",
+    "backend_name": backend_name,  # such as "ibm_fez"
+    "options": options,
+}
+
+job = optimizer.run(**arguments)
+```
+
+### 3. 結果を取得する {#3-retrieve-the-result-2}
+
+結果を取得し、解のビット列を元のグラフノードにマッピングします。
+
+```python
+print(job.result())
+```
+
+MaxCut問題の解は、結果オブジェクトの`solution`サブ辞書に直接含まれています。
+
+```python
+maxcut_solution = job.result()["solution"]
+```
+
+## 例3：ベンチマークインスタンス {#example-3-benchmark-instances}
+
+ベンチマークインスタンスはGitHubで入手可能です：[Kipuベンチマークインスタンス](https://github.com/Kipu-Quantum-GmbH/benchmark-instances)
+
+インスタンスは`pygithub`ライブラリを使用して読み込むことができます。インストールするには、次のコマンドを実行してください：
+
+```python
+# %pip install pygithub
+```
+
+ベンチマークインスタンスのパスは次のとおりです：
+
+**Maxcut：**
+- `'maxcut/maxcut_28_nodes.json'`
+- `'maxcut/maxcut_30_nodes.json'`
+- `'maxcut/maxcut_32_nodes.json'`
+- `'maxcut/maxcut_80_nodes.json'`
+- `'maxcut/maxcut_100_nodes.json'`
+- `'maxcut/maxcut_120_nodes.json'`
+
+**HUBO：**
+- `'HUBO/hubo1_marrakesh.json'`
+- `'HUBO/hubo2_marrakesh.json'`
+
+HUBOインスタンスのベンチマーク性能を再現するには、バックエンドに`ibm_marrakesh`を選択し、`options`サブ辞書で`direct_qubit_mapping`を`True`に設定してください。
+
+以下の例では、32ノードのMaxCutインスタンスを実行します。
+
+```python
+from github import Github
+import urllib
+import json
+import ast
+
+repo = "Kipu-Quantum-GmbH/benchmark-instances"
+path = "maxcut/maxcut_32_nodes.json"
+gh = Github()
+repo = gh.get_repo(repo)
+branch = "main"
+file = repo.get_contents(urllib.parse.quote(path), ref=branch)
+
+# load json file with benchmark problem
+problem_json = json.loads(file.decoded_content)
+
+# convert objective function to compatible format
+objective_func = {
+    key: ast.literal_eval(value) for key, value in problem_json.items()
+}
+
+# Setup configuration to run the optimizer
+options = {
+    "shots": 5_000,
+    "num_iterations": 5,
+    "use_session": True,
+    "direct_qubit_mapping": False,
+}
+
+arguments = {
+    "problem": objective_func,
+    "problem_type": "spin",
+    "backend_name": "ibm_brisbane",
+    "options": options,
+}
+
+job = optimizer.run(**arguments)
+
+result = job.result()
+```
+
+## ユースケース {#use-cases}
+
+最適化ソルバーの典型的なユースケースは組み合わせ最適化問題です。金融、製薬、物流など多くの産業からの問題を解くことができます。いくつかの例を以下に示します。
+* ポートフォリオ最適化（QUBO）：[学術論文](https://doi.org/10.1103/PhysRevApplied.22.054037)および[ホワイトペーパー](https://kipu-quantum.com/zope64/kipu_2024/content/e3915/e3916/e4187/White-Paper-2-Financial-modeling-on-quantum-computers-using-digitally-compressed-algorithms-1.pdf)
+* タンパク質折り畳み（HUBO）：[学術論文](https://doi.org/10.1103/PhysRevApplied.20.014024)
+* 物流スケジューリング（QUBO）：[学術論文](https://doi.org/10.1103/PhysRevApplied.22.064068)
+* ネットワーク最適化：[ウェビナー](https://www.youtube.com/watch?v=w5SrCIK88No)
+* Market split（QUBO）：[チュートリアル](/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer)
+
+特定のユースケースに取り組み、専用のマッピングを開発することに興味がある場合は、お手伝いすることができます。[お問い合わせください。](https://share-eu1.hsforms.com/2Ff8cgWvTR9ukT_fPoaNhDw2dqpz5)
+
+## サポートを受ける {#get-support}
+
+サポートについては、support@kipu-quantum.comまでお問い合わせください。
+
+## 次のステップ {#next-steps}
+
+- [Kipu QuantumのQuantum Optimizerへのアクセスをリクエストする](https://share-eu1.hsforms.com/2Ff8cgWvTR9ukT_fPoaNhDw2dqpz5)
+- チュートリアル[Kipu QuantumのIskay Quantum OptimizerでMarket Split問題を解く](/tutorials/solve-market-split-problem-with-iskay-quantum-optimizer)をお試しください。
+- [Romero, S. V., et al. (2025).  Bias-Field Digitized Counterdiabatic Quantum Algorithm for Higher-Order Binary Optimization. arXiv preprint arXiv:2409.04477.](https://arxiv.org/abs/2409.04477)をご参照ください。
+- [Cadavid, A. G., et al. (2024).  Bias-field digitized counterdiabatic quantum optimization. arXiv preprint arXiv:2405.13898.](https://arxiv.org/abs/2405.13898)をご参照ください。
+- [Chandarana, P., et al. (2025).  Runtime Quantum Advantage with Digital Quantum Optimization. arXiv preprint arXiv:2505.08663.](https://arxiv.org/abs/2505.08663)をご参照ください。
+
+## 追加情報 {#additional-information}
+
+Iskayは、私たちの会社名Kipu Quantumと同様に、ペルーの言葉です。私たちはドイツのスタートアップですが、これらの言葉は共同創業者の一人の出身国に由来しており、そこではQuipuが紀元前2000年に人類が開発した最初の計算機の一つでした。

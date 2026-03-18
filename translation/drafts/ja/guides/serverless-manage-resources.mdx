@@ -1,0 +1,390 @@
+---
+title: "Qiskit Serverlessのコンピュートおよびデータリソースを管理する"
+sidebar_label: "Qiskit Serverlessのコンピュートおよびデータリソースを管理する"
+description: "Qiskit Serverlessを使用して、Qiskitパターン全体のコンピュートとデータを管理します。"
+notebook_path: "guides/serverless-manage-resources.ipynb"
+---
+{/* doqumentation-source-hash: 56de3dc5 */}
+
+<OpenInLabBanner notebookPath="guides/serverless-manage-resources.ipynb" />
+
+
+
+<details>
+<summary><b>パッケージバージョン</b></summary>
+
+このページのコードは、以下の要件を使用して開発されました。
+これらのバージョン以降を使用することを推奨します。
+
+```
+qiskit[all]~=2.0.0
+qiskit-ibm-runtime~=0.37.0
+qiskit-serverless~=0.22.0
+```
+</details>
+Qiskit Serverlessを使用すると、CPU、QPU、その他のコンピュートアクセラレーターを含む[Qiskitパターン](/guides/intro-to-patterns)全体のコンピュートとデータを管理できます。
+## 詳細なステータスを設定する {#set-detailed-statuses}
+
+Serverlessのワークロードには、ワークフロー全体にわたって複数のステージがあります。デフォルトでは、`job.status()`で以下のステータスを確認できます。
+
+- **`QUEUED`**: ワークロードがクラシカルリソースのキューに入っています
+- **`INITIALIZING`**: ワークロードをセットアップ中です
+- **`RUNNING`**: ワークロードがクラシカルリソース上で実行中です
+- **`DONE`**: ワークロードが正常に完了しました
+
+また、特定のワークフローステージをより詳しく説明するカスタムステータスを設定することもできます。
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-ibm-runtime qiskit-serverless
+```
+
+```python
+# This cell is hidden from users, it just creates a new folder
+from pathlib import Path
+
+Path("./source_files").mkdir(exist_ok=True)
+```
+
+```python
+%%writefile ./source_files/status_example.py
+
+from qiskit_serverless import update_status, Job
+
+## If your function has a mapping stage, particularly application functions, you can set the status to "RUNNING: MAPPING" as follows:
+update_status(Job.MAPPING)
+
+## While handling transpilation, error suppression, and so forth, you can set the status to "RUNNING: OPTIMIZING_FOR_HARDWARE":
+update_status(Job.OPTIMIZING_HARDWARE)
+
+## After you submit jobs to Qiskit Runtime, the underlying quantum job will be queued. You can set status to "RUNNING: WAITING_FOR_QPU":
+update_status(Job.WAITING_QPU)
+
+## When the Qiskit Runtime job starts running on the QPU, set the following status "RUNNING: EXECUTING_QPU":
+update_status(Job.EXECUTING_QPU)
+
+## Once QPU is completed and post-processing has begun, set the status "RUNNING: POST_PROCESSING":
+update_status(Job.POST_PROCESSING)
+```
+
+```text
+Writing ./source_files/status_example.py
+```
+
+このワークロードが正常に完了すると（`save_result()`を使用）、ステータスは自動的に`DONE`に更新されます。
+## 並列ワークフロー {#parallel-workflows}
+
+並列化できるクラシカルタスクには、`@distribute_task`デコレーターを使用してタスクの実行に必要なコンピュート要件を定義します。まず、[Write your first Qiskit Serverless program](./serverless-first-program)のトピックにある`transpile_remote.py`の例を以下のコードで参照してください。
+
+以下のコードを使用するには、事前に[認証情報を保存](/guides/cloud-setup)しておく必要があります。
+
+```python
+%%writefile ./source_files/transpile_remote.py
+
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_serverless import distribute_task
+
+service = QiskitRuntimeService()
+
+@distribute_task(target={"cpu": 1})
+def transpile_remote(circuit, optimization_level, backend):
+    """Transpiles an abstract circuit (or list of circuits) into an ISA circuit for a given backend."""
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=optimization_level,
+        backend=service.backend(backend)
+    )
+    isa_circuit = pass_manager.run(circuit)
+    return isa_circuit
+```
+
+```text
+Writing ./source_files/transpile_remote.py
+```
+
+この例では、`transpile_remote()`関数を`@distribute_task(target={"cpu": 1})`でデコレートしています。実行すると、単一CPUコアを持つ非同期の並列ワーカータスクが作成され、ワーカーを追跡するための参照が返されます。結果を取得するには、その参照を`get()`関数に渡します。これを使用して複数の並列タスクを実行できます。
+
+```python
+%%writefile --append ./source_files/transpile_remote.py
+
+from time import time
+from qiskit_serverless import get, get_arguments, save_result, update_status, Job
+
+# Get arguments
+arguments = get_arguments()
+circuit = arguments.get("circuit")
+optimization_level = arguments.get("optimization_level")
+backend = arguments.get("backend")
+```
+
+```text
+Appending to ./source_files/transpile_remote.py
+```
+
+```python
+%%writefile --append ./source_files/transpile_remote.py
+# Start distributed transpilation
+
+update_status(Job.OPTIMIZING_HARDWARE)
+
+start_time = time()
+transpile_worker_references = [
+    transpile_remote(circuit, optimization_level, backend)
+    for circuit in arguments.get("circuit_list")
+]
+
+transpiled_circuits = get(transpile_worker_references)
+end_time = time()
+```
+
+```text
+Appending to ./source_files/transpile_remote.py
+```
+
+```python
+%%writefile --append ./source_files/transpile_remote.py
+# Save result, with metadata
+
+result = {
+    "circuits": transpiled_circuits,
+    "metadata": {
+        "resource_usage": {
+            "RUNNING: OPTIMIZING_FOR_HARDWARE": {
+                "CPU_TIME": end_time - start_time,
+                "QPU_TIME": 0,
+            },
+        }
+    },
+}
+
+save_result(result)
+```
+
+```text
+Appending to ./source_files/transpile_remote.py
+```
+
+```python
+# This cell is hidden from users.
+# It uploads the serverless program and checks it runs.
+
+def test_serverless_job(title, entrypoint):
+    # Import in function to stop them interfering with user-facing code
+    from qiskit.circuit.random import random_circuit
+    from qiskit_serverless import IBMServerlessClient, QiskitFunction
+    import time
+    import uuid
+
+    title += "_" + uuid.uuid4().hex[:8]
+    serverless = IBMServerlessClient()
+    transpile_remote_demo = QiskitFunction(
+        title=title,
+        entrypoint=entrypoint,
+        working_dir="./source_files/",
+    )
+    serverless.upload(transpile_remote_demo)
+    job = serverless.get(title).run(
+        circuit=random_circuit(3, 3),
+        circuit_list=[random_circuit(3, 3) for _ in range(3)],
+        backend="ibm_torino",
+        optimization_level=1,
+    )
+    for retry in range(25):
+        time.sleep(5)
+        status = job.status()
+        if status == "DONE":
+            print("Job completed successfully")
+            return
+        if status not in [
+            "QUEUED",
+            "INITIALIZING",
+            "RUNNING",
+            "RUNNING: OPTIMIZING_FOR_HARDWARE",
+            "DONE",
+        ]:
+            raise Exception(
+                f"Unexpected job status '{status}'.\nHere's the logs:\n"
+                + job.logs()
+            )
+        print(f"Waiting for job (status '{status}')")
+    raise Exception("Job did not complete in time")
+
+test_serverless_job(
+    title="transpile_remote_serverless_test", entrypoint="transpile_remote.py"
+)
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'RUNNING')
+```
+
+```text
+Waiting for job (status 'RUNNING: OPTIMIZING_FOR_HARDWARE')
+```
+
+```text
+Job completed successfully
+```
+
+### さまざまなタスク設定を試す {#explore-different-task-configurations}
+
+`@distribute_task()`を使用して、タスクのCPU、GPU、メモリを柔軟に割り当てることができます。IBM Quantum&reg; Platform上のQiskit Serverlessでは、各プログラムに16個のCPUコアと32 GB RAMが搭載されており、必要に応じて動的に割り当てることができます。
+
+CPUコアは、完全なCPUコアとして、またはフラクショナル割り当て（部分割り当て）として割り当てることができます。
+
+メモリはバイト数で割り当てます。1キロバイトに1024バイト、1メガバイトに1024キロバイト、1ギガバイトに1024メガバイトがあることを覚えておいてください。ワーカーに2 GBのメモリを割り当てるには、`"mem": 2 * 1024 * 1024 * 1024`を指定する必要があります。
+
+```python
+%%writefile --append ./source_files/transpile_remote.py
+
+@distribute_task(target={
+    "cpu": 16,
+    "mem": 2 * 1024 * 1024 * 1024
+})
+def transpile_remote(circuit, optimization_level, backend):
+    return None
+```
+
+```text
+Appending to ./source_files/transpile_remote.py
+```
+
+```python
+# This cell is hidden from users.
+# It checks the distributed program works.
+test_serverless_job(
+    title="transpile_remote_serverless_test", entrypoint="transpile_remote.py"
+)
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'QUEUED')
+```
+
+```text
+Waiting for job (status 'RUNNING')
+```
+
+```text
+Waiting for job (status 'RUNNING: OPTIMIZING_FOR_HARDWARE')
+```
+
+```text
+Waiting for job (status 'RUNNING: OPTIMIZING_FOR_HARDWARE')
+```
+
+```text
+Waiting for job (status 'RUNNING: OPTIMIZING_FOR_HARDWARE')
+```
+
+```text
+Waiting for job (status 'RUNNING: OPTIMIZING_FOR_HARDWARE')
+```
+
+```text
+Job completed successfully
+```
+
+## プログラム全体でデータを管理する {#manage-data-across-your-program}
+
+Qiskit Serverlessでは、すべてのプログラムにわたって`/data`ディレクトリ内のファイルを管理できます。いくつかの制限事項があります。
+
+- 現在サポートされているのは`tar`ファイルと`h5`ファイルのみです
+- これはフラットな`/data`ストレージのみであり、`/data/folder/`のようなサブディレクトリは使用できません
+
+以下では、ファイルのアップロード方法を示します。IBM Quantumアカウントを使用してQiskit Serverlessに認証されていることを確認してください（手順については[Deploy to IBM Quantum Platform](/guides/serverless-first-program#deploy-to-ibm-quantum-platform)を参照してください）。
+
+```python
+import tarfile
+from qiskit_serverless import IBMServerlessClient
+
+# Create a tar
+filename = "transpile_demo.tar"
+file = tarfile.open(filename, "w")
+file.add("./source_files/transpile_remote.py")
+file.close()
+
+# Get a reference to a QiskitFunction
+serverless = IBMServerlessClient()
+transpile_remote_demo = next(
+    program
+    for program in serverless.list()
+    if program.title == "transpile_remote_serverless"
+)
+
+# Upload the tar to Serverless data directory
+serverless.file_upload(file=filename, function=transpile_remote_demo)
+```
+
+```text
+'{"message":"/usr/src/app/media/5e1f442128cdf60018496a04/transpile_demo.tar"}'
+```
+
+次に、`data`ディレクトリ内のすべてのファイルを一覧表示できます。このデータはすべてのプログラムからアクセス可能です。
+
+```python
+serverless.files(function=transpile_remote_demo)
+```
+
+```text
+['classifier_name.pkl.tar', 'output.json.tar', 'transpile_demo.tar']
+```
+
+これは、プログラムから`file_download()`を使用してファイルをプログラム環境にダウンロードし、`tar`を解凍することで実行できます。
+
+```python
+%%writefile ./source_files/extract_tarfile.py
+
+import tarfile
+from qiskit_serverless import IBMServerlessClient
+
+serverless = IBMServerlessClient(token="<YOUR_API_KEY>") # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+files = serverless.files()
+demo_file = files[0]
+downloaded_tar = serverless.file_download(demo_file)
+
+with tarfile.open(downloaded_tar, 'r') as tar:
+    tar.extractall()
+```
+
+この時点で、ローカル実験と同様にプログラムからファイルを操作できます。`file_upload()`、`file_download()`、`file_delete()`は、ローカル実験からも、アップロードされたプログラムからも呼び出すことができ、一貫性のある柔軟なデータ管理が実現できます。
+## 次のステップ {#next-steps}
+
+<Admonition type="info" title="推奨事項">
+
+- [既存のコードをQiskit Serverlessに移植する](./serverless-port-code)完全な例をご覧ください。
+- 研究者がQiskit Serverlessと量子中心スーパーコンピューティングを使用して[量子化学を探求した](https://arxiv.org/abs/2405.05068v1)論文をお読みください。
+
+</Admonition>

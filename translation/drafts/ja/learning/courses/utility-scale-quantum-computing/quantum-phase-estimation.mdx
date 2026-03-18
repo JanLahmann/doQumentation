@@ -1,0 +1,662 @@
+---
+title: "量子位相推定"
+sidebar_label: "量子位相推定"
+description: "このコースでは、多くの量子アルゴリズムで重要な役割を果たすQFTについて学びます"
+notebook_path: "learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.ipynb"
+---
+{/* doqumentation-source-hash: bb6c1007 */}
+
+<OpenInLabBanner notebookPath="learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.ipynb" />
+
+
+
+# 量子アルゴリズム：位相推定
+
+<Admonition type="note">
+
+Kento Ueda（2024年5月15日）
+
+このノートブックでは、量子フーリエ変換（QFT）と量子位相推定（QPE）の基本概念と実装について説明します。
+
+元の講義の[PDFをダウンロード](https://ibm.ent.box.com/public/static/srgnll6u8ame7gk186pkthq7erc7l6rw.zip)できます。コードスニペットは静止画像のため、一部が非推奨になっている場合があります。
+
+*この実験の実行に必要な QPU 時間の目安は約 7 秒です。*
+
+</Admonition>
+
+## 1. はじめに {#1-introduction}
+
+**量子フーリエ変換（QFT）**
+
+量子フーリエ変換は、古典的な離散フーリエ変換の量子版です。量子状態に適用される線形変換であり、計算基底をフーリエ基底表現にマッピングします。QFT は多くの量子アルゴリズムにおいて重要な役割を担っており、量子状態から周期性の情報を効率的に抽出する手法を提供します。
+QFT は、$N$ Qubit に対してアダマールゲートや制御位相ゲートなどの量子ゲートを $O(N^2)$ 回の演算で実装でき、古典的なフーリエ変換に対する指数的な高速化を実現します。
+
+- **応用例**：大きな整数の素因数分解や離散対数を求める Shor のアルゴリズムなど、量子アルゴリズムの基盤となっています。
+
+**量子位相推定（QPE）**
+
+量子位相推定は、ユニタリ演算子の固有ベクトルに対応する位相を推定するための量子アルゴリズムです。このアルゴリズムは、量子状態の抽象的な数学的性質と計算上の応用との橋渡しをします。
+
+- **応用例**：ユニタリ行列の固有値の探索や量子システムのシミュレーションなどの問題を解くことができます。
+
+QFT と QPE を組み合わせることで、古典コンピュータでは困難な多くの問題を解く量子アルゴリズムの本質的な基盤が形成されます。このノートブックを通じて、これらの技法がどのように実装されるかを理解できるようになります。
+
+## 2. 量子フーリエ変換（QFT）の基礎 {#2-basic-of-quantum-fourier-transformation-qft}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit_aer import AerSimulator
+from qiskit.visualization import plot_histogram, plot_bloch_multivector
+from qiskit.quantum_info import Statevector
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime import Sampler
+
+from numpy import pi
+```
+
+離散フーリエ変換との類比から、QFT は $N$ Qubit の量子状態 $\vert X\rangle = \sum_{j=0}^{N-1} x_j \vert j \rangle$ に作用し、量子状態 $\vert Y\rangle = \sum_{k=0}^{N-1} y_k \vert k \rangle$ にマッピングします。
+
+$$
+QFT_{N}: \vert j \rangle \mapsto \frac{1}{\sqrt{N}}\sum_{k=0}^{N-1}\omega_N^{jk} \vert k \rangle
+$$
+
+ここで $\omega_N^{jk} = e^{2\pi i \frac{jk}{N}}$ です。
+
+またはユニタリ行列表現として：
+
+$$
+U_{QFT} = \frac{1}{\sqrt{N}} \sum_{j=0}^{N-1} \sum_{k=0}^{N-1} \omega_N^{jk} \vert k \rangle \langle j \vert
+$$
+
+### 2.1. 直感的理解 {#intuition}
+
+量子フーリエ変換（QFT）は、計算基底（Z 基底）とフーリエ基底という 2 つの基底間の変換を行います。ではここでのフーリエ基底とはどのような意味でしょうか？フーリエ変換 $F(\omega)$ は関数 $f(x)$ を周波数 $\omega$ の正弦波関数に畳み込んだものを表すことを思い出してください。平たく言えば、フーリエ変換は $f(x)$ を正弦波（または余弦波）で構成するために各周波数 $\omega$ がどれだけ必要かを示す関数です。QFT がこの文脈でどのような意味を持つかをより直感的に理解するため、4 つの Qubit を使って整数を 2 進数で符号化した以下のステップ画像をご覧ください：
+
+<IBMVideo id="134399598" title="この短い動画では、異なる速度で歳差運動する 4 つの Qubit が数字を符号化するために使われる様子を示しています。"/>
+
+計算基底では、状態 $|0\rangle$ と $|1\rangle$ を使って数を 2 進数で格納します。
+
+異なる Qubit が変化する頻度に注目してください。一番左の Qubit は数が 1 増えるごとに反転し、次の Qubit は 2 増えるごと、3 番目は 4 増えるごとに反転し、以降も同様です。
+
+これらの状態に量子フーリエ変換を適用すると、次のようにマッピングされます：
+
+$$
+|\text{State in Computational Basis}\rangle \quad \xrightarrow[]{\text{QFT}} \quad |\text{State in Fourier Basis}\rangle
+$$
+
+$$
+\text{QFT}|x\rangle = |\widetilde{x}\rangle
+$$
+
+（フーリエ基底の状態はチルダ（~）で表すことが多いです。）
+
+フーリエ基底では、Z 軸周りの異なる回転を使って数を格納します：
+
+IFRAME
+
+格納したい数が、各 Qubit が Z 軸周りに回転する角度を決定します。状態 $|\widetilde{0}\rangle$ では、すべての Qubit が $|{+}\rangle$ の状態にあります。上記の例でわかるように、4 Qubit に状態 $|\widetilde{5}\rangle$ を符号化するには、一番左の Qubit を $\tfrac{5}{2^n} = \tfrac{5}{16}$ 回転（$\tfrac{5}{16}\times 2\pi$ ラジアン）させました。次の Qubit はその 2 倍（$\tfrac{10}{16}\times 2\pi$ ラジアン、すなわち $10/16$ 回転）となり、さらに次の Qubit ではこの角度が 2 倍になり、以降も同様です。
+
+各 Qubit が変化する頻度にも注目してください。この場合、一番左の Qubit（`qubit 0`）が最も低い周波数を持ち、一番右が最も高い周波数を持ちます。
+
+### 2.2 例：1-Qubit QFT {#22-example-1-qubit-qft}
+
+$N = 2^1 = 2$ の場合を考えます。
+
+ユニタリ行列は次のように書けます：
+
+$$
+\begin{aligned}
+U_{QFT} & = \frac{1}{\sqrt{2}} \sum_{j=0}^{1} \sum_{k=0}^{1} \omega_2^{jk} \vert k \rangle \langle j \vert
+\\
+& = \frac{1}{\sqrt{2}} (\omega_2^{0} \vert 0 \rangle \langle 0 \vert + \omega_2^{0} \vert 0 \rangle \langle 1 \vert + \omega_2^{0} \vert 1 \rangle \langle 0 \vert + \omega_2^{1} \vert 1 \rangle \langle 1 \vert)
+\\
+& = \frac{1}{\sqrt{2}} (\vert 0 \rangle \langle 0 \vert + \vert 0 \rangle \langle 1 \vert + \vert 1 \rangle \langle 0 \vert - \vert 1 \rangle \langle 1 \vert)
+\\
+& = H
+\end{aligned}
+$$
+
+この演算はアダマールゲート（$H$）を適用した結果です。
+
+### 2.3 QFT の積表現 {#23-product-representation-of-qft}
+
+$N = 2^n$ の場合の変換を一般化し、状態 $\vert x \rangle = \vert x_1\ldots x_n \rangle$ に作用する $QFT_{N}$ を考えます。
+
+$$
+\begin{aligned}
+QFT_N\vert x \rangle & = \frac{1}{\sqrt{N}} \sum_{y=0}^{N-1}\omega_N^{xy} \vert y \rangle
+\\
+& = \frac{1}{\sqrt{N}} \sum_{y=0}^{N-1} e^{2 \pi i xy / 2^n} \vert y \rangle ~\text{since}\: \omega_N^{xy} = e^{2\pi i \frac{xy}{N}} \:\text{and}\: N = 2^n
+\\
+& = \frac{1}{\sqrt{N}} \sum_{y=0}^{N-1} e^{2 \pi i \left(\sum_{k=1}^n y_k/2^k\right) x} \vert y_1 \ldots y_n \rangle \:\text{rewriting in fractional binary notation}\: y = y_1\ldots y_n, y/2^n = \sum_{k=1}^n y_k/2^k
+\\
+& = \frac{1}{\sqrt{N}} \sum_{y=0}^{N-1} \prod_{k=1}^n e^{2 \pi i x y_k/2^k } \vert y_1 \ldots y_n \rangle \:\text{after expanding the exponential of a sum to a product of exponentials,}
+\\
+& = \frac{1}{\sqrt{N}} \bigotimes_{k=1}^n  \left(\vert0\rangle + e^{2 \pi i x /2^k } \vert1\rangle \right) \:\text{after rearranging the sum and products, and expanding}
+\sum_{y=0}^{N-1} = \sum_{y_1=0}^{1}\sum_{y_2=0}^{1}\ldots\sum_{y_n=0}^{1}
+\\
+& = \frac{1}{\sqrt{N}}
+\left(\vert0\rangle + e^{\frac{2\pi i}{2}x} \vert1\rangle\right)
+\otimes
+\left(\vert0\rangle + e^{\frac{2\pi i}{2^2}x} \vert1\rangle\right)
+\otimes
+\ldots
+\otimes
+\left(\vert0\rangle + e^{\frac{2\pi i}{2^{n-1}}x} \vert1\rangle\right)
+\otimes
+\left(\vert0\rangle + e^{\frac{2\pi i}{2^n}x} \vert1\rangle\right)
+\end{aligned}
+$$
+
+### 2.4 例：3 Qubit QFT の Circuit 構成 {#24-example-circuit-construction-of-3-qubits-qft}
+
+上記の説明だけでは、QFT Circuit をどのように構成するかは明確でないかもしれません。ここでは、3 つの Qubit が異なる「速度」で位相が変化することを期待するという点のみを押さえておいてください。これが Circuit にどのように変換されるかを正確に理解することは、読者への演習問題とします。講義 PDF には複数の図と例が記載されています。また、「量子アルゴリズムの基礎」コースの[このレッスン](/learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction)も参考になります。
+
+ここではシミュレータのみを使って QFT を示します。量子位相推定に移るまでは Qiskit パターンズフレームワークを使用しません。
+
+```python
+# Prepare for 3 qubits circuit
+qr = QuantumRegister(3)
+cr = ClassicalRegister(3)
+qc = QuantumCircuit(qr, cr)
+```
+
+```python
+qc.h(2)
+qc.cp(pi / 2, 1, 2)  # Controlled-phase gate from qubit 1 to qubit 2
+qc.cp(pi / 4, 0, 2)  # Controlled-phase gate from qubit 0 to qubit 2
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/98cc96b3-f2d8-4d0d-bb57-186ea0919f53-0.avif)
+
+```python
+qc.h(1)
+qc.cp(pi / 2, 0, 1)  # Controlled-phase gate from qubit 0 to qubit 1
+
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/eaff67fa-82f9-4402-8fa5-d0f0af824616-0.avif)
+
+```python
+qc.h(0)
+
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/43e09a6b-ea86-4f02-9e3a-82317c3b787f-0.avif)
+
+```python
+qc.swap(0, 2)
+
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/d7dd1cae-f463-4308-866c-8267e015c6ff-0.avif)
+
+例として $|5\rangle$ に QFT を適用してみます。
+
+まず、整数 5 の 2 進数表現を確認し、状態 5 を符号化する Circuit を作成します：
+
+```python
+bin(5)
+```
+
+```text
+'0b101'
+```
+
+```python
+qc = QuantumCircuit(3)
+
+qc.x(0)
+qc.x(2)
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/db631de5-4619-4e8c-b9d1-c6197650ae33-0.avif)
+
+Aer シミュレータを使って量子状態を確認します：
+
+```python
+statevector = Statevector(qc)
+plot_bloch_multivector(statevector)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/83f34fc7-21f3-408b-9beb-a146cb77d27c-0.avif)
+
+最後に QFT を追加し、Qubit の最終状態を確認します：
+
+```python
+qc.h(2)
+qc.cp(pi / 2, 1, 2)
+qc.cp(pi / 4, 0, 2)
+
+qc.h(1)
+qc.cp(pi / 2, 0, 1)
+
+qc.h(0)
+
+qc.swap(0, 2)
+
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/524f24ae-3d86-4be4-99cc-c0c8557b8393-0.avif)
+
+```python
+statevector = Statevector(qc)
+plot_bloch_multivector(statevector)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/cf4d7152-bb06-4017-922a-5fa97075a67f-0.avif)
+
+QFT 関数が正しく動作していることが確認できます。Qubit 0 は $\tfrac{5}{8}$ 回転、Qubit 1 は $\tfrac{10}{8}$ 回転（$\tfrac{1}{4}$ 回転に相当）、Qubit 2 は $\tfrac{20}{8}$ 回転（$\tfrac{1}{2}$ 回転に相当）しています。
+
+### 2.5 演習：QFT {#25-exercise-qft}
+
+（1）4 Qubit の QFT を実装してください。
+
+```python
+##your code goes here##
+```
+
+（2）$|14\rangle$ に QFT を適用し、ブロッホ球を使って状態ベクトルをシミュレートして描画してください。
+
+```python
+##your code goes here##
+```
+
+#### 演習の解答：QFT {#solution-of-the-exercise-qft}
+
+（1）
+
+```python
+qr = QuantumRegister(4)
+cr = ClassicalRegister(4)
+qc = QuantumCircuit(qr, cr)
+
+qc.h(3)
+qc.cp(pi / 2, 2, 3)
+qc.cp(pi / 4, 1, 3)
+qc.cp(pi / 8, 0, 3)
+
+qc.h(2)
+qc.cp(pi / 2, 1, 2)
+qc.cp(pi / 4, 0, 2)
+
+qc.h(1)
+qc.cp(pi / 2, 0, 1)
+
+qc.h(0)
+
+qc.swap(0, 3)
+qc.swap(1, 2)
+
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/02e1d50b-6555-4a1e-a2b9-ba77c77840a1-0.avif)
+
+（2）
+
+```python
+bin(14)
+```
+
+```text
+'0b1110'
+```
+
+```python
+qc = QuantumCircuit(4)
+
+qc.x(1)
+qc.x(2)
+qc.x(3)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/a01ee72e-8486-426d-a654-21b272b958ff-0.avif)
+
+```python
+qc.h(3)
+qc.cp(pi / 2, 2, 3)
+qc.cp(pi / 4, 1, 3)
+qc.cp(pi / 8, 0, 3)
+
+qc.h(2)
+qc.cp(pi / 2, 1, 2)
+qc.cp(pi / 4, 0, 2)
+
+qc.h(1)
+qc.cp(pi / 2, 0, 1)
+qc.h(0)
+
+qc.swap(0, 3)
+qc.swap(1, 2)
+
+qc.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/db8a6229-a864-4f5e-889b-8ccd5561eddb-0.avif)
+
+```python
+statevector = Statevector(qc)
+plot_bloch_multivector(statevector)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/0d0af6c8-73e7-4e49-9d81-75446373d6c8-0.avif)
+
+## 3. 量子位相推定（QPE）の基礎 {#3-basics-of-quantum-phase-estimation-qpe}
+
+ユニタリ演算 $U$ が与えられたとき、QPE は $U\vert\psi \rangle =e^{\boldsymbol{2\pi i} \theta }|\psi \rangle$ における $\theta$ を推定します。$U$ はユニタリであるため、その固有値はすべてノルムが 1 です。
+
+
+### 3.1 手順 {#procedure}
+#### 1. 準備
+
+$\vert\psi\rangle$ は一組の量子ビットレジスタに格納されます。追加の $n$ 量子ビットからなるカウンティングレジスタに、値 $2^n\theta$ を記録します：
+
+$$
+|\psi_0\rangle = \lvert 0 \rangle^{\otimes n} \lvert \psi \rangle
+$$
+#### 2. 重ね合わせ
+
+カウンティングレジスタに $n$ ビットのアダマールゲート演算 $H^{\otimes n}$ を適用します：
+
+$$
+|\psi_1\rangle = {\frac {1}{2^{\frac {n}{2}}}}\left(|0\rangle +|1\rangle \right)^{\otimes n} \lvert \psi \rangle
+$$
+#### 3. 制御ユニタリ演算
+
+対応する制御ビットが $|1\rangle$ のときにのみ、ターゲットレジスタにユニタリ演算子 $U$ を適用する制御ユニタリ $CU$ を導入する必要があります。$U$ は固有ベクトル $|\psi\rangle$ を持つユニタリ演算子であり、$U|\psi \rangle =e^{\boldsymbol{2\pi i} \theta }|\psi \rangle$ を満たすため、次のようになります：
+
+$$
+U^{2^{j}}|\psi \rangle =U^{2^{j}-1}U|\psi \rangle =U^{2^{j}-1}e^{2\pi i\theta }|\psi \rangle =\cdots =e^{2\pi i2^{j}\theta }|\psi \rangle
+$$
+### 3.2 例：T ゲートの QPE {#example-t-gate-qpe}
+QPE の例として $T$ ゲートを使い、その位相 $\theta$ を推定してみましょう。
+
+$$
+T|1\rangle =
+\begin{pmatrix}
+1 & 0\\
+0 & e^\frac{i\pi}{4}\\
+\end{pmatrix}
+\begin{pmatrix}
+0\\
+1\\
+\end{pmatrix}
+= e^\frac{i\pi}{4}|1\rangle
+$$
+
+期待される結果は次のとおりです：
+
+$$
+\theta = \frac{1}{8}
+$$
+
+ここで
+
+$$
+T|1\rangle = e^{2i\pi\theta}|1\rangle
+$$
+$X$ ゲートを適用して、$T$ ゲートの固有ベクトル $\vert\psi\rangle = \vert1\rangle$ を初期化します：
+
+```python
+qpe = QuantumCircuit(4, 3)
+qpe.x(3)
+qpe.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/2334e6e2-7ae2-4d4c-9014-3e6041f37ee7-0.avif)
+
+次に、カウンティング量子ビットにアダマールゲートを適用します：
+
+```python
+for qubit in range(3):
+    qpe.h(qubit)
+qpe.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/9c020053-c369-4cc4-829e-72246d79f82c-0.avif)
+
+制御ユニタリ演算を実行します：
+
+```python
+repetitions = 1
+for counting_qubit in range(3):
+    for i in range(repetitions):
+        qpe.cp(pi / 4, counting_qubit, 3)  # This is C-U
+    repetitions *= 2
+qpe.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/0b3bedfc-be73-427d-9eed-22a2d7df60cd-0.avif)
+
+逆量子フーリエ変換を適用してカウンティングレジスタの状態を変換し、その後カウンティングレジスタを測定します：
+
+```python
+from qiskit.circuit.library import QFT
+```
+
+```python
+# Apply inverse QFT
+qpe.append(QFT(3, inverse=True), [0, 1, 2])
+qpe.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/df8ada87-4279-47bb-acd5-cb432bdfc998-0.avif)
+
+```python
+for n in range(3):
+    qpe.measure(n, n)
+qpe.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/5fcc8195-8fc9-47bc-9ef3-9d9d444db812-0.avif)
+
+Aer シミュレーターを使ってシミュレーションを実行できます：
+
+```python
+aer_sim = AerSimulator()
+shots = 2048
+
+pm = generate_preset_pass_manager(backend=aer_sim, optimization_level=1)
+t_qpe = pm.run(qpe)
+
+sampler = Sampler(mode=aer_sim)
+job = sampler.run([t_qpe], shots=shots)
+result = job.result()
+answer = result[0].data.c.get_counts()
+
+plot_histogram(answer)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/b0152311-8f60-4c11-a10e-a35691c0ece5-0.avif)
+
+結果として `001` が確実に得られており、これは10進数で `1` に相当します。次に、$\theta$ を求めるために結果（`1`）を $2^n$ で割ります：
+
+$$
+\theta = \frac{1}{2^3} = \frac{1}{8}
+$$
+ショアのアルゴリズムでは、$\theta$ を未知としてその値を回路から取得することで、数の素因数分解が可能になります。
+### 3.3 演習 {#exercise}
+
+3 量子ビットのカウンティングと固有ベクトル用の 1 量子ビットを使って、$\theta = 1/3$ を推定してください。
+
+$P|1\rangle = e^{i\lambda}|1\rangle$。$U|1\rangle = e^{2\pi i \tfrac{1}{3}}|1\rangle$ を実装したいので、$\lambda = \tfrac{2 \pi}{3}$ と設定する必要があります。
+
+```python
+##your code goes here##
+```
+
+#### 演習の解答：$\theta = 1/3$ {#solution-of-the-exercise-theta-13}
+
+```python
+# Create and set up circuit
+qpe = QuantumCircuit(4, 3)
+
+# Apply H-Gates to counting qubits:
+for qubit in range(3):
+    qpe.h(qubit)
+
+# Prepare our eigenstate |psi>:
+qpe.x(3)
+
+# Do the controlled-U operations:
+angle = 2 * pi / 3
+repetitions = 1
+for counting_qubit in range(3):
+    for i in range(repetitions):
+        qpe.cp(angle, counting_qubit, 3)
+    repetitions *= 2
+
+# Do the inverse QFT:
+qpe.append(QFT(3, inverse=True), [0, 1, 2])
+
+for n in range(3):
+    qpe.measure(n, n)
+
+qpe.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/9cb90eab-e6ce-4456-b73e-e4082fed2850-0.avif)
+
+```python
+aer_sim = AerSimulator()
+shots = 4096
+
+pm = generate_preset_pass_manager(backend=aer_sim, optimization_level=1)
+t_qpe = pm.run(qpe)
+
+sampler = Sampler(mode=aer_sim)
+job = sampler.run([t_qpe], shots=shots)
+result = job.result()
+answer = result[0].data.c.get_counts()
+
+plot_histogram(answer)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/e118815f-5d92-4ea1-9849-b178ef84d8a4-0.avif)
+
+## 4. Qiskit Runtime Sampler プリミティブを使った実行 {#execution-using-the-qiskit-runtime-sampler-primitive}
+
+実際の量子デバイスを使って QPE を実行し、Qiskit パターンの 4 ステップに従います。
+
+    1. 問題を量子ネイティブな形式にマッピングする
+    2. 回路を最適化する
+    3. ターゲット回路を実行する
+    4. 結果を後処理する
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Sampler
+```
+
+```python
+# Loading your IBM Quantum&reg; account(s)
+
+service = QiskitRuntimeService()
+```
+
+### 4.1 ステップ 1：問題を量子回路と演算子にマッピングする {#step-1-map-problem-to-quantum-circuits-and-operators}
+
+```python
+qpe = QuantumCircuit(4, 3)
+qpe.x(3)
+for qubit in range(3):
+    qpe.h(qubit)
+repetitions = 1
+for counting_qubit in range(3):
+    for i in range(repetitions):
+        qpe.cp(pi / 4, counting_qubit, 3)  # This is C-U
+    repetitions *= 2
+qpe.append(QFT(3, inverse=True), [0, 1, 2])
+for n in range(3):
+    qpe.measure(n, n)
+qpe.draw(output="mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/70c92e35-0e13-4552-99be-50d6950dfedc-0.avif)
+
+```python
+backend = service.least_busy(simulator=False, operational=True, min_num_qubits=4)
+
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_strasbourg')>
+```
+
+### 4.2 ステップ 2：ターゲットハードウェア向けに最適化する {#step-2-optimize-for-target-hardware}
+
+```python
+# Transpile the circuit into basis gates executable on the hardware
+pm = generate_preset_pass_manager(backend=backend, optimization_level=2)
+qc_compiled = pm.run(qpe)
+
+qc_compiled.draw("mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/d4d57d21-00c6-4144-aa3e-4a467a065078-0.avif)
+
+### 4.3 ステップ 3：ターゲットハードウェアで実行する {#step-3-execute-on-target-hardware}
+
+```python
+real_sampler = Sampler(mode=backend)
+job = real_sampler.run([qc_compiled], shots=1024)
+job_id = job.job_id()
+print("job id:", job_id)
+```
+
+```text
+job id: d13p4zb5z6q00087ag00
+```
+
+```python
+job = service.job(job_id)  # Input your job-id between the quotations
+job.status()
+```
+
+```text
+'DONE'
+```
+
+```python
+result_real = job.result()
+print(result_real)
+```
+
+```text
+PrimitiveResult([SamplerPubResult(data=DataBin(c=BitArray(<shape=(), num_shots=1024, num_bits=3>)), metadata={'circuit_metadata': {}})], metadata={'execution': {'execution_spans': ExecutionSpans([DoubleSliceSpan(<start='2025-06-09 22:39:00', stop='2025-06-09 22:39:00', size=1024>)])}, 'version': 2})
+```
+
+### 4.4 ステップ 4：結果を後処理する {#step-4-post-process-the-results}
+
+```python
+from qiskit.visualization import plot_histogram
+
+plot_histogram(result_real[0].data.c.get_counts())
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/quantum-phase-estimation/extracted-outputs/bd9181eb-dc1e-42e1-bdcf-3bb6b128538d-0.avif)
+
+```python
+# See the version of Qiskit
+import qiskit
+
+qiskit.__version__
+```
+
+```text
+'2.0.2'
+```
