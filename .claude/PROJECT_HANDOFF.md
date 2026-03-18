@@ -439,4 +439,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 18, 2026 (sidebar badge consistent positioning — always left of twistie)*
+*Last updated: March 18, 2026 (FR/ES/DE 100% translation completion — 385/385 each, zero fallbacks)*
