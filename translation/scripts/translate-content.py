@@ -142,6 +142,18 @@ BANNER_TEMPLATES = {
         "Sie sehen die englische Originalversion.\n"
         ":::\n"
     ),
+    "ms": (
+        "\n:::note[Belum diterjemahkan]\n"
+        "Halaman ini belum diterjemahkan. "
+        "Anda sedang melihat versi asal dalam bahasa Inggeris.\n"
+        ":::\n"
+    ),
+    "id": (
+        "\n:::note[Belum diterjemahkan]\n"
+        "Halaman ini belum diterjemahkan. "
+        "Anda sedang melihat versi asli dalam bahasa Inggris.\n"
+        ":::\n"
+    ),
 }
 
 

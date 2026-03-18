@@ -103,7 +103,7 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut'],
+    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut', 'ms', 'id', 'th'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
@@ -125,6 +125,9 @@ const config: Config = {
       sax: { label: 'Säggssch', url: 'https://sax.doqumentation.org' },
       bln: { label: 'Berlinerisch', url: 'https://bln.doqumentation.org' },
       aut: { label: 'Österreichisch', url: 'https://aut.doqumentation.org' },
+      ms: { label: 'Bahasa Melayu', url: 'https://ms.doqumentation.org' },
+      id: { label: 'Bahasa Indonesia', url: 'https://id.doqumentation.org' },
+      th: { label: 'ไทย (Thai)', url: 'https://th.doqumentation.org' },
     },
   },
 
@@ -166,7 +169,7 @@ const config: Config = {
         hashed: true,
         indexBlog: false,
         docsRouteBasePath: '/',
-        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he'],
+        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he', 'th'],
       },
     ],
   ],
