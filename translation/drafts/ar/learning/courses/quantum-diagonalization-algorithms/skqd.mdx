@@ -1,0 +1,311 @@
+---
+title: "التقطير الكمومي لكريلوف القائم على أخذ العينات"
+sidebar_label: "التقطير الكمومي لكريلوف القائم على أخذ العينات"
+description: "تُجمع موضوعات الدروس السابقة للاستفادة من ضمانات تقارب QKD وسرعة SQD في SKQD."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/skqd.ipynb"
+---
+
+{/* source-hash: 91595df8 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/skqd.ipynb" />
+
+{/* cspell:ignore arxiv Neel probs eigenvals Hatano */}
+
+# التقطير الكمومي لكريلوف القائم على أخذ العينات (SKQD) {#sample-based-krylov-quantum-diagonalization-skqd}
+
+يجمع هذا الدرس حول التقطير الكمومي لكريلوف القائم على أخذ العينات (SKQD) الطرق الموضّحة في الدروس السابقة. يتكوّن من مثال واحد يستفيد من إطار أنماط Qiskit:
+
+    - الخطوة 1: رسم المسألة إلى دوائر كمومية ومشغّلات
+    - الخطوة 2: التحسين للعتاد المستهدف
+    - الخطوة 3: التنفيذ باستخدام أوليات Qiskit
+    - الخطوة 4: المعالجة اللاحقة
+
+خطوة مهمة في طريقة التقطير الكمومي القائمة على أخذ العينات هي توليد متجهات عالية الجودة للفضاء الجزئي. في الدرس السابق، استخدمنا نموذج LUCJ لتوليد متجهات الفضاء الجزئي لهاميلتوني الكيمياء. في هذا الدرس، سنستخدم حالات كريلوف الكمومية[\[1\]](#references) كما نوقش في الدرس 2. أولًا، سنراجع كيفية إنشاء فضاء كريلوف على حاسوب كمومي باستخدام عمليات التطور الزمني. ثم سنأخذ منه عينات. وسنسقط هاميلتوني النظام على الفضاء الجزئي المأخوذة منه العينات ونُقطّره لتقدير طاقة الحالة الأساسية. تتقارب الخوارزمية بشكل مثبوت وفعّال نحو الحالة الأساسية، وفق الافتراضات الموضّحة في الدرس 2.
+
+## 0. فضاء كريلوف {#the-krylov-space}
+
+نتذكر أن فضاء كريلوف $\mathcal{K}^r$ من الرتبة $r$ هو الفضاء المولَّد بمتجهات يُحصل عليها بضرب قوى أعلى للمصفوفة $A$ حتى $r-1$، مع متجه مرجعي $\vert v \rangle$.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+إذا كانت المصفوفة $A$ هي الهاميلتوني $H$، يُسمّى الفضاء المقابل _فضاء كريلوف القدرة_ $\mathcal{K}_P$. في حال كانت $A$ هي مشغّل التطور الزمني المولَّد من الهاميلتوني $U=e^{-iH(dt)}$، يُشار إلى الفضاء باسم فضاء كريلوف الأحادي $\mathcal{K}_U$. لا يمكن توليد فضاء كريلوف القدرة مباشرةً على حاسوب كمومي لأن $H$ ليس مشغّلًا أحاديًا. عوضًا عن ذلك، يمكننا استخدام مشغّل التطور الزمني $U = e^{-iH(dt)}$ الذي يمكن إثبات أنه يُعطي [ضمانات تقارب](https://arxiv.org/abs/2110.07492) مشابهة لفضاء كريلوف القدرة. تصبح قوى $U$ حينئذٍ خطوات زمنية مختلفة $U^k = e^{-iH(k dt)}$ حيث $k = 0, 1, 2, ..., (r-1)$.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+
+## 1. رسم المسألة إلى دوائر كمومية ومشغّلات {#map-problem-to-quantum-circuits-and-operators}
+
+في هذا الدرس، نتناول الهاميلتوني لسلسلة الدوران XX-Z ضد المغناطيسية بنصف عزم $\frac{1}{2}$ ذات $L = 22$ موقعًا مع شرط حدود دورية:
+$$
+    H = \sum_{i, j}^{N} J_{xy} (X_{i} X_{j} + Y_{i} Y_{j}) + Z_{i} Z_{j}
+$$
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-sqd qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+num_spins = 22
+coupling_map = CouplingMap.from_ring(num_spins)
+H_op = generate_xyz_hamiltonian(coupling_map, coupling_constants=(0.3, 0.3, 1.0))
+```
+
+لبناء فضاء كريلوف، نحتاج إلى ثلاثة مكوّنات رئيسية:
+
+1. اختيار لبُعد كريلوف ($r$) والخطوة الزمنية ($dt$).
+2. حالة أولية (مرجعية) (المتجه $\vert v \rangle$ أعلاه) ذات تداخل كثيري الحدود مع الحالة المستهدفة (الأساسية)، حيث تكون الحالة المستهدفة متفرقة. هذا الشرط للتداخل الكثيري الحدود هو نفسه في خوارزمية تقدير الطور الكمومي.
+3. مشغّلات التطور الزمني $U^{k}=e^{-iH(k * dt)}$ ($k = 0, 1, 2, ..., r-1$).
+
+لقيمة $r$ مختارة (و$dt$)، سننشئ $r$ دوائر كمومية منفصلة ونأخذ منها عينات. تُنشأ كل دائرة كمومية بربط التمثيل الكمومي للدائرة للحالة المرجعية ومشغّل التطور الزمني لقيمة $k$.
+
+بُعد كريلوف الأكبر يُحسِّن تقارب الطاقة المُقدَّرة. نُعيِّن البُعد على $5$ في هذا الدرس لتوضيح اتجاه التقارب.
+
+أظهر المرجع [\[2\]](#references) أن خطوة زمنية كافية صغيرة لـKQD هي $\pi / \vert \vert H \vert \vert$، وأنه من الأفضل التقليل من تقدير هذه القيمة على المبالغة فيها. من جهة أخرى، اختيار $dt$ صغيرًا جدًا يُفضي إلى تكييف أسوأ للفضاء الجزئي لكريلوف، إذ تختلف متجهات أساس كريلوف أقل بين الخطوات الزمنية. علاوةً على ذلك، بينما هذا الاختيار لـ$dt$ كافٍ بشكل مثبوت لتقارب SKQD، الاختيار الأمثل لـ$dt$ في هذا السياق القائم على أخذ العينات موضوع دراسة مستمرة. في هذا الدرس، نُعيِّن $dt = 0.15$.
+
+إضافةً إلى بُعد كريلوف والخطوة الزمنية، نحتاج إلى تحديد عدد خطوات تروتر للتطور الزمني. استخدام خطوات قليلة جدًا يُفضي إلى أخطاء تروتر أكبر، بينما خطوات كثيرة جدًا تُفضي إلى دوائر أعمق. في هذا الدرس، نُعيِّن عدد خطوات تروتر على $6$.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of krylov subspace
+dt = 0.15
+num_trotter_steps = 6
+```
+
+بعد ذلك، نحتاج إلى اختيار حالة مرجعية $\vert \psi \rangle$ ذات تداخل ما مع الحالة الأساسية. لهذا الهاميلتوني، نستخدم حالة _نيل_ المتبادلة بأحادٍ وأصفار $\vert ...101...010...101 \rangle$ كحالتنا المرجعية.
+
+```python
+# Prep `Neel` state as the reference state for evolution
+from qiskit import QuantumCircuit
+
+qc_state_prep = QuantumCircuit(num_spins)
+for i in range(num_spins):
+    if i % 2 == 0:
+        qc_state_prep.x(i)
+```
+
+أخيرًا، نحتاج إلى رسم مشغّل التطور الزمني إلى دائرة كمومية. تم هذا في الدرس 2، لكن هنا سنستفيد من طرق Qiskit، تحديدًا طريقة تُسمّى _التوليف_. هناك طرق مختلفة لتوليف المشغّلات الرياضية إلى دوائر كمومية ببوابات كمومية. كثير من هذه التقنيات متاحة في [وحدة توليف Qiskit](https://docs.quantum.ibm.com/api/qiskit/synthesis). سنستخدم نهج [`LieTrotter`](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter) للتوليف [\[3\]](#references) [\[4\]](#references).
+
+```python
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+
+evol_gate = PauliEvolutionGate(
+    H_op, time=(dt / num_trotter_steps), synthesis=LieTrotter(reps=num_trotter_steps)
+)  # `U` operator
+
+qr = QuantumRegister(num_spins)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+
+circuits = []
+for rep in range(krylov_dim):
+    circ = qc_state_prep.copy()
+
+    # Repeating the `U` operator to implement U^0, U^1, U^2, and so on, for power Krylov space
+    for _ in range(rep):
+        circ.compose(other=qc_evol, inplace=True)
+
+    circ.measure_all()
+    circuits.append(circ)
+```
+
+```python
+circuits[1].decompose().draw("mpl", fold=-1)
+```
+
+![مخرج خلية الكود السابقة](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/7ffc3eaa-9563-4c89-9d7b-808a3a37b275-0.avif)
+
+```python
+circuits[2].decompose().draw("mpl", fold=-1)
+```
+
+![مخرج خلية الكود السابقة](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/bdbc0881-06b0-49f2-8919-a376aa7f08e3-0.avif)
+
+## 2. التحسين للعتاد المستهدف {#optimize-for-target-hardware}
+
+الآن بعد إنشاء الدوائر، يمكننا تحسينها للعتاد المستهدف. نختار وحدة معالجة كمومية بنطاق الأداة.
+
+```python
+import warnings
+
+from qiskit import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+warnings.filterwarnings("ignore")
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+الآن، نُرجمة الدوائر للمنصة المستهدفة باستخدام مدير المرور الجاهز.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuits = pm.run(circuits=circuits)
+```
+
+## 3. التنفيذ على العتاد المستهدف {#execute-on-target-hardware}
+
+بعد تحسين الدوائر للتنفيذ على العتاد، أصبحنا جاهزين لتشغيلها على العتاد المستهدف وجمع العينات لتقدير طاقة الحالة الأساسية.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+job = sampler.run(isa_circuits, shots=100_000)  # Takes approximately 2m 58s of QPU time
+```
+
+```python
+counts_all = [job.result()[k].data.meas.get_counts() for k in range(krylov_dim)]
+```
+
+## 4. معالجة النتائج لاحقًا {#post-process-results}
+
+بعد ذلك، نجمع الأعداد لأبعاد كريلوف المتزايدة بطريقة تراكمية. باستخدام الأعداد التراكمية، سنمتد الفضاءات الجزئية لأبعاد كريلوف المتزايدة ونحلّل سلوك التقارب.
+
+```python
+from collections import Counter
+
+counts_cumulative = []
+for i in range(krylov_dim):
+    counter = Counter()
+    for d in counts_all[: i + 1]:
+        counter.update(d)
+
+    counts = dict(counter)
+    counts_cumulative.append(counts)
+```
+
+لإسقاط الهاميلتوني وتقطيره، نستخدم قدرات [`qiskit-addon-sqd`](https://qiskit.github.io/qiskit-addon-sqd/). يوفّر الإضافة وظائف لإسقاط الهاميلتونيات القائمة على سلاسل باولي على فضاء جزئي وحلّ القيم الذاتية باستخدام `SciPy`.
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.qubit import solve_qubit
+```
+
+من حيث المبدأ، يمكننا تصفية سلاسل البتات ذات النمط الخاطئ قبل توسيع الفضاء الجزئي. فمثلًا، عادةً ما تكون الحالة الأساسية للهاميلتوني ضد المغناطيسي في هذا الدرس ذات عدد متساوٍ من أعداد دوران "أعلى" و"أسفل"، أي يجب أن يكون عدد "1"ات في سلسلة البتات نصف العدد الكلي من البتات (عدد الدورانات) في النظام بالضبط. تُصفّي الدالة التالية سلاسل البتات ذات العدد الخاطئ من "1"ات من الأعداد.
+
+```python
+# Filters out bitstrings that do not have specified number (`num_ones`) of `1` bits.
+def postselect_counts(counts, num_ones):
+    filtered_counts = {}
+    for bitstring, freq in counts.items():
+        if bitstring.count("1") == num_ones:
+            filtered_counts[bitstring] = freq
+
+    return filtered_counts
+```
+
+باستخدام سلاسل البتات ذات العدد الصحيح من الإلكترونات الصاعدة/الهابطة، نمتد الفضاءات الجزئية ونحسب القيم الذاتية لأبعاد كريلوف المتزايدة. حسب حجم المسألة والموارد الكلاسيكية المتاحة، قد نحتاج إلى اعتماد أخذ عينات فرعية (مشابهة لـ[درس SQD](/learning/courses/quantum-diagonalization-algorithms/sqd-implementation)) للحفاظ على بُعد الفضاء الجزئي ضمن حدود معقولة. علاوةً على ذلك، يمكننا تطبيق مفهوم الاسترداد التكويني المشابه للدرس 4. يمكننا حساب إشغال الإلكترونات لكل موقع من الحالات الذاتية المُعادة بناؤها واستخدام المعلومات لتصحيح سلاسل البتات ذات العدد الخاطئ من الإلكترونات الصاعدة/الهابطة. نترك هذا تمرينًا للقراء المهتمين.
+
+```python
+import numpy as np
+
+num_batches = 10
+rand_seed = 0
+scipy_kwargs = {"k": 2, "which": "SA"}
+
+ground_state_energies = []
+for idx, counts in enumerate(counts_cumulative):
+    counts = postselect_counts(counts, num_ones=num_spins // 2)
+    bitstring_matrix, probs = counts_to_arrays(counts=counts)
+
+    eigenvals, eigenstates = solve_qubit(
+        bitstring_matrix, H_op, verbose=False, **scipy_kwargs
+    )
+    gs_en = np.min(eigenvals)
+    ground_state_energies.append(gs_en)
+```
+
+بعد ذلك، نرسم الطاقة المحسوبة كدالة لبُعد كريلوف ونقارنها مع الطاقة الدقيقة. تُحسَب الطاقة الدقيقة بشكل منفصل باستخدام طريقة القوة الكاملة الكلاسيكية. يمكن أن نرى أن طاقة الحالة الأساسية المُقدَّرة تتقارب مع زيادة بُعد فضاء كريلوف. رغم أن بُعد كريلوف $5$ محدود، إلا أن النتائج تُظهر تقاربًا مثيرًا للإعجاب، ومن المتوقع أن يتحسن مع بُعد كريلوف أكبر [\[1\]](#references).
+
+```python
+import matplotlib.pyplot as plt
+
+exact_gs_en = -23.934184
+plt.plot(
+    range(1, krylov_dim + 1),
+    ground_state_energies,
+    color="blue",
+    linestyle="-.",
+    label="estimate",
+)
+plt.plot(
+    range(1, krylov_dim + 1),
+    [exact_gs_en] * krylov_dim,
+    color="red",
+    linestyle="-",
+    label="exact",
+)
+plt.xticks(range(1, krylov_dim + 1), range(1, krylov_dim + 1))
+plt.legend()
+plt.xlabel("Krylov space dimension")
+plt.ylabel("Energy")
+plt.ylim([-24, -22.50])
+plt.title(
+    "Estimating Ground state energy with Sample-based Krylov Quantum Diagonalization"
+)
+plt.show()
+```
+
+![مخرج خلية الكود السابقة](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/debca96a-e0e3-4342-a755-8204dba50d74-0.avif)
+
+### اختبر فهمك {#check-your-understanding}
+اقرأ الأسئلة أدناه، فكّر في إجاباتك، ثم انقر على المثلثات للكشف عن الحلول.
+
+<details>
+<summary>
+
+ما الذي يمكن فعله لتحسين التقارب في الرسم البياني أعلاه؟
+
+</summary>
+
+**الجواب:**
+
+زيادة بُعد كريلوف. بشكل عام، يمكن أيضًا زيادة عدد الطلقات، لكن هذا العدد مرتفع بالفعل في الحساب أعلاه.
+
+</details>
+
+<details>
+<summary>
+
+ما المزايا الرئيسية لـSKQD على (أ) SQD، و(ب) KQD؟
+
+</summary>
+
+**الجواب:**
+
+قد تكون هناك إجابات أخرى صالحة، لكن الإجابات الكاملة يجب أن تتضمن التالي:
+
+   (أ) يأتي SKQD مع ضمانات تقارب لا يمتلكها SQD. في SQD إما تحتاج إلى تخمين جيد جدًا لنموذجك يتمتع بتداخل ممتاز مع دعم الحالة الأساسية في الأساس الحسابي، أو تحتاج إلى إدخال مكوّن تباديلي في الحساب لأخذ عينات من عائلة من نماذج.
+
+   (ب) يتطلب SKQD وقتًا أقل بكثير من وحدة المعالجة الكمومية، لأنه يتجنب الحساب المُكلف لعناصر المصفوفة عبر اختبار هادامار.
+
+</details>
+
+## 5. ملخص {#summary}
+
+- تقدير طاقة الحالة الأساسية عبر أخذ عينات من حالات أساس كريلوف مناسب جدًا لنماذج الشبكة بما فيها أنظمة الدوران ومسائل المادة المكثفة ونظريات المقياس على الشبكة. يتوسع هذا النهج بشكل أفضل بكثير من VQE، لأنه لا يتطلب تحسينًا على معاملات عديدة في نموذج تباديلي كما في VQE، أو في SQD القائم على النماذج الإرشادية (مثلًا مسألة الكيمياء في الدرس السابق).
+    - للحفاظ على عمق الدوائر منخفضًا، من الحكمة معالجة مسائل الشبكة المناسبة للعتاد السابق للتسامح مع الأخطاء.
+- لا يتعرض SKQD لمشكلة قياس كمومي كما في VQE. لا توجد مجموعات من مشغّلات باولي المتبادلة لتقديرها.
+- SKQD قوي في مواجهة العينات المشوشة إذ يمكن استخدام روتين اختيار مسبق خاص بالمسألة (مثلًا، تصفية سلاسل البتات التي لا تتوافق مع الأنماط الخاصة بالمسألة) أو تحمّل تكلفة إضافية للتقطير الكلاسيكي (أي التقطير في فضاء جزئي أكبر) للتخلص فعليًا من أثر الضوضاء.
+
+## المراجع {#references}
+
+\[1] Jeffery Yu et al., "Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization" (2025). [arxiv:quant-ph/2501.09702](https://arxiv.org/abs/2501.09702).
+
+\[2] Ethan N. Epperly, Lin Lin, and Yuji Nakatsukasa. "A theory of quantum subspace diagonalization". SIAM Journal on Matrix Analysis and Applications 43, 1263–1290 (2022).
+
+\[2] N. Hatano and M. Suzuki, "Finding Exponential Product Formulas of Higher Orders" (2005). [arXiv:math-ph/0506007](https://arxiv.org/abs/math-ph/0506007).
+
+\[4] D. Berry, G. Ahokas, R. Cleve and B. Sanders, "Efficient quantum algorithms for simulating sparse Hamiltonians" (2006). [arXiv:quant-ph/0508139](https://arxiv.org/abs/quant-ph/0508139).

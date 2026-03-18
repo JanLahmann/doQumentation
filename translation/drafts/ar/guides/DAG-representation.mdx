@@ -1,0 +1,269 @@
+---
+title: "التعامل مع الـ DAGs في مراحل الـ Transpiler"
+sidebar_label: "التعامل مع الـ DAGs في مراحل الـ Transpiler"
+description: "كيفية استخدام الرسوم البيانية الحلقية الموجهة (DAGs) لتحليل دوائر الكم وتحويلها في مراحل الـ Transpiler في Qiskit"
+notebook_path: "guides/DAG-representation.ipynb"
+---
+
+{/* doqumentation-source-hash: 31d81c47 */}
+
+<OpenInLabBanner notebookPath="guides/DAG-representation.ipynb" />
+
+
+
+{/* cspell:ignore subdag DAGOpNode qargs cargs dag_drawer couplinglist */}
+
+في Qiskit، تُمثَّل الدوائر الكمية داخل مراحل الـ Transpiler باستخدام هياكل تُعرف بالـ DAG. بشكل عام، يتكون الـ DAG من رؤوس (تُسمى أيضاً "عقد" أو nodes) وحواف موجَّهة تربط أزواج الرؤوس في اتجاه معين. يُخزَّن هذا التمثيل في كائنات `qiskit.dagcircuit.DAGCircuit` مؤلَّفة من كائنات `DagNode` فردية. وتتمثل ميزة هذا التمثيل على مجرد قائمة بوابات (أي netlist) في أنه يجعل تدفق المعلومات بين العمليات صريحاً وواضحاً، مما يُسهّل اتخاذ قرارات التحويل.
+
+يوضح هذا الدليل كيفية التعامل مع الـ DAGs واستخدامها لكتابة مراحل Transpiler مخصصة. سنبدأ ببناء دائرة بسيطة وفحص تمثيلها كـ DAG، ثم نستعرض العمليات الأساسية على الـ DAG، وننتهي بتطبيق مرحلة `BasicMapper` مخصصة.
+
+## بناء دائرة وفحص الـ DAG الخاص بها {#build-a-circuit-and-examine-its-dag}
+
+يوضح مقتطف الكود التالي الـ DAG عبر إنشاء دائرة بسيطة تُهيئ حالة Bell وتطبّق دوران $R_Z$ بناءً على نتيجة القياس.
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>إصدارات الحزم</b></summary>
+
+تم تطوير الكود في هذه الصفحة باستخدام المتطلبات التالية.
+ننصح باستخدام هذه الإصدارات أو أحدث منها.
+
+```
+qiskit[all]~=2.3.0
+```
+</details>
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit
+```
+
+```python
+from qiskit import QuantumRegister, ClassicalRegister, QuantumCircuit
+from qiskit.converters import circuit_to_dag
+from qiskit.visualization import circuit_drawer
+from qiskit.visualization.dag_visualization import dag_drawer
+
+# Create circuit
+q = QuantumRegister(3, "q")
+c = ClassicalRegister(3, "c")
+circ = QuantumCircuit(q, c)
+circ.h(q[0])
+circ.cx(q[0], q[1])
+circ.measure(q[0], c[0])
+
+# Qiskit 2.0 uses if_test instead of c_if
+with circ.if_test((c, 2)):
+    circ.rz(0.5, q[1])
+
+circuit_drawer(circ, output="mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/1d16892a-0.svg)
+
+في الـ DAG، توجد ثلاثة أنواع من عقد الرسم البياني: عقد الإدخال للـ Qubit/clbit (باللون الأخضر)، وعقد العمليات (باللون الأزرق)، وعقد الإخراج (باللون الأحمر). كل حافة تمثل تدفق البيانات (أو الاعتمادية) بين عقدتين. استخدم دالة `qiskit.tools.visualization.dag_drawer()` لعرض الـ DAG الخاص بهذه الدائرة. (يلزم تثبيت [مكتبة Graphviz](https://graphviz.org/download/) لتشغيل هذا.)
+
+```python
+# Convert to DAG
+dag = circuit_to_dag(circ)
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/e498faa3-0.avif)
+
+## العمليات الأساسية على الـ DAG {#basic-dag-operations}
+
+توضح أمثلة الكود التالية العمليات الشائعة على الـ DAGs، بما فيها الوصول إلى العقد وإضافة العمليات واستبدال الدوائر الفرعية. وتشكّل هذه العمليات الأساس لبناء مراحل الـ Transpiler.
+
+## الحصول على جميع عقد العمليات في الـ DAG {#get-all-operation-nodes-in-the-dag}
+تُعيد الدالة `op_nodes()` قائمة قابلة للتكرار من كائنات `DAGOpNode` الموجودة في الدائرة:
+
+```python
+dag.op_nodes()
+```
+
+```text
+[DAGOpNode(op=Instruction(name='h', num_qubits=1, num_clbits=0, params=[]), qargs=(<Qubit register=(3, "q"), index=0>,), cargs=()),
+ DAGOpNode(op=Instruction(name='cx', num_qubits=2, num_clbits=0, params=[]), qargs=(<Qubit register=(3, "q"), index=0>, <Qubit register=(3, "q"), index=1>), cargs=()),
+ DAGOpNode(op=Instruction(name='measure', num_qubits=1, num_clbits=1, params=[]), qargs=(<Qubit register=(3, "q"), index=0>,), cargs=(<Clbit register=(3, "c"), index=0>,)),
+ DAGOpNode(op=Instruction(name='if_else', num_qubits=1, num_clbits=3, params=[<qiskit.circuit.quantumcircuit.QuantumCircuit object at 0x7f912f47db10>, None]), qargs=(<Qubit register=(3, "q"), index=1>,), cargs=(<Clbit register=(3, "c"), index=0>, <Clbit register=(3, "c"), index=1>, <Clbit register=(3, "c"), index=2>))]
+```
+
+كل عقدة هي مثيل من الفئة `DAGOpNode`:
+
+```python
+node = dag.op_nodes()[3]
+print("node name:", node.name)
+print("op:", node.op)
+print("qargs:", node.qargs)
+print("cargs:", node.cargs)
+print("condition:", node.op.condition)
+```
+
+```text
+node name: if_else
+op: Instruction(name='if_else', num_qubits=1, num_clbits=3, params=[<qiskit.circuit.quantumcircuit.QuantumCircuit object at 0x7f912f4ceed0>, None])
+qargs: (<Qubit register=(3, "q"), index=1>,)
+cargs: (<Clbit register=(3, "c"), index=0>, <Clbit register=(3, "c"), index=1>, <Clbit register=(3, "c"), index=2>)
+condition: (ClassicalRegister(3, 'c'), 2)
+```
+
+## إضافة عملية إلى النهاية {#add-an-operation-to-the-back}
+تُضاف العملية إلى نهاية الـ DAGCircuit باستخدام الدالة `apply_operation_back()`. تُلحق هذه الدالة البوابة المحددة لتعمل على الـ Qubits المعطاة بعد جميع العمليات الموجودة في الدائرة.
+
+```python
+from qiskit.circuit.library import HGate
+
+dag.apply_operation_back(HGate(), qargs=[q[0]])
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/3c144b49-0.avif)
+
+## إضافة عملية إلى البداية {#add-an-operation-to-the-front}
+تُضاف العملية إلى بداية الـ DAGCircuit باستخدام الدالة `apply_operation_front()`. تُدرج هذه الدالة البوابة المحددة قبل جميع العمليات الموجودة في الدائرة، مما يجعلها أول عملية تُنفَّذ فعلياً.
+
+```python
+from qiskit.circuit.library import CCXGate
+
+dag.apply_operation_front(CCXGate(), qargs=[q[0], q[1], q[2]])
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/ed80a69f-0.avif)
+
+## استبدال عقدة بدائرة فرعية {#substitute-a-node-with-a-subcircuit}
+تُستبدل العقدة التي تمثل عملية معينة في الـ DAGCircuit بدائرة فرعية. أولاً، يُبنى DAG فرعي جديد يحتوي على تسلسل البوابات المطلوب، ثم تُستبدل العقدة المستهدفة بهذا الـ DAG الفرعي باستخدام `substitute_node_with_dag()`، مع الحفاظ على الاتصالات بباقي الدائرة.
+
+```python
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.circuit.library import CHGate, U2Gate, CXGate
+
+# Build sub-DAG
+mini_dag = DAGCircuit()
+p = QuantumRegister(2, "p")
+mini_dag.add_qreg(p)
+mini_dag.apply_operation_back(CHGate(), qargs=[p[1], p[0]])
+mini_dag.apply_operation_back(U2Gate(0.1, 0.2), qargs=[p[1]])
+
+# Replace CX with mini_dag
+cx_node = dag.op_nodes(op=CXGate).pop()
+dag.substitute_node_with_dag(cx_node, mini_dag, wires=[p[0], p[1]])
+dag_drawer(dag)
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/fdb3dd70-0.avif)
+
+بعد اكتمال جميع التحويلات، يمكن تحويل الـ DAG مجدداً إلى كائن `QuantumCircuit` اعتيادي. وهكذا تعمل خط أنابيب الـ Transpiler: تُؤخذ دائرة، تُعالَج على شكل DAG، ثم تُنتج دائرة محوَّلة كمخرج.
+
+```python
+from qiskit.converters import dag_to_circuit
+
+new_circ = dag_to_circuit(dag)
+circuit_drawer(new_circ, output="mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/786571f7-0.svg)
+
+## تطبيق مرحلة BasicMapper {#implement-a-basicmapper-pass}
+يمكن الاستفادة من بنية الـ DAG لكتابة مراحل Transpiler. في المثال أدناه، تُطبَّق مرحلة `BasicMapper` لربط دائرة اعتباطية بجهاز له قيود على الاتصال بين الـ Qubits. للمزيد من التوجيه، راجع دليل [كتابة مراحل Transpiler مخصصة](/guides/custom-transpiler-pass).
+
+تُعرَّف المرحلة على أنها `TransformationPass`، أي أنها تُعدِّل الدائرة. يتم ذلك بالمرور عبر الـ DAG طبقة تلو الأخرى، والتحقق مما إذا كانت كل تعليمة تستوفي القيود التي يفرضها خريطة الاقتران الخاصة بالجهاز. فإن اكتُشف انتهاك، يُحدَّد مسار التبديل المناسب وتُدرج بوابات SWAP اللازمة وفقاً لذلك.
+
+عند إنشاء مرحلة Transpiler، يكون القرار الأول هو اختيار ما إذا كانت المرحلة يجب أن ترث من `TransformationPass` أو `AnalysisPass`. صُمِّمت مراحل التحويل لتعديل الدائرة، في حين صُمِّمت مراحل التحليل فقط لاستخراج المعلومات لاستخدامها من قِبل المراحل اللاحقة. ثم تُطبَّق الوظيفة الرئيسية في الدالة `run(dag)`. وأخيراً، يجب تسجيل المرحلة ضمن وحدة `qiskit.transpiler.passes`.
+
+في هذه المرحلة تحديداً، يُجتاز الـ DAG طبقة تلو الأخرى (حيث تحتوي كل طبقة على عمليات تعمل على مجموعات منفصلة من الـ Qubits ويمكن بالتالي تنفيذها بشكل مستقل). لكل عملية، إذا لم تُستوفَ قيود خريطة الاقتران، يُحدَّد مسار تبديل مناسب وتُدرج عمليات التبديل اللازمة لتقريب الـ Qubits المعنية من بعضها.
+
+```python
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.transpiler import Layout
+from qiskit.circuit.library import SwapGate
+
+class BasicSwap(TransformationPass):
+    def __init__(self, coupling_map, initial_layout=None):
+        super().__init__()
+        self.coupling_map = coupling_map
+        self.initial_layout = initial_layout
+
+    def run(self, dag):
+        new_dag = DAGCircuit()
+        for qreg in dag.qregs.values():
+            new_dag.add_qreg(qreg)
+        for creg in dag.cregs.values():
+            new_dag.add_creg(creg)
+
+        if self.initial_layout is None:
+            self.initial_layout = Layout.generate_trivial_layout(
+                *dag.qregs.values()
+            )
+
+        current_layout = self.initial_layout.copy()
+
+        for layer in dag.serial_layers():
+            subdag = layer["graph"]
+            for gate in subdag.two_qubit_ops():
+                q0, q1 = gate.qargs
+                p0 = current_layout[q0]
+                p1 = current_layout[q1]
+
+                if self.coupling_map.distance(p0, p1) != 1:
+                    path = self.coupling_map.shortest_undirected_path(p0, p1)
+                    for i in range(len(path) - 2):
+                        wire1, wire2 = path[i], path[i + 1]
+                        qubit1 = current_layout[wire1]
+                        qubit2 = current_layout[wire2]
+                        new_dag.apply_operation_back(
+                            SwapGate(), qargs=[qubit1, qubit2]
+                        )
+                        current_layout.swap(wire1, wire2)
+
+            new_dag.compose(
+                subdag, qubits=current_layout.reorder_bits(new_dag.qubits)
+            )
+
+        return new_dag
+```
+
+يمكن الآن اختبار هذه المرحلة على دائرة مثال صغيرة. يُنشأ مدير مراحل (pass manager) يتضمن المرحلة المعرَّفة حديثاً. ثم تُمرَّر الدائرة المثال إلى هذا المدير، فتُنتج دائرة جديدة محوَّلة كمخرج.
+
+```python
+from qiskit.transpiler import CouplingMap, PassManager
+from qiskit import QuantumRegister, QuantumCircuit
+
+q = QuantumRegister(7, "q")
+in_circ = QuantumCircuit(q)
+in_circ.h(q[0])
+in_circ.cx(q[0], q[4])
+in_circ.cx(q[2], q[3])
+in_circ.cx(q[6], q[1])
+in_circ.cx(q[5], q[0])
+in_circ.rz(0.1, q[2])
+in_circ.cx(q[5], q[0])
+
+coupling = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6]]
+coupling_map = CouplingMap(couplinglist=coupling)
+
+pm = PassManager()
+pm.append(BasicSwap(coupling_map))
+
+out_circ = pm.run(in_circ)
+
+in_circ.draw(output="mpl")
+out_circ.draw(output="mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/DAG-representation/extracted-outputs/2f35375f-0.svg)
+
+## الخطوات التالية {#next-steps}
+
+<Admonition type="tip" title="توصيات">
+    - راجع الدليل حول إنشاء [مرحلة Transpiler مخصصة](./custom-transpiler-pass)
+    - تعلّم كيفية [إنشاء Backends مخصصة والـ Transpile إليها](./custom-backend)
+    - جرّب دليل [مقارنة إعدادات الـ Transpiler](/guides/circuit-transpilation-settings)
+    - راجع [توثيق DAG Circuit API](https://docs.quantum.ibm.com/api/qiskit/dagcircuit)
+</Admonition>

@@ -1,0 +1,1020 @@
+---
+title: "بناء قالب دالة Qiskit لمحاكاة هاميلتونيان"
+sidebar_label: "بناء قالب دالة Qiskit لمحاكاة هاميلتونيان"
+description: "كيفية إنشاء برنامج transpilation متوازٍ ونشره على منصة IBM Quantum لاستخدامه كخدمة عن بُعد قابلة لإعادة الاستخدام."
+notebook_path: "guides/function-template-hamiltonian-simulation.ipynb"
+---
+
+{/* doqumentation-source-hash: e227e7ed */}
+
+<OpenInLabBanner notebookPath="guides/function-template-hamiltonian-simulation.ipynb" />
+
+
+
+# بناء قالب دالة لمحاكاة هاميلتونيان {#build-a-function-template-for-hamiltonian-simulation}
+
+يُغلّف هذا القالب سير عمل لمحاكاة التطور الزمني لحالة ابتدائية مقارنةً بهاميلتونيان قائم على السبين يُعرّفه المستخدم، ويُعيد مجموعة من قيم التوقع المحددة باستخدام [إضافة AQC](./qiskit-addons-aqc).
+
+هذا القالب مُهيكل كنمط Qiskit يتضمن الخطوات التالية:
+
+#### 1. جمع المدخلات وتعيين المسألة {#collecting-input-and-mapping-the-problem}
+
+يأخذ هذا القسم كمدخلات: هاميلتونيان المراد محاكاته، وحالة ابتدائية على شكل `QuantumCircuit`، ومجموعة من المؤثرات لتقدير قيم التوقع، ومواصفات خيارات إضافة AQC. تتحقق هذه الخطوة من وجود جميع بيانات الإدخال المطلوبة وأنها بالتنسيق الصحيح.
+
+تُستخدم بعد ذلك وسيطات الإدخال لبناء الدوائر الكمومية والمؤثرات ذات الصلة لسير العمل. يُنشأ دائرة هدف، ويجري البحث عن تمثيل حالة جداء المصفوفة لهذه الدائرة باستخدام إضافة AQC. بعد ذلك، تُولَّد دائرة ansatz وتُحسَّن باستخدام طرق الشبكات الترابطية (tensor network)، مما ينتج دائرةً نهائية تُنفّذ بقية التطور الزمني.
+
+#### 2. إعداد الدوائر المولَّدة للتنفيذ {#prepare-the-generated-circuits-for-execution}
+
+تُحوَّل الدوائر المولَّدة من إضافة AQC بعد ذلك عبر الـ transpilation لتُنفَّذ على بيك‌اند مختار. يُنشأ نسخة من [`EstimatorV2`](../api/qiskit-ibm-runtime/estimator-v2) مع مجموعة افتراضية من خيارات تخفيف الأخطاء لإدارة تنفيذ الدائرة.
+
+#### 3. التنفيذ {#execution}
+
+أخيراً، تُحوَّل دائرة ansatz عبر الـ transpilation وتُنفَّذ على QPU، وتجمع التقديرات لجميع قيم التوقع المحددة، التي تُعاد بتنسيق قابل للتسلسل (serializable) ليتمكن المستخدم من الوصول إليها.
+
+## كتابة قالب الدالة {#write-the-function-template}
+
+أولاً، اكتب قالب دالة لمحاكاة هاميلتونيان يستخدم [إضافة AQC-Tensor لـ Qiskit](/guides/qiskit-addons-aqc) لتعيين وصف المسألة إلى دائرة ذات عمق مخفَّض للتنفيذ على العتاد.
+
+طوال العملية، يُحفظ الكود في `./source_files/template_hamiltonian_simulation.py`. هذا الملف هو قالب الدالة الذي يمكنك رفعه وتشغيله عن بُعد مع Qiskit Serverless.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q mergedeep numpy qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-ibm-catalog qiskit-ibm-runtime qiskit-serverless quimb scipy
+```
+
+```python
+# This cell is hidden from users, it just creates a new folder
+from pathlib import Path
+
+Path("./source_files").mkdir(exist_ok=True)
+```
+
+### جمع المدخلات والتحقق منها {#collect-and-validate-the-inputs}
+
+ابدأ بالحصول على مدخلات القالب. يحتوي هذا المثال على مدخلات خاصة بالمجال وذات صلة بمحاكاة هاميلتونيان (مثل هاميلتونيان والمؤثر)، وخيارات خاصة بالإمكانيات (مثل مقدار ضغط الطبقات الأولية من دائرة Trotter باستخدام AQC-Tensor، أو خيارات متقدمة لضبط دقيق لقمع الأخطاء وتخفيفها ما وراء الإعدادات الافتراضية المضمّنة في هذا المثال).
+
+```python
+%%writefile ./source_files/template_hamiltonian_simulation.py
+
+from qiskit import QuantumCircuit
+from qiskit_serverless import get_arguments, save_result
+
+# Extract parameters from arguments
+#
+# Do this at the top of the program so it fails early if any required arguments are missing or invalid.
+
+arguments = get_arguments()
+
+dry_run = arguments.get("dry_run", False)
+backend_name = arguments["backend_name"]
+
+aqc_evolution_time = arguments["aqc_evolution_time"]
+aqc_ansatz_num_trotter_steps = arguments["aqc_ansatz_num_trotter_steps"]
+aqc_target_num_trotter_steps = arguments["aqc_target_num_trotter_steps"]
+
+remainder_evolution_time = arguments["remainder_evolution_time"]
+remainder_num_trotter_steps = arguments["remainder_num_trotter_steps"]
+
+# Stop if this fidelity is achieved
+aqc_stopping_fidelity = arguments.get("aqc_stopping_fidelity", 1.0)
+# Stop after this number of iterations, even if stopping fidelity is not achieved
+aqc_max_iterations = arguments.get("aqc_max_iterations", 500)
+
+hamiltonian = arguments["hamiltonian"]
+observable = arguments["observable"]
+initial_state = arguments.get("initial_state", QuantumCircuit(hamiltonian.num_qubits))
+```
+
+```text
+Writing ./source_files/template_hamiltonian_simulation.py
+```
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+import numpy as np
+import json
+from mergedeep import merge
+
+# Configure `EstimatorOptions`, to control the parameters of the hardware experiment
+#
+# Set default options
+estimator_default_options = {
+    "resilience": {
+        "measure_mitigation": True,
+        "zne_mitigation": True,
+        "zne": {
+            "amplifier": "gate_folding",
+            "noise_factors": [1, 2, 3],
+            "extrapolated_noise_factors": list(np.linspace(0, 3, 31)),
+            "extrapolator": ["exponential", "linear", "fallback"],
+        },
+        "measure_noise_learning": {
+            "num_randomizations": 512,
+            "shots_per_randomization": 512,
+        },
+    },
+    "twirling": {
+        "enable_gates": True,
+        "enable_measure": True,
+        "num_randomizations": 300,
+        "shots_per_randomization": 100,
+        "strategy": "active",
+    },
+}
+# Merge with user-provided options
+estimator_options = merge(
+    arguments.get("estimator_options", {}), estimator_default_options
+)
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+حين يعمل قالب الدالة، يُفيد إرجاع المعلومات في السجلات باستخدام عبارات print، حتى تتمكن من تقييم تقدم حمل العمل بشكل أفضل. فيما يلي مثال بسيط على طباعة `estimator_options` لتبقى سجلاً بخيارات Estimator الفعلية المستخدمة. ثمة أمثلة مشابهة كثيرة أخرى في أنحاء البرنامج للإبلاغ عن التقدم أثناء التنفيذ، بما في ذلك قيمة الدالة الهدف خلال المكوّن التكراري لـ AQC-Tensor، وعمق البوابتين الكيوبتيتين لدائرة بنية مجموعة التعليمات (ISA) النهائية المُعدَّة للتنفيذ على العتاد.
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+print("estimator_options =", json.dumps(estimator_options, indent=4))
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+#### التحقق من المدخلات {#validate-the-inputs}
+
+جانب مهم من ضمان إمكانية إعادة استخدام القالب عبر نطاق من المدخلات هو التحقق من المدخلات. الكود التالي مثال على التحقق من أن دقة الإيقاف (stopping fidelity) أثناء AQC-Tensor قد حُدِّدت بشكل مناسب، وإن لم تكن كذلك، يُعيد رسالة خطأ مفيدة توضح كيفية إصلاح الخطأ.
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+# Perform parameter validation
+
+if not 0.0 < aqc_stopping_fidelity <= 1.0:
+    raise ValueError(
+        f"Invalid stopping fidelity: {aqc_stopping_fidelity}.  It must be a positive float no greater than 1."
+    )
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+#### إعداد مخرجات الدالة {#prepare-the-function-outputs}
+
+أولاً، أعدَّ قاموساً لحفظ جميع مخرجات قالب الدالة. ستُضاف مفاتيح إلى هذا القاموس طوال سير العمل، ويُعاد في نهاية البرنامج.
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+output = {}
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+### تعيين المسألة ومعالجة الدائرة مسبقاً باستخدام AQC {#map-the-problem-and-pre-process-the-circuit-with-aqc}
+
+يحدث تحسين AQC-Tensor في الخطوة 1 من نمط Qiskit. أولاً، تُنشأ حالة هدف. في هذا المثال، تُبنى من دائرة هدف تُطوِّر نفس الهاميلتونيان للفترة الزمنية نفسها مثل الجزء الخاص بـ AQC. بعد ذلك، يُولَّد ansatz من دائرة مكافئة لكن بخطوات Trotter أقل. في الجزء الرئيسي من خوارزمية AQC، يُقرَّب ذلك الـ ansatz تكرارياً من الحالة الهدف. أخيراً، يُدمج الناتج مع بقية خطوات Trotter اللازمة للوصول إلى وقت التطور المطلوب.
+
+لاحظ الأمثلة الإضافية للتسجيل المدمجة في الكود التالي.
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+import os
+os.environ["NUMBA_CACHE_DIR"] = "/data"
+
+import datetime
+import quimb.tensor
+from scipy.optimize import OptimizeResult, minimize
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+from qiskit_addon_aqc_tensor.ansatz_generation import (
+    generate_ansatz_from_circuit,
+    AnsatzBlock,
+)
+from qiskit_addon_aqc_tensor.simulation import (
+    tensornetwork_from_circuit,
+    compute_overlap,
+)
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_addon_aqc_tensor.objective import OneMinusFidelity
+
+print("Hamiltonian:", hamiltonian)
+print("Observable:", observable)
+simulator_settings = QuimbSimulator(quimb.tensor.CircuitMPS, autodiff_backend="jax")
+
+# Construct the AQC target circuit
+aqc_target_circuit = initial_state.copy()
+if aqc_evolution_time:
+    aqc_target_circuit.compose(
+        generate_time_evolution_circuit(
+            hamiltonian,
+            synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+            time=aqc_evolution_time,
+        ),
+        inplace=True,
+    )
+
+# Construct matrix-product state representation of the AQC target state
+aqc_target_mps = tensornetwork_from_circuit(aqc_target_circuit, simulator_settings)
+print("Target MPS maximum bond dimension:", aqc_target_mps.psi.max_bond())
+output["target_bond_dimension"] = aqc_target_mps.psi.max_bond()
+
+# Generate an ansatz and initial parameters from a Trotter circuit with fewer steps
+aqc_good_circuit = initial_state.copy()
+if aqc_evolution_time:
+    aqc_good_circuit.compose(
+        generate_time_evolution_circuit(
+            hamiltonian,
+            synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+            time=aqc_evolution_time,
+        ),
+        inplace=True,
+    )
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(aqc_good_circuit)
+print("Number of AQC parameters:", len(aqc_initial_parameters))
+output["num_aqc_parameters"] = len(aqc_initial_parameters)
+
+# Calculate the fidelity of ansatz circuit vs. the target state, before optimization
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Starting fidelity of AQC portion:", starting_fidelity)
+output["aqc_starting_fidelity"] = starting_fidelity
+
+# Optimize the ansatz parameters by using MPS calculations
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(f"{datetime.datetime.now()} Intermediate result: Fidelity {fidelity:.8f}")
+    if intermediate_result.fun < stopping_point:
+        raise StopIteration
+
+objective = OneMinusFidelity(aqc_target_mps, aqc_ansatz, simulator_settings)
+stopping_point = 1.0 - aqc_stopping_fidelity
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if result.status not in (
+    0,
+    1,
+    99,
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+print(f"Done after {result.nit} iterations.")
+output["num_iterations"] = result.nit
+aqc_final_parameters = result.x
+output["aqc_final_parameters"] = list(aqc_final_parameters)
+
+# Construct an optimized circuit for initial portion of time evolution
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+
+# Calculate fidelity after optimization
+aqc_final_mps = tensornetwork_from_circuit(aqc_final_circuit, simulator_settings)
+aqc_fidelity = abs(compute_overlap(aqc_final_mps, aqc_target_mps)) ** 2
+print("Fidelity of AQC portion:", aqc_fidelity)
+output["aqc_fidelity"] = aqc_fidelity
+
+# Construct final circuit, with remainder of time evolution
+final_circuit = aqc_final_circuit.copy()
+if remainder_evolution_time:
+    remainder_circuit = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=remainder_num_trotter_steps),
+        time=remainder_evolution_time,
+    )
+    final_circuit.compose(remainder_circuit, inplace=True)
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+### تحسين الدائرة النهائية للتنفيذ {#optimize-the-final-circuit-for-execution}
+
+بعد الانتهاء من جزء AQC في سير العمل، تُحوَّل `final_circuit` عبر الـ [transpilation للعتاد](/guides/transpile#instruction-set-architecture) كالمعتاد.
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.transpiler import generate_preset_pass_manager
+
+service = QiskitRuntimeService()
+backend = service.backend(backend_name)
+
+# Transpile PUBs (circuits and observables) to match ISA
+pass_manager = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuit = pass_manager.run(final_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+isa_2qubit_depth = isa_circuit.depth(lambda x: x.operation.num_qubits == 2)
+print("ISA circuit two-qubit depth:", isa_2qubit_depth)
+output["twoqubit_depth"] = isa_2qubit_depth
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+#### الخروج المبكر عند استخدام وضع التجربة الجافة {#exit-early-if-using-dry-run-mode}
+
+إذا تم تحديد وضع التجربة الجافة (dry run)، يتوقف البرنامج قبل التنفيذ على العتاد. قد يكون هذا مفيداً إذا أردت مثلاً فحص عمق البوابتين الكيوبتيتين لدائرة ISA قبل اتخاذ قرار التنفيذ على العتاد.
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+# Exit now if dry run; don't execute on hardware
+if dry_run:
+    import sys
+
+    print("Exiting before hardware execution since `dry_run` is True.")
+    save_result(output)
+    sys.exit(0)
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+#### تنفيذ الدائرة على العتاد {#execute-the-circuit-on-hardware}
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+# ## Step 3: Execute quantum experiments on backend
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+estimator = Estimator(backend, options=estimator_options)
+
+# Submit the underlying Estimator job. Note that this is not the
+# actual function job.
+job = estimator.run([(isa_circuit, isa_observable)])
+print("Job ID:", job.job_id())
+output["job_id"] = job.job_id()
+
+# Wait until job is complete
+hw_results = job.result()
+hw_results_dicts = [pub_result.data.__dict__ for pub_result in hw_results]
+
+# Save hardware results to serverless output dictionary
+output["hw_results"] = hw_results_dicts
+
+# Reorganize expectation values
+hw_expvals = [pub_result_data["evs"].tolist() for pub_result_data in hw_results_dicts]
+
+# Save expectation values to Qiskit Serverless
+print("Hardware expectation values", hw_expvals)
+output["hw_expvals"] = hw_expvals[0]
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+
+#### حفظ المخرجات {#save-the-output}
+
+يُعيد قالب الدالة هذا المخرجات ذات الصلة على مستوى المجال لسير عمل محاكاة هاميلتونيان (قيم التوقع) إضافةً إلى البيانات الوصفية المهمة التي تُولَّد على طول الطريق.
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+save_result(output)
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
+## نشر الدالة على منصة IBM Quantum {#deploy-the-function-to-ibm-quantum-platform}
+
+القسم السابق أنشأ برنامجًا يُشغَّل عن بُعد. الكود في هذا القسم يرفع ذلك البرنامج إلى Qiskit Serverless.
+
+استخدم `qiskit-ibm-catalog` للمصادقة على `QiskitServerless` بمفتاح API الخاص بك، الذي يمكنك إيجاده على لوحة تحكم [IBM Quantum Platform](https://quantum.cloud.ibm.com)، ثم ارفع البرنامج.
+
+يمكنك اختياريًا استخدام `save_account()` لحفظ بيانات اعتمادك (راجع دليل [إعداد حساب IBM Cloud الخاص بك](/guides/cloud-setup#cloud-save)). لاحظ أن هذا يكتب بيانات الاعتماد في نفس الملف المستخدم بواسطة [`QiskitRuntimeService.save_account()`.](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/qiskit-runtime-service#save_account)
+
+```python
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+
+# Authenticate to the remote cluster and submit the pattern for remote execution
+serverless = QiskitServerless()
+```
+
+هذا البرنامج يحتوي على تبعيات `pip` مخصصة. أضفها إلى مصفوفة `dependencies` عند إنشاء نسخة `QiskitFunction`:
+
+```python
+template = QiskitFunction(
+    title="template_hamiltonian_simulation",
+    entrypoint="template_hamiltonian_simulation.py",
+    working_dir="./source_files/",
+    dependencies=[
+        "qiskit-addon-utils~=0.1.0",
+        "qiskit-addon-aqc-tensor[quimb-jax]~=0.1.2",
+        "mergedeep==1.3.4",
+    ],
+)
+```
+
+```python
+serverless.upload(template)
+```
+
+```text
+QiskitFunction(template_hamiltonian_simulation)
+```
+
+أخيرًا، للتحقق من أن البرنامج رُفع بنجاح، استخدم `serverless.list()`:
+
+```python
+serverless.list()
+```
+
+```text
+QiskitFunction(template_hamiltonian_simulation),
+```
+
+## تشغيل قالب الدالة عن بُعد {#run-the-function-template-remotely}
+
+تم رفع قالب الدالة، لذا يمكنك الآن تشغيله عن بُعد باستخدام Qiskit Serverless. أولًا، حمِّل القالب بالاسم:
+
+```python
+template = serverless.load("template_hamiltonian_simulation")
+```
+
+بعد ذلك، شغِّل القالب بالمدخلات على المستوى التطبيقي لمحاكاة هاميلتونيان. يحدد هذا المثال نموذج XXZ مكوَّن من 50 Qubit مع ترابطات عشوائية، وحالة ابتدائية ومؤثر رصد.
+
+```python
+from itertools import chain
+import numpy as np
+from qiskit.quantum_info import SparsePauliOp
+
+L = 50
+
+# Generate the edge list for this spin-chain
+edges = [(i, i + 1) for i in range(L - 1)]
+# Generate an edge-coloring so we can make hw-efficient circuits
+edges = edges[::2] + edges[1::2]
+
+# Generate random coefficients for our XXZ Hamiltonian
+np.random.seed(0)
+Js = np.random.rand(L - 1) + 0.5 * np.ones(L - 1)
+
+hamiltonian = SparsePauliOp.from_sparse_list(
+    chain.from_iterable(
+        [
+            [
+                ("XX", (i, j), Js[i] / 2),
+                ("YY", (i, j), Js[i] / 2),
+                ("ZZ", (i, j), Js[i]),
+            ]
+            for i, j in edges
+        ]
+    ),
+    num_qubits=L,
+)
+observable = SparsePauliOp.from_sparse_list(
+    [("ZZ", (L // 2 - 1, L // 2), 1.0)], num_qubits=L
+)
+```
+
+```python
+from qiskit import QuantumCircuit
+
+initial_state = QuantumCircuit(L)
+for i in range(L):
+    if i % 2:
+        initial_state.x(i)
+```
+
+```python
+job = template.run(
+    dry_run=True,
+    initial_state=initial_state,
+    hamiltonian=hamiltonian,
+    observable=observable,
+    backend_name="ibm_fez",
+    estimator_options={},
+    aqc_evolution_time=0.2,
+    aqc_ansatz_num_trotter_steps=1,
+    aqc_target_num_trotter_steps=32,
+    remainder_evolution_time=0.2,
+    remainder_num_trotter_steps=4,
+    aqc_max_iterations=300,
+)
+print(job.job_id)
+```
+
+```text
+853b0edb-d63f-4629-be71-398b6dcf33cb
+```
+
+تحقق من حالة المهمة:
+
+```python
+job.status()
+```
+
+```text
+'QUEUED'
+```
+
+بعد أن تبدأ المهمة بالتشغيل، يمكنك جلب السجلات الناتجة عن استدعاءات `print()`. يمكن أن تقدم هذه السجلات معلومات مفيدة حول تقدم سير عمل محاكاة هاميلتونيان؛ مثلًا، قيمة دالة الهدف خلال المكوِّن التكراري لـ AQC، أو عمق البوابات الثنائية Qubit لدائرة ISA النهائية المعدَّة للتنفيذ على العتاد الفعلي.
+
+```python
+print(job.logs())
+```
+
+```text
+No logs yet.
+```
+
+أوقف بقية البرنامج حتى تصبح النتيجة متاحة. بعد انتهاء المهمة، يمكنك استرجاع النتائج. تشمل هذه النتائج مخرجات محاكاة هاميلتونيان على المستوى التطبيقي (قيمة التوقع) وبيانات وصفية مفيدة.
+
+```python
+result = job.result()
+
+del result[
+    "aqc_final_parameters"
+]  # the list is too long to conveniently display here
+result
+```
+
+```text
+{'target_bond_dimension': 5,
+ 'num_aqc_parameters': 816,
+ 'aqc_starting_fidelity': 0.9914382555614002,
+ 'num_iterations': 72,
+ 'aqc_fidelity': 0.9998108844412502,
+ 'twoqubit_depth': 33}
+```
+
+بعد اكتمال المهمة، سيصبح مخرج السجل الكامل متاحًا.
+
+```python
+print(job.logs())
+```
+
+```text
+2024-12-17 14:50:15,580	INFO job_manager.py:531 -- Runtime env is setting up.
+estimator_options = {
+    "resilience": {
+        "measure_mitigation": true,
+        "zne_mitigation": true,
+        "zne": {
+            "amplifier": "gate_folding",
+            "noise_factors": [
+                1,
+                2,
+                3
+            ],
+            "extrapolated_noise_factors": [
+                0.0,
+                0.1,
+                0.2,
+                0.30000000000000004,
+                0.4,
+                0.5,
+                0.6000000000000001,
+                0.7000000000000001,
+                0.8,
+                0.9,
+                1.0,
+                1.1,
+                1.2000000000000002,
+                1.3,
+                1.4000000000000001,
+                1.5,
+                1.6,
+                1.7000000000000002,
+                1.8,
+                1.9000000000000001,
+                2.0,
+                2.1,
+                2.2,
+                2.3000000000000003,
+                2.4000000000000004,
+                2.5,
+                2.6,
+                2.7,
+                2.8000000000000003,
+                2.9000000000000004,
+                3.0
+            ],
+            "extrapolator": [
+                "exponential",
+                "linear",
+                "fallback"
+            ]
+        },
+        "measure_noise_learning": {
+            "num_randomizations": 512,
+            "shots_per_randomization": 512
+        }
+    },
+    "twirling": {
+        "enable_gates": true,
+        "enable_measure": true,
+        "num_randomizations": 300,
+        "shots_per_randomization": 100,
+        "strategy": "active"
+    }
+}
+Hamiltonian: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXX', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYY', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'XXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'YYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZI', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IXXIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IYYIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[0.52440675+0.j, 0.52440675+0.j, 1.0488135 +0.j, 0.55138169+0.j,
+ 0.55138169+0.j, 1.10276338+0.j, 0.4618274 +0.j, 0.4618274 +0.j,
+ 0.9236548 +0.j, 0.46879361+0.j, 0.46879361+0.j, 0.93758721+0.j,
+ 0.73183138+0.j, 0.73183138+0.j, 1.46366276+0.j, 0.64586252+0.j,
+ 0.64586252+0.j, 1.29172504+0.j, 0.53402228+0.j, 0.53402228+0.j,
+ 1.06804456+0.j, 0.28551803+0.j, 0.28551803+0.j, 0.57103606+0.j,
+ 0.2601092 +0.j, 0.2601092 +0.j, 0.5202184 +0.j, 0.63907838+0.j,
+ 0.63907838+0.j, 1.27815675+0.j, 0.73930917+0.j, 0.73930917+0.j,
+ 1.47861834+0.j, 0.48073968+0.j, 0.48073968+0.j, 0.96147936+0.j,
+ 0.30913721+0.j, 0.30913721+0.j, 0.61827443+0.j, 0.32167664+0.j,
+ 0.32167664+0.j, 0.64335329+0.j, 0.51092416+0.j, 0.51092416+0.j,
+ 1.02184832+0.j, 0.38227781+0.j, 0.38227781+0.j, 0.76455561+0.j,
+ 0.47807517+0.j, 0.47807517+0.j, 0.95615033+0.j, 0.2593949 +0.j,
+ 0.2593949 +0.j, 0.5187898 +0.j, 0.55604786+0.j, 0.55604786+0.j,
+ 1.11209572+0.j, 0.72187404+0.j, 0.72187404+0.j, 1.44374808+0.j,
+ 0.42975395+0.j, 0.42975395+0.j, 0.8595079 +0.j, 0.5988156 +0.j,
+ 0.5988156 +0.j, 1.1976312 +0.j, 0.58338336+0.j, 0.58338336+0.j,
+ 1.16676672+0.j, 0.35519128+0.j, 0.35519128+0.j, 0.71038256+0.j,
+ 0.40771418+0.j, 0.40771418+0.j, 0.81542835+0.j, 0.60759468+0.j,
+ 0.60759468+0.j, 1.21518937+0.j, 0.52244159+0.j, 0.52244159+0.j,
+ 1.04488318+0.j, 0.57294706+0.j, 0.57294706+0.j, 1.14589411+0.j,
+ 0.6958865 +0.j, 0.6958865 +0.j, 1.391773  +0.j, 0.44172076+0.j,
+ 0.44172076+0.j, 0.88344152+0.j, 0.51444746+0.j, 0.51444746+0.j,
+ 1.02889492+0.j, 0.71279832+0.j, 0.71279832+0.j, 1.42559664+0.j,
+ 0.29356465+0.j, 0.29356465+0.j, 0.5871293 +0.j, 0.66630992+0.j,
+ 0.66630992+0.j, 1.33261985+0.j, 0.68500607+0.j, 0.68500607+0.j,
+ 1.37001215+0.j, 0.64957928+0.j, 0.64957928+0.j, 1.29915856+0.j,
+ 0.64026459+0.j, 0.64026459+0.j, 1.28052918+0.j, 0.56996051+0.j,
+ 0.56996051+0.j, 1.13992102+0.j, 0.72233446+0.j, 0.72233446+0.j,
+ 1.44466892+0.j, 0.45733097+0.j, 0.45733097+0.j, 0.91466194+0.j,
+ 0.63711684+0.j, 0.63711684+0.j, 1.27423369+0.j, 0.53421697+0.j,
+ 0.53421697+0.j, 1.06843395+0.j, 0.55881775+0.j, 0.55881775+0.j,
+ 1.1176355 +0.j, 0.558467  +0.j, 0.558467  +0.j, 1.116934  +0.j,
+ 0.59091015+0.j, 0.59091015+0.j, 1.1818203 +0.j, 0.46851598+0.j,
+ 0.46851598+0.j, 0.93703195+0.j, 0.28011274+0.j, 0.28011274+0.j,
+ 0.56022547+0.j, 0.58531893+0.j, 0.58531893+0.j, 1.17063787+0.j,
+ 0.31446315+0.j, 0.31446315+0.j, 0.6289263 +0.j])
+Observable: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+Target MPS maximum bond dimension: 5
+Number of AQC parameters: 816
+Starting fidelity of AQC portion: 0.9914382555614002
+2024-12-17 14:52:23.400028 Intermediate result: Fidelity 0.99764093
+2024-12-17 14:52:23.429669 Intermediate result: Fidelity 0.99788003
+2024-12-17 14:52:23.459674 Intermediate result: Fidelity 0.99795970
+2024-12-17 14:52:23.489666 Intermediate result: Fidelity 0.99799067
+2024-12-17 14:52:23.518545 Intermediate result: Fidelity 0.99803401
+2024-12-17 14:52:23.546952 Intermediate result: Fidelity 0.99809821
+2024-12-17 14:52:23.575271 Intermediate result: Fidelity 0.99824660
+2024-12-17 14:52:23.604049 Intermediate result: Fidelity 0.99845326
+2024-12-17 14:52:23.632709 Intermediate result: Fidelity 0.99870497
+2024-12-17 14:52:23.660527 Intermediate result: Fidelity 0.99891442
+2024-12-17 14:52:23.688273 Intermediate result: Fidelity 0.99904488
+2024-12-17 14:52:23.716105 Intermediate result: Fidelity 0.99914438
+2024-12-17 14:52:23.744336 Intermediate result: Fidelity 0.99922827
+2024-12-17 14:52:23.773399 Intermediate result: Fidelity 0.99929071
+2024-12-17 14:52:23.801482 Intermediate result: Fidelity 0.99932432
+2024-12-17 14:52:23.830466 Intermediate result: Fidelity 0.99936460
+2024-12-17 14:52:23.860738 Intermediate result: Fidelity 0.99938891
+2024-12-17 14:52:23.889958 Intermediate result: Fidelity 0.99940607
+2024-12-17 14:52:23.918703 Intermediate result: Fidelity 0.99941965
+2024-12-17 14:52:23.949744 Intermediate result: Fidelity 0.99944337
+2024-12-17 14:52:23.980871 Intermediate result: Fidelity 0.99946875
+2024-12-17 14:52:24.012124 Intermediate result: Fidelity 0.99949009
+2024-12-17 14:52:24.044359 Intermediate result: Fidelity 0.99952191
+2024-12-17 14:52:24.075840 Intermediate result: Fidelity 0.99953669
+2024-12-17 14:52:24.106303 Intermediate result: Fidelity 0.99955242
+2024-12-17 14:52:24.139329 Intermediate result: Fidelity 0.99958412
+2024-12-17 14:52:24.169725 Intermediate result: Fidelity 0.99960176
+2024-12-17 14:52:24.198749 Intermediate result: Fidelity 0.99961606
+2024-12-17 14:52:24.227874 Intermediate result: Fidelity 0.99963811
+2024-12-17 14:52:24.256818 Intermediate result: Fidelity 0.99964383
+2024-12-17 14:52:24.285889 Intermediate result: Fidelity 0.99964717
+2024-12-17 14:52:24.315228 Intermediate result: Fidelity 0.99966064
+2024-12-17 14:52:24.345322 Intermediate result: Fidelity 0.99966517
+2024-12-17 14:52:24.374921 Intermediate result: Fidelity 0.99967089
+2024-12-17 14:52:24.404309 Intermediate result: Fidelity 0.99968305
+2024-12-17 14:52:24.432664 Intermediate result: Fidelity 0.99968889
+2024-12-17 14:52:24.461639 Intermediate result: Fidelity 0.99969997
+2024-12-17 14:52:24.491244 Intermediate result: Fidelity 0.99971666
+2024-12-17 14:52:24.520354 Intermediate result: Fidelity 0.99972441
+2024-12-17 14:52:24.549965 Intermediate result: Fidelity 0.99973561
+2024-12-17 14:52:24.583464 Intermediate result: Fidelity 0.99973811
+2024-12-17 14:52:24.617537 Intermediate result: Fidelity 0.99974074
+2024-12-17 14:52:24.652247 Intermediate result: Fidelity 0.99974467
+2024-12-17 14:52:24.686831 Intermediate result: Fidelity 0.99974991
+2024-12-17 14:52:24.725476 Intermediate result: Fidelity 0.99975230
+2024-12-17 14:52:24.764637 Intermediate result: Fidelity 0.99975373
+2024-12-17 14:52:24.802499 Intermediate result: Fidelity 0.99975552
+2024-12-17 14:52:24.839960 Intermediate result: Fidelity 0.99975885
+2024-12-17 14:52:24.877472 Intermediate result: Fidelity 0.99976469
+2024-12-17 14:52:24.916233 Intermediate result: Fidelity 0.99976517
+2024-12-17 14:52:24.993750 Intermediate result: Fidelity 0.99976875
+2024-12-17 14:52:25.034953 Intermediate result: Fidelity 0.99976887
+2024-12-17 14:52:25.076197 Intermediate result: Fidelity 0.99977244
+2024-12-17 14:52:25.112340 Intermediate result: Fidelity 0.99977638
+2024-12-17 14:52:25.149947 Intermediate result: Fidelity 0.99977828
+2024-12-17 14:52:25.190049 Intermediate result: Fidelity 0.99978174
+2024-12-17 14:52:25.310903 Intermediate result: Fidelity 0.99978222
+2024-12-17 14:52:25.347512 Intermediate result: Fidelity 0.99978508
+2024-12-17 14:52:25.385201 Intermediate result: Fidelity 0.99978543
+2024-12-17 14:52:25.457436 Intermediate result: Fidelity 0.99978770
+2024-12-17 14:52:25.497133 Intermediate result: Fidelity 0.99978818
+2024-12-17 14:52:25.541179 Intermediate result: Fidelity 0.99978913
+2024-12-17 14:52:25.584791 Intermediate result: Fidelity 0.99978937
+2024-12-17 14:52:25.621484 Intermediate result: Fidelity 0.99979068
+2024-12-17 14:52:25.655847 Intermediate result: Fidelity 0.99979211
+2024-12-17 14:52:25.691710 Intermediate result: Fidelity 0.99979700
+2024-12-17 14:52:25.767711 Intermediate result: Fidelity 0.99979759
+2024-12-17 14:52:25.804517 Intermediate result: Fidelity 0.99979807
+2024-12-17 14:52:25.839394 Intermediate result: Fidelity 0.99980236
+2024-12-17 14:52:25.874438 Intermediate result: Fidelity 0.99980296
+2024-12-17 14:52:25.909900 Intermediate result: Fidelity 0.99980320
+2024-12-17 14:52:26.713044 Intermediate result: Fidelity 0.99980320
+Done after 72 iterations.
+Fidelity of AQC portion: 0.9998108844412502
+ISA circuit two-qubit depth: 33
+Exiting before hardware execution since `dry_run` is True.
+```
+## الخطوات التالية {#next-steps}
+
+<Admonition type="info" title="توصيات">
+
+للتعمق أكثر في إضافة AQC-Tensor لـ Qiskit، اطّلع على درس [تطوّر زمني لتروتر المحسَّن باستخدام التصريف الكمي التقريبي](/tutorials/approximate-quantum-compilation-for-time-evolution) أو [مستودع qiskit-addon-aqc-tensor](https://github.com/Qiskit/qiskit-addon-aqc-tensor).
+
+</Admonition>
+
+```python
+%%writefile ./source_files/template_hamiltonian_simulation_full.py
+
+from qiskit import QuantumCircuit
+from qiskit_serverless import get_arguments, save_result
+
+# Extract parameters from arguments
+#
+# Do this at the top of the program so it fails early if any required arguments are missing or invalid.
+
+arguments = get_arguments()
+
+dry_run = arguments.get("dry_run", False)
+backend_name = arguments["backend_name"]
+
+aqc_evolution_time = arguments["aqc_evolution_time"]
+aqc_ansatz_num_trotter_steps = arguments["aqc_ansatz_num_trotter_steps"]
+aqc_target_num_trotter_steps = arguments["aqc_target_num_trotter_steps"]
+
+remainder_evolution_time = arguments["remainder_evolution_time"]
+remainder_num_trotter_steps = arguments["remainder_num_trotter_steps"]
+
+# Stop if this fidelity is achieved
+aqc_stopping_fidelity = arguments.get("aqc_stopping_fidelity", 1.0)
+# Stop after this number of iterations, even if stopping fidelity is not achieved
+aqc_max_iterations = arguments.get("aqc_max_iterations", 500)
+
+hamiltonian = arguments["hamiltonian"]
+observable = arguments["observable"]
+initial_state = arguments.get("initial_state", QuantumCircuit(hamiltonian.num_qubits))
+
+import numpy as np
+import json
+from mergedeep import merge
+
+# Configure `EstimatorOptions`, to control the parameters of the hardware experiment
+#
+# Set default options
+estimator_default_options = {
+    "resilience": {
+        "measure_mitigation": True,
+        "zne_mitigation": True,
+        "zne": {
+            "amplifier": "gate_folding",
+            "noise_factors": [1, 2, 3],
+            "extrapolated_noise_factors": list(np.linspace(0, 3, 31)),
+            "extrapolator": ["exponential", "linear", "fallback"],
+        },
+        "measure_noise_learning": {
+            "num_randomizations": 512,
+            "shots_per_randomization": 512,
+        },
+    },
+    "twirling": {
+        "enable_gates": True,
+        "enable_measure": True,
+        "num_randomizations": 300,
+        "shots_per_randomization": 100,
+        "strategy": "active",
+    },
+}
+# Merge with user-provided options
+estimator_options = merge(
+    arguments.get("estimator_options", {}), estimator_default_options
+)
+
+print("estimator_options =", json.dumps(estimator_options, indent=4))
+
+# Perform parameter validation
+
+if not 0.0 < aqc_stopping_fidelity <= 1.0:
+    raise ValueError(
+        f"Invalid stopping fidelity: {aqc_stopping_fidelity}.  It must be a positive float no greater than 1."
+    )
+
+output = {}
+
+import os
+os.environ["NUMBA_CACHE_DIR"] = "/data"
+
+import datetime
+import quimb.tensor
+from scipy.optimize import OptimizeResult, minimize
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+from qiskit_addon_aqc_tensor.ansatz_generation import (
+    generate_ansatz_from_circuit,
+    AnsatzBlock,
+)
+from qiskit_addon_aqc_tensor.simulation import (
+    tensornetwork_from_circuit,
+    compute_overlap,
+)
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_addon_aqc_tensor.objective import OneMinusFidelity
+
+print("Hamiltonian:", hamiltonian)
+print("Observable:", observable)
+simulator_settings = QuimbSimulator(quimb.tensor.CircuitMPS, autodiff_backend="jax")
+
+# Construct the AQC target circuit
+aqc_target_circuit = initial_state.copy()
+if aqc_evolution_time:
+    aqc_target_circuit.compose(
+        generate_time_evolution_circuit(
+            hamiltonian,
+            synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+            time=aqc_evolution_time,
+        ),
+        inplace=True,
+    )
+
+# Construct matrix-product state representation of the AQC target state
+aqc_target_mps = tensornetwork_from_circuit(aqc_target_circuit, simulator_settings)
+print("Target MPS maximum bond dimension:", aqc_target_mps.psi.max_bond())
+output["target_bond_dimension"] = aqc_target_mps.psi.max_bond()
+
+# Generate an ansatz and initial parameters from a Trotter circuit with fewer steps
+aqc_good_circuit = initial_state.copy()
+if aqc_evolution_time:
+    aqc_good_circuit.compose(
+        generate_time_evolution_circuit(
+            hamiltonian,
+            synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+            time=aqc_evolution_time,
+        ),
+        inplace=True,
+    )
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(aqc_good_circuit)
+print("Number of AQC parameters:", len(aqc_initial_parameters))
+output["num_aqc_parameters"] = len(aqc_initial_parameters)
+
+# Calculate the fidelity of ansatz circuit vs. the target state, before optimization
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Starting fidelity of AQC portion:", starting_fidelity)
+output["aqc_starting_fidelity"] = starting_fidelity
+
+# Optimize the ansatz parameters by using MPS calculations
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(f"{datetime.datetime.now()} Intermediate result: Fidelity {fidelity:.8f}")
+    if intermediate_result.fun < stopping_point:
+        raise StopIteration
+
+objective = OneMinusFidelity(aqc_target_mps, aqc_ansatz, simulator_settings)
+stopping_point = 1.0 - aqc_stopping_fidelity
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if result.status not in (
+    0,
+    1,
+    99,
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+print(f"Done after {result.nit} iterations.")
+output["num_iterations"] = result.nit
+aqc_final_parameters = result.x
+output["aqc_final_parameters"] = list(aqc_final_parameters)
+
+# Construct an optimized circuit for initial portion of time evolution
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+
+# Calculate fidelity after optimization
+aqc_final_mps = tensornetwork_from_circuit(aqc_final_circuit, simulator_settings)
+aqc_fidelity = abs(compute_overlap(aqc_final_mps, aqc_target_mps)) ** 2
+print("Fidelity of AQC portion:", aqc_fidelity)
+output["aqc_fidelity"] = aqc_fidelity
+
+# Construct final circuit, with remainder of time evolution
+final_circuit = aqc_final_circuit.copy()
+if remainder_evolution_time:
+    remainder_circuit = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=remainder_num_trotter_steps),
+        time=remainder_evolution_time,
+    )
+    final_circuit.compose(remainder_circuit, inplace=True)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.transpiler import generate_preset_pass_manager
+
+service = QiskitRuntimeService()
+backend = service.backend(backend_name)
+
+# Transpile PUBs (circuits and observables) to match ISA
+pass_manager = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuit = pass_manager.run(final_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+
+isa_2qubit_depth = isa_circuit.depth(lambda x: x.operation.num_qubits == 2)
+print("ISA circuit two-qubit depth:", isa_2qubit_depth)
+output["twoqubit_depth"] = isa_2qubit_depth
+
+# Exit now if dry run; don't execute on hardware
+if dry_run:
+    import sys
+
+    print("Exiting before hardware execution since `dry_run` is True.")
+    save_result(output)
+    sys.exit(0)
+
+# ## Step 3: Execute quantum experiments on backend
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+estimator = Estimator(backend, options=estimator_options)
+
+# Submit the underlying Estimator job. Note that this is not the
+# actual function job.
+job = estimator.run([(isa_circuit, isa_observable)])
+print("Job ID:", job.job_id())
+output["job_id"] = job.job_id()
+
+# Wait until job is complete
+hw_results = job.result()
+hw_results_dicts = [pub_result.data.__dict__ for pub_result in hw_results]
+
+# Save hardware results to serverless output dictionary
+output["hw_results"] = hw_results_dicts
+
+# Reorganize expectation values
+hw_expvals = [pub_result_data["evs"].tolist() for pub_result_data in hw_results_dicts]
+
+# Save expectation values to Qiskit Serverless
+output["hw_expvals"] = hw_expvals[0]
+
+save_result(output)
+```
+
+```text
+Overwriting ./source_files/template_hamiltonian_simulation_full.py
+```
+
+<details>
+<summary><b>الكود المصدري الكامل للبرنامج</b></summary>
+
+هنا المصدر الكامل لـ `./source_files/template_hamiltonian_simulation.py` في كتلة كود واحدة.
+
+</details>
+
+```python
+# This cell is hidden from users.  It verifies both source listings are identical then deletes the working folder we created
+import shutil
+
+with open("./source_files/template_hamiltonian_simulation.py") as f1:
+    with open("./source_files/template_hamiltonian_simulation_full.py") as f2:
+        assert f1.read() == f2.read()
+
+shutil.rmtree("./source_files/")
+```
