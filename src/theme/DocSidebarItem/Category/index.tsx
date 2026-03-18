@@ -53,6 +53,7 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
   const [visitedCount, setVisitedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const badgeRef = useRef<HTMLButtonElement | null>(null);
 
   const items = (props.item?.items || []) as SidebarItem[];
   const allHrefs = React.useMemo(() => collectHrefs(items), [items]);
@@ -76,6 +77,56 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
     window.addEventListener(PAGE_VISITED_EVENT, onPageVisited);
     return () => window.removeEventListener(PAGE_VISITED_EVENT, onPageVisited);
   }, [refresh]);
+
+  // Inject badge into the collapsible's flex flow (left of twistie).
+  // Direct DOM because the badge must be a flex child of the collapsible
+  // or the link, which are rendered by OriginalCategory.
+  useEffect(() => {
+    if (!wrapperRef.current) return;
+    const collapsible = wrapperRef.current.querySelector('.menu__list-item-collapsible');
+    if (!collapsible) return;
+
+    const badge = document.createElement('button');
+    badge.className = 'dq-category-badge';
+    badgeRef.current = badge;
+
+    badge.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const prefix = commonPrefix(allHrefs);
+      clearVisitedByPrefix(prefix);
+      clearExecutedByPrefix(prefix);
+      setVisitedCount(0);
+      window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
+    });
+
+    // href categories: .menu__caret button is a sibling — insert before it.
+    // no-href categories: caret is ::after on the link — append inside link.
+    const caretButton = collapsible.querySelector(':scope > .menu__caret');
+    if (caretButton) {
+      collapsible.insertBefore(badge, caretButton);
+    } else {
+      const link = collapsible.querySelector(':scope > .menu__link');
+      if (link) link.appendChild(badge);
+    }
+
+    return () => badge.remove();
+  }, [allHrefs]);
+
+  // Update badge text and visibility when counts change
+  useEffect(() => {
+    const badge = badgeRef.current;
+    if (!badge) return;
+    if (visitedCount > 0 && totalCount > 0) {
+      badge.textContent = `${visitedCount}/${totalCount}`;
+      badge.title = `${visitedCount} of ${totalCount} visited — click to clear`;
+      badge.setAttribute('aria-label',
+        `Clear progress for this section (${visitedCount} of ${totalCount} visited)`);
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  }, [visitedCount, totalCount]);
 
   // Sidebar collapse memory: observe DOM changes and persist state
   useEffect(() => {
@@ -105,30 +156,9 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
     return () => observer.disconnect();
   }, [categoryLabel]);
 
-  const handleClear = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const prefix = commonPrefix(allHrefs);
-    clearVisitedByPrefix(prefix);
-    clearExecutedByPrefix(prefix);
-    setVisitedCount(0);
-    // Notify all other sidebar components (parent categories, child links/categories)
-    window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
-  };
-
   return (
     <div className="dq-sidebar-category" ref={wrapperRef}>
       <OriginalCategory {...props} />
-      {visitedCount > 0 && totalCount > 0 && (
-        <button
-          className="dq-category-badge"
-          onClick={handleClear}
-          title={`${visitedCount} of ${totalCount} visited — click to clear`}
-          aria-label={`Clear progress for this section (${visitedCount} of ${totalCount} visited)`}
-        >
-          {visitedCount}/{totalCount}
-        </button>
-      )}
     </div>
   );
 }
