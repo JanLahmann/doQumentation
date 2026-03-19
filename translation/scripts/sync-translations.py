@@ -7,7 +7,9 @@ Fixes the most common validation failures mechanically — no retranslation need
   1. Missing pip install code blocks (added by sync-content.py after translation)
   2. Differing code blocks (translated comments, updated EN code)
   3. Missing survey/feedback URLs
-  4. index.mdx code blocks + URLs
+  4. Duplicate trailing EN sections (appended by earlier sync runs)
+  5. Missing content lines from EN (e.g., new backends added after translation)
+  6. Missing reference URLs from EN
 
 Usage:
     python translation/scripts/sync-translations.py --locale fr                    # all genuine translations
@@ -207,7 +209,7 @@ def find_survey_section(content: str) -> tuple[str, int] | None:
 
 
 def fix_missing_survey_url(en_content: str, tr_content: str) -> str | None:
-    """If EN has a survey URL section that TR is missing, insert it."""
+    """If EN has a survey URL section that TR is missing, insert the URL."""
     en_survey = find_survey_section(en_content)
     if en_survey is None:
         return None
@@ -218,9 +220,40 @@ def fix_missing_survey_url(en_content: str, tr_content: str) -> str | None:
     if SURVEY_URL_PATTERN.search(tr_content):
         return None
 
-    # Insert survey section at end of TR, before any trailing blank lines
+    # Extract just the survey URL line from EN
+    survey_url_line = None
+    for line in survey_text.split('\n'):
+        if SURVEY_URL_PATTERN.search(line):
+            survey_url_line = line
+            break
+
+    if survey_url_line is None:
+        return None
+
     tr_lines = tr_content.split('\n')
-    # Find last non-empty line
+
+    # Check if TR has a translated survey heading — if so, insert the URL
+    # line after the translated survey paragraph, not the whole EN section
+    survey_heading_idx = None
+    for i, line in enumerate(tr_lines):
+        stripped = line.strip()
+        if re.match(r'^##\s+.*\{#tutorial-survey\}', stripped):
+            survey_heading_idx = i
+            break
+
+    if survey_heading_idx is not None:
+        # Insert the URL after the survey paragraph (find end of paragraph)
+        insert_at = survey_heading_idx + 1
+        while insert_at < len(tr_lines) and tr_lines[insert_at].strip() != '':
+            insert_at += 1
+        new_tr_lines = (
+            tr_lines[:insert_at]
+            + [survey_url_line]
+            + tr_lines[insert_at:]
+        )
+        return '\n'.join(new_tr_lines)
+
+    # No translated survey heading — insert whole EN survey section at end
     insert_at = len(tr_lines)
     while insert_at > 0 and tr_lines[insert_at - 1].strip() == '':
         insert_at -= 1
@@ -258,6 +291,305 @@ def extract_link_urls(content: str) -> set[str]:
             if not url.startswith('#'):
                 urls.add(url)
     return urls
+
+# ---------------------------------------------------------------------------
+# Fix: Remove duplicate trailing EN sections
+# ---------------------------------------------------------------------------
+
+def extract_headings(content: str) -> list[tuple[int, str, str]]:
+    """Extract headings with line numbers. Returns [(line_idx, level_markers, text)]."""
+    headings = []
+    in_code = False
+    for i, line in enumerate(content.split('\n')):
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        m = re.match(r'^(#{1,6})\s+(.+)', stripped)
+        if m:
+            headings.append((i, m.group(1), m.group(2)))
+    return headings
+
+
+def fix_duplicate_trailing_section(en_content: str, tr_content: str) -> str | None:
+    """Remove duplicate EN section appended at end of translation.
+
+    A section is duplicate when the file has MORE headings than EN, and
+    the trailing EN headings (without {#anchor}) cover topics that already
+    have a translated heading (with {#anchor}) earlier in the file.
+    The anchor ID is used to match: e.g., {#references} in the translated
+    heading matches "## References" in the duplicate EN heading.
+    """
+    en_headings = extract_headings(en_content)
+    tr_headings = extract_headings(tr_content)
+    tr_lines = tr_content.split('\n')
+
+    if len(tr_headings) <= len(en_headings):
+        return None  # No extra headings
+
+    # Build a map: EN heading text -> anchor ID used in translations
+    en_text_to_anchor = {}
+    for _, _, text in en_headings:
+        clean = re.sub(r'\s*\{#[^}]+\}', '', text).strip()
+        # The anchor is typically the slugified EN heading
+        en_text_to_anchor[clean] = clean.lower().replace(' ', '-')
+
+    # Collect anchors from translated headings (with {#...})
+    tr_anchors = {}  # anchor_id -> line_idx
+    for line_idx, _, text in tr_headings:
+        m = re.search(r'\{#([^}]+)\}', text)
+        if m:
+            tr_anchors[m.group(1)] = line_idx
+
+    # Walk from end: find EN headings without {#anchor} whose topic
+    # is already covered by a translated heading with matching anchor
+    first_dup_line = None
+    for i in range(len(tr_headings) - 1, -1, -1):
+        line_idx, _, tr_text = tr_headings[i]
+        has_anchor = '{#' in tr_text
+        clean = re.sub(r'\s*\{#[^}]+\}', '', tr_text).strip()
+
+        if not has_anchor and clean in en_text_to_anchor:
+            expected_anchor = en_text_to_anchor[clean]
+            # Check if a translated heading with this anchor exists earlier
+            if expected_anchor in tr_anchors and tr_anchors[expected_anchor] < line_idx:
+                first_dup_line = line_idx
+            else:
+                break
+        else:
+            break
+
+    if first_dup_line is None:
+        return None
+
+    # Now scan backwards from the EN heading to find where the duplicate
+    # content actually starts (there may be duplicate non-heading content
+    # like reference entries before the heading)
+    cut_line = first_en_dup_heading
+
+    # Walk backwards over non-empty lines that look like duplicate EN content
+    # (references, paragraphs that appear earlier in the file)
+    while cut_line > 0:
+        prev_line = tr_lines[cut_line - 1].strip()
+        if prev_line == '':
+            cut_line -= 1
+            continue
+        # Check if this line is a duplicate of an earlier line in the file
+        is_duplicate = False
+        for j in range(cut_line - 2):
+            if tr_lines[j].strip() == prev_line and prev_line:
+                is_duplicate = True
+                break
+        if is_duplicate:
+            cut_line -= 1
+        else:
+            break
+
+    # Skip blank lines before the cut point
+    while cut_line > 0 and tr_lines[cut_line - 1].strip() == '':
+        cut_line -= 1
+
+    # Verify we're not cutting too much (at least half the file should remain)
+    if cut_line < len(tr_lines) // 3:
+        return None
+
+    new_lines = tr_lines[:cut_line]
+    # Ensure file ends with single newline
+    while new_lines and new_lines[-1].strip() == '':
+        new_lines.pop()
+    new_lines.append('')
+
+    result = '\n'.join(new_lines)
+    if result == tr_content:
+        return None
+    return result
+
+# ---------------------------------------------------------------------------
+# Fix: Insert missing content lines from EN (e.g., new backends in index.mdx)
+# ---------------------------------------------------------------------------
+
+def fix_missing_en_lines(en_content: str, tr_content: str) -> str | None:
+    """Insert specific missing content lines from EN into TR.
+
+    Handles cases where EN was updated after translation (new backends,
+    new links) and the translation is missing those lines. Uses context
+    matching to find insertion points.
+    """
+    en_lines = en_content.split('\n')
+    tr_lines = tr_content.split('\n')
+    fixes_applied = []
+
+    # Pattern: missing numbered list items (e.g., "2. **IBM Code Engine**")
+    # Find numbered lists in EN and check if TR has fewer items
+    en_urls = extract_link_urls(en_content)
+    tr_urls = extract_link_urls(tr_content)
+    missing_urls = en_urls - tr_urls
+
+    if not missing_urls:
+        return None
+
+    current_lines = list(tr_lines)
+    changed = False
+
+    # For each missing URL, find the EN line containing it and try to insert
+    for url in sorted(missing_urls):
+        # Find the EN line(s) containing this URL
+        en_url_lines = []
+        for i, line in enumerate(en_lines):
+            if url in line:
+                en_url_lines.append((i, line))
+
+        if not en_url_lines:
+            continue
+
+        for en_idx, en_line in en_url_lines:
+            # Skip if URL is in a code block
+            in_code = False
+            for l in en_lines[:en_idx]:
+                if l.strip().startswith('```'):
+                    in_code = not in_code
+            if in_code:
+                continue
+
+            # Already in TR?
+            if any(url in l for l in current_lines):
+                continue
+
+            # Strategy: find the EN line BEFORE this one in TR, insert after it
+            # Look for context: the line before in EN
+            if en_idx > 0:
+                prev_en = en_lines[en_idx - 1].strip()
+                # Find this context in TR
+                for j, tr_line in enumerate(current_lines):
+                    # Match by URL content in the previous line
+                    prev_urls = re.findall(r'https?://\S+', prev_en)
+                    if prev_urls and any(pu in tr_line for pu in prev_urls):
+                        current_lines.insert(j + 1, en_line)
+                        changed = True
+                        fixes_applied.append(url)
+                        break
+                    # Match by numbered list pattern (e.g., "1. **Binder**")
+                    prev_num = re.match(r'^(\d+)\.\s+\*\*', prev_en)
+                    tr_num = re.match(r'^(\d+)\.\s+\*\*', tr_line.strip())
+                    if prev_num and tr_num and prev_num.group(1) == tr_num.group(1):
+                        current_lines.insert(j + 1, en_line)
+                        changed = True
+                        fixes_applied.append(url)
+                        break
+
+            # Strategy 2: find the EN line AFTER this one in TR, insert before it
+            if url not in '\n'.join(current_lines) and en_idx < len(en_lines) - 1:
+                next_en = en_lines[en_idx + 1].strip()
+                if next_en:
+                    next_urls = re.findall(r'https?://\S+', next_en)
+                    for j, tr_line in enumerate(current_lines):
+                        if next_urls and any(nu in tr_line for nu in next_urls):
+                            current_lines.insert(j, en_line)
+                            changed = True
+                            fixes_applied.append(url)
+                            break
+                        next_num = re.match(r'^(\d+)\.\s+\*\*', next_en)
+                        tr_num = re.match(r'^(\d+)\.\s+\*\*', tr_line.strip())
+                        if next_num and tr_num and next_num.group(1) == tr_num.group(1):
+                            current_lines.insert(j, en_line)
+                            changed = True
+                            fixes_applied.append(url)
+                            break
+
+            # Strategy 3: standalone line (like "When multiple backends...")
+            # Insert after the last numbered list item or before </details>
+            if url not in '\n'.join(current_lines):
+                for j in range(len(current_lines) - 1, -1, -1):
+                    if re.match(r'^\d+\.\s+\*\*', current_lines[j].strip()):
+                        current_lines.insert(j + 1, '')
+                        current_lines.insert(j + 2, en_line)
+                        changed = True
+                        fixes_applied.append(url)
+                        break
+
+    if not changed:
+        return None
+
+    return '\n'.join(current_lines)
+
+# ---------------------------------------------------------------------------
+# Fix: Insert missing reference URLs from EN
+# ---------------------------------------------------------------------------
+
+def fix_missing_reference_urls(en_content: str, tr_content: str) -> str | None:
+    """Insert missing reference list entries from EN into TR.
+
+    When EN has reference entries (numbered citations) that TR is missing,
+    insert them at the correct position in TR's reference list.
+    """
+    # Find reference sections in both
+    en_lines = en_content.split('\n')
+    tr_lines = tr_content.split('\n')
+
+    # Find reference heading in TR
+    ref_heading_idx = None
+    for i, line in enumerate(tr_lines):
+        stripped = line.strip()
+        # Match ## References or translated variants with anchor
+        if re.match(r'^##\s+.*\{#references\}', stripped) or stripped == '## References':
+            ref_heading_idx = i
+            # Use the LAST one (in case of duplicates that weren't caught)
+            # Actually use the FIRST translated one
+            break
+
+    if ref_heading_idx is None:
+        return None
+
+    # Extract reference entries from EN (numbered: "1. Author...")
+    en_ref_entries = {}
+    en_ref_heading = None
+    for i, line in enumerate(en_lines):
+        if re.match(r'^##\s+References', line.strip()):
+            en_ref_heading = i
+    if en_ref_heading is None:
+        return None
+
+    ref_re = re.compile(r'^(\d+)\.\s+(.+)')
+    for i in range(en_ref_heading + 1, len(en_lines)):
+        m = ref_re.match(en_lines[i].strip())
+        if m:
+            en_ref_entries[int(m.group(1))] = en_lines[i]
+        elif en_lines[i].strip().startswith('##'):
+            break
+
+    # Extract TR reference entries
+    tr_ref_entries = {}
+    for i in range(ref_heading_idx + 1, len(tr_lines)):
+        m = ref_re.match(tr_lines[i].strip())
+        if m:
+            tr_ref_entries[int(m.group(1))] = i
+        elif tr_lines[i].strip().startswith('##'):
+            break
+
+    # Find missing entries
+    missing = set(en_ref_entries.keys()) - set(tr_ref_entries.keys())
+    if not missing:
+        return None
+
+    # Insert missing entries at the right position
+    current = list(tr_lines)
+    offset = 0
+    for num in sorted(missing):
+        # Find insertion point: after the previous numbered entry
+        insert_after = ref_heading_idx + offset
+        for existing_num in sorted(tr_ref_entries.keys()):
+            if existing_num < num:
+                insert_after = tr_ref_entries[existing_num] + offset
+
+        current.insert(insert_after + 1, en_ref_entries[num])
+        offset += 1
+
+    result = '\n'.join(current)
+    if result == tr_content:
+        return None
+    return result
 
 # ---------------------------------------------------------------------------
 # Main sync logic
@@ -303,11 +635,29 @@ def sync_file(en_path: Path, tr_path: Path, dry_run: bool = False) -> list[str]:
         current = result
         fixes.append(f"restored {count} differing code block(s)")
 
-    # Fix 3: Missing survey URLs
+    # Fix 3: Duplicate trailing EN sections (must run BEFORE survey URL fix)
+    result = fix_duplicate_trailing_section(en_content, current)
+    if result is not None:
+        current = result
+        fixes.append("removed duplicate trailing EN section")
+
+    # Fix 4: Missing survey URLs (runs after duplicate removal)
     result = fix_missing_survey_url(en_content, current)
     if result is not None:
         current = result
         fixes.append("inserted missing survey URL section")
+
+    # Fix 5: Missing content lines from EN (new backends, links)
+    result = fix_missing_en_lines(en_content, current)
+    if result is not None:
+        current = result
+        fixes.append("inserted missing EN content lines")
+
+    # Fix 6: Missing reference URLs
+    result = fix_missing_reference_urls(en_content, current)
+    if result is not None:
+        current = result
+        fixes.append("inserted missing reference entries")
 
     if fixes and not dry_run:
         tr_path.write_text(current, encoding='utf-8')
