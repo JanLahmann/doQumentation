@@ -1,41 +1,6 @@
 # Translation Feedback — it
 
-**386 files** validated: 380 PASS, 6 FAIL
-
-## Files needing fixes
-
-### `index.mdx` — FAIL
-
-- **Link URLs**: 2 URL difference(s)
-  - Missing URL: /jupyter-settings#backend-selection
-  - Missing URL: /jupyter-settings#code-engine
-
-### `tutorials/multi-product-formula.mdx` — FAIL
-
-- **Link URLs**: 1 URL difference(s)
-  - Missing URL: https://arxiv.org/abs/2407.17405
-
-### `tutorials/probabilistic-error-amplification.mdx` — FAIL
-
-- **Code blocks**: Count mismatch: EN=32, TR=28
-- **JSX tags**: 1 tag count mismatch(es)
-  - Admonition: EN=0, TR=1
-
-### `tutorials/projected-quantum-kernels.mdx` — FAIL
-
-- **Link URLs**: 1 URL difference(s)
-  - Missing URL: https://www.science.org/doi/full/10.1126/science.abq0225
-
-### `tutorials/sample-based-krylov-quantum-diagonalization.mdx` — FAIL
-
-- **Link URLs**: 1 URL difference(s)
-  - Missing URL: https://arxiv.org/abs/2405.05068
-
-### `tutorials/shors-algorithm.mdx` — FAIL
-
-- **Link URLs**: 2 URL difference(s)
-  - Missing URL: https://arxiv.org/abs/quant-ph/9511026
-  - Missing URL: https://doi.org/10.22331/q-2021-04-15-433
+**387 files** validated: 387 PASS, 0 FAIL
 
 ## Passing files
 
@@ -211,6 +176,7 @@
 - `guides/visualize-circuit-timing.mdx`
 - `guides/visualize-circuits.mdx`
 - `guides/visualize-results.mdx`
+- `index.mdx`
 - `learning/courses/basics-of-quantum-information/entanglement-in-action/chsh-game.mdx`
 - `learning/courses/basics-of-quantum-information/entanglement-in-action/introduction.mdx`
 - `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation.mdx`
@@ -365,6 +331,7 @@
 - `learning/courses/variational-algorithm-design/optimization-loops.mdx`
 - `learning/courses/variational-algorithm-design/reference-states.mdx`
 - `learning/courses/variational-algorithm-design/variational-algorithms.mdx`
+- `learning/index.mdx`
 - `learning/modules/computer-science/deutsch-jozsa.mdx`
 - `learning/modules/computer-science/grovers.mdx`
 - `learning/modules/computer-science/index.mdx`
@@ -399,10 +366,13 @@
 - `tutorials/index.mdx`
 - `tutorials/krylov-quantum-diagonalization.mdx`
 - `tutorials/long-range-entanglement.mdx`
+- `tutorials/multi-product-formula.mdx`
 - `tutorials/nishimori-phase-transition.mdx`
 - `tutorials/operator-back-propagation.mdx`
 - `tutorials/pauli-correlation-encoding-for-qaoa.mdx`
 - `tutorials/periodic-boundary-conditions-with-circuit-cutting.mdx`
+- `tutorials/probabilistic-error-amplification.mdx`
+- `tutorials/projected-quantum-kernels.mdx`
 - `tutorials/qedma-2d-ising-with-qesem.mdx`
 - `tutorials/quantum-approximate-optimization-algorithm.mdx`
 - `tutorials/quantum-kernel-training.mdx`
@@ -411,7 +381,9 @@
 - `tutorials/readout-error-mitigation-sampler.mdx`
 - `tutorials/real-time-benchmarking-for-qubit-selection.mdx`
 - `tutorials/repetition-codes.mdx`
+- `tutorials/sample-based-krylov-quantum-diagonalization.mdx`
 - `tutorials/sample-based-quantum-diagonalization.mdx`
+- `tutorials/shors-algorithm.mdx`
 - `tutorials/sml-classification.mdx`
 - `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx`
 - `tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.mdx`

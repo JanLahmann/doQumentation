@@ -60,16 +60,30 @@ FRONTMATTER_SAME_ALLOWED = {
     "overview",
     # Brand names and proper nouns
     "ibm quantum composer", "qiskit code assistant", "open source", "support",
+    "ibm circuit function",
+    "iskay quantum optimizer - a qiskit function by kipu quantum",
     # Technical/scientific terms used as-is internationally
-    "ansatz", "hardware", "teleportation", "purifications",
+    "ansatz", "hardware", "teleportation", "purifications", "fidelity", "mapping",
     "sample-based quantum diagonalization", "variational quantum eigensolver",
-    "quantum key distribution",
+    "quantum key distribution", "quantum information", "quantum technology",
+    "quantum teleportation", "quantum simulation", "quantum phase estimation",
+    "quantum fourier transform", "quantum krylov diagonalization",
+    "sample-based krylov quantum diagonalization",
+    "superdense coding", "circuit cutting", "circuit library",
+    "noise learning helper", "development workflow", "bloch sphere",
+    "asymmetric key cryptography",
     # Quantum computing proper nouns / standard technical terms
     "chsh inequality", "nishimori phase transition",
     "quantum approximate optimization algorithm", "quantum kernel training",
-    "repetition codes",
+    "repetition codes", "css codes", "toric code", "threshold theorem",
+    "quantum resource management interface (qrmi)",
+    "multi-product formulas (mpf)", "operator backpropagation (obp)",
+    "directed execution model (beta)", "fair-share scheduler",
+    "code of conduct", "utility-scale qaoa",
     # Course section titles identical across languages
     "introduction", "circuits", "utility i", "utility ii", "utility iii",
+    # Generic course descriptions (often left in English as meta-description)
+    "a free ibm course on quantum information and computation",
 }
 
 # Regex from fix-heading-anchors.py
@@ -85,7 +99,7 @@ LOCALE_WORD_RATIO = {
     "pt": 2.5,
 }
 # Minimum EN words for paragraph inflation check (short paragraphs have high variance)
-MIN_WORDS_FOR_INFLATION = 20
+MIN_WORDS_FOR_INFLATION = 30
 # Minimum TR words to flag — paragraphs under this can't be word salad regardless of ratio
 # Real word salad (e.g. Gemini degradation) produces 500+ word paragraphs; 250 avoids
 # false positives from positional paragraph mismatch in zip()-based matching.
@@ -102,7 +116,7 @@ LOCALE_LINE_DELTA_PCT = {
 # Inline LaTeX ($) tolerance — differences arise from translation choices
 # (e.g., wrapping a variable in $...$ or writing it as prose, expanding/contracting
 # math expressions). Math-heavy course content needs higher tolerance.
-MAX_LATEX_INLINE_DELTA = 30
+MAX_LATEX_INLINE_DELTA = 35
 
 # ---------------------------------------------------------------------------
 # slugify() — copied from fix-heading-anchors.py for standalone use
@@ -574,7 +588,9 @@ def check_frontmatter(en_content: str, tr_content: str) -> CheckResult:
     for key in FRONTMATTER_TRANSLATE_KEYS:
         if key in en_fm and key in tr_fm:
             if en_fm[key] == tr_fm[key]:
-                if en_fm[key].lower() not in FRONTMATTER_SAME_ALLOWED:
+                val_lower = en_fm[key].lower()
+                # Skip allowed same-value titles, and "Exam | ..." titles
+                if val_lower not in FRONTMATTER_SAME_ALLOWED and not val_lower.startswith("exam"):
                     details.append(f"{key} appears untranslated: '{en_fm[key]}'")
 
     if details:

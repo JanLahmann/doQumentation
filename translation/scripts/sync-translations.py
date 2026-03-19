@@ -600,8 +600,10 @@ def get_en_path(rel_path: str) -> Path:
     return DOCS_DIR / rel_path
 
 
-def get_tr_dir(locale: str) -> Path:
+def get_tr_dir(locale: str, custom_dir: str | None = None) -> Path:
     """Get the translation directory for a locale."""
+    if custom_dir:
+        return REPO_ROOT / custom_dir / locale
     return I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
 
 
@@ -666,9 +668,9 @@ def sync_file(en_path: Path, tr_path: Path, dry_run: bool = False) -> list[str]:
 
 
 def sync_locale(locale: str, section: str | None = None,
-                dry_run: bool = False) -> dict[str, list[str]]:
+                dry_run: bool = False, custom_dir: str | None = None) -> dict[str, list[str]]:
     """Sync all genuine translations for a locale. Returns {rel_path: [fixes]}."""
-    tr_dir = get_tr_dir(locale)
+    tr_dir = get_tr_dir(locale, custom_dir)
     if not tr_dir.exists():
         print(f"  No translations found for {locale}")
         return {}
@@ -704,6 +706,8 @@ def main():
                         help='Sync all locales')
     parser.add_argument('--section', type=str,
                         help='Filter by section (tutorials, guides, learning)')
+    parser.add_argument('--dir', type=str,
+                        help='Translation source directory (default: i18n/). E.g. --dir translation/drafts')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would change without modifying files')
     args = parser.parse_args()
@@ -721,7 +725,7 @@ def main():
         print(f"Syncing {locale.upper()}{'  (dry run)' if args.dry_run else ''}")
         print(f"{'=' * 60}")
 
-        results = sync_locale(locale, section=args.section, dry_run=args.dry_run)
+        results = sync_locale(locale, section=args.section, dry_run=args.dry_run, custom_dir=args.dir)
 
         if results:
             for rel_path, fixes in results.items():
