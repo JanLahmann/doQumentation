@@ -372,6 +372,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 - **IBM Quantum Ecosystem listing** — Submit doQumentation.org to https://www.ibm.com/quantum/ecosystem to increase visibility.
+- **"View in English" button on translated pages** — Add a button/link on translated pages to switch to the original English version. Useful when translations are incomplete or users want to verify against the source. Could use Docusaurus `alternatePageUtils` or a simple link to `https://doqumentation.org/{path}`.
 
 ### Resolved (Feb–Mar 2026)
 - **Backend selection UI** — Radio buttons on settings page when multiple backends available. `detectJupyterConfig()` refactored with `buildConfigFor()` helper and override support (`doqumentation_backend_override` key). Auto-clears stale overrides. Credential save/delete handlers refresh the backend list. Switching backends cancels in-flight builds and clears cached sessions.
