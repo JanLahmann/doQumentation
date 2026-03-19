@@ -154,7 +154,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: Root (global BetaNotice), CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, NavbarItem/LocaleDropdownNavbarItem, MDXComponents
-├── i18n/                       # Translations: de/es/fr (385 each — 100% complete), uk (56), ja (56), it/pt/tl (48 each), he (47), ar (44), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34), swg/bad/bar (31 each)
+├── i18n/                       # Translations: de/es/fr/it (387 each — 100% complete), uk (56), ja (56), pt/tl (48 each), he (47), ar (44), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34), swg/bad/bar (31 each)
 ├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
 ├── translation/                # Translation infrastructure
 │   ├── drafts/{locale}/{path}  # Staging area for new translations (git-tracked)
@@ -226,7 +226,7 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | FR | [fr.doqumentation.org](https://fr.doqumentation.org) | **385 + UI (100%)** | Live |
 | UK | [uk.doqumentation.org](https://uk.doqumentation.org) | 56 + UI | Live |
 | JA | [ja.doqumentation.org](https://ja.doqumentation.org) | 60 + UI | Live |
-| IT | [it.doqumentation.org](https://it.doqumentation.org) | **386 + UI (100%)** | Live |
+| IT | [it.doqumentation.org](https://it.doqumentation.org) | **387 + UI (100%)** | Live |
 | PT | [pt.doqumentation.org](https://pt.doqumentation.org) | 48 + UI | Live |
 | TL | [tl.doqumentation.org](https://tl.doqumentation.org) | 48 + UI | Live |
 | AR | [ar.doqumentation.org](https://ar.doqumentation.org) | 44 + UI | Live (RTL) |
@@ -361,7 +361,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation expansion** — **DE/ES/FR/IT are 100% complete (DE/ES/FR: 385/385, IT: 386/386, zero fallbacks)**. Remaining: UK at 56/387, JA at 56/387, PT/TL at 48, HE at 47, AR at 44 (needs re-translation). German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34). New locales: MS, ID, TH (all at 0/387 — English fallbacks only). **5 translation branches still to merge**: AR (342 files), UK (339), JA (331), TL (169), PT (167) — each single-locale, no overlaps, ready for squash merge after validation. Run `python translation/scripts/translation-status.py` for current counts, or see `translation/STATUS.md`.
+- **Translation expansion** — **DE/ES/FR/IT are 100% complete (DE/ES/FR: 387/387, IT: 387/387, zero fallbacks)**. Remaining: UK at 56/387, JA at 56/387, PT/TL at 48, HE at 47, AR at 44 (needs re-translation). German dialects: KSH (46), NDS (43), GSW (42), SAX (39), BLN (36), AUT (34). New locales: MS, ID, TH (all at 0/387 — English fallbacks only). **5 translation branches still to merge**: AR (342 files), UK (339), JA (331), TL (169), PT (167) — each single-locale, no overlaps, ready for squash merge after validation. Run `python translation/scripts/translation-status.py` for current counts, or see `translation/STATUS.md`.
 - **Upstream sync strategy** — Plan how to pull upstream changes from [Qiskit/documentation](https://github.com/Qiskit/documentation) weekly. Currently `sync-content.py` clones from the fork (`JanLahmann/Qiskit-documentation`), which must be manually synced with upstream. Need: automated fork sync (GitHub Actions or scheduled script), handling of merge conflicts in modified files (`hello-world.ipynb`, `_toc.json`), freshness checks for translated content after EN changes, and a rollback strategy if upstream breaks the build.
 - **Translation structural sync script** — When English source changes (code blocks, imports, frontmatter), translated files go stale. Code blocks should be byte-identical between EN and translations, so they can be mechanically synced without re-translating prose. Need a script that takes a translated MDX file + latest EN MDX, replaces code blocks/imports/frontmatter from EN while preserving translated text. Would complement `check-translation-freshness.py` (which detects staleness but doesn't fix it).
 - **Qiskit execution error hints** — When a Binder/thebelab cell raises a common error, surface a helpful inline hint. Typical errors to handle: `IBMRuntimeError`/`QiskitBackendNotFoundError` (no IBM account → hint to run the save-account cell), `ModuleNotFoundError` (package missing → hint to run the prerequisites cell), `QiskitError: 'AerSimulator'` (aer not installed → hint re: kernel restart after pip), kernel restart/dead messages, and `NameError` on common Qiskit objects (cell run out of order → hint to run from top). Hook into thebelab's output area (or a MutationObserver on cell output divs) and match stderr/stdout against known patterns to inject a styled hint below the output.
