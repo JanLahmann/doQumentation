@@ -64,6 +64,10 @@ FRONTMATTER_SAME_ALLOWED = {
     "ansatz", "hardware", "teleportation", "purifications",
     "sample-based quantum diagonalization", "variational quantum eigensolver",
     "quantum key distribution",
+    # Quantum computing proper nouns / standard technical terms
+    "chsh inequality", "nishimori phase transition",
+    "quantum approximate optimization algorithm", "quantum kernel training",
+    "repetition codes",
     # Course section titles identical across languages
     "introduction", "circuits", "utility i", "utility ii", "utility iii",
 }
