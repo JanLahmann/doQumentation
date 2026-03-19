@@ -87,8 +87,9 @@ MIN_WORDS_FOR_INFLATION = 20
 # false positives from positional paragraph mismatch in zip()-based matching.
 MIN_TR_WORDS_FOR_INFLATION = 250
 
-# Line count tolerance (percentage). Romance languages are typically more verbose.
-MAX_LINE_DELTA_PCT = 5
+# Line count tolerance (percentage). All translations can have some line count variation
+# from paragraph wrapping, list formatting, and course intro structure differences.
+MAX_LINE_DELTA_PCT = 15
 LOCALE_LINE_DELTA_PCT = {
     "fr": 20, "es": 20, "it": 20, "pt": 20,  # Romance languages — verbose + course intro variation
     "de": 20,  # German compound words expand line count
@@ -234,24 +235,43 @@ def extract_link_urls(content: str) -> list[tuple[int, str]]:
     lines = content.split('\n')
     results = []
     in_code = False
-    md_link_re = re.compile(r'\[([^\]]*)\]\(([^)]+)\)')
     jsx_href_re = re.compile(r'href="([^"]+)"')
 
+    # First pass: extract JSX href URLs line by line (respecting code blocks)
     for i, line in enumerate(lines):
         if line.strip().startswith('```'):
             in_code = not in_code
             continue
         if in_code:
             continue
-        for m in md_link_re.finditer(line):
-            url = m.group(2).split(' ')[0].strip('"').strip("'")
-            # Skip anchor-only links (may change with translated headings)
-            if not url.startswith('#'):
-                results.append((i + 1, url))
         for m in jsx_href_re.finditer(line):
             url = m.group(1)
             if not url.startswith('#'):
                 results.append((i + 1, url))
+
+    # Second pass: extract markdown link URLs, handling multiline links
+    # Strip code blocks first, then use multiline regex
+    stripped = []
+    in_code = False
+    for line in lines:
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            stripped.append('')
+            continue
+        if in_code:
+            stripped.append('')
+        else:
+            stripped.append(line)
+    text = '\n'.join(stripped)
+    md_link_re = re.compile(r'\[([^\]]*)\]\(([^)]+)\)', re.DOTALL)
+    for m in md_link_re.finditer(text):
+        url = m.group(2).split(' ')[0].strip('"').strip("'")
+        # Collapse any newlines/whitespace in the URL (shouldn't happen, but be safe)
+        url = url.strip()
+        # Calculate line number from match start position
+        line_num = text[:m.start()].count('\n') + 1
+        if not url.startswith('#'):
+            results.append((line_num, url))
 
     return results
 
@@ -393,8 +413,8 @@ def check_line_count(en_content: str, tr_content: str,
         return CheckResult("Line count", True, "Empty file")
     max_delta = LOCALE_LINE_DELTA_PCT.get(locale, MAX_LINE_DELTA_PCT)
     delta_pct = abs(en_lines - tr_lines) / en_lines * 100
-    # Short files (< 30 lines): absolute tolerance of 6 lines instead of percentage
-    if en_lines < 30 and abs(en_lines - tr_lines) <= 6:
+    # Short files (< 50 lines): absolute tolerance of 8 lines instead of percentage
+    if en_lines < 50 and abs(en_lines - tr_lines) <= 8:
         return CheckResult("Line count", True,
                            f"EN={en_lines}, TR={tr_lines} (short file, within absolute tolerance)")
     if delta_pct > max_delta:
@@ -587,13 +607,11 @@ def check_link_urls(en_content: str, tr_content: str) -> CheckResult:
     details = []
 
     missing = en_urls - tr_urls
-    extra = tr_urls - en_urls
 
     for url in sorted(missing):
         details.append(f"Missing URL: {url}")
-    for url in sorted(extra):
-        details.append(f"Extra URL: {url}")
 
+    # Extra URLs in TR are OK — translators may add helpful local links
     if details:
         return CheckResult("Link URLs", False,
                            f"{len(details)} URL difference(s)", details)

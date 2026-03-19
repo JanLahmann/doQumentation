@@ -77,7 +77,8 @@ Rules:
 - If `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{path}` exists and does NOT contain `{/* doqumentation-untranslated-fallback */}` — SKIP it (already promoted)
 - Preserve ALL frontmatter keys exactly — translate ONLY values of `title`, `description`, `sidebar_label`
 - **Source hash**: After the frontmatter closing `---`, add a source hash comment: `{/* doqumentation-source-hash: XXXX */}` where XXXX is the first 8 hex chars of SHA-256 of the EN source file content. Compute with: `python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"`. This lets the freshness checker detect when the EN source changes.
-- Preserve ALL code blocks (` ```python `, ` ```bash `, ` ```text `, etc.) completely unchanged
+- Preserve ALL code blocks (` ```python `, ` ```bash `, ` ```text `, etc.) completely unchanged — the translated file MUST have the exact same number of code blocks as the English source
+- If the EN file contains a pip install block with `# Added by doQumentation`, you MUST include it unchanged
 - Preserve ALL math/LaTeX (`$...$`, `$$...$$`) completely unchanged
 - Preserve ALL JSX/HTML tag names, imports, and structural attributes unchanged (e.g., `<Admonition>`, `<Tabs>`, `<OpenInLabBanner>`)
 - Preserve ALL URLs/links and image paths unchanged
@@ -219,6 +220,9 @@ python translation/scripts/validate-translation.py --locale {LOCALE} --dir trans
 
 # Promote passing drafts to i18n/
 python translation/scripts/promote-drafts.py --locale {LOCALE}
+
+# Sync structural elements (pip install blocks, code blocks, survey URLs) from EN
+python translation/scripts/sync-translations.py --locale {LOCALE}
 
 # Populate English fallbacks for remaining untranslated pages
 python translation/scripts/translate-content.py populate-locale --locale {LOCALE}
