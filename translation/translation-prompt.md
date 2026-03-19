@@ -56,7 +56,7 @@ Launch **one agent per file**, up to **3 agents in parallel** per round. Use `mo
 
 Example: 9 files → 3 rounds of 3 agents each.
 
-**Large files (>400 lines)**: The orchestrator MUST handle chunking — see "Large File Chunking" section below. Do NOT assign files >400 lines to a single agent. Do NOT include chunking instructions in the per-agent prompt. Do NOT ask agents to "handle chunking themselves."
+**Large files (>600 lines)**: The orchestrator MUST handle chunking — see "Large File Chunking" section below. Do NOT assign files >600 lines to a single agent. Do NOT include chunking instructions in the per-agent prompt. Do NOT ask agents to "handle chunking themselves."
 
 Each agent gets this prompt (with variables filled in):
 
@@ -95,23 +95,25 @@ Rules:
 
 ---
 
-## Large File Chunking (>400 lines) — Orchestrator MUST Do This
+## Large File Chunking (>600 lines) — Orchestrator MUST Do This
 
-**CRITICAL**: The orchestrator (you) MUST handle chunking. Sub-agents always receive a single chunk or a complete small file — they NEVER split files themselves. Do NOT assign a file >400 lines to a single agent. Do NOT tell an agent "if the file is large, chunk it." YOU do the chunking.
+**CRITICAL**: The orchestrator (you) MUST handle chunking. Sub-agents always receive a single chunk or a complete small file — they NEVER split files themselves. Do NOT assign a file >600 lines to a single agent. Do NOT tell an agent "if the file is large, chunk it." YOU do the chunking.
+
+**Why 600 lines?** Agents can reliably Write files up to ~1000-1300 lines, but the 32K output token limit causes failures on very large files (~1700+ lines). The 600-line threshold provides safety margin, especially for math-heavy files where LaTeX inflates token counts.
 
 ### Step-by-step procedure for EVERY file
 
 Before assigning any file to an agent:
 
 1. **Read the file** yourself: `Read docs/{path}` — note the total line count
-2. **If ≤400 lines** → assign to one agent as normal (use the standard prompt above)
-3. **If >400 lines** → YOU must chunk it. Follow steps 3a–3e below:
+2. **If ≤600 lines** → assign to one agent as normal (use the standard prompt above)
+3. **If >600 lines** → YOU must chunk it. Follow steps 3a–3e below:
 
    **3a. Find section boundaries**: Scan the file for `## ` headings (level 2). Note each heading's line number.
 
-   **3b. Plan chunks**: Group consecutive sections into chunks of ~300–400 lines each. Never exceed 500 lines per chunk. Always split at a `## ` heading boundary. Write down: chunk 1 = lines 1–N, chunk 2 = lines (N+1)–M, etc.
+   **3b. Plan chunks**: Group consecutive sections into chunks of ~400–600 lines each. Never exceed 600 lines per chunk. Always split at a `## ` or `### ` heading boundary. Write down: chunk 1 = lines 1–N, chunk 2 = lines (N+1)–M, etc.
 
-   **3c. Launch chunk agents** (up to 3 in parallel). Each chunk agent gets this prompt:
+   **3c. Launch chunk agents** (up to 3 in parallel). Each chunk agent writes its output to a numbered file **inside the project directory** (NOT `/tmp/` — the sandbox blocks writes to `/tmp/`):
 
    ```
    You are a {LANGUAGE} translator for doQumentation.
@@ -123,7 +125,7 @@ Before assigning any file to an agent:
    Instructions:
    1. Read `docs/{path}` (the full file)
    2. Translate ONLY lines {START} through {END}
-   3. Write ONLY the translated chunk to `/tmp/{filename}-part{N}.mdx`
+   3. Write ONLY the translated chunk to `translation/drafts/{LOCALE}/{filename}-part{N}.mdx`
 
    [FIRST CHUNK ONLY: Include the frontmatter block. Add source hash after `---`.]
    [SUBSEQUENT CHUNKS: Start directly at the section heading on line {START}. No frontmatter.]
@@ -131,7 +133,9 @@ Before assigning any file to an agent:
    Translation rules: [same rules as the standard prompt above]
    ```
 
-   **3d. Concatenate**: After ALL chunk agents finish, read each `/tmp/{filename}-part{N}.mdx` in order. Concatenate them with a blank line between chunks. Write the result to `translation/drafts/{LOCALE}/{path}`.
+   **3d. Concatenate**: After ALL chunk agents finish, read each `translation/drafts/{LOCALE}/{filename}-part{N}.mdx` in order. Concatenate them with a blank line between chunks. Write the result to `translation/drafts/{LOCALE}/{path}`. Then delete the part files.
+
+   **IMPORTANT**: Do NOT use `cat >>` appending — chunks may finish out of order. Always wait for ALL chunks to complete, then concatenate in the correct order using Read + Write.
 
    **3e. Verify integrity**: Check the concatenated file:
    - Total line count is within ±20% of source
@@ -143,9 +147,11 @@ Before assigning any file to an agent:
 
 ### Common mistakes to AVOID
 
-- **DO NOT** assign a 600-line file to one agent and say "translate this file"
+- **DO NOT** assign a 700-line file to one agent and say "translate this file"
 - **DO NOT** tell an agent "if the file is too large, split it into chunks"
 - **DO NOT** tell an agent "handle chunking as needed"
+- **DO NOT** write chunks to `/tmp/` — the sandbox blocks it. Use `translation/drafts/` instead.
+- **DO NOT** use `cat >>` to append chunks — they may arrive out of order
 - **DO** read the file yourself first, count the lines, plan the chunks, then launch chunk agents
 
 ---
@@ -189,8 +195,8 @@ If the status script is unavailable or you prefer manual discovery, follow these
 ### Step 2: Check file sizes and plan chunking
 
 **Before launching any agents**, read each file to translate and note its line count. Group them into:
-- **Small files** (≤400 lines): assign one agent per file
-- **Large files** (>400 lines): plan chunks per the "Large File Chunking" section above
+- **Small files** (≤600 lines): assign one agent per file
+- **Large files** (>600 lines): plan chunks per the "Large File Chunking" section above
 
 ### Step 3: Launch parallel agents
 
@@ -278,6 +284,6 @@ Run `python translation/scripts/translation-status.py` for live counts, or see `
 |---------|-------|
 | Model | `sonnet` |
 | Subagent type | `general-purpose` |
-| Unit per agent | 1 file or 1 chunk (orchestrator splits files >400 lines) |
+| Unit per agent | 1 file or 1 chunk (orchestrator splits files >600 lines) |
 | Parallel agents | 3 per round |
 | Rounds for full locale | ~124 rounds (371 files ÷ 3 agents per round) |
