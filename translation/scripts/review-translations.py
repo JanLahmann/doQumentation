@@ -58,7 +58,7 @@ SECTION_PRIORITY = [
     "learning/modules/",
 ]
 
-SKIP_LOCALES = {"ar"}  # Known broken, needs full re-translation
+SKIP_LOCALES = set()  # AR re-translated and passing validation as of Mar 2026
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 
