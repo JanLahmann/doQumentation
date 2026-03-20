@@ -227,9 +227,9 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | UK | [uk.doqumentation.org](https://uk.doqumentation.org) | **387 + UI (100%)** | Live |
 | JA | [ja.doqumentation.org](https://ja.doqumentation.org) | **387 + UI (100%)** | Live |
 | IT | [it.doqumentation.org](https://it.doqumentation.org) | **387 + UI (100%)** | Live |
-| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | **386 + UI (99.7%)** | Live |
-| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | **383 + UI (99.0%)** | Live |
-| AR | [ar.doqumentation.org](https://ar.doqumentation.org) | **385 + UI (99.5%)** | Live (RTL) |
+| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | **387 + UI (100%)** | Live |
+| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | **387 + UI (100%)** | Live |
+| AR | [ar.doqumentation.org](https://ar.doqumentation.org) | **387 + UI (100%)** | Live (RTL) |
 | HE | [he.doqumentation.org](https://he.doqumentation.org) | 47 + UI | Live (RTL) |
 | KSH | [ksh.doqumentation.org](https://ksh.doqumentation.org) | 46 + UI | Live |
 | NDS | [nds.doqumentation.org](https://nds.doqumentation.org) | 43 + UI | Live |
@@ -362,7 +362,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation expansion** — **DE/ES/FR/IT/UK/JA are 100% (387/387)**. AR 385/387 (99.5%), PT 386/387 (99.7%), TL 383/387 (99.0%), HE 47/387 (12.1%). All promoted translations pass structural validation (100% PASS). Zero remaining drafts. German dialects: KSH 46, NDS 43, GSW 42, SAX 39, BLN 36, AUT 34. Run `python translation/scripts/translation-status.py` for current counts.
+- **Translation expansion** — **DE/ES/FR/IT/UK/JA/AR/PT/TL are 100% (387/387)**. HE 47/387 (12.1%). All promoted translations pass structural validation (100% PASS). Zero remaining drafts. German dialects: KSH 46, NDS 43, GSW 42, SAX 39, BLN 36, AUT 34. Run `python translation/scripts/translation-status.py` for current counts.
 - **Upstream sync strategy** — Plan how to pull upstream changes from [Qiskit/documentation](https://github.com/Qiskit/documentation) weekly. Currently `sync-content.py` clones from the fork (`JanLahmann/Qiskit-documentation`), which must be manually synced with upstream. Need: automated fork sync (GitHub Actions or scheduled script), handling of merge conflicts in modified files (`hello-world.ipynb`, `_toc.json`), freshness checks for translated content after EN changes, and a rollback strategy if upstream breaks the build.
 - **Translation structural sync script** — ✅ DONE. See `sync-translations.py` in Resolved section below.
 - **Qiskit execution error hints** — When a Binder/thebelab cell raises a common error, surface a helpful inline hint. Typical errors to handle: `IBMRuntimeError`/`QiskitBackendNotFoundError` (no IBM account → hint to run the save-account cell), `ModuleNotFoundError` (package missing → hint to run the prerequisites cell), `QiskitError: 'AerSimulator'` (aer not installed → hint re: kernel restart after pip), kernel restart/dead messages, and `NameError` on common Qiskit objects (cell run out of order → hint to run from top). Hook into thebelab's output area (or a MutationObserver on cell output divs) and match stderr/stdout against known patterns to inject a styled hint below the output.
