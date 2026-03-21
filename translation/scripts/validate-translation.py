@@ -507,6 +507,31 @@ def check_latex_inline(en_content: str, tr_content: str) -> CheckResult:
     return CheckResult("Inline LaTeX ($)", True, f"{en_count} delimiters match")
 
 
+def check_indented_headings(tr_content: str) -> CheckResult:
+    """Detect headings with leading whitespace — MDX won't parse {#anchor} on these."""
+    lines = tr_content.split('\n')
+    in_code = False
+    details = []
+
+    for i, line in enumerate(lines):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        # Line has leading whitespace but looks like a heading
+        m = re.match(r'^(\s+)(#{1,6})\s+(.+)$', line)
+        if m:
+            details.append(
+                f"Line {i + 1}: '{line.strip()[:60]}' has {len(m.group(1))} leading space(s)")
+
+    if details:
+        return CheckResult("Indented headings", False,
+                           f"{len(details)} heading(s) with leading whitespace (breaks MDX)",
+                           details)
+    return CheckResult("Indented headings", True, "No indented headings")
+
+
 def check_heading_count(en_content: str, tr_content: str) -> CheckResult:
     en_headings = extract_headings(en_content)
     tr_headings = extract_headings(tr_content)
@@ -703,6 +728,7 @@ def validate_file(en_path: Path, tr_path: Path, locale: str,
     report.checks.append(check_code_blocks(en_content, tr_content))
     report.checks.append(check_latex_display(en_content, tr_content))
     report.checks.append(check_latex_inline(en_content, tr_content))
+    report.checks.append(check_indented_headings(tr_content))
     report.checks.append(check_heading_count(en_content, tr_content))
     report.checks.append(check_heading_anchors(en_content, tr_content))
     report.checks.append(check_image_paths(en_content, tr_content))
