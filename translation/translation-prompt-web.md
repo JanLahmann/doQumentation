@@ -74,5 +74,7 @@ For files >600 lines: YOU (the orchestrator) must chunk at ## headings into ~400
 Skip files already in translation/drafts/{LOCALE}/ or genuinely translated in i18n/{LOCALE}/docusaurus-plugin-content-docs/current/ (no {/* doqumentation-untranslated-fallback */} marker).
 
 Work in order: tutorials → guides → courses → modules.
-After every 10 files, report progress and commit: git add translation/drafts/ && git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
+Before starting, print: "Starting: {N} files to translate ({X} tutorials, Y guides, Z courses, W modules)"
+After each agent completes, print: "✓ {path} — {done}/{total} ({percent}%)"
+After every 10 files, commit: git add translation/drafts/ && git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
 ```
