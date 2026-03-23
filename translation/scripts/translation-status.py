@@ -438,7 +438,7 @@ def format_backlog(locale: str, en_files: dict) -> str:
             sections_output.append("\n".join(section_lines))
 
     lines.append(f"Backlog for {locale.upper()} ({name}) — {total_remaining} untranslated pages")
-    lines.append("Priority: Guides → Courses → Modules → Tutorials")
+    lines.append("Priority: Tutorials → Guides → Courses → Modules")
     lines.append("")
 
     if sections_output:
