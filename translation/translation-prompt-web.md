@@ -67,6 +67,7 @@ Rules:
 - Translate headings with anchor: ## Translated Heading {#original-english-anchor}
 - Keep technical terms: Qubit, Gate, Circuit, Backend, Transpiler
 - Write natural, fluent {LANGUAGE}
+- Do NOT echo or print the translated content — just write the file
 ---
 
 For files >600 lines: YOU (the orchestrator) must chunk at ## headings into ~400-line pieces. Launch one agent per chunk writing to translation/drafts/{LOCALE}/{filename}-part{N}.mdx. After all finish, concatenate and write to the final path. Delete part files.
