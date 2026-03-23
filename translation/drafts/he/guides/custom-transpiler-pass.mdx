@@ -1,0 +1,229 @@
+---
+title: "כתוב את ה-transpiler pass שלך"
+sidebar_label: "כתוב את ה-transpiler pass שלך"
+description: "למד איך לכתוב transpiler pass משלך באמצעות Qiskit, כולל ייצוג DAG של מעגלים"
+notebook_path: "guides/custom-transpiler-pass.ipynb"
+---
+
+{/* doqumentation-source-hash: b4430d9c */}
+
+<OpenInLabBanner notebookPath="guides/custom-transpiler-pass.ipynb" />
+
+
+
+# כתוב transpiler pass מותאם אישית
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>גרסאות חבילות</b></summary>
+
+הקוד בדף זה פותח עם הדרישות הבאות.
+אנו ממליצים להשתמש בגרסאות אלה או חדשות יותר.
+
+```
+qiskit[all]~=2.3.0
+```
+</details>
+ה-Qiskit SDK מאפשר לך ליצור passes של transpilation מותאמות אישית ולהריץ אותן באובייקט `PassManager` או להוסיף אותן ל-`StagedPassManager`. כאן נדגים איך לכתוב transpiler pass, תוך התמקדות בבניית pass שמבצע [Pauli twirling](https://arxiv.org/abs/quant-ph/0606161) על שערים קוונטיים רועשים במעגל קוונטי. דוגמה זו משתמשת ב-DAG, שהוא האובייקט שמניפולציה עליו מבצע הסוג `TransformationPass` של pass.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit
+```
+
+<details>
+  <summary>
+    רקע: ייצוג DAG
+  </summary>
+
+לפני בניית pass, חשוב להציג את הייצוג הפנימי של מעגלים קוונטיים ב-Qiskit, ה-[directed acyclic graph (DAG)](../api/qiskit/qiskit.dagcircuit.DAGCircuit) (ראה [מדריך זה](https://qiskit.org/ecosystem/rustworkx/tutorial/dags.html) לסקירה כללית). כדי לעקוב אחר השלבים הללו, התקן את [ספריית `graphviz`](https://graphviz.org/download/) עבור פונקציות ציור ה-DAG.
+
+ב-Qiskit, בתוך שלבי ה-transpilation, מעגלים מיוצגים באמצעות DAG. באופן כללי, DAG מורכב מ*צמתים* (הידועים גם כ-"nodes") ו*קשתות* מכוונות שמחברות זוגות של צמתים בכיוון מסוים. ייצוג זה מאוחסן באמצעות אובייקטי `qiskit.dagcircuit.DAGCircuit` המורכבים מאובייקטי `DagNode` בודדים. היתרון של ייצוג זה על פני רשימה טהורה של שערים (כלומר, *netlist*) הוא שזרימת המידע בין פעולות היא מפורשת, מה שמקל על קבלת החלטות שינוי.
+
+דוגמה זו ממחישה את ה-DAG על ידי יצירת מעגל פשוט שמכין מצב Bell ומיישם סיבוב $R_Z$, בהתאם לתוצאת המדידה.
+
+```python
+  from qiskit import QuantumRegister, ClassicalRegister, QuantumCircuit
+  import numpy as np
+
+  qr = QuantumRegister(3, 'qr')
+  cr = ClassicalRegister(3, 'cr')
+  qc = QuantumCircuit(qr, cr)
+
+  qc.h(qr[0])
+  qc.cx(qr[0], qr[1])
+  qc.measure(qr[0], cr[0])
+  qc.rz(np.pi/2, qr[1]).c_if(cr, 2)
+  qc.draw(output='mpl')
+
+```
+![מעגל שמכין מצב Bell ומיישם סיבוב $R_Z$ בהתאם לתוצאת המדידה.](/docs/images/guides/custom-transpiler-pass/DAG_circ.avif "Circuit")
+
+השתמש בפונקציה `qiskit.tools.visualization.dag_drawer()` כדי לצפות ב-DAG של המעגל הזה. יש שלושה סוגים של צמתים בגרף: צמתי qubit/clbit (ירוק), צמתי פעולה (כחול), וצמתי פלט (אדום). כל קשת מציינת זרימת נתונים (או תלות) בין שני צמתים.
+
+```python
+from qiskit.converters import circuit_to_dag
+from qiskit.tools.visualization import dag_drawer
+
+dag = circuit_to_dag(qc)
+dag_drawer(dag)
+```
+![ה-DAG של המעגל מורכב מצמתים המחוברים על ידי קשתות מכוונות. זהו דרך ויזואלית לייצג qubits או סיביות קלאסיות, הפעולות, ואופן זרימת הנתונים.](/docs/images/guides/custom-transpiler-pass/DAG.avif "DAG")
+</details>
+## Transpiler passes {#transpiler-passes}
+
+Transpiler passes מסווגים כ-[`AnalysisPass`](../api/qiskit/qiskit.transpiler.AnalysisPass) או כ-[`TransformationPass`](../api/qiskit/qiskit.transpiler.TransformationPass). Passes בכלל עובדים עם ה-[DAG](../api/qiskit/qiskit.dagcircuit.DAGCircuit) ועם ה-`property_set`, אובייקט דמוי מילון לאחסון מאפיינים שנקבעים על ידי analysis passes. Analysis passes עובדים עם ה-DAG וה-`property_set` שלו. הם לא יכולים לשנות את ה-DAG, אך יכולים לשנות את ה-`property_set`. זה שונה מ-transformation passes, שכן אלה כן משנים את ה-DAG, ויכולים לקרוא (אך לא לכתוב) את ה-`property_set`. לדוגמה, transformation passes מתרגמים מעגל ל-[ISA](./transpile#instruction-set-architecture) שלו או מבצעים routing passes כדי להכניס שערי SWAP היכן שצריך.
+## צור transpiler pass מסוג `PauliTwirl` {#create-a-paulitwirl-transpiler-pass}
+
+הדוגמה הבאה בונה transpiler pass שמוסיף Pauli twirls. [Pauli twirling](https://arxiv.org/abs/quant-ph/0606161) היא אסטרטגיה לדיכוי שגיאות שמאקראית איך qubits חווים ערוצים רועשים, שאנו מניחים שהם שערים דו-קיוביטיים בדוגמה זו (כי הם הרבה יותר נוטים לשגיאות משערים חד-קיוביטיים). ה-Pauli twirls לא משפיעים על פעולת השערים הדו-קיוביטיים. הם נבחרים כך שאלה המוחלים *לפני* השער הדו-קיוביטי (משמאל) מנוטרלים על ידי אלה המוחלים *אחרי* השער הדו-קיוביטי (מימין). במובן זה, הפעולות הדו-קיוביטיות זהות, אך האופן שבו הן מבוצעות שונה. יתרון אחד של Pauli twirling הוא שהוא הופך שגיאות קוהרנטיות לשגיאות סטוכסטיות, שניתן לשפר על ידי ממוצע נוסף.
+
+Transpiler passes פועלים על ה-[DAG](../api/qiskit/qiskit.dagcircuit.DAGCircuit), כך שהמתודה החשובה לדרוס היא `.run()`, שמקבלת את ה-DAG כקלט. אתחול זוגות של Paulis כפי שמוצג שומר על פעולת כל שער דו-קיוביטי. זה נעשה עם מתודת העזר `build_twirl_set`, שעוברת על כל Pauli דו-קיוביטי (כפי שהתקבל מ-`pauli_basis(2)`) ומוצאת את ה-Pauli האחר ששומר על הפעולה.
+
+מה-DAG, השתמש במתודה `op_nodes()` כדי להחזיר את כל הצמתים שלו. ניתן להשתמש ב-DAG גם לאיסוף runs, שהן רצפים של צמתים שרצים ברציפות על qubit. אלה ניתנים לאיסוף כ-runs חד-קיוביטיים עם `collect_1q_runs`, runs דו-קיוביטיים עם `collect_2q_runs`, ו-runs של צמתים שבהם שמות ההוראות נמצאים ב-namelist עם `collect_runs`. ל-`DAGCircuit` יש מתודות רבות לחיפוש ומעבר על גרף. מתודה אחת שנמצאת בשימוש נפוץ היא `topological_op_nodes`, שמספקת את הצמתים בסדר תלות. מתודות אחרות כמו `bfs_successors` משמשות בעיקר לקביעת אופן האינטראקציה של צמתים עם פעולות עוקבות ב-DAG.
+
+בדוגמה, אנחנו רוצים להחליף כל צומת, המייצג הוראה, בתת-מעגל הבנוי כ-mini DAG. ל-mini DAG מתווסף רגיסטר קוונטי דו-קיוביטי. פעולות מתווספות ל-mini DAG על ידי שימוש ב-`apply_operation_back`, שמציב את ה-`Instruction` בפלט של ה-mini DAG (בעוד ש-`apply_operation_front` היה מציב אותה בקלט של ה-mini DAG). לאחר מכן הצומת מוחלף ב-mini DAG על ידי שימוש ב-`substitute_node_with_dag`, והתהליך נמשך על כל מופע של `CXGate` ו-`ECRGate` ב-DAG (המתאימים לשערי הבסיס הדו-קיוביטיים ב-backends של IBM&reg;).
+
+```python
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.circuit import QuantumCircuit, QuantumRegister, Gate
+from qiskit.circuit.library import CXGate, ECRGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.quantum_info import Operator, pauli_basis
+
+import numpy as np
+
+from typing import Iterable, Optional
+```
+
+```python
+class PauliTwirl(TransformationPass):
+    """Add Pauli twirls to two-qubit gates."""
+
+    def __init__(
+        self,
+        gates_to_twirl: Optional[Iterable[Gate]] = None,
+    ):
+        """
+        Args:
+            gates_to_twirl: Names of gates to twirl. The default behavior is to twirl all
+                two-qubit basis gates, `cx` and `ecr` for IBM backends.
+        """
+        if gates_to_twirl is None:
+            gates_to_twirl = [CXGate(), ECRGate()]
+        self.gates_to_twirl = gates_to_twirl
+        self.build_twirl_set()
+        super().__init__()
+
+    def build_twirl_set(self):
+        """
+        Build a set of Paulis to twirl for each gate and store internally as .twirl_set.
+        """
+        self.twirl_set = {}
+
+        # iterate through gates to be twirled
+        for twirl_gate in self.gates_to_twirl:
+            twirl_list = []
+
+            # iterate through Paulis on left of gate to twirl
+            for pauli_left in pauli_basis(2):
+                # iterate through Paulis on right of gate to twirl
+                for pauli_right in pauli_basis(2):
+                    # save pairs that produce identical operation as gate to twirl
+                    if (Operator(pauli_left) @ Operator(twirl_gate)).equiv(
+                        Operator(twirl_gate) @ pauli_right
+                    ):
+                        twirl_list.append((pauli_left, pauli_right))
+
+            self.twirl_set[twirl_gate.name] = twirl_list
+
+    def run(
+        self,
+        dag: DAGCircuit,
+    ) -> DAGCircuit:
+        # collect all nodes in DAG and proceed if it is to be twirled
+        twirling_gate_classes = tuple(
+            gate.base_class for gate in self.gates_to_twirl
+        )
+        for node in dag.op_nodes():
+            if not isinstance(node.op, twirling_gate_classes):
+                continue
+
+            # random integer to select Pauli twirl pair
+            pauli_index = np.random.randint(
+                0, len(self.twirl_set[node.op.name])
+            )
+            twirl_pair = self.twirl_set[node.op.name][pauli_index]
+
+            # instantiate mini_dag and attach quantum register
+            mini_dag = DAGCircuit()
+            register = QuantumRegister(2)
+            mini_dag.add_qreg(register)
+
+            # apply left Pauli, gate to twirl, and right Pauli to empty mini-DAG
+            mini_dag.apply_operation_back(
+                twirl_pair[0].to_instruction(), [register[0], register[1]]
+            )
+            mini_dag.apply_operation_back(node.op, [register[0], register[1]])
+            mini_dag.apply_operation_back(
+                twirl_pair[1].to_instruction(), [register[0], register[1]]
+            )
+
+            # substitute gate to twirl node with twirling mini-DAG
+            dag.substitute_node_with_dag(node, mini_dag)
+
+        return dag
+```
+
+## שימוש ב-transpiler pass מסוג `PauliTwirl` {#use-the-paulitwirl-transpiler-pass}
+
+הקוד הבא משתמש ב-pass שנוצר למעלה כדי לבצע transpile למעגל. נשקול מעגל פשוט עם שערי `cx` ו-`ecr`.
+
+```python
+qc = QuantumCircuit(3)
+qc.cx(0, 1)
+qc.ecr(1, 2)
+qc.ecr(1, 0)
+qc.cx(2, 1)
+qc.draw("mpl")
+```
+
+![פלט תא הקוד הקודם](/docs/images/guides/custom-transpiler-pass/extracted-outputs/9123905d-b4cb-4ae9-9695-4ad77e70bdab-0.svg)
+
+כדי להחיל את ה-pass המותאם אישית, בנה pass manager באמצעות ה-pass מסוג `PauliTwirl` והרץ אותו על 50 מעגלים.
+
+```python
+pm = PassManager([PauliTwirl()])
+twirled_qcs = [pm.run(qc) for _ in range(50)]
+```
+
+כל שער דו-קיוביטי עכשיו כלוא בין שני Paulis.
+
+```python
+twirled_qcs[-1].draw("mpl")
+```
+
+![פלט תא הקוד הקודם](/docs/images/guides/custom-transpiler-pass/extracted-outputs/e2515cf3-f8d9-4281-9673-d5a955d7aab9-0.svg)
+
+האופרטורים זהים אם משתמשים ב-`Operator` מ-`qiskit.quantum_info`:
+
+```python
+np.all([Operator(twirled_qc).equiv(qc) for twirled_qc in twirled_qcs])
+```
+
+```text
+np.True_
+```
+
+## הצעדים הבאים {#next-steps}
+
+<Admonition type="tip" title="המלצות">
+    - כדי ללמוד איך להשתמש בפונקציה `generate_preset_passmanager` במקום לכתוב את ה-passes שלך, התחל עם הנושא [הגדרות ברירת מחדל ואפשרויות קונפיגורציה של Transpilation](defaults-and-configuration-options).
+    - נסה את המדריך [השוואת הגדרות Transpiler](/guides/circuit-transpilation-settings).
+    - עיין ב[תיעוד ה-API של ה-transpiler.](https://docs.quantum.ibm.com/api/qiskit/transpiler)
+</Admonition>
