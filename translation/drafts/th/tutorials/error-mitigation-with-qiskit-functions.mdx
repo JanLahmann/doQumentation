@@ -1,0 +1,231 @@
+---
+title: "การลดข้อผิดพลาดด้วย IBM Circuit function"
+sidebar_label: "การลดข้อผิดพลาดด้วย IBM Circuit function"
+description: "ทำตามตัวอย่างการสร้างและรันเวิร์กโฟลว์โดยใช้ IBM Circuit function"
+notebook_path: "tutorials/error-mitigation-with-qiskit-functions.ipynb"
+---
+
+{/* doqumentation-source-hash: b6806448 */}
+
+<OpenInLabBanner notebookPath="tutorials/error-mitigation-with-qiskit-functions.ipynb" />
+
+
+
+<Admonition type="note" title="หมายเหตุ">
+Qiskit Functions เป็นฟีเจอร์ทดลองที่ใช้ได้เฉพาะผู้ใช้ IBM Quantum&reg; Premium Plan, Flex Plan และ On-Prem (ผ่าน IBM Quantum Platform API) Plan เท่านั้น ขณะนี้อยู่ในสถานะ preview release และอาจมีการเปลี่ยนแปลงได้
+</Admonition>
+
+*ประมาณการการใช้งาน: 26 นาทีบน Eagle processor (หมายเหตุ: นี่เป็นการประมาณเท่านั้น เวลาจริงอาจแตกต่างกัน)*
+บทช่วยสอนนี้จะพาไปทำตามตัวอย่างการสร้างและรันเวิร์กโฟลว์โดยใช้ IBM Circuit function ฟังก์ชันนี้รับ [Primitive Unified Blocs](/guides/primitive-input-output) (PUBs) เป็นอินพุต และส่งออกค่าคาดหวัง (expectation values) ที่ผ่านการลดข้อผิดพลาดแล้ว มันมี pipeline อัตโนมัติและปรับแต่งได้สำหรับการ optimize วงจรและรันบน quantum hardware เพื่อให้นักวิจัยสามารถโฟกัสที่การค้นพบอัลกอริทึมและแอปพลิเคชันได้
+
+ดูเอกสารสำหรับ [บทนำ Qiskit Functions](/guides/functions) และเรียนรู้วิธีเริ่มต้นใช้งาน [IBM Circuit function](/guides/ibm-circuit-function)
+## พื้นหลัง {#background}
+
+บทช่วยสอนนี้พิจารณา hardware-efficient Trotterized time evolution circuit สำหรับ 2D transverse-field Ising model และคำนวณค่า global magnetization วงจรแบบนี้มีประโยชน์ในหลายสาขา เช่น condensed matter physics, chemistry และ machine learning สำหรับข้อมูลเพิ่มเติมเกี่ยวกับโครงสร้างของโมเดลนี้ ดูได้ที่ [Nature 618, 500–505 (2023)](https://www.nature.com/articles/s41586-023-06096-3)
+
+IBM Circuit function รวมความสามารถของ Qiskit transpiler service และ Qiskit Runtime Estimator เพื่อให้อินเตอร์เฟซที่เรียบง่ายสำหรับการรันวงจร ฟังก์ชันนี้ทำการ transpilation, error suppression, error mitigation และ circuit execution ภายใน managed service เดียว ทำให้เราโฟกัสที่การแมปปัญหาเป็นวงจรได้โดยไม่ต้องสร้างแต่ละขั้นตอนของ pattern เอง
+## ข้อกำหนดเบื้องต้น {#requirements}
+
+ก่อนเริ่มบทช่วยสอนนี้ ให้ตรวจสอบว่าได้ติดตั้งสิ่งต่อไปนี้แล้ว:
+
+- Qiskit SDK v1.2 หรือใหม่กว่า (`pip install qiskit`)
+- Qiskit Runtime v0.28 หรือใหม่กว่า (`pip install qiskit-ibm-runtime`)
+- IBM Qiskit Functions Catalog client v0.0.0 หรือใหม่กว่า (`pip install qiskit-ibm-catalog`)
+- Qiskit Aer v0.15.0 หรือใหม่กว่า (`pip install qiskit-aer`)
+## การตั้งค่า {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-catalog qiskit-ibm-runtime rustworkx
+```
+
+```python
+import rustworkx
+from collections import defaultdict
+from numpy import pi, mean
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.quantum_info import SparsePauliOp
+```
+
+## ขั้นตอนที่ 1: แมปอินพุต classical เป็นปัญหา quantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+<ul>
+    <li>อินพุต: พารามิเตอร์สำหรับสร้าง quantum circuit</li>
+    <li>เอาต์พุต: Abstract circuit และ observables</li>
+</ul>
+#### สร้าง Circuit {#construct-the-circuit}
+Circuit ที่เราจะสร้างเป็น hardware-efficient, Trotterized time evolution circuit สำหรับ 2D transverse-field Ising model เราเริ่มต้นด้วยการเลือก backend คุณสมบัติของ backend นี้ (นั่นคือ coupling map ของมัน) จะถูกใช้เพื่อกำหนดปัญหา quantum และให้แน่ใจว่ามัน hardware-efficient
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+จากนั้น เราดึง coupling map จาก backend
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+layer_couplings = defaultdict(list)
+```
+
+เราต้องระมัดระวังในการออกแบบ layer ของวงจร เราจะทำสิ่งนี้โดยการระบายสีขอบของ coupling map (นั่นคือการจัดกลุ่ม disjoint edges) และใช้การระบายสีนั้นเพื่อวาง gate ในวงจรได้อย่างมีประสิทธิภาพมากขึ้น ผลลัพธ์คือวงจรที่ตื้นกว่าพร้อม layer ของ gate ที่สามารถรันพร้อมกันบน hardware ได้
+
+```python
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+
+for edge_idx, color in edge_coloring.items():
+    layer_couplings[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layer_couplings = [
+    sorted(layer_couplings[i]) for i in sorted(layer_couplings.keys())
+]
+```
+
+จากนั้น เราเขียนฟังก์ชัน helper ง่ายๆ ที่ implement hardware-efficient, Trotterized time evolution circuit สำหรับ 2D transverse-field Ising model โดยใช้ edge coloring ที่ได้มาข้างต้น
+
+```python
+def construct_trotter_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    layer_couplings: list,
+    barrier: bool = True,
+) -> QuantumCircuit:
+    theta, phi = Parameter("theta"), Parameter("phi")
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(theta, range(num_qubits))
+        for layer in layer_couplings:
+            for edge in layer:
+                if edge[0] < num_qubits and edge[1] < num_qubits:
+                    circuit.rzz(phi, edge[0], edge[1])
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+```
+
+เราจะเลือกจำนวน qubit และ trotter steps แล้วสร้างวงจร
+
+```python
+num_qubits = 100
+num_trotter_steps = 2
+
+circuit = construct_trotter_circuit(
+    num_qubits, num_trotter_steps, layer_couplings
+)
+circuit.draw("mpl", fold=-1)
+```
+
+![ผลลัพธ์ของ code cell ก่อนหน้า](/docs/images/tutorials/error-mitigation-with-qiskit-functions/extracted-outputs/18eefa99-f1c4-41b5-90b8-7fd8723cac84-0.avif)
+
+เพื่อประเมินคุณภาพของการรัน เราต้องเปรียบเทียบกับผลลัพธ์ที่ ideal Circuit ที่เลือกนั้นเกินขีดความสามารถของการจำลองแบบ classical brute force ดังนั้น เราจึงกำหนดพารามิเตอร์ของ `Rx` gate ทั้งหมดในวงจรเป็น $0$ และ `Rzz` gate ทั้งหมดเป็น $\pi$ ซึ่งทำให้วงจรเป็น Clifford ทำให้สามารถทำการจำลอง ideal และได้ผลลัพธ์ ideal สำหรับการเปรียบเทียบ ในกรณีนี้ เราทราบว่าผลลัพธ์จะเป็น `1.0`
+
+```python
+parameters = [0, pi]
+```
+
+#### สร้าง Observable {#construct-the-observable}
+ก่อนอื่น คำนวณ global magnetization ตามแนว $\hat{z}$ สำหรับปัญหา $N$-qubit: $M_z = \sum_{i=1}^N \langle Z_i \rangle / N$ สิ่งนี้ต้องการการคำนวณ single-site magnetization $\langle Z_i \rangle$ ของแต่ละ qubit $i$ ก่อน ซึ่งกำหนดไว้ในโค้ดต่อไปนี้
+
+```python
+observables = []
+for i in range(num_qubits):
+    obs = "I" * (i) + "Z" + "I" * (num_qubits - i - 1)
+    observables.append(SparsePauliOp(obs))
+
+print(observables[0])
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+```
+
+## ขั้นตอนที่ 2 และ 3: Optimize ปัญหาสำหรับการรันบน quantum hardware และรันด้วย IBM Circuit function {#steps-2-and-3-optimize-problem-for-quantum-hardware-execution-and-execute-with-the-ibm-circuit-function}
+
+<ul>
+    <li>อินพุต: Abstract circuit และ observables</li>
+    <li>เอาต์พุต: ค่าคาดหวังที่ผ่านการลดข้อผิดพลาดแล้ว</li>
+</ul>
+ตอนนี้ เราสามารถส่ง abstract circuit และ observables ไปยัง IBM Circuit function ได้แล้ว มันจะจัดการ transpilation และการรันบน quantum hardware ให้เรา และส่งคืนค่าคาดหวังที่ผ่านการลดข้อผิดพลาด ก่อนอื่น เราโหลดฟังก์ชันจาก [IBM Qiskit Functions Catalog](/guides/functions)
+
+```python
+catalog = QiskitFunctionsCatalog(
+    token="<YOUR_API_KEY>"
+)  # Use the 44-character API_KEY you created and saved from the IBM Quantum Platform Home dashboard
+function = catalog.load("ibm/circuit-function")
+```
+
+IBM Circuit function รับ `pubs`, `backend_name` รวมถึงอินพุตเสริมสำหรับการกำหนดค่า transpilation, error mitigation และอื่นๆ เราสร้าง `pub` จาก abstract circuit, observables และพารามิเตอร์ของวงจร ชื่อของ backend ควรระบุเป็น string
+
+```python
+pubs = [(circuit, observables, parameters)]
+backend_name = backend.name
+```
+
+เราสามารถกำหนดค่า `options` สำหรับ transpilation, error suppression และ error mitigation ได้ด้วย หากไม่ต้องการระบุ จะใช้การตั้งค่าเริ่มต้น IBM Circuit function มีออปชันที่ใช้บ่อยสำหรับ `optimization_level` ซึ่งควบคุมระดับการ optimize วงจร และ `mitigation_level` ซึ่งระบุระดับ error suppression และ mitigation ที่จะใช้ โปรดทราบว่า `mitigation_level` ของ IBM Circuit function แตกต่างจาก `resilience_level` ที่ใช้ใน [Qiskit Runtime Estimator](/guides/configure-error-mitigation) สำหรับคำอธิบายโดยละเอียดของออปชันที่ใช้บ่อยเหล่านี้รวมถึงออปชันขั้นสูงอื่นๆ ดูได้ที่ [เอกสารสำหรับ IBM Circuit function](/guides/ibm-circuit-function)
+
+ในบทช่วยสอนนี้ เราจะตั้งค่า `default_precision`, `optimization_level: 3` และ `mitigation_level: 3` ซึ่งจะเปิดใช้งาน gate twirling และ Zero Noise Extrapolation (ZNE) ผ่าน Probabilistic Error Amplification (PEA) เพิ่มเติมจากการตั้งค่าเริ่มต้น level 1
+
+```python
+options = {
+    "default_precision": 0.011,
+    "optimization_level": 3,
+    "mitigation_level": 3,
+}
+```
+
+เมื่อระบุอินพุตแล้ว เราส่ง job ไปยัง IBM Circuit function เพื่อ optimize และรัน
+
+```python
+job = function.run(backend_name=backend_name, pubs=pubs, options=options)
+```
+
+## ขั้นตอนที่ 4: Post-process และส่งผลลัพธ์ในรูปแบบ classical ที่ต้องการ {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+<ul>
+    <li>อินพุต: ผลลัพธ์จาก IBM Circuit function</li>
+    <li>เอาต์พุต: Global magnetization</li>
+</ul>
+#### คำนวณ Global Magnetization {#compute-the-global-magnetization}
+ผลลัพธ์จากการรันฟังก์ชันมีรูปแบบเดียวกับ [Estimator](/guides/primitive-input-output#estimator-output)
+
+```python
+result = job.result()[0]
+```
+
+เราดึงค่าคาดหวังที่ผ่านการลดข้อผิดพลาดและที่ไม่ผ่านการลดข้อผิดพลาดจากผลลัพธ์นี้ ค่าคาดหวังเหล่านี้แสดงถึง single-site magnetization ตามแนว $\hat{z}$ เราหาค่าเฉลี่ยเพื่อได้ global magnetization และเปรียบเทียบกับค่า ideal ที่ `1.0` สำหรับ problem instance นี้
+
+```python
+mitigated_expvals = result.data.evs
+magnetization_mitigated = mean(mitigated_expvals)
+
+print("mitigated:", magnetization_mitigated)
+
+unmitigated_expvals = [
+    result.data.evs_extrapolated[i][0][1] for i in range(num_qubits)
+]
+magnetization_unmitigated = mean(unmitigated_expvals)
+
+print("unmitigated:", magnetization_unmitigated)
+```
+
+```text
+mitigated: 0.9749883476088692
+unmitigated: 0.7832977198447583
+```
+
+## แบบสำรวจบทช่วยสอน {#tutorial-survey}
+
+กรุณาทำแบบสำรวจสั้นๆ นี้เพื่อให้ feedback เกี่ยวกับบทช่วยสอนนี้ ความคิดเห็นของคุณจะช่วยเราพัฒนาเนื้อหาและประสบการณ์ผู้ใช้
+
+[ลิงก์ไปยังแบบสำรวจ](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

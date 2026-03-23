@@ -1,0 +1,230 @@
+---
+title: "Circuit cutting เพื่อลดความลึกของ Circuit"
+sidebar_label: "Circuit cutting เพื่อลดความลึกของ Circuit"
+description: "สร้าง Qiskit pattern สำหรับการตัด Gate ใน quantum circuit เพื่อลดความลึกของ Circuit"
+notebook_path: "tutorials/depth-reduction-with-circuit-cutting.ipynb"
+---
+
+{/* doqumentation-source-hash: 2d9b5de7 */}
+
+<OpenInLabBanner notebookPath="tutorials/depth-reduction-with-circuit-cutting.ipynb" />
+
+
+
+*ประมาณการใช้งาน: แปดนาทีบนโปรเซสเซอร์ Eagle (หมายเหตุ: นี่เป็นเพียงการประมาณเท่านั้น เวลาจริงอาจแตกต่างกัน)*
+## พื้นหลัง {#background}
+
+บทช่วยสอนนี้จะแสดงวิธีสร้าง `Qiskit pattern` สำหรับการตัด Gate ใน quantum circuit เพื่อลดความลึกของ Circuit สำหรับการพูดคุยเชิงลึกเพิ่มเติมเกี่ยวกับ circuit cutting สามารถเข้าชมได้ที่ [เอกสาร circuit cutting Qiskit addon](https://qiskit.github.io/qiskit-addon-cutting/)
+## ข้อกำหนดเบื้องต้น {#requirements}
+
+ก่อนเริ่มบทช่วยสอนนี้ ให้ตรวจสอบว่าได้ติดตั้งสิ่งต่อไปนี้แล้ว:
+- Qiskit SDK v2.0 ขึ้นไป พร้อมรองรับ [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 ขึ้นไป (`pip install qiskit-ibm-runtime`)
+- Circuit cutting Qiskit addon v0.9.0 ขึ้นไป (`pip install qiskit-addon-cutting`)
+## การตั้งค่า {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+
+from qiskit.circuit.library import EfficientSU2
+from qiskit.quantum_info import PauliList, Statevector, SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_addon_cutting import (
+    cut_gates,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+```
+
+## ขั้นตอนที่ 1: แมปข้อมูล input แบบคลาสสิกไปสู่ปัญหา quantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+เราจะนำ Qiskit pattern ไปใช้โดยผ่านสี่ขั้นตอนที่ระบุไว้ใน [เอกสาร](/guides/intro-to-patterns) ในกรณีนี้ เราจะจำลอง expectation value บน Circuit ที่มีความลึกหนึ่งๆ โดยการตัด Gate ที่ได้ผลลัพธ์เป็น swap gate และรัน subexperiment บน Circuit ที่ตื้นกว่า การตัด Gate มีความเกี่ยวข้องกับขั้นตอนที่ 2 (ปรับแต่ง Circuit สำหรับการรัน quantum โดยการแยกย่อย Gate ที่ห่างไกล) และขั้นตอนที่ 4 (การประมวลผลหลังเพื่อสร้าง expectation value บน Circuit ต้นฉบับขึ้นใหม่)
+ในขั้นตอนแรก เราจะสร้าง Circuit จาก Qiskit circuit library และกำหนด observable บางส่วน
+
+*   Input: พารามิเตอร์แบบคลาสสิกสำหรับกำหนด Circuit
+*   Output: Circuit abstract และ observable
+
+```python
+circuit = EfficientSU2(num_qubits=4, entanglement="circular").decompose()
+circuit.assign_parameters([0.4] * len(circuit.parameters), inplace=True)
+observables = PauliList(["ZZII", "IZZI", "IIZZ", "XIXI", "ZIZZ", "IXIX"])
+circuit.draw("mpl", scale=0.8, style="iqp")
+```
+
+![ผลลัพธ์จากเซลล์โค้ดก่อนหน้า](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/54ed0f13-0.avif)
+
+## ขั้นตอนที่ 2: ปรับแต่งปัญหาสำหรับการรันบน quantum hardware {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+*   Input: Circuit abstract และ observable
+*   Output: Target circuit และ observable ที่ผ่านการตัด Gate ที่ห่างไกลเพื่อลดความลึกของ Circuit หลัง transpile
+
+เราเลือก initial layout ที่ต้องการ swap สองครั้งในการรัน Gate ระหว่าง Qubit 3 และ 0 และอีกสอง swap เพื่อนำ Qubit กลับสู่ตำแหน่งเดิม เราเลือก `optimization_level=3` ซึ่งเป็นระดับการปรับแต่งสูงสุดที่มีให้ใช้งานกับ preset pass manager
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=circuit.num_qubits, simulator=False
+)
+
+pm = generate_preset_pass_manager(
+    optimization_level=3, initial_layout=[0, 1, 2, 3], backend=backend
+)
+transpiled_qc = pm.run(circuit)
+```
+
+![Coupling map แสดง Qubit ที่จำเป็นต้องทำ swap](/docs/images/tutorials/depth-reduction-with-circuit-cutting/swaps.avif)
+
+```python
+print(f"Transpiled circuit depth: {transpiled_qc.depth()}")
+transpiled_qc.draw("mpl", scale=0.4, idle_wires=False, style="iqp", fold=-1)
+```
+
+```text
+Transpiled circuit depth: 103
+```
+
+![ผลลัพธ์จากเซลล์โค้ดก่อนหน้า](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/4fe4af43-1.avif)
+
+*ค้นหาและตัด Gate ที่ห่างไกล:* เราจะแทนที่ Gate ที่ห่างไกล (Gate ที่เชื่อมต่อ Qubit ที่ไม่ใช่ local ได้แก่ 0 และ 3) ด้วย object `TwoQubitQPDGate` โดยระบุ index ของ Gate เหล่านั้น `cut_gates` จะแทนที่ Gate ในตำแหน่ง index ที่กำหนดด้วย object `TwoQubitQPDGate` และยังส่งคืนรายการของ instance `QPDBasis` หนึ่งรายการสำหรับการแยกย่อย Gate แต่ละตัว object `QPDBasis` มีข้อมูลเกี่ยวกับวิธีการแยกย่อย Gate ที่ถูกตัดออกเป็น operation แบบ single-qubit
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(circuit.data)
+    if {circuit.find_bit(q)[0] for q in instruction.qubits} == {0, 3}
+]
+
+# Decompose distant CNOTs into TwoQubitQPDGate instances
+qpd_circuit, bases = cut_gates(circuit, cut_indices)
+
+qpd_circuit.draw("mpl", scale=0.8)
+```
+
+![ผลลัพธ์จากเซลล์โค้ดก่อนหน้า](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/23e3d25e-0.avif)
+
+*สร้าง subexperiment สำหรับรันบน backend*: `generate_cutting_experiments` รับ Circuit ที่มี instance `TwoQubitQPDGate` และ observable ในรูปแบบ `PauliList`
+
+เพื่อจำลอง expectation value ของ Circuit ขนาดเต็ม จะมีการสร้าง subexperiment หลายรายการจาก joint quasiprobability distribution ของ Gate ที่ถูกแยกย่อย แล้วรันบน backend หนึ่งตัวหรือมากกว่า จำนวน sample ที่ดึงจาก distribution นั้นถูกควบคุมด้วย `num_samples` โดยจะมี coefficient รวมหนึ่งค่าสำหรับแต่ละ sample ที่ไม่ซ้ำกัน สำหรับข้อมูลเพิ่มเติมเกี่ยวกับวิธีการคำนวณ coefficient ให้ดูที่ [เนื้อหาอธิบาย](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html)
+
+```python
+# Generate the subexperiments and sampling coefficients
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit, observables=observables, num_samples=np.inf
+)
+```
+
+*เพื่อเปรียบเทียบ เราจะเห็นว่า QPD subexperiment จะตื้นกว่าหลังจากตัด Gate ที่ห่างไกล*: นี่คือตัวอย่างของ subexperiment ที่เลือกมาแบบสุ่มจาก QPD circuit ความลึกลดลงมากกว่าครึ่ง ต้องสร้างและประเมิน subexperiment แบบ probabilistic จำนวนมากเหล่านี้เพื่อสร้าง expectation value ของ Circuit ที่ลึกกว่าขึ้นใหม่
+
+```python
+# Transpile the decomposed circuit to the same layout
+transpiled_qpd_circuit = pm.run(subexperiments[100])
+
+print(f"Original circuit depth after transpile: {transpiled_qc.depth()}")
+print(
+    f"QPD subexperiment depth after transpile: {transpiled_qpd_circuit.depth()}"
+)
+transpiled_qpd_circuit.draw(
+    "mpl", scale=0.6, style="iqp", idle_wires=False, fold=-1
+)
+```
+
+```text
+Original circuit depth after transpile: 103
+QPD subexperiment depth after transpile: 46
+```
+
+![ผลลัพธ์จากเซลล์โค้ดก่อนหน้า](/docs/images/tutorials/depth-reduction-with-circuit-cutting/extracted-outputs/70e2f1b6-1.avif)
+
+*ในทางกลับกัน การตัดส่งผลให้ต้องการ sampling เพิ่มเติม*. ที่นี่เราตัด CNOT gate สามตัว ส่งผลให้มี sampling overhead เป็น $9^3$ สำหรับข้อมูลเพิ่มเติมเกี่ยวกับ sampling overhead ที่เกิดจาก circuit cutting ให้ดูที่ [เอกสาร Circuit Knitting Toolbox](https://qiskit-extensions.github.io/circuit-knitting-toolbox/circuit_cutting/explanation/index.html)
+
+```python
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 729.0
+```
+
+## ขั้นตอนที่ 3: รันโดยใช้ Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+
+รัน target circuit ("subexperiment") ด้วย Sampler Primitive
+
+*   Input: Target circuit
+*   Output: Quasi-probability distribution
+
+```python
+# Transpile the subexperiments to the backend's instruction set architecture (ISA)
+ isa_subexperiments = pm.run(subexperiments)
+
+# Set up the Qiskit Runtime Sampler primitive.  For a fake backend, this will use a local simulator.
+sampler = SamplerV2(backend)
+
+# Submit the subexperiments
+job = sampler.run(isa_subexperiments)
+```
+
+```python
+# Retrieve the results
+results = job.result()
+```
+
+```python
+print(job.job_id())
+```
+
+```text
+czypg1r6rr3g008mgp6g
+```
+
+## ขั้นตอนที่ 4: ประมวลผลหลังและส่งคืนผลลัพธ์ในรูปแบบคลาสสิกที่ต้องการ {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+ใช้ผลลัพธ์ของ subexperiment, subobservable และ sampling coefficient เพื่อสร้าง expectation value ของ Circuit ต้นฉบับขึ้นใหม่
+
+Input: Quasi-probability distribution
+Output: Expectation value ที่สร้างขึ้นใหม่
+
+```python
+reconstructed_expvals = reconstruct_expectation_values(
+    results,
+    coefficients,
+    observables,
+)
+# Reconstruct final expectation value
+final_expval = np.dot(reconstructed_expvals, [1] * len(observables))
+print("Final reconstructed expectation value")
+print(final_expval)
+```
+
+```text
+Final reconstructed expectation value
+1.0751342773437473
+```
+
+```python
+ideal_expvals = [
+    Statevector(circuit).expectation_value(SparsePauliOp(observable))
+    for observable in observables
+]
+print("Ideal expectation value")
+print(np.dot(ideal_expvals, [1] * len(observables)).real)
+```
+
+```text
+Ideal expectation value
+1.2283177520039992
+```
+
+## แบบสำรวจบทช่วยสอน {#tutorial-survey}
+
+กรุณาทำแบบสำรวจสั้นๆ นี้เพื่อให้ feedback เกี่ยวกับบทช่วยสอนนี้ ความคิดเห็นของคุณจะช่วยให้เราปรับปรุงเนื้อหาและประสบการณ์การใช้งานของเรา
+
+[ลิงก์ไปยังแบบสำรวจ](https://your.feedback.ibm.com/jfe/form/SV_2ftYFf9t72yFNIO)

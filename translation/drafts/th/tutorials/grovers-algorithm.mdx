@@ -1,0 +1,210 @@
+---
+title: "อัลกอริทึมของ Grover"
+sidebar_label: "อัลกอริทึมของ Grover"
+description: "เรียนรู้พื้นฐานของการคำนวณเชิงควอนตัม และวิธีใช้บริการ IBM Quantum และ QPU เพื่อแก้ปัญหาในโลกจริง"
+notebook_path: "tutorials/grovers-algorithm.ipynb"
+---
+
+{/* doqumentation-source-hash: fc701bfe */}
+
+<OpenInLabBanner notebookPath="tutorials/grovers-algorithm.ipynb" />
+
+
+
+*ประมาณการใช้งาน: ไม่ถึงหนึ่งนาทีบน Eagle r3 processor (หมายเหตุ: นี่เป็นเพียงการประมาณเท่านั้น ระยะเวลาที่ใช้จริงอาจแตกต่างกันไป)*
+## พื้นหลัง {#background}
+
+Amplitude amplification เป็นอัลกอริทึมหรือ subroutine เชิงควอนตัมอเนกประสงค์ที่สามารถใช้เพื่อให้ได้ความเร็วแบบ quadratic เหนืออัลกอริทึมคลาสสิกบางประเภท [อัลกอริทึมของ Grover](https://arxiv.org/abs/quant-ph/9605043) เป็นอัลกอริทึมแรกที่แสดงให้เห็นถึงความเร็วนี้สำหรับปัญหาการค้นหาแบบไม่มีโครงสร้าง การกำหนดปัญหาการค้นหาของ Grover ต้องการฟังก์ชัน oracle ที่ทำเครื่องหมาย computational basis states หนึ่งรายการขึ้นไปว่าเป็น states ที่เราต้องการค้นหา และ amplification circuit ที่เพิ่ม amplitude ของ states ที่ถูกทำเครื่องหมาย ส่งผลให้ states ที่เหลือถูกกดทับลง
+
+ที่นี่เราจะสาธิตวิธีสร้าง Grover oracles และใช้ [`grover_operator()`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.grover_operator) จาก Qiskit circuit library เพื่อตั้งค่า Grover's search instance ได้อย่างง่ายดาย `Sampler` primitive ของ runtime ช่วยให้รัน Grover circuits ได้อย่างราบรื่น
+
+## ความต้องการ {#requirements}
+
+ก่อนเริ่มบทเรียนนี้ ให้ตรวจสอบว่าติดตั้งสิ่งต่อไปนี้แล้ว:
+
+* Qiskit SDK v1.4 ขึ้นไป พร้อมรองรับ [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime (`pip install qiskit-ibm-runtime`) v0.36 ขึ้นไป
+
+## การตั้งค่า {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-ibm-runtime
+```
+
+```python
+# Built-in modules
+import math
+
+# Imports from Qiskit
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import grover_operator, MCMTGate, ZGate
+from qiskit.visualization import plot_distribution
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+# Imports from Qiskit Runtime
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+def grover_oracle(marked_states):
+    """Build a Grover oracle for multiple marked states
+
+    Here we assume all input marked states have the same number of bits
+
+    Parameters:
+        marked_states (str or list): Marked states of oracle
+
+    Returns:
+        QuantumCircuit: Quantum circuit representing Grover oracle
+    """
+    if not isinstance(marked_states, list):
+        marked_states = [marked_states]
+    # Compute the number of qubits in circuit
+    num_qubits = len(marked_states[0])
+
+    qc = QuantumCircuit(num_qubits)
+    # Mark each target state in the input list
+    for target in marked_states:
+        # Flip target bit-string to match Qiskit bit-ordering
+        rev_target = target[::-1]
+        # Find the indices of all the '0' elements in bit-string
+        zero_inds = [
+            ind
+            for ind in range(num_qubits)
+            if rev_target.startswith("0", ind)
+        ]
+        # Add a multi-controlled Z-gate with pre- and post-applied X-gates (open-controls)
+        # where the target bit-string has a '0' entry
+        if zero_inds:
+            qc.x(zero_inds)
+        qc.compose(MCMTGate(ZGate(), num_qubits - 1, 1), inplace=True)
+        if zero_inds:
+            qc.x(zero_inds)
+    return qc
+```
+
+## ขั้นตอนที่ 1: แปลง input คลาสสิกให้เป็นปัญหาควอนตัม {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+อัลกอริทึมของ Grover ต้องการ [oracle](/learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/introduction) ที่ระบุ computational basis states หนึ่งรายการขึ้นไปที่ถูกทำเครื่องหมาย โดย "ทำเครื่องหมาย" หมายถึง state ที่มี phase เป็น -1 controlled-Z gate หรือ multi-controlled generalization บน $N$ qubits จะทำเครื่องหมาย $2^{N}-1$ state (`'1'`*$N$ bit-string) การทำเครื่องหมาย basis states ที่มี `'0'` หนึ่งตัวขึ้นไปในการแทนแบบไบนารีต้องใช้ X-gates บน qubits ที่เกี่ยวข้องก่อนและหลัง controlled-Z gate ซึ่งเทียบเท่ากับการมี open-control บน qubit นั้น ในโค้ดต่อไปนี้เราจะกำหนด oracle ที่ทำสิ่งนั้นโดยทำเครื่องหมาย basis states หนึ่งรายการขึ้นไปตามที่กำหนดผ่าน bit-string representation ของพวกมัน `MCMT` gate ถูกใช้เพื่อสร้าง multi-controlled Z-gate
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+backend.name
+```
+
+```text
+'ibm_brisbane'
+```
+
+### Grover's instance เฉพาะ {#specific-grovers-instance}
+
+เมื่อมีฟังก์ชัน oracle แล้ว เราสามารถกำหนด Grover search instance เฉพาะได้ ในตัวอย่างนี้เราจะทำเครื่องหมาย computational states สองรายการจากทั้งหมดแปดรายการที่มีใน three-qubit computational space:
+
+```python
+marked_states = ["011", "100"]
+
+oracle = grover_oracle(marked_states)
+oracle.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/c150298f-0.avif)
+
+```python
+marked_states = ["011", "100"]
+
+oracle = grover_oracle(marked_states)
+oracle.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/7baca7e2-99fc-4089-b5d8-30da56816a6a-0.avif)
+
+```python
+marked_states = ["011", "100"]
+
+oracle = grover_oracle(marked_states)
+oracle.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/d3a26fc9-9090-4527-a749-a412661260b6-0.avif)
+
+### Grover operator {#grover-operator}
+
+`grover_operator()` ที่มีอยู่ใน Qiskit รับ oracle circuit แล้วคืน circuit ที่ประกอบด้วย oracle circuit เองและ circuit ที่ขยาย amplitude ของ states ที่ถูกทำเครื่องหมายโดย oracle ที่นี่เราใช้ method `decompose()` บน circuit เพื่อดู gates ภายใน operator:
+
+```python
+grover_op = grover_operator(oracle)
+grover_op.decompose().draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/283d5265-0.avif)
+
+การนำ `grover_op` circuit นี้มาใช้ซ้ำหลายครั้งจะขยาย amplitude ของ states ที่ถูกทำเครื่องหมาย ทำให้กลายเป็น bit-strings ที่มีความน่าจะเป็นสูงสุดใน output distribution ของ circuit จำนวนครั้งที่ใช้ที่เหมาะสมที่สุดถูกกำหนดโดยอัตราส่วนของ states ที่ถูกทำเครื่องหมายต่อจำนวน computational states ทั้งหมดที่เป็นไปได้:
+
+```python
+optimal_num_iterations = math.floor(
+    math.pi
+    / (4 * math.asin(math.sqrt(len(marked_states) / 2**grover_op.num_qubits)))
+)
+```
+
+### Full Grover circuit {#full-grover-circuit}
+
+การทดลอง Grover ที่สมบูรณ์เริ่มต้นด้วย Hadamard gate บนแต่ละ qubit เพื่อสร้าง superposition ที่สม่ำเสมอของ computational basis states ทั้งหมด ตามด้วย Grover operator (`grover_op`) ที่ทำซ้ำตามจำนวนครั้งที่เหมาะสม ที่นี่เราใช้ method `QuantumCircuit.power(INT)` เพื่อนำ Grover operator มาใช้ซ้ำ
+
+```python
+qc = QuantumCircuit(grover_op.num_qubits)
+# Create even superposition of all basis states
+qc.h(range(grover_op.num_qubits))
+# Apply Grover operator the optimal number of times
+qc.compose(grover_op.power(optimal_num_iterations), inplace=True)
+# Measure all qubits
+qc.measure_all()
+qc.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/4933ae44-0.avif)
+
+## ขั้นตอนที่ 2: ปรับปัญหาให้เหมาะสมสำหรับการรันบน quantum hardware {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+```python
+target = backend.target
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+
+circuit_isa = pm.run(qc)
+circuit_isa.draw(output="mpl", idle_wires=False, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/c9a3020e-0.avif)
+
+## ขั้นตอนที่ 3: รันด้วย Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+
+Amplitude amplification เป็นปัญหาแบบ sampling ที่เหมาะสำหรับการรันด้วย [`Sampler`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/sampler-v2) runtime primitive
+
+สังเกตว่า method `run()` ของ [Qiskit Runtime `SamplerV2`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/sampler-v2) รับ iterable ของ `primitive unified blocks (PUBs)` สำหรับ sampler แต่ละ PUB คือ iterable ในรูปแบบ `(circuit, parameter_values)` อย่างไรก็ตาม อย่างน้อยที่สุดก็รับ list ของ quantum circuit(s) ได้
+
+```python
+# To run on local simulator:
+#   1. Use the StatevectorSampler from qiskit.primitives instead
+sampler = Sampler(mode=backend)
+sampler.options.default_shots = 10_000
+result = sampler.run([circuit_isa]).result()
+dist = result[0].data.meas.get_counts()
+```
+
+## ขั้นตอนที่ 4: ประมวลผลและแสดงผลลัพธ์ในรูปแบบคลาสสิกที่ต้องการ {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+```python
+plot_distribution(dist)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/grovers-algorithm/extracted-outputs/a5ef9913-0.avif)
+
+## แบบสำรวจบทเรียน {#tutorial-survey}
+
+กรุณาทำแบบสำรวจสั้นนี้เพื่อให้ feedback เกี่ยวกับบทเรียนนี้ ความคิดเห็นของคุณจะช่วยให้เราปรับปรุงเนื้อหาและประสบการณ์การใช้งานได้ดียิ่งขึ้น
+
+[ลิงก์ไปยังแบบสำรวจ](https://your.feedback.ibm.com/jfe/form/SV_0j1SlLPkooyeFJY)
