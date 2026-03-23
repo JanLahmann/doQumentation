@@ -1,0 +1,235 @@
+---
+title: "การฝึก Quantum Kernel"
+sidebar_label: "การฝึก Quantum Kernel"
+description: "สร้าง Qiskit pattern สำหรับคำนวณค่าต่าง ๆ ในเมทริกซ์ quantum kernel เพื่อใช้ในการจำแนกแบบ binary"
+notebook_path: "tutorials/quantum-kernel-training.ipynb"
+---
+
+{/* doqumentation-source-hash: 1ead87c1 */}
+
+<OpenInLabBanner notebookPath="tutorials/quantum-kernel-training.ipynb" />
+
+
+
+*ประมาณการการใช้งาน: ไม่ถึงหนึ่งนาทีบนโปรเซสเซอร์ Eagle r3 (หมายเหตุ: นี่เป็นเพียงการประมาณเท่านั้น เวลาการรันจริงอาจแตกต่างออกไป)*
+## พื้นหลัง {#background}
+
+บทช่วยสอนนี้แสดงวิธีสร้าง `Qiskit pattern` สำหรับคำนวณค่าต่าง ๆ ในเมทริกซ์ quantum kernel ที่ใช้สำหรับการจำแนกแบบ binary สำหรับข้อมูลเพิ่มเติมเกี่ยวกับ `Qiskit patterns` และวิธีที่ `Qiskit Serverless` สามารถนำไปใช้ deploy ขึ้น cloud เพื่อการรันแบบ managed ให้เยี่ยมชม [หน้าเอกสารของเราเกี่ยวกับ IBM Quantum&reg; Platform](/guides/serverless)
+## ข้อกำหนดเบื้องต้น {#requirements}
+
+ก่อนเริ่มบทช่วยสอนนี้ ให้แน่ใจว่าได้ติดตั้งสิ่งต่อไปนี้แล้ว:
+- Qiskit SDK v1.0 ขึ้นไป พร้อมรองรับ [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 ขึ้นไป (`pip install qiskit-ibm-runtime`)
+## การตั้งค่า {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy pandas qiskit qiskit-ibm-catalog qiskit-ibm-runtime
+```
+
+```python
+!wget https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv
+
+# การ import ทั่วไปและฟังก์ชันช่วยเหลือ
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.circuit.library import UnitaryOverlap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
+
+# from qiskit_serverless import IBMServerlessClient, QiskitFunction
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+
+def visualize_counts(res_counts, num_qubits, num_shots):
+    """แสดงผลลัพธ์จาก Qiskit Sampler primitive"""
+    zero_prob = res_counts.get(0, 0.0)
+    top_10 = dict(
+        sorted(res_counts.items(), key=lambda item: item[1], reverse=True)[
+            :10
+        ]
+    )
+    top_10.update({0: zero_prob})
+    by_key = dict(sorted(top_10.items(), key=lambda item: item[0]))
+    x_vals, y_vals = list(zip(*by_key.items()))
+    x_vals = [bin(x_val)[2:].zfill(num_qubits) for x_val in x_vals]
+    y_vals_prob = []
+    for t in range(len(y_vals)):
+        y_vals_prob.append(y_vals[t] / num_shots)
+    y_vals = y_vals_prob
+    plt.bar(x_vals, y_vals)
+    plt.xticks(rotation=75)
+    plt.title("Results of sampling")
+    plt.xlabel("Measured bitstring")
+    plt.ylabel("Probability")
+    plt.show()
+
+def get_training_data():
+    """อ่านข้อมูลสำหรับการฝึก"""
+    df = pd.read_csv("dataset_graph7.csv", sep=",", header=None)
+    training_data = df.values[:20, :]
+    ind = np.argsort(training_data[:, -1])
+    X_train = training_data[ind][:, :-1]
+
+    return X_train
+```
+
+```text
+7[1A[1G[27G[Files: 0  Bytes: 0  [0 B/s] Re]87[2A[1G[27G[https://raw.githubusercontent.]87[1S[3A[1G[0JSaving 'dataset_graph7.csv.1'
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1S[3A[1G[0JHTTP response 200  [https://raw.githubusercontent.com/qiskit-community/prototype-quantum-kernel-training/main/data/dataset_graph7.csv]
+87[2A[1Gdataset_graph7.csv.1 100% [=============================>]   20.25K    --.-KB/s87[1A[1G[27G[Files: 1  Bytes: 20.25K [93.33]8[m[m[m[m
+```
+
+## ขั้นตอนที่ 1: แมป input แบบ classical ไปยังปัญหา quantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+*   Input: ชุดข้อมูลสำหรับการฝึก
+*   Output: วงจรแบบ abstract สำหรับคำนวณค่าในเมทริกซ์ kernel
+
+สร้าง quantum circuit ที่ใช้ในการประเมินค่าหนึ่งในเมทริกซ์ kernel เราใช้ข้อมูล input เพื่อกำหนดมุมหมุนสำหรับ gate แบบ parametrized ในวงจร โดยจะใช้ตัวอย่างข้อมูล `x1=14` และ `x2=19`
+
+***หมายเหตุ: ชุดข้อมูลที่ใช้ในบทช่วยสอนนี้สามารถดาวน์โหลดได้ [ที่นี่](https://github.com/qiskit-community/prototype-quantum-kernel-training/blob/main/data/dataset_graph7.csv)***
+
+```python
+# เตรียมข้อมูลสำหรับการฝึก
+X_train = get_training_data()
+
+# เมทริกซ์ kernel ว่าง
+num_samples = np.shape(X_train)[0]
+kernel_matrix = np.full((num_samples, num_samples), np.nan)
+
+# เตรียม feature map สำหรับคำนวณ overlap
+num_features = np.shape(X_train)[1]
+num_qubits = int(num_features / 2)
+entangler_map = [[0, 2], [3, 4], [2, 5], [1, 4], [2, 3], [4, 6]]
+fm = QuantumCircuit(num_qubits)
+training_param = Parameter("θ")
+feature_params = ParameterVector("x", num_qubits * 2)
+fm.ry(training_param, fm.qubits)
+for cz in entangler_map:
+    fm.cz(cz[0], cz[1])
+for i in range(num_qubits):
+    fm.rz(-2 * feature_params[2 * i + 1], i)
+    fm.rx(-2 * feature_params[2 * i], i)
+
+# กำหนด tunable parameter ให้เป็นค่าที่ optimal และตั้งค่า data params สำหรับตัวอย่างสองตัวแรก
+x1 = 14
+x2 = 19
+unitary1 = fm.assign_parameters(list(X_train[x1]) + [np.pi / 2])
+unitary2 = fm.assign_parameters(list(X_train[x2]) + [np.pi / 2])
+
+# สร้าง overlap circuit
+overlap_circ = UnitaryOverlap(unitary1, unitary2)
+overlap_circ.measure_all()
+overlap_circ.draw("mpl", scale=0.6, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/70d6faff-9a56-44bb-b26f-f573a8c90889-0.avif)
+
+## ขั้นตอนที่ 2: ปรับปรุงปัญหาสำหรับการรันบน quantum hardware {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+*   Input: วงจรแบบ abstract ที่ยังไม่ได้ปรับให้เหมาะสมกับ backend ใดโดยเฉพาะ
+*   Output: วงจรเป้าหมายและ observable ที่ถูกปรับให้เหมาะสมกับ QPU ที่เลือก
+
+ใช้ฟังก์ชัน `generate_preset_pass_manager` จาก Qiskit เพื่อกำหนดขั้นตอนการ optimize สำหรับวงจรของเราตาม QPU ที่วางแผนจะรันการทดลอง โดยตั้ง `optimization_level=3` ซึ่งหมายความว่าเราจะใช้ preset pass manager ที่ให้ระดับการ optimize สูงที่สุด
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=overlap_circ.num_qubits
+)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+overlap_ibm = pm.run(overlap_circ)
+overlap_ibm.draw("mpl", scale=0.6, idle_wires=False, fold=-1, style="iqp")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/49607b34-9723-493d-85da-bd97c1351104-0.avif)
+
+## ขั้นตอนที่ 3: รันด้วย Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+
+*   Input: วงจรเป้าหมาย
+*   Output: การกระจายแบบ quasi-probability
+
+ใช้ `Sampler` primitive จาก Qiskit Runtime เพื่อสร้างการกระจายแบบ quasi-probability ของสถานะที่ได้จากการ sampling วงจร สำหรับงานสร้างเมทริกซ์ kernel เราสนใจเป็นพิเศษในความน่าจะเป็นของการวัดสถานะ |0>
+
+สำหรับการสาธิตนี้ เราจะรันบน QPU ด้วย primitives ของ `qiskit-ibm-runtime` หากต้องการรันด้วย primitives แบบ statevector ของ `qiskit` ให้แทนที่บล็อกโค้ดที่ใช้ Qiskit IBM&reg; Runtime primitives ด้วยบล็อกที่คอมเมนต์ไว้
+
+```python
+num_shots = 10_000
+
+## ประเมินปัญหาโดยใช้ statevector-based primitives จาก Qiskit
+# from qiskit.primitives import StatevectorSampler
+
+# sampler = StatevectorSampler()
+# results = sampler.run([overlap_circ]).result()
+# counts = results[0].data.meas.get_int_counts()
+
+# ประเมินปัญหาโดยใช้ QPU ผ่าน Qiskit IBM Runtime
+
+sampler = Sampler(mode=backend)
+results = sampler.run([overlap_ibm]).result()
+counts = results[0].data.meas.get_int_counts()
+
+visualize_counts(counts, num_qubits, num_shots)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-kernel-training/extracted-outputs/d2f4f6cf-067e-4d53-aa04-7ca9c803d3e1-0.avif)
+
+## ขั้นตอนที่ 4: ประมวลผลหลังการรันและคืนผลลัพธ์ในรูปแบบ classical {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+*   Input: การกระจายความน่าจะเป็น
+*   Output: ค่าเดียวในเมทริกซ์ kernel
+
+คำนวณความน่าจะเป็นของการวัด |0> บน overlap circuit และเติมค่าในเมทริกซ์ kernel ในตำแหน่งที่สอดคล้องกับตัวอย่างที่แทนด้วย overlap circuit นี้ (แถวที่ 15, คอลัมน์ที่ 20) ในการแสดงภาพนี้ สีแดงเข้มขึ้นหมายถึง fidelity ที่ใกล้เคียง 1.0 มากขึ้น เพื่อเติมเมทริกซ์ kernel ทั้งหมด เราต้องรันการทดลอง quantum สำหรับแต่ละค่า
+
+```python
+# คำนวณ fidelity หรือความน่าจะเป็นในการวัดค่า 0
+kernel_matrix[x1, x2] = counts.get(0, 0.0) / num_shots
+print(f"Fidelity: {kernel_matrix[x1, x2]}")
+```
+
+```text
+Fidelity: 0.1279
+```
+
+![kernel_matrix.png](/docs/images/tutorials/quantum-kernel-training/kernel_matrix.avif)
+## Deploy Qiskit pattern ขึ้น cloud {#deploy-the-qiskit-pattern-to-the-cloud}
+
+ในการทำเช่นนี้ ให้ย้ายซอร์สโค้ดด้านบนไปยังไฟล์ `./source/generate_kernel_entry.py` ห่อโค้ดในสคริปต์ที่รับ input และคืนผลลัพธ์สุดท้าย จากนั้น upload ไปยัง remote cluster โดยใช้คลาส `QiskitFunction` จาก `Qiskit Serverless` สำหรับคำแนะนำเกี่ยวกับการระบุ dependencies ภายนอก การส่ง input arguments และอื่น ๆ ดูที่ [Qiskit Serverless guides](https://qiskit.github.io/qiskit-serverless/getting_started/index.html)
+
+Input ของ Pattern คือคู่ของตัวอย่างข้อมูล `x1` และ `x2` ส่วน output คือ fidelity ระหว่างตัวอย่างทั้งสอง ค่านี้จะถูกใช้เพื่อเติมค่าในเมทริกซ์ kernel ที่สอดคล้องกับตัวอย่างทั้งสองนี้
+
+```python
+serverless = QiskitServerless()
+
+kernel_entry_pattern = QiskitFunction(
+    title="generate-kernel-entry",
+    entrypoint="generate_kernel_entry.py",
+    working_dir="./source/",
+)
+
+serverless.upload(kernel_entry_pattern)
+```
+
+## รัน Qiskit pattern ในฐานะ managed service {#run-the-qiskit-pattern-as-a-managed-service}
+
+เมื่อ upload pattern ขึ้น cloud แล้ว เราสามารถรันได้ง่าย ๆ ผ่าน client `IBMServerlessProvider` เพื่อความเรียบง่าย เราจะใช้ quantum simulator แบบ exact ในสภาพแวดล้อม cloud ดังนั้น fidelity ที่คำนวณได้จะมีความแม่นยำสูง
+
+```python
+generate_kernel_entry = serverless.load("generate-kernel-entry")
+job = generate_kernel_entry.run(
+    sample1=list(X_train[x1]), sample2=list(X_train[x2])
+)
+
+kernel_matrix[x1, x2] = job.result()["fidelity"]
+print(f"fidelity: {kernel_matrix[x1, x2]}")
+```
+
+## แบบสอบถามของบทช่วยสอน {#tutorial-survey}
+
+กรุณาทำแบบสอบถามสั้น ๆ นี้เพื่อให้ feedback เกี่ยวกับบทช่วยสอนนี้ ความคิดเห็นของคุณจะช่วยให้เราปรับปรุงเนื้อหาและประสบการณ์การใช้งาน
+
+[ลิงก์ไปยังแบบสอบถาม](https://your.feedback.ibm.com/jfe/form/SV_6xsFvUYV1pNHCqW)
