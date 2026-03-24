@@ -551,6 +551,7 @@ function setupCellFeedback(): void {
 /** After injection, show a skip-hint on cells that contain save_account().
  *  Prevents users from overwriting injected credentials with placeholder values. */
 function annotateSaveAccountCells(): void {
+  if (isSimulatorExemptPage()) return;
   const simMode = getSimulatorMode();
   const hasCredentials = !!getIBMQuantumToken();
   if (!simMode && !hasCredentials) return;
@@ -621,6 +622,7 @@ function annotateSaveAccountCells(): void {
 }
 
 function annotateSessionCells(): void {
+  if (isSimulatorExemptPage()) return;
   if (getIBMQuantumPlan() !== 'open') return;
   if (!getIBMQuantumToken() || getSimulatorMode()) return;
 
@@ -646,6 +648,19 @@ function annotateSessionCells(): void {
 }
 
 // ── Kernel injection for IBM credentials / simulator mode ──
+
+/**
+ * Pages where simulator interception is disabled.
+ * These pages intentionally demonstrate real hardware access.
+ */
+const SIMULATOR_EXEMPT_PAGES = [
+  '/tutorials/hello-world',
+];
+
+function isSimulatorExemptPage(): boolean {
+  const path = window.location.pathname.replace(/\/$/, '');
+  return SIMULATOR_EXEMPT_PAGES.some(p => path === p || path.endsWith(p));
+}
 
 const CONFLICT_EVENT = 'executablecode:conflict';
 
@@ -768,7 +783,8 @@ function broadcastInjection(info: InjectionInfo): void {
 }
 
 async function injectKernelSetup(kernelObj: unknown): Promise<void> {
-  const simMode = getSimulatorMode();
+  const exempt = isSimulatorExemptPage();
+  const simMode = exempt ? false : getSimulatorMode();
   const token = getIBMQuantumToken();
   const activeMode = getActiveMode();
 
