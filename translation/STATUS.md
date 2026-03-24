@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-03-23 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-03-24 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -21,6 +21,9 @@ python translation/scripts/translation-status.py --write-status
 | Tagalog | `tl` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Arabic | `ar` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Hebrew | `he` | 44/44 | 1/172 | 1/1 | 0/0 | 47/219 |
+| Malay | `ms` | 0/44 | 0/172 | 0/1 | 0/0 | 0/219 |
+| Indonesian | `id` | 0/44 | 0/172 | 0/1 | 0/0 | 0/219 |
+| Thai | `th` | 0/44 | 0/172 | 0/1 | 0/0 | 0/219 |
 | Swabian | `swg` | 14/44 | 1/172 | 13/1 | 2/0 | 31/219 |
 | Badisch | `bad` | 14/44 | 1/172 | 13/1 | 2/0 | 31/219 |
 | Bavarian | `bar` | 14/44 | 1/172 | 13/1 | 2/0 | 31/219 |
@@ -3706,10 +3709,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 1/172 | 0 | 1 | — | 171 |
+| Guides | 1/172 | 31 | 1 | — | 171 |
 | Courses | 1/1 | 0 | 1 | — | 0 |
 | Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **46/217** | **0** | **46** | **—** | **171** |
+| **Total** | **46/217** | **31** | **46** | **—** | **171** |
 
 <details>
 <summary>Pipeline history (47 files in status.json)</summary>
@@ -3765,6 +3768,36 @@ python translation/scripts/translation-status.py --write-status
 | `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-03-20 |
 
 </details>
+
+### Malay (`ms`)
+
+| Section | Translated | Drafts | PASS | FAIL | Remaining |
+|---------|-----------|--------|------|------|-----------|
+| Tutorials | 0/44 | 0 | — | — | 44 |
+| Guides | 0/172 | 0 | — | — | 172 |
+| Courses | 0/1 | 0 | — | — | 1 |
+| Modules | 0/0 | 0 | — | — | 0 |
+| **Total** | **0/217** | **0** | **—** | **—** | **217** |
+
+### Indonesian (`id`)
+
+| Section | Translated | Drafts | PASS | FAIL | Remaining |
+|---------|-----------|--------|------|------|-----------|
+| Tutorials | 0/44 | 0 | — | — | 44 |
+| Guides | 0/172 | 0 | — | — | 172 |
+| Courses | 0/1 | 0 | — | — | 1 |
+| Modules | 0/0 | 0 | — | — | 0 |
+| **Total** | **0/217** | **0** | **—** | **—** | **217** |
+
+### Thai (`th`)
+
+| Section | Translated | Drafts | PASS | FAIL | Remaining |
+|---------|-----------|--------|------|------|-----------|
+| Tutorials | 0/44 | 10 | — | — | 44 |
+| Guides | 0/172 | 4 | — | — | 172 |
+| Courses | 0/1 | 0 | — | — | 1 |
+| Modules | 0/0 | 0 | — | — | 0 |
+| **Total** | **0/217** | **14** | **—** | **—** | **217** |
 
 ### Swabian (`swg`)
 
