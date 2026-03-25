@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-03-24 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-03-25 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -2899,10 +2899,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 172 | — | 0 |
+| Guides | 172/172 | 1 | 172 | — | 0 |
 | Courses | 154/1 | 0 | 154 | — | -153 |
 | Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| **Total** | **385/217** | **1** | **385** | **—** | **-168** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
