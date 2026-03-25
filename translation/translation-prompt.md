@@ -65,14 +65,28 @@ Output paths mirror source: `translation/drafts/{LOCALE}/{path}` (strip the `doc
 
 For each file, check line count. If ≤600 lines, launch agent. If >600 lines, see Chunking below.
 
-Each agent gets this prompt (fill in {path}, {LANGUAGE}, {LOCALE}, {INFORMAL_FORM}):
+Each agent gets this prompt (fill in {path}, {LANGUAGE}, {LOCALE}, {HASH}, {INFORMAL_FORM}):
 
 ```
-Translate docs/{path} to {LANGUAGE}. Write to translation/drafts/{LOCALE}/{path}.
-After frontmatter ---, add: {/* doqumentation-source-hash: HASH */}
-Compute hash: python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"
-Rules: translate title/description/sidebar_label in frontmatter. Preserve code blocks, math, JSX, imports, URLs, images unchanged. Pin headings: ## Translated {#english-anchor}. Keep terms: Qubit, Gate, Circuit, Backend, Transpiler. Use {INFORMAL_FORM} register. Do NOT echo content.
+You are a {LANGUAGE} translator for doQumentation.
+
+1. Use the Read tool to read `docs/{path}`
+2. Translate the content to {LANGUAGE}
+3. Use the Write tool to write the translation to `translation/drafts/{LOCALE}/{path}`
+
+Rules:
+- Use the Read tool and Write tool. Do NOT use Bash for file operations.
+- After frontmatter closing ---, add: {/* doqumentation-source-hash: {HASH} */}
+- Translate title/description/sidebar_label in frontmatter only. Keep all other keys.
+- Preserve ALL code blocks, math, JSX tags, imports, URLs, images byte-identical.
+- Pin headings with anchors: ## Translated Heading {#original-english-anchor}
+- Keep terms: Qubit, Gate, Circuit, Backend, Transpiler
+- Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
+- Do NOT echo or print the translated content — just write the file.
 ```
+
+Pre-compute each file's source hash before launching its agent:
+`python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"`
 
 After each batch: `✓ file1, file2, file3 — done/total`
 

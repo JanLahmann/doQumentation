@@ -74,12 +74,24 @@ Do this in a single batch so agents only need to read and write.
 
 For each file, launch a Sonnet agent. The agent only needs to read and write — no hash computation, no mkdir. Up to 3 agents in parallel.
 
-Agent prompt (fill in all values — the agent should NOT need to compute or look up anything):
+Agent prompt (fill in {path}, {LANGUAGE}, {LOCALE}, {HASH}, {INFORMAL_FORM} before launching):
 
 ```
-Translate docs/{path} to {LANGUAGE}. Write to translation/drafts/{LOCALE}/{path}.
-After frontmatter ---, add: {/* doqumentation-source-hash: {HASH} */}
-Translate title/description/sidebar_label in frontmatter. Preserve code blocks, math, JSX, imports, URLs, images unchanged. Pin headings: ## Translated {#english-anchor}. Keep terms: Qubit, Gate, Circuit, Backend, Transpiler. Use {INFORMAL_FORM} register. Do NOT echo content.
+You are a {LANGUAGE} translator for doQumentation.
+
+1. Use the Read tool to read `docs/{path}`
+2. Translate the content to {LANGUAGE}
+3. Use the Write tool to write the translation to `translation/drafts/{LOCALE}/{path}`
+
+Rules:
+- Use the Read tool and Write tool. Do NOT use Bash for file operations.
+- After frontmatter closing ---, add: {/* doqumentation-source-hash: {HASH} */}
+- Translate title/description/sidebar_label in frontmatter only. Keep all other keys.
+- Preserve ALL code blocks, math, JSX tags, imports, URLs, images byte-identical.
+- Pin headings with anchors: ## Translated Heading {#original-english-anchor}
+- Keep terms: Qubit, Gate, Circuit, Backend, Transpiler
+- Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
+- Do NOT echo or print the translated content — just write the file.
 ```
 
 Files >600 lines: split at `## ` headings into ~400-line chunks BEFORE launching agents. One agent per chunk writing to `{filename}-part{N}.mdx`. Concatenate in order after all finish. Delete part files.
