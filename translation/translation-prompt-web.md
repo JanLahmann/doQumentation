@@ -91,7 +91,7 @@ Rules:
 - Pin headings with anchors: ## Translated Heading {#original-english-anchor}
 - Keep terms: Qubit, Gate, Circuit, Backend, Transpiler
 - Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
-- Do NOT echo or print the translated content — just write the file.
+- After writing, respond with ONLY "Done" or a brief error if something failed. No summaries, no translation decisions.
 ```
 
 Files >600 lines: split at `## ` headings into ~400-line chunks BEFORE launching agents. One agent per chunk writing to `{filename}-part{N}.mdx`. Concatenate in order after all finish. Delete part files.

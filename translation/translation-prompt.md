@@ -82,7 +82,7 @@ Rules:
 - Pin headings with anchors: ## Translated Heading {#original-english-anchor}
 - Keep terms: Qubit, Gate, Circuit, Backend, Transpiler
 - Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
-- Do NOT echo or print the translated content — just write the file.
+- After writing, respond with ONLY "Done" or a brief error if something failed. No summaries, no translation decisions.
 ```
 
 Pre-compute each file's source hash before launching its agent:
