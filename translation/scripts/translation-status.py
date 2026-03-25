@@ -405,8 +405,8 @@ def format_locale_detail(locale: str, en_files: dict, status: dict) -> str:
     return "\n".join(lines)
 
 
-def format_backlog(locale: str, en_files: dict) -> str:
-    """Format prioritized backlog for a locale."""
+def format_backlog(locale: str, en_files: dict, limit: int = 0) -> str:
+    """Format prioritized backlog for a locale. If limit > 0, show at most that many files."""
     trans = get_locale_translations(locale)
     drafts = get_locale_drafts(locale)
 
@@ -414,13 +414,14 @@ def format_backlog(locale: str, en_files: dict) -> str:
     name = LOCALE_NAMES.get(locale, locale)
 
     total_remaining = 0
+    shown = 0
 
-    # Priority order: Guides → Courses → Modules → Tutorials
+    # Priority order: Tutorials → Guides → Courses → Modules
     priority = [
+        ("tutorials", "Tutorials"),
         ("guides", "Guides"),
         ("courses", "Courses"),
         ("modules", "Modules"),
-        ("tutorials", "Tutorials"),
     ]
 
     sections_output = []
@@ -432,13 +433,22 @@ def format_backlog(locale: str, en_files: dict) -> str:
         total_remaining += len(remaining)
 
         if remaining:
+            if limit and shown >= limit:
+                sections_output.append(f"{label} ({len(remaining)} remaining): ... (use --limit 0 to see all)")
+                continue
             section_lines = [f"{label} ({len(remaining)} remaining):"]
             for rel in remaining:
+                if limit and shown >= limit:
+                    section_lines.append(f"  ... and {len(remaining) - (shown - (shown - len(section_lines) + 1))} more")
+                    break
                 section_lines.append(f"  {rel}")
+                shown += 1
             sections_output.append("\n".join(section_lines))
 
     lines.append(f"Backlog for {locale.upper()} ({name}) — {total_remaining} untranslated pages")
     lines.append("Priority: Tutorials → Guides → Courses → Modules")
+    if limit:
+        lines.append(f"Showing first {min(limit, total_remaining)} files (--limit {limit})")
     lines.append("")
 
     if sections_output:
@@ -692,6 +702,8 @@ def main():
                         help="Include dialect locales (KSH, NDS, etc.)")
     parser.add_argument("--backlog", action="store_true",
                         help="Show prioritized untranslated files (requires --locale)")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Limit backlog output to N files (0 = unlimited)")
     parser.add_argument("--validate", action="store_true",
                         help="Run structural validation and record results (slow)")
     parser.add_argument("--markdown", action="store_true",
@@ -755,7 +767,7 @@ def main():
         if not args.locale:
             print("Error: --backlog requires --locale", file=sys.stderr)
             sys.exit(2)
-        print(format_backlog(args.locale, en_files))
+        print(format_backlog(args.locale, en_files, limit=args.limit))
     elif args.locale:
         print(format_locale_detail(args.locale, en_files, status))
     else:

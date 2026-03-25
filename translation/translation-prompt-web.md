@@ -1,81 +1,87 @@
 # Translation Prompt — Claude Code Web Session
 
-Paste into the Claude Code web UI (claude.ai Code tab) with the doQumentation repo connected.
-Change `{LANGUAGE}` and `{LOCALE}` to your target language before pasting.
+Use with: `Read translation/translation-prompt-web.md. Continue translations to Hebrew.`
 
-See [`translation-prompt.md`](translation-prompt.md) for the full CLI prompt (CLI with parallel Task agents).
+The language in the user message determines the target. This prompt is self-contained — do NOT read translation-prompt.md.
 
----
+## Language Table
 
-## Variable Reference
+| Language | LOCALE | Informal form |
+|----------|--------|---------------|
+| German | de | "du" not "Sie" |
+| Spanish | es | "tú" not "usted" |
+| French | fr | "tu" not "vous" |
+| Italian | it | "tu" not "Lei" |
+| Ukrainian | uk | "ти" not "Ви" |
+| Japanese | ja | polite (です/ます) but not overly formal |
+| Portuguese | pt | "você" casual |
+| Filipino | tl | casual (no po/opo) |
+| Arabic | ar | informal register |
+| Hebrew | he | informal register |
+| Thai | th | casual (no ครับ/ค่ะ) |
+| Malay | ms | casual |
+| Indonesian | id | casual |
 
-| Language | LOCALE | LANGUAGE |
-|----------|--------|----------|
-| German | de | German |
-| Spanish | es | Spanish |
-| French | fr | French |
-| Italian | it | Italian |
-| Ukrainian | uk | Ukrainian |
-| Japanese | ja | Japanese |
-| Portuguese | pt | Portuguese |
-| Tagalog | tl | Tagalog/Filipino |
-| Arabic | ar | Arabic |
-| Hebrew | he | Hebrew |
-| Malay | ms | Malay |
-| Indonesian | id | Indonesian |
-| Thai | th | Thai |
+Look up the LOCALE and informal form from this table based on the language the user specified.
 
----
+## Constraints
 
-## Prompt
+- Translate at most 20 files per session. Stop after 20 and report progress.
+- Launch at most 3 agents in parallel. Wait for all 3 to finish before the next batch.
+- If an agent fails or times out, skip that file and move on.
+
+## Step 1 — Setup
+
+All three commands are required. The docs/ directory is not in git — it is generated:
+
+```bash
+git pull && git submodule update --init && python scripts/sync-content.py
+ls docs/tutorials/ docs/guides/ docs/learning/courses/ docs/learning/modules/
+```
+
+If any directory is missing, stop — setup failed.
+
+## Step 2 — Discover files to translate
+
+```bash
+python translation/scripts/translation-status.py --locale LOCALE --backlog --limit 20
+```
+
+This prints at most 20 untranslated file paths in priority order (tutorials → guides → courses → modules). These are the files to translate this session.
+
+Source file paths (courses and modules are nested — not top-level):
+- Tutorials: `docs/tutorials/{file}.mdx`
+- Guides: `docs/guides/{file}.mdx`
+- Courses: `docs/learning/courses/{course}/{section}/{file}.mdx`
+- Modules: `docs/learning/modules/{module}/{file}.mdx`
+
+Print: "Translating up to 20 of N remaining files."
+
+## Step 3 — Translate
+
+For each file from the backlog, launch a Sonnet agent with this prompt:
 
 ```
-Language: {LANGUAGE} ({LOCALE})
-
-SETUP (run these first):
-  git pull
-  git submodule update --init
-  python scripts/sync-content.py
-
-This generates docs/tutorials/, docs/guides/, and docs/learning/ (all gitignored).
-Verify: ls docs/tutorials/ docs/guides/ docs/learning/courses/ docs/learning/modules/
-
-DISCOVER what needs translating:
-  python translation/scripts/translation-status.py --locale {LOCALE} --backlog
-
-Source file paths (courses and modules are nested under docs/learning/):
-- Tutorials: docs/tutorials/{file}.mdx
-- Guides: docs/guides/{file}.mdx
-- Courses: docs/learning/courses/{course}/{section}/{file}.mdx
-- Modules: docs/learning/modules/{module}/{file}.mdx
-
-TRANSLATE using Sonnet agents — one file per agent, up to 3 in parallel.
-Use model: "sonnet" for each agent. Each agent gets this prompt:
-
----
-Translate docs/{path} from English to {LANGUAGE}.
-
-1. Read docs/{path}
-2. Compute source hash: python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"
-3. Write translation to translation/drafts/{LOCALE}/{path}
-
-Rules:
-- After frontmatter closing ---, add: {/* doqumentation-source-hash: XXXX */}
-- Translate frontmatter title/description/sidebar_label only. Keep all other keys.
-- Preserve ALL code blocks (``` fences) byte-identical — same count, same content
-- Preserve ALL math ($...$, $$...$$), JSX tags, imports, URLs, image paths unchanged
-- Translate headings with anchor: ## Translated Heading {#original-english-anchor}
-- Keep technical terms: Qubit, Gate, Circuit, Backend, Transpiler
-- Write natural, fluent {LANGUAGE}
-- Do NOT echo or print the translated content — just write the file
----
-
-For files >600 lines: YOU (the orchestrator) must chunk at ## headings into ~400-line pieces. Launch one agent per chunk writing to translation/drafts/{LOCALE}/{filename}-part{N}.mdx. After all finish, concatenate and write to the final path. Delete part files.
-
-Skip files already in translation/drafts/{LOCALE}/ or genuinely translated in i18n/{LOCALE}/docusaurus-plugin-content-docs/current/ (no {/* doqumentation-untranslated-fallback */} marker).
-
-Work in order: tutorials → guides → courses → modules.
-Before starting, print: "Starting: {N} files to translate ({X} tutorials, Y guides, Z courses, W modules)"
-After each agent completes, print: "✓ {path} — {done}/{total} ({percent}%)"
-After every 10 files, commit: git add translation/drafts/ && git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
+Translate docs/{path} to {LANGUAGE}. Write to translation/drafts/{LOCALE}/{path}.
+After frontmatter ---, add: {/* doqumentation-source-hash: HASH */}
+Compute hash: python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"
+Rules: translate title/description/sidebar_label in frontmatter. Preserve code blocks, math, JSX, imports, URLs, images unchanged. Pin headings: ## Translated {#english-anchor}. Keep terms: Qubit, Gate, Circuit, Backend, Transpiler. Use INFORMAL_FORM register. Do NOT echo content.
 ```
+
+Fill in {path}, {LANGUAGE}, {LOCALE}, HASH, and INFORMAL_FORM from the language table above.
+
+Files >600 lines: split at `## ` headings into ~400-line chunks BEFORE launching agents. One agent per chunk writing to `{filename}-part{N}.mdx`. Concatenate in order after all finish. Delete part files.
+
+After each batch of 3: `✓ file1, file2, file3 — done/total`
+
+After every 10 files:
+```bash
+git add translation/drafts/{LOCALE}/
+git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
+```
+
+## Step 4 — Summary
+
+After finishing or reaching 20 files, print:
+- Files translated, skipped, failed
+- Files remaining (total from step 2)
