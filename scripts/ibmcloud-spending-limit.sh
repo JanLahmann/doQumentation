@@ -16,7 +16,7 @@
 set -euo pipefail
 
 CE_PROJECT="ce-doqumentation-01"
-CE_APP="ce-doqumentation-01"
+CE_APP_PREFIX="ce-doqumentation-"
 CE_REGION="eu-de"
 DEFAULT_THRESHOLD=5  # USD per month
 
@@ -73,20 +73,34 @@ else
     ibmcloud target -r "$CE_REGION" -g Default &>/dev/null || true
 
     if ibmcloud ce project select --name "$CE_PROJECT" &>/dev/null 2>&1; then
-        echo "   App configuration:"
-        ibmcloud ce app get --name "$CE_APP" --output json 2>/dev/null \
-            | grep -E '"(min_scale|max_scale|scale_memory_limit|scale_cpu_limit)"' \
-            | sed 's/^/   /' || echo "   (Could not retrieve app config)"
-        echo ""
+        # Find all workshop/CE apps matching the prefix
+        APP_COUNT=0
+        ALL_OK=true
+        for APP_NAME in $(ibmcloud ce app list --output json 2>/dev/null \
+            | jq -r '.[].metadata.name // empty' 2>/dev/null \
+            | grep "^${CE_APP_PREFIX}" | sort); do
+            APP_COUNT=$((APP_COUNT + 1))
+            echo "   App: ${APP_NAME}"
+            ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+                | grep -E '"(min_scale|max_scale|scale_memory_limit|scale_cpu_limit)"' \
+                | sed 's/^/     /' || echo "     (Could not retrieve app config)"
 
-        # Verify critical caps
-        MAX_SCALE=$(ibmcloud ce app get --name "$CE_APP" --output json 2>/dev/null \
-            | grep '"max_scale"' | grep -o '[0-9]*' || echo "unknown")
-        if [[ "$MAX_SCALE" == "1" ]]; then
-            echo "   ✓ max-scale=1 (single instance cap — primary cost control)"
-        else
-            echo "   ⚠ max-scale=${MAX_SCALE} — consider setting to 1 to cap costs:"
-            echo "     ibmcloud ce app update --name ${CE_APP} --max-scale 1"
+            MAX_SCALE=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+                | grep '"max_scale"' | grep -o '[0-9]*' || echo "unknown")
+            if [[ "$MAX_SCALE" == "1" ]]; then
+                echo "     ✓ max-scale=1"
+            else
+                echo "     ⚠ max-scale=${MAX_SCALE} — consider setting to 1:"
+                echo "       ibmcloud ce app update --name ${APP_NAME} --max-scale 1"
+                ALL_OK=false
+            fi
+            echo ""
+        done
+
+        if [[ "$APP_COUNT" -eq 0 ]]; then
+            echo "   No apps found matching prefix '${CE_APP_PREFIX}'"
+        elif $ALL_OK; then
+            echo "   ✓ All ${APP_COUNT} app(s) have max-scale=1"
         fi
     else
         echo "   Warning: Could not select project ${CE_PROJECT}"
@@ -96,10 +110,10 @@ fi
 echo ""
 echo "3. Cost control summary:"
 echo "   • Spending notification: \$${THRESHOLD}/month (set via console)"
-echo "   • CE max-scale: 1 (single instance cap)"
+echo "   • CE apps: ${APP_COUNT:-unknown} instance(s), each max-scale=1"
 echo "   • CE min-scale: 0 (scales to zero when idle — no charges)"
 echo "   • nginx rate limiting: /build/ 5r/m, /api/ 30r/s, /terminals/ 10r/m"
-echo "   • Estimated monthly cost: \$0–7 (within free tier if usage is light)"
+echo "   • Estimated monthly cost: \$0–7 per instance (within free tier if usage is light)"
 echo ""
 echo "   Hard spending limits are NOT available on IBM Cloud."
 echo "   Monitor usage: https://cloud.ibm.com/billing/usage"

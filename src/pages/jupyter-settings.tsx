@@ -45,6 +45,12 @@ import {
   getAvailableBackends,
   getBackendOverride,
   setBackendOverride,
+  getWorkshopPool,
+  saveWorkshopPool,
+  clearWorkshopPool,
+  getWorkshopAssignment,
+  getWorkshopInstanceStats,
+  type WorkshopPool,
   type JupyterConfig,
   type SimulatorBackend,
   type ActiveMode,
@@ -186,6 +192,14 @@ export default function JupyterSettings(): JSX.Element {
   const [ceSaveResult, setCeSaveResult] = useState<string | null>(null);
   const [ceSaveResultType, setCeSaveResultType] = useState<'success' | 'warning' | 'info'>('success');
 
+  // Workshop pool state
+  const [workshopPool, setWorkshopPoolState] = useState<WorkshopPool | null>(null);
+  const [workshopAssigned, setWorkshopAssignedState] = useState<string | null>(null);
+  const [workshopStats, setWorkshopStats] = useState<Array<{ url: string; kernels: number; status: 'online' | 'starting' | 'offline' }> | null>(null);
+  const [workshopConfigInput, setWorkshopConfigInput] = useState('');
+  const [workshopResult, setWorkshopResult] = useState<string | null>(null);
+  const [workshopResultType, setWorkshopResultType] = useState<'success' | 'warning' | 'info'>('success');
+
   // Backend selection state
   const [availableBackends, setAvailableBackends] = useState<AvailableBackend[]>([]);
   const [backendOverride, setBackendOverrideState] = useState<JupyterConfig['environment'] | null>(null);
@@ -233,6 +247,13 @@ export default function JupyterSettings(): JSX.Element {
       setCeDaysRemaining(getCEDaysRemaining());
     }
 
+    // Load workshop pool state
+    const savedPool = getWorkshopPool();
+    if (savedPool) {
+      setWorkshopPoolState(savedPool);
+      setWorkshopAssignedState(getWorkshopAssignment());
+    }
+
     // Load backend selection state
     setAvailableBackends(getAvailableBackends());
     setBackendOverrideState(getBackendOverride());
@@ -247,11 +268,35 @@ export default function JupyterSettings(): JSX.Element {
     setBookmarkCount(getBookmarks().length);
   }, []);
 
-  // Auto-open <details> when URL has a hash anchor
+  // Auto-import workshop config from URL fragment (#workshop=BASE64)
+  // and auto-open <details> when URL has a hash anchor
   useEffect(() => {
     const hash = window.location.hash?.slice(1);
     if (!hash) return;
-    const target = document.getElementById(hash);
+
+    // Workshop auto-import: #workshop=BASE64_JSON
+    if (hash.startsWith('workshop=')) {
+      try {
+        const configStr = atob(hash.slice('workshop='.length));
+        const config = JSON.parse(configStr);
+        if (Array.isArray(config.pool) && config.pool.length > 0 && config.token) {
+          saveWorkshopPool(config.pool, config.token);
+          const pool = getWorkshopPool();
+          setWorkshopPoolState(pool);
+          setWorkshopAssignedState(getWorkshopAssignment());
+          setAvailableBackends(getAvailableBackends());
+          setWorkshopResult(`Joined workshop with ${config.pool.length} instance(s).`);
+          setWorkshopResultType('success');
+          // Replace hash so the config isn't visible in the URL bar
+          window.history.replaceState(null, '', window.location.pathname + '#code-engine');
+        }
+      } catch {
+        setWorkshopResult('Invalid workshop config in URL.');
+        setWorkshopResultType('warning');
+      }
+    }
+
+    const target = document.getElementById(hash.startsWith('workshop=') ? 'code-engine' : hash);
     if (!target) return;
     // Walk up to find enclosing <details> and open it
     let el: HTMLElement | null = target;
@@ -392,6 +437,55 @@ export default function JupyterSettings(): JSX.Element {
     );
     setCeSaveResult(result.message);
     setCeSaveResultType(result.success ? 'success' : 'warning');
+  };
+
+  // Workshop handlers
+  const handleWorkshopJoin = () => {
+    if (!workshopConfigInput.trim()) return;
+    try {
+      const configStr = atob(workshopConfigInput.trim());
+      const config = JSON.parse(configStr);
+      if (!Array.isArray(config.pool) || config.pool.length === 0 || !config.token) {
+        setWorkshopResult('Invalid config: must contain "pool" (array of URLs) and "token".');
+        setWorkshopResultType('warning');
+        return;
+      }
+      saveWorkshopPool(config.pool, config.token);
+      const pool = getWorkshopPool();
+      setWorkshopPoolState(pool);
+      setWorkshopAssignedState(getWorkshopAssignment());
+      refreshBackends();
+      setWorkshopConfigInput('');
+      setWorkshopResult(`Joined workshop with ${config.pool.length} instance(s).`);
+      setWorkshopResultType('success');
+    } catch {
+      setWorkshopResult('Invalid config — must be a base64-encoded JSON string.');
+      setWorkshopResultType('warning');
+    }
+  };
+
+  const handleWorkshopLeave = () => {
+    clearWorkshopPool();
+    setWorkshopPoolState(null);
+    setWorkshopAssignedState(null);
+    setWorkshopStats(null);
+    setWorkshopConfigInput('');
+    refreshBackends('code-engine');
+    setWorkshopResult('Left workshop. Falling back to single CE instance or Binder.');
+    setWorkshopResultType('success');
+  };
+
+  const handleWorkshopRefreshStats = async () => {
+    const pool = getWorkshopPool();
+    if (!pool) return;
+    setWorkshopResult('Checking instances...');
+    setWorkshopResultType('info');
+    const stats = await getWorkshopInstanceStats(pool.pool);
+    setWorkshopStats(stats);
+    const online = stats.filter(s => s.status === 'online').length;
+    const totalKernels = stats.reduce((sum, s) => sum + s.kernels, 0);
+    setWorkshopResult(`${online}/${stats.length} instances online, ${totalKernels} active kernel(s).`);
+    setWorkshopResultType(online === stats.length ? 'success' : 'warning');
   };
 
   // Simulator mode handlers
@@ -943,77 +1037,183 @@ export default function JupyterSettings(): JSX.Element {
                 </Translate>
               </p>
 
-              <details className="margin-bottom--md">
-                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
-                  <Translate id="settings.ce.setupTitle">Setup Instructions</Translate>
-                </summary>
-                <ol style={{ marginTop: '0.5rem' }}>
-                  <li><Translate id="settings.ce.step1">Create an IBM Cloud account at cloud.ibm.com (free tier available)</Translate></li>
-                  <li><Translate id="settings.ce.step2">Create a Code Engine project in your preferred region</Translate></li>
-                  <li>
-                    <Translate
-                      id="settings.ce.step3"
-                      values={{image: <code>ghcr.io/janlahmann/doqumentation-codeengine:latest</code>}}
-                    >
-                      {'Deploy a new application with image {image}, port 8080'}
-                    </Translate>
-                  </li>
-                  <li><Translate id="settings.ce.step4">Set environment variable JUPYTER_TOKEN to a secure token (min 32 characters) and CORS_ORIGIN to your domain</Translate></li>
-                </ol>
-              </details>
+              {/* ── Workshop Mode Panel ── */}
+              {workshopPool && workshopPool.pool.length > 0 ? (
+                <>
+                  <div className="alert alert--success margin-bottom--md">
+                    <strong>Workshop Mode</strong> — {workshopPool.pool.length} instance(s)
+                    {workshopAssigned && (
+                      <span style={{ display: 'block', fontSize: '0.85rem', marginTop: '0.25rem', opacity: 0.85 }}>
+                        This tab assigned to: {workshopAssigned.replace(/^https:\/\//, '').split('.')[0]}...
+                      </span>
+                    )}
+                  </div>
 
-              {ceDaysRemaining >= 0 && (
-                <div className="alert alert--info margin-bottom--md">
-                  <Translate
-                    id="settings.ce.daysRemaining"
-                    values={{days: ceDaysRemaining}}
-                  >
-                    {'Code Engine settings will auto-delete in {days} day(s).'}
-                  </Translate>
-                </div>
+                  {/* Instance Status Dashboard */}
+                  <details className="margin-bottom--md">
+                    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                      Instance Status
+                    </summary>
+                    <div style={{ marginTop: '0.5rem' }}>
+                      {workshopStats ? (
+                        <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid var(--ifm-color-emphasis-300)' }}>
+                              <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem' }}>#</th>
+                              <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem' }}>Instance</th>
+                              <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>Kernels</th>
+                              <th style={{ textAlign: 'center', padding: '0.25rem 0.5rem' }}>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {workshopStats.map((s, i) => (
+                              <tr key={s.url} style={{ borderBottom: '1px solid var(--ifm-color-emphasis-200)' }}>
+                                <td style={{ padding: '0.25rem 0.5rem' }}>{i + 1}</td>
+                                <td style={{ padding: '0.25rem 0.5rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                                  {s.url.replace(/^https:\/\//, '').slice(0, 40)}...
+                                </td>
+                                <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>{s.kernels}</td>
+                                <td style={{ textAlign: 'center', padding: '0.25rem 0.5rem' }}>
+                                  {s.status === 'online' ? '\u25CF Online' : s.status === 'starting' ? '\u25CB Starting...' : '\u25CB Offline'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <p style={{ color: 'var(--ifm-color-emphasis-600)', fontSize: '0.85rem' }}>
+                          Click Refresh to check instance status.
+                        </p>
+                      )}
+                      <button
+                        className="button button--secondary button--sm"
+                        onClick={handleWorkshopRefreshStats}
+                        style={{ marginTop: '0.5rem' }}
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </details>
+
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                    <button
+                      className="button button--outline button--danger button--sm"
+                      onClick={handleWorkshopLeave}
+                    >
+                      Leave Workshop
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* ── Single CE Instance Form ── */}
+                  <details className="margin-bottom--md">
+                    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                      <Translate id="settings.ce.setupTitle">Setup Instructions</Translate>
+                    </summary>
+                    <ol style={{ marginTop: '0.5rem' }}>
+                      <li><Translate id="settings.ce.step1">Create an IBM Cloud account at cloud.ibm.com (free tier available)</Translate></li>
+                      <li><Translate id="settings.ce.step2">Create a Code Engine project in your preferred region</Translate></li>
+                      <li>
+                        <Translate
+                          id="settings.ce.step3"
+                          values={{image: <code>ghcr.io/janlahmann/doqumentation-codeengine:latest</code>}}
+                        >
+                          {'Deploy a new application with image {image}, port 8080'}
+                        </Translate>
+                      </li>
+                      <li><Translate id="settings.ce.step4">Set environment variable JUPYTER_TOKEN to a secure token (min 32 characters) and CORS_ORIGIN to your domain</Translate></li>
+                    </ol>
+                  </details>
+
+                  {ceDaysRemaining >= 0 && (
+                    <div className="alert alert--info margin-bottom--md">
+                      <Translate
+                        id="settings.ce.daysRemaining"
+                        values={{days: ceDaysRemaining}}
+                      >
+                        {'Code Engine settings will auto-delete in {days} day(s).'}
+                      </Translate>
+                    </div>
+                  )}
+
+                  <div className="margin-bottom--sm">
+                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                      <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'The public URL of your Code Engine application (from IBM Cloud console).'})} />
+                    </label>
+                    <input
+                      type="url"
+                      value={ceUrl}
+                      onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
+                      placeholder="https://your-app.region.codeengine.appdomain.cloud"
+                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
+                    />
+                  </div>
+
+                  <div className="margin-bottom--md">
+                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                      <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
+                    </label>
+                    <input
+                      type="password"
+                      value={ceToken}
+                      onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
+                      placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
+                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                    <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
+                      <Translate id="settings.ce.save">Save</Translate>
+                    </button>
+                    <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
+                      <Translate id="settings.ce.test">Test Connection</Translate>
+                    </button>
+                    <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
+                      <Translate id="settings.ce.clear">Clear</Translate>
+                    </button>
+                  </div>
+
+                  {ceSaveResult && (
+                    <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
+                      {ceSaveResult}
+                    </div>
+                  )}
+
+                  {/* ── Join Workshop ── */}
+                  <details className="margin-bottom--md" style={{ marginTop: '1rem' }}>
+                    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                      Join Workshop
+                    </summary>
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)' }}>
+                        Paste the workshop config string provided by your instructor.
+                        This connects you to a pool of Code Engine instances for the class.
+                      </p>
+                      <input
+                        type="text"
+                        value={workshopConfigInput}
+                        onChange={e => { setWorkshopConfigInput(e.target.value); setWorkshopResult(null); }}
+                        placeholder="Paste base64 workshop config here..."
+                        style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
+                      />
+                      <button
+                        className="button button--primary button--sm"
+                        onClick={handleWorkshopJoin}
+                        disabled={!workshopConfigInput.trim()}
+                        style={{ marginTop: '0.5rem' }}
+                      >
+                        Join
+                      </button>
+                    </div>
+                  </details>
+                </>
               )}
 
-              <div className="margin-bottom--sm">
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'The public URL of your Code Engine application (from IBM Cloud console).'})} />
-                </label>
-                <input
-                  type="url"
-                  value={ceUrl}
-                  onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
-                  placeholder="https://your-app.region.codeengine.appdomain.cloud"
-                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
-                />
-              </div>
-
-              <div className="margin-bottom--md">
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                  <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
-                </label>
-                <input
-                  type="password"
-                  value={ceToken}
-                  onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
-                  placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
-                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
-                  <Translate id="settings.ce.save">Save</Translate>
-                </button>
-                <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
-                  <Translate id="settings.ce.test">Test Connection</Translate>
-                </button>
-                <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
-                  <Translate id="settings.ce.clear">Clear</Translate>
-                </button>
-              </div>
-
-              {ceSaveResult && (
-                <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
-                  {ceSaveResult}
+              {workshopResult && (
+                <div className={`alert alert--${workshopResultType} margin-bottom--md`}>
+                  {workshopResult}
                 </div>
               )}
             </div>

@@ -47,6 +47,11 @@ const STORAGE_KEY_CE_SAVED_AT = 'doqumentation_ce_saved_at';
 // Backend override (user-selected execution backend)
 const STORAGE_KEY_BACKEND_OVERRIDE = 'doqumentation_backend_override';
 
+// Workshop pool (multiple CE instances for classroom use)
+const STORAGE_KEY_WORKSHOP_POOL = 'doqumentation_workshop_pool';
+const SESSION_KEY_WORKSHOP_ASSIGNED = 'dq-workshop-assigned';
+const SESSION_KEY_WORKSHOP_POOL_VERSION = 'dq-workshop-pool-version';
+
 // IBM Quantum plan type
 const STORAGE_KEY_IBM_PLAN = 'doqumentation_ibm_plan';
 const VALID_IBM_PLANS = ['open', 'payg', 'premium'] as const;
@@ -61,6 +66,7 @@ export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
   STORAGE_KEY_CE_URL, STORAGE_KEY_CE_TOKEN, STORAGE_KEY_CE_SAVED_AT,
   STORAGE_KEY_BACKEND_OVERRIDE, STORAGE_KEY_IBM_PLAN,
+  STORAGE_KEY_WORKSHOP_POOL,
 ];
 
 /** Metadata for an available backend shown in the backend selector UI. */
@@ -111,11 +117,20 @@ export function getAvailableBackends(): AvailableBackend[] {
     backends.push({ environment: 'custom', label: 'Custom Server', detail: customUrl });
   }
 
-  // Code Engine? (check expiry first)
-  checkCEExpiry();
-  const ceUrl = getItem(STORAGE_KEY_CE_URL);
-  if (ceUrl) {
-    backends.push({ environment: 'code-engine', label: 'Code Engine', detail: ceUrl });
+  // Code Engine? Workshop pool takes priority over single URL.
+  const workshop = getWorkshopPool();
+  if (workshop && workshop.pool.length > 0) {
+    backends.push({
+      environment: 'code-engine',
+      label: 'Code Engine',
+      detail: `Workshop (${workshop.pool.length} instances)`,
+    });
+  } else {
+    checkCEExpiry();
+    const ceUrl = getItem(STORAGE_KEY_CE_URL);
+    if (ceUrl) {
+      backends.push({ environment: 'code-engine', label: 'Code Engine', detail: ceUrl });
+    }
   }
 
   // GitHub Pages / doqumentation.org?
@@ -171,6 +186,24 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
       };
     }
     case 'code-engine': {
+      // Workshop pool takes priority over single CE URL
+      const wsPool = getWorkshopPool();
+      if (wsPool && wsPool.pool.length > 0) {
+        const assigned = assignWorkshopInstance();
+        if (assigned) {
+          return {
+            enabled: true,
+            baseUrl: assigned,
+            wsUrl: assigned.replace(/^http(s?):\/\//, 'ws$1://'),
+            token: wsPool.token,
+            thebeEnabled: true,
+            labEnabled: true,
+            binderUrl: assigned + '/build/gh/placeholder',
+            environment: 'code-engine',
+          };
+        }
+      }
+      // Fall through to single CE URL
       const ceUrl = getItem(STORAGE_KEY_CE_URL);
       if (!ceUrl || !/^https?:\/\//i.test(ceUrl)) return null;
       checkCEExpiry();
@@ -418,6 +451,121 @@ export function getCEDaysRemaining(): number {
   if (!savedAt) return -1;
   const remaining = getCredentialTTLMs() - (Date.now() - Number(savedAt));
   return Math.max(0, Math.ceil(remaining / (24 * 60 * 60 * 1000)));
+}
+
+// ── Workshop pool (multi-instance Code Engine for classrooms) ──
+
+export interface WorkshopPool {
+  pool: string[];
+  token: string;
+  version: number;
+}
+
+/** Save a workshop pool configuration. Validates that all URLs are https. */
+export function saveWorkshopPool(pool: string[], token: string): void {
+  if (typeof window === 'undefined') return;
+  const validated = pool
+    .map(u => u.replace(/\/+$/, ''))
+    .filter(u => /^https:\/\//i.test(u));
+  if (validated.length === 0) return;
+  const existing = getWorkshopPool();
+  const version = existing ? existing.version + 1 : 1;
+  setItem(STORAGE_KEY_WORKSHOP_POOL, JSON.stringify({ pool: validated, token, version }));
+}
+
+/** Read the current workshop pool, or null if not configured. */
+export function getWorkshopPool(): WorkshopPool | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = getItem(STORAGE_KEY_WORKSHOP_POOL);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed.pool) && parsed.pool.length > 0) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the workshop pool and session assignment. */
+export function clearWorkshopPool(): void {
+  if (typeof window === 'undefined') return;
+  removeItem(STORAGE_KEY_WORKSHOP_POOL);
+  try {
+    sessionStorage.removeItem(SESSION_KEY_WORKSHOP_ASSIGNED);
+    sessionStorage.removeItem(SESSION_KEY_WORKSHOP_POOL_VERSION);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Get or assign an instance from the workshop pool for this tab.
+ * Sticky via sessionStorage — once assigned, this tab stays on the same instance.
+ * Re-assigns if the pool version has changed or the assigned URL is no longer in the pool.
+ */
+export function assignWorkshopInstance(): string | null {
+  if (typeof window === 'undefined') return null;
+  const pool = getWorkshopPool();
+  if (!pool || pool.pool.length === 0) return null;
+
+  try {
+    const current = sessionStorage.getItem(SESSION_KEY_WORKSHOP_ASSIGNED);
+    const savedVersion = sessionStorage.getItem(SESSION_KEY_WORKSHOP_POOL_VERSION);
+
+    // Keep current assignment if still valid and pool version matches
+    if (current && pool.pool.includes(current) && savedVersion === String(pool.version)) {
+      return current;
+    }
+
+    // Assign: pick random instance
+    const idx = Math.floor(Math.random() * pool.pool.length);
+    const assigned = pool.pool[idx];
+    sessionStorage.setItem(SESSION_KEY_WORKSHOP_ASSIGNED, assigned);
+    sessionStorage.setItem(SESSION_KEY_WORKSHOP_POOL_VERSION, String(pool.version));
+    return assigned;
+  } catch {
+    // sessionStorage unavailable — pick random without sticking
+    return pool.pool[Math.floor(Math.random() * pool.pool.length)];
+  }
+}
+
+/** Get the currently assigned workshop instance for this tab, without assigning a new one. */
+export function getWorkshopAssignment(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return sessionStorage.getItem(SESSION_KEY_WORKSHOP_ASSIGNED);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Query /stats on each instance in the pool. Returns kernel count + status per instance.
+ * Used by the organizer dashboard and optionally for load-aware assignment.
+ */
+export async function getWorkshopInstanceStats(
+  pool: string[],
+): Promise<Array<{ url: string; kernels: number; status: 'online' | 'starting' | 'offline' }>> {
+  const results = await Promise.all(
+    pool.map(async (url) => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const resp = await fetch(`${url}/stats`, { signal: controller.signal, mode: 'cors' });
+        clearTimeout(timeout);
+        if (resp.ok) {
+          const data = await resp.json();
+          return { url, kernels: data.kernels ?? 0, status: 'online' as const };
+        }
+        if (resp.status === 502 || resp.status === 503) {
+          return { url, kernels: 0, status: 'starting' as const };
+        }
+        return { url, kernels: 0, status: 'offline' as const };
+      } catch {
+        return { url, kernels: 0, status: 'offline' as const };
+      }
+    }),
+  );
+  return results;
 }
 
 // ── Simulator mode ──
@@ -718,8 +866,32 @@ export function ensureBinderSession(
       settled = true;
       clearTimeout(timeout);
       cleanup();
-      onProgress?.('failed');
       es.close();
+
+      // Workshop failover: try next instance in the pool
+      const wsPool = getWorkshopPool();
+      if (wsPool && wsPool.pool.length > 1) {
+        const current = getWorkshopAssignment();
+        const currentIdx = current ? wsPool.pool.indexOf(current) : -1;
+        const nextIdx = (currentIdx + 1) % wsPool.pool.length;
+        const next = wsPool.pool[nextIdx];
+        try {
+          sessionStorage.setItem(SESSION_KEY_WORKSHOP_ASSIGNED, next);
+        } catch { /* ignore */ }
+        // Rebuild config with new instance and retry once
+        const retryConfig: JupyterConfig = {
+          ...config,
+          baseUrl: next,
+          wsUrl: next.replace(/^http(s?):\/\//, 'ws$1://'),
+          token: wsPool.token,
+          binderUrl: next + '/build/gh/placeholder',
+        };
+        onProgress?.('connecting');
+        ensureBinderSession(retryConfig, onProgress).then(resolve).catch(reject);
+        return;
+      }
+
+      onProgress?.('failed');
       reject(new Error('Binder connection error'));
     };
   });

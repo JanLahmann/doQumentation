@@ -57,6 +57,10 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
                 self.send_error(503, 'Jupyter not ready')
             return
 
+        if self.path == '/stats':
+            self._handle_stats()
+            return
+
         if not self.path.startswith('/build'):
             self.send_error(404)
             return
@@ -96,6 +100,24 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
             # Client disconnected mid-stream — nothing to do
             pass
 
+    def _handle_stats(self):
+        """Return kernel count and status for workshop monitoring."""
+        try:
+            token = os.environ.get('JUPYTER_TOKEN', '')
+            url = f'http://127.0.0.1:{JUPYTER_PORT}/api/kernels?token={token}'
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                kernels = json.loads(resp.read())
+            body = json.dumps({'kernels': len(kernels), 'status': 'ready'})
+        except Exception:
+            body = json.dumps({'kernels': 0, 'status': 'unavailable'})
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(body.encode())
+
     def _send_event(self, event):
         """Write a single SSE event."""
         line = f'data: {json.dumps(event)}\n\n'
@@ -103,8 +125,8 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_OPTIONS(self):
-        """Handle CORS preflight for /build paths only."""
-        if not self.path.startswith('/build'):
+        """Handle CORS preflight for /build and /stats paths."""
+        if not (self.path.startswith('/build') or self.path == '/stats'):
             self.send_error(404)
             return
         self.send_response(204)
