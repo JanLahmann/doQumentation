@@ -63,7 +63,7 @@ Output paths mirror source: `translation/drafts/{LOCALE}/{path}` (strip the `doc
 
 ## Step 3 — Translate
 
-For each file, check line count. If ≤600 lines, launch agent. If >600 lines, see Chunking below.
+For each file, check line count. If ≤400 lines, launch agent. If >400 lines, see Chunking below.
 
 Each agent gets this prompt (fill in {path}, {LANGUAGE}, {LOCALE}, {HASH}, {INFORMAL_FORM}):
 
@@ -77,21 +77,27 @@ You are a {LANGUAGE} translator for doQumentation.
 Rules:
 - Use the Read tool and Write tool. Do NOT use Bash for file operations.
 - After frontmatter closing ---, add: {/* doqumentation-source-hash: {HASH} */}
-- Translate title/description/sidebar_label in frontmatter only. Keep all other keys.
-- Preserve ALL code blocks, math, JSX tags, imports, URLs, images byte-identical.
-- Pin headings with anchors: ## Translated Heading {#original-english-anchor}
-- Keep terms: Qubit, Gate, Circuit, Backend, Transpiler
+- Translate: title, description, sidebar_label in frontmatter; all prose paragraphs;
+  headings; list items; blockquotes; table cells; admonition text and title= props;
+  <summary> and <details> text; JSX label= props (but keep value=, id=, type=, className= unchanged).
+- Keep byte-identical: code fences and their content, math ($...$, $$...$$), URLs,
+  image paths, imports, inline code backticks (e.g. `Statevector`, `QuantumCircuit`).
+- Pin headings: if the source has {#anchor}, use it exactly.
+  If no anchor in source, derive one: lowercase the English heading, replace spaces with hyphens.
+  Example: ## Change ordering in Qiskit → ## Translated {#change-ordering-in-qiskit}
+- Keep terms: Qubit, Gate, Circuit, Backend, Transpiler, Session, Sampler, Estimator, PUB
 - Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
-- After writing, respond with ONLY "Done" or a brief error if something failed. No summaries, no translation decisions.
+- After writing, respond with ONLY "Done" or a brief error if something failed.
 ```
 
 Pre-compute each file's source hash before launching its agent:
 `python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"`
 
-After each batch: `✓ file1, file2, file3 — done/total`
+After each batch: `✓ file1 (N lines), file2 (N lines), file3 (N lines) — done/total`
 
-After every 10 files:
+After every 10 files, validate and commit:
 ```bash
+python translation/scripts/validate-translation.py --locale {LOCALE} --dir translation/drafts
 git add translation/drafts/{LOCALE}/
 git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
 ```
@@ -104,7 +110,6 @@ After all files are done, print:
 
 Then remind the user:
 ```bash
-python translation/scripts/validate-translation.py --locale {LOCALE} --dir translation/drafts
 python translation/scripts/fix-heading-anchors.py --locale {LOCALE} --dir translation/drafts --apply
 python translation/scripts/promote-drafts.py --locale {LOCALE}
 python translation/scripts/sync-translations.py --locale {LOCALE}
@@ -112,13 +117,13 @@ python translation/scripts/translate-content.py populate-locale --locale {LOCALE
 git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 ```
 
-## Chunking (files >600 lines)
+## Chunking (files >400 lines)
 
-You (the orchestrator) MUST split large files. Do NOT give >600 lines to one agent.
+You (the orchestrator) MUST split large files. Do NOT give >400 lines to one agent.
 
 1. Find `## ` headings and their line numbers.
-2. Group into chunks of 400–600 lines at heading boundaries.
-3. Launch one SEPARATE agent per chunk (max 3 parallel). Each chunk MUST go to a different agent — never assign multiple chunks to the same agent. Each agent writes to `translation/drafts/{LOCALE}/{filename}-part{N}.mdx`. First chunk includes frontmatter + source hash. Later chunks start at the heading.
-4. After ALL chunks finish, concatenate and clean up in one shell command:
-   `cat translation/drafts/{LOCALE}/{filename}-part1.mdx translation/drafts/{LOCALE}/{filename}-part2.mdx > translation/drafts/{LOCALE}/{path} && rm translation/drafts/{LOCALE}/{filename}-part*.mdx`
+2. Group into chunks of 200–400 lines at heading boundaries.
+3. Launch one SEPARATE agent per chunk (max 3 parallel). Each chunk MUST go to a different agent — never assign multiple chunks to the same agent. Each agent writes to `translation/drafts/{LOCALE}/{filename}-part{N}.mdx`. First chunk includes frontmatter + source hash. Later chunks start at the heading. Agents write parts only — they do NOT concatenate.
+4. After ALL chunks finish, the orchestrator concatenates and cleans up in one shell command:
+   `cat translation/drafts/{LOCALE}/{filename}-part1.mdx translation/drafts/{LOCALE}/{filename}-part2.mdx [...] > translation/drafts/{LOCALE}/{path} && rm translation/drafts/{LOCALE}/{filename}-part*.mdx`
 5. Verify: heading count and code fence count match source.
