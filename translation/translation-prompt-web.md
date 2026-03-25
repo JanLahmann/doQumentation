@@ -41,6 +41,11 @@ ls docs/tutorials/ docs/guides/ docs/learning/courses/ docs/learning/modules/
 
 If any directory is missing, stop — setup failed.
 
+Create draft output directories so agents can write directly:
+```bash
+mkdir -p translation/drafts/{LOCALE}/tutorials translation/drafts/{LOCALE}/guides translation/drafts/{LOCALE}/learning/courses translation/drafts/{LOCALE}/learning/modules
+```
+
 ## Step 2 — Discover files to translate
 
 ```bash
@@ -57,18 +62,25 @@ Source file paths (courses and modules are nested — not top-level):
 
 Print: "Translating up to 20 of N remaining files."
 
-## Step 3 — Translate
+## Step 3 — Prepare
 
-For each file from the backlog, launch a Sonnet agent with this prompt:
+Before launching agents, for each file from the backlog:
+1. Compute its source hash: `python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"`
+2. Create the output directory: `mkdir -p translation/drafts/{LOCALE}/$(dirname {path})`
+
+Do this in a single batch so agents only need to read and write.
+
+## Step 4 — Translate
+
+For each file, launch a Sonnet agent. The agent only needs to read and write — no hash computation, no mkdir. Up to 3 agents in parallel.
+
+Agent prompt (fill in all values — the agent should NOT need to compute or look up anything):
 
 ```
 Translate docs/{path} to {LANGUAGE}. Write to translation/drafts/{LOCALE}/{path}.
-After frontmatter ---, add: {/* doqumentation-source-hash: HASH */}
-Compute hash: python3 -c "import hashlib; print(hashlib.sha256(open('docs/{path}').read().encode()).hexdigest()[:8])"
-Rules: translate title/description/sidebar_label in frontmatter. Preserve code blocks, math, JSX, imports, URLs, images unchanged. Pin headings: ## Translated {#english-anchor}. Keep terms: Qubit, Gate, Circuit, Backend, Transpiler. Use INFORMAL_FORM register. Do NOT echo content.
+After frontmatter ---, add: {/* doqumentation-source-hash: {HASH} */}
+Translate title/description/sidebar_label in frontmatter. Preserve code blocks, math, JSX, imports, URLs, images unchanged. Pin headings: ## Translated {#english-anchor}. Keep terms: Qubit, Gate, Circuit, Backend, Transpiler. Use {INFORMAL_FORM} register. Do NOT echo content.
 ```
-
-Fill in {path}, {LANGUAGE}, {LOCALE}, HASH, and INFORMAL_FORM from the language table above.
 
 Files >600 lines: split at `## ` headings into ~400-line chunks BEFORE launching agents. One agent per chunk writing to `{filename}-part{N}.mdx`. Concatenate in order after all finish. Delete part files.
 
@@ -80,7 +92,7 @@ git add translation/drafts/{LOCALE}/
 git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
 ```
 
-## Step 4 — Summary
+## Step 5 — Summary
 
 After finishing or reaching 20 files, print:
 - Files translated, skipped, failed
