@@ -1,0 +1,245 @@
+## Programming Practice {#programming-practice}
+
+ให้ฝึกอัลกอริทึม SKQD สาธิตเวิร์กโฟลว์แบบ heterogeneous ที่อธิบายไว้ก่อนหน้า กระบวนการแบ่งออกเป็นสี่ขั้นตอนที่แยกกัน แต่ละขั้นตอนมี Python script และ shell script ที่สอดคล้องสำหรับการ submit งาน
+
+### Mapping (`mapping.py` และ `mapping.sh`) {#mapping-mappingpy-and-mappingsh}
+
+ขั้นตอนแรกในเวิร์กโฟลว์ของเราคือการกำหนดปัญหาทางกายภาพและแมปมันเป็นชุดของ quantum circuit
+
+`mapping.py` กำหนด parameter สำหรับปัญหาฟิสิกส์เฉพาะ — ในกรณีนี้คือ Anderson impurity model พร้อม seven bath site (`n_bath = 7`) มันสร้าง one-body (`h1e`) และ two-body (`h2e`) integral ที่แทน Hamiltonian ของระบบ
+
+```python
+
+...
+
+n_bath = 7  # number of bath sites
+
+...
+
+# One body matrix elements in the "position" basis
+h1e = -t * np.diag(np.ones(n_bath), k=1) - t * np.diag(np.ones(n_bath), k=-1)
+h1e[impurity_index, impurity_index + 1] = -V
+h1e[impurity_index + 1, impurity_index] = -V
+h1e[impurity_index, impurity_index] = eps
+
+# Two body matrix elements in the "position" basis
+h2e = np.zeros((n_bath + 1, n_bath + 1, n_bath + 1, n_bath + 1))
+h2e[impurity_index, impurity_index, impurity_index, impurity_index] = U
+
+...
+
+# The one-body time evolution
+free_fermion_evolution = ffsim.qiskit.OrbitalRotationJW(n_modes, Utar)
+
+# The two-body time evolution
+def append_diagonal_evolution(dt, U, impurity_qubit, num_orb, q_circuit):
+    """Append two-body time evolution to a quantum circuit."""
+    if U != 0:
+        q_circuit.append(
+            CPhaseGate(-dt / 2 * U),
+            [impurity_qubit, impurity_qubit + num_orb],
+        )
+
+```
+
+มันจากนั้นสร้าง quantum circuit ที่ต้องการสำหรับอัลกอริทึม SKQD เริ่มต้นด้วยการสร้าง initial state (`initial_state`) และจากนั้นใช้ time-evolution operator สำหรับจำนวน step ที่แตกต่างกัน (`d = 8`) เพื่อสร้าง Krylov basis state ที่แตกต่างกัน $|\phi_j\rangle = (e^{-iHt})^j |\phi_0\rangle$
+
+```python
+
+# The reference state
+def initial_state(q_circuit, norb, nocc):
+    """Prepare an initial state."""
+    for i in range(nocc):
+        q_circuit.append(XGate(), [i])
+        q_circuit.append(XGate(), [norb + i])
+    rot = XXPlusYYGate(np.pi / 2, -np.pi / 2)
+
+    for i in range(3):
+        for j in range(nocc - i - 1, nocc + i, 2):
+            q_circuit.append(rot, [j, j + 1])
+            q_circuit.append(rot, [norb + j, norb + j + 1])
+    q_circuit.append(rot, [j + 1, j + 2])
+    q_circuit.append(rot, [norb + j + 1, norb + j + 2])
+
+...
+
+# Generate the initial state
+qubits = QuantumRegister(2 * n_modes, name="q")
+init_state = QuantumCircuit(qubits)
+initial_state(init_state, n_modes, n_modes // 2)
+
+...
+
+d = 8  # Number of Krylov basis states
+circuits = []
+for i in range(d):
+    circ = init_state.copy()
+    circuits.append(circ)
+    for _ in range(i):
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+        circ.append(free_fermion_evolution, qubits)
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+    circ.measure_all()
+
+print(circuits[0].draw(scale=0.4, fold=-1))
+
+```
+
+Script บันทึกรายการ circuit 8 ตัวที่สร้างขึ้น (แต่ละตัวมีการวัดที่ต่อท้าย) ลงในไฟล์ชื่อ `circuits.qpy`
+
+`mapping.sh` คือ Slurm batch script ที่ใช้สำหรับ submit งาน `mapping.py` เนื่องจากนี่คือการประมวลผลแบบคลาสสิก มันร้องขอทรัพยากรจาก standard CPU partition (`--partition=normal`)
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+
+### Optimization (`optimization.py` และ `optimization.sh`) {#optimization-optimizationpy-and-optimizationsh}
+
+เมื่อมี circuit แล้ว circuit เหล่านั้นต้องถูก optimize และ compile เพื่อรันอย่างมีประสิทธิภาพบนฮาร์ดแวร์ควอนตัมเป้าหมาย
+
+ใน `optimization.py` script นี้ขั้นแรกโหลดไฟล์ `circuits.qpy` ที่สร้างในขั้นตอน mapping และดึงข้อมูลทรัพยากรควอนตัมโดย `QRMI()` ซึ่งเป็น quantum resource manager จากนั้นใช้ `generate_preset_pass_manager` ของ Qiskit พร้อม optimization level สูง (`optimization_level=3`) เพื่อแปลง abstract logical circuit เป็น Instruction Set Architecture (ISA) circuit กระบวนการนี้เขียน circuit ใหม่โดยใช้ native gate ของฮาร์ดแวร์และ optimize เพื่อลด depth และลด error
+
+```python
+
+...
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+target = quantum_resource.target
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3,
+    target=target
+)
+isa_circuits = pass_manager.run(circuits)
+
+```
+
+circuit ที่ถูก transpile และพร้อมสำหรับฮาร์ดแวร์ถูกบันทึกลงในไฟล์ใหม่ `isa_circuits.qpy`
+
+คล้ายกับ mapping script Slurm job นี้รันบน classical CPU partition (`--partition=normal`) ด้วย เนื่องจาก transpilation คืองานแบบคลาสสิก
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+
+### Execution (`execution.py` และ `execution.sh`) {#execution-executionpy-and-executionsh}
+
+นี่คือขั้นตอนเดียวที่ใช้คอมพิวเตอร์ควอนตัม ที่นี่ เราดำเนินการ circuit ที่ถูก optimize และเก็บตัวอย่างการวัด
+
+`execution.py` โหลดไฟล์ `isa_circuits.qpy` ที่ถูก optimize แล้วจากนั้น initialize `SamplerV2` primitive ที่เชื่อมต่อกับทรัพยากรควอนตัม มันจากนั้นเรียก `sampler.run()` เพื่อดำเนินการ circuit บน QPU สำหรับจำนวน shot ที่กำหนด (`shots=500`)
+
+```python
+
+...
+
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+
+# Sample from the circuits
+noisy_sampler = Sampler(quantum_resource)
+job = noisy_sampler.run(isa_circuits, shots=500)
+
+```
+
+เมื่อสิ้นสุดการดำเนินการ ผลลัพธ์ที่วัดได้ (bitstring) จาก circuit ทั้งหมดถูกเก็บรวบรวมและรวมกัน และ count ของพวกมันถูกบันทึกลงในไฟล์ `counts.json`
+
+Slurm script `execution.sh` แตกต่างจากตัวอื่นๆ ในขั้นตอนนี้ มันร้องขอให้รันบน quantum partition (`--partition=quantum`) และร้องขอ QPU หนึ่งตัวโดยเฉพาะ (`--gres=qpu:1`)
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-execution
+#SBATCH --output=sqd-execution.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=quantum
+#SBATCH --gres=qpu:1
+
+srun python /data/ch4/sqd/execution.py
+```
+
+### Post-processing (`postprocessing.py` และ `postprocessing.sh`) {#post-processing-postprocessingpy-and-postprocessingsh}
+
+ในขั้นตอนสุดท้าย เรากลับมายังคอมพิวเตอร์คลาสสิกเพื่อวิเคราะห์ข้อมูลจากการทดลองควอนตัมและคำนวณผลลัพธ์สุดท้าย: พลังงาน ground state ของระบบเป้าหมาย
+
+โปรแกรม `postprocessing.py` ขั้นแรกอ่านไฟล์ `counts.json` ที่มีผลการวัด จากนั้น reconstruct Hamiltonian ของ Anderson model (โดยใช้ parameter เดียวกับใน `mapping.py`) มันจากนั้นส่ง bitstring ที่วัดได้และนิยาม Hamiltonian ไปยังฟังก์ชัน `diagonalize_fermionic_hamiltonian` ฟังก์ชันนี้ดำเนินการ SKQD logic หลัก: ใช้ bitstring เพื่อสร้าง projected Hamiltonian $\tilde{H}$ และ diagonalize มันเพื่อหาพลังงาน ground state
+
+```python
+
+...
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=300,
+    norb=n_modes,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=10,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+
+```
+
+สุดท้าย มัน print พลังงาน SKQD ที่คำนวณได้และเปรียบเทียบกับพลังงานที่แน่นอนที่ทราบสำหรับปัญหานี้ แสดง absolute error สุดท้ายของการคำนวณ
+
+job script สุดท้ายรันบน classical partition (`--partition=normal`) เนื่องจากการวิเคราะห์ทั้งหมดเป็นแบบคลาสสิก สำหรับ subspace ขนาดใหญ่ ขั้นตอนนี้อาจต้องการทรัพยากร HPC แบบคลาสสิกมากขึ้น
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-postprocessing
+#SBATCH --output=sqd-postprocessing.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/postprocessing.py
+```
+
+## สรุป {#summary}
+
+แค่นั้นเลย! เราได้ผ่านแนวคิดและตัวอย่างหลายอย่างที่จะช่วยให้คุณเริ่มต้นกับการจัดการโปรแกรม hybrid ที่ซับซ้อน แน่นอนนี่เป็นเพียงจุดเริ่มต้นของทุกสิ่งที่คุณสามารถทำได้กับการรวมทรัพยากรควอนตัมและ HPC แบบคลาสสิก
+
+เพื่อสำรวจกรณีการใช้งานและอัลกอริทึมเพิ่มเติม เรียกดู[เอกสาร](https://docs.quantum.ibm.com/guides)และ[บทแนะนำ](https://docs.quantum.ibm.com/tutorials)บน IBM Quantum Platform และอย่าลืมเยี่ยมชมทรัพยากรที่แชร์ในบทเรียนถัดไปสำหรับข้อมูลเพิ่มเติมเกี่ยวกับอัลกอริทึมและซอฟต์แวร์สำหรับทั้งนักวิทยาศาสตร์การประมวลผลและผู้ดูแลระบบ data center
+
+## อ้างอิง {#references}
+
+[1] Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization. https://arxiv.org/abs/2501.09702
+
+[2] Chemistry beyond the scale of exact diagonalization on a quantum-centric supercomputer. https://www.science.org/doi/10.1126/sciadv.adu9991
