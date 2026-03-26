@@ -1,0 +1,159 @@
+---
+title: "Buat pengurus pass untuk dynamical decoupling"
+sidebar_label: "Buat pengurus pass untuk dynamical decoupling"
+description: "Cara membuat pengurus pass untuk dynamical decoupling dalam Qiskit."
+notebook_path: "guides/dynamical-decoupling-pass-manager.ipynb"
+---
+
+{/* doqumentation-source-hash: d395a730 */}
+
+<OpenInLabBanner notebookPath="guides/dynamical-decoupling-pass-manager.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Package versions</b></summary>
+
+Kod pada halaman ini dibangunkan menggunakan keperluan berikut.
+Kami mengesyorkan menggunakan versi ini atau yang lebih baharu.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+Halaman ini menunjukkan cara menggunakan pass [`PadDynamicalDecoupling`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling) untuk menambah teknik penindasan ralat yang disebut _dynamical decoupling_ pada litar.
+
+Dynamical decoupling berfungsi dengan menambah urutan nadi (dikenali sebagai _urutan dynamical decoupling_) pada qubit yang melahu untuk membalikkannya mengelilingi sfera Bloch, yang membatalkan kesan saluran hingar, dengan itu menindas dekoherensi. Urutan nadi ini serupa dengan nadi refokus yang digunakan dalam resonans magnet nuklear. Untuk penerangan lengkap, lihat [A Quantum Engineer's Guide to Superconducting Qubits](https://arxiv.org/abs/1904.06560).
+
+Oleh kerana pass `PadDynamicalDecoupling` hanya beroperasi pada litar yang dijadualkan dan melibatkan gate yang tidak semestinya gate asas sasaran kami, anda juga memerlukan pass [`ALAPScheduleAnalysis`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis) dan [`BasisTranslator`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.BasisTranslator).
+
+Contoh ini menggunakan `ibm_fez`, yang telah dimulakan sebelum ini. Dapatkan maklumat `target` dari `backend` dan simpan nama operasi sebagai `basis_gates` kerana `target` perlu diubah suai untuk menambah maklumat masa untuk gate yang digunakan dalam dynamical decoupling.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.backend("ibm_fez")
+
+target = backend.target
+basis_gates = list(target.operation_names)
+```
+
+Buat litar `efficient_su2` sebagai contoh. Pertama, transpil litar ke backend kerana nadi dynamical decoupling perlu ditambah selepas litar telah ditranspil dan dijadualkan. Dynamical decoupling sering berfungsi paling baik apabila terdapat banyak masa melahu dalam litar kuantum - iaitu, terdapat qubit yang tidak digunakan sementara yang lain aktif. Ini berlaku dalam litar ini kerana gate `ecr` dua qubit diterapkan secara berurutan dalam ansatz ini.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(12, entanglement="circular", reps=1)
+pm = generate_preset_pass_manager(1, target=target, seed_transpiler=12345)
+qc_t = pm.run(qc)
+qc_t.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/8228f889-806a-4873-b1da-27c9795d5f5c-0.svg)
+
+Urutan dynamical decoupling adalah siri gate yang bergabung menjadi identiti dan dijarakkan secara tetap dalam masa. Contohnya, mulakan dengan membuat urutan mudah yang dipanggil XY4 yang terdiri daripada empat gate.
+
+```python
+from qiskit.circuit.library import XGate, YGate
+
+X = XGate()
+Y = YGate()
+
+dd_sequence = [X, Y, X, Y]
+```
+
+Oleh kerana masa dynamical decoupling yang tetap, maklumat tentang `YGate` perlu ditambah ke `target` kerana ia *bukan* gate asas, sedangkan `XGate` adalah. Walau bagaimanapun, kami tahu *a priori* bahawa `YGate` mempunyai tempoh dan ralat yang sama dengan `XGate`, jadi kami boleh mendapatkan sifat-sifat tersebut dari `target` dan menambahnya semula untuk objek `YGate`. Inilah juga sebabnya `basis_gates` disimpan secara berasingan, kerana kami menambah arahan `YGate` ke `target` walaupun ia bukan gate asas sebenar `ibm_fez`.
+
+```python
+from qiskit.transpiler import InstructionProperties
+
+y_gate_properties = {}
+for qubit in range(target.num_qubits):
+    y_gate_properties.update(
+        {
+            (qubit,): InstructionProperties(
+                duration=target["x"][(qubit,)].duration,
+                error=target["x"][(qubit,)].error,
+            )
+        }
+    )
+
+target.add_instruction(YGate(), y_gate_properties)
+```
+
+Litar ansatz seperti `efficient_su2` adalah berparameter, jadi nilainya mesti diikat sebelum dihantar ke backend. Di sini, tetapkan parameter rawak.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1234)
+qc_t.assign_parameters(
+    rng.uniform(-np.pi, np.pi, qc_t.num_parameters), inplace=True
+)
+```
+
+Seterusnya, laksanakan pass tersuai. Mulakan `PassManager` dengan `ALAPScheduleAnalysis` dan `PadDynamicalDecoupling`. Jalankan `ALAPScheduleAnalysis` dahulu untuk menambah maklumat masa tentang litar kuantum sebelum urutan dynamical decoupling yang dijarakkan secara tetap boleh ditambah. Pass-pass ini dijalankan pada litar dengan `.run()`.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+dd_pm = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        PadDynamicalDecoupling(target=target, dd_sequence=dd_sequence),
+    ]
+)
+qc_dd = dd_pm.run(qc_t)
+```
+
+Gunakan alat visualisasi [`timeline_drawer`](https://docs.quantum.ibm.com/api/qiskit/qiskit.visualization.timeline_drawer) untuk melihat masa litar dan mengesahkan bahawa urutan objek `XGate` dan `YGate` yang dijarakkan secara tetap muncul dalam litar.
+
+```python
+from qiskit.visualization import timeline_drawer
+
+timeline_drawer(qc_dd, idle_wires=False, target=target)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/cb73e2c4-ab05-4f15-91ae-2fab64028d6e-0.svg)
+
+Akhirnya, kerana `YGate` bukan gate asas sebenar backend kami, terapkan pass `BasisTranslator` secara manual (ini adalah pass lalai, tetapi ia dilaksanakan sebelum penjadualan, jadi perlu diterapkan semula). Pustaka kesetaraan sesi adalah pustaka kesetaraan litar yang membolehkan transpiler menguraikan litar ke dalam gate asas, seperti yang juga ditentukan sebagai argumen.
+
+```python
+from qiskit.circuit.equivalence_library import (
+    SessionEquivalenceLibrary as sel,
+)
+from qiskit.transpiler.passes import BasisTranslator
+
+qc_dd = BasisTranslator(sel, basis_gates)(qc_dd)
+qc_dd.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/aaa27ee4-1965-41bf-abd2-1d9176af6dc4-0.svg)
+
+Kini, objek `YGate` tiada dalam litar kami, dan terdapat maklumat masa eksplisit dalam bentuk gate `Delay`. Litar yang telah ditranspil dengan dynamical decoupling ini kini sedia untuk dihantar ke backend.
+## Langkah seterusnya {#next-steps}
+
+<Admonition type="tip" title="Cadangan">
+    - Untuk mempelajari cara menggunakan fungsi `generate_preset_passmanager` dan bukannya menulis pass sendiri, mulakan dengan topik [Tetapan lalai transpilasi dan pilihan konfigurasi](defaults-and-configuration-options).
+    - Cuba panduan [Bandingkan tetapan transpiler](/guides/circuit-transpilation-settings#compare-transpiler-settings).
+    - Lihat [dokumentasi API Transpil.](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler)
+</Admonition>
