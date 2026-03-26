@@ -1,0 +1,446 @@
+#### Pilih langkah Trotter {#choose-trotter-steps}
+Eksperimen yang ditampilkan di Fig. 4 Ref. [\[3\]](#references) menggunakan $k_j = [2, 3, 4]$ langkah Trotter simetris dengan orde $2$. Kita fokus pada hasil untuk waktu $t=3$, di mana MPF dan PF dengan jumlah langkah Trotter yang lebih tinggi (6 dalam hal ini) memiliki error Trotter yang sama. Namun, nilai ekspektasi MPF dihitung dari sirkuit yang bersesuaian dengan jumlah langkah Trotter yang lebih rendah sehingga lebih dangkal. Dalam praktiknya, meskipun MPF dan sirkuit langkah Trotter yang lebih dalam memiliki error Trotter yang sama, kita mengharapkan nilai ekspektasi eksperimental yang dihitung dari sirkuit MPF lebih dekat ke nilai teori, karena itu berarti menjalankan sirkuit yang lebih dangkal yang kurang terpapar noise hardware dibandingkan sirkuit yang bersesuaian dengan langkah PF Trotter yang lebih tinggi.
+
+```python
+total_time = 3
+mpf_trotter_steps = [2, 3, 4]
+order = 2
+symmetric = True
+```
+
+#### Siapkan LSE {#set-up-the-lse}
+Di sini kita melihat koefisien MPF statis untuk masalah ini.
+
+```python
+lse = setup_static_lse(mpf_trotter_steps, order=order, symmetric=symmetric)
+mpf_coeffs = lse.solve()
+print(
+    f"The static coefficients associated with the ansatze are: {mpf_coeffs}"
+)
+print("L1 norm:", np.linalg.norm(mpf_coeffs, ord=1))
+```
+
+```text
+The static coefficients associated with the ansatze are: [ 0.26666667 -2.31428571  3.04761905]
+L1 norm: 5.628571428571431
+```
+
+```python
+model_approx, coeffs_approx = setup_sum_of_squares_problem(
+    lse, max_l1_norm=2.0
+)
+model_approx.solve()
+print(coeffs_approx.value)
+print(
+    "L1 norm of the approximate coefficients:",
+    np.linalg.norm(coeffs_approx.value, ord=1),
+)
+```
+
+```text
+[-0.24255546 -0.25744454  1.5       ]
+L1 norm of the approximate coefficients: 2.0
+```
+
+#### Koefisien dinamis {#dynamic-coefficients}
+
+```python
+# Create approximate time-evolution circuits
+single_2nd_order_circ = generate_time_evolution_circuit(
+    hamiltonian, time=1.0, synthesis=SuzukiTrotter(reps=1, order=order)
+)
+single_2nd_order_circ = pm.run(single_2nd_order_circ)  # collect XX and YY
+
+# Find layers in the circuit
+layers = slice_by_depth(single_2nd_order_circ, max_slice_depth=1)
+
+# Create tensor network models
+models = [
+    LayerModel.from_quantum_circuit(layer, conserve="Sz") for layer in layers
+]
+
+# Create the time-evolution object
+approx_factory = partial(
+    LayerwiseEvolver,
+    layers=models,
+    options={
+        "preserve_norm": False,
+        "trunc_params": {
+            "chi_max": 64,
+            "svd_min": 1e-8,
+            "trunc_cut": None,
+        },
+        "max_delta_t": 4,
+    },
+)
+
+# Create exact time-evolution circuits
+single_4th_order_circ = generate_time_evolution_circuit(
+    hamiltonian, time=1.0, synthesis=SuzukiTrotter(reps=1, order=4)
+)
+single_4th_order_circ = pm.run(single_4th_order_circ)
+exact_model_layers = [
+    LayerModel.from_quantum_circuit(layer, conserve="Sz")
+    for layer in slice_by_depth(single_4th_order_circ, max_slice_depth=1)
+]
+
+# Create the time-evolution object
+exact_factory = partial(
+    LayerwiseEvolver,
+    layers=exact_model_layers,
+    dt=0.1,
+    options={
+        "preserve_norm": False,
+        "trunc_params": {
+            "chi_max": 64,
+            "svd_min": 1e-8,
+            "trunc_cut": None,
+        },
+        "max_delta_t": 3,
+    },
+)
+
+def identity_factory():
+    return MPOState.initialize_from_lattice(models[0].lat, conserve=True)
+
+mps_initial_state = MPS_neel_state(models[0].lat)
+
+lse = setup_dynamic_lse(
+    mpf_trotter_steps,
+    total_time,
+    identity_factory,
+    exact_factory,
+    approx_factory,
+    mps_initial_state,
+)
+problem, coeffs = setup_frobenius_problem(lse)
+try:
+    problem.solve()
+    mpf_dynamic_coeffs = coeffs.value
+except Exception as error:
+    print(error, "Calculation Failed for time", total_time)
+print("")
+```
+
+#### Bangun setiap sirkuit Trotter dalam dekomposisi MPF kita {#construct-each-of-the-trotter-circuits-in-our-mpf-decomposition}
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit import QuantumCircuit
+
+mpf_circuits = []
+for k in mpf_trotter_steps:
+    # Initial state preparation |1010..>
+    circuit = QuantumCircuit(L)
+    circuit.x([i for i in range(L) if i % 2])
+
+    trotter_circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=k, order=order),
+        time=total_time,
+    )
+
+    circuit.compose(trotter_circ, qubits=range(L), inplace=True)
+
+    mpf_circuits.append(circuit)
+```
+
+#### Bangun sirkuit Trotter dengan error Trotter yang sebanding dengan MPF {#construct-trotter-circuit-with-comparable-trotter-error-to-mpf}
+
+```python
+k = 6
+
+# Initial state preparation |1010..>
+comp_circuit = QuantumCircuit(L)
+comp_circuit.x([i for i in range(L) if i % 2])
+
+trotter_circ = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=k, order=order),
+    time=total_time,
+)
+
+comp_circuit.compose(trotter_circ, qubits=range(L), inplace=True)
+
+mpf_circuits.append(comp_circuit)
+```
+
+### Langkah 2: Optimalkan masalah untuk eksekusi pada hardware quantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+```python
+import copy
+from qiskit.transpiler import Target, CouplingMap
+
+target = backend.target
+instruction_2q = "cz"
+
+cmap = target.build_coupling_map(filter_idle_qubits=True)
+cmap_list = list(cmap.get_edges())
+
+max_meas_err = 0.055
+min_t2 = 30
+max_twoq_err = 0.01
+
+# Remove qubits with bad measurement or t2
+cust_cmap_list = copy.deepcopy(cmap_list)
+for q in range(target.num_qubits):
+    meas_err = target["measure"][(q,)].error
+    if target.qubit_properties[q].t2 is not None:
+        t2 = target.qubit_properties[q].t2 * 1e6
+    else:
+        t2 = 0
+    if meas_err > max_meas_err or t2 < min_t2:
+        # print(q)
+        for q_pair in cmap_list:
+            if q in q_pair:
+                try:
+                    cust_cmap_list.remove(q_pair)
+                except ValueError:
+                    continue
+
+# Remove qubits with bad 2q gate or t2
+for q in cmap_list:
+    twoq_gate_err = target[instruction_2q][q].error
+    if twoq_gate_err > max_twoq_err:
+        # print(q)
+        for q_pair in cmap_list:
+            if q == q_pair:
+                try:
+                    cust_cmap_list.remove(q_pair)
+                except ValueError:
+                    continue
+
+cust_cmap = CouplingMap(cust_cmap_list)
+
+cust_target = Target.from_configuration(
+    basis_gates=backend.configuration().basis_gates
+    + ["measure"],  # or whatever new set of gates
+    coupling_map=cust_cmap,
+)
+
+sorted_components = sorted(
+    [list(comp.physical_qubits) for comp in cust_cmap.connected_components()],
+    reverse=True,
+)
+print("size of largest component", len(sorted_components[0]))
+```
+
+```text
+size of largest component 73
+```
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+transpiler = generate_preset_pass_manager(
+    optimization_level=3, target=cust_target
+)
+
+transpiled_circuits = [transpiler.run(circ) for circ in mpf_circuits]
+
+qubits_layouts = [
+    [
+        idx
+        for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+        if qb._register.name != "ancilla"
+    ]
+    for circuit in transpiled_circuits
+]
+
+transpiled_circuits = []
+for circuit, layout in zip(mpf_circuits, qubits_layouts):
+    transpiler = generate_preset_pass_manager(
+        optimization_level=3, backend=backend, initial_layout=layout
+    )
+    transpiled_circuit = transpiler.run(circuit)
+    transpiled_circuits.append(transpiled_circuit)
+
+# transform the observable defined on virtual qubits to
+# an observable defined on all physical qubits
+ isa_observables = [
+    observable.apply_layout(circ.layout) for circ in transpiled_circuits
+]
+```
+
+### Langkah 3: Eksekusi menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+
+```python
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+estimator = Estimator(mode=backend)
+estimator.options.default_shots = 30000
+
+# Set simple error suppression/mitigation options
+estimator.options.dynamical_decoupling.enable = True
+estimator.options.twirling.enable_gates = True
+estimator.options.twirling.enable_measure = True
+estimator.options.twirling.num_randomizations = "auto"
+estimator.options.twirling.strategy = "active-accum"
+estimator.options.resilience.measure_mitigation = True
+estimator.options.experimental.execution_path = "gen3-turbo"
+
+estimator.options.resilience.zne_mitigation = True
+estimator.options.resilience.zne.noise_factors = (1, 1.2, 1.4)
+estimator.options.resilience.zne.extrapolator = "linear"
+
+estimator.options.environment.job_tags = ["mpf large"]
+
+job_50 = estimator.run(
+    [
+        (circ, observable)
+        for circ, observable in zip(transpiled_circuits, isa_observables)
+    ]
+)
+```
+
+### Langkah 4: Pasca-proses dan kembalikan hasil dalam format klasikal yang diinginkan {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+```python
+result = job_50.result()
+evs = [res.data.evs for res in result]
+std = [res.data.stds for res in result]
+
+print(evs)
+print(std)
+```
+
+```text
+[array(-0.08034071), array(-0.00605026), array(-0.15345759), array(-0.18127293)]
+[array(0.04482517), array(0.03438413), array(0.21540776), array(0.21520829)]
+```
+
+```python
+exact_mpf_std = np.sqrt(
+    sum([(coeff**2) * (std**2) for coeff, std in zip(mpf_coeffs, std[:3])])
+)
+print(
+    "Exact static MPF expectation value: ",
+    evs[:3] @ mpf_coeffs,
+    "+-",
+    exact_mpf_std,
+)
+approx_mpf_std = np.sqrt(
+    sum(
+        [
+            (coeff**2) * (std**2)
+            for coeff, std in zip(coeffs_approx.value, std[:3])
+        ]
+    )
+)
+print(
+    "Approximate static MPF expectation value: ",
+    evs[:3] @ coeffs_approx.value,
+    "+-",
+    approx_mpf_std,
+)
+dynamic_mpf_std = np.sqrt(
+    sum(
+        [
+            (coeff**2) * (std**2)
+            for coeff, std in zip(mpf_dynamic_coeffs, std[:3])
+        ]
+    )
+)
+print(
+    "Dynamic MPF expectation value: ",
+    evs[:3] @ mpf_dynamic_coeffs,
+    "+-",
+    dynamic_mpf_std,
+)
+```
+
+```text
+Exact static MPF expectation value:  -0.47510243192011536 +- 0.6613940032465087
+Approximate static MPF expectation value:  -0.20914170384216998 +- 0.32341567460419135
+Dynamic MPF expectation value:  -0.07994951978722761 +- 0.07423091963310202
+```
+
+```python
+sym = {2: "^", 3: "s", 4: "p"}
+# Get expectation values at all times for each Trotter step
+for k, step in enumerate(mpf_trotter_steps):
+    plt.errorbar(
+        k,
+        evs[k],
+        yerr=std[k],
+        alpha=0.5,
+        markersize=4,
+        marker=sym[step],
+        color="grey",
+        label=f"{mpf_trotter_steps[k]} Trotter steps",
+    )
+
+plt.errorbar(
+    3,
+    evs[-1],
+    yerr=std[-1],
+    alpha=0.5,
+    markersize=8,
+    marker="x",
+    color="blue",
+    label="6 Trotter steps",
+)
+
+plt.errorbar(
+    4,
+    evs[:3] @ mpf_coeffs,
+    yerr=exact_mpf_std,
+    markersize=4,
+    marker="o",
+    color="purple",
+    label="Static MPF",
+)
+
+plt.errorbar(
+    5,
+    evs[:3] @ coeffs_approx.value,
+    yerr=approx_mpf_std,
+    markersize=4,
+    marker="o",
+    color="orange",
+    label="Approximate static MPF",
+)
+
+plt.errorbar(
+    6,
+    evs[:3] @ mpf_dynamic_coeffs,
+    yerr=dynamic_mpf_std,
+    markersize=4,
+    marker="o",
+    color="pink",
+    label="Dynamic MPF",
+)
+
+exact_obs = -0.24384471447172074  # Calculated via Tensor Network calculation
+plt.axhline(
+    y=exact_obs, linestyle="--", color="red", label="Exact time-evolution"
+)
+
+plt.title(
+    f"Expectation values for (ZZ,{(L//2-1, L//2)}) at time {total_time} for the different methods "
+)
+plt.xlabel("Method")
+plt.ylabel("Expectation Value")
+plt.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2)
+plt.grid(alpha=0.1)
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/multi-product-formula/extracted-outputs/d751af7c-0.avif)
+
+Saat mengeksekusi sirkuit pada hardware, kita mungkin menghadapi tantangan tambahan dalam memperoleh nilai ekspektasi yang akurat karena adanya noise hardware. Hal ini tidak diperhitungkan dalam formalisme MPF dan bisa merugikan solusi MPF. Misalnya, ini bisa menjadi alasan mengapa koefisien dinamis gagal memberikan estimasi nilai ekspektasi yang lebih baik dibandingkan koefisien statis aproksimasi dalam plot. Artinya, evolusi aproksimasi, yang mensimulasikan sirkuit aproksimasi, tidak secara akurat mencerminkan hasil yang diperoleh dengan mengeksekusi sirkuit aproksimasi di hadapan noise hardware. Untuk alasan ini, disarankan untuk menggabungkan berbagai teknik mitigasi error guna mendapatkan hasil sedekat mungkin dengan nilai ideal untuk setiap formula produk. Ini akan menunjukkan manfaat yang konsisten dari pendekatan MPF.
+
+Secara keseluruhan, koefisien statis aproksimasi masih memberikan solusi yang lebih akurat daripada formula produk dengan jumlah langkah Trotter yang lebih tinggi dengan jumlah error Trotter yang sama dalam pengaturan tanpa noise.
+
+Penting juga untuk dicatat bahwa dalam contoh yang mereproduksi eksperimen di Ref. [\[3\]](#references), titik waktu $t=3$ melampaui batas di mana PF dengan $k=2$ diharapkan berfungsi dengan baik, yaitu $t/k>1$ seperti yang dibahas dalam [panduan ini.](https://qiskit.github.io/qiskit-addon-mpf/how_tos/choose_trotter_steps.html)
+## Referensi {#references}
+
+[1] [Vazquez, A. C., Egger, D. J., Ochsner, D., & Woerner, S. (2023). Well-conditioned multi-product formulas for hardware-friendly Hamiltonian simulation. Quantum, 7, 1067.](https://quantum-journal.org/papers/q-2023-07-25-1067/)
+
+[2] [Zhuk, S., Robertson, N. F., & Bravyi, S. (2024). Trotter error bounds and dynamic multi-product formulas for Hamiltonian simulation. Physical Review Research, 6(3), 033309.](https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309)
+
+[3] [Robertson, N. F., et al. (2024). Tensor network enhanced dynamic multiproduct formulas. arXiv preprint arXiv:2407.17405.](https://arxiv.org/abs/2407.17405)

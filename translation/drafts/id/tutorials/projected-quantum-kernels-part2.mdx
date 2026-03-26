@@ -1,0 +1,481 @@
+## Langkah 2: Optimalkan masalah untuk eksekusi pada perangkat keras kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+### Circuit kuantum {#quantum-circuit}
+
+Sekarang kita buat feature map yang memetakan dataset klasik kita ke ruang fitur berdimensi lebih tinggi. Untuk embedding ini, kita pakai [`ZZFeatureMap`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.ZZFeatureMap) dari Qiskit.
+
+```python
+feature_dimension = train_data.shape[1]
+reps = 24
+insert_barriers = True
+entanglement = "pairwise"
+
+# ZZFeatureMap with linear entanglement and a repetition of 2
+embed = ZZFeatureMap(
+    feature_dimension=feature_dimension,
+    reps=reps,
+    entanglement=entanglement,
+    insert_barriers=insert_barriers,
+    name="ZZFeatureMap",
+)
+embed.decompose().draw(output="mpl", style="iqp", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/projected-quantum-kernels/extracted-outputs/45956df4-5472-4394-a3e1-5514c456791d-0.avif)
+
+Pilihan embedding kuantum lain adalah ansatz evolusi Hamiltonian 1D-Heisenberg. Kamu bisa lewati bagian ini kalau mau langsung lanjut dengan `ZZFeatureMap`.
+
+```python
+feature_dimension = train_data.shape[1]
+num_qubits = feature_dimension + 1
+embed2 = QuantumCircuit(num_qubits)
+num_trotter_steps = 6
+pv_length = feature_dimension * num_trotter_steps
+pv = ParameterVector("theta", pv_length)
+
+# Add Haar random single qubit unitary to each qubit as initial state
+np.random.seed(42)
+seeds_unitary = np.random.randint(0, 100, num_qubits)
+for i in range(num_qubits):
+    rand_gate = UnitaryGate(random_unitary(2, seed=seeds_unitary[i]))
+    embed2.append(rand_gate, [i])
+
+def trotter_circ(feature_dimension, num_trotter_steps):
+    num_qubits = feature_dimension + 1
+    circ = QuantumCircuit(num_qubits)
+    # Even
+    for i in range(0, feature_dimension, 2):
+        circ.rzz(2 * pv[i] / num_trotter_steps, i, i + 1)
+    for i in range(0, feature_dimension, 2):
+        circ.rxx(2 * pv[i] / num_trotter_steps, i, i + 1)
+    for i in range(0, feature_dimension, 2):
+        circ.ryy(2 * pv[i] / num_trotter_steps, i, i + 1)
+    # Odd
+    for i in range(1, feature_dimension, 2):
+        circ.rzz(2 * pv[i] / num_trotter_steps, i, i + 1)
+    for i in range(1, feature_dimension, 2):
+        circ.rxx(2 * pv[i] / num_trotter_steps, i, i + 1)
+    for i in range(1, feature_dimension, 2):
+        circ.ryy(2 * pv[i] / num_trotter_steps, i, i + 1)
+    return circ
+
+# Hamiltonian evolution ansatz
+for step in range(num_trotter_steps):
+    circ = trotter_circ(feature_dimension, num_trotter_steps)
+    if step % 2 == 0:
+        embed2 = embed2.compose(circ)
+    else:
+        reverse_circ = circ.reverse_ops()
+        embed2 = embed2.compose(reverse_circ)
+
+embed2.draw(output="mpl", style="iqp", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/projected-quantum-kernels/extracted-outputs/659dbf23-fd3f-4e01-94b4-33e6d672172c-0.avif)
+
+## Langkah 3: Eksekusi menggunakan Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+### Ukur 1-RDM {#measure-1-rdms}
+
+Blok utama dari projected quantum kernels adalah reduced density matrices (RDM), yang diperoleh melalui pengukuran projektif pada feature map kuantum. Di langkah ini, kita dapatkan semua single-qubit reduced density matrices (1-RDM), yang nantinya akan dimasukkan ke fungsi kernel eksponensial klasik.
+Mari kita lihat cara menghitung 1-RDM untuk satu data point dari dataset sebelum kita jalankan untuk semua data. 1-RDM adalah kumpulan pengukuran single-qubit operator Pauli `X`, `Y` dan `Z` pada semua qubit. Ini karena single-qubit RDM bisa dinyatakan sepenuhnya sebagai: $$\rho = \frac{1}{2} \big( I + \braket \sigma_x \sigma_x  + \braket \sigma_y \sigma_y + \braket \sigma_z \sigma_z  \big)$$
+Pertama kita pilih backend yang akan digunakan.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=133
+)
+target = backend.target
+```
+
+Kemudian kita jalankan Circuit kuantum dan ukur proyeksinya. Perhatikan bahwa kita mengaktifkan error mitigation, termasuk Zero Noise Extrapolation (ZNE).
+
+```python
+# Let's select the ZZFeatureMap embedding for this example
+qc = embed
+num_qubits = feature_dimension
+
+# Identity operator on all qubits
+id = "I" * num_qubits
+
+# Let's select the first training datapoint as an example
+parameters = train_data[0]
+
+# Bind parameter to the circuit and simplify it
+qc_bound = qc.assign_parameters(parameters)
+transpiler = generate_preset_pass_manager(
+    optimization_level=3, basis_gates=["u3", "cz"]
+)
+transpiled_circuit = transpiler.run(qc_bound)
+
+# Transpile for hardware
+transpiler = generate_preset_pass_manager(optimization_level=3, target=target)
+transpiled_circuit = transpiler.run(transpiled_circuit)
+
+# We group all commuting observables
+# These groups are the Pauli X, Y and Z operators on individual qubits
+observables_x = [
+    SparsePauliOp(id[:i] + "X" + id[(i + 1) :]).apply_layout(
+        transpiled_circuit.layout
+    )
+    for i in range(num_qubits)
+]
+observables_y = [
+    SparsePauliOp(id[:i] + "Y" + id[(i + 1) :]).apply_layout(
+        transpiled_circuit.layout
+    )
+    for i in range(num_qubits)
+]
+observables_z = [
+    SparsePauliOp(id[:i] + "Z" + id[(i + 1) :]).apply_layout(
+        transpiled_circuit.layout
+    )
+    for i in range(num_qubits)
+]
+
+# We define the primitive unified blocs (PUBs) consisting of the embedding circuit,
+# set of observables and the circuit parameters
+pub_x = (transpiled_circuit, observables_x)
+pub_y = (transpiled_circuit, observables_y)
+pub_z = (transpiled_circuit, observables_z)
+
+# Experiment options for error mitigation
+num_randomizations = 300
+shots_per_randomization = 100
+noise_factors = [1, 3, 5]
+
+experimental_opts = {}
+experimental_opts["resilience"] = {
+    "measure_mitigation": True,
+    "zne_mitigation": True,
+    "zne": {
+        "noise_factors": noise_factors,
+        "amplifier": "gate_folding",
+        "extrapolated_noise_factors": [0] + noise_factors,
+    },
+}
+experimental_opts["twirling"] = {
+    "num_randomizations": num_randomizations,
+    "shots_per_randomization": shots_per_randomization,
+    "strategy": "active-accum",
+}
+
+# We define and run the estimator to obtain <X>, <Y> and <Z> on all qubits
+estimator = Estimator(mode=backend, options=experimental_opts)
+
+job = estimator.run([pub_x, pub_y, pub_z])
+```
+
+Selanjutnya kita ambil hasilnya.
+
+```python
+job_result_x = job.result()[0].data.evs
+job_result_y = job.result()[1].data.evs
+job_result_z = job.result()[2].data.evs
+```
+
+```python
+print(job_result_x)
+print(job_result_y)
+print(job_result_z)
+```
+
+```text
+[ 3.67865951e-03  1.01158571e-02 -3.95790878e-02  6.33984326e-03
+  1.86035759e-02 -2.91533268e-02 -1.06374793e-01  4.48873518e-18
+  4.70201764e-02  3.53997968e-02  2.53130819e-02  3.23903401e-02
+  6.06327843e-03  1.16313667e-02 -1.12387504e-02 -3.18457725e-02
+ -4.16445718e-04 -1.45609602e-03 -4.21737114e-01  2.83705669e-02
+  6.91332890e-03 -7.45363001e-02 -1.20139326e-02 -8.85566135e-02
+ -3.22648394e-02 -3.24228074e-02  6.20431299e-04  3.04225434e-03
+  5.72795792e-03  1.11288428e-02  1.50395861e-01  9.18380197e-02
+  1.02553163e-01  2.98312847e-02 -3.30298912e-01 -1.13979648e-01
+  4.49159340e-03  8.63861493e-02  3.05666566e-02  2.21463145e-04
+  1.45946735e-02  8.54537275e-03 -8.09805979e-02 -2.92608104e-02
+ -3.91243644e-02 -3.96632760e-02 -1.41187613e-01 -1.07363243e-01
+  1.81089440e-02  2.70778895e-02  1.45139414e-02  2.99480458e-02
+  4.99137134e-02  7.08789852e-02  4.30565759e-02  8.71287156e-02
+  1.04334798e-01  7.72191962e-02  7.10059720e-02  1.04650403e-01]
+[-7.31765102e-05  7.42669174e-03  9.82277344e-03  5.92638249e-02
+  4.24120486e-02 -9.06473416e-03  4.55057675e-03  8.43494094e-03
+  6.92097339e-02 -6.82234424e-02  6.13509008e-02  3.94200491e-02
+ -1.24037979e-02  1.01976642e-01  7.90538600e-03 -7.19726160e-02
+ -1.19501703e-16 -1.03796614e-02  7.37382463e-02  1.97238568e-01
+ -3.59250635e-02 -2.67554009e-02  3.55010633e-02  7.68877990e-02
+  6.50677589e-05 -6.59298767e-03 -1.23719487e-02 -6.41938151e-02
+  1.95603072e-02 -2.48448551e-02  5.17784810e-02 -5.93767100e-02
+  3.11897681e-02 -3.91959720e-18 -4.47769148e-03  1.39202197e-01
+ -6.56387523e-02 -5.85665483e-02  9.52905894e-03 -8.61460731e-02
+  3.91790656e-02 -1.27544375e-01  1.63712244e-01  3.36816934e-04
+  2.26230028e-02 -2.45023393e-05  4.95635588e-03  1.44779564e-01
+  3.71625177e-02  3.65675948e-03  2.83694017e-02 -7.10500602e-02
+ -1.15467702e-01  6.21712129e-03 -4.80958959e-02  2.21021066e-02
+  7.99062499e-02 -1.87164076e-02 -3.67100369e-02 -2.38923731e-02]
+[ 6.85871605e-01  5.07725024e-01  8.71024642e-03  3.34823455e-02
+  4.58684961e-02  9.44384189e-17 -4.46829296e-02 -2.91296778e-02
+  4.15466461e-02  2.89628330e-02  1.88624017e-03  5.37110446e-02
+  2.59579053e-03  1.39327071e-02 -2.90781778e-02  5.07209866e-03
+  5.83403000e-02  2.60764440e-02  4.45999706e-17 -6.66701417e-03
+  3.03215873e-01  2.26172533e-02  2.43105960e-02  4.98861041e-18
+ -2.45530791e-02  6.26940708e-02  1.21058073e-02  2.76675948e-04
+  2.63980996e-02  2.58302364e-02  7.47856723e-02  8.42728943e-02
+  5.70989097e-02  6.92955086e-02 -5.68313712e-03  1.32199452e-01
+  8.90511238e-02 -3.45204621e-02 -1.05445836e-01  6.03864150e-03
+  2.16291384e-02  8.22303162e-03  1.00856715e-02  6.28973151e-02
+  6.26727169e-02  6.15399206e-02  9.67320897e-02  1.03045269e-16
+  1.79688783e-01 -1.59960520e-02 -1.15422952e-02  9.60200470e-03
+  6.58396672e-02  7.78329830e-03  6.53226955e-02  2.45778685e-03
+  4.36694753e-03  5.75098762e-03 -2.48896201e-02  8.33740755e-05]
+```
+
+Kita cetak ukuran Circuit dan kedalaman gate dua-qubit.
+
+```python
+print(f"qubits: {qc.num_qubits}")
+print(
+    f"2q-depth: {transpiled_circuit.depth(lambda x: x.operation.num_qubits==2)}"
+)
+print(
+    f"2q-size: {transpiled_circuit.size(lambda x: x.operation.num_qubits==2)}"
+)
+print(f"Operator counts: {transpiled_circuit.count_ops()}")
+transpiled_circuit.draw("mpl", fold=-1, style="clifford", idle_wires=False)
+```
+
+```text
+qubits: 60
+2q-depth: 64
+2q-size: 1888
+Operator counts: OrderedDict({'rz': 6016, 'sx': 4576, 'cz': 1888, 'x': 896, 'barrier': 31})
+```
+
+![Output of the previous code cell](/docs/images/tutorials/projected-quantum-kernels/extracted-outputs/4f573436-ec5c-451b-976c-ad718b3c201d-1.avif)
+
+Kita sekarang bisa iterasi seluruh dataset pelatihan untuk mendapatkan semua 1-RDM.
+Kita juga menyediakan hasil dari eksperimen yang sudah kita jalankan pada perangkat keras kuantum. Kamu bisa menjalankan pelatihan sendiri dengan mengatur flag di bawah ke `True`, atau pakai hasil proyeksi yang sudah kita sediakan.
+
+```python
+# Set this to True if you want to run the training on hardware
+run_experiment = False
+```
+
+```python
+# Identity operator on all qubits
+id = "I" * num_qubits
+
+# projections_train[i][j][k] will be the expectation value of the j-th Pauli operator (0: X, 1: Y, 2: Z)
+# of datapoint i on qubit k
+projections_train = []
+jobs_train = []
+
+# Experiment options for error mitigation
+num_randomizations = 300
+shots_per_randomization = 100
+noise_factors = [1, 3, 5]
+
+experimental_opts = {}
+experimental_opts["resilience"] = {
+    "measure_mitigation": True,
+    "zne_mitigation": True,
+    "zne": {
+        "noise_factors": noise_factors,
+        "amplifier": "gate_folding",
+        "return_all_extrapolated": True,
+        "return_unextrapolated": True,
+        "extrapolated_noise_factors": [0] + noise_factors,
+    },
+}
+experimental_opts["twirling"] = {
+    "num_randomizations": num_randomizations,
+    "shots_per_randomization": shots_per_randomization,
+    "strategy": "active-accum",
+}
+options = EstimatorOptions(experimental=experimental_opts)
+
+if run_experiment:
+    with Batch(backend=backend):
+        for i in tqdm.tqdm(
+            range(len(train_data)), desc="Training data progress"
+        ):
+            # Get training sample
+            parameters = train_data[i]
+
+            # Bind parameter to the circuit and simplify it
+            qc_bound = qc.assign_parameters(parameters)
+            transpiler = generate_preset_pass_manager(
+                optimization_level=3, basis_gates=["u3", "cz"]
+            )
+            transpiled_circuit = transpiler.run(qc_bound)
+
+            # Transpile for hardware
+            transpiler = generate_preset_pass_manager(
+                optimization_level=3, target=target
+            )
+            transpiled_circuit = transpiler.run(transpiled_circuit)
+
+            # We group all commuting observables
+            # These groups are the Pauli X, Y and Z operators on individual qubits
+            observables_x = [
+                SparsePauliOp(id[:i] + "X" + id[(i + 1) :]).apply_layout(
+                    transpiled_circuit.layout
+                )
+                for i in range(num_qubits)
+            ]
+            observables_y = [
+                SparsePauliOp(id[:i] + "Y" + id[(i + 1) :]).apply_layout(
+                    transpiled_circuit.layout
+                )
+                for i in range(num_qubits)
+            ]
+            observables_z = [
+                SparsePauliOp(id[:i] + "Z" + id[(i + 1) :]).apply_layout(
+                    transpiled_circuit.layout
+                )
+                for i in range(num_qubits)
+            ]
+
+            # We define the primitive unified blocs (PUBs) consisting of the embedding circuit,
+            # set of observables and the circuit parameters
+            pub_x = (transpiled_circuit, observables_x)
+            pub_y = (transpiled_circuit, observables_y)
+            pub_z = (transpiled_circuit, observables_z)
+
+            # We define and run the estimator to obtain <X>, <Y> and <Z> on all qubits
+            estimator = Estimator(options=options)
+
+            job = estimator.run([pub_x, pub_y, pub_z])
+            jobs_train.append(job)
+```
+
+```text
+Training data progress: 100%|██████████| 172/172 [13:03<00:00,  4.55s/it]
+```
+
+Setelah semua job selesai, kita bisa ambil hasilnya.
+
+```python
+if run_experiment:
+    for i in tqdm.tqdm(
+        range(len(train_data)), desc="Retrieving training data results"
+    ):
+        # Completed job
+        job = jobs_train[i]
+
+        # Job results
+        job_result_x = job.result()[0].data.evs
+        job_result_y = job.result()[1].data.evs
+        job_result_z = job.result()[2].data.evs
+
+        # Record <X>, <Y> and <Z> on all qubits for the current datapoint
+        projections_train.append([job_result_x, job_result_y, job_result_z])
+```
+
+Kita ulangi ini untuk test set.
+
+```python
+# Identity operator on all qubits
+id = "I" * num_qubits
+
+# projections_test[i][j][k] will be the expectation value of the j-th Pauli operator (0: X, 1: Y, 2: Z)
+# of datapoint i on qubit k
+projections_test = []
+jobs_test = []
+
+# Experiment options for error mitigation
+num_randomizations = 300
+shots_per_randomization = 100
+noise_factors = [1, 3, 5]
+
+experimental_opts = {}
+experimental_opts["resilience"] = {
+    "measure_mitigation": True,
+    "zne_mitigation": True,
+    "zne": {
+        "noise_factors": noise_factors,
+        "amplifier": "gate_folding",
+        "return_all_extrapolated": True,
+        "return_unextrapolated": True,
+        "extrapolated_noise_factors": [0] + noise_factors,
+    },
+}
+experimental_opts["twirling"] = {
+    "num_randomizations": num_randomizations,
+    "shots_per_randomization": shots_per_randomization,
+    "strategy": "active-accum",
+}
+options = EstimatorOptions(experimental=experimental_opts)
+
+if run_experiment:
+    with Batch(backend=backend):
+        for i in tqdm.tqdm(range(len(test_data)), desc="Test data progress"):
+            # Get test sample
+            parameters = test_data[i]
+
+            # Bind parameter to the circuit and simplify it
+            qc_bound = qc.assign_parameters(parameters)
+            transpiler = generate_preset_pass_manager(
+                optimization_level=3, basis_gates=["u3", "cz"]
+            )
+            transpiled_circuit = transpiler.run(qc_bound)
+
+            # Transpile for hardware
+            transpiler = generate_preset_pass_manager(
+                optimization_level=3, target=target
+            )
+            transpiled_circuit = transpiler.run(transpiled_circuit)
+
+            # We group all commuting observables
+            # These groups are the Pauli X, Y and Z operators on individual qubits
+            observables_x = [
+                SparsePauliOp(id[:i] + "X" + id[(i + 1) :]).apply_layout(
+                    transpiled_circuit.layout
+                )
+                for i in range(num_qubits)
+            ]
+            observables_y = [
+                SparsePauliOp(id[:i] + "Y" + id[(i + 1) :]).apply_layout(
+                    transpiled_circuit.layout
+                )
+                for i in range(num_qubits)
+            ]
+            observables_z = [
+                SparsePauliOp(id[:i] + "Z" + id[(i + 1) :]).apply_layout(
+                    transpiled_circuit.layout
+                )
+                for i in range(num_qubits)
+            ]
+
+            # We define the primitive unified blocs (PUBs) consisting of the embedding circuit,
+            # set of observables and the circuit parameters
+            pub_x = (transpiled_circuit, observables_x)
+            pub_y = (transpiled_circuit, observables_y)
+            pub_z = (transpiled_circuit, observables_z)
+
+            # We define and run the estimator to obtain <X>, <Y> and <Z> on all qubits
+            estimator = Estimator(options=options)
+
+            job = estimator.run([pub_x, pub_y, pub_z])
+            jobs_test.append(job)
+```
+
+```text
+Test data progress: 100%|██████████| 74/74 [00:13<00:00,  5.56it/s]
+```
+
+Kita bisa ambil hasilnya seperti sebelumnya.
+
+```python
+if run_experiment:
+    for i in tqdm.tqdm(
+        range(len(test_data)), desc="Retrieving test data results"
+    ):
+        # Completed job
+        job = jobs_test[i]
+
+        # Job results
+        job_result_x = job.result()[0].data.evs
+        job_result_y = job.result()[1].data.evs
+        job_result_z = job.result()[2].data.evs
+
+        # Record <X>, <Y> and <Z> on all qubits for the current datapoint
+        projections_test.append([job_result_x, job_result_y, job_result_z])
+```
