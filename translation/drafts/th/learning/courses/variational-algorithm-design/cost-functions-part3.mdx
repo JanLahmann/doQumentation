@@ -1,0 +1,303 @@
+## Measurement strategy: speed versus accuracy
+
+ดังที่กล่าวไว้ เราใช้คอมพิวเตอร์ควอนตัมที่มี noise เป็น *black-box oracle* โดย noise อาจทำให้ค่าที่ได้ไม่ deterministic ทำให้เกิดความผันแปรแบบสุ่มซึ่งในทางกลับกันจะขัดขวาง หรืออาจถึงขั้นป้องกัน การ converge ของ optimizer บางตัวไปยัง proposed solution นี่เป็นปัญหาทั่วไปที่เราต้องแก้ไขเมื่อสำรวจ quantum utility แบบค่อยๆ เพิ่มและก้าวไปสู่ quantum advantage:
+
+![A graph showing how simulation cost varies with circuit complexity. Using a classical computer it grows exponentially. With quantum error mitigation, there should be a crossover at which that becomes advantageous. Quantum error correction allows for linear growth of the simulation cost and will certainly lead to advantage.](/learning/images/courses/variational-algorithm-design/cost-functions/cost-function-path-to-quantum-advantage.svg)
+
+เราสามารถใช้ตัวเลือก error suppression และ error mitigation ของ Qiskit Runtime Primitive เพื่อแก้ปัญหา noise และ maximize ประโยชน์ของคอมพิวเตอร์ควอนตัมในปัจจุบัน
+### Error Suppression
+
+[Error suppression](/guides/configure-error-suppression) หมายถึงเทคนิคที่ใช้ optimize และแปลง circuit ระหว่างการ compile เพื่อ minimize error นี่เป็นเทคนิคการจัดการ error พื้นฐานที่มักส่งผลให้มี <DefinitionTooltip definition="Extra costs introduced by new techniques, relative to a base implementation.">overhead</DefinitionTooltip> จากการประมวลผล classical ล่วงหน้าในเวลา runtime โดยรวม overhead ได้แก่การ transpile circuit เพื่อรันบน quantum hardware โดย:
+
+- แสดง circuit ด้วย native gate ที่มีบนระบบควอนตัม
+- Mapping virtual Qubit ไปยัง physical Qubit
+- เพิ่ม SWAP ตามข้อกำหนดด้านการเชื่อมต่อ
+- Optimize 1Q และ 2Q gate
+- เพิ่ม dynamical decoupling กับ idle Qubit เพื่อป้องกันผลของ decoherence
+
+Primitive อนุญาตให้ใช้เทคนิค error suppression โดยการตั้ง `optimization_level` และเลือก advanced transpilation option ในคอร์สถัดไปเราจะเจาะลึกวิธีการสร้าง circuit ต่างๆ เพื่อปรับปรุงผลลัพธ์ แต่สำหรับกรณีส่วนใหญ่แนะนำให้ตั้ง `optimization_level=3`
+
+เราจะแสดงให้เห็นคุณค่าของการเพิ่ม optimization ในกระบวนการ transpilation โดยดูตัวอย่าง circuit ที่มีพฤติกรรม ideal อย่างง่าย
+
+```python
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+
+theta = Parameter("theta")
+
+qc = QuantumCircuit(2)
+qc.x(1)
+qc.h(0)
+qc.cp(theta, 0, 1)
+qc.h(0)
+observables = SparsePauliOp.from_list([("ZZ", 1)])
+
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/cost-functions/extracted-outputs/9e0bf552-32b0-477e-9ac3-4ab643c30623-0.avif)
+
+Circuit ข้างต้นสามารถให้ sinusoidal expectation value ของ observable ที่กำหนดได้ หากเราใส่ phase ที่ครอบคลุมช่วงที่เหมาะสม เช่น $[0,2\pi]$
+
+```python
+## Setup phases
+import numpy as np
+
+phases = np.linspace(0, 2 * np.pi, 50)
+
+# phases need to be expressed as a list of lists in order to work
+individual_phases = [[phase] for phase in phases]
+```
+
+เราสามารถใช้ simulator เพื่อแสดงประโยชน์ของ optimized transpilation เราจะกลับมาใช้ real hardware เพื่อแสดงประโยชน์ของ error mitigation ด้านล่าง เราจะใช้ QiskitRuntimeService เพื่อรับ real backend (ในกรณีนี้คือ ibm_brisbane) และใช้ AerSimulator เพื่อ simulate backend นั้น รวมถึงพฤติกรรม noise ของมัน
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_aer import AerSimulator
+
+# get a real backend from the runtime service
+service = QiskitRuntimeService()
+backend = service.backend("ibm_brisbane")
+
+# generate a simulator that mimics the real quantum system with the latest calibration results
+backend_sim = AerSimulator.from_backend(backend)
+```
+
+ตอนนี้เราสามารถใช้ pass manager เพื่อ transpile circuit ไปยัง "instruction set architecture" หรือ ISA ของ backend นี่เป็นข้อกำหนดใหม่ใน Qiskit Runtime: circuit ทั้งหมดที่ submit ไปยัง backend ต้องเป็นไปตาม constraint ของ target backend หมายความว่าต้องเขียนในแง่ของ ISA ของ backend นั่นคือชุด instruction ที่อุปกรณ์สามารถเข้าใจและ execute ได้ constraint เหล่านี้กำหนดโดยปัจจัยเช่น native basis gate ของอุปกรณ์, การเชื่อมต่อของ Qubit และเมื่อเกี่ยวข้องก็รวมถึงข้อกำหนดด้าน timing ของ pulse และ instruction อื่นๆ
+
+โปรดทราบว่าในกรณีนี้เราจะทำสองครั้ง: ครั้งหนึ่งด้วย optimization_level = 0 และอีกครั้งด้วยค่า 3 แต่ละครั้งเราจะใช้ Estimator primitive เพื่อประมาณ expectation value ของ observable ที่ค่า phase ต่างๆ
+
+```python
+# Import estimator and specify that we are using the simulated backend:
+
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+estimator = Estimator(mode=backend_sim)
+
+circuit = qc
+```
+
+```python
+# Use a pass manager to transpile the circuit and observable for the backend being simulated.
+# Start with no optimization:
+
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(backend=backend_sim, optimization_level=0)
+isa_circuit = pm.run(circuit)
+isa_observables = observables.apply_layout(layout=isa_circuit.layout)
+
+noisy_exp_values = []
+pub = (isa_circuit, isa_observables, [individual_phases])
+cost = estimator.run([pub]).result()[0].data.evs
+noisy_exp_values = cost[0]
+```
+
+```python
+
+# Repeat above steps, but now with optimization = 3:
+
+exp_values_with_opt_es = []
+pm = generate_preset_pass_manager(backend=backend_sim, optimization_level=3)
+isa_circuit = pm.run(circuit)
+isa_observables = observables.apply_layout(layout=isa_circuit.layout)
+
+pub = (isa_circuit, isa_observables, [individual_phases])
+cost = estimator.run([pub]).result()[0].data.evs
+exp_values_with_opt_es = cost[0]
+```
+
+สุดท้าย เราสามารถ plot ผลลัพธ์ และเราเห็นว่าความแม่นยำของการคำนวณค่อนข้างดีแม้ไม่มี optimization แต่แน่นอนว่าดีขึ้นเมื่อเพิ่ม optimization เป็น level 3 โปรดทราบว่าใน circuit ที่ลึกและซับซ้อนกว่า ความแตกต่างระหว่าง optimization level 0 และ 3 น่าจะชัดเจนกว่านี้มาก นี่เป็น circuit อย่างง่ายที่ใช้เป็น toy model
+
+```python
+import matplotlib.pyplot as plt
+
+plt.plot(phases, noisy_exp_values, "o", label="opt=0")
+plt.plot(phases, exp_values_with_opt_es, "o", label="opt=3")
+plt.plot(phases, 2 * np.sin(phases / 2) ** 2 - 1, label="ideal")
+plt.ylabel("Expectation")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/cost-functions/extracted-outputs/f3d3f805-f8d0-474d-9a88-2d1f164639b0-0.avif)
+
+### Error Mitigation
+
+[Error mitigation](/guides/configure-error-mitigation) หมายถึงเทคนิคที่ช่วยให้ผู้ใช้ลด circuit error โดยการ model noise ของอุปกรณ์ ณ เวลา execute โดยทั่วไปจะส่งผลให้มี quantum pre-processing overhead ที่เกี่ยวข้องกับการ train model และ classical post-processing overhead เพื่อ mitigate error ในผลลัพธ์ raw โดยใช้ model ที่สร้างขึ้น
+
+ตัวเลือก `resilience_level` ของ Qiskit Runtime primitive ระบุปริมาณ resilience ต่อ error ที่ต้องการสร้าง Level ที่สูงขึ้นจะสร้างผลลัพธ์ที่แม่นยำกว่าแต่ต้องใช้เวลาประมวลผลนานกว่าเนื่องจาก overhead ในการ sample quantum Resilience level ช่วยกำหนด trade-off ระหว่างต้นทุนและความแม่นยำเมื่อนำ error mitigation มาใช้กับ primitive query
+
+เมื่อ implement เทคนิค error mitigation ใดๆ เราคาดว่า <DefinitionTooltip definition="A systematic drift in the measured quantities, usually caused by errors.">bias</DefinitionTooltip> ในผลลัพธ์จะลดลงเมื่อเทียบกับ unmitigated bias ก่อนหน้า ในบางกรณี bias อาจหายไปด้วย อย่างไรก็ตาม สิ่งนี้มีต้นทุน เมื่อเราลด bias ในปริมาณที่ประมาณ ความแปรปรวนทางสถิติจะเพิ่มขึ้น (นั่นคือ variance) ซึ่งเราสามารถรับมือได้โดยการเพิ่มจำนวน shot ต่อ circuit ในกระบวนการ sampling ซึ่งจะเพิ่ม overhead เกินกว่าที่จำเป็นในการลด bias จึงไม่ทำโดย default เราสามารถเลือกใช้พฤติกรรมนี้ได้ง่ายๆ โดยปรับจำนวน shot ต่อ circuit ใน options.executions.shots ดังที่แสดงในตัวอย่างด้านล่าง
+
+![A diagram showing broader or narrowing distributions as in the bias/variance tradeoff.](/learning/images/courses/variational-algorithm-design/cost-functions/cost-function-bias-variance-trade-off.svg)
+
+สำหรับคอร์สนี้ เราจะสำรวจ error mitigation model เหล่านี้ในระดับสูงเพื่อแสดง error mitigation ที่ Qiskit Runtime primitive สามารถทำได้โดยไม่ต้องการรายละเอียดการ implement เต็มรูปแบบ
+
+### Twirled readout error extinction (T-REx)
+
+Twirled readout error extinction (T-REx) ใช้เทคนิคที่รู้จักในชื่อ Pauli twirling เพื่อลด noise ที่เกิดขึ้นระหว่างกระบวนการวัดควอนตัม เทคนิคนี้ไม่สมมติรูปแบบ noise เฉพาะ ทำให้ทั่วไปและมีประสิทธิภาพมาก
+
+workflow โดยรวม:
+
+1. รวบรวมข้อมูลสำหรับ zero state ด้วย random bit flip (Pauli X ก่อนวัด)
+2. รวบรวมข้อมูลสำหรับ (noisy) state ที่ต้องการด้วย random bit flip (Pauli X ก่อนวัด)
+3. คำนวณ special function สำหรับแต่ละชุดข้อมูล และหาร
+
+&nbsp;
+
+![A diagram showing measurement and calibration circuits for T-REX.](/learning/images/courses/variational-algorithm-design/cost-functions/cost-function-trex-data-collection.svg)
+
+เราสามารถตั้งค่านี้ด้วย `options.resilience_level = 1` ดังแสดงในตัวอย่างด้านล่าง
+
+### Zero noise extrapolation
+
+Zero noise extrapolation (ZNE) ทำงานโดยการขยาย noise ใน circuit ที่เตรียม quantum state ที่ต้องการก่อน รับการวัดสำหรับ noise หลายระดับ และใช้การวัดเหล่านั้นในการ infer ผลลัพธ์ที่ไม่มี noise
+
+workflow โดยรวม:
+
+1. ขยาย circuit noise สำหรับ noise factor หลายค่า
+2. รัน circuit ที่มีการขยาย noise ทุก circuit
+3. Extrapolate กลับไปยัง zero noise limit
+
+&nbsp;
+
+![A diagram showing steps in ZNE. Noise is artificially amplified by different factors. Then the values are extrapolated to what they should be at zero noise.](/learning/images/courses/variational-algorithm-design/cost-functions/cost-function-zne-stages.svg)
+
+เราสามารถตั้งค่านี้ด้วย `options.resilience_level = 2` เราสามารถ optimize เพิ่มเติมได้โดยสำรวจ `noise_factors`, `noise_amplifiers` และ `extrapolators` หลากหลาย แต่อยู่นอกขอบเขตของคอร์สนี้ เราขอแนะนำให้ทดลองกับ[ตัวเลือกเหล่านี้ตามที่อธิบายไว้ที่นี่](/guides/configure-error-mitigation)
+
+แต่ละวิธีมี overhead ที่เกี่ยวข้อง: trade-off ระหว่างจำนวนการคำนวณควอนตัมที่จำเป็น (เวลา) และความแม่นยำของผลลัพธ์:
+
+$$
+\begin{array}{c|c|c|c}
+  \text{Methods} & R=1 \text{, T-REx} & R=2 \text{, ZNE} \\[1mm]
+  \hline
+  \text{Assumptions} & \text{None} & \text{Ability to scale noise} \\[1mm]
+  \text{Qubit overhead} & 1 & 1 \\[1mm]
+  \text{Sampling overhead} & 2 & N_{\text{noise-factors}} \\[1mm]
+  \text{Bias} & 0 & \mathcal{O}(\lambda^{N_{\text{noise-factors}}}) \\[1mm]
+\end{array}
+$$
+### การใช้ตัวเลือก mitigation และ suppression ของ Qiskit Runtime
+
+ต่อไปนี้เป็นวิธีคำนวณ expectation value ขณะใช้ error mitigation และ suppression ใน Qiskit Runtime เราสามารถใช้ circuit และ observable เดิมได้ แต่คราวนี้ตรึง optimization level ไว้ที่ level 2 และปรับ _resilience_ หรือเทคนิค error mitigation ที่ใช้ กระบวนการ error mitigation นี้เกิดขึ้นหลายครั้งตลอด optimization loop
+
+เราทำส่วนนี้บน real hardware เนื่องจาก error mitigation ไม่มีบน simulator
+
+```python
+# Estimated usage: 8 minutes, benchmarked on an Eagle processor, 5-23-24
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import (
+    Session,
+    EstimatorOptions,
+    EstimatorV2 as Estimator,
+)
+
+# We select the least busy backend
+
+# Select the least busy backend
+# backend = service.least_busy(
+#    operational=True, min_num_qubits=ansatz.num_qubits, simulator=False
+# )
+
+# Or use a specific backend
+backend = service.backend("ibm_brisbane")
+
+# Initialize some variables to save the results from different runs:
+
+exp_values_with_em0_es = []
+exp_values_with_em1_es = []
+exp_values_with_em2_es = []
+
+# Use a pass manager to optimize the circuit and observables for the backend chosen:
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=2)
+isa_circuit = pm.run(circuit)
+isa_observables = observables.apply_layout(layout=isa_circuit.layout)
+
+# Open a session and run with no error mitigation:
+
+estimator_options = EstimatorOptions(resilience_level=0, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    pub = (isa_circuit, isa_observables, [individual_phases])
+    cost = estimator.run([pub]).result()[0].data.evs
+
+session.close()
+
+exp_values_with_em0_es = cost[0]
+
+# Open a session and run with resilience = 1:
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    pub = (isa_circuit, isa_observables, [individual_phases])
+    cost = estimator.run([pub]).result()[0].data.evs
+
+session.close()
+
+exp_values_with_em1_es = cost[0]
+
+# Open a session and run with resilience = 2:
+
+estimator_options = EstimatorOptions(resilience_level=2, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    pub = (isa_circuit, isa_observables, [individual_phases])
+    cost = estimator.run([pub]).result()[0].data.evs
+
+session.close()
+
+exp_values_with_em2_es = cost[0]
+```
+
+เช่นเดิม เราสามารถ plot expected value ที่ได้เป็น function ของมุม phase สำหรับ error mitigation สามระดับที่ใช้ แม้จะยากในการสังเกต แต่จะเห็นว่า error mitigation ช่วยปรับปรุงผลลัพธ์เล็กน้อย อีกครั้งที่ผลของ circuit ที่ลึกและซับซ้อนกว่าจะชัดเจนกว่ามาก
+
+```python
+import matplotlib.pyplot as plt
+
+plt.plot(phases, exp_values_with_em0_es, "o", label="unmitigated")
+plt.plot(phases, exp_values_with_em1_es, "o", label="resil = 1")
+plt.plot(phases, exp_values_with_em2_es, "o", label="resil = 2")
+plt.plot(phases, 2 * np.sin(phases / 2) ** 2 - 1, label="ideal")
+plt.ylabel("Expectation")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/cost-functions/extracted-outputs/474f1a1a-ee90-468d-9390-fdb455aeb142-0.avif)
+
+## สรุป
+
+ในบทเรียนนี้ คุณได้เรียนรู้วิธีสร้าง cost function:
+
+- สร้าง cost function
+- วิธีใช้ Qiskit Runtime primitive เพื่อ mitigate และ suppress noise
+- วิธีกำหนด measurement strategy เพื่อ optimize speed เทียบกับ accuracy
+
+นี่คือ variational workload ระดับสูงของเรา:
+
+![A diagram showing the quantum circuit with unitaries preparing the reference state and variational state, followed by measurements. These are used to evaluate the cost function.](/learning/images/courses/variational-algorithm-design/cost-functions/cost-function-circuit.svg)
+
+cost function ของเรารันในแต่ละ iteration ของ optimization loop บทเรียนถัดไปจะสำรวจว่า classical optimizer ใช้การประเมิน cost function เพื่อเลือกพารามิเตอร์ใหม่อย่างไร
+
+```python
+import qiskit
+import qiskit_ibm_runtime
+
+print(qiskit.version.get_version_info())
+print(qiskit_ibm_runtime.version.get_version_info())
+```
+
+```text
+1.1.0
+0.23.0
+```
