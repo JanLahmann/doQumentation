@@ -120,8 +120,9 @@ Print summary: files translated, skipped, failed, remaining.
 You (the orchestrator) MUST split large files. Do NOT give >400 lines to one agent.
 
 1. Find `## ` and `### ` headings and their line numbers.
-2. Group into chunks of at most 400 lines at `## ` or `### ` heading boundaries.
-3. Launch one SEPARATE agent per chunk (max 3 parallel). Each chunk MUST go to a different agent — never assign multiple chunks to the same agent. Each agent writes to `translation/drafts/{LOCALE}/{filename}-part{N}.mdx`. First chunk includes frontmatter + source hash. Later chunks start at the heading. Agents write parts only — they do NOT concatenate.
-4. After ALL chunks finish, the orchestrator concatenates and cleans up in one shell command:
+2. Group into chunks of at most 400 lines. **Chunk boundaries fall between lines**: chunk N ends on the last line *before* a heading; chunk N+1 starts *at* that heading. No line appears in two chunks.
+3. Launch one SEPARATE agent per chunk (max 3 parallel). Each chunk MUST go to a different agent — never assign multiple chunks to the same agent. Each agent writes to `translation/drafts/{LOCALE}/{filename}-part{N}.mdx`. First chunk includes frontmatter + source hash. Later chunks start exactly at the heading line. Agents write parts only — they do NOT concatenate.
+4. Leave the part files in place. Continue translating the next file immediately.
+5. After ALL translation is done (Step 4), concatenate all part files and clean up:
    `cat translation/drafts/{LOCALE}/{filename}-part1.mdx translation/drafts/{LOCALE}/{filename}-part2.mdx [...] > translation/drafts/{LOCALE}/{path} && rm translation/drafts/{LOCALE}/{filename}-part*.mdx`
-5. Verify: heading count and code fence count match source.
+   Repeat for each chunked file. Then verify: heading count and code fence count match source.
