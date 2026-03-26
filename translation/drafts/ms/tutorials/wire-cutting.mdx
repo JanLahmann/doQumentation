@@ -1,0 +1,567 @@
+---
+title: "Pemotongan wayar untuk anggaran nilai jangkaan"
+sidebar_label: "Pemotongan wayar untuk anggaran nilai jangkaan"
+description: "Guna pemotongan wayar untuk membahagikan litar kepada beberapa subLitar yang lebih kecil."
+notebook_path: "tutorials/wire-cutting.ipynb"
+---
+
+{/* doqumentation-source-hash: 011c86de */}
+
+<OpenInLabBanner notebookPath="tutorials/wire-cutting.ipynb" />
+
+
+
+{/* cspell:ignore edgecolor Cutqc */}
+
+*Anggaran penggunaan: satu minit pada pemproses Eagle (NOTA: Ini adalah anggaran sahaja. Masa jalan anda mungkin berbeza.)*
+## Latar Belakang {#background}
+
+Circuit-knitting ialah istilah umum yang merangkumi pelbagai kaedah untuk mempartisi sebuah litar kepada beberapa subLitar yang lebih kecil, melibatkan lebih sedikit gerbang dan/atau Qubit. Setiap subLitar boleh dilaksanakan secara bebas dan keputusan akhir diperoleh melalui pemprosesan klasik selepas daripada hasil setiap subLitar. Teknik ini boleh diakses melalui [circuit cutting Qiskit addon](https://qiskit.github.io/qiskit-addon-cutting/index.html), dan penjelasan terperinci tentang teknik ini diberikan dalam [dokumen rasmi](https://qiskit.github.io/qiskit-addon-cutting/explanation/index.html) berserta [bahan pengenalan lain](https://qiskit.github.io/qiskit-addon-cutting/tutorials/index.html).
+
+Notebook ini membincangkan kaedah yang dipanggil <b>pemotongan wayar</b> di mana litar dipartisi mengikut wayar [\[1\], \[2\]](#references). Perlu diingat bahawa pemotongan dalam litar klasik adalah mudah kerana hasil pada titik pemotongan boleh ditentukan secara deterministik, sama ada 0 atau 1. Walau bagaimanapun, keadaan Qubit pada titik pemotongan adalah, secara umumnya, keadaan campuran. Oleh itu, setiap subLitar perlu diukur beberapa kali dalam basis yang berbeza (biasanya set basis yang lengkap secara tomografi seperti basis Pauli [\[3\], \[4\]](#references)) dan disediakan pula dalam keadaan eigenstatenya yang sepadan. Rajah di bawah (<i>ihsan: Tesis PhD, Ritajit Majumdar</i>) menunjukkan contoh pemotongan wayar untuk keadaan GHZ 4-Qubit menjadi tiga subLitar. Di sini $M_j$ merujuk kepada set basis (biasanya Pauli X, Y dan Z) dan $P_i$ merujuk kepada set eigenstate (biasanya $|0\rangle$, $|1\rangle$, $|+\rangle$ dan $|+i\rangle$).
+
+![wc-1.png](/docs/images/tutorials/wire-cutting-to-improve-performance/0ce8857b-7f5f-400e-8536-6a496c724d50.avif)
+![wc-2.png](/docs/images/tutorials/wire-cutting-to-improve-performance/cbce4455-4794-4c81-8630-3e3993e1b29f.avif)
+
+Memandangkan setiap subLitar mempunyai lebih sedikit Qubit dan/atau gerbang, ia dijangka lebih tahan terhadap hingar. Notebook ini menunjukkan contoh bagaimana kaedah ini boleh digunakan untuk menyekat hingar dalam sistem secara berkesan.
+## Keperluan {#requirements}
+Sebelum memulakan tutorial ini, pastikan anda telah memasang perkara berikut:
+
+- Qiskit SDK v2.0 atau lebih baharu, dengan sokongan [visualisasi](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.22 atau lebih baharu ( `pip install qiskit-ibm-runtime` )
+- Circuit cutting Qiskit addon v0.9.0 atau lebih baharu (`pip install qiskit-addon-cutting`)
+
+Kita akan menggunakan litar Many Body Localization (MBL) dalam notebook ini. Litar MBL ialah litar yang cekap dari segi perkakasan dan diparameterkan oleh dua parameter $\theta$ dan $\vec{\phi}$. Apabila $\theta$ ditetapkan kepada $0$ dan keadaan awal disediakan dalam $|0\rangle$ untuk semua Qubit, nilai jangkaan ideal bagi $\langle Z_i \rangle$ ialah $+1$ untuk setiap tapak Qubit $i$ tanpa mengira nilai $\vec{\phi}$. Anda boleh menyemak butiran lanjut tentang litar MBL dalam <a href="https://arxiv.org/abs/2307.07552">kertas kerja ini</a>.
+## Persediaan {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-cutting qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.circuit import Parameter, ParameterVector, QuantumCircuit
+from qiskit.quantum_info import PauliList, SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.result import sampled_expectation_value
+
+from qiskit_addon_cutting.instructions import CutWire
+from qiskit_addon_cutting import (
+    cut_wires,
+    expand_observables,
+    partition_problem,
+    generate_cutting_experiments,
+    reconstruct_expectation_values,
+)
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+class MBLChainCircuit(QuantumCircuit):
+    def __init__(
+        self, num_qubits: int, depth: int, use_cut: bool = False
+    ) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainCircuit<{num_qubits}, {depth}>"
+        )
+        evolution = MBLChainEvolution(num_qubits, depth, use_cut)
+        self.compose(evolution, inplace=True)
+
+class MBLChainEvolution(QuantumCircuit):
+    def __init__(self, num_qubits: int, depth: int, use_cut) -> None:
+        super().__init__(
+            num_qubits, name=f"MBLChainEvolution<{num_qubits}, {depth}>"
+        )
+
+        theta = Parameter("θ")
+        phis = ParameterVector("φ", num_qubits)
+
+        for layer in range(depth):
+            layer_parity = layer % 2
+            # print("layer parity", layer_parity)
+            for qubit in range(layer_parity, num_qubits - 1, 2):
+                # print(qubit)
+                self.cz(qubit, qubit + 1)
+                self.u(theta, 0, np.pi, qubit)
+                self.u(theta, 0, np.pi, qubit + 1)
+                if (
+                    use_cut
+                    and layer_parity == 0
+                    and (
+                        qubit == num_qubits // 2 - 1
+                        or qubit == num_qubits // 2
+                    )
+                ):
+                    self.append(CutWire(), [num_qubits // 2])
+                if use_cut and layer < depth - 1 and layer_parity == 1:
+                    if qubit == num_qubits // 2:
+                        self.append(CutWire(), [qubit])
+            for qubit in range(num_qubits):
+                self.p(phis[qubit], qubit)
+```
+
+## Bahagian I. Contoh skala kecil {#part-i-small-scale-example}
+### Langkah 1: Petakan input klasik kepada masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+Pertama sekali kita bina litar templat tanpa sebarang nilai parameter tertentu. Kita juga menyediakan pemegang tempat yang dipanggil `CutWire` untuk menandakan kedudukan pemotongan. Bagi contoh skala kecil ini, kita menggunakan litar MBL 10-Qubit.
+
+```python
+num_qubits = 10
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+mbl.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/9c7939a1-6b70-4dad-b873-5f34d67551c4-0.avif)
+
+Ingat bahawa kita ingin mencari nilai jangkaan bagi pemerhatian $\frac{1}{n}\sum_{i=1} ^n Z_i$ apabila $\theta=0$. Kita akan menetapkan beberapa nilai rawak untuk parameter $\vec{\phi}$.
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+params
+```
+
+```text
+[0,
+ 0.2376615174332788,
+ 0.28244289857682414,
+ 0.019248960591717768,
+ 0.46140600996102477,
+ 0.31408025180068433,
+ 0.718184005135733,
+ 0.991153920182475,
+ 0.09289485768301442,
+ 0.8857848280067783,
+ 0.6177529765767047]
+```
+
+Sekarang kita tandakan litar untuk pemotongan dengan memasukkan **CutWire** yang sesuai bagi mencipta dua pemotongan yang kira-kira sama besar. Kita tetapkan `use_cut=True` dalam fungsi, dan benarkan ia menandakan selepas $\frac{n}{2}$ Qubit, dengan $n$ ialah bilangan Qubit dalam litar asal.
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/31844134-514b-46ea-85f9-133e432f053f-0.avif)
+
+### Langkah 2: Optimumkan masalah untuk pelaksanaan perkakasan kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+Seterusnya kita potong litar kepada dua subLitar yang lebih kecil. Untuk contoh ini, kita hadkan kepada 2 subLitar sahaja. Untuk itu, kita menggunakan <a href="https://qiskit.github.io/qiskit-addon-cutting/">Qiskit Addon: Circuit Cutting</a>.
+#### Potong litar kepada subLitar yang lebih kecil {#cut-the-circuit-into-smaller-subcircuits}
+Memotong wayar pada satu titik meningkatkan bilangan Qubit sebanyak satu. Selain Qubit asal, terdapat satu Qubit tambahan sebagai pemegang tempat kepada litar selepas pemotongan. Imej berikut memberikan gambaran ini:
+
+![wc-4.png](/docs/images/tutorials/wire-cutting-to-improve-performance/dfc5f923-e507-4873-888e-d90e1618be3a.avif)
+
+Addon ini menggunakan fungsi `cut_wires` untuk mengambil kira Qubit tambahan yang timbul akibat pemotongan.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+```
+
+#### Cipta dan kembangkan pemerhatian {#create-and-expand-the-observables}
+
+Sekarang kita bina pemerhatian $M_z = \frac{1}{n}\sum_{i=1}^n \langle Z_i \rangle$. Memandangkan hasil ideal bagi $\langle Z_i \rangle$ untuk setiap $i$ ialah $+1$, hasil ideal bagi $M_z$ juga ialah $+1$.
+
+```python
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+observable
+```
+
+```text
+PauliList(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII',
+           'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII',
+           'IIIIIIIIZI', 'IIIIIIIIIZ'])
+```
+
+Walau bagaimanapun, perlu diperhatikan bahawa bilangan Qubit dalam litar telah bertambah selepas memasukkan operasi `Move` maya 2-Qubit selepas pemotongan. Oleh itu, kita perlu mengembangkan pemerhatian juga dengan memasukkan identiti untuk menyesuaikan dengan litar semasa.
+
+```python
+new_obs = expand_observables(observable, mbl, mbl_move)
+new_obs
+```
+
+```text
+PauliList(['ZIIIIIIIIII', 'IZIIIIIIIII', 'IIZIIIIIIII', 'IIIZIIIIIII',
+           'IIIIZIIIIII', 'IIIIIIZIIII', 'IIIIIIIZIII', 'IIIIIIIIZII',
+           'IIIIIIIIIZI', 'IIIIIIIIIIZ'])
+```
+
+Perhatikan bahawa setiap pemerhatian kini telah dikembangkan untuk menampung tujuh Qubit, seperti dalam litar dengan operasi `Move`, berbanding enam Qubit asal. Seterusnya, partisi litar kepada dua subLitar.
+
+```python
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+```
+
+Mari kita visualisasikan subLitar tersebut
+
+```python
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subcircuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/c10af39c-88fe-4605-975c-5bf0e21ee4c4-0.avif)
+
+```python
+subcircuits[1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/35920640-76e8-4af6-a252-ee6a22e9c26a-0.avif)
+
+Pemerhatian turut dipartisi untuk disesuaikan dengan subLitar
+
+```python
+subobservables = partitioned_problem.subobservables
+subobservables
+```
+
+```text
+{0: PauliList(['IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IIIIII', 'IZIIII',
+            'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']),
+ 1: PauliList(['ZIIII', 'IZIII', 'IIZII', 'IIIZI', 'IIIIZ', 'IIIII', 'IIIII',
+            'IIIII', 'IIIII', 'IIIII'])}
+```
+
+Perlu diingat bahawa setiap subLitar menghasilkan beberapa sampel. Rekonstruksi mengambil kira hasil setiap sampel ini. Setiap sampel ini dipanggil `subexperiment`.
+Mengembangkan pemerhatian menggunakan operasi `Move` memerlukan struktur data `PauliList`. Kita juga boleh mencipta pemerhatian $M_z$ dalam struktur data `SparsePauliOp` yang lebih umum, yang akan berguna kemudian semasa rekonstruksi subeksperimen.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+M_z
+```
+
+```text
+SparsePauliOp(['ZIIIIIIIII', 'IZIIIIIIII', 'IIZIIIIIII', 'IIIZIIIIII', 'IIIIZIIIII', 'IIIIIZIIII', 'IIIIIIZIII', 'IIIIIIIZII', 'IIIIIIIIZI', 'IIIIIIIIIZ'],
+              coeffs=[0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j,
+ 0.1+0.j, 0.1+0.j])
+```
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+Mari kita lihat dua contoh di mana Qubit yang dipotong diukur dalam dua basis yang berbeza. Pertama, ia diukur dalam basis Z biasa, dan seterusnya diukur dalam basis X.
+
+```python
+subexperiments[0][6].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/749e8f27-9c83-48d8-bcf6-635c967bf10b-0.avif)
+
+```python
+subexperiments[0][2].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/987547e4-296a-41e4-ad82-41f4139a87a0-0.avif)
+
+#### Transpilkan setiap subeksperimen {#transpile-each-subexperiment}
+
+Pada masa ini kita perlu Transpilkan litar kita sebelum menghantarnya untuk pelaksanaan. Oleh itu, kita akan Transpilkan setiap litar dalam subeksperimen terlebih dahulu.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+Sekarang kita perlu Transpilkan setiap litar dalam subeksperimen. Untuk itu, kita mula-mula mencipta pengurus laluan, kemudian menggunakannya untuk Transpilkan setiap litar.
+
+```python
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+```python
+isa_subexperiments[0][0].draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/962c4745-a235-4ef8-b56b-d3026be67fb6-0.avif)
+
+### Langkah 3: Laksanakan menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+Sekarang kita akan melaksanakan setiap litar dalam subeksperimen. `Qiskit-addon-cutting` menggunakan `SamplerV2` untuk melaksanakan subeksperimen.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### Langkah 4: Proses selepas dan kembalikan keputusan dalam format klasik yang dikehendaki {#step-4-post-process-and-return-result-in-desired-classical-format}
+Setelah litar dilaksanakan, kita perlu mendapatkan semula keputusan dan merekonstruksi nilai jangkaan untuk litar yang tidak dipotong dan pemerhatian asal.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9674376845359803
+```
+
+#### Pengesahan silang {#cross-verify}
+
+Mari kita laksanakan litar tanpa pemotongan dan semak hasilnya. Perlu diingat bahawa untuk pelaksanaan litar yang tidak dipotong, kita boleh terus menggunakan `EstimatorV2` untuk mengira nilai jangkaan. Namun kita akan menggunakan `Primitive` yang sama sepanjang masa. Jadi kita akan menggunakan `SamplerV2` untuk mendapatkan taburan kebarangkalian dan mengira nilai jangkaan menggunakan fungsi `sampled_expectation_value`.
+
+Pertama kita perlu Transpilkan litar `mbl` yang tidak dipotong.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+```
+
+Seterusnya kita bina `pub` dan jalankan litar yang tidak dipotong.
+
+```python
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+```
+
+```python
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9498046875000001
+```
+
+Kita perhatikan bahawa nilai jangkaan yang diperoleh melalui pemotongan wayar lebih hampir kepada nilai ideal $+1$ berbanding yang tidak dipotong. Mari kita tingkatkan skala masalah sekarang.
+## Bahagian II. Tingkatkan skalanya! {#part-ii-scale-it-up}
+
+Sebelum ini, kita menunjukkan keputusan untuk litar MBL 10-Qubit. Seterusnya, kita tunjukkan bahawa peningkatan dalam nilai jangkaan juga diperoleh untuk litar yang lebih besar. Untuk itu, kita ulangi proses ini untuk litar MBL 60-Qubit.
+### Langkah 1: Petakan input klasik kepada masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem-2}
+
+```python
+num_qubits = 60
+depth = 2
+mbl = MBLChainCircuit(num_qubits, depth)
+```
+
+Kita cipta satu set nilai rawak untuk $\vec{\phi}$
+
+```python
+phis = list(np.random.rand(mbl.num_parameters - 1))
+theta = [0]
+params = theta + phis
+```
+
+Seterusnya kita bina litar yang dipotong
+
+```python
+mbl_cut = MBLChainCircuit(num_qubits, depth, use_cut=True)
+mbl_cut.assign_parameters(params, inplace=True)
+mbl_cut.draw("mpl", fold=-1)
+```
+
+### Langkah 2: Optimumkan masalah untuk pelaksanaan perkakasan kuantum {#step-2-optimize-problem-for-quantum-hardware-execution-2}
+Seperti yang ditunjukkan dalam contoh skala kecil, kita partisi litar dan pemerhatian untuk eksperimen pemotongan.
+
+```python
+mbl_move = cut_wires(mbl_cut)
+
+# Define observable
+observable = PauliList(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)]
+)
+new_obs = expand_observables(observable, mbl, mbl_move)
+
+# Partition the circuit into subcircuits
+partitioned_problem = partition_problem(circuit=mbl_move, observables=new_obs)
+
+# Get subcircuits
+subcircuits = partitioned_problem.subcircuits
+```
+
+```python
+subobservables = partitioned_problem.subobservables
+```
+
+Kita juga mencipta objek `SparsePauliOp` untuk pemerhatian dengan pekali yang betul.
+
+```python
+M_z = SparsePauliOp(
+    ["I" * i + "Z" + "I" * (num_qubits - i - 1) for i in range(num_qubits)],
+    coeffs=[1 / num_qubits] * num_qubits,
+)
+```
+
+Seterusnya kita janakan subeksperimen dan Transpilkan setiap litar dalam subeksperimen.
+
+```python
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits,
+    observables=subobservables,
+    num_samples=np.inf,
+)
+```
+
+```python
+isa_subexperiments = {
+    label: pm.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+### Langkah 3: Laksanakan menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives-2}
+Kita menggunakan mod `Batch` untuk melaksanakan semua litar dalam subeksperimen.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+### Langkah 4: Proses selepas dan kembalikan keputusan dalam format klasik yang dikehendaki {#step-4-post-process-and-return-result-in-desired-classical-format-2}
+Mari kita dapatkan semula keputusan untuk setiap litar dalam subeksperimen dan rekonstruksi nilai jangkaan yang sepadan dengan litar yang tidak dipotong dan pemerhatian asal.
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+```python
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+reconstructed_expval = np.dot(reconstructed_expval_terms, M_z.coeffs).real
+reconstructed_expval
+```
+
+```text
+0.9631355921427409
+```
+
+#### Pengesahan silang {#cross-verify-2}
+
+Seperti dalam contoh skala kecil, kita akan sekali lagi mendapatkan nilai jangkaan dengan melaksanakan litar yang tidak dipotong, dan membandingkan hasilnya dengan pemotongan litar. Kita akan menggunakan `SamplerV2` untuk mengekalkan keseragaman dalam penggunaan Primitif.
+
+```python
+sampler = SamplerV2(mode=backend)
+
+if mbl.num_clbits == 0:
+    mbl.measure_all()
+isa_mbl = pm.run(mbl)
+
+pub = (isa_mbl, params)
+uncut_job = sampler.run([pub])
+```
+
+```python
+uncut_counts = uncut_job.result()[0].data.meas.get_counts()
+uncut_expval = sampled_expectation_value(uncut_counts, M_z)
+uncut_expval
+```
+
+```text
+0.9426757812499998
+```
+
+#### Visualisasi {#visualize}
+
+Mari kita visualisasikan peningkatan dalam nilai jangkaan yang diperoleh dengan menggunakan pemotongan wayar.
+
+```python
+ax = plt.gca()
+methods = ["cut", "uncut"]
+values = [reconstructed_expval, uncut_expval]
+
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(y=1, color="k", linestyle="--")
+ax.set_ylim([0.85, 1.02])
+plt.text(0.3, 0.99, "Exact result")
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/wire-cutting/extracted-outputs/19dad6bb-544e-45b9-90c4-3555681e4e5b-0.avif)
+
+#### Inferens {#inference}
+
+Kita perhatikan bahawa dalam kedua-dua masalah skala kecil dan besar, pemotongan wayar menghasilkan keputusan yang lebih baik berbanding yang tidak dipotong. Perlu diingat bahawa tiada teknik pengurangan ralat digunakan dalam eksperimen ini. Oleh itu, peningkatan dalam keputusan yang diperoleh adalah semata-mata kerana pemotongan wayar. Ada kemungkinan untuk meningkatkan lagi keputusan menggunakan kaedah pengurangan yang berbeza bersama-sama dengan pemotongan litar.
+
+Selain itu, dalam notebook ini, kita mengira kedua-dua subLitar pada perkakasan yang sama. Dalam [\[5\], \[6\]](#references), para pengarang menunjukkan kaedah untuk mengedarkan subLitar pada perkakasan yang berbeza menggunakan maklumat hingar bagi memaksimumkan penindasan hingar dan memparalelkan proses tersebut.
+## Lampiran: pertimbangan penskalaan sumber {#appendix-resource-scaling-consideration}
+Bilangan litar yang perlu dilaksanakan meningkat dengan bilangan pemotongan. Oleh itu, walaupun banyak pemotongan boleh menghasilkan subLitar yang kecil sehingga meningkatkan lagi prestasi, ia juga membawa kepada bilangan pelaksanaan litar yang amat tinggi, yang mungkin tidak praktikal bagi kebanyakan kes. Di bawah, kita tunjukkan contoh bilangan subLitar yang sepadan dengan bilangan pemotongan untuk litar 50-Qubit.
+
+![wc-5.png](/docs/images/tutorials/wire-cutting-to-improve-performance/5c6ea4da-bbd8-47f9-ac48-e438cc59a11d.avif)
+
+Perlu diingat bahawa walaupun untuk lima pemotongan, bilangan subeksperimen adalah sekitar 200k. Oleh itu, pemotongan litar hanya patut digunakan apabila bilangan pemotongan adalah kecil.
+### Satu contoh litar mesra-potong dan tidak mesra-potong {#one-example-of-cut-friendly-and-cut-unfriendly-circuits-each}
+
+#### Litar mesra-potong {#cut-friendly-circuit}
+
+Seperti yang dinyatakan sebelum ini, sebuah litar adalah mesra-potong apabila litar itu boleh dipartisi kepada subLitar berasingan yang lebih kecil dengan bilangan pemotongan yang sedikit. Mana-mana litar yang cekap dari segi perkakasan, iaitu litar yang memerlukan sedikit atau tiada gerbang SWAP apabila dipetakan ke peta gandingan perkakasan, adalah secara umumnya mesra-potong. Di bawah, kita tunjukkan contoh ansatz pemuliharaan pengujaan yang digunakan dalam Kimia Kuantum. Perhatikan bahawa litar sedemikian boleh dipartisi kepada dua subLitar dengan satu pemotongan sahaja tanpa mengira bilangan Qubit.
+
+![wc-6.png](/docs/images/tutorials/wire-cutting-to-improve-performance/c122a418-b914-41e7-a1aa-00eb1eec5b87.avif)
+
+#### Litar tidak mesra-potong {#cut-unfriendly-circuit}
+
+Sebuah litar adalah tidak mesra-potong jika, secara umumnya, bilangan pemotongan yang diperlukan untuk membentuk partition berasingan meningkat dengan ketara seiring dengan kedalaman atau bilangan Qubit. Ingat bahawa dengan setiap pemotongan, satu Qubit tambahan diperlukan. Jadi dengan bertambahnya bilangan pemotongan, bilangan Qubit efektif juga turut meningkat. Di bawah kita tunjukkan contoh litar Grover 3-Qubit dengan satu contoh pemotongan yang mungkin.
+
+![wc-7.png](/docs/images/tutorials/wire-cutting-to-improve-performance/b31dc57e-e6d7-49fd-9f46-304a328b3764.avif)
+
+Kita perhatikan bahawa tiga pemotongan diperlukan, dan pemotongan itu lebih bersifat menegak daripada mendatar. Ini bermakna bilangan pemotongan dijangka berskala secara linear dengan bilangan Qubit, yang tidak sesuai untuk pemotongan.
+## Rujukan {#references}
+
+[1] Peng, T., Harrow, A. W., Ozols, M., & Wu, X. (2020). Simulating large quantum circuits on a small quantum computer. Physical review letters, 125(15), 150504.
+
+[2] Tang, W., Tomesh, T., Suchara, M., Larson, J., & Martonosi, M. (2021, April). Cutqc: using small quantum computers for large quantum circuit evaluations. In Proceedings of the 26th ACM International conference on architectural support for programming languages and operating systems (pp. 473-486).
+
+[3]  Perlin, M. A., Saleem, Z. H., Suchara, M., & Osborn, J. C. (2021). Quantum circuit cutting with maximum-likelihood tomography. npj Quantum Information, 7(1), 64.
+
+[4]  Majumdar, R., & Wood, C. J. (2022). Error mitigated quantum circuit cutting. arXiv preprint arXiv:2211.13431.
+
+[5]  Khare, T., Majumdar, R., Sangle, R., Ray, A., Seshadri, P. V., & Simmhan, Y. (2023). Parallelizing Quantum-Classical Workloads: Profiling the Impact of Splitting Techniques. In 2023 IEEE International Conference on Quantum Computing and Engineering (QCE) (Vol. 1, pp. 990-1000). IEEE.
+
+[6]  Bhoumik, D., Majumdar, R., Saha, A., & Sur-Kolay, S. (2023). Distributed Scheduling of Quantum Circuits with Noise and Time Optimization. arXiv preprint arXiv:2309.06005.
+## Tinjauan tutorial {#tutorial-survey}
+
+Sila ambil tinjauan singkat ini untuk memberikan maklum balas tentang tutorial ini. Pandangan anda akan membantu kami meningkatkan kandungan dan pengalaman pengguna kami.
+
+[Pautan ke tinjauan](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)
