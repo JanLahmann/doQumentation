@@ -38,3 +38,7 @@ To limit scope: `Translate all untranslated tutorials and guides to LANGUAGE.`
 | Thai | th |
 | Malay | ms |
 | Indonesian | id |
+| Korean | ko |
+| Polish | pl |
+| Romanian | ro |
+| Czech | cs |

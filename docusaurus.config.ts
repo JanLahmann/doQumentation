@@ -103,7 +103,7 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut', 'ms', 'id', 'th'],
+    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'cs'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
@@ -128,6 +128,10 @@ const config: Config = {
       ms: { label: 'Bahasa Melayu', url: 'https://ms.doqumentation.org' },
       id: { label: 'Bahasa Indonesia', url: 'https://id.doqumentation.org' },
       th: { label: 'ไทย (Thai)', url: 'https://th.doqumentation.org' },
+      ko: { label: '한국어', url: 'https://ko.doqumentation.org' },
+      pl: { label: 'Polski', url: 'https://pl.doqumentation.org' },
+      ro: { label: 'Română', url: 'https://ro.doqumentation.org' },
+      cs: { label: 'Čeština', url: 'https://cs.doqumentation.org' },
     },
   },
 
@@ -169,7 +173,7 @@ const config: Config = {
         hashed: true,
         indexBlog: false,
         docsRouteBasePath: '/',
-        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he'],
+        language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he', 'ko'],
       },
     ],
   ],

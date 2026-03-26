@@ -38,7 +38,7 @@ STATUS_MD = REPO_ROOT / "translation" / "STATUS.md"
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 
-MAIN_LOCALES = ["de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he", "ms", "id", "th"]
+MAIN_LOCALES = ["de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he", "ms", "id", "th", "ko", "pl", "ro", "cs"]
 DIALECT_LOCALES = ["swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut"]
 ALL_LOCALES = MAIN_LOCALES + DIALECT_LOCALES
 
@@ -50,6 +50,7 @@ LOCALE_NAMES = {
     "nds": "Low German", "gsw": "Swiss German", "sax": "Saxon",
     "bln": "Berlinerisch", "aut": "Austrian",
     "ms": "Malay", "id": "Indonesian", "th": "Thai",
+    "ko": "Korean", "pl": "Polish", "ro": "Romanian", "cs": "Czech",
 }
 
 # Sections in priority order for backlog

@@ -154,6 +154,30 @@ BANNER_TEMPLATES = {
         "Anda sedang melihat versi asli dalam bahasa Inggris.\n"
         ":::\n"
     ),
+    "ko": (
+        "\n:::note[번역 미완료]\n"
+        "이 페이지는 아직 한국어로 번역되지 않았습니다. "
+        "영어 원본을 보고 있습니다.\n"
+        ":::\n"
+    ),
+    "pl": (
+        "\n:::note[Nieprzetłumaczone]\n"
+        "Ta strona nie została jeszcze przetłumaczona na język polski. "
+        "Oglądasz oryginalną wersję angielską.\n"
+        ":::\n"
+    ),
+    "ro": (
+        "\n:::note[Netradus]\n"
+        "Această pagină nu a fost încă tradusă în limba română. "
+        "Vizualizați versiunea originală în limba engleză.\n"
+        ":::\n"
+    ),
+    "cs": (
+        "\n:::note[Nepřeloženo]\n"
+        "Tato stránka zatím nebyla přeložena do češtiny. "
+        "Zobrazujete původní anglickou verzi.\n"
+        ":::\n"
+    ),
 }
 
 

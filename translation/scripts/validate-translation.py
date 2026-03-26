@@ -35,7 +35,7 @@ I18N_DIR = REPO_ROOT / "i18n"
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "th", "ar", "he",
     "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
-    "ms", "id",
+    "ms", "id", "ko", "pl", "ro", "cs",
 ]
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 

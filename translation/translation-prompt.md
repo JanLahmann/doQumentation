@@ -25,6 +25,10 @@ The language in the user message determines the target. Look up LOCALE and infor
 | Thai | th | casual (no ครับ/ค่ะ) |
 | Malay | ms | casual |
 | Indonesian | id | casual |
+| Korean | ko | polite (합니다/해요) but not overly formal |
+| Polish | pl | informal ("ty" not "Pan/Pani") |
+| Romanian | ro | informal ("tu" not "dumneavoastră") |
+| Czech | cs | informal ("ty" not "Vy") |
 
 ## Constraints
 
