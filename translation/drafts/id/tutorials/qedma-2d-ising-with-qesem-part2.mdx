@@ -1,0 +1,324 @@
+## Langkah 2: Optimalkan masalah untuk eksekusi pada perangkat keras kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+### Estimasi waktu QPU dengan dan tanpa OBP {#qpu-time-estimation-with-and-without-obp}
+Pengguna umumnya ingin mengetahui berapa banyak waktu QPU yang dibutuhkan untuk eksperimen mereka.
+Namun, ini dianggap sebagai masalah yang sulit bagi komputer klasik.
+
+QESEM menawarkan dua mode estimasi waktu untuk memberi tahu pengguna tentang kelayakan eksperimen mereka:
+1. Estimasi waktu analitis - memberikan perkiraan yang sangat kasar dan tidak membutuhkan waktu QPU. Ini dapat digunakan untuk menguji apakah suatu transpilation pass berpotensi mengurangi waktu QPU.
+2. Estimasi waktu empiris (didemonstrasikan di sini) - memberikan perkiraan yang cukup baik dan menggunakan beberapa menit waktu QPU.
+
+Dalam kedua kasus, QESEM menghasilkan estimasi waktu untuk mencapai presisi yang diperlukan untuk **semua** observable.
+
+```python
+run_on_real_hardware = True
+
+precision = 0.05
+if run_on_real_hardware:
+    backend_name = "ibm_fez"
+else:
+    backend_name = "fake_fez"
+
+# Start a job for empirical time estimation
+estimation_job_wo_obp = qesem_function.run(
+    pubs=[(circ, obs_list)],
+    instance=instance,
+    backend_name=backend_name,  # E.g. "ibm_brisbane"
+    options={
+        "estimate_time_only": "empirical",  # "empirical" - gets actual time estimates without running full mitigation
+        "max_execution_time": 120,  # Limits the QPU time, specified in seconds.
+        "default_precision": precision,
+    },
+)
+```
+
+```python
+print(estimation_job_wo_obp.job_id)
+print(estimation_job_wo_obp.status())
+```
+
+```text
+17d3828e-9fdb-482e-8e9b-392f3eefe313
+DONE
+```
+
+```python
+# Get the result object (blocking method). Use job.status() in a loop for non-blocking.
+# This takes 1-3 minutes
+result = estimation_job_wo_obp.result()
+```
+
+```python
+print(
+    f"Empirical time estimation (sec): {result[0].metadata['time_estimation_sec']}"
+)
+```
+
+```text
+Empirical time estimation (sec): 1200
+```
+
+Sekarang kita akan menggunakan operator backpropagation (OBP). (Lihat panduan [OBP](/guides/qiskit-addons-obp) untuk detail lebih lanjut tentang addon Qiskit OBP.) Kita akan membuat fungsi yang menghasilkan potongan Circuit untuk backpropagation:
+
+```python
+def run_backpropagation(circ_vec, observable, steps_vec, max_qwc_groups=8):
+    """
+    Runs backpropagation for a list of circuits and observables.
+    Returns lists of backpropagated circuits and observables.
+    """
+    op_budget = OperatorBudget(max_qwc_groups=max_qwc_groups)
+    bp_circuit_vec = []
+    bp_observable_vec = []
+
+    for i, circ in enumerate(circ_vec):
+        slices = slice_by_gate_types(circ)
+        bp_observable, remaining_slices, metadata = backpropagate(
+            observable,
+            slices,
+            operator_budget=op_budget,
+        )
+        bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+        bp_circuit_vec.append(bp_circuit)
+        bp_observable_vec.append(bp_observable)
+        print(f"n.o. steps: {steps_vec[i]}")
+        print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+        print(
+            f"New observable has {len(bp_observable.paulis)} terms, which can be combined into "
+            f"{len(bp_observable.group_commuting(qubit_wise=True))} groups.\n"
+            f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+        )
+        print("-----------------")
+    return bp_circuit_vec, bp_observable_vec
+```
+
+Kita memanggil fungsinya:
+
+```python
+bp_circ_vec, bp_obs_vec = run_backpropagation([circ], observable, [steps])
+```
+
+```text
+n.o. steps: 9
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+```
+
+```python
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circ_vec[-1].draw("mpl", scale=0.8, fold=-1, idle_wires=False)
+None
+```
+
+```text
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/cedb7fa1-1.avif)
+
+Kita bisa melihat bahwa backpropagation mengurangi dua lapisan Circuit.
+Sekarang setelah kita memiliki Circuit yang telah diperkecil dan observable yang telah diperluas, mari lakukan estimasi waktu untuk Circuit yang telah di-backpropagasi:
+
+```python
+# Start a job for empirical time estimation
+estimation_job_obp = qesem_function.run(
+    pubs=[(bp_circ_vec[-1], [bp_obs_vec[-1]])],
+    instance=instance,
+    backend_name=backend_name,
+    options={
+        "estimate_time_only": "empirical",
+        "max_execution_time": 120,
+        "default_precision": precision,
+    },
+)
+```
+
+```python
+print(estimation_job_obp.job_id)
+print(estimation_job_obp.status())
+```
+
+```text
+8bae699d-a16b-4d39-bbd9-d123fbcce55d
+DONE
+```
+
+```python
+result_obp = estimation_job_obp.result()
+```
+
+```python
+print(
+    f"Empirical time estimation (sec): {result_obp[0].metadata['time_estimation_sec']}"
+)
+```
+
+```text
+Empirical time estimation (sec): 900
+```
+
+Kita melihat bahwa OBP mengurangi biaya waktu untuk mitigasi Circuit.
+## Langkah 3: Eksekusi menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+### Jalankan dengan Backend nyata {#run-with-real-backend}
+Sekarang kita menjalankan eksperimen penuh pada beberapa langkah Trotter. Jumlah Qubit, presisi yang diperlukan, dan waktu QPU maksimal dapat dimodifikasi sesuai dengan sumber daya QPU yang tersedia. Perlu diingat bahwa membatasi waktu QPU maksimal akan memengaruhi presisi akhir, seperti yang akan terlihat pada plot di bawah.
+
+Kita menganalisis empat Circuit dengan 5, 7, dan 9 langkah Trotter pada presisi 0.05, membandingkan nilai ekspektasi ideal, noisy, dan error-mitigated:
+
+```python
+steps_vec = [5, 7, 9]
+
+circ_vec = []
+for steps in steps_vec:
+    circ = trotter_circuit_from_layers(
+        steps, theta_x, theta_z, theta_zz, layers
+    )
+    circ_vec.append(circ)
+```
+
+Sekali lagi, kita melakukan OBP pada setiap Circuit untuk mengurangi waktu eksekusi:
+
+```python
+bp_circ_vec_35, bp_obs_vec_35 = run_backpropagation(
+    circ_vec, observable, steps_vec
+)
+```
+
+```text
+n.o. steps: 5
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+n.o. steps: 7
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+n.o. steps: 9
+Backpropagated 11 slices.
+New observable has 363 terms, which can be combined into 4 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+-----------------
+```
+
+Sekarang kita menjalankan sekumpulan job QESEM penuh. Kita membatasi waktu eksekusi QPU maksimal untuk setiap titik demi kontrol yang lebih baik terhadap anggaran QPU.
+
+```python
+run_on_real_hardware = True
+
+precision = 0.05
+if run_on_real_hardware:
+    backend_name = "ibm_marrakesh"
+else:
+    backend_name = "fake_fez"
+```
+
+```python
+# Running full jobs for:
+pubs_list = [
+    [(bp_circ_vec_35[i], bp_obs_vec_35[i])] for i in range(len(bp_obs_vec_35))
+]
+```
+
+```python
+# Initiating multiple jobs for different lengths
+job_list = []
+for pubs in pubs_list:
+    job_obp = qesem_function.run(
+        pubs=pubs,
+        instance=instance,
+        backend_name=backend_name,  # E.g. "ibm_brisbane"
+        options={
+            "max_execution_time": 300,  # Limits the QPU time, specified in seconds.
+            "default_precision": 0.05,
+        },
+    )
+    job_list.append(job_obp)
+```
+
+Di sini kita memeriksa status setiap job:
+
+```python
+for job in job_list:
+    print(job.status())
+```
+
+```text
+DONE
+DONE
+DONE
+DONE
+```
+
+## Langkah 4: Pasca-proses dan kembalikan hasil dalam format klasik yang diinginkan {#step-4-post-process-and-return-result-in-desired-classical-format}
+Ketika semua job selesai dijalankan, kita bisa membandingkan nilai ekspektasi noisy dan mitigated-nya.
+
+```python
+ideal_values = []
+noisy_values = []
+error_mitigated_values = []
+error_mitigated_stds = []
+
+for i in range(len(job_list)):
+    job = job_list[i]
+    result = job.result()  # Blocking - takes 3-5 minutes
+    noisy_results = result[0].metadata["noisy_results"]
+
+    ideal_val = calculate_ideal_evs(circ_vec[i], observable, n_qubits, i)
+    print("---------------------------------")
+    print(f"Ideal: {ideal_val}")
+    print(f"Noisy: {noisy_results.evs}")
+    print(f"QESEM: {result[0].data.evs} \u00b1 {result[0].data.stds}")
+
+    ideal_values.append(ideal_val)
+    noisy_values.append(noisy_results.evs)
+    error_mitigated_values.append(result[0].data.evs)
+    error_mitigated_stds.append(result[0].data.stds)
+```
+
+```text
+Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits.
+---------------------------------
+Ideal: 0.79537
+Noisy: 0.7039237951821501
+QESEM: 0.7828018244130982 ± 0.013257266977728376
+Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits.
+---------------------------------
+Ideal: 0.78653
+Noisy: 0.6478583812958806
+QESEM: 0.7875259197423828 ± 0.02703045139248604
+Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits.
+---------------------------------
+Ideal: 0.79699
+Noisy: 0.6171787879868142
+QESEM: 0.6918791909168913 ± 0.0740873782039517
+```
+
+Terakhir, kita bisa memplot magnetisasi versus jumlah langkah. Ini merangkum manfaat menggunakan Fungsi Qiskit QESEM untuk mitigasi error bebas bias pada perangkat kuantum yang noisy.
+
+```python
+plt.plot(steps_vec, ideal_values, "--", label="ideal")
+plt.scatter(steps_vec, noisy_values, label="noisy")
+plt.errorbar(
+    steps_vec,
+    error_mitigated_values,
+    yerr=error_mitigated_stds,
+    fmt="o",
+    capsize=5,
+    label="QESEM mitigation",
+)
+plt.legend()
+plt.xlabel("n.o. steps")
+plt.ylabel("Magnetization")
+```
+
+```text
+Text(0, 0.5, 'Magnetization')
+```
+
+![Output of the previous code cell](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/0f1a44d0-1.avif)
+
+<Admonition type="note">
+
+Langkah kesembilan memiliki error bar statistik yang besar karena kita membatasi waktu QPU hingga 5 menit. Jika kamu menjalankan langkah ini selama 15 menit (seperti yang disarankan oleh estimasi waktu empiris), kamu akan mendapatkan error bar yang lebih kecil. Oleh karena itu, nilai mitigated akan menjadi lebih dekat ke nilai ideal.
+</Admonition>

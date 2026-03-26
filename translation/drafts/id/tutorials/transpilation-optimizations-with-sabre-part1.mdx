@@ -1,0 +1,430 @@
+---
+title: "Optimisasi Transpilasi dengan SABRE"
+sidebar_label: "Optimisasi Transpilasi dengan SABRE"
+description: "SABRE adalah alat optimasi untuk layout dan routing. Alat ini sangat efektif untuk sirkuit berskala besar dan coupling map yang kompleks,"
+notebook_path: "tutorials/transpilation-optimizations-with-sabre.ipynb"
+---
+
+{/* doqumentation-source-hash: 7f815f77 */}
+
+<OpenInLabBanner notebookPath="tutorials/transpilation-optimizations-with-sabre.ipynb" />
+
+
+
+{/* cspell:ignore ylabel xlabel fontsize sharex edgecolor */}
+
+# Optimisasi Transpilasi dengan SABRE
+*Estimasi penggunaan: kurang dari satu menit pada prosesor Heron r2 (CATATAN: Ini hanya estimasi. Waktu aktual kamu bisa berbeda.)*
+## Latar Belakang {#latar-belakang}
+Transpilasi adalah langkah penting dalam Qiskit yang mengubah Circuit kuantum ke bentuk yang kompatibel dengan perangkat keras kuantum tertentu. Proses ini melibatkan dua tahap utama: **qubit layout** (memetakan qubit logis ke qubit fisik di perangkat) dan **gate routing** (memastikan gate multi-qubit mematuhi konektivitas perangkat dengan menyisipkan gate SWAP sesuai kebutuhan).
+
+SABRE (*SWAP-Based Bidirectional heuristic search algorithm*) adalah alat optimasi yang kuat untuk layout maupun routing. SABRE sangat efektif untuk **sirkuit berskala besar** (100+ qubit) dan perangkat dengan coupling map yang kompleks, seperti **IBM&reg; Heron**, di mana pertumbuhan eksponensial kemungkinan pemetaan qubit membutuhkan solusi yang efisien.
+
+### Mengapa Menggunakan SABRE? {#mengapa-menggunakan-sabre}
+
+SABRE meminimalkan jumlah gate SWAP dan mengurangi kedalaman sirkuit, sehingga meningkatkan performa sirkuit di perangkat keras nyata. Pendekatan berbasis heuristik membuat SABRE ideal untuk perangkat keras canggih dan sirkuit besar yang kompleks. Peningkatan terbaru yang diperkenalkan dalam algoritma [LightSABRE](https://arxiv.org/abs/2409.08368) semakin mengoptimalkan performa SABRE, menawarkan runtime yang lebih cepat dan lebih sedikit gate SWAP. Peningkatan ini membuatnya semakin efektif untuk sirkuit berskala besar.
+
+### Apa yang Akan Kamu Pelajari {#apa-yang-akan-kamu-pelajari}
+
+Tutorial ini dibagi menjadi dua bagian:
+1. Belajar menggunakan SABRE dengan **pola Qiskit** untuk optimasi lanjutan pada sirkuit besar.
+2. Memanfaatkan **qiskit_serverless** untuk memaksimalkan potensi SABRE dalam transpilasi yang skalabel dan efisien.
+
+Kamu akan:
+- Mengoptimalkan SABRE untuk sirkuit dengan 100+ qubit, melampaui pengaturan transpilasi default seperti `optimization_level=3`.
+- Menjelajahi **peningkatan LightSABRE** yang meningkatkan runtime dan mengurangi jumlah gate.
+- Menyesuaikan parameter kunci SABRE (`swap_trials`, `layout_trials`, `max_iterations`, `heuristic`) untuk menyeimbangkan **kualitas sirkuit** dan **runtime transpilasi**.
+## Persyaratan {#persyaratan}
+
+Sebelum memulai tutorial ini, pastikan kamu sudah menginstal hal-hal berikut:
+- Qiskit SDK v1.0 atau lebih baru, dengan dukungan [visualisasi](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.28 atau lebih baru (`pip install qiskit-ibm-runtime`)
+- Serverless (`pip install qiskit-ibm-catalog qiskit_serverless`)
+## Pengaturan {#pengaturan}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-ibm-catalog qiskit-ibm-runtime qiskit-serverless
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_ibm_catalog import QiskitServerless, QiskitFunction
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import EstimatorOptions
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit.transpiler import CouplingMap
+from qiskit.transpiler.passes import SabreLayout, SabreSwap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+```
+
+## Bagian I. Menggunakan SABRE dengan Pola Qiskit {#bagian-i-menggunakan-sabre-dengan-pola-qiskit}
+
+SABRE dapat digunakan di Qiskit untuk mengoptimalkan Circuit kuantum dengan menangani tahap qubit layout dan gate routing. Di bagian ini, kita akan memandu kamu melalui **contoh minimal** penggunaan SABRE dengan pola Qiskit, dengan fokus utama pada langkah 2 optimasi.
+
+Untuk menjalankan SABRE, kamu membutuhkan:
+- Representasi **DAG** (Directed Acyclic Graph) dari Circuit kuantum kamu.
+- **Coupling map** dari Backend, yang menentukan bagaimana qubit terhubung secara fisik.
+- **Pass SABRE**, yang menerapkan algoritma untuk mengoptimalkan layout dan routing.
+
+Untuk bagian ini, kita akan fokus pada pass **SabreLayout**. Pass ini melakukan uji layout maupun routing, bekerja untuk menemukan layout awal yang paling efisien sambil meminimalkan jumlah gate SWAP yang dibutuhkan. Yang penting, `SabreLayout` sendiri secara internal mengoptimalkan layout dan routing dengan menyimpan solusi yang menambah jumlah gate SWAP paling sedikit. Perlu dicatat bahwa saat menggunakan hanya **SabreLayout**, kita tidak bisa mengubah heuristik SABRE, tetapi kita bisa menyesuaikan jumlah `layout_trials`.
+### Langkah 1: Petakan Input Klasik ke Masalah Kuantum {#langkah-1-petakan-input-klasik-ke-masalah-kuantum}
+
+Sebuah Circuit **GHZ (Greenberger-Horne-Zeilinger)** adalah Circuit kuantum yang mempersiapkan keadaan terjalin di mana semua qubit berada dalam keadaan `|0...0⟩` atau `|1...1⟩`. Keadaan GHZ untuk $n$ qubit direpresentasikan secara matematis sebagai:
+$$ |\text{GHZ}\rangle = \frac{1}{\sqrt{2}} \left( |0\rangle^{\otimes n} + |1\rangle^{\otimes n} \right) $$
+
+Circuit ini dibangun dengan menerapkan:
+1. Gate Hadamard pada qubit pertama untuk menciptakan superposisi.
+2. Serangkaian gate CNOT untuk menjalin qubit-qubit lainnya dengan qubit pertama.
+
+Untuk contoh ini, kita sengaja membangun **Circuit GHZ topologi bintang** alih-alih topologi linier. Dalam topologi bintang, qubit pertama bertindak sebagai "hub," dan semua qubit lain dijerat langsung dengannya menggunakan gate CNOT. Pilihan ini disengaja karena, meskipun **keadaan GHZ topologi linier** secara teori dapat diimplementasikan dengan kedalaman $O(N)$ pada coupling map linier tanpa gate SWAP, SABRE akan dengan mudah menemukan solusi optimal dengan memetakan Circuit GHZ 100 qubit ke subgraf coupling map heavy-hex Backend.
+
+**Circuit GHZ topologi bintang** menghadirkan masalah yang jauh lebih menantang. Meskipun secara teori masih dapat dieksekusi dengan kedalaman $O(N)$ tanpa gate SWAP, menemukan solusi ini membutuhkan identifikasi layout awal yang optimal, yang jauh lebih sulit karena konektivitas circuit yang non-linier. Topologi ini berfungsi sebagai kasus uji yang lebih baik untuk mengevaluasi SABRE, karena menunjukkan bagaimana parameter konfigurasi memengaruhi performa layout dan routing dalam kondisi yang lebih kompleks.
+
+![ghz_star_topology.png](/docs/images/tutorials/transpilation-optimizations-with-sabre/ghz_star_topology.avif)
+
+Perlu diperhatikan:
+- Alat **HighLevelSynthesis** dapat menghasilkan solusi kedalaman $O(N)$ yang optimal untuk Circuit GHZ topologi bintang tanpa memperkenalkan gate SWAP, seperti yang ditunjukkan pada gambar di atas.
+- Sebagai alternatif, pass **StarPrerouting** dapat mengurangi kedalaman lebih lanjut dengan memandu keputusan routing SABRE, meskipun mungkin masih memperkenalkan beberapa gate SWAP. Namun, StarPrerouting meningkatkan runtime dan membutuhkan integrasi ke dalam proses transpilasi awal.
+
+Untuk keperluan tutorial ini, kita mengecualikan HighLevelSynthesis dan StarPrerouting agar dapat mengisolasi dan menyoroti dampak langsung dari konfigurasi SABRE pada runtime dan kedalaman sirkuit. Dengan mengukur nilai ekspektasi $\langle Z_0 Z_i \rangle$ untuk setiap pasangan qubit, kita menganalisis:
+- Seberapa baik SABRE mengurangi gate SWAP dan kedalaman sirkuit.
+- Efek optimasi ini pada fidelitas Circuit yang dieksekusi, di mana penyimpangan dari $\langle Z_0 Z_i \rangle = 1$ menunjukkan hilangnya jeratan.!
+
+```python
+# set seed for reproducibility
+seed = 42
+num_qubits = 110
+
+# Create GHZ circuit
+qc = QuantumCircuit(num_qubits)
+qc.h(0)
+for i in range(1, num_qubits):
+    qc.cx(0, i)
+
+qc.measure_all()
+```
+
+Selanjutnya, kita akan memetakan operator yang diminati untuk mengevaluasi perilaku sistem. Secara khusus, kita akan menggunakan operator `ZZ` antara qubit untuk memeriksa bagaimana jeratan menurun seiring qubit semakin berjauhan. Analisis ini penting karena ketidakakuratan dalam nilai ekspektasi $\langle Z_0 Z_i \rangle$ untuk qubit yang jauh dapat mengungkapkan dampak noise dan kesalahan dalam eksekusi sirkuit. Dengan mempelajari penyimpangan ini, kita mendapatkan wawasan tentang seberapa baik sirkuit mempertahankan jeratan di bawah konfigurasi SABRE yang berbeda dan seberapa efektif SABRE meminimalkan dampak kendala perangkat keras.
+
+```python
+# ZZII...II, ZIZI...II, ... , ZIII...IZ
+operator_strings = [
+    "Z" + "I" * i + "Z" + "I" * (num_qubits - 2 - i)
+    for i in range(num_qubits - 1)
+]
+print(operator_strings)
+print(len(operator_strings))
+
+operators = [SparsePauliOp(operator) for operator in operator_strings]
+```
+
+```text
+['ZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZI', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZ']
+109
+```
+
+### Langkah 2: Optimalkan Masalah untuk Eksekusi Perangkat Keras Kuantum {#langkah-2-optimalkan-masalah-untuk-eksekusi-perangkat-keras-kuantum}
+
+Pada langkah ini, kita fokus mengoptimalkan layout sirkuit untuk eksekusi pada perangkat keras kuantum tertentu dengan 127 qubit. Ini adalah fokus utama tutorial, karena kita melakukan **optimasi SABRE dan transpilasi** untuk mencapai performa sirkuit terbaik. Menggunakan pass `SabreLayout`, kita menentukan pemetaan qubit awal yang meminimalkan kebutuhan gate SWAP selama routing. Dengan meneruskan `coupling_map` dari Backend target, `SabreLayout` mengadaptasi layout ke kendala konektivitas perangkat.
+
+Kita akan menggunakan `generate_preset_pass_manager` dengan `optimization_level=3` untuk proses transpilasi dan menyesuaikan pass `SabreLayout` dengan berbagai konfigurasi. Tujuannya adalah menemukan pengaturan yang menghasilkan sirkuit yang ditranspilasi dengan **ukuran dan/atau kedalaman terendah**, menunjukkan dampak optimasi SABRE.
+
+#### Mengapa Ukuran dan Kedalaman Sirkuit Penting? {#mengapa-ukuran-dan-kedalaman-sirkuit-penting}
+
+- **Ukuran lebih kecil (jumlah gate):** Mengurangi jumlah operasi, meminimalkan peluang kesalahan terakumulasi.
+- **Kedalaman lebih rendah:** Mempersingkat total waktu eksekusi, yang penting untuk menghindari dekoherensi dan mempertahankan fidelitas keadaan kuantum.
+
+Dengan mengoptimalkan metrik ini, kita meningkatkan keandalan dan akurasi eksekusi sirkuit pada perangkat keras kuantum yang berisik.
+Pilih Backend.
+
+```python
+service = QiskitRuntimeService()
+# backend = service.least_busy(
+#    operational=True, simulator=False, min_num_qubits=127
+# )
+backend = service.backend("ibm_boston")
+print(f"Using backend: {backend.name}")
+```
+
+```text
+Using backend: ibm_boston
+```
+
+Untuk mengevaluasi dampak berbagai konfigurasi pada optimasi sirkuit, kita akan membuat tiga pass manager, masing-masing dengan pengaturan unik untuk pass `SabreLayout`. Konfigurasi ini membantu menganalisis trade-off antara kualitas sirkuit dan waktu transpilasi.
+
+#### Parameter Utama {#parameter-utama}
+- **`max_iterations`**: Jumlah iterasi routing maju-mundur untuk menyempurnakan layout dan mengurangi biaya routing.
+- **`layout_trials`**: Jumlah layout awal acak yang diuji, memilih yang meminimalkan gate SWAP.
+- **`swap_trials`**: Jumlah uji routing untuk setiap layout, menyempurnakan penempatan gate untuk routing yang lebih baik.
+
+Tingkatkan `layout_trials` dan `swap_trials` untuk melakukan optimasi yang lebih menyeluruh, dengan biaya peningkatan waktu transpilasi.
+
+#### Konfigurasi dalam Tutorial Ini {#konfigurasi-dalam-tutorial-ini}
+1. **`pm_1`**: Pengaturan default dengan `optimization_level=3`.
+   - `max_iterations=4`
+   - `layout_trials=20`
+   - `swap_trials=20`
+
+2. **`pm_2`**: Meningkatkan jumlah uji untuk eksplorasi yang lebih baik.
+   - `max_iterations=4`
+   - `layout_trials=200`
+   - `swap_trials=200`
+
+3. **`pm_3`**: Memperluas `pm_2` dengan meningkatkan jumlah iterasi untuk penyempurnaan lebih lanjut.
+   - `max_iterations=8`
+   - `layout_trials=200`
+   - `swap_trials=200`
+
+Dengan membandingkan hasil konfigurasi ini, kita bertujuan menentukan mana yang mencapai keseimbangan terbaik antara kualitas sirkuit (misalnya, ukuran dan kedalaman) dan biaya komputasi.
+
+```python
+# Get the coupling map from the backend
+cmap = CouplingMap(backend().configuration().coupling_map)
+
+# Create the SabreLayout passes for the custom configurations
+sl_2 = SabreLayout(
+    coupling_map=cmap,
+    seed=seed,
+    max_iterations=4,
+    layout_trials=200,
+    swap_trials=200,
+)
+sl_3 = SabreLayout(
+    coupling_map=cmap,
+    seed=seed,
+    max_iterations=8,
+    layout_trials=200,
+    swap_trials=200,
+)
+
+# Create the pass managers, need to first create then configure the SabreLayout passes
+pm_1 = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_2 = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_3 = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+```
+
+Sekarang kita bisa mengkonfigurasi pass `SabreLayout` di pass manager kustom. Untuk melakukan ini, kita tahu bahwa untuk `generate_preset_pass_manager` default pada `optimization_level=3`, pass `SabreLayout` berada di indeks 2, karena `SabreLayout` terjadi setelah pass `SetLayout` dan `VF2Layout`. Kita bisa mengakses pass ini dan memodifikasi parameternya.
+
+```python
+pm_2.layout.replace(index=2, passes=sl_2)
+pm_3.layout.replace(index=2, passes=sl_3)
+```
+
+Dengan setiap pass manager dikonfigurasi, kita sekarang akan menjalankan proses transpilasi untuk masing-masing. Untuk membandingkan hasil, kita akan melacak metrik kunci, termasuk waktu transpilasi, kedalaman sirkuit (diukur sebagai kedalaman gate dua qubit), dan jumlah total gate dalam sirkuit yang ditranspilasi.
+
+```python
+# Transpile the circuit with each pass manager and measure the time
+t0 = time.time()
+tqc_1 = pm_1.run(qc)
+t1 = time.time() - t0
+t0 = time.time()
+tqc_2 = pm_2.run(qc)
+t2 = time.time() - t0
+t0 = time.time()
+tqc_3 = pm_3.run(qc)
+t3 = time.time() - t0
+
+# Obtain the depths and the total number of gates (circuit size)
+depth_1 = tqc_1.depth(lambda x: x.operation.num_qubits == 2)
+depth_2 = tqc_2.depth(lambda x: x.operation.num_qubits == 2)
+depth_3 = tqc_3.depth(lambda x: x.operation.num_qubits == 2)
+size_1 = tqc_1.size()
+size_2 = tqc_2.size()
+size_3 = tqc_3.size()
+
+# Transform the observables to match the backend's ISA
+operators_list_1 = [op.apply_layout(tqc_1.layout) for op in operators]
+operators_list_2 = [op.apply_layout(tqc_2.layout) for op in operators]
+operators_list_3 = [op.apply_layout(tqc_3.layout) for op in operators]
+
+# Compute improvements compared to pass manager 1 (default)
+depth_improvement_2 = ((depth_1 - depth_2) / depth_1) * 100
+depth_improvement_3 = ((depth_1 - depth_3) / depth_1) * 100
+size_improvement_2 = ((size_1 - size_2) / size_1) * 100
+size_improvement_3 = ((size_1 - size_3) / size_1) * 100
+time_increase_2 = ((t2 - t1) / t1) * 100
+time_increase_3 = ((t3 - t1) / t1) * 100
+
+print(
+    f"Pass manager 1 (4,20,20)  : Depth {depth_1}, Size {size_1}, Time {t1:.4f} s"
+)
+print(
+    f"Pass manager 2 (4,200,200): Depth {depth_2}, Size {size_2}, Time {t2:.4f} s"
+)
+print(f"  - Depth improvement: {depth_improvement_2:.2f}%")
+print(f"  - Size improvement: {size_improvement_2:.2f}%")
+print(f"  - Time increase: {time_increase_2:.2f}%")
+print(
+    f"Pass manager 3 (8,200,200): Depth {depth_3}, Size {size_3}, Time {t3:.4f} s"
+)
+print(f"  - Depth improvement: {depth_improvement_3:.2f}%")
+print(f"  - Size improvement: {size_improvement_3:.2f}%")
+print(f"  - Time increase: {time_increase_3:.2f}%")
+```
+
+```text
+Pass manager 1 (4,20,20)  : Depth 439, Size 2346, Time 0.5775 s
+Pass manager 2 (4,200,200): Depth 395, Size 2070, Time 3.9927 s
+  - Depth improvement: 10.02%
+  - Size improvement: 11.76%
+  - Time increase: 591.43%
+Pass manager 3 (8,200,200): Depth 375, Size 1873, Time 2.3079 s
+  - Depth improvement: 14.58%
+  - Size improvement: 20.16%
+  - Time increase: 299.67%
+```
+
+Hasil ini menunjukkan bahwa meningkatkan jumlah uji (`layout_trials` dan `swap_trials`) dapat secara signifikan meningkatkan kualitas sirkuit dengan mengurangi kedalaman dan ukuran. Namun, peningkatan ini sering datang dengan biaya peningkatan runtime karena komputasi tambahan yang diperlukan untuk mengeksplorasi lebih banyak layout potensial dan jalur routing.
+
+Meningkatkan `max_iterations` dapat semakin meningkatkan optimasi dengan menyempurnakan layout melalui lebih banyak siklus routing maju-mundur. Dalam kasus ini, meningkatkan `max_iterations` menghasilkan pengurangan paling signifikan dalam kedalaman dan ukuran sirkuit, bahkan mengurangi runtime dibandingkan `pm_2`, kemungkinan dengan menyederhanakan tahap optimasi berikutnya. Penting untuk dicatat, bagaimanapun, bahwa efektivitas meningkatkan `max_iterations` dapat bervariasi secara signifikan tergantung pada sirkuit. Meskipun lebih banyak iterasi dapat menghasilkan pilihan layout dan routing yang lebih baik, mereka tidak memberikan jaminan dan sangat bergantung pada struktur sirkuit dan kompleksitas kendala konektivitas.
+
+```python
+# Plot the results of the metrics
+times = [t1, t2, t3]
+depths = [depth_1, depth_2, depth_3]
+sizes = [size_1, size_2, size_3]
+pm_names = [
+    "pm_1 (4 iter, 20 trials)",
+    "pm_2 (4 iter, 200 trials)",
+    "pm_3 (8 iter, 200 trials)",
+]
+colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(pm_names)))
+
+# Create a figure with three subplots
+fig, axs = plt.subplots(3, 1, figsize=(6, 9), sharex=True)
+axs[0].bar(pm_names, times, color=colors)
+axs[0].set_ylabel("Time (s)", fontsize=12)
+axs[0].set_title("Transpilation Time", fontsize=14)
+axs[0].grid(axis="y", linestyle="--", alpha=0.7)
+axs[1].bar(pm_names, depths, color=colors)
+axs[1].set_ylabel("Depth", fontsize=12)
+axs[1].set_title("Circuit Depth", fontsize=14)
+axs[1].grid(axis="y", linestyle="--", alpha=0.7)
+axs[2].bar(pm_names, sizes, color=colors)
+axs[2].set_ylabel("Size", fontsize=12)
+axs[2].set_title("Circuit Size", fontsize=14)
+axs[2].set_xticks(range(len(pm_names)))
+axs[2].set_xticklabels(pm_names, fontsize=10, rotation=15)
+axs[2].grid(axis="y", linestyle="--", alpha=0.7)
+
+# Add some spacing between subplots
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/818a8997-d2c7-4661-a6ea-f58eac376bf8-0.avif)
+
+### Langkah 3: Eksekusi Menggunakan Primitif Qiskit {#langkah-3-eksekusi-menggunakan-primitif-qiskit}
+
+Pada langkah ini, kita menggunakan primitif `Estimator` untuk menghitung nilai ekspektasi $\langle Z_0 Z_i \rangle$ untuk operator `ZZ`, mengevaluasi jeratan dan kualitas eksekusi Circuit yang ditranspilasi. Untuk selaras dengan alur kerja pengguna yang umum, kita mengirimkan job untuk eksekusi dan menerapkan penekanan kesalahan menggunakan **dynamical decoupling**, sebuah teknik yang memitigasi dekoherensi dengan menyisipkan urutan gate untuk mempertahankan keadaan qubit. Selain itu, kita menentukan tingkat resiliensi untuk mengatasi noise, dengan tingkat yang lebih tinggi memberikan hasil yang lebih akurat dengan biaya peningkatan waktu pemrosesan. Pendekatan ini menilai performa setiap konfigurasi pass manager dalam kondisi eksekusi yang realistis.
+
+```python
+options = EstimatorOptions()
+options.resilience_level = 2
+options.dynamical_decoupling.enable = True
+options.dynamical_decoupling.sequence_type = "XY4"
+
+# Create an Estimator object
+estimator = Estimator(backend, options=options)
+```
+
+```python
+# Submit the circuit to Estimator
+job_1 = estimator.run([(tqc_1, operators_list_1)])
+job_1_id = job_1.job_id()
+print(job_1_id)
+
+job_2 = estimator.run([(tqc_2, operators_list_2)])
+job_2_id = job_2.job_id()
+print(job_2_id)
+
+job_3 = estimator.run([(tqc_3, operators_list_3)])
+job_3_id = job_3.job_id()
+print(job_3_id)
+```
+
+```text
+d5k0qs7853es738dab6g
+d5k0qsf853es738dab70
+d5k0qsf853es738dab7g
+```
+
+```python
+# Run the jobs
+result_1 = job_1.result()[0]
+print("Job 1 done")
+result_2 = job_2.result()[0]
+print("Job 2 done")
+result_3 = job_3.result()[0]
+print("Job 3 done")
+```
+
+```text
+Job 1 done
+Job 2 done
+Job 3 done
+```
+
+### Langkah 4: Pasca-Proses dan Kembalikan Hasil dalam Format Klasik yang Diinginkan {#langkah-4-pasca-proses-dan-kembalikan-hasil-dalam-format-klasik-yang-diinginkan}
+
+Setelah job selesai, kita menganalisis hasil dengan memplot nilai ekspektasi $\langle Z_0 Z_i \rangle$ untuk setiap qubit. Dalam simulasi ideal, semua nilai $\langle Z_0 Z_i \rangle$ seharusnya bernilai 1, mencerminkan jeratan sempurna di seluruh qubit. Namun, karena noise dan kendala perangkat keras, nilai ekspektasi biasanya menurun seiring peningkatan `i`, mengungkapkan bagaimana jeratan menurun seiring jarak.
+
+Pada langkah ini, kita membandingkan hasil dari setiap konfigurasi pass manager dengan simulasi ideal. Dengan memeriksa penyimpangan $\langle Z_0 Z_i \rangle$ dari 1 untuk setiap konfigurasi, kita dapat mengukur seberapa baik setiap pass manager mempertahankan jeratan dan memitigasi efek noise. Analisis ini secara langsung menilai dampak optimasi SABRE pada fidelitas eksekusi dan menyoroti konfigurasi mana yang terbaik dalam menyeimbangkan kualitas optimasi dan performa eksekusi.
+
+Hasil akan divisualisasikan untuk menyoroti perbedaan di seluruh pass manager, menampilkan bagaimana peningkatan dalam layout dan routing memengaruhi eksekusi sirkuit akhir pada perangkat keras kuantum yang berisik.
+
+```python
+data = list(range(1, len(operators) + 1))  # Distance between the Z operators
+
+values_1 = list(result_1.data.evs)
+values_2 = list(result_2.data.evs)
+values_3 = list(result_3.data.evs)
+
+plt.plot(
+    data,
+    values_1,
+    marker="o",
+    label="pm_1 (iters=4, swap_trials=20, layout_trials=20)",
+)
+plt.plot(
+    data,
+    values_2,
+    marker="s",
+    label="pm_2 (iters=4, swap_trials=200, layout_trials=200)",
+)
+plt.plot(
+    data,
+    values_3,
+    marker="^",
+    label="pm_3 (iters=8, swap_trials=200, layout_trials=200)",
+)
+plt.xlabel("Distance between qubits $i$")
+plt.ylabel(r"$\langle Z_i Z_0 \rangle / \langle Z_1 Z_0 \rangle $")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/bc6cb36f-4bf2-4275-baf5-9557fcba520a-0.avif)
+
+### Analisis Hasil {#analisis-hasil}
+
+Plot menunjukkan nilai ekspektasi $\langle Z_0 Z_i \rangle / \langle Z_0 Z_0 \rangle$ sebagai fungsi jarak antar qubit untuk tiga konfigurasi pass manager dengan tingkat optimasi yang meningkat. Dalam kasus ideal, nilai-nilai ini tetap mendekati 1, menunjukkan korelasi yang kuat di seluruh sirkuit. Seiring peningkatan jarak, noise dan kesalahan yang terakumulasi menyebabkan penurunan korelasi, mengungkapkan seberapa baik setiap strategi transpilasi mempertahankan struktur yang mendasari keadaan tersebut.
+
+Di antara ketiga konfigurasi, `pm_1` jelas berkinerja paling buruk. Nilai korelasinya menurun dengan cepat seiring peningkatan jarak dan mendekati nol jauh lebih awal dari dua konfigurasi lainnya. Perilaku ini konsisten dengan kedalaman sirkuit dan jumlah gate yang lebih besar, di mana noise yang terakumulasi dengan cepat menurunkan korelasi jarak jauh.
+
+Baik `pm_2` maupun `pm_3` mewakili peningkatan signifikan dibandingkan `pm_1` di hampir semua jarak. Secara rata-rata, `pm_3` menunjukkan performa keseluruhan yang paling kuat, mempertahankan nilai korelasi yang lebih tinggi dalam jarak yang lebih jauh dan menunjukkan penurunan yang lebih bertahap. Ini selaras dengan optimasinya yang lebih agresif, yang menghasilkan sirkuit yang lebih dangkal dan umumnya lebih tahan terhadap akumulasi noise.
+
+Namun demikian, `pm_2` menunjukkan akurasi yang jauh lebih baik pada jarak pendek dibandingkan `pm_3`, meskipun memiliki kedalaman dan jumlah gate yang sedikit lebih besar. Ini menunjukkan bahwa kedalaman sirkuit saja tidak sepenuhnya menentukan performa; struktur spesifik yang dihasilkan oleh transpilasi, termasuk bagaimana gate yang saling menjerat diatur dan bagaimana kesalahan merambat melalui sirkuit, juga memainkan peran penting. Dalam beberapa kasus, transformasi yang diterapkan oleh `pm_2` tampaknya lebih baik dalam mempertahankan korelasi lokal, meskipun tidak berskala sebaik untuk jarak yang lebih jauh.
+
+Secara keseluruhan, hasil ini menyoroti trade-off antara kekompakan sirkuit dan struktur sirkuit. Meskipun peningkatan optimasi umumnya meningkatkan stabilitas jarak jauh, performa terbaik untuk observable tertentu bergantung pada pengurangan kedalaman sirkuit sekaligus menghasilkan struktur yang cocok dengan karakteristik noise perangkat keras.

@@ -1,0 +1,437 @@
+## Part II. Mengonfigurasi Heuristik di SABRE dan Menggunakan Serverless {#part-ii-configuring-the-heuristic-in-sabre-and-using-serverless}
+
+Selain menyesuaikan jumlah percobaan, SABRE mendukung kustomisasi heuristik routing yang digunakan selama transpilasi. Secara default, `SabreLayout` menggunakan heuristik decay, yang secara dinamis memboboti qubit berdasarkan kemungkinan mereka di-swap. Untuk menggunakan heuristik berbeda (seperti heuristik `lookahead`), kamu bisa membuat pass `SabreSwap` kustom dan menghubungkannya ke `SabreLayout` dengan menjalankan `PassManager` bersama `FullAncillaAllocation`, `EnlargeWithAncilla`, dan `ApplyLayout`. Saat menggunakan `SabreSwap` sebagai parameter untuk `SabreLayout`, hanya satu percobaan layout yang dilakukan secara default. Untuk menjalankan beberapa percobaan layout secara efisien, kita memanfaatkan runtime serverless untuk paralelisasi. Untuk informasi lebih lanjut tentang serverless, lihat [dokumentasi Serverless](/guides/serverless).
+
+### Cara Mengubah Heuristik Routing {#how-to-change-the-routing-heuristic}
+1. Buat pass `SabreSwap` kustom dengan heuristik yang diinginkan.
+2. Gunakan `SabreSwap` kustom ini sebagai metode routing untuk pass `SabreLayout`.
+
+Meskipun memungkinkan untuk menjalankan beberapa percobaan layout menggunakan loop, runtime serverless adalah pilihan yang lebih baik untuk eksperimen berskala besar dan lebih intensif. Serverless mendukung eksekusi paralel dari percobaan layout, yang secara signifikan mempercepat optimasi sirkuit yang lebih besar dan sweep eksperimen yang luas. Hal ini membuatnya sangat berharga saat bekerja dengan tugas-tugas yang intensif sumber daya atau ketika efisiensi waktu sangat penting.
+
+Bagian ini berfokus hanya pada langkah 2 optimasi: meminimalkan ukuran dan kedalaman sirkuit untuk mendapatkan sirkuit hasil transpilasi terbaik. Berdasarkan hasil sebelumnya, kita kini menjelajahi bagaimana kustomisasi heuristik dan paralelisasi serverless dapat lebih meningkatkan performa optimasi, menjadikannya cocok untuk transpilasi sirkuit kuantum berskala besar.
+
+### Hasil tanpa runtime serverless (1 percobaan layout): {#results-without-serverless-runtime-1-layout-trial}
+
+```python
+swap_trials = 1000
+
+# Default PassManager with `SabreLayout` and `SabreSwap`, using heuristic "decay"
+sr_default = SabreSwap(
+    coupling_map=cmap, heuristic="decay", trials=swap_trials, seed=seed
+)
+sl_default = SabreLayout(
+    coupling_map=cmap, routing_pass=sr_default, seed=seed
+)
+pm_default = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_default.layout.replace(index=2, passes=sl_default)
+pm_default.routing.replace(index=1, passes=sr_default)
+
+t0 = time.time()
+tqc_default = pm_default.run(qc)
+t_default = time.time() - t0
+size_default = tqc_default.size()
+depth_default = tqc_default.depth(lambda x: x.operation.num_qubits == 2)
+
+# Custom PassManager with `SabreLayout` and `SabreSwap`, using heuristic "lookahead"
+sr_custom = SabreSwap(
+    coupling_map=cmap, heuristic="lookahead", trials=swap_trials, seed=seed
+)
+sl_custom = SabreLayout(coupling_map=cmap, routing_pass=sr_custom, seed=seed)
+pm_custom = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, seed_transpiler=seed
+)
+pm_custom.layout.replace(index=2, passes=sl_custom)
+pm_custom.routing.replace(index=1, passes=sr_custom)
+
+t0 = time.time()
+tqc_custom = pm_custom.run(qc)
+t_custom = time.time() - t0
+size_custom = tqc_custom.size()
+depth_custom = tqc_custom.depth(lambda x: x.operation.num_qubits == 2)
+
+print(
+    f"Default (heuristic='decay')    : Depth {depth_default}, Size {size_default}, Time {t_default}"
+)
+print(
+    f"Custom  (heuristic='lookahead'): Depth {depth_custom}, Size {size_custom}, Time {t_custom}"
+)
+```
+
+```text
+Default (heuristic='decay')    : Depth 443, Size 3115, Time 1.034372091293335
+Custom  (heuristic='lookahead'): Depth 432, Size 2856, Time 0.6669301986694336
+```
+
+Di sini kita melihat bahwa heuristik `lookahead` berkinerja lebih baik daripada heuristik `decay` dalam hal kedalaman sirkuit, ukuran, dan waktu. Peningkatan ini menunjukkan bagaimana kita bisa meningkatkan SABRE melampaui sekadar percobaan dan iterasi untuk sirkuit dan batasan perangkat keras tertentu. Perlu dicatat bahwa hasil ini didasarkan pada satu percobaan layout. Untuk mendapatkan hasil yang lebih akurat, kami merekomendasikan menjalankan beberapa percobaan layout, yang dapat dilakukan secara efisien menggunakan runtime serverless.
+
+### Hasil dengan runtime serverless (beberapa percobaan layout) {#results-with-serverless-runtime-multiple-layout-trials}
+
+Qiskit Serverless mengharuskan pengaturan file `.py` workload ke dalam direktori khusus. Sel kode berikut adalah file Python di direktori `source_files` bernama `transpile_remote.py`. File ini berisi fungsi yang menjalankan proses transpilasi.
+
+```python
+# This cell is hidden from users, it makes sure the `source_files` directory exists
+from pathlib import Path
+
+Path("source_files").mkdir(exist_ok=True)
+```
+
+```python
+%%writefile source_files/transpile_remote.py
+import time
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.transpiler.passes import SabreLayout, SabreSwap
+from qiskit.transpiler import CouplingMap
+from qiskit_serverless import get_arguments, save_result, distribute_task, get
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+@distribute_task(target={
+    "cpu": 1,
+    "mem": 1024 * 1024 * 1024
+})
+def transpile_remote(qc, optimization_level, backend_name, seed, swap_trials, heuristic):
+    """Transpiles an abstract circuit into an ISA circuit for a given backend."""
+
+    service = QiskitRuntimeService()
+    backend = service.backend(backend_name)
+
+    pm = generate_preset_pass_manager(
+        optimization_level=optimization_level,
+        backend=backend,
+        seed_transpiler=seed
+    )
+
+    # Changing the `SabreLayout` and `SabreSwap` passes to use the custom configurations
+    cmap = CouplingMap(backend().configuration().coupling_map)
+    sr = SabreSwap(coupling_map=cmap, heuristic=heuristic, trials=swap_trials, seed=seed)
+    sl = SabreLayout(coupling_map=cmap, routing_pass=sr, seed=seed)
+    pm.layout.replace(index=2, passes=sl)
+    pm.routing.replace(index=1, passes=sr)
+
+    # Measure the transpile time
+    start_time = time.time()  # Start timer
+    tqc = pm.run(qc)  # Transpile the circuit
+    end_time = time.time()  # End timer
+
+    transpile_time = end_time - start_time  # Calculate the elapsed time
+    return tqc, transpile_time  # Return both the transpiled circuit and the transpile time
+
+# Get program arguments
+arguments = get_arguments()
+circuit = arguments.get("circuit")
+backend_name = arguments.get("backend_name")
+optimization_level = arguments.get("optimization_level")
+seed_list = arguments.get("seed_list")
+swap_trials = arguments.get("swap_trials")
+heuristic = arguments.get("heuristic")
+
+# Transpile the circuits
+transpile_worker_references = [
+    transpile_remote(circuit, optimization_level, backend_name, seed, swap_trials, heuristic)
+    for seed in seed_list
+]
+
+results_with_times = get(transpile_worker_references)
+
+# Separate the transpiled circuits and their transpile times
+transpiled_circuits = [result[0] for result in results_with_times]
+transpile_times = [result[1] for result in results_with_times]
+
+# Save both results and transpile times
+save_result({"transpiled_circuits": transpiled_circuits, "transpile_times": transpile_times})
+```
+
+```text
+Overwriting source_files/transpile_remote.py
+```
+
+Sel berikut mengunggah file `transpile_remote.py` sebagai program Qiskit Serverless dengan nama `transpile_remote_serverless`.
+
+```python
+serverless = QiskitServerless()
+
+transpile_remote_demo = QiskitFunction(
+    title="transpile_remote_serverless",
+    entrypoint="transpile_remote.py",
+    working_dir="./source_files/",
+)
+serverless.upload(transpile_remote_demo)
+transpile_remote_serverless = serverless.load("transpile_remote_serverless")
+```
+
+Buat 20 seed berbeda untuk mewakili 20 percobaan layout yang berbeda.
+
+```python
+num_seeds = 20  # represents the different layout trials
+seed_list = [seed + i for i in range(num_seeds)]
+```
+
+Jalankan program yang telah diunggah dan berikan input untuk heuristik lookahead.
+
+```python
+job_lookahead = transpile_remote_serverless.run(
+    circuit=qc,
+    backend_name=backend.name,
+    optimization_level=3,
+    seed_list=seed_list,
+    swap_trials=swap_trials,
+    heuristic="lookahead",
+)
+```
+
+```python
+job_lookahead.job_id
+```
+
+```text
+'15767dfc-e71d-4720-94d6-9212f72334c2'
+```
+
+```python
+job_lookahead.status()
+```
+
+```text
+'QUEUED'
+```
+
+Terima log dan hasil dari runtime serverless.
+
+```python
+logs_lookahead = job_lookahead.logs()
+print(logs_lookahead)
+```
+
+```text
+No logs yet.
+```
+
+Setelah program berstatus `DONE`, kamu bisa menggunakan `job.results()` untuk mengambil hasil yang tersimpan di `save_result()`.
+
+```python
+# Run the job with lookahead heuristic
+start_time = time.time()
+results_lookahead = job_lookahead.result()
+end_time = time.time()
+
+job_lookahead_time = end_time - start_time
+```
+
+Sekarang lakukan hal yang sama untuk heuristik decay.
+
+```python
+job_decay = transpile_remote_serverless.run(
+    circuit=qc,
+    backend_name=backend.name,
+    optimization_level=3,
+    seed_list=seed_list,
+    swap_trials=swap_trials,
+    heuristic="decay",
+)
+```
+
+```python
+job_decay.job_id
+```
+
+```text
+'00418c76-d6ec-4bd8-9f70-05d0fa14d4eb'
+```
+
+```python
+logs_decay = job_decay.logs()
+print(logs_decay)
+```
+
+```text
+No logs yet.
+```
+
+```python
+# Run the job with the decay heuristic
+start_time = time.time()
+results_decay = job_decay.result()
+end_time = time.time()
+
+job_decay_time = end_time - start_time
+```
+
+```python
+# Extract transpilation times
+transpile_times_decay = results_decay["transpile_times"]
+transpile_times_lookahead = results_lookahead["transpile_times"]
+
+# Calculate total transpilation time for serial execution
+total_transpile_time_decay = sum(transpile_times_decay)
+total_transpile_time_lookahead = sum(transpile_times_lookahead)
+
+# Print total transpilation time
+print("=== Total Transpilation Time (Serial Execution) ===")
+print(f"Decay Heuristic    : {total_transpile_time_decay:.2f} seconds")
+print(f"Lookahead Heuristic: {total_transpile_time_lookahead:.2f} seconds")
+
+# Print serverless job time (parallel execution)
+print("\n=== Serverless Job Time (Parallel Execution) ===")
+print(f"Decay Heuristic    : {job_decay_time:.2f} seconds")
+print(f"Lookahead Heuristic: {job_lookahead_time:.2f} seconds")
+
+# Calculate and print average runtime per transpilation
+avg_transpile_time_decay = total_transpile_time_decay / num_seeds
+avg_transpile_time_lookahead = total_transpile_time_lookahead / num_seeds
+avg_job_time_decay = job_decay_time / num_seeds
+avg_job_time_lookahead = job_lookahead_time / num_seeds
+
+print("\n=== Average Time Per Transpilation ===")
+print(f"Decay Heuristic (Serial)    : {avg_transpile_time_decay:.2f} seconds")
+print(f"Decay Heuristic (Serverless): {avg_job_time_decay:.2f} seconds")
+print(
+    f"Lookahead Heuristic (Serial)    : {avg_transpile_time_lookahead:.2f} seconds"
+)
+print(
+    f"Lookahead Heuristic (Serverless): {avg_job_time_lookahead:.2f} seconds"
+)
+
+# Calculate and print serverless improvement percentage
+decay_improvement_percentage = (
+    (total_transpile_time_decay - job_decay_time) / total_transpile_time_decay
+) * 100
+lookahead_improvement_percentage = (
+    (total_transpile_time_lookahead - job_lookahead_time)
+    / total_transpile_time_lookahead
+) * 100
+
+print("\n=== Serverless Improvement ===")
+print(f"Decay Heuristic    : {decay_improvement_percentage:.2f}%")
+print(f"Lookahead Heuristic: {lookahead_improvement_percentage:.2f}%")
+```
+
+```text
+=== Total Transpilation Time (Serial Execution) ===
+Decay Heuristic    : 112.37 seconds
+Lookahead Heuristic: 85.37 seconds
+
+=== Serverless Job Time (Parallel Execution) ===
+Decay Heuristic    : 5.72 seconds
+Lookahead Heuristic: 5.85 seconds
+
+=== Average Time Per Transpilation ===
+Decay Heuristic (Serial)    : 5.62 seconds
+Decay Heuristic (Serverless): 0.29 seconds
+Lookahead Heuristic (Serial)    : 4.27 seconds
+Lookahead Heuristic (Serverless): 0.29 seconds
+
+=== Serverless Improvement ===
+Decay Heuristic    : 94.91%
+Lookahead Heuristic: 93.14%
+```
+
+Hasil ini menunjukkan keuntungan efisiensi yang substansial dari penggunaan eksekusi serverless untuk transpilasi sirkuit kuantum. Dibandingkan dengan eksekusi serial, eksekusi serverless secara dramatis mengurangi total waktu eksekusi untuk heuristik `decay` maupun `lookahead` dengan memparalelkan percobaan transpilasi yang independen. Sementara eksekusi serial mencerminkan biaya kumulatif penuh dari penjelajahan beberapa percobaan layout, waktu job serverless menunjukkan bagaimana eksekusi paralel dapat memadatkan biaya ini menjadi waktu clock yang jauh lebih singkat. Hasilnya, waktu efektif per transpilasi berkurang menjadi sebagian kecil dari yang diperlukan dalam pengaturan serial, terlepas dari heuristik yang digunakan. Kemampuan ini sangat penting untuk mengoptimalkan SABRE hingga potensi penuhnya. Banyak peningkatan performa terkuat SABRE berasal dari meningkatkan jumlah percobaan layout dan routing, yang bisa sangat mahal jika dieksekusi secara berurutan. Eksekusi serverless menghilangkan bottleneck ini, memungkinkan sweep parameter berskala besar dan eksplorasi konfigurasi heuristik yang lebih mendalam dengan overhead minimal.
+
+Secara keseluruhan, temuan ini menunjukkan bahwa eksekusi serverless adalah kunci untuk menskalakan optimasi SABRE, membuat eksperimentasi agresif dan penyempurnaan menjadi praktis dibandingkan eksekusi serial.
+
+Ambil hasil dari runtime serverless dan bandingkan hasil heuristik lookahead dan decay. Kita akan membandingkan ukuran dan kedalamannya.
+
+```python
+# Extract sizes and depths
+sizes_lookahead = [
+    circuit.size() for circuit in results_lookahead["transpiled_circuits"]
+]
+depths_lookahead = [
+    circuit.depth(lambda x: x.operation.num_qubits == 2)
+    for circuit in results_lookahead["transpiled_circuits"]
+]
+sizes_decay = [
+    circuit.size() for circuit in results_decay["transpiled_circuits"]
+]
+depths_decay = [
+    circuit.depth(lambda x: x.operation.num_qubits == 2)
+    for circuit in results_decay["transpiled_circuits"]
+]
+
+def create_scatterplot(x, y1, y2, xlabel, ylabel, title, labels, colors):
+    plt.figure(figsize=(8, 5))
+    plt.scatter(
+        x, y1, label=labels[0], color=colors[0], alpha=0.8, edgecolor="k"
+    )
+    plt.scatter(
+        x, y2, label=labels[1], color=colors[1], alpha=0.8, edgecolor="k"
+    )
+    plt.xlabel(xlabel, fontsize=12)
+    plt.ylabel(ylabel, fontsize=12)
+    plt.title(title, fontsize=14)
+    plt.legend(fontsize=10)
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+create_scatterplot(
+    seed_list,
+    sizes_lookahead,
+    sizes_decay,
+    "Seed",
+    "Size",
+    "Circuit Size",
+    ["lookahead", "Decay"],
+    ["blue", "red"],
+)
+create_scatterplot(
+    seed_list,
+    depths_lookahead,
+    depths_decay,
+    "Seed",
+    "Depth",
+    "Circuit Depth",
+    ["lookahead", "Decay"],
+    ["blue", "red"],
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/4cf9588b-8ea6-4761-b544-14bef8f0be85-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/transpilation-optimizations-with-sabre/extracted-outputs/4cf9588b-8ea6-4761-b544-14bef8f0be85-1.avif)
+
+Setiap titik dalam scatter plot di atas mewakili satu percobaan layout, dengan sumbu x menunjukkan kedalaman sirkuit dan sumbu y menunjukkan ukuran sirkuit. Hasil menunjukkan bahwa heuristik lookahead umumnya mengungguli heuristik decay dalam meminimalkan kedalaman dan ukuran sirkuit. Dalam aplikasi praktis, tujuannya adalah mengidentifikasi percobaan layout optimal untuk heuristik yang dipilih, baik dengan memprioritaskan kedalaman maupun ukuran. Hal ini dapat dicapai dengan memilih percobaan dengan nilai terendah untuk metrik yang diinginkan. Yang penting, meningkatkan jumlah percobaan layout meningkatkan peluang untuk mencapai hasil yang lebih baik dalam hal ukuran atau kedalaman, tetapi dengan biaya overhead komputasi yang lebih tinggi.
+
+```python
+min_depth_lookahead = min(depths_lookahead)
+min_depth_decay = min(depths_decay)
+min_size_lookahead = min(sizes_lookahead)
+min_size_decay = min(sizes_decay)
+print(
+    "Lookahead: Min Depth",
+    min_depth_lookahead,
+    "Min Size",
+    min_size_lookahead,
+)
+print("Decay:     Min Depth", min_depth_decay, "Min Size", min_size_decay)
+```
+
+```text
+Lookahead: Min Depth 399 Min Size 2452
+Decay:     Min Depth 415 Min Size 2611
+```
+
+Dalam perbandingan awal kami menggunakan satu percobaan layout, heuristik lookahead menunjukkan performa yang sedikit lebih baik baik dalam kedalaman maupun ukuran sirkuit. Dengan memperluas studi ini ke beberapa percobaan layout menggunakan `QiskitServerless`, kami dapat mengeksplorasi ruang inisialisasi SABRE yang jauh lebih luas, memungkinkan perbandingan yang lebih representatif antara heuristik.
+
+Dari scatter plot dan hasil terbaik yang diamati, jelas bahwa performa bervariasi secara signifikan dengan seed acak yang digunakan oleh SABRE. Kedua heuristik menunjukkan sebaran yang luas dalam kedalaman dan ukuran sirkuit di berbagai seed, menunjukkan bahwa satu run seringkali tidak cukup untuk menangkap hasil mendekati optimal. Variabilitas ini menekankan pentingnya menjalankan banyak percobaan dengan seed berbeda saat bertujuan meminimalkan kedalaman dan/atau jumlah gate. Di seluruh set percobaan, baik heuristik `lookahead` maupun `decay` mampu menghasilkan hasil yang kompetitif. Dalam beberapa kasus, heuristik `decay` mampu menyamai atau bahkan mengungguli `lookahead` untuk seed tertentu. Namun, untuk sirkuit tertentu ini, hasil keseluruhan terbaik diperoleh menggunakan heuristik lookahead, meskipun dengan selisih yang tipis. Ini menunjukkan bahwa meskipun lookahead memberikan hasil terkuat di sini, keunggulannya atas decay tidak mutlak.
+
+Secara keseluruhan, hasil ini memperkuat dua poin kunci. Pertama, memanfaatkan banyak seed sangat penting untuk mengekstrak performa terbaik yang mungkin dari SABRE, terlepas dari heuristik yang digunakan. Kedua, meskipun pilihan heuristik penting, struktur sirkuit memainkan peran dominan, dan performa relatif `lookahead` dan `decay` mungkin berbeda untuk sirkuit lain. Oleh karena itu, eksperimentasi multi-seed berskala besar sangat penting untuk transpilasi sirkuit kuantum yang kuat dan efektif.
+
+```python
+# This cell is hidden from users, it cleans up the `source_files` directory
+from pathlib import Path
+
+Path("source_files/transpile_remote.py").unlink()
+Path("source_files").rmdir()
+```
+
+## Kesimpulan {#conclusion}
+
+Dalam tutorial ini, kita menjelajahi cara mengoptimalkan sirkuit besar menggunakan SABRE di Qiskit. Kita mendemonstrasikan cara mengonfigurasi pass `SabreLayout` dengan berbagai parameter untuk menyeimbangkan kualitas sirkuit dan waktu transpilasi. Kita juga menunjukkan cara menyesuaikan heuristik routing di SABRE dan menggunakan runtime `QiskitServerless` untuk memparalelkan percobaan layout secara efisien ketika `SabreSwap` terlibat. Dengan menyesuaikan parameter dan heuristik ini, kamu dapat mengoptimalkan layout dan routing sirkuit besar, memastikan eksekusinya berjalan efisien di perangkat keras kuantum.
+
+## Survei tutorial {#tutorial-survey}
+
+Silakan isi survei singkat ini untuk memberikan masukan tentang tutorial ini. Wawasanmu akan membantu kami meningkatkan konten dan pengalaman pengguna kami.
+
+[Tautan ke survei](https://your.feedback.ibm.com/jfe/form/SV_d9YWUSQIAvU9HXE)

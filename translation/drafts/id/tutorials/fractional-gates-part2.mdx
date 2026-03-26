@@ -1,0 +1,459 @@
+## Workflow dengan fractional gates {#workflow-with-fractional-gates}
+### Langkah 1: Petakan input klasik ke masalah kuantum {#step-1-map-classical-inputs-to-quantum-problem}
+
+#### Circuit quantum kernel {#quantum-kernel-circuit}
+Di bagian ini, kita mengeksplorasi circuit quantum kernel menggunakan Gate RZZ untuk memperkenalkan workflow fractional gates.
+
+Kita mulai dengan membangun Circuit kuantum untuk menghitung entri-entri individual dari matriks kernel.
+Ini dilakukan dengan menggabungkan Circuit ZZ feature map dengan unitary overlap.
+Fungsi kernel mengambil vektor dalam ruang yang dipetakan fitur dan mengembalikan hasil kali dalamnya sebagai entri matriks kernel:
+$$K(x, y) = \langle \Phi(x) | \Phi(y) \rangle,$$
+di mana $|\Phi(x)\rangle$ merepresentasikan state kuantum yang dipetakan fitur.
+
+Kita membangun Circuit ZZ feature map secara manual menggunakan Gate RZZ.
+Meskipun Qiskit menyediakan `zz_feature_map` bawaan, fitur ini belum mendukung Gate RZZ per Qiskit v2.0.2 ([lihat issue](https://github.com/Qiskit/qiskit/issues/14469)).
+
+Selanjutnya, kita menghitung fungsi kernel untuk input yang identik — misalnya, $K(x, x) = 1$.
+Pada komputer kuantum yang bising, nilai ini bisa kurang dari 1 akibat noise.
+Hasil yang lebih mendekati 1 menunjukkan noise yang lebih rendah dalam eksekusi.
+Dalam tutorial ini, kita menyebut nilai ini sebagai *fidelitas*, yang didefinisikan sebagai
+$$\text{fidelity} = K(x, x).$$
+
+```python
+optimization_level = 2
+shots = 2000
+reps = 3
+rng = np.random.default_rng(seed=123)
+```
+
+```python
+def my_zz_feature_map(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    x = ParameterVector("x", num_qubits * reps)
+    qc = QuantumCircuit(num_qubits)
+    qc.h(range(num_qubits))
+    for k in range(reps):
+        K = k * num_qubits
+        for i in range(num_qubits):
+            qc.rz(x[i + K], i)
+        pairs = [(i, i + 1) for i in range(num_qubits - 1)]
+        for i, j in pairs[0::2] + pairs[1::2]:
+            qc.rzz((np.pi - x[i + K]) * (np.pi - x[j + K]), i, j)
+    return qc
+
+def quantum_kernel(num_qubits: int, reps: int = 1) -> QuantumCircuit:
+    qc = my_zz_feature_map(num_qubits, reps=reps)
+    inner_product = unitary_overlap(qc, qc, "x", "y", insert_barrier=True)
+    inner_product.measure_all()
+    return inner_product
+
+def random_parameters(inner_product: QuantumCircuit) -> np.ndarray:
+    return np.tile(rng.random(inner_product.num_parameters // 2), 2)
+
+def fidelity(result) -> float:
+    ba = result.data.meas
+    return ba.get_int_counts().get(0, 0) / ba.num_shots
+```
+
+Circuit quantum kernel beserta nilai parameter-nya dibuat untuk sistem dengan 4 hingga 40 Qubit, lalu fidelitasnya dievaluasi.
+
+```python
+qubits = list(range(4, 44, 4))
+circuits = [quantum_kernel(i, reps=reps) for i in qubits]
+params = [random_parameters(circ) for circ in circuits]
+```
+
+Circuit empat-Qubit divisualisasikan di bawah ini.
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b3d6341a-0.avif)
+
+Dalam workflow Qiskit patterns standar, nilai parameter biasanya diteruskan ke primitif Sampler atau Estimator sebagai bagian dari PUB.
+Namun, ketika menggunakan Backend yang mendukung fractional gates, nilai parameter tersebut harus ditetapkan secara eksplisit ke Circuit kuantum sebelum transpilasi.
+
+```python
+b_qc = [
+    circ.assign_parameters(param) for circ, param in zip(circuits, params)
+]
+b_qc[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6c9c1977-0.avif)
+
+### Langkah 2: Optimalkan masalah untuk eksekusi perangkat keras kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+Kita kemudian men-transpile Circuit menggunakan pass manager sesuai pola Qiskit standar.
+Dengan menyediakan Backend yang mendukung fractional gates ke `generate_preset_pass_manager`, sebuah pass khusus bernama `FoldRzzAngle` dimasukkan secara otomatis.
+Pass ini memodifikasi Circuit agar memenuhi batasan sudut RZZ.
+Hasilnya, Gate RZZ dengan nilai negatif pada gambar sebelumnya diubah menjadi nilai positif, dan beberapa Gate X tambahan ditambahkan.
+
+```python
+backend_f = service.backend(name=backend_name, use_fractional_gates=True)
+# pm_f includes `FoldRzzAngle` pass
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_f
+)
+```
+
+```python
+t_qc_f = pm_f.run(b_qc)
+print(t_qc_f[0].count_ops())
+t_qc_f[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 35), ('rzz', 18), ('x', 13), ('rx', 9), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a18e5c70-1.avif)
+
+Untuk menilai dampak fractional gates, kita mengevaluasi jumlah gate non-lokal (CZ dan RZZ untuk Backend ini),
+beserta kedalaman dan durasi Circuit, dan membandingkan metrik-metrik ini dengan workflow standar nanti.
+
+```python
+nnl_f = [qc.num_nonlocal_gates() for qc in t_qc_f]
+depth_f = [qc.depth() for qc in t_qc_f]
+duration_f = [
+    qc.estimate_duration(backend_f.target, unit="u") for qc in t_qc_f
+]
+```
+
+### Langkah 3: Eksekusi menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+Kita menjalankan Circuit yang sudah di-transpile dengan Backend yang mendukung fractional gates.
+
+```python
+sampler_f = SamplerV2(mode=backend_f)
+sampler_f.options.dynamical_decoupling.enable = True
+sampler_f.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_f.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_f.run(t_qc_f, shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bninsi51bc738j97eg
+```
+
+### Langkah 4: Pasca-proses dan kembalikan hasil dalam format klasik yang diinginkan {#step-4-post-process-and-return-result-in-desired-classical-format}
+Kamu bisa mendapatkan nilai fungsi kernel $K(x, x)$ dengan mengukur probabilitas bitstring semua-nol `00...00` pada output.
+
+```python
+# job = service.job("d1obougt0npc73flhiag")
+result = job.result()
+fidelity_f = [fidelity(result=res) for res in result]
+print(fidelity_f)
+usage_f = job.usage()
+```
+
+```text
+[0.9005, 0.647, 0.3345, 0.355, 0.3315, 0.174, 0.1875, 0.149, 0.1175, 0.085]
+```
+
+## Perbandingan workflow dan Circuit tanpa fractional gates {#comparison-of-workflow-and-circuit-without-fractional-gates}
+
+Di bagian ini, kita menyajikan workflow Qiskit patterns standar menggunakan Backend yang tidak mendukung fractional gates.
+Dengan membandingkan Circuit yang di-transpile, kamu akan melihat bahwa versi yang menggunakan fractional gates (dari bagian sebelumnya) lebih ringkas dibanding yang tanpa fractional gates.
+
+```python
+# step 1: map classical inputs to quantum problem
+# `circuits` and `params` from the previous section are reused here
+```
+
+```python
+# step 2: optimize circuits
+backend_c = service.backend(backend_name)  # w/o fractional gates
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc_c = pm_c.run(circuits)
+print(t_qc_c[0].count_ops())
+t_qc_c[0].draw("mpl", fold=-1)
+```
+
+```text
+OrderedDict([('rz', 130), ('sx', 80), ('cz', 36), ('measure', 4), ('barrier', 2)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/a10f2d95-1.avif)
+
+```python
+nnl_c = [qc.num_nonlocal_gates() for qc in t_qc_c]
+depth_c = [qc.depth() for qc in t_qc_c]
+duration_c = [
+    qc.estimate_duration(backend_c.target, unit="u") for qc in t_qc_c
+]
+```
+
+```python
+# step 3: execute
+sampler_c = SamplerV2(backend_c)
+sampler_c.options.dynamical_decoupling.enable = True
+sampler_c.options.dynamical_decoupling.sequence_type = "XY4"
+sampler_c.options.dynamical_decoupling.skip_reset_qubits = True
+```
+
+```python
+job = sampler_c.run(pubs=zip(t_qc_c, params), shots=shots)
+print(job.job_id())
+```
+
+```text
+d4bnirvnmdfs73ae3a2g
+```
+
+```python
+# step 4: post-processing
+# job = service.job("d1obp8j3rr0s73bg4810")
+result = job.result()
+fidelity_c = [fidelity(res) for res in result]
+print(fidelity_c)
+usage_c = job.usage()
+```
+
+```text
+[0.6675, 0.5725, 0.098, 0.102, 0.065, 0.0235, 0.006, 0.0015, 0.0015, 0.002]
+```
+
+## Perbandingan kedalaman dan fidelitas {#comparison-of-depths-and-fidelities}
+
+Di bagian ini, kita membandingkan jumlah gate non-lokal dan fidelitas antara Circuit dengan dan tanpa fractional gates.
+Ini menonjolkan potensi manfaat penggunaan fractional gates dari segi efisiensi eksekusi dan kualitas.
+
+```python
+plt.plot(qubits, depth_c, "-o", label="no fractional gates")
+plt.plot(qubits, depth_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("depth")
+plt.title("Comparison of depths")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bcaac50>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/ef343a53-1.avif)
+
+```python
+plt.plot(qubits, duration_c, "-o", label="no fractional gates")
+plt.plot(qubits, duration_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("duration (µs)")
+plt.title("Comparison of durations")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bdef310>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/98bb2cd0-1.avif)
+
+```python
+plt.plot(qubits, nnl_c, "-o", label="no fractional gates")
+plt.plot(qubits, nnl_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("number of non-local gates")
+plt.title("Comparison of numbers of non-local gates")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12be8ac90>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/1383b242-1.avif)
+
+```python
+plt.plot(qubits, fidelity_c, "-o", label="no fractional gates")
+plt.plot(qubits, fidelity_f, "-o", label="with fractional gates")
+plt.xlabel("number of qubits")
+plt.ylabel("fidelity")
+plt.title("Comparison of fidelities")
+plt.grid()
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x12bea8290>
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/8b4594f5-1.avif)
+
+Kita membandingkan waktu penggunaan QPU dengan dan tanpa fractional gates. Hasil pada sel berikut menunjukkan bahwa waktu penggunaan QPU hampir identik.
+
+```python
+print(f"no fractional gates: {usage_c} seconds")
+print(f"fractional gates: {usage_f} seconds")
+```
+
+```text
+no fractional gates: 7 seconds
+fractional gates: 7 seconds
+```
+
+## Topik lanjutan: Menggunakan hanya fractional RX gates {#advanced-topic-using-only-fractional-rx-gates}
+
+Kebutuhan workflow yang dimodifikasi saat menggunakan fractional gates terutama berasal dari pembatasan sudut Gate RZZ.
+Namun, jika kamu hanya menggunakan fractional RX gates dan mengecualikan fractional RZZ gates, kamu tetap bisa mengikuti workflow Qiskit patterns standar.
+Pendekatan ini masih bisa memberikan manfaat yang berarti, terutama pada Circuit yang banyak menggunakan Gate RX dan Gate U, dengan mengurangi jumlah gate keseluruhan dan berpotensi meningkatkan performa.
+Di bagian ini, kita menunjukkan cara mengoptimalkan Circuit menggunakan hanya fractional RX gates, tanpa Gate RZZ.
+
+Untuk mendukung ini, kita menyediakan fungsi utilitas yang memungkinkan kamu menonaktifkan basis gate tertentu dalam objek Target.
+Di sini, kita menggunakannya untuk menonaktifkan Gate RZZ.
+
+```python
+from qiskit.circuit.library import n_local
+from qiskit.transpiler import Target
+```
+
+```python
+def remove_instruction_from_target(target: Target, gate_name: str) -> Target:
+    new_target = Target(
+        description=target.description,
+        num_qubits=target.num_qubits,
+        dt=target.dt,
+        granularity=target.granularity,
+        min_length=target.min_length,
+        pulse_alignment=target.pulse_alignment,
+        acquire_alignment=target.acquire_alignment,
+        qubit_properties=target.qubit_properties,
+        concurrent_measurements=target.concurrent_measurements,
+    )
+
+    for name, qarg_map in target.items():
+        if name == gate_name:
+            continue
+        instruction = target.operation_from_name(name)
+        if qarg_map == {None: None}:
+            qarg_map = None
+        new_target.add_instruction(instruction, qarg_map, name=name)
+    return new_target
+```
+
+Kita menggunakan Circuit yang terdiri dari Gate U, CZ, dan RZZ sebagai contoh.
+
+```python
+qc = n_local(3, "u", "cz", "linear", reps=1)
+qc.rzz(1.1, 0, 1)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/6b812497-0.avif)
+
+Pertama, kita men-transpile Circuit untuk Backend yang tidak mendukung fractional gates.
+
+```python
+pm_c = generate_preset_pass_manager(
+    optimization_level=optimization_level, backend=backend_c
+)
+t_qc = pm_c.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 23), ('sx', 16), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/9e8e0709-1.avif)
+
+Kemudian, kita men-transpile Circuit yang sama menggunakan fractional RX gates, dengan mengecualikan Gate RZZ.
+Ini menghasilkan sedikit pengurangan jumlah gate total, berkat implementasi Gate RX yang lebih efisien.
+
+```python
+backend_f = service.backend(backend_name, use_fractional_gates=True)
+target = remove_instruction_from_target(backend_f.target, "rzz")
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 22), ('sx', 14), ('cz', 4), ('rx', 1)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/db45feb0-1.avif)
+
+### Optimalkan Gate U dengan fractional RX gates {#optimize-u-gates-with-fractional-rx-gates}
+
+Di bagian ini, kita menunjukkan cara mengoptimalkan Gate U menggunakan fractional RX gates, berdasarkan Circuit yang sama dari bagian sebelumnya.
+
+Kamu perlu menginstal [paket](https://github.com/Qiskit/qiskit-basis-constructor) `qiskit-basis-constructor` untuk bagian ini.
+Ini adalah versi beta dari plugin transpilasi baru untuk Qiskit, yang mungkin akan diintegrasikan ke dalam Qiskit di masa depan.
+
+```python
+# %pip install qiskit-basis-constructor
+```
+
+```python
+from qiskit.circuit.library import UGate
+from qiskit_basis_constructor import DEFAULT_EQUIVALENCE_LIBRARY
+```
+
+Kita men-transpile Circuit menggunakan hanya fractional RX gates, dengan mengecualikan Gate RZZ.
+Dengan memperkenalkan aturan dekomposisi kustom, seperti yang ditunjukkan berikut ini,
+kita bisa mengurangi jumlah gate single-qubit yang diperlukan untuk mengimplementasikan Gate U.
+
+Fitur ini sedang dalam diskusi di [GitHub issue ini.](https://github.com/Qiskit/qiskit/issues/13455)
+
+```python
+# special decomposition rule for UGate
+x = ParameterVector("x", 3)
+zxz = QuantumCircuit(1)
+zxz.rz(x[2] - np.pi / 2, 0)
+zxz.rx(x[0], 0)
+zxz.rz(x[1] + np.pi / 2, 0)
+DEFAULT_EQUIVALENCE_LIBRARY.add_equivalence(UGate(x[0], x[1], x[2]), zxz)
+```
+
+Selanjutnya, kita menerapkan Transpiler menggunakan terjemahan `constructor-beta` yang disediakan oleh paket `qiskit-basis-constructor`.
+Hasilnya, total jumlah gate berkurang dibandingkan transpilasi sebelumnya.
+
+```python
+pm_f = generate_preset_pass_manager(
+    optimization_level=optimization_level,
+    target=target,
+    translation_method="constructor-beta",
+)
+t_qc = pm_f.run(qc)
+print(t_qc.count_ops())
+t_qc.draw("mpl")
+```
+
+```text
+OrderedDict([('rz', 16), ('rx', 9), ('cz', 4)])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/fractional-gates/extracted-outputs/b19aae7c-1.avif)
+
+## Pemecahan masalah {#troubleshooting}
+### Masalah: Sudut RZZ yang tidak valid mungkin tersisa setelah transpilasi {#issue-invalid-rzz-angles-might-remain-after-transpilation}
+
+Per Qiskit v2.0.3, terdapat masalah yang diketahui di mana Gate RZZ dengan sudut tidak valid mungkin masih ada dalam Circuit bahkan setelah transpilasi.
+Masalah ini biasanya muncul dalam kondisi berikut.
+#### Kegagalan saat menggunakan opsi `target` dengan `generate_preset_pass_manager` atau `transpiler` {#failure-when-using-target-option-with-generate_preset_pass_manager-or-transpiler}
+
+Ketika opsi `target` digunakan dengan `generate_preset_pass_manager` atau `transpiler`, pass Transpiler khusus `FoldRzzAngle` tidak dipanggil.
+Untuk memastikan penanganan sudut RZZ yang benar untuk fractional gates, kami menyarankan untuk selalu menggunakan opsi `backend`.
+Lihat [issue ini](https://github.com/Qiskit/qiskit/issues/14318) untuk detail lebih lanjut.
+#### Kegagalan ketika Circuit mengandung gate tertentu {#failure-when-circuits-contain-certain-gates}
+
+Jika Circuit kamu mencakup gate tertentu seperti `XXPlusYYGate`, Transpiler Qiskit mungkin menghasilkan Gate RZZ dengan sudut yang tidak valid.
+Jika kamu menemui masalah ini, lihat [GitHub issue ini](https://github.com/Qiskit/qiskit-ibm-runtime/issues/2256#issuecomment-2889487152) untuk solusinya.
+## Survei tutorial {#tutorial-survey}
+
+Silakan isi survei singkat ini untuk memberikan masukan tentang tutorial ini. Wawasanmu akan membantu kami meningkatkan konten dan pengalaman pengguna.
+
+[Tautan ke survei](https://your.feedback.ibm.com/jfe/form/SV_cCNiGkGX5xZMzoG)

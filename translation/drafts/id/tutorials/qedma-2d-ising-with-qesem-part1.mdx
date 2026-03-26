@@ -1,0 +1,487 @@
+---
+title: "Simulasi 2D tilted-field Ising dengan fungsi QESEM"
+sidebar_label: "Simulasi 2D tilted-field Ising dengan fungsi QESEM"
+description: "Tutorial ini menunjukkan simulasi model Ising medan transversal 2D dengan mitigasi kesalahan QESEM yang dikombinasikan dengan modul operator backpropagation Qiskit."
+notebook_path: "tutorials/qedma-2d-ising-with-qesem.ipynb"
+---
+{/* doqumentation-source-hash: 8e34bcfa */}
+
+<OpenInLabBanner notebookPath="tutorials/qedma-2d-ising-with-qesem.ipynb" />
+
+
+
+{/* cspell:ignore bppeps */}
+
+<Admonition type="note">
+Qiskit Functions adalah fitur eksperimental yang hanya tersedia untuk pengguna IBM Quantum&reg; Premium Plan, Flex Plan, dan On-Prem (via IBM Quantum Platform API) Plan. Fitur ini berada dalam status rilis pratinjau dan dapat berubah sewaktu-waktu.
+</Admonition>
+
+*Estimasi penggunaan: 20 menit pada prosesor Heron r2. (CATATAN: Ini hanya perkiraan. Waktu aktual kamu mungkin berbeda.)*
+## Latar Belakang {#background}
+
+Tutorial ini menunjukkan cara menggunakan [QESEM](/guides/qedma-qesem), Qiskit Function dari Qedma, untuk mensimulasikan dinamika model spin kuantum kanonik, yaitu model Ising medan miring 2D (TFI) dengan sudut non-Clifford:
+
+$$
+H = J \sum_{\langle i,j \rangle} Z_i Z_j + g_x \sum_i X_i + g_z \sum_i Z_i ,
+$$
+
+di mana $ \langle i,j \rangle $ menandakan tetangga terdekat pada sebuah kisi. Mensimulasikan evolusi waktu sistem kuantum banyak-benda adalah tugas yang secara komputasi sangat berat bagi komputer klasik. Komputer kuantum, sebaliknya, secara alami dirancang untuk menyelesaikan tugas ini secara efisien. Model TFI, khususnya, telah menjadi tolok ukur populer pada perangkat keras kuantum karena perilaku fisiknya yang kaya dan implementasinya yang ramah perangkat keras.
+
+Daripada mensimulasikan dinamika waktu kontinu, kita menggunakan model kicked Ising yang berkaitan erat. Dinamika tersebut dapat diekspresikan secara tepat sebagai sirkuit kuantum periodik, di mana setiap langkah evolusi terdiri dari tiga lapisan gate dua Qubit fraksional $ R_{ZZ} (\alpha_{ZZ}) $, diselingi oleh lapisan gate satu Qubit $ R_X (\alpha_X) $ dan $ R_Z (\alpha_Z) $.
+
+Kita akan menggunakan sudut-sudut generik yang menantang baik untuk simulasi klasik maupun mitigasi kesalahan. Secara khusus, kita memilih $ \alpha_{ZZ} = 1.0 $, $ \alpha_X = 0.53 $, dan $ \alpha_Z = 0.1 $, menempatkan model ini jauh dari titik integrable mana pun.
+
+Dalam tutorial ini kita akan melakukan hal-hal berikut:
+* Memperkirakan waktu QPU yang diharapkan untuk mitigasi kesalahan penuh menggunakan fitur estimasi waktu analitik dan empiris dari QESEM.
+* Membangun dan mensimulasikan Circuit model Ising medan miring 2D menggunakan tata letak Qubit yang terinspirasi perangkat keras dan lapisan gate.
+* Memvisualisasikan konektivitas Qubit perangkat dan subgraf yang dipilih untuk eksperimen kamu.
+* Mendemonstrasikan penggunaan [operator backpropagation (OBP)](/guides/qiskit-addons-obp) untuk mengurangi kedalaman Circuit. Teknik ini memangkas operasi dari akhir Circuit dengan biaya lebih banyak pengukuran operator.
+* Melakukan mitigasi kesalahan (EM) yang tidak bias untuk beberapa observable secara bersamaan menggunakan QESEM, membandingkan hasil ideal, berderau, dan yang telah dimitigasi.
+* Menganalisis dan memplot dampak mitigasi kesalahan terhadap magnetisasi di berbagai kedalaman Circuit.
+
+Catatan: OBP pada umumnya akan mengembalikan sekumpulan observable yang mungkin tidak saling komutasi. QESEM secara otomatis mengoptimalkan basis pengukuran ketika observable target mengandung suku-suku yang tidak saling komutasi. QESEM menghasilkan kandidat set basis pengukuran menggunakan beberapa algoritma heuristik dan memilih set yang meminimalkan jumlah basis yang berbeda. Artinya, QESEM mengelompokkan observable yang kompatibel ke dalam basis yang sama untuk mengurangi jumlah total konfigurasi pengukuran yang diperlukan, sehingga meningkatkan efisiensi.
+## Tentang QESEM {#about-qesem}
+
+QESEM adalah perangkat lunak berbasis karakterisasi yang andal dan akurat tinggi, yang mengimplementasikan mitigasi kesalahan kuasi-probabilistik yang efisien dan tidak bias.
+Perangkat lunak ini dirancang untuk memitigasi kesalahan pada Circuit kuantum generik dan bersifat agnostik terhadap aplikasi. QESEM telah divalidasi di berbagai platform perangkat keras, termasuk eksperimen skala utilitas pada perangkat IBM&reg; Eagle dan Heron. Tahapan alur kerja QESEM adalah sebagai berikut:
+
+1. Karakterisasi perangkat — memetakan fidelitas gate dan mengidentifikasi kesalahan koheren, memberikan data kalibrasi waktu nyata. Tahap ini memastikan mitigasi memanfaatkan operasi dengan fidelitas tertinggi yang tersedia.
+2. Transpilasi sadar-noise — menghasilkan dan mengevaluasi pemetaan Qubit alternatif, set operasi, dan basis pengukuran, memilih varian yang meminimalkan estimasi waktu QPU, dengan paralelisasi opsional untuk mempercepat pengumpulan data.
+3. Penekanan kesalahan — mendefinisikan ulang gate native, menerapkan Pauli twirling, dan mengoptimalkan kontrol level pulsa (pada platform yang didukung) untuk meningkatkan fidelitas.
+4. Karakterisasi Circuit — membangun model kesalahan lokal yang disesuaikan dan menyesuaikannya dengan pengukuran QPU untuk mengkuantifikasi noise residual.
+5. Mitigasi kesalahan — membangun dekomposisi kuasi-probabilistik multi-tipe, dan melakukan sampling dari dekomposisi tersebut dalam proses adaptif yang meminimalkan waktu QPU mitigasi dan sensitivitas terhadap fluktuasi perangkat keras, sehingga mencapai akurasi tinggi pada volume Circuit yang besar.
+
+Untuk informasi lebih lanjut tentang QESEM dan eksperimen skala utilitas dari model ini pada subgraf berkonektivitas tinggi 103-Qubit dari geometri heavy-hex native `ibm_marrakesh`, lihat [Reliable high-accuracy error mitigation for utility-scale quantum circuits.](https://arxiv.org/abs/2508.10997)
+![Alur kerja QESEM.](/docs/images/tutorials/qedma-2d-ising-with-qesem/QESEM_workflow.avif)
+## Persyaratan {#requirements}
+
+Instal paket Python berikut sebelum menjalankan notebook:
+
+- Qiskit SDK v2.0.0 atau lebih baru (`pip install qiskit`)
+- Qiskit Runtime v0.40.0 atau lebih baru (`pip install qiskit-ibm-runtime`)
+- Qiskit Functions Catalog v0.8.0 atau lebih baru ( `pip install qiskit-ibm-catalog` )
+- Addon OBP Qiskit v0.3.0 atau lebih baru ( `pip install qiskit-addon-obp` )
+- Addon Qiskit Utils v0.1.1 atau lebih baru ( `pip install qiskit-addon-utils` )
+- Simulator Qiskit Aer v0.17.1 atau lebih baru ( `pip install qiskit-aer` )
+- Matplotlib v3.10.3 atau lebih baru ( `pip install matplotlib` )
+## Pengaturan {#setup}
+Pertama, impor library yang diperlukan:
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-aer qiskit-ibm-catalog qiskit-ibm-runtime
+```
+
+```python
+%matplotlib inline
+
+from typing import Sequence
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+import qiskit
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_aer import AerSimulator
+from qiskit_addon_utils.slicing import combine_slices, slice_by_gate_types
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.visualization import (
+    plot_gate_map,
+)
+```
+
+Selanjutnya, lakukan autentikasi menggunakan API key kamu dari dashboard [IBM Quantum Platform](http://quantum.cloud.ibm.com/). Kemudian, pilih Qiskit Function sebagai berikut. (Perhatikan bahwa demi keamanan, sebaiknya [simpan kredensial akun kamu](/guides/functions#install-qiskit-functions-catalog-client) ke lingkungan lokal kamu, jika kamu menggunakan mesin tepercaya, agar kamu tidak perlu memasukkan API key setiap kali melakukan autentikasi.)
+
+```python
+# Paste here your instance and token strings
+
+instance = "YOUR_INSTANCE"
+token = "YOUR_TOKEN"
+channel = "ibm_quantum_platform"
+
+catalog = QiskitFunctionsCatalog(
+    channel=channel, token=token, instance=instance
+)
+qesem_function = catalog.load("qedma/qesem")
+```
+
+## Langkah 1: Memetakan input klasik ke masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+Kita mulai dengan mendefinisikan fungsi yang membuat Circuit Trotter:
+
+```python
+def trotter_circuit_from_layers(
+    steps: int,
+    theta_x: float,
+    theta_z: float,
+    theta_zz: float,
+    layers: Sequence[Sequence[tuple[int, int]]],
+    init_state: str | None = None,
+) -> qiskit.QuantumCircuit:
+    """
+    Generates an ising trotter circuit
+    :param steps: trotter steps
+    :param theta_x: RX angle
+    :param theta_z: RZ angle
+    :param theta_zz: RZZ angle
+    :param layers: list of layers (can be list of layers in device)
+    :param init_state: Initial state to prepare. If None, will not prepare any state. If "+", will
+     add Hadamard gates to all qubits.
+    :return: QuantumCircuit
+    """
+    qubits = sorted({i for layer in layers for edge in layer for i in edge})
+    circ = qiskit.QuantumCircuit(max(qubits) + 1)
+
+    if init_state == "+":
+        print("init_state = +")
+        for q in qubits:
+            circ.h(q)
+
+    for _ in range(steps):
+        for q in qubits:
+            circ.rx(theta_x, q)
+            circ.rz(theta_z, q)
+
+        for layer in layers:
+            for edge in layer:
+                circ.rzz(theta_zz, *edge)
+        circ.barrier(qubits)
+
+    return circ
+```
+
+Selanjutnya kita membuat fungsi untuk menghitung nilai ekspektasi ideal menggunakan `AerSimulator`.
+
+Perlu diingat bahwa untuk Circuit yang besar (30 Qubit atau lebih), kami merekomendasikan penggunaan nilai yang telah dihitung sebelumnya dari simulasi belief-propagation (BP) PEPS. Kode ini menyertakan nilai yang telah dihitung sebelumnya untuk 35 Qubit sebagai contoh, berdasarkan pendekatan BP untuk mengevolusi jaringan tensor PEPS yang diperkenalkan [dalam makalah ini](https://www.science.org/doi/10.1126/sciadv.adk4321) (yang kita sebut PEPS-BP), menggunakan paket Python jaringan tensor [quimb.](https://joss.theoj.org/papers/10.21105/joss.00819)
+
+```python
+def calculate_ideal_evs(circ, obs, num_qubits, step):
+    # Predefined results for large circuits - calculated using bppeps for 3, 5, 7, 9 trotter steps
+    predefined_35 = [
+        0.79537,
+        0.78653,
+        0.79699,
+    ]
+
+    if num_qubits == 35:
+        print(
+            "Using precalculated ideal values for large circuits calculated with belief propagation PEPS. Currently only for 35 qubits."
+        )
+        return predefined_35[step]
+
+    else:
+        simulator = AerSimulator()
+
+        # Use Estimator primitive to get expectation value
+        estimator = Estimator(simulator)
+        sim_result = estimator.run([(circ, [obs])], precision=0.0001).result()
+
+        # Extracting the result
+        ideal_values = sim_result[0].data.evs[0]
+        return ideal_values
+```
+
+Kita menggunakan pemetaan lapisan $R_{ZZ}$ berbasis perangkat keras yang diambil dari perangkat Heron, dari mana kita memotong lapisan-lapisan sesuai dengan jumlah Qubit yang ingin kita simulasikan. Kita mendefinisikan subgraf untuk 10, 21, 28, dan 35 Qubit yang mempertahankan struktur 2D (silakan ubah ke subgraf favorit kamu):
+
+```python
+LAYERS_HERON_R2 = [  # the full set of hardware layers for Heron r2
+    [
+        (2, 3),
+        (6, 7),
+        (10, 11),
+        (14, 15),
+        (20, 21),
+        (16, 23),
+        (24, 25),
+        (17, 27),
+        (28, 29),
+        (18, 31),
+        (32, 33),
+        (19, 35),
+        (36, 41),
+        (42, 43),
+        (37, 45),
+        (46, 47),
+        (38, 49),
+        (50, 51),
+        (39, 53),
+        (60, 61),
+        (56, 63),
+        (64, 65),
+        (57, 67),
+        (68, 69),
+        (58, 71),
+        (72, 73),
+        (59, 75),
+        (76, 81),
+        (82, 83),
+        (77, 85),
+        (86, 87),
+        (78, 89),
+        (90, 91),
+        (79, 93),
+        (94, 95),
+        (100, 101),
+        (96, 103),
+        (104, 105),
+        (97, 107),
+        (108, 109),
+        (98, 111),
+        (112, 113),
+        (99, 115),
+        (116, 121),
+        (122, 123),
+        (117, 125),
+        (126, 127),
+        (118, 129),
+        (130, 131),
+        (119, 133),
+        (134, 135),
+        (140, 141),
+        (136, 143),
+        (144, 145),
+        (137, 147),
+        (148, 149),
+        (138, 151),
+        (152, 153),
+        (139, 155),
+    ],
+    [
+        (1, 2),
+        (3, 4),
+        (5, 6),
+        (7, 8),
+        (9, 10),
+        (11, 12),
+        (13, 14),
+        (21, 22),
+        (23, 24),
+        (25, 26),
+        (27, 28),
+        (29, 30),
+        (31, 32),
+        (33, 34),
+        (40, 41),
+        (43, 44),
+        (45, 46),
+        (47, 48),
+        (49, 50),
+        (51, 52),
+        (53, 54),
+        (55, 59),
+        (61, 62),
+        (63, 64),
+        (65, 66),
+        (67, 68),
+        (69, 70),
+        (71, 72),
+        (73, 74),
+        (80, 81),
+        (83, 84),
+        (85, 86),
+        (87, 88),
+        (89, 90),
+        (91, 92),
+        (93, 94),
+        (95, 99),
+        (101, 102),
+        (103, 104),
+        (105, 106),
+        (107, 108),
+        (109, 110),
+        (111, 112),
+        (113, 114),
+        (120, 121),
+        (123, 124),
+        (125, 126),
+        (127, 128),
+        (129, 130),
+        (131, 132),
+        (133, 134),
+        (135, 139),
+        (141, 142),
+        (143, 144),
+        (145, 146),
+        (147, 148),
+        (149, 150),
+        (151, 152),
+        (153, 154),
+    ],
+    [
+        (3, 16),
+        (7, 17),
+        (11, 18),
+        (22, 23),
+        (26, 27),
+        (30, 31),
+        (34, 35),
+        (21, 36),
+        (25, 37),
+        (29, 38),
+        (33, 39),
+        (41, 42),
+        (44, 45),
+        (48, 49),
+        (52, 53),
+        (43, 56),
+        (47, 57),
+        (51, 58),
+        (62, 63),
+        (66, 67),
+        (70, 71),
+        (74, 75),
+        (61, 76),
+        (65, 77),
+        (69, 78),
+        (73, 79),
+        (81, 82),
+        (84, 85),
+        (88, 89),
+        (92, 93),
+        (83, 96),
+        (87, 97),
+        (91, 98),
+        (102, 103),
+        (106, 107),
+        (110, 111),
+        (114, 115),
+        (101, 116),
+        (105, 117),
+        (109, 118),
+        (113, 119),
+        (121, 122),
+        (124, 125),
+        (128, 129),
+        (132, 133),
+        (123, 136),
+        (127, 137),
+        (131, 138),
+        (142, 143),
+        (146, 147),
+        (150, 151),
+        (154, 155),
+        (0, 1),
+        (4, 5),
+        (8, 9),
+        (12, 13),
+        (54, 55),
+        (15, 19),
+    ],
+]
+
+subgraphs = {  # the subgraphs for the different qubit counts such that it's 2D
+    10: list(range(22, 29)) + [16, 17, 37],
+    21: list(range(3, 12)) + list(range(23, 32)) + [16, 17, 18],
+    28: list(range(3, 12))
+    + list(range(23, 32))
+    + list(range(45, 50))
+    + [16, 17, 18, 37, 38],
+    35: list(range(3, 12))
+    + list(range(21, 32))
+    + list(range(41, 50))
+    + [16, 17, 18, 36, 37, 38],
+    42: list(range(3, 12))
+    + list(range(21, 32))
+    + list(range(41, 50))
+    + list(range(63, 68))
+    + [16, 17, 18, 36, 37, 38, 56, 57],
+}
+
+n_qubits = 35  # 21, 28, 35, 42
+```
+
+```python
+layers = [
+    [
+        edge
+        for edge in layer
+        if edge[0] in subgraphs[n_qubits] and edge[1] in subgraphs[n_qubits]
+    ]
+    for layer in LAYERS_HERON_R2
+]
+
+print(layers)
+```
+
+```text
+[[(6, 7), (10, 11), (16, 23), (24, 25), (17, 27), (28, 29), (18, 31), (36, 41), (42, 43), (37, 45), (46, 47), (38, 49)], [(3, 4), (5, 6), (7, 8), (9, 10), (21, 22), (23, 24), (25, 26), (27, 28), (29, 30), (43, 44), (45, 46), (47, 48)], [(3, 16), (7, 17), (11, 18), (22, 23), (26, 27), (30, 31), (21, 36), (25, 37), (29, 38), (41, 42), (44, 45), (48, 49), (4, 5), (8, 9)]]
+```
+
+Sekarang kita memvisualisasikan tata letak Qubit pada perangkat Heron untuk subgraf yang dipilih:
+
+```python
+service = QiskitRuntimeService(
+    channel=channel,
+    token=token,
+    instance=instance,
+)
+backend = service.backend("ibm_fez")  # or any available device
+
+selected_qubits = subgraphs[n_qubits]
+num_qubits = backend.configuration().num_qubits
+qubit_color = [
+    "#ff7f0e" if i in selected_qubits else "#d3d3d3"
+    for i in range(num_qubits)
+]
+
+plot_gate_map(
+    backend=backend,
+    figsize=(15, 10),
+    qubit_color=qubit_color,
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/4f02995559bb437f-0.avif)
+
+Perhatikan bahwa konektivitas tata letak Qubit yang dipilih tidak harus linear, dan dapat mencakup wilayah yang luas dari perangkat Heron tergantung pada jumlah Qubit yang dipilih.
+
+Sekarang kita menghasilkan Circuit Trotter dan observable magnetisasi rata-rata untuk jumlah Qubit dan parameter yang dipilih:
+
+```python
+# Chosen parameters:
+theta_x = 0.53
+theta_z = 0.1
+theta_zz = 1.0
+steps = 9
+
+circ = trotter_circuit_from_layers(steps, theta_x, theta_z, theta_zz, layers)
+print(
+    f"Circuit 2q layers: {circ.depth(filter_function=lambda instr: len(instr.qubits) == 2)}"
+)
+print("\nCircuit structure:")
+
+circ.draw("mpl", scale=0.8, fold=-1, idle_wires=False)
+plt.show()
+
+observable = qiskit.quantum_info.SparsePauliOp.from_sparse_list(
+    [("Z", [q], 1 / n_qubits) for q in subgraphs[n_qubits]],
+    np.max(subgraphs[n_qubits]) + 1,
+)  # Average magnetization observable
+
+print(observable)
+obs_list = [observable]
+```
+
+```text
+Circuit 2q layers: 27
+
+Circuit structure:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/qedma-2d-ising-with-qesem/extracted-outputs/1d34dd0d-1.avif)
+
+```text
+SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'ZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIIIIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', 'IIIIIIIIIIIZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j,
+ 0.02857143+0.j, 0.02857143+0.j, 0.02857143+0.j])
+```
