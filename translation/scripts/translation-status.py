@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import hashlib
+import re
 import json
 import sys
 from datetime import date
@@ -146,7 +147,7 @@ def get_locale_translations(locale: str) -> dict[str, list[str]]:
 
 
 def get_locale_drafts(locale: str) -> dict[str, list[str]]:
-    """Get draft files for a locale, grouped by section."""
+    """Get draft files for a locale, grouped by section. Excludes part files."""
     result = {"tutorials": [], "guides": [], "courses": [], "modules": [], "other": []}
     locale_dir = DRAFTS_DIR / locale
 
@@ -155,6 +156,9 @@ def get_locale_drafts(locale: str) -> dict[str, list[str]]:
 
     for mdx in sorted(locale_dir.rglob("*.mdx")):
         if mdx.name.startswith("_"):
+            continue
+        # Skip unconcatenated chunk part files (e.g. foo-part1.mdx)
+        if re.search(r'-part\d+\.mdx$', mdx.name):
             continue
         content = mdx.read_text(encoding="utf-8")
         if FALLBACK_MARKER in content:
@@ -172,6 +176,15 @@ def get_locale_drafts(locale: str) -> dict[str, list[str]]:
             result["other"].append(rel)
 
     return result
+
+
+def get_locale_part_files(locale: str) -> int:
+    """Count unconcatenated chunk part files for a locale."""
+    locale_dir = DRAFTS_DIR / locale
+    if not locale_dir.exists():
+        return 0
+    return sum(1 for mdx in locale_dir.rglob("*.mdx")
+               if re.search(r'-part\d+\.mdx$', mdx.name))
 
 
 def get_validation_summary(locale: str, status: dict) -> tuple[int, int]:
@@ -267,7 +280,7 @@ def format_overview(en_files: dict, locales: list[str], status: dict,
 
     # Header
     has_val = validation_results is not None
-    header = f"{'Locale':<8} {'Tutorials':>10} {'Guides':>10} {'Courses':>10} {'Modules':>10} {'Total':>10} {'Drafts':>6}"
+    header = f"{'Locale':<8} {'Tutorials':>10} {'Guides':>10} {'Courses':>10} {'Modules':>10} {'Total':>10} {'Drafts':>8}"
     if has_val:
         header += f"  {'Validated':>12}"
     lines.append(header)
@@ -285,9 +298,14 @@ def format_overview(en_files: dict, locales: list[str], status: dict,
         t_total = t_tut + t_gui + t_crs + t_mod + t_oth
 
         d_total = sum(len(v) for v in drafts.values())
+        parts = get_locale_part_files(locale)
 
         def frac(n, d):
             return f"{n}/{d}"
+
+        drafts_col = str(d_total)
+        if parts:
+            drafts_col += f"+{parts}p"
 
         row = (f"{locale.upper():<8} "
                f"{frac(t_tut, totals['tutorials']):>10} "
@@ -295,7 +313,7 @@ def format_overview(en_files: dict, locales: list[str], status: dict,
                f"{frac(t_crs, totals['courses']):>10} "
                f"{frac(t_mod, totals['modules']):>10} "
                f"{frac(t_total, total_all):>10} "
-               f"{d_total:>6}")
+               f"{drafts_col:>8}")
 
         if has_val:
             p, f_ = validation_results.get(locale, (-1, -1))
