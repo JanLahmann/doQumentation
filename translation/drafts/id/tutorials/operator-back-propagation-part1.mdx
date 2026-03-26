@@ -1,0 +1,403 @@
+---
+title: "Operator backpropagation (OBP) untuk estimasi nilai ekspektasi"
+sidebar_label: "Operator backpropagation (OBP) untuk estimasi nilai ekspektasi"
+description: "Dalam tutorial ini kita akan mengimplementasikan pola Qiskit untuk mensimulasikan dinamika kuantum rantai spin Heisenberg menggunakan qiskit-addon-obp"
+notebook_path: "tutorials/operator-back-propagation.ipynb"
+---
+{/* doqumentation-source-hash: fde62368 */}
+
+<OpenInLabBanner notebookPath="tutorials/operator-back-propagation.ipynb" />
+
+
+
+{/* cspell:ignore fontsize edgecolor circo simeq  // This in an equation and isn't being ignored correctly */}
+
+*Estimasi penggunaan: 16 menit pada prosesor Eagle r3 (CATATAN: Ini hanya estimasi. Waktu berjalan kamu bisa berbeda.)*
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime rustworkx
+```
+
+```python
+# This cell is hidden from users;
+# it disables linting rules.
+# ruff: noqa
+```
+
+## Latar Belakang {#background}
+
+Operator backpropagation adalah teknik yang melibatkan penyerapan operasi dari akhir Circuit kuantum ke dalam observable yang diukur, sehingga secara umum mengurangi kedalaman Circuit dengan biaya berupa tambahan suku pada observable. Tujuannya adalah untuk membackpropagasi sebanyak mungkin Circuit tanpa membiarkan observable tumbuh terlalu besar. Implementasi berbasis Qiskit tersedia di addon OBP Qiskit; detail selengkapnya bisa ditemukan di [dokumentasi](/guides/qiskit-addons-obp) terkait beserta [contoh sederhana](/guides/qiskit-addons-obp-get-started) untuk memulai.
+
+Perhatikan contoh Circuit yang di dalamnya observable $O = \sum_P c_P P$ akan diukur, di mana $P$ adalah Pauli dan $c_P$ adalah koefisien. Mari kita notasikan Circuit tersebut sebagai uniter tunggal $U$ yang secara logis dapat dibagi menjadi $U = U_C U_Q$ seperti yang ditunjukkan pada gambar di bawah.
+
+![Diagram Circuit yang menunjukkan Uq diikuti oleh Uc](/docs/images/tutorials/improving-estimation-of-expectation-values-with-operator-backpropagation/logical-partitioning.avif)
+
+Operator backpropagation menyerap uniter $U_C$ ke dalam observable dengan mengevolusinya sebagai $O' = U_C^{\dagger}OU_C = \sum_P c_P U_C^{\dagger}PU_C$. Dengan kata lain, sebagian komputasi dilakukan secara klasikal melalui evolusi observable dari $O$ ke $O'$. Masalah semula kini dapat diformulasikan ulang sebagai pengukuran observable $O'$ untuk Circuit baru yang memiliki kedalaman lebih rendah dengan uniter $U_Q$.
+
+Uniter $U_C$ direpresentasikan sebagai sejumlah irisan $U_C = U_S U_{S-1}...U_2U_1$. Ada beberapa cara untuk mendefinisikan sebuah irisan. Misalnya, pada Circuit contoh di atas, setiap lapisan $R_{zz}$ dan setiap lapisan Gate $R_x$ dapat dianggap sebagai irisan individual. Backpropagation melibatkan kalkulasi $O' = \Pi_{s=1}^S \sum_P c_P U_s^{\dagger} P U_s$ secara klasikal. Setiap irisan $U_s$ dapat direpresentasikan sebagai $U_s = exp(\frac{-i\theta_s P_s}{2})$, di mana $P_s$ adalah Pauli $n$-Qubit dan $\theta_s$ adalah skalar. Mudah untuk diverifikasi bahwa
+
+$$
+U_s^{\dagger} P U_s = P \qquad \text{if} ~[P,P_s] = 0,
+$$
+$$
+U_s^{\dagger} P U_s = \qquad cos(\theta_s)P + i sin(\theta_s)P_sP \qquad \text{if} ~\{P,P_s\} = 0
+$$
+
+Pada contoh di atas, jika $\{P,P_s\} = 0$, maka kita perlu menjalankan dua Circuit kuantum, alih-alih satu, untuk menghitung nilai ekspektasi. Oleh karena itu, backpropagation dapat meningkatkan jumlah suku dalam observable, sehingga menyebabkan jumlah eksekusi Circuit yang lebih tinggi. Salah satu cara untuk memungkinkan backpropagation lebih dalam ke Circuit, sambil mencegah operator tumbuh terlalu besar, adalah dengan memangkas suku-suku yang memiliki koefisien kecil, daripada menambahkannya ke operator. Misalnya, pada contoh di atas, seseorang dapat memilih untuk memangkas suku yang melibatkan $P_sP$ selama $\theta_s$ cukup kecil. Memangkas suku dapat menghasilkan lebih sedikit Circuit kuantum yang perlu dieksekusi, namun hal ini menghasilkan beberapa kesalahan dalam kalkulasi nilai ekspektasi akhir yang sebanding dengan besarnya koefisien suku-suku yang dipangkas.
+
+Tutorial ini mengimplementasikan [pola Qiskit](/guides/intro-to-patterns) untuk mensimulasikan dinamika kuantum rantai spin Heisenberg menggunakan <a href="https://github.com/Qiskit/qiskit-addon-obp">qiskit-addon-obp</a>.
+## Persyaratan {#requirements}
+
+Sebelum memulai tutorial ini, pastikan kamu telah menginstal hal-hal berikut:
+
+- Qiskit SDK v1.2 atau lebih baru (`pip install qiskit`)
+- Qiskit Runtime v0.28 atau lebih baru (`pip install qiskit-ibm-runtime`)
+- OBP Qiskit addon (`pip install qiskit-addon-obp`)
+- Qiskit addon utils (`pip install qiskit-addon-utils`)
+## Pengaturan {#setup}
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from qiskit.primitives import StatevectorEstimator as Estimator
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import CouplingMap
+from qiskit.synthesis import LieTrotter
+
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_utils.slicing import slice_by_gate_types, combine_slices
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+from rustworkx.visualization import graphviz_draw
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import EstimatorV2, EstimatorOptions
+```
+
+## Bagian I: Rantai spin Heisenberg skala kecil {#part-i-small-scale-heisenberg-spin-chain}
+### Langkah 1: Petakan input klasikal ke masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+#### Petakan evolusi waktu model kuantum Heisenberg ke eksperimen kuantum. {#map-the-time-evolution-of-a-quantum-heisenberg-model-to-a-quantum-experiment}
+
+Paket [qiskit_addon_utils](https://github.com/Qiskit/qiskit-addon-utils) menyediakan beberapa fungsionalitas yang dapat digunakan kembali untuk berbagai tujuan.
+
+Modul [qiskit_addon_utils.problem_generators](https://docs.quantum.ibm.com/api/qiskit-addon-utils/problem-generators)-nya menyediakan fungsi untuk menghasilkan Hamiltonian seperti Heisenberg pada graf konektivitas tertentu.
+Graf ini bisa berupa [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html) atau [CouplingMap](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.CouplingMap) sehingga mudah digunakan dalam alur kerja berbasis Qiskit.
+
+Berikut ini, kita membuat `CouplingMap` rantai linier dari 10 Qubit.
+
+```python
+num_qubits = 10
+layout = [(i - 1, i) for i in range(1, num_qubits)]
+
+# Instantiate a CouplingMap object
+coupling_map = CouplingMap(layout)
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/de8ce35e-a2c5-474f-adb9-88c9afb2bd76-0.avif)
+
+Selanjutnya, kita membuat operator Pauli yang memodelkan Hamiltonian Heisenberg XYZ.
+
+$$
+{\hat{\mathcal{H}}_{XYZ} = \sum_{(j,k)\in E} (J_{x} \sigma_j^{x} \sigma_{k}^{x} + J_{y} \sigma_j^{y} \sigma_{k}^{y} + J_{z} \sigma_j^{z} \sigma_{k}^{z}) + \sum_{j\in V} (h_{x} \sigma_j^{x} + h_{y} \sigma_j^{y} + h_{z} \sigma_j^{z})}
+$$
+
+Di mana $G(V,E)$ adalah graf dari coupling map yang diberikan.
+
+```python
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIIY', 'IIIIIIIIIZ', 'IIIIIIIIXI', 'IIIIIIIIYI', 'IIIIIIIIZI', 'IIIIIIIXII', 'IIIIIIIYII', 'IIIIIIIZII', 'IIIIIIXIII', 'IIIIIIYIII', 'IIIIIIZIII', 'IIIIIXIIII', 'IIIIIYIIII', 'IIIIIZIIII', 'IIIIXIIIII', 'IIIIYIIIII', 'IIIIZIIIII', 'IIIXIIIIII', 'IIIYIIIIII', 'IIIZIIIIII', 'IIXIIIIIII', 'IIYIIIIIII', 'IIZIIIIIII', 'IXIIIIIIII', 'IYIIIIIIII', 'IZIIIIIIII', 'XIIIIIIIII', 'YIIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+Dari operator Qubit, kita bisa membuat Circuit kuantum yang memodelkan evolusi waktunya.
+Sekali lagi, modul [qiskit_addon_utils.problem_generators](https://docs.quantum.ibm.com/api/qiskit-addon-utils/problem-generators) hadir dengan fungsi yang tepat untuk melakukan hal tersebut:
+
+```python
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=2),
+)
+circuit.draw("mpl", style="iqp", scale=0.6)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/1d68f197-ffa4-49de-9fe8-243b1facbd00-0.avif)
+
+### Langkah 2: Optimalkan masalah untuk eksekusi hardware kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+#### Buat irisan Circuit untuk dibackpropagasi {#create-circuit-slices-to-backpropagate}
+
+Ingat, fungsi ``backpropagate`` akan membackpropagasi seluruh irisan Circuit sekaligus, sehingga pilihan cara memotong dapat berdampak pada seberapa baik backpropagation bekerja untuk masalah tertentu. Di sini, kita akan mengelompokkan Gate dengan tipe yang sama ke dalam irisan menggunakan fungsi [slice_by_gate_types](https://docs.quantum.ibm.com/api/qiskit-addon-utils/slicing#slice_by_gate_types).
+
+Untuk diskusi lebih detail tentang pemotongan Circuit, cek [panduan how-to](https://qiskit.github.io/qiskit-addon-utils/how_tos/create_circuit_slices.html) dari paket [qiskit-addon-utils](https://github.com/Qiskit/qiskit-addon-utils).
+
+```python
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+#### Batasi seberapa besar operator boleh tumbuh selama backpropagation {#constrain-how-large-the-operator-may-grow-during-backpropagation}
+
+Selama backpropagation, jumlah suku dalam operator secara umum akan mendekati $4^N$ dengan cepat, di mana $N$ adalah jumlah Qubit. Ketika dua suku dalam operator tidak berkomutasi secara qubit-wise, kita memerlukan Circuit terpisah untuk mendapatkan nilai ekspektasi yang sesuai dengan keduanya. Misalnya, jika kita memiliki observable 2-Qubit $O = 0.1 XX + 0.3 IZ - 0.5 IX$, maka karena $[XX,IX] = 0$, pengukuran dalam satu basis sudah cukup untuk menghitung nilai ekspektasi kedua suku ini. Namun, $IZ$ anti-berkomutasi dengan dua suku lainnya. Jadi kita memerlukan pengukuran basis terpisah untuk menghitung nilai ekspektasi $IZ$. Dengan kata lain, kita memerlukan dua, bukan satu, Circuit untuk menghitung $\langle O \rangle$. Seiring bertambahnya jumlah suku dalam operator, ada kemungkinan jumlah eksekusi Circuit yang diperlukan juga meningkat.
+
+Ukuran operator dapat dibatasi dengan menentukan argumen kata kunci ``operator_budget`` dari fungsi ``backpropagate``, yang menerima instance [OperatorBudget](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-simplify#operatorbudget).
+
+Untuk mengontrol jumlah sumber daya (waktu) tambahan yang dialokasikan, kita membatasi jumlah maksimum grup Pauli yang berkomutasi secara qubit-wise yang boleh dimiliki observable yang telah dibackpropagasi. Di sini kita tentukan bahwa backpropagation harus berhenti ketika jumlah grup Pauli yang berkomutasi secara qubit-wise dalam operator melebihi 8.
+
+```python
+op_budget = OperatorBudget(max_qwc_groups=8)
+```
+
+#### Backpropagasi irisan dari Circuit {#backpropagate-slices-from-the-circuit}
+
+Pertama kita tentukan observable sebagai $M_Z = \frac{1}{N} \sum_{i=1}^N \langle Z_i \rangle$, di mana $N$ adalah jumlah Qubit. Kita akan membackpropagasi irisan dari Circuit evolusi waktu hingga suku-suku dalam observable tidak lagi dapat digabungkan menjadi delapan grup Pauli yang berkomutasi secara qubit-wise atau lebih sedikit.
+
+```python
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / num_qubits) for i in range(num_qubits)],
+    num_qubits=num_qubits,
+)
+observable
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j, 0.1+0.j,
+ 0.1+0.j, 0.1+0.j])
+```
+
+Di bawah ini kamu akan melihat bahwa kita telah membackpropagasi enam irisan, dan suku-sukunya digabungkan menjadi enam, bukan delapan grup. Ini berarti membackpropagasi satu irisan lagi akan menyebabkan jumlah grup Pauli melebihi delapan. Kita dapat memverifikasi bahwa hal ini memang terjadi dengan memeriksa metadata yang dikembalikan. Perlu dicatat juga bahwa pada bagian ini transformasi Circuit bersifat eksak. Artinya, tidak ada suku dari observable baru $O'$ yang dipangkas. Circuit yang telah dibackpropagasi dan operator yang telah dibackpropagasi memberikan hasil yang sama persis dengan Circuit dan operator aslinya.
+
+```python
+# Backpropagate slices onto the observable
+bp_obs, remaining_slices, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget
+)
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", fold=-1, scale=0.6)
+```
+
+```text
+Backpropagated 6 slices.
+New observable has 60 terms, which can be combined into 6 groups.
+Note that backpropagating one more slice would result in 114 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/65ec9cb1-a4ed-497b-a616-180e9659956f-1.avif)
+
+Selanjutnya, kita akan menentukan masalah yang sama dengan batasan yang sama pada ukuran output observable. Namun kali ini, kita mengalokasikan anggaran kesalahan untuk setiap irisan menggunakan fungsi [setup_budget](https://docs.quantum.ibm.com/api/qiskit-addon-obp/utils-truncating#setup_budget). Suku-suku Pauli dengan koefisien kecil akan dipangkas dari setiap irisan hingga anggaran kesalahan terisi, dan sisa anggaran akan ditambahkan ke anggaran irisan berikutnya. Perlu dicatat bahwa dalam kasus ini, transformasi akibat backpropagation bersifat aproksimasi karena beberapa suku dalam operator dipangkas.
+
+Untuk mengaktifkan pemangkasan ini, kita perlu menyiapkan anggaran kesalahan seperti berikut:
+
+```python
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+Perlu dicatat bahwa dengan mengalokasikan kesalahan `5e-3` per irisan untuk pemangkasan, kita dapat menghapus 1 irisan lagi dari Circuit, sambil tetap berada dalam anggaran asli berupa delapan grup Pauli yang berkomutasi dalam observable. Secara default, `backpropagate` menggunakan norma L1 dari koefisien yang dipangkas untuk membatasi total kesalahan yang ditimbulkan dari pemangkasan. Untuk opsi lain, lihat [panduan how-to tentang menentukan p_norm](https://qiskit.github.io/qiskit-addon-obp/how_tos/bound_error_using_p_norm.html).
+
+Pada contoh khusus ini di mana kita telah membackpropagasi tujuh irisan, total kesalahan pemangkasan seharusnya tidak melebihi ``(5e-3 error/irisan) * (7 irisan) = 3.5e-2``.
+Untuk diskusi lebih lanjut tentang mendistribusikan anggaran kesalahan di seluruh irisan, cek [panduan how-to ini](https://qiskit.github.io/qiskit-addon-obp/how_tos/truncate_operator_terms.html).
+
+```python
+# Run the same experiment but truncate observable terms with small coefficients
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable,
+    slices,
+    operator_budget=op_budget,
+    truncation_error_budget=truncation_error_budget,
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(
+    remaining_slices_trunc, include_barriers=False
+)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 82 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 3.266e-02
+Note that backpropagating one more slice would result in 114 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/5e8bae1a-ef18-4eb0-9d2a-1ac7bbdced3b-1.avif)
+
+Kita perlu dicatat bahwa pemangkasan memungkinkan kita untuk membackpropagasi lebih jauh tanpa peningkatan jumlah grup yang berkomutasi dalam observable.
+#### Sekarang setelah kita memiliki ansatz yang diperkecil dan observable yang diperluas, kita bisa men-transpile eksperimen kita ke Backend. {#now-that-we-have-our-reduced-ansatz-and-expanded-observables-we-can-transpile-our-experiments-to-the-backend}
+
+Di sini kita akan menggunakan komputer kuantum IBM&reg; 127-Qubit untuk mendemonstrasikan cara men-transpile ke Backend QPU.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+```
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+Kita membuat <a href="/guides/primitive-input-output">Primitive Unified Bloc (PUB)</a> untuk masing-masing dari tiga kasus.
+
+```python
+pub = (circuit_isa, observable_isa)
+bp_pub = (bp_circuit_isa, bp_obs_isa)
+bp_trunc_pub = (bp_circuit_trunc_isa, bp_obs_trunc_isa)
+```
+
+### Langkah 3: Eksekusi menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+#### Hitung nilai ekspektasi {#calculate-expectation-value}
+
+Akhirnya, kita dapat menjalankan eksperimen yang telah dibackpropagasi dan membandingkannya dengan eksperimen penuh menggunakan [StatevectorEstimator](https://docs.quantum.ibm.com/api/qiskit/qiskit.primitives.StatevectorEstimator) tanpa derau.
+
+```python
+ideal_estimator = Estimator()
+
+# Run the experiments using Estimator primitive to obtain the exact outcome
+result_exact = (
+    ideal_estimator.run([(circuit, observable)]).result()[0].data.evs.item()
+)
+print(f"Exact expectation value: {result_exact}")
+```
+
+```text
+Exact expectation value: 0.8871244838989416
+```
+
+Kita akan menggunakan <a href="/guides/configure-error-mitigation">resilience_level</a> = 2 untuk contoh ini.
+
+```python
+options = EstimatorOptions()
+options.default_precision = 0.011
+options.resilience_level = 2
+
+estimator = EstimatorV2(mode=backend, options=options)
+```
+
+```python
+job = estimator.run([pub, bp_pub, bp_trunc_pub])
+```
+
+### Langkah 4: Pasca-proses dan kembalikan hasil ke format klasikal yang diinginkan {#step-4-post-process-and-return-result-to-desired-classical-format}
+
+```python
+result_no_bp = job.result()[0].data.evs.item()
+result_bp = job.result()[1].data.evs.item()
+result_bp_trunc = job.result()[2].data.evs.item()
+
+std_no_bp = job.result()[0].data.stds.item()
+std_bp = job.result()[1].data.stds.item()
+std_bp_trunc = job.result()[2].data.stds.item()
+```
+
+```python
+print(
+    f"Expectation value without backpropagation: {result_no_bp} ± {std_no_bp}"
+)
+print(f"Backpropagated expectation value: {result_bp} ± {std_bp}")
+print(
+    f"Backpropagated expectation value with truncation: {result_bp_trunc} ± {std_bp_trunc}"
+)
+```
+
+```text
+Expectation value without backpropagation: 0.8033194665993642
+Backpropagated expectation value: 0.8599808781259016
+Backpropagated expectation value with truncation: 0.8868736004169483
+```
+
+```python
+methods = [
+    "No backpropagation",
+    "Backpropagation",
+    "Backpropagation w/ truncation",
+]
+values = [result_no_bp, result_bp, result_bp_trunc]
+stds = [std_no_bp, std_bp, std_bp_trunc]
+
+ax = plt.gca()
+plt.bar(methods, values, color="#a56eff", width=0.4, edgecolor="#8a3ffc")
+plt.axhline(result_exact)
+ax.set_ylim([0.6, 0.92])
+plt.text(0.2, 0.895, "Exact result")
+ax.set_ylabel(r"$M_Z$", fontsize=12)
+```
+
+```text
+Text(0, 0.5, '$M_Z$')
+```
+
+![Output of the previous code cell](/docs/images/tutorials/operator-back-propagation/extracted-outputs/b444d8bc-c800-4aa3-9927-eb807e92194f-1.avif)

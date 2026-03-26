@@ -1,0 +1,189 @@
+## Langkah 1: Petakan input klasik ke masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Langkah pertama adalah membuat sekumpulan Circuit kuantum untuk membenchmark semua kandidat tautan Bell pair yang disesuaikan dengan topologi perangkat. Kita akan mencari secara terprogram pada peta pasangan perangkat untuk semua rantai empat Qubit yang terhubung secara linier. Setiap rantai seperti itu (dilabeli dengan indeks Qubit $[q0-q1-q2-q3]$) berfungsi sebagai kasus uji untuk Circuit pertukaran entanglement. Dengan mengidentifikasi semua jalur panjang 4 yang mungkin, kita memastikan cakupan maksimum untuk kemungkinan pengelompokan Qubit yang dapat merealisasikan protokol ini.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True)
+```
+
+Kita menghasilkan rantai-rantai ini dengan menggunakan fungsi pembantu yang melakukan pencarian greedy pada graf perangkat. Fungsi ini mengembalikan "stripe" berisi empat rantai empat-Qubit yang dibundel menjadi grup 16-Qubit (Circuit dinamis saat ini membatasi ukuran register pengukuran menjadi `16` Qubit). Pembundalan memungkinkan kita menjalankan beberapa eksperimen empat-Qubit secara paralel pada bagian chip yang berbeda, sehingga penggunaan seluruh perangkat menjadi lebih efisien. Setiap stripe 16-Qubit berisi empat rantai yang tidak saling tumpang-tindih, artinya tidak ada Qubit yang digunakan kembali dalam satu grup. Misalnya, satu stripe bisa terdiri dari rantai $[0-1-2-3]$, $[4-5-6-7]$, $[8-9-10-11]$, dan $[12-13-14-15]$ yang semuanya dikemas bersama. Qubit yang tidak dimasukkan dalam stripe mana pun dikembalikan dalam variabel `leftover`.
+
+```python
+from itertools import chain
+from collections import defaultdict
+
+def stripes16_from_backend(backend):
+    """
+    Creates stripes of 16 qubits, four non-overlapping  four-qubit chains, that cover as much of
+    the coupling map as possible. Returns any unused qubits as leftovers.
+    """
+    # get the undirected adjacency list
+    edges = backend.coupling_map.get_edges()
+    graph = defaultdict(set)
+    for u, v in edges:
+        graph[u].add(v)
+        graph[v].add(u)
+
+    qubits = sorted(graph)  # all qubit indices that appear
+
+    # greedy search for 4-long linear chains (blocks) ────────────
+    used = set()  # qubits already placed in a block
+    blocks = []  # each block is a four-qubit list
+
+    for q in qubits:  # deterministic order for reproducibility
+        if q in used:
+            continue  # already consumed by earlier block
+
+        # depth-first "straight" walk of length 3 without revisiting nodes
+        def extend(path):
+            if len(path) == 4:
+                return path
+            tip = path[-1]
+            for nbr in sorted(graph[tip]):  # deterministic
+                if nbr not in path and nbr not in used:
+                    maybe = extend(path + [nbr])
+                    if maybe:
+                        return maybe
+            return None
+
+        block = extend([q])
+        if block:  # found a 4-node path
+            blocks.append(block)
+            used.update(block)
+
+    # bundle four four-qubit blocks into one 16-qubit stripe (max number of measurement compatible with if-else)
+    stripes = [
+        list(chain.from_iterable(blocks[i : i + 4]))
+        for i in range(0, len(blocks) // 4 * 4, 4)  # full groups of four
+    ]
+
+    leftovers = set(qubits) - set(chain.from_iterable(stripes))
+    return stripes, leftovers
+```
+
+```python
+initial_layouts, leftover = stripes16_from_backend(backend)
+```
+
+Selanjutnya, kita membangun Circuit untuk setiap stripe 16-Qubit. Rutinitas ini melakukan hal berikut untuk setiap rantai:
+
+* Siapkan Bell pair tengah: Terapkan Hadamard pada Qubit 1 dan CNOT dari Qubit 1 ke Qubit 2. Ini menentanglement Qubit 1 dan 2 (membuat state Bell $|\Phi^+\rangle = (|00\rangle + |11\rangle)/\sqrt{2}$).
+* Entangle Qubit tepi: Terapkan CNOT dari Qubit 0 ke Qubit 1, dan CNOT dari Qubit 2 ke Qubit 3. Ini menghubungkan pasangan yang awalnya terpisah sehingga Qubit 0 dan 3 akan menjadi terentanglement setelah langkah-langkah berikutnya. Hadamard pada Qubit 2 juga diterapkan (ini, dikombinasikan dengan CNOT sebelumnya, membentuk bagian dari pengukuran Bell pada Qubit 1 dan 2). Pada titik ini, Qubit 0 dan 3 belum terentanglement, tetapi Qubit 1 dan 2 terentanglement dengan keduanya dalam state empat-Qubit yang lebih besar.
+* Pengukuran mid-circuit dan feedforward: Qubit 1 dan 2 (Qubit tengah) diukur dalam basis komputasi, menghasilkan dua bit klasik. Berdasarkan hasil pengukuran tersebut, kita menerapkan operasi kondisional: jika pengukuran Qubit 1 (sebut bit ini $m_{12}$) bernilai 1, kita menerapkan Gate $X$ pada Qubit 3; jika pengukuran Qubit 2 ($m_{21}$) bernilai 1, kita menerapkan Gate $Z$ pada Qubit 0. Gate kondisional ini (direalisasikan menggunakan konstruk `if_test`/`if_else` Qiskit) mengimplementasikan koreksi teleportasi standar. Koreksi ini "membatalkan" flip Pauli acak yang terjadi akibat proyeksi Qubit 1 dan 2, memastikan bahwa Qubit 0 dan 3 berakhir pada state Bell yang diketahui, terlepas dari hasil pengukuran. Setelah langkah ini, Qubit 0 dan 3 seharusnya secara ideal terentanglement dalam state Bell $|\Phi^+\rangle$.
+* Ukur stabilizer Bell pair: Kita kemudian membagi menjadi dua versi Circuit. Pada versi pertama, kita mengukur stabilizer $ZZ$ pada Qubit 0 dan 3. Pada versi kedua, kita mengukur stabilizer $XX$ pada Qubit-Qubit tersebut.
+
+Untuk setiap layout awal empat-Qubit, fungsi di atas mengembalikan dua Circuit (satu untuk pengukuran stabilizer $ZZ$, satu untuk $XX$). Di akhir langkah ini, kita memiliki daftar Circuit yang mencakup setiap rantai empat-Qubit di perangkat. Circuit-Circuit ini mencakup pengukuran mid-circuit dan operasi kondisional (if/else), yang merupakan instruksi kunci dari Circuit dinamis.
+
+```python
+circuits = create_bell_stab(initial_layouts)
+circuits[-1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/bd04755f-0.avif)
+
+## Langkah 2: Optimalkan masalah untuk eksekusi pada perangkat keras kuantum {#step-2-optimize-the-problem-for-quantum-hardware-execution}
+
+Sebelum menjalankan Circuit kita pada perangkat keras nyata, kita perlu melakukan transpilasi agar sesuai dengan batasan fisik perangkat. Transpilasi akan memetakan Circuit abstrak ke Qubit fisik dan set Gate perangkat yang dipilih. Karena kita sudah memilih Qubit fisik tertentu untuk setiap rantai (dengan menyediakan `initial_layout` ke generator Circuit), kita menggunakan `optimization_level=0` pada Transpiler dengan layout tetap tersebut. Ini memberi tahu Qiskit untuk tidak menetapkan ulang Qubit atau melakukan optimasi berat yang dapat mengubah struktur Circuit. Kita ingin mempertahankan urutan operasi (terutama Gate kondisional) persis seperti yang ditentukan.
+
+```python
+isa_circuits = []
+for ind, init_layout in enumerate(initial_layouts):
+    pm = generate_preset_pass_manager(
+        optimization_level=0, backend=backend, initial_layout=init_layout
+    )
+    isa_circ = pm.run(circuits[ind * 2 : ind * 2 + 2])
+    isa_circuits.extend(isa_circ)
+```
+
+```python
+isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/3ad620f7-0.avif)
+
+## Langkah 3: Eksekusi menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+
+Kita sekarang bisa menjalankan eksperimen pada perangkat kuantum. Kita menggunakan Qiskit Runtime dan primitif Sampler-nya untuk mengeksekusi sekumpulan Circuit secara efisien.
+
+```python
+sampler = Sampler(mode=backend)
+sampler.options.environment.job_tags = ["cut-bell-pair-test"]
+job = sampler.run(isa_circuits)
+```
+
+## Langkah 4: Pasca-proses dan kembalikan hasil dalam format klasik yang diinginkan {#step-4-post-process-and-return-result-in-the-desired-classical-format}
+
+Langkah terakhir adalah menghitung metrik mean squared error (MSE) untuk setiap grup Qubit yang diuji dan merangkum hasilnya. Untuk setiap rantai, kita sekarang memiliki $\langle Z_0Z_3\rangle$ dan $\langle X_0X_3\rangle$ yang terukur. Jika Qubit 0 dan 3 terentanglement sempurna dalam state Bell $|\Phi^+\rangle$, kita akan mengharapkan keduanya bernilai +1. Kita mengkuantifikasi penyimpangan menggunakan MSE:
+
+$$\text{MSE} = \frac{( \langle Z_0Z_3\rangle - 1)^2 + (\langle X_0X_3\rangle - 1)^2}{2}.$$
+
+Nilai ini adalah 0 untuk Bell pair sempurna, dan meningkat seiring state terentanglement menjadi lebih berisik (dengan hasil acak memberikan ekspektasi sekitar 0, MSE akan mendekati 1). Kode ini menghitung MSE untuk setiap grup empat-Qubit.
+
+Hasilnya mengungkapkan rentang kualitas entanglement yang luas di seluruh perangkat. Hal ini mengonfirmasi temuan makalah bahwa variasi kualitas Bell state bisa lebih dari satu orde besarnya tergantung pada Qubit fisik mana yang digunakan. Secara praktis, ini berarti bahwa wilayah atau tautan tertentu pada chip jauh lebih baik dalam melakukan operasi pengukuran mid-circuit dan feedforward dibandingkan yang lain. Faktor-faktor seperti kesalahan readout Qubit, masa hidup Qubit, dan crosstalk kemungkinan berkontribusi pada perbedaan-perbedaan ini. Misalnya, jika satu rantai mencakup Qubit readout yang sangat berisik, pengukuran mid-circuit bisa tidak dapat diandalkan, sehingga menghasilkan fidelitas yang buruk untuk pasangan terentanglement tersebut (MSE tinggi).
+
+```python
+layouts_mse = get_mse(job.result(), initial_layouts)
+```
+
+```text
+layout [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+qubits: [0, 1, 2, 3], mse:, 0.0312
+qubits: [4, 5, 6, 7], mse:, 0.0491
+qubits: [8, 9, 10, 11], mse:, 0.0711
+qubits: [12, 13, 14, 15], mse:, 0.0436
+
+layout [16, 23, 22, 21, 17, 27, 26, 25, 18, 31, 30, 29, 19, 35, 34, 33]
+qubits: [16, 23, 22, 21], mse:, 0.0197
+qubits: [17, 27, 26, 25], mse:, 0.113
+qubits: [18, 31, 30, 29], mse:, 0.0287
+qubits: [19, 35, 34, 33], mse:, 0.0433
+
+layout [36, 41, 42, 43, 37, 45, 46, 47, 38, 49, 50, 51, 39, 53, 54, 55]
+qubits: [36, 41, 42, 43], mse:, 0.1645
+qubits: [37, 45, 46, 47], mse:, 0.0409
+qubits: [38, 49, 50, 51], mse:, 0.0519
+qubits: [39, 53, 54, 55], mse:, 0.0829
+
+layout [56, 63, 62, 61, 57, 67, 66, 65, 58, 71, 70, 69, 59, 75, 74, 73]
+qubits: [56, 63, 62, 61], mse:, 0.8663
+qubits: [57, 67, 66, 65], mse:, 0.0375
+qubits: [58, 71, 70, 69], mse:, 0.0664
+qubits: [59, 75, 74, 73], mse:, 0.0291
+
+layout [76, 81, 82, 83, 77, 85, 86, 87, 78, 89, 90, 91, 79, 93, 94, 95]
+qubits: [76, 81, 82, 83], mse:, 0.0598
+qubits: [77, 85, 86, 87], mse:, 0.313
+qubits: [78, 89, 90, 91], mse:, 0.0679
+qubits: [79, 93, 94, 95], mse:, 0.0505
+
+layout [96, 103, 102, 101, 97, 107, 106, 105, 98, 111, 110, 109, 99, 115, 114, 113]
+qubits: [96, 103, 102, 101], mse:, 0.0302
+qubits: [97, 107, 106, 105], mse:, 0.0384
+qubits: [98, 111, 110, 109], mse:, 0.0375
+qubits: [99, 115, 114, 113], mse:, 0.1051
+
+layout [116, 121, 122, 123, 117, 125, 126, 127, 118, 129, 130, 131, 119, 133, 134, 135]
+qubits: [116, 121, 122, 123], mse:, 0.1624
+qubits: [117, 125, 126, 127], mse:, 0.7246
+qubits: [118, 129, 130, 131], mse:, 0.5919
+qubits: [119, 133, 134, 135], mse:, 0.5277
+
+layout [136, 143, 142, 141, 137, 147, 146, 145, 138, 151, 150, 149, 139, 155, 154, 153]
+qubits: [136, 143, 142, 141], mse:, 0.0383
+qubits: [137, 147, 146, 145], mse:, 1.0187
+qubits: [138, 151, 150, 149], mse:, 0.1531
+qubits: [139, 155, 154, 153], mse:, 0.0471
+```
+
+Terakhir, kita memvisualisasikan performa keseluruhan dengan memplot cumulative distribution function (CDF) dari nilai-nilai MSE untuk semua rantai. Plot CDF menampilkan ambang batas MSE pada sumbu-x, dan proporsi pasangan Qubit yang memiliki MSE paling banyak sebesar itu pada sumbu-y. Kurva ini dimulai dari nol dan mendekati satu seiring ambang batas berkembang untuk mencakup semua titik data. Kenaikan curam di dekat MSE rendah akan menunjukkan bahwa banyak pasangan memiliki fidelitas tinggi; kenaikan lambat berarti banyak pasangan memiliki kesalahan lebih besar. Kita memberi anotasi pada CDF dengan identitas pasangan terbaik. Dalam plot tersebut, setiap titik pada CDF sesuai dengan MSE satu rantai empat-Qubit, dan kita memberi label titik tersebut dengan pasangan indeks Qubit $[q0, q3]$ yang terentanglement dalam eksperimen itu. Ini memudahkan untuk menemukan pasangan Qubit fisik mana yang menjadi pemain terbaik (titik paling kiri pada CDF).
+
+```python
+plot_mse_ecdfs(layouts_mse, combine_layouts=True)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/678ddac9-0.avif)
+
+## Referensi {#references}
+
+[\[1\] Carrera Vazquez, A., Tornow, C., Ristè, D. et al. Combining quantum processors with real-time classical communication. Nature 636, 75-79 (2024).](https://www.nature.com/articles/s41586-024-08178-2)

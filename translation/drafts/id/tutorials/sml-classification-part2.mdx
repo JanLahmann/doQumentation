@@ -1,0 +1,426 @@
+## Langkah 1: Memetakan input klasikal ke masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Kita mulai dengan menyiapkan dataset untuk eksperimen hybrid quantum–klasikal. Tujuan langkah ini adalah mengubah data stabilitas grid mentah menjadi pembagian pelatihan, validasi, dan pengujian yang seimbang, yang bisa digunakan secara konsisten oleh alur kerja klasikal maupun kuantum. Mempertahankan pembagian yang identik memastikan perbandingan performa nantinya adil dan dapat direproduksi.
+### Memuat dan memproses data {#data-loading-and-preprocessing}
+
+Pertama kita muat file CSV pelatihan dan pengujian, membuat pembagian validasi, dan menyeimbangkan dataset menggunakan random over-sampling. Penyeimbangan mencegah bias ke kelas mayoritas dan memberikan sinyal pembelajaran yang lebih stabil untuk model ensemble klasikal maupun kuantum.
+
+```python
+# Load and upload the data
+X_train, y_train = load_data(TRAIN_PATH)
+X_test, y_test = load_data(TEST_PATH)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train, test_size=0.2, random_state=RANDOM_STATE
+)
+
+# Balance the dataset through over-sampling of the positive class
+ros = RandomOverSampler(random_state=RANDOM_STATE)
+X_train_bal, y_train_bal = ros.fit_resample(X_train, y_train)
+
+print("Shapes:")
+print("  X_train_bal:", X_train_bal.shape)
+print("  y_train_bal:", y_train_bal.shape)
+print("  X_val:", X_val.shape)
+print("  y_val:", y_val.shape)
+print("  X_test:", X_test.shape)
+print("  y_test:", y_test.shape)
+```
+
+```text
+Shapes:
+  X_train_bal: (5104, 12)
+  y_train_bal: (5104,)
+  X_val: (850, 12)
+  y_val: (850,)
+  X_test: (750, 12)
+  y_test: (750,)
+```
+
+### Baseline klasikal: referensi AdaBoost {#classical-baseline-adaboost-reference}
+
+Sebelum menjalankan optimasi kuantum apa pun, kita latih baseline klasikal yang kuat — classifier AdaBoost standar — pada data yang sudah diseimbangkan. Ini memberikan titik referensi yang dapat direproduksi untuk perbandingan selanjutnya, membantu mengukur apakah optimasi kuantum meningkatkan generalisasi atau efisiensi melebihi ensemble klasikal yang sudah disetel dengan baik.
+
+```python
+# ----- Classical baseline: AdaBoost -----
+baseline = AdaBoostClassifier(n_estimators=60, random_state=RANDOM_STATE)
+baseline.fit(X_train_bal, y_train_bal)
+baseline_pred = baseline.predict(X_test)
+print("Classical AdaBoost baseline:")
+_ = evaluate_predictions(baseline_pred, y_test)
+```
+
+```text
+Classical AdaBoost baseline:
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+```
+
+## Langkah 2: Mengoptimalkan masalah untuk eksekusi pada hardware kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+Tugas pemilihan ensemble dirumuskan sebagai masalah optimasi kombinatorial di mana setiap weak learner adalah variabel keputusan biner, dan tujuannya menyeimbangkan akurasi dengan sparsitas melalui regularisasi. `QuantumEnhancedEnsembleClassifier` menyelesaikan ini dengan QAOA pada hardware IBM, sambil tetap mengizinkan eksplorasi berbasis simulator. `optimizer_options` mengontrol loop hybrid: `simulator=False` mengarahkan sirkuit ke QPU yang dipilih, `num_solutions` memperluas cakupan pencarian, dan `classical_optimizer_options` (untuk optimizer klasikal dalam) mengatur konvergensi; nilai sekitar 60 iterasi adalah keseimbangan yang baik antara kualitas dan runtime. Opsi runtime — seperti kedalaman sirkuit moderat (`reps`) dan upaya transpilasi standar — membantu memastikan performa yang robust di berbagai perangkat. Konfigurasi di bawah ini adalah profil "hasil terbaik" yang akan kita gunakan untuk eksekusi hardware; kamu juga bisa membuat varian simulasi murni dengan mengubah `simulator=True` untuk menjalankan alur kerja secara lokal tanpa menggunakan waktu QPU.
+
+```python
+# QAOA / runtime configuration for best results on hardware
+optimizer_options = {
+    "simulator": False,  # set True to test locally without QPU
+    "num_solutions": 100_000,  # broaden search over candidate ensembles
+    "reps": 3,  # QAOA depth (circuit layers)
+    "optimization_level": 3,  # transpilation effort
+    "num_transpiler_runs": 30,  # explore multiple layouts
+    "classical_optimizer": "COBYLA",  # robust default for this landscape
+    "classical_optimizer_options": {
+        "maxiter": 60  # practical convergence budget
+    },
+    # You can pass backend-specific options; leaving None uses least-busy routing
+    "estimator_options": None,
+    "sampler_options": None,
+}
+
+print("Configured hardware optimization profile:")
+for key, value in optimizer_options.items():
+    print(f"  {key}: {value}")
+```
+
+```text
+Configured hardware optimization profile:
+  simulator: False
+  num_solutions: 100000
+  reps: 3
+  optimization_level: 3
+  num_transpiler_runs: 30
+  classical_optimizer: COBYLA
+  classical_optimizer_options: {'maxiter': 60}
+  estimator_options: None
+  sampler_options: None
+```
+
+## Langkah 3: Eksekusi menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+
+Sekarang kita jalankan alur kerja penuh menggunakan aksi `create_fit_predict` dari fungsi Singularity untuk melatih, mengoptimalkan, dan mengevaluasi `QuantumEnhancedEnsembleClassifier` secara end-to-end pada infrastruktur IBM. Fungsi ini membangun ensemble, menerapkan optimasi kuantum melalui primitif Qiskit, dan mengembalikan prediksi beserta metadata job (termasuk runtime dan penggunaan resource). Pembagian data klasikal dari Langkah 1 digunakan kembali untuk reproduktivitas, dengan data validasi diteruskan melalui `fit_params` agar optimasi dapat menyetel hyperparameter secara internal sambil menjaga set pengujian tetap tidak tersentuh.
+
+Pada langkah ini, kita eksplorasi beberapa konfigurasi ensemble kuantum untuk memahami bagaimana parameter utama — khususnya `num_learners` dan `regularization` — memengaruhi kualitas hasil dan penggunaan QPU.
+- `num_learners` menentukan lebar ensemble (dan secara implisit, jumlah Qubit), memengaruhi kapasitas model dan biaya komputasi.
+- `regularization` mengontrol sparsitas dan overfitting, membentuk berapa banyak learner yang tetap aktif setelah optimasi.
+
+Dengan memvariasikan parameter ini, kita bisa melihat bagaimana lebar ensemble dan regularisasi berinteraksi: meningkatkan lebar biasanya meningkatkan F1 tapi membutuhkan lebih banyak waktu QPU, sementara regularisasi yang lebih kuat atau adaptif dapat meningkatkan generalisasi dengan jejak hardware yang hampir sama. Subbagian berikutnya membahas tiga konfigurasi representatif untuk mengilustrasikan efek-efek ini.
+### Baseline {#baseline}
+
+Konfigurasi ini menggunakan `num_learners = 10` dan `regularization = 7`.
+
+- `num_learners` mengontrol lebar ensemble — secara efektif jumlah weak learner yang digabungkan dan, pada hardware kuantum, **jumlah Qubit yang dibutuhkan**. Nilai yang lebih besar memperluas ruang pencarian kombinatorial dan dapat meningkatkan akurasi dan recall, tapi juga meningkatkan lebar sirkuit, waktu kompilasi, dan penggunaan QPU secara keseluruhan.
+- `regularization` menetapkan kekuatan penalti untuk menyertakan learner tambahan. Dengan regularisasi "onsite" default, nilai yang lebih tinggi memaksakan sparsitas yang lebih kuat (lebih sedikit learner yang disimpan), sementara nilai yang lebih rendah mengizinkan ensemble yang lebih kompleks.
+
+Setup ini memberikan baseline berbiaya rendah, menunjukkan bagaimana ensemble kecil berperilaku sebelum memperluas lebar atau menyetel sparsitas.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 10
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_1 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_1 = job_1.result()
+print("Action status:", result_1.get("status"))
+print("Action message:", result_1.get("message"))
+print("Metadata:", result_1.get("metadata"))
+qeec_pred_job_1 = np.array(result_1["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_1, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 267.05158376693726}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 3336.8785166740417}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 152.4274561405182}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1550.1889700889587}}}
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+```
+
+```python
+status_1 = job_1.status()
+print("\nQuantum job status:", status_1)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### Meningkatkan jumlah learner {#increase-the-number-of-learners}
+
+Di sini kita tingkatkan `num_learners` dari 10 → 30 sambil mempertahankan `regularization = 7`.
+
+- Lebih banyak learner memperluas ruang hipotesis, memungkinkan model menangkap pola yang lebih halus, yang dapat sedikit meningkatkan F1.
+- Dalam kebanyakan kasus, perbedaan runtime antara 10 dan 30 learner tidak signifikan, menunjukkan bahwa penambahan lebar sirkuit tidak meningkatkan biaya eksekusi secara substansial.
+- Peningkatan kualitas tetap mengikuti *kurva diminishing-returns*: keuntungan awal muncul saat ensemble berkembang, tapi mencapai plateau karena learner tambahan berkontribusi lebih sedikit informasi baru.
+
+Eksperimen ini menyoroti trade-off kualitas–efisiensi — meningkatkan lebar ensemble mungkin menawarkan sedikit keuntungan akurasi tanpa penalti runtime yang besar, tergantung pada kondisi Backend dan transpilasi.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 30
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_2 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_2 = job_2.result()
+print("Action status:", result_2.get("status"))
+print("Action message:", result_2.get("message"))
+print("QPU Time:", result_2.get("metadata"))
+qeec_pred_job_2 = np.array(result_2["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_2, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+QPU Time: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 680.2116754055023}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 80.80395102500916}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 154.4466371536255}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1095.822762966156}}}
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+```
+
+```python
+status_2 = job_2.status()
+print("\nQuantum job status:", status_2)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### Regularisasi {#regularization}
+
+Dalam konfigurasi ini, kita tingkatkan ke `num_learners = 60` dan memperkenalkan regularisasi adaptif untuk mengelola sparsitas secara lebih intuitif.
+
+- Dengan `regularization = "auto"`, optimizer secara otomatis menemukan kekuatan regularisasi yang sesuai yang memilih sekitar `regularization_ratio * num_learners` weak learner untuk ensemble akhir, daripada menetapkan penalti secara manual. Ini memberikan antarmuka yang lebih nyaman untuk mengelola keseimbangan antara sparsitas dan ukuran ensemble.
+- `regularization_type = "alpha"` mendefinisikan cara penalti diterapkan. Tidak seperti `onsite` yang tidak terbatas `[0, ∞]`, `alpha` dibatasi antara `[0, 1]`, membuatnya lebih mudah disetel dan diinterpretasikan. Parameter ini mengontrol trade-off antara penalti individual dan berpasangan, menawarkan rentang konfigurasi yang lebih halus.
+- `regularization_desired_ratio ≈ 0.82` menentukan proporsi target learner yang tetap aktif setelah regularisasi — di sini, sekitar 82% learner dipertahankan, memangkas 18% terlemah secara otomatis.
+
+Meskipun regularisasi adaptif menyederhanakan konfigurasi dan membantu mempertahankan ensemble yang seimbang, hal ini tidak selalu menjamin performa yang lebih baik atau lebih stabil. Kualitas aktual bergantung pada pemilihan parameter regularisasi yang tepat, dan penyetelanny melalui cross-validation bisa mahal secara komputasi. Keunggulan utamanya terletak pada peningkatan kemudahan penggunaan dan interpretabilitas daripada keuntungan akurasi langsung.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 60
+REGULARIZATION = "auto"
+REGULARIZATION_TYPE = "alpha"
+REGULARIZATION_RATIO = 0.82
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_3 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    regularization_type=REGULARIZATION_TYPE,
+    regularization_desired_ratio=REGULARIZATION_RATIO,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_3 = job_3.result()
+print("Action status:", result_3.get("status"))
+print("Action message:", result_3.get("message"))
+print("Metadata:", result_3.get("metadata"))
+qeec_pred_job_3 = np.array(result_3["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_3, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 1387.7451872825623}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 95.41597843170166}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 171.78878355026245}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1146.5584812164307}}}
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```python
+status_3 = job_3.status()
+print("\nQuantum job status:", status_3)
+```
+
+```text
+Quantum job status: DONE
+```
+
+## Langkah 4: Pasca-pemrosesan dan mengembalikan hasil dalam format klasikal yang diinginkan {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+Sekarang kita pasca-proses output dari eksekusi klasikal maupun kuantum, mengubahnya menjadi format yang konsisten untuk evaluasi downstream. Langkah ini membandingkan kualitas prediktif menggunakan metrik standar — akurasi, presisi, recall, dan F1 — dan menganalisis bagaimana lebar ensemble (`num_learners`) dan kontrol sparsitas (`regularization`) memengaruhi performa dan perilaku komputasi.
+
+Baseline AdaBoost klasikal memberikan referensi yang ringkas dan stabil untuk pembelajaran skala kecil. Ia bekerja baik dengan ensemble terbatas dan overhead komputasi yang dapat diabaikan, mencerminkan kekuatan boosting tradisional ketika ruang hipotesis masih dapat dikelola. Konfigurasi kuantum (`qeec_pred_job_1`, `qeec_pred_job_2`, dan `qeec_pred_job_3`) memperluas baseline ini dengan menanamkan proses pemilihan ensemble dalam loop optimasi kuantum variasional. Ini memungkinkan sistem mengeksplorasi subset learner yang sangat besar secara bersamaan dalam superposisi, mengatasi sifat kombinatorial pemilihan ensemble dengan lebih efisien seiring bertambahnya skala.
+
+Hasil menunjukkan bahwa meningkatkan `num_learners` dari 10 ke 30 meningkatkan recall dan F1, mengonfirmasi bahwa ensemble yang lebih lebar menangkap interaksi yang lebih kaya antar weak learner. Keuntungan ini bersifat sublinear pada hardware saat ini — setiap learner tambahan menghasilkan kenaikan akurasi yang lebih kecil — tapi perilaku penskalaan yang mendasarinya tetap menguntungkan karena optimizer kuantum dapat mencari ruang konfigurasi yang lebih luas tanpa ledakan eksponensial yang khas pada pemilihan subset klasikal. Regularisasi memperkenalkan nuansa tambahan: λ=7 yang tetap memaksakan sparsitas yang konsisten dan menstabilkan konvergensi, sedangkan α-regularisasi adaptif secara otomatis menyetel sparsitas berdasarkan korelasi antar learner. Pemangkasan dinamis ini sering mencapai F1 yang sedikit lebih tinggi untuk lebar Qubit yang sama, menyeimbangkan kompleksitas model dan generalisasi.
+
+Ketika dibandingkan langsung dengan baseline AdaBoost, konfigurasi kuantum terkecil (L=10) menghasilkan akurasi yang serupa, memvalidasi kebenaran pipeline hybrid. Pada lebar yang lebih besar, varian kuantum — terutama dengan auto-regularisasi — mulai melampaui baseline klasikal secara moderat, menunjukkan recall dan F1 yang meningkat tanpa pertumbuhan linier dalam biaya komputasi. Peningkatan ini tidak menunjukkan "keunggulan kuantum" yang langsung tapi lebih merupakan **efisiensi penskalaan**: optimizer kuantum mempertahankan performa yang dapat dikelola saat ensemble berkembang, di mana pendekatan klasikal akan menghadapi pertumbuhan eksponensial dalam kompleksitas pemilihan subset.
+
+Dalam praktiknya:
+- Gunakan **baseline klasikal** untuk validasi cepat dan benchmarking pada dataset kecil.
+- Terapkan **ensemble kuantum** ketika lebar model atau kompleksitas fitur bertambah — pencarian berbasis QAOA skala lebih baik dalam regime tersebut.
+- Gunakan **α-regularisasi adaptif** untuk mempertahankan sparsitas dan generalisasi tanpa meningkatkan lebar sirkuit.
+- Pantau waktu QPU dan kedalaman untuk menyeimbangkan keuntungan kualitas terhadap kendala hardware saat ini.
+
+Bersama-sama, eksperimen ini menunjukkan bahwa ensemble yang dioptimalkan secara kuantum melengkapi metode klasikal: mereka mereproduksi akurasi baseline pada skala kecil sambil menawarkan jalur menuju penskalaan efisien pada masalah pembelajaran kombinatorial yang lebih besar. Seiring hardware berkembang, keunggulan penskalaan ini diharapkan semakin bertambah, memperluas ukuran dan kedalaman model berbasis ensemble yang layak melampaui apa yang praktis secara klasikal.
+### Mengevaluasi metrik untuk setiap konfigurasi {#evaluate-metrics-for-each-configuration}
+
+Sekarang kita evaluasi semua konfigurasi — baseline AdaBoost klasikal dan tiga ensemble kuantum — menggunakan helper `evaluate_predictions` untuk menghitung akurasi, presisi, recall, dan F1 pada set pengujian yang sama. Perbandingan ini mengklarifikasi bagaimana optimasi kuantum skala relatif terhadap pendekatan klasikal: pada lebar kecil, keduanya berkinerja serupa; saat ensemble berkembang, metode kuantum dapat mengeksplorasi ruang hipotesis yang lebih besar dengan lebih efisien. Tabel yang dihasilkan menangkap tren ini dalam bentuk yang konsisten dan kuantitatif.
+
+```python
+results = []
+
+# Classical baseline
+acc_b, prec_b, rec_b, f1_b = evaluate_predictions(baseline_pred, y_test)
+results.append(
+    {
+        "Config": "AdaBoost (Classical)",
+        "Accuracy": acc_b,
+        "Precision": prec_b,
+        "Recall": rec_b,
+        "F1": f1_b,
+    }
+)
+
+# Quantum runs
+for label, preds in [
+    ("QEEC L=10, reg=7", qeec_pred_job_1),
+    ("QEEC L=30, reg=7", qeec_pred_job_2),
+    (f"QEEC L=60, reg=auto (α={REGULARIZATION_RATIO})", qeec_pred_job_3),
+]:
+    acc, prec, rec, f1 = evaluate_predictions(preds, y_test)
+    results.append(
+        {
+            "Config": label,
+            "Accuracy": acc,
+            "Precision": prec,
+            "Recall": rec,
+            "F1": f1,
+        }
+    )
+
+df_results = pd.DataFrame(results)
+df_results
+```
+
+```text
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```text
+Config  Accuracy  Precision    Recall        F1
+0          AdaBoost (Classical)  0.789333        1.0  0.789333  0.882265
+1              QEEC L=10, reg=7  0.868000        1.0  0.868000  0.929336
+2              QEEC L=30, reg=7  0.894667        1.0  0.894667  0.944405
+3  QEEC L=60, reg=auto (α=0.82)  0.908000        1.0  0.908000  0.951782
+```
+
+### Memvisualisasikan tren kualitas antar konfigurasi {#visualize-quality-trends-across-configurations}
+
+Grafik batang berkelompok di bawah membandingkan **Akurasi** dan **F1** di seluruh baseline klasikal dan ensemble kuantum (`L=10`, `L=30`, dan `L=60 auto-α`). Ini mengilustrasikan bagaimana akurasi stabil sementara F1 berangsur meningkat seiring lebar ensemble kuantum bertambah, mendemonstrasikan bahwa metode hybrid mempertahankan penskalaan performa tanpa pertumbuhan biaya eksponensial yang khas pada pemilihan subset klasikal.
+
+```python
+x = np.arange(len(df_results))
+width = 0.35
+plt.figure(figsize=(7.6, 4.6))
+plt.bar(x - width / 2, df_results["Accuracy"], width=width, label="Accuracy")
+plt.bar(x + width / 2, df_results["F1"], width=width, label="F1")
+plt.xticks(x, df_results["Config"], rotation=10)
+plt.ylabel("Score")
+plt.title("Classical vs Quantum ensemble performance")
+plt.legend()
+plt.ylim(0, 1.0)
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sml-classification/extracted-outputs/0f15c5fb-2450-4671-9bc2-471043414df2-0.avif)
+
+### Interpretasi {#interpretation}
+
+Plot ini mengonfirmasi pola penskalaan yang diharapkan. AdaBoost klasikal bekerja dengan baik untuk ensemble yang lebih kecil tapi semakin mahal untuk diskalakan seiring jumlah weak learner bertambah, karena masalah pemilihan subsetnya berkembang secara kombinatorial. Model yang ditingkatkan secara kuantum mereplikasi akurasi klasikal pada lebar rendah dan mulai melampauinya saat ukuran ensemble meningkat, terutama di bawah α-regularisasi adaptif. Ini mencerminkan kemampuan optimizer kuantum untuk mengambil sampel dan mengevaluasi banyak kandidat subset secara paralel melalui superposisi, mempertahankan pencarian yang dapat dikelola bahkan pada lebar yang lebih tinggi. Meskipun overhead hardware saat ini mengimbangi beberapa keuntungan teoretis, tren ini mengilustrasikan keunggulan efisiensi penskalaan dari formulasi kuantum. Secara praktis, metode klasikal tetap lebih disukai untuk benchmark ringan, sementara ensemble yang ditingkatkan secara kuantum menjadi menguntungkan saat dimensionalitas model dan ukuran ensemble berkembang, menawarkan trade-off yang lebih baik antara akurasi, generalisasi, dan pertumbuhan komputasi.
+## Lampiran: Manfaat penskalaan dan peningkatan {#appendix-scaling-benefits-and-enhancements}
+
+Keunggulan skalabilitas `QuantumEnhancedEnsembleClassifier` muncul dari cara proses pemilihan ensemble dipetakan ke optimasi kuantum.
+Metode pembelajaran ensemble klasikal, seperti AdaBoost atau random forest, menjadi mahal secara komputasi seiring jumlah weak learner meningkat karena memilih subset optimal adalah masalah kombinatorial yang skala secara eksponensial.
+
+Sebaliknya, formulasi kuantum — diimplementasikan di sini melalui Quantum Approximate Optimization Algorithm (QAOA) — dapat mengeksplorasi ruang pencarian yang sangat besar ini dengan lebih efisien dengan mengevaluasi beberapa konfigurasi dalam superposisi.
+Akibatnya, waktu pelatihan tidak berkembang secara signifikan seiring jumlah learner bertambah, memungkinkan model tetap efisien meskipun lebar ensemble meningkat.
+
+Meskipun hardware saat ini menimbulkan beberapa keterbatasan kebisingan dan kedalaman, alur kerja ini mendemonstrasikan pendekatan hybrid near-term di mana komponen klasikal dan kuantum bekerja sama: optimizer kuantum memberikan lanskap inisialisasi yang lebih baik untuk loop klasikal, meningkatkan konvergensi dan kualitas model akhir.
+Seiring prosesor kuantum berkembang, manfaat skalabilitas ini diharapkan meluas ke dataset yang lebih besar, ensemble yang lebih luas, dan kedalaman sirkuit yang lebih dalam.
+## Referensi {#references}
+
+1. [Pengenalan Qiskit Functions](/guides/functions)
+2. [Multiverse Computing Singularity Machine Learning](/guides/multiverse-computing-singularity)
+## Survei tutorial {#tutorial-survey}
+
+Luangkan waktu sebentar untuk memberikan masukan tentang tutorial ini. Masukan kamu akan membantu kami meningkatkan konten dan pengalaman pengguna.
+
+[Tautan ke survei](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)

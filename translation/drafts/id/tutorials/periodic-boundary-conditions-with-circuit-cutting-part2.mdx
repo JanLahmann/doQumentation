@@ -1,0 +1,275 @@
+## Langkah 2: Optimasi masalah untuk eksekusi di perangkat keras kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+<ul>
+    <li>Input: Sirkuit abstrak dan observabel</li>
+    <li>Output: Sirkuit target dan observabel yang dihasilkan dengan memotong gate jarak jauh</li>
+</ul>
+#### Transpilasi sirkuit {#transpile-the-circuit}
+
+Perlu diperhatikan bahwa sirkuit dapat ditranspilasi pada tahap ini, atau setelah pemotongan. Jika kita melakukan transpilasi setelah pemotongan, kita harus mentranspilasi setiap subeksperimen yang dihasilkan akibat overhead sampling. Oleh karena itu, lebih bijak untuk melakukan transpilasi pada tahap ini guna mengurangi overhead transpilasi.
+
+Namun, jika transpilasi dilakukan pada tahap ini dengan konektivitas perangkat keras asli, transpiler akan menambahkan banyak gate SWAP untuk menempatkan operasi 2-qubit periodik — yang mengaburkan manfaat circuit cutting. Untuk menghindari masalah ini, kita dapat memanfaatkan pengetahuan kita tentang gate mana yang perlu dipotong. Secara khusus, kita bisa membuat coupling map virtual dengan menambahkan koneksi virtual antara qubit yang berjauhan untuk mengakomodasi gate 2-qubit periodik ini. Hal ini memastikan sirkuit dapat ditranspilasi pada tahap ini tanpa menambahkan gate SWAP ekstra.
+
+```python
+coupling_map = backend.configuration().coupling_map
+
+# create a virtual coupling map with long range connectivity
+virtual_coupling_map = coupling_map.copy()
+virtual_coupling_map.append([init_layout[-1], init_layout[0]])
+virtual_coupling_map.append([init_layout[0], init_layout[-1]])
+```
+
+```python
+pm_virtual = generate_preset_pass_manager(
+    optimization_level=1,
+    coupling_map=virtual_coupling_map,
+    initial_layout=init_layout,
+    basis_gates=backend.configuration().basis_gates,
+)
+
+virtual_mapped_circuit = pm_virtual.run(ansatz)
+virtual_mapped_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/ad38aa32-4613-46c5-bf62-da332a1b9dfb-0.avif)
+
+#### Potong konektivitas periodik jarak jauh {#cut-the-long-range-periodic-connectivities}
+Sekarang kita memotong gate-gate dalam sirkuit yang telah ditranspilasi. Perlu diperhatikan bahwa gate 2-qubit yang perlu dipotong adalah yang menghubungkan qubit pertama dan terakhir dari layout.
+
+```python
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(virtual_mapped_circuit.data)
+    if {virtual_mapped_circuit.find_bit(q)[0] for q in instruction.qubits}
+    == {init_layout[-1], init_layout[0]}
+]
+```
+
+Kita akan menerapkan layout dari sirkuit yang telah ditranspilasi ke observabel.
+
+```python
+trans_observables = observables.apply_layout(virtual_mapped_circuit.layout)
+```
+
+Terakhir, subeksperimen dibuat dengan melakukan sampling atas berbagai basis pengukuran dan persiapan.
+
+```python
+qpd_circuit, bases = cut_gates(virtual_mapped_circuit, cut_indices)
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit,
+    observables=trans_observables.paulis,
+    num_samples=np.inf,
+)
+```
+
+Perlu diperhatikan bahwa pemotongan interaksi jarak jauh menghasilkan eksekusi banyak sampel sirkuit yang berbeda dalam basis pengukuran dan persiapannya. Informasi lebih lanjut tentang ini dapat ditemukan di <a href='https://arxiv.org/abs/1909.07534'>Constructing a virtual two-qubit gate by sampling single-qubit operations</a> dan <a href='https://arxiv.org/abs/2312.11638'>Cutting circuits with multiple two-qubit unitaries</a>.
+
+Jumlah gate periodik yang dipotong sama dengan jumlah pengulangan layer `TwoLocal`, yang didefinisikan sebagai `num_reps` di atas. Overhead sampling dari gate cutting adalah 6. Oleh karena itu, total jumlah subeksperimen akan menjadi $6^{num\_reps}$.
+
+```python
+print(f"Number of subexperiments is {len(subexperiments)} = 6**{num_reps}")
+```
+
+```text
+Number of subexperiments is 36 = 6**2
+```
+
+#### Transpilasi subeksperimen {#transpile-the-subexperiments}
+Pada titik ini, subeksperimen berisi sirkuit dengan beberapa gate 1-qubit yang tidak termasuk dalam basis gate set. Hal ini karena qubit yang dipotong diukur dalam basis yang berbeda, dan gate rotasi yang digunakan untuk ini belum tentu termasuk dalam basis gate set. Misalnya, pengukuran dalam basis X berarti menerapkan gate Hadamard sebelum pengukuran biasa dalam basis Z. Namun Hadamard bukan bagian dari basis gate set.
+
+Alih-alih menerapkan seluruh proses transpilasi pada setiap sirkuit dalam subeksperimen, kita bisa menggunakan pass transpilasi tertentu. Lihat <a href="https://docs.quantum.ibm.com/api/qiskit/transpiler_passes">dokumentasi ini</a> untuk deskripsi lengkap semua pass transpilasi yang tersedia.
+
+Kita akan menerapkan pass ```BasisTranslator``` lalu ```Optimize1qGatesDecomposition``` untuk memastikan semua gate dalam sirkuit ini termasuk dalam basis gate set. Menggunakan dua pass ini lebih cepat daripada proses transpilasi penuh, karena langkah-langkah lain seperti routing dan pemilihan initial layout tidak dilakukan lagi.
+
+```python
+pass_ = PassManager(
+    [Optimize1qGatesDecomposition(basis=backend.configuration().basis_gates)]
+)
+
+subexperiments = pass_.run(
+    [
+        dag_to_circuit(
+            BasisTranslator(sel, target_basis=backend.basis_gates).run(
+                circuit_to_dag(circ)
+            )
+        )
+        for circ in subexperiments
+    ]
+)
+```
+
+## Langkah 3: Eksekusi menggunakan primitif Qiskit {#step-3-execute-using-qiskit-primitives}
+
+<ul>
+    <li>Input: Sirkuit target</li>
+    <li>Output: Distribusi kuasi-probabilitas</li>
+</ul>
+Kita menggunakan primitif `SamplerV2` untuk mengeksekusi sirkuit yang telah dipotong. Kita menonaktifkan `dynamical decoupling` dan `twirling` agar peningkatan yang kita peroleh dalam hasil semata-mata disebabkan oleh penerapan gate cutting yang efektif untuk jenis sirkuit ini.
+
+```python
+options = SamplerOptions()
+options.default_shots = 10000
+options.dynamical_decoupling.enable = False
+options.twirling.enable_gates = False
+options.twirling.enable_measure = False
+```
+
+Sekarang kita akan mengirimkan job menggunakan mode batch.
+
+```python
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(options=options)
+    cut_job = sampler.run(subexperiments)
+
+print(f"Job ID {cut_job.job_id()}")
+```
+
+```text
+Job ID cwxf7wq60bqg008pvt8g
+```
+
+```python
+result = cut_job.result()
+```
+
+## Langkah 4: Pasca-proses dan kembalikan hasil dalam format klasik yang diinginkan {#step-4-post-process-and-return-result-in-desired-classical-format}
+<ul>
+    <li>Input: Distribusi kuasi-probabilitas</li>
+    <li>Output: Nilai ekspektasi yang direkonstruksi</li>
+</ul>
+
+```python
+reconstructed_expvals = reconstruct_expectation_values(
+    result,
+    coefficients,
+    paulis,
+)
+```
+
+Sekarang kita akan menghitung rata-rata dari observabel Z-type berbobot-1 dan berbobot-2.
+
+```python
+cut_weight_1 = np.mean(reconstructed_expvals[:num_qubits])
+cut_weight_2 = np.mean(reconstructed_expvals[num_qubits:])
+
+print(f"Average of weight-1 expectation values is {cut_weight_1}")
+print(f"Average of weight-2 expectation values is {cut_weight_2}")
+```
+
+```text
+Average of weight-1 expectation values is -0.741733944954063
+Average of weight-2 expectation values is 0.6968862385320495
+```
+
+### Verifikasi Silang: Dapatkan nilai ekspektasi tanpa pemotongan {#cross-verify-obtain-uncut-expectation-value}
+Berguna untuk memverifikasi silang keunggulan teknik circuit cutting dibandingkan tanpa pemotongan. Di sini kita akan menghitung nilai ekspektasi tanpa memotong sirkuit. Perlu diperhatikan bahwa sirkuit yang tidak dipotong akan menderita banyak gate SWAP yang diperlukan untuk mengimplementasikan operasi 2-qubit antara qubit pertama dan terakhir. Kita akan menggunakan fungsi `sampled_expectation_value` untuk mendapatkan nilai ekspektasi dari sirkuit yang tidak dipotong setelah mendapatkan distribusi probabilitas melalui `SamplerV2`. Hal ini memungkinkan penggunaan primitif yang seragam di semua instance. Namun perlu diperhatikan bahwa kita juga bisa menggunakan `EstimatorV2` untuk langsung menghitung nilai ekspektasi.
+
+```python
+if ansatz.num_clbits == 0:
+    ansatz.measure_all()
+
+pm_uncut = generate_preset_pass_manager(
+    optimization_level=1, backend=backend, initial_layout=init_layout
+)
+
+transpiled_circuit = pm_uncut.run(ansatz)
+```
+
+```python
+sampler = SamplerV2(mode=backend, options=options)
+uncut_job = sampler.run([transpiled_circuit])
+```
+
+```python
+uncut_job_id = uncut_job.job_id()
+print(f"The job id for the uncut clifford circuit is {uncut_job_id}")
+```
+
+```text
+The job id for the uncut clifford circuit is cwxfads2ac5g008jhe7g
+```
+
+```python
+uncut_result = uncut_job.result()[0]
+uncut_counts = uncut_result.data.meas.get_counts()
+```
+
+Sekarang kita akan menghitung rata-rata nilai ekspektasi dari semua observabel Z-type berbobot-1 dan berbobot-2 tanpa pemotongan.
+
+```python
+uncut_expvals = [
+    sampled_expectation_value(uncut_counts, obs) for obs in paulis
+]
+
+uncut_weight_1 = np.mean(uncut_expvals[:num_qubits])
+uncut_weight_2 = np.mean(uncut_expvals[num_qubits:])
+
+print(f"Average of weight-1 expectation values is {uncut_weight_1}")
+print(f"Average of weight-2 expectation values is {uncut_weight_2}")
+```
+
+```text
+Average of weight-1 expectation values is -0.32494128440366965
+Average of weight-2 expectation values is 0.32340917431192656
+```
+
+### Visualisasi {#visualize}
+Mari kita visualisasikan peningkatan yang diperoleh untuk observabel berbobot-1 dan berbobot-2 saat menggunakan gate cutting untuk sirkuit rantai periodik.
+
+```python
+mpl.rcParams.update(mpl.rcParamsDefault)
+
+fig = plt.subplots(figsize=(12, 8), dpi=200)
+width = 0.25
+labels = ["Weight-1", "Weight-2"]
+x = np.arange(len(labels))
+
+ideal = [-1, 1]
+cut = [cut_weight_1, cut_weight_2]
+uncut = [uncut_weight_1, uncut_weight_2]
+
+br1 = np.arange(len(ideal))
+br2 = [x + width for x in br1]
+br3 = [x + width for x in br2]
+
+plt.bar(
+    br1, ideal, width=width, edgecolor="k", label="Ideal", color="#4589ff"
+)
+plt.bar(br2, cut, width=width, edgecolor="k", label="Cut", color="#a56eff")
+plt.bar(
+    br3, uncut, width=width, edgecolor="k", label="Uncut", color="#009d9a"
+)
+
+plt.axhline(y=0, color="k", linestyle="-")
+
+plt.xticks([r + width for r in range(len(ideal))], labels, fontsize=14)
+plt.yticks(fontsize=14)
+
+plt.legend(fontsize=14)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/periodic-boundary-conditions-with-circuit-cutting/extracted-outputs/2ba8913f-ba35-409c-bc4c-5f28e3698f20-0.avif)
+
+### Ringkasan {#summary}
+
+Secara ringkas, kita menghitung rata-rata nilai ekspektasi dari observabel Z-type berbobot-1 dan berbobot-2 untuk rantai 1D periodik dengan 109 qubit. Untuk melakukan hal tersebut, kita:
+
+- membuat coupling map virtual dengan menambahkan konektivitas jarak jauh antara qubit pertama dan terakhir dari rantai 1D, lalu mentranspilasi sirkuit.
+    - transpilasi pada tahap ini memungkinkan kita menghindari overhead transpilasi setiap subeksperimen secara terpisah setelah pemotongan,
+    - menggunakan coupling map virtual memungkinkan kita menghindari gate SWAP ekstra untuk operasi 2-qubit antara qubit pertama dan terakhir.
+- menghapus konektivitas jarak jauh dari sirkuit yang telah ditranspilasi melalui gate cutting.
+- mengubah sirkuit yang dipotong ke dalam basis gate set dengan menerapkan pass transpilasi yang sesuai.
+- mengeksekusi sirkuit yang dipotong pada perangkat IBM Quantum menggunakan primitif `SamplerV2`.
+- mendapatkan nilai ekspektasi dengan merekonstruksi hasil dari sirkuit yang dipotong.
+### Kesimpulan {#inference}
+
+Kita bisa melihat dari hasil bahwa rata-rata observabel $\langle Z \rangle$ berbobot-1 dan $\langle ZZ \rangle$ berbobot-2 meningkat secara signifikan dengan memotong gate periodik. Perlu diperhatikan bahwa studi ini tidak menyertakan teknik penekanan atau mitigasi error apa pun. Peningkatan yang diamati semata-mata disebabkan oleh penggunaan gate cutting yang tepat untuk masalah ini. Hasilnya dapat ditingkatkan lebih lanjut dengan menggunakan teknik mitigasi dan penekanan error.
+
+Studi ini menunjukkan contoh penggunaan gate cutting secara efektif untuk meningkatkan performa komputasi.
+## Survei tutorial {#tutorial-survey}
+
+Silakan isi survei singkat ini untuk memberikan masukan tentang tutorial ini. Pendapat Anda akan membantu kami meningkatkan konten dan pengalaman pengguna.
+
+[Link to survey](https://your.feedback.ibm.com/jfe/form/SV_3fQQYAIjTxvIChg)
