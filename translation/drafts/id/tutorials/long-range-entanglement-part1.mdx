@@ -1,0 +1,745 @@
+---
+title: "Entanglement jarak jauh dengan dynamic circuits"
+sidebar_label: "Entanglement jarak jauh dengan dynamic circuits"
+description: "Tutorial ini mengimplementasikan CNOT jarak jauh menggunakan dynamic circuits dengan Bell pair, pengukuran, dan feedforward, lalu membandingkannya dengan pendekatan unitary langsung."
+notebook_path: "tutorials/long-range-entanglement.ipynb"
+---
+{/* doqumentation-source-hash: 07a4373f */}
+
+<OpenInLabBanner notebookPath="tutorials/long-range-entanglement.ipynb" />
+
+
+
+{/* cspell:ignore fontsize hcords, ycords, xcords, ecolor, elinewidth, allcr, braket, frameon */}
+
+*Estimasi penggunaan: 4 menit pada prosesor Heron r2. (CATATAN: Ini hanya perkiraan. Waktu aktual bisa berbeda.)*
+## Latar Belakang {#background}
+
+Entanglement jarak jauh antara qubit-qubit yang berjauhan memang menantang pada perangkat dengan konektivitas terbatas. Tutorial ini menunjukkan bagaimana dynamic circuits bisa menghasilkan entanglement seperti itu dengan mengimplementasikan gate controlled-X jarak jauh (LRCX) menggunakan protokol berbasis pengukuran.
+
+Mengikuti pendekatan Elisa Bäumer et al. di [1](#ref-1), metode ini menggunakan pengukuran mid-circuit dan feedforward untuk mencapai gate kedalaman konstan terlepas dari jarak antar qubit. Caranya dengan membuat Bell pair perantara, mengukur satu qubit dari setiap pasangan, dan menerapkan gate yang dikondisikan secara klasik untuk menyebarkan entanglement ke seluruh perangkat. Ini menghindari rantai SWAP yang panjang, sehingga mengurangi kedalaman sirkuit dan paparan terhadap error gate dua qubit.
+
+Dalam notebook ini, kita mengadaptasi protokol tersebut untuk hardware IBM Quantum&reg; dan memperluasnya untuk menjalankan beberapa operasi LRCX secara paralel, sehingga kita bisa mengeksplorasi bagaimana performa berskala dengan jumlah operasi kondisional yang simultan.
+
+## Persyaratan {#requirements}
+
+Sebelum memulai tutorial ini, pastikan kamu sudah menginstal:
+
+- Qiskit SDK v2.0 atau lebih baru, dengan dukungan [visualisasi](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime ( `pip install qiskit-ibm-runtime` ) v0.37 atau lebih baru
+
+## Setup {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.circuit.classical import expr
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.visualization import plot_circuit_layout
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Batch,
+    SamplerV2 as Sampler,
+)
+import matplotlib.pyplot as plt
+import numpy as np
+```
+
+## Langkah 1: Memetakan input klasik ke masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Kita akan mengimplementasikan gate CNOT jarak jauh antara dua qubit yang berjauhan, mengikuti konstruksi dynamic-circuit yang ditunjukkan di bawah (diadaptasi dari Gbr. 1a di Ref. [1](#ref-1)). Ide utamanya adalah menggunakan "bus" qubit ancilla, yang diinisialisasi ke $|0\rangle$, untuk memediasi teleportasi gate jarak jauh.
+
+![Sirkuit CNOT jarak jauh](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+Seperti yang diilustrasikan dalam gambar, prosesnya bekerja sebagai berikut:
+1. Siapkan rantai Bell pair yang menghubungkan qubit kontrol dan target melalui ancilla perantara.
+2. Lakukan pengukuran Bell antara qubit tetangga yang tidak saling terjerat, menukar entanglement langkah demi langkah hingga kontrol dan target berbagi sebuah Bell pair.
+3. Gunakan Bell pair ini untuk teleportasi gate, mengubah CNOT lokal menjadi CNOT jarak jauh yang deterministik dengan kedalaman konstan.
+
+Pendekatan ini menggantikan rantai SWAP yang panjang dengan protokol kedalaman konstan, mengurangi paparan terhadap error gate dua qubit dan membuat operasi ini berskala dengan ukuran perangkat.
+
+Selanjutnya, kita akan menelusuri implementasi dynamic-circuit dari sirkuit LRCX. Di bagian akhir, kita juga akan menyediakan implementasi berbasis unitary untuk perbandingan, guna menyoroti keunggulan dynamic circuits dalam konteks ini.
+
+### (i) Inisialisasi sirkuit {#i-initialize-circuit}
+
+Kita mulai dengan masalah kuantum sederhana yang akan menjadi dasar perbandingan. Secara spesifik, kita menginisialisasi sirkuit dengan qubit kontrol di indeks 0 dan menerapkan gate Hadamard padanya. Ini menghasilkan keadaan superposisi yang, jika diikuti oleh operasi controlled-X, menghasilkan Bell state $(|00\rangle + |11\rangle)/\sqrt{2}$ antara qubit kontrol dan target.
+
+Pada tahap ini, kita belum membangun controlled-X jarak jauh (LRCX) itu sendiri. Sebaliknya, tujuan kita adalah mendefinisikan sirkuit awal yang jelas dan minimal yang menyoroti peran LRCX. Pada Langkah 2, kita akan menunjukkan bagaimana LRCX dapat diimplementasikan sebagai optimasi menggunakan dynamic circuits, dan membandingkan performanya dengan ekuivalen unitarynya. Yang penting, protokol LRCX dapat diterapkan pada sirkuit awal apa pun. Di sini kita menggunakan setup Hadamard sederhana ini untuk kejelasan demonstrasi.
+
+```python
+distance = 6  # The distance of the CNOT gate, with the convention that a distance of zero is a nearest-neighbor CNOT.
+
+def initialize_circuit(distance):
+    assert distance >= 0
+    control = 0  # control qubit
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    k = int(n / 2)  # Number of Bell States to be used
+
+    allcr = [cr]
+    if (
+        distance > 1
+    ):  # This classical register will be used to store ZZ measurements. It is only used for long-range CX gates with distance > 1
+        c1 = ClassicalRegister(
+            k, name="c1"
+        )  # Classical register needed for post processing
+        allcr.append(c1)
+    if (
+        distance > 0
+    ):  # This classical register will be used to store XX measurements. It is only used if distance > 0
+        c2 = ClassicalRegister(
+            n - k, name="c2"
+        )  # Classical register needed for post processing
+        allcr.append(c2)
+
+    qc = QuantumCircuit(qr, *allcr, name="CNOT")
+
+    # Apply a Hadamard gate to the control qubit such that the long-range CNOT gate will prepare a Bell state (|00> + |11>)/sqrt(2)
+    qc.h(control)
+
+    return qc
+
+qc = initialize_circuit(distance)
+qc.draw(fold=-1, output="mpl", scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/0446b8e8-0.avif)
+
+## Langkah 2: Mengoptimalkan masalah untuk eksekusi hardware kuantum {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+Pada langkah ini, kita menunjukkan cara membangun sirkuit LRCX menggunakan dynamic circuits. Tujuannya adalah mengoptimalkan sirkuit untuk eksekusi pada hardware dengan mengurangi kedalaman dibandingkan implementasi unitary murni. Untuk mengilustrasikan manfaatnya, kita akan menampilkan baik konstruksi LRCX dinamis maupun ekuivalen unitarynya, lalu membandingkan performanya setelah transpilasi. Yang penting, meskipun di sini kita menerapkan LRCX pada masalah yang diinisialisasi Hadamard sederhana, protokol ini bisa diterapkan pada sirkuit mana pun yang membutuhkan CNOT jarak jauh.
+
+### (ii) Menyiapkan Bell pair {#ii-prepare-bell-pairs}
+
+Kita mulai dengan membuat rantai Bell pair di sepanjang jalur antara qubit kontrol dan target. Jika jaraknya ganjil, kita pertama-tama menerapkan CNOT dari kontrol ke tetangganya, yang merupakan CNOT yang akan diteleportasikan. Untuk jarak genap, CNOT ini akan diterapkan setelah langkah persiapan Bell pair. Rantai Bell pair kemudian menjerat pasangan qubit yang berurutan, membangun sumber daya yang diperlukan untuk membawa informasi kontrol di seluruh perangkat.
+
+```python
+# Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+def check_even(n: int) -> int:
+    """Return 1 if n is even, else 2."""
+    return 1 if n % 2 == 0 else 2
+
+def prepare_bell_pairs(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if add_barriers:
+        qc.barrier()
+
+    x0 = check_even(n)
+    if n % 2 != 0:
+        qc.cx(0, 1)
+
+    # Create k Bell pairs
+    for i in range(k):
+        qc.h(x0 + 2 * i)
+        qc.cx(x0 + 2 * i, x0 + 2 * i + 1)
+    return qc
+
+qc = prepare_bell_pairs(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4df8ebba-0.avif)
+
+### (iii) Mengukur pasangan qubit tetangga dalam basis Bell {#iii-measure-neighboring-qubit-pairs-in-the-bell-basis}
+
+Selanjutnya, kita mengukur qubit tetangga yang *tidak saling terjerat* dalam basis Bell (pengukuran dua qubit dari $XX$ dan $ZZ$). Ini menciptakan Bell pair jarak jauh antara qubit target dan qubit yang berdekatan dengan kontrol (dengan koreksi Pauli, yang akan diimplementasikan melalui feedforward pada langkah berikutnya). Secara paralel, kita mengimplementasikan pengukuran entangling yang menteleportasikan gate CNOT untuk bekerja pada qubit target yang dimaksud.
+
+```python
+def measure_bell_basis(qc, add_barriers=True):
+    n = qc.num_qubits - 2  # number of qubits between target and control
+    k = int(n / 2)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # Determine where to start the Bell pair chain and add an extra CNOT when n is odd
+    x0 = 1 if n % 2 == 0 else 2
+
+    # Entangling layer that implements the Bell measurement (and additionally adds the CNOT to be teleported, if n is even)
+    for i in range(k + 1):
+        qc.cx(x0 - 1 + 2 * i, x0 + 2 * i)
+
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.h(2 * i + 1 - x0)
+        else:
+            qc.h(2 * i + 1 - x0)
+
+    if add_barriers:
+        qc.barrier()
+
+    # Map the ZZ measurements onto classical register c1
+    for i in range(k):
+        if i == 0:
+            qc.measure(2 * i + x0, c1[i])
+        else:
+            qc.measure(2 * i + x0, c1[i])
+
+    # Map the XX measurements onto classical register c2
+    for i in range(1, k + x0):
+        if i == 1:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+        else:
+            qc.measure(2 * i + 1 - x0, c2[i - 1])
+    return qc
+
+qc = measure_bell_basis(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/8eed9e57-0.avif)
+
+### (iv) Selanjutnya, terapkan koreksi feedforward untuk memperbaiki operator byproduct Pauli {#iv-next-apply-feedforward-corrections-to-correct-pauli-byproduct-operators}
+
+Pengukuran basis Bell memperkenalkan byproduct Pauli yang harus dikoreksi menggunakan hasil pengukuran yang tercatat. Ini dilakukan dalam dua langkah. Pertama, kita perlu menghitung paritas dari semua pengukuran $ZZ$, yang kemudian digunakan untuk menerapkan gate $X$ secara kondisional pada qubit target. Demikian pula, paritas pengukuran $XX$ dihitung dan digunakan untuk menerapkan gate $Z$ secara kondisional pada qubit kontrol.
+
+Dengan framework ekspresi klasik baru di Qiskit, paritas ini dapat dihitung langsung di lapisan pemrosesan klasik sirkuit. Alih-alih menerapkan serangkaian gate kondisional individual untuk setiap bit pengukuran, kita dapat membangun ekspresi klasik tunggal yang merepresentasikan XOR (paritas) dari semua hasil pengukuran yang relevan. Ekspresi ini kemudian digunakan sebagai kondisi dalam satu blok `if_test`, memungkinkan gate koreksi diterapkan dengan kedalaman konstan. Pendekatan ini sekaligus menyederhanakan sirkuit dan memastikan bahwa koreksi feedforward tidak menambah latensi yang tidak perlu.
+
+```python
+def apply_ffwd_corrections(qc):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+    n = qc.num_qubits - 2  # number of qubits between target and control
+
+    k = int(n / 2)
+    x0 = check_even(n)
+
+    if n > 1:
+        _, c1, c2 = qc.cregs
+    elif n > 0:
+        _, c2 = qc.cregs
+
+    # First, let's compute the parity of all ZZ measurements
+    for i in range(k):
+        if i == 0:
+            parity_ZZ = expr.lift(
+                c1[i]
+            )  # Store the value of the first ZZ measurement in parity_ZZ
+        else:
+            parity_ZZ = expr.bit_xor(
+                c1[i], parity_ZZ
+            )  # Successively compute the parity via XOR operations
+
+    for i in range(1, k + x0):
+        if i == 1:
+            parity_XX = expr.lift(
+                c2[i - 1]
+            )  # Store the value of the first XX measurement in parity_XX
+        else:
+            parity_XX = expr.bit_xor(
+                c2[i - 1], parity_XX
+            )  # Successively compute the parity via XOR operations
+
+    if n > 0:
+        with qc.if_test(parity_XX):
+            qc.z(control)
+
+    if n > 1:
+        with qc.if_test(parity_ZZ):
+            qc.x(target)
+    return qc
+
+qc = apply_ffwd_corrections(qc)
+qc.draw(output="mpl", fold=-1, scale=0.5)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/4915791a-0.avif)
+
+### (v) Terakhir, ukur qubit kontrol dan target {#v-finally-measure-control-and-target-qubits}
+
+Kita mendefinisikan fungsi pembantu yang memungkinkan pengukuran qubit kontrol dan target dalam basis $XX$, $YY$, atau $ZZ$. Untuk memverifikasi Bell state $(|00\rangle + |11\rangle)/\sqrt{2}$, nilai ekspektasi $XX$ dan $ZZ$ keduanya harus $+1$, karena keduanya adalah stabilizer dari keadaan tersebut. Pengukuran $YY$ juga didukung di sini dan akan digunakan di bawah saat menghitung fidelitas.
+
+```python
+def measure_in_basis(qc, basis="XX", add_barrier=True):
+    control = 0  # control qubit
+    target = qc.num_qubits - 1  # target qubit
+
+    assert basis in ["XX", "YY", "ZZ"]
+
+    qc = (
+        qc.copy()
+    )  # We copy the circuit because we want to measure in different bases
+    cr = qc.cregs[0]
+
+    if add_barrier:
+        qc.barrier()
+
+    if basis == "XX":
+        qc.h(control)
+        qc.h(target)
+    elif basis == "YY":
+        qc.sdg(control)
+        qc.sdg(target)
+        qc.h(control)
+        qc.h(target)
+
+    qc.measure(control, cr[0])
+    qc.measure(target, cr[1])
+    return qc
+
+qc_YY = measure_in_basis(qc.copy(), basis="YY")
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d087d7c1-0.avif)
+
+### Satukan semuanya {#put-it-all-together}
+
+Kita menggabungkan berbagai langkah yang didefinisikan di atas untuk membuat gate CX jarak jauh di dua ujung sebuah garis 1D. Langkah-langkahnya meliputi:
+- Menginisialisasi qubit kontrol dalam $\\ket{+}$
+- Menyiapkan Bell pair
+- Mengukur pasangan qubit tetangga
+- Menerapkan koreksi feedforward yang bergantung pada MCM
+
+```python
+def lrcx(distance, prep_barrier=True, pre_measure_barrier=True):
+    qc = initialize_circuit(distance)
+    qc = prepare_bell_pairs(qc, prep_barrier)
+    qc = measure_bell_basis(qc, pre_measure_barrier)
+    qc = apply_ffwd_corrections(qc)
+    return qc
+
+qc = lrcx(distance)
+# Apply the measurement in the XX, YY, and ZZ bases
+qc_XX, qc_YY, qc_ZZ = [
+    measure_in_basis(qc, basis=basis) for basis in ["XX", "YY", "ZZ"]
+]
+
+display(
+    qc_YY.draw(output="mpl", fold=-1, scale=0.5)
+)  # Circuit for measuring in the YY basis
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/11fc8adc-0.avif)
+
+### Membuat sirkuit untuk berbagai jarak {#generate-circuits-for-different-distances}
+
+Sekarang kita membuat sirkuit CX jarak jauh untuk berbagai pemisahan qubit. Untuk setiap jarak, kita membangun sirkuit yang mengukur dalam basis $XX$, $YY$, dan $ZZ$, yang nantinya akan digunakan untuk menghitung fidelitas.
+
+Daftar jarak mencakup pemisahan pendek dan panjang, dengan `distance = 0` yang sesuai dengan CX tetangga terdekat. Jarak yang sama ini juga akan digunakan untuk menghasilkan sirkuit unitary yang sesuai nanti untuk perbandingan.
+
+```python
+distances = [
+    0,
+    1,
+    2,
+    3,
+    6,
+    11,
+    16,
+    21,
+    28,
+    35,
+    44,
+    55,
+    60,
+]  # Distances for long range CX. distance of 0 is a nearest-neighbor CX
+distances.sort()
+assert (
+    min(distances) >= 0
+)  # Only works for distance larger than 2 because classical register cannot be empty
+basis_list = ["XX", "YY", "ZZ"]
+
+circuits_dyn = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_dyn.append(
+            measure_in_basis(lrcx(distance, prep_barrier=False), basis=basis)
+        )
+print(f"Number of circuits: {len(circuits_dyn)}")
+circuits_dyn[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/72c70b11-1.avif)
+
+#### Implementasi berbasis unitary dengan menukar qubit ke tengah {#unitary-based-implementation-swapping-the-qubits-to-the-middle}
+
+Sebagai perbandingan, kita pertama-tama memeriksa kasus di mana gate CNOT jarak jauh diimplementasikan menggunakan koneksi tetangga terdekat dan gate unitary. Pada gambar berikut, di sebelah kiri adalah sirkuit untuk gate CNOT jarak jauh yang mencakup rantai 1D n-qubit dengan koneksi tetangga terdekat saja. Di tengah adalah dekomposisi unitary yang setara yang dapat diimplementasikan dengan gate CNOT lokal, kedalaman sirkuit $O(n)$.
+
+![Sirkuit CNOT jarak jauh](/docs/images/tutorials/long-range-entanglement/dynamic_vs_unitary_long_range_illustration.avif)
+
+Sirkuit di tengah dapat diimplementasikan sebagai berikut:
+
+```python
+def cnot_unitary(distance):
+    """Generate a long range CNOT gate using local CNOTs on a 1D chain of qubits subject to n
+    nearest-neighbor connections only.
+
+    Args:
+        distance (int) : The distance of the CNOT gate, with the convention that a distance of 0 is a nearest-neighbor CNOT.
+
+    Returns:
+        QuantumCircuit: A Quantum Circuit implementing a long-range CNOT gate between qubit 0 and qubit distance+1
+    """
+    assert distance >= 0
+    n = distance  # number of qubits between target and control
+
+    qr = QuantumRegister(
+        n + 2, name="q"
+    )  # Circuit with n qubits between control and target
+    cr = ClassicalRegister(
+        2, name="cr"
+    )  # Classical register for measuring control and target qubits
+
+    qc = QuantumCircuit(qr, cr, name="CNOT_unitary")
+
+    control_qubit = 0
+
+    qc.h(control_qubit)  # Prepare the control qubit in the |+> state
+
+    k = int(n / 2)
+    qc.barrier()
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(i, i + 1)
+        qc.cx(i + 1, i)
+        qc.cx(-i - 1, -i - 2)
+        qc.cx(-i - 2, -i - 1)
+    if n % 2 == 1:
+        qc.cx(k + 2, k + 1)
+        qc.cx(k + 1, k + 2)
+    qc.barrier()
+    qc.cx(k, k + 1)
+    for i in range(control_qubit, control_qubit + k):
+        qc.cx(k - i, k - 1 - i)
+        qc.cx(k - 1 - i, k - i)
+        qc.cx(k + i + 1, k + i + 2)
+        qc.cx(k + i + 2, k + i + 1)
+    if n % 2 == 1:
+        qc.cx(-2, -1)
+        qc.cx(-1, -2)
+
+    return qc
+```
+
+Sekarang buat semua sirkuit unitary, dan bangun sirkuit yang mengukur dalam basis $XX$, $YY$, dan $ZZ$, sama seperti yang kita lakukan untuk sirkuit dinamis di atas.
+
+```python
+circuits_uni = []
+for distance in distances:
+    for basis in basis_list:
+        circuits_uni.append(
+            measure_in_basis(cnot_unitary(distance), basis=basis)
+        )
+
+print(f"Number of circuits: {len(circuits_uni)}")
+circuits_uni[14].draw(fold=-1, output="mpl", idle_wires=False)
+```
+
+```text
+Number of circuits: 39
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/d6154b1c-1.avif)
+
+Setelah kita memiliki sirkuit dinamis dan unitary untuk berbagai jarak, kita siap untuk transpilasi. Pertama, kita perlu memilih perangkat Backend.
+
+```python
+# Set up access to IBM Quantum devices
+from qiskit.circuit import IfElseOp
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=156
+)
+```
+
+Langkah berikut memastikan bahwa Backend mendukung instruksi `if_else`, yang diperlukan untuk versi terbaru dynamic circuits. Karena fitur ini masih dalam akses awal, kita secara eksplisit menambahkan `IfElseOp` ke target Backend jika belum tersedia.
+
+```python
+if "if_else" not in backend.target.operation_names:
+    backend.target.add_instruction(IfElseOp, name="if_else")
+```
+
+#### Gunakan string Layer Fidelity untuk memilih rantai 1D {#use-layer-fidelity-string-for-selecting-1d-chain}
+
+Karena kita ingin membandingkan performa sirkuit dinamis dan unitary pada rantai 1D, kita menggunakan string Layer Fidelity untuk memilih topologi linear dari rantai qubit terbaik dari perangkat. Ini memastikan bahwa kedua jenis sirkuit ditranspilasi dengan batasan konektivitas yang sama, memungkinkan perbandingan performa yang adil.
+
+```python
+# This selects best qubits for longest distance and uses the same control for all lengths
+lf_qubits = backend.properties().to_dict()[
+    "general_qlists"
+]  # best linear chain qubits
+chosen_layouts = {
+    distance: [
+        val["qubits"]
+        for val in lf_qubits
+        if val["name"] == f"lf_{distances[-1] + 2}"
+    ][0][: distance + 2]
+    for distance in distances
+}
+print(chosen_layouts[max(distances)])  # best qubits at each distance
+```
+
+```text
+[10, 11, 12, 13, 14, 15, 19, 35, 34, 33, 39, 53, 54, 55, 59, 75, 74, 73, 72, 71, 58, 51, 50, 49, 48, 47, 46, 45, 44, 43, 56, 63, 62, 61, 76, 81, 82, 83, 84, 85, 77, 65, 66, 67, 68, 69, 78, 89, 90, 91, 98, 111, 110, 109, 108, 107, 106, 105, 104, 103, 102, 101]
+```
+
+```python
+isa_circuits_dyn = []
+isa_circuits_uni = []
+
+# Using the same initial layouts for both circuits for better apples to apples comparison
+for qc in circuits_dyn:
+    pm = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        initial_layout=chosen_layouts[qc.num_qubits - 2],
+    )
+    isa_circuits_dyn.append(pm.run(qc))
+
+for qc in circuits_uni:
+    pm = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        initial_layout=chosen_layouts[qc.num_qubits - 2],
+    )
+    isa_circuits_uni.append(pm.run(qc))
+```
+
+```python
+print(
+    f"2Q depth: {isa_circuits_dyn[14].depth(lambda x: x.operation.num_qubits == 2)}"
+)
+isa_circuits_dyn[14].draw("mpl", fold=-1, idle_wires=0)
+```
+
+```text
+2Q depth: 2
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/c77c3fd3-1.avif)
+
+```python
+print(
+    f"2Q depth: {isa_circuits_uni[14].depth(lambda x: x.operation.num_qubits == 2)}"
+)
+isa_circuits_uni[14].draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+2Q depth: 13
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/7e5fc240-1.avif)
+
+### Visualisasikan qubit yang digunakan untuk sirkuit LRCX {#visualize-qubits-used-for-the-lrcx-circuit}
+
+Di bagian ini, kita memeriksa bagaimana sirkuit LRCX dipetakan ke hardware. Kita mulai dengan memvisualisasikan qubit fisik yang digunakan dalam sirkuit, kemudian mempelajari bagaimana jarak kontrol-target dalam layout memengaruhi jumlah operasi.
+
+```python
+# Note: the qubit coordinates must be hard-coded.
+# The backend API does not currently provide this information directly.
+# If using a different backend, you will need to adjust the coordinates accordingly,
+# or set the qubit_coordinates = None to use the default layout coordinates.
+
+def _heron_coords_r2():
+    """Generate coordinates for the Heron layout in R2. Note"""
+    cord_map = np.array(
+        [
+            [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                3,
+                7,
+                11,
+                15,
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                1,
+                5,
+                9,
+                13,
+            ],
+            -1
+            * np.array([j for i in range(15) for j in [i] * [16, 4][i % 2]]),
+        ],
+        dtype=int,
+    )
+
+    hcords = []
+    ycords = cord_map[0]
+    xcords = cord_map[1]
+    for i in range(156):
+        hcords.append([xcords[i] + 1, np.abs(ycords[i]) + 1])
+
+    return hcords
+
+# Visualize the active qubits in the circuit layout
+plot_circuit_layout(
+    circuit=isa_circuits_uni[-1],
+    backend=backend,
+    view="physical",
+    qubit_coordinates=_heron_coords_r2(),
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/long-range-entanglement/extracted-outputs/2d090f8a-0.avif)

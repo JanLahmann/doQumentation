@@ -1,0 +1,308 @@
+---
+title: "Tingkatkan klasifikasi fitur menggunakan projected quantum kernels"
+sidebar_label: "Tingkatkan klasifikasi fitur menggunakan projected quantum kernels"
+description: "Tutorial tentang peningkatan klasifikasi fitur menggunakan projected quantum kernels"
+notebook_path: "tutorials/projected-quantum-kernels.ipynb"
+---
+
+{/* doqumentation-source-hash: fb4f4fe9 */}
+
+<OpenInLabBanner notebookPath="tutorials/projected-quantum-kernels.ipynb" />
+
+
+
+{/* cspell:ignore braket sqrtm cytotoxicity  Nalm Cytotoxicity binarize Utro Filippo Hsin */}
+*Estimasi penggunaan: 80 menit pada prosesor Heron r3 (CATATAN: Ini hanya estimasi. Waktu aktualmu bisa berbeda.)*
+
+Dalam tutorial ini, kita mendemonstrasikan cara menjalankan [projected quantum kernel](https://www.nature.com/articles/s41467-021-22539-9) (PQK) dengan Qiskit pada dataset biologis dunia nyata, berdasarkan makalah [Enhanced Prediction of CAR T-Cell Cytotoxicity with Quantum-Kernel Methods](https://arxiv.org/abs/2507.22710) [[1]](#references).
+
+PQK adalah metode yang digunakan dalam quantum machine learning (QML) untuk mengenkode data klasikal ke dalam ruang fitur quantum dan memproyeksikannya kembali ke domain klasikal, dengan memanfaatkan komputer quantum untuk meningkatkan seleksi fitur. Metode ini melibatkan pengkodean data klasikal ke dalam state quantum menggunakan Circuit quantum, umumnya melalui proses yang disebut feature mapping, di mana data ditransformasikan ke dalam ruang Hilbert berdimensi tinggi. Aspek "projected" mengacu pada ekstraksi informasi klasikal dari state quantum, dengan mengukur observable tertentu, untuk membangun matriks kernel yang dapat digunakan dalam algoritma berbasis kernel klasikal seperti support vector machine. Pendekatan ini memanfaatkan keunggulan komputasi sistem quantum untuk berpotensi mencapai performa lebih baik pada tugas-tugas tertentu dibandingkan metode klasikal.
+
+Tutorial ini juga mengasumsikan kamu sudah familiar secara umum dengan metode QML. Untuk eksplorasi lebih lanjut tentang QML, lihat kursus [Quantum machine learning](/learning/courses/quantum-machine-learning) di IBM Quantum Learning.
+### Persyaratan
+Sebelum memulai tutorial ini, pastikan kamu sudah menginstal hal-hal berikut:
+
+- Qiskit SDK v2.0 atau lebih baru, dengan dukungan [visualisasi](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 atau lebih baru (`pip install qiskit-ibm-runtime`)
+- Category encoders 2.8.1 (`pip install category-encoders`)
+- NumPy 2.3.2 (`pip install numpy`)
+- Pandas 2.3.2 (`pip install pandas`)
+- Scikit-learn 1.7.1 (`pip install scikit-learn`)
+- Tqdm 4.67.1 (`pip install tqdm`)
+### Setup
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q category-encoders numpy pandas qiskit qiskit-ibm-runtime scipy scikit-learn tqdm
+```
+
+```python
+import warnings
+
+# Standard libraries
+import os
+import numpy as np
+import pandas as pd
+
+# Machine learning and data processing
+import category_encoders as ce
+from scipy.linalg import inv, sqrtm
+from sklearn.metrics.pairwise import rbf_kernel
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.svm import SVC
+
+# Qiskit and Qiskit Runtime
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+from qiskit.circuit.library import UnitaryGate, ZZFeatureMap
+from qiskit.quantum_info import SparsePauliOp, random_unitary
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import (
+    Batch,
+    EstimatorOptions,
+    EstimatorV2 as Estimator,
+    QiskitRuntimeService,
+)
+
+# Progress bar
+import tqdm
+
+warnings.filterwarnings("ignore")
+```
+
+## Langkah 1: Petakan input klasikal ke masalah quantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+### Persiapan dataset {#dataset-preparation}
+
+Dalam tutorial ini kita menggunakan dataset biologis dunia nyata untuk tugas klasifikasi biner, yang dihasilkan oleh Daniels et al. (2022) dan dapat diunduh dari [supplementary material](https://www.science.org/doi/full/10.1126/science.abq0225#supplementary-materials) yang disertakan dalam makalah tersebut. Data terdiri dari CAR T-cell, yaitu sel T yang direkayasa secara genetik untuk digunakan dalam imunoterapi guna mengobati kanker tertentu. Sel T, sejenis sel imun, dimodifikasi di laboratorium untuk mengekspresikan chimeric antigen receptor (CAR) yang menargetkan protein spesifik pada sel kanker. Sel T yang telah dimodifikasi ini dapat mengenali dan menghancurkan sel kanker dengan lebih efektif. Fitur data adalah motif CAR T-cell, yang merujuk pada komponen struktural atau fungsional spesifik dari CAR yang direkayasa ke dalam sel T. Berdasarkan motif-motif ini, tugas kita adalah memprediksi sitotoksisitas dari suatu CAR T-cell, melabelinya sebagai toksik atau tidak toksik.
+Berikut adalah fungsi-fungsi helper untuk melakukan preprocessing dataset ini.
+
+```python
+def preprocess_data(dir_root, args):
+    """
+    Preprocess the training and test data.
+    """
+    # Read from the csv files
+    train_data = pd.read_csv(
+        os.path.join(dir_root, args["file_train_data"]),
+        encoding="unicode_escape",
+        sep=",",
+    )
+    test_data = pd.read_csv(
+        os.path.join(dir_root, args["file_test_data"]),
+        encoding="unicode_escape",
+        sep=",",
+    )
+
+    # Fix the last motif ID
+    train_data[train_data == 17] = 14
+    train_data.columns = [
+        "Cell Number",
+        "motif",
+        "motif.1",
+        "motif.2",
+        "motif.3",
+        "motif.4",
+        "Nalm 6 Cytotoxicity",
+    ]
+    test_data[test_data == 17] = 14
+    test_data.columns = [
+        "Cell Number",
+        "motif",
+        "motif.1",
+        "motif.2",
+        "motif.3",
+        "motif.4",
+        "Nalm 6 Cytotoxicity",
+    ]
+
+    # Adjust motif at the third position
+    if args["filter_for_spacer_motif_third_position"]:
+        train_data = train_data[
+            (train_data["motif.2"] == 14) | (train_data["motif.2"] == 0)
+        ]
+        test_data = test_data[
+            (test_data["motif.2"] == 14) | (test_data["motif.2"] == 0)
+        ]
+
+    train_data = train_data[
+        args["motifs_to_use"] + [args["label_name"], "Cell Number"]
+    ]
+    test_data = test_data[
+        args["motifs_to_use"] + [args["label_name"], "Cell Number"]
+    ]
+
+    # Adjust motif at the last position
+    if not args["allow_spacer_motif_last_position"]:
+        last_motif = args["motifs_to_use"][len(args["motifs_to_use"]) - 1]
+        train_data = train_data[
+            (train_data[last_motif] != 14) & (train_data[last_motif] != 0)
+        ]
+        test_data = test_data[
+            (test_data[last_motif] != 14) & (test_data[last_motif] != 0)
+        ]
+
+    # Get the labels
+    train_labels = np.array(train_data[args["label_name"]])
+    test_labels = np.array(test_data[args["label_name"]])
+
+    # For the classification task use the threshold to binarize labels
+    train_labels[train_labels > args["label_binarization_threshold"]] = 1
+    train_labels[train_labels < 1] = args["min_label_value"]
+    test_labels[test_labels > args["label_binarization_threshold"]] = 1
+    test_labels[test_labels < 1] = args["min_label_value"]
+
+    # Reduce data to just the motifs of interest
+    train_data = train_data[args["motifs_to_use"]]
+    test_data = test_data[args["motifs_to_use"]]
+
+    # Get the class and motif counts
+    min_class = np.min(np.unique(np.concatenate([train_data, test_data])))
+    max_class = np.max(np.unique(np.concatenate([train_data, test_data])))
+
+    num_class = max_class - min_class + 1
+    num_motifs = len(args["motifs_to_use"])
+    print(str(max_class) + ":" + str(min_class) + ":" + str(num_class))
+
+    train_data = train_data - min_class
+    test_data = test_data - min_class
+
+    return (
+        train_data,
+        test_data,
+        train_labels,
+        test_labels,
+        num_class,
+        num_motifs,
+    )
+
+def data_encoder(args, train_data, test_data, num_class, num_motifs):
+    """
+    Use one-hot or binary encoding for classical data representation.
+    """
+    if args["encoder"] == "one-hot":
+        # Transform to one-hot encoding
+        train_data = np.eye(num_class)[train_data]
+        test_data = np.eye(num_class)[test_data]
+
+        train_data = train_data.reshape(
+            train_data.shape[0], train_data.shape[1] * train_data.shape[2]
+        )
+        test_data = test_data.reshape(
+            test_data.shape[0], test_data.shape[1] * test_data.shape[2]
+        )
+
+    elif args["encoder"] == "binary":
+        # Transform to binary encoding
+        encoder = ce.BinaryEncoder()
+
+        base_array = np.unique(np.concatenate([train_data, test_data]))
+        base = pd.DataFrame(base_array).astype("category")
+        base.columns = ["motif"]
+        for motif_name in args["motifs_to_use"][1:]:
+            base[motif_name] = base.loc[:, "motif"]
+        encoder.fit(base)
+
+        train_data = encoder.transform(train_data.astype("category"))
+        test_data = encoder.transform(test_data.astype("category"))
+
+        train_data = np.reshape(
+            train_data.values, (train_data.shape[0], num_motifs, -1)
+        )
+        test_data = np.reshape(
+            test_data.values, (test_data.shape[0], num_motifs, -1)
+        )
+
+        train_data = train_data.reshape(
+            train_data.shape[0], train_data.shape[1] * train_data.shape[2]
+        )
+        test_data = test_data.reshape(
+            test_data.shape[0], test_data.shape[1] * test_data.shape[2]
+        )
+
+    else:
+        raise ValueError("Invalid encoding type.")
+
+    return train_data, test_data
+```
+
+Kamu bisa menjalankan tutorial ini dengan menjalankan sel berikut, yang secara otomatis membuat struktur folder yang diperlukan dan mengunduh file training dan test langsung ke lingkunganmu. Jika kamu sudah memiliki file-file ini secara lokal, langkah ini akan menimpanya untuk memastikan konsistensi versi.
+
+```python
+## Download dataset
+
+# Create data directory if it doesn't exist
+!mkdir -p data_tutorial/pqk
+
+# Download the training and test sets from the official Qiskit documentation repo
+!wget -q --show-progress -O data_tutorial/pqk/train_data.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/pqk/train_data.csv
+
+!wget -q --show-progress -O data_tutorial/pqk/test_data.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/pqk/test_data.csv
+
+!wget -q --show-progress -O data_tutorial/pqk/projections_train.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/pqk/projections_train.csv
+
+!wget -q --show-progress -O data_tutorial/pqk/projections_test.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/pqk/projections_test.csv
+
+# Check the files have been downloaded
+!echo "Dataset files downloaded:"
+!ls -lh data_tutorial/pqk/*.csv
+```
+
+```python
+args = {
+    "file_train_data": "train_data.csv",
+    "file_test_data": "test_data.csv",
+    "motifs_to_use": ["motif", "motif.1", "motif.2", "motif.3"],
+    "label_name": "Nalm 6 Cytotoxicity",
+    "label_binarization_threshold": 0.62,
+    "filter_for_spacer_motif_third_position": False,
+    "allow_spacer_motif_last_position": True,
+    "min_label_value": -1,
+    "encoder": "one-hot",
+}
+dir_root = "./"
+
+# Preprocess data
+train_data, test_data, train_labels, test_labels, num_class, num_motifs = (
+    preprocess_data(dir_root=dir_root, args=args)
+)
+
+# Encode the data
+train_data, test_data = data_encoder(
+    args, train_data, test_data, num_class, num_motifs
+)
+```
+
+```text
+14:0:15
+```
+
+Kita juga mentransformasi dataset sehingga $1$ direpresentasikan sebagai $\pi/2$ untuk keperluan scaling.
+
+```python
+# Change 1 to pi/2
+angle = np.pi / 2
+
+tmp = pd.DataFrame(train_data).astype("float64")
+tmp[tmp == 1] = angle
+train_data = tmp.values
+
+tmp = pd.DataFrame(test_data).astype("float64")
+tmp[tmp == 1] = angle
+test_data = tmp.values
+```
+
+Kita memverifikasi ukuran dan bentuk dari dataset training dan test.
+
+```python
+print(train_data.shape, train_labels.shape)
+print(test_data.shape, test_labels.shape)
+```
+
+```text
+(172, 60) (172,)
+(74, 60) (74,)
+```

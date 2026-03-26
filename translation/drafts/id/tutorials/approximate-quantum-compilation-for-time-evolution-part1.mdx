@@ -1,0 +1,464 @@
+---
+title: "Kompilasi kuantum aproksimasi untuk sirkuit evolusi waktu"
+sidebar_label: "Kompilasi kuantum aproksimasi untuk sirkuit evolusi waktu"
+description: "Tutorial ini menunjukkan cara mengimplementasikan AQC-Tensor dengan Qiskit untuk meningkatkan performa sirkuit kuantum"
+notebook_path: "tutorials/approximate-quantum-compilation-for-time-evolution.ipynb"
+---
+
+{/* doqumentation-source-hash: 93a62359 */}
+
+<OpenInLabBanner notebookPath="tutorials/approximate-quantum-compilation-for-time-evolution.ipynb" />
+
+
+
+{/* cspell:ignore circo */}
+
+*Estimasi penggunaan: Lima menit pada prosesor Eagle (CATATAN: Ini hanya estimasi. Waktu eksekusi aktual bisa berbeda.)*
+## Latar Belakang {#background}
+
+Tutorial ini menunjukkan cara mengimplementasikan **Kompilasi Kuantum Aproksimasi** menggunakan tensor network (AQC-Tensor) dengan Qiskit untuk meningkatkan performa sirkuit kuantum. Kita akan menerapkan AQC-Tensor dalam konteks evolusi waktu Trotterisasi untuk mengurangi kedalaman sirkuit sambil mempertahankan akurasi simulasi, mengikuti kerangka kerja Qiskit untuk persiapan state dan optimasi. Kamu akan belajar cara membuat sirkuit ansatz berkedalaman rendah dari sirkuit Trotter awal, mengoptimalkannya dengan tensor network, dan mempersiapkannya untuk eksekusi di perangkat keras kuantum.
+
+Tujuan utamanya adalah mensimulasikan evolusi waktu untuk Hamiltonian model dengan kedalaman sirkuit yang lebih rendah. Ini dicapai menggunakan addon Qiskit **AQC-Tensor**, [qiskit-addon-aqc-tensor](https://github.com/Qiskit/qiskit-addon-aqc-tensor), yang memanfaatkan tensor network, khususnya matrix product states (MPS), untuk mengompresi dan mengoptimalkan sirkuit awal. Melalui penyesuaian iteratif, sirkuit ansatz yang dikompres mempertahankan fidelitas terhadap sirkuit asli sambil tetap layak untuk perangkat keras kuantum near-term. Detail lebih lanjut bisa ditemukan di [dokumentasi](/guides/qiskit-addons-aqc) terkait beserta [contoh sederhana](/guides/qiskit-addons-aqc-get-started) untuk memulai.
+
+Kompilasi Kuantum Aproksimasi sangat menguntungkan dalam simulasi kuantum yang melampaui waktu koherensi perangkat keras, karena memungkinkan simulasi yang kompleks dilakukan dengan lebih efisien. Tutorial ini memandu kamu melalui pengaturan alur kerja AQC-Tensor di Qiskit, mencakup inisialisasi Hamiltonian, pembuatan sirkuit Trotter, dan transpilasi sirkuit akhir yang teroptimalkan untuk perangkat target.
+## Prasyarat {#requirements}
+
+Sebelum memulai tutorial ini, pastikan kamu sudah menginstal:
+
+* Qiskit SDK v1.0 atau lebih baru, dengan dukungan [visualisasi](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime v0.22 atau lebih baru (`pip install qiskit-ibm-runtime`)
+* Addon Qiskit AQC-Tensor (`pip install 'qiskit-addon-aqc-tensor[aer,quimb-jax]'`)
+## Pengaturan {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-ibm-runtime quimb rustworkx scipy
+```
+
+```python
+import numpy as np
+import quimb.tensor
+import datetime
+import matplotlib.pyplot as plt
+
+from scipy.optimize import OptimizeResult, minimize
+
+from qiskit.quantum_info import SparsePauliOp, Pauli
+from qiskit.transpiler import CouplingMap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit import QuantumCircuit
+from qiskit.synthesis import SuzukiTrotter
+
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_aqc_tensor.ansatz_generation import (
+    generate_ansatz_from_circuit,
+)
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+from rustworkx.visualization import graphviz_draw
+```
+
+## Bagian I. Contoh skala kecil {#part-i-small-scale-example}
+
+Bagian pertama tutorial ini menggunakan contoh skala kecil dengan 10 situs untuk mengilustrasikan proses memetakan masalah simulasi kuantum ke sirkuit kuantum yang dapat dieksekusi. Di sini, kita akan mengeksplorasi dinamika model XXZ dengan 10 situs, sehingga kita bisa membangun dan mengoptimalkan sirkuit kuantum yang terkelola sebelum diskalakan ke sistem yang lebih besar.
+
+Model XXZ banyak dipelajari dalam fisika untuk mengkaji interaksi spin dan sifat magnetik. Kita menyiapkan Hamiltonian dengan kondisi batas terbuka dan interaksi antar situs tetangga yang bergantung pada situs sepanjang rantai.
+
+### Hamiltonian model dan observabel {#model-hamiltonian-and-observable}
+
+Hamiltonian untuk model XXZ 10-situs kita didefinisikan sebagai:
+$$
+\hat{\mathcal{H}}_{XXZ} = \sum_{i=1}^{L-1} J_{i,(i+1)}\left(X_i X_{(i+1)}+Y_i Y_{(i+1)}+ 2\cdot Z_i Z_{(i+1)} \right) \, ,
+$$
+
+di mana $J_{i,(i+1)}$ adalah koefisien acak yang bersesuaian dengan edge $(i, i+1)$, dan $L=10$ adalah jumlah situs.
+
+Dengan mensimulasikan evolusi sistem ini menggunakan kedalaman sirkuit yang lebih rendah, kita bisa mendapatkan wawasan tentang penggunaan AQC-Tensor untuk mengompresi dan mengoptimalkan sirkuit.
+#### Menyiapkan Hamiltonian dan observabel {#set-up-the-hamiltonian-and-observable}
+
+Sebelum memetakan masalah kita, kita perlu menyiapkan coupling map, Hamiltonian, dan observabel untuk model XXZ 10-situs.
+
+```python
+# L is the number of sites, also the length of the 1D spin chain
+L = 10
+
+# Generate the coupling map
+edge_list = [(i - 1, i) for i in range(1, L)]
+# Generate an edge-coloring so we can make hw-efficient circuits
+even_edges = edge_list[::2]
+odd_edges = edge_list[1::2]
+coupling_map = CouplingMap(edge_list)
+
+# Generate random coefficients for our XXZ Hamiltonian
+np.random.seed(0)
+Js = np.random.rand(L - 1) + 0.5 * np.ones(L - 1)
+hamiltonian = SparsePauliOp(Pauli("I" * L))
+for i, edge in enumerate(even_edges + odd_edges):
+    hamiltonian += SparsePauliOp.from_sparse_list(
+        [
+            ("XX", (edge), Js[i] / 2),
+            ("YY", (edge), Js[i] / 2),
+            ("ZZ", (edge), Js[i]),
+        ],
+        num_qubits=L,
+    )
+
+# Generate a ZZ observable between the two middle qubits
+observable = SparsePauliOp.from_sparse_list(
+    [("ZZ", (L // 2 - 1, L // 2), 1.0)], num_qubits=L
+)
+
+print("Hamiltonian:", hamiltonian)
+print("Observable:", observable)
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+```text
+Hamiltonian: SparsePauliOp(['IIIIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII'],
+              coeffs=[1.        +0.j, 0.52440675+0.j, 0.52440675+0.j, 1.0488135 +0.j,
+ 0.60759468+0.j, 0.60759468+0.j, 1.21518937+0.j, 0.55138169+0.j,
+ 0.55138169+0.j, 1.10276338+0.j, 0.52244159+0.j, 0.52244159+0.j,
+ 1.04488318+0.j, 0.4618274 +0.j, 0.4618274 +0.j, 0.9236548 +0.j,
+ 0.57294706+0.j, 0.57294706+0.j, 1.14589411+0.j, 0.46879361+0.j,
+ 0.46879361+0.j, 0.93758721+0.j, 0.6958865 +0.j, 0.6958865 +0.j,
+ 1.391773  +0.j, 0.73183138+0.j, 0.73183138+0.j, 1.46366276+0.j])
+Observable: SparsePauliOp(['IIIIZZIIII'],
+              coeffs=[1.+0.j])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/1ea0e102-23d5-4e6e-8ef8-e82843452b19-1.avif)
+
+Setelah Hamiltonian didefinisikan, kita bisa melanjutkan untuk membangun state awal.
+
+```python
+# Generate an initial state
+initial_state = QuantumCircuit(L)
+for i in range(L):
+    if i % 2:
+        initial_state.x(i)
+```
+
+### Langkah 1: Memetakan input klasik ke masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Sekarang setelah kita membangun Hamiltonian, yang mendefinisikan interaksi spin-spin dan medan magnet eksternal yang mengkarakterisasi sistem, kita mengikuti tiga langkah utama dalam alur kerja AQC-Tensor:
+
+1. **Buat sirkuit AQC yang teroptimalkan**: Menggunakan Trotterisasi, kita mengaproksimasi evolusi awal, yang kemudian dikompres untuk mengurangi kedalaman sirkuit.
+2. **Buat sirkuit evolusi waktu yang tersisa**: Tangkap evolusi untuk waktu yang tersisa melampaui segmen awal.
+3. **Gabungkan sirkuit-sirkuit tersebut**: Gabungkan sirkuit AQC yang teroptimalkan dengan sirkuit evolusi yang tersisa menjadi sirkuit evolusi waktu lengkap yang siap untuk dieksekusi.
+
+Pendekatan ini menghasilkan ansatz berkedalaman rendah untuk evolusi target, mendukung simulasi yang efisien dalam batasan perangkat keras kuantum near-term.
+#### Menentukan porsi evolusi waktu untuk disimulasikan secara klasik {#determine-the-portion-of-time-evolution-to-simulate-classically}
+
+Tujuan kita adalah mensimulasikan evolusi waktu Hamiltonian model yang didefinisikan sebelumnya menggunakan evolusi Trotter. Untuk membuat proses ini efisien bagi perangkat keras kuantum, kita membagi evolusi menjadi dua segmen:
+
+- **Segmen Awal**: Porsi awal evolusi ini, dari $ t_i = 0.0 $ hingga $ t_f = 0.2 $, dapat disimulasikan dengan MPS dan dapat "dikompilasi" secara efisien menggunakan AQC-Tensor. Dengan menggunakan [addon Qiskit AQC-Tensor](https://github.com/Qiskit/qiskit-addon-aqc-tensor), kita membuat sirkuit terkompres untuk segmen ini, yang disebut `aqc_target_circuit`. Karena segmen ini akan disimulasikan pada simulator tensor-network, kita bisa menggunakan jumlah layer Trotter yang lebih banyak tanpa berdampak signifikan pada sumber daya perangkat keras. Kita menetapkan `aqc_target_num_trotter_steps = 32` untuk segmen ini.
+
+- **Segmen Berikutnya**: Porsi evolusi yang tersisa ini, dari $ t = 0.2 $ hingga $ t = 0.4 $, akan dieksekusi pada perangkat keras kuantum, yang disebut `subsequent_circuit`. Mengingat keterbatasan perangkat keras, kita bertujuan menggunakan layer Trotter sesedikit mungkin untuk menjaga kedalaman sirkuit yang terkelola. Untuk segmen ini, kita menggunakan `subsequent_num_trotter_steps = 3`.
+
+#### Memilih waktu pemisahan {#choose-the-split-time}
+Kita memilih $t = 0.2$ sebagai waktu pemisahan untuk menyeimbangkan simulabilitas klasik dengan kelayakan perangkat keras. Di awal evolusi, entanglement dalam model XXZ tetap cukup rendah sehingga metode klasik seperti MPS dapat mengaproksimasi dengan akurat.
+
+Saat memilih waktu pemisahan, panduan yang baik adalah memilih titik di mana entanglement masih dapat dikelola secara klasik tetapi sudah cukup menangkap evolusi untuk menyederhanakan bagian yang dieksekusi di perangkat keras. Mungkin diperlukan coba-coba untuk menemukan keseimbangan terbaik bagi Hamiltonian yang berbeda.
+
+```python
+# Generate the AQC target circuit (initial segment)
+aqc_evolution_time = 0.2
+aqc_target_num_trotter_steps = 32
+
+aqc_target_circuit = initial_state.copy()
+aqc_target_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+```python
+# Generate the subsequent circuit
+subsequent_num_trotter_steps = 3
+subsequent_evolution_time = 0.2
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+subsequent_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/83039f82-97cb-4613-86c9-a8faf0839a02-0.avif)
+
+Untuk memungkinkan perbandingan yang bermakna, kita akan membuat dua sirkuit tambahan:
+
+- **Sirkuit perbandingan AQC**: Sirkuit ini berevolusi hingga `aqc_evolution_time` tetapi menggunakan durasi langkah Trotter yang sama seperti `subsequent_circuit`. Sirkuit ini berfungsi sebagai pembanding terhadap `aqc_target_circuit`, menunjukkan evolusi yang akan kita amati tanpa menggunakan jumlah langkah Trotter yang lebih banyak. Kita akan menyebut sirkuit ini sebagai `aqc_comparison_circuit`.
+
+- **Sirkuit referensi**: Sirkuit ini digunakan sebagai baseline untuk mendapatkan hasil yang tepat. Sirkuit ini mensimulasikan evolusi penuh menggunakan tensor network untuk menghitung hasil yang eksak, memberikan referensi untuk mengevaluasi efektivitas AQC-Tensor. Kita akan menyebut sirkuit ini sebagai `reference_circuit`.
+
+```python
+# Generate the AQC comparison circuit
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps
+    / subsequent_evolution_time
+    * aqc_evolution_time
+)
+print(
+    "Number of Trotter steps for comparison:",
+    aqc_comparison_num_trotter_steps,
+)
+
+aqc_comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+```text
+Number of Trotter steps for comparison: 3
+```
+
+```python
+# Generate the reference circuit
+evolution_time = 0.4
+reps = 200
+
+reference_circuit = initial_state.copy()
+reference_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=reps),
+        time=evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+#### Membuat ansatz dan parameter awal dari sirkuit Trotter dengan lebih sedikit langkah {#generate-an-ansatz-and-initial-parameters-from-a-trotter-circuit-with-fewer-steps}
+
+Sekarang setelah kita membangun empat sirkuit kita, mari lanjutkan dengan alur kerja AQC-Tensor. Pertama, kita membangun sirkuit "baik" yang memiliki waktu evolusi yang sama dengan sirkuit target, tetapi dengan lebih sedikit langkah Trotter (dan dengan demikian lebih sedikit layer).
+
+Kemudian kita meneruskan sirkuit "baik" ini ke fungsi `generate_ansatz_from_circuit` dari AQC-Tensor. Fungsi ini menganalisis konektivitas dua-Qubit dari sirkuit dan mengembalikan dua hal:
+
+1. Sirkuit ansatz terparametrisasi yang umum dengan konektivitas dua-Qubit yang sama seperti sirkuit input.
+2. Parameter yang, ketika dimasukkan ke dalam ansatz, menghasilkan sirkuit input (baik).
+
+Segera kita akan mengambil parameter-parameter ini dan menyesuaikannya secara iteratif untuk membawa sirkuit ansatz sedekat mungkin ke target MPS.
+
+```python
+aqc_ansatz_num_trotter_steps = 1
+
+aqc_good_circuit = initial_state.copy()
+aqc_good_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/b9e81c51-dc6f-4237-9aca-e1384f1897bc-0.avif)
+
+```python
+print(f"AQC Comparison circuit: depth {aqc_comparison_circuit.depth()}")
+print(f"Target circuit:         depth {aqc_target_circuit.depth()}")
+print(
+    f"Ansatz circuit:         depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters"
+)
+```
+
+```text
+AQC Comparison circuit: depth 36
+Target circuit:         depth 385
+Ansatz circuit:         depth 7, with 156 parameters
+```
+
+#### Memilih pengaturan untuk simulasi tensor network {#choose-settings-for-tensor-network-simulation}
+
+Di sini, kita menggunakan simulator sirkuit matrix-product state dari Quimb, beserta jax untuk menyediakan gradient.
+
+```python
+simulator_settings = QuimbSimulator(
+    quimb.tensor.CircuitMPS, autodiff_backend="jax"
+)
+```
+
+Selanjutnya, kita membangun representasi MPS dari state target yang akan diaproksimasi menggunakan AQC-Tensor. Representasi ini memungkinkan penanganan entanglement yang efisien, memberikan deskripsi kompak dari state kuantum untuk optimasi lebih lanjut.
+
+```python
+aqc_target_mps = tensornetwork_from_circuit(
+    aqc_target_circuit, simulator_settings
+)
+print("Target MPS maximum bond dimension:", aqc_target_mps.psi.max_bond())
+
+# Obtains the reference MPS, where we can obtain the exact expectation value by examining the `local_expectation``
+reference_mps = tensornetwork_from_circuit(
+    reference_circuit, simulator_settings
+)
+reference_expval = reference_mps.local_expectation(
+    quimb.pauli("Z") & quimb.pauli("Z"), (L // 2 - 1, L // 2)
+).real.item()
+print("Reference MPS maximum bond dimension:", reference_mps.psi.max_bond())
+```
+
+```text
+Target MPS maximum bond dimension: 5
+Reference MPS maximum bond dimension: 7
+```
+
+Perlu dicatat bahwa dengan memilih jumlah langkah Trotter yang lebih banyak untuk state target, kita secara efektif telah mengurangi error Trotter-nya dibandingkan sirkuit awal. Kita dapat mengevaluasi fidelitas ($ |\langle \psi_1 | \psi_2 \rangle|^2 $) antara state yang disiapkan oleh sirkuit awal dan state target untuk mengkuantifikasi perbedaan ini.
+
+```python
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Starting fidelity:", starting_fidelity)
+```
+
+```text
+Starting fidelity: 0.9982464959067222
+```
+
+#### Mengoptimalkan parameter ansatz menggunakan perhitungan MPS {#optimize-the-parameters-of-the-ansatz-using-mps-calculations}
+Pada langkah ini, kita mengoptimalkan parameter ansatz dengan meminimalkan fungsi biaya sederhana, `MaximizeStateFidelity`, menggunakan optimizer L-BFGS dari SciPy. Kita memilih kriteria berhenti untuk fidelitas yang memastikannya melampaui fidelitas sirkuit awal tanpa AQC-Tensor. Setelah ambang batas ini tercapai, sirkuit terkompres akan menunjukkan error Trotter yang lebih rendah dan kedalaman yang berkurang dibandingkan sirkuit asli. Dengan menggunakan waktu CPU tambahan, optimasi lebih lanjut dapat terus meningkatkan fidelitas.
+
+```python
+# Setting values for the optimization
+aqc_stopping_fidelity = 1
+aqc_max_iterations = 500
+
+stopping_point = 1.0 - aqc_stopping_fidelity
+objective = MaximizeStateFidelity(
+    aqc_target_mps, aqc_ansatz, simulator_settings
+)
+
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(
+        f"{datetime.datetime.now()} Intermediate result: Fidelity {fidelity:.8f}"
+    )
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if (
+    result.status
+    not in (
+        0,
+        1,
+        99,
+    )
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+2025-04-14 11:46:52.174235 Intermediate result: Fidelity 0.99795851
+2025-04-14 11:46:52.218249 Intermediate result: Fidelity 0.99822826
+2025-04-14 11:46:52.280924 Intermediate result: Fidelity 0.99829675
+2025-04-14 11:46:52.356214 Intermediate result: Fidelity 0.99832474
+2025-04-14 11:46:52.411609 Intermediate result: Fidelity 0.99836131
+2025-04-14 11:46:52.453747 Intermediate result: Fidelity 0.99839954
+2025-04-14 11:46:52.496184 Intermediate result: Fidelity 0.99846517
+2025-04-14 11:46:52.542046 Intermediate result: Fidelity 0.99865029
+2025-04-14 11:46:52.583679 Intermediate result: Fidelity 0.99872332
+2025-04-14 11:46:52.628732 Intermediate result: Fidelity 0.99892359
+2025-04-14 11:46:52.690386 Intermediate result: Fidelity 0.99900640
+2025-04-14 11:46:52.759398 Intermediate result: Fidelity 0.99907169
+2025-04-14 11:46:52.819496 Intermediate result: Fidelity 0.99911423
+2025-04-14 11:46:52.884505 Intermediate result: Fidelity 0.99918716
+2025-04-14 11:46:52.947919 Intermediate result: Fidelity 0.99921278
+2025-04-14 11:46:53.012808 Intermediate result: Fidelity 0.99924853
+2025-04-14 11:46:53.083626 Intermediate result: Fidelity 0.99928797
+2025-04-14 11:46:53.153235 Intermediate result: Fidelity 0.99933028
+2025-04-14 11:46:53.221371 Intermediate result: Fidelity 0.99935757
+2025-04-14 11:46:53.286211 Intermediate result: Fidelity 0.99938140
+2025-04-14 11:46:53.352391 Intermediate result: Fidelity 0.99940964
+2025-04-14 11:46:53.420472 Intermediate result: Fidelity 0.99944051
+2025-04-14 11:46:53.486279 Intermediate result: Fidelity 0.99946828
+2025-04-14 11:46:53.552338 Intermediate result: Fidelity 0.99948723
+2025-04-14 11:46:53.618688 Intermediate result: Fidelity 0.99951011
+2025-04-14 11:46:53.690878 Intermediate result: Fidelity 0.99954718
+2025-04-14 11:46:53.762725 Intermediate result: Fidelity 0.99956267
+2025-04-14 11:46:53.829784 Intermediate result: Fidelity 0.99958949
+2025-04-14 11:46:53.897477 Intermediate result: Fidelity 0.99960498
+2025-04-14 11:46:53.954633 Intermediate result: Fidelity 0.99961308
+2025-04-14 11:46:54.010125 Intermediate result: Fidelity 0.99962894
+2025-04-14 11:46:54.064717 Intermediate result: Fidelity 0.99964121
+2025-04-14 11:46:54.118892 Intermediate result: Fidelity 0.99964348
+2025-04-14 11:46:54.183236 Intermediate result: Fidelity 0.99964860
+2025-04-14 11:46:54.245521 Intermediate result: Fidelity 0.99965695
+2025-04-14 11:46:54.305792 Intermediate result: Fidelity 0.99966398
+2025-04-14 11:46:54.355819 Intermediate result: Fidelity 0.99967816
+2025-04-14 11:46:54.409580 Intermediate result: Fidelity 0.99968293
+2025-04-14 11:46:54.457979 Intermediate result: Fidelity 0.99968936
+2025-04-14 11:46:54.505891 Intermediate result: Fidelity 0.99969223
+2025-04-14 11:46:54.551084 Intermediate result: Fidelity 0.99970009
+2025-04-14 11:46:54.601817 Intermediate result: Fidelity 0.99970724
+2025-04-14 11:46:54.650097 Intermediate result: Fidelity 0.99970987
+2025-04-14 11:46:54.714727 Intermediate result: Fidelity 0.99971237
+2025-04-14 11:46:54.780052 Intermediate result: Fidelity 0.99971916
+2025-04-14 11:46:54.871994 Intermediate result: Fidelity 0.99971940
+2025-04-14 11:46:54.958244 Intermediate result: Fidelity 0.99972465
+2025-04-14 11:46:55.011057 Intermediate result: Fidelity 0.99972763
+2025-04-14 11:46:55.175339 Intermediate result: Fidelity 0.99972894
+2025-04-14 11:46:56.688912 Intermediate result: Fidelity 0.99972894
+Done after 50 iterations.
+```
+
+```python
+parameters = [float(param) for param in aqc_final_parameters]
+print("Final parameters:", parameters)
+```
+
+```text
+Final parameters: [-7.853983035039254, 1.5707966468427772, 1.5707962768868613, -1.570798010835122, 1.570794480409574, 1.5707972214146968, -1.570796593027083, 1.5707968206822998, -1.5707959018046258, -1.5707991700969144, 1.5707965852600927, 4.712386891737442, -7.853980840717957, 1.5707967508132654, 1.5707943162503217, -1.5707955382023582, 1.5707958007156742, 1.570796096113293, -1.5707928509846847, 1.5707971042943747, -1.570797909276557, -1.5707941020637393, 1.5707980179540793, 4.712389823219363, -1.5707928752386107, 1.5707996426312891, -1.5707975640471001, -1.570794132802984, 1.5707944361599957, 4.712390747060803, 0.1048818190315936, 0.06686710468840577, -0.0668645844756557, -3.1415923537135466, 1.2374931269696063, 6.323169390432535e-07, 3.53229204771738e-08, 2.1091105688681484, 6.283186439944202, 0.12152258846156239, 0.07961752617254866, -0.07961775088604585, -1.6564278051174865e-06, 2.0771163596472384, 3.141592651630471, -6.283185775192653, 1.7691609006726954, 3.1415922910116216, 0.19837572065074083, 0.11114901449078964, -0.11115124544944892, -3.141591983034976, 0.8570788408766729, 4.201601390404146e-07, -3.141593736550978, 0.34652010942396333, 6.283186232785291, 0.13606356527241956, 0.03891676349289617, -0.03891524189533726, -1.5707965732853424, 1.5707968967088564, -0.3086133992238162, 1.5707957152428194, 1.5707968398959653, -0.32062737993080026, 0.11027416939993417, 0.0726167290795046, -0.07262020423334464, -2.3729431959735024e-06, 1.8204437429254703, 9.299060301196612e-07, -3.141592899563451, 2.103269568939461, 3.1415937539734626, 0.11536891854817125, 0.09099022308254198, -0.09098864958606581, -3.1415913307373127, 2.078429034357281, -1.509777998069368e-06, -3.1415922600663255, 1.5189162645358172, -3.1415878461323583, 0.09999070991480716, 0.04352011445148391, -0.04351849541849812, -1.570797642506462, 1.570795238023824, 0.8903442644396505, 1.5707962698006606, 1.5707946765132268, 0.9098791754570567, 0.10448284343424026, 0.07317037684936827, -0.07316718173961152, -3.141592682240966, 2.1665363080039612, -7.450882112394189e-07, -5.771181304929921e-07, 2.615334999517103, -3.1415914971653898, 0.1890887078648001, 0.13578163074571992, -0.13578078143610256, 7.156734195912883e-07, 1.7915385305413096, -5.188866034727312e-07, 1.2827742939197711e-06, 1.2348316581417487, 6.28318357406372, 0.08061187643781703, 0.03820789039271876, -0.03820731868804904, 1.5707964027727628, 1.570798734462218, 4.387336153720882, -1.570795722044763, 1.570798457375325, 4.450361734163248, 0.092360147257953, 0.06047700345049011, -0.06048592856713045, -3.141591214829027, 2.6593289993286047, -2.366937342261038e-07, 8.112162974032695e-08, 1.8907014631413432, 8.355881261853104e-07, 0.23303641819370874, 0.14331998953606456, -0.1433194488304741, -3.141591621822901, 0.7455776479558791, 3.1415914520163586, -3.1415933560496105, 0.7603938554148255, -1.6230983177616282e-06, 0.07186349688535713, 0.03197144517771341, -0.031971177878588546, -4.712389048748508, 1.5707948403165752, 1.2773619319829186, -1.5707990802172127, 1.5707957676951863, 1.289083769394045, 0.13644999397718796, 0.032761460443590046, -0.032762060585195645, -1.5707977610073176, 1.5707964181578042, -3.4826435600366983, -4.712389691708343, 1.570794277502252, 2.799088046133275]
+```
+
+Pada titik ini, kita hanya perlu menemukan parameter akhir untuk sirkuit ansatz. Kita kemudian bisa menggabungkan sirkuit AQC yang teroptimalkan dengan sirkuit evolusi yang tersisa untuk membuat sirkuit evolusi waktu lengkap untuk dieksekusi di perangkat keras kuantum.
+
+```python
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+aqc_final_circuit.compose(subsequent_circuit, inplace=True)
+aqc_final_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/813c9ced-6a2e-4345-bffc-7dae938e2015-0.avif)
+
+Kita juga perlu menggabungkan `aqc_comparison_circuit` kita dengan sirkuit evolusi yang tersisa. Sirkuit ini akan digunakan untuk membandingkan performa sirkuit yang dioptimalkan AQC-Tensor dengan sirkuit asli.
+
+```python
+aqc_comparison_circuit.compose(subsequent_circuit, inplace=True)
+aqc_comparison_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/86ba26ff-0bfa-47d0-b5ee-8944a8ddf274-0.avif)
