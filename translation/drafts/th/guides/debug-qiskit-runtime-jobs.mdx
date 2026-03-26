@@ -1,0 +1,407 @@
+---
+title: "ดีบัก Qiskit Runtime jobs"
+sidebar_label: "ดีบัก Qiskit Runtime jobs"
+description: "ใช้โมดูล Qiskit Runtime Debugging tools และคลาส `Neat` เพื่อดีบักและวิเคราะห์ jobs"
+notebook_path: "guides/debug-qiskit-runtime-jobs.ipynb"
+---
+
+{/* doqumentation-source-hash: e27fb401 */}
+
+<OpenInLabBanner notebookPath="guides/debug-qiskit-runtime-jobs.ipynb" />
+
+
+
+{/* cspell:ignore ZIIIII, IZIIII,IIZIII, IIIZII, IIIIZI, IIIIIZ, rdiff */}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>เวอร์ชันของ Package</b></summary>
+
+โค้ดในหน้านี้พัฒนาโดยใช้ requirements ต่อไปนี้
+แนะนำให้ใช้เวอร์ชันเหล่านี้หรือใหม่กว่า
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+```
+</details>
+ก่อนส่ง workload ของ Qiskit Runtime ที่ใช้ทรัพยากรมากไปรันบนฮาร์ดแวร์ คุณสามารถใช้คลาส [`Neat` (Noisy Estimator Analyzer Tool)](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#neat) ของ Qiskit Runtime เพื่อตรวจสอบว่า Estimator workload ของคุณตั้งค่าถูกต้อง มีแนวโน้มคืนผลลัพธ์ที่แม่นยำ ใช้ options ที่เหมาะสมที่สุดสำหรับปัญหาที่กำหนด และอื่น ๆ
+
+`Neat` แปลง Circuit อินพุตให้เป็น Clifford เพื่อการจำลองที่มีประสิทธิภาพ ในขณะที่ยังคงโครงสร้างและความลึกของ Circuit ไว้ Clifford Circuit มีระดับ noise ใกล้เคียงกันและเป็นตัวแทนที่ดีสำหรับศึกษา Circuit ต้นฉบับที่สนใจ
+
+ตัวอย่างต่อไปนี้แสดงสถานการณ์ที่ `Neat` สามารถเป็นทรัพยากรที่มีประโยชน์
+ก่อนอื่น นำเข้า package ที่เกี่ยวข้องและ[ยืนยันตัวตนกับ Qiskit Runtime service](/guides/cloud-setup)
+## เตรียม environment {#prepare-the-environment}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+import random
+
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import SparsePauliOp
+
+from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2 as Estimator
+from qiskit_ibm_runtime.debug_tools import Neat
+
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+```
+
+```python
+# Choose the least busy backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Generate a preset pass manager
+# This will be used to convert the abstract circuit to an equivalent Instruction Set Architecture (ISA) circuit.
+pm = generate_preset_pass_manager(backend=backend, optimization_level=0)
+
+# Set the random seed
+random.seed(10)
+```
+
+## สร้าง Circuit เป้าหมาย {#initialize-a-target-circuit}
+
+พิจารณา Circuit หกคิวบิตที่มีคุณสมบัติดังต่อไปนี้:
+
+* สลับระหว่างการหมุน `RZ` แบบสุ่มและชั้นของ Gate `CNOT`
+* มีโครงสร้างแบบ mirror คือ ใช้ unitary `U` ตามด้วย inverse ของมัน
+
+```python
+def generate_circuit(n_qubits, n_layers):
+    r"""
+    A function to generate a pseudo-random a circuit with ``n_qubits`` qubits and
+    ``2*n_layers`` entangling layers of the type used in this notebook.
+    """
+    # An array of random angles
+    angles = [
+        [random.random() for q in range(n_qubits)] for s in range(n_layers)
+    ]
+
+    qc = QuantumCircuit(n_qubits)
+    qubits = list(range(n_qubits))
+
+    # do random circuit
+    for layer in range(n_layers):
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(angles[layer][q_idx], qubit)
+
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+    # undo random circuit
+    for layer in range(n_layers)[::-1]:
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(-angles[layer][q_idx], qubit)
+
+    return qc
+
+# Generate a random circuit
+qc = generate_circuit(6, 3)
+# Convert the abstract circuit to an equivalent ISA circuit.
+ isa_qc = pm.run(qc)
+
+qc.draw("mpl", idle_wires=0)
+```
+
+![Output of the previous code cell](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/df19af55-897d-4b1f-baf8-fac2641ae87d-0.svg)
+
+เลือก operator `Z` แบบ single-Pauli เป็น observable และใช้เพื่อสร้าง primitive unified blocs (PUBs)
+
+```python
+# Initialize the observables
+obs = ["ZIIIII", "IZIIII", "IIZIII", "IIIZII", "IIIIZI", "IIIIIZ"]
+print(f"Observables: {obs}")
+
+# Map the observables to the backend's layout
+isa_obs = [SparsePauliOp(o).apply_layout(isa_qc.layout) for o in obs]
+
+# Initialize the PUBs, which consist of six-qubit circuits with `n_layers` 1, ..., 6
+all_n_layers = [1, 2, 3, 4, 5, 6]
+
+pubs = [(pm.run(generate_circuit(6, n)), isa_obs) for n in all_n_layers]
+```
+
+```text
+Observables: ['ZIIIII', 'IZIIII', 'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']
+```
+
+## แปลง Circuit เป็น Clifford {#cliffordize-the-circuits}
+
+PUB Circuit ที่กำหนดไว้ก่อนหน้าไม่ใช่ Clifford ซึ่งทำให้ยากต่อการจำลองแบบ classical อย่างไรก็ตาม คุณสามารถใช้เมธอด [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) ของ `Neat` เพื่อแมปไปยัง Clifford Circuit สำหรับการจำลองที่มีประสิทธิภาพมากขึ้น เมธอด [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) เป็น wrapper ของ Transpiler pass [`ConvertISAToClifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-convert-isa-to-clifford) ซึ่งสามารถใช้งานแยกต่างหากได้เช่นกัน โดยเฉพาะอย่างยิ่ง มันแทนที่ Gate single-Qubit ที่ไม่ใช่ Clifford ใน Circuit ต้นฉบับด้วย Gate single-Qubit แบบ Clifford แต่ไม่เปลี่ยนแปลง Gate สองคิวบิต จำนวน Qubit หรือความลึกของ Circuit
+
+ดูข้อมูลเพิ่มเติมเกี่ยวกับการจำลอง Clifford Circuit ได้ที่ [Efficient simulation of stabilizer circuits with Qiskit Aer primitives](/guides/simulate-stabilizer-circuits)
+ก่อนอื่น สร้าง `Neat`
+
+```python
+# You could specify a custom `NoiseModel` here. If `None`, `Neat`
+# pulls the noise model from the given backend
+noise_model = None
+
+# Initialize `Neat`
+analyzer = Neat(backend, noise_model)
+```
+
+ต่อไป แปลง PUBs ให้เป็น Clifford
+
+```python
+clifford_pubs = analyzer.to_clifford(pubs)
+
+clifford_pubs[0].circuit.draw("mpl", idle_wires=0)
+```
+
+![Output of the previous code cell](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/3ad78f41-a2f8-4381-826a-ae728e081ad6-0.svg)
+
+## Application 1: วิเคราะห์ผลกระทบของ noise ต่อ output ของ Circuit {#application-1-analyze-the-impact-of-noise-on-the-circuit-outputs}
+
+ตัวอย่างนี้แสดงวิธีใช้ `Neat` เพื่อศึกษาผลกระทบของ noise model ต่างๆ ต่อ PUBs ตามความลึกของ Circuit โดยรันการจำลองในสภาวะทั้ง ideal ([`ideal_sim`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#ideal_sim)) และ noisy ([`noisy_sim`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#noisy_sim)) ซึ่งมีประโยชน์ในการตั้งความคาดหวังเกี่ยวกับคุณภาพของผลลัพธ์จากการทดลองก่อนรัน job บน QPU ดูข้อมูลเพิ่มเติมเกี่ยวกับ noise model ได้ที่ [Exact and noisy simulation with Qiskit Aer primitives](/guides/simulate-with-qiskit-aer#exact-and-noisy-simulation-with-qiskit-aer-primitives)
+
+ผลลัพธ์จากการจำลองรองรับการดำเนินการทางคณิตศาสตร์ จึงสามารถนำมาเปรียบเทียบกัน (หรือกับผลลัพธ์จากการทดลอง) เพื่อคำนวณค่าวัดประสิทธิภาพได้
+
+<Admonition type="caution">
+QPU สามารถได้รับผลกระทบจาก noise หลายประเภท noise model ของ Qiskit Aer ที่ใช้ที่นี่จำลองเพียงบางส่วนเท่านั้น จึงมีแนวโน้มรุนแรงน้อยกว่า noise บน QPU จริง
+
+ดูรายละเอียดว่า error ใดบ้างที่รวมอยู่เมื่อสร้าง noise model จาก QPU ได้ที่ API reference ของ Aer [`NoiseModel`](https://qiskit.github.io/qiskit-aer/stubs/qiskit_aer.noise.NoiseModel.html#qiskit_aer.noise.NoiseModel.from_backend)
+</Admonition>
+
+เริ่มต้นด้วยการรันการจำลองแบบ classical ทั้ง ideal และ noisy
+
+```python
+# Perform a noiseless simulation
+ideal_results = analyzer.ideal_sim(clifford_pubs)
+print(f"Ideal results:\n {ideal_results}\n")
+
+# Perform a noisy simulation with the backend's noise model
+noisy_results = analyzer.noisy_sim(clifford_pubs)
+print(f"Noisy results:\n {noisy_results}\n")
+```
+
+```text
+Ideal results:
+ NeatResult([NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.])), NeatPubResult(vals=array([1., 1., 1., 1., 1., 1.]))])
+```
+
+```text
+Noisy results:
+ NeatResult([NeatPubResult(vals=array([0.99023438, 0.99609375, 0.9921875 , 0.99023438, 0.99414062,
+       0.99414062])), NeatPubResult(vals=array([0.984375  , 0.99414062, 0.98242188, 0.98828125, 0.98632812,
+       0.99414062])), NeatPubResult(vals=array([0.96679688, 0.97070312, 0.95898438, 0.97851562, 0.98046875,
+       0.98828125])), NeatPubResult(vals=array([0.9453125 , 0.953125  , 0.97070312, 0.96875   , 0.98242188,
+       0.99023438])), NeatPubResult(vals=array([0.93164062, 0.9375    , 0.953125  , 0.96875   , 0.96484375,
+       0.98046875])), NeatPubResult(vals=array([0.92578125, 0.921875  , 0.93359375, 0.953125  , 0.95898438,
+       0.9765625 ]))])
+```
+
+ต่อไป นำการดำเนินการทางคณิตศาสตร์มาใช้เพื่อคำนวณผลต่างสัมบูรณ์ ส่วนที่เหลือของคู่มือนี้ใช้ผลต่างสัมบูรณ์เป็นค่าวัดประสิทธิภาพสำหรับเปรียบเทียบผลลัพธ์ ideal กับผลลัพธ์ noisy หรือผลจากการทดลอง แต่สามารถกำหนดค่าวัดประสิทธิภาพแบบอื่นได้เช่นกัน
+
+ผลต่างสัมบูรณ์แสดงให้เห็นว่าผลกระทบของ noise เพิ่มขึ้นตามขนาดของ Circuit
+
+```python
+# Figure of merit: Absolute difference
+def rdiff(res1, re2):
+    r"""The absolute difference between `res1` and re2`.
+
+    --> The closer to `0`, the better.
+    """
+    d = abs(res1 - re2)
+    return np.round(d.vals * 100, 2)
+
+for idx, (ideal_res, noisy_res) in enumerate(
+    zip(ideal_results, noisy_results)
+):
+    vals = rdiff(ideal_res, noisy_res)
+
+    # Print the mean absolute difference for the observables
+    mean_vals = np.round(np.mean(vals), 2)
+    print(
+        f"Mean absolute difference between ideal and noisy results for circuits with {all_n_layers[idx]} layers:\n  {mean_vals}%\n"
+    )
+```
+
+```text
+Mean absolute difference between ideal and noisy results for circuits with 1 layers:
+  0.72%
+
+Mean absolute difference between ideal and noisy results for circuits with 2 layers:
+  1.17%
+
+Mean absolute difference between ideal and noisy results for circuits with 3 layers:
+  2.6%
+
+Mean absolute difference between ideal and noisy results for circuits with 4 layers:
+  3.16%
+
+Mean absolute difference between ideal and noisy results for circuits with 5 layers:
+  4.4%
+
+Mean absolute difference between ideal and noisy results for circuits with 6 layers:
+  5.5%
+```
+
+คุณสามารถปฏิบัติตามแนวทางคร่าวๆ และแบบง่ายต่อไปนี้เพื่อปรับปรุง Circuit ประเภทนี้:
+
+- ถ้าผลต่างสัมบูรณ์เฉลี่ยมากกว่า 90% การลด error มักจะไม่ช่วยได้
+- ถ้าผลต่างสัมบูรณ์เฉลี่ยน้อยกว่า 90% [Probabilistic Error Amplification (PEA)](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-amplification-pea) มักจะสามารถปรับปรุงผลลัพธ์ได้
+- ถ้าผลต่างสัมบูรณ์เฉลี่ยน้อยกว่า 80% [ZNE with gate folding](/guides/error-mitigation-and-suppression-techniques#zero-noise-extrapolation-zne) ก็มักจะสามารถปรับปรุงผลลัพธ์ได้เช่นกัน
+
+เนื่องจากผลต่างสัมบูรณ์ทั้งหมดข้างต้นน้อยกว่า 90% การใช้ PEA กับ Circuit ต้นฉบับจึงน่าจะช่วยปรับปรุงคุณภาพของผลลัพธ์ได้
+คุณสามารถกำหนด noise model ต่างๆ ในตัววิเคราะห์ได้ ตัวอย่างต่อไปนี้ทำการทดสอบเดียวกันแต่เพิ่ม noise model แบบกำหนดเอง
+
+```python
+# Set up a noise model with strength 0.02 on every two-qubit gate
+noise_model = NoiseModel()
+for qubits in backend.coupling_map:
+    noise_model.add_quantum_error(
+        depolarizing_error(0.02, 2), ["ecr", "cx"], qubits
+    )
+
+# Update the analyzer's noise model
+analyzer.noise_model = noise_model
+
+# Perform a noiseless simulation
+ideal_results = analyzer.ideal_sim(clifford_pubs)
+
+# Perform a noisy simulation with the backend's noise model
+noisy_results = analyzer.noisy_sim(clifford_pubs)
+
+# Compare the results
+for idx, (ideal_res, noisy_res) in enumerate(
+    zip(ideal_results, noisy_results)
+):
+    values = rdiff(ideal_res, noisy_res)
+
+    # Print the mean absolute difference for the observables
+    mean_values = np.round(np.mean(values), 2)
+    print(
+        f"Mean absolute difference between ideal and noisy results for circuits with {all_n_layers[idx]} layers:\n  {mean_values}%\n"
+    )
+```
+
+```text
+Mean absolute difference between ideal and noisy results for circuits with 1 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 2 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 3 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 4 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 5 layers:
+  0.0%
+
+Mean absolute difference between ideal and noisy results for circuits with 6 layers:
+  0.0%
+```
+
+ดังที่แสดงให้เห็น เมื่อกำหนด noise model คุณสามารถพยายามวัดปริมาณผลกระทบของ noise ต่อ PUBs ที่สนใจ (ในเวอร์ชัน Cliffordized) ก่อนรันบน QPU
+## Application 2: เปรียบเทียบกลยุทธ์ต่างๆ {#application-2-benchmark-different-strategies}
+
+ตัวอย่างนี้ใช้ `Neat` เพื่อช่วยระบุ options ที่ดีที่สุดสำหรับ PUBs ของคุณ ลองพิจารณาการรันปัญหา estimation ด้วย PEA ซึ่งไม่สามารถจำลองด้วย `qiskit_aer` ได้ คุณสามารถใช้ `Neat` เพื่อช่วยกำหนดว่า noise amplification factors ใดจะทำงานได้ดีที่สุด แล้วนำ factors เหล่านั้นไปใช้เมื่อรันการทดลองจริงบน QPU
+
+```python
+# Generate a circuit with six qubits and six layers
+ isa_qc = pm.run(generate_circuit(6, 3))
+
+# Use the same observables as previously
+pubs = [(isa_qc, isa_obs)]
+clifford_pubs = analyzer.to_clifford(pubs)
+```
+
+```python
+noise_factors = [
+    [1, 1.1],
+    [1, 1.1, 1.2],
+    [1, 1.5, 2],
+    [1, 1.5, 2, 2.5, 3],
+    [1, 4],
+]
+```
+
+```python
+# Run the PUBs on a QPU
+estimator = Estimator(backend)
+estimator.options.default_shots = 100000
+estimator.options.twirling.enable_gates = True
+estimator.options.twirling.enable_measure = True
+estimator.options.twirling.shots_per_randomization = 100
+estimator.options.resilience.measure_mitigation = True
+estimator.options.resilience.zne_mitigation = True
+estimator.options.resilience.zne.amplifier = "pea"
+
+jobs = []
+for factors in noise_factors:
+    estimator.options.resilience.zne.noise_factors = factors
+    jobs.append(estimator.run(clifford_pubs))
+
+results = [job.result() for job in jobs]
+```
+
+```python
+# Perform a noiseless simulation
+ideal_results = analyzer.ideal_sim(clifford_pubs)
+```
+
+```python
+# Look at the mean absolute difference to quickly tell the best choice for your options
+for factors, res in zip(noise_factors, results):
+    d = rdiff(ideal_results[0], res[0])
+    print(
+        f"Mean absolute difference for factors {factors}:\n  {np.round(np.mean(d), 2)}%\n"
+    )
+```
+
+```text
+Mean absolute difference for factors [1, 1.1]:
+  6.83%
+
+Mean absolute difference for factors [1, 1.1, 1.2]:
+  8.76%
+
+Mean absolute difference for factors [1, 1.5, 2]:
+  8.03%
+
+Mean absolute difference for factors [1, 1.5, 2, 2.5, 3]:
+  10.17%
+
+Mean absolute difference for factors [1, 4]:
+  8.02%
+```
+
+ผลลัพธ์ที่มีความแตกต่างน้อยที่สุดจะบอกว่าควรเลือก options ใด
+## ขั้นตอนถัดไป {#next-steps}
+
+<Admonition type="tip" title="คำแนะนำ">
+    - เรียนรู้เกี่ยวกับ [การจำลองแบบ Exact และ noisy ด้วย Qiskit Aer primitives](/guides/simulate-with-qiskit-aer)
+    - เรียนรู้เกี่ยวกับ [Qiskit Runtime options ที่มีให้ใช้งาน](/guides/runtime-options-overview)
+    - เรียนรู้เกี่ยวกับ [เทคนิค Error mitigation และ suppression](/guides/error-mitigation-and-suppression-techniques)
+    - ดูหัวข้อ [Transpile with pass managers](transpile-with-pass-managers)
+    - เรียนรู้ [วิธี transpile circuits](/guides/circuit-transpilation-settings#compare-transpiler-settings) ในฐานะส่วนหนึ่งของ Qiskit patterns workflows โดยใช้ Qiskit Runtime
+    - ทบทวน [เอกสาร API สำหรับ Debugging tools](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools)

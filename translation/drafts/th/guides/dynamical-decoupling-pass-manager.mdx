@@ -1,0 +1,159 @@
+---
+title: "สร้าง pass manager สำหรับ dynamical decoupling"
+sidebar_label: "สร้าง pass manager สำหรับ dynamical decoupling"
+description: "วิธีสร้าง pass manager สำหรับ dynamical decoupling ใน Qiskit"
+notebook_path: "guides/dynamical-decoupling-pass-manager.ipynb"
+---
+
+{/* doqumentation-source-hash: d395a730 */}
+
+<OpenInLabBanner notebookPath="guides/dynamical-decoupling-pass-manager.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>เวอร์ชันของ package</b></summary>
+
+โค้ดในหน้านี้พัฒนาโดยใช้ requirement ต่อไปนี้
+แนะนำให้ใช้เวอร์ชันเหล่านี้หรือใหม่กว่า
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+หน้านี้สาธิตวิธีใช้ pass [`PadDynamicalDecoupling`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling) เพื่อเพิ่มเทคนิคการยับยั้งข้อผิดพลาดที่เรียกว่า _dynamical decoupling_ ให้กับ Circuit
+
+Dynamical decoupling ทำงานโดยการเพิ่ม pulse sequence (เรียกว่า _dynamical decoupling sequence_) ให้กับ Qubit ที่ว่างอยู่เพื่อพลิกรอบ Bloch sphere ซึ่งยกเลิกผลของ noise channel ทำให้ลด decoherence ได้ pulse sequence เหล่านี้คล้ายกับ refocusing pulse ที่ใช้ใน nuclear magnetic resonance สำหรับคำอธิบายเต็มรูปแบบ ดู [A Quantum Engineer's Guide to Superconducting Qubits](https://arxiv.org/abs/1904.06560)
+
+เนื่องจาก pass `PadDynamicalDecoupling` ทำงานเฉพาะกับ scheduled circuit และมี Gate ที่ไม่ได้เป็น basis gate ของ target จึงต้องใช้ pass [`ALAPScheduleAnalysis`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis) และ [`BasisTranslator`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.BasisTranslator) ด้วย
+
+ตัวอย่างนี้ใช้ `ibm_fez` ที่เริ่มต้นไว้แล้วก่อนหน้านี้ ดึงข้อมูล `target` จาก `backend` และบันทึกชื่อ operation เป็น `basis_gates` เพราะ `target` จะต้องถูกแก้ไขเพื่อเพิ่มข้อมูล timing สำหรับ Gate ที่ใช้ใน dynamical decoupling
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.backend("ibm_fez")
+
+target = backend.target
+basis_gates = list(target.operation_names)
+```
+
+สร้าง Circuit `efficient_su2` เป็นตัวอย่าง ขั้นแรก transpile Circuit ไปยัง Backend เพราะ dynamical decoupling pulse ต้องเพิ่มหลังจาก Circuit ถูก transpile และ scheduled แล้ว Dynamical decoupling มักทำงานได้ดีที่สุดเมื่อมี idle time มากใน quantum circuit กล่าวคือ มี Qubit ที่ไม่ได้ใช้งานในขณะที่ Qubit อื่นๆ กำลังทำงาน กรณีนี้เกิดขึ้นใน Circuit นี้เพราะ `ecr` Gate แบบ two-qubit ถูกนำไปใช้ตามลำดับใน ansatz นี้
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(12, entanglement="circular", reps=1)
+pm = generate_preset_pass_manager(1, target=target, seed_transpiler=12345)
+qc_t = pm.run(qc)
+qc_t.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/8228f889-806a-4873-b1da-27c9795d5f5c-0.svg)
+
+dynamical decoupling sequence คือชุดของ Gate ที่ประกอบกันเป็น identity และเว้นระยะห่างสม่ำเสมอตามเวลา ตัวอย่างเช่น เริ่มต้นด้วยการสร้าง sequence ง่ายๆ ชื่อ XY4 ที่ประกอบด้วย Gate สี่ตัว
+
+```python
+from qiskit.circuit.library import XGate, YGate
+
+X = XGate()
+Y = YGate()
+
+dd_sequence = [X, Y, X, Y]
+```
+
+เนื่องจาก timing ของ dynamical decoupling sequence มีระยะสม่ำเสมอ จึงต้องเพิ่มข้อมูลเกี่ยวกับ `YGate` ลงใน `target` เพราะ `YGate` *ไม่ใช่* basis gate ในขณะที่ `XGate` เป็น อย่างไรก็ตาม เรารู้ *ล่วงหน้า* ว่า `YGate` มี duration และ error เดียวกันกับ `XGate` จึงสามารถดึง property เหล่านั้นจาก `target` และเพิ่มกลับสำหรับ object `YGate` ได้ นี่คือสาเหตุที่บันทึก `basis_gates` แยกไว้ด้วย เนื่องจากเราเพิ่มคำสั่ง `YGate` ลงใน `target` แม้ว่ามันไม่ใช่ basis gate จริงของ `ibm_fez`
+
+```python
+from qiskit.transpiler import InstructionProperties
+
+y_gate_properties = {}
+for qubit in range(target.num_qubits):
+    y_gate_properties.update(
+        {
+            (qubit,): InstructionProperties(
+                duration=target["x"][(qubit,)].duration,
+                error=target["x"][(qubit,)].error,
+            )
+        }
+    )
+
+target.add_instruction(YGate(), y_gate_properties)
+```
+
+Circuit ansatz เช่น `efficient_su2` เป็นแบบ parameterized จึงต้องผูกค่าก่อนส่งไปยัง Backend ที่นี่กำหนด parameter แบบสุ่ม
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1234)
+qc_t.assign_parameters(
+    rng.uniform(-np.pi, np.pi, qc_t.num_parameters), inplace=True
+)
+```
+
+ขั้นต่อไป รัน custom pass สร้าง `PassManager` ด้วย `ALAPScheduleAnalysis` และ `PadDynamicalDecoupling` รัน `ALAPScheduleAnalysis` ก่อนเพื่อเพิ่มข้อมูล timing ของ quantum circuit ก่อนที่จะเพิ่ม dynamical decoupling sequence ที่มีระยะสม่ำเสมอได้ pass เหล่านี้รันบน Circuit ด้วย `.run()`
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+dd_pm = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        PadDynamicalDecoupling(target=target, dd_sequence=dd_sequence),
+    ]
+)
+qc_dd = dd_pm.run(qc_t)
+```
+
+ใช้เครื่องมือ visualization [`timeline_drawer`](https://docs.quantum.ibm.com/api/qiskit/qiskit.visualization.timeline_drawer) เพื่อดู timing ของ Circuit และยืนยันว่า sequence ของ object `XGate` และ `YGate` ที่มีระยะห่างสม่ำเสมอปรากฏใน Circuit
+
+```python
+from qiskit.visualization import timeline_drawer
+
+timeline_drawer(qc_dd, idle_wires=False, target=target)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/cb73e2c4-ab05-4f15-91ae-2fab64028d6e-0.svg)
+
+สุดท้าย เนื่องจาก `YGate` ไม่ใช่ basis gate จริงของ Backend นำ pass `BasisTranslator` ไปใช้ด้วยตนเอง (เป็น pass เริ่มต้น แต่รันก่อน scheduling จึงต้องนำไปใช้อีกครั้ง) session equivalence library คือ library ของ circuit equivalence ที่ช่วยให้ Transpiler แยกวิเคราะห์ Circuit เป็น basis gate ตามที่ระบุเป็น argument ด้วย
+
+```python
+from qiskit.circuit.equivalence_library import (
+    SessionEquivalenceLibrary as sel,
+)
+from qiskit.transpiler.passes import BasisTranslator
+
+qc_dd = BasisTranslator(sel, basis_gates)(qc_dd)
+qc_dd.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/aaa27ee4-1965-41bf-abd2-1d9176af6dc4-0.svg)
+
+ตอนนี้ object `YGate` หายไปจาก Circuit แล้ว และมีข้อมูล timing ที่ชัดเจนในรูปของ `Delay` Gate Circuit ที่ transpile แล้วพร้อม dynamical decoupling นี้พร้อมส่งไปยัง Backend แล้ว
+## ขั้นตอนถัดไป {#next-steps}
+
+<Admonition type="tip" title="คำแนะนำ">
+    - หากต้องการเรียนรู้วิธีใช้ฟังก์ชัน `generate_preset_passmanager` แทนการเขียน pass เอง เริ่มต้นด้วยหัวข้อ [Transpilation default settings and configuration options](defaults-and-configuration-options)
+    - ลองดู guide [Compare transpiler settings](/guides/circuit-transpilation-settings#compare-transpiler-settings)
+    - ดู [Transpile API documentation](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler)
+</Admonition>

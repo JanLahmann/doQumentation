@@ -1,0 +1,613 @@
+---
+title: "การจำแนกประเภทแบบ Ensemble ที่ปรับปรุงด้วย Quantum แบบ Hybrid (workflow ความเสถียรของกริด)"
+sidebar_label: "การจำแนกประเภทแบบ Ensemble ที่ปรับปรุงด้วย Quantum แบบ Hybrid (workflow ความเสถียรของกริด)"
+description: "สร้างและวิเคราะห์ ensemble แบบ hybrid quantum–classical สำหรับการจำแนกประเภทความเสถียรของกริดบน IBM QPU โดยใช้ Singularity Qiskit Function ของ Multiverse Computing"
+notebook_path: "tutorials/sml-classification.ipynb"
+---
+{/* doqumentation-source-hash: c97b0dfa */}
+
+<OpenInLabBanner notebookPath="tutorials/sml-classification.ipynb" />
+
+
+
+{/* cspell:ignore QEEC interpretability hyperparameters overfitting sublinear preds prec */}
+
+*ประมาณการใช้งาน: 20 นาทีในเวลา QPU สำหรับแต่ละ job บนโปรเซสเซอร์ Eagle r3 (หมายเหตุ: นี่เป็นเพียงการประมาณเท่านั้น เวลาจริงอาจแตกต่างกัน)*
+## พื้นหลัง {#background}
+
+บทแนะนำนี้แสดงให้เห็น workflow แบบ hybrid quantum–classical ที่เพิ่มประสิทธิภาพ ensemble แบบ classical ด้วยขั้นตอนการปรับให้เหมาะสมแบบ quantum โดยใช้ "Singularity Machine Learning – Classification" ของ Multiverse Computing (Qiskit Function) เราฝึกกลุ่มของ learner แบบ conventional (เช่น decision tree, k-NN, logistic regression) แล้วปรับปรุงกลุ่มนั้นด้วย quantum layer เพื่อเพิ่มความหลากหลายและการ generalize จุดประสงค์นั้นใช้งานได้จริง: บน task การทำนายความเสถียรของกริดจริง เราเปรียบเทียบ baseline แบบ classical ที่แข็งแกร่งกับทางเลือกที่ปรับให้เหมาะสมด้วย quantum ภายใต้การแบ่งข้อมูลเดียวกัน เพื่อให้เห็นว่าขั้นตอน quantum ช่วยอะไรได้บ้างและมีต้นทุนเท่าใด
+
+ทำไมเรื่องนี้ถึงสำคัญ: การเลือก subset ที่ดีจาก weak learner จำนวนมากเป็นปัญหาแบบ combinatorial ที่เติบโตอย่างรวดเร็วตามขนาด ensemble Heuristic แบบ classical อย่าง boosting, bagging และ stacking ทำงานได้ดีในระดับปานกลาง แต่อาจมีปัญหาในการสำรวจ library ขนาดใหญ่และซ้ำซ้อนของโมเดลอย่างมีประสิทธิภาพ ฟังก์ชันนี้รวม quantum algorithm — โดยเฉพาะ QAOA (และ VQE แบบ optional ในการตั้งค่าอื่น) — เพื่อค้นหาพื้นที่นั้นอย่างมีประสิทธิภาพมากขึ้นหลังจากฝึก classical learner แล้ว เพิ่มโอกาสในการหา subset ที่กะทัดรัดและหลากหลายที่ generalize ได้ดีกว่า
+
+สิ่งสำคัญคือขนาดข้อมูลไม่ถูกจำกัดด้วย Qubit การประมวลผลหนักบนข้อมูล — การ preprocessing, การฝึก learner pool และการประเมิน — ยังคงเป็น classical และสามารถจัดการตัวอย่างหลายล้านรายการได้ Qubit จะกำหนดเฉพาะขนาด ensemble ที่ใช้ในขั้นตอนการเลือกแบบ quantum การแยกส่วนนี้คือสิ่งที่ทำให้แนวทางนี้ใช้งานได้กับฮาร์ดแวร์ปัจจุบัน: คุณใช้ workflow scikit-learn ที่คุ้นเคยสำหรับข้อมูลและการฝึกโมเดล ขณะที่เรียกขั้นตอน quantum ผ่าน interface แบบ action ที่ชัดเจนใน Qiskit Functions
+
+ในทางปฏิบัติ แม้ว่าจะสามารถป้อน learner ประเภทต่างๆ ให้กับ ensemble (เช่น decision tree, logistic regression หรือ k-NN) แต่ Decision Tree มักทำงานได้ดีที่สุด optimizer มักจะเลือก ensemble member ที่แข็งแกร่งกว่าเสมอ — เมื่อป้อน learner แบบผสม โมเดลที่อ่อนแอกว่าอย่าง linear regressor มักถูกตัดออกเพื่อเลือกโมเดลที่มีความสามารถสูงกว่าอย่าง Decision Tree
+
+สิ่งที่คุณจะทำที่นี่: เตรียมและปรับสมดุล dataset ความเสถียรของกริด; สร้าง baseline แบบ classical AdaBoost; รัน quantum configuration หลายแบบที่แตกต่างกันในความกว้าง ensemble และ regularization; รันบน IBM&reg; simulator หรือ QPU ผ่าน Qiskit Serverless; และเปรียบเทียบ accuracy, precision, recall และ F1 ในทุก run ระหว่างนั้น คุณจะใช้ pattern action ของฟังก์ชัน (`create`, `fit`, `predict`, `fit_predict`, `create_fit_predict`) และตัวควบคุมหลัก:
+- ประเภท Regularization: `onsite` (λ) สำหรับ sparsity โดยตรง และ `alpha` สำหรับการแลกเปลี่ยนแบบ ratio-based ระหว่าง interaction และ onsite terms
+- Auto-regularization: ตั้ง `regularization="auto"` พร้อม target selection ratio เพื่อปรับ sparsity อัตโนมัติ
+- ตัวเลือก optimizer: simulator เทียบกับ QPU, repetitions, classical optimizer และ option ของมัน, transpilation depth และการตั้งค่า runtime sampler/estimator
+
+Benchmark ในเอกสารแสดงให้เห็นว่า accuracy ดีขึ้นเมื่อจำนวน learner (Qubit) เพิ่มขึ้นในปัญหาที่ท้าทาย โดย quantum classifier ทำได้เทียบเท่าหรือดีกว่า ensemble แบบ classical ที่เทียบเคียงกันได้ ในบทแนะนำนี้ คุณจะสร้าง workflow ตั้งแต่ต้นจนจบซ้ำ และตรวจสอบว่าเมื่อใดที่การเพิ่มความกว้าง ensemble หรือเปลี่ยนไปใช้ adaptive regularization ให้ F1 ที่ดีกว่าด้วยการใช้ทรัพยากรที่สมเหตุสมผล ผลลัพธ์คือมุมมองที่มีเหตุผลว่าขั้นตอนการปรับให้เหมาะสมแบบ quantum สามารถเสริม (แทนที่จะแทนที่) การเรียนรู้ ensemble แบบ classical ในแอปพลิเคชันจริงได้อย่างไร
+## ข้อกำหนด {#requirements}
+
+ก่อนเริ่มบทแนะนำนี้ ตรวจสอบให้แน่ใจว่าคุณมีแพ็กเกจต่อไปนี้ติดตั้งในสภาพแวดล้อม Python ของคุณ:
+
+- `qiskit[visualization]~=2.1.0`
+- `qiskit-serverless~=0.24.0`
+- `qiskit-ibm-runtime v0.40.1`
+- `qiskit-ibm-catalog~=0.8.0`
+- `scikit-learn==1.5.2`
+- `pandas>=2.0.0,<3.0.0`
+- `imbalanced-learn~=0.12.3`
+## การตั้งค่า {#setup}
+
+ในส่วนนี้ เราจะเริ่มต้น Qiskit Serverless client และโหลดฟังก์ชัน Singularity Machine Learning – Classification ที่ Multiverse Computing ให้มา
+ด้วย Qiskit Serverless คุณสามารถรัน workflow แบบ hybrid quantum–classical บน infrastructure cloud ที่ IBM จัดการได้โดยไม่ต้องกังวลเรื่องการจัดการทรัพยากร
+คุณจะต้องใช้ API key ของ IBM Quantum Platform และชื่อ cloud resource (CRN) ของคุณเพื่อ authenticate และเข้าถึง Qiskit Functions
+### ดาวน์โหลด dataset {#download-the-dataset}
+
+ในการรันบทแนะนำนี้ เราใช้ **dataset การจำแนกประเภทความเสถียรของกริด** ที่ผ่านการ preprocess แล้ว ซึ่งมีข้อมูลการอ่านเซ็นเซอร์ระบบไฟฟ้าที่มีป้ายกำกับ
+เซลล์ต่อไปนี้จะสร้างโครงสร้างโฟลเดอร์ที่จำเป็นโดยอัตโนมัติและดาวน์โหลดทั้งไฟล์ training และ test โดยตรงไปยังสภาพแวดล้อมของคุณโดยใช้ `wget`
+ถ้าคุณมีไฟล์เหล่านี้อยู่ในเครื่องแล้ว ขั้นตอนนี้จะเขียนทับอย่างปลอดภัยเพื่อให้ version สอดคล้องกัน
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q imbalanced-learn matplotlib numpy pandas qiskit-ibm-catalog qiskit-ibm-runtime scikit-learn
+```
+
+```python
+## Download dataset for Grid Stability Classification
+
+# Create data directory if it doesn't exist
+!mkdir -p data_tutorial/grid_stability
+
+# Download the training and test sets from the official Qiskit documentation repo
+!wget -q --show-progress -O data_tutorial/grid_stability/train.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/train.csv
+
+!wget -q --show-progress -O data_tutorial/grid_stability/test.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/test.csv
+
+# Check the files have been downloaded
+!echo "Dataset files downloaded:"
+!ls -lh data_tutorial/grid_stability/*.csv
+```
+
+```text
+data_tutorial/grid_ 100%[===================>] 612.94K  --.-KB/s    in 0.01s
+data_tutorial/grid_ 100%[===================>] 108.19K  --.-KB/s    in 0.006s
+Dataset files downloaded:
+-rw-r--r-- 1 coder coder 109K Nov  8 18:50 data_tutorial/grid_stability/test.csv
+-rw-r--r-- 1 coder coder 613K Nov  8 18:50 data_tutorial/grid_stability/train.csv
+```
+
+### นำเข้าแพ็กเกจที่จำเป็น {#import-required-packages}
+
+ในส่วนนี้ เรานำเข้าแพ็กเกจ Python และ Qiskit module ทั้งหมดที่ใช้ตลอดบทแนะนำ
+ซึ่งรวมถึง library วิทยาศาสตร์หลักสำหรับการจัดการข้อมูลและการประเมินโมเดล — เช่น `NumPy`, `pandas` และ `scikit-learn` — พร้อมกับเครื่องมือแสดงผลและ Qiskit component สำหรับรันโมเดลที่ปรับปรุงด้วย quantum
+นอกจากนี้เรายังนำเข้า `QiskitRuntimeService` และ `QiskitFunctionsCatalog` เพื่อเชื่อมต่อกับบริการ IBM Quantum&reg; และเข้าถึงฟังก์ชัน Singularity Machine Learning
+
+```python
+from typing import Tuple
+import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from imblearn.over_sampling import RandomOverSampler
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_ibm_runtime import QiskitRuntimeService
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.model_selection import train_test_split
+
+warnings.filterwarnings("ignore")
+```
+
+### กำหนดตัวแปรคงที่ {#set-constant-variables}
+
+```python
+IBM_TOKEN = ""
+IBM_INSTANCE_TEST = ""
+IBM_INSTANCE_QUANTUM = ""
+FUNCTION_NAME = "multiverse/singularity"
+RANDOM_STATE: int = 123
+TRAIN_PATH = "data_tutorial/grid_stability/train.csv"
+TEST_PATH = "data_tutorial/grid_stability/test.csv"
+```
+
+### เชื่อมต่อกับ IBM Quantum และโหลดฟังก์ชัน Singularity {#connect-to-ibm-quantum-and-load-the-singularity-function}
+
+ต่อไป เรา authenticate กับบริการ IBM Quantum และโหลดฟังก์ชัน Singularity Machine Learning – Classification จาก Qiskit Functions Catalog
+`QiskitRuntimeService` สร้างการเชื่อมต่อที่ปลอดภัยกับ IBM Quantum Platform โดยใช้ API token และ instance CRN ของคุณ ทำให้เข้าถึง quantum backend ได้
+จากนั้น `QiskitFunctionsCatalog` จะใช้ดึงฟังก์ชัน Singularity ตามชื่อ (`"multiverse/singularity"`) เพื่อให้เราสามารถเรียกมันในภายหลังสำหรับการคำนวณแบบ hybrid quantum–classical
+ถ้าการตั้งค่าสำเร็จ คุณจะเห็นข้อความยืนยันว่าฟังก์ชันถูกโหลดอย่างถูกต้อง
+
+```python
+service = QiskitRuntimeService(
+    token=IBM_TOKEN,
+    channel="ibm_quantum_platform",
+    instance=IBM_INSTANCE_QUANTUM,
+)
+
+backend = service.least_busy()
+catalog = QiskitFunctionsCatalog(
+    token=IBM_TOKEN,
+    instance=IBM_INSTANCE_TEST,
+    channel="ibm_quantum_platform",
+)
+singularity = catalog.load(FUNCTION_NAME)
+print(
+    "Successfully connected to IBM Qiskit Serverless and loaded the Singularity function."
+)
+print("Catalog:", catalog)
+print("Singularity function:", singularity)
+```
+
+```text
+Successfully connected to IBM Qiskit Serverless and loaded the Singularity function.
+Catalog: <QiskitFunctionsCatalog>
+Singularity function: QiskitFunction(multiverse/singularity)
+```
+
+### กำหนด helper function {#define-helper-functions}
+
+ก่อนรันการทดลองหลัก เรากำหนด utility function เล็กๆ น้อยๆ ที่ช่วยให้การโหลดข้อมูลและการประเมินโมเดลง่ายขึ้น
+- `load_data()` อ่านไฟล์ CSV input ลงใน NumPy array โดยแยก feature และ label เพื่อความเข้ากันได้กับ `scikit-learn` และ quantum workflow
+- `evaluate_predictions()` คำนวณตัวชี้วัดประสิทธิภาพหลัก — accuracy, precision, recall และ F1-score — และรายงาน runtime แบบ optional ถ้ามีข้อมูลการจับเวลา
+
+helper function เหล่านี้ทำให้การดำเนินการที่ทำซ้ำในภายหลังใน notebook ง่ายขึ้น และให้การรายงาน metric ที่สม่ำเสมอทั้ง classifier แบบ classical และ quantum
+
+```python
+def load_data(data_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load data from the given path to X and y arrays."""
+    df: pd.DataFrame = pd.read_csv(data_path)
+    return df.iloc[:, :-1].values, df.iloc[:, -1].values
+
+def evaluate_predictions(predictions, y_true):
+    """Compute and print accuracy, precision, recall, and F1 score."""
+    accuracy = accuracy_score(y_true, predictions)
+    precision = precision_score(y_true, predictions)
+    recall = recall_score(y_true, predictions)
+    f1 = f1_score(y_true, predictions)
+    print("Accuracy:", accuracy)
+    print("Precision:", precision)
+    print("Recall:", recall)
+    print("F1:", f1)
+    return accuracy, precision, recall, f1
+```
+
+## ขั้นตอนที่ 1: แมป input แบบ classical ไปสู่ปัญหา quantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+เราเริ่มต้นด้วยการเตรียม dataset สำหรับการทดลองแบบ hybrid quantum–classical เป้าหมายของขั้นตอนนี้คือแปลงข้อมูลความเสถียรของกริดแบบดิบเป็นชุด training, validation และ test ที่สมดุลซึ่งสามารถใช้งานได้อย่างสม่ำเสมอทั้ง workflow แบบ classical และ quantum การรักษา split ที่เหมือนกันทำให้การเปรียบเทียบประสิทธิภาพในภายหลังเป็นธรรมและทำซ้ำได้
+### การโหลดข้อมูลและ preprocessing {#data-loading-and-preprocessing}
+
+เราโหลดไฟล์ CSV training และ test ก่อน สร้าง validation split และปรับสมดุล dataset โดยใช้การ over-sampling แบบ random การปรับสมดุลป้องกันการลำเอียงไปหา class ส่วนใหญ่ และให้สัญญาณการเรียนรู้ที่เสถียรกว่าสำหรับทั้ง classical และ quantum ensemble model
+
+```python
+# Load and upload the data
+X_train, y_train = load_data(TRAIN_PATH)
+X_test, y_test = load_data(TEST_PATH)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train, test_size=0.2, random_state=RANDOM_STATE
+)
+
+# Balance the dataset through over-sampling of the positive class
+ros = RandomOverSampler(random_state=RANDOM_STATE)
+X_train_bal, y_train_bal = ros.fit_resample(X_train, y_train)
+
+print("Shapes:")
+print("  X_train_bal:", X_train_bal.shape)
+print("  y_train_bal:", y_train_bal.shape)
+print("  X_val:", X_val.shape)
+print("  y_val:", y_val.shape)
+print("  X_test:", X_test.shape)
+print("  y_test:", y_test.shape)
+```
+
+```text
+Shapes:
+  X_train_bal: (5104, 12)
+  y_train_bal: (5104,)
+  X_val: (850, 12)
+  y_val: (850,)
+  X_test: (750, 12)
+  y_test: (750,)
+```
+
+### Baseline แบบ classical: AdaBoost reference {#classical-baseline-adaboost-reference}
+
+ก่อนรัน quantum optimization ใดๆ เราฝึก baseline แบบ classical ที่แข็งแกร่ง — standard AdaBoost classifier — บนข้อมูลที่สมดุลเดียวกัน สิ่งนี้ให้จุดอ้างอิงที่ทำซ้ำได้สำหรับการเปรียบเทียบในภายหลัง ช่วยให้วัดได้ว่า quantum optimization ปรับปรุง generalization หรือ efficiency ได้เกินกว่า ensemble แบบ classical ที่ tune ดีแล้วหรือไม่
+
+```python
+# ----- Classical baseline: AdaBoost -----
+baseline = AdaBoostClassifier(n_estimators=60, random_state=RANDOM_STATE)
+baseline.fit(X_train_bal, y_train_bal)
+baseline_pred = baseline.predict(X_test)
+print("Classical AdaBoost baseline:")
+_ = evaluate_predictions(baseline_pred, y_test)
+```
+
+```text
+Classical AdaBoost baseline:
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+```
+## ขั้นตอนที่ 2: ปรับปัญหาให้เหมาะสมกับการรันบนฮาร์ดแวร์ควอนตัม {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+งาน ensemble selection ถูกนิยามเป็นปัญหา combinatorial optimization ที่ weak learner แต่ละตัวเป็นตัวแปรไบนารี โดย objective จะสมดุลระหว่างความแม่นยำกับ sparsity ผ่าน regularization term `QuantumEnhancedEnsembleClassifier` แก้ปัญหานี้ด้วย QAOA บนฮาร์ดแวร์ IBM ขณะที่ยังรองรับการทดสอบบน simulator ด้วย `optimizer_options` ควบคุม hybrid loop: `simulator=False` ส่ง Circuit ไปยัง QPU ที่เลือก, `num_solutions` เพิ่มขอบเขตการค้นหา, และ `classical_optimizer_options` (สำหรับ classical optimizer ภายใน) กำหนดการ convergence; ค่าประมาณ 60 iterations เป็นจุดสมดุลที่ดีระหว่างคุณภาพและเวลา runtime options เช่น ความลึก Circuit ระดับกลาง (`reps`) และความพยายาม transpilation มาตรฐาน — ช่วยให้ได้ประสิทธิภาพที่มีเสถียรภาพบนอุปกรณ์ต่าง ๆ การตั้งค่าด้านล่างนี้คือโปรไฟล์ "best-results" ที่จะใช้สำหรับการรันบนฮาร์ดแวร์จริง แต่ถ้าต้องการทดสอบโดยไม่ใช้ QPU ให้เปลี่ยน `simulator=True`
+
+```python
+# QAOA / runtime configuration for best results on hardware
+optimizer_options = {
+    "simulator": False,  # set True to test locally without QPU
+    "num_solutions": 100_000,  # broaden search over candidate ensembles
+    "reps": 3,  # QAOA depth (circuit layers)
+    "optimization_level": 3,  # transpilation effort
+    "num_transpiler_runs": 30,  # explore multiple layouts
+    "classical_optimizer": "COBYLA",  # robust default for this landscape
+    "classical_optimizer_options": {
+        "maxiter": 60  # practical convergence budget
+    },
+    # You can pass backend-specific options; leaving None uses least-busy routing
+    "estimator_options": None,
+    "sampler_options": None,
+}
+
+print("Configured hardware optimization profile:")
+for key, value in optimizer_options.items():
+    print(f"  {key}: {value}")
+```
+
+```text
+Configured hardware optimization profile:
+  simulator: False
+  num_solutions: 100000
+  reps: 3
+  optimization_level: 3
+  num_transpiler_runs: 30
+  classical_optimizer: COBYLA
+  classical_optimizer_options: {'maxiter': 60}
+  estimator_options: None
+  sampler_options: None
+```
+
+## ขั้นตอนที่ 3: รันด้วย Qiskit primitives {#step-3-execute-using-qiskit-primitives}
+
+ตอนนี้เราจะรัน workflow ทั้งหมดโดยใช้ action `create_fit_predict` ของ Singularity function เพื่อ train, optimize, และประเมิน `QuantumEnhancedEnsembleClassifier` แบบ end-to-end บน IBM infrastructure ฟังก์ชันจะสร้าง ensemble, ใช้การ optimization ควอนตัมผ่าน Qiskit primitives, และคืนค่าทั้ง predictions และ job metadata (รวมถึง runtime และการใช้ทรัพยากร) data split จาก Step 1 ถูกนำมาใช้ซ้ำเพื่อให้ผลลัพธ์ทำซ้ำได้ โดย validation data ถูกส่งผ่าน `fit_params` เพื่อให้ optimization ปรับ hyperparameter ได้ภายใน ขณะที่ test set ที่สำรองไว้ยังคงไม่ถูกแตะต้อง
+
+ในขั้นตอนนี้ เราจะทดสอบการตั้งค่าหลายแบบของ quantum ensemble เพื่อทำความเข้าใจว่า parameter สำคัญ อย่าง `num_learners` และ `regularization` ส่งผลต่อทั้งคุณภาพผลลัพธ์และการใช้ QPU อย่างไร
+- `num_learners` กำหนดความกว้างของ ensemble (และโดยนัย กำหนดจำนวน Qubit) ซึ่งส่งผลต่อ capacity และต้นทุนการคำนวณของโมเดล
+- `regularization` ควบคุม sparsity และการ overfitting โดยกำหนดจำนวน learner ที่จะคงอยู่หลัง optimization
+
+การเปลี่ยนแปลง parameter เหล่านี้ทำให้เราเห็นว่าความกว้างของ ensemble และ regularization ส่งผลซึ่งกันและกันอย่างไร: การเพิ่มความกว้างมักปรับปรุง F1 แต่ใช้เวลา QPU มากขึ้น ขณะที่ regularization ที่แข็งแกร่งหรือ adaptive อาจปรับปรุง generalization โดยใช้ฮาร์ดแวร์ในปริมาณพอ ๆ กัน ส่วนถัดไปจะพาผ่านสามการตั้งค่าตัวแทนเพื่อแสดงผลกระทบเหล่านี้
+
+### Baseline {#baseline}
+
+การตั้งค่านี้ใช้ `num_learners = 10` และ `regularization = 7`
+
+- `num_learners` ควบคุมความกว้างของ ensemble — คือจำนวน weak learner ที่รวมกัน และบนฮาร์ดแวร์ควอนตัม หมายถึง **จำนวน Qubit ที่ต้องการ** ค่าที่มากขึ้นจะขยาย combinatorial search space และอาจเพิ่มความแม่นยำและ recall แต่ยังเพิ่มความกว้าง Circuit, เวลา compilation, และการใช้ QPU โดยรวม
+- `regularization` กำหนดความแรงของ penalty สำหรับการรวม learner เพิ่มเติม ด้วย regularization แบบ "onsite" ค่าที่สูงขึ้นบังคับ sparsity ที่แข็งแกร่งขึ้น (คง learner ไว้น้อยลง) ขณะที่ค่าต่ำกว่าอนุญาต ensemble ที่ซับซ้อนกว่า
+
+การตั้งค่านี้ให้ baseline ที่มีต้นทุนต่ำ แสดงพฤติกรรมของ ensemble ขนาดเล็กก่อนจะขยายความกว้างหรือปรับ sparsity
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 10
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_1 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_1 = job_1.result()
+print("Action status:", result_1.get("status"))
+print("Action message:", result_1.get("message"))
+print("Metadata:", result_1.get("metadata"))
+qeec_pred_job_1 = np.array(result_1["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_1, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 267.05158376693726}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 3336.8785166740417}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 152.4274561405182}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1550.1889700889587}}}
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+```
+
+```python
+status_1 = job_1.status()
+print("\nQuantum job status:", status_1)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### เพิ่มจำนวน learner {#increase-the-number-of-learners}
+
+ที่นี่เราเพิ่ม `num_learners` จาก 10 → 30 ขณะที่คง `regularization = 7` ไว้
+
+- learner ที่มากขึ้นขยาย hypothesis space ทำให้โมเดลจับ pattern ที่ละเอียดขึ้นได้ ซึ่งอาจเพิ่ม F1 ได้บ้าง
+- ในกรณีส่วนใหญ่ ความแตกต่างของ runtime ระหว่าง 10 กับ 30 learner ไม่มากนัก แสดงว่าความกว้าง Circuit ที่เพิ่มขึ้นไม่ได้เพิ่มต้นทุนการรันอย่างมีนัยสำคัญ
+- การปรับปรุงคุณภาพยังคงเป็นไปตาม *diminishing-returns curve*: ผลกำไรช่วงต้นปรากฏเมื่อ ensemble ขยายตัว แต่จะคงที่เมื่อ learner เพิ่มเติมให้ข้อมูลใหม่น้อยลง
+
+การทดลองนี้แสดงถึง trade-off ระหว่างคุณภาพและประสิทธิภาพ — การเพิ่มความกว้าง ensemble อาจให้ผลลัพธ์ความแม่นยำที่ดีขึ้นเล็กน้อยโดยไม่มีผลกระทบต่อ runtime มากนัก ขึ้นอยู่กับ Backend และสภาพการ transpilation
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 30
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_2 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_2 = job_2.result()
+print("Action status:", result_2.get("status"))
+print("Action message:", result_2.get("message"))
+print("QPU Time:", result_2.get("metadata"))
+qeec_pred_job_2 = np.array(result_2["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_2, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+QPU Time: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 680.2116754055023}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 80.80395102500916}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 154.4466371536255}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1095.822762966156}}}
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+```
+
+```python
+status_2 = job_2.status()
+print("\nQuantum job status:", status_2)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### Regularization {#regularization}
+
+ในการตั้งค่านี้ เราเพิ่มเป็น `num_learners = 60` และใช้ adaptive regularization เพื่อจัดการ sparsity ได้สะดวกขึ้น
+
+- ด้วย `regularization = "auto"` optimizer จะหาค่าความแรงของ regularization ที่เหมาะสมโดยอัตโนมัติ ซึ่งจะเลือก weak learner ประมาณ `regularization_ratio * num_learners` ตัวสำหรับ ensemble สุดท้าย แทนการกำหนด penalty ด้วยตนเอง นี่ให้ interface ที่สะดวกกว่าสำหรับจัดการสมดุลระหว่าง sparsity และขนาด ensemble
+- `regularization_type = "alpha"` กำหนดวิธีใช้ penalty ต่างจาก `onsite` ที่ไม่มีขอบเขต `[0, ∞]` แบบ `alpha` มีขอบเขต `[0, 1]` ทำให้ปรับแต่งและตีความได้ง่ายกว่า parameter นี้ควบคุม trade-off ระหว่าง penalty เดี่ยวและ pairwise ให้ช่วงการตั้งค่าที่เรียบกว่า
+- `regularization_desired_ratio ≈ 0.82` กำหนดสัดส่วนเป้าหมายของ learner ที่จะคงอยู่หลัง regularization — ที่นี่ประมาณ 82% ของ learner ถูกคงไว้ โดย 18% ที่อ่อนแอที่สุดถูกตัดออกอัตโนมัติ
+
+แม้ adaptive regularization จะทำให้การตั้งค่าง่ายขึ้นและช่วยรักษา ensemble ที่สมดุล แต่ไม่ได้รับประกันประสิทธิภาพที่ดีขึ้นหรือมั่นคงกว่าเสมอไป คุณภาพจริงขึ้นอยู่กับการเลือก regularization parameter ที่เหมาะสม และการปรับผ่าน cross-validation อาจมีต้นทุนการคำนวณสูง ข้อดีหลักอยู่ที่ความสะดวกและการตีความที่ดีขึ้น ไม่ใช่การเพิ่มความแม่นยำโดยตรง
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 60
+REGULARIZATION = "auto"
+REGULARIZATION_TYPE = "alpha"
+REGULARIZATION_RATIO = 0.82
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_3 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    regularization_type=REGULARIZATION_TYPE,
+    regularization_desired_ratio=REGULARIZATION_RATIO,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_3 = job_3.result()
+print("Action status:", result_3.get("status"))
+print("Action message:", result_3.get("message"))
+print("Metadata:", result_3.get("metadata"))
+qeec_pred_job_3 = np.array(result_3["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_3, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 1387.7451872825623}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 95.41597843170166}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 171.78878355026245}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1146.5584812164307}}}
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```python
+status_3 = job_3.status()
+print("\nQuantum job status:", status_3)
+```
+
+```text
+Quantum job status: DONE
+```
+
+## ขั้นตอนที่ 4: Post-process และคืนผลลัพธ์ในรูปแบบ classical ที่ต้องการ {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+ตอนนี้เราจะ post-process ผลลัพธ์จากการรันทั้งแบบ classical และ quantum แปลงเป็น format ที่สอดคล้องกันสำหรับการประเมินขั้นต่อไป ขั้นตอนนี้เปรียบเทียบคุณภาพการพยากรณ์โดยใช้ metrics มาตรฐาน ได้แก่ accuracy, precision, recall, และ F1 และวิเคราะห์ว่าความกว้างของ ensemble (`num_learners`) และการควบคุม sparsity (`regularization`) ส่งผลต่อทั้งประสิทธิภาพและพฤติกรรมการคำนวณอย่างไร
+
+classical AdaBoost baseline ให้ reference ที่กะทัดรัดและมั่นคงสำหรับการเรียนรู้ขนาดเล็ก ทำงานได้ดีกับ ensemble ขนาดจำกัดและ overhead การคำนวณน้อยมาก สะท้อนจุดแข็งของ traditional boosting เมื่อ hypothesis space ยังจัดการได้ การตั้งค่า quantum (`qeec_pred_job_1`, `qeec_pred_job_2`, และ `qeec_pred_job_3`) ขยาย baseline นี้โดยฝัง ensemble-selection process ไว้ใน variational quantum optimization loop ทำให้ระบบสำรวจ subset ของ learner ที่ขยายตัวแบบ exponential พร้อมกันใน superposition ได้ จัดการกับ combinatorial nature ของ ensemble selection ได้มีประสิทธิภาพมากขึ้นเมื่อขนาดเพิ่มขึ้น
+
+ผลลัพธ์แสดงว่าการเพิ่ม `num_learners` จาก 10 เป็น 30 ปรับปรุง recall และ F1 ยืนยันว่า ensemble ที่กว้างขึ้นจับ interaction ระหว่าง weak learner ได้ดีขึ้น ผลกำไรนี้เป็นแบบ sublinear บนฮาร์ดแวร์ปัจจุบัน — learner แต่ละตัวที่เพิ่มขึ้นให้ increment ความแม่นยำที่เล็กลง — แต่พฤติกรรมการ scaling พื้นฐานยังคงดี เพราะ quantum optimizer สามารถค้นหา configuration space ที่กว้างขึ้นโดยไม่มี exponential blow-up แบบ classical subset selection Regularization เพิ่มความซับซ้อน: λ=7 คงที่บังคับ sparsity ที่สม่ำเสมอและทำให้ convergence มั่นคง ขณะที่ adaptive α-regularization ปรับ sparsity อัตโนมัติตาม correlation ระหว่าง learner การ pruning แบบ dynamic นี้มักให้ F1 ที่สูงขึ้นเล็กน้อยสำหรับ qubit width เดียวกัน โดยสมดุลความซับซ้อนของโมเดลและ generalization
+
+เมื่อเปรียบเทียบโดยตรงกับ AdaBoost baseline การตั้งค่า quantum ที่เล็กที่สุด (L=10) ให้ความแม่นยำใกล้เคียงกัน ยืนยันความถูกต้องของ hybrid pipeline ที่ความกว้างมากขึ้น quantum variants — โดยเฉพาะกับ auto-regularization — เริ่มแซงหน้า classical baseline เล็กน้อย แสดง recall และ F1 ที่ดีขึ้นโดยไม่มีการเติบโตแบบ linear ของต้นทุนการคำนวณ ผลปรับปรุงเหล่านี้ไม่ได้บ่งชี้ "quantum advantage" ทันที แต่แสดง **scaling efficiency**: quantum optimizer รักษาประสิทธิภาพที่จัดการได้เมื่อ ensemble ขยายตัว ซึ่ง classical approach จะเผชิญกับการเติบโตแบบ exponential ใน subset-selection complexity
+
+ในทางปฏิบัติ:
+- ใช้ **classical baseline** สำหรับการ validation และ benchmarking อย่างรวดเร็วบน dataset ขนาดเล็ก
+- ใช้ **quantum ensembles** เมื่อความกว้างของโมเดลหรือความซับซ้อนของ feature เพิ่มขึ้น — QAOA-based search จะ scale ได้ดีกว่าในสภาวะเหล่านั้น
+- ใช้ **adaptive α-regularization** เพื่อรักษา sparsity และ generalization โดยไม่ต้องเพิ่มความกว้าง Circuit
+- ติดตาม QPU time และความลึกเพื่อสมดุลผลกำไรด้านคุณภาพกับข้อจำกัดของฮาร์ดแวร์ในระยะใกล้
+
+รวมกัน การทดลองเหล่านี้แสดงว่า quantum-optimized ensembles เสริม classical methods: สร้างความแม่นยำ baseline ในระดับ scale ขนาดเล็ก ขณะที่เปิดทางสู่การ scaling ที่มีประสิทธิภาพบนปัญหา combinatorial learning ขนาดใหญ่ขึ้น เมื่อฮาร์ดแวร์พัฒนาขึ้น ข้อได้เปรียบด้าน scaling เหล่านี้คาดว่าจะทวีคูณ ขยายขนาดและความลึกที่ทำได้ของโมเดลแบบ ensemble ออกไปเกินกว่าที่ classical ทำได้จริง
+
+### ประเมิน metrics สำหรับแต่ละ configuration {#evaluate-metrics-for-each-configuration}
+
+ตอนนี้เราจะประเมินทุก configuration — classical AdaBoost baseline และ quantum ensembles ทั้งสาม — โดยใช้ `evaluate_predictions` helper เพื่อคำนวณ accuracy, precision, recall, และ F1 บน test set เดียวกัน การเปรียบเทียบนี้ชี้แจงว่า quantum optimization scale อย่างไรเมื่อเทียบกับ classical approach: ที่ความกว้างน้อย ทั้งสองทำงานได้ใกล้เคียงกัน เมื่อ ensemble ขยายตัว quantum method สามารถสำรวจ hypothesis space ขนาดใหญ่ขึ้นได้มีประสิทธิภาพมากกว่า ตารางผลลัพธ์บันทึกแนวโน้มเหล่านี้ในรูปแบบเชิงปริมาณที่สอดคล้องกัน
+
+```python
+results = []
+
+# Classical baseline
+acc_b, prec_b, rec_b, f1_b = evaluate_predictions(baseline_pred, y_test)
+results.append(
+    {
+        "Config": "AdaBoost (Classical)",
+        "Accuracy": acc_b,
+        "Precision": prec_b,
+        "Recall": rec_b,
+        "F1": f1_b,
+    }
+)
+
+# Quantum runs
+for label, preds in [
+    ("QEEC L=10, reg=7", qeec_pred_job_1),
+    ("QEEC L=30, reg=7", qeec_pred_job_2),
+    (f"QEEC L=60, reg=auto (α={REGULARIZATION_RATIO})", qeec_pred_job_3),
+]:
+    acc, prec, rec, f1 = evaluate_predictions(preds, y_test)
+    results.append(
+        {
+            "Config": label,
+            "Accuracy": acc,
+            "Precision": prec,
+            "Recall": rec,
+            "F1": f1,
+        }
+    )
+
+df_results = pd.DataFrame(results)
+df_results
+```
+
+```text
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```text
+Config  Accuracy  Precision    Recall        F1
+0          AdaBoost (Classical)  0.789333        1.0  0.789333  0.882265
+1              QEEC L=10, reg=7  0.868000        1.0  0.868000  0.929336
+2              QEEC L=30, reg=7  0.894667        1.0  0.894667  0.944405
+3  QEEC L=60, reg=auto (α=0.82)  0.908000        1.0  0.908000  0.951782
+```
+
+### แสดงแนวโน้มคุณภาพในแต่ละ configuration {#visualize-quality-trends-across-configurations}
+
+กราฟ bar chart แบบ grouped ด้านล่างเปรียบเทียบ **Accuracy** และ **F1** ระหว่าง classical baseline และ quantum ensembles (`L=10`, `L=30`, และ `L=60 auto-α`) โดยแสดงให้เห็นว่า accuracy มีเสถียรภาพ ขณะที่ F1 ค่อย ๆ ดีขึ้นเมื่อความกว้างของ quantum ensemble เพิ่มขึ้น แสดงให้เห็นว่า hybrid method รักษา performance scaling ไว้ได้โดยไม่มีการเติบโตของต้นทุนแบบ exponential แบบ classical subset selection
+
+```python
+x = np.arange(len(df_results))
+width = 0.35
+plt.figure(figsize=(7.6, 4.6))
+plt.bar(x - width / 2, df_results["Accuracy"], width=width, label="Accuracy")
+plt.bar(x + width / 2, df_results["F1"], width=width, label="F1")
+plt.xticks(x, df_results["Config"], rotation=10)
+plt.ylabel("Score")
+plt.title("Classical vs Quantum ensemble performance")
+plt.legend()
+plt.ylim(0, 1.0)
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sml-classification/extracted-outputs/0f15c5fb-2450-4671-9bc2-471043414df2-0.avif)
+
+### การตีความ {#interpretation}
+
+กราฟยืนยัน scaling pattern ที่คาดไว้ AdaBoost แบบ classical ทำงานได้ดีสำหรับ ensemble ขนาดเล็ก แต่มีต้นทุน scaling ที่เพิ่มขึ้นเมื่อจำนวน weak learner เพิ่มขึ้น เพราะ subset-selection problem ขยายแบบ combinatorial โมเดลที่ enhanced ด้วย quantum จำลองความแม่นยำ classical ที่ความกว้างต่ำ และเริ่มแซงหน้าเมื่อ ensemble ขยายตัว โดยเฉพาะภายใต้ adaptive α-regularization สิ่งนี้สะท้อนความสามารถของ quantum optimizer ในการ sample และประเมิน candidate subset จำนวนมากพร้อมกันผ่าน superposition รักษาการค้นหาที่จัดการได้แม้ที่ความกว้างสูงขึ้น แม้ hardware overhead ในปัจจุบันจะชดเชยผลกำไรทางทฤษฎีบางส่วน แนวโน้มนี้แสดง scaling efficiency advantage ของการ formulation แบบ quantum ในทางปฏิบัติ classical method ยังคงเหมาะกว่าสำหรับ benchmark ขนาดเล็ก ขณะที่ quantum-enhanced ensembles เริ่มได้เปรียบเมื่อ model dimensionality และขนาด ensemble ขยายตัว ให้ trade-off ที่ดีกว่าระหว่างความแม่นยำ, generalization, และการเติบโตของการคำนวณ
+
+## ภาคผนวก: ประโยชน์ด้าน Scaling และการปรับปรุง {#appendix-scaling-benefits-and-enhancements}
+
+ข้อได้เปรียบด้าน scalability ของ `QuantumEnhancedEnsembleClassifier` มาจากวิธีที่ ensemble-selection process ถูก map ไปยัง quantum optimization
+classical ensemble learning methods เช่น AdaBoost หรือ random forests มีต้นทุนการคำนวณสูงขึ้นเมื่อจำนวน weak learner เพิ่มขึ้น เพราะการเลือก subset ที่เหมาะสมที่สุดเป็นปัญหา combinatorial ที่ scale แบบ exponential
+
+ในทางตรงกันข้าม quantum formulation — ที่นำไปใช้ที่นี่ผ่าน Quantum Approximate Optimization Algorithm (QAOA) — สามารถสำรวจ search space ที่ขยายแบบ exponential เหล่านี้ได้มีประสิทธิภาพมากขึ้นโดยประเมิน configuration หลาย ๆ แบบพร้อมกันใน superposition
+ผลที่ได้คือ training time ไม่เพิ่มขึ้นอย่างมีนัยสำคัญตามจำนวน learner ทำให้โมเดลมีประสิทธิภาพแม้เมื่อความกว้างของ ensemble เพิ่มขึ้น
+
+แม้ฮาร์ดแวร์ปัจจุบันจะมี noise และข้อจำกัดด้าน depth workflow นี้แสดง hybrid approach ระยะใกล้ที่ classical และ quantum components ทำงานร่วมกัน: quantum optimizer ให้ initialization landscape ที่ดีกว่าสำหรับ classical loop ปรับปรุง convergence และคุณภาพโมเดลสุดท้าย
+เมื่อ quantum processors พัฒนาขึ้น ประโยชน์ด้าน scalability เหล่านี้คาดว่าจะขยายไปสู่ dataset ขนาดใหญ่, ensemble ที่กว้างขึ้น, และความลึก Circuit ที่มากขึ้น
+
+## อ้างอิง {#references}
+
+1. [Introduction to Qiskit Functions](/guides/functions)
+2. [Multiverse Computing Singularity Machine Learning](/guides/multiverse-computing-singularity)
+
+## แบบสำรวจ tutorial {#tutorial-survey}
+
+กรุณาใช้เวลาสักครู่เพื่อให้ feedback เกี่ยวกับ tutorial นี้ ความคิดเห็นของคุณจะช่วยปรับปรุงเนื้อหาและประสบการณ์ผู้ใช้ของเรา
