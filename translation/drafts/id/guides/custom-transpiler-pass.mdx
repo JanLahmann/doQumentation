@@ -1,0 +1,229 @@
+---
+title: "Tulis transpiler pass-mu sendiri"
+sidebar_label: "Tulis transpiler pass-mu sendiri"
+description: "Pelajari cara menulis transpiler pass sendiri menggunakan Qiskit, termasuk representasi sirkuit DAG"
+notebook_path: "guides/custom-transpiler-pass.ipynb"
+---
+
+{/* doqumentation-source-hash: b4430d9c */}
+
+<OpenInLabBanner notebookPath="guides/custom-transpiler-pass.ipynb" />
+
+
+
+# Tulis custom transpiler pass
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versi paket</b></summary>
+
+Kode di halaman ini dikembangkan menggunakan persyaratan berikut.
+Kami merekomendasikan menggunakan versi ini atau yang lebih baru.
+
+```
+qiskit[all]~=2.3.0
+```
+</details>
+Qiskit SDK memungkinkan kamu membuat custom transpilation pass dan menjalankannya di objek `PassManager` atau menambahkannya ke `StagedPassManager`. Di sini kita akan mendemonstrasikan cara menulis transpiler pass, dengan fokus membangun pass yang melakukan [Pauli twirling](https://arxiv.org/abs/quant-ph/0606161) pada quantum gate yang noisy dalam sebuah quantum Circuit. Contoh ini menggunakan DAG, yaitu objek yang dimanipulasi oleh tipe pass `TransformationPass`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit
+```
+
+<details>
+  <summary>
+    Latar belakang: Representasi DAG
+  </summary>
+
+Sebelum membangun sebuah pass, penting untuk mengenalkan representasi internal dari quantum circuit di Qiskit, yaitu [directed acyclic graph (DAG)](../api/qiskit/qiskit.dagcircuit.DAGCircuit) (lihat [tutorial ini](https://qiskit.org/ecosystem/rustworkx/tutorial/dags.html) untuk gambaran umum). Untuk mengikuti langkah-langkah ini, instal [pustaka `graphviz`](https://graphviz.org/download/) untuk fungsi plotting DAG.
+
+Di Qiskit, dalam tahap transpilasi, Circuit direpresentasikan menggunakan DAG. Secara umum, DAG terdiri dari *vertices* (juga dikenal sebagai "node") dan *edges* berarah yang menghubungkan pasangan vertices dalam orientasi tertentu. Representasi ini disimpan menggunakan objek `qiskit.dagcircuit.DAGCircuit` yang terdiri dari objek-objek `DagNode` individual. Keunggulan representasi ini dibandingkan daftar gate biasa (yaitu, *netlist*) adalah aliran informasi antar operasi menjadi eksplisit, sehingga lebih mudah dalam mengambil keputusan transformasi.
+
+Contoh berikut mengilustrasikan DAG dengan membuat Circuit sederhana yang mempersiapkan Bell state dan menerapkan rotasi $R_Z$, tergantung pada hasil pengukuran.
+
+```python
+  from qiskit import QuantumRegister, ClassicalRegister, QuantumCircuit
+  import numpy as np
+
+  qr = QuantumRegister(3, 'qr')
+  cr = ClassicalRegister(3, 'cr')
+  qc = QuantumCircuit(qr, cr)
+
+  qc.h(qr[0])
+  qc.cx(qr[0], qr[1])
+  qc.measure(qr[0], cr[0])
+  qc.rz(np.pi/2, qr[1]).c_if(cr, 2)
+  qc.draw(output='mpl')
+
+```
+![Circuit yang mempersiapkan Bell state dan menerapkan rotasi $R_Z$ tergantung pada hasil pengukuran.](/docs/images/guides/custom-transpiler-pass/DAG_circ.avif "Circuit")
+
+Gunakan fungsi `qiskit.tools.visualization.dag_drawer()` untuk melihat DAG dari Circuit ini. Ada tiga jenis node dalam graph: node qubit/clbit (hijau), node operasi (biru), dan node output (merah). Setiap edge menunjukkan aliran data (atau dependensi) antara dua node.
+
+```python
+from qiskit.converters import circuit_to_dag
+from qiskit.tools.visualization import dag_drawer
+
+dag = circuit_to_dag(qc)
+dag_drawer(dag)
+```
+![DAG dari Circuit terdiri dari node-node yang terhubung oleh edge berarah. Ini adalah cara visual untuk merepresentasikan qubit atau classical bit, operasi-operasinya, dan cara data mengalir.](/docs/images/guides/custom-transpiler-pass/DAG.avif "DAG")
+</details>
+## Transpiler pass {#transpiler-passes}
+
+Transpiler pass diklasifikasikan sebagai [`AnalysisPass`](../api/qiskit/qiskit.transpiler.AnalysisPass) atau [`TransformationPass`](../api/qiskit/qiskit.transpiler.TransformationPass). Pass pada umumnya bekerja dengan [DAG](../api/qiskit/qiskit.dagcircuit.DAGCircuit) dan `property_set`, sebuah objek mirip dictionary untuk menyimpan properti yang ditentukan oleh analysis pass. Analysis pass bekerja dengan DAG dan `property_set`-nya. Mereka tidak bisa memodifikasi DAG, tapi bisa memodifikasi `property_set`. Ini berbeda dengan transformation pass, yang memang memodifikasi DAG, dan bisa membaca (tapi tidak menulis ke) `property_set`. Misalnya, transformation pass menerjemahkan Circuit ke [ISA](./transpile#instruction-set-architecture)-nya atau melakukan routing pass untuk menyisipkan SWAP gate sesuai kebutuhan.
+## Buat transpiler pass `PauliTwirl` {#create-a-paulitwirl-transpiler-pass}
+
+Contoh berikut membangun sebuah transpiler pass yang menambahkan Pauli twirl. [Pauli twirling](https://arxiv.org/abs/quant-ph/0606161) adalah strategi penekanan error yang mengacak cara Qubit mengalami noisy channel, yang dalam contoh ini kita asumsikan adalah two-qubit gate (karena jauh lebih rentan terhadap error dibandingkan single-qubit gate). Pauli twirl tidak mempengaruhi operasi two-qubit gate. Twirl dipilih sedemikian rupa sehingga yang diterapkan *sebelum* two-qubit gate (di sebelah kiri) diimbangi oleh yang diterapkan *setelah* two-qubit gate (di sebelah kanan). Dalam pengertian ini, operasi two-qubit gate identik, tapi cara melakukannya berbeda. Salah satu manfaat Pauli twirling adalah mengubah coherent error menjadi stochastic error, yang bisa diperbaiki dengan lebih banyak averaging.
+
+Transpiler pass bekerja pada [DAG](../api/qiskit/qiskit.dagcircuit.DAGCircuit), sehingga metode penting yang perlu di-override adalah `.run()`, yang menerima DAG sebagai input. Menginisialisasi pasangan Pauli seperti yang ditunjukkan mempertahankan operasi setiap two-qubit gate. Ini dilakukan dengan metode helper `build_twirl_set`, yang menelusuri setiap two-qubit Pauli (seperti yang diperoleh dari `pauli_basis(2)`) dan menemukan Pauli lain yang mempertahankan operasi tersebut.
+
+Dari DAG, gunakan metode `op_nodes()` untuk mengembalikan semua node-nya. DAG juga bisa digunakan untuk mengumpulkan run, yaitu urutan node yang berjalan tanpa interupsi pada sebuah Qubit. Run ini bisa dikumpulkan sebagai single-qubit run dengan `collect_1q_runs`, two-qubit run dengan `collect_2q_runs`, dan run dari node di mana nama instruksi ada dalam namelist menggunakan `collect_runs`. `DAGCircuit` memiliki banyak metode untuk mencari dan melintasi graph. Salah satu metode yang sering digunakan adalah `topological_op_nodes`, yang menyediakan node dalam urutan dependensi. Metode lain seperti `bfs_successors` digunakan terutama untuk menentukan bagaimana node berinteraksi dengan operasi berikutnya pada DAG.
+
+Dalam contoh ini, kita ingin mengganti setiap node, yang merepresentasikan sebuah instruksi, dengan subcircuit yang dibangun sebagai mini DAG. Mini DAG memiliki two-qubit quantum register yang ditambahkan ke dalamnya. Operasi ditambahkan ke mini DAG dengan menggunakan `apply_operation_back`, yang menempatkan `Instruction` pada output mini DAG (sedangkan `apply_operation_front` akan menempatkannya pada input mini DAG). Node kemudian digantikan oleh mini DAG menggunakan `substitute_node_with_dag`, dan proses berlanjut untuk setiap instance `CXGate` dan `ECRGate` dalam DAG (sesuai dengan two-qubit basis gate pada Backend IBM&reg;).
+
+```python
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.circuit import QuantumCircuit, QuantumRegister, Gate
+from qiskit.circuit.library import CXGate, ECRGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.basepasses import TransformationPass
+from qiskit.quantum_info import Operator, pauli_basis
+
+import numpy as np
+
+from typing import Iterable, Optional
+```
+
+```python
+class PauliTwirl(TransformationPass):
+    """Add Pauli twirls to two-qubit gates."""
+
+    def __init__(
+        self,
+        gates_to_twirl: Optional[Iterable[Gate]] = None,
+    ):
+        """
+        Args:
+            gates_to_twirl: Names of gates to twirl. The default behavior is to twirl all
+                two-qubit basis gates, `cx` and `ecr` for IBM backends.
+        """
+        if gates_to_twirl is None:
+            gates_to_twirl = [CXGate(), ECRGate()]
+        self.gates_to_twirl = gates_to_twirl
+        self.build_twirl_set()
+        super().__init__()
+
+    def build_twirl_set(self):
+        """
+        Build a set of Paulis to twirl for each gate and store internally as .twirl_set.
+        """
+        self.twirl_set = {}
+
+        # iterate through gates to be twirled
+        for twirl_gate in self.gates_to_twirl:
+            twirl_list = []
+
+            # iterate through Paulis on left of gate to twirl
+            for pauli_left in pauli_basis(2):
+                # iterate through Paulis on right of gate to twirl
+                for pauli_right in pauli_basis(2):
+                    # save pairs that produce identical operation as gate to twirl
+                    if (Operator(pauli_left) @ Operator(twirl_gate)).equiv(
+                        Operator(twirl_gate) @ pauli_right
+                    ):
+                        twirl_list.append((pauli_left, pauli_right))
+
+            self.twirl_set[twirl_gate.name] = twirl_list
+
+    def run(
+        self,
+        dag: DAGCircuit,
+    ) -> DAGCircuit:
+        # collect all nodes in DAG and proceed if it is to be twirled
+        twirling_gate_classes = tuple(
+            gate.base_class for gate in self.gates_to_twirl
+        )
+        for node in dag.op_nodes():
+            if not isinstance(node.op, twirling_gate_classes):
+                continue
+
+            # random integer to select Pauli twirl pair
+            pauli_index = np.random.randint(
+                0, len(self.twirl_set[node.op.name])
+            )
+            twirl_pair = self.twirl_set[node.op.name][pauli_index]
+
+            # instantiate mini_dag and attach quantum register
+            mini_dag = DAGCircuit()
+            register = QuantumRegister(2)
+            mini_dag.add_qreg(register)
+
+            # apply left Pauli, gate to twirl, and right Pauli to empty mini-DAG
+            mini_dag.apply_operation_back(
+                twirl_pair[0].to_instruction(), [register[0], register[1]]
+            )
+            mini_dag.apply_operation_back(node.op, [register[0], register[1]])
+            mini_dag.apply_operation_back(
+                twirl_pair[1].to_instruction(), [register[0], register[1]]
+            )
+
+            # substitute gate to twirl node with twirling mini-DAG
+            dag.substitute_node_with_dag(node, mini_dag)
+
+        return dag
+```
+
+## Gunakan transpiler pass `PauliTwirl` {#use-the-paulitwirl-transpiler-pass}
+
+Kode berikut menggunakan pass yang dibuat di atas untuk melakukan transpilasi pada sebuah Circuit. Pertimbangkan Circuit sederhana dengan gate `cx` dan `ecr`.
+
+```python
+qc = QuantumCircuit(3)
+qc.cx(0, 1)
+qc.ecr(1, 2)
+qc.ecr(1, 0)
+qc.cx(2, 1)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/custom-transpiler-pass/extracted-outputs/9123905d-b4cb-4ae9-9695-4ad77e70bdab-0.svg)
+
+Untuk menerapkan custom pass, bangun pass manager menggunakan pass `PauliTwirl` dan jalankan pada 50 Circuit.
+
+```python
+pm = PassManager([PauliTwirl()])
+twirled_qcs = [pm.run(qc) for _ in range(50)]
+```
+
+Setiap two-qubit gate kini diapit oleh dua Pauli.
+
+```python
+twirled_qcs[-1].draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/custom-transpiler-pass/extracted-outputs/e2515cf3-f8d9-4281-9673-d5a955d7aab9-0.svg)
+
+Operator-nya sama jika `Operator` dari `qiskit.quantum_info` digunakan:
+
+```python
+np.all([Operator(twirled_qc).equiv(qc) for twirled_qc in twirled_qcs])
+```
+
+```text
+np.True_
+```
+
+## Langkah selanjutnya {#next-steps}
+
+<Admonition type="tip" title="Rekomendasi">
+    - Untuk mempelajari cara menggunakan fungsi `generate_preset_passmanager` alih-alih menulis pass sendiri, mulailah dengan topik [Pengaturan default dan opsi konfigurasi Transpilasi](defaults-and-configuration-options).
+    - Coba panduan [Bandingkan pengaturan Transpiler](/guides/circuit-transpilation-settings).
+    - Tinjau [dokumentasi API transpiler.](https://docs.quantum.ibm.com/api/qiskit/transpiler)
+</Admonition>

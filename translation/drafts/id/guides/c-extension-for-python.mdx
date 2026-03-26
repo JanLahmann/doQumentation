@@ -1,0 +1,182 @@
+---
+title: Memperluas Qiskit di Python dengan C
+description: Cara membuat ekstensi C untuk alur kerja Qiskit kamu di Python
+sidebar_label: Ekstensi C untuk Python
+---
+
+{/* doqumentation-source-hash: afebf203 */}
+
+# Memperluas Qiskit di Python dengan C
+
+Untuk mempercepat program Python Qiskit kamu dengan C, kamu bisa menggunakan ekstensi C Qiskit untuk Python.
+Ini membutuhkan langkah tambahan dibandingkan penggunaan C mandiri; untuk detail lebih lanjut, lihat [panduan Instal Qiskit C API](/guides/install-c-api).
+
+<Admonition type="warning">
+  Qiskit C API masih bersifat eksperimental, dan belum berkomitmen pada antarmuka pemrograman atau biner yang sepenuhnya stabil. Modul ekstensi yang dibangun terhadap Qiskit hanya dijamin bekerja pada versi Qiskit yang digunakan saat build.
+</Admonition>
+
+<Admonition type="note">
+  Instruksi ini hanya diuji pada sistem mirip UNIX. Instruksi untuk Windows sedang dalam proses.
+</Admonition>
+
+## Persyaratan {#requirements}
+
+Mulai dengan memastikan kamu telah menginstal [Qiskit C API](/guides/install-c-api). Selanjutnya, instal antarmuka Python Qiskit, seperti berikut:
+```bash
+pip install -r requirements.txt -c constraints.txt
+pip install .
+```
+
+## Mendefinisikan ekstensi C {#define-the-c-extension}
+
+Ada berbagai pilihan untuk menulis ekstensi C untuk Python. Demi kesederhanaan, panduan ini dimulai dengan pendekatan yang menggunakan modul [`ctypes`](https://docs.python.org/3/library/ctypes.html) bawaan Python. Di bagian berikutnya, bagian [Ekstensi C manual](#manual-c-extension) memberikan contoh membangun ekstensi C menggunakan C API Python untuk mengurangi overhead saat runtime.
+
+Sebagai contoh, asumsikan kamu menulis fungsi C untuk membangun sebuah observable dan ingin mengembalikannya ke Python. Kamu bisa mengonversi `QkObs*` di sisi C ke objek `SparseObservable` di sisi Python, menggunakan konverter yang tersedia `qk_obs_to_python`:
+```c
+// file: extension.c
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>  // include Python header for access to PyObject
+#define QISKIT_C_PYTHON_INTERFACE  // enable C->Python conversion functions
+#include <qiskit.h>
+
+PyObject *build_observable(void) {
+    QkObs *obs = qk_obs_zero(100);
+    // build the observable ...
+    PyObject *pyobj = qk_obs_to_python(obs); // convert to Qiskit's Python ``SparseObservable``
+    qk_obs_free(obs);
+    return pyobj;
+}
+```
+
+Berikut ini menunjukkan cara mengkompilasi ini menjadi shared library - misalnya, `qiskit_cextension.so`.
+Setelah selesai, kamu bisa memanggil program C dari Python:
+```python
+# file: main.py
+import qiskit
+import ctypes
+
+# Load the extension, ensuring the global interpreter lock (GIL) is acquired for function calls,
+# which you need for the C->Python object conversion.
+lib = ctypes.PyDLL("/path/to/qiskit_cextension.so")
+lib.build_observable.argtypes = None  # set argument types to the function
+lib.build_observable.restype = ctypes.py_object  # set return type
+
+# now you can directly call the function
+obs = lib.build_observable()
+print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
+print(obs)
+```
+
+## Build {#build}
+
+Pertama, kamu harus membangun ekstensi Python Qiskit. Ini mencakup simbol C sehingga kamu bisa mengakses kedua antarmuka melalui shared library yang sama. Ini penting untuk memastikan data bisa dioper dengan benar antara C dan Python.
+```bash
+python setup.py build_rust --inplace --release
+```
+Shared library disebut ``_accelerate.<platform-specific-part>``. Temukan lokasi dan namanya seperti berikut:
+```bash
+QKLIB=$(python -c "import os; import qiskit; print(os.path.dirname(qiskit._accelerate.__file__))")
+QKNAME=$(python -c "import os; import qiskit; print(os.path.basename(qiskit._accelerate.__file__))")
+```
+
+Kamu perlu mengetahui lokasi includes Python (``Python.h``) dan library (``libpython.<suffix>``) dari environment kamu.
+Ini bisa diidentifikasi, misalnya, dengan
+```bash
+PYINCLUDE=$(python -c "import sysconfig; print(sysconfig.get_path('include'))")
+PYLIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+PYNAME=$(find $PYLIB -maxdepth 1 -name "libpython*" | grep -oE "[^/]+$" | grep -oE "python[0-9]+\.[0-9]+" || echo "python")
+```
+(Jika kamu sudah mengetahui lokasi dan nama-nama ini, kamu juga bisa langsung mengaturnya.)
+
+### Link {#link}
+
+Proses linking bisa berbeda antar platform dan linker. Berikut ini menjelaskan solusi untuk linker yang mendukung library dengan nama sembarang, menggunakan flag `-l:` (seperti linker `ld` milik GNU). Lihat di bawah jika linker kamu mengharuskan library diberi nama `lib<sesuatu>` (seperti linker `ldd` yang umum di MacOS).
+
+Kamu bisa membangun ekstensi dengan menentukan nama lengkap library `_accelerate`:
+```bash
+gcc extension.c -fpic -shared -o cextension.so \
+  -I/path/to/dist/c/include -L$QKLIB -l:$QKNAME \
+  -I$PYINCLUDE -L$PYLIB -l$PYNAME
+```
+Lalu, cukup ketik ``python main.py`` untuk menjalankan program Python.
+
+Alternatif menggunakan nama library yang tepat dengan `-l:` adalah membuat symlink library `_accelerate` ke nama yang diinginkan.
+Untuk menyertakan shared library `_accelerate`, buat symlink ke format yang diharapkan linker yaitu `lib<nama library>.<suffix>`:
+```bash
+ln -s $QKLIB/$QKNAME $QKLIB/libqiskit.<suffix>
+```
+di mana `<suffix>` adalah misalnya `so` di Linux atau `dylib` di MacOS. Ini memungkinkan penggunaan `qiskit` sebagai nama library:
+```bash
+gcc extension.c -fpic -shared -o qiskit_cextension.so \
+  -I/path/to/dist/c/include -L$QKLIB -lqiskit \
+  -I$PYINCLUDE -L$PYLIB -l$PYNAME
+```
+Lalu, cukup ketik ``python main.py`` untuk menjalankan program Python.
+
+## Ekstensi C manual {#manual-c-extension}
+
+Selain menggunakan `ctypes`, dimungkinkan untuk membangun ekstensi Python secara manual menggunakan [C API Python](https://docs.python.org/3/c-api/intro.html) secara langsung. Ini berpotensi lebih cepat daripada menggunakan `ctypes`, meskipun membutuhkan lebih banyak upaya untuk diimplementasikan.
+Kode berikut adalah contoh singkat cara mencapai hal ini.
+
+```c
+// file: extension.c
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
+#include <stdio.h>
+#define QISKIT_C_PYTHON_INTERFACE
+#include <qiskit.h>
+
+QkObs *build_observable() {
+    // build a 100-qubit empty observable
+    u_int32_t num_qubits = 100;
+    QkObs *obs = qk_obs_zero(num_qubits);
+
+    // add the term 2 * (X0 Y1 Z2) to the observable
+    complex double coeff = 2;  // the coefficient
+    QkBitTerm bit_terms[3] = {QkBitTerm_X, QkBitTerm_Y, QkBitTerm_Z};  // bit terms: X Y Z
+    uint32_t indices[3] = {0, 1, 2};  // indices: 0 1 2
+    QkObsTerm term = {coeff, 3, bit_terms, indices, num_qubits};
+    qk_obs_add_term(obs, &term);  // append the term
+
+    return obs;
+}
+
+/// Define the Python function, which will internally build the QkObs using the
+/// C function defined above, and then convert the C object to the Python equivalent:
+/// a SparseObservable, handled as PyObject.
+static PyObject *cextension_build_observable(PyObject *self, PyObject *args) {
+    // At this point, ``args`` could be parsed for arguments. See PyArg_ParseTuple for details.
+    QkObs *obs = build_observable();  // call the C function to build the observable
+    PyObject *py_obs = qk_obs_to_python(obs);  // convert QkObs to the Python-equivalent
+    return py_obs;
+}
+
+/// Define the module methods.
+static PyMethodDef CExtMethods[] = {
+    {"build_observable", cextension_build_observable, METH_VARARGS, "Build an observable."},
+    {NULL, NULL, 0, NULL}, // sentinel
+};
+
+/// Define the module, which here is called ``cextension``.
+static struct PyModuleDef cextension = {
+    PyModuleDef_HEAD_INIT,
+    "cextension", // module name
+    NULL,         // docs
+    -1,           // keep the module state in global variables
+    CExtMethods,
+};
+
+PyMODINIT_FUNC PyInit_cextension(void) { return PyModule_Create(&cextension); }
+```
+Untuk mengkompilasi shared library, tautkan library Python dan Qiskit, seperti yang dijelaskan di bagian [Build](#build) di atas. Script Python kemudian tidak memerlukan `ctypes` tetapi bisa langsung mengimpor modul `cextension` (pastikan ada di Python path kamu):
+```python
+# file: main.py
+import qiskit
+import cextension
+
+# directly call the function
+obs = cextension.build_observable()
+print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
+print(obs)
+```
