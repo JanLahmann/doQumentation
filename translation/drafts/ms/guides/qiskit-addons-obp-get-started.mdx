@@ -1,0 +1,343 @@
+---
+title: "Mula dengan OBP"
+sidebar_label: "Mula dengan OBP"
+description: "Mula menggunakan addon Qiskit pembalikan belakang operator (OBP)"
+notebook_path: "guides/qiskit-addons-obp-get-started.ipynb"
+---
+{/* doqumentation-source-hash: a1ca3d58 */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-obp-get-started.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versi pakej</b></summary>
+
+Kod pada halaman ini dibangunkan menggunakan keperluan berikut.
+Kami mengesyorkan menggunakan versi ini atau yang lebih baharu.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-addon-utils~=0.3.0
+qiskit-addon-obp~=0.3.0
+```
+</details>
+Apabila anda menyediakan beban kerja kuantum dengan pembalikan belakang operator (OBP), pertama anda mesti membuat pilihan "hirisan Circuit", dan kedua, anda harus menentukan ambang pemotongan atau "bajet ralat" untuk mengeluarkan sebutan dengan pekali kecil dalam operator yang dibalikan ke belakang serta menetapkan had atas kepada keseluruhan saiz operator yang dibalikan ke belakang. Semasa pembalikan belakang, bilangan sebutan dalam operator Circuit $N$-Qubit akan mendekati $4^N$ dengan cepat dalam senario terburuk. Panduan ini menunjukkan langkah-langkah yang terlibat dalam menerapkan OBP kepada beban kerja kuantum.
+
+Komponen utama pakej `qiskit-addons-obp` adalah fungsi `backpropagate()`. Ia menerima argumen untuk observable akhir yang hendak direkonstruksi, set hirisan Circuit untuk dikira secara klasik, dan, secara pilihan, `TruncationErrorBudget` atau `OperatorBudget` untuk memberikan kekangan pada pemotongan yang dilakukan. Setelah ini ditentukan, operator yang dibalikan ke belakang secara klasik $O'$ dikira secara berulang dengan menerapkan Gate dari setiap hirisan, $s$, dengan cara berikut:
+
+$$ O'^{(s)} = \mathcal{U}_{S-s+1}^\dagger O'^{(s-1)} \mathcal{U}_{S-s+1} $$
+
+di mana $S$ adalah jumlah bilangan hirisan dan $\mathcal{U}_{s}$ mewakili satu hirisan Circuit. Contoh ini menggunakan pakej `qiskit-addons-utils` untuk menyediakan hirisan Circuit serta menjana Circuit contoh.
+
+Untuk bermula, pertimbangkan evolusi masa rantai Heisenberg XYZ. Hamiltonian ini mempunyai bentuk
+
+$$ \hat{H} = \sum_{(j,k)} \left( J_xX_jX_k + J_yY_jY_k + J_z Z_jZ_k \right) + \sum_{j} \left(h_xX_j + h_yY_j + h_zZ_j\right)$$
+
+dan nilai jangkaan yang hendak diukur adalah $\langle Z_0 \rangle$.
+
+Coretan kod berikut menjana Hamiltonian dalam bentuk `SparsePauliOp` menggunakan modul `qiskit_addons_utils.problem_generators` dan `CouplingMap`. Tetapkan pemalar gandingan kepada $J_x=\pi/8$, $J_y=\pi/4$, $J_z=\pi/2$ dan medan magnet luaran kepada $h_x=\pi/3$, $h_y=\pi/6$, $h_z=\pi/9$, kemudian jana Circuit yang memodelkan evolusi masanya.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+from qiskit.transpiler import CouplingMap
+from qiskit.synthesis import LieTrotter
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+from qiskit.primitives import StatevectorEstimator
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+    generate_xyz_hamiltonian,
+)
+from qiskit_addon_utils.slicing import slice_by_gate_types
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+from qiskit_addon_obp.utils.truncating import setup_budget
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_utils.slicing import combine_slices
+
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit linear chain on this coupling map
+reduced_coupling_map = coupling_map.reduce(
+    [0, 13, 1, 14, 10, 16, 5, 12, 8, 18]
+)
+
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+
+# we evolve for some time
+circuit = generate_time_evolution_circuit(
+    hamiltonian, synthesis=LieTrotter(reps=2), time=0.2
+)
+
+circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-obp-get-started/extracted-outputs/5b4fd077-2d8f-46e8-9631-40cadbe07879-0.svg)
+
+### Sediakan input untuk pembalikan belakang {#prepare-inputs-to-backpropagate}
+
+Seterusnya, jana hirisan Circuit untuk pembalikan belakang. Secara amnya, pilihan cara menghiris boleh memberi kesan kepada betapa baiknya pembalikan belakang berfungsi untuk masalah tertentu. Di sini, kumpulkan Gate jenis yang sama ke dalam hirisan menggunakan fungsi `qiskit_addons_utils.slice_by_gate_types`.
+
+```python
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+Setelah hirisan dijana, tentukan `OperatorBudget` untuk memberikan fungsi `backpropagate()` syarat untuk berhenti membalikan operator ke belakang dan mencegah overhed klasik daripada terus berkembang. Anda juga boleh menentukan bajet ralat pemotongan untuk setiap hirisan di mana sebutan Pauli dengan pekali kecil akan dipotong dari setiap hirisan sehingga bajet ralat dipenuhi. Sebarang baki bajet kemudiannya akan ditambah ke bajet hirisan berikutnya.
+
+Di sini, tentukan bahawa pembalikan belakang perlu berhenti apabila bilangan kumpulan Pauli yang bertukar secara Qubit-bijak dalam operator melebihi $8$, dan peruntukkan bajet ralat sebesar $0.005$ untuk setiap hirisan.
+
+```python
+op_budget = OperatorBudget(max_qwc_groups=8)
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+### Balikan semula hirisan ke belakang {#backpropagate-slices}
+
+Dalam langkah ini anda akan menentukan observable akhir yang hendak diukur dan menjalankan pembalikan belakang merentasi setiap hirisan. Fungsi `backpropagate()` mengembalikan tiga output: observable yang dibalikan ke belakang, hirisan Circuit yang tinggal yang tidak dibalikan ke belakang (dan yang perlu dijalankan pada perkakasan kuantum), serta metadata tentang pembalikan belakang.
+
+Perhatikan bahawa kedua-dua `OperatorBudget` dan `TruncationErrorBudget` adalah parameter pilihan untuk kaedah `backpropagate()`. Secara amnya, pilihan terbaik untuk kedua-duanya harus dipilih secara heuristik dan memerlukan sejumlah percubaan. Dalam contoh ini kita akan membalikan ke belakang dengan dan tanpa `TruncationErrorBudget`.
+
+<Admonition title="Nota" type="note">
+  Secara lalai, `backpropagate()` menggunakan norma $L_1$ pekali yang dipotong untuk membatasi jumlah ralat yang ditanggung daripada pemotongan, tetapi $L_p$ lain boleh digunakan jika anda ingin mengubah cara ralat pemotongan dikira.
+</Admonition>
+
+```python
+# Specify a single-qubit observable
+observable = SparsePauliOp("IIIIIIIIIZ")
+
+# Backpropagate without the truncation error budget
+backpropagated_observable, remaining_slices, metadata = backpropagate(
+    observable,
+    slices,
+    operator_budget=op_budget,
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(backpropagated_observable.paulis)} terms, which can be combined into "
+    f"{len(backpropagated_observable.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 18 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 0.000e+00
+Note that backpropagating one more slice would result in 27 terms across 12 groups.
+```
+
+```python
+print(
+    "The remaining circuit after backpropagation without truncation looks as follows:"
+)
+bp_circuit.draw("mpl", scale=0.6)
+```
+
+```text
+The remaining circuit after backpropagation without truncation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-obp-get-started/extracted-outputs/243681df-1234-4b83-9139-16b2b8c88308-1.svg)
+
+Coretan kod di bawah membalikan Circuit ke belakang *dengan* bajet ralat pemotongan.
+
+```python
+# Backpropagate *with* the truncation error budget
+backpropagated_observable_trunc, remaining_slices_trunc, metadata_trunc = (
+    backpropagate(
+        observable,
+        slices,
+        operator_budget=op_budget,
+        truncation_error_budget=truncation_error_budget,
+    )
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(
+    remaining_slices_trunc, include_barriers=True
+)
+
+print(f"Backpropagated {metadata_trunc.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(backpropagated_observable_trunc.paulis)} terms, which can be combined into "
+    f"{len(backpropagated_observable_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata_trunc.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata_trunc.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata_trunc.backpropagation_history[-1].num_qwc_groups} groups."
+)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 19 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 4.933e-02
+Note that backpropagating one more slice would result in 27 terms across 13 groups.
+```
+
+```python
+print(
+    "The remaining circuit after backpropagation with truncation looks as follows:"
+)
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+The remaining circuit after backpropagation with truncation looks as follows:
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-obp-get-started/extracted-outputs/ab852775-229d-4652-9456-56c4dc8e628c-1.svg)
+
+### Transpil dan laksanakan beban kerja kuantum {#transpile-and-execute-quantum-workload}
+
+Setelah anda membalikan operator ke belakang, anda boleh melaksanakan bahagian Circuit yang tinggal pada QPU. Beban kerja kuantum, menggunakan Estimator, harus merangkumi Circuit `bp_circuit_trunc` dan mesti mengukur operator yang dibalikan ke belakang `backpropagated_observable`
+
+Untuk menunjukkan keberkesanan OBP dengan sendirinya, coretan kod berikut mentranspil kedua-dua Circuit asal dan yang dibalikan ke belakang (dengan dan tanpa pemotongan) dan mensimulasikan Circuit secara klasik menggunakan `StatevectorEstimator`.
+
+```python
+# Specify a backend and a pass manager for transpilation
+backend = FakeMelbourneV2()
+# pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment without truncation
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = backpropagated_observable.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = backpropagated_observable_trunc.apply_layout(
+    bp_circuit_trunc_isa.layout
+)
+
+estimator = StatevectorEstimator()
+
+# Run the experiments using the exact statevector estimator
+result_exact = (
+    estimator.run([(circuit, observable)]).result()[0].data.evs.item()
+)
+
+result_bp = (
+    estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+)
+result_bp_trunc = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)])
+    .result()[0]
+    .data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value without truncation: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+print(
+    f"    - Expected Error for truncated observable: {metadata_trunc.accumulated_error(0):.3e}"
+)
+print(
+    f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc):.3e}"
+)
+```
+
+```text
+Exact expectation value: 0.8854160687717517
+Backpropagated expectation value without truncation: 0.8854160687717533
+Backpropagated expectation value with truncation: 0.8850236647156081
+    - Expected Error for truncated observable: 4.933e-02
+    - Observed Error for truncated observable: 3.924e-04
+```
+
+Akhir sekali coretan kod berikut akan mentranspil dan melaksanakan Circuit yang dibalikan ke belakang pada QPU (dengan dan tanpa pemotongan).
+
+```python
+# Specify a backend and a pass manager for transpilation
+service = QiskitRuntimeService()
+backend = service.least_busy()
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+
+# Transpile backpropagated experiment without truncation
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = backpropagated_observable.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = backpropagated_observable_trunc.apply_layout(
+    bp_circuit_trunc_isa.layout
+)
+
+# Run the experiments using Estimator primitive
+estimator = EstimatorV2(mode=backend)
+
+result_bp_qpu = (
+    estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+)
+
+result_bp_trunc_qpu = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)])
+    .result()[0]
+    .data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value without truncation: {result_bp_qpu}")
+print(
+    f"Backpropagated expectation value with truncation: {result_bp_trunc_qpu}"
+)
+print(
+    f"    - Observed Error for observable without truncation: {abs(result_exact - result_bp_qpu):.3e}"
+)
+print(
+    f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc_qpu):.3e}"
+)
+```
+
+```text
+Exact expectation value: 0.8854160687717517
+Backpropagated expectation value without truncation: 0.8790435084647706
+Backpropagated expectation value with truncation: 0.8759838342768448
+    - Observed Error for observable without truncation: 6.373e-03
+    - Observed Error for truncated observable: 9.432e-03
+```
+
+## Langkah seterusnya {#next-steps}
+
+<Admonition type="tip" title="Cadangan">
+- Cuba tutorial tentang menggunakan [OBP untuk meningkatkan nilai jangkaan.](/tutorials/operator-back-propagation)
+</Admonition>
