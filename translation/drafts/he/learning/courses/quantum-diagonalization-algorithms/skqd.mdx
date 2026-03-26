@@ -1,0 +1,307 @@
+---
+title: "אלכסון קוונטי של קריילוב מבוסס-דגימה"
+sidebar_label: "אלכסון קוונטי של קריילוב מבוסס-דגימה"
+description: "הנושאים מהשיעורים הקודמים משולבים כדי לנצל את ערבויות ההתכנסות של QKD ואת המהירות של SQD ב-SKQD."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/skqd.ipynb"
+---
+
+{/* doqumentation-source-hash: ef263b4f */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/skqd.ipynb" />
+
+
+
+{/* cspell:ignore arxiv Neel probs eigenvals Hatano */}
+
+# אלכסון קוונטי של קריילוב מבוסס-דגימה (SKQD) {#sample-based-krylov-quantum-diagonalization-skqd}
+שיעור זה על אלכסון קוונטי של קריילוב מבוסס-דגימה (SKQD) משלב שיטות שהוסברו בשיעורים קודמים. הוא מורכב מדוגמה אחת המשתמשת במסגרת התבניות של Qiskit:
+
+    - שלב 1: מיפוי הבעיה ל-Circuit קוונטיים ואופרטורים
+    - שלב 2: אופטימיזציה עבור חומרה יעד
+    - שלב 3: הרצה באמצעות Qiskit Primitives
+    - שלב 4: עיבוד לאחר מדידה
+
+צעד חשוב בשיטת האלכסון הקוונטי מבוסס-הדגימה הוא יצירת וקטורים איכותיים לתת-המרחב. בשיעור הקודם השתמשנו ב-ansatz מסוג LUCJ כדי לייצר וקטורי תת-מרחב להמילטוניאן כימי. בשיעור זה נשתמש במצבי קריילוב קוונטיים[\[1\]](#references) כפי שנדון בשיעור 2. תחילה נסקור כיצד ליצור את מרחב קריילוב במחשב קוונטי באמצעות פעולות אבולוציה בזמן. לאחר מכן נדגום ממנו. נטיל את ההמילטוניאן של המערכת על תת-המרחב הנדגם ונאלכסן אותו כדי להעריך את אנרגיית מצב היסוד. האלגוריתם מתכנס בהוכחה ובאופן יעיל למצב היסוד, בהנחות המתוארות בשיעור 2.
+
+## 0. מרחב קריילוב {#0-the-krylov-space}
+
+נזכור שמרחב קריילוב $\mathcal{K}^r$ מסדר $r$ הוא המרחב הנפרש על-ידי וקטורים המתקבלים מהכפלת חזקות גבוהות יותר של מטריצה $A$, עד $r-1$, בוקטור ייחוס $\vert v \rangle$.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+אם המטריצה $A$ היא ההמילטוניאן $H$, המרחב המתאים נקרא _מרחב קריילוב של חזקות_ $\mathcal{K}_P$. במקרה שבו $A$ הוא אופרטור האבולוציה בזמן הנוצר על-ידי ההמילטוניאן $U=e^{-iH(dt)}$, המרחב מכונה מרחב קריילוב האוניטרי $\mathcal{K}_U$. תת-מרחב קריילוב של חזקות אינו יכול להיווצר ישירות במחשב קוונטי, מאחר ש-$H$ אינו אופרטור אוניטרי. במקום זאת, נוכל להשתמש באופרטור האבולוציה בזמן $U = e^{-iH(dt)}$ שניתן להראות כי הוא מספק [ערבויות התכנסות](https://arxiv.org/abs/2110.07492) דומות למרחב קריילוב של חזקות. חזקות של $U$ הופכות אז לצעדי זמן שונים $U^k = e^{-iH(k dt)}$ כאשר $k = 0, 1, 2, ..., (r-1)$.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+## 1. מיפוי הבעיה ל-Circuit קוונטיים ואופרטורים {#1-map-problem-to-quantum-circuits-and-operators}
+בשיעור זה אנו בוחנים את ההמילטוניאן לשרשרת ספין-$1/2$ של XX-Z אנטיפרומגנטית עם $L = 22$ אתרים ותנאי שפה מחזוריים:
+$$
+    H = \sum_{i, j}^{N} J_{xy} (X_{i} X_{j} + Y_{i} Y_{j}) + Z_{i} Z_{j}
+$$
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-sqd qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+num_spins = 22
+coupling_map = CouplingMap.from_ring(num_spins)
+H_op = generate_xyz_hamiltonian(coupling_map, coupling_constants=(0.3, 0.3, 1.0))
+```
+
+כדי לבנות את מרחב קריילוב, נדרשים שלושה מרכיבים עיקריים:
+
+1. בחירת מימד קריילוב ($r$) וצעד זמן ($dt$).
+2. מצב ראשוני (ייחוס) (הוקטור $\vert v \rangle$ לעיל) עם חפיפה פולינומית עם מצב היעד (מצב היסוד), כאשר מצב היעד הוא דליל. דרישת החפיפה הפולינומית זהה לזו שבאלגוריתם אמדן הפאזה הקוונטית.
+3. אופרטורי אבולוציה בזמן $U^{k}=e^{-iH(k * dt)}$ ($k = 0, 1, 2, ..., r-1$).
+
+עבור ערך נבחר של $r$ (וכן $dt$), ניצור $r$ Circuit קוונטיים נפרדים ונדגום מהם. כל Circuit קוונטי נוצר על-ידי שרשור ה-Circuit הקוונטי המייצג את מצב הייחוס ואת אופרטור האבולוציה בזמן עבור ערך $k$ כלשהו.
+
+מימד קריילוב גדול יותר משפר את ההתכנסות של האנרגיה המוערכת. אנו קובעים את המימד ל-$5$ בשיעור זה כדי להמחיש את מגמת ההתכנסות.
+
+הפניה [\[2\]](#references) הראתה שצעד זמן קטן מספיק עבור KQD הוא $\pi / \vert \vert H \vert \vert$, ושעדיף להמעיט בהערכת ערך זה מאשר להגזים בו. מצד שני, בחירת $dt$ קטן מדי מובילה לקונדיציה גרועה יותר של תת-מרחב קריילוב, שכן וקטורי הבסיס של קריילוב שונים פחות מצעד זמן לצעד זמן. בנוסף, בעוד שבחירה זו של $dt$ מוכחת כמספקת להתכנסות של SKQD, בהקשר של דגימה זה, הבחירה האופטימלית של $dt$ בפועל היא נושא לחקר מתמשך. בשיעור זה אנו קובעים $dt = 0.15$.
+
+מעבר למימד קריילוב ולצעד הזמן, עלינו לקבוע את מספר צעדי Trotter לאבולוציה בזמן. שימוש בצעדים מעטים מדי מוביל לשגיאות Trotterization גדולות יותר, בעוד שצעדים רבים מדי מובילים ל-Circuit עמוקים יותר. בשיעור זה אנו קובעים את מספר צעדי Trotter ל-$6$.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of krylov subspace
+dt = 0.15
+num_trotter_steps = 6
+```
+
+לאחר מכן, עלינו לבחור מצב ייחוס $\vert \psi \rangle$ שיש לו חפיפה כלשהי עם מצב היסוד. עבור ההמילטוניאן הזה, אנו משתמשים במצב _Neel_ עם "1"ים ו-"0"ים לסירוגין $\vert ...101...010...101 \rangle$ כמצב הייחוס שלנו.
+
+```python
+# Prep `Neel` state as the reference state for evolution
+from qiskit import QuantumCircuit
+
+qc_state_prep = QuantumCircuit(num_spins)
+for i in range(num_spins):
+    if i % 2 == 0:
+        qc_state_prep.x(i)
+```
+
+לבסוף, עלינו למפות את אופרטור האבולוציה בזמן ל-Circuit קוונטי. זה נעשה בשיעור 2, אך כאן נמנף שיטות ב-Qiskit, ספציפית שיטה בשם _synthesis_. קיימות שיטות שונות לסינתזה של אופרטורים מתמטיים ל-Circuit קוונטיים עם Gate קוונטיים. טכניקות רבות כאלה זמינות ב[מודול הסינתזה של Qiskit](https://docs.quantum.ibm.com/api/qiskit/synthesis). נשתמש בגישת [`LieTrotter`](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter) לסינתזה [\[3\]](#references) [\[4\]](#references).
+
+```python
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+
+evol_gate = PauliEvolutionGate(
+    H_op, time=(dt / num_trotter_steps), synthesis=LieTrotter(reps=num_trotter_steps)
+)  # `U` operator
+
+qr = QuantumRegister(num_spins)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+
+circuits = []
+for rep in range(krylov_dim):
+    circ = qc_state_prep.copy()
+
+    # Repeating the `U` operator to implement U^0, U^1, U^2, and so on, for power Krylov space
+    for _ in range(rep):
+        circ.compose(other=qc_evol, inplace=True)
+
+    circ.measure_all()
+    circuits.append(circ)
+```
+
+```python
+circuits[1].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/7ffc3eaa-9563-4c89-9d7b-808a3a37b275-0.avif)
+
+```python
+circuits[2].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/bdbc0881-06b0-49f2-8919-a376aa7f08e3-0.avif)
+
+## 2. אופטימיזציה עבור חומרה יעד {#2-optimize-for-target-hardware}
+עכשיו שיצרנו את ה-Circuit, נוכל לבצע עליהם אופטימיזציה עבור חומרה יעד. אנו בוחרים QPU בקנה מידה של שירות.
+
+```python
+import warnings
+
+from qiskit import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+warnings.filterwarnings("ignore")
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+כעת, אנו מבצעים transpilation של ה-Circuit ל-Backend היעד באמצעות מנהל מעברים מוגדר מראש.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuits = pm.run(circuits=circuits)
+```
+
+## 3. הרצה על חומרה יעד {#3-execute-on-target-hardware}
+לאחר אופטימיזציית ה-Circuit להרצה על חומרה, אנו מוכנים להריצם על החומרה היעד ולאסוף דגימות לאמדן אנרגיית מצב היסוד.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+job = sampler.run(isa_circuits, shots=100_000)  # Takes approximately 2m 58s of QPU time
+```
+
+```python
+counts_all = [job.result()[k].data.meas.get_counts() for k in range(krylov_dim)]
+```
+
+## 4. עיבוד תוצאות לאחר מדידה {#4-post-process-results}
+לאחר מכן, אנו מצרפים את הספירות עבור מימדי קריילוב הולכים וגדלים בצורה מצטברת. באמצעות הספירות המצטברות, נפרוש תת-מרחבים עבור מימד קריילוב הולך וגדל וננתח את התנהגות ההתכנסות.
+
+```python
+from collections import Counter
+
+counts_cumulative = []
+for i in range(krylov_dim):
+    counter = Counter()
+    for d in counts_all[: i + 1]:
+        counter.update(d)
+
+    counts = dict(counter)
+    counts_cumulative.append(counts)
+```
+
+כדי להטיל ולאלכסן את ההמילטוניאן, אנו משתמשים ביכולות מ-[`qiskit-addon-sqd`](https://qiskit.github.io/qiskit-addon-sqd/). ה-addon מציע פונקציונליות להטלת המילטוניאנים מבוססי מחרוזות פאולי על תת-מרחב ופותר ערכי עצמיים באמצעות `SciPy`.
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.qubit import solve_qubit
+```
+
+באופן עקרוני, נוכל לסנן מחרוזות סיביות עם תבנית שגויה לפני פריסת תת-המרחב. לדוגמה, מצב היסוד של ההמילטוניאן האנטיפרומגנטי בשיעור זה בדרך כלל מכיל מספר שווה של ספינים "מעלה" ו"מטה", כלומר, מספר ה-"1"ים במחרוזת הסיביות צריך להיות בדיוק מחצית מסך כל הסיביות (הספינים) במערכת. הפונקציה הבאה מסננת מחרוזות סיביות עם מספר שגוי של "1"ים מהספירות.
+
+```python
+# Filters out bitstrings that do not have specified number (`num_ones`) of `1` bits.
+def postselect_counts(counts, num_ones):
+    filtered_counts = {}
+    for bitstring, freq in counts.items():
+        if bitstring.count("1") == num_ones:
+            filtered_counts[bitstring] = freq
+
+    return filtered_counts
+```
+
+באמצעות מחרוזות סיביות עם המספר הנכון של אלקטרונים מעלה/מטה, אנו פורסים תת-מרחבים ומחשבים ערכי עצמיים עבור מימד קריילוב הולך וגדל. בהתאם לגודל הבעיה ולמשאבים הקלאסיים הזמינים, ייתכן שנצטרך לאמץ דגימת משנה (דומה ל[שיעור על SQD](/learning/courses/quantum-diagonalization-algorithms/sqd-implementation)) כדי לשמור על מימד תת-המרחב בגבולות. יתרה מזאת, נוכל להחיל את מושג שחזור הקונפיגורציה בדומה לשיעור 4. נוכל לחשב את אוכלוסיות האלקטרונים לאתר ממצבי עצמיים שנבנו מחדש ולהשתמש במידע כדי לתקן מחרוזות סיביות עם מספר שגוי של אלקטרונים מעלה/מטה. אנו משאירים זאת כתרגיל לקוראים המתעניינים.
+
+```python
+import numpy as np
+
+num_batches = 10
+rand_seed = 0
+scipy_kwargs = {"k": 2, "which": "SA"}
+
+ground_state_energies = []
+for idx, counts in enumerate(counts_cumulative):
+    counts = postselect_counts(counts, num_ones=num_spins // 2)
+    bitstring_matrix, probs = counts_to_arrays(counts=counts)
+
+    eigenvals, eigenstates = solve_qubit(
+        bitstring_matrix, H_op, verbose=False, **scipy_kwargs
+    )
+    gs_en = np.min(eigenvals)
+    ground_state_energies.append(gs_en)
+```
+
+לאחר מכן, אנו מציגים את האנרגיה המחושבת כפונקציה של מימד קריילוב ומשווים עם האנרגיה המדויקת. האנרגיה המדויקת מחושבת בנפרד באמצעות שיטת כוח גס קלאסית. ניתן לראות שאנרגיית מצב היסוד המוערכת מתכנסת עם גידול מימד מרחב קריילוב. למרות שמימד קריילוב של $5$ הוא מגביל, התוצאות עדיין מראות התכנסות מרשימה, אשר צפויה להשתפר עם מימד קריילוב גדול יותר [\[1\]](#references).
+
+```python
+import matplotlib.pyplot as plt
+
+exact_gs_en = -23.934184
+plt.plot(
+    range(1, krylov_dim + 1),
+    ground_state_energies,
+    color="blue",
+    linestyle="-.",
+    label="estimate",
+)
+plt.plot(
+    range(1, krylov_dim + 1),
+    [exact_gs_en] * krylov_dim,
+    color="red",
+    linestyle="-",
+    label="exact",
+)
+plt.xticks(range(1, krylov_dim + 1), range(1, krylov_dim + 1))
+plt.legend()
+plt.xlabel("Krylov space dimension")
+plt.ylabel("Energy")
+plt.ylim([-24, -22.50])
+plt.title(
+    "Estimating Ground state energy with Sample-based Krylov Quantum Diagonalization"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/debca96a-e0e3-4342-a755-8204dba50d74-0.avif)
+
+### בדוק את הבנתך {#check-your-understanding}
+קרא את השאלות למטה, חשוב על תשובותיך, ולאחר מכן לחץ על המשולשים כדי לגלות את הפתרונות.
+
+<details>
+<summary>
+
+מה ניתן לעשות כדי לשפר את ההתכנסות בגרף שלמעלה?
+
+</summary>
+
+__תשובה:__
+
+הגדל את מימד קריילוב. באופן כללי, ניתן גם להגדיל את מספר המדידות (shots), אך זה כבר גבוה למדי בחישוב שלמעלה.
+
+</details>
+
+<details>
+<summary>
+
+מהם היתרונות העיקריים של SKQD על פני (א) SQD, ו-(ב) KQD?
+
+</summary>
+
+__תשובה:__
+
+ייתכן שיש תשובות תקפות נוספות, אך תשובות מלאות צריכות לכלול את הדברים הבאים:
+
+   (א) SKQD מגיע עם ערבויות התכנסות שאין ל-SQD. ב-SQD אתה צריך או לנחש ניחוש טוב מאוד עבור ה-ansatz שלך שיש לו חפיפה מצוינת עם תמיכת מצב היסוד בבסיס החישובי, או שאתה צריך להכניס מרכיב וריאציוני לחישוב כדי לדגום משפחה של ansaetze.
+
+   (ב) SKQD דורש הרבה פחות זמן QPU, מפני שהוא נמנע מהחישוב היקר של איברי מטריצה דרך בדיקת Hadamard.
+
+</details>
+
+## 5. סיכום {#5-summary}
+
+- אמדן אנרגיית מצב היסוד דרך דגימת מצבי בסיס קריילוב מתאים מאוד למודלים של סריג כולל מערכות ספין, בעיות של חומר מעובה ותיאוריות מידה על סריג. גישה זו מתרחבת הרבה יותר טוב מ-VQE, מפני שהיא אינה דורשת אופטימיזציה על פני פרמטרים רבים ב-ansatz וריאציוני כמו ב-VQE, או ב-SQD מבוסס-ansatz היוריסטי (לדוגמה, הבעיה הכימית בשיעור הקודם).
+    - כדי לשמור על עומקי Circuit נמוכים, חכם לעסוק בבעיות סריג המתאימות לחומרה לפני סובלנות לתקלות.
+- SKQD אינה סובלת מבעיית מדידה קוונטית כמו ב-VQE. אין קבוצות של אופרטורי פאולי מתחלפים שיש להעריך.
+- SKQD חסינה לדגימות רועשות שכן ניתן להשתמש בשגרת בחירה לאחר מדידה ספציפית לבעיה (לדוגמה, לסנן מחרוזות סיביות שאינן עומדות בתבניות ספציפיות לבעיה) או לשאת בעלות אלכסון קלאסי (כלומר, לאלכסן בתת-מרחב גדול יותר) כדי להסיר ביעילות את השפעת הרעש.
+
+## מקורות {#references}
+
+\[1] Jeffery Yu et al., "Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization" (2025). [arxiv:quant-ph/2501.09702](https://arxiv.org/abs/2501.09702).
+
+\[2] Ethan N. Epperly, Lin Lin, and Yuji Nakatsukasa. "A theory of quantum subspace diagonalization". SIAM Journal on Matrix Analysis and Applications 43, 1263–1290 (2022).
+
+\[2] N. Hatano and M. Suzuki, "Finding Exponential Product Formulas of Higher Orders" (2005). [arXiv:math-ph/0506007](https://arxiv.org/abs/math-ph/0506007).
+
+\[4] D. Berry, G. Ahokas, R. Cleve and B. Sanders, "Efficient quantum algorithms for simulating sparse Hamiltonians" (2006). [arXiv:quant-ph/0508139](https://arxiv.org/abs/quant-ph/0508139).

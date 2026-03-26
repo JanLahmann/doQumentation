@@ -1,0 +1,579 @@
+---
+title: "מימוש SQD"
+sidebar_label: "מימוש SQD"
+description: "אלכסון קוונטי מבוסס-דגימה (SQD) מיושם בהקשר של פתרון מצב הבסיס של מולקולת חנקן."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb"
+---
+{/* doqumentation-source-hash: 0c4d6eec */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize milli hcore ccsd Motta */}
+
+# SQD לאמידת אנרגיה של המילטוניאן כימי {#sqd-for-energy-estimation-of-a-chemistry-hamiltonian}
+בשיעור זה נשתמש ב-SQD כדי לאמוד את אנרגיית מצב הבסיס של מולקולה.
+
+בפרט, נדון בנושאים הבאים תוך שימוש בגישת ה-4 שלבים של Qiskit:
+
+1. שלב 1: מיפוי הבעיה ל-Circuit קוונטיים ואופרטורים
+    - הגדרת ההמילטוניאן המולקולרי עבור $N_2$.
+    - הסבר על ה-ansatz המקומי של אשכול יוניטרי Jastrow (LUCJ) בהשראת כימיה ותואם חומרה [\[1\]](#references)
+2. שלב 2: אופטימיזציה לחומרת היעד
+    - אופטימיזציה של ספירת ה-Gate ופריסת ה-ansatz להרצה על חומרה
+3. שלב 3: הרצה על חומרת היעד
+    - הרצת ה-Circuit המאופטמז על QPU אמיתי ליצירת דגימות של תת-המרחב.
+4. שלב 4: עיבוד תוצאות לאחר ביצוע
+    - הצגת לולאת שחזור התצורה העצמית-עקבית [\[2\]](#references)
+        - עיבוד לאחר ביצוע של כלל מחרוזות הביט, תוך שימוש בידע מוקדם על מספר החלקיקים ותפוסת האורביטל הממוצעת המחושבת בסבב האחרון.
+        - יצירה הסתברותית של אצוות תת-דגימות ממחרוזות הביט ששוחזרו.
+        - הטלה ואלכסון של ההמילטוניאן המולקולרי על כל תת-מרחב דגוּם.
+        - שמירת אנרגיית מצב הבסיס המינימלית שנמצאה בכל האצוות ועדכון תפוסת האורביטל הממוצעת.
+
+נשתמש במספר חבילות תוכנה לאורך השיעור.
+- `PySCF` להגדרת המולקולה והכנת ההמילטוניאן.
+- חבילת `ffsim` לבניית ה-ansatz של LUCJ.
+- `Qiskit` לטרנספילציה של ה-ansatz להרצה על חומרה.
+- `Qiskit IBM Runtime` להרצת ה-Circuit על QPU ואיסוף דגימות.
+- `Qiskit addon SQD` לשחזור תצורה ואמידת אנרגיית מצב הבסיס באמצעות הטלת תת-מרחב ואלכסון מטריצות.
+## 1. מיפוי הבעיה ל-Circuit קוונטיים ואופרטורים {#1-map-problem-to-quantum-circuits-and-operators}
+### המילטוניאן מולקולרי {#molecular-hamiltonian}
+המילטוניאן מולקולרי לוקח את הצורה הכללית:
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \,
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+$\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$ הם אופרטורי היצירה/השמדה הפרמיוניים המשויכים לאלמנט ה-$p$ של קבוצת הבסיס ולספין $\sigma$. $h_{pr}$ ו-$(pr|qs)$ הם האינטגרלים האלקטרוניים חד-גופניים ודו-גופניים. באמצעות pySCF נגדיר את המולקולה ונחשב את האינטגרלים חד-הגוף ודו-הגוף של ההמילטוניאן עבור קבוצת הבסיס `6-31g`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+warnings.filterwarnings("ignore")
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],  # Two N atoms 1 angstrom apart
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)  # hcore: one-body integrals
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)  # eri: two-body integrals
+
+# Compute exact energy for comparison
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570774
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+בשיעור זה נשתמש בטרנספורמציית Jordan-Wigner‏ (JW) כדי למפות פונקציית גל פרמיונית לפונקציית גל קוונטית, כך שניתן יהיה להכין אותה באמצעות Circuit קוונטי. טרנספורמציית JW ממפה את מרחב פוק של פרמיונים ב-M אורביטלים מרחביים אל מרחב הילברט של 2M Qubitים, כלומר, אורביטל מרחבי מפוצל לשני _אורביטלי ספין_, אחד המשויך לאלקטרון עם ספין למעלה ($\alpha$) ואחר עם ספין למטה ($\beta$). אורביטל ספין יכול להיות תפוס או פנוי. בדרך כלל, כשאנחנו מדברים על מספר אורביטלים, הכוונה היא למספר האורביטלים _המרחביים_. מספר אורביטלי הספין יהיה כפול. ב-Circuit קוונטיים, נייצג כל אורביטל ספין באמצעות Qubit אחד. כך, קבוצה אחת של Qubitים תייצג אורביטלי ספין-למעלה או $\alpha$, וקבוצה אחרת תייצג אורביטלי ספין-למטה או $\beta$. למשל, מולקולת $N_2$ עבור קבוצת בסיס `6-31g` מכילה $16$ אורביטלים מרחביים (כלומר, $16$ $\alpha$ + $16$ $\beta$ = $32$ אורביטלי ספין). לפיכך, נזדקק ל-Circuit קוונטי של $32$ Qubitים (ייתכן שנזדקק ל-Qubitי עזר נוספים כפי שיידון בהמשך). ה-Qubitים נמדדים בבסיס חישובי כדי לייצר מחרוזות ביט, המייצגות תצורות אלקטרוניות או דטרמיננטים (של סלייטר). לאורך שיעור זה נשתמש במונחים מחרוזות ביט, תצורות ודטרמיננטים לסירוגין. מחרוזות הביט מספרות לנו על תפוסת האלקטרונים באורביטלי הספין: $1$ במיקום ביט מסוים פירושו שאורביטל הספין המתאים תפוס, ו-$0$ פירושו שהוא פנוי. מכיוון שבעיות מבנה אלקטרוני שומרות על מספר חלקיקים, מספר קבוע של אורביטלי ספין חייב להיות תפוס. למולקולת $N_2$ יש $5$ אלקטרונים עם ספין-למעלה ($\alpha$) ו-$5$ אלקטרונים עם ספין-למטה ($\beta$). לפיכך, כל מחרוזת ביט המייצגת את האורביטלים $\alpha$ ו-$\beta$ חייבת להכיל חמישה $1$ים לכל מולקולת $N_2$.
+### 1.1 Circuit קוונטי לייצור דגימות: ה-ansatz של LUCJ {#11-quantum-circuit-for-sample-generation-the-lucj-ansatz}
+בשיעור זה נשתמש ב-ansatz של אשכול יוניטרי מקומי Jastrow (LUCJ) [\\[1\\]](#references) להכנת מצב קוונטי ודגימה עוקבת. ראשית, נסביר את אבני הבניין השונות של ה-ansatz המלא של UCJ ואת ההפשטות שנעשו בגרסה המקומית שלו. לאחר מכן, באמצעות חבילת ffsim, נבנה את ה-ansatz של LUCJ ונמטב אותו באמצעות Transpiler של Qiskit להרצה על חומרה.
+
+ל-ansatz של UCJ יש את הצורה הבאה (עבור מכפלה של $L$ שכבות או חזרות של אופרטור UCJ):
+
+$$
+|\psi\rangle = \prod_{\mu=1}^{L}{(e^{K^{\mu}} \times {e^{iJ^{\mu}}} \times {e^{-K^{\mu}}})} |\Phi_{0}\rangle
+$$
+
+כאשר, $\vert \Phi_{0} \rangle$ הוא מצב ייחוס, שנלקח בדרך כלל כמצב Hartree-Fock‏ (HF). מכיוון שמצב Hartree-Fock מוגדר ככזה שבו האורביטלים בעלי המספר הנמוך ביותר תפוסים, הכנת מצב HF תכלול החלת Gate ‏X על Qubitים המתאימים לאורביטלים תפוסים. למשל, בלוק הכנת מצב HF עבור 4 אורביטלים מרחביים עם 2 אלקטרוני ספין-למעלה ו-2 ספין-למטה עשוי להיראות כך:
+![A circuit diagram showing 8 qubits, 4 called alpha orbitals and 4 called beta orbitals. The top two alpha and the top two beta have a "not" gate.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig1.avif)
+חזרה בודדת של אופרטור UCJ ${(e^{K^{(\mu)}} \times {e^{iJ^{(\mu)}}} \times {e^{-K^{(\mu)}}})}$ מורכבת מאבולוציית קולון אלכסונית ($e^{iJ^{(\mu)}}$) מוקפת בסיבובי אורביטלים ($e^{K^{(\mu)}}$ ו-$e^{-K^{(\mu)}}$).
+![A circuit diagram showing that the UCJ circuit can be broken down into rotation layers and a diagonal Coulomb evolution layer.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig2.avif)
+בלוקי סיבוב האורביטלים פועלים על מין ספין יחיד ($\alpha$ (ספין-למעלה)/$\beta$ (ספין-למטה)). עבור כל מין אלקטרוני, סיבוב האורביטל מורכב משכבת Gate ‏$R_{z}$ חד-Qubit אחת, ולאחריה סדרה של Gate סיבוב גיבנס דו-Qubit ($XX + YY$ gates).
+
+ה-Gate דו-ה-Qubit פועלים על אורביטלי ספין סמוכים (Qubitים שכנים ביניהם), ולכן ניתן לממשם על QPU של IBM&reg; ללא צורך ב-Gate SWAP.
+![A circuit diagram showing 4 alpha orbital qubits and 4 beta orbital qubits. The circuits start with R-Z gates, and then have a series of Given's rotation gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig3.avif)
+ה-$e^{iJ^{(\mu)}}$, המכונה גם אופרטור קולון אלכסוני, מורכב משלושה בלוקים. שניים מהם פועלים על סקטורי ספין זהים ($e^{iJ_{\alpha \alpha}^{(\mu)}}$ ו-$e^{iJ_{\beta \beta}^{(\mu)}}$), ואחד פועל בין שני סקטורי הספין ($e^{iJ_{\alpha \beta}^{(\mu)}}$).
+
+כל הבלוקים ב-$e^{iJ^{(\mu)}}$ מורכבים מ-Gate מספר-מספר $U_{nn}(\phi)$ [\[1\]](#references). ניתן לפרק Gate ‏$U_{nn}(\phi)$ לתוך Gate ‏$R_{ZZ}(\frac{\phi}{2})$ ואחריו שני Gate ‏$Rz(-\frac{\phi}{2})$ חד-Qubit הפועלים על שני Qubitים נפרדים.
+
+לרכיבי ספין זהה ($J_{\alpha \alpha}$ ו-$J_{\beta \beta}$) יש Gate ‏$U_{nn}$ בין כל הזוגות האפשריים של Qubitים. אולם, מכיוון של-QPU מוליכי-על יש קישוריות מגבילה, יש להחליף Qubitים כדי לממש Gate בין Qubitים לא-סמוכים.
+
+למשל, נחשוב על הבלוק הבא $e^{iJ_{\alpha \alpha}^{(\mu)}}$ (או $e^{iJ_{\beta \beta}^{(\mu)}}$) עבור $N = 4$ אורביטלים מרחביים. עבור קישוריות Qubit לינארית, שלושת ה-Gate האחרונים אינם מיושמים ישירות כיוון שהם פועלים בין Qubitים לא-סמוכים (למשל, Q0 ו-Q2 אינם מחוברים ישירות). לפיכך, נזדקק ל-Gate SWAP כדי להפוך אותם לסמוכים (האיור הבא מציג דוגמה עם $3$ Gate SWAP).
+![A circuit diagram showing linearly-coupled qubits and corresponding alpha/beta circuits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig4.avif)
+לאחר מכן, ה-$J_{\alpha \beta}$ מממש Gate בין אורביטלים בעלי אינדקס זהה מסקטורי ספין שונים (למשל, בין $0\alpha$ ו-$0\beta$). באופן דומה, אם ה-Qubitים אינם פיזית סמוכים על QPU, גם Gate אלו ידרשו SWAP.
+![A circuit diagram showing 4 alpha qubits connected to the 4 beta qubits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig5.avif)
+מהדיון לעיל, ה-ansatz של UCJ מתמודד עם כמה מכשולים להרצה על חומרה כיוון שהוא דורש Gate SWAP בשל אינטראקציות בין Qubitים לא-סמוכים. הגרסה המקומית של ה-ansatz של UCJ, LUCJ, מתמודדת עם אתגר זה על ידי הסרת חלק מ-$U_{nn}$ מאופרטור קולון האלכסוני.
+
+בבלוקים של אלקטרונים מאותו מין, $J_{\alpha \alpha}$ ו-$J_{\beta \beta}$), אנחנו שומרים רק את Gate ‏$U_{nn}$ התואמים לקישוריות שכנים קרובים ומסירים Gate בין Qubitים לא-סמוכים בגרסת LUCJ. האיור הבא מציג את בלוק LUCJ לאחר הסרת ה-Gate הלא-סמוכים.
+![A circuit diagram showing 4 alpha qubits and 4 beta qubits each with R-Z gates, followed by two-qubit gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig6.avif)
+לאחר מכן, גרסת LUCJ של בלוק ה-$J_{\alpha \beta}$ הפועל בין מיני אלקטרונים שונים יכולה ללבוש צורות שונות בהתאם לטופולוגיית המכשיר.
+
+גם כאן, גרסת LUCJ מסלקת Gate לא-תואמים. האיור למטה מציג וריאנטים של בלוק ה-$J_{\alpha \beta}$ עבור טופולוגיות Qubit שונות כולל רשת ריבועית, משושה, heavy-hex ולינארית.
+
+- **ריבועית**: ניתן לקיים Gate ‏$U_{nn}$ בין כל האורביטלים $\alpha$ ו-$\beta$ ללא SWAP כלשהם, ולפיכך אין צורך להסיר Gate ‏$U_{nn}$ כלשהם.
+- **Heavy-hex**: האינטראקציות $\alpha$-$\beta$ נשמרות בין כל אורביטל עם אינדקס כפולה של $4$ (כגון ה-0, ה-4 וה-8) ומתווכות על ידי _Qubit עזר_, כלומר, נדרשים Qubitי עזר בין השרשראות הלינאריות המייצגות את האורביטלים $\alpha$ ו-$\beta$. סידור זה דורש מספר מוגבל של SWAP.
+- **משושה**: כל אורביטל שני, כגון אורביטלים עם אינדקס 0, 2 ו-4, הופכים לשכנים קרובים כאשר $\alpha$ ו-$\beta$ מסודרים בשתי שרשראות לינאריות סמוכות.
+- **לינארי**: רק אורביטל $\alpha$ אחד ואורביטל $\beta$ אחד מחוברים, כלומר בלוק ה-$J_{\alpha \beta}$ יכיל רק Gate אחד.
+![Connectivity diagrams for different qubit layouts. They show qubits arranged on a square grid, a hexagonal lattice, a heavy-hex lattice (hexagonal lattice with one extra qubit along each side of the hexagon), and a linear chain.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig7.avif)
+בעוד שהסרת Gate מה-ansatz של UCJ לבניית גרסת LUCJ הופכת אותו ליותר תואם חומרה, ה-ansatz מאבד מעט מיכולת ההבעה שלו. לפיכך, ייתכן שיידרשו יותר חזרות ($L$) של אופרטור UCJ המשונה בעת שימוש ב-ansatz של LUCJ.
+### 1.2 אתחול ה-ansatz של LUCJ {#12-lucj-ansatz-initialization}
+ה-LUCJ הוא ansatz פרמטרי, ועלינו לאתחל את הפרמטרים לפני הרצה על חומרה. דרך אחת לאתחל ansatz היא באמצעות ערכי הרחבות `t1` ו-`t2` מהשיטה הקלאסית של אשכול מצמד בודד וכפול (CCSD), כאשר ערכי `t1` הם המקדמים של אופרטורי עירור בודד וערכי `t2` הם עבור אופרטורי עירור כפול.
+
+שים לב שלמרות שאתחול ה-ansatz של LUCJ עם ערכי הרחבות `t1` ו-`t2` מניב תוצאות סבירות, ייתכן שפרמטרי ה-ansatz יזדקקו לאופטימיזציה נוספת.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(
+    scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]
+)
+ccsd.run()
+
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929733  E_corr = -0.20458912219883
+```
+
+### 1.3 בניית ה-ansatz של LUCJ באמצעות `ffsim` {#13-constructing-the-lucj-ansatz-using-ffsim}
+נשתמש בחבילת [ffsim](https://github.com/qiskit-community/ffsim/tree/main) כדי ליצור ולאתחל את ה-ansatz עם ערכי הרחבות `t1` ו-`t2` שחושבו לעיל. מכיוון שלמולקולה שלנו יש מצב Hartree-Fock עם קליפה סגורה, נשתמש בגרסה המאוזנת-ספין של ה-ansatz של UCJ, [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced).
+
+מכיוון שלחומרת IBM יש טופולוגיית heavy-hex, נאמץ את התבנית _zig-zag_ המשמשת ב-[\[1\]](#references) ומוסברת לעיל לאינטראקציות Qubit. בתבנית זו, אורביטלים (Qubitים) עם אותו ספין מחוברים בטופולוגיית קו (עיגולים אדומים וכחולים). עקב טופולוגיית heavy-hex, לאורביטלים עם ספינים שונים יש חיבורים בין כל אורביטל רביעי, כלומר, האורביטל ה-0, ה-4, ה-8 וכן הלאה (עיגולים סגולים).
+
+![A zig-zag pattern traced out along a heavy-hex lattice.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig8.avif)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 2
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+# circuit.decompose().draw("mpl", scale=0.5, fold=-1)
+```
+
+ניתן לאמטב את ה-ansatz של LUCJ עם שכבות חוזרות על ידי מיזוג בלוקים סמוכים מסוימים. נחשוב על מקרה של `n_reps=2`. שני בלוקי סיבוב האורביטלים האמצעיים ניתנים למיזוג לתוך בלוק סיבוב אורביטלים בודד. לחבילת `ffsim` יש מנהל מעבר בשם `ffsim.qiskit.PRE_INIT` לאופטימיזציה של ה-Circuit על ידי מיזוג בלוקים סמוכים כאלה.
+![A diagram showing layers of the LUCJ ansatz.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig9.avif)
+## 2. אופטימיזציה לחומרת היעד {#2-optimize-for-target-hardware}
+ראשית, אנחנו מביאים Backend לבחירתנו. נמטב את ה-Circuit שלנו עבור ה-Backend, ולאחר מכן נריץ את ה-Circuit המאופטמז על אותו Backend כדי לייצר דגימות לתת-המרחב.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+לאחר מכן, אנחנו ממליצים על השלבים הבאים לאופטימיזציה של ה-ansatz והפיכתו לתואם חומרה.
+
+- בחירת Qubitים פיזיים (`initial_layout`) מהחומרה הנבחרת התואמים את תבנית ה-zig-zag (שתי שרשראות לינאריות עם Qubit עזר ביניהן) המתוארת לעיל. פריסת Qubitים בתבנית זו מובילה ל-Circuit תואם חומרה יעיל עם פחות Gate.
+- יצירת מנהל מעבר שלבי באמצעות הפונקציה [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager) מ-Qiskit עם ה-`backend` ו-`initial_layout` הנבחרים.
+- הגדרת שלב ה-`pre_init` של מנהל המעבר השלבי ל-`ffsim.qiskit.PRE_INIT`. ‏`ffsim.qiskit.PRE_INIT` כולל מעברי Transpiler של Qiskit שמפרקים Gate לסיבובי אורביטלים ולאחר מכן ממזגים את סיבובי האורביטלים, מה שמביא לפחות Gate ב-Circuit הסופי.
+- הרצת מנהל המעבר על ה-Circuit שלך.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+spin_a_layout = [0, 14, 18, 19, 20, 33, 39, 40, 41, 53, 60, 61, 62, 72, 81, 82]
+spin_b_layout = [2, 3, 4, 15, 22, 23, 24, 34, 43, 44, 45, 54, 64, 65, 66, 73]
+
+initial_layout = spin_a_layout + spin_b_layout
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=initial_layout
+)
+
+# without PRE_INIT passes
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/o pre-init passes): {isa_circuit.count_ops()}")
+
+# with PRE_INIT passes
+# We will use the circuit generated by this pass manager for hardware execution
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
+```
+
+```text
+Gate counts (w/o pre-init passes): OrderedDict({'rz': 7579, 'sx': 6106, 'ecr': 2316, 'x': 336, 'measure': 32, 'barrier': 1})
+Gate counts (w/ pre-init passes): OrderedDict({'rz': 4088, 'sx': 3125, 'ecr': 1262, 'x': 201, 'measure': 32, 'barrier': 1})
+```
+
+## 3. הרצה על חומרת היעד {#3-execute-on-target-hardware}
+אחרי שאופטמנו את ה-Circuit לביצוע על חומרה, אנחנו מוכנים להריץ אותו על החומרה היעד ולאסוף דגימות לאומדן אנרגיית מצב היסוד. מכיוון שיש לנו רק Circuit אחד, נשתמש ב-[מצב ביצוע Job](/guides/execution-modes) של Qiskit Runtime ונריץ את ה-Circuit.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+sampler.options.dynamical_decoupling.enable = True
+
+job = sampler.run([isa_circuit], shots=10_000)  # Takes approximately 5sec of QPU time
+```
+
+```python
+# Run cell after IQX job completion
+primitive_result = job.result()
+pub_result = primitive_result[0]
+counts = pub_result.data.meas.get_counts()
+```
+
+## 4. עיבוד תוצאות לאחר הריצה {#post-process-results}
+את שלב העיבוד שלאחר הריצה של זרימת העבודה של SQD אפשר לסכם בעזרת הדיאגרמה הבאה.
+
+![A flow chart showing how sampled states are used to determine ground state eigenvalues and eigenvectors.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig10.avif)
+דגימת ה-LUCJ ansatz בבסיס המחשוב יוצרת מאגר של קונפיגורציות רועשות $\tilde{\mathcal{\chi}}$, שמשמשות בשגרת העיבוד שלאחר הריצה. השגרה כוללת שיטה הנקראת (פרטים יידונו בהמשך) _שחזור קונפיגורציות_, שמתקנת קונפיגורציות עם מספר אלקטרונים שגוי בצורה הסתברותית. קונפיגורציות עם מספר אלקטרונים נכון בלבד $\tilde{\mathcal{\chi}}_{R}$ נדגמות מחדש ומתחלקות למספר אצוות בהתבסס על תדירות ההופעה של כל קונפיגורציה ייחודית. כל אצווה של דגימות מגדירה תת-מרחב ($\mathcal{S^{(k)}}$). לאחר מכן, ה-Hamiltonian המולקולרי, $H$, מוקרן על תת-המרחבים:
+$$
+H_{\mathcal{S}^{(k)}} = P_{\mathcal{S}^{(k)}} H _{\mathcal{S}^{(k)}} \text{ with } P_{\mathcal{S}^{(k)}} = \sum_{x \in \mathcal{S}^{(k)}} \vert x \rangle \langle x \vert
+$$
+
+כל Hamiltonian מוקרן $H_{\mathcal{S}^{(k)}}$ מוזן לפותר ערכים עצמיים, שם הוא מאלכסן כדי לחשב ערכים עצמיים ווקטורים עצמיים ולשחזור מצב עצמי. בשיעור זה אנחנו מקרינים ומאלכסנים את ה-Hamiltonian בעזרת חבילת `qiskit-addon-sqd` שמשתמשת בשיטת Davidson מ-PySCF לאלכסון.
+
+$$
+H_{\mathcal{S}^{(k)}} \vert \psi^{(k)} \rangle = E^{(k)} \vert \psi^{(k)} \rangle
+$$
+
+לאחר מכן אנחנו אוספים את ערך הייגן הנמוך ביותר (האנרגיה) מהאצוות, ומחשבים גם תפוסת אורביטל ממוצעת, $\text{n}$. מידע התפוסה הממוצעת משמש בשלב שחזור הקונפיגורציות לתיקון הסתברותי של קונפיגורציות רועשות.
+
+בהמשך נסביר בפירוט את לולאת שחזור הקונפיגורציות העצמית-עקבית ונציג דוגמאות קוד קונקרטיות לביצוע השלבים שתוארו לעיל לאומדן אנרגיית מצב היסוד של ה-Hamiltonian של $N_2$.
+### 4.1 שחזור קונפיגורציות: סקירה {#configuration-recovery-overview}
+כל סיביה (bit) במחרוזת סיביות (Slater determinant) מייצגת אורביטל ספין. המחצית הימנית של מחרוזת הסיביות מייצגת אורביטלי ספין-עלייה, והמחצית השמאלית מייצגת אורביטלי ספין-ירידה. `1` פירושו שהאורביטל מאוכלס על ידי אלקטרון, ו-`0` פירושו שהאורביטל ריק. אנחנו יודעים מראש את מספר החלקיקים הנכון (הן אלקטרוני ספין-עלייה והן אלקטרוני ספין-ירידה). נניח שיש לנו דטרמיננטה $x$ עם $N_x$ אלקטרונים (כלומר יש $N_x$ מספר של `1`-ות במחרוזת) בה. מספר החלקיקים הנכון הוא $N$. אם $N_x \neq N$, אנחנו יודעים שמחרוזת הסיביות הושחתה על ידי רעש. שגרת הקונפיגורציה העצמית-עקבית מנסה לתקן את מחרוזת הסיביות על ידי היפוך $|N_x - N|$ סיביות בצורה הסתברותית תוך שימוש במידע תפוסת אורביטל ממוצעת. תפוסת האורביטל הממוצעת ($n$) מספרת לנו עד כמה סביר שאורביטל מסוים יהיה מאוכלס על ידי אלקטרון. אם $N_x < N$, יש לנו פחות אלקטרונים וצריך להפוך כמה `0`-ות ל-`1`-ות ולהיפך.
+
+ההסתברות להיפוך יכולה להיות $|x[i] - avg\_occupancy[i]|$ עבור אורביטל ספין `i`-תי. ב-[\[2\]](#references), המחברים השתמשו בהסתברות היפוך משוקללת בעזרת פונקציית ReLU מותאמת.
+
+$$
+\begin{align}
+    w(y) = \begin{cases}
+
+    \delta \frac{y}{h} & \text{if }  y \leq h\\ \nonumber
+
+    \delta + (1 - \delta) \frac{y - h}{1 - h} & \text{if } y > h
+
+\end{cases}
+\end{align}
+$$
+
+כאן $h$ מגדיר את מיקום ה"פינה" של פונקציית ReLU, והפרמטר $\delta$ מגדיר את ערך פונקציית ReLU בפינה. עבור $\delta = 0$, $w$ הופכת לפונקציית ReLU אמיתית, ועבור $\delta >0$ היא הופכת ל-ReLU _מותאמת_. במאמר, המחברים השתמשו ב-$\delta = 0.01$ ו-$h =$ מספר חלקיקי alpha (או beta) / מספר אורביטלי ספין alpha (או beta) $= N/M$ (גורם מילוי).
+
+תפוסת האורביטל הממוצעת ($n$) אינה ידועה מראש. האיטרציה הראשונה של אומדן מצב היסוד מתחילה עם קונפיגורציות שיש בהן רק מספר חלקיקים נכון בשני מיני הספין. אחרי האיטרציה הראשונה יש לנו אומדן של מצב היסוד, ובעזרתו אנחנו יכולים לבנות את הניחוש הראשון של $n$. ניחוש $n$ זה משמש לשחזור קונפיגורציות, להרצת האיטרציה הבאה של אומדן מצב היסוד, ולשיפור עצמי-עקבי של ניחוש $n$. התהליך חוזר על עצמו עד שמתקיים קריטריון עצירה.
+
+נשקול את הדוגמה הבאה עבור $N = 2$ ו-$x = |1000\rangle$ ($N_x = 1$). צריך להפוך אחד מהאפסים ל-1 כדי לתקן את מספר החלקיקים, והאפשרויות הן `1100`, `1010`, ו-`1001`. בהתבסס על הסתברות ההיפוך, אחת מהאפשרויות תיבחר כ-_קונפיגורציה משוחזרת_ (או מחרוזת הסיביות עם מספר חלקיקים נכון).
+
+נניח שבאיטרציה הראשונה מריצים שתי אצוות, ומצבי היסוד המוערכים מהן הם:
+
+$$
+\begin{align}\nonumber
+    \text{Batch0: } \vert \psi \rangle &= 0.8 \times \vert 1001 \rangle + 0.6 \times \vert 0110 \rangle \\ \nonumber
+    \text{Batch1: } \vert \psi \rangle &= \frac{1}{\sqrt{3}} \left( \vert 1001 \rangle + \vert 0101 \rangle + \vert 0110 \rangle \right) \nonumber
+\end{align}
+$$
+
+בעזרת מצבי הבסיס החישובי ומשרעותיהם, אנחנו יכולים לחשב את ההסתברות לתפוסת אלקטרון (בקיצור _תפוסות_) לכל אורביטל-ספין (Qubit) (שימו לב שהסתברות = |משרעת|$^2$). להלן ריכוז תפוסות Qubit-אחד-אחד לכל מחרוזת סיביות המופיעה במצב היסוד המוערך, וחישוב תפוסת האורביטל הכוללת לאצווה. שימו לב שלפי אמנת הסדר של Qiskit, הסיביה הימנית ביותר מייצגת qubit-0 (Q0), והסיביה השמאלית ביותר מייצגת Q3.
+
+תפוסה (Batch0):
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |   0.64   |    0.0   |    0.0   |   0.64   |
+|    0110   |    0.0   |   0.36   |   0.36   |    0.0   |
+| **n** _(Batch0)_ | **0.64** | **0.36** | **0.36** | **0.64** |
+
+תפוסה (Batch1)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |    0.33   |   0.00   |   0.00   |    0.33   |
+|    0101   |    0.0   |   0.33   |   0.00   |    0.33   |
+|    0110   |    0.0   |   0.33   |   0.33   |    0.00   |
+| **n** _(Batch1)_ | **0.33** | **0.66** | **0.33** | **0.66** |
+
+תפוסה (ממוצע על פני האצוות)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| **n** _(Batch0)_ | 0.64 | 0.36 | 0.36 | 0.64 |
+| **n** _(Batch1)_ | 0.33 | 0.66 | 0.33 | 0.66 |
+| **n** _(average)_ | **0.49** | **0.51** | **0.35** | **0.65** |
+
+בעזרת תפוסת האורביטל הממוצעת שחושבה לעיל, אנחנו יכולים למצוא את הסתברויות ההיפוך עבור אורביטלים שונים בקונפיגורציה $x = \vert 1000 \rangle$. מכיוון שהאורביטל המיוצג על ידי Q3 כבר מאוכלס ואינו צריך היפוך, קובעים שה-p(flip) שלו הוא $0$. לשאר האורביטלים, שאינם מאוכלסים, הסתברות ההיפוך היא $\vert x[i] - \text{n}[i] \vert$ כל אחד. לצד p(flip), אנחנו גם מחשבים את משקל ההסתברות הקשור להיפוך בעזרת פונקציית ReLU המותאמת המתוארת לעיל.
+
+הסתברות היפוך ($x = \vert 1000 \rangle$, $\delta = 0.01$, $h = N/M = 2/4 = 0.50$)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| p(flip) ($\vert x[i] - \text{n}[i] \vert$) | 0 | 0.51 | 0.35 | 0.65 |
+| w(p(flip)) | 0 | 0.03 | 0.007 | 0.31 |
+
+לבסוף, בעזרת ההסתברויות המשוקללות שלעיל, אנחנו יכולים להפוך אחד מהאורביטלים הלא-מאוכלסים Q2, Q1, ו-Q0. בהתבסס על הערכים לעיל, Q0 ייהפך ברוב הסיכויים, וקונפיגורציה משוחזרת אפשרית יכולה להיות $\vert \text{1001} \rangle$.
+![A diagram of configuration recovery.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig11.avif)
+את תהליך שחזור הקונפיגורציות העצמי-עקבי המלא אפשר לסכם כך:
+
+**איטרציה ראשונה:** נניח שמחרוזות הסיביות (קונפיגורציות או Slater determinants) שנוצרו על ידי המחשב הקוונטי מרכיבות קבוצה $\widetilde{\chi}$, שכוללת הן קונפיגורציות עם מספר חלקיקים נכון ($\widetilde{\chi}_{correct}$) והן עם מספר שגוי ($\widetilde{\chi}_{incorrect}$) בכל ענף ספין.
+1. קונפיגורציות מ-($\widetilde{\chi}_{correct}$) נדגמות באקראי ליצירת אצוות $(\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)})$ של וקטורים להקרנה לתת-מרחב. מספר האצוות ומספר הדגימות בכל אצווה הם פרמטרים שמוגדרים על ידי המשתמש. ככל שמספר הדגימות בכל אצווה גדול יותר, כך ממד תת-המרחב גדול יותר והאלכסון דורש יותר משאבי חישוב קלאסי. מצד שני, מספר דגימות קטן מדי עלול להחמיץ וקטורי תמיכה של מצב היסוד ולהוביל לאומדן שגוי.
+2. מריצים את פותר הייגן-מצב (כלומר הקרנה לתת-מרחב ואלכסון) על האצוות ומקבלים מצבים עצמיים מקורבים. $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+3. מהמצבים העצמיים המקורבים בונים את הניחוש הראשון של $n$.
+
+**איטרציות עוקבות:**
+1. בעזרת $n$ מתקנים את הקונפיגורציות עם מספר חלקיקים שגוי ב-$\widetilde{\chi}_{incorrect}$. נניח שנקרא להן $\widetilde{\chi}_{correct\_new}$. אז, $\widetilde{\chi}_{recovered} (\widetilde{\chi}_{R}) = \widetilde{\chi}_{correct} \cup \widetilde{\chi}_{correct\_new}$ מרכיבה את הקבוצה החדשה של קונפיגורציות עם מספר חלקיקים נכון.
+2. $\widetilde{\chi}_{R}$ נדגמת ליצירת אצוות $\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)}$.
+3. פותר הייגן-מצב רץ עם האצוות החדשות ומייצר אומדנים חדשים למצבי היסוד $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+4. מהמצבים העצמיים המקורבים בונים ניחוש מעודכן של $n$.
+5. אם קריטריון העצירה לא מתקיים, חוזרים לשלב `2.1`.
+### 4.2 אומדן מצב היסוד {#ground-state-estimation}
+ראשית, נמיר את הספירות למטריצת מחרוזות סיביות ומערך הסתברויות לעיבוד שלאחר הריצה.
+
+כל שורה במטריצה מייצגת מחרוזת סיביות ייחודית אחת. מכיוון שה-Qubit-ים מסומנים מימין של מחרוזת הסיביות ב-Qiskit, עמודה ``0`` מייצגת Qubit ``N-1``, ועמודה ``N-1`` מייצגת Qubit ``0``, כאשר ``N`` הוא מספר ה-Qubit-ים.
+
+אורביטלי alpha מיוצגים בטווח אינדקס עמודות ``(N, N/2]`` (מחצית ימנית), ואורביטלי beta מיוצגים בטווח העמודות ``(N/2, 0]`` (מחצית שמאלית).
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+
+# Convert counts into bitstring and probability arrays
+bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts)
+```
+
+יש כמה אפשרויות שנשלטות על ידי המשתמש שחשובות לטכניקה זו:
+
+- ``iterations``: מספר איטרציות של שחזור קונפיגורציות עצמי-עקבי
+- ``n_batches``: מספר אצוות הקונפיגורציות שמשמשות בקריאות השונות לפותר הייגן-מצב
+- ``samples_per_batch``: מספר הקונפיגורציות הייחודיות לכלול בכל אצווה
+- ``max_davidson_cycles``: מספר מקסימלי של מחזורי Davidson שמריץ כל פותר ערכים עצמיים
+
+```python
+import numpy as np
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_fermion,
+)
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+
+rng = np.random.default_rng(24)
+# SQD options
+iterations = 5
+
+# Eigenstate solver options
+n_batches = 5
+samples_per_batch = 500
+max_davidson_cycles = 300
+
+# Self-consistent configuration recovery loop
+e_hist = np.zeros((iterations, n_batches))  # energy history
+s_hist = np.zeros((iterations, n_batches))  # spin history
+occupancy_hist = []
+avg_occupancy = None
+for i in range(iterations):
+    print(f"Starting configuration recovery iteration {i}")
+    # On the first iteration, we have no orbital occupancy information from the
+    # solver, so we begin with the full set of noisy configurations.
+    if avg_occupancy is None:
+        bs_mat_tmp = bitstring_matrix_full
+        probs_arr_tmp = probs_arr_full
+
+    # If we have average orbital occupancy information, we use it to refine the full set of noisy configurations
+    else:
+        bs_mat_tmp, probs_arr_tmp = recover_configurations(
+            bitstring_matrix_full,
+            probs_arr_full,
+            avg_occupancy,
+            num_elec_a,
+            num_elec_b,
+            rand_seed=rng,
+        )
+
+    # Create batches of subsamples. We post-select here to remove configurations
+    # with incorrect hamming weight during iteration 0, since no config recovery was performed.
+    batches = postselect_and_subsample(
+        bs_mat_tmp,
+        probs_arr_tmp,
+        hamming_right=num_elec_a,
+        hamming_left=num_elec_b,
+        samples_per_batch=samples_per_batch,
+        num_batches=n_batches,
+        rand_seed=rng,
+    )
+
+    # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
+    e_tmp = np.zeros(n_batches)
+    s_tmp = np.zeros(n_batches)
+    occs_tmp = []
+    coeffs = []
+    for j in range(n_batches):
+        strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+        print(f"  Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+        energy_sci, coeffs_sci, avg_occs, spin = solve_fermion(
+            batches[j],
+            hcore,
+            eri,
+            open_shell=open_shell,
+            spin_sq=spin_sq,
+            max_davidson=max_davidson_cycles,
+        )
+        energy_sci += nuclear_repulsion_energy
+        e_tmp[j] = energy_sci
+        s_tmp[j] = spin
+        occs_tmp.append(avg_occs)
+        coeffs.append(coeffs_sci)
+
+    # Combine batch results
+    avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+    # Track optimization history
+    e_hist[i, :] = e_tmp
+    s_hist[i, :] = s_tmp
+    occupancy_hist.append(avg_occupancy)
+```
+
+```text
+Starting configuration recovery iteration 0
+  Batch 0 subspace dimension: 21609
+  Batch 1 subspace dimension: 21609
+  Batch 2 subspace dimension: 21609
+  Batch 3 subspace dimension: 21609
+  Batch 4 subspace dimension: 21609
+Starting configuration recovery iteration 1
+  Batch 0 subspace dimension: 609961
+  Batch 1 subspace dimension: 616225
+  Batch 2 subspace dimension: 627264
+  Batch 3 subspace dimension: 633616
+  Batch 4 subspace dimension: 624100
+Starting configuration recovery iteration 2
+  Batch 0 subspace dimension: 564001
+  Batch 1 subspace dimension: 605284
+  Batch 2 subspace dimension: 582169
+  Batch 3 subspace dimension: 559504
+  Batch 4 subspace dimension: 591361
+Starting configuration recovery iteration 3
+  Batch 0 subspace dimension: 550564
+  Batch 1 subspace dimension: 549081
+  Batch 2 subspace dimension: 531441
+  Batch 3 subspace dimension: 527076
+  Batch 4 subspace dimension: 531441
+Starting configuration recovery iteration 4
+  Batch 0 subspace dimension: 544644
+  Batch 1 subspace dimension: 580644
+  Batch 2 subspace dimension: 527076
+  Batch 3 subspace dimension: 531441
+  Batch 4 subspace dimension: 537289
+```
+
+### 4.3 דיון בתוצאות {#discussion-of-results}
+הגרף הראשון מראה שאחרי כמה איטרציות אנחנו מעריכים את אנרגיית מצב היסוד בתוך ~24 mH (דיוק כימי מקובל בדרך כלל כ-1 kcal/mol $\approx$ 1.6 mH). הגרף השני מראה את התפוסה הממוצעת של כל אורביטל מרחבי אחרי האיטרציה הסופית. אנחנו רואים שהן האלקטרונים ספין-עלייה והן ספין-ירידה מאכלסים את חמשת האורביטלים הראשונים בהסתברות גבוהה בפתרונות שלנו.
+
+למרות שאנרגיית מצב היסוד המוערכת סבירה, היא אינה בתוך גבולות הדיוק הכימי ($\pm \approx 1.6$ mH). פער זה ניתן לייחס לממד תת-המרחב הקטן שהשתמשנו בו לעיל להקרנה ואלכסון. מכיוון שהשתמשנו ב-`samples_per_batch=500`, תת-המרחב נפרש על ידי מקסימום $500$ וקטורים, מה שמחמיץ וקטורים מתמיכת מצב היסוד. הגדלת הפרמטר `samples_per_batch` אמורה לשפר את הדיוק על חשבון יותר משאבי חישוב קלאסי וזמן ריצה.
+
+```python
+# Data for energies plot
+x1 = range(iterations)
+min_e = [np.min(e) for e in e_hist]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = occupancy_hist[-1][0] + occupancy_hist[-1][1]
+x2 = range(len(y2))
+```
+
+```python
+import matplotlib.pyplot as plt
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-6)
+axs[0].axhline(
+    y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy"
+)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.02234 Ha
+Absolute error: 0.02434 Ha
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-4-sqd-implementation/extracted-outputs/8cd90034-6ef3-41bd-a847-c115cade82f7-1.avif)
+
+#### תרגיל לקורא {#exercise-for-the-reader}
+הגדל בהדרגה את הפרמטר `samples_per_batch` (לדוגמה, מ-$1000$ עד $10000$ בצעד של $1000$; בכפוף לזיכרון המחשב שלך) והשווה את אנרגיות מצב היסוד המוערכות.
+## מקורות {#references}
+
+\[1] M. Motta et al., "Bridging physical intuition and hardware efficiency for correlated electronic states: the local unitary cluster Jastrow ansatz for electronic structure" (2023). [Chem. Sci., 2023, 14, 11213](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k).
+
+\[2] J. Robledo-Moreno et al., "Chemistry Beyond Exact Solutions on a Quantum-Centric Supercomputer" (2024). [arXiv:quant-ph/2405.05068](https://arxiv.org/abs/2405.05068).
