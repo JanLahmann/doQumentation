@@ -84,6 +84,24 @@ FRONTMATTER_SAME_ALLOWED = {
     "introduction", "circuits", "utility i", "utility ii", "utility iii",
     # Generic course descriptions (often left in English as meta-description)
     "a free ibm course on quantum information and computation",
+    # Qiskit Function partner product names and descriptions (kept in English as brand/product names)
+    "qiskit addons", "qiskit addon utilities", "qiskit function templates",
+    "qiskit mcp servers", "qiskit runtime local testing mode",
+    "fractional gates", "quickstart", "qubit initialization",
+    "represent quantum computers", "retired qpus",
+    "approximate quantum compilation with tensor networks",
+    "overview of the addon for approximate quantum compilation using tensor networks",
+    "quantum portfolio optimizer - a qiskit function by global data quantum",
+    "a qiskit function to solve dynamic portfolio optimization problems using a fine-tuned implementation of the vqe.",
+    "singularity machine learning by multiverse computing",
+    "a qiskit function to create and train a hybrid quantum ensemble classifier from multiple learners and optimizes them for diversity and generalization with qaoa",
+    "optimization solver - a qiskit function by q-ctrl fire opal",
+    "start solving utility-scale optimization problems with the fire opal optimization solver by q-ctrl",
+    "performance management - a qiskit function by q-ctrl fire opal",
+    "apply automated error suppression using fire opal performance management by q-ctrl",
+    "qesem - a qiskit function by qedma",
+    "run quantum circuits on noisy qpus to obtain highly accurate error-free results with highly efficient qpu-time overheads, close to fundamental bounds.",
+    "hi-vqe chemistry - a qiskit function by qunova computing",
 }
 
 # Regex from fix-heading-anchors.py
