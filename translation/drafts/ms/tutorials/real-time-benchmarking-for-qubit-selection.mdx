@@ -1,0 +1,574 @@
+---
+title: "Penandaarasan masa nyata untuk pemilihan Qubit"
+sidebar_label: "Penandaarasan masa nyata untuk pemilihan Qubit"
+description: "Jalankan eksperimen pencirian masa nyata dan kemas kini sifat backend untuk meningkatkan pemilihan Qubit semasa memetakan Circuit ke Qubit fizikal pada QPU."
+notebook_path: "tutorials/real-time-benchmarking-for-qubit-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 9d3523c0 */}
+
+<OpenInLabBanner notebookPath="tutorials/real-time-benchmarking-for-qubit-selection.ipynb" />
+
+
+
+{/* cspell:ignore sharex */}
+
+*Anggaran penggunaan: 4 minit pada pemproses Eagle r2 (NOTA: Ini hanya anggaran sahaja. Masa jalan anda mungkin berbeza.)*
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-experiments qiskit-ibm-runtime rustworkx
+```
+
+```python
+# This cell is hidden from users – it disables some lint rules
+# ruff: noqa: E722
+```
+
+## Latar belakang {#background}
+
+Tutorial ini menunjukkan cara menjalankan eksperimen pencirian masa nyata dan mengemas kini sifat backend untuk meningkatkan pemilihan Qubit semasa memetakan Circuit ke Qubit fizikal pada QPU. Kamu akan belajar tentang eksperimen pencirian asas yang digunakan untuk menentukan sifat QPU, cara melakukannya dalam Qiskit, dan cara mengemas kini sifat yang disimpan dalam objek backend yang mewakili QPU berdasarkan eksperimen-eksperimen ini.
+
+Sifat yang dilaporkan QPU dikemas kini sekali sehari, tetapi sistem boleh beranjak lebih cepat daripada masa antara kemas kini. Ini boleh mempengaruhi kebolehpercayaan rutin pemilihan Qubit dalam peringkat `Layout` pengurus laluan, kerana ia akan menggunakan sifat yang dilaporkan yang tidak mewakili keadaan QPU semasa. Atas sebab ini, mungkin berbaloi untuk memperuntukkan sebahagian masa QPU untuk eksperimen pencirian, yang kemudiannya boleh digunakan untuk mengemas kini sifat QPU yang digunakan oleh rutin `Layout`.
+
+## Keperluan {#requirements}
+
+Sebelum memulakan tutorial ini, pastikan kamu telah memasang perkara-perkara berikut:
+
+- Qiskit SDK v2.0 atau lebih baru, dengan sokongan [visualisasi](https://docs.quantum.ibm.com/api/qiskit/visualization)
+- Qiskit Runtime v0.40 atau lebih baru ( `pip install qiskit-ibm-runtime` )
+- Qiskit Experiments v0.12 atau lebih baru ( `pip install qiskit-experiments` )
+- Pustaka graf Rustworkx (`pip install rustworkx`)
+
+## Persediaan {#setup}
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import hellinger_fidelity
+from qiskit.transpiler import InstructionProperties
+
+from qiskit_experiments.library import (
+    T1,
+    T2Hahn,
+    LocalReadoutError,
+    StandardRB,
+)
+from qiskit_experiments.framework import BatchExperiment, ParallelExperiment
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session
+
+from datetime import datetime
+from collections import defaultdict
+import numpy as np
+import rustworkx
+import matplotlib.pyplot as plt
+import copy
+```
+
+## Langkah 1: Petakan input klasik kepada masalah kuantum {#langkah-1-petakan-input-klasik-kepada-masalah-kuantum}
+
+Untuk menanda aras perbezaan dalam prestasi, kita pertimbangkan sebuah Circuit yang menyediakan keadaan Bell merentasi rantaian linear dengan panjang yang berbeza. Kesetiaan keadaan Bell di hujung rantaian diukur.
+
+```python
+from qiskit import QuantumCircuit
+
+ideal_dist = {"00": 0.5, "11": 0.5}
+
+num_qubits_list = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 127]
+circuits = []
+for num_qubits in num_qubits_list:
+    circuit = QuantumCircuit(num_qubits, 2)
+    circuit.h(0)
+    for i in range(num_qubits - 1):
+        circuit.cx(i, i + 1)
+    circuit.barrier()
+    circuit.measure(0, 0)
+    circuit.measure(num_qubits - 1, 1)
+    circuits.append(circuit)
+
+circuits[-1].draw(output="mpl", style="clifford", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/64c25da9-a728-4ae4-a377-3078a1dc618d-1.avif)
+
+### Sediakan backend dan peta gandingan {#sediakan-backend-dan-peta-gandingan}
+
+Pertama, pilih backend
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+
+qubits = list(range(backend.num_qubits))
+```
+
+Kemudian dapatkan peta gandingannnya
+
+```python
+coupling_graph = backend.coupling_map.graph.to_undirected(multigraph=False)
+
+# Get unidirectional coupling map
+one_dir_coupling_map = coupling_graph.edge_list()
+```
+
+Untuk menanda aras sebanyak mungkin Gate dua-Qubit secara serentak, kita pisahkan peta gandingan kepada `layered_coupling_map`. Objek ini mengandungi senarai lapisan di mana setiap lapisan adalah senarai tepi yang padanya Gate dua-Qubit boleh dilaksanakan pada masa yang sama. Ini juga dipanggil pewarnaan tepi peta gandingan.
+
+```python
+# Get layered coupling map
+edge_coloring = rustworkx.graph_bipartite_edge_color(coupling_graph)
+layered_coupling_map = defaultdict(list)
+for edge_idx, color in edge_coloring.items():
+    layered_coupling_map[color].append(
+        coupling_graph.get_edge_endpoints_by_index(edge_idx)
+    )
+layered_coupling_map = [
+    sorted(layered_coupling_map[i])
+    for i in sorted(layered_coupling_map.keys())
+]
+```
+
+### Eksperimen pencirian {#eksperimen-pencirian}
+
+Satu siri eksperimen digunakan untuk mencirikan sifat utama Qubit dalam QPU. Ini adalah $T_1$, $T_2$, ralat bacaan, dan ralat Gate satu-Qubit dan dua-Qubit. Kita akan ringkaskan apakah sifat-sifat ini dan merujuk kepada eksperimen dalam pakej [`qiskit-experiments`](https://qiskit-community.github.io/qiskit-experiments/index.html) yang digunakan untuk mencirikannya.
+
+#### T1 {#t1}
+
+$T_1$ ialah masa ciri yang diperlukan untuk Qubit yang teruja jatuh ke keadaan asas akibat proses dekoherensi peredam amplitud. Dalam [eksperimen $T_1$](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t1.html), kita mengukur Qubit yang teruja selepas satu tempoh kelewatan. Lebih besar masa kelewatan, lebih besar kemungkinan Qubit jatuh ke keadaan asas. Matlamat eksperimen adalah untuk mencirikan kadar pereputan Qubit ke arah keadaan asas.
+
+#### T2 {#t2}
+
+$T_2$ mewakili jumlah masa yang diperlukan untuk unjuran vektor Bloch satu Qubit pada satah XY jatuh kepada kira-kira 37% ($\frac{1}{e}$) daripada amplitud awalnya akibat proses dekoherensi fasa. Dalam [eksperimen $T_2$ Hahn Echo](https://qiskit-community.github.io/qiskit-experiments/manuals/characterization/t2hahn.html), kita boleh menganggarkan kadar pereputan ini.
+
+#### Pencirian ralat persediaan keadaan dan pengukuran (SPAM) {#pencirian-ralat-persediaan-keadaan-dan-pengukuran-spam}
+
+Dalam [eksperimen pencirian ralat SPAM](https://qiskit-community.github.io/qiskit-experiments/manuals/measurement/readout_mitigation.html), Qubit disediakan dalam keadaan tertentu ($\vert 0 \rangle$ atau $\vert 1 \rangle$) dan diukur. Kebarangkalian mengukur keadaan yang berbeza daripada yang disediakan kemudiannya memberikan kebarangkalian ralat.
+
+#### Penandaarasan rawak satu-Qubit dan dua-Qubit {#penandaarasan-rawak-satu-qubit-dan-dua-qubit}
+
+[Penandaarasan rawak (RB)](https://qiskit-community.github.io/qiskit-experiments/manuals/verification/randomized_benchmarking.html) ialah protokol popular untuk mencirikan kadar ralat pemproses kuantum. Eksperimen RB terdiri daripada penjanaan Circuit Clifford rawak pada Qubit yang diberikan supaya uniter yang dikira oleh Circuit adalah identiti. Selepas menjalankan Circuit, bilangan tembakan yang menghasilkan ralat (iaitu, output yang berbeza daripada keadaan asas) dikira, dan daripada data ini kita boleh membuat anggaran ralat untuk peranti kuantum, dengan mengira Ralat Per Clifford.
+
+```python
+# Create T1 experiments on all qubit in parallel
+t1_exp = ParallelExperiment(
+    [
+        T1(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create T2-Hahn experiments on all qubit in parallel
+t2_exp = ParallelExperiment(
+    [
+        T2Hahn(
+            physical_qubits=[qubit],
+            delays=[1e-6, 20e-6, 40e-6, 80e-6, 200e-6, 400e-6],
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create readout experiments on all qubit in parallel
+readout_exp = LocalReadoutError(qubits)
+
+# Create single-qubit RB experiments on all qubit in parallel
+singleq_rb_exp = ParallelExperiment(
+    [
+        StandardRB(
+            physical_qubits=[qubit], lengths=[10, 100, 500], num_samples=10
+        )
+        for qubit in qubits
+    ],
+    backend,
+    analysis=None,
+)
+
+# Create two-qubit RB experiments on the three layers of disjoint edges of the heavy-hex
+twoq_rb_exp_batched = BatchExperiment(
+    [
+        ParallelExperiment(
+            [
+                StandardRB(
+                    physical_qubits=pair,
+                    lengths=[10, 50, 100],
+                    num_samples=10,
+                )
+                for pair in layer
+            ],
+            backend,
+            analysis=None,
+        )
+        for layer in layered_coupling_map
+    ],
+    backend,
+    flatten_results=True,
+    analysis=None,
+)
+```
+
+### Sifat QPU dari masa ke masa {#sifat-qpu-dari-masa-ke-masa}
+
+Dengan melihat sifat QPU yang dilaporkan dari masa ke masa (kita akan pertimbangkan satu minggu di bawah), kita dapat melihat bagaimana sifat-sifat ini boleh turun naik dalam skala satu hari. Turun naik kecil boleh berlaku walaupun dalam satu hari. Dalam senario ini, sifat yang dilaporkan (dikemas kini sekali sehari) tidak akan menangkap dengan tepat status QPU semasa. Lebih-lebih lagi, jika sesebuah kerja di-transpile secara tempatan (menggunakan sifat yang dilaporkan semasa) dan diserahkan tetapi dilaksanakan hanya pada masa yang lebih lewat (minit atau hari), ia mungkin berisiko menggunakan sifat yang lapuk untuk pemilihan Qubit dalam langkah transpilasi. Ini menegaskan kepentingan mempunyai maklumat terkini tentang QPU pada masa pelaksanaan. Pertama, jom kita ambil sifat-sifat dalam julat masa tertentu.
+
+```python
+instruction_2q_name = "cz"  # set the name of the default 2q of the device
+errors_list = []
+for day_idx in range(10, 17):
+    calibrations_time = datetime(
+        year=2025, month=8, day=day_idx, hour=0, minute=0, second=0
+    )
+    targer_hist = backend.target_history(datetime=calibrations_time)
+
+    t1_dict, t2_dict = {}, {}
+    for qubit in range(targer_hist.num_qubits):
+        t1_dict[qubit] = targer_hist.qubit_properties[qubit].t1
+        t2_dict[qubit] = targer_hist.qubit_properties[qubit].t2
+
+    errors_dict = {
+        "1q": targer_hist["sx"],
+        "2q": targer_hist[f"{instruction_2q_name}"],
+        "spam": targer_hist["measure"],
+        "t1": t1_dict,
+        "t2": t2_dict,
+    }
+
+    errors_list.append(errors_dict)
+```
+
+Kemudian, jom kita plot nilainya
+
+```python
+fig, axs = plt.subplots(5, 1, figsize=(10, 20), sharex=False)
+
+# Plot for T1 values
+for qubit in range(targer_hist.num_qubits):
+    t1s = []
+    for errors_dict in errors_list:
+        t1_dict = errors_dict["t1"]
+        try:
+            t1s.append(t1_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t1 data for qubit {qubit}")
+
+    axs[0].plot(t1s)
+
+axs[0].set_title("T1")
+axs[0].set_ylabel(r"Time ($\mu s$)")
+axs[0].set_xlabel("Days")
+
+# Plot for T2 values
+for qubit in range(targer_hist.num_qubits):
+    t2s = []
+    for errors_dict in errors_list:
+        t2_dict = errors_dict["t2"]
+        try:
+            t2s.append(t2_dict[qubit] / 1e-6)
+        except:
+            print(f"missing t2 data for qubit {qubit}")
+
+    axs[1].plot(t2s)
+
+axs[1].set_title("T2")
+axs[1].set_ylabel(r"Time ($\mu s$)")
+axs[1].set_xlabel("Days")
+
+# Plot SPAM values
+for qubit in range(targer_hist.num_qubits):
+    spams = []
+    for errors_dict in errors_list:
+        spam_dict = errors_dict["spam"]
+        spams.append(spam_dict[tuple([qubit])].error)
+
+    axs[2].plot(spams)
+
+axs[2].set_title("SPAM Errors")
+axs[2].set_ylabel("Error Rate")
+axs[2].set_xlabel("Days")
+
+# Plot 1Q Gate Errors
+for qubit in range(targer_hist.num_qubits):
+    oneq_gates = []
+    for errors_dict in errors_list:
+        oneq_gate_dict = errors_dict["1q"]
+        oneq_gates.append(oneq_gate_dict[tuple([qubit])].error)
+
+    axs[3].plot(oneq_gates)
+
+axs[3].set_title("1Q Gate Errors")
+axs[3].set_ylabel("Error Rate")
+axs[3].set_xlabel("Days")
+
+# Plot 2Q Gate Errors
+for pair in one_dir_coupling_map:
+    twoq_gates = []
+    for errors_dict in errors_list:
+        twoq_gate_dict = errors_dict["2q"]
+        twoq_gates.append(twoq_gate_dict[pair].error)
+
+    axs[4].plot(twoq_gates)
+
+axs[4].set_title("2Q Gate Errors")
+axs[4].set_ylabel("Error Rate")
+axs[4].set_xlabel("Days")
+
+plt.subplots_adjust(hspace=0.5)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/e0ba509d-e0e0-438b-aedf-5e01919c7d4f-0.avif)
+
+Kamu dapat lihat bahawa dalam beberapa hari, sesetengah sifat Qubit boleh berubah dengan ketara. Ini menegaskan kepentingan mempunyai maklumat segar tentang status QPU, agar kita dapat memilih Qubit yang berprestasi terbaik untuk sesebuah eksperimen.
+
+## Langkah 2: Optimumkan masalah untuk pelaksanaan perkakasan kuantum {#langkah-2-optimumkan-masalah-untuk-pelaksanaan-perkakasan-kuantum}
+
+Tiada pengoptimuman Circuit atau operator yang dilakukan dalam tutorial ini.
+
+## Langkah 3: Laksanakan menggunakan primitif Qiskit {#langkah-3-laksanakan-menggunakan-primitif-qiskit}
+
+### Laksanakan Circuit kuantum dengan pemilihan Qubit lalai {#laksanakan-circuit-kuantum-dengan-pemilihan-qubit-lalai}
+
+Sebagai rujukan prestasi, kita akan melaksanakan Circuit kuantum pada QPU menggunakan Qubit lalai, iaitu Qubit yang dipilih dengan sifat backend yang diminta. Kita akan menggunakan `optimization_level = 3`. Tetapan ini merangkumi pengoptimuman transpilasi yang paling maju, dan menggunakan sifat sasaran (seperti ralat operasi) untuk memilih Qubit berprestasi terbaik untuk pelaksanaan.
+
+```python
+pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
+isa_circuits = pm.run(circuits)
+initial_qubits = [
+    [
+        idx
+        for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+        if qb._register.name != "ancilla"
+    ]
+    for circuit in isa_circuits
+]
+```
+
+### Laksanakan Circuit kuantum dengan pemilihan Qubit masa nyata {#laksanakan-circuit-kuantum-dengan-pemilihan-qubit-masa-nyata}
+
+Dalam bahagian ini, kita akan menyiasat kepentingan mempunyai maklumat terkini tentang sifat Qubit QPU untuk hasil yang optimum. Pertama, kita akan menjalankan suite lengkap eksperimen pencirian QPU ($T_1$, $T_2$, SPAM, RB satu-Qubit dan RB dua-Qubit), yang kemudiannya boleh kita gunakan untuk mengemas kini sifat backend. Ini membolehkan pengurus laluan memilih Qubit untuk pelaksanaan berdasarkan maklumat segar tentang QPU, yang mungkin meningkatkan prestasi pelaksanaan. Kedua, kita melaksanakan Circuit pasangan Bell dan kita bandingkan kesetiaan yang diperoleh selepas memilih Qubit dengan sifat QPU yang dikemas kini berbanding kesetiaan yang kita peroleh sebelumnya apabila menggunakan sifat yang dilaporkan lalai untuk pemilihan Qubit.
+
+<Admonition type="caution">
+Perlu diingat bahawa sesetengah eksperimen pencirian mungkin gagal apabila rutin pemasangan tidak dapat memasang lengkung pada data yang diukur. Jika kamu melihat amaran daripada eksperimen-eksperimen ini, periksanya untuk memahami pencirian mana yang gagal pada Qubit mana, dan cuba laraskan parameter eksperimen (seperti masa untuk $T_1$, $T_2$, atau panjang bilangan eksperimen RB).
+</Admonition>
+
+```python
+# Prepare characterization experiments
+batches = [t1_exp, t2_exp, readout_exp, singleq_rb_exp, twoq_rb_exp_batched]
+batches_exp = BatchExperiment(batches, backend)  # , analysis=None)
+run_options = {"shots": 1e3, "dynamic": False}
+
+with Session(backend=backend) as session:
+    sampler = SamplerV2(mode=session)
+
+    # Run characterization experiments
+    batches_exp_data = batches_exp.run(
+        sampler=sampler, **run_options
+    ).block_for_results()
+
+    EPG_sx_result_list = batches_exp_data.analysis_results("EPG_sx")
+    EPG_sx_result_q_indices = [
+        result.device_components.index for result in EPG_sx_result_list
+    ]
+    EPG_x_result_list = batches_exp_data.analysis_results("EPG_x")
+    EPG_x_result_q_indices = [
+        result.device_components.index for result in EPG_x_result_list
+    ]
+    T1_result_list = batches_exp_data.analysis_results("T1")
+    T1_result_q_indices = [
+        result.device_components.index for result in T1_result_list
+    ]
+
+    T2_result_list = batches_exp_data.analysis_results("T2")
+    T2_result_q_indices = [
+        result.device_components.index for result in T2_result_list
+    ]
+
+    Readout_result_list = batches_exp_data.analysis_results(
+        "Local Readout Mitigator"
+    )
+
+    EPG_2q_result_list = batches_exp_data.analysis_results(
+        f"EPG_{instruction_2q_name}"
+    )
+
+    # Update target properties
+    target = copy.deepcopy(backend.target)
+    for i in range(target.num_qubits - 1):
+        qarg = (i,)
+
+        if qarg in EPG_sx_result_q_indices:
+            target.update_instruction_properties(
+                instruction="sx",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_sx_result_list[i].value.nominal_value
+                ),
+            )
+        if qarg in EPG_x_result_q_indices:
+            target.update_instruction_properties(
+                instruction="x",
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_x_result_list[i].value.nominal_value
+                ),
+            )
+
+        err_mat = Readout_result_list.value.assignment_matrix(i)
+        readout_assignment_error = (
+            err_mat[0, 1] + err_mat[1, 0]
+        ) / 2  # average readout error
+        target.update_instruction_properties(
+            instruction="measure",
+            qargs=qarg,
+            properties=InstructionProperties(error=readout_assignment_error),
+        )
+
+        if qarg in T1_result_q_indices:
+            target.qubit_properties[i].t1 = T1_result_list[
+                i
+            ].value.nominal_value
+        if qarg in T2_result_q_indices:
+            target.qubit_properties[i].t2 = T2_result_list[
+                i
+            ].value.nominal_value
+
+    for pair_idx, pair in enumerate(one_dir_coupling_map):
+        qarg = tuple(pair)
+        try:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg,
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+        except:
+            target.update_instruction_properties(
+                instruction=instruction_2q_name,
+                qargs=qarg[::-1],
+                properties=InstructionProperties(
+                    error=EPG_2q_result_list[pair_idx].value.nominal_value
+                ),
+            )
+
+    # transpile circuits to updated target
+    pm = generate_preset_pass_manager(target=target, optimization_level=3)
+    isa_circuit_updated = pm.run(circuits)
+    updated_qubits = [
+        [
+            idx
+            for idx, qb in circuit.layout.initial_layout.get_physical_bits().items()
+            if qb._register.name != "ancilla"
+        ]
+        for circuit in isa_circuit_updated
+    ]
+
+    n_trials = 3  # run multiple trials to see variations
+
+    # interleave circuits
+    interleaved_circuits = []
+    for original_circuit, updated_circuit in zip(
+        isa_circuits, isa_circuit_updated
+    ):
+        interleaved_circuits.append(original_circuit)
+        interleaved_circuits.append(updated_circuit)
+
+    # Run circuits
+    # Set simple error suppression/mitigation options
+    sampler.options.dynamical_decoupling.enable = True
+    sampler.options.dynamical_decoupling.sequence_type = "XY4"
+
+    job_interleaved = sampler.run(interleaved_circuits * n_trials)
+```
+
+## Langkah 4: Proses selepas dan kembalikan keputusan dalam format klasik yang diingini {#langkah-4-proses-selepas-dan-kembalikan-keputusan-dalam-format-klasik-yang-diingini}
+
+Akhirnya, jom kita bandingkan kesetiaan keadaan Bell yang diperoleh dalam dua tetapan berbeza:
+
+- `original`, iaitu dengan Qubit lalai yang dipilih oleh Transpiler berdasarkan sifat yang dilaporkan backend.
+- `updated`, iaitu dengan Qubit yang dipilih berdasarkan sifat backend yang dikemas kini selepas eksperimen pencirian dijalankan.
+
+```python
+results = job_interleaved.result()
+all_fidelity_list, all_fidelity_updated_list = [], []
+for exp_idx in range(n_trials):
+    fidelity_list, fidelity_updated_list = [], []
+
+    for idx, num_qubits in enumerate(num_qubits_list):
+        pub_result_original = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx
+        ]
+        pub_result_updated = results[
+            2 * exp_idx * len(num_qubits_list) + 2 * idx + 1
+        ]
+
+        fid = hellinger_fidelity(
+            ideal_dist, pub_result_original.data.c.get_counts()
+        )
+        fidelity_list.append(fid)
+
+        fid_up = hellinger_fidelity(
+            ideal_dist, pub_result_updated.data.c.get_counts()
+        )
+        fidelity_updated_list.append(fid_up)
+    all_fidelity_list.append(fidelity_list)
+    all_fidelity_updated_list.append(fidelity_updated_list)
+```
+
+```python
+plt.figure(figsize=(8, 6))
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_list, axis=0),
+    yerr=np.std(all_fidelity_list, axis=0),
+    fmt="o-.",
+    label="original",
+    color="b",
+)
+# plt.plot(num_qubits_list, fidelity_list, '-.')
+plt.errorbar(
+    num_qubits_list,
+    np.mean(all_fidelity_updated_list, axis=0),
+    yerr=np.std(all_fidelity_updated_list, axis=0),
+    fmt="o-.",
+    label="updated",
+    color="r",
+)
+# plt.plot(num_qubits_list, fidelity_updated_list, '-.')
+plt.xlabel("Chain length")
+plt.xticks(num_qubits_list)
+plt.ylabel("Fidelity")
+plt.title("Bell pair fidelity at the edge of N-qubits chain")
+plt.legend()
+plt.grid(
+    alpha=0.2,
+    linestyle="-.",
+)
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/real-time-benchmarking-for-qubit-selection/extracted-outputs/656ec97a-3fd9-4635-9a98-1c5589761689-0.avif)
+
+Tidak semua jalankan akan menunjukkan peningkatan prestasi akibat pencirian masa nyata — dan dengan bertambahnya panjang rantaian, dan justeru kurangnya kebebasan untuk memilih Qubit fizikal, kepentingan maklumat peranti yang dikemas kini menjadi semakin berkurangan. Walau bagaimanapun, ia adalah amalan baik untuk mengumpul data segar tentang sifat peranti bagi memahami prestasinya. Kadangkala, sistem dua-aras sementara mungkin mempengaruhi prestasi sesetengah Qubit. Data masa nyata boleh memberitahu kita apabila kejadian sedemikian berlaku dan membantu kita mengelakkan kegagalan eksperimen dalam kes-kes sebegitu.
+
+<Admonition type="note" title="Cabaran untuk kamu">
+Cuba terapkan kaedah ini pada pelaksanaan kamu sendiri dan tentukan berapa banyak manfaat yang kamu dapat! Kamu juga boleh cuba tengok berapa banyak peningkatan yang kamu dapat daripada backend yang berbeza.
+</Admonition>
+
+## Kaji selidik tutorial {#kaji-selidik-tutorial}
+
+Sila ambil kaji selidik ringkas ini untuk memberikan maklum balas tentang tutorial ini. Pandangan kamu akan membantu kami menambah baik kandungan dan pengalaman pengguna kami.
+
+[Pautan ke kaji selidik](https://your.feedback.ibm.com/jfe/form/SV_0w6FZ9QrWkKfTQq)
