@@ -95,27 +95,25 @@ Pre-compute each file's source hash before launching its agent:
 
 After each batch: `✓ file1 (N lines), file2 (N lines), file3 (N lines) — done/total`
 
-After every 10 files, validate and commit:
+After every 10 files, commit (no validation yet — that happens at the end):
 ```bash
-python translation/scripts/validate-translation.py --locale {LOCALE} --dir translation/drafts
-git add translation/drafts/{LOCALE}/
-git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
+git add translation/drafts/{LOCALE}/ && git commit -m "feat(i18n): add {LANGUAGE} translation drafts"
 ```
 
-## Step 4 — Summary
+## Step 4 — Validate and finalize
 
-After all files are done, print:
-- Files translated, skipped, failed
-- Remaining count
-
-Then remind the user:
+After ALL translation is done, run validation and post-processing in one block:
 ```bash
+python translation/scripts/validate-translation.py --locale {LOCALE} --dir translation/drafts
 python translation/scripts/fix-heading-anchors.py --locale {LOCALE} --dir translation/drafts --apply
 python translation/scripts/promote-drafts.py --locale {LOCALE}
 python translation/scripts/sync-translations.py --locale {LOCALE}
 python translation/scripts/translate-content.py populate-locale --locale {LOCALE}
 git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
+git commit -m "feat(i18n): promote {LANGUAGE} translations"
 ```
+
+Print summary: files translated, skipped, failed, remaining.
 
 ## Chunking (files >400 lines)
 
