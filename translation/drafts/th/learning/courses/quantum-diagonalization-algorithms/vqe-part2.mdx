@@ -1,0 +1,451 @@
+## 3. ตัวอย่าง Hamiltonian {#3-example-hamiltonian}
+
+มานำอัลกอริทึมนี้ไปใช้งานจริงโดยใช้ Hamiltonian matrix ขนาดเล็กเพื่อให้เราเห็นว่าเกิดอะไรขึ้นในแต่ละขั้นตอน เราจะใช้กรอบ Qiskit pattern:
+
+-__ขั้นตอนที่ 1__: แมปปัญหาไปยัง quantum circuit และตัวดำเนินการ
+-__ขั้นตอนที่ 2__: เพิ่มประสิทธิภาพสำหรับฮาร์ดแวร์เป้าหมาย
+-__ขั้นตอนที่ 3__: รันบนฮาร์ดแวร์เป้าหมาย
+-__ขั้นตอนที่ 4__: Post-process ผลลัพธ์
+
+### 3.1 ขั้นตอนที่ 1: แมปปัญหาไปยัง Quantum Circuit และตัวดำเนินการ {#31-step-1-map-the-problem-to-quantum-circuits-and-operators}
+
+เราจะใช้ตัวที่นิยามข้างต้นจาก chemistry context เราเริ่มต้นด้วย general import บางตัว
+
+```python
+# General imports
+import numpy as np
+
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+# Plotting functions
+import matplotlib.pyplot as plt
+```
+
+อีกครั้ง เราสมมติว่า Hamiltonian ที่สนใจเป็นที่รู้จัก เราจะใช้ Hamiltonian ที่เล็กมากที่นี่ เนื่องจากวิธีอื่นๆ ที่อภิปรายใน course นี้จะมีประสิทธิภาพมากกว่าในการแก้ปัญหาขนาดใหญ่
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+import numpy as np
+
+hamiltonian = SparsePauliOp.from_list(
+    [("YZ", 0.3980), ("ZI", -0.3980), ("ZZ", -0.0113), ("XX", 0.1810)]
+)
+
+A = np.array(hamiltonian)
+eigenvalues, eigenvectors = np.linalg.eigh(A)
+print("The ground state energy is ", min(eigenvalues))
+```
+
+```text
+The ground state energy is  -0.702930394459531
+```
+
+มีตัวเลือก ansatz สำเร็จรูปหลายตัวใน Qiskit เราจะใช้ ```efficient_su2```
+
+```python
+# Pre-defined ansatz circuit and operator class for Hamiltonian
+from qiskit.circuit.library import efficient_su2
+
+# Note that it is more common to place initial 'h' gates outside the ansatz. Here we specifically wanted this layer structure.
+ansatz = efficient_su2(
+    hamiltonian.num_qubits, su2_gates=["h", "rz", "y"], entanglement="circular", reps=1
+)
+
+num_params = ansatz.num_parameters
+print("This circuit has ", num_params, "parameters")
+
+ansatz.decompose().draw("mpl", style="iqp")
+```
+
+```text
+This circuit has  4 parameters
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/vqe/extracted-outputs/84d6380e-8ee8-4340-a416-c07900fe4c5b-1.avif)
+
+ansatz ที่แตกต่างกันจะมีโครงสร้าง entangling และ rotation gate ต่างกัน ตัวที่แสดงที่นี่ใช้ CNOT gate สำหรับการ entangle และทั้ง Y gate และ parametrized RZ gate สำหรับ rotation สังเกตขนาดของ parameter space นี้ หมายความว่าเราต้อง minimize cost function บนตัวแปร 4 ตัว (พารามิเตอร์สำหรับ RZ gate) ซึ่งสามารถขยายขนาดได้ แต่ไม่ได้ไม่มีขีดจำกัด การรันปัญหาที่คล้ายกันบน qubit 4 ตัว โดยใช้ reps เริ่มต้น 3 ตัวสำหรับ ```efficient_su2``` จะให้ variational parameter 16 ตัว
+### 3.2 ขั้นตอนที่ 2: เพิ่มประสิทธิภาพสำหรับฮาร์ดแวร์เป้าหมาย {#32-step-2-optimize-for-target-hardware}
+
+ansatz ถูกเขียนโดยใช้ gate ที่คุ้นเคย แต่ circuit ของเราต้อง transpile เพื่อใช้ basis gate ที่สามารถนำไปใช้บนควอนตัมคอมพิวเตอร์แต่ละเครื่อง เราเลือก backend ที่ว่างงานน้อยที่สุด
+
+```python
+# runtime imports
+from qiskit_ibm_runtime import QiskitRuntimeService, Session
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_torino')>
+```
+
+ตอนนี้เราสามารถ transpile circuit สำหรับฮาร์ดแวร์นี้และแสดงภาพ transpiled ansatz ของเรา
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+
+ansatz_isa = pm.run(ansatz)
+
+ansatz_isa.draw(output="mpl", idle_wires=False, style="iqp")
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/vqe/extracted-outputs/4a1cdcf3-7d94-4a1f-b675-9549bf28d956-0.avif)
+
+หมายเหตุว่า gate ที่ใช้เปลี่ยนไป และ qubit ใน circuit นามธรรมของเราถูกแมปไปยัง qubit ที่มีหมายเลขต่างกันบนควอนตัมคอมพิวเตอร์ เราต้องแมป Hamiltonian ของเราให้เหมือนกันเพื่อให้ผลลัพธ์มีความหมาย
+
+```python
+hamiltonian_isa = hamiltonian.apply_layout(layout=ansatz_isa.layout)
+```
+
+### 3.3 ขั้นตอนที่ 3: รันบนฮาร์ดแวร์เป้าหมาย {#33-step-3-execute-on-target-hardware}
+
+#### 3.3.1 รายงานค่าที่ได้ {#331-reporting-out-values}
+
+เรานิยาม cost function ที่นี่ซึ่งรับ argument ที่เป็นโครงสร้างที่เราสร้างในขั้นตอนก่อนหน้า: พารามิเตอร์, ansatz และ Hamiltonian นอกจากนี้ยังใช้ estimator ที่เรายังไม่ได้นิยาม เรารวมโค้ดเพื่อติดตาม history ของ cost function เพื่อให้เราสามารถตรวจสอบพฤติกรรม convergence ได้
+
+```python
+def cost_func(params, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (EstimatorV2): Estimator primitive instance
+        cost_history_dict: Dictionary for storing intermediate results
+
+    Returns:
+        float: Energy estimate
+    """
+    pub = (ansatz, [hamiltonian], [params])
+    result = estimator.run(pubs=[pub]).result()
+    energy = result[0].data.evs[0]
+
+    cost_history_dict["iters"] += 1
+    cost_history_dict["prev_vector"] = params
+    cost_history_dict["cost_history"].append(energy)
+    print(f"Iters. done: {cost_history_dict['iters']} [Current cost: {energy}]")
+
+    return energy
+
+cost_history_dict = {
+    "prev_vector": None,
+    "iters": 0,
+    "cost_history": [],
+}
+```
+
+เป็นประโยชน์อย่างมากถ้าคุณสามารถเลือกค่าพารามิเตอร์เริ่มต้นตามความรู้เกี่ยวกับปัญหาและลักษณะของ target state เราจะไม่สมมติความรู้ดังกล่าวและใช้ค่าสุ่มเริ่มต้น
+
+```python
+x0 = 2 * np.pi * np.random.random(num_params)
+```
+
+```python
+# This required 13 min, 20 s QPU time on an Eagle processor, 28 min total time.
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session)
+    estimator.options.default_shots = 10000
+
+    res = minimize(
+        cost_func,
+        x0,
+        args=(ansatz_isa, hamiltonian_isa, estimator),
+        method="cobyla",
+        options={"maxiter": 50},
+    )
+```
+
+```text
+Iters. done: 1 [Current cost: 0.010575798722044727]
+Iters. done: 2 [Current cost: 0.004040015974440895]
+Iters. done: 3 [Current cost: 0.0020213258785942503]
+Iters. done: 4 [Current cost: 0.18723082446726014]
+Iters. done: 5 [Current cost: -0.2746792152068885]
+Iters. done: 6 [Current cost: -0.3094547651648519]
+Iters. done: 7 [Current cost: -0.05281985428356641]
+Iters. done: 8 [Current cost: 0.00808560303514377]
+Iters. done: 9 [Current cost: -0.0014821685303514388]
+Iters. done: 10 [Current cost: -0.004759824281150161]
+Iters. done: 11 [Current cost: 0.09942328705995292]
+Iters. done: 12 [Current cost: 0.01092366214057508]
+Iters. done: 13 [Current cost: 0.05017497496069776]
+Iters. done: 14 [Current cost: 0.13028868414310696]
+Iters. done: 15 [Current cost: 0.013747803514376994]
+Iters. done: 16 [Current cost: 0.2583072432944498]
+Iters. done: 17 [Current cost: -0.14422125655131562]
+Iters. done: 18 [Current cost: -0.0004950150347678081]
+Iters. done: 19 [Current cost: 0.00681082268370607]
+Iters. done: 20 [Current cost: -0.0023377795527156544]
+Iters. done: 21 [Current cost: 0.6027665591169237]
+Iters. done: 22 [Current cost: 0.00596641373801917]
+Iters. done: 23 [Current cost: -0.008318769968051117]
+Iters. done: 24 [Current cost: -0.00026683306709265246]
+Iters. done: 25 [Current cost: -0.007648222843450479]
+Iters. done: 26 [Current cost: 0.004121086261980831]
+Iters. done: 27 [Current cost: -0.004075019968051117]
+Iters. done: 28 [Current cost: -0.004419369009584665]
+Iters. done: 29 [Current cost: 0.213185460054037]
+Iters. done: 30 [Current cost: -0.06505919572162797]
+Iters. done: 31 [Current cost: -0.5334241316590271]
+Iters. done: 32 [Current cost: 0.00218370607028754]
+Iters. done: 33 [Current cost: 0.09579352143666908]
+Iters. done: 34 [Current cost: -0.009274800319488819]
+Iters. done: 35 [Current cost: -0.44395141360688106]
+Iters. done: 36 [Current cost: 0.011747104632587858]
+Iters. done: 37 [Current cost: -0.003344149361022364]
+Iters. done: 38 [Current cost: 0.19138183916486304]
+Iters. done: 39 [Current cost: 0.013513931813145209]
+```
+
+เราสามารถดู raw output
+
+```python
+res
+```
+
+```text
+message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: -0.5334241316590271
+       x: [ 1.024e+00  6.459e+00  3.625e+00  4.007e+00]
+    nfev: 39
+   maxcv: 0.0
+```
+
+### 3.4 ขั้นตอนที่ 4: Post-process ผลลัพธ์ {#34-step-4-post-process-results}
+
+ถ้ากระบวนการสิ้นสุดอย่างถูกต้อง ค่าใน dictionary ของเราควรเท่ากับ solution vector และจำนวน function evaluation ทั้งหมดตามลำดับ ซึ่งง่ายต่อการตรวจสอบ:
+
+```python
+cost_history_dict
+```
+
+```text
+{'prev_vector': array([1.02397956, 6.45886604, 3.62479262, 4.00744128]),
+ 'iters': 39,
+ 'cost_history': [np.float64(0.010575798722044727),
+  np.float64(0.004040015974440895),
+  np.float64(0.0020213258785942503),
+  np.float64(0.18723082446726014),
+  np.float64(-0.2746792152068885),
+  np.float64(-0.3094547651648519),
+  np.float64(-0.05281985428356641),
+  np.float64(0.00808560303514377),
+  np.float64(-0.0014821685303514388),
+  np.float64(-0.004759824281150161),
+  np.float64(0.09942328705995292),
+  np.float64(0.01092366214057508),
+  np.float64(0.05017497496069776),
+  np.float64(0.13028868414310696),
+  np.float64(0.013747803514376994),
+  np.float64(0.2583072432944498),
+  np.float64(-0.14422125655131562),
+  np.float64(-0.0004950150347678081),
+  np.float64(0.00681082268370607),
+  np.float64(-0.0023377795527156544),
+  np.float64(0.6027665591169237),
+  np.float64(0.00596641373801917),
+  np.float64(-0.008318769968051117),
+  np.float64(-0.00026683306709265246),
+  np.float64(-0.007648222843450479),
+  np.float64(0.004121086261980831),
+  np.float64(-0.004075019968051117),
+  np.float64(-0.004419369009584665),
+  np.float64(0.213185460054037),
+  np.float64(-0.06505919572162797),
+  np.float64(-0.5334241316590271),
+  np.float64(0.00218370607028754),
+  np.float64(0.09579352143666908),
+  np.float64(-0.009274800319488819),
+  np.float64(-0.44395141360688106),
+  np.float64(0.011747104632587858),
+  np.float64(-0.003344149361022364),
+  np.float64(0.19138183916486304),
+  np.float64(0.013513931813145209)]}
+```
+
+```python
+fig, ax = plt.subplots()
+x = np.linspace(0, 10, 50)
+
+# Define the constant function
+constant = -0.7029
+y_constant = np.full_like(x, constant)
+ax.plot(
+    range(cost_history_dict["iters"]), cost_history_dict["cost_history"], label="VQE"
+)
+ax.set_xlabel("Iterations")
+ax.set_ylabel("Cost")
+ax.plot(y_constant, label="Target")
+plt.legend()
+plt.draw()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/vqe/extracted-outputs/a789373a-8d32-4761-ba21-6b2f98a7ae5a-0.avif)
+
+IBM Quantum มีข้อเสนอ upskilling อื่นๆ ที่เกี่ยวข้องกับ VQE ถ้าพร้อมนำ VQE ไปใช้งานจริง ดู tutorial: [Ground-state energy estimation of the Heisenberg chain with VQE](/tutorials/spin-chain-vqe) หากต้องการข้อมูลเพิ่มเติมเกี่ยวกับการสร้าง molecular Hamiltonian ดู [บทเรียนนี้](/learning/courses/quantum-chem-with-vqe/hamiltonian-construction) ใน course [Quantum chemistry with VQE](/learning/courses/quantum-chem-with-vqe) ของเรา ถ้าสนใจทำความเข้าใจเชิงลึกเกี่ยวกับวิธี variational algorithm เช่น VQE ทำงานอย่างไร แนะนำ course [Variational Algorithm Design](/learning/courses/variational-algorithm-design/optimization-loops)
+
+### ทดสอบความเข้าใจ {#check-your-understanding-3}
+อ่านคำถามด้านล่าง คิดคำตอบของคุณ แล้วคลิกสามเหลี่ยมเพื่อดูเฉลย
+
+<details>
+<summary>
+
+ในส่วนนี้ เราคำนวณ ground state energy จาก Hamiltonian ถ้าเราต้องการนำสิ่งนี้ไปใช้กับการกำหนดรูปทรงของโมเลกุล เราจะขยายสิ่งนี้อย่างไร?
+
+</summary>
+
+__คำตอบ:__
+
+เราต้องแนะนำตัวแปรสำหรับระยะห่างระหว่างอะตอม และมุมระหว่างพันธะ เราต้องเปลี่ยนแปลงสิ่งเหล่านี้ สำหรับการเปลี่ยนแปลงแต่ละครั้ง เราจะสร้าง Hamiltonian ใหม่ (เนื่องจาก operator ที่อธิบายพลังงานขึ้นอยู่กับรูปทรงอย่างแน่นอน) สำหรับ Hamiltonian แต่ละตัวที่สร้างขึ้นและแมปลงบน qubit เราต้องทำการ optimization เช่นเดียวกับที่ทำข้างต้น จากปัญหา optimization ที่ converge แล้วทั้งหมดนั้น รูปทรงที่ให้พลังงานต่ำสุดจะเป็นรูปทรงที่ธรรมชาติเลือก สิ่งนี้ซับซ้อนกว่าที่แสดงข้างต้นมาก การคำนวณดังกล่าวทำสำหรับโมเลกุลที่ง่ายที่สุดคือ $\text{H}_2$ [ที่นี่](/learning/courses/quantum-chem-with-vqe/geometry)
+
+</details>
+## 4. ความสัมพันธ์ของ VQE กับวิธีอื่นๆ {#4-vqes-relationship-to-other-methods}
+
+ในส่วนนี้ เราจะทบทวนข้อดีและข้อเสียของแนวทาง VQE ดั้งเดิมและชี้ให้เห็นความสัมพันธ์กับอัลกอริทึมใหม่ๆ ที่ล้ำหน้ากว่า
+
+### 4.1 จุดแข็งและจุดอ่อนของ VQE {#41-the-strengths-and-weaknesses-of-vqe}
+
+จุดแข็งบางส่วนได้ถูกชี้ให้เห็นแล้ว ได้แก่:
+
+* ความเหมาะสมกับฮาร์ดแวร์ปัจจุบัน: อัลกอริทึมควอนตัมบางตัวต้องการอัตราข้อผิดพลาดที่ต่ำกว่ามาก ใกล้เคียงกับ large scale fault tolerance VQE ไม่ต้องการ สามารถนำไปใช้บนควอนตัมคอมพิวเตอร์ปัจจุบันได้
+* Circuit ที่ตื้น: VQE มักใช้ quantum circuit ที่ค่อนข้างตื้น ทำให้ VQE มีความอ่อนไหวต่อ gate error สะสมน้อยลงและเหมาะสำหรับเทคนิค error mitigation หลายอย่าง แน่นอนว่า circuit ไม่ตื้นเสมอไป ขึ้นอยู่กับ ansatz ที่ใช้
+* ความหลากหลาย: VQE สามารถ (ในหลักการ) นำไปใช้กับปัญหาใดๆ ที่สามารถเขียนเป็นปัญหา eigenvalue/eigenvector มีข้อแม้หลายอย่างที่ทำให้ VQE ไม่ปฏิบัติจริงหรือเสียเปรียบสำหรับปัญหาบางอย่าง บางส่วนสรุปด้านล่าง
+
+จุดอ่อนบางส่วนของ VQE และปัญหาที่ไม่สามารถนำไปใช้ได้จริงได้อธิบายข้างต้นด้วย ได้แก่:
+
+* ลักษณะ Heuristic: VQE ไม่รับประกัน convergence ไปยัง ground state energy ที่ถูกต้อง เนื่องจากประสิทธิภาพขึ้นอยู่กับการเลือก ansatz และวิธี optimization [\[1-2\]](#references) ถ้าเลือก ansatz ที่แย่ซึ่งขาด entanglement ที่จำเป็นสำหรับ ground state ที่ต้องการ ไม่มี classical optimizer ใดสามารถเข้าถึง ground state นั้นได้
+* พารามิเตอร์อาจมีจำนวนมาก: ansatz ที่มี expressivity สูงอาจมีพารามิเตอร์มากจนการทำ minimization iteration ใช้เวลานานมาก
+* ต้นทุนการวัดสูง: ใน VQE estimator ถูกใช้เพื่อประมาณค่าความคาดหวังของแต่ละ term ใน Hamiltonian Hamiltonian ที่สนใจส่วนใหญ่จะมี term ที่ไม่สามารถประมาณพร้อมกันได้ ซึ่งอาจทำให้ VQE ใช้ทรัพยากรมากสำหรับระบบขนาดใหญ่ที่มี Hamiltonian ที่ซับซ้อน [\[1\]](#references)
+* ผลของ noise: เมื่อ classical optimizer กำลังค้นหา minimum การคำนวณที่มี noise อาจทำให้มันสับสนและพาไปผิดทางจาก minimum ที่แท้จริงหรือชะลอ convergence วิธีแก้ปัญหาที่เป็นไปได้คือการใช้เทคนิค error mitigation และ error suppression ขั้นสูง [\[2-3\]](#references) จาก IBM
+* Barren plateau: พื้นที่ที่ gradient หายไป [\[2-3\]](#references) มีอยู่แม้ในกรณีที่ไม่มี noise แต่ noise ทำให้รุนแรงขึ้นเนื่องจากการเปลี่ยนแปลงของค่าความคาดหวังเนื่องจาก noise อาจใหญ่กว่าการเปลี่ยนแปลงจากการอัปเดตพารามิเตอร์ในพื้นที่ barren เหล่านี้
+
+### 4.2 ความสัมพันธ์กับแนวทางอื่นๆ {#42-relationship-to-other-approaches}
+
+#### Adapt-VQE {#adapt-vqe}
+
+อัลกอริทึม **ADAPT-VQE** (Adaptive Derivative-Assembled Pseudo-Trotter Variational Quantum Eigensolver) เป็นการปรับปรุงของอัลกอริทึม VQE ดั้งเดิม ออกแบบมาเพื่อปรับปรุงประสิทธิภาพ ความแม่นยำ และความสามารถในการขยายขนาดสำหรับการจำลองควอนตัม โดยเฉพาะใน quantum chemistry
+
+อัลกอริทึม VQE ดั้งเดิมที่อธิบายตลอดบทเรียนนี้ใช้ ansatz ที่กำหนดไว้ล่วงหน้าและคงที่เพื่อประมาณ ground state ของระบบ ในกรณีของเรา เราใช้ `efficient_su2` ที่มี repetition เดี่ยว โดยใช้ Y และ RZ rotation gate แม้ว่าพารามิเตอร์ใน RZ gate จะเปลี่ยนแปลง แต่โครงสร้างของ ansatz นี้และ gate ที่ใช้ไม่เปลี่ยนแปลง
+
+ADAPT-VQE แก้ไขข้อจำกัดของ VQE ผ่านการสร้าง ansatz แบบ adaptive แทนที่จะเริ่มต้นด้วย ansatz ที่คงที่ ADAPT-VQE สร้าง ansatz แบบ dynamically ทีละขั้น ในแต่ละขั้น มันเลือก operator จาก predefined pool (เช่น fermionic excitation operator) ที่มี gradient ใหญ่ที่สุดเทียบกับพลังงาน ซึ่งรับประกันว่าเพิ่มเฉพาะ operator ที่มีผลกระทบมากที่สุดเท่านั้น ส่งผลให้ได้ ansatz ที่กะทัดรัดและมีประสิทธิภาพ [\[4-6\]](#references) แนวทางนี้อาจให้ประโยชน์หลายอย่าง:
+
+1. **Circuit Depth ลดลง**: โดยการขยาย ansatz แบบ incremental และเน้นเฉพาะ operator ที่จำเป็น ADAPT-VQE ลด gate operation เมื่อเทียบกับแนวทาง VQE แบบดั้งเดิม [\[5,7\]](#references)
+2. **ความแม่นยำปรับปรุง**: ลักษณะ adaptive ทำให้ ADAPT-VQE กู้คืน correlation energy ได้มากขึ้นในแต่ละขั้น ทำให้มีประสิทธิภาพเป็นพิเศษสำหรับระบบที่มีความสัมพันธ์สูงซึ่ง VQE แบบดั้งเดิมทำได้ยาก [\[8,9\]](#references)
+3. **Scalability และความทนทานต่อ Noise**: ansatz ที่กะทัดรัดลดการสะสมของ gate error ลดค่าใช้จ่ายในการคำนวณ และจำกัดจำนวน variational parameter ที่ต้อง minimize
+
+ADAPT-VQE ยังไม่สมบูรณ์แบบ ในบางกรณีอาจติดหรือช้าลงเนื่องจาก local minimum และอาจประสบกับ over-parameterization นอกจากนี้ยังอาจใช้ทรัพยากรค่อนข้างมาก เนื่องจากต้องการการคำนวณ gradient และการเพิ่มประสิทธิภาพพารามิเตอร์ด้วยโครงสร้าง gate หลายแบบ
+
+#### Quantum phase estimation (QPE) {#quantum-phase-estimation-qpe}
+
+QPE มีวัตถุประสงค์คล้ายกับ VQE แต่การนำไปใช้งานต่างกันมาก QPE ต้องการควอนตัมคอมพิวเตอร์แบบ fault-tolerant เนื่องจาก quantum circuit ที่มีความลึกโดยทั่วไปและระดับ coherence สูงที่ต้องการ เมื่อ QPE สามารถนำไปใช้งานได้ มันจะแม่นยำกว่า VQE วิธีหนึ่งในการอธิบายความแตกต่างคือผ่านความแม่นยำเป็นฟังก์ชันของ circuit depth QPE บรรลุความแม่นยำ $\epsilon$ ด้วย circuit depth ที่ scale เป็น $O(1/\epsilon)$ [\[10\]](#references) VQE ต้องการตัวอย่าง $O(1/\epsilon^2)$ เพื่อบรรลุความแม่นยำเดียวกัน [\[10,11\]](#references)
+
+#### Krylov, SQD, QSCI และอื่นๆ ใน course นี้ {#krylov-sqd-qsci-and-others-in-this-course}
+
+VQE ช่วยสร้าง quantum algorithm ที่ยังคงพึ่งพาคอมพิวเตอร์คลาสสิก ไม่เพียงแต่สำหรับการใช้งานควอนตัมคอมพิวเตอร์เท่านั้น แต่ยังสำหรับส่วนสำคัญของอัลกอริทึมด้วย อัลกอริทึมดังกล่าวหลายตัวเป็นจุดสนใจของ course ที่เหลือ ที่นี่ เราให้คำอธิบายเบื้องต้นของบางส่วน เพียงเพื่อเปรียบเทียบกับ VQE จะอธิบายอย่างละเอียดมากขึ้นในบทเรียนถัดไป
+
+__Krylov quantum diagonalization (KQD)__
+
+__Krylov subspace method__ เป็นวิธีฉาย matrix ลงบน subspace เพื่อลดมิติและทำให้จัดการได้ง่ายขึ้น ในขณะที่รักษาคุณสมบัติสำคัญไว้ เคล็ดลับหนึ่งในวิธีนี้คือการสร้าง subspace ที่รักษาคุณสมบัติเหล่านี้ ปรากฎว่าการสร้าง subspace นี้มีความเกี่ยวข้องอย่างใกล้ชิดกับวิธีที่ได้รับการยอมรับบนควอนตัมคอมพิวเตอร์ที่เรียกว่า __Trotterization__
+
+มีเวอร์ชันต่างๆ ของ quantum Krylov method แต่โดยทั่วไปแนวทางคือ:
+* ใช้ควอนตัมคอมพิวเตอร์เพื่อสร้าง subspace (Krylov subspace) ผ่าน Trotterization
+* ฉาย matrix ที่สนใจลงบน Krylov subspace นั้น
+* Diagonalize Hamiltonian ที่ฉายใหม่โดยใช้คอมพิวเตอร์คลาสสิก
+
+__Sampling-based quantum diagonalization (SQD)__
+
+__Sampling-based quantum diagonalization (SQD)__ มีความเกี่ยวข้องกับ Krylov method ตรงที่มันก็พยายามลดมิติของ matrix ที่จะ diagonalize ในขณะที่รักษาคุณสมบัติสำคัญด้วย SQD ทำสิ่งนี้ในลักษณะต่อไปนี้:
+* เริ่มต้นด้วยการเดาเริ่มต้นสำหรับ ground state และเตรียมระบบในสถานะ ground state นั้น
+* ใช้ Sampler สุ่มตัวอย่าง bitstring ที่ประกอบเป็นสถานะนี้
+* ใช้ชุดของ computational basis state จาก Sampler เป็น subspace สำหรับฉาย matrix ที่สนใจ
+* Diagonalize matrix ที่เล็กลงที่ฉายแล้วโดยใช้คอมพิวเตอร์คลาสสิก
+
+สิ่งนี้มีความเกี่ยวข้องกับ VQE ตรงที่ใช้การคำนวณทั้งคลาสสิกและควอนตัมสำหรับองค์ประกอบอัลกอริทึมสำคัญ ทั้งคู่ยังแบ่งปันความต้องการว่าเราต้องเตรียม good initial guess หรือ ansatz แต่การกระจายงานระหว่างคอมพิวเตอร์คลาสสิกและควอนตัมใน SQD คล้ายกับ Krylov method มากกว่า
+
+ในความเป็นจริง Krylov method และ SQD ได้ถูกรวมกันเป็น sampling-based Krylov quantum diagonalization (SKQD) [\[12\]](#references) ไปแล้วเมื่อไม่นานมานี้
+
+__Quantum subspace configuration interaction__
+
+__Quantum Selected Configuration Interaction (QSCI)__ [\[13\]](#references) เป็นอัลกอริทึมที่สร้าง ground state โดยประมาณของ Hamiltonian โดยการสุ่มตัวอย่าง trial wave function เพื่อระบุ computational basis state ที่สำคัญในการสร้าง subspace สำหรับ classical diagonalization
+ทั้ง SQD และ QSCI ใช้ควอนตัมคอมพิวเตอร์เพื่อสร้าง reduced subspace จุดแข็งเพิ่มเติมของ QSCI อยู่ที่การเตรียมสถานะ โดยเฉพาะในบริบทของปัญหาเคมี มันใช้กลยุทธ์ต่างๆ เช่น การใช้ time-evolved state [\[14\]](#references) และชุดของ chemistry-inspired ansatz โดยการเน้นที่การเตรียมสถานะอย่างมีประสิทธิภาพ QSCI ลดค่าใช้จ่ายการคำนวณควอนตัมสำหรับ chemical Hamiltonian ในขณะที่รักษา fidelity สูงและใช้ประโยชน์จาก noise robustness จากเทคนิค quantum state sampling [\[15\]](#references) QSCI ยังให้เทคนิคการสร้างแบบ adaptive ที่ให้ ansatz มากขึ้นเพื่อผลลัพธ์ที่ดีขึ้น
+
+workflow เริ่มต้นของ QSCI สำหรับปัญหาเคมีคือ:
+* สร้าง molecular Hamiltonian โดยใช้ software ที่ต้องการ (เช่น SciPy)
+* เตรียมอัลกอริทึม QSCI โดยเลือก initial state ที่เหมาะสมและ chemistry-inspired ansatz พร้อมชุดพารามิเตอร์ที่เลือกไว้ล่วงหน้า
+* สุ่มตัวอย่าง basis state สำคัญและ diagonalize Hamiltonian โดยใช้คอมพิวเตอร์คลาสสิกเพื่อหา ground state energy
+* มักใช้ configuration recovery [\[16\]](#references) และ symmetry post-selection [\[15\]](#references) เป็นเทคนิค post processing
+* ตัวเลือก workflow ของ adaptive QSCI มี optimization loop เพิ่มเติมจากขั้นตอน 2 ถึง 3 โดยใช้ ansatz มากขึ้นพร้อม random initial state
+
+### ทดสอบความเข้าใจ {#check-your-understanding-4}
+อ่านคำถามด้านล่าง คิดคำตอบของคุณ แล้วคลิกสามเหลี่ยมเพื่อดูเฉลย
+
+<details>
+<summary>
+
+VQE มีอะไรเหมือนกับวิธีอื่นๆ ทั้งหมดที่ระบุข้างต้น (ยกเว้น QPE ที่ไม่ได้อธิบายอย่างละเอียด)?
+
+</summary>
+
+__คำตอบ:__
+
+ทุกวิธีมี trial state หรือ wave function บางอย่าง ทุกวิธีทำงานได้ดีที่สุดเมื่อการเดาเริ่มต้นสำหรับ trial state นี้ดีเยี่ยม
+
+คำตอบที่ถูกต้องอีกอย่างคือ ทุกวิธีนำไปใช้งานได้ง่ายที่สุดเมื่อ Hamiltonian วัดได้ง่าย (สามารถจัดกลุ่มเป็นกลุ่มของ Pauli operator ที่ commute กันได้ค่อนข้างน้อยกลุ่ม)
+
+</details>
+
+<details>
+<summary>
+
+VQE ไม่มีอะไรเหมือนกับวิธีอื่นๆ ที่ระบุข้างต้นเลยในด้านไหน?
+
+</summary>
+
+__คำตอบ:__
+
+Classical optimizer ไม่มีวิธีอื่นใดที่ใช้ classical optimization algorithm เพื่อเลือก variational parameter
+
+</details>
+## References {#references}
+
+[2] https://en.wikipedia.org/wiki/Variational_quantum_eigensolver
+
+[3] https://journals.aps.org/prapplied/abstract/10.1103/PhysRevApplied.19.024047
+
+[4] https://arxiv.org/abs/2111.05176
+
+[6] https://inquanto.quantinuum.com/tutorials/InQ_tut_fe4n2_2.html
+
+[7] https://www.nature.com/articles/s41467-019-10988-2
+
+[8] https://arxiv.org/abs/2210.15438
+
+[9] https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.013254
+
+[10] https://arxiv.org/html/2403.09624v1
+
+[11] https://www.nature.com/articles/s42005-023-01312-y
+
+[13] https://arxiv.org/abs/1802.00171
+
+[14] https://arxiv.org/abs/2103.08505
+
+[15] https://arxiv.org/html/2501.09702v1
+
+[16] https://quri-sdk.qunasys.com/docs/examples/quri-algo-vm/qsci/
+
+[17] https://arxiv.org/abs/2412.13839
+
+[18] https://arxiv.org/abs/2302.11320v1
