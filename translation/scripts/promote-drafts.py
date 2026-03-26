@@ -44,6 +44,7 @@ STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "th", "ar", "he",
+    "ms", "id", "ko", "pl", "ro", "cs",
     "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
 
