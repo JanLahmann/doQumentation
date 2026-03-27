@@ -538,15 +538,36 @@ export function getWorkshopAssignment(): string | null {
   }
 }
 
+/** Stats for a single workshop instance, returned by the /stats endpoint. */
+export type InstanceStats = {
+  url: string;
+  kernels: number;
+  kernelsBusy: number;
+  connections: number;
+  uptimeSeconds: number;
+  memoryMb: number | null;
+  memoryTotalMb: number | null;
+  peakKernels: number;
+  peakConnections: number;
+  totalSseConnections: number;
+  status: 'online' | 'starting' | 'offline';
+};
+
+const OFFLINE_STATS: Omit<InstanceStats, 'url' | 'status'> = {
+  kernels: 0, kernelsBusy: 0, connections: 0, uptimeSeconds: 0,
+  memoryMb: null, memoryTotalMb: null,
+  peakKernels: 0, peakConnections: 0, totalSseConnections: 0,
+};
+
 /**
- * Query /stats on each instance in the pool. Returns kernel count + status per instance.
+ * Query /stats on each instance in the pool. Returns enriched stats per instance.
  * Used by the organizer dashboard and optionally for load-aware assignment.
  */
 export async function getWorkshopInstanceStats(
   pool: string[],
-): Promise<Array<{ url: string; kernels: number; status: 'online' | 'starting' | 'offline' }>> {
+): Promise<InstanceStats[]> {
   const results = await Promise.all(
-    pool.map(async (url) => {
+    pool.map(async (url): Promise<InstanceStats> => {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
@@ -554,14 +575,26 @@ export async function getWorkshopInstanceStats(
         clearTimeout(timeout);
         if (resp.ok) {
           const data = await resp.json();
-          return { url, kernels: data.kernels ?? 0, status: 'online' as const };
+          return {
+            url,
+            kernels: data.kernels ?? 0,
+            kernelsBusy: data.kernels_busy ?? 0,
+            connections: data.connections ?? 0,
+            uptimeSeconds: data.uptime_seconds ?? 0,
+            memoryMb: data.memory_mb ?? null,
+            memoryTotalMb: data.memory_total_mb ?? null,
+            peakKernels: data.peak_kernels ?? 0,
+            peakConnections: data.peak_connections ?? 0,
+            totalSseConnections: data.total_sse_connections ?? 0,
+            status: 'online',
+          };
         }
         if (resp.status === 502 || resp.status === 503) {
-          return { url, kernels: 0, status: 'starting' as const };
+          return { url, ...OFFLINE_STATS, status: 'starting' };
         }
-        return { url, kernels: 0, status: 'offline' as const };
+        return { url, ...OFFLINE_STATS, status: 'offline' };
       } catch {
-        return { url, kernels: 0, status: 'offline' as const };
+        return { url, ...OFFLINE_STATS, status: 'offline' };
       }
     }),
   );

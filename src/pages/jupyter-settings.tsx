@@ -51,6 +51,7 @@ import {
   getWorkshopAssignment,
   getWorkshopInstanceStats,
   type WorkshopPool,
+  type InstanceStats,
   type JupyterConfig,
   type SimulatorBackend,
   type ActiveMode,
@@ -195,10 +196,12 @@ export default function JupyterSettings(): JSX.Element {
   // Workshop pool state
   const [workshopPool, setWorkshopPoolState] = useState<WorkshopPool | null>(null);
   const [workshopAssigned, setWorkshopAssignedState] = useState<string | null>(null);
-  const [workshopStats, setWorkshopStats] = useState<Array<{ url: string; kernels: number; status: 'online' | 'starting' | 'offline' }> | null>(null);
+  const [workshopStats, setWorkshopStats] = useState<InstanceStats[] | null>(null);
   const [workshopConfigInput, setWorkshopConfigInput] = useState('');
   const [workshopResult, setWorkshopResult] = useState<string | null>(null);
   const [workshopResultType, setWorkshopResultType] = useState<'success' | 'warning' | 'info'>('success');
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   // Backend selection state
   const [availableBackends, setAvailableBackends] = useState<AvailableBackend[]>([]);
@@ -309,6 +312,14 @@ export default function JupyterSettings(): JSX.Element {
     }
     setTimeout(() => target.scrollIntoView({ behavior: 'smooth' }), 100);
   }, []);
+
+  // Auto-refresh workshop stats every 30s when enabled
+  useEffect(() => {
+    if (!autoRefresh || !workshopPool) return;
+    handleWorkshopRefreshStats();
+    const interval = setInterval(handleWorkshopRefreshStats, 30_000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, workshopPool]);
 
   const handleTest = async () => {
     if (!customUrl) return;
@@ -470,6 +481,8 @@ export default function JupyterSettings(): JSX.Element {
     setWorkshopAssignedState(null);
     setWorkshopStats(null);
     setWorkshopConfigInput('');
+    setAutoRefresh(false);
+    setLastUpdated(null);
     refreshBackends('code-engine');
     setWorkshopResult('Left workshop. Falling back to single CE instance or Binder.');
     setWorkshopResultType('success');
@@ -482,9 +495,14 @@ export default function JupyterSettings(): JSX.Element {
     setWorkshopResultType('info');
     const stats = await getWorkshopInstanceStats(pool.pool);
     setWorkshopStats(stats);
+    setLastUpdated(new Date());
     const online = stats.filter(s => s.status === 'online').length;
     const totalKernels = stats.reduce((sum, s) => sum + s.kernels, 0);
-    setWorkshopResult(`${online}/${stats.length} instances online, ${totalKernels} active kernel(s).`);
+    const totalBusy = stats.reduce((sum, s) => sum + s.kernelsBusy, 0);
+    const totalConn = stats.reduce((sum, s) => sum + s.connections, 0);
+    setWorkshopResult(
+      `${online}/${stats.length} online, ${totalKernels} kernels (${totalBusy} busy), ${totalConn} connections`
+    );
     setWorkshopResultType(online === stats.length ? 'success' : 'warning');
   };
 
@@ -1056,42 +1074,84 @@ export default function JupyterSettings(): JSX.Element {
                     </summary>
                     <div style={{ marginTop: '0.5rem' }}>
                       {workshopStats ? (
-                        <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse' }}>
-                          <thead>
-                            <tr style={{ borderBottom: '1px solid var(--ifm-color-emphasis-300)' }}>
-                              <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem' }}>#</th>
-                              <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem' }}>Instance</th>
-                              <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>Kernels</th>
-                              <th style={{ textAlign: 'center', padding: '0.25rem 0.5rem' }}>Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {workshopStats.map((s, i) => (
-                              <tr key={s.url} style={{ borderBottom: '1px solid var(--ifm-color-emphasis-200)' }}>
-                                <td style={{ padding: '0.25rem 0.5rem' }}>{i + 1}</td>
-                                <td style={{ padding: '0.25rem 0.5rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                                  {s.url.replace(/^https:\/\//, '').slice(0, 40)}...
-                                </td>
-                                <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>{s.kernels}</td>
-                                <td style={{ textAlign: 'center', padding: '0.25rem 0.5rem' }}>
-                                  {s.status === 'online' ? '\u25CF Online' : s.status === 'starting' ? '\u25CB Starting...' : '\u25CB Offline'}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                        <>
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse', minWidth: '500px' }}>
+                              <thead>
+                                <tr style={{ borderBottom: '1px solid var(--ifm-color-emphasis-300)' }}>
+                                  <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem' }}>#</th>
+                                  <th style={{ textAlign: 'left', padding: '0.25rem 0.5rem' }}>Instance</th>
+                                  <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>Kernels</th>
+                                  <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>Busy</th>
+                                  <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>Conn</th>
+                                  <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>Memory</th>
+                                  <th style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>Uptime</th>
+                                  <th style={{ textAlign: 'center', padding: '0.25rem 0.5rem' }}>Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {workshopStats.map((s, i) => (
+                                  <tr key={s.url} style={{ borderBottom: '1px solid var(--ifm-color-emphasis-200)' }}>
+                                    <td style={{ padding: '0.25rem 0.5rem' }}>{i + 1}</td>
+                                    <td style={{ padding: '0.25rem 0.5rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                                      {s.url.replace(/^https:\/\//, '').split('.')[0]}
+                                    </td>
+                                    <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>{s.kernels}</td>
+                                    <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>{s.kernelsBusy}</td>
+                                    <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>{s.connections}</td>
+                                    <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>
+                                      {s.memoryMb != null && s.memoryTotalMb != null
+                                        ? `${s.memoryMb}/${s.memoryTotalMb} MB`
+                                        : '\u2014'}
+                                    </td>
+                                    <td style={{ textAlign: 'right', padding: '0.25rem 0.5rem' }}>
+                                      {s.uptimeSeconds > 0
+                                        ? s.uptimeSeconds >= 3600
+                                          ? `${Math.floor(s.uptimeSeconds / 3600)}h ${Math.floor((s.uptimeSeconds % 3600) / 60)}m`
+                                          : `${Math.floor(s.uptimeSeconds / 60)}m`
+                                        : '\u2014'}
+                                    </td>
+                                    <td style={{ textAlign: 'center', padding: '0.25rem 0.5rem' }}>
+                                      {s.status === 'online' ? '\u25CF Online' : s.status === 'starting' ? '\u25CB Starting...' : '\u25CB Offline'}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          {/* Peak stats summary */}
+                          {workshopStats.some(s => s.status === 'online') && (
+                            <p style={{ fontSize: '0.8rem', color: 'var(--ifm-color-emphasis-600)', marginTop: '0.25rem', marginBottom: '0.5rem' }}>
+                              Peak: {Math.max(...workshopStats.map(s => s.peakKernels))} kernels, {Math.max(...workshopStats.map(s => s.peakConnections))} connections | Total sessions: {workshopStats.reduce((sum, s) => sum + s.totalSseConnections, 0)}
+                            </p>
+                          )}
+                        </>
                       ) : (
                         <p style={{ color: 'var(--ifm-color-emphasis-600)', fontSize: '0.85rem' }}>
                           Click Refresh to check instance status.
                         </p>
                       )}
-                      <button
-                        className="button button--secondary button--sm"
-                        onClick={handleWorkshopRefreshStats}
-                        style={{ marginTop: '0.5rem' }}
-                      >
-                        Refresh
-                      </button>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                        <button
+                          className="button button--secondary button--sm"
+                          onClick={handleWorkshopRefreshStats}
+                        >
+                          Refresh
+                        </button>
+                        <label style={{ fontSize: '0.85rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                          <input
+                            type="checkbox"
+                            checked={autoRefresh}
+                            onChange={e => setAutoRefresh(e.target.checked)}
+                          />
+                          Auto-refresh (30s)
+                        </label>
+                        {lastUpdated && (
+                          <span style={{ fontSize: '0.8rem', color: 'var(--ifm-color-emphasis-500)' }}>
+                            Last updated: {lastUpdated.toLocaleTimeString()}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </details>
 
