@@ -123,9 +123,58 @@ def check_indented_headings(tr_content: str, en_content: str = "") -> CheckResul
 
 ---
 
+---
+
+## 5. Validator: heading count should exclude indented headings consistently
+
+**File:** `translation/scripts/validate-translation.py`, function `check_heading_count`
+
+**Problem:** The heading count check counts all non-code-block headings. But `check_indented_headings` permits indented headings that are also indented in EN (by position). If the heading count check doesn't also exclude those same indented headings from its count, the two checks contradict each other. Example: `kipu-optimization.mdx` has ` #### Accepted problem formats` (1 leading space in EN). EN heading count = 26 (skips it). If TR renders it non-indented, TR count = 27 → mismatch. But `check_indented_headings` would flag it too. The workaround — adding a leading space to the TR — is fragile and surprising.
+
+**Fix:** In the heading count check, use the same `get_heading_info()` helper from the `check_indented_headings` fix (#1 above) to exclude headings that are indented in EN from both the EN and TR counts.
+
+**Impact:** Eliminates the kipu-style count mismatch. The two checks become consistent: a heading that is indented in EN is excluded from the count check AND permitted (not flagged) by the indented headings check.
+
+---
+
+## 6. Validator: lint code fence count check should compare TR to EN, not just check even/odd
+
+**File:** `translation/scripts/lint-translation.py`, fence count check
+
+**Problem:** The lint check flags any file where the total number of ` ``` ` fence markers is odd. But some EN source files legitimately have an odd fence count (e.g. `qiskit-code-assistant-local.mdx` has 29 fences — JSX template literals). The TR correctly mirrors the EN, but fails the lint check.
+
+**Fix:** Compare TR fence count to EN fence count. Only flag if `TR_count != EN_count`. An odd count is fine as long as both sides match.
+
+**Impact:** Eliminates false positive lint failures for files with JSX template fences. Currently requires `--force` to promote these files.
+
+---
+
+## 7. Fix upstream stray leading space in `kipu-optimization.mdx`
+
+**File:** `upstream-docs` submodule (or `docs/guides/kipu-optimization.mdx` after sync)
+
+**Problem:** Line 84 of `docs/guides/kipu-optimization.mdx` has a stray leading space:
+```
+ #### Accepted problem formats
+```
+This is almost certainly a typo in the IBM upstream source. It is not intentional MDX structure — unlike the `  # Title` headings in notebook-style course files (which are structural). The stray space causes every translation of this file to require manual intervention (add leading space to TR, or force-promote).
+
+**Fix:**
+1. Remove the leading space from `docs/guides/kipu-optimization.mdx` line 84 (or raise a PR upstream).
+2. Re-stamp the source hash in all 12 promoted locale files for `guides/kipu-optimization.mdx` (DE, ES, FR, IT, UK, JA, AR, PT, TL, TH, MS, ID) using `check-translation-freshness.py --stamp`.
+
+**Contrast with notebook-style files:** `error-mitigation.mdx` and `quantum-circuit-optimization.mdx` have `  # Title` at line 12. These are intentional (notebook cell title style) and should be left as-is — handled only by the validator fix (#1 + #5).
+
+**Impact:** Future translations of `kipu-optimization.mdx` pass validation without any manual intervention.
+
+---
+
 ## Priority order
 
 1. **#1 (validator fix)** — highest impact, purely mechanical, no risk of regression
 2. **#2 (prompt rule)** — one line addition, immediately reduces the most common failure
-3. **#3 (chunk threshold)** — safe change, reduces edge-case truncation
-4. **#4 (boundary overlap)** — more complex to phrase clearly, lowest frequency
+3. **#5 (heading count consistency)** — pairs with #1, eliminates kipu-style contradictions
+4. **#6 (lint fence count)** — one-line fix, eliminates false positive lint failures
+5. **#7 (upstream kipu fix)** — fixes the root cause for kipu specifically; requires hash re-stamp across 12 locales
+6. **#3 (chunk threshold)** — safe change, reduces edge-case truncation
+7. **#4 (boundary overlap)** — more complex to phrase clearly, lowest frequency
