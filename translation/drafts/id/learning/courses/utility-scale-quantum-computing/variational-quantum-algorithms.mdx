@@ -1,0 +1,1026 @@
+---
+title: "Algoritma kuantum variatif"
+sidebar_label: "Algoritma kuantum variatif"
+description: "Tutorial ini memberikan gambaran umum tentang algoritma hibrida kuantum-klasik, VQE, dan QAOA"
+notebook_path: "learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.ipynb"
+---
+
+{/* doqumentation-source-hash: cd649102 */}
+
+<OpenInLabBanner notebookPath="learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.ipynb" />
+
+
+
+# Algoritma kuantum: Algoritma kuantum variatif
+
+<Admonition type="note">
+
+Takashi Imamichi (24 Mei 2024)
+
+[Unduh pdf](https://ibm.ent.box.com/s/blnffu0pd7yzxarq3zc3w0jv90365ny2) dari kuliah aslinya. Perlu dicatat bahwa beberapa potongan kode mungkin sudah tidak berlaku karena ini adalah gambar statis.
+
+*Perkiraan waktu QPU untuk menjalankan eksperimen ini adalah 9 menit (diuji pada prosesor Eagle).*
+
+(notebook ini mungkin tidak dapat dievaluasi dalam waktu yang tersedia di Open Plan. Mohon gunakan sumber daya komputasi kuantum dengan bijak.)
+
+</Admonition>
+## 1. Pengenalan {#1-pengenalan}
+
+Tutorial ini memberikan gambaran umum tentang algoritma hibrida kuantum-klasik, khususnya berfokus pada variational quantum eigensolver (VQE) dan quantum approximate optimization algorithm (QAOA). Tujuan utama dari algoritma-algoritma ini adalah untuk menangani masalah optimasi dengan menggunakan Circuit kuantum yang memiliki Gate kuantum terparameter.
+
+Meskipun ada kemajuan dalam komputasi kuantum, kehadiran noise pada perangkat kuantum saat ini membuat sulit untuk mengekstrak hasil yang bermakna dari Circuit kuantum yang dalam. Untuk mengatasi tantangan ini, VQE dan QAOA mengadopsi pendekatan hibrida kuantum-klasik, yang melibatkan eksekusi iteratif Circuit kuantum yang relatif pendek menggunakan komputasi kuantum dan mengoptimalkan parameter Circuit kuantum terparameter target menggunakan komputasi klasik.
+
+QAOA berpotensi memberikan solusi optimal untuk masalah target pada skala utilitas, berkat penerapan berbagai teknik mitigasi dan supresi error. VQE memiliki banyak aplikasi (seperti kimia kuantum) di mana skalabilitasnya lebih terbatas. Namun, ada sejumlah pendekatan berbasis nilai eigen yang muncul untuk melengkapi dan meningkatkan VQE, termasuk diagonalisasi subruang Krylov dan sampling-based quantum diagonalization (SQD). Memahami VQE adalah langkah pertama yang penting dalam memahami berbagai algoritma hibrida klasik-kuantum yang telah muncul.
+
+Modul ini menjelaskan konsep dasar dan implementasi VQE dan QAOA. Tutorial lebih lanjut akan mengeksplorasi topik dan teknik lanjutan untuk menskalakan algoritma-algoritma ini.
+Kamu membutuhkan library berikut di lingkunganmu untuk menjalankan notebook ini.
+Jika kamu belum menginstalnya, kamu bisa menginstalnya dengan menghapus tanda komentar dan menjalankan sel berikut.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-ibm-runtime rustworkx scipy
+```
+
+```python
+# % pip install 'qiskit[visualization]' qiskit-ibm-runtime
+```
+
+## 2. Menghitung nilai eigen minimum dari Hamiltonian sederhana {#2-menghitung-nilai-eigen-minimum-dari-hamiltonian-sederhana}
+
+Kita akan mulai dengan menerapkan VQE pada kasus yang sangat sederhana, untuk melihat cara kerjanya. Kita akan menghitung nilai eigen minimum dari matriks Pauli $Z$ dengan VQE. Kita akan mulai dengan mengimpor beberapa paket umum.
+
+```python
+import numpy as np
+from qiskit.circuit import ParameterVector, QuantumCircuit
+from qiskit.primitives import StatevectorEstimator, StatevectorSampler
+from qiskit.quantum_info import SparsePauliOp
+from scipy.optimize import minimize
+```
+
+Sekarang kita mendefinisikan operator yang kita minati dan melihatnya dalam bentuk matriks.
+
+```python
+op = SparsePauliOp("Z")
+op.to_matrix()
+```
+
+```text
+array([[ 1.+0.j,  0.+0.j],
+       [ 0.+0.j, -1.+0.j]])
+```
+
+Cukup mudah untuk mendapatkan nilai eigen secara klasik, sehingga kita bisa memeriksa hasil kita. Ini mungkin menjadi sulit saat kita menskalakan ke skala utilitas. Di sini kita menggunakan numpy.
+
+```python
+# compute eigenvalues with numpy
+result = np.linalg.eigh(op.to_matrix())
+print("Eigenvalues:", result.eigenvalues)
+```
+
+```text
+Eigenvalues: [-1.  1.]
+```
+
+Untuk mendapatkan nilai eigen menggunakan algoritma kuantum variatif, kita membangun Circuit dengan Gate yang mengambil parameter variatif:
+
+```python
+# define a variational form
+param = ParameterVector("a", 3)
+qc = QuantumCircuit(1, 1)
+qc.u(param[0], param[1], param[2], 0)
+qc_estimator = qc.copy()
+qc.measure(0, 0)
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/99d5d36b-0.avif)
+
+Jika kita ingin memperkirakan nilai ekspektasi dari sebuah operator (seperti $Z$), kita harus menggunakan Estimator. Jika kita ingin melihat keadaan sistem, kita menggunakan Sampler.
+
+```python
+sampler = StatevectorSampler()
+estimator = StatevectorEstimator()
+```
+
+Kita bisa menghitung jumlah bitstring 0 dan 1 dengan nilai parameter acak `[1, 2, 3]` menggunakan Sampler.
+
+```python
+# compute counts of bitstrings with random parameter values by Sampler
+result = sampler.run([(qc, [1, 2, 3])]).result()
+counts = result[0].data.c.get_counts()
+counts
+```
+
+```text
+{'0': 783, '1': 241}
+```
+
+Kita tahu bahwa kita bisa menghitung nilai ekspektasi Z dengan $\langle Z \rangle = p_0 - p_1$ dengan probabilitas $\{0: p_0, 1: p_1\}$.
+
+```python
+# compute the expectation value of Z based on the counts
+(counts.get("0", 0) - counts.get("1", 0)) / sum(counts.values())
+```
+
+```text
+0.529296875
+```
+
+Circuit ini berhasil, tetapi nilai parameter yang dipilih tidak sesuai dengan keadaan berenergi rendah (atau nilai eigen rendah). Nilai eigen yang diperoleh cukup jauh di atas minimum. Hasilnya serupa saat menggunakan estimator.
+
+Perlu dicatat bahwa Estimator mengambil Circuit kuantum tanpa pengukuran.
+
+```python
+result = estimator.run([(qc_estimator, op, [1, 2, 3])]).result()
+result[0].data.evs
+```
+
+```text
+array(0.54030231)
+```
+
+Kita perlu mencari parameter dan menemukan yang menghasilkan nilai eigen terendah.
+Kita membuat fungsi untuk menerima nilai parameter dari bentuk variatif dan mengembalikan nilai ekspektasi $\langle Z \rangle$.
+
+```python
+# define a cost function to look for the minimum eigenvalue of Z
+def cost(x):
+    result = sampler.run([(qc, x)]).result()
+    counts = result[0].data.c.get_counts()
+    expval = (counts.get("0", 0) - counts.get("1", 0)) / sum(counts.values())
+    # the following line shows the trajectory of the optimization
+    print(expval, counts)
+    return expval
+```
+
+Mari kita terapkan fungsi `minimize` dari SciPy untuk menemukan nilai eigen minimum dari Z.
+
+```python
+# minimize the cost function with scipy's minimize
+min_result = minimize(cost, [0, 0, 0], method="COBYLA", tol=1e-8)
+min_result
+```
+
+```text
+1.0 {'0': 1024}
+0.494140625 {'0': 765, '1': 259}
+0.466796875 {'0': 751, '1': 273}
+0.564453125 {'0': 801, '1': 223}
+-0.4296875 {'1': 732, '0': 292}
+-0.984375 {'1': 1016, '0': 8}
+-0.8984375 {'1': 972, '0': 52}
+-0.990234375 {'1': 1019, '0': 5}
+-0.892578125 {'1': 969, '0': 55}
+-0.986328125 {'1': 1017, '0': 7}
+-0.861328125 {'1': 953, '0': 71}
+-1.0 {'1': 1024}
+-0.982421875 {'1': 1015, '0': 9}
+-0.99609375 {'1': 1022, '0': 2}
+-0.986328125 {'1': 1017, '0': 7}
+-1.0 {'1': 1024}
+-0.990234375 {'1': 1019, '0': 5}
+-0.998046875 {'1': 1023, '0': 1}
+-0.99609375 {'1': 1022, '0': 2}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-0.998046875 {'1': 1023, '0': 1}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-0.998046875 {'1': 1023, '0': 1}
+-0.998046875 {'1': 1023, '0': 1}
+-0.998046875 {'1': 1023, '0': 1}
+-1.0 {'1': 1024}
+-0.998046875 {'1': 1023, '0': 1}
+-0.998046875 {'1': 1023, '0': 1}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-0.998046875 {'1': 1023, '0': 1}
+-0.994140625 {'1': 1021, '0': 3}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+-1.0 {'1': 1024}
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -1.0
+       x: [ 3.182e+00  1.338e+00  1.664e-01]
+    nfev: 63
+   maxcv: 0.0
+```
+
+```python
+# check counts of bitstrings with the optimal parameters
+result = sampler.run([(qc, min_result.x)]).result()
+result[0].data.c.get_counts()
+```
+
+```text
+{'0': 1, '1': 1023}
+```
+
+### 2.1 Latihan {#2-1-latihan}
+
+Hitung nilai eigen minimum dari $Z \otimes Z$ dengan VQE.
+
+```python
+z2 = SparsePauliOp("ZZ")
+print(z2)
+print(z2.to_matrix())
+```
+
+```text
+SparsePauliOp(['ZZ'],
+              coeffs=[1.+0.j])
+[[ 1.+0.j  0.+0.j  0.+0.j  0.+0.j]
+ [ 0.+0.j -1.+0.j  0.+0.j  0.+0.j]
+ [ 0.+0.j  0.+0.j -1.+0.j  0.+0.j]
+ [ 0.+0.j  0.+0.j  0.+0.j  1.+0.j]]
+```
+
+```python
+# compute eigenvalues with numpy
+```
+
+```python
+# define a variational form
+# qc = ...
+```
+
+```python
+# compute counts of bitstrings with a random parameter values by Sampler
+# result = sampler.run(...)
+# result
+```
+
+```python
+# compute the expectation value of ZZ based on the counts
+```
+
+```python
+# verify the expectation value of ZZ with Estimator
+```
+
+```python
+# define a cost function to look for the minimum eigenvalue of ZZ
+# def cost(x):
+#    expval = ...
+#    return expval
+```
+
+```python
+# minimize the cost function with scipy's minimize
+# min_result = minimize(cost, [...], method="COBYLA", tol=1e-8)
+# min_result
+```
+
+```python
+# check counts of bitstrings with the optimal parameter values
+# result = sampler.run(qc, min_result.x).result()
+# result
+```
+
+#### Solusi latihan {#solusi-latihan}
+
+Kita mendefinisikan operator yang kita minati dan melihatnya dalam bentuk matriks.
+
+```python
+z2 = SparsePauliOp("ZZ")
+print(z2)
+print(z2.to_matrix())
+```
+
+```text
+SparsePauliOp(['ZZ'],
+              coeffs=[1.+0.j])
+[[ 1.+0.j  0.+0.j  0.+0.j  0.+0.j]
+ [ 0.+0.j -1.+0.j  0.+0.j  0.+0.j]
+ [ 0.+0.j  0.+0.j -1.+0.j  0.+0.j]
+ [ 0.+0.j  0.+0.j  0.+0.j  1.+0.j]]
+```
+
+Untuk mendapatkan nilai eigen menggunakan algoritma kuantum variatif, kita membangun Circuit dengan Gate yang mengambil parameter variatif:
+
+```python
+# define a variational form
+param = ParameterVector("a", 6)
+qc = QuantumCircuit(2, 2)
+qc.u(param[0], param[1], param[2], 0)
+qc.u(param[3], param[4], param[5], 1)
+qc_estimator = qc.copy()
+qc.measure([0, 1], [0, 1])
+qc.draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/7d5e894a-0.avif)
+
+Jika kita ingin memperkirakan nilai ekspektasi dari sebuah operator (seperti $Z \otimes Z$), kita akan menggunakan Estimator. Jika kita ingin melihat keadaan sistem, kita menggunakan Sampler.
+
+```python
+sampler = StatevectorSampler()
+estimator = StatevectorEstimator()
+```
+
+```python
+# compute counts of bitstrings with random parameter values by Sampler
+result = sampler.run([(qc, [1, 2, 3, 4, 5, 6])]).result()
+counts = result[0].data.c.get_counts()
+counts
+```
+
+```text
+{'10': 661, '11': 203, '01': 47, '00': 113}
+```
+
+```python
+# compute the expectation value of ZZ based on the counts
+(
+    counts.get("00", 0)
+    - counts.get("01", 0)
+    - counts.get("10", 0)
+    + counts.get("11", 0)
+) / sum(counts.values())
+```
+
+```text
+-0.3828125
+```
+
+Circuit ini berhasil, tetapi nilai parameter yang dipilih tidak sesuai dengan keadaan berenergi rendah (atau nilai eigen rendah). Nilai eigen yang diperoleh cukup jauh di atas minimum. Hasilnya serupa saat menggunakan estimator.
+
+```python
+# verify the expectation value of ZZ with Estimator
+result = estimator.run([(qc_estimator, z2, [1, 2, 3, 4, 5, 6])]).result()
+result[0].data.evs
+```
+
+```text
+array(-0.35316516)
+```
+
+Kita perlu mencari parameter dan menemukan yang menghasilkan nilai eigen terendah.
+
+```python
+# define a cost function to look for the minimum eigenvalue of ZZ
+def cost(x):
+    result = sampler.run([(qc, x)]).result()
+    counts = result[0].data.c.get_counts()
+    expval = (
+        counts.get("00", 0)
+        - counts.get("01", 0)
+        - counts.get("10", 0)
+        + counts.get("11", 0)
+    ) / sum(counts.values())
+    print(expval, counts)
+    return expval
+```
+
+```python
+# minimize the cost function with scipy's minimize
+min_result = minimize(cost, [0, 0, 0, 0, 0, 0], method="COBYLA", tol=1e-8)
+min_result
+```
+
+```text
+1.0 {'00': 1024}
+0.578125 {'00': 808, '01': 216}
+0.5234375 {'00': 780, '01': 244}
+0.548828125 {'00': 793, '01': 231}
+0.3515625 {'00': 637, '10': 164, '11': 55, '01': 168}
+0.3359375 {'00': 638, '11': 46, '10': 174, '01': 166}
+0.283203125 {'00': 602, '10': 181, '01': 186, '11': 55}
+-0.087890625 {'01': 414, '00': 184, '10': 143, '11': 283}
+0.236328125 {'10': 27, '11': 623, '01': 364, '00': 10}
+-0.0625 {'11': 261, '01': 403, '00': 219, '10': 141}
+0.248046875 {'01': 366, '11': 628, '00': 11, '10': 19}
+-0.0625 {'10': 145, '11': 254, '01': 399, '00': 226}
+0.228515625 {'01': 373, '11': 609, '00': 20, '10': 22}
+0.0546875 {'11': 376, '10': 273, '01': 211, '00': 164}
+-0.447265625 {'01': 731, '10': 10, '11': 267, '00': 16}
+-0.71484375 {'01': 871, '11': 99, '00': 47, '10': 7}
+-0.46484375 {'01': 741, '00': 253, '10': 9, '11': 21}
+-0.87890625 {'01': 962, '00': 39, '11': 23}
+-0.640625 {'00': 176, '01': 837, '11': 8, '10': 3}
+-0.88671875 {'01': 966, '00': 41, '11': 17}
+-0.994140625 {'01': 1021, '11': 3}
+-0.91796875 {'01': 982, '11': 35, '00': 7}
+-0.994140625 {'01': 1021, '11': 2, '00': 1}
+-0.939453125 {'01': 993, '00': 31}
+-0.990234375 {'01': 1019, '11': 5}
+-0.90234375 {'01': 974, '00': 21, '11': 29}
+-0.98046875 {'01': 1014, '11': 10}
+-0.994140625 {'01': 1021, '00': 3}
+-0.990234375 {'01': 1019, '11': 4, '00': 1}
+-0.98828125 {'01': 1018, '11': 6}
+-0.990234375 {'01': 1019, '11': 4, '00': 1}
+-0.994140625 {'01': 1021, '11': 2, '00': 1}
+-0.99609375 {'01': 1022, '11': 2}
+-0.998046875 {'01': 1023, '00': 1}
+-0.99609375 {'01': 1022, '00': 2}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '00': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '00': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '00': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '00': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '00': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-0.99609375 {'01': 1022, '00': 1, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '00': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-0.99609375 {'01': 1022, '11': 1, '00': 1}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '00': 1}
+-0.994140625 {'01': 1021, '00': 3}
+-0.998046875 {'01': 1023, '00': 1}
+-0.99609375 {'01': 1022, '11': 2}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '00': 1}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-0.998046875 {'01': 1023, '11': 1}
+-0.99609375 {'01': 1022, '11': 2}
+-1.0 {'01': 1024}
+-0.998046875 {'01': 1023, '11': 1}
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -0.998046875
+       x: [ 3.167e+00  6.940e-01  1.033e+00 -2.894e-02  8.933e-01
+            1.885e+00]
+    nfev: 128
+   maxcv: 0.0
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -0.99609375
+       x: [ 3.098e+00 -5.402e-01  1.091e+00 -1.004e-02  3.615e-01
+            6.913e-01]
+    nfev: 115
+   maxcv: 0.0
+```
+
+Kita mendapatkan nilai eigen yang sangat dekat dengan minimum yang diberikan numpy kepada kita.
+
+```python
+# check counts of bitstrings with the optimal parameters
+result = sampler.run([(qc, min_result.x)]).result()
+result[0].data.c.get_counts()
+```
+
+```text
+{'01': 1024}
+```
+## 3. Quantum Optimization dengan Qiskit patterns {#3-quantum-optimization-with-qiskit-patterns}
+
+Dalam bagian ini kita akan belajar tentang Qiskit patterns dan quantum approximate optimization. Qiskit pattern adalah serangkaian langkah yang intuitif dan berulang untuk mengimplementasikan alur kerja komputasi kuantum:
+!["Qiskit function"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/qiskit-function.avif)
+Kita akan menerapkan patterns tersebut dalam konteks **optimisasi kombinatorial** dan menunjukkan cara menyelesaikan masalah **Max-Cut** menggunakan **Quantum Approximate Optimization Algorithm (QAOA)**, sebuah metode iteratif hibrida (kuantum-klasik).
+
+Perlu dicatat bahwa bagian QAOA ini didasarkan pada "Part 1: Small-scale QAOA" dari tutorial [Quantum approximate optimization algorithm](/tutorials/quantum-approximate-optimization-algorithm). Lihat tutorial tersebut untuk belajar cara mengembangkannya ke skala yang lebih besar.
+### 3.1 Qiskit pattern untuk optimisasi (skala kecil) {#31-small-scale-qiskit-pattern-for-optimization}
+Bagian ini akan menggunakan masalah Max-Cut skala kecil untuk mengilustrasikan langkah-langkah yang diperlukan untuk menyelesaikan masalah optimisasi menggunakan komputer kuantum.
+Masalah Max-Cut adalah masalah optimisasi yang sulit diselesaikan (lebih tepatnya, ini adalah masalah NP-hard) dengan berbagai aplikasi dalam clustering, ilmu jaringan, dan fisika statistik. Tutorial ini mempertimbangkan sebuah graf berisi node yang terhubung oleh edge, dan bertujuan untuk membagi node-node tersebut menjadi dua himpunan dengan "memotong" edge, sehingga jumlah edge yang dipotong dimaksimalkan.
+!["Maxcut"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/maxcut.avif)
+Untuk memberi konteks sebelum memetakan masalah ini ke algoritma kuantum, kamu bisa lebih memahami bagaimana masalah Max-Cut menjadi masalah optimisasi kombinatorial klasik dengan terlebih dahulu mempertimbangkan minimisasi fungsi $f(x)$
+
+$$
+\min_{x\in \{0, 1\}^n}f(x),
+$$
+
+di mana input $x$ adalah vektor yang komponennya berkorespondensi dengan setiap node dari graf. Kemudian, batasi setiap komponen tersebut agar bernilai $0$ atau $1$ (yang merepresentasikan apakah node tersebut masuk dalam potongan atau tidak). Contoh skala kecil ini menggunakan graf dengan $n=5$ node.
+
+Kamu bisa membuat fungsi dari sepasang node $i,j$ yang menunjukkan apakah edge yang bersesuaian $(i,j)$ ada dalam potongan. Misalnya, fungsi $x_i + x_j - 2 x_i x_j$ bernilai 1 hanya jika salah satu dari $x_i$ atau $x_j$ bernilai 1 (yang berarti edge tersebut ada dalam potongan) dan nol dalam kasus lain. Masalah memaksimalkan edge dalam potongan dapat diformulasikan sebagai
+
+$$
+\max_{x\in \{0, 1\}^n} \sum_{(i,j)} x_i + x_j - 2 x_i x_j,
+$$
+
+yang dapat ditulis ulang sebagai minimisasi dalam bentuk
+
+$$
+\min_{x\in \{0, 1\}^n} \sum_{(i,j)}  2 x_i x_j - x_i - x_j.
+$$
+
+Minimum dari $f(x)$ dalam kasus ini adalah ketika jumlah edge yang dilintasi potongan maksimal. Seperti yang bisa kamu lihat, belum ada kaitannya dengan komputasi kuantum sama sekali. Kamu perlu memformulasikan ulang masalah ini menjadi sesuatu yang bisa dipahami oleh komputer kuantum.
+Inisialisasi masalah dengan membuat graf dengan $n=5$ node.
+
+```python
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import rustworkx as rx
+from rustworkx.visualization import mpl_draw
+```
+
+```python
+n = 5
+
+graph = rx.PyGraph()
+graph.add_nodes_from(range(1, n + 1))
+edge_list = [
+    (0, 1, 1.0),
+    (0, 2, 1.0),
+    (1, 2, 1.0),
+    (1, 3, 1.0),
+    (2, 4, 1.0),
+    (3, 4, 1.0),
+]
+graph.add_edges_from(edge_list)
+pos = rx.spring_layout(graph, seed=2)
+mpl_draw(graph, node_size=600, pos=pos, with_labels=True, labels=str)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/99e763fe-0.avif)
+
+### 3.2 Langkah 1. Petakan input klasik ke masalah kuantum {#32-step-1-map-classical-inputs-to-a-quantum-problem}
+
+Langkah pertama dari pattern adalah memetakan masalah klasik (graf) ke dalam **Circuit** dan **operator** kuantum. Untuk melakukan ini, ada tiga langkah utama:
+
+1. Gunakan serangkaian reformulasi matematis untuk merepresentasikan masalah ini menggunakan notasi masalah Quadratic Unconstrained Binary Optimization (QUBO).
+2. Tulis ulang masalah optimisasi sebagai Hamiltonian yang keadaan dasarnya berkorespondensi dengan solusi yang meminimalkan fungsi biaya.
+3. Buat Circuit kuantum yang akan mempersiapkan keadaan dasar Hamiltonian ini melalui proses yang mirip dengan quantum annealing.
+
+**Catatan:** Dalam metodologi QAOA, pada akhirnya kamu ingin memiliki operator (**Hamiltonian**) yang merepresentasikan **fungsi biaya** dari algoritma hibrida kita, serta sebuah Circuit berparameter (**Ansatz**) yang merepresentasikan keadaan kuantum dengan kandidat solusi masalah. Kamu bisa mengambil sampel dari keadaan kandidat ini dan kemudian mengevaluasinya menggunakan fungsi biaya.
+
+#### Graf &rarr; masalah optimisasi {#graph-rarr-optimization-problem}
+
+Langkah pertama dari pemetaan adalah perubahan notasi. Berikut ini mengekspresikan masalah dalam notasi QUBO:
+
+$$
+\min_{x\in \{0, 1\}^n}x^T Q x,
+$$
+
+di mana $Q$ adalah matriks berukuran $n\times n$ berisi bilangan real, $n$ berkorespondensi dengan jumlah node dalam graf, $x$ adalah vektor variabel biner yang diperkenalkan sebelumnya, dan $x^T$ menunjukkan transpose dari vektor $x$.
+```
+Problem name: maxcut
+
+Minimize
+  2*x_1*x_2 + 2*x_1*x_3 + 2*x_2*x_3 + 2*x_2*x_4 + 2*x_3*x_5 + 2*x_4*x_5 - 2*x_1
+  - 3*x_2 - 3*x_3 - 2*x_4 - 2*x_5
+
+Subject to
+  No constraints
+
+  Binary variables (5)
+    x_1 x_2 x_3 x_4 x_5
+```
+#### Masalah optimisasi &rarr; Hamiltonian {#optimization-problem-rarr-hamiltonian}
+
+Kamu kemudian bisa memformulasikan ulang masalah QUBO sebagai **Hamiltonian** (di sini, sebuah matriks yang merepresentasikan energi suatu sistem):
+
+$$
+H_C=\sum_{ij}Q_{ij}Z_iZ_j + \sum_i b_iZ_i.
+$$
+
+**Langkah-langkah reformulasi dari masalah QAOA ke Hamiltonian**
+
+Untuk menunjukkan bagaimana masalah QAOA dapat ditulis ulang dengan cara ini, pertama-tama ganti variabel biner $x_i$ dengan sekumpulan variabel baru $z_i\in\{-1, 1\}$ melalui
+
+$$
+x_i = \frac{1-z_i}{2}.
+$$
+
+Di sini kamu bisa melihat bahwa jika $x_i$ bernilai $0$, maka $z_i$ harus bernilai $1$. Ketika $x_i$ disubstitusi dengan $z_i$ dalam masalah optimisasi ($x^TQx$), formulasi yang ekuivalen dapat diperoleh.
+
+$$
+x^TQx=\sum_{ij}Q_{ij}x_ix_j \\ =\frac{1}{4}\sum_{ij}Q_{ij}(1-z_i)(1-z_j) \\=\frac{1}{4}\sum_{ij}Q_{ij}z_iz_j-\frac{1}{4}\sum_{ij}(Q_{ij}+Q_{ji})z_i + \frac{n^2}{4}.
+$$
+
+Sekarang jika kita mendefinisikan $b_i=-\sum_{j}(Q_{ij}+Q_{ji})$, menghapus faktor awal, dan suku konstanta $n^2$, kita tiba pada dua formulasi yang ekuivalen dari masalah optimisasi yang sama.
+
+$$
+min_{x\in\{0,1\}^n} x^TQx\Longleftrightarrow \min_{z\in\{-1,1\}^n}z^TQz + b^Tz
+$$
+
+Di sini, $b$ bergantung pada $Q$. Perhatikan bahwa untuk mendapatkan $z^TQz + b^Tz$ kita menghilangkan faktor 1/4 dan offset konstanta $n^2$ yang tidak berperan dalam optimisasi.
+
+Sekarang, untuk mendapatkan formulasi kuantum dari masalah tersebut, promosikan variabel $z_i$ menjadi matriks Pauli $Z$, seperti matriks berukuran $2\times 2$ berbentuk
+
+$$
+Z_i = \begin{pmatrix}1 & 0 \\ 0 & -1\end{pmatrix}.
+ $$
+
+Ketika kamu mensubstitusi matriks-matriks ini ke dalam masalah optimisasi di atas, kamu mendapatkan Hamiltonian berikut
+
+$$
+H_C=\sum_{ij}Q_{ij}Z_iZ_j + \sum_i b_iZ_i.
+$$
+
+*Ingat juga bahwa matriks $Z$ tertanam dalam ruang komputasi komputer kuantum, yaitu ruang Hilbert berukuran $2^n\times 2^n$. Oleh karena itu, kamu harus memahami suku-suku seperti $Z_iZ_j$ sebagai produk tensor $Z_i\otimes Z_j$ yang tertanam dalam ruang Hilbert berukuran $2^n\times 2^n$. Misalnya, dalam masalah dengan lima variabel keputusan, suku $Z_1Z_3$ dipahami sebagai $I\otimes Z_3\otimes I\otimes Z_1\otimes I$ di mana $I$ adalah matriks identitas berukuran $2\times 2$.*
+
+Hamiltonian ini disebut <b>Hamiltonian fungsi biaya</b>. Ia memiliki sifat bahwa keadaan dasarnya berkorespondensi dengan solusi yang <b>meminimalkan fungsi biaya $f(x)$</b>.
+Oleh karena itu, untuk menyelesaikan masalah optimisasi kamu sekarang perlu mempersiapkan keadaan dasar $H_C$ (atau keadaan dengan tumpang tindih yang tinggi dengannya) di komputer kuantum. Kemudian, pengambilan sampel dari keadaan ini akan, dengan probabilitas tinggi, menghasilkan solusi untuk $\min~f(x)$.
+
+```python
+def build_max_cut_operator(graph: rx.PyGraph) -> tuple[SparsePauliOp, float]:
+    sp_list = []
+    constant = 0
+    for s, t in graph.edge_list():
+        w = graph.get_edge_data(s, t)
+        sp_list.append(("ZZ", [s, t], w / 2))
+        constant -= 1 / 2
+    return SparsePauliOp.from_sparse_list(
+        sp_list, num_qubits=graph.num_nodes()
+    ), constant
+```
+
+```python
+cost_hamiltonian, constant = build_max_cut_operator(graph)
+print("Cost Function Hamiltonian:", cost_hamiltonian)
+print("Constant:", constant)
+```
+
+```text
+Cost Function Hamiltonian: SparsePauliOp(['IIIZZ', 'IIZIZ', 'IIZZI', 'IZIZI', 'ZIZII', 'ZZIII'],
+              coeffs=[0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j])
+Constant: -3.0
+```
+
+#### Hamiltonian &rarr; Circuit kuantum {#hamiltonian-rarr-quantum-circuit}
+Hamiltonian $H_C$ berisi definisi kuantum dari masalah kamu. Sekarang kamu bisa membuat Circuit kuantum yang akan membantu *mengambil sampel* solusi yang baik dari komputer kuantum. QAOA terinspirasi dari quantum annealing dan menerapkan lapisan-lapisan operator yang berselang-seling dalam Circuit kuantum.
+
+Ide umumnya adalah memulai dari keadaan dasar sistem yang diketahui, $H^{\otimes n}|0\rangle$ di atas, kemudian mengarahkan sistem ke keadaan dasar operator biaya yang diinginkan. Ini dilakukan dengan menerapkan operator $\exp\{-i\gamma_k H_C\}$ dan $\exp\{-i\beta_k H_m\}$ dengan sudut-sudut $\gamma_1,...,\gamma_p$ dan $\beta_1,...,\beta_p~$.
+
+Circuit kuantum yang kamu hasilkan **berparameter** oleh $\gamma_i$ dan $\beta_i$, sehingga kamu bisa mencoba berbagai nilai $\gamma_i$ dan $\beta_i$ dan mengambil sampel dari keadaan yang dihasilkan.
+!["QAOA circuit diagram"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/circuit-diagram.svg)
+Dalam kasus ini kita akan mencoba contoh dengan 1 lapisan QAOA yang mengandung dua parameter: $\gamma_1$ dan $\beta_1$.
+
+```python
+from qiskit.circuit.library import QAOAAnsatz
+```
+
+```python
+circuit = QAOAAnsatz(cost_operator=cost_hamiltonian, reps=1)
+circuit.measure_all()
+circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/7bd8c6d4-f40f-4a11-a440-0b26d9021b53-0.avif)
+
+```python
+circuit.decompose(reps=3).draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/148d2d62-0.avif)
+
+```python
+circuit.parameters
+```
+
+```text
+ ParameterView([ParameterVectorElement(β[0]), ParameterVectorElement(γ[0])])
+```
+
+### 3.3 Langkah 2. Optimalkan Circuit untuk eksekusi di hardware kuantum {#33-step-2-optimize-circuits-for-quantum-hardware-execution}
+Circuit di atas mengandung serangkaian abstraksi yang berguna untuk memikirkan algoritma kuantum, tetapi tidak bisa langsung dijalankan di hardware. Untuk bisa berjalan di QPU, Circuit perlu menjalani serangkaian operasi yang membentuk langkah **transpilasi** atau **optimisasi Circuit** dari pattern tersebut.
+
+Library Qiskit menawarkan serangkaian **transpilation passes** yang melayani berbagai macam transformasi Circuit. Kamu perlu memastikan Circuit kamu **dioptimalkan** sesuai tujuan.
+
+Transpilasi mungkin melibatkan beberapa langkah, seperti:
+
+* **Pemetaan awal** Qubit dalam Circuit (seperti variabel keputusan) ke Qubit fisik di perangkat.
+* **Unrolling** instruksi dalam Circuit kuantum menjadi instruksi native hardware yang dipahami Backend.
+* **Routing** Qubit mana pun dalam Circuit yang berinteraksi ke Qubit fisik yang saling bertetangga satu sama lain.
+* **Penekanan error** dengan menambahkan Gate satu Qubit untuk menekan noise dengan dynamical decoupling.
+
+Informasi lebih lanjut tentang transpilasi tersedia dalam [dokumentasi](/guides/transpile) kami.
+
+Kode berikut mentransformasi dan mengoptimalkan Circuit abstrak menjadi format yang siap dieksekusi di salah satu perangkat yang dapat diakses melalui cloud menggunakan **layanan Qiskit IBM&reg; Runtime**.
+
+Perlu dicatat bahwa kamu bisa menguji program secara lokal dengan "local testing mode" sebelum mengirimnya ke komputer kuantum nyata.
+Informasi lebih lanjut tentang local testing mode tersedia dalam [dokumentasi.](/guides/local-testing-mode)
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+# Use a quantum device
+service = QiskitRuntimeService()
+backend = service.least_busy(min_num_qubits=127)
+# backend = service.backend("ibm_kingston")
+
+# You can test your programs locally with a fake backend (local testing mode)
+# backend = FakeBrisbane()
+
+print(backend)
+
+# Create pass manager for transpilation
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+candidate_circuit = pm.run(circuit)
+candidate_circuit.draw("mpl", fold=False, idle_wires=False)
+```
+
+```text
+service = QiskitRuntimeService(channel="ibm_quantum_platform")
+```
+
+```text
+<IBMBackend('ibm_strasbourg')>
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/95cd3eed-0348-4373-b664-16a65d42f1e7-2.avif)
+
+### 3.4 Langkah 3. Eksekusi menggunakan Qiskit primitives {#34-step-3-execute-using-qiskit-primitives}
+Dalam alur kerja QAOA, parameter QAOA yang optimal ditemukan dalam loop optimisasi iteratif, yang menjalankan serangkaian evaluasi Circuit dan menggunakan optimizer klasik untuk menemukan parameter $\beta_k$ dan $\gamma_k$ yang optimal. Loop eksekusi ini dijalankan melalui langkah-langkah berikut:
+
+1. Tentukan parameter awal
+2. Instansiasi Session baru yang berisi loop optimisasi dan primitive yang digunakan untuk mengambil sampel Circuit
+3. Setelah sekumpulan parameter yang optimal ditemukan, eksekusi Circuit sekali lagi untuk mendapatkan distribusi akhir yang akan digunakan pada langkah pasca-proses.
+#### Tentukan Circuit dengan parameter awal {#define-circuit-with-initial-parameters}
+Kita mulai dengan parameter yang dipilih secara acak.
+
+```python
+initial_gamma = np.pi
+initial_beta = np.pi / 2
+init_params = [initial_gamma, initial_beta]
+```
+
+#### Tentukan Backend dan primitive eksekusi {#define-backend-and-execution-primitive}
+Gunakan **Qiskit Runtime primitives** untuk berinteraksi dengan Backend IBM&reg;. Dua primitive tersebut adalah Sampler dan Estimator, dan pilihan primitive bergantung pada jenis pengukuran yang ingin kamu jalankan di komputer kuantum. Untuk minimisasi $H_C$, gunakan Estimator karena pengukuran fungsi biaya hanyalah nilai ekspektasi dari $\langle H_C \rangle$.
+#### Jalankan {#run}
+
+Primitive menawarkan berbagai [mode eksekusi](/guides/execution-modes) untuk menjadwalkan beban kerja di perangkat kuantum, dan alur kerja QAOA berjalan secara iteratif dalam sebuah Session.
+!["execution mode"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/execution-mode.avif)
+Kamu bisa menghubungkan fungsi biaya berbasis Sampler ke dalam rutinitas minimisasi SciPy untuk menemukan parameter yang optimal.
+
+```python
+def cost_func_estimator(params, ansatz, hamiltonian, estimator):
+    # transform the observable defined on virtual qubits to
+    # an observable defined on all physical qubits
+    isa_hamiltonian = hamiltonian.apply_layout(ansatz.layout)
+
+    pub = (ansatz, isa_hamiltonian, params)
+    job = estimator.run([pub])
+
+    results = job.result()[0]
+    cost = results.data.evs
+
+    objective_func_vals.append(cost)
+
+    return cost
+```
+
+```python
+from qiskit_ibm_runtime import Session, EstimatorV2
+from scipy.optimize import minimize
+
+objective_func_vals = []  # Global variable
+with Session(backend=backend) as session:
+    # If using qiskit-ibm-runtime<0.24.0, change `mode=` to `session=`
+    estimator = EstimatorV2(mode=session)
+    estimator.options.default_shots = 1000
+
+    # Set simple error suppression/mitigation options
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XY4"
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+
+    result = minimize(
+        cost_func_estimator,
+        init_params,
+        args=(candidate_circuit, cost_hamiltonian, estimator),
+        method="COBYLA",
+        tol=1e-2,
+    )
+    print(result)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -0.6557925874481715
+       x: [ 2.873e+00  9.414e-01]
+    nfev: 21
+   maxcv: 0.0
+```
+
+Optimizer berhasil mengurangi biaya dan menemukan parameter yang lebih baik untuk Circuit tersebut.
+
+```python
+plt.figure(figsize=(12, 6))
+plt.plot(objective_func_vals)
+plt.xlabel("Iteration")
+plt.ylabel("Cost")
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/f923dd5d-0.avif)
+
+Setelah menemukan parameter yang optimal untuk Circuit, kamu bisa menetapkan parameter-parameter ini dan mengambil sampel distribusi akhir yang diperoleh dengan parameter yang sudah dioptimalkan. Di sinilah primitive *Sampler* harus digunakan karena distribusi probabilitas pengukuran bitstring yang berkorespondensi dengan potongan optimal dari graf.
+
+**Catatan:** Ini berarti mempersiapkan keadaan kuantum $\psi$ di komputer lalu mengukurnya. Sebuah pengukuran akan meruntuhkan keadaan menjadi satu keadaan basis komputasi — misalnya, `010101110000...` — yang berkorespondensi dengan kandidat solusi $x$ untuk masalah optimisasi awal kita ($\max f(x)$ atau $\min f(x)$ tergantung tugasnya).
+
+```python
+optimized_circuit = candidate_circuit.assign_parameters(result.x)
+optimized_circuit.draw("mpl", fold=False, idle_wires=False)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/f8dddf5a-0.avif)
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+
+# If using qiskit-ibm-runtime<0.24.0, change `mode=` to `backend=`
+sampler = SamplerV2(mode=backend)
+
+# Set simple error suppression/mitigation options
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XY4"
+sampler.options.twirling.enable_gates = True
+sampler.options.twirling.num_randomizations = "auto"
+
+pub = (optimized_circuit,)
+job = sampler.run([pub], shots=int(1e4))
+counts_int = job.result()[0].data.meas.get_int_counts()
+counts_bin = job.result()[0].data.meas.get_counts()
+shots = sum(counts_int.values())
+final_distribution_int = {key: val / shots for key, val in counts_int.items()}
+final_distribution_bin = {key: val / shots for key, val in counts_bin.items()}
+print(final_distribution_int)
+```
+
+```text
+{12: 0.0652, 31: 0.0089, 4: 0.0085, 13: 0.0731, 26: 0.0256, 28: 0.0246, 17: 0.0405, 25: 0.0591, 20: 0.031, 15: 0.0221, 8: 0.017, 21: 0.0371, 14: 0.0461, 16: 0.0229, 19: 0.0723, 23: 0.0199, 22: 0.0478, 18: 0.0708, 24: 0.0165, 6: 0.0525, 7: 0.0155, 5: 0.0245, 3: 0.0231, 29: 0.0121, 30: 0.0062, 10: 0.0363, 1: 0.0097, 9: 0.042, 27: 0.0094, 11: 0.0349, 0: 0.0129, 2: 0.0119}
+```
+
+### 3.5 Langkah 4. Pasca-proses, kembalikan hasil dalam format klasik {#35-step-4-post-process-return-result-in-classical-format}
+
+Langkah pasca-proses menginterpretasikan output pengambilan sampel untuk mengembalikan solusi bagi masalah asal kamu. Dalam kasus ini, kamu tertarik pada bitstring dengan probabilitas tertinggi karena ini menentukan potongan yang optimal. Simetri dalam masalah memungkinkan empat kemungkinan solusi, dan proses pengambilan sampel akan mengembalikan salah satunya dengan probabilitas yang sedikit lebih tinggi, tetapi kamu bisa melihat dalam distribusi yang diplot di bawah bahwa empat dari bitstring tersebut secara jelas lebih mungkin daripada yang lainnya.
+
+```python
+# auxiliary functions to sample most likely bitstring
+def to_bitstring(integer, num_bits):
+    result = np.binary_repr(integer, width=num_bits)
+    return [int(digit) for digit in result]
+
+keys = list(final_distribution_int.keys())
+values = list(final_distribution_int.values())
+most_likely = keys[np.argmax(np.abs(values))]
+most_likely_bitstring = to_bitstring(most_likely, len(graph))
+most_likely_bitstring.reverse()
+
+print("Result bitstring:", most_likely_bitstring)
+```
+
+```text
+Result bitstring: [1, 0, 1, 1, 0]
+```
+
+```python
+import matplotlib.pyplot as plt
+
+matplotlib.rcParams.update({"font.size": 10})
+final_bits = final_distribution_bin
+values = np.abs(list(final_bits.values()))
+top_4_values = sorted(values, reverse=True)[:4]
+positions = []
+for value in top_4_values:
+    positions.append(np.where(values == value)[0])
+fig = plt.figure(figsize=(11, 6))
+ax = fig.add_subplot(1, 1, 1)
+plt.xticks(rotation=45)
+plt.title("Result Distribution")
+plt.xlabel("Bitstrings (reversed)")
+plt.ylabel("Probability")
+ax.bar(list(final_bits.keys()), list(final_bits.values()), color="tab:grey")
+for p in positions:
+    ax.get_children()[p[0].item()].set_color("tab:purple")
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/32a3020e-c1ea-4aff-988c-d7910a690fa8-0.avif)
+
+#### Visualisasi potongan terbaik {#visualize-best-cut}
+
+Dari bitstring yang optimal, kamu kemudian bisa memvisualisasikan potongan ini pada graf aslinya.
+
+```python
+colors = ["tab:grey" if i == 0 else "tab:purple" for i in most_likely_bitstring]
+mpl_draw(graph, node_size=600, pos=pos, with_labels=True, labels=str, node_color=colors)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/22a48124-e6b4-4144-bee1-f01fa4c7ccbb-0.avif)
+
+Dan hitung nilai potongan tersebut. Solusinya tidak optimal karena adanya noise (nilai potongan dari solusi optimal adalah 5).
+
+```python
+from typing import Sequence
+
+def evaluate_sample(x: Sequence[int], graph: rx.PyGraph) -> float:
+    assert len(x) == len(
+        list(graph.nodes())
+    ), "The length of x must coincide with the number of nodes in the graph."
+    return sum(
+        x[u] * (1 - x[v]) + x[v] * (1 - x[u]) for u, v in list(graph.edge_list())
+    )
+
+cut_value = evaluate_sample(most_likely_bitstring, graph)
+print("The value of the cut is:", cut_value)
+```
+
+```text
+The value of the cut is: 5
+```
+
+Ini mengakhiri tutorial QAOA skala kecil.
+Kamu akan belajar cara mengadaptasi QAOA pada skala utilitas dalam "Part 2: scale it up!" dari tutorial [Quantum approximate optimization algorithm](/tutorials/quantum-approximate-optimization-algorithm).
+
+```python
+# Check Qiskit version
+import qiskit
+
+qiskit.__version__
+```
+
+```text
+'2.0.2'
+```
