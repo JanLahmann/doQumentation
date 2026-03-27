@@ -1,0 +1,279 @@
+---
+title: "Tahap-tahap Transpiler"
+sidebar_label: "Tahap-tahap Transpiler"
+description: "Tahap-tahap default dari pipeline transpilasi sirkuit kuantum di Qiskit."
+notebook_path: "guides/transpiler-stages.ipynb"
+---
+
+{/* doqumentation-source-hash: 4cbc569d */}
+
+<OpenInLabBanner notebookPath="guides/transpiler-stages.ipynb" />
+
+
+
+{/* cspell:ignore fontsize */}
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versi paket</b></summary>
+
+Kode di halaman ini dikembangkan menggunakan persyaratan berikut.
+Kami sarankan menggunakan versi ini atau yang lebih baru.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+
+Halaman ini menjelaskan tahap-tahap dari pipeline transpilasi bawaan di Qiskit SDK. Ada enam tahap:
+
+1. `init`
+2. `layout`
+3. `routing`
+4. `translation`
+5. `optimization`
+6. `scheduling`
+
+Fungsi [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager#qiskit.transpiler.generate_preset_pass_manager) membuat [staged pass manager](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.StagedPassManager) preset yang terdiri dari tahap-tahap ini. Pass spesifik yang membentuk setiap tahap bergantung pada argumen yang diberikan ke `generate_preset_pass_manager`. `optimization_level` adalah argumen posisional yang wajib ditentukan; nilainya berupa integer yang bisa 0, 1, 2, atau 3. Nilai yang lebih tinggi menunjukkan optimasi yang lebih berat namun lebih mahal (lihat [Pengaturan default dan opsi konfigurasi Transpiler](defaults-and-configuration-options)).
+
+Cara yang disarankan untuk mentranspilasi Circuit adalah dengan membuat preset staged pass manager lalu menjalankannya pada Circuit, seperti yang dijelaskan di [Transpile dengan pass manager](transpile-with-pass-managers). Namun, alternatif yang lebih sederhana tapi kurang bisa dikustomisasi adalah menggunakan fungsi [`transpile`](https://docs.quantum.ibm.com/api/qiskit/compiler#qiskit.compiler.transpile). Fungsi ini menerima Circuit langsung sebagai argumen. Sama seperti `generate_preset_pass_manager`, pass transpiler yang digunakan bergantung pada argumen seperti `optimization_level` yang diberikan ke `transpile`. Sebenarnya, secara internal fungsi `transpile` memanggil `generate_preset_pass_manager` untuk membuat preset staged pass manager dan menjalankannya pada Circuit.
+
+## Tahap Init {#init-stage}
+
+Tahap pertama ini secara default tidak banyak melakukan hal dan terutama berguna jika kamu ingin menyertakan optimasi awal sendiri. Karena kebanyakan algoritma layout dan routing hanya dirancang untuk bekerja dengan Gate satu dan dua Qubit, tahap ini juga digunakan untuk menerjemahkan Gate apa pun yang beroperasi pada lebih dari dua Qubit menjadi Gate yang hanya beroperasi pada satu atau dua Qubit.
+
+Untuk informasi lebih lanjut tentang mengimplementasikan optimasi awal sendiri untuk tahap ini, lihat bagian tentang plugin dan penyesuaian pass manager.
+
+## Tahap Layout {#layout-stage}
+
+Tahap berikutnya melibatkan layout atau konektivitas Backend tempat Circuit akan dikirim. Secara umum, sirkuit kuantum adalah entitas abstrak yang Qubit-nya merupakan representasi "virtual" atau "logis" dari Qubit aktual yang digunakan dalam komputasi. Untuk mengeksekusi serangkaian Gate, diperlukan pemetaan satu-ke-satu dari Qubit "virtual" ke Qubit "fisik" pada perangkat kuantum nyata. Pemetaan ini disimpan sebagai objek `Layout` dan merupakan bagian dari batasan yang didefinisikan dalam [instruction set architecture (ISA)](./transpile#instruction-set-architecture) Backend.
+
+![Gambar ini mengilustrasikan Qubit yang dipetakan dari representasi wire ke diagram yang menggambarkan cara Qubit terhubung pada QPU.](/docs/images/guides/transpiler-stages/layout-mapping.avif "Pemetaan Qubit")
+
+Pemilihan pemetaan sangat penting untuk meminimalkan jumlah operasi SWAP yang diperlukan untuk memetakan Circuit input ke topologi perangkat dan memastikan Qubit yang paling terkalibrasi digunakan. Karena pentingnya tahap ini, preset pass manager mencoba beberapa metode berbeda untuk menemukan layout terbaik. Biasanya ini melibatkan dua langkah: pertama, coba temukan layout "sempurna" (layout yang tidak memerlukan operasi SWAP apa pun), kemudian, pass heuristik yang mencoba menemukan layout terbaik jika layout sempurna tidak ditemukan. Ada dua `Pass` yang biasanya digunakan untuk langkah pertama ini:
+
+- `TrivialLayout`: Memetakan setiap Qubit virtual secara naif ke Qubit fisik bernomor sama pada perangkat (yaitu, [`0`,`1`,`1`,`3`] -> [`0`,`1`,`1`,`3`]). Ini adalah perilaku historis yang hanya digunakan di `optimzation_level=1` untuk mencoba menemukan layout sempurna. Jika gagal, `VF2Layout` dicoba berikutnya.
+- `VF2Layout`: Ini adalah `AnalysisPass` yang memilih layout ideal dengan memperlakukan tahap ini sebagai masalah subgraph isomorphism, diselesaikan oleh algoritma VF2++. Jika lebih dari satu layout ditemukan, heuristik penilaian dijalankan untuk memilih pemetaan dengan rata-rata error terendah.
+
+Kemudian untuk tahap heuristik, dua pass digunakan secara default:
+
+- `DenseLayout`: Menemukan sub-graph dari perangkat dengan konektivitas terbesar dan memiliki jumlah Qubit yang sama dengan Circuit (digunakan untuk optimization level 1 jika ada operasi control flow seperti IfElseOp dalam Circuit).
+- `SabreLayout`: Pass ini memilih layout dengan memulai dari layout acak awal dan berulang kali menjalankan algoritma `SabreSwap`. Pass ini hanya digunakan pada optimization level 1, 2, dan 3 jika layout sempurna tidak ditemukan melalui pass `VF2Layout`. Untuk detail lebih lanjut tentang algoritma ini, lihat makalah [arXiv:1809.02573.](https://arxiv.org/abs/1809.02573)
+
+## Tahap Routing {#routing-stage}
+
+Untuk mengimplementasikan Gate dua Qubit antara Qubit yang tidak terhubung langsung pada perangkat kuantum, satu atau lebih Gate SWAP harus disisipkan ke dalam Circuit untuk memindahkan status Qubit hingga bersebelahan pada peta Gate perangkat. Setiap Gate SWAP mewakili operasi yang mahal dan berisik untuk dilakukan. Dengan demikian, menemukan jumlah minimum Gate SWAP yang diperlukan untuk memetakan Circuit ke perangkat tertentu adalah langkah penting dalam proses transpilasi. Untuk efisiensi, tahap ini biasanya dihitung bersamaan dengan tahap Layout secara default, namun keduanya secara logis berbeda satu sama lain. Tahap *Layout* memilih Qubit hardware yang akan digunakan, sementara tahap *Routing* menyisipkan jumlah Gate SWAP yang tepat agar Circuit dapat dieksekusi menggunakan layout yang dipilih.
+
+Namun, menemukan pemetaan SWAP yang optimal itu sulit. Bahkan, ini adalah masalah NP-hard, sehingga terlalu mahal untuk dihitung kecuali untuk perangkat kuantum dan Circuit input yang sangat kecil. Untuk mengatasi hal ini, Qiskit menggunakan algoritma heuristik stokastik bernama `SabreSwap` untuk menghitung pemetaan SWAP yang baik, meskipun tidak selalu optimal. Penggunaan metode stokastik berarti Circuit yang dihasilkan tidak dijamin sama di setiap kali dijalankan. Memang, menjalankan Circuit yang sama berulang kali menghasilkan distribusi kedalaman Circuit dan jumlah Gate pada output. Itulah mengapa banyak pengguna memilih untuk menjalankan fungsi routing (atau seluruh `StagedPassManager`) berkali-kali dan memilih Circuit dengan kedalaman terendah dari distribusi output.
+
+Misalnya, mari kita ambil Circuit GHZ 15 Qubit yang dieksekusi 100 kali, menggunakan `initial_layout` yang "buruk" (terputus).
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib qiskit qiskit-ibm-runtime
+```
+
+```python
+import matplotlib.pyplot as plt
+from qiskit import QuantumCircuit
+from qiskit_ibm_runtime.fake_provider import FakeAuckland, FakeWashingtonV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+backend = FakeAuckland()
+
+ghz = QuantumCircuit(15)
+ghz.h(0)
+ghz.cx(0, range(1, 15))
+
+depths = []
+for seed in range(100):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        layout_method="trivial",  # Fixed layout mapped in circuit order
+        seed_transpiler=seed,  # For reproducible results
+    )
+    depths.append(pass_manager.run(ghz).depth())
+
+plt.figure(figsize=(8, 6))
+plt.hist(depths, align="left", color="#AC557C")
+plt.xlabel("Depth", fontsize=14)
+plt.ylabel("Counts", fontsize=14)
+```
+
+```text
+Text(0, 0.5, 'Counts')
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/358cfb50-02fc-48f2-a4ec-657837e0c304-1.svg)
+
+Distribusi yang lebar ini menunjukkan betapa sulitnya bagi SWAP mapper untuk menghitung pemetaan terbaik. Untuk mendapatkan gambaran, mari kita lihat Circuit yang dieksekusi serta Qubit yang dipilih pada hardware.
+
+```python
+ghz.draw("mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/bb3b8c1f-69fd-4e0c-9b78-9ee67f3361bb-0.svg)
+
+```python
+from qiskit.visualization import plot_circuit_layout
+
+# Plot the hardware graph and indicate which hardware qubits were chosen to run the circuit
+transpiled_circ = pass_manager.run(ghz)
+plot_circuit_layout(transpiled_circ, backend)
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/e4cd49ef-5b3e-4ee0-82f8-c83e1f0ae755-0.svg)
+
+Seperti yang bisa kamu lihat, Circuit ini harus mengeksekusi Gate dua Qubit antara Qubit 0 dan 14, yang sangat jauh satu sama lain pada graf konektivitas. Menjalankan Circuit ini dengan demikian memerlukan penyisipan Gate SWAP untuk mengeksekusi semua Gate dua Qubit menggunakan pass `SabreSwap`.
+
+Perhatikan juga bahwa algoritma `SabreSwap` berbeda dari metode `SabreLayout` yang lebih besar di tahap sebelumnya. Secara default, `SabreLayout` menjalankan layout dan routing, lalu mengembalikan Circuit yang sudah ditransformasi. Hal ini dilakukan karena beberapa alasan teknis tertentu yang disebutkan di [halaman referensi API](../api/qiskit/qiskit.transpiler.passes.SabreLayout) pass tersebut.
+
+## Tahap Translation {#translation-stage}
+
+Saat menulis Circuit kuantum, kamu bebas menggunakan Gate kuantum (operasi uniter) apa pun yang kamu suka, beserta kumpulan operasi non-Gate seperti instruksi pengukuran atau reset Qubit. Namun, kebanyakan perangkat kuantum hanya mendukung sejumlah kecil Gate kuantum dan operasi non-Gate secara native. Gate native ini merupakan bagian dari definisi [ISA](./transpile#instruction-set-architecture) target, dan tahap preset `PassManagers` ini menerjemahkan (atau *unrolls*) Gate yang ditentukan dalam Circuit ke Gate basis native Backend yang ditentukan. Ini adalah langkah penting, karena memungkinkan Circuit untuk dieksekusi oleh Backend, namun biasanya mengakibatkan peningkatan kedalaman dan jumlah Gate.
+
+Dua kasus khusus sangat penting untuk disorot, dan membantu mengilustrasikan apa yang dilakukan tahap ini.
+
+1. Jika Gate SWAP bukan Gate native untuk Backend target, ini memerlukan tiga Gate CNOT:
+
+```python
+print("native gates:" + str(sorted(backend.operation_names)))
+qc = QuantumCircuit(2)
+qc.swap(0, 1)
+qc.decompose().draw("mpl")
+```
+
+```text
+native gates:['cx', 'delay', 'for_loop', 'id', 'if_else', 'measure', 'reset', 'rz', 'switch_case', 'sx', 'x']
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/31fcf8b6-4f3a-460e-90fd-446813bd4f28-1.svg)
+
+Sebagai produk dari tiga Gate CNOT, SWAP adalah operasi yang mahal untuk dilakukan pada perangkat kuantum yang berisik. Namun, operasi semacam itu biasanya diperlukan untuk menanamkan Circuit ke dalam konektivitas Gate yang terbatas dari banyak perangkat. Dengan demikian, meminimalkan jumlah Gate SWAP dalam Circuit adalah tujuan utama dalam proses transpilasi.
+
+2. Gate Toffoli, atau controlled-controlled-not (`ccx`), adalah Gate tiga Qubit. Mengingat bahwa set Gate basis kita hanya mencakup Gate satu dan dua Qubit, operasi ini harus didekomposisi. Namun, ini cukup mahal:
+
+```python
+qc = QuantumCircuit(3)
+qc.ccx(0, 1, 2)
+qc.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/8a2c1913-3324-44b0-859e-d7fd348161c3-0.svg)
+
+Untuk setiap Gate Toffoli dalam Circuit kuantum, hardware dapat mengeksekusi hingga enam Gate CNOT dan sejumlah Gate satu Qubit. Contoh ini menunjukkan bahwa algoritma apa pun yang menggunakan banyak Gate Toffoli akan berakhir sebagai Circuit dengan kedalaman besar dan karenanya akan terpengaruh secara signifikan oleh noise.
+
+## Tahap Optimization {#optimization-stage}
+
+Tahap ini berpusat pada dekomposisi Circuit kuantum ke dalam set Gate basis perangkat target, dan harus melawan peningkatan kedalaman dari tahap layout dan routing. Untungnya, ada banyak rutinitas untuk mengoptimalkan Circuit dengan menggabungkan atau menghilangkan Gate. Dalam beberapa kasus, metode-metode ini sangat efektif sehingga Circuit output memiliki kedalaman lebih rendah dari input, bahkan setelah layout dan routing ke topologi hardware. Dalam kasus lain, tidak banyak yang bisa dilakukan, dan komputasi mungkin sulit dilakukan pada perangkat yang berisik. Tahap inilah tempat berbagai optimization level mulai berbeda.
+
+- Untuk `optimization_level=1`, tahap ini menyiapkan [`Optimize1qGatesDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition) dan [`CXCancellation`](https://docs.quantum.ibm.com/api/qiskit/1.4/qiskit.transpiler.passes.CXCancellation), yang menggabungkan rantai Gate satu Qubit dan membatalkan Gate CNOT yang berdampingan.
+- Untuk `optimization_level=2`, tahap ini menggunakan pass [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation) sebagai pengganti `CXCancellation`, yang menghapus Gate redundan dengan memanfaatkan relasi komutasi.
+- Untuk `optimization_level=3`, tahap ini menyiapkan pass-pass berikut:
+  - [`Collect2qBlocks`](../api/qiskit/qiskit.transpiler.passes.Collect2qBlocks)
+  - [`ConsolidateBlocks`](../api/qiskit/qiskit.transpiler.passes.ConsolidateBlocks)
+  - [`UnitarySynthesis`](../api/qiskit/qiskit.transpiler.passes.UnitarySynthesis)
+  - [`Optimize1qGateDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition)
+  - [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation)
+
+Selain itu, tahap ini juga melakukan beberapa pemeriksaan akhir untuk memastikan semua instruksi dalam Circuit terdiri dari Gate basis yang tersedia pada Backend target.
+
+Contoh di bawah menggunakan state GHZ menunjukkan efek dari pengaturan optimization level yang berbeda pada kedalaman Circuit dan jumlah Gate.
+
+<Admonition type="note">
+  Output transpilasi bervariasi karena SWAP mapper yang stokastik. Oleh karena itu, angka-angka di bawah kemungkinan akan berubah setiap kali kamu menjalankan kode.
+</Admonition>
+
+![State GHZ 15 Qubit](/docs/images/guides/transpiler-stages/transpiler-11.avif "State GHZ 15 Qubit sebelum transpilasi")
+
+Kode berikut membangun state GHZ 15 Qubit dan membandingkan `optimization_levels` transpilasi dari segi kedalaman Circuit hasil, jumlah Gate, dan jumlah Gate multi-Qubit.
+
+```python
+ghz = QuantumCircuit(15)
+ghz.h(0)
+ghz.cx(0, range(1, 15))
+
+depths = []
+gate_counts = []
+multiqubit_gate_counts = []
+levels = [str(x) for x in range(4)]
+for level in range(4):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=level,
+        backend=backend,
+        seed_transpiler=1234,
+    )
+    circ = pass_manager.run(ghz)
+    depths.append(circ.depth())
+    gate_counts.append(sum(circ.count_ops().values()))
+    multiqubit_gate_counts.append(circ.count_ops()["cx"])
+
+fig, (ax1, ax2) = plt.subplots(2, 1)
+ax1.bar(levels, depths, label="Depth")
+ax1.set_xlabel("Optimization Level")
+ax1.set_ylabel("Depth")
+ax1.set_title("Output Circuit Depth")
+ax2.bar(levels, gate_counts, label="Number of Circuit Operations")
+ax2.bar(levels, multiqubit_gate_counts, label="Number of CX gates")
+ax2.set_xlabel("Optimization Level")
+ax2.set_ylabel("Number of gates")
+ax2.legend()
+ax2.set_title("Number of output circuit gates")
+fig.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/2507de9c-1b94-4d56-b5a6-0b2bb1719a80-0.svg)
+
+## Scheduling {#scheduling}
+
+Tahap terakhir ini hanya dijalankan jika dipanggil secara eksplisit (mirip dengan tahap Init) dan tidak berjalan secara default (meskipun metode bisa ditentukan dengan mengatur argumen `scheduling_method` saat memanggil `generate_preset_pass_manager`). Tahap scheduling biasanya digunakan setelah Circuit diterjemahkan ke basis target, dipetakan ke perangkat, dan dioptimalkan. Pass-pass ini berfokus pada memperhitungkan semua waktu idle dalam Circuit. Secara garis besar, scheduling pass bisa dianggap sebagai penyisipan instruksi delay secara eksplisit untuk memperhitungkan waktu idle antara eksekusi Gate dan untuk memeriksa berapa lama Circuit akan berjalan pada Backend.
+
+Berikut adalah contohnya:
+
+```python
+ghz = QuantumCircuit(5)
+ghz.h(0)
+ghz.cx(0, range(1, 5))
+
+# Use fake backend
+backend = FakeWashingtonV2()
+
+# Run with optimization level 3 and 'asap' scheduling pass
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3,
+    backend=backend,
+    scheduling_method="asap",
+    seed_transpiler=1234,
+)
+
+circ = pass_manager.run(ghz)
+circ.draw(output="mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/4339deb5-4947-493b-8940-e68c91311631-0.svg)
+
+![Circuit dengan instruksi delay](/docs/images/guides/transpiler-stages/transpiler-16.avif)
+
+Transpiler menyisipkan instruksi `Delay` untuk memperhitungkan waktu idle pada setiap Qubit. Untuk mendapatkan gambaran yang lebih baik tentang timing Circuit, kita juga bisa melihatnya dengan fungsi `timeline.draw()`:
+
+![Tampilan timeline.draw() dari Circuit yang sama](/docs/images/guides/transpiler-stages/transpiler-17.avif)
+
+Scheduling Circuit melibatkan dua bagian: analisis dan pemetaan batasan, diikuti dengan padding pass. Bagian pertama memerlukan menjalankan scheduling analysis pass (secara default ini adalah [`ALAPSchedulingAnalysis`](../api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis)), yang menganalisis Circuit dan merekam waktu mulai setiap instruksi dalam Circuit ke dalam jadwal. Setelah Circuit memiliki jadwal awal, pass tambahan dapat dijalankan untuk memperhitungkan batasan timing apa pun pada Backend target. Akhirnya, padding pass seperti [`PadDelay`](../api/qiskit/qiskit.transpiler.passes.PadDelay) atau [`PadDynamicalDecoupling`](../api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling) bisa dieksekusi.
+
+## Langkah selanjutnya {#next-steps}
+
+<Admonition type="tip" title="Rekomendasi">
+    - Untuk mempelajari cara menggunakan fungsi `generate_preset_passmanager`, mulailah dengan topik [Pengaturan default transpilasi dan opsi konfigurasi](defaults-and-configuration-options).
+    - Lanjutkan belajar tentang transpilasi dengan topik [Transpiler dengan pass manager](transpile-with-pass-managers).
+    - Coba panduan [Bandingkan pengaturan Transpiler](/guides/circuit-transpilation-settings).
+    - Lihat [Dokumentasi API Transpile.](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler)
+</Admonition>
