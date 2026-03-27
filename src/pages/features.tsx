@@ -90,6 +90,18 @@ export default function Features(): JSX.Element {
                 linkLabel={translate({id: 'features.execution.ce.link', message: 'Set up Code Engine'})}
               />
               <FeatureCard
+                title={translate({id: 'features.execution.workshop.title', message: 'Workshop Mode'})}
+                description={translate({id: 'features.execution.workshop.desc', message: 'Run classroom workshops with up to 50 participants. Deploy multiple Code Engine instances and share a single URL — participants are automatically distributed with sticky sessions and automatic failover.'})}
+                link="/workshop-setup"
+                linkLabel={translate({id: 'features.execution.workshop.link', message: 'Workshop setup guide'})}
+              />
+              <FeatureCard
+                title={translate({id: 'features.execution.monitoring.title', message: 'Workshop Monitoring'})}
+                description={translate({id: 'features.execution.monitoring.desc', message: 'Live dashboard with auto-refresh (30s) shows per-instance kernel counts, busy kernels, connections, memory usage, and uptime. Each instance exposes a /stats endpoint. Stress test script simulates concurrent users to find capacity limits before the class starts.'})}
+                link="/jupyter-settings#code-engine"
+                linkLabel={translate({id: 'features.execution.monitoring.link', message: 'Settings dashboard'})}
+              />
+              <FeatureCard
                 title={translate({id: 'features.execution.colab.title', message: 'Open in Google Colab'})}
                 description={translate({id: 'features.execution.colab.desc', message: "Every notebook page has an 'Open in Colab' button for zero-install cloud execution. Opens translated notebooks when browsing in another language."})}
               />
