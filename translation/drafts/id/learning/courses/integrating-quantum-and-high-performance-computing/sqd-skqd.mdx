@@ -1,0 +1,430 @@
+---
+title: "SQD dan SKQD"
+sidebar_label: "SQD dan SKQD"
+description: "Pelajaran ini menggunakan contoh algoritma (SQD) untuk mendemonstrasikan bagaimana sumber daya klasikal dan kuantum dapat dimanfaatkan bersama."
+notebook_path: "learning/courses/integrating-quantum-and-high-performance-computing/sqd-skqd.ipynb"
+---
+
+{/* doqumentation-source-hash: 4495d939 */}
+
+{/* cspell:ignore VQAsgres sinfo SBATCH ntasks cpus srun Sbatch sbatch squeue subseteq Utar nocc gres Iskandar Sitdikov */}
+
+Dalam bab ini, kita akan mengeksplorasi bagaimana komputer kuantum dan klasikal bekerja sama untuk memecahkan salah satu tantangan terpenting dalam sains: memperkirakan energi molekul dan material secara akurat.
+
+Iskandar Sitdikov mendeskripsikan pendekatan algoritmik dalam video berikut.
+
+<IBMVideo id="134680646" title="In this video, Iskandar Sitdikov implements a hybrid classical quantum calculation using a simulated HPC environment."/>
+
+## Hamiltonian
+
+Kunci masalah ini adalah operator matematika—Hamiltonian, yang mewakili total energi suatu sistem. Untuk tujuan komputasional, kita bisa menganggap Hamiltonian ini sebagai matriks besar. Solusi yang kita cari—khususnya ground state sistem—adalah eigenvalue terkecil dari matriks ini. Tantangannya, bagaimanapun, adalah bahwa untuk masalah praktis, matriks Hamiltonian ini sangat besar. Ia tumbuh secara eksponensial dengan ukuran sistem, dengan cepat menjadi terlalu besar ($2^n$ di mana $n$ adalah jumlah qubit) bahkan untuk superkomputer paling bertenaga sekalipun untuk disimpan atau dipecahkan secara langsung.
+
+$$
+H = \begin{pmatrix}
+H_{0,0} & H_{0,1} & \cdots & H_{0,N-1} \\
+H_{1,0} & H_{1,1} & \cdots & H_{1,N-1} \\
+\vdots & \vdots & \ddots & \vdots \\
+H_{N-1,0} & H_{N-1,1} & \cdots & H_{N-1,N-1}
+\end{pmatrix} \quad (N=2^n)
+$$
+
+Untuk mengatasi ini, kita menggunakan strategi kuat yang dikenal sebagai metode subruang. Alih-alih menangani seluruh matriks, kita secara cerdas memilih irisan kecil yang relevan — sebuah "subruang" — yang kita yakini berisi informasi paling penting tentang solusi berenergi rendah yang kita cari.
+
+$$
+\underset{\text{Full Hamiltonian}}{\begin{pmatrix}
+\ddots & \vdots \\
+\cdots & H_{i,j} & \cdots \\
+& \vdots & \ddots
+\end{pmatrix}}
+\quad \xrightarrow{\text{Project}} \quad
+\underset{\text{Projected Hamiltonian}}{\tilde{H}}
+= \begin{pmatrix}
+\langle b_1 | H | b_1 \rangle & \cdots & \langle b_1 | H | b_L \rangle \\
+\vdots & \ddots & \vdots \\
+\langle b_L | H | b_1 \rangle & \cdots & \langle b_L | H | b_L \rangle
+\end{pmatrix}
+\quad \xrightarrow{\text{Diagonalize}} \quad
+\underset{\text{Eigenvalues}}{\begin{pmatrix}
+E_0 & & 0 \\
+& \ddots & \\
+0 & & E_{L-1}
+\end{pmatrix}}
+$$
+
+Setelah subruang kecil ini didefinisikan oleh sekumpulan state basis $\{|b_i\rangle\}$, Hamiltonian penuh diproyeksikan ke dalamnya untuk membuat matriks baru yang lebih kecil $\tilde{H}$. Setiap elemen dari matriks ini dihitung dari state basis subruang dan Hamiltonian asli seperti dalam $\langle b_i | H | b_j \rangle$. Matriks kecil ini kemudian dapat dengan mudah didiagonalisasi di komputer klasikal, dan eigenvalue yang dihasilkan adalah estimasi energi kita.
+
+Seperti yang mungkin kamu tebak, keberhasilan seluruh pendekatan ini sangat bergantung pada pemilihan subruang yang "baik". Jika subruang kita tidak mewakili ground state yang sebenarnya secara akurat, jawaban akhir kita akan salah. Di sinilah komputer kuantum berperan: mereka memungkinkan kita untuk menyiapkan dan mengambil sampel dari state kuantum kompleks yang dirancang untuk mengidentifikasi subruang penting ini. Untuk masalah yang benar-benar besar, seperti struktur kimia kompleks atau binding site, bahkan matriks yang diproyeksikan mungkin masih menantang untuk didiagonalisasi. Oleh karena itu, masalah seperti itu idealnya cocok untuk memanfaatkan kekuatan sumber daya komputasi kuantum dan klasikal.
+
+Dalam bagian berikut, kita akan mengeksplorasi dua algoritma canggih, SQD dan SKQD, yang memanfaatkan mekanika kuantum untuk menemukan dan membangun subruang-subruang ini. Untuk pendalaman yang lebih lengkap, ada [kursus lengkap](/learning/courses/quantum-diagonalization-algorithms) di IBM Quantum learning yang didedikasikan untuk topik-topik ini secara rinci. Untuk tujuan kursus ini, kita akan menjaga penjelasan pada tingkat tinggi.
+## Sample-based Quantum Diagonalization
+
+Sample-based Quantum Diagonalization (SQD) adalah algoritma variasional yang kuat yang mengimplementasikan metode subruang dengan cara kuantum. Ia menghindari prosedur mahal dan kompleks seperti tes Hadamard dengan menggunakan komputer kuantum untuk menyiapkan state percobaan dan mengambil sampel *bitstring*, yang mendefinisikan subruang untuk diagonalisasi klasikal.
+
+![A schematic of the workflow specific to sample-based quantum diagonalization. The steps include a variational quantum circuit, using measurements to project the Hamiltonian into a subspace, then using a classical optimizer to update variational parameters in the circuit and repeating.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/sqd-cycle.svg)
+
+Algoritma SQD dapat dipecah menjadi langkah-langkah berikut:
+
+#### Langkah 1: Siapkan state Ansatz
+
+Misalkan $H = \sum_{j=1}^Q \alpha_j P_j$ adalah Hamiltonian pada $n$ qubit. Meskipun ground state sejati mungkin didukung pada semua $2^n$ state basis, SQD paling efektif dalam kasus di mana ground state dapat didekati dengan baik oleh subruang sparse (sekumpulan bitstring yang berukuran polinomial).
+
+Untuk membangun subruang ini, kita mulai dengan state input $|\phi_0\rangle$, seperti state Hartree-Fock (HF) dalam kimia. Kita kemudian menerapkan rangkaian kuantum terparameterisasi, $U(\theta)$, yang dikenal sebagai ansatz.
+
+![A diagram showing the overlap of the computational basis states making up the ansatz and those making up the true ground state. Specifically, the image shows that the two regions will have some overlap, but might not perfectly match.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/ansatz.svg)
+
+Diagram ini mengilustrasikan tujuan ansatz yang baik. Ansatz menyiapkan state kuantum yang dukungannya (himpunan state basis yang menyusunnya) idealnya memiliki overlap yang besar dengan dukungan ground state yang sebenarnya. Rangkaian ini memungkinkan kita untuk dengan cepat memproyeksikan ansatz ke state basis komputasional, yang akan digunakan lebih lanjut dalam diagonalisasi klasikal. Dengan kata lain: kita tidak harus menebak ansatz yang merupakan ground state; kita hanya perlu agar ansatz mengandung state basis yang sama. Kemudian diagonalisasi klasikal dari Hamiltonian yang diproyeksikan akan memberi kita superposisi state basis yang paling baik mendekati ground state.
+#### Langkah 2: Ambil sampel subruang
+
+Dengan mengambil sampel dari rangkaian yang disiapkan oleh ansatz, kita mendapatkan kumpulan bitstring, $\{b_j\}_{j=1}^L$. Bitstring-bitstring ini mendefinisikan basis dari subruang yang kita pilih. Waktu runtime kuantum untuk langkah ini ditentukan oleh kedalaman rangkaian dan jumlah sampel yang diambil.
+
+#### Langkah 3: Proyeksikan dan diagonalisasi secara klasikal
+
+Menggunakan bitstring yang diambil sampelnya, kita memproyeksikan Hamiltonian ke subruang yang mereka bentangkan. Untuk setiap pasangan bitstring $(j, k)$, kita secara klasikal menghitung elemen matriks $\tilde{H}_{jk} = \langle b_j | H | b_k \rangle$. Karena operator Pauli bersifat sparse, langkah ini secara klasikal efisien untuk Hamiltonian fisika. Matriks kecil yang dihasilkan $\tilde{H}$ kemudian didiagonalisasi pada prosesor klasikal untuk memperkirakan ground state dan energinya.
+
+#### Langkah 4: Optimalkan ansatz (opsional)
+
+Prosesnya bisa dibuat iteratif. Dengan memperlakukan estimasi energi ground state sebagai fungsi biaya, kita bisa mengoptimalkan parameter rangkaian ($\theta$) menggunakan metode seperti gradient descent untuk meningkatkan ansatz, dan pada gilirannya, perkiraan energi pada iterasi berikutnya.
+
+### Keunggulan utama SQD
+
+SQD menawarkan beberapa fitur kuat yang menjadikannya kandidat terdepan untuk mendemonstrasikan quantum advantage:
+
+* Robustness yang kuat terhadap noise: Misalkan ground state sejati didukung hanya pada dua bitstring. Jika keduanya diambil sampel sama sekali, bahkan jika overlap mereka dengan ansatz kita kecil, diagonalisasi akan memberikan bobot yang sesuai kepada mereka dan secara efektif mengabaikan semua bitstring asing dan berisik lainnya yang mungkin juga telah diambil sampel. Penyaringan inheren ini membuat SQD sangat toleran terhadap noise.
+* Verifiabilitas klasikal: Tidak seperti QPE atau VQA, SQD menghasilkan perkiraan klasikal untuk ground state. Ini berarti siapa saja yang memiliki akses ke daftar bitstring dan bobotnya dapat menghitung ulang dan memverifikasi estimasi energi secara langsung di komputer klasikal.
+
+SQD telah digunakan untuk memperkirakan energi disosiasi ground-state N$_2$ dan sifat elektronik kluster [2Fe-2S] dan [4Fe-4S] [[2]](#references), dengan rangkaian sebesar 77 qubit dan 10.570 gate.
+
+### Uji pemahamanmu
+<details>
+<summary>
+
+Benar atau Salah: SQD dapat diterapkan pada sistem kimia.
+
+</summary>
+
+__Jawaban:__
+
+Benar
+</details>
+
+### Uji pemahamanmu
+<details>
+<summary>
+
+Sebut himpunan semua state basis komputasional yang menyusun ansatz-mu $A$. Sebut himpunan semua state basis komputasional yang menyusun ground state sejati dari sistemmu $G$. Mana dari berikut ini yang sesuai dengan ansatz yang "baik"? Pilih semua yang berlaku.
+
+(a) $A \subset G \\$
+(b) $A \subseteq G\\$
+(c) $G \subset A\\$
+(d) $G \subseteq A\\$
+</summary>
+
+__Jawaban:__
+
+(c) dan (d)
+</details>
+## SKQD (Sample-based Krylov Quantum Diagonalization)
+
+Sample-based Krylov Quantum Diagonalization (SKQD) adalah algoritma berbasis sampel kuantum kuat lainnya yang dibangun di atas prinsip-prinsip SQD. Meskipun tujuannya sama—menemukan subruang yang baik untuk diagonalisasi—SKQD menggunakan metode yang lebih terstruktur untuk menghasilkan bitstring, terutama untuk masalah seperti Hamiltonian latis.
+
+Inti dari SKQD adalah bahwa alih-alih mengoptimalkan rangkaian terparameterisasi untuk menemukan ansatz yang baik, seseorang dapat secara terbukti konvergen ke ground state dengan mengambil sampel dari sekumpulan state yang dihasilkan oleh evolusi waktu alami sistem itu sendiri - subruang Krylov. Algoritma SKQD dapat dipecah menjadi langkah-langkah berikut:
+
+#### Langkah 1: Bangun subruang Krylov dengan evolusi waktu
+
+Prosesnya dimulai dengan state awal $|\phi_0\rangle.$ Yang penting, kita tidak memerlukan state awal ini untuk memiliki overlap yang "baik" dengan ground state. Hanya perlu "berukuran polinomial", atau dijelaskan oleh polinomial dalam ukuran sistem. Algoritma itu sendiri kemudian akan mendorong state semakin dekat ke ground state sistem. SKQD menerapkan operator evolusi waktu, $e^{-iHt}$, untuk panjang waktu yang berbeda. Ini menciptakan sekumpulan $d$ state kuantum yang berbeda, didefinisikan sebagai:
+
+$$
+|\phi_j\rangle = e^{-i \,\delta t j H}|\phi_0\rangle,  \quad \text{for } j = 0, 1, \dots, d-1 \quad \text{}
+$$
+
+Kumpulan state yang berevolusi waktu ini membentuk basis Krylov. Langkah ini sangat efektif untuk Hamiltonian latis di mana jumlah suku dalam Hamiltonian tidak banyak. Untuk masalah kimia, evolusi waktu ini dapat menghasilkan rangkaian yang sangat dalam, itulah mengapa SQD sering direkomendasikan untuk kasus-kasus tersebut.
+
+#### Langkah 2: Ambil sampel dari state basis Krylov
+
+Selanjutnya, sampel bitstring dikumpulkan dari masing-masing $d$ state yang berbeda ($|\phi_0\rangle, |\phi_1\rangle, \dots, |\phi_{d-1}\rangle$) yang disiapkan pada langkah sebelumnya. Semua bitstring ini kemudian dikumpulkan bersama untuk membentuk basis subruang.
+
+#### Langkah 3: Proyeksikan dan diagonalisasi secara klasikal
+
+Langkah ini identik dengan yang ada di SQD. Bitstring yang dikumpulkan digunakan untuk memproyeksikan Hamiltonian penuh ke subruang yang mereka bentangkan. Matriks kecil yang dihasilkan, $\tilde{H}$, kemudian didiagonalisasi di komputer klasikal untuk menemukan energi ground state.
+
+### Keunggulan utama dan jaminan SKQD
+
+Pendekatan terstruktur SKQD memberikan manfaat unik:
+
+* Konvergensi yang terbukti: Keunggulan utama SKQD adalah jaminan teoretisnya tentang konvergensi di bawah kondisi yang spesifik dan terdefinisi dengan baik. Jika ground state sejati bersifat sparse (dapat didekati dengan baik oleh sejumlah polinomial bitstring) dan celah energi ke state tereksitasi pertama tidak terlalu kecil, metode ini terbukti bekerja secara efisien. Dalam kondisi ini, SKQD menjamin bahwa ia akan menemukan bitstring penting yang menyusun ground state dan dapat mendekati energi ground state dengan akurasi tinggi. Ini hanya memerlukan jumlah eksperimen kuantum dan shot yang polinomial. Jaminan ini menempatkan pendekatan berbasis sampel pada landasan teoritis yang ketat, mirip dengan metode yang sudah mapan seperti quantum phase estimation.
+
+* Manfaat bersama dengan SQD: Mirip dengan SQD, SKQD juga memiliki sifat robustness terhadap noise. Dengan kata lain, selama seseorang memiliki semua bitstring yang baik dalam himpunan bitstring yang diambil sampel, diagonalisasi memberikan bobot hampir nol kepada bitstring yang salah, membuat prosedurnya robust terhadap noise. Selain itu, karena solusinya diproduksi dari HPC klasikal, energi solusi dapat diverifikasi secara klasikal.
+
+Dalam eksperimen, SKQD telah digunakan dengan hingga 70 qubit dan ribuan gate untuk mempelajari ground state dari model Anderson 4-impurity yang kompleks, mencapai kesepakatan yang sangat baik dengan metode klasikal state-of-the-art seperti DMRG.[[1]](#references)
+
+### Uji pemahamanmu
+<details>
+<summary>
+
+Bagian mana dari algoritma SKQD yang membuatnya lebih cocok untuk masalah fisika seperti spin latis daripada masalah kimia? Mengapa?
+
+</summary>
+
+__Jawaban:__
+
+Evolusi waktu memerlukan rangkaian Trotter, yang sangat dalam untuk Hamiltonian yang kompleks dan tidak sparse. Interaksi latis spin diatur oleh matriks spin, yang setara dengan matriks Pauli. Dengan demikian, Hamiltonian untuk latis spin cenderung lebih kompak dapat diekspresikan dalam matriks Pauli, terutama yang dengan interaksi nearest-neighbor.
+
+</details>
+## SQD dan SKQD sebagai komputasi heterogen
+
+Untuk merangkum semuanya, kita bisa merepresentasikan algoritma berbasis sampel sebagai kombinasi dari berbagai model pemrograman pada sekumpulan sumber daya heterogen. Misalnya, kita bisa merepresentasikan algoritma kita sebagai alur kerja tugas.
+
+![A schematic of the workflow specific to sample-based quantum diagonalization. The steps include a variational quantum circuit, using measurements to project the Hamiltonian into a subspace, then using a classical optimizer to update variational parameters in the circuit and repeating.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/sqd-workflow.svg)
+
+Gambar ini mengilustrasikan alur kerja empat tahap yang fundamental. Pertama, kita akan memiliki tugas untuk persiapan rangkaian kuantum yang tumpang tindih dengan state target kita, diikuti oleh tugas untuk transpilasi, yang hanya memerlukan sumber daya klasikal untuk dieksekusi. Selanjutnya akan ada tugas yang menggunakan primitif untuk mengeksekusi rangkaian kuantum kita, yang memerlukan sumber daya kuantum. Akhirnya, kita memiliki tugas post-processing, yang sendirinya mungkin merupakan algoritma diagonalisasi paralel yang berjalan di beberapa node.
+
+Selain itu, kita mungkin ingin menjalankan salah satu algoritma ini berkali-kali saat kita memvariasikan ansatz kita, atau kita mungkin ingin menjalankannya sepenuhnya secara paralel dengan populasi yang berbeda.
+
+![A schematic of an SQD workload being split among several resources. It shows several processes running sequentially, using the results of one iteration to inform the next, but also performing many such processes in parallel.](/learning/images/courses/integrating-quantum-and-high-performance-computing/sqd-skqd/sqd-complex.svg)
+
+Seperti yang digambarkan di atas, kamu mungkin menjalankan beberapa alur kerja secara bersamaan sambil melakukan hal berikut:
+
+* Memvariasikan parameter atau struktur ansatz untuk menemukan yang paling efektif.
+* Memulai dengan state atau konfigurasi awal yang berbeda ("populasi") untuk menghindari minimum lokal dan memastikan hasil yang lebih robust.
+
+Pendekatan multi-lapisan ini, yang menggabungkan heterogenitas berbasis tugas dengan paralelisme tingkat alur kerja, adalah kunci untuk membuka potensi penuh dari algoritma-algoritma ini.
+## Praktik pemrograman
+
+Mari kita praktikkan algoritma SKQD, mendemonstrasikan alur kerja heterogen yang dijelaskan sebelumnya. Prosesnya dipecah menjadi empat tahap yang berbeda, masing-masing dengan skrip Python sendiri dan skrip shell yang sesuai untuk pengiriman job.
+
+### Pemetaan (`mapping.py` dan `mapping.sh`)
+
+Langkah pertama dalam alur kerja kita adalah mendefinisikan masalah fisika dan memetakannya ke sekumpulan rangkaian kuantum.
+
+`mapping.py` mendefinisikan parameter untuk masalah fisika tertentu—dalam hal ini, model impuritas Anderson dengan tujuh bath site (`n_bath = 7`). Ia membangun integral satu-badan (`h1e`) dan dua-badan (`h2e`) yang mewakili Hamiltonian sistem.
+
+```python
+
+...
+
+n_bath = 7  # number of bath sites
+
+...
+
+# One body matrix elements in the "position" basis
+h1e = -t * np.diag(np.ones(n_bath), k=1) - t * np.diag(np.ones(n_bath), k=-1)
+h1e[impurity_index, impurity_index + 1] = -V
+h1e[impurity_index + 1, impurity_index] = -V
+h1e[impurity_index, impurity_index] = eps
+
+# Two body matrix elements in the "position" basis
+h2e = np.zeros((n_bath + 1, n_bath + 1, n_bath + 1, n_bath + 1))
+h2e[impurity_index, impurity_index, impurity_index, impurity_index] = U
+
+...
+
+# The one-body time evolution
+free_fermion_evolution = ffsim.qiskit.OrbitalRotationJW(n_modes, Utar)
+
+# The two-body time evolution
+def append_diagonal_evolution(dt, U, impurity_qubit, num_orb, q_circuit):
+    """Append two-body time evolution to a quantum circuit."""
+    if U != 0:
+        q_circuit.append(
+            CPhaseGate(-dt / 2 * U),
+            [impurity_qubit, impurity_qubit + num_orb],
+        )
+
+```
+Kemudian ia menghasilkan rangkaian kuantum yang diperlukan untuk algoritma SKQD. Ia dimulai dengan membuat state awal (`initial_state`) dan kemudian menerapkan operator evolusi waktu untuk jumlah langkah yang bervariasi (`d = 8`) untuk menghasilkan state basis Krylov yang berbeda, $|\phi_j\rangle = (e^{-iHt})^j |\phi_0\rangle$.
+
+```python
+
+# The reference state
+def initial_state(q_circuit, norb, nocc):
+    """Prepare an initial state."""
+    for i in range(nocc):
+        q_circuit.append(XGate(), [i])
+        q_circuit.append(XGate(), [norb + i])
+    rot = XXPlusYYGate(np.pi / 2, -np.pi / 2)
+
+    for i in range(3):
+        for j in range(nocc - i - 1, nocc + i, 2):
+            q_circuit.append(rot, [j, j + 1])
+            q_circuit.append(rot, [norb + j, norb + j + 1])
+    q_circuit.append(rot, [j + 1, j + 2])
+    q_circuit.append(rot, [norb + j + 1, norb + j + 2])
+
+...
+
+# Generate the initial state
+qubits = QuantumRegister(2 * n_modes, name="q")
+init_state = QuantumCircuit(qubits)
+initial_state(init_state, n_modes, n_modes // 2)
+
+...
+
+d = 8  # Number of Krylov basis states
+circuits = []
+for i in range(d):
+    circ = init_state.copy()
+    circuits.append(circ)
+    for _ in range(i):
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+        circ.append(free_fermion_evolution, qubits)
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+    circ.measure_all()
+
+print(circuits[0].draw(scale=0.4, fold=-1))
+
+```
+Skrip ini menyimpan daftar 8 rangkaian yang dihasilkan (masing-masing dengan pengukuran yang ditambahkan) ke file bernama `circuits.qpy`.
+
+`mapping.sh` adalah skrip batch Slurm yang digunakan untuk mengirimkan job `mapping.py`. Karena ini adalah komputasi klasikal, ia meminta sumber daya dari partisi CPU standar (`--partition=normal`).
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+### Optimasi (`optimization.py` dan `optimization.sh`)
+
+Setelah kita memiliki rangkaian, mereka harus dioptimalkan dan dikompilasi untuk berjalan secara efisien di hardware kuantum target.
+
+Dalam `optimization.py`, skrip ini pertama memuat file `circuits.qpy` yang dibuat pada tahap pemetaan dan membawa informasi sumber daya kuantum dengan `QRMI()`, manajer sumber daya kuantum. Kemudian ia menggunakan `generate_preset_pass_manager` Qiskit dengan level optimasi tinggi (`optimization_level=3`) untuk mengkonversi rangkaian logis abstrak menjadi rangkaian Instruction Set Architecture (ISA). Proses ini menulis ulang rangkaian menggunakan gate asli hardware dan mengoptimalkannya untuk mengurangi kedalaman dan meminimalkan kesalahan.
+
+```python
+
+...
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+target = quantum_resource.target
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3,
+    target=target
+)
+isa_circuits = pass_manager.run(circuits)
+
+```
+
+Rangkaian yang telah ditranspilasi dan siap hardware disimpan ke file baru, `isa_circuits.qpy`.
+
+Mirip dengan skrip pemetaan, job Slurm ini juga berjalan pada partisi CPU klasikal (`--partition=normal`), karena transpilasi adalah tugas klasikal.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+
+### Eksekusi (`execution.py` dan `execution.sh`)
+
+Ini adalah satu-satunya tahap di mana komputer kuantum digunakan. Di sini, kita mengeksekusi rangkaian yang dioptimalkan dan mengumpulkan sampel pengukuran.
+
+`execution.py` memuat file `isa_circuits.qpy` yang dioptimalkan, kemudian menginisialisasi primitif `SamplerV2` yang terhubung ke sumber daya kuantum. Kemudian ia memanggil `sampler.run()` untuk mengeksekusi rangkaian di QPU untuk jumlah shot yang ditentukan (`shots=500`).
+
+```python
+
+...
+
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+
+# Sample from the circuits
+noisy_sampler = Sampler(quantum_resource)
+job = noisy_sampler.run(isa_circuits, shots=500)
+
+```
+Pada akhir eksekusi, hasil yang diukur (bitstring) dari semua rangkaian dikumpulkan dan digabungkan, dan hitungannya disimpan ke file `counts.json`.
+
+Skrip Slurm `execution.sh` berbeda dari yang lain pada tahap ini. Ia meminta untuk dijalankan pada partisi kuantum (`--partition=quantum`) dan secara khusus meminta satu QPU (`--gres=qpu:1`).
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-execution
+#SBATCH --output=sqd-execution.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=quantum
+#SBATCH --gres=qpu:1
+
+srun python /data/ch4/sqd/execution.py
+```
+
+### Post-processing (`postprocessing.py` dan `postprocessing.sh`)
+
+Pada langkah terakhir, kita kembali ke komputer klasikal untuk menganalisis data dari eksperimen kuantum dan menghitung hasil akhir: energi ground state dari sistem target kita.
+
+Program `postprocessing.py` pertama membaca file `counts.json` yang berisi hasil pengukuran. Kemudian ia merekonstruksi Hamiltonian dari model Anderson (menggunakan parameter yang sama seperti di `mapping.py`). Kemudian ia meneruskan bitstring yang diukur dan definisi Hamiltonian ke fungsi `diagonalize_fermionic_hamiltonian`. Fungsi ini melakukan logika inti SKQD: ia menggunakan bitstring untuk membangun Hamiltonian yang diproyeksikan $\tilde{H}$ dan mendiagonalisasinya untuk menemukan energi ground state.
+
+```python
+
+...
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=300,
+    norb=n_modes,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=10,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+
+```
+
+Akhirnya, ini mencetak energi SKQD yang dihitung dan membandingkannya dengan energi eksak yang diketahui untuk masalah ini, menunjukkan kesalahan absolut akhir dari perhitungan.
+
+Skrip job terakhir berjalan pada partisi klasikal (`--partition=normal`), karena semua analisis bersifat klasikal. Untuk subruang yang besar, langkah ini mungkin memerlukan lebih banyak sumber daya HPC klasikal.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-postprocessing
+#SBATCH --output=sqd-postprocessing.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/postprocessing.py
+```
+## Ringkasan
+
+Dan itulah! Kita sekarang telah menjalankan beberapa konsep dan contoh yang dapat membantu kamu memulai dengan manajemen program hibrida yang kompleks. Tentu saja, ini baru permulaan dari semua yang bisa kamu lakukan dengan kombinasi sumber daya kuantum dan HPC klasikal.
+
+Untuk mengeksplorasi lebih banyak use case dan algoritma, telusuri [dokumentasi](https://docs.quantum.ibm.com/guides) dan [tutorial](https://docs.quantum.ibm.com/tutorials) kami di IBM Quantum Platform, dan pastikan untuk mengunjungi sumber daya yang dibagikan dalam pelajaran berikutnya untuk informasi lebih lanjut tentang algoritma dan perangkat lunak baik untuk ilmuwan komputasional maupun administrator pusat data.
+
+## Referensi
+
+[1] Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization. https://arxiv.org/abs/2501.09702
+
+[2] Chemistry beyond the scale of exact diagonalization on a quantum-centric supercomputer. https://www.science.org/doi/10.1126/sciadv.adu9991
