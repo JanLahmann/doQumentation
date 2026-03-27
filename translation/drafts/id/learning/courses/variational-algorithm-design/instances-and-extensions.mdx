@@ -1,0 +1,604 @@
+---
+title: "Instansi dan ekstensi"
+sidebar_label: "Instansi dan ekstensi"
+description: "Pelajaran ini menunjukkan alur kerja lengkap untuk beberapa pendekatan variasional dan menjelaskan bagaimana cara memodifikasinya."
+notebook_path: "learning/courses/variational-algorithm-design/instances-and-extensions.ipynb"
+---
+{/* doqumentation-source-hash: 1c3ec190 */}
+
+<OpenInLabBanner notebookPath="learning/courses/variational-algorithm-design/instances-and-extensions.ipynb" />
+
+
+
+{/* cspell: ignore disp SSVQE's forall */}
+
+Bab ini akan membahas beberapa algoritma variasional kuantum, termasuk
+
+* [Variational Quantum Eigensolver (VQE)](https://arxiv.org/abs/1304.3061)
+* [Subspace Search VQE (SSVQE)](https://arxiv.org/abs/1810.09434)
+* [Variational Quantum Deflation (VQD)](https://arxiv.org/abs/1805.08138)
+* [Quantum Sampling Regression (QSR)](https://arxiv.org/pdf/2012.02338)
+
+Dengan menggunakan algoritma-algoritma ini, kita akan mempelajari beberapa ide desain yang bisa dimasukkan ke dalam algoritma variasional kustom, seperti bobot, penalti, over-sampling, dan under-sampling. Kami mendorongmu untuk bereksperimen dengan konsep-konsep ini dan berbagi temuanmu dengan komunitas.
+
+Framework pola Qiskit berlaku untuk semua algoritma ini — tapi kita hanya akan secara eksplisit menyebut langkah-langkahnya di contoh pertama saja.
+## Variational Quantum Eigensolver (VQE) {#variational-quantum-eigensolver-vqe}
+
+[VQE](https://arxiv.org/abs/1304.3061) adalah salah satu algoritma kuantum variasional yang paling banyak digunakan, memberikan template bagi algoritma lain untuk dikembangkan.
+
+![A diagram showing how VQE uses the reference state and ansatz to estimate a cost function, and then iterate using variational parameters.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-vqe.svg)
+### Langkah 1: Memetakan input klasik ke masalah kuantum {#step-1-map-classical-inputs-to-a-quantum-problem}
+### Tata letak teoritis {#theoretical-layout}
+
+Tata letak VQE sangat sederhana:
+
+- Siapkan operator referensi $U_R$
+  - Kita mulai dari state $|0\rangle$ dan menuju ke reference state $|\rho\rangle$
+- Terapkan variational form $U_V(\vec\theta_{i,j})$ untuk membuat ansatz $U_A(\vec\theta_{i,j})$
+  - Kita berpindah dari state $|\rho\rangle$ ke $U_V(\vec\theta_{i,j})|\rho\rangle = |\psi(\vec\theta_{i,j})\rangle$
+- Bootstrap di $i=0$ jika kita punya masalah serupa (biasanya ditemukan melalui simulasi atau sampling klasik)
+  - Setiap optimizer akan di-bootstrap secara berbeda, menghasilkan set awal vektor parameter $\Theta_0 := \\{ {\vec\theta_{0,j} | j \in \mathcal{J}_\text{opt}^0} \\}$ (misalnya, dari titik awal $\vec\theta_0$).
+- Evaluasi fungsi biaya $C(\vec\theta_{i,j}) := \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ untuk semua state yang disiapkan di komputer kuantum.
+- Gunakan optimizer klasik untuk memilih set parameter berikutnya $\Theta_{i+1}$.
+- Ulangi proses sampai konvergensi tercapai.
+
+Ini adalah loop optimisasi klasik sederhana di mana kita mengevaluasi fungsi biaya. Beberapa optimizer mungkin membutuhkan beberapa evaluasi untuk menghitung gradien, menentukan iterasi berikutnya, atau menilai konvergensi.
+
+Berikut contoh untuk observable berikut:
+
+$$
+\hat{O}_1 = 2 II - 2 XX + 3 YY - 3 ZZ,
+$$
+### Implementasi {#implementation}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime scipy
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import TwoLocal
+import numpy as np
+
+theta_list = (2 * np.pi * np.random.rand(1, 8)).tolist()
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+
+reference_circuit = QuantumCircuit(2)
+reference_circuit.x(0)
+
+variational_form = TwoLocal(
+    2,
+    rotation_blocks=["rz", "ry"],
+    entanglement_blocks="cx",
+    entanglement="linear",
+    reps=1,
+)
+
+ansatz = reference_circuit.compose(variational_form)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/db20526e-48d4-44eb-9d2b-6c5d2ce5777e-0.avif)
+
+```python
+def cost_func_vqe(parameters, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+    estimator_result = estimator_job.result()[0]
+
+    cost = estimator_result.data.evs[0]
+    return cost
+```
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+```
+
+Kita bisa menggunakan fungsi biaya ini untuk menghitung parameter optimal
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+x0 = np.ones(8)
+
+result = minimize(
+    cost_func_vqe, x0, args=(ansatz, observable, estimator), method="COBYLA"
+)
+
+result
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -5.999999982445723
+       x: [ 1.741e+00  9.606e-01  1.571e+00  2.115e-05  1.899e+00
+            1.243e+00  6.063e-01  6.063e-01]
+    nfev: 136
+   maxcv: 0.0
+```
+
+### Langkah 2: Optimalkan masalah untuk eksekusi kuantum {#step-2-optimize-problem-for-quantum-execution}
+
+Kita akan memilih Backend yang paling tidak sibuk, dan mengimpor komponen yang diperlukan dari `qiskit_ibm_runtime`.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import Session, EstimatorOptions
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_brisbane')>
+```
+
+Kita akan men-transpile Circuit menggunakan preset pass manager dengan level optimisasi 3, dan kita akan menerapkan layout yang sesuai ke observable.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_ansatz = pm.run(ansatz)
+isa_observable = observable.apply_layout(layout=isa_ansatz.layout)
+```
+
+### Langkah 3: Eksekusi menggunakan Qiskit Runtime primitives {#step-3-execute-using-qiskit-runtime-primitives}
+
+Kita sekarang siap menjalankan perhitungan di hardware IBM Quantum&reg;. Karena minimisasi fungsi biaya bersifat sangat iteratif, kita akan memulai Runtime Session. Dengan cara ini, kita hanya perlu mengantri satu kali. Setelah job mulai berjalan, setiap iterasi dengan pembaruan parameter akan langsung berjalan.
+
+```python
+x0 = np.ones(8)
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    result = minimize(
+        cost_func_vqe,
+        x0,
+        args=(isa_ansatz, isa_observable, estimator),
+        method="COBYLA",
+        options={"maxiter": 200, "disp": True},
+    )
+session.close()
+print(result)
+```
+
+### Langkah 4: Post-process, kembalikan hasil dalam format klasik {#step-4-post-process-return-result-in-classical-format}
+
+Kita bisa melihat bahwa rutinitas minimisasi berhasil dihentikan, artinya kita mencapai toleransi default dari optimizer klasik COBYLA. Jika kita membutuhkan hasil yang lebih presisi, kita bisa menentukan toleransi yang lebih kecil. Ini memang mungkin diperlukan, karena hasilnya beberapa persen lebih jauh dibandingkan hasil yang diperoleh simulator di atas.
+
+Nilai x yang diperoleh adalah tebakan terbaik saat ini untuk parameter yang meminimalkan fungsi biaya. Jika melakukan iterasi untuk mendapatkan presisi yang lebih tinggi, nilai-nilai tersebut harus digunakan sebagai pengganti x0 yang awalnya digunakan (vektor berisi angka satu).
+
+Terakhir, kita catat bahwa fungsi dievaluasi sebanyak 96 kali dalam proses optimisasi. Jumlah ini bisa berbeda dari jumlah langkah optimisasi, karena beberapa optimizer membutuhkan beberapa evaluasi fungsi dalam satu langkah, misalnya saat memperkirakan gradien.
+## Subspace Search VQE (SSVQE) {#subspace-search-vqe-ssvqe}
+
+[SSVQE](https://arxiv.org/abs/1810.09434) adalah varian dari VQE yang memungkinkan mendapatkan $k$ eigenvalue pertama dari observable $\hat{H}$ dengan eigenvalue $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$, di mana $N\geq k$. Tanpa kehilangan generalitas, kita asumsikan bahwa $\lambda_0<\lambda_1<...<\lambda_{N-1}$. SSVQE memperkenalkan ide baru dengan menambahkan bobot untuk membantu memprioritaskan optimisasi untuk suku dengan bobot terbesar.
+
+![A diagram showing how subspace-search VQE uses the components of variational algorithm.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-ssvqe.svg)
+
+Untuk mengimplementasikan algoritma ini, kita membutuhkan $k$ reference state yang saling ortogonal $\{ |\rho_j\rangle \}_{j=0}^{k-1}$, artinya $\langle \rho_j | \rho_l \rangle = \delta_{jl}$ untuk $j,l<k$. State-state ini bisa dikonstruksi menggunakan operator Pauli. Fungsi biaya dari algoritma ini kemudian adalah:
+
+$$
+\begin{aligned}
+C(\vec{\theta})
+
+& := \sum_{j=0}^{k-1} w_j \langle \rho_j | U_{V}^{\dagger}(\vec{\theta})\hat{H} U_{V}(\vec{\theta})|\rho_j \rangle \\[1mm]
+
+& := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle \\[1mm]
+
+\end{aligned}
+$$
+
+di mana $w_j$ adalah bilangan positif sembarang sedemikian sehingga jika $j<l<k$ maka $w_j>w_l$, dan $U_V(\vec{\theta})$ adalah variational form yang didefinisikan pengguna.
+
+Algoritma SSVQE bergantung pada fakta bahwa eigenstate yang bersesuaian dengan eigenvalue yang berbeda saling ortogonal. Secara spesifik, hasil kali dalam dari $U_V(\vec{\theta})|\rho_j\rangle$ dan $U_V(\vec{\theta})|\rho_l\rangle$ bisa diekspresikan sebagai:
+
+$$
+\begin{aligned}
+\langle \rho_j | U_{V}^{\dagger}(\vec{\theta})U_{V}(\vec{\theta})|\rho_l \rangle
+
+& = \langle \rho_j | I |\rho_l \rangle \\[1mm]
+
+& = \langle \rho_j | \rho_l \rangle \\[1mm]
+
+& = \delta_{jl}
+
+\end{aligned}
+$$
+
+Kesamaan pertama berlaku karena $U_{V}(\vec{\theta})$ adalah operator kuantum dan karenanya bersifat uniter. Kesamaan terakhir berlaku karena ortogonalitas reference state $|\rho_j\rangle$. Fakta bahwa ortogonalitas dipertahankan melalui transformasi uniter berkaitan erat dengan prinsip konservasi informasi, sebagaimana dinyatakan dalam ilmu informasi kuantum. Dalam sudut pandang ini, transformasi non-uniter merepresentasikan proses di mana informasi hilang atau disuntikkan.
+
+Bobot $w_j$ membantu memastikan bahwa semua state adalah eigenstate. Jika bobot-bobot cukup berbeda, suku dengan bobot terbesar (yaitu, $w_0$) akan diprioritaskan selama optimisasi dibanding yang lain. Akibatnya, state yang dihasilkan $U_{V}(\vec{\theta})|\rho_0 \rangle$ akan menjadi eigenstate yang bersesuaian dengan $\lambda_0$. Karena $\{ U_{V}(\vec{\theta})|\rho_j\rangle \}_{j=0}^{k-1}$ saling ortogonal, state-state yang tersisa akan ortogonal terhadapnya dan, oleh karena itu, terkandung dalam subspace yang bersesuaian dengan eigenvalue $\{\lambda_1,...,\lambda_{N-1}\}$.
+
+Menerapkan argumen yang sama untuk sisa suku, prioritas berikutnya adalah suku dengan bobot $w_1$, sehingga $U_{V}(\vec{\theta})|\rho_1 \rangle$ akan menjadi eigenstate yang bersesuaian dengan $\lambda_1$, dan suku lainnya akan terkandung dalam eigenspace dari $\{\lambda_2,...,\lambda_{N-1}\}$.
+
+Dengan penalaran induktif, kita menyimpulkan bahwa $U_{V}(\vec{\theta})|\rho_j \rangle$ akan menjadi eigenstate perkiraan dari $\lambda_j$ untuk $0\leq j < k.$
+
+### Tata letak teoritis {#theoretical-layout-ssvqe}
+
+SSVQE dapat dirangkum sebagai berikut:
+
+- Siapkan beberapa reference state dengan menerapkan uniter U_R ke k state basis komputasi yang berbeda
+   - Algoritma ini membutuhkan penggunaan $k$ reference state yang saling ortogonal $\{ |\rho_j\rangle \}_{j=0}^{k-1}$, sedemikian sehingga $\langle \rho_j | \rho_l \rangle = \delta_{jl}$ untuk $j,l<k$.
+- Terapkan variational form $U_V(\vec\theta_{i,j})$ ke setiap reference state, menghasilkan ansatz berikut $U_A(\vec\theta_{i,j})$.
+- Bootstrap di $i=0$ jika masalah serupa tersedia (biasanya ditemukan melalui simulasi atau sampling klasik).
+- Evaluasi fungsi biaya $C(\vec\theta_{i,j}) := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ untuk semua state yang disiapkan di komputer kuantum.
+  - Ini bisa dipisahkan menjadi menghitung nilai ekspektasi untuk observable $\langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ dan mengalikan hasilnya dengan $w_j$.
+  - Setelah itu, fungsi biaya mengembalikan jumlah semua nilai ekspektasi berbobot.
+- Gunakan optimizer klasik untuk menentukan set parameter berikutnya $\Theta_{i+1}$.
+- Ulangi langkah-langkah di atas sampai konvergensi tercapai.
+
+Kamu akan merekonstruksi fungsi biaya SSVQE dalam penilaian, tapi kita punya cuplikan berikut untuk memotivasi solusimu:
+
+```python
+import numpy as np
+
+def cost_func_ssvqe(
+    params, initialized_anastz_list, weights, ansatz, hamiltonian, estimator
+):
+    # """Return estimate of energy from estimator
+
+    # Parameters:
+    #     params (ndarray): Array of ansatz parameters
+    #     initialized_anastz_list (list QuantumCircuit): Array of initialised ansatz with reference
+    #     weights (list): List of weights
+    #     ansatz (QuantumCircuit): Parameterized ansatz circuit
+    #     hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+    #     estimator (Estimator): Estimator primitive instance
+
+    # Returns:
+    #     float: Weighted energy estimate
+    # """
+
+    energies = []
+
+    # Define SSVQE
+
+    weighted_energy_sum = np.dot(energies, weights)
+    return weighted_energy_sum
+```
+## Variational Quantum Deflation (VQD) {#variational-quantum-deflation-vqd}
+
+[VQD](https://arxiv.org/abs/1805.08138) adalah metode iteratif yang memperluas VQE untuk mendapatkan $k$ nilai eigen pertama dari suatu observable $\hat{H}$ dengan nilai eigen $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$, di mana $N\geq k$, bukan hanya yang pertama. Untuk sisa bagian ini, kita akan mengasumsikan, tanpa mengurangi keumuman, bahwa $\lambda_0\leq\lambda_1\leq...\leq\lambda_{N-1}$. VQD memperkenalkan konsep biaya penalti untuk memandu proses optimasi.
+
+![Diagram yang menunjukkan bagaimana VQD menggunakan komponen-komponen algoritma variasional.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-vqd.svg)
+VQD memperkenalkan istilah penalti, dilambangkan sebagai $\beta$, untuk menyeimbangkan kontribusi setiap istilah overlap terhadap biaya. Istilah penalti ini berfungsi untuk menghukum proses optimasi jika ortogonalitas tidak tercapai. Kita memberlakukan batasan ini karena eigenstate dari suatu observable, atau operator Hermitian, yang bersesuaian dengan nilai eigen yang berbeda selalu saling ortogonal, atau dapat dibuat demikian dalam kasus degenerasi atau nilai eigen yang berulang. Dengan demikian, dengan menegakkan ortogonalitas terhadap eigenstate yang bersesuaian dengan $\lambda_0$, kita secara efektif mengoptimalkan atas subruang yang bersesuaian dengan sisa nilai eigen $\{\lambda_1, \lambda_2,..., \lambda_{N-1}\}$. Di sini, $\lambda_1$ adalah nilai eigen terendah dari sisa nilai eigen dan, oleh karena itu, solusi optimal dari masalah baru dapat diperoleh menggunakan teorema variasional.
+
+Ide umum di balik VQD adalah menggunakan VQE seperti biasa untuk mendapatkan nilai eigen terendah $\lambda_0 := C_0(\vec\theta^0) \equiv C_\text{VQE}(\vec\theta^0)$ beserta eigenstate (perkiraan) yang bersesuaian $|\psi(\vec{\theta^0})\rangle$ untuk vektor parameter optimal $\vec{\theta^0}$. Kemudian, untuk mendapatkan nilai eigen berikutnya $\lambda_1 > \lambda_0$, alih-alih meminimalkan fungsi biaya $C_0(\vec{\theta}) := \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$, kita mengoptimalkan:
+
+$$
+C_1(\vec{\theta}) :=
+C_0(\vec{\theta})+ \beta_0 |\langle \psi(\vec{\theta})| \psi(\vec{\theta^0})\rangle  |^2
+$$
+
+Nilai positif $\beta_0$ idealnya harus lebih besar dari $\lambda_1-\lambda_0$.
+
+Ini memperkenalkan fungsi biaya baru yang dapat dipandang sebagai masalah terkendala, di mana kita meminimalkan $C_\text{VQE}(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ dengan syarat bahwa state harus ortogonal terhadap $|\psi(\vec{\theta^0})\rangle$ yang telah diperoleh sebelumnya, dengan $\beta_0$ bertindak sebagai istilah penalti jika syarat tidak terpenuhi.
+
+Sebagai alternatif, masalah baru ini dapat diinterpretasikan sebagai menjalankan VQE pada observable baru:
+
+$$
+\hat{H_1} := \hat{H} + \beta_0 |\psi(\vec{\theta^0})\rangle \langle \psi(\vec{\theta^0})|
+\quad \Rightarrow \quad
+C_1(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H_1} | \psi(\vec{\theta})\rangle,
+$$
+
+Dengan asumsi bahwa solusi untuk masalah baru adalah $|\psi(\vec{\theta^1})\rangle$, nilai ekspektasi dari $\hat{H}$ (bukan $\hat{H_1}$) seharusnya $ \langle \psi(\vec{\theta^1}) | \hat{H} | \psi(\vec{\theta^1})\rangle = \lambda_1$.
+Untuk mendapatkan nilai eigen ketiga $\lambda_2$, fungsi biaya yang perlu dioptimalkan adalah:
+
+$$
+C_2(\vec{\theta}) :=
+C_1(\vec{\theta}) + \beta_1 |\langle \psi(\vec{\theta})| \psi(\vec{\theta^1})\rangle  |^2
+$$
+
+di mana $\beta_1$ adalah konstanta positif yang cukup besar untuk menegakkan ortogonalitas state solusi terhadap $|\psi(\vec{\theta^0})\rangle$ dan $|\psi(\vec{\theta^1})\rangle$. Ini menghukum state dalam ruang pencarian yang tidak memenuhi persyaratan ini, sehingga secara efektif membatasi ruang pencarian. Dengan demikian, solusi optimal dari masalah baru seharusnya adalah eigenstate yang bersesuaian dengan $\lambda_2$.
+
+Seperti kasus sebelumnya, masalah baru ini juga dapat diinterpretasikan sebagai VQE dengan observable:
+
+$$
+\hat{H_2} := \hat{H_1} + \beta_1 |\psi(\vec{\theta^1})\rangle \langle \psi(\vec{\theta^1})|
+\quad \Rightarrow \quad
+C_2(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H_2} | \psi(\vec{\theta})\rangle.
+$$
+
+Jika solusi untuk masalah baru ini adalah $|\psi(\vec{\theta^2})\rangle$, nilai ekspektasi dari $\hat{H}$ (bukan $\hat{H_2}$) seharusnya $ \langle \psi(\vec{\theta^2}) | \hat{H} | \psi(\vec{\theta^2})\rangle = \lambda_2$.
+Secara analog, untuk mendapatkan nilai eigen ke-$k$ yaitu $\lambda_{k-1}$, kamu perlu meminimalkan fungsi biaya:
+
+$$
+C_{k-1}(\vec{\theta}) :=
+C_{k-2}(\vec{\theta}) + \beta_{k-2} |\langle \psi(\vec{\theta})| \psi(\vec{\theta^{k-2}})\rangle  |^2,
+$$
+
+Ingat bahwa kita mendefinisikan $\vec{\theta^j}$ sedemikian sehingga $\langle \psi(\vec{\theta^j}) | \hat{H} | \psi(\vec{\theta^j})\rangle = \lambda_j, \forall j<k$. Masalah ini setara dengan meminimalkan $C(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ tetapi dengan syarat bahwa state harus ortogonal terhadap $|\psi(\vec{\theta^j})\rangle ; \forall j \in {0, \cdots, k-1}$, sehingga membatasi ruang pencarian ke subruang yang bersesuaian dengan nilai eigen $\{\lambda_{k-1},\cdots,\lambda_{N-1}\}$.
+
+Masalah ini setara dengan VQE dengan observable:
+
+$$
+\hat{H}_{k-1} :=
+\hat{H}_{k-2} + \beta_{k-2} |\psi(\vec{\theta^{k-2}})\rangle \langle \psi(\vec{\theta^{k-2}})|
+\quad \Rightarrow \quad
+C_{k-1}(\vec{\theta}) = \langle \psi(\vec{\theta}) | \hat{H}_{k-1} | \psi(\vec{\theta})\rangle,
+$$
+
+Seperti yang bisa kamu lihat dari prosesnya, untuk mendapatkan nilai eigen ke-$k$, kamu membutuhkan eigenstate (perkiraan) dari $k-1$ nilai eigen sebelumnya, sehingga kamu perlu menjalankan VQE sebanyak $k$ kali. Oleh karena itu, fungsi biaya VQD adalah sebagai berikut:
+
+$$
+C_k(\vec{\theta}) =
+\langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle +
+\sum_{j=0}^{k-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle |^2
+$$
+### Tata letak teoritis {#theoretical-layout}
+
+Tata letak VQD dapat dirangkum sebagai berikut:
+
+- Siapkan operator referensi $U_R$
+- Terapkan variational form $U_V(\vec\theta_{i,j})$ pada state referensi, membuat ansatz berikut $U_A(\vec\theta_{i,j})$
+- Bootstrap pada $i=0$ jika kita punya masalah serupa (biasanya ditemukan via simulasi atau sampling klasik).
+- Evaluasi fungsi biaya $C_k(\vec{\theta})$, yang melibatkan komputasi $k$ excited state dan array $\beta$ yang mendefinisikan penalti overlap untuk setiap istilah overlap.
+  - Hitung nilai ekspektasi untuk observable $\langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ untuk setiap $k$
+  - Hitung penalti $\sum_{j=0}^{k-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle |^2$.
+  - Fungsi biaya kemudian harus mengembalikan jumlah dari kedua istilah ini
+- Gunakan pengoptimal klasik untuk memilih set parameter berikutnya $\Theta_{i+1}$.
+- Ulangi proses ini hingga konvergensi tercapai.
+### Implementasi {#implementation}
+
+Untuk implementasi ini, kita akan membuat fungsi untuk penalti overlap. Penalti ini akan digunakan dalam fungsi biaya di setiap iterasi. Proses ini akan diulang untuk setiap excited state
+
+```python
+from qiskit.circuit.library import TwoLocal
+
+ansatz = TwoLocal(2, rotation_blocks=["ry", "rz"], entanglement_blocks="cz", reps=1)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Output dari sel kode sebelumnya](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/9d368de5-d512-4fe8-8842-9c735944b22b-0.avif)
+
+Pertama, kita akan menyiapkan fungsi yang menghitung fidelitas state -- persentase overlap antara dua state yang akan kita gunakan sebagai penalti untuk VQD:
+
+```python
+import numpy as np
+
+def calculate_overlaps(ansatz, prev_circuits, parameters, sampler):
+    def create_fidelity_circuit(circuit_1, circuit_2):
+        """
+        Constructs the list of fidelity circuits to be evaluated.
+        These circuits represent the state overlap between pairs of input circuits,
+        and their construction depends on the fidelity method implementations.
+        """
+
+        if len(circuit_1.clbits) > 0:
+            circuit_1.remove_final_measurements()
+        if len(circuit_2.clbits) > 0:
+            circuit_2.remove_final_measurements()
+
+        circuit = circuit_1.compose(circuit_2.inverse())
+        circuit.measure_all()
+        return circuit
+
+    overlaps = []
+
+    for prev_circuit in prev_circuits:
+        fidelity_circuit = create_fidelity_circuit(ansatz, prev_circuit)
+        sampler_job = sampler.run([(fidelity_circuit, parameters)])
+        meas_data = sampler_job.result()[0].data.meas
+
+        counts_0 = meas_data.get_int_counts().get(0, 0)
+        shots = meas_data.num_shots
+        overlap = counts_0 / shots
+        overlaps.append(overlap)
+
+    return np.array(overlaps)
+```
+
+Saatnya menulis fungsi biaya VQD. Seperti sebelumnya ketika kita hanya menghitung ground state, kita akan menentukan state energi terendah menggunakan primitif Estimator. Namun, seperti yang dijelaskan di atas, kita sekarang akan menambahkan istilah penalti untuk memastikan ortogonalitas state berenergi lebih tinggi. Artinya, untuk setiap excited state baru, penalti ditambahkan untuk setiap overlap antara state variasional saat ini dan eigenstate berenergi lebih rendah yang sudah ditemukan.
+
+```python
+def cost_func_vqd(
+    parameters, ansatz, prev_states, step, betas, estimator, sampler, hamiltonian
+):
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+
+    total_cost = 0
+
+    if step > 1:
+        overlaps = calculate_overlaps(ansatz, prev_states, parameters, sampler)
+        total_cost = np.sum(
+            [np.real(betas[state] * overlap) for state, overlap in enumerate(overlaps)]
+        )
+
+    estimator_result = estimator_job.result()[0]
+
+    value = estimator_result.data.evs[0] + total_cost
+
+    return value
+```
+
+Perhatikan terutama bahwa fungsi biaya di atas merujuk ke fungsi `calculate_overlaps`, yang sebenarnya membuat Circuit quantum baru. Jika kita ingin menjalankan pada hardware nyata, Circuit baru tersebut juga harus ditranspilasi, sebaiknya dengan cara yang optimal, untuk dijalankan pada Backend yang kita pilih. Perhatikan bahwa transpilasi telah dibangun ke dalam fungsi `calculate_overlaps` atau `cost_func_vqd`. Silakan coba modifikasi kode sendiri untuk membangun transpilasi tambahan (dan kondisional) ini — tapi ini juga akan dilakukan untukmu di pelajaran berikutnya.
+
+Dalam pelajaran ini, kita akan menjalankan algoritma VQD menggunakan Statevector Sampler dan Statevector Estimator:
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+sampler = Sampler()
+estimator = Estimator()
+```
+
+Kita akan memperkenalkan observable yang akan diestimasi. Di pelajaran berikutnya kita akan menambahkan beberapa konteks fisik pada ini, seperti excited state dari suatu molekul. Mungkin membantu untuk memikirkan observable ini sebagai Hamiltonian dari sistem yang dapat memiliki excited state, meskipun observable ini tidak dipilih untuk cocok dengan molekul atau atom tertentu.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+```
+
+Di sini, kita menetapkan jumlah total state yang ingin kita hitung (ground state dan excited state, k), dan penalti (betas) untuk overlap antara statevector yang seharusnya ortogonal. Konsekuensi dari memilih betas terlalu tinggi atau terlalu rendah akan dieksplorasi sedikit di pelajaran berikutnya. Untuk sekarang, kita akan menggunakan yang disediakan di bawah. Kita akan mulai dengan menggunakan semua nol sebagai parameter kita. Dalam perhitunganmu sendiri, kamu mungkin ingin menggunakan parameter awal yang lebih cerdas berdasarkan pengetahuanmu tentang sistem atau berdasarkan perhitungan sebelumnya.
+
+```python
+k = 3
+betas = [33, 33, 33]
+x0 = np.zeros(8)
+```
+
+Kita sekarang dapat menjalankan perhitungan:
+
+```python
+from scipy.optimize import minimize
+
+prev_states = []
+prev_opt_parameters = []
+eigenvalues = []
+
+for step in range(1, k + 1):
+    if step > 1:
+        prev_states.append(ansatz.assign_parameters(prev_opt_parameters))
+
+    result = minimize(
+        cost_func_vqd,
+        x0,
+        args=(ansatz, prev_states, step, betas, estimator, sampler, observable),
+        method="COBYLA",
+        options={
+            "maxiter": 200,
+        },
+    )
+    print(result)
+
+    prev_opt_parameters = result.x
+    eigenvalues.append(result.fun)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -5.999999979545955
+       x: [-5.150e-01 -5.452e-02 -1.571e+00 -2.853e-05  2.671e-01
+           -2.672e-01 -8.509e-01 -8.510e-01]
+    nfev: 131
+   maxcv: 0.0
+ message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: 4.024550284767612
+       x: [-3.745e-01  1.041e+00  8.637e-01  1.202e+00 -8.847e-02
+            1.181e-02  7.611e-01 -3.006e-01]
+    nfev: 110
+   maxcv: 0.0
+ message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: 5.608925562838559
+       x: [-2.670e-01  1.280e+00  1.070e+00 -8.031e-01 -1.524e-01
+           -6.956e-02  7.018e-01  1.514e+00]
+    nfev: 90
+   maxcv: 0.0
+```
+
+Nilai yang kita peroleh dari fungsi biaya adalah sekitar -6.00, 4.02, dan 5.61. Hal penting tentang hasil ini adalah bahwa nilai fungsinya meningkat. Jika kita mendapatkan excited state pertama yang energinya lebih rendah dari perhitungan awal ground state tanpa kendala, itu akan menunjukkan adanya kesalahan di suatu tempat dalam kode kita.
+
+Nilai x adalah parameter yang menghasilkan statevector yang bersesuaian dengan masing-masing biaya (energi) ini.
+
+Terakhir, kita mencatat bahwa ketiga minimisasi berkonvergensi dalam toleransi default pengoptimal klasik (di sini COBYLA). Masing-masing memerlukan 131, 110, dan 90 evaluasi fungsi.
+## Quantum Sampling Regression (QSR) {#quantum-sampling-regression-qsr}
+
+Salah satu masalah utama dengan VQE adalah banyaknya panggilan ke komputer kuantum yang diperlukan untuk mendapatkan parameter di setiap langkah, misalnya, $k$, $k-1$, dan seterusnya. Ini sangat bermasalah ketika akses ke perangkat kuantum harus mengantri. Meskipun [`Session`](/guides/run-jobs-session) dapat digunakan untuk mengelompokkan beberapa panggilan iteratif, pendekatan alternatif adalah menggunakan sampling. Dengan memanfaatkan lebih banyak sumber daya klasik, kita dapat menyelesaikan seluruh proses optimasi dalam satu panggilan. Di sinilah [Quantum Sampling Regression](https://arxiv.org/pdf/2012.02338) berperan. Karena akses ke komputer kuantum masih merupakan komoditas rendah penawaran/tinggi permintaan, kita menemukan trade-off ini menjadi mungkin dan nyaman untuk banyak studi saat ini. Pendekatan ini memanfaatkan semua kemampuan klasik yang tersedia sambil tetap menangkap banyak cara kerja internal dan sifat intrinsik komputasi kuantum yang tidak muncul dalam simulasi.
+
+![Diagram yang menunjukkan bagaimana QSR menggunakan komponen-komponen algoritma variasional.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-qsr.svg)
+
+Ide di balik QSR adalah bahwa fungsi biaya $C(\theta) := \langle \psi(\theta) | \hat{H} | \psi(\theta)\rangle$ dapat dinyatakan sebagai deret Fourier dengan cara berikut:
+
+$$
+\begin{aligned}
+C(\vec{\theta})
+
+& := \langle \psi(\theta) | \hat{H} | \psi(\theta)\rangle \\[1mm]
+
+& := a_0 + \sum_{k=1}^S[a_k\cos(k\theta)+ b_k\sin(k\theta)] \\[1mm]
+
+\end{aligned}
+$$
+
+Tergantung pada periodisitas dan bandwidth fungsi asli, himpunan $S$ bisa terbatas atau tak terbatas. Untuk keperluan diskusi ini, kita akan mengasumsikan ia tak terbatas. Langkah berikutnya adalah mensampel fungsi biaya $C(\theta)$ beberapa kali untuk mendapatkan koefisien Fourier $\{a_0, a_k, b_k\}_{k=1}^S$. Secara khusus, karena kita memiliki $2S+1$ unknown, kita perlu mensampel fungsi biaya sebanyak $2S+1$ kali.
+
+Jika kita kemudian mensampel fungsi biaya untuk nilai parameter $2S+1$ yaitu $\{\theta_1,...,\theta_{2S+1}\}$, kita dapat memperoleh sistem berikut:
+
+$$
+\begin{pmatrix} 1 & \cos(\theta_1) & \sin(\theta_1) & \cos(2\theta_1) & ... & \sin(S\theta_1) \\
+1 & \cos(\theta_2) & \sin(\theta_2) & \cos(2\theta_2) & \cdots & \sin(S\theta_2)\\
+\vdots & \vdots & \vdots & \vdots & \ddots & \vdots\\
+1 & \cos(\theta_{2S+1}) & \sin(\theta_{2S+1}) & \cos(2\theta_{2S+1}) & \cdots & \sin(S\theta_{2S+1})
+\end{pmatrix} \begin{pmatrix} a_0 \\ a_1 \\ b_1 \\ a_2 \\ \vdots \\ b_S \end{pmatrix} = \begin{pmatrix} C(\theta_1) \\ C(\theta_2) \\ \vdots \\ C(\theta_{2S+1}) \end{pmatrix},
+$$
+
+yang akan kita tulis ulang sebagai
+
+$$
+Fa=c.
+$$
+
+Dalam praktiknya, sistem ini umumnya tidak konsisten karena nilai fungsi biaya $c$ tidak tepat. Oleh karena itu, biasanya ide yang baik untuk menormalisasinya dengan mengalikannya dengan $F^\dagger$ di sebelah kiri, yang menghasilkan:
+
+$$
+F^\dagger Fa = F^\dagger c.
+$$
+
+Sistem baru ini selalu konsisten, dan solusinya adalah solusi least-squares dari masalah asli. Jika kita memiliki $k$ parameter alih-alih hanya satu, dan setiap parameter $\theta^i$ memiliki $S_i$-nya sendiri untuk $i \in {1,...,k}$, maka jumlah total sampel yang diperlukan adalah:
+
+$$
+T=\prod_{i=1}^k(2S_i+1)\leq \prod_{i=1}^k(2S_{max}+1) = (2S_{max}+1)^n,
+$$
+
+di mana $S_{\max} = \max_i(S_i)$. Selain itu, menyesuaikan $S_{\max}$ sebagai parameter yang bisa diatur (alih-alih menyimpulkannya) membuka kemungkinan baru, seperti:
+
+- **Over-sampling** untuk meningkatkan akurasi.
+- **Under-sampling** untuk meningkatkan performa dengan mengurangi overhead runtime atau menghilangkan local minima.
+### Tata letak teoritis {#theoretical-layout-qsr}
+
+Tata letak QSR dapat dirangkum sebagai berikut:
+
+- Siapkan operator referensi $U_R$.
+  - Kita akan pergi dari state $|0\rangle$ ke state referensi $|\rho\rangle$
+- Terapkan variational form $U_V(\vec\theta_{i,j})$ untuk membuat ansatz $U_A(\vec\theta_{i,j})$.
+  - Tentukan bandwidth yang terkait dengan setiap parameter dalam ansatz. Batas atas sudah cukup.
+- Bootstrap pada $i=0$ jika kita punya masalah serupa (biasanya ditemukan dengan simulasi atau sampling klasik).
+- Sampel fungsi biaya $C(\vec\theta) := a_0 + \sum_{k=1}^S[a_k\cos(k\theta)+ b_k\sin(k\theta)]$ minimal $T$ kali.
+  - $T=\prod_{i=1}^k(2S_i+1)\leq \prod_{i=1}^k(2S_{max}+1) = (2S_{max}+1)^n$
+  - Putuskan apakah akan over-sampling/under-sampling untuk menyeimbangkan kecepatan vs akurasi dengan menyesuaikan $T$.
+- Hitung koefisien Fourier dari sampel (yaitu, selesaikan sistem persamaan linear yang dinormalisasi).
+- Selesaikan untuk minimum global dari fungsi regresi yang dihasilkan pada mesin klasik.
+## Ringkasan {#summary}
+
+Dengan pelajaran ini, kamu telah belajar tentang beberapa instance variasional yang tersedia:
+
+- Tata letak umum
+- Memperkenalkan bobot dan penalti untuk menyesuaikan fungsi biaya
+- Mengeksplorasi under-sampling vs over-sampling untuk trade-off kecepatan vs akurasi
+
+Ide-ide ini dapat diadaptasi untuk membentuk algoritma variasional kustom yang sesuai dengan masalahmu. Kami mendorongmu untuk berbagi hasilmu dengan komunitas. Pelajaran berikutnya akan mengeksplorasi cara menggunakan algoritma variasional untuk menyelesaikan suatu aplikasi.
