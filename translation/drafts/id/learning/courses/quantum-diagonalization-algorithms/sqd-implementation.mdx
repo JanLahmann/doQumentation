@@ -1,0 +1,582 @@
+---
+title: "Implementasi SQD"
+sidebar_label: "Implementasi SQD"
+description: "Sample-based quantum diagonalization (SQD) diimplementasikan dalam konteks mencari ground state dari molekul nitrogen."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb"
+---
+
+{/* doqumentation-source-hash: 0c4d6eec */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize milli hcore ccsd Motta */}
+
+# SQD untuk estimasi energi dari Hamiltonian kimia {#sqd-for-energy-estimation-of-a-chemistry-hamiltonian}
+Di pelajaran ini, kita akan menerapkan SQD untuk mengestimasi energi ground state dari sebuah molekul.
+
+Secara khusus, kita akan membahas topik-topik berikut menggunakan pendekatan pola Qiskit $4$-langkah:
+
+1. Langkah 1: Peta masalah ke circuit dan operator kuantum
+    - Siapkan Hamiltonian molekuler untuk $N_2$.
+    - Jelaskan local unitary cluster Jastrow (LUCJ) yang terinspirasi dari kimia dan ramah hardware [\[1\]](#references)
+2. Langkah 2: Optimalkan untuk hardware target
+    - Optimalkan jumlah Gate dan tata letak ansatz untuk eksekusi hardware
+3. Langkah 3: Eksekusi pada hardware target
+    - Jalankan Circuit yang telah dioptimalkan pada QPU nyata untuk menghasilkan sampel dari subspace.
+4. Langkah 4: Pasca-proses hasil
+    - Perkenalkan loop pemulihan konfigurasi self-consistent [\[2\]](#references)
+        - Pasca-proses seluruh set sampel bitstring, menggunakan pengetahuan sebelumnya tentang jumlah partikel dan rata-rata hunian orbital yang dihitung pada iterasi terakhir.
+        - Secara probabilistik buat batch subsampel dari bitstring yang dipulihkan.
+        - Proyeksikan dan diagonalisasi Hamiltonian molekuler pada setiap subspace yang diambil.
+        - Simpan energi ground state minimum yang ditemukan di semua batch dan perbarui rata-rata hunian orbital.
+
+Kita akan menggunakan beberapa paket perangkat lunak sepanjang pelajaran.
+- `PySCF` untuk mendefinisikan molekul dan menyiapkan Hamiltonian.
+- paket `ffsim` untuk membangun ansatz LUCJ.
+- `Qiskit` untuk mentranspile ansatz untuk eksekusi hardware.
+- `Qiskit IBM Runtime` untuk mengeksekusi Circuit pada QPU dan mengumpulkan sampel.
+- `Qiskit addon SQD` untuk pemulihan konfigurasi dan estimasi energi ground state menggunakan proyeksi subspace dan diagonalisasi matriks.
+## 1. Peta masalah ke circuit dan operator kuantum {#1-map-problem-to-quantum-circuits-and-operators}
+### Hamiltonian molekuler {#molecular-hamiltonian}
+Sebuah Hamiltonian molekuler memiliki bentuk umum:
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \,
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+$\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$ adalah operator penciptaan/pemusnahan fermionik yang terkait dengan elemen basis set ke-$p$ dan spin $\sigma$. $h_{pr}$ dan $(pr|qs)$ adalah integral elektronik satu- dan dua-badan. Menggunakan pySCF, kita akan mendefinisikan molekul dan menghitung integral satu- dan dua-badan dari Hamiltonian untuk basis set `6-31g`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+warnings.filterwarnings("ignore")
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],  # Two N atoms 1 angstrom apart
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)  # hcore: one-body integrals
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)  # eri: two-body integrals
+
+# Compute exact energy for comparison
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570774
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+Di pelajaran ini, kita akan menggunakan transformasi Jordan-Wigner (JW) untuk memetakan fungsi gelombang fermionik ke fungsi gelombang qubit agar bisa disiapkan menggunakan Circuit kuantum. Transformasi JW memetakan ruang Fock fermion dalam M orbital spasial ke ruang Hilbert dari 2M qubit, yaitu, sebuah orbital spasial dibagi menjadi dua _orbital spin_, satu terkait dengan elektron spin naik ($\alpha$) dan satu lagi dengan spin turun ($\beta$). Sebuah orbital spin bisa terisi atau kosong. Biasanya, saat kita menyebut jumlah orbital, kita menggunakan jumlah orbital _spasial_. Jumlah orbital spin akan dua kali lipatnya. Dalam Circuit kuantum, kita akan merepresentasikan setiap orbital spin dengan satu qubit. Jadi, satu set qubit akan merepresentasikan orbital spin-naik atau $\alpha$-orbital, dan set lainnya akan merepresentasikan orbital spin-turun atau $\beta$-orbital. Misalnya, molekul $N_2$ untuk basis set `6-31g` memiliki $16$ orbital spasial (yaitu, $16$ $\alpha$ + $16$ $\beta$ = $32$ orbital spin). Dengan demikian, kita membutuhkan Circuit kuantum $32$-qubit (kita mungkin memerlukan qubit ancilla tambahan seperti yang dibahas nanti). Qubit diukur dalam basis komputasi untuk menghasilkan bitstring, yang merepresentasikan konfigurasi elektronik atau determinan (Slater). Sepanjang pelajaran ini, kita akan menggunakan istilah bitstring, konfigurasi, dan determinan secara bergantian. Bitstring memberi tahu kita hunian elektron dalam orbital spin: nilai $1$ di posisi bit berarti orbital spin yang sesuai terisi, sedangkan $0$ berarti orbital spin kosong. Karena masalah struktur elektronik bersifat konservasi partikel, hanya sejumlah tetap orbital spin yang harus terisi. Molekul $N_2$ memiliki $5$ elektron spin-naik ($\alpha$) dan $5$ spin-turun ($\beta$). Jadi, setiap bitstring yang merepresentasikan orbital $\alpha$ dan $\beta$ harus memiliki lima $1$ masing-masing untuk molekul $N_2$.
+### 1.1 Circuit kuantum untuk pembuatan sampel: Ansatz LUCJ {#11-quantum-circuit-for-sample-generation-the-lucj-ansatz}
+Di pelajaran ini, kita akan menggunakan ansatz local unitary coupled cluster Jastrow (LUCJ) [\\[1\\]](#references) untuk persiapan keadaan kuantum dan pengambilan sampel berikutnya. Pertama, kita akan menjelaskan berbagai blok bangunan dari ansatz UCJ penuh dan aproksimasi yang dibuat dalam versi lokalnya. Selanjutnya, dengan menggunakan paket ffsim, kita akan membangun ansatz LUCJ dan mengoptimalkannya menggunakan Transpiler Qiskit untuk eksekusi hardware.
+
+Ansatz UCJ memiliki bentuk berikut (untuk hasil kali $L$ lapisan atau pengulangan operator UCJ.)
+
+$$
+|\psi\rangle = \prod_{\mu=1}^{L}{(e^{K^{\mu}} \times {e^{iJ^{\mu}}} \times {e^{-K^{\mu}}})} |\Phi_{0}\rangle
+$$
+
+di mana, $\vert \Phi_{0} \rangle$ adalah keadaan referensi, biasanya diambil sebagai keadaan Hartree-Fock (HF). Karena keadaan Hartree-Fock didefinisikan memiliki orbital bernomor terendah yang terisi, persiapan keadaan HF akan melibatkan penerapan Gate X untuk mengatur qubit yang sesuai dengan orbital yang terisi menjadi satu. Misalnya, blok persiapan keadaan HF untuk 4 orbital spasial dan 2 spin-naik dan 2 spin-turun mungkin terlihat seperti berikut:
+![A circuit diagram showing 8 qubits, 4 called alpha orbitals and 4 called beta orbitals. The top two alpha and the top two beta have a "not" gate.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig1.avif)
+Satu pengulangan dari operator UCJ ${(e^{K^{(\mu)}} \times {e^{iJ^{(\mu)}}} \times {e^{-K^{(\mu)}}})}$ terdiri dari evolusi Coulomb diagonal ($e^{iJ^{(\mu)}}$) yang diapit oleh rotasi orbital ($e^{K^{(\mu)}}$ dan $e^{-K^{(\mu)}}$).
+![A circuit diagram showing that the UCJ circuit can be broken down into rotation layers and a diagonal Coulomb evolution layer.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig2.avif)
+Blok rotasi orbital bekerja pada satu spesies spin ($\alpha$ (spin-naik)/$\beta$ (spin-turun)). Untuk setiap spesies elektron, rotasi orbital terdiri dari lapisan Gate $R_{z}$ satu-qubit diikuti oleh urutan Gate rotasi Given's dua-qubit ($XX + YY$ gates).
+
+Gate dua-qubit bekerja pada orbital-spin yang berdekatan (qubit tetangga terdekat), dan oleh karena itu, dapat diimplementasikan pada QPU IBM&reg; tanpa memerlukan Gate SWAP.
+![A circuit diagram showing 4 alpha orbital qubits and 4 beta orbital qubits. The circuits start with R-Z gates, and then have a series of Given's rotation gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig3.avif)
+$e^{iJ^{(\mu)}}$, yang juga dikenal sebagai operator Coulomb diagonal, terdiri dari tiga blok. Dua di antaranya bekerja pada sektor spin yang sama ($e^{iJ_{\alpha \alpha}^{(\mu)}}$ dan $e^{iJ_{\beta \beta}^{(\mu)}}$), dan satu bekerja antara dua sektor spin ($e^{iJ_{\alpha \beta}^{(\mu)}}$).
+
+Semua blok dalam $e^{iJ^{(\mu)}}$ terdiri dari Gate number-number $U_{nn}(\phi)$ [\[1\]](#references). Sebuah Gate $U_{nn}(\phi)$ bisa dipecah lebih lanjut menjadi Gate $R_{ZZ}(\frac{\phi}{2})$ diikuti oleh dua Gate $Rz(-\frac{\phi}{2})$ satu-qubit yang bekerja pada dua qubit terpisah.
+
+Komponen spin-sama ($J_{\alpha \alpha}$ dan $J_{\beta \beta}$) memiliki Gate $U_{nn}$ antara semua pasangan qubit yang memungkinkan. Namun, karena QPU superkonduktor memiliki konektivitas yang terbatas, qubit harus ditukar untuk mewujudkan Gate antara qubit yang tidak berdekatan.
+
+Misalnya, pertimbangkan blok $e^{iJ_{\alpha \alpha}^{(\mu)}}$ (atau $e^{iJ_{\beta \beta}^{(\mu)}}$) berikut untuk $N = 4$ orbital spasial. Untuk konektivitas qubit linier, tiga Gate terakhir tidak dapat langsung diimplementasikan karena bekerja antara qubit yang tidak berdekatan (misalnya, Q0 dan Q2 tidak terhubung langsung). Oleh karena itu, kita memerlukan Gate SWAP untuk membuatnya berdekatan (gambar berikut menunjukkan contoh dengan $3$ Gate SWAP).
+![A circuit diagram showing linearly-coupled qubits and corresponding alpha/beta circuits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig4.avif)
+Selanjutnya, $J_{\alpha \beta}$ mengimplementasikan Gate antara orbital berindeks sama dari sektor spin yang berbeda (misalnya, antara $0\alpha$ dan $0\beta$). Demikian pula, jika qubit tidak secara fisik berdekatan pada QPU, Gate-Gate ini juga akan memerlukan SWAP.
+![A circuit diagram showing 4 alpha qubits connected to the 4 beta qubits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig5.avif)
+Dari diskusi di atas, ansatz UCJ menghadapi beberapa kendala untuk eksekusi HW karena memerlukan Gate SWAP akibat interaksi qubit yang tidak berdekatan. Varian lokal dari ansatz UCJ, LUCJ, mengatasi tantangan ini dengan menghapus beberapa $U_{nn}$ dari operator Coulomb diagonal.
+
+Pada blok spesies elektron yang sama, $J_{\alpha \alpha}$ dan $J_{\beta \beta}$), kita hanya menyimpan Gate $U_{nn}$ yang kompatibel dengan konektivitas tetangga-terdekat dan menghapus Gate antara qubit yang tidak berdekatan dalam versi LUCJ. Gambar berikut menunjukkan blok LUCJ setelah penghapusan Gate non-berdekatan.
+![A circuit diagram showing 4 alpha qubits and 4 beta qubits each with R-Z gates, followed by two-qubit gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig6.avif)
+Selanjutnya, versi LUCJ dari blok $J_{\alpha \beta}$ yang bekerja antara spesies elektron yang berbeda bisa mengambil bentuk yang berbeda berdasarkan topologi perangkat.
+
+Di sini juga, versi LUCJ menghilangkan Gate yang tidak kompatibel. Gambar di bawah menunjukkan varian dari blok $J_{\alpha \beta}$ untuk berbagai topologi qubit termasuk grid, heksagonal, heavy-hex, dan linier.
+
+- **Square**: kita bisa memiliki Gate $U_{nn}$ antara semua orbital $\alpha$ dan $\beta$ tanpa SWAP apapun, dan oleh karena itu, tidak perlu menghapus Gate $U_{nn}$ apapun.
+- **Heavy-hex**: Interaksi $\alpha$-$\beta$ dijaga antara setiap orbital berindeks ke-$4$ (seperti orbital ke-0, ke-4, dan ke-8) dan dimediasi _ancilla_, yaitu, kita memerlukan qubit ancilla antara rantai linier yang merepresentasikan orbital $\alpha$ dan $\beta$. Susunan ini membutuhkan jumlah SWAP yang terbatas.
+- **Hexagonal**: Setiap orbital lainnya, seperti orbital berindeks ke-0, ke-2, dan ke-4, menjadi tetangga terdekat ketika $\alpha$ dan $\beta$ disusun dalam dua rantai linier yang berdekatan.
+- **Linear**: Hanya satu orbital $\alpha$ dan satu $\beta$ yang terhubung, yang berarti blok $J_{\alpha \beta}$ hanya akan memiliki satu Gate.
+![Connectivity diagrams for different qubit layouts. They show qubits arranged on a square grid, a hexagonal lattice, a heavy-hex lattice (hexagonal lattice with one extra qubit along each side of the hexagon), and a linear chain.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig7.avif)
+Meski menghapus Gate dari ansatz UCJ untuk membangun versi LUCJ membuatnya lebih kompatibel dengan HW, ansatz kehilangan sebagian ekspresivitasnya. Oleh karena itu, lebih banyak pengulangan ($L$) dari operator UCJ yang dimodifikasi mungkin diperlukan saat menggunakan ansatz LUCJ.
+### 1.2 Inisialisasi ansatz LUCJ {#12-lucj-ansatz-initialization}
+LUCJ adalah ansatz yang diparameterisasi, dan kita perlu menginisialisasi parameter sebelum eksekusi hardware. Salah satu cara untuk menginisialisasi ansatz adalah dengan menggunakan amplitudo `t1` dan `t2` dari metode coupled cluster singles and doubles (CCSD) klasik, di mana amplitudo `t1` adalah koefisien dari operator eksitasi tunggal dan amplitudo `t2` untuk operator eksitasi ganda.
+
+Perhatikan bahwa meskipun menginisialisasi ansatz LUCJ dengan amplitudo `t1` dan `t2` menghasilkan hasil yang cukup baik, parameter ansatz mungkin perlu dioptimalkan lebih lanjut.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(
+    scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]
+)
+ccsd.run()
+
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929733  E_corr = -0.20458912219883
+```
+
+### 1.3 Membangun ansatz LUCJ menggunakan `ffsim` {#13-constructing-the-lucj-ansatz-using-ffsim}
+Kita akan menggunakan paket [ffsim](https://github.com/qiskit-community/ffsim/tree/main) untuk membuat dan menginisialisasi ansatz dengan amplitudo `t1` dan `t2` yang dihitung di atas. Karena molekul kita memiliki keadaan Hartree-Fock closed-shell, kita akan menggunakan varian spin-balanced dari ansatz UCJ, [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced).
+
+Karena hardware IBM memiliki topologi heavy-hex, kita akan mengadopsi pola _zig-zag_ yang digunakan dalam [\[1\]](#references) dan dijelaskan di atas untuk interaksi qubit. Dalam pola ini, orbital (qubit) dengan spin yang sama terhubung dengan topologi garis (lingkaran merah dan biru). Karena topologi heavy-hex, orbital untuk spin yang berbeda memiliki koneksi antara setiap orbital ke-4, yaitu orbital ke-0, ke-4, ke-8, dan seterusnya (lingkaran ungu).
+
+![A zig-zag pattern traced out along a heavy-hex lattice.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig8.avif)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 2
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+# circuit.decompose().draw("mpl", scale=0.5, fold=-1)
+```
+
+Ansatz LUCJ dengan lapisan berulang bisa dioptimalkan dengan menggabungkan beberapa blok yang berdekatan. Pertimbangkan kasus untuk `n_reps=2`. Dua blok rotasi orbital di tengah bisa digabungkan menjadi satu blok rotasi orbital. Paket `ffsim` memiliki pass manager bernama `ffsim.qiskit.PRE_INIT` untuk mengoptimalkan Circuit dengan menggabungkan blok-blok yang berdekatan tersebut.
+![A diagram showing layers of the LUCJ ansatz.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig9.avif)
+## 2. Optimalkan untuk hardware target {#2-optimize-for-target-hardware}
+Pertama, kita ambil Backend pilihan kita. Kita akan mengoptimalkan Circuit kita untuk Backend tersebut, lalu mengeksekusi Circuit yang telah dioptimalkan pada Backend yang sama untuk menghasilkan sampel untuk subspace.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+Selanjutnya, kita rekomendasikan langkah-langkah berikut untuk mengoptimalkan ansatz dan membuatnya kompatibel dengan hardware.
+
+- Pilih qubit fisik (`initial_layout`) dari hardware target yang mengikuti pola zig-zag (dua rantai linier dengan qubit ancilla di antaranya) yang dijelaskan di atas. Menata qubit dalam pola ini menghasilkan Circuit yang efisien dan kompatibel dengan hardware dengan lebih sedikit Gate.
+- Buat staged pass manager menggunakan fungsi [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager) dari Qiskit dengan pilihan `backend` dan `initial_layout` kamu.
+- Atur tahap `pre_init` dari staged pass manager kamu ke `ffsim.qiskit.PRE_INIT`. `ffsim.qiskit.PRE_INIT` mencakup pass Transpiler Qiskit yang mengurai Gate menjadi rotasi orbital dan kemudian menggabungkan rotasi orbital, menghasilkan lebih sedikit Gate dalam Circuit akhir.
+- Jalankan pass manager pada Circuit kamu.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+spin_a_layout = [0, 14, 18, 19, 20, 33, 39, 40, 41, 53, 60, 61, 62, 72, 81, 82]
+spin_b_layout = [2, 3, 4, 15, 22, 23, 24, 34, 43, 44, 45, 54, 64, 65, 66, 73]
+
+initial_layout = spin_a_layout + spin_b_layout
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=initial_layout
+)
+
+# without PRE_INIT passes
+ isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/o pre-init passes): {isa_circuit.count_ops()}")
+
+# with PRE_INIT passes
+# We will use the circuit generated by this pass manager for hardware execution
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+ isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
+```
+
+```text
+Gate counts (w/o pre-init passes): OrderedDict({'rz': 7579, 'sx': 6106, 'ecr': 2316, 'x': 336, 'measure': 32, 'barrier': 1})
+Gate counts (w/ pre-init passes): OrderedDict({'rz': 4088, 'sx': 3125, 'ecr': 1262, 'x': 201, 'measure': 32, 'barrier': 1})
+```
+
+## 3. Eksekusi pada hardware target {#3-execute-on-target-hardware}
+Setelah mengoptimalkan Circuit untuk eksekusi hardware, kita siap menjalankannya pada hardware target dan mengumpulkan sampel untuk estimasi energi ground state. Karena kita hanya memiliki satu Circuit, kita akan menggunakan [mode eksekusi Job](/guides/execution-modes) dari Qiskit Runtime dan mengeksekusi Circuit kita.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+sampler.options.dynamical_decoupling.enable = True
+
+job = sampler.run([isa_circuit], shots=10_000)  # Takes approximately 5sec of QPU time
+```
+
+```python
+# Run cell after IQX job completion
+primitive_result = job.result()
+pub_result = primitive_result[0]
+counts = pub_result.data.meas.get_counts()
+```
+## 4. Post-process results {#4-post-process-results}
+Bagian post-processing dari alur kerja SQD bisa diringkas menggunakan diagram berikut.
+
+![A flow chart showing how sampled states are used to determine ground state eigenvalues and eigenvectors.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig10.avif)
+Pengambilan sampel ansatz LUCJ dalam basis komputasi menghasilkan kumpulan konfigurasi yang bising $\tilde{\mathcal{\chi}}$, yang digunakan dalam rutinitas post-processing. Proses ini melibatkan metode yang disebut _configuration recovery_ (dibahas lebih lanjut nanti) untuk secara probabilistik mengoreksi konfigurasi dengan jumlah elektron yang salah. Konfigurasi yang hanya memiliki jumlah elektron yang benar $\tilde{\mathcal{\chi}}_{R}$ kemudian di-subsample dan didistribusikan ke dalam beberapa batch berdasarkan frekuensi kemunculan setiap konfigurasi unik. Setiap batch sampel mendefinisikan sebuah subspace ($\mathcal{S^{(k)}}$). Selanjutnya, Hamiltonian molekular, $H$, diproyeksikan ke subspace:
+$$
+H_{\mathcal{S}^{(k)}} = P_{\mathcal{S}^{(k)}} H _{\mathcal{S}^{(k)}} \text{ with } P_{\mathcal{S}^{(k)}} = \sum_{x \in \mathcal{S}^{(k)}} \vert x \rangle \langle x \vert
+$$
+
+Setiap Hamiltonian yang diproyeksikan $H_{\mathcal{S}^{(k)}}$ kemudian dimasukkan ke dalam Eigensolver, di mana ia didiagonalisasi untuk menghitung nilai eigen dan vektor eigen guna merekonstruksi eigenstate. Dalam pelajaran ini, kita memproyeksikan dan mendiagonalisasi Hamiltonian menggunakan paket `qiskit-addon-sqd` yang menggunakan metode Davidson dari PySCF untuk diagonalisasi.
+
+$$
+H_{\mathcal{S}^{(k)}} \vert \psi^{(k)} \rangle = E^{(k)} \vert \psi^{(k)} \rangle
+$$
+
+Kita kemudian mengumpulkan nilai eigen (energi) terendah dari batch-batch tersebut, dan juga menghitung rata-rata hunian orbital, $\text{n}$. Informasi hunian rata-rata ini digunakan dalam langkah configuration recovery untuk secara probabilistik mengoreksi konfigurasi yang bising.
+
+Selanjutnya, kita menjelaskan secara rinci loop configuration recovery yang self-consistent dan menunjukkan contoh kode konkret untuk mengimplementasikan langkah-langkah di atas guna memperkirakan energi ground state dari Hamiltonian $N_2$.
+
+### 4.1 Configuration recovery: gambaran umum {#41-configuration-recovery-overview}
+Setiap bit dalam sebuah bitstring (determinan Slater) mewakili orbital spin. Setengah kanan dari sebuah bitstring mewakili orbital spin-up, dan setengah kiri mewakili orbital spin-down. `1` berarti orbital ditempati oleh elektron, dan `0` berarti orbital kosong. Kita mengetahui jumlah partikel yang benar (baik elektron spin-up maupun spin-down) sejak awal. Misalkan kita memiliki determinan $x$ dengan $N_x$ elektron (yaitu, ada $N_x$ jumlah $1$ dalam bitstring) di dalamnya. Jumlah partikel yang benar adalah $N$. Jika $N_x \neq N$, maka kita tahu bahwa bitstring tersebut rusak oleh noise. Rutinitas konfigurasi self-consistent mencoba mengoreksi bitstring dengan membalik $|N_x - N|$ bit secara probabilistik dengan memanfaatkan informasi hunian orbital rata-rata. Hunian orbital rata-rata ($n$) memberi tahu kita seberapa besar kemungkinan suatu orbital ditempati oleh elektron. Jika $N_x < N$, kita memiliki lebih sedikit elektron dan perlu membalik beberapa $0$ menjadi $1$ dan sebaliknya.
+
+Probabilitas pembalikan bisa berupa $|x[i] - avg\_occupancy[i]|$ untuk orbital spin ke-`i`. Dalam [\[2\]](#references), para penulis menggunakan probabilitas pembalikan berbobot menggunakan fungsi ReLU yang dimodifikasi.
+
+$$
+\begin{align}
+    w(y) = \begin{cases}
+
+    \delta \frac{y}{h} & \text{if }  y \leq h\\ \nonumber
+
+    \delta + (1 - \delta) \frac{y - h}{1 - h} & \text{if } y > h
+
+\end{cases}
+\end{align}
+$$
+
+Di sini $h$ mendefinisikan lokasi "sudut" dari fungsi ReLU, dan parameter $\delta$ mendefinisikan nilai fungsi ReLU di sudut tersebut. Untuk $\delta = 0$, $w$ menjadi fungsi ReLU sejati, dan untuk $\delta >0$, ia menjadi ReLU _termodifikasi_. Dalam paper tersebut, para penulis menggunakan $\delta = 0.01$ dan $h =$ jumlah partikel alpha (atau beta)/jumlah orbital spin alpha (atau beta) $= N/M$ (faktor pengisian).
+
+Hunian orbital rata-rata ($n$) tidak diketahui sejak awal. Iterasi pertama dari estimasi ground state dimulai dengan konfigurasi yang hanya memiliki jumlah partikel yang benar di kedua spesies spin. Setelah iterasi pertama, kita memiliki perkiraan ground state, dan menggunakan perkiraan tersebut, kita bisa membuat tebakan pertama dari $n$. Tebakan $n$ ini digunakan untuk memulihkan konfigurasi, menjalankan iterasi berikutnya dari estimasi ground state, dan secara self-consistent menyempurnakan tebakan $n$. Proses ini berulang sampai kriteria penghentian terpenuhi.
+
+Pertimbangkan contoh berikut untuk $N = 2$ dan $x = |1000\rangle$ ($N_x = 1$). Kita perlu membalik salah satu dari 0 menjadi 1 untuk mengoreksinya sesuai jumlah partikel, dan pilihannya adalah `1100`, `1010`, dan `1001`. Berdasarkan probabilitas pembalikan, salah satu pilihan akan dipilih sebagai _recovered configuration_ (atau bitstring dengan jumlah partikel yang benar).
+
+Misalkan pada iterasi pertama kita menjalankan dua batch, dan ground state yang diperkirakan dari keduanya adalah:
+
+$$
+\begin{align}\nonumber
+    \text{Batch0: } \vert \psi \rangle &= 0.8 \times \vert 1001 \rangle + 0.6 \times \vert 0110 \rangle \\ \nonumber
+    \text{Batch1: } \vert \psi \rangle &= \frac{1}{\sqrt{3}} \left( \vert 1001 \rangle + \vert 0101 \rangle + \vert 0110 \rangle \right) \nonumber
+\end{align}
+$$
+
+Menggunakan state basis komputasi dan amplitudonya, kita bisa menghitung probabilitas hunian elektron (singkatnya _occupancies_) per orbital spin (qubit) (perhatikan bahwa probabilitas = |amplitudo|$^2$). Di bawah ini kita tabelkan hunian per qubit untuk setiap bitstring yang muncul dalam ground state yang diperkirakan dan menghitung hunian orbital total untuk sebuah batch. Perhatikan bahwa, sesuai konvensi pengurutan Qiskit, bit paling kanan mewakili qubit-0 (Q0), dan bit paling kiri mewakili Q3.
+
+Hunian (Batch0):
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |   0.64   |    0.0   |    0.0   |   0.64   |
+|    0110   |    0.0   |   0.36   |   0.36   |    0.0   |
+| **n** _(Batch0)_ | **0.64** | **0.36** | **0.36** | **0.64** |
+
+Hunian (Batch1)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |    0.33   |   0.00   |   0.00   |    0.33   |
+|    0101   |    0.0   |   0.33   |   0.00   |    0.33   |
+|    0110   |    0.0   |   0.33   |   0.33   |    0.00   |
+| **n** _(Batch1)_ | **0.33** | **0.66** | **0.33** | **0.66** |
+
+Hunian (rata-rata antar batch)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| **n** _(Batch0)_ | 0.64 | 0.36 | 0.36 | 0.64 |
+| **n** _(Batch1)_ | 0.33 | 0.66 | 0.33 | 0.66 |
+| **n** _(average)_ | **0.49** | **0.51** | **0.35** | **0.65** |
+
+Menggunakan hunian orbital rata-rata yang dihitung di atas, kita bisa menemukan probabilitas pembalikan untuk orbital-orbital berbeda dalam konfigurasi $x = \vert 1000 \rangle$. Karena orbital yang diwakili oleh Q3 sudah ditempati dan tidak perlu dibalik, kita set p(flip)-nya menjadi $0$. Untuk orbital lainnya yang kosong, probabilitas pembalikan adalah $\vert x[i] - \text{n}[i] \vert$ masing-masing. Bersama dengan p(flip), kita juga menghitung bobot probabilitas yang terkait dengan pembalikan menggunakan fungsi ReLU termodifikasi yang dijelaskan di atas.
+
+Probabilitas pembalikan ($x = \vert 1000 \rangle$, $\delta = 0.01$, $h = N/M = 2/4 = 0.50$)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| p(flip) ($\vert x[i] - \text{n}[i] \vert$) | 0 | 0.51 | 0.35 | 0.65 |
+| w(p(flip)) | 0 | 0.03 | 0.007 | 0.31 |
+
+Akhirnya, menggunakan probabilitas berbobot di atas, kita bisa membalik salah satu dari orbital Q2, Q1, dan Q0 yang kosong. Berdasarkan nilai di atas, Q0 paling mungkin dibalik, dan konfigurasi yang mungkin dipulihkan adalah $\vert \text{1001} \rangle$.
+![A diagram of configuration recovery.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig11.avif)
+Proses configuration recovery self-consistent yang lengkap bisa dirangkum sebagai berikut:
+
+**Iterasi pertama:** Misalkan bitstring (konfigurasi atau determinan Slater) yang dihasilkan oleh komputer kuantum membentuk himpunan $\widetilde{\chi}$, yang mencakup konfigurasi dengan jumlah partikel yang benar ($\widetilde{\chi}_{correct}$) maupun yang salah ($\widetilde{\chi}_{incorrect}$) di setiap sektor spin.
+1. Konfigurasi dari ($\widetilde{\chi}_{correct}$) di-sample secara acak untuk membuat batch $(\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)})$ vektor untuk proyeksi subspace. Jumlah batch dan sampel dalam setiap batch adalah parameter yang ditentukan pengguna. Semakin besar jumlah sampel dalam setiap batch, semakin besar dimensi subspace dan semakin berat komputasi diagonalisasi yang dibutuhkan. Di sisi lain, jumlah sampel yang terlalu sedikit bisa melewatkan vektor dukungan ground state dan menghasilkan estimasi yang salah.
+2. Jalankan eigenstate solver (yaitu, proyeksi ke subspace dan diagonalisasi) pada batch-batch tersebut dan dapatkan eigenstate perkiraan. $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+3. Dari eigenstate perkiraan, buat tebakan pertama untuk $n$.
+
+**Iterasi berikutnya:**
+1. Menggunakan $n$ untuk mengoreksi konfigurasi dengan jumlah partikel yang salah dalam $\widetilde{\chi}_{incorrect}$. Misalkan kita menamakannya $\widetilde{\chi}_{correct\_new}$. Kemudian, $\widetilde{\chi}_{recovered} (\widetilde{\chi}_{R}) = \widetilde{\chi}_{correct} \cup \widetilde{\chi}_{correct\_new}$ membentuk himpunan konfigurasi baru dengan jumlah partikel yang benar.
+2. $\widetilde{\chi}_{R}$ di-sample untuk membuat batch $\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)}$.
+3. Eigenstate solver berjalan dengan batch baru dan menghasilkan estimasi baru dari ground state $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+4. Dari eigenstate perkiraan, buat tebakan yang lebih baik untuk $n$.
+5. Jika kriteria penghentian belum terpenuhi, kembali ke langkah `2.1`.
+
+### 4.2 Estimasi ground state {#42-ground-state-estimation}
+Pertama, kita akan mengubah counts menjadi matriks bitstring dan array probabilitas untuk post-processing.
+
+Setiap baris dalam matriks mewakili satu bitstring unik. Karena qubit diindeks dari kanan bitstring di Qiskit, kolom ``0`` mewakili qubit ``N-1``, dan kolom ``N-1`` mewakili qubit ``0``, di mana ``N`` adalah jumlah qubit.
+
+Orbital alpha diwakili dalam rentang indeks kolom ``(N, N/2]`` (setengah kanan), dan orbital beta diwakili dalam rentang kolom ``(N/2, 0]`` (setengah kiri).
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+
+# Convert counts into bitstring and probability arrays
+bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts)
+```
+
+Ada beberapa opsi yang dikendalikan pengguna yang penting untuk teknik ini:
+
+- ``iterations``: Jumlah iterasi configuration recovery self-consistent
+- ``n_batches``: Jumlah batch konfigurasi yang digunakan oleh berbagai panggilan ke eigenstate solver
+- ``samples_per_batch``: Jumlah konfigurasi unik yang disertakan dalam setiap batch
+- ``max_davidson_cycles``: Jumlah maksimum siklus Davidson yang dijalankan oleh setiap eigensolver
+
+```python
+import numpy as np
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_fermion,
+)
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+
+rng = np.random.default_rng(24)
+# SQD options
+iterations = 5
+
+# Eigenstate solver options
+n_batches = 5
+samples_per_batch = 500
+max_davidson_cycles = 300
+
+# Self-consistent configuration recovery loop
+e_hist = np.zeros((iterations, n_batches))  # energy history
+s_hist = np.zeros((iterations, n_batches))  # spin history
+occupancy_hist = []
+avg_occupancy = None
+for i in range(iterations):
+    print(f"Starting configuration recovery iteration {i}")
+    # On the first iteration, we have no orbital occupancy information from the
+    # solver, so we begin with the full set of noisy configurations.
+    if avg_occupancy is None:
+        bs_mat_tmp = bitstring_matrix_full
+        probs_arr_tmp = probs_arr_full
+
+    # If we have average orbital occupancy information, we use it to refine the full set of noisy configurations
+    else:
+        bs_mat_tmp, probs_arr_tmp = recover_configurations(
+            bitstring_matrix_full,
+            probs_arr_full,
+            avg_occupancy,
+            num_elec_a,
+            num_elec_b,
+            rand_seed=rng,
+        )
+
+    # Create batches of subsamples. We post-select here to remove configurations
+    # with incorrect hamming weight during iteration 0, since no config recovery was performed.
+    batches = postselect_and_subsample(
+        bs_mat_tmp,
+        probs_arr_tmp,
+        hamming_right=num_elec_a,
+        hamming_left=num_elec_b,
+        samples_per_batch=samples_per_batch,
+        num_batches=n_batches,
+        rand_seed=rng,
+    )
+
+    # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
+    e_tmp = np.zeros(n_batches)
+    s_tmp = np.zeros(n_batches)
+    occs_tmp = []
+    coeffs = []
+    for j in range(n_batches):
+        strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+        print(f"  Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+        energy_sci, coeffs_sci, avg_occs, spin = solve_fermion(
+            batches[j],
+            hcore,
+            eri,
+            open_shell=open_shell,
+            spin_sq=spin_sq,
+            max_davidson=max_davidson_cycles,
+        )
+        energy_sci += nuclear_repulsion_energy
+        e_tmp[j] = energy_sci
+        s_tmp[j] = spin
+        occs_tmp.append(avg_occs)
+        coeffs.append(coeffs_sci)
+
+    # Combine batch results
+    avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+    # Track optimization history
+    e_hist[i, :] = e_tmp
+    s_hist[i, :] = s_tmp
+    occupancy_hist.append(avg_occupancy)
+```
+
+```text
+Starting configuration recovery iteration 0
+  Batch 0 subspace dimension: 21609
+  Batch 1 subspace dimension: 21609
+  Batch 2 subspace dimension: 21609
+  Batch 3 subspace dimension: 21609
+  Batch 4 subspace dimension: 21609
+Starting configuration recovery iteration 1
+  Batch 0 subspace dimension: 609961
+  Batch 1 subspace dimension: 616225
+  Batch 2 subspace dimension: 627264
+  Batch 3 subspace dimension: 633616
+  Batch 4 subspace dimension: 624100
+Starting configuration recovery iteration 2
+  Batch 0 subspace dimension: 564001
+  Batch 1 subspace dimension: 605284
+  Batch 2 subspace dimension: 582169
+  Batch 3 subspace dimension: 559504
+  Batch 4 subspace dimension: 591361
+Starting configuration recovery iteration 3
+  Batch 0 subspace dimension: 550564
+  Batch 1 subspace dimension: 549081
+  Batch 2 subspace dimension: 531441
+  Batch 3 subspace dimension: 527076
+  Batch 4 subspace dimension: 531441
+Starting configuration recovery iteration 4
+  Batch 0 subspace dimension: 544644
+  Batch 1 subspace dimension: 580644
+  Batch 2 subspace dimension: 527076
+  Batch 3 subspace dimension: 531441
+  Batch 4 subspace dimension: 537289
+```
+
+### 4.3 Diskusi hasil {#43-discussion-of-results}
+Plot pertama menunjukkan bahwa setelah beberapa iterasi kita memperkirakan energi ground state dalam ~24 mH (akurasi kimia biasanya diterima sebesar 1 kcal/mol $\approx$ 1.6 mH). Plot kedua menunjukkan hunian rata-rata setiap orbital spasial setelah iterasi terakhir. Kita bisa melihat bahwa elektron spin-up maupun spin-down menempati lima orbital pertama dengan probabilitas tinggi dalam solusi kita.
+
+Meskipun energi ground state yang diperkirakan cukup baik, namun belum dalam batas akurasi kimia ($\pm \approx 1.6$ mH). Kesenjangan ini bisa dikaitkan dengan dimensi subspace yang kecil yang kita gunakan di atas untuk proyeksi dan diagonalisasi. Karena kita menggunakan `samples_per_batch=500`, subspace dibentangkan oleh maks $500$ vektor, yang melewatkan vektor dari dukungan ground state. Meningkatkan parameter `samples_per_batch` seharusnya meningkatkan akurasi dengan mengorbankan lebih banyak sumber daya komputasi klasik dan waktu proses.
+
+```python
+# Data for energies plot
+x1 = range(iterations)
+min_e = [np.min(e) for e in e_hist]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = occupancy_hist[-1][0] + occupancy_hist[-1][1]
+x2 = range(len(y2))
+```
+
+```python
+import matplotlib.pyplot as plt
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-6)
+axs[0].axhline(
+    y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy"
+)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.02234 Ha
+Absolute error: 0.02434 Ha
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-4-sqd-implementation/extracted-outputs/8cd90034-6ef3-41bd-a847-c115cade82f7-1.avif)
+
+#### Latihan untuk pembaca {#exercise-for-the-reader}
+Tingkatkan secara bertahap parameter `samples_per_batch` (misalnya, dari $1000$ hingga $10000$ dengan langkah $1000$; sesuai dengan memori komputermu) dan bandingkan energi ground state yang diperkirakan.
+
+## References {#references}
+
+\[1\] M. Motta et al., "Bridging physical intuition and hardware efficiency for correlated electronic states: the local unitary cluster Jastrow ansatz for electronic structure" (2023). [Chem. Sci., 2023, 14, 11213](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k).
+
+\[2\] J. Robledo-Moreno et al., "Chemistry Beyond Exact Solutions on a Quantum-Centric Supercomputer" (2024). [arXiv:quant-ph/2405.05068](https://arxiv.org/abs/2405.05068).
