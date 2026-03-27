@@ -1,24 +1,206 @@
 # Translation Feedback — th
 
-**12 files** validated: 11 PASS, 1 FAIL
+**174 files** validated: 168 PASS, 6 FAIL
 
 ## Files needing fixes
 
-### `guides/kipu-optimization.mdx` — FAIL
+### `learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx` — FAIL
+
+- **Code blocks**: 1 block(s) differ
+  - Block 1 (EN line 43, TR line 45): diff at line 2: EN='This minimize function has several arguments, but the most r' TR='ฟังก์ชัน minimize นี้มีหลายอาร์กิวเมนต์ แต่อาร์กิวเมนต์ที่เก'
+
+### `learning/courses/quantum-machine-learning/introduction.mdx` — FAIL
+
+- **Code blocks**: 1 block(s) differ
+  - Block 3 (EN line 263, TR line 265): diff at line 11: EN='2025-05-09 10:04:29 (1.37 MB/s) - ‘dataset_graph7.csv.2’ sav' TR='2025-05-09 10:04:29 (1.37 MB/s) - 'dataset_graph7.csv.2' sav'
+
+### `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` — FAIL
+
+- **Code blocks**: 1 block(s) differ
+  - Block 20 (EN line 348, TR line 349): diff at line 11: EN='2024-07-11 23:05:23 (2.11 MB/s) - ‘dataset_graph7.csv.15’ sa' TR='2024-07-11 23:05:23 (2.11 MB/s) - 'dataset_graph7.csv.15' sa'
+
+### `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` — FAIL
 
 - **Indented headings**: 1 heading(s) with leading whitespace (breaks MDX)
-  - Line 91: '#### รูปแบบปัญหาที่รับได้ {#accepted-problem-formats}' has 1 leading space(s)
+  - Line 14: '# Quantum noise และการลดข้อผิดพลาด' has 2 leading space(s)
+
+### `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` — FAIL
+
+- **Indented headings**: 1 heading(s) with leading whitespace (breaks MDX)
+  - Line 13: '# การปรับแต่ง Quantum Circuit' has 1 leading space(s)
+
+### `learning/courses/variational-algorithm-design/cost-functions.mdx` — FAIL
+
+- **Code blocks**: 1 block(s) differ
+  - Block 25 (EN line 736, TR line 741): diff at line 9: EN='isa_observables = observables.apply_layout(layout=isa_circui' TR=' isa_observables = observables.apply_layout(layout=isa_circu'
 
 ## Passing files
 
-- `guides/algorithmiq-tem.mdx`
-- `guides/configure-error-mitigation.mdx`
-- `guides/configure-error-suppression.mdx`
-- `guides/qasm-feature-table.mdx`
-- `guides/qiskit-addons-sqd-get-started.mdx`
-- `guides/qiskit-backendv1-to-v2.mdx`
-- `guides/runtime-options-overview.mdx`
-- `tutorials/approximate-quantum-compilation-for-time-evolution.mdx`
-- `tutorials/dc-hex-ising.mdx`
-- `tutorials/multi-product-formula.mdx`
-- `tutorials/sample-based-krylov-quantum-diagonalization.mdx`
+- `guides/v2-primitives.mdx`
+- `guides/virtual-private-endpoints.mdx`
+- `guides/visualize-circuit-timing.mdx`
+- `guides/visualize-circuits.mdx`
+- `guides/visualize-results.mdx`
+- `learning/courses/basics-of-quantum-information/entanglement-in-action/chsh-game.mdx`
+- `learning/courses/basics-of-quantum-information/entanglement-in-action/introduction.mdx`
+- `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation.mdx`
+- `learning/courses/basics-of-quantum-information/entanglement-in-action/quantum-teleportation.mdx`
+- `learning/courses/basics-of-quantum-information/entanglement-in-action/superdense-coding.mdx`
+- `learning/courses/basics-of-quantum-information/exam.mdx`
+- `learning/courses/basics-of-quantum-information/index.mdx`
+- `learning/courses/basics-of-quantum-information/multiple-systems/classical-information.mdx`
+- `learning/courses/basics-of-quantum-information/multiple-systems/introduction.mdx`
+- `learning/courses/basics-of-quantum-information/multiple-systems/qiskit-implementation.mdx`
+- `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information.mdx`
+- `learning/courses/basics-of-quantum-information/quantum-circuits/circuits.mdx`
+- `learning/courses/basics-of-quantum-information/quantum-circuits/inner-products-and-projections.mdx`
+- `learning/courses/basics-of-quantum-information/quantum-circuits/introduction.mdx`
+- `learning/courses/basics-of-quantum-information/quantum-circuits/limitations-on-quantum-information.mdx`
+- `learning/courses/basics-of-quantum-information/single-systems/classical-information.mdx`
+- `learning/courses/basics-of-quantum-information/single-systems/introduction.mdx`
+- `learning/courses/basics-of-quantum-information/single-systems/qiskit-implementation.mdx`
+- `learning/courses/basics-of-quantum-information/single-systems/quantum-information.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/discretization-of-errors.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/introduction.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/repetition-codes.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/shor-code.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/exam.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/introduction.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/threshold-theorem.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/index.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/css-codes.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/introduction.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/other-code-families.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/toric-code.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/introduction.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/pauli-operations-and-observables.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/repetition-code-revisited.mdx`
+- `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/exam.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/analysis.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/concluding-remarks.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/grover-algorithm-description.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/introduction.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/number-of-iterations.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/unstructured-search.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/index.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-problem.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/factoring-and-gcd.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/introduction.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/simulating-classical-computations.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/introduction.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/query-model-of-computation.mdx`
+- `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/simon-algorithm.mdx`
+- `learning/courses/general-formulation-of-quantum-information/density-matrices/bloch-sphere.mdx`
+- `learning/courses/general-formulation-of-quantum-information/density-matrices/convex-combinations.mdx`
+- `learning/courses/general-formulation-of-quantum-information/density-matrices/density-matrix-basics.mdx`
+- `learning/courses/general-formulation-of-quantum-information/density-matrices/introduction.mdx`
+- `learning/courses/general-formulation-of-quantum-information/density-matrices/multiple-systems.mdx`
+- `learning/courses/general-formulation-of-quantum-information/exam.mdx`
+- `learning/courses/general-formulation-of-quantum-information/general-measurements/discrimination-and-tomography.mdx`
+- `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements.mdx`
+- `learning/courses/general-formulation-of-quantum-information/general-measurements/introduction.mdx`
+- `learning/courses/general-formulation-of-quantum-information/general-measurements/naimark-theorem.mdx`
+- `learning/courses/general-formulation-of-quantum-information/index.mdx`
+- `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/fidelity.mdx`
+- `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/introduction.mdx`
+- `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/purifications.mdx`
+- `learning/courses/general-formulation-of-quantum-information/quantum-channels/introduction.mdx`
+- `learning/courses/general-formulation-of-quantum-information/quantum-channels/quantum-channel-basics.mdx`
+- `learning/courses/general-formulation-of-quantum-information/quantum-channels/representation-equivalence.mdx`
+- `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels.mdx`
+- `learning/courses/integrating-quantum-and-high-performance-computing/compute-resources.mdx`
+- `learning/courses/integrating-quantum-and-high-performance-computing/exam.mdx`
+- `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx`
+- `learning/courses/integrating-quantum-and-high-performance-computing/introduction.mdx`
+- `learning/courses/integrating-quantum-and-high-performance-computing/next-steps.mdx`
+- `learning/courses/integrating-quantum-and-high-performance-computing/programming-models.mdx`
+- `learning/courses/integrating-quantum-and-high-performance-computing/sqd-skqd.mdx`
+- `learning/courses/quantum-business-foundations/business-impacts.mdx`
+- `learning/courses/quantum-business-foundations/exam.mdx`
+- `learning/courses/quantum-business-foundations/how-to-become-quantum-ready.mdx`
+- `learning/courses/quantum-business-foundations/index.mdx`
+- `learning/courses/quantum-business-foundations/introduction-to-quantum-computing.mdx`
+- `learning/courses/quantum-business-foundations/quantum-computing-fundamentals.mdx`
+- `learning/courses/quantum-business-foundations/quantum-technology.mdx`
+- `learning/courses/quantum-business-foundations/start-your-quantum-journey.mdx`
+- `learning/courses/quantum-chem-with-vqe/ansatz.mdx`
+- `learning/courses/quantum-chem-with-vqe/exam.mdx`
+- `learning/courses/quantum-chem-with-vqe/geometry.mdx`
+- `learning/courses/quantum-chem-with-vqe/ground-state.mdx`
+- `learning/courses/quantum-chem-with-vqe/hamiltonian-construction.mdx`
+- `learning/courses/quantum-chem-with-vqe/index.mdx`
+- `learning/courses/quantum-chem-with-vqe/introduction.mdx`
+- `learning/courses/quantum-computing-in-practice/applications-of-qc.mdx`
+- `learning/courses/quantum-computing-in-practice/index.mdx`
+- `learning/courses/quantum-computing-in-practice/introduction.mdx`
+- `learning/courses/quantum-computing-in-practice/mapping.mdx`
+- `learning/courses/quantum-computing-in-practice/running-quantum-circuits.mdx`
+- `learning/courses/quantum-computing-in-practice/simulating-nature.mdx`
+- `learning/courses/quantum-computing-in-practice/utility-scale-qaoa.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/exam.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/index.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/introduction.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/krylov.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/skqd.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/sqd-implementation.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/sqd-overview.mdx`
+- `learning/courses/quantum-diagonalization-algorithms/vqe.mdx`
+- `learning/courses/quantum-machine-learning/classical-ml-review.mdx`
+- `learning/courses/quantum-machine-learning/data-encoding.mdx`
+- `learning/courses/quantum-machine-learning/exam.mdx`
+- `learning/courses/quantum-machine-learning/index.mdx`
+- `learning/courses/quantum-machine-learning/qvc-qnn.mdx`
+- `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography.mdx`
+- `learning/courses/quantum-safe-cryptography/cryptographic-hash-functions.mdx`
+- `learning/courses/quantum-safe-cryptography/exam.mdx`
+- `learning/courses/quantum-safe-cryptography/index.mdx`
+- `learning/courses/quantum-safe-cryptography/introduction-to-this-course.mdx`
+- `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx`
+- `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx`
+- `learning/courses/quantum-safe-cryptography/whats-next.mdx`
+- `learning/courses/quantum-safe-cryptography/works-cited.mdx`
+- `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx`
+- `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx`
+- `learning/courses/utility-scale-quantum-computing/grovers-algorithm.mdx`
+- `learning/courses/utility-scale-quantum-computing/hardware.mdx`
+- `learning/courses/utility-scale-quantum-computing/index.mdx`
+- `learning/courses/utility-scale-quantum-computing/introduction.mdx`
+- `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx`
+- `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx`
+- `learning/courses/utility-scale-quantum-computing/teleportation.mdx`
+- `learning/courses/utility-scale-quantum-computing/utility-i.mdx`
+- `learning/courses/utility-scale-quantum-computing/utility-ii.mdx`
+- `learning/courses/utility-scale-quantum-computing/utility-iii.mdx`
+- `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx`
+- `learning/courses/variational-algorithm-design/ansaetze-and-variational-forms.mdx`
+- `learning/courses/variational-algorithm-design/exam.mdx`
+- `learning/courses/variational-algorithm-design/examples-and-applications.mdx`
+- `learning/courses/variational-algorithm-design/index.mdx`
+- `learning/courses/variational-algorithm-design/instances-and-extensions.mdx`
+- `learning/courses/variational-algorithm-design/optimization-loops.mdx`
+- `learning/courses/variational-algorithm-design/reference-states.mdx`
+- `learning/courses/variational-algorithm-design/variational-algorithms.mdx`
+- `learning/modules/computer-science/deutsch-jozsa.mdx`
+- `learning/modules/computer-science/grovers.mdx`
+- `learning/modules/computer-science/index.mdx`
+- `learning/modules/computer-science/qft.mdx`
+- `learning/modules/computer-science/quantum-key-distribution.mdx`
+- `learning/modules/computer-science/quantum-teleportation.mdx`
+- `learning/modules/computer-science/shors-algorithm.mdx`
+- `learning/modules/computer-science/vqe.mdx`
+- `learning/modules/index.mdx`
+- `learning/modules/quantum-mechanics/bells-inequality-with-qiskit.mdx`
+- `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx`
+- `learning/modules/quantum-mechanics/get-started-with-qiskit.mdx`
+- `learning/modules/quantum-mechanics/index.mdx`
+- `learning/modules/quantum-mechanics/stern-gerlach-measurements-with-qiskit.mdx`
+- `learning/modules/quantum-mechanics/superposition-with-qiskit.mdx`
