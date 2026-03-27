@@ -374,6 +374,12 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 - **IBM Quantum Ecosystem listing** — Submit doQumentation.org to https://www.ibm.com/quantum/ecosystem to increase visibility.
 - **"View in English" button on translated pages** — Add a button/link on translated pages to switch to the original English version. Useful when translations are incomplete or users want to verify against the source. Could use Docusaurus `alternatePageUtils` or a simple link to `https://doqumentation.org/{path}`.
+- **Site usage analytics** — Track overall site traffic and per-page usage across all locales. Options to evaluate:
+  - **Privacy-friendly**: [Plausible](https://plausible.io) or [Umami](https://umami.is) — lightweight, cookie-free, GDPR-compliant, self-hostable. Plausible has a free tier for open-source projects.
+  - **Self-hosted**: [GoatCounter](https://www.goatcounter.com) — free for non-commercial, no cookies, single JS tag.
+  - **GitHub-native**: GitHub traffic insights (Settings → Traffic) for the main repo, but doesn't cover subdomains or per-page detail.
+  - **Docusaurus plugin**: `@docusaurus/plugin-google-gtag` or `docusaurus-plugin-plausible` for built-in integration.
+  - Needs to work across 26+ subdomains (one per locale). Consider a single analytics property with locale as a dimension, or per-subdomain tracking. Key metrics: page views, unique visitors, most-visited pages, locale distribution, code execution usage (custom events for Run/Run All clicks).
 
 ### Resolved (Feb–Mar 2026)
 - **Backend selection UI** — Radio buttons on settings page when multiple backends available. `detectJupyterConfig()` refactored with `buildConfigFor()` helper and override support (`doqumentation_backend_override` key). Auto-clears stale overrides. Credential save/delete handlers refresh the backend list. Switching backends cancels in-flight builds and clears cached sessions.
