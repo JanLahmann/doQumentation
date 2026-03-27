@@ -1,3 +1,57 @@
+---
+title: "Memulai dengan SQD"
+sidebar_label: "Memulai dengan SQD"
+description: "Mulai gunakan addon SQD dan cara memproses hasil pasca-eksekusi"
+notebook_path: "guides/qiskit-addons-sqd-get-started.ipynb"
+---
+{/* doqumentation-source-hash: cc399cbf */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-sqd-get-started.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize milli */}
+
+# Memulai dengan Sample-based quantum diagonalization (SQD) {#getting-started-with-sample-based-quantum-diagonalization-sqd}
+<details>
+<summary><b>Versi paket</b></summary>
+
+Kode di halaman ini dikembangkan menggunakan persyaratan berikut.
+Kami menyarankan untuk menggunakan versi ini atau yang lebih baru.
+
+```
+qiskit-addon-sqd~=0.10.0
+pyscf~=2.8.0; sys.platform != 'win32'
+```
+</details>
+<Admonition type="caution" title="Catatan untuk pengguna Windows">
+
+Contoh ini menggunakan paket `pyscf`, yaitu library simulasi kimia berbasis Python, yang tidak didukung secara native di Windows; oleh karena itu, contoh-contoh di bawah ini tidak akan berfungsi.
+
+Untuk menjalankan potongan kode di bawah ini, pengguna Windows perlu membuat lingkungan Python menggunakan Windows Subsystem for Linux, seperti yang disarankan dalam [panduan instalasi `pyscf`.](https://pyscf.org/user/install.html)
+
+</Admonition>
+
+Panduan ini menunjukkan contoh kerja sederhana untuk memulai dengan paket `qiskit-addon-sqd`. Dalam contoh ini, kamu bisa menggunakan SQD untuk mendapatkan aproksimasi ground state dari molekul $N_2$ pada keadaan keseimbangan.
+
+Untuk memulai, ingat bahwa Hamiltonian elektron berinteraksi secara generik memiliki bentuk:
+
+$$ \hat{H} = \sum_{\substack{pr\\ \sigma}}h_{pr} \hat{a}_{p\sigma}^\dagger \hat{a}_{r\sigma} + \sum_{\substack{prqs\\ \sigma\tau}} \frac{1}{2}\left(pr|qs\right)\hat{a}_{p\sigma}^\dagger \hat{a}_{q\tau}^\dagger \hat{a}_{s\tau}\hat{a}_{r\sigma} $$
+
+di mana $\hat{a}_{p\sigma}^\dagger$ dan $\hat{a}_{p\sigma}$ adalah operator kreasi dan anihilasi Fermionic yang terkait dengan orbital ke-$p$ dengan spin $\sigma$, serta $h_{pr}$ dan $\left(pr|qs\right)$ adalah integral elektronik satu-bodi dan dua-bodi.
+## Menyiapkan informasi molekul {#prepare-molecule-information}
+
+Untuk memulai, tentukan molekul dan propertinya menggunakan `pyscf` serta integral elektronik yang tersimpan di `n2_fci.txt`.
+<Admonition type="note">
+Contoh ini menggunakan data yang sudah disiapkan sebelumnya dalam file bernama `n2_fci.txt`, yang berisi integral elektronik satu-bodi dan dua-bodi. Untuk menjalankan sel kode di bawah ini pada mesin lokal, salin dan tempel data ke dalam file dengan nama yang sama. Contoh ini juga membutuhkan paket `pyscf` untuk diinstal.
+</Admonition>
+
+<details>
+<summary>
+Klik di sini untuk memeriksa informasi orbital yang digunakan untuk menghasilkan ansatz.
+
+</summary>
+
 ```
 &FCI NORB=  16,NELEC=10,MS2=0,
   ORBSYM=1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -1614,3 +1668,231 @@
  </details>
 
 ```python
+## Dapatkan sampel dari ansatz {#obtain-samples-from-an-ansatz}
+
+Setelah informasi molekul dimuat, kamu perlu menentukan Circuit ansatz dan mengoptimalkannya untuk eksekusi. Ini mencakup mempertimbangkan simetri masalahmu, pilihan ansatz, serta mengoptimalkannya agar berjalan di perangkat keras kuantum.
+
+Namun, pilihan-pilihan ini bersifat spesifik terhadap masalah dan berada di luar cakupan panduan ini. Sebagai gantinya, untuk mendemonstrasikan alur kerja SQD, kita akan membuat sekumpulan counts acak untuk diproses oleh loop pemulihan konfigurasi. Ini mensimulasikan data pengukuran dari Circuit 32-qubit yang disampling dengan 10.000 shots. Setelah data count dibuat, metode `recover_configurations()` mengharuskanmu mengonversi data count menjadi matriks bitstring yang diukur di setiap shot, serta array probabilitas untuk setiap state yang diukur.
+
+<Admonition type="note">
+Pembuatan sampel secara artifisial hanya digunakan sebagai sarana untuk mendemonstrasikan tooling dari `qiskit-addon-sqd`. Paket ini dimaksudkan untuk digunakan sebagai bagian dari alur kerja yang lebih besar di mana ansatz atau Circuit lainnya didefinisikan, dioptimalkan, dan dieksekusi menggunakan Sampler primitive. Blok kode di bawah berisi kode yang dikomentari yang mendemonstrasikan seperti apa alur kerja tipikal jika diberikan Circuit ansatz yang telah ditranspilasi menjadi ISA circuit.
+</Admonition>
+
+```python
+# from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# sampler = Sampler(mode=backend)
+# job = sampler.run([isa_circuit], shots=10_000)
+# primitive_result = job.result()
+# pub_result = primitive_result[0]
+# counts = pub_result.data.meas.get_counts()
+
+from qiskit_addon_sqd.counts import generate_counts_uniform
+from qiskit_addon_sqd.counts import counts_to_arrays
+import numpy as np
+
+rng = np.random.default_rng(24)
+counts = generate_counts_uniform(10_000, num_orbitals * 2, rand_seed=rng)
+
+# Convert counts into bitstring and probability arrays
+bitstring_matrix_full, probs_array_full = counts_to_arrays(counts)
+```
+
+## Jalankan loop pemulihan konfigurasi {#run-configuration-recovery-loop}
+
+Sampel pengukuran kemudian dapat diperhalus dengan mengulangi pemulihan konfigurasi dan mendiagonalisasi sekumpulan sub-sampel untuk mendekati ground state hingga konvergen.
+
+Pertama, tentukan opsi-opsi berikut:
+
+- `ITERATIONS`: Jumlah iterasi pemulihan konfigurasi yang konsisten-diri
+- `NUM_BATCHES`: Jumlah kumpulan sub-sampel yang akan didiagonalisasi
+- `SAMPLES_PER_BATCH`: Jumlah sampel yang disertakan di setiap batch
+- `MAX_DAVIDSON_CYCLES`: Jumlah iterasi untuk solver eigenstate
+
+```python
+# SQD options
+ITERATIONS = 5
+
+# Eigenstate solver options
+NUM_BATCHES = 1
+SAMPLES_PER_BATCH = 500
+MAX_DAVIDSON_CYCLES = 200
+```
+
+Selanjutnya, untuk memplot konvergensi, definisikan array untuk menyimpan aproksimasi energi ground state, nilai ekspektasi dari $\langle S \rangle ^2$, dan ocupansi orbital molekul.
+
+```python
+# Self-consistent configuration recovery loop
+energy_hist = np.zeros((ITERATIONS, NUM_BATCHES))  # energy history
+spin_sq_hist = np.zeros((ITERATIONS, NUM_BATCHES))  # spin history
+occupancy_hist = []
+avg_occupancy = None
+```
+
+Sekarang, jalankan loop pemulihan konfigurasi. Setiap loop terdiri dari tiga langkah:
+
+1. Gunakan fungsi `recover_configurations()` untuk mendapatkan matriks bitstring yang diperhalus dan array probabilitas berdasarkan rata-rata ocupansi orbital.
+1. Gunakan `postselect_and_subsample()` untuk mengumpulkan batch sub-sampel yang akan didiagonalisasi.
+1. Kemudian gunakan batch sub-sampel sebagai argumen ke fungsi `solve_fermion()` untuk mendapatkan aproksimasi dari ground state.
+
+Penting untuk memperhatikan cara menangani iterasi pertama dari loop pemulihan konfigurasi. Karena rata-rata ocupansi orbital belum tersedia, hanya fungsi `postselect_and_subsample()` yang dipanggil. Ini menghapus sampel yang tidak fisis (sampel dengan Hamming weight yang salah) sebelum menjalankan solver eigenstate, `solve_fermion()`. Setelah itu, rata-rata ocupansi orbital dihitung di semua batch dan digunakan sebagai input ke metode `recover_configurations()`, yang membalik bit individual secara probabilistik berdasarkan rata-rata ini. Lihat Bagian **II-A** dari informasi tambahan dalam [paper SQD](https://arxiv.org/abs/2405.05068) untuk informasi lebih lanjut.
+
+```python
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+from qiskit_addon_sqd.fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_fermion,
+)
+
+for i in range(ITERATIONS):
+    print(f"\nStarting configuration recovery iteration {i}")
+    # On the first iteration, we have no orbital occupancy information from the
+    # solver, so we just post-select from the full bitstring set based on Hamming weight.
+    if avg_occupancy is None:
+        bitstring_matrix_tmp = bitstring_matrix_full
+        probs_array_tmp = probs_array_full
+
+    # If there is average orbital occupancy information, use it to refine the full set of noisy configurations
+    else:
+        bitstring_matrix_tmp, probs_array_tmp = recover_configurations(
+            bitstring_matrix_full,
+            probs_array_full,
+            avg_occupancy,
+            num_alpha,
+            num_beta,
+            rand_seed=rng,
+        )
+
+    # Throw out configurations with an incorrect particle number in either the spin-up or spin-down systems
+    batches = postselect_and_subsample(
+        bitstring_matrix_tmp,
+        probs_array_tmp,
+        hamming_right=num_alpha,
+        hamming_left=num_beta,
+        samples_per_batch=SAMPLES_PER_BATCH,
+        num_batches=NUM_BATCHES,
+        rand_seed=rng,
+    )
+
+    # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
+    e_tmp = np.zeros(NUM_BATCHES)
+    s_tmp = np.zeros(NUM_BATCHES)
+    occs_tmp = []
+    coeffs = []
+    for j in range(NUM_BATCHES):
+        strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+        print(f"Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+        energy_sci, coeffs_sci, avg_occs, spin = solve_fermion(
+            batches[j],
+            core_hamiltonian,
+            electron_repulsion_integrals,
+            open_shell=open_shell,
+            spin_sq=spin_sq,
+            max_cycle=MAX_DAVIDSON_CYCLES,
+        )
+        energy_sci += nuclear_repulsion_energy
+        e_tmp[j] = energy_sci
+        s_tmp[j] = spin
+        occs_tmp.append(avg_occs)
+        coeffs.append(coeffs_sci)
+
+    # Combine batch results
+    avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+    # Track optimization history
+    energy_hist[i, :] = e_tmp
+    spin_sq_hist[i, :] = s_tmp
+    occupancy_hist.append(avg_occupancy)
+    print()
+```
+
+```text
+Starting configuration recovery iteration 0
+Batch 0 subspace dimension: 6400
+
+Starting configuration recovery iteration 1
+Batch 0 subspace dimension: 555025
+
+Starting configuration recovery iteration 2
+Batch 0 subspace dimension: 573049
+
+Starting configuration recovery iteration 3
+Batch 0 subspace dimension: 518400
+
+Starting configuration recovery iteration 4
+Batch 0 subspace dimension: 562500
+```
+
+### Visualisasikan hasilnya {#visualize-the-results}
+
+Terakhir, hasilnya dapat divisualisasikan dengan memeriksa energi yang diaproksimasi dan rata-rata ocupansi orbital di setiap iterasi dari loop pemulihan konfigurasi. Plot pertama menunjukkan bahwa setelah beberapa iterasi, energi ground state diestimasi dalam kisaran sekitar `27 mH` (akurasi kimia umumnya diterima sebagai `1 kcal/mol` $\approx$ `1.6 mH`). Ingat bahwa demonstrasi ini menggunakan noise murni, dan kemampuan untuk mendekati energi hingga tingkat ini berasal dari pengetahuan sebelumnya tentang molekul dan struktur elektroniknya.
+
+Plot kedua menunjukkan rata-rata ocupansi setiap orbital spasial setelah iterasi terakhir. Perhatikan bahwa elektron spin-up maupun spin-down keduanya menempati lima orbital pertama dengan probabilitas tinggi dalam solusinya.
+
+```python
+import matplotlib.pyplot as plt
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+exact_energy = -109.04667
+
+# Data for energies plot
+x1 = range(ITERATIONS)
+min_e = [np.min(e) for e in energy_hist]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4]
+
+# Data for avg spatial orbital occupancy
+y2 = occupancy_hist[-1][0] + occupancy_hist[-1][1]
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-4)
+axs[0].axhline(
+    y=chem_accuracy,
+    color="#BF5700",
+    linestyle="--",
+    label="chemical accuracy",
+)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.02383 Ha
+Absolute error: 0.02284 Ha
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-sqd-get-started/extracted-outputs/79f57ba1-492b-4c35-a3c7-4e3615cbb321-1.avif)
+
+## Langkah selanjutnya {#next-steps}
+
+<Admonition type="tip" title="Rekomendasi">
+    - Baca [tutorial SQD](/tutorials/sample-based-quantum-diagonalization) di IBM Quantum Learning
+</Admonition>
