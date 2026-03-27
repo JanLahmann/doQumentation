@@ -146,6 +146,12 @@ def transform_mdx(content: str, source_path: Path) -> str:
     # #37: Fix heading hierarchy — "Check your understanding" should be H3, not H4+
     content = re.sub(r'^#{4,}\s+(Check your understanding)', r'### \1', content, flags=re.MULTILINE)
 
+    # Fix stray leading whitespace on headings in kipu-optimization.mdx (upstream bug).
+    # Targeted to this file only — other files (e.g. notebook-style courses) intentionally
+    # have indented headings.
+    if source_path.name == 'kipu-optimization.mdx':
+        content = re.sub(r'^\s+(#{1,6}\s)', r'\1', content, flags=re.MULTILINE)
+
     # Add Tabs/TabItem imports if used but not imported
     if '<Tabs>' in content or '<TabItem' in content:
         if "import Tabs from" not in content and "import TabItem from" not in content:

@@ -202,20 +202,39 @@ def check_unescaped_jsx_quotes(lines: list[str]) -> list[tuple[str, int, str]]:
     return findings
 
 
-def check_code_fence_balance(lines: list[str]) -> list[tuple[str, int, str]]:
-    """Check for unmatched code fences."""
+def check_code_fence_balance(
+    lines: list[str], en_lines: list[str] | None = None
+) -> list[tuple[str, int, str]]:
+    """Check that TR has the same number of code fences as EN.
+
+    Compares TR fence count to EN fence count rather than checking odd/even,
+    because some EN files legitimately have odd fence counts (e.g. JSX
+    template literals).
+    """
     findings = []
-    fence_count = 0
+    tr_fence_count = 0
     last_fence_line = 0
     for i, line in enumerate(lines):
         if line.strip().startswith("```"):
-            fence_count += 1
+            tr_fence_count += 1
             last_fence_line = i + 1
-    if fence_count % 2 != 0:
-        findings.append((
-            ERROR, last_fence_line,
-            f"unmatched code fence ({fence_count} total, expected even)"
-        ))
+
+    if en_lines is not None:
+        en_fence_count = sum(
+            1 for line in en_lines if line.strip().startswith("```")
+        )
+        if tr_fence_count != en_fence_count:
+            findings.append((
+                ERROR, last_fence_line,
+                f"code fence count mismatch: TR={tr_fence_count}, EN={en_fence_count}"
+            ))
+    else:
+        # Fallback when no EN source available: flag odd count
+        if tr_fence_count % 2 != 0:
+            findings.append((
+                ERROR, last_fence_line,
+                f"unmatched code fence ({tr_fence_count} total, expected even)"
+            ))
     return findings
 
 
@@ -266,7 +285,6 @@ ALL_CHECKS = [
     check_heading_mid_line,
     check_invalid_anchor_chars,
     check_unescaped_jsx_quotes,
-    check_code_fence_balance,
 ]
 
 
@@ -286,6 +304,7 @@ def lint_file(
     findings = []
     for check in ALL_CHECKS:
         findings.extend(check(lines))
+    findings.extend(check_code_fence_balance(lines, en_lines))
     findings.extend(check_missing_imports(lines, en_lines))
 
     return findings

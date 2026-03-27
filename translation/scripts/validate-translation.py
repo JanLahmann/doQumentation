@@ -589,8 +589,48 @@ def check_indented_headings(tr_content: str, en_content: str = "") -> CheckResul
 
 
 def check_heading_count(en_content: str, tr_content: str) -> CheckResult:
-    en_headings = extract_headings(en_content)
-    tr_headings = extract_headings(tr_content)
+    # Build list of all EN headings (indented and non-indented) to identify
+    # which positions are indented.  Uses the same broad regex as
+    # check_indented_headings so the two checks stay consistent.
+    en_all_indented: list[bool] = []
+    in_code = False
+    for line in en_content.split('\n'):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if re.match(r'^\s*#{1,6}\s+', line):
+            en_all_indented.append(bool(re.match(r'^(\s+)#{1,6}\s+', line)))
+
+    # extract_headings only returns non-indented headings (^#{1,6}).
+    # Collect *all* headings (indented + non-indented) for both sides so we
+    # can skip positions where the EN heading is indented.
+    def _all_headings(content: str) -> list[tuple[int, str, str]]:
+        """Like extract_headings but also captures indented headings."""
+        lines = content.split('\n')
+        headings = []
+        _in_code = False
+        for i, ln in enumerate(lines):
+            if ln.strip().startswith('```'):
+                _in_code = not _in_code
+                continue
+            if _in_code:
+                continue
+            m = re.match(r'^\s*(#{1,6})\s+(.+)$', ln)
+            if m:
+                headings.append((i + 1, m.group(1), m.group(2).rstrip()))
+        return headings
+
+    en_headings_all = _all_headings(en_content)
+    tr_headings_all = _all_headings(tr_content)
+
+    # Filter out headings at positions where EN is indented
+    en_headings = [h for idx, h in enumerate(en_headings_all)
+                   if idx >= len(en_all_indented) or not en_all_indented[idx]]
+    tr_headings = [h for idx, h in enumerate(tr_headings_all)
+                   if idx >= len(en_all_indented) or not en_all_indented[idx]]
+
     if len(en_headings) != len(tr_headings):
         return CheckResult("Heading count", False,
                            f"EN={len(en_headings)}, TR={len(tr_headings)}")
