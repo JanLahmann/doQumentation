@@ -435,12 +435,13 @@ def format_backlog(locale: str, en_files: dict, limit: int = 0) -> str:
     total_remaining = 0
     shown = 0
 
-    # Priority order: Tutorials → Guides → Courses → Modules
+    # Priority order: Tutorials → Guides → Courses → Modules → Other
     priority = [
         ("tutorials", "Tutorials"),
         ("guides", "Guides"),
         ("courses", "Courses"),
         ("modules", "Modules"),
+        ("other", "Other"),
     ]
 
     sections_output = []
@@ -465,7 +466,7 @@ def format_backlog(locale: str, en_files: dict, limit: int = 0) -> str:
             sections_output.append("\n".join(section_lines))
 
     lines.append(f"Backlog for {locale.upper()} ({name}) — {total_remaining} untranslated pages")
-    lines.append("Priority: Tutorials → Guides → Courses → Modules")
+    lines.append("Priority: Tutorials → Guides → Courses → Modules → Other")
     if limit:
         lines.append(f"Showing first {min(limit, total_remaining)} files (--limit {limit})")
     lines.append("")
