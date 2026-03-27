@@ -39,6 +39,14 @@ I18N_DIR = _mod.I18N_DIR
 REPO_ROOT = _mod.REPO_ROOT
 validate_file = _mod.validate_file
 
+# Import lint functions from lint-translation.py
+_lint_spec = importlib.util.spec_from_file_location(
+    "lint_translation", _script_dir / "lint-translation.py")
+_lint_mod = importlib.util.module_from_spec(_lint_spec)
+_lint_spec.loader.exec_module(_lint_mod)
+lint_file = _lint_mod.lint_file
+LINT_ERROR = _lint_mod.ERROR
+
 DRAFTS_DIR = REPO_ROOT / "translation" / "drafts"
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
@@ -123,6 +131,17 @@ def promote_file(draft_path: Path, locale: str, force: bool = False,
             result["action"] = "skipped"
             result["failures"] = [
                 c.name for c in report.checks if not c.passed
+            ]
+            return result
+
+        # Run lint checks — file must pass both validation AND lint
+        lint_findings = lint_file(draft_path, en_path)
+        lint_errors = [f for f in lint_findings if f[0] == LINT_ERROR]
+        if lint_errors:
+            result["action"] = "skipped"
+            result["validation"] = "LINT-FAIL"
+            result["failures"] = [
+                f"lint:{msg}" for _, _, msg in lint_errors
             ]
             return result
 

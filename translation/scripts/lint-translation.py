@@ -174,6 +174,34 @@ def check_invalid_anchor_chars(lines: list[str]) -> list[tuple[str, int, str]]:
     return findings
 
 
+def check_unescaped_jsx_quotes(lines: list[str]) -> list[tuple[str, int, str]]:
+    """Check for unescaped quotes inside JSX attribute values.
+
+    Heuristic: on lines containing JSX attribute patterns like definition="...",
+    title="...", label="...", an odd number of double-quotes suggests one is
+    unescaped inside an attribute value.
+    """
+    findings = []
+    # Attributes commonly translated that carry string values
+    attr_pattern = re.compile(
+        r'(?:definition|title|label|description|alt|placeholder|aria-label)\s*=\s*"'
+    )
+    for i, line in enumerate(lines):
+        if is_inside_code_block(lines, i):
+            continue
+        if not attr_pattern.search(line):
+            continue
+        # Count double-quotes on the line
+        quote_count = line.count('"')
+        if quote_count % 2 != 0:
+            findings.append((
+                ERROR, i + 1,
+                f"odd number of double-quotes ({quote_count}) on JSX attribute line "
+                f"— likely unescaped quote (use &quot;)"
+            ))
+    return findings
+
+
 def check_code_fence_balance(lines: list[str]) -> list[tuple[str, int, str]]:
     """Check for unmatched code fences."""
     findings = []
@@ -237,6 +265,7 @@ ALL_CHECKS = [
     check_garbled_xml_tags,
     check_heading_mid_line,
     check_invalid_anchor_chars,
+    check_unescaped_jsx_quotes,
     check_code_fence_balance,
 ]
 

@@ -708,6 +708,55 @@ def check_link_urls(en_content: str, tr_content: str) -> CheckResult:
                        f"{len(en_urls)} URLs, all preserved")
 
 
+def check_invalid_anchors(tr_content: str) -> CheckResult:
+    """Check for heading anchors containing invalid characters (dots, spaces, etc.)."""
+    lines = tr_content.split('\n')
+    details = []
+    in_code = False
+
+    for i, line in enumerate(lines):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        for m in re.finditer(r'\{#([^}]+)\}', line):
+            anchor = m.group(1)
+            bad_chars = [ch for ch in anchor if not re.match(r'[a-zA-Z0-9_-]', ch)]
+            if bad_chars:
+                unique = ''.join(sorted(set(bad_chars)))
+                details.append(
+                    f"Line {i + 1}: {{#{anchor}}} contains invalid char(s): {unique!r}")
+
+    if details:
+        return CheckResult("Invalid anchor characters", False,
+                           f"{len(details)} anchor(s) with invalid characters", details)
+    return CheckResult("Invalid anchor characters", True, "All anchors use valid characters")
+
+
+def check_duplicate_anchors(tr_content: str) -> CheckResult:
+    """Check for lines with more than one {#...} anchor (breaks MDX)."""
+    lines = tr_content.split('\n')
+    details = []
+    in_code = False
+
+    for i, line in enumerate(lines):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        anchors = re.findall(r'\{#[^}]+\}', line)
+        if len(anchors) > 1:
+            details.append(
+                f"Line {i + 1}: {len(anchors)} anchors on same line: {' '.join(anchors)}")
+
+    if details:
+        return CheckResult("Duplicate anchors", False,
+                           f"{len(details)} line(s) with multiple anchors", details)
+    return CheckResult("Duplicate anchors", True, "No duplicate anchors")
+
+
 def check_paragraph_inflation(en_content: str, tr_content: str,
                                locale: str) -> CheckResult:
     if locale in NO_WORDCOUNT_LOCALES:
@@ -777,6 +826,8 @@ def validate_file(en_path: Path, tr_path: Path, locale: str,
     report.checks.append(check_indented_headings(tr_content, en_content))
     report.checks.append(check_heading_count(en_content, tr_content))
     report.checks.append(check_heading_anchors(en_content, tr_content))
+    report.checks.append(check_invalid_anchors(tr_content))
+    report.checks.append(check_duplicate_anchors(tr_content))
     report.checks.append(check_image_paths(en_content, tr_content))
     report.checks.append(check_frontmatter(en_content, tr_content))
     report.checks.append(check_jsx_tags(en_content, tr_content))
