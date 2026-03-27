@@ -16,7 +16,7 @@ If any directory is missing, setup failed — do not proceed.
 Replace LANGUAGE and LOCALE, then paste:
 
 ```
-Translate all untranslated pages to LANGUAGE. Follow instructions in translation/translation-prompt.md. Chunk files over 400 lines. Assign one chunk per agent. Use only 3 parallel agents. Do not assign more work to a single agent.
+Translate all untranslated pages to LANGUAGE. Follow instructions in translation/translation-prompt.md. Chunk files over 350 lines. Assign one chunk per agent. Use only 3 parallel agents. Do not assign more work to a single agent.
 ```
 
 To limit scope: `Translate all untranslated tutorials and guides to LANGUAGE.`

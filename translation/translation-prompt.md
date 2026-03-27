@@ -55,19 +55,20 @@ python translation/scripts/translation-status.py --locale {LOCALE} --backlog
 
 Add `--limit N` to cap the number of files per session.
 
-This lists untranslated files in priority order: tutorials → guides → courses → modules.
+This lists untranslated files in priority order: tutorials → guides → courses → modules → other.
 
 Source paths (courses and modules are nested — not top-level):
 - `docs/tutorials/{file}.mdx`
 - `docs/guides/{file}.mdx`
 - `docs/learning/courses/{course}/{section}/{file}.mdx`
 - `docs/learning/modules/{module}/{file}.mdx`
+- `docs/learning/index.mdx` and other top-level index pages (in "Other" section)
 
 Output paths mirror source: `translation/drafts/{LOCALE}/{path}` (strip the `docs/` prefix).
 
 ## Step 3 — Translate
 
-For each file, check line count. If ≤400 lines, launch agent. If >400 lines, see Chunking below.
+For each file, check line count. If ≤350 lines, launch agent. If >350 lines, see Chunking below.
 
 Each agent gets this prompt (fill in {path}, {LANGUAGE}, {LOCALE}, {HASH}, {INFORMAL_FORM}, and for chunks the start/stop heading text):
 
@@ -86,6 +87,7 @@ Rules:
   <summary> and <details> text; JSX label= props (but keep value=, id=, type=, className= unchanged).
 - Keep byte-identical: code fences and their content, math ($...$, $$...$$), URLs,
   image paths, imports, inline code backticks (e.g. `Statevector`, `QuantumCircuit`).
+- Never add leading spaces inside code fences. Every line within a code block must be byte-identical to the source — including the very first line after the opening fence.
 - Pin headings: if the source has {#anchor}, use it exactly.
   If no anchor in source, derive one: lowercase the English heading, replace spaces with hyphens.
   Example: ## Change ordering in Qiskit → ## Translated {#change-ordering-in-qiskit}
@@ -119,9 +121,9 @@ git commit -m "feat(i18n): promote {LANGUAGE} translations"
 
 Print summary: files translated, skipped, failed, remaining.
 
-## Chunking (files >400 lines)
+## Chunking (files >350 lines)
 
-You (the orchestrator) MUST split large files. Do NOT give >400 lines to one agent.
+You (the orchestrator) MUST split large files. Do NOT give >350 lines to one agent.
 
 **Large code blocks (>200 lines)**: Code blocks are preserved byte-identical — they need no translation. When a file contains a code block longer than 200 lines:
 1. Split the file around it: prose-before, code-block, prose-after.
@@ -130,13 +132,14 @@ You (the orchestrator) MUST split large files. Do NOT give >400 lines to one age
 This avoids agents hitting output limits on files that are mostly code.
 
 1. Find `## ` and `### ` headings and their line numbers.
-2. Group into chunks of at most 400 lines. For each candidate boundary line N (a heading line):
+2. Group into chunks of at most 350 lines. For each candidate boundary line N (a heading line):
    - Count the number of ` ``` ` fence lines above line N. If the count is **odd**, line N is inside an open code block — move the boundary to the next heading below until the count is even.
 3. Describe each chunk to its agent using **explicit start heading and stop heading**, not line numbers:
    - First chunk: "Translate from the start of the file up to but NOT including the line `## Stop Heading`."
    - Middle chunks: "Translate starting at the line `## Start Heading`, up to but NOT including `## Stop Heading`."
    - Last chunk: "Translate starting at the line `## Start Heading` through the end of the file."
    - First chunk includes frontmatter + source hash. Later chunks do NOT include frontmatter.
+   - When describing a middle or last chunk, also include the 3 lines immediately before the start heading in the agent prompt, so the agent can see if there is a section-level heading (e.g. `# Activity 2:`) that belongs to its chunk. Instruct the agent: "If the line immediately before your start heading is a `#`-level heading, include it in your translation."
 4. Launch one SEPARATE agent per chunk. Each chunk MUST go to a different agent — never assign multiple chunks to the same agent. Each agent writes to `translation/drafts/{LOCALE}/{filename}-part{N}.mdx`. Agents write parts only — they do NOT concatenate.
 5. Leave the part files in place. Continue translating the next file immediately.
 6. After ALL translation is done (Step 4), concatenate all part files and clean up:

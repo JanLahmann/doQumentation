@@ -541,33 +541,45 @@ def check_latex_inline(en_content: str, tr_content: str) -> CheckResult:
 
 def check_indented_headings(tr_content: str, en_content: str = "") -> CheckResult:
     """Detect headings with leading whitespace — MDX won't parse {#anchor} on these."""
-    lines = tr_content.split('\n')
-    en_indented = set()
-    if en_content:
+
+    def get_heading_info(content):
+        """Returns list of (is_indented, stripped_text) for each heading, skipping code blocks."""
+        result = []
         in_code = False
-        for line in en_content.split('\n'):
+        for line in content.split('\n'):
             if line.strip().startswith('```'):
                 in_code = not in_code
                 continue
-            if not in_code and re.match(r'^(\s+)(#{1,6})\s+', line):
-                en_indented.add(line.strip().split('{#')[0].rstrip())
+            if in_code:
+                continue
+            if re.match(r'^\s*#{1,6}\s+', line):
+                indented = bool(re.match(r'^(\s+)#{1,6}\s+', line))
+                result.append(indented)
+        return result
+
+    en_heading_indented = get_heading_info(en_content) if en_content else []
+
     in_code = False
     details = []
+    tr_heading_idx = 0
 
-    for i, line in enumerate(lines):
+    for i, line in enumerate(tr_content.split('\n')):
         if line.strip().startswith('```'):
             in_code = not in_code
             continue
         if in_code:
             continue
-        # Line has leading whitespace but looks like a heading
         m = re.match(r'^(\s+)(#{1,6})\s+(.+)$', line)
-        if m:
-            stripped = line.strip().split('{#')[0].rstrip()
-            if stripped in en_indented:
-                continue  # source also has this indented heading, skip
-            details.append(
-                f"Line {i + 1}: '{line.strip()[:60]}' has {len(m.group(1))} leading space(s)")
+        if re.match(r'^\s*#{1,6}\s+', line):
+            is_indented = bool(m)
+            if is_indented:
+                # Check if EN heading at same position is also indented
+                if tr_heading_idx < len(en_heading_indented) and en_heading_indented[tr_heading_idx]:
+                    tr_heading_idx += 1
+                    continue  # EN also has this indented — not a translation error
+                details.append(
+                    f"Line {i + 1}: '{line.strip()[:60]}' has {len(m.group(1))} leading space(s)")
+            tr_heading_idx += 1
 
     if details:
         return CheckResult("Indented headings", False,
