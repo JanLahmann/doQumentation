@@ -1,0 +1,1130 @@
+---
+title: "Przybliżona kompilacja kwantowa dla układów ewolucji w czasie"
+sidebar_label: "Przybliżona kompilacja kwantowa dla układów ewolucji w czasie"
+description: "Ten samouczek pokazuje, jak zaimplementować AQC-Tensor z Qiskit, aby poprawić wydajność układów kwantowych"
+notebook_path: "tutorials/approximate-quantum-compilation-for-time-evolution.ipynb"
+---
+
+{/* doqumentation-source-hash: 93a62359 */}
+
+<OpenInLabBanner notebookPath="tutorials/approximate-quantum-compilation-for-time-evolution.ipynb" />
+
+
+
+{/* cspell:ignore circo */}
+
+*Szacowany czas obliczeń: Pięć minut na procesorze Eagle (UWAGA: To jest tylko szacunek. Rzeczywisty czas może się różnić.)*
+## Wprowadzenie {#background}
+
+Ten samouczek pokazuje, jak zaimplementować **Przybliżoną Kompilację Kwantową** z użyciem sieci tensorowych (AQC-Tensor) z Qiskit, aby poprawić wydajność układów kwantowych. Stosujemy AQC-Tensor w kontekście troterowskiej ewolucji w czasie, aby zmniejszyć głębokość układu przy zachowaniu dokładności symulacji, zgodnie z frameworkiem Qiskit do przygotowania stanów i optymalizacji. Nauczysz się, jak tworzyć niskopoziomowy ansatz z wyjściowego układu Trottera, optymalizować go za pomocą sieci tensorowych i przygotowywać do wykonania na sprzęcie kwantowym.
+
+Głównym celem jest symulacja ewolucji w czasie dla modelowego Hamiltonianu przy zmniejszonej głębokości układu. Osiąga się to za pomocą dodatku Qiskit **AQC-Tensor**, [qiskit-addon-aqc-tensor](https://github.com/Qiskit/qiskit-addon-aqc-tensor), który wykorzystuje sieci tensorowe, a konkretnie stany iloczynu macierzowego (MPS), do kompresji i optymalizacji wyjściowego układu. Poprzez iteracyjne dostosowania, skompresowany ansatz zachowuje wierność oryginalnemu układowi, pozostając jednocześnie wykonalnym na sprzęcie kwantowym bliskiej przyszłości. Więcej szczegółów można znaleźć w odpowiedniej [dokumentacji](/guides/qiskit-addons-aqc) wraz z [prostym przykładem](/guides/qiskit-addons-aqc-get-started) na dobry start.
+
+Przybliżona Kompilacja Kwantowa jest szczególnie korzystna w symulacjach kwantowych przekraczających czasy koherencji sprzętu, ponieważ pozwala na wydajniejsze przeprowadzanie złożonych symulacji. Ten samouczek przeprowadzi cię przez konfigurację przepływu pracy AQC-Tensor w Qiskit, obejmującą inicjalizację Hamiltonianu, generowanie układów Trottera oraz transpilację ostatecznego zoptymalizowanego układu dla docelowego urządzenia.
+## Wymagania {#requirements}
+
+Przed rozpoczęciem tego samouczka upewnij się, że masz zainstalowane następujące elementy:
+
+* Qiskit SDK v1.0 lub nowszy, z obsługą [wizualizacji](https://docs.quantum.ibm.com/api/qiskit/visualization)
+* Qiskit Runtime v0.22 lub nowszy (`pip install qiskit-ibm-runtime`)
+* Dodatek AQC-Tensor Qiskit (`pip install 'qiskit-addon-aqc-tensor[aer,quimb-jax]'`)
+## Konfiguracja {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-ibm-runtime quimb rustworkx scipy
+```
+
+```python
+import numpy as np
+import quimb.tensor
+import datetime
+import matplotlib.pyplot as plt
+
+from scipy.optimize import OptimizeResult, minimize
+
+from qiskit.quantum_info import SparsePauliOp, Pauli
+from qiskit.transpiler import CouplingMap
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit import QuantumCircuit
+from qiskit.synthesis import SuzukiTrotter
+
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_aqc_tensor.ansatz_generation import (
+    generate_ansatz_from_circuit,
+)
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+from rustworkx.visualization import graphviz_draw
+```
+
+## Część I: przykład w małej skali {#part-i-small-scale-example}
+
+Pierwsza część tego samouczka używa przykładu w małej skali z 10 węzłami, aby zilustrować proces mapowania problemu symulacji kwantowej na wykonywalny układ kwantowy. Tutaj zbadamy dynamikę modelu XXZ o 10 węzłach, co pozwoli nam zbudować i zoptymalizować zarządzalny układ kwantowy przed skalowaniem do większych systemów.
+
+Model XXZ jest szeroko badany w fizyce pod kątem interakcji spinowych i właściwości magnetycznych. Konfigurujemy Hamiltonian z otwartymi warunkami brzegowymi i zależnymi od miejsca oddziaływaniami między sąsiednimi węzłami wzdłuż łańcucha.
+
+### Hamiltonian modelu i obserwabla {#model-hamiltonian-and-observable}
+
+Hamiltonian dla naszego 10-węzłowego modelu XXZ jest zdefiniowany jako:
+$$
+\hat{\mathcal{H}}_{XXZ} = \sum_{i=1}^{L-1} J_{i,(i+1)}\left(X_i X_{(i+1)}+Y_i Y_{(i+1)}+ 2\cdot Z_i Z_{(i+1)} \right) \, ,
+$$
+
+gdzie $J_{i,(i+1)}$ jest losowym współczynnikiem odpowiadającym krawędzi $(i, i+1)$, a $L=10$ to liczba węzłów.
+
+Symulując ewolucję tego układu przy zmniejszonej głębokości układu, możemy uzyskać wgląd w zastosowanie AQC-Tensor do kompresji i optymalizacji układów.
+#### Konfiguracja Hamiltonianu i obserwabli {#set-up-the-hamiltonian-and-observable}
+
+Zanim zmapujemy nasz problem, musimy skonfigurować mapę sprzężeń, Hamiltonian i obserwablę dla 10-węzłowego modelu XXZ.
+
+```python
+# L is the number of sites, also the length of the 1D spin chain
+L = 10
+
+# Generate the coupling map
+edge_list = [(i - 1, i) for i in range(1, L)]
+# Generate an edge-coloring so we can make hw-efficient circuits
+even_edges = edge_list[::2]
+odd_edges = edge_list[1::2]
+coupling_map = CouplingMap(edge_list)
+
+# Generate random coefficients for our XXZ Hamiltonian
+np.random.seed(0)
+Js = np.random.rand(L - 1) + 0.5 * np.ones(L - 1)
+hamiltonian = SparsePauliOp(Pauli("I" * L))
+for i, edge in enumerate(even_edges + odd_edges):
+    hamiltonian += SparsePauliOp.from_sparse_list(
+        [
+            ("XX", (edge), Js[i] / 2),
+            ("YY", (edge), Js[i] / 2),
+            ("ZZ", (edge), Js[i]),
+        ],
+        num_qubits=L,
+    )
+
+# Generate a ZZ observable between the two middle qubits
+observable = SparsePauliOp.from_sparse_list(
+    [("ZZ", (L // 2 - 1, L // 2), 1.0)], num_qubits=L
+)
+
+print("Hamiltonian:", hamiltonian)
+print("Observable:", observable)
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+```text
+Hamiltonian: SparsePauliOp(['IIIIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII'],
+              coeffs=[1.        +0.j, 0.52440675+0.j, 0.52440675+0.j, 1.0488135 +0.j,
+ 0.60759468+0.j, 0.60759468+0.j, 1.21518937+0.j, 0.55138169+0.j,
+ 0.55138169+0.j, 1.10276338+0.j, 0.52244159+0.j, 0.52244159+0.j,
+ 1.04488318+0.j, 0.4618274 +0.j, 0.4618274 +0.j, 0.9236548 +0.j,
+ 0.57294706+0.j, 0.57294706+0.j, 1.14589411+0.j, 0.46879361+0.j,
+ 0.46879361+0.j, 0.93758721+0.j, 0.6958865 +0.j, 0.6958865 +0.j,
+ 1.391773  +0.j, 0.73183138+0.j, 0.73183138+0.j, 1.46366276+0.j])
+Observable: SparsePauliOp(['IIIIZZIIII'],
+              coeffs=[1.+0.j])
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/1ea0e102-23d5-4e6e-8ef8-e82843452b19-1.avif)
+
+Po zdefiniowaniu Hamiltonianu możemy przystąpić do konstruowania stanu początkowego.
+
+```python
+# Generate an initial state
+initial_state = QuantumCircuit(L)
+for i in range(L):
+    if i % 2:
+        initial_state.x(i)
+```
+
+### Krok 1: Mapowanie danych wejściowych klasycznych na problem kwantowy {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Teraz, gdy skonstruowaliśmy Hamiltonian definiujący oddziaływania spin-spin i zewnętrzne pola magnetyczne charakteryzujące układ, wykonujemy trzy główne kroki w przepływie pracy AQC-Tensor:
+
+1. **Wygeneruj zoptymalizowany układ AQC**: Używając troteryzacji, przybliżamy wyjściową ewolucję, która jest następnie kompresowana w celu zmniejszenia głębokości układu.
+2. **Utwórz pozostały układ ewolucji w czasie**: Uchwyć ewolucję dla pozostałego czasu poza wyjściowym segmentem.
+3. **Połącz układy**: Scal zoptymalizowany układ AQC z pozostałym układem ewolucji w kompletny układ ewolucji w czasie gotowy do wykonania.
+
+Takie podejście tworzy niskopoziomowy ansatz dla docelowej ewolucji, wspierając wydajną symulację w ramach ograniczeń sprzętu kwantowego bliskiej przyszłości.
+#### Wyznaczenie fragmentu ewolucji w czasie do symulacji klasycznej {#determine-the-portion-of-time-evolution-to-simulate-classically}
+
+Naszym celem jest symulacja ewolucji w czasie modelowego Hamiltonianu zdefiniowanego wcześniej, przy użyciu ewolucji Trottera. Aby uczynić ten proces wydajnym dla sprzętu kwantowego, dzielimy ewolucję na dwa segmenty:
+
+- **Segment wyjściowy**: Ten wyjściowy fragment ewolucji, od $ t_i = 0.0 $ do $ t_f = 0.2 $, jest symulowany z MPS i może być wydajnie „skompilowany" za pomocą AQC-Tensor. Używając [dodatku AQC-Tensor Qiskit](https://github.com/Qiskit/qiskit-addon-aqc-tensor), generujemy skompresowany układ dla tego segmentu, określany jako `aqc_target_circuit`. Ponieważ ten segment będzie symulowany na symulatorze sieciowym tensorowym, możemy pozwolić sobie na użycie większej liczby warstw Trottera bez znaczącego wpływu na zasoby sprzętowe. Ustawiamy `aqc_target_num_trotter_steps = 32` dla tego segmentu.
+
+- **Segment kolejny**: Ten pozostały fragment ewolucji, od $ t = 0.2 $ do $ t = 0.4 $, będzie wykonywany na sprzęcie kwantowym, określany jako `subsequent_circuit`. Ze względu na ograniczenia sprzętowe, dążymy do użycia jak najmniejszej liczby warstw Trottera, aby utrzymać zarządzalną głębokość układu. Dla tego segmentu używamy `subsequent_num_trotter_steps = 3`.
+
+#### Wybór czasu podziału {#choose-the-split-time}
+Wybieramy $t = 0.2$ jako czas podziału, aby zrównoważyć klasyczną symulacyjność z wykonalnością sprzętową. Na początku ewolucji splątanie w modelu XXZ pozostaje wystarczająco niskie, aby metody klasyczne takie jak MPS mogły go dokładnie aproksymować.
+
+Przy wyborze czasu podziału, dobrą zasadą jest wybranie punktu, w którym splątanie jest nadal zarządzalne klasycznie, ale uchwytuje wystarczająco dużo ewolucji, aby uprościć fragment wykonywaną na sprzęcie. Może być potrzebne metodą prób i błędów znalezienie najlepszej równowagi dla różnych Hamiltonianów.
+
+```python
+# Generate the AQC target circuit (initial segment)
+aqc_evolution_time = 0.2
+aqc_target_num_trotter_steps = 32
+
+aqc_target_circuit = initial_state.copy()
+aqc_target_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+```python
+# Generate the subsequent circuit
+subsequent_num_trotter_steps = 3
+subsequent_evolution_time = 0.2
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+subsequent_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/83039f82-97cb-4613-86c9-a8faf0839a02-0.avif)
+
+Aby umożliwić sensowne porównanie, wygenerujemy dwa dodatkowe układy:
+
+- **Układ porównawczy AQC**: Ten układ ewoluuje do `aqc_evolution_time`, ale używa tego samego czasu kroku Trottera co `subsequent_circuit`. Służy jako porównanie do `aqc_target_circuit`, pokazując ewolucję, którą obserwowalibyśmy bez użycia zwiększonej liczby kroków Trottera. Będziemy odwoływać się do tego układu jako `aqc_comparison_circuit`.
+
+- **Układ referencyjny**: Ten układ służy jako punkt odniesienia do uzyskania dokładnego wyniku. Symuluje pełną ewolucję z użyciem sieci tensorowych w celu obliczenia dokładnego wyniku, dostarczając odniesienia do oceny skuteczności AQC-Tensor. Będziemy odwoływać się do tego układu jako `reference_circuit`.
+
+```python
+# Generate the AQC comparison circuit
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps
+    / subsequent_evolution_time
+    * aqc_evolution_time
+)
+print(
+    "Number of Trotter steps for comparison:",
+    aqc_comparison_num_trotter_steps,
+)
+
+aqc_comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+```text
+Number of Trotter steps for comparison: 3
+```
+
+```python
+# Generate the reference circuit
+evolution_time = 0.4
+reps = 200
+
+reference_circuit = initial_state.copy()
+reference_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=reps),
+        time=evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+#### Generowanie ansatzu i parametrów początkowych z układu Trottera z mniejszą liczbą kroków {#generate-an-ansatz-and-initial-parameters-from-a-trotter-circuit-with-fewer-steps}
+
+Teraz, gdy skonstruowaliśmy nasze cztery układy, przejdźmy do przepływu pracy AQC-Tensor. Najpierw konstruujemy „dobry" układ, który ma ten sam czas ewolucji co układ docelowy, ale z mniejszą liczbą kroków Trottera (a tym samym mniejszą liczbą warstw).
+
+Następnie przekazujemy ten „dobry" układ do funkcji `generate_ansatz_from_circuit` z AQC-Tensor. Ta funkcja analizuje łączność dwu-Qubitową układu i zwraca dwie rzeczy:
+
+1. Ogólny, sparametryzowany układ ansatz o tej samej łączności dwu-Qubitowej co układ wejściowy.
+2. Parametry, które po podstawieniu do ansatzu dają układ wejściowy (dobry).
+
+Wkrótce weźmiemy te parametry i będziemy je iteracyjnie dostosowywać, aby przybliżyć układ ansatz jak najbliżej docelowego MPS.
+
+```python
+aqc_ansatz_num_trotter_steps = 1
+
+aqc_good_circuit = initial_state.copy()
+aqc_good_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/b9e81c51-dc6f-4237-9aca-e1384f1897bc-0.avif)
+
+```python
+print(f"AQC Comparison circuit: depth {aqc_comparison_circuit.depth()}")
+print(f"Target circuit:         depth {aqc_target_circuit.depth()}")
+print(
+    f"Ansatz circuit:         depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters"
+)
+```
+
+```text
+AQC Comparison circuit: depth 36
+Target circuit:         depth 385
+Ansatz circuit:         depth 7, with 156 parameters
+```
+
+#### Wybór ustawień symulacji sieci tensorowej {#choose-settings-for-tensor-network-simulation}
+
+Tutaj używamy symulatora układu stanu iloczynu macierzowego Quimb, wraz z jax do dostarczania gradientu.
+
+```python
+simulator_settings = QuimbSimulator(
+    quimb.tensor.CircuitMPS, autodiff_backend="jax"
+)
+```
+
+Następnie budujemy reprezentację MPS stanu docelowego, który będzie aproksymowany za pomocą AQC-Tensor. Ta reprezentacja umożliwia wydajne obsługiwanie splątania, zapewniając zwartą reprezentację stanu kwantowego do dalszej optymalizacji.
+
+```python
+aqc_target_mps = tensornetwork_from_circuit(
+    aqc_target_circuit, simulator_settings
+)
+print("Target MPS maximum bond dimension:", aqc_target_mps.psi.max_bond())
+
+# Obtains the reference MPS, where we can obtain the exact expectation value by examining the `local_expectation``
+reference_mps = tensornetwork_from_circuit(
+    reference_circuit, simulator_settings
+)
+reference_expval = reference_mps.local_expectation(
+    quimb.pauli("Z") & quimb.pauli("Z"), (L // 2 - 1, L // 2)
+).real.item()
+print("Reference MPS maximum bond dimension:", reference_mps.psi.max_bond())
+```
+
+```text
+Target MPS maximum bond dimension: 5
+Reference MPS maximum bond dimension: 7
+```
+
+Zauważ, że wybierając większą liczbę kroków Trottera dla stanu docelowego, skutecznie zredukowaliśmy jego błąd Trottera w porównaniu z wyjściowym układem. Możemy ocenić wierność ($ |\langle \psi_1 | \psi_2 \rangle|^2 $) między stanem przygotowanym przez wyjściowy układ a stanem docelowym, aby skwantyfikować tę różnicę.
+
+```python
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Starting fidelity:", starting_fidelity)
+```
+
+```text
+Starting fidelity: 0.9982464959067222
+```
+
+#### Optymalizacja parametrów ansatzu za pomocą obliczeń MPS {#optimize-the-parameters-of-the-ansatz-using-mps-calculations}
+W tym kroku optymalizujemy parametry ansatzu, minimalizując prostą funkcję kosztu `MaximizeStateFidelity`, używając optymalizatora L-BFGS z SciPy. Wybieramy kryterium zatrzymania dla wierności, które zapewnia jej przekroczenie wierności wyjściowego układu bez AQC-Tensor. Po osiągnięciu tego progu, skompresowany układ będzie charakteryzował się zarówno mniejszym błędem Trottera, jak i zredukowaną głębokością w porównaniu z oryginalnym układem. Używając dodatkowego czasu CPU, dalsza optymalizacja może kontynuować zwiększanie wierności.
+
+```python
+# Setting values for the optimization
+aqc_stopping_fidelity = 1
+aqc_max_iterations = 500
+
+stopping_point = 1.0 - aqc_stopping_fidelity
+objective = MaximizeStateFidelity(
+    aqc_target_mps, aqc_ansatz, simulator_settings
+)
+
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(
+        f"{datetime.datetime.now()} Intermediate result: Fidelity {fidelity:.8f}"
+    )
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if (
+    result.status
+    not in (
+        0,
+        1,
+        99,
+    )
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+2025-04-14 11:46:52.174235 Intermediate result: Fidelity 0.99795851
+2025-04-14 11:46:52.218249 Intermediate result: Fidelity 0.99822826
+2025-04-14 11:46:52.280924 Intermediate result: Fidelity 0.99829675
+2025-04-14 11:46:52.356214 Intermediate result: Fidelity 0.99832474
+2025-04-14 11:46:52.411609 Intermediate result: Fidelity 0.99836131
+2025-04-14 11:46:52.453747 Intermediate result: Fidelity 0.99839954
+2025-04-14 11:46:52.496184 Intermediate result: Fidelity 0.99846517
+2025-04-14 11:46:52.542046 Intermediate result: Fidelity 0.99865029
+2025-04-14 11:46:52.583679 Intermediate result: Fidelity 0.99872332
+2025-04-14 11:46:52.628732 Intermediate result: Fidelity 0.99892359
+2025-04-14 11:46:52.690386 Intermediate result: Fidelity 0.99900640
+2025-04-14 11:46:52.759398 Intermediate result: Fidelity 0.99907169
+2025-04-14 11:46:52.819496 Intermediate result: Fidelity 0.99911423
+2025-04-14 11:46:52.884505 Intermediate result: Fidelity 0.99918716
+2025-04-14 11:46:52.947919 Intermediate result: Fidelity 0.99921278
+2025-04-14 11:46:53.012808 Intermediate result: Fidelity 0.99924853
+2025-04-14 11:46:53.083626 Intermediate result: Fidelity 0.99928797
+2025-04-14 11:46:53.153235 Intermediate result: Fidelity 0.99933028
+2025-04-14 11:46:53.221371 Intermediate result: Fidelity 0.99935757
+2025-04-14 11:46:53.286211 Intermediate result: Fidelity 0.99938140
+2025-04-14 11:46:53.352391 Intermediate result: Fidelity 0.99940964
+2025-04-14 11:46:53.420472 Intermediate result: Fidelity 0.99944051
+2025-04-14 11:46:53.486279 Intermediate result: Fidelity 0.99946828
+2025-04-14 11:46:53.552338 Intermediate result: Fidelity 0.99948723
+2025-04-14 11:46:53.618688 Intermediate result: Fidelity 0.99951011
+2025-04-14 11:46:53.690878 Intermediate result: Fidelity 0.99954718
+2025-04-14 11:46:53.762725 Intermediate result: Fidelity 0.99956267
+2025-04-14 11:46:53.829784 Intermediate result: Fidelity 0.99958949
+2025-04-14 11:46:53.897477 Intermediate result: Fidelity 0.99960498
+2025-04-14 11:46:53.954633 Intermediate result: Fidelity 0.99961308
+2025-04-14 11:46:54.010125 Intermediate result: Fidelity 0.99962894
+2025-04-14 11:46:54.064717 Intermediate result: Fidelity 0.99964121
+2025-04-14 11:46:54.118892 Intermediate result: Fidelity 0.99964348
+2025-04-14 11:46:54.183236 Intermediate result: Fidelity 0.99964860
+2025-04-14 11:46:54.245521 Intermediate result: Fidelity 0.99965695
+2025-04-14 11:46:54.305792 Intermediate result: Fidelity 0.99966398
+2025-04-14 11:46:54.355819 Intermediate result: Fidelity 0.99967816
+2025-04-14 11:46:54.409580 Intermediate result: Fidelity 0.99968293
+2025-04-14 11:46:54.457979 Intermediate result: Fidelity 0.99968936
+2025-04-14 11:46:54.505891 Intermediate result: Fidelity 0.99969223
+2025-04-14 11:46:54.551084 Intermediate result: Fidelity 0.99970009
+2025-04-14 11:46:54.601817 Intermediate result: Fidelity 0.99970724
+2025-04-14 11:46:54.650097 Intermediate result: Fidelity 0.99970987
+2025-04-14 11:46:54.714727 Intermediate result: Fidelity 0.99971237
+2025-04-14 11:46:54.780052 Intermediate result: Fidelity 0.99971916
+2025-04-14 11:46:54.871994 Intermediate result: Fidelity 0.99971940
+2025-04-14 11:46:54.958244 Intermediate result: Fidelity 0.99972465
+2025-04-14 11:46:55.011057 Intermediate result: Fidelity 0.99972763
+2025-04-14 11:46:55.175339 Intermediate result: Fidelity 0.99972894
+2025-04-14 11:46:56.688912 Intermediate result: Fidelity 0.99972894
+Done after 50 iterations.
+```
+
+```python
+parameters = [float(param) for param in aqc_final_parameters]
+print("Final parameters:", parameters)
+```
+
+```text
+Final parameters: [-7.853983035039254, 1.5707966468427772, 1.5707962768868613, -1.570798010835122, 1.570794480409574, 1.5707972214146968, -1.570796593027083, 1.5707968206822998, -1.5707959018046258, -1.5707991700969144, 1.5707965852600927, 4.712386891737442, -7.853980840717957, 1.5707967508132654, 1.5707943162503217, -1.5707955382023582, 1.5707958007156742, 1.570796096113293, -1.5707928509846847, 1.5707971042943747, -1.570797909276557, -1.5707941020637393, 1.5707980179540793, 4.712389823219363, -1.5707928752386107, 1.5707996426312891, -1.5707975640471001, -1.570794132802984, 1.5707944361599957, 4.712390747060803, 0.1048818190315936, 0.06686710468840577, -0.0668645844756557, -3.1415923537135466, 1.2374931269696063, 6.323169390432535e-07, 3.53229204771738e-08, 2.1091105688681484, 6.283186439944202, 0.12152258846156239, 0.07961752617254866, -0.07961775088604585, -1.6564278051174865e-06, 2.0771163596472384, 3.141592651630471, -6.283185775192653, 1.7691609006726954, 3.1415922910116216, 0.19837572065074083, 0.11114901449078964, -0.11115124544944892, -3.141591983034976, 0.8570788408766729, 4.201601390404146e-07, -3.141593736550978, 0.34652010942396333, 6.283186232785291, 0.13606356527241956, 0.03891676349289617, -0.03891524189533726, -1.5707965732853424, 1.5707968967088564, -0.3086133992238162, 1.5707957152428194, 1.5707968398959653, -0.32062737993080026, 0.11027416939993417, 0.0726167290795046, -0.07262020423334464, -2.3729431959735024e-06, 1.8204437429254703, 9.299060301196612e-07, -3.141592899563451, 2.103269568939461, 3.1415937539734626, 0.11536891854817125, 0.09099022308254198, -0.09098864958606581, -3.1415913307373127, 2.078429034357281, -1.509777998069368e-06, -3.1415922600663255, 1.5189162645358172, -3.1415878461323583, 0.09999070991480716, 0.04352011445148391, -0.04351849541849812, -1.570797642506462, 1.570795238023824, 0.8903442644396505, 1.5707962698006606, 1.5707946765132268, 0.9098791754570567, 0.10448284343424026, 0.07317037684936827, -0.07316718173961152, -3.141592682240966, 2.1665363080039612, -7.450882112394189e-07, -5.771181304929921e-07, 2.615334999517103, -3.1415914971653898, 0.1890887078648001, 0.13578163074571992, -0.13578078143610256, 7.156734195912883e-07, 1.7915385305413096, -5.188866034727312e-07, 1.2827742939197711e-06, 1.2348316581417487, 6.28318357406372, 0.08061187643781703, 0.03820789039271876, -0.03820731868804904, 1.5707964027727628, 1.570798734462218, 4.387336153720882, -1.570795722044763, 1.570798457375325, 4.450361734163248, 0.092360147257953, 0.06047700345049011, -0.06048592856713045, -3.141591214829027, 2.6593289993286047, -2.366937342261038e-07, 8.112162974032695e-08, 1.8907014631413432, 8.355881261853104e-07, 0.23303641819370874, 0.14331998953606456, -0.1433194488304741, -3.141591621822901, 0.7455776479558791, 3.1415914520163586, -3.1415933560496105, 0.7603938554148255, -1.6230983177616282e-06, 0.07186349688535713, 0.03197144517771341, -0.031971177878588546, -4.712389048748508, 1.5707948403165752, 1.2773619319829186, -1.5707990802172127, 1.5707957676951863, 1.289083769394045, 0.13644999397718796, 0.032761460443590046, -0.032762060585195645, -1.5707977610073176, 1.5707964181578042, -3.4826435600366983, -4.712389691708343, 1.570794277502252, 2.799088046133275]
+```
+
+W tym momencie wystarczy znaleźć ostateczne parametry układu ansatz. Następnie możemy scalić zoptymalizowany układ AQC z pozostałym układem ewolucji, aby stworzyć kompletny układ ewolucji w czasie do wykonania na sprzęcie kwantowym.
+
+```python
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+aqc_final_circuit.compose(subsequent_circuit, inplace=True)
+aqc_final_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/813c9ced-6a2e-4345-bffc-7dae938e2015-0.avif)
+
+Musimy również scalić nasz `aqc_comparison_circuit` z pozostałym układem ewolucji. Ten układ będzie używany do porównania wydajności układu zoptymalizowanego za pomocą AQC-Tensor z oryginalnym układem.
+
+```python
+aqc_comparison_circuit.compose(subsequent_circuit, inplace=True)
+aqc_comparison_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/86ba26ff-0bfa-47d0-b5ee-8944a8ddf274-0.avif)
+
+### Krok 2: Optymalizacja problemu pod kątem wykonania na sprzęcie kwantowym {#step-2-optimize-problem-for-quantum-hardware-execution}
+Wybierz sprzęt. Tutaj użyjemy dowolnego dostępnego urządzenia IBM Quantum&reg; z co najmniej 127 Qubitami.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(min_num_qubits=127)
+print(backend)
+```
+
+Transpilujemy PUBs (układy i obserwable), aby dopasować je do Backend ISA (Instruction Set Architecture). Ustawiając `optimization_level=3`, Transpiler optymalizuje układ tak, aby pasował do jednowymiarowego łańcucha Qubitów, zmniejszając szum wpływający na wierność układu. Po przekształceniu układów do formatu zgodnego z Backend, stosujemy odpowiadające przekształcenie do obserwabli, aby zapewnić ich zgodność ze zmodyfikowanym układem Qubitów.
+
+```python
+pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=3
+)
+isa_circuit = pass_manager.run(aqc_final_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+print("Observable info:", isa_observable)
+print("Circuit depth:", isa_circuit.depth())
+isa_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ'],
+              coeffs=[1.+0.j])
+Circuit depth: 111
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/087fff8d-98b9-4f9a-8004-01a3b0166e12-1.avif)
+
+Przeprowadź transpilację dla układu porównawczego.
+
+```python
+isa_comparison_circuit = pass_manager.run(aqc_comparison_circuit)
+isa_comparison_observable = observable.apply_layout(
+    isa_comparison_circuit.layout
+)
+print("Observable info:", isa_comparison_observable)
+print("Circuit depth:", isa_comparison_circuit.depth())
+isa_comparison_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZ'],
+              coeffs=[1.+0.j])
+Circuit depth: 158
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/7c2e5fe7-21ce-461d-adaa-776f8d882163-1.avif)
+
+### Krok 3: Wykonanie z użyciem prymitywów Qiskit {#step-3-execute-using-qiskit-primitives}
+
+W tym kroku wykonujemy transpilowany układ na sprzęcie kwantowym (lub symulowanym Backend). Używając klasy `EstimatorV2` z `qiskit_ibm_runtime`, konfigurujemy Estimator do uruchomienia układu i pomiaru określonej obserwabli. Wynik zadania dostarcza oczekiwanego wyniku dla obserwabli, dając nam wgląd w wydajność układu na docelowym sprzęcie.
+
+```python
+estimator = Estimator(backend)
+job = estimator.run([(isa_circuit, isa_observable)])
+print("Job ID:", job.job_id())
+job.result()
+```
+
+```text
+Job ID: czyhqdxd8drg008hx0yg
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), ensemble_standard_error=np.ndarray(<shape=(), dtype=float64>)), metadata={'shots': 4096, 'target_precision': 0.015625, 'circuit_metadata': {}, 'resilience': {}, 'num_randomizations': 32})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': False, 'enable_measure': True, 'num_randomizations': 'auto', 'shots_per_randomization': 'auto', 'interleave_randomizations': True, 'strategy': 'active-accum'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': False, 'pec_mitigation': False}, 'version': 2})
+```
+
+Przeprowadź wykonanie dla układu porównawczego.
+
+```python
+job_comparison = estimator.run([(isa_comparison_circuit, isa_observable)])
+print("Job Comparison ID:", job.job_id())
+job_comparison.result()
+```
+
+```text
+Job Comparison ID: czyhqdxd8drg008hx0yg
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), ensemble_standard_error=np.ndarray(<shape=(), dtype=float64>)), metadata={'shots': 4096, 'target_precision': 0.015625, 'circuit_metadata': {}, 'resilience': {}, 'num_randomizations': 32})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': False, 'enable_measure': True, 'num_randomizations': 'auto', 'shots_per_randomization': 'auto', 'interleave_randomizations': True, 'strategy': 'active-accum'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': False, 'pec_mitigation': False}, 'version': 2})
+```
+
+### Krok 4: Przetwarzanie końcowe i zwracanie wyników w pożądanym formacie klasycznym {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+W tym przypadku rekonstrukcja nie jest konieczna. Możemy bezpośrednio sprawdzić wynik, uzyskując dostęp do wartości oczekiwanej z danych wyjściowych wykonania.
+
+```python
+# AQC results
+hw_results = job.result()
+hw_results_dicts = [pub_result.data.__dict__ for pub_result in hw_results]
+hw_expvals = [
+    pub_result_data["evs"].tolist() for pub_result_data in hw_results_dicts
+]
+aqc_expval = hw_expvals[0]
+
+# AQC comparison results
+hw_comparison_results = job_comparison.result()
+hw_comparison_results_dicts = [
+    pub_result.data.__dict__ for pub_result in hw_comparison_results
+]
+hw_comparison_expvals = [
+    pub_result_data["evs"].tolist()
+    for pub_result_data in hw_comparison_results_dicts
+]
+aqc_compare_expval = hw_comparison_expvals[0]
+
+print(f"Exact:         \t{reference_expval:.4f}")
+print(
+    f"AQC:           \t{aqc_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_expval):.4f}"
+)
+print(
+    f"AQC Comparison:\t{aqc_compare_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_compare_expval):.4f}"
+)
+```
+
+```text
+Exact:         	-0.5252
+AQC:           	-0.4903, |∆| = 0.0349
+AQC Comparison:	0.5424, |∆| = 1.0676
+```
+
+Wykres słupkowy porównujący wyniki układów AQC, porównawczego i dokładnego.
+
+```python
+plt.style.use("seaborn-v0_8")
+
+labels = ["AQC Result", "AQC Comparison Result"]
+values = [abs(aqc_expval), abs(aqc_compare_expval)]
+
+plt.figure(figsize=(10, 6))
+bars = plt.bar(labels, values, color=["tab:blue", "tab:purple"])
+plt.axhline(
+    y=abs(reference_expval), color="red", linestyle="--", label="Exact Result"
+)
+plt.xlabel("Results")
+plt.ylabel("Absolute Expected Value")
+plt.title("AQC Result vs AQC Comparison Result (Absolute Values)")
+plt.legend()
+for bar in bars:
+    y_val = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2.0,
+        y_val,
+        round(y_val, 2),
+        va="bottom",
+    )
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/5f7b36a6-3666-4223-9c5d-d92bca741ad2-0.avif)
+## Część II: skalowanie {#part-ii-scale-it-up}
+
+Druga część tego samouczka rozbudowuje poprzedni przykład, skalując problem do większego układu złożonego z 50 węzłów, co ilustruje, jak odwzorowywać bardziej złożone kwantowe problemy symulacyjne na wykonywalne kwantowe obwody. Badamy tutaj dynamikę modelu XXZ z 50 węzłami, co pozwala nam zbudować i zoptymalizować rozległy Circuit kwantowy odzwierciedlający bardziej realistyczne rozmiary układów.
+
+Hamiltonian dla naszego modelu XXZ z 50 węzłami jest zdefiniowany jako:
+$$
+\hat{\mathcal{H}}_{XXZ} = \sum_{i=1}^{L-1} J_{i,(i+1)}\left(X_i X_{(i+1)}+Y_i Y_{(i+1)}+ 2\cdot Z_i Z_{(i+1)} \right) \, ,
+$$
+
+gdzie $J_{i,(i+1)}$ jest losowym współczynnikiem odpowiadającym krawędzi $(i, i+1)$, a $L=50$ to liczba węzłów.
+Zdefiniuj mapę sprzężeń i krawędzie dla Hamiltonianu.
+
+```python
+L = 50  # L = length of our 1D spin chain
+
+# Generate the edge list for this spin-chain
+edge_list = [(i - 1, i) for i in range(1, L)]
+# Generate an edge-coloring so we can make hw-efficient circuits
+even_edges = edge_list[::2]
+odd_edges = edge_list[1::2]
+
+# Instantiate a CouplingMap object
+coupling_map = CouplingMap(edge_list)
+
+# Generate random coefficients for our XXZ Hamiltonian
+np.random.seed(0)
+Js = np.random.rand(L - 1) + 0.5 * np.ones(L - 1)
+
+hamiltonian = SparsePauliOp(Pauli("I" * L))
+for i, edge in enumerate(even_edges + odd_edges):
+    hamiltonian += SparsePauliOp.from_sparse_list(
+        [
+            ("XX", (edge), Js[i] / 2),
+            ("YY", (edge), Js[i] / 2),
+            ("ZZ", (edge), Js[i]),
+        ],
+        num_qubits=L,
+    )
+
+observable = SparsePauliOp.from_sparse_list(
+    [("ZZ", (L // 2 - 1, L // 2), 1.0)], num_qubits=L
+)
+
+# Generate an initial state
+L = hamiltonian.num_qubits
+initial_state = QuantumCircuit(L)
+for i in range(L):
+    if i % 2:
+        initial_state.x(i)
+```
+
+### Krok 1: Odwzorowanie klasycznych danych wejściowych na problem kwantowy {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+W przypadku tego większego problemu zaczynamy od skonstruowania Hamiltonianu dla modelu XXZ z 50 węzłami, definiując oddziaływania spin-spin i zewnętrzne pola magnetyczne we wszystkich węzłach. Następnie wykonujemy trzy główne kroki:
+
+1. **Wygeneruj zoptymalizowany Circuit AQC**: Użyj metody Trotteryzacji do przybliżenia początkowej ewolucji, a następnie skompresuj ten segment, aby zmniejszyć głębokość Circuit.
+2. **Utwórz Circuit dla pozostałej ewolucji czasowej**: Uuchwyć pozostałą ewolucję czasową poza segmentem początkowym.
+3. **Połącz Circuity**: Scal zoptymalizowany Circuit AQC z Circuit pozostałej ewolucji, aby uzyskać kompletny Circuit ewolucji czasowej gotowy do wykonania.
+Wygeneruj docelowy Circuit AQC (segment początkowy).
+
+```python
+aqc_evolution_time = 0.2
+aqc_target_num_trotter_steps = 32
+
+aqc_target_circuit = initial_state.copy()
+aqc_target_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+Wygeneruj kolejny Circuit (pozostały segment).
+
+```python
+subsequent_num_trotter_steps = 3
+subsequent_evolution_time = 0.2
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+```
+
+Wygeneruj Circuit porównawczy AQC (segment początkowy, ale z taką samą liczbą kroków Trottera jak Circuit kolejny).
+
+```python
+# Generate the AQC comparison circuit
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps
+    / subsequent_evolution_time
+    * aqc_evolution_time
+)
+print(
+    "Number of Trotter steps for comparison:",
+    aqc_comparison_num_trotter_steps,
+)
+
+aqc_comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+```text
+Number of Trotter steps for comparison: 3
+```
+
+Wygeneruj Circuit referencyjny.
+
+```python
+evolution_time = 0.4
+reps = 200
+
+reference_circuit = initial_state.copy()
+reference_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=reps),
+        time=evolution_time,
+    ),
+    inplace=True,
+)
+```
+
+Wygeneruj ansatz i parametry początkowe na podstawie Circuit Trottera z mniejszą liczbą kroków.
+
+```python
+aqc_ansatz_num_trotter_steps = 1
+
+aqc_good_circuit = initial_state.copy()
+aqc_good_circuit.compose(
+    generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+        time=aqc_evolution_time,
+    ),
+    inplace=True,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit
+)
+```
+
+```python
+print(f"AQC Comparison circuit: depth {aqc_comparison_circuit.depth()}")
+print(f"Target circuit:         depth {aqc_target_circuit.depth()}")
+print(
+    f"Ansatz circuit:         depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters"
+)
+```
+
+```text
+AQC Comparison circuit: depth 36
+Target circuit:         depth 385
+Ansatz circuit:         depth 7, with 816 parameters
+```
+
+Ustaw ustawienia dla symulacji sieci tensorowych, a następnie skonstruuj reprezentację stanu docelowego w postaci iloczynu macierzowego (MPS) na potrzeby optymalizacji. Następnie oceń wierność między Circuit początkowym a stanem docelowym, aby określić różnicę w błędzie Trottera.
+
+```python
+simulator_settings = QuimbSimulator(
+    quimb.tensor.CircuitMPS, autodiff_backend="jax"
+)
+
+# Build the matrix-product representation of the state to be approximated by AQC
+aqc_target_mps = tensornetwork_from_circuit(
+    aqc_target_circuit, simulator_settings
+)
+print("Target MPS maximum bond dimension:", aqc_target_mps.psi.max_bond())
+
+# Obtains the reference MPS, where we can obtain the exact expectation value by examining the `local_expectation``
+reference_mps = tensornetwork_from_circuit(
+    reference_circuit, simulator_settings
+)
+reference_expval = reference_mps.local_expectation(
+    quimb.pauli("Z") & quimb.pauli("Z"), (L // 2 - 1, L // 2)
+).real.item()
+
+# Compute the starting fidelity
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Starting fidelity:", starting_fidelity)
+```
+
+```text
+Target MPS maximum bond dimension: 5
+Starting fidelity: 0.9926466919924161
+```
+
+Aby zoptymalizować parametry ansatzu, minimalizujemy funkcję kosztu `MaximizeStateFidelity` za pomocą optymalizatora L-BFGS z biblioteki SciPy, z kryterium zatrzymania ustawionym na przekroczenie wierności Circuit początkowego bez AQC-Tensor. Zapewnia to, że skompresowany Circuit ma zarówno mniejszy błąd Trottera, jak i mniejszą głębokość.
+
+```python
+# Setting values for the optimization
+aqc_stopping_fidelity = 1
+aqc_max_iterations = 500
+
+stopping_point = 1.0 - aqc_stopping_fidelity
+objective = MaximizeStateFidelity(
+    aqc_target_mps, aqc_ansatz, simulator_settings
+)
+
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(
+        f"{datetime.datetime.now()} Intermediate result: Fidelity {fidelity:.8f}"
+    )
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if (
+    result.status
+    not in (
+        0,
+        1,
+        99,
+    )
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+2025-04-14 11:48:28.705807 Intermediate result: Fidelity 0.99795851
+2025-04-14 11:48:28.743265 Intermediate result: Fidelity 0.99822826
+2025-04-14 11:48:28.776629 Intermediate result: Fidelity 0.99829675
+2025-04-14 11:48:28.816153 Intermediate result: Fidelity 0.99832474
+2025-04-14 11:48:28.856437 Intermediate result: Fidelity 0.99836131
+2025-04-14 11:48:28.896432 Intermediate result: Fidelity 0.99839954
+2025-04-14 11:48:28.936670 Intermediate result: Fidelity 0.99846517
+2025-04-14 11:48:28.982069 Intermediate result: Fidelity 0.99865029
+2025-04-14 11:48:29.026130 Intermediate result: Fidelity 0.99872332
+2025-04-14 11:48:29.067426 Intermediate result: Fidelity 0.99892359
+2025-04-14 11:48:29.110742 Intermediate result: Fidelity 0.99900640
+2025-04-14 11:48:29.161362 Intermediate result: Fidelity 0.99907169
+2025-04-14 11:48:29.207933 Intermediate result: Fidelity 0.99911423
+2025-04-14 11:48:29.266772 Intermediate result: Fidelity 0.99918716
+2025-04-14 11:48:29.331727 Intermediate result: Fidelity 0.99921278
+2025-04-14 11:48:29.401694 Intermediate result: Fidelity 0.99924853
+2025-04-14 11:48:29.467980 Intermediate result: Fidelity 0.99928797
+2025-04-14 11:48:29.533281 Intermediate result: Fidelity 0.99933028
+2025-04-14 11:48:29.600833 Intermediate result: Fidelity 0.99935757
+2025-04-14 11:48:29.670816 Intermediate result: Fidelity 0.99938140
+2025-04-14 11:48:29.736928 Intermediate result: Fidelity 0.99940964
+2025-04-14 11:48:29.802931 Intermediate result: Fidelity 0.99944051
+2025-04-14 11:48:29.869177 Intermediate result: Fidelity 0.99946828
+2025-04-14 11:48:29.940156 Intermediate result: Fidelity 0.99948723
+2025-04-14 11:48:30.005751 Intermediate result: Fidelity 0.99951011
+2025-04-14 11:48:30.070853 Intermediate result: Fidelity 0.99954718
+2025-04-14 11:48:30.139171 Intermediate result: Fidelity 0.99956267
+2025-04-14 11:48:30.210506 Intermediate result: Fidelity 0.99958949
+2025-04-14 11:48:30.279647 Intermediate result: Fidelity 0.99960498
+2025-04-14 11:48:30.348016 Intermediate result: Fidelity 0.99961308
+2025-04-14 11:48:30.414311 Intermediate result: Fidelity 0.99962894
+2025-04-14 11:48:30.488910 Intermediate result: Fidelity 0.99964121
+2025-04-14 11:48:30.561298 Intermediate result: Fidelity 0.99964348
+2025-04-14 11:48:30.632214 Intermediate result: Fidelity 0.99964860
+2025-04-14 11:48:30.705703 Intermediate result: Fidelity 0.99965695
+2025-04-14 11:48:30.775679 Intermediate result: Fidelity 0.99966398
+2025-04-14 11:48:30.842629 Intermediate result: Fidelity 0.99967816
+2025-04-14 11:48:30.912357 Intermediate result: Fidelity 0.99968293
+2025-04-14 11:48:30.979420 Intermediate result: Fidelity 0.99968936
+2025-04-14 11:48:31.049196 Intermediate result: Fidelity 0.99969223
+2025-04-14 11:48:31.125391 Intermediate result: Fidelity 0.99970009
+2025-04-14 11:48:31.201256 Intermediate result: Fidelity 0.99970724
+2025-04-14 11:48:31.272424 Intermediate result: Fidelity 0.99970987
+2025-04-14 11:48:31.338907 Intermediate result: Fidelity 0.99971237
+2025-04-14 11:48:31.404800 Intermediate result: Fidelity 0.99971916
+2025-04-14 11:48:31.475226 Intermediate result: Fidelity 0.99971940
+2025-04-14 11:48:31.547746 Intermediate result: Fidelity 0.99972465
+2025-04-14 11:48:31.622827 Intermediate result: Fidelity 0.99972763
+2025-04-14 11:48:31.819516 Intermediate result: Fidelity 0.99972894
+2025-04-14 11:48:33.444538 Intermediate result: Fidelity 0.99972894
+Done after 50 iterations.
+```
+
+```python
+parameters = [float(param) for param in aqc_final_parameters]
+```
+
+Skonstruuj finalny Circuit do transpilacji, łącząc zoptymalizowany ansatz z Circuit pozostałej ewolucji czasowej.
+
+```python
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+aqc_final_circuit.compose(subsequent_circuit, inplace=True)
+```
+
+```python
+aqc_comparison_circuit.compose(subsequent_circuit, inplace=True)
+```
+### Krok 2: Optymalizacja problemu pod kątem wykonania na sprzęcie kwantowym {#step-2-optimize-problem-for-quantum-hardware-execution}
+Wybierz Backend.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(min_num_qubits=127)
+print(backend)
+```
+
+Transpiluj ukończony Circuit na docelowym sprzęcie, przygotowując go do wykonania. Wynikowy układ ISA można następnie wysłać do wykonania na Backend.
+
+```python
+pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=3
+)
+isa_circuit = pass_manager.run(aqc_final_circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+print("Observable info:", isa_observable)
+print("Circuit depth:", isa_circuit.depth())
+isa_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+Circuit depth: 122
+```
+
+![Wynik poprzedniej komórki kodu](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/85b4acc0-7121-416d-9bf5-b6d3135ae805-1.avif)
+
+```python
+isa_comparison_circuit = pass_manager.run(aqc_comparison_circuit)
+isa_comparison_observable = observable.apply_layout(
+    isa_comparison_circuit.layout
+)
+print("Observable info:", isa_comparison_observable)
+print("Circuit depth:", isa_comparison_circuit.depth())
+isa_comparison_circuit.draw("mpl", fold=-1, idle_wires=False)
+```
+
+```text
+Observable info: SparsePauliOp(['IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIZZIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'],
+              coeffs=[1.+0.j])
+Circuit depth: 158
+```
+
+![Wynik poprzedniej komórki kodu](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/b0d295c7-c816-4683-bb2a-0ce9898e5d88-1.avif)
+
+### Krok 3: Wykonanie przy użyciu prymitywów Qiskit {#step-3-execute-using-qiskit-primitives}
+
+W tym kroku uruchamiamy transpilowany Circuit na sprzęcie kwantowym (lub symulowanym Backend) przy użyciu `EstimatorV2` z `qiskit_ibm_runtime`, aby zmierzyć określoną obserwowalną. Wynik zadania dostarczy cennych informacji na temat wydajności Circuit na docelowym sprzęcie.
+
+W tym przykładzie na większą skalę zbadamy, jak wykorzystać `EstimatorOptions` do lepszego zarządzania parametrami eksperymentu sprzętowego i ich kontroli. Choć te ustawienia są opcjonalne, są przydatne do śledzenia parametrów eksperymentu i doprecyzowywania opcji wykonania w celu uzyskania optymalnych wyników.
+
+Pełną listę dostępnych opcji wykonania znajdziesz w [dokumentacji qiskit-ibm-runtime](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-estimator-options).
+
+```python
+twirling_options = {
+    "enable_gates": True,
+    "enable_measure": True,
+    "num_randomizations": 300,
+    "shots_per_randomization": 100,
+    "strategy": "active",
+}
+
+zne_options = {
+    "amplifier": "gate_folding",
+    "noise_factors": [1, 2, 3],
+    "extrapolated_noise_factors": list(np.linspace(0, 3, 31)),
+    "extrapolator": ["exponential", "linear", "fallback"],
+}
+
+meas_learning_options = {
+    "num_randomizations": 512,
+    "shots_per_randomization": 512,
+}
+
+resilience_options = {
+    "measure_mitigation": True,
+    "zne_mitigation": True,
+    "zne": zne_options,
+    "measure_noise_learning": meas_learning_options,
+}
+
+estimator_options = {
+    "resilience": resilience_options,
+    "twirling": twirling_options,
+}
+
+estimator = Estimator(backend, options=estimator_options)
+```
+
+```python
+job = estimator.run([(isa_circuit, isa_observable)])
+print("Job ID:", job.job_id())
+job.result()
+```
+
+```text
+Job ID: czyjx6crxz8g008f63r0
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), evs_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), ensemble_stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), evs_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>), stds_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>)), metadata={'shots': 30000, 'target_precision': 0.005773502691896258, 'circuit_metadata': {}, 'resilience': {'zne': {'extrapolator': 'exponential'}}, 'num_randomizations': 300})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': True, 'enable_measure': True, 'num_randomizations': 300, 'shots_per_randomization': 100, 'interleave_randomizations': True, 'strategy': 'active'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': True, 'pec_mitigation': False, 'zne': {'noise_factors': [1, 2, 3], 'extrapolator': ['exponential', 'linear', 'fallback'], 'extrapolated_noise_factors': [0, 0.1, 0.2, 0.30000000000000004, 0.4, 0.5, 0.6000000000000001, 0.7000000000000001, 0.8, 0.9, 1, 1.1, 1.2000000000000002, 1.3, 1.4000000000000001, 1.5, 1.6, 1.7000000000000002, 1.8, 1.9000000000000001, 2, 2.1, 2.2, 2.3000000000000003, 2.4000000000000004, 2.5, 2.6, 2.7, 2.8000000000000003, 2.9000000000000004, 3]}}, 'version': 2})
+```
+
+```python
+job_comparison = estimator.run([(isa_comparison_circuit, isa_observable)])
+print("Job Comparison ID:", job.job_id())
+job_comparison.result()
+```
+
+```text
+Job Comparison ID: czyjx6crxz8g008f63r0
+```
+
+```text
+PrimitiveResult([PubResult(data=DataBin(evs=np.ndarray(<shape=(), dtype=float64>), stds=np.ndarray(<shape=(), dtype=float64>), evs_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), ensemble_stds_noise_factors=np.ndarray(<shape=(3,), dtype=float64>), evs_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>), stds_extrapolated=np.ndarray(<shape=(3, 31), dtype=float64>)), metadata={'shots': 30000, 'target_precision': 0.005773502691896258, 'circuit_metadata': {}, 'resilience': {'zne': {'extrapolator': 'exponential'}}, 'num_randomizations': 300})], metadata={'dynamical_decoupling': {'enable': False, 'sequence_type': 'XX', 'extra_slack_distribution': 'middle', 'scheduling_method': 'alap'}, 'twirling': {'enable_gates': True, 'enable_measure': True, 'num_randomizations': 300, 'shots_per_randomization': 100, 'interleave_randomizations': True, 'strategy': 'active'}, 'resilience': {'measure_mitigation': True, 'zne_mitigation': True, 'pec_mitigation': False, 'zne': {'noise_factors': [1, 2, 3], 'extrapolator': ['exponential', 'linear', 'fallback'], 'extrapolated_noise_factors': [0, 0.1, 0.2, 0.30000000000000004, 0.4, 0.5, 0.6000000000000001, 0.7000000000000001, 0.8, 0.9, 1, 1.1, 1.2000000000000002, 1.3, 1.4000000000000001, 1.5, 1.6, 1.7000000000000002, 1.8, 1.9000000000000001, 2, 2.1, 2.2, 2.3000000000000003, 2.4000000000000004, 2.5, 2.6, 2.7, 2.8000000000000003, 2.9000000000000004, 3]}}, 'version': 2})
+```
+
+### Krok 4: Przetwarzanie końcowe i zwracanie wyniku w pożądanym formacie klasycznym {#step-4-post-process-and-return-result-in-desired-classical-format}
+Tutaj, podobnie jak poprzednio, nie jest potrzebna żadna rekonstrukcja; możemy bezpośrednio uzyskać dostęp do wartości oczekiwanej z wyników wykonania, aby zbadać rezultat.
+
+```python
+# AQC results
+hw_results = job.result()
+hw_results_dicts = [pub_result.data.__dict__ for pub_result in hw_results]
+hw_expvals = [
+    pub_result_data["evs"].tolist() for pub_result_data in hw_results_dicts
+]
+aqc_expval = hw_expvals[0]
+
+# AQC comparison results
+hw_comparison_results = job_comparison.result()
+hw_comparison_results_dicts = [
+    pub_result.data.__dict__ for pub_result in hw_comparison_results
+]
+hw_comparison_expvals = [
+    pub_result_data["evs"].tolist()
+    for pub_result_data in hw_comparison_results_dicts
+]
+aqc_compare_expval = hw_comparison_expvals[0]
+
+print(f"Exact:         \t{reference_expval:.4f}")
+print(
+    f"AQC:           \t{aqc_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_expval):.4f}"
+)
+print(
+    f"AQC Comparison:\t{aqc_compare_expval:.4f}, |∆| = {np.abs(reference_expval- aqc_compare_expval):.4f}"
+)
+```
+
+```text
+Exact:         	-0.5888
+AQC:           	-0.4809, |∆| = 0.1078
+AQC Comparison:	1.1764, |∆| = 1.7652
+```
+
+Narysuj wyniki układów AQC, porównawczego i dokładnego dla modelu XXZ z 50 węzłami.
+
+```python
+labels = ["AQC Result", "AQC Comparison Result"]
+values = [abs(aqc_expval), abs(aqc_compare_expval)]
+
+plt.figure(figsize=(10, 6))
+bars = plt.bar(labels, values, color=["tab:blue", "tab:purple"])
+plt.axhline(
+    y=abs(reference_expval), color="red", linestyle="--", label="Exact Result"
+)
+plt.xlabel("Results")
+plt.ylabel("Absolute Expected Value")
+plt.title("AQC Result vs AQC Comparison Result (Absolute Values)")
+plt.legend()
+for bar in bars:
+    y_val = bar.get_height()
+    plt.text(
+        bar.get_x() + bar.get_width() / 2.0,
+        y_val,
+        round(y_val, 2),
+        va="bottom",
+    )
+
+plt.show()
+```
+
+![Wynik poprzedniej komórki kodu](/docs/images/tutorials/approximate-quantum-compilation-for-time-evolution/extracted-outputs/01889c4d-16a4-458a-9211-08be8bcae1e4-0.avif)
+
+## Podsumowanie {#conclusion}
+
+W tym samouczku pokazano, jak używać przybliżonej kompilacji kwantowej z sieciami tensorowymi (AQC-Tensor) do kompresji i optymalizacji układów służących do symulacji dynamiki kwantowej na dużą skalę. Korzystając zarówno z małego, jak i dużego modelu Heisenberga, zastosowaliśmy AQC-Tensor w celu zmniejszenia głębokości Circuit wymaganej dla trotteryzowanej ewolucji czasowej. Generując sparametryzowany ansatz z uproszczonego układu Trottera i optymalizując go za pomocą technik macierzowego stanu produktowego (MPS), uzyskaliśmy niskopoziomowe przybliżenie docelowej ewolucji, które jest zarówno dokładne, jak i wydajne.
+
+Przedstawiony tutaj przepływ pracy podkreśla kluczowe zalety AQC-Tensor w skalowaniu symulacji kwantowych:
+
+- **Znacząca kompresja Circuit**: AQC-Tensor zredukował głębokość Circuit potrzebną do złożonej ewolucji czasowej, zwiększając jej wykonalność na obecnych urządzeniach.
+- **Efektywna optymalizacja**: Podejście MPS zapewniło solidne ramy do optymalizacji parametrów, równoważąc wierność z efektywnością obliczeniową.
+- **Wykonanie gotowe na sprzęt**: Transpilacja ostatecznego zoptymalizowanego Circuit zapewniła spełnienie ograniczeń docelowego sprzętu kwantowego.
+
+W miarę jak pojawiają się coraz większe urządzenia kwantowe i bardziej zaawansowane algorytmy, techniki takie jak AQC-Tensor staną się niezbędne do uruchamiania złożonych symulacji kwantowych na sprzęcie bliskim terminowi, demonstrując obiecujący postęp w zarządzaniu głębokością i wiernością skalowalnych zastosowań kwantowych.
+## Ankieta dotycząca samouczka {#tutorial-survey}
+
+Wypełnij tę krótką ankietę, aby podzielić się opinią na temat tego samouczka. Twoje spostrzeżenia pomogą nam ulepszyć nasze treści i doświadczenie użytkownika.
+
+[Link do ankiety](https://your.feedback.ibm.com/jfe/form/SV_eF01c2sfeSt6cqq)
