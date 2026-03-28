@@ -107,6 +107,10 @@ Integrating Quantum and HPC:
 Total: 27 videos (1 done, 26 remaining).
 ```
 
+## Alternative (requires auth)
+
+IBM Video has a REST API: `GET https://api.video.ibm.com/videos/{ID}/captions/en/vtt` — but it returns 401 (requires channel owner API token). If we ever get API access, this would be much simpler than the browser approach.
+
 ## Notes
 
 - CDN tokens expire quickly (~60 seconds). Work one video at a time.
