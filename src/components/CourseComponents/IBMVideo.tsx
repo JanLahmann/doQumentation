@@ -80,11 +80,11 @@ function parseVtt(text: string): VttCue[] {
     if (!tsLine) continue;
     const [startStr, endStr] = tsLine.split('-->');
     const tsIdx = lines.indexOf(tsLine);
-    const text = lines.slice(tsIdx + 1).join(' ');
+    const cueText = lines.slice(tsIdx + 1).join(' ');
     cues.push({
       start: parseTimestamp(startStr),
       end: parseTimestamp(endStr),
-      text,
+      text: cueText,
     });
   }
   return cues;
@@ -160,6 +160,10 @@ function TranscriptPanel({
 /**
  * Renders an embedded video player for IBM Quantum course content,
  * with an optional synced transcript panel below.
+ *
+ * Supports two player APIs for transcript sync:
+ * - YouTube: IFrame Player API (getCurrentTime + seekTo)
+ * - IBM Video: postMessage API (getProperty('progress') + callMethod('seek'))
  */
 export default function IBMVideo({ id, title }: IBMVideoProps) {
   return (
@@ -191,6 +195,7 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const playerRef = useRef<YTPlayer | null>(null);
   const playerElRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const timerRef = useRef<number | null>(null);
 
   // Load transcript VTT
@@ -249,7 +254,6 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
         },
         events: {
           onReady: () => {
-            // Poll current time for transcript sync
             timerRef.current = window.setInterval(() => {
               if (playerRef.current) {
                 setCurrentTime(playerRef.current.getCurrentTime());
@@ -271,12 +275,64 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
     };
   }, [youtubeId, cues.length, currentLocale]);
 
+  // IBM Video postMessage API setup — poll progress for transcript sync
+  useEffect(() => {
+    if (youtubeId || cues.length === 0) return; // Only for IBM Video
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    // Listen for postMessage responses from IBM Video embed
+    const handleMessage = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return;
+      try {
+        const data = JSON.parse(event.data);
+        if (data.event === 'cycapi:getProperty' && data.property === 'progress') {
+          setCurrentTime(data.data || 0);
+        }
+      } catch { /* not our message */ }
+    };
+    window.addEventListener('message', handleMessage);
+
+    // Poll progress every 250ms once iframe is loaded
+    const startPolling = () => {
+      timerRef.current = window.setInterval(() => {
+        try {
+          iframe.contentWindow?.postMessage(
+            JSON.stringify({ cmd: 'cycapi:getProperty', args: ['progress'] }),
+            '*'
+          );
+        } catch { /* cross-origin error, ignore */ }
+      }, 250);
+    };
+
+    iframe.addEventListener('load', startPolling);
+    // If already loaded
+    if (iframe.contentDocument?.readyState === 'complete') {
+      startPolling();
+    }
+
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [youtubeId, cues.length]);
+
   const handleSeek = useCallback((time: number) => {
-    if (playerRef.current) {
+    if (youtubeId && playerRef.current) {
+      // YouTube seek
       playerRef.current.seekTo(time, true);
       setCurrentTime(time);
+    } else if (!youtubeId && iframeRef.current) {
+      // IBM Video seek via postMessage
+      try {
+        iframeRef.current.contentWindow?.postMessage(
+          JSON.stringify({ cmd: 'cycapi:callMethod', args: ['seek', time] }),
+          '*'
+        );
+        setCurrentTime(time);
+      } catch { /* cross-origin error */ }
     }
-  }, []);
+  }, [youtubeId]);
 
   // YouTube with transcript: use IFrame API
   if (youtubeId && cues.length > 0) {
@@ -305,7 +361,7 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
     );
   }
 
-  // Fallback: regular iframe (no transcript or IBM Video)
+  // IBM Video or YouTube without transcript
   let iframeSrc: string;
   if (youtubeId) {
     const params = new URLSearchParams({ hl: currentLocale });
@@ -315,7 +371,7 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
     }
     iframeSrc = `https://www.youtube-nocookie.com/embed/${youtubeId}?${params}`;
   } else {
-    iframeSrc = `https://video.ibm.com/embed/recorded/${id}`;
+    iframeSrc = `https://video.ibm.com/embed/recorded/${id}?html5ui`;
   }
 
   return (
@@ -330,6 +386,7 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
         }}
       >
         <iframe
+          ref={iframeRef}
           src={iframeSrc}
           title={title || 'Video'}
           style={{
@@ -346,7 +403,7 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
         />
       </div>
       {cues.length > 0 && (
-        <TranscriptPanel cues={cues} currentTime={currentTime} onSeek={() => {}} />
+        <TranscriptPanel cues={cues} currentTime={currentTime} onSeek={handleSeek} />
       )}
     </div>
   );
