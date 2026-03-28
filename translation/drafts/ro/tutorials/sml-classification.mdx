@@ -1,0 +1,611 @@
+---
+title: "Clasificare hibridă cu ansamblu îmbunătățit cuantic (flux de lucru pentru stabilitatea rețelei)"
+sidebar_label: "Clasificare hibridă cu ansamblu îmbunătățit cuantic (flux de lucru pentru stabilitatea rețelei)"
+description: "Construiește și analizează un ansamblu hibrid cuantic–clasic pentru clasificarea stabilității rețelei pe QPU-urile IBM, folosind funcția Singularity Qiskit de la Multiverse Computing."
+notebook_path: "tutorials/sml-classification.ipynb"
+---
+
+{/* doqumentation-source-hash: c97b0dfa */}
+
+<OpenInLabBanner notebookPath="tutorials/sml-classification.ipynb" />
+
+
+
+{/* cspell:ignore QEEC interpretability hyperparameters overfitting sublinear preds prec */}
+
+*Estimare de utilizare: 20 de minute de timp QPU pentru fiecare job pe un procesor Eagle r3. (NOTĂ: Aceasta este doar o estimare. Timpul tău de execuție poate varia.)*
+## Context {#background}
+
+Acest tutorial demonstrează un flux de lucru hibrid cuantic–clasic care îmbunătățește un ansamblu clasic cu un pas de optimizare cuantică. Folosind funcția „Singularity Machine Learning – Classification" de la Multiverse Computing (o funcție Qiskit), antrenăm un grup de modele convenționale (de exemplu, arbori de decizie, k-NN, regresie logistică) și apoi rafinăm acel grup cu un strat cuantic pentru a îmbunătăți diversitatea și generalizarea. Obiectivul este practic: pe o sarcină reală de predicție a stabilității rețelei, comparăm o linie de bază clasică puternică cu o alternativă optimizată cuantic, în aceleași partiții de date, astfel încât să poți vedea unde ajută pasul cuantic și ce cost implică.
+
+De ce contează asta: selectarea unui subset bun dintr-un număr mare de modele slabe este o problemă combinatorială care crește rapid cu dimensiunea ansamblului. Euristicile clasice precum boosting, bagging și stacking funcționează bine la scări moderate, dar pot întâmpina dificultăți în explorarea unor biblioteci mari și redundante de modele în mod eficient. Funcția integrează algoritmi cuantici — în special QAOA (și opțional VQE în alte configurații) — pentru a căuta acel spațiu mai eficient după ce modelele clasice sunt antrenate, crescând șansa de a găsi un subset compact și divers care generalizează mai bine.
+
+Esențial, scala datelor nu este limitată de Qubiți. Munca grea cu datele — preprocesare, antrenarea grupului de modele și evaluare — rămâne clasică și poate gestiona milioane de exemple. Qubiții determină doar dimensiunea ansamblului folosit în pasul de selecție cuantică. Această decuplare este ceea ce face abordarea viabilă pe hardware-ul actual: păstrezi fluxurile de lucru familiare din scikit-learn pentru date și antrenarea modelelor, apelând totodată pasul cuantic printr-o interfață de acțiune curată în Qiskit Functions.
+
+În practică, deși pot fi furnizate diferite tipuri de modele ansamblului (de exemplu, arbori de decizie, regresie logistică sau k-NN), Arborii de Decizie tind să performeze cel mai bine. Optimizatorul favorizează în mod consecvent membrii mai puternici ai ansamblului — atunci când sunt furnizate modele eterogene, modelele mai slabe, cum ar fi regresoarele liniare, sunt de obicei eliminate în favoarea unora mai expresive, cum ar fi Arborii de Decizie.
+
+Ce vei face aici: pregătești și echilibrezi setul de date pentru stabilitatea rețelei; stabilești o linie de bază clasică AdaBoost; rulezi mai multe configurații cuantice care variază lățimea ansamblului și regularizarea; execuți pe simulatoare IBM&reg; sau QPU-uri prin Qiskit Serverless; și compari acuratețea, precizia, recall-ul și F1 pentru toate rulările. Pe parcurs, vei folosi modelul de acțiune al funcției (`create`, `fit`, `predict`, `fit_predict`, `create_fit_predict`) și comenzile principale:
+- Tipuri de regularizare: `onsite` (λ) pentru sparsitate directă și `alpha` pentru un compromis bazat pe raport între termenii de interacțiune și cei onsite
+- Auto-regularizare: setează `regularization="auto"` cu un raport de selecție țintă pentru a adapta sparsitatea automat
+- Opțiuni de optimizare: simulator versus QPU, repetări, optimizator clasic și opțiunile sale, adâncimea transpilării și setările sampler/estimator pentru rulare
+
+Benchmark-urile din documentație arată că acuratețea se îmbunătățește pe măsură ce crește numărul de modele (Qubiți) pe probleme dificile, clasificatorul cuantic egalând sau depășind un ansamblu clasic comparabil. În acest tutorial, vei reproduce fluxul de lucru de la capăt la capăt și vei examina când creșterea lățimii ansamblului sau trecerea la regularizare adaptivă produce un F1 mai bun la o utilizare rezonabilă a resurselor. Rezultatul este o perspectivă fundamentată asupra modului în care un pas de optimizare cuantică poate completa, mai degrabă decât înlocui, învățarea clasică bazată pe ansamblu în aplicații reale.
+## Cerințe {#requirements}
+
+Înainte de a începe acest tutorial, asigură-te că ai instalate următoarele pachete în mediul tău Python:
+
+- `qiskit[visualization]~=2.1.0`
+- `qiskit-serverless~=0.24.0`
+- `qiskit-ibm-runtime v0.40.1`
+- `qiskit-ibm-catalog~=0.8.0`
+- `scikit-learn==1.5.2`
+- `pandas>=2.0.0,<3.0.0`
+- `imbalanced-learn~=0.12.3`
+## Configurare {#setup}
+
+În această secțiune, inițializăm clientul Qiskit Serverless și încărcăm funcția Singularity Machine Learning – Classification furnizată de Multiverse Computing.
+Cu Qiskit Serverless, poți rula fluxuri de lucru hibride cuantic–clasice pe infrastructura cloud gestionată IBM, fără să-ți faci griji cu privire la gestionarea resurselor.
+Vei avea nevoie de o cheie API IBM Quantum Platform și de numele resursei tale cloud (CRN) pentru autentificare și accesul la Qiskit Functions.
+### Descarcă setul de date {#download-the-dataset}
+
+Pentru a rula acest tutorial, folosim un **set de date de clasificare a stabilității rețelei** preprocesat, care conține citiri etichetate ale senzorilor sistemului de alimentare cu energie.
+Celula următoare creează automat structura de foldere necesară și descarcă atât fișierele de antrenament, cât și cele de test direct în mediul tău, folosind `wget`.
+Dacă ai deja aceste fișiere local, acest pas le va suprascrie în siguranță pentru a asigura consistența versiunii.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q imbalanced-learn matplotlib numpy pandas qiskit-ibm-catalog qiskit-ibm-runtime scikit-learn
+```
+
+```python
+## Download dataset for Grid Stability Classification
+
+# Create data directory if it doesn't exist
+!mkdir -p data_tutorial/grid_stability
+
+# Download the training and test sets from the official Qiskit documentation repo
+!wget -q --show-progress -O data_tutorial/grid_stability/train.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/train.csv
+
+!wget -q --show-progress -O data_tutorial/grid_stability/test.csv \
+  https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/grid_stability/test.csv
+
+# Check the files have been downloaded
+!echo "Dataset files downloaded:"
+!ls -lh data_tutorial/grid_stability/*.csv
+```
+
+```text
+data_tutorial/grid_ 100%[===================>] 612.94K  --.-KB/s    in 0.01s
+data_tutorial/grid_ 100%[===================>] 108.19K  --.-KB/s    in 0.006s
+Dataset files downloaded:
+-rw-r--r-- 1 coder coder 109K Nov  8 18:50 data_tutorial/grid_stability/test.csv
+-rw-r--r-- 1 coder coder 613K Nov  8 18:50 data_tutorial/grid_stability/train.csv
+```
+
+### Importă pachetele necesare {#import-required-packages}
+
+În această secțiune, importăm toate pachetele Python și modulele Qiskit folosite pe parcursul tutorialului.
+Acestea includ biblioteci științifice de bază pentru gestionarea datelor și evaluarea modelelor — cum ar fi `NumPy`, `pandas` și `scikit-learn` — alături de instrumente de vizualizare și componente Qiskit pentru rularea modelului îmbunătățit cuantic.
+Importăm de asemenea `QiskitRuntimeService` și `QiskitFunctionsCatalog` pentru a ne conecta la serviciile IBM Quantum&reg; și a accesa funcția Singularity Machine Learning.
+
+```python
+from typing import Tuple
+import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from imblearn.over_sampling import RandomOverSampler
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+from qiskit_ibm_runtime import QiskitRuntimeService
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.model_selection import train_test_split
+
+warnings.filterwarnings("ignore")
+```
+
+### Setează variabilele constante {#set-constant-variables}
+
+```python
+IBM_TOKEN = ""
+IBM_INSTANCE_TEST = ""
+IBM_INSTANCE_QUANTUM = ""
+FUNCTION_NAME = "multiverse/singularity"
+RANDOM_STATE: int = 123
+TRAIN_PATH = "data_tutorial/grid_stability/train.csv"
+TEST_PATH = "data_tutorial/grid_stability/test.csv"
+```
+
+### Conectează-te la IBM Quantum și încarcă funcția Singularity {#connect-to-ibm-quantum-and-load-the-singularity-function}
+
+În continuare, ne autentificăm cu serviciile IBM Quantum și încărcăm funcția Singularity Machine Learning – Classification din Catalogul Qiskit Functions.
+`QiskitRuntimeService` stabilește o conexiune sigură la IBM Quantum Platform folosind token-ul tău API și CRN-ul instanței, permițând accesul la Backend-uri cuantice.
+`QiskitFunctionsCatalog` este apoi folosit pentru a prelua funcția Singularity după nume (`"multiverse/singularity"`), permițându-ne să o apelăm ulterior pentru calculul hibrid cuantic–clasic.
+Dacă configurarea reușește, vei vedea un mesaj de confirmare care indică faptul că funcția a fost încărcată corect.
+
+```python
+service = QiskitRuntimeService(
+    token=IBM_TOKEN,
+    channel="ibm_quantum_platform",
+    instance=IBM_INSTANCE_QUANTUM,
+)
+
+backend = service.least_busy()
+catalog = QiskitFunctionsCatalog(
+    token=IBM_TOKEN,
+    instance=IBM_INSTANCE_TEST,
+    channel="ibm_quantum_platform",
+)
+singularity = catalog.load(FUNCTION_NAME)
+print(
+    "Successfully connected to IBM Qiskit Serverless and loaded the Singularity function."
+)
+print("Catalog:", catalog)
+print("Singularity function:", singularity)
+```
+
+```text
+Successfully connected to IBM Qiskit Serverless and loaded the Singularity function.
+Catalog: <QiskitFunctionsCatalog>
+Singularity function: QiskitFunction(multiverse/singularity)
+```
+
+### Definește funcțiile ajutătoare {#define-helper-functions}
+
+Înainte de a rula experimentele principale, definim câteva funcții utilitare mici care simplifică încărcarea datelor și evaluarea modelelor.
+- `load_data()` citește fișierele CSV de intrare în tablouri NumPy, separând caracteristicile și etichetele pentru compatibilitate cu `scikit-learn` și fluxurile de lucru cuantice.
+- `evaluate_predictions()` calculează metrici cheie de performanță — acuratețe, precizie, recall și scor F1 — și raportează opțional timpul de execuție dacă sunt furnizate informații de timp.
+
+Aceste funcții ajutătoare simplifică operațiunile repetate mai târziu în notebook și asigură raportarea consecventă a metricilor atât pentru clasificatoarele clasice, cât și pentru cele cuantice.
+
+```python
+def load_data(data_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load data from the given path to X and y arrays."""
+    df: pd.DataFrame = pd.read_csv(data_path)
+    return df.iloc[:, :-1].values, df.iloc[:, -1].values
+
+def evaluate_predictions(predictions, y_true):
+    """Compute and print accuracy, precision, recall, and F1 score."""
+    accuracy = accuracy_score(y_true, predictions)
+    precision = precision_score(y_true, predictions)
+    recall = recall_score(y_true, predictions)
+    f1 = f1_score(y_true, predictions)
+    print("Accuracy:", accuracy)
+    print("Precision:", precision)
+    print("Recall:", recall)
+    print("F1:", f1)
+    return accuracy, precision, recall, f1
+```
+
+## Pasul 1: Mapează intrările clasice la o problemă cuantică {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Începem prin pregătirea setului de date pentru experimentarea hibridă cuantic–clasică. Scopul acestui pas este de a converti datele brute privind stabilitatea rețelei în partiții echilibrate de antrenament, validare și testare, care pot fi utilizate în mod consistent atât de fluxurile de lucru clasice, cât și de cele cuantice. Menținerea unor partiții identice asigură că comparațiile de performanță ulterioare sunt corecte și reproductibile.
+### Încărcarea și preprocesarea datelor {#data-loading-and-preprocessing}
+
+Mai întâi încărcăm fișierele CSV de antrenament și testare, creăm o partiție de validare și echilibrăm setul de date prin supraesantionare aleatorie. Echilibrarea previne polarizarea spre clasa majoritară și oferă un semnal de învățare mai stabil atât pentru modelele de ansamblu clasice, cât și pentru cele cuantice.
+
+```python
+# Load and upload the data
+X_train, y_train = load_data(TRAIN_PATH)
+X_test, y_test = load_data(TEST_PATH)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train, test_size=0.2, random_state=RANDOM_STATE
+)
+
+# Balance the dataset through over-sampling of the positive class
+ros = RandomOverSampler(random_state=RANDOM_STATE)
+X_train_bal, y_train_bal = ros.fit_resample(X_train, y_train)
+
+print("Shapes:")
+print("  X_train_bal:", X_train_bal.shape)
+print("  y_train_bal:", y_train_bal.shape)
+print("  X_val:", X_val.shape)
+print("  y_val:", y_val.shape)
+print("  X_test:", X_test.shape)
+print("  y_test:", y_test.shape)
+```
+
+```text
+Shapes:
+  X_train_bal: (5104, 12)
+  y_train_bal: (5104,)
+  X_val: (850, 12)
+  y_val: (850,)
+  X_test: (750, 12)
+  y_test: (750,)
+```
+
+### Linia de bază clasică: referința AdaBoost {#classical-baseline-adaboost-reference}
+
+Înainte de a rula orice optimizare cuantică, antrenăm o linie de bază clasică puternică — un clasificator AdaBoost standard — pe aceleași date echilibrate. Aceasta oferă un punct de referință reproductibil pentru comparația ulterioară, ajutând la cuantificarea dacă optimizarea cuantică îmbunătățește generalizarea sau eficiența față de un ansamblu clasic bine ajustat.
+
+```python
+# ----- Classical baseline: AdaBoost -----
+baseline = AdaBoostClassifier(n_estimators=60, random_state=RANDOM_STATE)
+baseline.fit(X_train_bal, y_train_bal)
+baseline_pred = baseline.predict(X_test)
+print("Classical AdaBoost baseline:")
+_ = evaluate_predictions(baseline_pred, y_test)
+```
+
+```text
+Classical AdaBoost baseline:
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+```
+
+## Pasul 2: Optimizează problema pentru execuția pe hardware cuantic {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+Sarcina de selecție a ansamblului este formulată ca o problemă de optimizare combinatorială în care fiecare model slab este o variabilă de decizie binară, iar obiectivul echilibrează acuratețea cu sparsitatea printr-un termen de regularizare. `QuantumEnhancedEnsembleClassifier` rezolvă aceasta cu QAOA pe hardware IBM, permițând în același timp explorarea bazată pe simulator. `optimizer_options` controlează bucla hibridă: `simulator=False` direcționează circuitele către QPU-ul selectat, `num_solutions` crește lărgimea căutării, iar `classical_optimizer_options` (pentru optimizatorul clasic intern) guvernează convergența; valorile de aproximativ 60 de iterații reprezintă un bun echilibru între calitate și timp de execuție. Opțiunile de rulare — cum ar fi adâncimea moderată a circuitului (`reps`) și un efort standard de transpilare — ajută la asigurarea unei performanțe robuste pe diferite dispozitive. Configurația de mai jos este profilul „cele mai bune rezultate" pe care îl vom folosi pentru rulările pe hardware; poți crea de asemenea o variantă pur simulată comutând `simulator=True` pentru a testa fluxul de lucru fără a consuma timp QPU.
+
+```python
+# QAOA / runtime configuration for best results on hardware
+optimizer_options = {
+    "simulator": False,  # set True to test locally without QPU
+    "num_solutions": 100_000,  # broaden search over candidate ensembles
+    "reps": 3,  # QAOA depth (circuit layers)
+    "optimization_level": 3,  # transpilation effort
+    "num_transpiler_runs": 30,  # explore multiple layouts
+    "classical_optimizer": "COBYLA",  # robust default for this landscape
+    "classical_optimizer_options": {
+        "maxiter": 60  # practical convergence budget
+    },
+    # You can pass backend-specific options; leaving None uses least-busy routing
+    "estimator_options": None,
+    "sampler_options": None,
+}
+
+print("Configured hardware optimization profile:")
+for key, value in optimizer_options.items():
+    print(f"  {key}: {value}")
+```
+
+```text
+Configured hardware optimization profile:
+  simulator: False
+  num_solutions: 100000
+  reps: 3
+  optimization_level: 3
+  num_transpiler_runs: 30
+  classical_optimizer: COBYLA
+  classical_optimizer_options: {'maxiter': 60}
+  estimator_options: None
+  sampler_options: None
+```
+## Pasul 3: Execuție folosind primitivele Qiskit {#step-3-execute-using-qiskit-primitives}
+
+Acum executăm fluxul complet de lucru folosind acțiunea `create_fit_predict` a funcției Singularity, pentru a antrena, optimiza și evalua `QuantumEnhancedEnsembleClassifier` de la un capăt la altul pe infrastructura IBM. Funcția construiește ansamblul, aplică optimizarea cuantică prin primitivele Qiskit și returnează atât predicțiile, cât și metadatele job-ului (inclusiv durata de execuție și utilizarea resurselor). Împărțirea datelor clasice din Pasul 1 este reutilizată pentru reproductibilitate, datele de validare fiind transmise prin `fit_params`, astfel încât optimizarea să poată ajusta hiperparametrii intern, păstrând setul de test de rezervă intact.
+
+În acest pas, explorăm mai multe configurații ale ansamblului cuantic pentru a înțelege modul în care parametrii cheie — în special `num_learners` și `regularization` — influențează atât calitatea rezultatelor, cât și utilizarea QPU.
+- `num_learners` determină lățimea ansamblului (și implicit numărul de qubiți), influențând capacitatea modelului și costul computațional.
+- `regularization` controlează sparsitatea și supraajustarea, modelând câți cursanți rămân activi după optimizare.
+
+Variind acești parametri, putem observa modul în care lățimea ansamblului și regularizarea interacționează: creșterea lățimii îmbunătățește de obicei F1, dar costă mai mult timp QPU, în timp ce regularizarea mai puternică sau adaptivă poate îmbunătăți generalizarea la aproximativ același consum hardware. Subsecțiunile următoare prezintă trei configurații reprezentative pentru a ilustra aceste efecte.
+### Configurație de bază {#baseline}
+
+Această configurație folosește `num_learners = 10` și `regularization = 7`.
+
+- `num_learners` controlează lățimea ansamblului — efectiv numărul de cursanți slabi combinați și, pe hardware cuantic, **numărul de qubiți necesari**. O valoare mai mare extinde spațiul de căutare combinatorial și poate îmbunătăți acuratețea și recall-ul, dar crește și lățimea circuitului, timpul de compilare și utilizarea totală a QPU.
+- `regularization` setează puterea penalizării pentru includerea de cursanți suplimentari. Cu regularizarea implicită „onsite", valorile mai mari impun o sparsitate mai mare (mai puțini cursanți păstrați), în timp ce valorile mai mici permit ansambluri mai complexe.
+
+Această configurație oferă o bază de referință cu cost redus, arătând cum se comportă un ansamblu mic înainte de a scala lățimea sau de a ajusta sparsitatea.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 10
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_1 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_1 = job_1.result()
+print("Action status:", result_1.get("status"))
+print("Action message:", result_1.get("message"))
+print("Metadata:", result_1.get("metadata"))
+qeec_pred_job_1 = np.array(result_1["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_1, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 267.05158376693726}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 3336.8785166740417}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 152.4274561405182}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1550.1889700889587}}}
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+```
+
+```python
+status_1 = job_1.status()
+print("\nQuantum job status:", status_1)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### Creșterea numărului de cursanți {#increase-the-number-of-learners}
+
+Aici creștem `num_learners` de la 10 → 30, păstrând `regularization = 7`.
+
+- Mai mulți cursanți extind spațiul ipotezelor, permițând modelului să capteze tipare mai subtile, ceea ce poate ridica modest F1.
+- În cele mai multe cazuri, diferența de timp de execuție între 10 și 30 de cursanți nu este semnificativă, indicând că lățimea suplimentară a circuitului nu crește considerabil costul de execuție.
+- Îmbunătățirea calității urmează totuși o *curbă cu randamente descrescătoare*: câștigurile timpurii apar pe măsură ce ansamblul crește, dar se plafonează pe măsură ce cursanții suplimentari contribuie cu mai puțină informație nouă.
+
+Acest experiment evidențiază compromisul dintre calitate și eficiență — creșterea lățimii ansamblului poate oferi câștiguri mici de acuratețe fără o penalizare majoră de timp de execuție, în funcție de Backend și condițiile de transpilare.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 30
+REGULARIZATION = 7
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_2 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_2 = job_2.result()
+print("Action status:", result_2.get("status"))
+print("Action message:", result_2.get("message"))
+print("QPU Time:", result_2.get("metadata"))
+qeec_pred_job_2 = np.array(result_2["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_2, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+QPU Time: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 680.2116754055023}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 80.80395102500916}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 154.4466371536255}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1095.822762966156}}}
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+```
+
+```python
+status_2 = job_2.status()
+print("\nQuantum job status:", status_2)
+```
+
+```text
+Quantum job status: DONE
+```
+
+### Regularizare {#regularization}
+
+În această configurație, creștem la `num_learners = 60` și introducem regularizare adaptivă pentru a gestiona sparsitatea mai intuitiv.
+
+- Cu `regularization = "auto"`, optimizatorul găsește automat o putere de regularizare adecvată care selectează aproximativ `regularization_ratio * num_learners` cursanți slabi pentru ansamblul final, în loc să fixeze manual penalizarea. Aceasta oferă o interfață mai convenabilă pentru gestionarea echilibrului dintre sparsitate și dimensiunea ansamblului.
+- `regularization_type = "alpha"` definește modul în care este aplicată penalizarea. Spre deosebire de `onsite`, care este nemărginit `[0, ∞]`, `alpha` este limitat între `[0, 1]`, facilitând ajustarea și interpretarea. Parametrul controlează compromisul dintre penalizările individuale și cele pereche, oferind un interval de configurare mai lin.
+- `regularization_desired_ratio ≈ 0.82` specifică proporția țintă de cursanți care rămân activi după regularizare — aici, aproximativ 82% din cursanți sunt păstrați, tăind automat cei mai slabi 18%.
+
+Deși regularizarea adaptivă simplifică configurarea și ajută la menținerea unui ansamblu echilibrat, nu garantează neapărat performanțe mai bune sau mai stabile. Calitatea reală depinde de alegerea unui parametru de regularizare adecvat, iar ajustarea sa prin validare încrucișată poate fi costisitoare din punct de vedere computațional. Principalul avantaj constă în utilizabilitate și interpretabilitate îmbunătățite, nu neapărat în câștiguri directe de acuratețe.
+
+```python
+# Problem scale and regularization
+NUM_LEARNERS = 60
+REGULARIZATION = "auto"
+REGULARIZATION_TYPE = "alpha"
+REGULARIZATION_RATIO = 0.82
+```
+
+```python
+# ----- Quantum-enhanced ensemble on IBM hardware -----
+print("\n-- Submitting quantum-enhanced ensemble job --")
+job_3 = singularity.run(
+    action="create_fit_predict",
+    name="grid_stability_qeec",
+    quantum_classifier="QuantumEnhancedEnsembleClassifier",
+    num_learners=NUM_LEARNERS,
+    regularization=REGULARIZATION,
+    regularization_type=REGULARIZATION_TYPE,
+    regularization_desired_ratio=REGULARIZATION_RATIO,
+    optimizer_options=optimizer_options,  # from Step 2
+    backend_name=backend,  # least-busy compatible backend
+    instance=IBM_INSTANCE_QUANTUM,
+    random_state=RANDOM_STATE,
+    X_train=X_train_bal,
+    y_train=y_train_bal,
+    X_test=X_test,
+    fit_params={"validation_data": (X_val, y_val)},
+    options={"save": False},
+)
+result_3 = job_3.result()
+print("Action status:", result_3.get("status"))
+print("Action message:", result_3.get("message"))
+print("Metadata:", result_3.get("metadata"))
+qeec_pred_job_3 = np.array(result_3["data"]["predictions"])
+_ = evaluate_predictions(qeec_pred_job_3, y_test)
+```
+
+```text
+-- Submitting quantum-enhanced ensemble job --
+Action status: ok
+Action message: Classifier created, fitted, and predicted.
+Metadata: {'resource_usage': {'RUNNING: MAPPING': {'CPU_TIME': 1387.7451872825623}, 'RUNNING: WAITING_QPU': {'CPU_TIME': 95.41597843170166}, 'RUNNING: POST_PROCESSING': {'CPU_TIME': 171.78878355026245}, 'RUNNING: EXECUTING_QPU': {'QPU_TIME': 1146.5584812164307}}}
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```python
+status_3 = job_3.status()
+print("\nQuantum job status:", status_3)
+```
+
+```text
+Quantum job status: DONE
+```
+
+## Pasul 4: Post-procesare și returnarea rezultatului în formatul clasic dorit {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+Acum post-procesăm ieșirile atât din rulările clasice, cât și din cele cuantice, convertindu-le într-un format consistent pentru evaluarea ulterioară. Acest pas compară calitatea predictivă folosind metrici standard — acuratețe, precizie, recall și F1 — și analizează modul în care lățimea ansamblului (`num_learners`) și controlul sparsității (`regularization`) influențează atât performanța, cât și comportamentul computațional.
+
+Referința clasică AdaBoost oferă un punct de referință compact și stabil pentru învățarea la scară mică. Performează bine cu ansambluri limitate și consum de calcul neglijabil, reflectând puterea tehnicii tradiționale de boosting atunci când spațiul ipotezelor este încă abordabil. Configurațiile cuantice (`qeec_pred_job_1`, `qeec_pred_job_2` și `qeec_pred_job_3`) extind această referință prin integrarea procesului de selecție a ansamblului într-o buclă de optimizare cuantică variatională. Aceasta permite sistemului să exploreze simultan subseturi exponențial de mari de cursanți prin suprapunere, abordând mai eficient natura combinatorială a selecției ansamblului pe măsură ce scala crește.
+
+Rezultatele arată că creșterea `num_learners` de la 10 la 30 îmbunătățește recall-ul și F1, confirmând că un ansamblu mai larg captează interacțiuni mai bogate între cursanții slabi. Câștigul este subliniar pe hardware-ul actual — fiecare cursant suplimentar aduce incrementuri mai mici de acuratețe — dar comportamentul de scalare subiacent rămâne favorabil, deoarece optimizatorul cuantic poate căuta spații de configurare mai largi fără explozia exponențială tipică selecției clasice de subseturi. Regularizarea introduce nuanțe suplimentare: un λ=7 fix impune o sparsitate consistentă și stabilizează convergența, în timp ce regularizarea adaptivă α ajustează automat sparsitatea pe baza corelațiilor dintre cursanți. Această tăiere dinamică obține adesea un F1 ușor mai mare pentru aceeași lățime de qubiți, echilibrând complexitatea modelului și generalizarea.
+
+Comparate direct cu referința AdaBoost, cea mai mică configurație cuantică (L=10) reproduce o acuratețe similară, validând corectitudinea pipeline-ului hibrid. La lățimi mai mari, variantele cuantice — în special cu regularizare automată — încep să depășească modest referința clasică, arătând recall și F1 îmbunătățite fără o creștere liniară a costului computațional. Aceste îmbunătățiri nu indică imediat un „avantaj cuantic", ci mai degrabă o **eficiență de scalare**: optimizatorul cuantic menține performanțe abordabile pe măsură ce ansamblul se extinde, acolo unde o abordare clasică s-ar confrunta cu o creștere exponențială a complexității selecției subseturilor.
+
+În practică:
+- Folosește **referința clasică** pentru validare rapidă și benchmarking pe seturi de date mici.
+- Aplică **ansambluri cuantice** când lățimea modelului sau complexitatea caracteristicilor cresc — căutarea bazată pe QAOA scalează mai grațios în acele regimuri.
+- Folosește **regularizarea adaptivă α** pentru a menține sparsitatea și generalizarea fără a crește lățimea circuitului.
+- Monitorizează timpul QPU și adâncimea pentru a echilibra câștigurile de calitate față de constrângerile hardware actuale.
+
+Împreună, aceste experimente arată că ansamblurile optimizate cuantic completează metodele clasice: reproduc acuratețea de referință la scale mici, oferind totodată o cale spre scalare eficientă pentru probleme de învățare combinatoriale mai mari. Pe măsură ce hardware-ul se îmbunătățește, aceste avantaje de scalare sunt de așteptat să se amplifice, extinzând dimensiunea și adâncimea fezabilă a modelelor bazate pe ansambluri dincolo de ceea ce este practic din punct de vedere clasic.
+### Evaluarea metricilor pentru fiecare configurație {#evaluate-metrics-for-each-configuration}
+
+Acum evaluăm toate configurațiile — referința clasică AdaBoost și cele trei ansambluri cuantice — folosind funcția auxiliară `evaluate_predictions` pentru a calcula acuratețea, precizia, recall-ul și F1 pe același set de test. Această comparație clarifică modul în care optimizarea cuantică scalează față de abordarea clasică: la lățimi mici, ambele performează similar; pe măsură ce ansamblurile cresc, metoda cuantică poate explora spații de ipoteze mai mari mai eficient. Tabelul rezultat surprinde aceste tendințe într-o formă consistentă și cantitativă.
+
+```python
+results = []
+
+# Classical baseline
+acc_b, prec_b, rec_b, f1_b = evaluate_predictions(baseline_pred, y_test)
+results.append(
+    {
+        "Config": "AdaBoost (Classical)",
+        "Accuracy": acc_b,
+        "Precision": prec_b,
+        "Recall": rec_b,
+        "F1": f1_b,
+    }
+)
+
+# Quantum runs
+for label, preds in [
+    ("QEEC L=10, reg=7", qeec_pred_job_1),
+    ("QEEC L=30, reg=7", qeec_pred_job_2),
+    (f"QEEC L=60, reg=auto (α={REGULARIZATION_RATIO})", qeec_pred_job_3),
+]:
+    acc, prec, rec, f1 = evaluate_predictions(preds, y_test)
+    results.append(
+        {
+            "Config": label,
+            "Accuracy": acc,
+            "Precision": prec,
+            "Recall": rec,
+            "F1": f1,
+        }
+    )
+
+df_results = pd.DataFrame(results)
+df_results
+```
+
+```text
+Accuracy: 0.7893333333333333
+Precision: 1.0
+Recall: 0.7893333333333333
+F1: 0.8822652757078987
+Accuracy: 0.868
+Precision: 1.0
+Recall: 0.868
+F1: 0.9293361884368309
+Accuracy: 0.8946666666666667
+Precision: 1.0
+Recall: 0.8946666666666667
+F1: 0.944405348346235
+Accuracy: 0.908
+Precision: 1.0
+Recall: 0.908
+F1: 0.9517819706498952
+```
+
+```text
+Config  Accuracy  Precision    Recall        F1
+0          AdaBoost (Classical)  0.789333        1.0  0.789333  0.882265
+1              QEEC L=10, reg=7  0.868000        1.0  0.868000  0.929336
+2              QEEC L=30, reg=7  0.894667        1.0  0.894667  0.944405
+3  QEEC L=60, reg=auto (α=0.82)  0.908000        1.0  0.908000  0.951782
+```
+
+### Vizualizarea tendințelor de calitate în funcție de configurații {#visualize-quality-trends-across-configurations}
+
+Diagrama cu bare grupate de mai jos compară **Acuratețea** și **F1** pentru referința clasică și ansamblurile cuantice (`L=10`, `L=30` și `L=60 auto-α`). Ilustrează modul în care acuratețea se stabilizează în timp ce F1 se îmbunătățește treptat pe măsură ce lățimea ansamblului cuantic crește, demonstrând că metoda hibridă susține scalarea performanței fără creșterea exponențială a costurilor tipică selecției clasice de subseturi.
+
+```python
+x = np.arange(len(df_results))
+width = 0.35
+plt.figure(figsize=(7.6, 4.6))
+plt.bar(x - width / 2, df_results["Accuracy"], width=width, label="Accuracy")
+plt.bar(x + width / 2, df_results["F1"], width=width, label="F1")
+plt.xticks(x, df_results["Config"], rotation=10)
+plt.ylabel("Score")
+plt.title("Classical vs Quantum ensemble performance")
+plt.legend()
+plt.ylim(0, 1.0)
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sml-classification/extracted-outputs/0f15c5fb-2450-4671-9bc2-471043414df2-0.avif)
+
+### Interpretare {#interpretation}
+
+Graficul confirmă tiparul de scalare așteptat. AdaBoost clasic performează bine pentru ansambluri mici, dar devine din ce în ce mai costisitor de scalat pe măsură ce numărul de cursanți slabi crește, deoarece problema de selecție a subseturilor se extinde combinatorial. Modelele îmbunătățite cuantic reproduc acuratețea clasică la lățimi mici și încep să o depășească pe măsură ce dimensiunea ansamblului crește, în special sub regularizarea adaptivă α. Aceasta reflectă capacitatea optimizatorului cuantic de a eșantiona și evalua simultan mulți candidați de subseturi prin suprapunere, menținând o căutare abordabilă chiar și la lățimi mai mari. Deși overhead-ul hardware actual compensează o parte din câștigurile teoretice, tendința ilustrează avantajul de eficiență la scalare al formulării cuantice. În termeni practici, metoda clasică rămâne preferabilă pentru benchmarkuri ușoare, în timp ce ansamblurile îmbunătățite cuantic devin avantajoase pe măsură ce dimensionalitatea modelului și dimensiunea ansamblului cresc, oferind compromisuri mai bune între acuratețe, generalizare și creșterea computațională.
+## Anexă: Beneficii de scalabilitate și îmbunătățiri {#appendix-scaling-benefits-and-enhancements}
+
+Avantajul de scalabilitate al `QuantumEnhancedEnsembleClassifier` provine din modul în care procesul de selecție a ansamblului se mapează la optimizarea cuantică.
+Metodele clasice de învățare cu ansambluri, cum ar fi AdaBoost sau pădurile aleatoare, devin costisitoare din punct de vedere computațional pe măsură ce numărul de cursanți slabi crește, deoarece selectarea subsetului optimal este o problemă combinatorială ce scalează exponențial.
+
+Prin contrast, formularea cuantică — implementată aici prin Algoritmul de Optimizare Aproximativă Cuantică (QAOA) — poate explora aceste spații de căutare exponențial de mari mai eficient, evaluând simultan multiple configurații în suprapunere.
+Ca rezultat, timpul de antrenare nu crește semnificativ odată cu numărul de cursanți, permițând modelului să rămână eficient chiar și pe măsură ce lățimea ansamblului crește.
+
+Deși hardware-ul actual introduce zgomot și limitări de adâncime, acest flux de lucru demonstrează o abordare hibridă pe termen scurt în care componentele clasice și cuantice cooperează: optimizatorul cuantic oferă un peisaj de inițializare mai bun pentru bucla clasică, îmbunătățind convergența și calitatea finală a modelului.
+Pe măsură ce procesoarele cuantice evoluează, aceste beneficii de scalabilitate sunt de așteptat să se extindă la seturi de date mai mari, ansambluri mai largi și adâncimi de circuit mai mari.
+## Referințe {#references}
+
+1. [Introducere în funcțiile Qiskit](/guides/functions)
+2. [Multiverse Computing Singularity Machine Learning](/guides/multiverse-computing-singularity)
+## Sondaj tutorial {#tutorial-survey}
+
+Te rugăm să aloci un minut pentru a ne oferi feedback despre acest tutorial. Părerile tale ne vor ajuta să îmbunătățim conținutul și experiența utilizatorilor.
+
+[Link spre sondaj](https://your.feedback.ibm.com/jfe/form/SV_3BLFkNVEuh0QBWm)
