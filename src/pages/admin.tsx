@@ -86,7 +86,8 @@ export default function AdminPage(): JSX.Element {
 
         <Section title="Analytics">
           <LinkList items={[
-            { label: 'Umami Dashboard', url: 'https://cloud.umami.is', description: 'Page views, custom events, locale distribution' },
+            { label: 'Umami Dashboard (admin)', url: 'https://cloud.umami.is', description: 'Full dashboard — requires login' },
+            { label: 'Shared Dashboard (read-only)', url: 'https://cloud.umami.is/share/MIkvtSY8pncOTN1G', description: 'Public link — share with workshop hosts' },
           ]} />
           <p>Tracked events: <code>Run Code</code>, <code>Run All</code>, <code>Binder Launch</code>, <code>Colab Open</code>, <code>Pageview</code> (with locale)</p>
           <p>Analytics auto-disabled on localhost/Docker. Cookie-free, GDPR-compliant. Filter by hostname in dashboard to see per-locale traffic.</p>
