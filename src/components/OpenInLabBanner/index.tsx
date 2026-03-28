@@ -3,6 +3,7 @@ import BrowserOnly from '@docusaurus/BrowserOnly';
 import {translate} from '@docusaurus/Translate';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import { detectJupyterConfig, getLabUrl, getBinderLabUrl, getColabUrl, openBinderLab } from '../../config/jupyter';
+import { trackEvent } from '../../config/analytics';
 import InfoIcon from '../InfoIcon';
 
 interface OpenInLabBannerProps {
@@ -103,6 +104,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
         const colabUrl = getColabUrl(notebookPath, currentLocale);
 
         const handleBinderClick = (e: React.MouseEvent) => {
+          trackEvent('Binder Launch', { notebook: notebookPath, page: window.location.pathname });
           // CE with labEnabled: direct link works, no SSE needed
           if (config.labEnabled) return;
           if (!usesRemoteSession) return;
@@ -194,6 +196,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 target="_blank"
                 rel="noopener noreferrer"
                 title="Google Colab — run in the cloud, no setup needed"
+                onClick={() => trackEvent('Colab Open', { notebook: notebookPath, page: window.location.pathname })}
                 style={{
                   padding: '0.25rem 0.75rem',
                   border: '1px solid var(--ifm-color-primary)',

@@ -40,6 +40,7 @@ import {
   type BinderSession,
 } from '../../config/jupyter';
 import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
+import { trackEvent } from '../../config/analytics';
 import InfoIcon from '../InfoIcon';
 
 // thebelab 0.4.x global — bootstrap() returns a Promise that resolves
@@ -1327,6 +1328,7 @@ export default function ExecutableCode({
 
     // Track this page as executed in learning progress
     markPageExecuted(window.location.pathname);
+    trackEvent('Run Code', { page: window.location.pathname });
 
     // Hide static outputs if user preference is set
     if (hideStaticOutputs) {
@@ -1381,6 +1383,7 @@ export default function ExecutableCode({
     if (runAllActive) return;
     runAllActive = true;
     runAllAbort = false;
+    trackEvent('Run All', { page: window.location.pathname });
 
     // Collect all thebelab cells and find their run buttons
     const cells = document.querySelectorAll('.thebelab-cell');
@@ -1631,6 +1634,7 @@ export default function ExecutableCode({
               target="_blank"
               rel="noopener noreferrer"
               title={translate({id: 'executable.button.colabTitle', message: 'Open notebook in Google Colab'})}
+              onClick={() => trackEvent('Colab Open', { notebook: notebookPath, page: window.location.pathname })}
             >
               {translate({id: 'executable.button.colab', message: 'Open in Colab'})}
             </a>
