@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-03-27 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-03-28 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -22,7 +22,7 @@ python translation/scripts/translation-status.py --write-status
 | Arabic | `ar` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Hebrew | `he` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Malay | `ms` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
-| Indonesian | `id` | 44/44 | 99/172 | 0/1 | 0/0 | 144/219 |
+| Indonesian | `id` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Thai | `th` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Korean | `ko` | 0/44 | 0/172 | 0/1 | 0/0 | 1/219 |
 | Polish | `pl` | 0/44 | 0/172 | 0/1 | 0/0 | 1/219 |
@@ -472,10 +472,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 171 | — | 0 |
+| Guides | 172/172 | 0 | 172 | — | 0 |
 | Courses | 154/1 | 0 | 154 | — | -153 |
 | Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **384** | **—** | **-168** |
+| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -585,7 +585,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/qasm-feature-table.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/qedma-qesem.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/qiskit-1.0-features.mdx` | promoted | PASS | 2026-03-18 |
-| `guides/qiskit-1.0-installation.mdx` | — | — | — |
+| `guides/qiskit-1.0-installation.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/qiskit-1.0.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/qiskit-2.0.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/qiskit-addons-aqc-get-started.mdx` | promoted | PASS | 2026-03-18 |
@@ -2498,10 +2498,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 171 | 1 | 0 |
+| Guides | 172/172 | 0 | 172 | — | 0 |
 | Courses | 154/1 | 0 | 154 | — | -153 |
 | Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **384** | **1** | **-168** |
+| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -2551,7 +2551,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/dynamical-decoupling-pass-manager.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/error-mitigation-and-suppression-techniques.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/estimate-job-run-time.mdx` | promoted | PASS | 2026-03-19 |
-| `guides/execution-modes-faq.mdx` | promoted | FAIL | 2026-03-19 |
+| `guides/execution-modes-faq.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/execution-modes-rest-api.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/execution-modes.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/fair-share-scheduler.mdx` | promoted | PASS | 2026-03-19 |
@@ -3309,9 +3309,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 153 | 1 | -153 |
+| Courses | 154/1 | 0 | 154 | — | -153 |
 | Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **384** | **1** | **-168** |
+| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -3623,7 +3623,7 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-19 |
-| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | FAIL | 2026-03-19 |
+| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/grovers-algorithm.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/hardware.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-03-19 |
@@ -3713,10 +3713,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 171 | 172 | — | 0 |
-| Courses | 154/1 | 153 | 154 | — | -153 |
-| Modules | 15/0 | 15 | 15 | — | -15 |
-| **Total** | **385/217** | **339** | **385** | **—** | **-168** |
+| Guides | 172/172 | 0 | 172 | — | 0 |
+| Courses | 154/1 | 0 | 154 | — | -153 |
+| Modules | 15/0 | 0 | 15 | — | -15 |
+| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -4522,13 +4522,13 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 99/172 | 64 | 99 | 1 | 73 |
-| Courses | 0/1 | 0 | — | — | 1 |
-| Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **143/217** | **64** | **143** | **1** | **74** |
+| Guides | 172/172 | 0 | 170 | — | 0 |
+| Courses | 154/1 | 1 | 29 | — | -153 |
+| Modules | 15/0 | 0 | 3 | — | -15 |
+| **Total** | **385/217** | **1** | **246** | **—** | **-168** |
 
 <details>
-<summary>Pipeline history (144 files in status.json)</summary>
+<summary>Pipeline history (250 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -4602,7 +4602,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/introduction-to-qasm.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/invite-and-manage-users.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/job-limits.mdx` | promoted | PASS | 2026-03-26 |
-| `guides/kipu-optimization.mdx` | needs-fix | FAIL | 2026-03-26 |
+| `guides/kipu-optimization.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/latest-updates.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/local-simulators.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/local-testing-mode.mdx` | promoted | PASS | 2026-03-26 |
@@ -4631,7 +4631,113 @@ python translation/scripts/translation-status.py --write-status
 | `guides/processor-types.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/pulse-migration.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/q-ctrl-optimization-solver.mdx` | promoted | PASS | 2026-03-26 |
+| `guides/q-ctrl-performance-management.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/qasm-feature-table.mdx` | promoted | PASS | 2026-03-26 |
+| `guides/qedma-qesem.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-1.0-features.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-1.0-installation.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-1.0.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-2.0.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-aqc-get-started.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-aqc.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-cutting-gates.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-cutting-wires.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-cutting.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-mpf-get-started.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-mpf.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-obp-get-started.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-obp.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-sqd-get-started.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-sqd.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-addons-utils.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-backendv1-to-v2.mdx` | promoted | skipped | 2026-03-27 |
+| `guides/qiskit-code-assistant-jupyterlab.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-code-assistant-local.mdx` | promoted | skipped | 2026-03-27 |
+| `guides/qiskit-code-assistant-openai-api.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-code-assistant-vscode.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-code-assistant.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-function-templates.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-mcp-servers.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-sdk-version-strategy.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qiskit-transpiler-service.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qpu-information.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qrmi.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/quick-start.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/quickstart-steps-org.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/qunova-chemistry.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/repetition-rate-execution.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/represent-quantum-computers.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/responsibilities.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/retired-qpus.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/run-jobs-batch.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/run-jobs-session.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/runtime-options-overview.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/save-circuits.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/save-credentials.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/save-jobs.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/secure-data.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/serverless-first-program.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/serverless-manage-resources.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/serverless-port-code.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/serverless-run-first-workload.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/serverless.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/set-optimization.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/simulate-stabilizer-circuits.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/simulate-with-qiskit-aer.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/simulate-with-qiskit-sdk-primitives.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/slurm-hpc-ux.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/slurm-plugin.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/specify-observables-pauli.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/specify-runtime-options.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/stretch.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/support.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/synthesize-unitary-operators.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/tools-intro.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/transpile-with-pass-managers.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/transpile.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/transpiler-plugins.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/transpiler-stages.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/upgrade-from-open.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/v2-primitives.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/view-cost.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/virtual-private-endpoints.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/visualize-circuit-timing.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/visualize-circuits.mdx` | promoted | PASS | 2026-03-27 |
+| `guides/visualize-results.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/superdense-coding.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/discretization-of-errors.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/repetition-code-revisited.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/concluding-remarks.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/simulating-classical-computations.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/fidelity.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx` | promoted | skipped | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/skqd.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/reference-states.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/variational-algorithms.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-03-27 |
 | `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-26 |
@@ -4684,10 +4790,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 40 | — | 0 |
-| Guides | 172/172 | 4 | 164 | 7 | 0 |
-| Courses | 154/1 | 120 | 151 | 6 | -153 |
-| Modules | 15/0 | 3 | 15 | — | -15 |
-| **Total** | **385/217** | **127** | **370** | **13** | **-168** |
+| Guides | 172/172 | 0 | 164 | 7 | 0 |
+| Courses | 154/1 | 0 | 151 | 6 | -153 |
+| Modules | 15/0 | 0 | 15 | — | -15 |
+| **Total** | **385/217** | **0** | **370** | **13** | **-168** |
 
 <details>
 <summary>Pipeline history (396 files in status.json)</summary>
