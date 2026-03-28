@@ -18,14 +18,15 @@ For each video ID below:
 3. Enable CC/subtitles on the video player
 4. Play the video — observe network requests for VTT subtitle chunks
 
-Key insight: Subtitle chunks live at path /rfc/8/ and video chunks at /rfc/1/.
-The chunk hashes are shared between subtitle and video at the same chunk number.
-Once you discover a few chunk hashes from network requests, you can construct
-all subtitle chunk URLs by using the /rfc/8/ path with those hashes.
+Key insight: Subtitle chunks live at path /rfc/7/ or /rfc/8/ (varies per video)
+and video chunks at /rfc/1/. The chunk hashes are shared between subtitle and
+video at the same chunk number. Once you discover a few chunk hashes from network
+requests, you can construct all subtitle chunk URLs by trying both /rfc/7/ and
+/rfc/8/ paths with those hashes.
 
 Extraction approach:
 1. From network requests, identify the subtitle chunk URL pattern:
-   https://uhs-akamai.ustream.tv/.../rfc/8/chunk_{N}_{HASH}.vtt
+   https://uhs-akamai.ustream.tv/.../rfc/7/chunk_{N}_{HASH}.vtt  (or /rfc/8/)
 2. Fetch all VTT chunks in the browser JS context:
 
    // In DevTools Console:
