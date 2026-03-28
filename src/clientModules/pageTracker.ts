@@ -9,6 +9,7 @@
 import { markPageVisited, setLastPage, addRecentPage, ALL_PREFERENCE_KEYS } from '../config/preferences';
 import { ALL_JUPYTER_KEYS } from '../config/jupyter';
 import { migrateLocalStorageToCookies } from '../config/storage';
+import { trackPageview } from '../config/analytics';
 
 /** Custom event name broadcast after a page visit is recorded. */
 export const PAGE_VISITED_EVENT = 'dq:page-visited';
@@ -28,6 +29,7 @@ export function onRouteDidUpdate({ location }: { location: Location }): void {
 
   // Track the visit
   markPageVisited(path);
+  trackPageview();
 
   // Defer title read — React hasn't updated <Head> yet when this hook fires,
   // so document.title may still be the previous page's or the site default.
