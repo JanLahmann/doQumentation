@@ -1,9 +1,16 @@
-import React from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import BrowserOnly from '@docusaurus/BrowserOnly';
 
 interface IBMVideoProps {
   id: string;
   title?: string;
+}
+
+interface VttCue {
+  start: number; // seconds
+  end: number;
+  text: string;
 }
 
 /**
@@ -53,17 +60,252 @@ const YOUTUBE_MAP: Record<string, string> = {
   '134325519': 'DUq-0r-Prw0',
 };
 
+/** Parse VTT timestamp (HH:MM:SS.mmm or MM:SS.mmm) to seconds. */
+function parseTimestamp(ts: string): number {
+  const parts = ts.trim().split(':');
+  if (parts.length === 3) {
+    return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+  }
+  return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+}
+
+/** Parse VTT content into cue list. */
+function parseVtt(text: string): VttCue[] {
+  const cues: VttCue[] = [];
+  const blocks = text.trim().split(/\n\n+/);
+  for (const block of blocks) {
+    if (block.trim() === 'WEBVTT') continue;
+    const lines = block.trim().split('\n');
+    const tsLine = lines.find(l => l.includes('-->'));
+    if (!tsLine) continue;
+    const [startStr, endStr] = tsLine.split('-->');
+    const tsIdx = lines.indexOf(tsLine);
+    const text = lines.slice(tsIdx + 1).join(' ');
+    cues.push({
+      start: parseTimestamp(startStr),
+      end: parseTimestamp(endStr),
+      text,
+    });
+  }
+  return cues;
+}
+
+/** Transcript panel shown below the video. */
+function TranscriptPanel({
+  cues,
+  currentTime,
+  onSeek,
+}: {
+  cues: VttCue[];
+  currentTime: number;
+  onSeek: (time: number) => void;
+}) {
+  const activeRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const activeIdx = cues.findIndex((c, i) => {
+    const next = cues[i + 1];
+    return currentTime >= c.start && (next ? currentTime < next.start : currentTime <= c.end);
+  });
+
+  useEffect(() => {
+    if (activeRef.current && containerRef.current) {
+      const container = containerRef.current;
+      const el = activeRef.current;
+      const top = el.offsetTop - container.offsetTop - container.clientHeight / 3;
+      container.scrollTo({ top, behavior: 'smooth' });
+    }
+  }, [activeIdx]);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        maxHeight: '200px',
+        overflowY: 'auto',
+        border: '1px solid var(--ifm-color-emphasis-300)',
+        borderRadius: '0 0 8px 8px',
+        padding: '0.5rem',
+        fontSize: '0.85rem',
+        lineHeight: '1.5',
+        background: 'var(--ifm-background-surface-color)',
+      }}
+    >
+      {cues.map((cue, i) => {
+        const isActive = i === activeIdx;
+        return (
+          <div
+            key={i}
+            ref={isActive ? activeRef : undefined}
+            onClick={() => onSeek(cue.start)}
+            style={{
+              padding: '0.25rem 0.5rem',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              background: isActive ? 'var(--ifm-color-primary-lightest)' : 'transparent',
+              fontWeight: isActive ? 600 : 400,
+              transition: 'background 0.2s',
+            }}
+          >
+            <span style={{ color: 'var(--ifm-color-emphasis-500)', marginRight: '0.5rem', fontSize: '0.75rem' }}>
+              {Math.floor(cue.start / 60)}:{String(Math.floor(cue.start % 60)).padStart(2, '0')}
+            </span>
+            {cue.text}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
- * Renders an embedded video player for IBM Quantum course content.
- *
- * Strategy:
- * 1. If a YouTube equivalent exists → embed YouTube (better UX, no restrictions)
- * 2. Otherwise → embed via video.ibm.com/embed/recorded/{id} (unlisted but working)
+ * Renders an embedded video player for IBM Quantum course content,
+ * with an optional synced transcript panel below.
  */
 export default function IBMVideo({ id, title }: IBMVideoProps) {
+  return (
+    <BrowserOnly>
+      {() => <IBMVideoInner id={id} title={title} />}
+    </BrowserOnly>
+  );
+}
+
+declare global {
+  interface Window {
+    YT?: {
+      Player: new (el: HTMLElement, config: Record<string, unknown>) => YTPlayer;
+    };
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
+interface YTPlayer {
+  getCurrentTime: () => number;
+  seekTo: (seconds: number, allowSeekAhead: boolean) => void;
+  destroy: () => void;
+}
+
+function IBMVideoInner({ id, title }: IBMVideoProps) {
   const { i18n: { currentLocale } } = useDocusaurusContext();
   const youtubeId = YOUTUBE_MAP[id];
+  const [cues, setCues] = useState<VttCue[]>([]);
+  const [currentTime, setCurrentTime] = useState(0);
+  const playerRef = useRef<YTPlayer | null>(null);
+  const playerElRef = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<number | null>(null);
 
+  // Load transcript VTT
+  useEffect(() => {
+    const locale = currentLocale || 'en';
+    const tryLocales = locale === 'en' ? ['en'] : [locale, 'en'];
+
+    (async () => {
+      for (const loc of tryLocales) {
+        try {
+          const resp = await fetch(`/transcripts/${id}/${loc}.vtt`);
+          if (resp.ok) {
+            const text = await resp.text();
+            const parsed = parseVtt(text);
+            if (parsed.length > 0) {
+              setCues(parsed);
+              return;
+            }
+          }
+        } catch { /* try next */ }
+      }
+    })();
+  }, [id, currentLocale]);
+
+  // YouTube IFrame API setup
+  useEffect(() => {
+    if (!youtubeId || cues.length === 0) return;
+
+    const loadApi = () => {
+      if (window.YT) {
+        createPlayer();
+        return;
+      }
+      const existing = document.querySelector('script[src*="youtube.com/iframe_api"]');
+      if (!existing) {
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        document.head.appendChild(tag);
+      }
+      window.onYouTubeIframeAPIReady = createPlayer;
+    };
+
+    const createPlayer = () => {
+      if (!playerElRef.current || playerRef.current) return;
+      const params: Record<string, string> = { hl: currentLocale };
+      if (currentLocale !== 'en') {
+        params.cc_load_policy = '1';
+        params.cc_lang_pref = currentLocale;
+      }
+      playerRef.current = new window.YT!.Player(playerElRef.current, {
+        videoId: youtubeId,
+        playerVars: {
+          ...params,
+          rel: '0',
+          modestbranding: '1',
+        },
+        events: {
+          onReady: () => {
+            // Poll current time for transcript sync
+            timerRef.current = window.setInterval(() => {
+              if (playerRef.current) {
+                setCurrentTime(playerRef.current.getCurrentTime());
+              }
+            }, 250);
+          },
+        },
+      } as Record<string, unknown>);
+    };
+
+    loadApi();
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (playerRef.current) {
+        try { playerRef.current.destroy(); } catch { /* ignore */ }
+        playerRef.current = null;
+      }
+    };
+  }, [youtubeId, cues.length, currentLocale]);
+
+  const handleSeek = useCallback((time: number) => {
+    if (playerRef.current) {
+      playerRef.current.seekTo(time, true);
+      setCurrentTime(time);
+    }
+  }, []);
+
+  // YouTube with transcript: use IFrame API
+  if (youtubeId && cues.length > 0) {
+    return (
+      <div style={{ margin: '1rem 0' }}>
+        <div style={{
+          position: 'relative',
+          paddingBottom: '56.25%',
+          height: 0,
+          overflow: 'hidden',
+          borderRadius: '8px 8px 0 0',
+        }}>
+          <div
+            ref={playerElRef}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+            }}
+          />
+        </div>
+        <TranscriptPanel cues={cues} currentTime={currentTime} onSeek={handleSeek} />
+      </div>
+    );
+  }
+
+  // Fallback: regular iframe (no transcript or IBM Video)
   let iframeSrc: string;
   if (youtubeId) {
     const params = new URLSearchParams({ hl: currentLocale });
@@ -84,7 +326,7 @@ export default function IBMVideo({ id, title }: IBMVideoProps) {
           paddingBottom: '56.25%',
           height: 0,
           overflow: 'hidden',
-          borderRadius: '8px',
+          borderRadius: cues.length > 0 ? '8px 8px 0 0' : '8px',
         }}
       >
         <iframe
@@ -103,6 +345,9 @@ export default function IBMVideo({ id, title }: IBMVideoProps) {
           loading="lazy"
         />
       </div>
+      {cues.length > 0 && (
+        <TranscriptPanel cues={cues} currentTime={currentTime} onSeek={() => {}} />
+      )}
     </div>
   );
 }
