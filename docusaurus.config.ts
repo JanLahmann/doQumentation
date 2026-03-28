@@ -301,6 +301,10 @@ const config: Config = {
               label: 'GitHub',
               href: 'https://github.com/JanLahmann/doQumentation',
             },
+            {
+              label: 'Legal / Impressum',
+              to: '/legal',
+            },
           ],
         },
         {
