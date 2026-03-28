@@ -56,7 +56,7 @@ function CodeBlock({ children }: { children: string }) {
 export default function AdminPage(): JSX.Element {
   return (
     <Layout title="Admin" description="Admin reference page" noIndex>
-      <main className="container margin-vert--lg" style={{ maxWidth: '800px' }}>
+      <main className="container margin-vert--lg" style={{ maxWidth: '800px' }} data-umami-ignore>
         <h1>Admin Panel</h1>
         <p style={{ color: 'var(--ifm-color-emphasis-600)' }}>
           Internal reference for admins and workshop hosts. Not indexed by search engines.
