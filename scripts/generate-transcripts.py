@@ -154,14 +154,15 @@ def main():
     source_pref = args.source
 
     generated = 0
+    errors = 0
     for ibm_id in target_ids:
         yt_id = youtube_map.get(ibm_id)
         effective_source = source_pref
         if effective_source == "auto":
             effective_source = "youtube" if yt_id else "ibm"
         if effective_source == "youtube" and not yt_id:
-            print(f"\n[{ibm_id}] No YouTube mapping — falling back to IBM Video")
-            effective_source = "ibm"
+            print(f"\n[{ibm_id}] No YouTube mapping — skipping (use --source auto or ibm)")
+            continue
 
         src_label = f"YouTube: {yt_id}" if effective_source == "youtube" else "IBM Video"
         print(f"\n[{ibm_id}] {src_label}")
@@ -170,10 +171,14 @@ def main():
             dest = TRANSCRIPTS_DIR / ibm_id / "en.vtt"
             if dest.exists():
                 dest.unlink()
-        if process_video(ibm_id, yt_id, args.model, effective_source):
-            generated += 1
+        try:
+            if process_video(ibm_id, yt_id, args.model, effective_source):
+                generated += 1
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            errors += 1
 
-    print(f"\nDone. Generated {generated} transcript(s).")
+    print(f"\nDone. Generated {generated} transcript(s), {errors} error(s).")
 
 
 if __name__ == "__main__":
