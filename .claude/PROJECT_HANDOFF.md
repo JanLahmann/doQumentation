@@ -238,10 +238,10 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | MS | [ms.doqumentation.org](https://ms.doqumentation.org) | **387 + UI (100%)** | Live |
 | ID | [id.doqumentation.org](https://id.doqumentation.org) | **387 + UI (100%)** | Live |
 | TH | [th.doqumentation.org](https://th.doqumentation.org) | **387 + UI (100%)** | Live |
-| KO | — | **45 (44 tutorials + index, 100% tutorials)** | Not deployed |
-| PL | — | **45 (44 tutorials + index, 100% tutorials)** | Not deployed |
-| RO | — | **45 (44 tutorials + index, 100% tutorials)** | Not deployed |
-| CS | — | **45 (44 tutorials + index, 100% tutorials)** | Not deployed |
+| KO | [ko.doqumentation.org](https://ko.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
+| PL | [pl.doqumentation.org](https://pl.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
+| RO | [ro.doqumentation.org](https://ro.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
+| CS | [cs.doqumentation.org](https://cs.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
 | KSH | [ksh.doqumentation.org](https://ksh.doqumentation.org) | 46 + UI | Live |
 | NDS | [nds.doqumentation.org](https://nds.doqumentation.org) | 43 + UI | Live |
 | GSW | [gsw.doqumentation.org](https://gsw.doqumentation.org) | 42 + UI | Live |
