@@ -373,7 +373,7 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 ## Open Items
 
 ### TODO
-- **Translation expansion** — **13 locales at 100% (387/387)**: DE, ES, FR, IT, UK, JA, AR, PT, TL, HE, MS, ID, TH. **4 new locales in progress**: KO, PL, RO, CS (drafts being produced by web sessions). Run `python translation/scripts/translation-status.py --all` for current counts. German dialects: KSH 46, NDS 43, GSW 42, SAX 39, BLN 36, AUT 34.
+- **Translation expansion** — **13 locales at 100% (387/387)**: DE, ES, FR, IT, UK, JA, AR, PT, TL, HE, MS, ID, TH. **4 new locales in progress** (tutorials done, guides/courses/modules remaining): CS 45/387, PL 45/387, KO/RO have partial unvalidated drafts. Run `python translation/scripts/translation-status.py --all` for current counts. German dialects: KSH 46, NDS 43, GSW 42, SAX 39, BLN 36, AUT 34.
 - **Upstream sync strategy** — Plan how to pull upstream changes from [Qiskit/documentation](https://github.com/Qiskit/documentation) weekly. Currently `sync-content.py` clones from the fork (`JanLahmann/Qiskit-documentation`), which must be manually synced with upstream. Need: automated fork sync (GitHub Actions or scheduled script), handling of merge conflicts in modified files (`hello-world.ipynb`, `_toc.json`), freshness checks for translated content after EN changes, and a rollback strategy if upstream breaks the build.
 - **Translation structural sync script** — ✅ DONE. See `sync-translations.py` in Resolved section below.
 - **Qiskit execution error hints** — When a Binder/thebelab cell raises a common error, surface a helpful inline hint. Typical errors to handle: `IBMRuntimeError`/`QiskitBackendNotFoundError` (no IBM account → hint to run the save-account cell), `ModuleNotFoundError` (package missing → hint to run the prerequisites cell), `QiskitError: 'AerSimulator'` (aer not installed → hint re: kernel restart after pip), kernel restart/dead messages, and `NameError` on common Qiskit objects (cell run out of order → hint to run from top). Hook into thebelab's output area (or a MutationObserver on cell output divs) and match stderr/stdout against known patterns to inject a styled hint below the output.
@@ -461,4 +461,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: March 28, 2026 (Umami analytics, legal/impressum page, admin page, 13 locales at 100%, validation improvements)*
+*Last updated: March 28, 2026 (Umami analytics, legal/impressum page, admin page, 13 locales at 100%, validation improvements, CS + PL tutorials translated — 45/387 each; KO/RO partial drafts)*
