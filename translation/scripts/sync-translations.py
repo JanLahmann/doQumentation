@@ -267,6 +267,36 @@ def fix_missing_survey_url(en_content: str, tr_content: str) -> str | None:
     return '\n'.join(new_tr_lines)
 
 # ---------------------------------------------------------------------------
+# Fix: Insert doQumentation survey notice
+# ---------------------------------------------------------------------------
+
+DOQUMENTATION_SURVEY_NOTICE = (
+    '> **Note:** This survey is provided by IBM Quantum and relates to the original English content. '
+    'To give feedback on doQumentation\'s website, translations, or code execution, '
+    'please [open a GitHub issue](https://github.com/JanLahmann/doQumentation/issues).'
+)
+
+def fix_missing_survey_notice(tr_content: str) -> str | None:
+    """If TR has a survey URL but no doQumentation notice, insert it."""
+    if not SURVEY_URL_PATTERN.search(tr_content):
+        return None
+    if 'github.com/JanLahmann/doQumentation/issues' in tr_content:
+        return None  # notice already present
+
+    # Find the survey URL line and insert the notice after it
+    tr_lines = tr_content.split('\n')
+    for i, line in enumerate(tr_lines):
+        if SURVEY_URL_PATTERN.search(line):
+            new_tr_lines = (
+                tr_lines[:i + 1]
+                + ['', DOQUMENTATION_SURVEY_NOTICE]
+                + tr_lines[i + 1:]
+            )
+            return '\n'.join(new_tr_lines)
+
+    return None
+
+# ---------------------------------------------------------------------------
 # Fix: Restore missing link URLs
 # ---------------------------------------------------------------------------
 
@@ -648,6 +678,12 @@ def sync_file(en_path: Path, tr_path: Path, dry_run: bool = False) -> list[str]:
     if result is not None:
         current = result
         fixes.append("inserted missing survey URL section")
+
+    # Fix 4b: Missing doQumentation survey notice
+    result = fix_missing_survey_notice(current)
+    if result is not None:
+        current = result
+        fixes.append("inserted doQumentation survey notice")
 
     # Fix 5: Missing content lines from EN (new backends, links)
     result = fix_missing_en_lines(en_content, current)

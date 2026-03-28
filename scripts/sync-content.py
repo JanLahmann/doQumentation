@@ -170,6 +170,18 @@ def transform_mdx(content: str, source_path: Path) -> str:
     # #41: Tag untagged code blocks with language hints based on content
     content = _tag_untagged_code_blocks(content)
 
+    # Add doQumentation context to IBM's "Tutorial survey" section:
+    # Clarify the survey belongs to IBM, and point to GitHub Issues for our feedback.
+    content = re.sub(
+        r'(## Tutorial survey\n\nPlease take this short survey to provide feedback on this tutorial\.'
+        r' Your insights will help us improve our content offerings and user experience\.)',
+        r'\1\n\n'
+        r'> **Note:** This survey is provided by IBM Quantum and relates to the original English content. '
+        r'To give feedback on doQumentation\'s website, translations, or code execution, '
+        r'please [open a GitHub issue](https://github.com/JanLahmann/doQumentation/issues).',
+        content,
+    )
+
     return content
 
 
