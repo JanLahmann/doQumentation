@@ -1,4 +1,5 @@
 import React from 'react';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
 interface IBMVideoProps {
   id: string;
@@ -60,11 +61,20 @@ const YOUTUBE_MAP: Record<string, string> = {
  * 2. Otherwise → embed via video.ibm.com/embed/recorded/{id} (unlisted but working)
  */
 export default function IBMVideo({ id, title }: IBMVideoProps) {
+  const { i18n: { currentLocale } } = useDocusaurusContext();
   const youtubeId = YOUTUBE_MAP[id];
 
-  const iframeSrc = youtubeId
-    ? `https://www.youtube-nocookie.com/embed/${youtubeId}`
-    : `https://video.ibm.com/embed/recorded/${id}`;
+  let iframeSrc: string;
+  if (youtubeId) {
+    const params = new URLSearchParams({ hl: currentLocale });
+    if (currentLocale !== 'en') {
+      params.set('cc_load_policy', '1');
+      params.set('cc_lang_pref', currentLocale);
+    }
+    iframeSrc = `https://www.youtube-nocookie.com/embed/${youtubeId}?${params}`;
+  } else {
+    iframeSrc = `https://video.ibm.com/embed/recorded/${id}`;
+  }
 
   return (
     <div style={{ margin: '1rem 0' }}>
