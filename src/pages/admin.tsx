@@ -8,10 +8,33 @@ import Layout from '@theme/Layout';
 
 const GITHUB_REPO = 'https://github.com/JanLahmann/doQumentation';
 
-const LOCALE_REPOS = [
-  'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he',
-  'ms', 'id', 'th', 'ko', 'pl', 'ro', 'cs',
-  'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut',
+const LOCALE_REPOS: { code: string; english: string; local: string }[] = [
+  { code: 'de', english: 'German', local: 'Deutsch' },
+  { code: 'es', english: 'Spanish', local: 'Español' },
+  { code: 'uk', english: 'Ukrainian', local: 'Українська' },
+  { code: 'fr', english: 'French', local: 'Français' },
+  { code: 'it', english: 'Italian', local: 'Italiano' },
+  { code: 'pt', english: 'Portuguese', local: 'Português' },
+  { code: 'ja', english: 'Japanese', local: '日本語' },
+  { code: 'tl', english: 'Filipino', local: 'Filipino' },
+  { code: 'ar', english: 'Arabic', local: 'العربية' },
+  { code: 'he', english: 'Hebrew', local: 'עברית' },
+  { code: 'ms', english: 'Malay', local: 'Bahasa Melayu' },
+  { code: 'id', english: 'Indonesian', local: 'Bahasa Indonesia' },
+  { code: 'th', english: 'Thai', local: 'ไทย' },
+  { code: 'ko', english: 'Korean', local: '한국어' },
+  { code: 'pl', english: 'Polish', local: 'Polski' },
+  { code: 'ro', english: 'Romanian', local: 'Română' },
+  { code: 'cs', english: 'Czech', local: 'Čeština' },
+  { code: 'swg', english: 'Swabian', local: 'Schwäbisch' },
+  { code: 'bad', english: 'Baden', local: 'Badisch' },
+  { code: 'bar', english: 'Bavarian', local: 'Bairisch' },
+  { code: 'ksh', english: 'Colognian', local: 'Kölsch' },
+  { code: 'nds', english: 'Low German', local: 'Plattdeutsch' },
+  { code: 'gsw', english: 'Swiss German', local: 'Schweizerdeutsch' },
+  { code: 'sax', english: 'Saxon', local: 'Sächsisch' },
+  { code: 'bln', english: 'Berlin', local: 'Berlinerisch' },
+  { code: 'aut', english: 'Austrian', local: 'Österreichisch' },
 ];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -142,15 +165,19 @@ echo -n "$CONFIG" | base64`}</CodeBlock>
           ]} />
 
           <h3>Satellite Repos (locale deploys)</h3>
-          <div style={{ columnCount: 3, columnGap: '1rem', fontSize: '0.85rem' }}>
-            {LOCALE_REPOS.map((locale) => (
-              <div key={locale} style={{ marginBottom: '0.25rem' }}>
-                <a href={`https://github.com/JanLahmann/doqumentation-${locale}`} target="_blank" rel="noopener noreferrer">
-                  {locale}
+          <div style={{ columnCount: 2, columnGap: '1.5rem', fontSize: '0.85rem' }}>
+            {LOCALE_REPOS.map(({ code, english, local }) => (
+              <div key={code} style={{ marginBottom: '0.35rem' }}>
+                <a href={`https://${code}.doqumentation.org`} target="_blank" rel="noopener noreferrer">
+                  <strong>{code}</strong>
                 </a>
-                {' → '}
-                <a href={`https://${locale}.doqumentation.org`} target="_blank" rel="noopener noreferrer">
-                  {locale}.doqumentation.org
+                {' '}
+                <span style={{ color: 'var(--ifm-color-emphasis-600)' }}>
+                  {english} ({local})
+                </span>
+                {' '}
+                <a href={`https://github.com/JanLahmann/doqumentation-${code}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.8em' }}>
+                  [repo]
                 </a>
               </div>
             ))}
