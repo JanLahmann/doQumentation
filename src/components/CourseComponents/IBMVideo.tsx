@@ -306,9 +306,9 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
           }, 250);
         }
 
-        // Progress response
-        if (data.event && typeof data.event.progress === 'number') {
-          setCurrentTime(data.event.progress);
+        // Progress response — comes back as data.property.progress
+        if (data.property && typeof data.property.progress === 'number') {
+          setCurrentTime(data.property.progress);
         }
       } catch { /* not our message */ }
     };
