@@ -276,44 +276,58 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
   }, [youtubeId, cues.length, currentLocale]);
 
   // IBM Video postMessage API setup — poll progress for transcript sync
+  // Protocol: send 'ready' on load → wait for ready event → send 'apihandshake' → poll 'getProperty'
+  const ibmApiReady = useRef(false);
   useEffect(() => {
     if (youtubeId || cues.length === 0) return; // Only for IBM Video
     const iframe = iframeRef.current;
     if (!iframe) return;
+    const embedHost = 'https://video.ibm.com';
 
-    // Listen for postMessage responses from IBM Video embed
+    const sendCmd = (cmd: string, args: unknown[] = []) => {
+      try {
+        iframe.contentWindow?.postMessage(JSON.stringify({ cmd, args }), embedHost);
+      } catch { /* cross-origin */ }
+    };
+
     const handleMessage = (event: MessageEvent) => {
+      if (event.origin.toLowerCase() !== embedHost) return;
       if (typeof event.data !== 'string') return;
       try {
         const data = JSON.parse(event.data);
-        if (data.event === 'cycapi:getProperty' && data.property === 'progress') {
-          setCurrentTime(data.data || 0);
+
+        // Handshake: player signals ready
+        if (data.event && data.event.ready) {
+          ibmApiReady.current = true;
+          sendCmd('apihandshake');
+          // Start polling progress
+          timerRef.current = window.setInterval(() => {
+            sendCmd('getProperty', ['progress']);
+          }, 250);
+        }
+
+        // Progress response
+        if (data.event && typeof data.event.progress === 'number') {
+          setCurrentTime(data.event.progress);
         }
       } catch { /* not our message */ }
     };
+
     window.addEventListener('message', handleMessage);
 
-    // Poll progress every 250ms once iframe is loaded
-    const startPolling = () => {
-      timerRef.current = window.setInterval(() => {
-        try {
-          iframe.contentWindow?.postMessage(
-            JSON.stringify({ cmd: 'cycapi:getProperty', args: ['progress'] }),
-            '*'
-          );
-        } catch { /* cross-origin error, ignore */ }
-      }, 250);
-    };
-
-    iframe.addEventListener('load', startPolling);
+    // Send ready when iframe loads
+    const onLoad = () => sendCmd('ready');
+    iframe.addEventListener('load', onLoad);
     // If already loaded
-    if (iframe.contentDocument?.readyState === 'complete') {
-      startPolling();
+    if (iframe.contentWindow) {
+      sendCmd('ready');
     }
 
     return () => {
       window.removeEventListener('message', handleMessage);
+      iframe.removeEventListener('load', onLoad);
       if (timerRef.current) clearInterval(timerRef.current);
+      ibmApiReady.current = false;
     };
   }, [youtubeId, cues.length]);
 
@@ -326,8 +340,8 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
       // IBM Video seek via postMessage
       try {
         iframeRef.current.contentWindow?.postMessage(
-          JSON.stringify({ cmd: 'cycapi:callMethod', args: ['seek', time] }),
-          '*'
+          JSON.stringify({ cmd: 'seek', args: [time] }),
+          'https://video.ibm.com'
         );
         setCurrentTime(time);
       } catch { /* cross-origin error */ }
