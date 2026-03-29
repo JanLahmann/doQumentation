@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-03-28 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-03-29 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -24,10 +24,10 @@ python translation/scripts/translation-status.py --write-status
 | Malay | `ms` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Indonesian | `id` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
 | Thai | `th` | 44/44 | 172/172 | 154/1 | 15/0 | 387/219 |
-| Korean | `ko` | 0/44 | 0/172 | 0/1 | 0/0 | 1/219 |
-| Polish | `pl` | 0/44 | 0/172 | 0/1 | 0/0 | 1/219 |
-| Romanian | `ro` | 0/44 | 0/172 | 0/1 | 0/0 | 1/219 |
-| Czech | `cs` | 0/44 | 0/172 | 0/1 | 0/0 | 1/219 |
+| Korean | `ko` | 44/44 | 0/172 | 0/1 | 0/0 | 45/219 |
+| Polish | `pl` | 44/44 | 0/172 | 0/1 | 0/0 | 45/219 |
+| Romanian | `ro` | 44/44 | 0/172 | 0/1 | 0/0 | 45/219 |
+| Czech | `cs` | 44/44 | 0/172 | 0/1 | 0/0 | 45/219 |
 | Swabian | `swg` | 14/44 | 1/172 | 13/1 | 2/0 | 31/219 |
 | Badisch | `bad` | 14/44 | 1/172 | 13/1 | 2/0 | 31/219 |
 | Bavarian | `bar` | 14/44 | 1/172 | 13/1 | 2/0 | 31/219 |
@@ -4523,12 +4523,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 170 | — | 0 |
-| Courses | 154/1 | 1 | 29 | — | -153 |
-| Modules | 15/0 | 0 | 3 | — | -15 |
-| **Total** | **385/217** | **1** | **246** | **—** | **-168** |
+| Courses | 154/1 | 0 | 153 | 1 | -153 |
+| Modules | 15/0 | 0 | 15 | — | -15 |
+| **Total** | **385/217** | **0** | **382** | **1** | **-168** |
 
 <details>
-<summary>Pipeline history (250 files in status.json)</summary>
+<summary>Pipeline history (387 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -4704,40 +4704,177 @@ python translation/scripts/translation-status.py --write-status
 | `guides/visualize-circuit-timing.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/visualize-circuits.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/visualize-results.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/chsh-game.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/quantum-teleportation.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/superdense-coding.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/basics-of-quantum-information/exam.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/classical-information.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/qiskit-implementation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/circuits.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/inner-products-and-projections.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/limitations-on-quantum-information.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/single-systems/classical-information.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/single-systems/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/single-systems/qiskit-implementation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/basics-of-quantum-information/single-systems/quantum-information.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/discretization-of-errors.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/repetition-codes.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/shor-code.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/foundations-of-quantum-error-correction/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/threshold-theorem.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/css-codes.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/other-code-families.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/toric-code.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/pauli-operations-and-observables.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/repetition-code-revisited.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/fundamentals-of-quantum-algorithms/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/analysis.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/concluding-remarks.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/grover-algorithm-description.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/number-of-iterations.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/unstructured-search.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-problem.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/factoring-and-gcd.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/simulating-classical-computations.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/query-model-of-computation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/simon-algorithm.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/bloch-sphere.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/convex-combinations.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/density-matrix-basics.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/multiple-systems.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/discrimination-and-tomography.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/naimark-theorem.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/fidelity.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/purifications.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/quantum-channel-basics.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/representation-equivalence.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/compute-resources.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/integrating-quantum-and-high-performance-computing/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/next-steps.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/programming-models.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/sqd-skqd.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/business-impacts.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/how-to-become-quantum-ready.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/introduction-to-quantum-computing.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/quantum-computing-fundamentals.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/quantum-technology.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-business-foundations/start-your-quantum-journey.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/ansatz.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx` | promoted | skipped | 2026-03-27 |
 | `learning/courses/quantum-chem-with-vqe/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/geometry.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/ground-state.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/hamiltonian-construction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-chem-with-vqe/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-computing-in-practice/applications-of-qc.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-computing-in-practice/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-computing-in-practice/mapping.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-computing-in-practice/running-quantum-circuits.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-computing-in-practice/simulating-nature.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-computing-in-practice/utility-scale-qaoa.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-diagonalization-algorithms/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/krylov.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-diagonalization-algorithms/skqd.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/sqd-implementation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/sqd-overview.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/classical-ml-review.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/data-encoding-part1.mdx` | needs-fix | FAIL | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-machine-learning/exam.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-machine-learning/qvc-qnn.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/cryptographic-hash-functions.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/introduction-to-this-course.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/grovers-algorithm.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/hardware.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/introduction.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/teleportation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/utility-i.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/utility-ii.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/utility-iii.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/ansaetze-and-variational-forms.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/exam.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/instances-and-extensions.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/variational-algorithm-design/optimization-loops.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/variational-algorithm-design/reference-states.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/variational-algorithm-design/variational-algorithms.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/deutsch-jozsa.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/grovers.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/qft.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/quantum-key-distribution.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/quantum-teleportation.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/shors-algorithm.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/computer-science/vqe.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/modules/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/quantum-mechanics/get-started-with-qiskit.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/quantum-mechanics/stern-gerlach-measurements-with-qiskit.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/modules/quantum-mechanics/superposition-with-qiskit.mdx` | promoted | PASS | 2026-03-27 |
 | `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-26 |
@@ -5203,41 +5340,249 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/44 | 0 | — | — | 44 |
+| Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 0/172 | 0 | — | — | 172 |
 | Courses | 0/1 | 0 | — | — | 1 |
 | Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **0/217** | **0** | **—** | **—** | **217** |
+| **Total** | **44/217** | **0** | **44** | **—** | **173** |
+
+<details>
+<summary>Pipeline history (44 files in status.json)</summary>
+
+| File | Status | Validation | Date |
+|------|--------|------------|------|
+| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/chsh-inequality.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/dc-hex-ising.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/depth-reduction-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/fractional-gates.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ghz-spacetime-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/grovers-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/hello-world.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/index.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/long-range-entanglement.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/multi-product-formula.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/nishimori-phase-transition.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/operator-back-propagation.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/periodic-boundary-conditions-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/probabilistic-error-amplification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/projected-quantum-kernels.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qedma-2d-ising-with-qesem.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-kernel-training.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-phase-estimation-qctrl.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qunova-hivqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/readout-error-mitigation-sampler.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/real-time-benchmarking-for-qubit-selection.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/repetition-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/shors-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sml-classification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/spin-chain-vqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transverse-field-ising-model.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-03-28 |
+
+</details>
 
 ### Polish (`pl`)
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/44 | 0 | — | — | 44 |
+| Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 0/172 | 0 | — | — | 172 |
 | Courses | 0/1 | 0 | — | — | 1 |
 | Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **0/217** | **0** | **—** | **—** | **217** |
+| **Total** | **44/217** | **0** | **44** | **—** | **173** |
+
+<details>
+<summary>Pipeline history (44 files in status.json)</summary>
+
+| File | Status | Validation | Date |
+|------|--------|------------|------|
+| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/chsh-inequality.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/dc-hex-ising.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/depth-reduction-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/fractional-gates.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ghz-spacetime-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/grovers-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/hello-world.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/index.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/long-range-entanglement.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/multi-product-formula.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/nishimori-phase-transition.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/operator-back-propagation.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/periodic-boundary-conditions-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/probabilistic-error-amplification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/projected-quantum-kernels.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qedma-2d-ising-with-qesem.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-kernel-training.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-phase-estimation-qctrl.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qunova-hivqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/readout-error-mitigation-sampler.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/real-time-benchmarking-for-qubit-selection.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/repetition-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/shors-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sml-classification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/spin-chain-vqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transverse-field-ising-model.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-03-28 |
+
+</details>
 
 ### Romanian (`ro`)
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/44 | 0 | — | — | 44 |
+| Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 0/172 | 0 | — | — | 172 |
 | Courses | 0/1 | 0 | — | — | 1 |
 | Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **0/217** | **0** | **—** | **—** | **217** |
+| **Total** | **44/217** | **0** | **44** | **—** | **173** |
+
+<details>
+<summary>Pipeline history (44 files in status.json)</summary>
+
+| File | Status | Validation | Date |
+|------|--------|------------|------|
+| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/chsh-inequality.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/dc-hex-ising.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/depth-reduction-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/fractional-gates.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ghz-spacetime-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/grovers-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/hello-world.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/index.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/long-range-entanglement.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/multi-product-formula.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/nishimori-phase-transition.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/operator-back-propagation.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/periodic-boundary-conditions-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/probabilistic-error-amplification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/projected-quantum-kernels.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qedma-2d-ising-with-qesem.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-kernel-training.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-phase-estimation-qctrl.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qunova-hivqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/readout-error-mitigation-sampler.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/real-time-benchmarking-for-qubit-selection.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/repetition-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/shors-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sml-classification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/spin-chain-vqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transverse-field-ising-model.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-03-28 |
+
+</details>
 
 ### Czech (`cs`)
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/44 | 0 | — | — | 44 |
+| Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 0/172 | 0 | — | — | 172 |
 | Courses | 0/1 | 0 | — | — | 1 |
 | Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **0/217** | **0** | **—** | **—** | **217** |
+| **Total** | **44/217** | **0** | **44** | **—** | **173** |
+
+<details>
+<summary>Pipeline history (44 files in status.json)</summary>
+
+| File | Status | Validation | Date |
+|------|--------|------------|------|
+| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/chsh-inequality.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/dc-hex-ising.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/depth-reduction-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/fractional-gates.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/ghz-spacetime-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/grovers-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/hello-world.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/index.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/long-range-entanglement.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/multi-product-formula.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/nishimori-phase-transition.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/operator-back-propagation.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/periodic-boundary-conditions-with-circuit-cutting.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/probabilistic-error-amplification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/projected-quantum-kernels.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qedma-2d-ising-with-qesem.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-kernel-training.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/quantum-phase-estimation-qctrl.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/qunova-hivqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/readout-error-mitigation-sampler.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/real-time-benchmarking-for-qubit-selection.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/repetition-codes.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/shors-algorithm.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/sml-classification.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/solve-market-split-problem-with-iskay-quantum-optimizer.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/spin-chain-vqe.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/transverse-field-ising-model.mdx` | promoted | PASS | 2026-03-28 |
+| `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-03-28 |
+
+</details>
 
 ### Swabian (`swg`)
 
