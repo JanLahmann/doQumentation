@@ -393,8 +393,8 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Copy code button** — Add a one-click copy button to code blocks. Docusaurus supports this natively via `themeConfig.prism` — may be disabled or hidden by the swizzled `CodeBlock` component in `src/theme/CodeBlock/`.
 - **Breadcrumbs** — Navigation trail (e.g. "Home > Courses > Basics of Quantum Information > Single Systems") showing page location in hierarchy. Docusaurus has built-in breadcrumb support — may just need enabling in `themeConfig` or checking if the swizzled theme suppresses it.
 - **Video subtitles — remaining work**:
-  - **25 German VTT translations** remaining (8/33 done). Translate via Claude Code agents.
-  - **26 IBM Video EN transcripts** remaining (1/27 done). Extract via Claude Cowork with Chrome (`scripts/video-subtitle-cowork-prompt.md`). Key: subtitle chunks at `/rfc/7/` or `/rfc/8/`, hashes shared with video chunks.
+  - **55/59 EN transcripts done** (32 YouTube via youtube-transcript-api + 23 IBM Video via Cowork). 4 IBM Video transcripts remaining — use `scripts/video-subtitle-cowork-prompt.md`.
+  - **47 German VTT translations remaining** (8/55 done). Translate via Claude Code agents.
   - **Other languages**: After DE is complete, translate VTTs to all other locales.
   - **Whisper alternative**: `pip install openai-whisper yt-dlp` for higher quality but slower (~5 min/video). Documented in `scripts/generate-transcripts.py` header.
   - **Post-processing**: Corrections dict in `generate-transcripts.py` fixes known errors (Kisket→Qiskit, Watchras→Watrous).
