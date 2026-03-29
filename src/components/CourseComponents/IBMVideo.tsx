@@ -291,8 +291,11 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
     };
 
     const handleMessage = (event: MessageEvent) => {
-      if (event.origin.toLowerCase() !== embedHost) return;
       if (typeof event.data !== 'string') return;
+      // Debug: log all messages from the iframe
+      if (event.source === iframe.contentWindow) {
+        try { console.log('[IBMVideo msg]', JSON.parse(event.data)); } catch {}
+      }
       try {
         const data = JSON.parse(event.data);
 
