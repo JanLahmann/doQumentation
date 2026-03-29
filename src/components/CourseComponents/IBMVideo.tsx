@@ -275,14 +275,16 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
     };
   }, [youtubeId, cues.length, currentLocale]);
 
-  // IBM Video postMessage API setup — poll progress for transcript sync
-  // Protocol: send 'ready' on load → wait for ready event → send 'apihandshake' → poll 'getProperty'
-  const ibmApiReady = useRef(false);
+  // IBM Video sync — track playback position via playing/seekCompleted events
+  // The getProperty('progress') API doesn't respond without the official SDK,
+  // so we track time locally: start a timer on 'playing', pause on 'playing:false'
+  const ibmPlayStartRef = useRef<number>(0); // wall-clock time when play started
+  const ibmOffsetRef = useRef<number>(0);     // video position when play started
+  const ibmPlayingRef = useRef(false);
   useEffect(() => {
-    if (youtubeId || cues.length === 0) return; // Only for IBM Video
+    if (youtubeId || cues.length === 0) return;
     const iframe = iframeRef.current;
     if (!iframe) return;
-    const embedHost = 'https://video.ibm.com';
 
     const sendCmd = (cmd: string, args: unknown[] = []) => {
       try {
@@ -295,55 +297,59 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
       if (event.source !== iframe.contentWindow) return;
       try {
         const data = JSON.parse(event.data);
-        console.log('[IBMVideo msg]', data);
 
-        // Handshake: player signals ready
-        if (data.event && data.event.ready && !ibmApiReady.current) {
-          ibmApiReady.current = true;
+        // Handshake
+        if (data.event?.ready) {
           sendCmd('apihandshake');
-          startPolling();
         }
 
-        // Progress response — check both possible locations
-        const progress = data.property?.progress ?? data.event?.progress;
-        if (typeof progress === 'number') {
-          setCurrentTime(progress);
+        // Playing state changed
+        if (data.event && typeof data.event.playing === 'boolean') {
+          if (data.event.playing) {
+            ibmPlayingRef.current = true;
+            ibmPlayStartRef.current = Date.now();
+            // Start update timer
+            if (!timerRef.current) {
+              timerRef.current = window.setInterval(() => {
+                if (ibmPlayingRef.current) {
+                  const elapsed = (Date.now() - ibmPlayStartRef.current) / 1000;
+                  setCurrentTime(ibmOffsetRef.current + elapsed);
+                }
+              }, 250);
+            }
+          } else {
+            // Paused — save current position
+            if (ibmPlayingRef.current) {
+              const elapsed = (Date.now() - ibmPlayStartRef.current) / 1000;
+              ibmOffsetRef.current += elapsed;
+            }
+            ibmPlayingRef.current = false;
+          }
+        }
+
+        // Seek completed — update offset from the seek target
+        if (data.event?.seekStarted) {
+          // seekStarted may contain the target position
+          ibmPlayingRef.current = false;
         }
       } catch { /* not our message */ }
     };
 
-    const startPolling = () => {
-      if (timerRef.current) return; // already polling
-      timerRef.current = window.setInterval(() => {
-        sendCmd('getProperty', ['progress']);
-      }, 500);
-    };
-
     window.addEventListener('message', handleMessage);
 
-    // Try handshake immediately + on load — the ready event may have already fired
     const initHandshake = () => {
       sendCmd('ready');
-      // Also try handshake directly in case ready event was missed
-      setTimeout(() => {
-        if (!ibmApiReady.current) {
-          sendCmd('apihandshake');
-          startPolling();
-        }
-      }, 2000);
+      setTimeout(() => sendCmd('apihandshake'), 1000);
     };
 
     iframe.addEventListener('load', initHandshake);
-    // If already loaded
-    if (iframe.contentWindow) {
-      initHandshake();
-    }
+    if (iframe.contentWindow) initHandshake();
 
     return () => {
       window.removeEventListener('message', handleMessage);
       iframe.removeEventListener('load', initHandshake);
       if (timerRef.current) clearInterval(timerRef.current);
-      ibmApiReady.current = false;
+      ibmPlayingRef.current = false;
     };
   }, [youtubeId, cues.length]);
 
@@ -359,6 +365,8 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
           JSON.stringify({ cmd: 'seek', args: [time] }),
           '*'
         );
+        ibmOffsetRef.current = time;
+        ibmPlayStartRef.current = Date.now();
         setCurrentTime(time);
       } catch { /* cross-origin error */ }
     }
