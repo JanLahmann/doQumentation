@@ -278,8 +278,6 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
   // IBM Video sync — track playback position via playing/seekCompleted events
   // The getProperty('progress') API doesn't respond without the official SDK,
   // so we track time locally: start a timer on 'playing', pause on 'playing:false'
-  const ibmPlayStartRef = useRef<number>(0); // wall-clock time when play started
-  const ibmOffsetRef = useRef<number>(0);     // video position when play started
   const ibmPlayingRef = useRef(false);
   useEffect(() => {
     if (youtubeId || cues.length === 0) return;
@@ -303,34 +301,23 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
           sendCmd('apihandshake');
         }
 
-        // Playing state changed
-        if (data.event && typeof data.event.playing === 'boolean') {
-          if (data.event.playing) {
-            ibmPlayingRef.current = true;
-            ibmPlayStartRef.current = Date.now();
-            // Start update timer
-            if (!timerRef.current) {
-              timerRef.current = window.setInterval(() => {
-                if (ibmPlayingRef.current) {
-                  const elapsed = (Date.now() - ibmPlayStartRef.current) / 1000;
-                  setCurrentTime(ibmOffsetRef.current + elapsed);
-                }
-              }, 250);
-            }
-          } else {
-            // Paused — save current position
-            if (ibmPlayingRef.current) {
-              const elapsed = (Date.now() - ibmPlayStartRef.current) / 1000;
-              ibmOffsetRef.current += elapsed;
-            }
-            ibmPlayingRef.current = false;
-          }
+        // Progress response from polling (cmd: 'progress')
+        if (data.property && typeof data.property.progress === 'number') {
+          setCurrentTime(data.property.progress);
         }
 
-        // Seek completed — update offset from the seek target
-        if (data.event?.seekStarted) {
-          // seekStarted may contain the target position
-          ibmPlayingRef.current = false;
+        // Playing state — start/stop polling
+        if (data.event && typeof data.event.playing === 'boolean') {
+          ibmPlayingRef.current = data.event.playing;
+          if (data.event.playing && !timerRef.current) {
+            // Start polling progress from the player
+            timerRef.current = window.setInterval(() => {
+              sendCmd('progress', []);
+            }, 500);
+          } else if (!data.event.playing && timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
         }
       } catch { /* not our message */ }
     };
@@ -359,29 +346,12 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
       playerRef.current.seekTo(time, true);
       setCurrentTime(time);
     } else if (!youtubeId && iframeRef.current) {
-      // IBM Video seek: pause → seek → play to ensure sync
-      const win = iframeRef.current.contentWindow;
-      const send = (cmd: string, args: unknown[] = []) =>
-        win?.postMessage(JSON.stringify({ cmd, args }), '*');
+      // IBM Video seek via postMessage
       try {
-        send('pause');
-        send('seek', [time]);
-        // Small delay to let seek complete, then resume
-        setTimeout(() => {
-          send('play');
-          ibmOffsetRef.current = time;
-          ibmPlayStartRef.current = Date.now();
-          ibmPlayingRef.current = true;
-          // Ensure timer is running
-          if (!timerRef.current) {
-            timerRef.current = window.setInterval(() => {
-              if (ibmPlayingRef.current) {
-                const elapsed = (Date.now() - ibmPlayStartRef.current) / 1000;
-                setCurrentTime(ibmOffsetRef.current + elapsed);
-              }
-            }, 250);
-          }
-        }, 300);
+        iframeRef.current.contentWindow?.postMessage(
+          JSON.stringify({ cmd: 'seek', args: [time] }),
+          '*'
+        );
         setCurrentTime(time);
       } catch { /* cross-origin error */ }
     }
