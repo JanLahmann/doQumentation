@@ -292,43 +292,56 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
 
     const handleMessage = (event: MessageEvent) => {
       if (typeof event.data !== 'string') return;
-      // Debug: log all messages from the iframe
-      if (event.source === iframe.contentWindow) {
-        try { console.log('[IBMVideo msg]', JSON.parse(event.data)); } catch {}
-      }
+      if (event.source !== iframe.contentWindow) return;
       try {
         const data = JSON.parse(event.data);
+        console.log('[IBMVideo msg]', data);
 
         // Handshake: player signals ready
-        if (data.event && data.event.ready) {
+        if (data.event && data.event.ready && !ibmApiReady.current) {
           ibmApiReady.current = true;
           sendCmd('apihandshake');
-          // Start polling progress
-          timerRef.current = window.setInterval(() => {
-            sendCmd('getProperty', ['progress']);
-          }, 250);
+          startPolling();
         }
 
-        // Progress response — comes back as data.property.progress
-        if (data.property && typeof data.property.progress === 'number') {
-          setCurrentTime(data.property.progress);
+        // Progress response — check both possible locations
+        const progress = data.property?.progress ?? data.event?.progress;
+        if (typeof progress === 'number') {
+          setCurrentTime(progress);
         }
       } catch { /* not our message */ }
     };
 
+    const startPolling = () => {
+      if (timerRef.current) return; // already polling
+      timerRef.current = window.setInterval(() => {
+        sendCmd('getProperty', ['progress']);
+      }, 500);
+    };
+
     window.addEventListener('message', handleMessage);
 
-    // Send ready when iframe loads
-    const onLoad = () => sendCmd('ready');
-    iframe.addEventListener('load', onLoad);
+    // Try handshake immediately + on load — the ready event may have already fired
+    const initHandshake = () => {
+      sendCmd('ready');
+      // Also try handshake directly in case ready event was missed
+      setTimeout(() => {
+        if (!ibmApiReady.current) {
+          sendCmd('apihandshake');
+          startPolling();
+        }
+      }, 2000);
+    };
+
+    iframe.addEventListener('load', initHandshake);
     // If already loaded
     if (iframe.contentWindow) {
-      sendCmd('ready');
+      initHandshake();
     }
 
     return () => {
       window.removeEventListener('message', handleMessage);
-      iframe.removeEventListener('load', onLoad);
+      iframe.removeEventListener('load', initHandshake);
       if (timerRef.current) clearInterval(timerRef.current);
       ibmApiReady.current = false;
     };
