@@ -359,14 +359,29 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
       playerRef.current.seekTo(time, true);
       setCurrentTime(time);
     } else if (!youtubeId && iframeRef.current) {
-      // IBM Video seek via postMessage
+      // IBM Video seek: pause → seek → play to ensure sync
+      const win = iframeRef.current.contentWindow;
+      const send = (cmd: string, args: unknown[] = []) =>
+        win?.postMessage(JSON.stringify({ cmd, args }), '*');
       try {
-        iframeRef.current.contentWindow?.postMessage(
-          JSON.stringify({ cmd: 'seek', args: [time] }),
-          '*'
-        );
-        ibmOffsetRef.current = time;
-        ibmPlayStartRef.current = Date.now();
+        send('pause');
+        send('seek', [time]);
+        // Small delay to let seek complete, then resume
+        setTimeout(() => {
+          send('play');
+          ibmOffsetRef.current = time;
+          ibmPlayStartRef.current = Date.now();
+          ibmPlayingRef.current = true;
+          // Ensure timer is running
+          if (!timerRef.current) {
+            timerRef.current = window.setInterval(() => {
+              if (ibmPlayingRef.current) {
+                const elapsed = (Date.now() - ibmPlayStartRef.current) / 1000;
+                setCurrentTime(ibmOffsetRef.current + elapsed);
+              }
+            }, 250);
+          }
+        }, 300);
         setCurrentTime(time);
       } catch { /* cross-origin error */ }
     }
