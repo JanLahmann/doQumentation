@@ -286,7 +286,7 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
 
     const sendCmd = (cmd: string, args: unknown[] = []) => {
       try {
-        iframe.contentWindow?.postMessage(JSON.stringify({ cmd, args }), embedHost);
+        iframe.contentWindow?.postMessage(JSON.stringify({ cmd, args }), '*');
       } catch { /* cross-origin */ }
     };
 
@@ -344,7 +344,7 @@ function IBMVideoInner({ id, title }: IBMVideoProps) {
       try {
         iframeRef.current.contentWindow?.postMessage(
           JSON.stringify({ cmd: 'seek', args: [time] }),
-          'https://video.ibm.com'
+          '*'
         );
         setCurrentTime(time);
       } catch { /* cross-origin error */ }
