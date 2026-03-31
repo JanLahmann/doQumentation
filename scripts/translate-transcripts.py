@@ -23,34 +23,56 @@ When running translations via Claude Code (without an API key), use the
 chunked agent workflow instead of this script:
 
 1. **Split** the VTT at a cue boundary into chunks of ≤300 lines each.
-   Larger files (1000+ lines) need 3-4+ chunks. Split at cue boundaries
-   (the blank line before a cue number) to avoid breaking mid-cue.
+   Find a cue number near the split point with `grep -n "^{cue}$" en.vtt`
+   and split one line before it. Guide for chunk counts by file size:
+     - 433-600 lines:   2 chunks
+     - 600-900 lines:   3 chunks
+     - 900-1300 lines:  4-5 chunks
+     - 1300-1800 lines: 5-7 chunks
+     - 1800-3600 lines: 7-13 chunks
 
-2. **Translate** each chunk in a parallel Sonnet agent. Each agent reads
-   its chunk from the English file (using offset/limit), translates it,
-   and writes to a temporary file ({id}/{locale}-chunk{N}.vtt). Chunk 1
-   includes the "WEBVTT" header; subsequent chunks omit it.
+2. **Translate** each chunk in a parallel Sonnet agent (model=sonnet).
+   Each agent reads its chunk from the English file (using offset/limit),
+   translates it, and writes to a temp file ({id}/{locale}-chunk{N}.vtt).
+   Chunk 1 includes the "WEBVTT" header; subsequent chunks omit it.
+   Process max 2 files at a time (4 agents = 2 files × 2 chunks).
 
-3. **Concatenate** the chunk files into the final {locale}.vtt.
+3. **Concatenate** the chunk files: cat chunk1 + newline + chunk2 [+ ...]
+   Verify the final line count matches the English original.
 
-4. **Post-process boundary**: A quick Sonnet agent reviews the 4-6 cues
-   around each join point. If the English had a mid-sentence split across
-   the chunk boundary, the two chunks may translate the bridging phrase
-   independently, creating redundancy. The post-processor fixes this.
-   Joins that fall between sentences need no fix.
+4. **Post-process boundary** (only if needed): A quick Sonnet agent
+   reviews the 4-6 cues around each join point. Fixes are only needed
+   when the English had a mid-sentence split across the chunk boundary,
+   causing the two chunks to translate the bridging phrase independently
+   (creating redundancy like "more amazing / amazingly"). Joins that
+   fall between complete sentences need no fix — and most don't.
 
-5. **Commit** results frequently to avoid losing work.
+5. **Clean up** temp chunk files, **commit** results frequently.
+
+Concurrency rules (learned the hard way):
+  - Max 4 concurrent agents. More causes starvation/timeouts.
+  - Do NOT launch 10+ agents — they compete for resources and most
+    will time out with 0-1 tool calls and no output (wasted tokens).
+  - 2 files × 2 chunks = 4 agents is the sweet spot.
+  - Wait for a batch to complete before launching the next.
 
 Performance (477-line file, Sonnet, 2 chunks):
-  - Chunk translation: ~90s wall time (both chunks in parallel)
-  - Boundary post-processing: ~20s
-  - Total: ~110s per file at Sonnet quality (51/60)
-  - Keep max 4 concurrent agents to avoid starvation/timeouts
+  - Chunk translation: ~70-90s per chunk (both run in parallel)
+  - Boundary post-processing: ~20s (often not needed)
+  - Total: ~90-110s per file at Sonnet quality
+  - Concatenation + cleanup: seconds
 
-Quality comparison (Opus-judged, Spanish, 477-line file):
-  - Haiku single-file:    43/60 (60s)  — physics errors, VTT structural issues
-  - Sonnet single-file:   51/60 (230s) — good quality, slow
-  - Sonnet chunked:       48/60 (110s) — same quality, boundary artifact fixable
+Quality comparison (Opus-judged, 477-line quantum teleportation video):
+  - Haiku single-file:    43/60 (60s)  — physics term errors ("desplomará"
+    instead of "colapsará"), VTT structural defects (missing cues, empty
+    final cue), inconsistent terminology
+  - Sonnet single-file:   51/60 (230s) — correct physics terms, consistent
+    style, proper grammar (subjunctive), intact VTT structure
+  - Sonnet chunked:        8.1/10 (90s) — Sonnet quality, one fixable
+    boundary artifact. Best speed/quality trade-off.
+
+  Verdict: Use Sonnet. Haiku is 5x faster but makes domain-specific
+  errors that matter for technical/educational content.
 """
 
 import argparse
