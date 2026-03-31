@@ -16,6 +16,41 @@ Usage:
 
 Requirements:
     pip install anthropic
+
+Claude Code chunked translation approach
+-----------------------------------------
+When running translations via Claude Code (without an API key), use the
+chunked agent workflow instead of this script:
+
+1. **Split** the VTT at a cue boundary into chunks of ≤300 lines each.
+   Larger files (1000+ lines) need 3-4+ chunks. Split at cue boundaries
+   (the blank line before a cue number) to avoid breaking mid-cue.
+
+2. **Translate** each chunk in a parallel Sonnet agent. Each agent reads
+   its chunk from the English file (using offset/limit), translates it,
+   and writes to a temporary file ({id}/{locale}-chunk{N}.vtt). Chunk 1
+   includes the "WEBVTT" header; subsequent chunks omit it.
+
+3. **Concatenate** the chunk files into the final {locale}.vtt.
+
+4. **Post-process boundary**: A quick Sonnet agent reviews the 4-6 cues
+   around each join point. If the English had a mid-sentence split across
+   the chunk boundary, the two chunks may translate the bridging phrase
+   independently, creating redundancy. The post-processor fixes this.
+   Joins that fall between sentences need no fix.
+
+5. **Commit** results frequently to avoid losing work.
+
+Performance (477-line file, Sonnet, 2 chunks):
+  - Chunk translation: ~90s wall time (both chunks in parallel)
+  - Boundary post-processing: ~20s
+  - Total: ~110s per file at Sonnet quality (51/60)
+  - Keep max 4 concurrent agents to avoid starvation/timeouts
+
+Quality comparison (Opus-judged, Spanish, 477-line file):
+  - Haiku single-file:    43/60 (60s)  — physics errors, VTT structural issues
+  - Sonnet single-file:   51/60 (230s) — good quality, slow
+  - Sonnet chunked:       48/60 (110s) — same quality, boundary artifact fixable
 """
 
 import argparse
