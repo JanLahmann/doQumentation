@@ -77,8 +77,16 @@ concurrent. Each agent prompt follows this template:
     Read static/transcripts/{ID}/en-chunk{N}.vtt and write the
     {LANGUAGE} translation to static/transcripts/{ID}/{LOCALE}-chunk{N}.vtt
 
-For small files (2-3 chunks), combine all chunks into one agent to reduce
-overhead. For large files (5+ chunks), give each chunk its own agent.
+Give each file to a single agent that translates all its chunks
+sequentially. This is more reliable than one-agent-per-chunk because it
+avoids coordination overhead. Each agent reads all en-chunk{N}.vtt files
+for its video, translates them, and writes {locale}-chunk{N}.vtt files.
+
+Batching strategy (max 4 concurrent agents):
+  - Small files (2-4 chunks): 4 files per batch, 1 agent each
+  - Medium files (5-7 chunks): 4 files per batch, 1 agent each
+  - Large files (8-15 chunks): 2-4 files per batch, 1 agent each
+  - Sort files by size and process smallest first for quick wins
 
 Language registers:
   - de: informal ("du" not "Sie")
@@ -121,9 +129,14 @@ Concurrency rules (learned the hard way)
   - Max 4 concurrent background agents. More causes starvation/timeouts.
   - Do NOT launch 10+ agents — they compete for resources and most
     will time out with 0-1 tool calls and no output (wasted tokens).
-  - For small files: 4 files × 1 agent each = 4 agents
-  - For large files: 1 file × 4 chunk agents = 4 agents
+  - 4 files × 1 agent each = 4 agents is the sweet spot.
   - Wait for a batch to complete before launching the next.
+  - Monitor progress by checking for {locale}-chunk*.vtt files:
+      for id in ...; do echo "$id: $(ls .../$id/{locale}-chunk*.vtt 2>/dev/null | wc -l)"; done
+  - If an agent stalls (output file stops growing for >2 min), launch a
+    replacement agent for just the remaining chunks of that file.
+  - Commit completed files while other agents are still running to avoid
+    losing progress.
 
 Performance
 ~~~~~~~~~~~
@@ -143,6 +156,20 @@ Quality comparison (Opus-judged, 477-line quantum teleportation video):
 
   Verdict: Use Sonnet. Haiku is 5x faster but makes domain-specific
   errors that matter for technical/educational content.
+
+Multi-language workflow
+~~~~~~~~~~~~~~~~~~~~~~
+Target languages (12 total): es, de, ja, uk, fr, it, pt, tl, th, ar, he, ko.
+
+Process one language at a time to completion (all 33 files), then move
+to the next. The en-chunk*.vtt files only need to be created once and
+can be reused across languages (re-chunk if they were cleaned up).
+
+Typical session: 33 files × ~2 min avg = ~1-1.5 hours per language.
+With 4 concurrent agents, a full language takes ~30-45 minutes wall time.
+
+Progress tracking: count {locale}.vtt files across all transcript dirs:
+    ls static/transcripts/*/{locale}.vtt 2>/dev/null | wc -l
 """
 
 import argparse
@@ -170,6 +197,7 @@ LOCALE_NAMES: dict[str, str] = {
     "th": "Thai",
     "ar": "Arabic",
     "he": "Hebrew",
+    "ko": "Korean",
 }
 
 SYSTEM_PROMPT = """\
@@ -200,6 +228,7 @@ REGISTER_MAP: dict[str, str] = {
     "th": "casual (no ครับ/ค่ะ)",
     "ar": "informal register",
     "he": "informal register",
+    "ko": "informal register",
 }
 
 
