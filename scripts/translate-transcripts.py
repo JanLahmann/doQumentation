@@ -16,6 +16,160 @@ Usage:
 
 Requirements:
     pip install anthropic
+
+Claude Code chunked translation approach
+-----------------------------------------
+When running translations via Claude Code (without an API key), use the
+chunked agent workflow instead of this script. This is the recommended
+approach for batch-translating all 33 VTT transcripts to multiple languages.
+
+**Overview:** Split each VTT file into chunks of ~248 lines at cue
+boundaries, translate each chunk via a background Sonnet agent, concatenate
+results, verify cue counts match, clean up temp files, commit and push.
+
+Step 1: Chunk all files upfront
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Run this bash loop to split all 33 English VTT files into chunks:
+
+    for id in $(ls -d static/transcripts/*/en.vtt | sed 's|.*/transcripts/||;s|/en.vtt||'); do
+      cd static/transcripts/$id
+      lines=$(wc -l < en.vtt)
+      if [ $lines -le 300 ]; then
+        cp en.vtt en-chunk1.vtt
+      else
+        prev=0; chunk=1
+        while [ $prev -lt $lines ]; do
+          target=$((prev + 248))
+          if [ $target -ge $lines ]; then
+            sed -n "$((prev+1)),${lines}p" en.vtt > en-chunk${chunk}.vtt
+            break
+          fi
+          cue_line=$(grep -n "^[0-9]\+$" en.vtt | awk -F: -v t=$target \
+            '$1 >= t-4 && $1 <= t+4 {print $1; exit}')
+          [ -z "$cue_line" ] && cue_line=$(grep -n "^[0-9]\+$" en.vtt | \
+            awk -F: -v t=$target '$1 >= t-10 && $1 <= t+10 {print $1; exit}')
+          end=$((cue_line - 1))
+          sed -n "$((prev+1)),${end}p" en.vtt > en-chunk${chunk}.vtt
+          prev=$end
+          chunk=$((chunk + 1))
+        done
+      fi
+      cd ../../..
+    done
+
+This produces en-chunk1.vtt, en-chunk2.vtt, ... in each transcript dir.
+Chunk count by file size: 433-600→2, 600-900→3, 900-1300→4-5,
+1300-1800→6-7, 1800-3600→8-15 chunks.
+
+Step 2: Translate chunks via background Sonnet agents
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Launch background agents (model=sonnet, run_in_background=true), max 4
+concurrent. Each agent prompt follows this template:
+
+    Translate VTT subtitle chunks from English to {LANGUAGE}. Rules:
+    - Use {REGISTER} register
+    - Keep quantum computing terms in English: qubit, gate, circuit,
+      backend, transpiler, Hadamard, Qiskit, BB84
+    - Keep proper names unchanged
+    - Preserve ALL formatting: cue numbers, timestamps, blank lines
+    - Output ONLY the translated VTT content, nothing else
+
+    Read static/transcripts/{ID}/en-chunk{N}.vtt and write the
+    {LANGUAGE} translation to static/transcripts/{ID}/{LOCALE}-chunk{N}.vtt
+
+Give each file to a single agent that translates all its chunks
+sequentially. This is more reliable than one-agent-per-chunk because it
+avoids coordination overhead. Each agent reads all en-chunk{N}.vtt files
+for its video, translates them, and writes {locale}-chunk{N}.vtt files.
+
+Batching strategy (max 4 concurrent agents):
+  - Small files (2-4 chunks): 4 files per batch, 1 agent each
+  - Medium files (5-7 chunks): 4 files per batch, 1 agent each
+  - Large files (8-15 chunks): 2-4 files per batch, 1 agent each
+  - Sort files by size and process smallest first for quick wins
+
+Language registers:
+  - de: informal ("du" not "Sie")
+  - ja: informal (だ/である style, not です/ます)
+  - uk: informal ("ти" not "Ви")
+  - es: informal ("tú" not "usted")
+  - fr: informal ("tu" not "vous")
+  - it: informal ("tu" not "Lei")
+  - pt: informal ("você" casual)
+  - tl: casual (no po/opo)
+  - th: casual (no ครับ/ค่ะ)
+  - ar: informal register
+  - he: informal register
+  - ko: informal register
+
+Step 3: Concatenate and verify
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+After all agents finish for a file:
+
+    cd static/transcripts/$id
+    cat {locale}-chunk1.vtt > {locale}.vtt
+    for i in 2 3 4 ...; do echo "" >> {locale}.vtt && cat {locale}-chunk${i}.vtt >> {locale}.vtt; done
+    en_cues=$(grep -c "^[0-9]\+$" en.vtt)
+    target_cues=$(grep -c "^[0-9]\+$" {locale}.vtt)
+    echo "$id: EN=${en_cues} {LOCALE}=${target_cues}"
+
+If cue counts don't match, inspect the file and fix manually.
+
+Step 4: Clean up and commit
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    rm -f en-chunk*.vtt {locale}-chunk*.vtt
+    git add static/transcripts/*/  {locale}.vtt
+    git commit -m "Add {LANGUAGE} VTT translations for N videos"
+    git push
+
+Commit after every 4-8 files to avoid losing progress.
+
+Concurrency rules (learned the hard way)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  - Max 4 concurrent background agents. More causes starvation/timeouts.
+  - Do NOT launch 10+ agents — they compete for resources and most
+    will time out with 0-1 tool calls and no output (wasted tokens).
+  - 4 files × 1 agent each = 4 agents is the sweet spot.
+  - Wait for a batch to complete before launching the next.
+  - Monitor progress by checking for {locale}-chunk*.vtt files:
+      for id in ...; do echo "$id: $(ls .../$id/{locale}-chunk*.vtt 2>/dev/null | wc -l)"; done
+  - If an agent stalls (output file stops growing for >2 min), launch a
+    replacement agent for just the remaining chunks of that file.
+  - Commit completed files while other agents are still running to avoid
+    losing progress.
+
+Performance
+~~~~~~~~~~~
+  - Small file (433-600 lines, 2 chunks): ~90s total
+  - Medium file (900-1300 lines, 4-5 chunks): ~2-3 min
+  - Large file (3000+ lines, 13-15 chunks): ~5-8 min
+  - Full language (33 files): ~45-90 min depending on batching
+
+Quality comparison (Opus-judged, 477-line quantum teleportation video):
+  - Haiku single-file:    43/60 (60s)  — physics term errors ("desplomará"
+    instead of "colapsará"), VTT structural defects (missing cues, empty
+    final cue), inconsistent terminology
+  - Sonnet single-file:   51/60 (230s) — correct physics terms, consistent
+    style, proper grammar (subjunctive), intact VTT structure
+  - Sonnet chunked:        8.1/10 (90s) — Sonnet quality, one fixable
+    boundary artifact. Best speed/quality trade-off.
+
+  Verdict: Use Sonnet. Haiku is 5x faster but makes domain-specific
+  errors that matter for technical/educational content.
+
+Multi-language workflow
+~~~~~~~~~~~~~~~~~~~~~~
+Target languages (12 total): es, de, ja, uk, fr, it, pt, tl, th, ar, he, ko.
+
+Process one language at a time to completion (all 33 files), then move
+to the next. The en-chunk*.vtt files only need to be created once and
+can be reused across languages (re-chunk if they were cleaned up).
+
+Typical session: 33 files × ~2 min avg = ~1-1.5 hours per language.
+With 4 concurrent agents, a full language takes ~30-45 minutes wall time.
+
+Progress tracking: count {locale}.vtt files across all transcript dirs:
+    ls static/transcripts/*/{locale}.vtt 2>/dev/null | wc -l
 """
 
 import argparse
@@ -43,6 +197,7 @@ LOCALE_NAMES: dict[str, str] = {
     "th": "Thai",
     "ar": "Arabic",
     "he": "Hebrew",
+    "ko": "Korean",
 }
 
 SYSTEM_PROMPT = """\
@@ -73,6 +228,7 @@ REGISTER_MAP: dict[str, str] = {
     "th": "casual (no ครับ/ค่ะ)",
     "ar": "informal register",
     "he": "informal register",
+    "ko": "informal register",
 }
 
 
