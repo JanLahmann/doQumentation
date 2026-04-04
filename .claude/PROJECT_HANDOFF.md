@@ -511,7 +511,7 @@ Follow the existing pattern used for `upstream-docs/` (Qiskit-documentation fork
    - Add a new content type (e.g., `addons`) alongside existing `tutorials`, `guides`, `courses`, `modules`
    - For each addon submodule, locate its notebook path (`docs/tutorials/`, `tutorials/`, or `docs/how_tos/`)
    - Run the same notebook→MDX transform pipeline already used for main content
-   - Output to `docs/addons/<addon-name>/` (e.g., `docs/addons/circuit-cutting/`)
+   - Output to `docs/qiskit-addons/<addon-name>/` (e.g., `docs/qiskit-addons/circuit-cutting/`)
    - Handle dependency injection: each addon needs its own package installed (already handled by the existing `%pip install` injection logic in sync-content.py)
    - Add an addon config map in sync-content.py:
      ```python
@@ -531,18 +531,18 @@ Follow the existing pattern used for `upstream-docs/` (Qiskit-documentation fork
 
 3. **Sidebar generation:**
    - Generate `sidebar-addons.json` (same pattern as `sidebar-guides.json`)
-   - Add to `sidebars.ts` as a new top-level category: "Addons" (or "Qiskit Addons")
+   - Add to `sidebars.ts` as a new top-level category: "Qiskit Addons"
    - Each addon becomes a subcategory with its tutorials listed inside
 
 4. **Navbar integration** in `docusaurus.config.ts`:
    ```typescript
    {
-     to: '/addons',
-     label: 'Addons',
+     to: '/qiskit-addons',
+     label: 'Qiskit Addons',
      position: 'left',
    },
    ```
-   Between "Guides" and "Courses" — keeping the hierarchy: Tutorials > Guides > Addons > Courses > Modules.
+   After "Modules" (last content item): Tutorials > Guides > Courses > Modules > Qiskit Addons.
 
 5. **NOTICE file update** — add attribution:
    ```
@@ -569,8 +569,8 @@ Follow the existing pattern used for `upstream-docs/` (Qiskit-documentation fork
    - Add `--addons` flag to sync-content.py invocation in CI
    - Addon content enters translation pipeline automatically once sync is working (Phase 2)
 
-8. **Addons index page:**
-   - Create `docs/addons/index.mdx` with an overview of all addons, links to each section, and links to the upstream API docs (hosted on qiskit.github.io)
+8. **Qiskit Addons index page:**
+   - Create `docs/qiskit-addons/index.mdx` with an overview of all addons, links to each section, and links to the upstream API docs (hosted on qiskit.github.io)
    - Could reuse the Card/CardGroup components already used on the homepage
 
 #### Implementation Phases
