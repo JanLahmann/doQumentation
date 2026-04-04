@@ -256,6 +256,11 @@ const config: Config = {
           position: 'left',
         },
         {
+          to: '/qiskit-addons',
+          label: 'Qiskit Addons',
+          position: 'left',
+        },
+        {
           href: 'https://quantum.cloud.ibm.com/docs/en/api',
           label: 'API Reference',
           position: 'left',
