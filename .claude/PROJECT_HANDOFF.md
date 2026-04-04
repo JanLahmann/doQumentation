@@ -463,7 +463,121 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - LED integration for RasQberry
 - Offline AI tutor (Granite 4.0 Nano)
 - "Add Cell" scratch pad (full JupyterLab available as alternative)
-- **Qiskit Addons docs** — Add documentation for official [Qiskit Addons](https://github.com/Qiskit?q=qiskit-addon) (sqd, obp, mpf, aqc-tensor, cutting, utils). Each addon repo has a `docs/` directory with tutorials/guides.
+- **Qiskit Global Summer School content** — Labs from QGSS 2023/2024/2025 repos (`qiskit-community/qgss-2025` etc.) contain high-quality Jupyter lab notebooks. Curated labs could be added as a "Summer School" section. Content is version-pinned to specific Qiskit releases, so would need compatibility review. See [qgss-2025](https://github.com/qiskit-community/qgss-2025) (332 stars, 5 core labs + community labs + lecture notes in separate repo).
+
+### Qiskit Addon Documentation (Plan)
+
+**Goal:** Add tutorial notebooks from official Qiskit addon repos as a new content section in doQumentation, with live code execution and translations.
+
+**License:** All addon repos are **Apache 2.0** — same as doQumentation's code license. Notebook content (tutorials/how-tos) would be served under the project's CC BY-SA 4.0 content license with proper attribution in NOTICE. Verified April 2026.
+
+#### Repos & Content Inventory (verified April 2026)
+
+| Repo | Notebooks | Path | Content |
+|------|-----------|------|---------|
+| qiskit-addon-cutting (101 stars) | 4 | `docs/tutorials/` | Gate cutting width/depth, wire cutting, automatic cut finding |
+| qiskit-addon-sqd (83 stars) | 2 | `docs/tutorials/` | Chemistry Hamiltonian, fermionic lattice Hamiltonian |
+| qiskit-addon-mthree (49 stars) | 5 | `tutorials/` | Measurement mitigation, quantum volume, dynamic BV, VQE |
+| qiskit-addon-obp (45 stars) | 1 | `docs/tutorials/` | Getting started with OBP |
+| qiskit-addon-mpf (35 stars) | 1 | `docs/tutorials/` | Getting started with MPF |
+| qiskit-addon-aqc-tensor (26 stars) | 1 | `docs/tutorials/` | Initial state AQC |
+| qiskit-addon-opt-mapper (14 stars) | 5 | `docs/how_tos/` | Migration, problem definition, converters, validation, DOCPLEX |
+| qiskit-addon-pna (8 stars) | 1 | `docs/tutorials/` | Noise-mitigating observable generation |
+| qiskit-addon-slc (5 stars) | 1 | `docs/tutorials/` | Getting started with SLC |
+| qiskit-addon-utils (27 stars) | 2 | `docs/how_tos/` | Circuit slices, device edge coloring |
+| **Total** | **23** | | |
+
+**Repos with NO notebooks (skip):** qiskit-addon-sqd-hpc (C++ only), qiskit-addon-dice-solver (API docs only), qiskit-fermions (RST docs only, too new).
+
+**Not in scope yet — future Phase 3 (qiskit-community application modules):** qiskit-machine-learning (13 notebooks), qiskit-nature (11), qiskit-optimization (12), qiskit-finance (12), qiskit-algorithms (11) — collectively ~59 notebooks. These live under `qiskit-community` org; some are no longer IBM-supported. Could be a major future expansion.
+
+#### Approach: Git Submodules
+
+Follow the existing pattern used for `upstream-docs/` (Qiskit-documentation fork):
+
+1. **Add submodules** in `.gitmodules` for each addon repo:
+   ```
+   [submodule "upstream-addons/qiskit-addon-cutting"]
+       path = upstream-addons/qiskit-addon-cutting
+       url = https://github.com/Qiskit/qiskit-addon-cutting.git
+   [submodule "upstream-addons/qiskit-addon-sqd"]
+       path = upstream-addons/qiskit-addon-sqd
+       url = https://github.com/Qiskit/qiskit-addon-sqd.git
+   ...
+   ```
+   Direct submodules to Qiskit org repos (no fork needed — unlike the main docs, we don't need to customize content). Use sparse checkout or shallow clones to keep size down.
+
+2. **Extend `sync-content.py`** to handle addon sources:
+   - Add a new content type (e.g., `addons`) alongside existing `tutorials`, `guides`, `courses`, `modules`
+   - For each addon submodule, locate its notebook path (`docs/tutorials/`, `tutorials/`, or `docs/how_tos/`)
+   - Run the same notebook→MDX transform pipeline already used for main content
+   - Output to `docs/addons/<addon-name>/` (e.g., `docs/addons/circuit-cutting/`)
+   - Handle dependency injection: each addon needs its own package installed (already handled by the existing `%pip install` injection logic in sync-content.py)
+   - Add an addon config map in sync-content.py:
+     ```python
+     ADDON_SOURCES = {
+         "circuit-cutting":    {"submodule": "upstream-addons/qiskit-addon-cutting", "path": "docs/tutorials", "pip": "qiskit-addon-cutting"},
+         "sqd":                {"submodule": "upstream-addons/qiskit-addon-sqd",     "path": "docs/tutorials", "pip": "qiskit-addon-sqd"},
+         "mthree":             {"submodule": "upstream-addons/qiskit-addon-mthree",  "path": "tutorials",      "pip": "qiskit-addon-mthree"},
+         "obp":                {"submodule": "upstream-addons/qiskit-addon-obp",     "path": "docs/tutorials", "pip": "qiskit-addon-obp"},
+         "mpf":                {"submodule": "upstream-addons/qiskit-addon-mpf",     "path": "docs/tutorials", "pip": "qiskit-addon-mpf"},
+         "aqc-tensor":         {"submodule": "upstream-addons/qiskit-addon-aqc-tensor", "path": "docs/tutorials", "pip": "qiskit-addon-aqc-tensor"},
+         "opt-mapper":         {"submodule": "upstream-addons/qiskit-addon-opt-mapper",  "path": "docs/how_tos",   "pip": "qiskit-addon-opt-mapper"},
+         "pna":                {"submodule": "upstream-addons/qiskit-addon-pna",     "path": "docs/tutorials", "pip": "qiskit-addon-pna"},
+         "slc":                {"submodule": "upstream-addons/qiskit-addon-slc",     "path": "docs/tutorials", "pip": "qiskit-addon-slc"},
+         "utils":              {"submodule": "upstream-addons/qiskit-addon-utils",   "path": "docs/how_tos",   "pip": "qiskit-addon-utils"},
+     }
+     ```
+
+3. **Sidebar generation:**
+   - Generate `sidebar-addons.json` (same pattern as `sidebar-guides.json`)
+   - Add to `sidebars.ts` as a new top-level category: "Addons" (or "Qiskit Addons")
+   - Each addon becomes a subcategory with its tutorials listed inside
+
+4. **Navbar integration** in `docusaurus.config.ts`:
+   ```typescript
+   {
+     to: '/addons',
+     label: 'Addons',
+     position: 'left',
+   },
+   ```
+   Between "Guides" and "Courses" — keeping the hierarchy: Tutorials > Guides > Addons > Courses > Modules.
+
+5. **NOTICE file update** — add attribution:
+   ```
+   This project includes tutorial content from Qiskit Addon repositories:
+     https://github.com/Qiskit/qiskit-addon-cutting (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-sqd (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-mthree (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-obp (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-mpf (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-aqc-tensor (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-opt-mapper (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-pna (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-slc (Apache 2.0)
+     https://github.com/Qiskit/qiskit-addon-utils (Apache 2.0)
+   ```
+
+6. **Binder/Docker environment:**
+   - Most addon packages are light; some like `pyscf` for sqd chemistry are heavy — handle via injected `%pip install` cells, not pre-install
+   - Docker: Add commonly used addons to `Dockerfile.jupyter` requirements
+   - The existing dependency injection logic in sync-content.py already handles `%pip install` cells
+
+7. **CI/CD:**
+   - Update `deploy.yml` and `deploy-locales.yml`: `submodules: recursive` (already uses `submodules: true`)
+   - Add `--addons` flag to sync-content.py invocation in CI
+   - Addon content enters translation pipeline automatically once sync is working (Phase 2)
+
+8. **Addons index page:**
+   - Create `docs/addons/index.mdx` with an overview of all addons, links to each section, and links to the upstream API docs (hosted on qiskit.github.io)
+   - Could reuse the Card/CardGroup components already used on the homepage
+
+#### Implementation Phases
+
+- **Phase 1:** Add the 7 core addons with `docs/tutorials/` (cutting, sqd, obp, mpf, aqc-tensor, pna, slc) = 11 notebooks. Small, well-structured, IBM-supported.
+- **Phase 2:** Add mthree (5 tutorials), opt-mapper (5 how-tos), utils (2 how-tos) = 12 more notebooks. Total: 23 notebooks.
+- **Phase 3 (future):** qiskit-community application modules (ML, nature, optimization, finance, algorithms) = ~59 notebooks. Separate submodules to `qiskit-community` org repos. Some may need Qiskit version compatibility fixes.
 
 ---
 
@@ -477,4 +591,4 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 
 ---
 
-*Last updated: April 4, 2026 (33 videos translated to 17 languages, 22 EN transcripts committed, transcript-status.md added)*
+*Last updated: April 4, 2026 (Qiskit addon docs plan added, summer school future idea added)*
