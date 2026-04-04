@@ -33,6 +33,19 @@ UPSTREAM_DIR = PROJECT_ROOT / "upstream-docs"
 DOCS_OUTPUT = PROJECT_ROOT / "docs"
 NOTEBOOKS_OUTPUT = PROJECT_ROOT / "notebooks"
 STATIC_DIR = PROJECT_ROOT / "static"
+ADDONS_DIR = PROJECT_ROOT / "upstream-addons"
+
+# Qiskit Addon sources — Phase 1: core addons with docs/tutorials/
+# Each entry: display name → {submodule dir name, notebook path within repo, pip package}
+ADDON_SOURCES = {
+    "Circuit Cutting":    {"repo": "qiskit-addon-cutting",    "path": "docs/tutorials", "pip": "qiskit-addon-cutting"},
+    "SQD":                {"repo": "qiskit-addon-sqd",        "path": "docs/tutorials", "pip": "qiskit-addon-sqd"},
+    "OBP":                {"repo": "qiskit-addon-obp",        "path": "docs/tutorials", "pip": "qiskit-addon-obp"},
+    "MPF":                {"repo": "qiskit-addon-mpf",        "path": "docs/tutorials", "pip": "qiskit-addon-mpf"},
+    "AQC-Tensor":         {"repo": "qiskit-addon-aqc-tensor", "path": "docs/tutorials", "pip": "qiskit-addon-aqc-tensor"},
+    "PNA":                {"repo": "qiskit-addon-pna",        "path": "docs/tutorials", "pip": "qiskit-addon-pna"},
+    "SLC":                {"repo": "qiskit-addon-slc",        "path": "docs/tutorials", "pip": "qiskit-addon-slc"},
+}
 
 # What to sync from upstream (content + images)
 CONTENT_PATHS = [
@@ -2080,6 +2093,188 @@ def scan_notebook_deps():
     print(f"\nReport saved to: {report_path}")
 
 
+def process_addons():
+    """Process Jupyter notebooks from Qiskit addon submodules."""
+    print("\n🧩 Processing Qiskit Addons...")
+
+    addons_dst = DOCS_OUTPUT / "qiskit-addons"
+    notebooks_dst = NOTEBOOKS_OUTPUT / "qiskit-addons"
+
+    # Clean output directories
+    if addons_dst.exists():
+        shutil.rmtree(addons_dst)
+    addons_dst.mkdir(parents=True)
+
+    if notebooks_dst.exists():
+        shutil.rmtree(notebooks_dst)
+    notebooks_dst.mkdir(parents=True)
+
+    # Generate the Qiskit Addons index page
+    addon_rows = []
+    for display_name, config in ADDON_SOURCES.items():
+        pip_pkg = config["pip"]
+        desc_map = {
+            "Circuit Cutting": "Reduce circuit width and depth by cutting gates and wires",
+            "SQD": "Sample-based Quantum Diagonalization for ground state estimation",
+            "OBP": "Operator Back-Propagation to reduce circuit depth",
+            "MPF": "Multi-Product Formulas for improved Hamiltonian simulation",
+            "AQC-Tensor": "Approximate Quantum Compilation with tensor networks",
+            "PNA": "Propagated Noise Absorption for error mitigation",
+            "SLC": "Shaded Lightcones for reducing PEC sampling overhead",
+        }
+        desc = desc_map.get(display_name, "")
+        addon_rows.append(f"| **{display_name}** | `{pip_pkg}` | {desc} |")
+
+    index_content = f"""---
+title: Qiskit Addons
+sidebar_label: Overview
+sidebar_position: 1
+description: Tutorials for official Qiskit Addons — circuit cutting, sample-based quantum diagonalization, operator backpropagation, and more.
+---
+
+# Qiskit Addons
+
+[Qiskit Addons](https://github.com/Qiskit?q=qiskit-addon) are official extension packages that provide specialized quantum computing algorithms and techniques. Each addon focuses on a specific area and includes tutorials with executable code.
+
+## Available Addons
+
+| Addon | Package | Description |
+|-------|---------|-------------|
+{chr(10).join(addon_rows)}
+
+All tutorials can be executed directly in your browser using Binder, or on your own Jupyter server.
+
+For API documentation, visit the individual addon repos on [GitHub](https://github.com/Qiskit?q=qiskit-addon).
+"""
+    index_path = addons_dst / "index.mdx"
+    index_path.write_text(index_content)
+    print("  ✓ index.mdx (generated)")
+
+    total_stats = {"ipynb": 0, "images": 0, "skipped": 0}
+
+    for display_name, config in ADDON_SOURCES.items():
+        repo_dir = ADDONS_DIR / config["repo"]
+        tutorials_src = repo_dir / config["path"]
+        # Slug: e.g. "Circuit Cutting" → "circuit-cutting"
+        slug_name = config["repo"].replace("qiskit-addon-", "")
+        addon_dst = addons_dst / slug_name
+        addon_nb_dst = notebooks_dst / slug_name
+
+        if not tutorials_src.exists():
+            print(f"  ⚠ {display_name}: tutorials not found at {tutorials_src}")
+            continue
+
+        addon_dst.mkdir(parents=True, exist_ok=True)
+        addon_nb_dst.mkdir(parents=True, exist_ok=True)
+
+        for src_path in sorted(tutorials_src.glob('*.ipynb')):
+            rel_name = src_path.name
+            dst_path = addon_dst / src_path.with_suffix('.mdx').name
+            notebook_path = f"qiskit-addons/{slug_name}/{rel_name}"
+
+            if convert_notebook(src_path, dst_path, notebook_path=notebook_path):
+                total_stats["ipynb"] += 1
+                print(f"  ✓ {display_name}: {rel_name} → .mdx")
+            else:
+                total_stats["skipped"] += 1
+
+            # Copy original notebook for "Open in Lab"
+            nb_dst = addon_nb_dst / rel_name
+            nb_rel = Path('qiskit-addons') / slug_name / rel_name
+            copy_notebook_with_rewrite(src_path, nb_dst, nb_rel)
+
+        # Copy any images from the tutorials directory
+        for img_path in tutorials_src.glob('*'):
+            if img_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
+                dst = addon_dst / img_path.name
+                shutil.copy(img_path, dst)
+                total_stats["images"] += 1
+
+        # Copy images from sibling directories that notebooks may reference
+        # via relative paths like ../images/ or ../_static/images/
+        # These resolve to qiskit-addons/images/ or qiskit-addons/_static/images/
+        docs_dir = repo_dir / config["path"].split("/")[0]  # e.g. "docs"
+        for img_subdir in ("images", "_static/images", "_static"):
+            img_src = docs_dir / img_subdir
+            if not img_src.exists():
+                continue
+            # Place at parent level (qiskit-addons/<img_subdir>) since MDX uses ../
+            img_dst = addons_dst / img_subdir
+            img_dst.mkdir(parents=True, exist_ok=True)
+            for img_path in img_src.rglob('*'):
+                if img_path.is_file() and img_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
+                    rel = img_path.relative_to(img_src)
+                    dst = img_dst / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if not dst.exists():
+                        shutil.copy(img_path, dst)
+                        total_stats["images"] += 1
+
+        # Also check for exp_data/ inside the tutorials dir
+        exp_data = tutorials_src / "exp_data"
+        if exp_data.exists():
+            exp_dst = addon_dst / "exp_data"
+            exp_dst.mkdir(parents=True, exist_ok=True)
+            for img_path in exp_data.rglob('*'):
+                if img_path.is_file():
+                    dst = exp_dst / img_path.relative_to(exp_data)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(img_path, dst)
+                    total_stats["images"] += 1
+
+    print(f"\n  Summary: {total_stats['ipynb']} notebooks, "
+          f"{total_stats['images']} images, {total_stats['skipped']} skipped")
+
+
+def generate_addons_sidebar():
+    """Generate sidebar configuration for Qiskit Addons."""
+    print("\n📋 Generating Qiskit Addons sidebar...")
+
+    addons_dst = DOCS_OUTPUT / "qiskit-addons"
+    sidebar_items = []
+
+    for display_name, config in ADDON_SOURCES.items():
+        slug_name = config["repo"].replace("qiskit-addon-", "")
+        addon_dir = addons_dst / slug_name
+
+        if not addon_dir.exists():
+            continue
+
+        # Collect all .mdx files in this addon directory
+        mdx_files = sorted(addon_dir.glob('*.mdx'))
+        if not mdx_files:
+            continue
+
+        items = []
+        for mdx_file in mdx_files:
+            # Docusaurus strips number prefixes (01_, 02_) from doc IDs
+            stem = re.sub(r'^\d+_', '', mdx_file.stem)
+            doc_id = f"qiskit-addons/{slug_name}/{stem}"
+            items.append(sidebar_doc_item(doc_id))
+
+        if len(items) == 1:
+            # Single tutorial — no need for a subcategory
+            sidebar_items.append(items[0])
+        else:
+            sidebar_items.append({
+                'type': 'category',
+                'label': display_name,
+                'collapsed': True,
+                'items': items,
+            })
+
+    sidebar_json = PROJECT_ROOT / "sidebar-addons.json"
+    sidebar_json.write_text(json.dumps(sidebar_items, indent=2))
+
+    # Count total docs
+    total = sum(1 for item in sidebar_items
+                if isinstance(item, str) or (isinstance(item, dict) and item.get('type') == 'doc'))
+    total += sum(len(item.get('items', [])) for item in sidebar_items
+                 if isinstance(item, dict) and item.get('type') == 'category')
+    print(f"  Found {total} addon tutorials")
+    print(f"  ✓ Generated {sidebar_json}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sync Qiskit tutorials for Docusaurus")
     parser.add_argument("--tutorials-only", action="store_true",
@@ -2089,7 +2284,7 @@ def main():
     parser.add_argument("--sample-only", action="store_true",
                         help="Only create sample content (for testing)")
     parser.add_argument("--skip", action="append", default=[],
-                        choices=["tutorials", "courses", "modules", "guides"],
+                        choices=["tutorials", "courses", "modules", "guides", "addons"],
                         help="Skip specific content types (can be repeated)")
     parser.add_argument("--scan-deps", action="store_true",
                         help="Scan notebooks for missing deps (report only, no conversion)")
@@ -2144,6 +2339,8 @@ def main():
             process_courses()
         if "modules" not in skip:
             process_modules()
+        if "addons" not in skip:
+            process_addons()
 
         create_learning_landing_pages()
 
@@ -2158,6 +2355,8 @@ def main():
             generate_course_sidebar()
         if "modules" not in skip:
             generate_module_sidebar()
+        if "addons" not in skip:
+            generate_addons_sidebar()
 
     print("\n" + "=" * 60)
     print("✅ Content sync complete!")

@@ -60,6 +60,13 @@ try {
   moduleItems = [];
 }
 
+let addonItems: SidebarItemConfig[];
+try {
+  addonItems = require('./sidebar-addons.json');
+} catch {
+  addonItems = [];
+}
+
 // Collect tutorial category labels so we can rename collisions in guides
 const tutorialLabels = collectCategoryLabels(tutorialItems);
 
@@ -105,6 +112,17 @@ const sidebars: SidebarsConfig = {
             label: 'Modules',
             collapsed: true,
             items: moduleItems,
+          },
+        ]
+      : []),
+    ...(addonItems.length > 0
+      ? [
+          {
+            type: 'category' as const,
+            label: 'Qiskit Addons',
+            collapsed: true,
+            link: {type: 'doc' as const, id: 'qiskit-addons/index'},
+            items: addonItems,
           },
         ]
       : []),
