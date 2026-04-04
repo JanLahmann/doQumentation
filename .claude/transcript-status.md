@@ -1,25 +1,27 @@
 # Video Transcript Status
 
-Generated: 2026-04-03
+Generated: 2026-04-04
 
 59 `<IBMVideo>` components in content. Two underlying platforms:
 - **YouTube** (32 videos): mapped via `YOUTUBE_MAP` in `IBMVideo.tsx`, transcripts via `youtube-transcript-api`
 - **IBM Video** (27 videos): `video.ibm.com`, transcripts extracted manually via browser (Akamai CDN blocks automation)
 
-Translations target 12 languages: ar, de, es, fr, he, it, ja, ko, pt, th, tl, uk.
+Translations cover 17 languages: ar, cs, de, es, fr, he, id, it, ja, ko, ms, pl, pt, ro, th, tl, uk.
 
 ## Summary
 
 | Status | YouTube | IBM Video | Total |
 |--------|---------|-----------|-------|
-| EN + 12 translations (complete) | 32 | 1 | 33 |
+| EN + 17 translations (complete) | 32 | 1 | 33 |
 | EN only (needs translation) | 0 | 22 | 22 |
 | No transcript at all | 0 | 4 | 4 |
 | **Total** | **32** | **27** | **59** |
 
 ## Fully translated (33 videos)
 
-All have `en.vtt` + 12 locale VTTs. Merged from `archive/claude/check-translation-status-aXqD6` on 2026-04-03.
+All have `en.vtt` + 17 locale VTTs. Squash-merged from two branches on 2026-04-04:
+- `archive/claude/check-translation-status-aXqD6` (ar, de, es, fr, he, it, ja, ko, pt, th, tl, uk)
+- `archive/claude/translate-video-transcripts-c747O` (cs, id, ms, pl, ro)
 
 **32 YouTube-mapped** (all by John Watrous, Katie McCormick, Chris Porter, Olivia Lanes, Darío Gil):
 132414879, 134056207, 134056217, 134056222, 134056223, 134056224, 134056231, 134056235,
@@ -31,7 +33,7 @@ All have `en.vtt` + 12 locale VTTs. Merged from `archive/claude/check-translatio
 
 ## EN transcript only — needs translation (22 IBM Video)
 
-All EN transcripts are currently **untracked** (not committed to git).
+All EN transcripts are committed (2026-04-04). Translations into 17 languages still needed.
 
 ### Quantum Business Foundations (11 videos)
 
@@ -99,6 +101,5 @@ Referenced in codebase but have **no transcript directory**. Likely demo/screenc
 
 ## Next steps
 
-1. **Commit** the 22 untracked EN transcripts to git
-2. **Translate** all 22 into 12 languages using `scripts/translate-transcripts.py`
-3. **Investigate** the 4 missing videos — extract subtitles if they have spoken content, or mark as no-subtitle demos
+1. **Translate** the 22 EN-only videos into 17 languages using `scripts/translate-transcripts.py`
+2. **Investigate** the 4 missing videos — extract subtitles if they have spoken content, or mark as no-subtitle demos
