@@ -115,19 +115,26 @@ const sidebars: SidebarsConfig = {
           },
         ]
       : []),
-    ...(addonItems.length > 0
-      ? [
+    /* API Reference + Settings are in the navbar — not duplicated here */
+  ],
+  // Qiskit Addons live in their own sidebar so the pages are still built and
+  // have working navigation when visited by direct URL, but they do NOT appear
+  // in the main tutorialsSidebar or the navbar. Re-enable by adding a navbar
+  // entry in docusaurus.config.ts and/or splicing the category back into
+  // tutorialsSidebar above.
+  ...(addonItems.length > 0
+    ? {
+        qiskitAddonsSidebar: [
           {
             type: 'category' as const,
             label: 'Qiskit Addons',
-            collapsed: true,
+            collapsed: false,
             link: {type: 'doc' as const, id: 'qiskit-addons/index'},
             items: addonItems,
           },
-        ]
-      : []),
-    /* API Reference + Settings are in the navbar — not duplicated here */
-  ],
+        ],
+      }
+    : {}),
 };
 
 export default sidebars;

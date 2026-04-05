@@ -255,11 +255,8 @@ const config: Config = {
           label: 'Modules',
           position: 'left',
         },
-        {
-          to: '/qiskit-addons',
-          label: 'Qiskit Addons',
-          position: 'left',
-        },
+        // Qiskit Addons are temporarily hidden from the navbar.
+        // Pages remain accessible via direct URL (/qiskit-addons and /qiskit-addons/<slug>/...).
         {
           href: 'https://quantum.cloud.ibm.com/docs/en/api',
           label: 'API Reference',
