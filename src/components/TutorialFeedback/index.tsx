@@ -30,7 +30,15 @@ function FeedbackWidget(): JSX.Element {
       <span className="tutorial-feedback__label">
         {translate({
           id: 'tutorialFeedback.question',
-          message: 'Was this tutorial helpful?',
+          message: 'Was this tutorial helpful on doQumentation?',
+          description: 'Feedback question about the tutorial experience on our site (content, code execution, presentation)',
+        })}
+      </span>
+      <span className="tutorial-feedback__hint">
+        {translate({
+          id: 'tutorialFeedback.hint',
+          message: '(content, code execution, presentation)',
+          description: 'Hint clarifying what aspects the feedback covers',
         })}
       </span>
       <button

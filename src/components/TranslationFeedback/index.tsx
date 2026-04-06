@@ -50,7 +50,8 @@ function TranslationBanner(): JSX.Element | null {
       <span className="translation-feedback__label">
         {translate({
           id: 'translationFeedback.question',
-          message: 'How is the translation quality?',
+          message: 'How is the translation quality on this page?',
+          description: 'Question about AI-generated translation accuracy',
         })}
       </span>
       <button
