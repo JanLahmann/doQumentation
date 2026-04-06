@@ -109,7 +109,26 @@ export default function LocaleDropdownNavbarItem({
     },
   );
 
-  const items = [...dropdownItemsBefore, ...localeItems, ...dropdownItemsAfter];
+  // On non-English pages, add a prominent "View in English" item at the top
+  const viewInEnglishItem: LinkLikeNavbarItemProps[] =
+    currentLocale !== 'en'
+      ? [
+          {
+            label: `\u{1F1EC}\u{1F1E7} ${translate({
+              message: 'View in English',
+              id: 'theme.navbar.viewInEnglish',
+              description: 'Label for the View in English link shown on translated pages',
+            })}`,
+            lang: utils.getLang('en'),
+            to: utils.getURL('en', {queryString}),
+            target: '_self',
+            autoAddBaseUrl: false,
+            className: 'dropdown__link--view-english',
+          },
+        ]
+      : [];
+
+  const items = [...viewInEnglishItem, ...dropdownItemsBefore, ...localeItems, ...dropdownItemsAfter];
 
   const dropdownLabel = mobile
     ? translate({

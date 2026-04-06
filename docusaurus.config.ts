@@ -198,6 +198,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/', // Serve docs at root
+          breadcrumbs: true,
           remarkPlugins: [remarkMath],
           rehypePlugins: [rehypeKatex],
           editUrl: 'https://github.com/JanLahmann/doQumentation/tree/main/',

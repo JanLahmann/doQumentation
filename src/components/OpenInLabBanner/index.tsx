@@ -209,6 +209,19 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               >
                 Colab &#8599;
               </a>
+              <a
+                href="/about/code-modifications"
+                style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--ifm-color-emphasis-500)',
+                  textDecoration: 'none',
+                  whiteSpace: 'nowrap',
+                  alignSelf: 'center',
+                }}
+                title="See what doQumentation modifies in exported notebooks"
+              >
+                What&apos;s modified?
+              </a>
             </div>
             {isActive && (
               <div style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.8rem' }}>

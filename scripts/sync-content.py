@@ -195,6 +195,21 @@ def transform_mdx(content: str, source_path: Path) -> str:
         content,
     )
 
+    # Append doQumentation feedback widget (Umami-tracked thumbs up/down).
+    # Only for tutorials (identified by path containing 'tutorials/').
+    is_tutorial = 'tutorials' in str(source_path)
+    if is_tutorial:
+        feedback_import = "import TutorialFeedback from '@site/src/components/TutorialFeedback';\n"
+        if feedback_import.strip() not in content:
+            if content.startswith('---'):
+                end_fm = re.search(r'^---\s*$', content[3:], re.MULTILINE)
+                if end_fm:
+                    pos = 3 + end_fm.end()
+                    content = content[:pos] + '\n\n' + feedback_import + content[pos:]
+            else:
+                content = feedback_import + '\n' + content
+        content = content.rstrip() + '\n\n<TutorialFeedback />\n'
+
     return content
 
 
@@ -548,9 +563,21 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
             desc_prop = f' description="{banner_description}"' if banner_description else ''
             banner = f'\n<OpenInLabBanner notebookPath="{notebook_path}"{desc_prop} />\n'
 
-        # Write output
+        # Write output.
+        # Extract any import statements from content (added by transform_mdx)
+        # and place them before the banner JSX to satisfy MDX import ordering.
+        import_lines = []
+        body_lines = []
+        for line in content.split('\n'):
+            if line.strip().startswith('import ') and ' from ' in line:
+                import_lines.append(line)
+            else:
+                body_lines.append(line)
+        imports_block = '\n'.join(import_lines) + '\n' if import_lines else ''
+        body = '\n'.join(body_lines)
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(frontmatter + banner + '\n' + content)
+        output_path.write_text(frontmatter + '\n' + imports_block + banner + '\n' + body)
 
         return True
 
@@ -1014,7 +1041,21 @@ def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path
         src = clean_notebook_markdown(src)
         cell['source'] = src
 
-    nb['cells'] = [prereq_cell] + cells
+    # Markdown cell explaining the injected setup — transparency for users
+    setup_notice = {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "> **\u2699\ufe0f Setup cell added by [doQumentation](https://doqumentation.org)**\n",
+            ">\n",
+            "> The code cell below was added automatically to install required packages\n",
+            "> (skipped if already installed, e.g. on Binder/Code Engine).\n",
+            "> It also contains a commented-out template for IBM Quantum credentials.\n",
+            "> [Learn more about automatic modifications.](https://doqumentation.org/about/code-modifications)"
+        ]
+    }
+
+    nb['cells'] = [setup_notice, prereq_cell] + cells
 
     # Colab notebook metadata: auto-run the first cell on open
     colab_meta = nb.setdefault('metadata', {}).setdefault('colab', {})

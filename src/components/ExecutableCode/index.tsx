@@ -1643,7 +1643,9 @@ export default function ExecutableCode({
           {(thebeStatus === 'connecting' || thebeStatus === 'error') && (
             <span className={`thebe-status thebe-status--${thebeStatus}`} aria-live="polite">
               {statusText[thebeStatus]}
-              <InfoIcon tooltip={translate({id: 'executable.info.binderStatus', message: 'Binder is preparing a free cloud server with all packages. This may take 2\u201325 minutes depending on cache availability.'})} position="below" />
+              <InfoIcon tooltip={jupyterConfig?.environment === 'code-engine'
+                ? translate({id: 'executable.info.ceStatus', message: 'Code Engine is starting a cloud container with all packages. This usually takes 1\u20133 minutes.'})
+                : translate({id: 'executable.info.binderStatus', message: 'Binder is preparing a free cloud server with all packages. This may take 2\u201325 minutes depending on cache availability.'})} position="below" />
             </span>
           )}
 
@@ -1681,14 +1683,20 @@ export default function ExecutableCode({
       <div className="executable-code" ref={containerRef}>
       {isFirstCell && binderCacheMiss && binderPhase && (
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-warning-dark, #b45309)', color: 'var(--ifm-color-warning-dark, #b45309)' }}>
-          {translate({id: 'executable.status.binderCacheMiss', message: '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Use Colab (above) or come back later.'})}
-          <InfoIcon tooltip={translate({id: 'executable.info.cacheMiss', message: 'The Binder Docker image must be rebuilt from scratch. Try Colab for instant access, or come back in ~20 minutes.'})} position="below" />
+          {jupyterConfig?.environment === 'code-engine'
+            ? translate({id: 'executable.status.ceCacheMiss', message: '\u26a0 Cold start \u2014 container build may take a few minutes.'})
+            : translate({id: 'executable.status.binderCacheMiss', message: '\u26a0 Cache not warmed \u2014 total build time 10\u201325 min. Use Colab (above) or come back later.'})}
+          <InfoIcon tooltip={jupyterConfig?.environment === 'code-engine'
+            ? translate({id: 'executable.info.ceCacheMiss', message: 'The Code Engine container is being built. This is usually faster than Binder.'})
+            : translate({id: 'executable.info.cacheMiss', message: 'The Binder Docker image must be rebuilt from scratch. Try Colab for instant access, or come back in ~20 minutes.'})} position="below" />
         </div>
       )}
 
       {isFirstCell && binderSlowStartup && binderPhase && (
         <div className="executable-code__conflict-banner" style={{ borderColor: 'var(--ifm-color-danger-dark, #dc3545)', color: 'var(--ifm-color-danger-dark, #dc3545)' }}>
-          {translate({id: 'executable.status.binderSlowStartup', message: 'Binder startup is taking longer than expected. You can cancel and try again later, or use one of the other backends (Colab, Docker, or Code Engine).'})}
+          {jupyterConfig?.environment === 'code-engine'
+            ? translate({id: 'executable.status.ceSlowStartup', message: 'Code Engine startup is taking longer than expected. You can cancel and try again later, or use Colab or Docker instead.'})
+            : translate({id: 'executable.status.binderSlowStartup', message: 'Binder startup is taking longer than expected. You can cancel and try again later, or use one of the other backends (Colab, Docker, or Code Engine).'})}
         </div>
       )}
 
