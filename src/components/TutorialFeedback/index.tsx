@@ -30,15 +30,15 @@ function FeedbackWidget(): JSX.Element {
       <span className="tutorial-feedback__label">
         {translate({
           id: 'tutorialFeedback.question',
-          message: 'Was this tutorial helpful on doQumentation?',
-          description: 'Feedback question about the tutorial experience on our site (content, code execution, presentation)',
+          message: 'How was the doQumentation experience?',
+          description: 'Feedback about our site (presentation, code execution, navigation) — NOT about the tutorial content, which is from IBM',
         })}
       </span>
       <span className="tutorial-feedback__hint">
         {translate({
           id: 'tutorialFeedback.hint',
-          message: '(content, code execution, presentation)',
-          description: 'Hint clarifying what aspects the feedback covers',
+          message: '(website, code execution, navigation — tutorial content is by IBM Quantum)',
+          description: 'Clarifies we only ask about our frontend/execution, not the IBM-authored content',
         })}
       </span>
       <button

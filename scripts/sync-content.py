@@ -189,9 +189,9 @@ def transform_mdx(content: str, source_path: Path) -> str:
         r'(## Tutorial survey\n\nPlease take this short survey to provide feedback on this tutorial\.'
         r' Your insights will help us improve our content offerings and user experience\.)',
         r'\1\n\n'
-        r'> **Note:** This survey is provided by IBM Quantum and relates to the original English content. '
-        r'To give feedback on doQumentation\'s website, translations, or code execution, '
-        r'please [open a GitHub issue](https://github.com/JanLahmann/doQumentation/issues).',
+        r'> **Note:** This survey is by **IBM Quantum** and covers the **tutorial content** (written by IBM). '
+        r'doQumentation provides the website, translations, and code execution — '
+        r'for feedback on those, please [open a GitHub issue](https://github.com/JanLahmann/doQumentation/issues).',
         content,
     )
 
