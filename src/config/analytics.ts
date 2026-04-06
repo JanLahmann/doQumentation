@@ -10,7 +10,9 @@ type AnalyticsEvent =
   | 'Run Code'
   | 'Run All'
   | 'Binder Launch'
-  | 'Colab Open';
+  | 'Colab Open'
+  | 'Tutorial Feedback'
+  | 'Translation Feedback';
 
 interface EventProps {
   page?: string;
