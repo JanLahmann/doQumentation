@@ -1,6 +1,6 @@
 # Video Transcript Status
 
-Generated: 2026-04-04
+Updated: 2026-04-07
 
 59 `<IBMVideo>` components in content. Two underlying platforms:
 - **YouTube** (32 videos): mapped via `YOUTUBE_MAP` in `IBMVideo.tsx`, transcripts via `youtube-transcript-api`
@@ -12,70 +12,44 @@ Translations cover 17 languages: ar, cs, de, es, fr, he, id, it, ja, ko, ms, pl,
 
 | Status | YouTube | IBM Video | Total |
 |--------|---------|-----------|-------|
-| EN + 17 translations (complete) | 32 | 1 | 33 |
-| EN only (needs translation) | 0 | 22 | 22 |
+| EN + 17 translations (complete) | 32 | 23 | 55 |
 | No transcript at all | 0 | 4 | 4 |
 | **Total** | **32** | **27** | **59** |
 
-## Fully translated (33 videos)
+## Fully translated (55 videos)
 
-All have `en.vtt` + 17 locale VTTs. Squash-merged from two branches on 2026-04-04:
+All have `en.vtt` + 17 locale VTTs (ar, cs, de, es, fr, he, id, it, ja, ko, ms, pl, pt, ro, th, tl, uk).
+
+### Batch 1 — Squash-merged 2026-04-04
+
 - `archive/claude/check-translation-status-aXqD6` (ar, de, es, fr, he, it, ja, ko, pt, th, tl, uk)
 - `archive/claude/translate-video-transcripts-c747O` (cs, id, ms, pl, ro)
 
-**32 YouTube-mapped** (all by John Watrous, Katie McCormick, Chris Porter, Olivia Lanes, Darío Gil):
+**32 YouTube-mapped** (John Watrous, Katie McCormick, Chris Porter, Olivia Lanes, Darío Gil):
 132414879, 134056207, 134056217, 134056222, 134056223, 134056224, 134056231, 134056235,
 134056243, 134063416, 134063421, 134063422, 134063423, 134063424, 134063425, 134063426,
 134082557, 134212334, 134313287, 134325501, 134325510, 134325519, 134352398, 134397390,
 134413658, 134413660, 134413662, 134413665, 134413671, 134413680, 134413695, 134460549
 
-**1 IBM Video only**: 134627974
+**1 IBM Video**: 134627974
 
-## EN transcript only — needs translation (22 IBM Video)
+### Batch 2 — Branch `claude/video-transcript-translations-P5nk1` (2026-04-05 to 2026-04-07)
 
-All EN transcripts are committed (2026-04-04). Translations into 17 languages still needed.
+22 IBM Video transcripts translated via chunked Sonnet agent workflow.
+- Session 1 (2026-04-05/06): ar, de, es, fr, id, ja, ms, th, tl, uk
+- Session 2 (2026-04-07): it, pt, ko, he, pl, ro, cs
 
-### Quantum Business Foundations (11 videos)
+#### Quantum Business Foundations (11 videos)
+132596522, 134056414, 133010485, 132984196, 133345142, 134056407, 133345141, 134056416, 133345140, 134056420, 133185610
 
-| Video ID | Page | Speaker / Topic |
-|----------|------|-----------------|
-| 132596522 | introduction-to-quantum-computing | Victoria Lipinska — QC overview |
-| 134056414 | introduction-to-quantum-computing | Katie Pizzolato — QC applications |
-| 133010485 | introduction-to-quantum-computing | Victoria Lipinska — problem classes |
-| 132984196 | quantum-computing-fundamentals | Katie Pizzolato — QC myths |
-| 133345142 | quantum-computing-fundamentals | Darío Gil — bits vs qubits |
-| 134056407 | quantum-computing-fundamentals | Antonio Corcoles — superposition |
-| 133345141 | quantum-computing-fundamentals | Darío Gil — circuits and gates |
-| 134056416 | quantum-computing-fundamentals | Qiskit pronunciation & features |
-| 133345140 | quantum-technology | Darío Gil — quantum volume |
-| 134056420 | quantum-technology | Error mitigation |
-| 133185610 | how-to-become-quantum-ready | Olivia Lanes — responsible QC |
+#### Quantum Chemistry with VQE (4 videos)
+132414895, 132414916, 132414924, 132414925
 
-### Quantum Chemistry with VQE (4 videos)
+#### Quantum Machine Learning (3 videos)
+134355930, 133981147, 133981150
 
-| Video ID | Page | Speaker / Topic |
-|----------|------|-----------------|
-| 132414895 | introduction | Victoria Lipinska — VQE overview |
-| 132414916 | classical-optimizers | Victoria Lipinska — classical optimizers |
-| 132414924 | hamiltonian-construction | Victoria Lipinska — Hamiltonians |
-| 132414925 | ground-state | Victoria Lipinska — combining components |
-
-### Quantum Machine Learning (3 videos)
-
-| Video ID | Page | Speaker / Topic |
-|----------|------|-----------------|
-| 134355930 | introduction | Chris Porter — subspace quantum diagonalization |
-| 133981147 | classical-ml-review | Chris Porter — kernel methods |
-| 133981150 | classical-ml-review | Chris Porter — neural networks |
-
-### Integrating Quantum and HPC (4 videos)
-
-| Video ID | Page | Speaker / Topic |
-|----------|------|-----------------|
-| 134680662 | introduction | Iskandar Sitdikov — HPC & QC intro |
-| 134680643 | programming-models | Iskandar Sitdikov — programming models |
-| 134680652 | compute-resources | Iskandar Sitdikov — computing resources |
-| 134680646 | sqd-skqd | Iskandar Sitdikov — hybrid calculation |
+#### Integrating Quantum and HPC (4 videos)
+134680662, 134680643, 134680652, 134680646
 
 ## Missing transcripts entirely (4 videos)
 
@@ -101,5 +75,4 @@ Referenced in codebase but have **no transcript directory**. Likely demo/screenc
 
 ## Next steps
 
-1. **Translate** the 22 EN-only videos into 17 languages using `scripts/translate-transcripts.py`
-2. **Investigate** the 4 missing videos — extract subtitles if they have spoken content, or mark as no-subtitle demos
+1. **Investigate** the 4 missing videos — extract subtitles if they have spoken content, or mark as no-subtitle demos
