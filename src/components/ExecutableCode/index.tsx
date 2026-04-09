@@ -666,7 +666,7 @@ function isSimulatorExemptPage(): boolean {
 const CONFLICT_EVENT = 'executablecode:conflict';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolean> {
+export async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolean> {
   const k = kernelObj as Record<string, any>;
   const kernel = k?.requestExecute ? k : k?.kernel;
   if (!kernel?.requestExecute) {
@@ -681,6 +681,59 @@ async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolea
     console.error('[ExecutableCode] kernel exec error:', err);
     return false;
   }
+}
+
+/**
+ * Execute code on the kernel and capture stdout messages via onIOPub.
+ * Returns true if the request was dispatched successfully.
+ * The supplied `onStdout` callback receives each stream text chunk;
+ * `onError` receives Python tracebacks.
+ */
+export async function executeOnKernelWithOutput(
+  kernelObj: unknown,
+  code: string,
+  onStdout: (text: string) => void,
+  onError?: (ename: string, evalue: string, traceback: string[]) => void,
+): Promise<boolean> {
+  const k = kernelObj as Record<string, any>;
+  const kernel = k?.requestExecute ? k : k?.kernel;
+  if (!kernel?.requestExecute) {
+    console.warn('[ExecutableCode] kernel.requestExecute not available');
+    return false;
+  }
+  try {
+    const future = kernel.requestExecute({ code, silent: false, store_history: false });
+    if (future) {
+      future.onIOPub = (msg: any) => {
+        const msgType = msg?.header?.msg_type;
+        if (msgType === 'stream') {
+          const text = msg?.content?.text;
+          if (typeof text === 'string') onStdout(text);
+        } else if (msgType === 'error' && onError) {
+          const ename = String(msg?.content?.ename ?? 'Error');
+          const evalue = String(msg?.content?.evalue ?? '');
+          const traceback = Array.isArray(msg?.content?.traceback) ? msg.content.traceback : [];
+          onError(ename, evalue, traceback);
+        }
+      };
+      if (future.done) await future.done;
+    }
+    return true;
+  } catch (err) {
+    console.error('[ExecutableCode] kernel exec error:', err);
+    return false;
+  }
+}
+
+/** Return the currently-active thebelab kernel object, or null if none is connected. */
+export function getActiveKernel(): unknown {
+  return activeKernel;
+}
+
+/** Trigger thebelab bootstrap using the auto-detected Jupyter config (idempotent). */
+export function ensureKernel(): void {
+  const config = lastJupyterConfig ?? detectJupyterConfig();
+  bootstrapOnce(config);
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
