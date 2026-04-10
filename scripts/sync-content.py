@@ -2293,16 +2293,17 @@ def generate_addons_sidebar():
             doc_id = f"qiskit-addons/{slug_name}/{stem}"
             items.append(sidebar_doc_item(doc_id))
 
-        if len(items) == 1:
-            # Single tutorial — no need for a subcategory
-            sidebar_items.append(items[0])
-        else:
-            sidebar_items.append({
-                'type': 'category',
-                'label': display_name,
-                'collapsed': True,
-                'items': items,
-            })
+        # Always wrap each addon in a category — even if it only has a
+        # single tutorial — so the sidebar shows which addon every entry
+        # belongs to. Without this, single-tutorial addons (OBP, MPF,
+        # AQC-Tensor, PNA, SLC) render as bare notebook titles with no
+        # indication of their parent addon.
+        sidebar_items.append({
+            'type': 'category',
+            'label': display_name,
+            'collapsed': True,
+            'items': items,
+        })
 
     sidebar_json = PROJECT_ROOT / "sidebar-addons.json"
     sidebar_json.write_text(json.dumps(sidebar_items, indent=2))
