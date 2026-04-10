@@ -215,20 +215,36 @@ export function createThebelabAdapter(): SimulationAdapter {
     },
 
     async getBackends() {
+      // QAMPoser's SimulationControls dialog only lists entries where
+      // backend_type === "noisy_fake" — everything else is silently
+      // filtered out (and a disabled "Real Hardware — Coming soon" is
+      // appended unconditionally). If we report our actual mode (ideal
+      // or real), the dialog shows an empty Step 2 and the Run button
+      // does nothing useful.
+      //
+      // Our simulate() ignores the `profile` argument the dialog passes
+      // back anyway — execution is routed via doQumentation Settings
+      // at the Python layer (ideal AerSimulator / noisy FakeBackend /
+      // real IBM Quantum). So we always report backend_type="noisy_fake"
+      // here purely to satisfy the dialog's filter. The displayed name
+      // still reflects the user's actual active mode so they can see
+      // what will run.
       const mode = getExecutionMode();
-      const backendType =
-        mode.kind === 'noisy_fake'
-          ? 'noisy_fake'
-          : mode.kind === 'real'
-            ? 'real'
-            : 'ideal';
+      const labelPrefix =
+        mode.kind === 'real'
+          ? 'IBM Quantum (real hardware)'
+          : mode.kind === 'noisy_fake'
+            ? 'Noisy fake backend'
+            : mode.kind === 'ideal'
+              ? 'Ideal simulator'
+              : 'Ideal simulator (fallback)';
       return [
         {
-          id: mode.kind,
-          name: mode.label,
-          num_qubits: 0,
-          backend_type: backendType,
-          description: `Routed via doQumentation settings (${mode.kind})`,
+          id: `doqumentation-${mode.kind}`,
+          name: `${labelPrefix} · ${mode.label}`,
+          num_qubits: 32,
+          backend_type: 'noisy_fake' as const,
+          description: `Routed via doQumentation Settings (${mode.kind})`,
         },
       ];
     },

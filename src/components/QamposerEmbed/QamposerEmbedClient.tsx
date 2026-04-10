@@ -6,17 +6,27 @@
  * @qamposer/react package touches `document` at import time, which would
  * crash Docusaurus static site generation. Load it via dynamic `import()`
  * from inside a `<BrowserOnly>` callback (see `./index.tsx`).
+ *
+ * Renders the full `Qamposer` component from `@qamposer/react/visualization`
+ * — the same layout as qamposer.org/demo — with Operations panel, circuit
+ * editor, results histogram, Q-sphere viewer, and QASM code editor. This
+ * replaces the earlier editor-only `QamposerMicro` preset.
+ *
+ * `Qamposer` internally wraps its children in its own `QamposerProvider`,
+ * so we pass provider props (adapter, realtimeAdapter, config, etc.) DIRECTLY
+ * to `<Qamposer>`. Do NOT nest it inside our own `<QamposerProvider>` — that
+ * would hide our adapter behind the inner default `noopAdapter` and the
+ * Run button would never actually execute anything.
  */
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
-  QamposerProvider,
-  QamposerMicro,
   type SimulationAdapter,
   type CircuitRequest,
   type SimulationResult,
   type SimulationCompleteEvent,
 } from '@qamposer/react';
+import { Qamposer } from '@qamposer/react/visualization';
 import { useColorMode } from '@docusaurus/theme-common';
 import { createThebelabAdapter } from './thebelabAdapter';
 import { createThebelabRealtimeAdapter } from './thebelabRealtimeAdapter';
@@ -147,18 +157,21 @@ export default function QamposerEmbedClient({
           <a href="/jupyter-settings">Settings</a> to change this.
         </div>
       )}
-      <QamposerProvider
+      {/*
+        Provider props go DIRECTLY on <Qamposer>, not on an outer
+        <QamposerProvider>. Qamposer wraps its content in its own provider
+        using these spread props; an outer wrapper would be ignored and our
+        adapter would silently fall back to noopAdapter.
+      */}
+      <Qamposer
+        showHeader={showHeader}
+        defaultTheme={colorMode === 'dark' ? 'dark' : 'light'}
         adapter={adapter}
         realtimeAdapter={realtimeAdapter}
         onSimulationComplete={handleSimulationComplete}
         config={{ maxQubits: 5, maxShots: 10000 }}
         defaultCircuit={{ qubits: defaultQubits, gates: [] }}
-      >
-        <QamposerMicro
-          showHeader={showHeader}
-          defaultTheme={colorMode === 'dark' ? 'dark' : 'light'}
-        />
-      </QamposerProvider>
+      />
     </div>
   );
 }
