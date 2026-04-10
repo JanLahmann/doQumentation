@@ -14,7 +14,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 | **Docker** | [ghcr.io/janlahmann/doqumentation](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation) | Local Jupyter + Qiskit |
 | **RasQberry Pi** | `http://rasqberry.local` | Local Jupyter + Qiskit, offline capable |
 
-**Content:** 42 Tutorials, 171 Guides, 154 Course pages, 14 Modules (~380 pages total).
+**Content:** 42 Tutorials, 171 Guides, 154 Course pages, 14 Modules, 11 Qiskit Addon tutorials (~391 pages total). Qiskit Addons are built and URL-accessible (`/qiskit-addons/...`) but currently hidden from navbar and main sidebar.
 
 **Live:** [doqumentation.org](https://doqumentation.org) | **Repo:** [JanLahmann/doQumentation](https://github.com/JanLahmann/doQumentation) | **License:** Apache 2.0 (code) + CC BY-SA 4.0 (content)
 
@@ -54,7 +54,10 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - **Kernel restart**: "Restart Kernel" button (visible when kernel is ready) calls `kernel.restart()`, clears all cell outputs/feedback, re-injects credentials/simulator setup. Same Binder session, fresh kernel state.
 - **Clear Session**: "Clear Session" button (GitHub Pages + Code Engine, visible when kernel is ready) clears `sessionStorage` session and resets to static view. Next Run starts a fresh server.
 - **Binder startup cancel + slow detection**: Cancel button replaces "Connecting..." during Binder startup — cancels the EventSource immediately. Per-phase timeout thresholds (connecting 1m, waiting 3m, fetching/pushing/launching 5m, building 12m) trigger a red warning banner suggesting alternative backends. "Clear Binder Session" also available on Settings page.
-- **Interception transparency**: All kernel modifications print `[doQumentation]` messages (simulator intercepts, credential injection, warning suppression, pip install cells)
+- **Interception transparency**: All kernel modifications print `[doQumentation]` messages (simulator intercepts, credential injection, warning suppression, pip install cells). Exported notebooks include a setup notice cell explaining injections. "What's modified?" link on `OpenInLabBanner`. Dedicated `/about/code-modifications` page listing every automatic transform.
+- **TutorialFeedback widget** (`src/components/TutorialFeedback/`): Thumbs up/down Umami-tracked widget appended to all tutorial + addon MDX pages via `sync-content.py`. Distinguishes doQumentation website feedback from IBM content survey. Label: "How was the doQumentation experience? (website, code execution, navigation — tutorial content is by IBM Quantum)".
+- **TranslationFeedback banner** (`src/components/TranslationFeedback/`): Translation quality banner on non-EN pages (good/ok/poor rating → Umami). Session-dismissible.
+- **"View in English" link**: Top entry in locale dropdown on non-EN pages — links to `https://doqumentation.org/{path}` for the original English version.
 - **save_account() protection**: Dynamic blue "Skip this cell" banners (runtime-injected via `annotateSaveAccountCells()`, translated via `code.json`) when credentials/simulator active, prevents overwriting injected values. **Run All auto-skips** these cells — `handleRunAll` filters out any cell with `.thebelab-cell__skip-hint` before execution.
 - **Full i18n**: All toolbar buttons, status messages, legend, conflict banner, settings link, and Binder hint wrapped with `translate()`/`<Translate>`
 
@@ -135,6 +138,8 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 - **Footer**: Three columns — doQumentation (Features, Settings, GitHub, Legal/Impressum), RasQberry (site + GitHub), IBM Quantum & Qiskit (docs, GitHub, Slack). IBM disclaimer in copyright.
 - **Legal page** (`/legal`): Impressum (Jan-R. Lahmann, contact via GitHub Issues) + Privacy Policy (Umami analytics, GitHub Pages hosting, external services, localStorage, GDPR rights). German DDG §5 + GDPR compliant. Linked from footer.
 - **Admin page** (`/admin`): Hidden reference page for admins/workshop hosts. Analytics dashboard link, CI/CD workflow links, translation commands, workshop checklist, satellite repo list. Not in navbar, excluded from search engines (`robots.txt` Disallow).
+- **Qamposer page** (`/qamposer`): Unlisted experimental visual quantum circuit composer (`@qamposer/react`). Embeds `QamposerMicro` wired into the existing thebelab kernel so simulations honor Settings (ideal / noisy fake / real IBM Quantum). `thebelabAdapter` routes via the active kernel, branching Python between `Backend.run()` and `SamplerV2` based on execution mode. `thebelabRealtimeAdapter` provides always-ideal live preview (disabled in real-device mode). `withRealDeviceGuard` pops a `window.confirm()` before any hardware job. Red pulsing badge + warning banner whenever real mode is active. Intentionally unlisted: no navbar/footer/homepage link, discreet experimental banner, `<meta robots="noindex,nofollow">`. Exports new `executeOnKernelWithOutput`/`getActiveKernel`/`ensureKernel` from `ExecutableCode` for adapter reuse.
+- **Breadcrumbs**: Enabled via `docs.breadcrumbs: true` in `docusaurus.config.ts` — auto-generated navigation trail at the top of every doc page.
 - **Analytics**: Umami Cloud (cookie-free, GDPR-compliant, no consent banner). Script in `headTags`, centralized `src/config/analytics.ts` module. Custom events: Run Code, Run All, Binder Launch, Colab Open. Locale tracked via custom Pageview event with hostname-derived locale. Auto-disabled on localhost/Docker. Dashboard: https://cloud.umami.is
 - **Styling**: Carbon Design-inspired (IBM Plex, `#0f62fe`).
 - **SEO & social sharing**: Open Graph + Twitter Card meta tags, JSON-LD structured data (Organization, WebPage, SoftwareApplication), robots meta for AI indexing, preconnect hints for fonts/CDN. Social card image (`static/img/rasqberry-social-card.png`, 1200x630).
@@ -148,15 +153,16 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 doQumentation/
 ├── .github/workflows/          # deploy, deploy-locales, docker, sync-deps, check-translations, binder
 ├── upstream-docs/              # Git submodule → JanLahmann/Qiskit-documentation (CC BY-SA 4.0)
+├── upstream-addons/            # Git submodules → 7 Qiskit addon repos (Apache 2.0)
 ├── binder/                     # Jupyter requirements (cross-platform + amd64-only)
 ├── docs/                       # Content (gitignored except index.mdx)
 ├── notebooks/                  # Original .ipynb for JupyterLab (generated)
 ├── src/
 │   ├── clientModules/          # pageTracker, displayPrefs, onboarding
-│   ├── components/             # ExecutableCode, ResumeCard, RecentPages, BookmarksList, OpenInLabBanner, BetaNotice, CourseComponents, GuideComponents
+│   ├── components/             # ExecutableCode, QamposerEmbed, ResumeCard, RecentPages, BookmarksList, OpenInLabBanner, BetaNotice, TutorialFeedback, TranslationFeedback, CourseComponents, GuideComponents
 │   ├── config/                 # storage.ts (cookie+localStorage), jupyter.ts (env detection, credentials), preferences.ts (user prefs)
 │   ├── css/custom.css          # All styling
-│   ├── pages/                  # features.tsx, jupyter-settings.tsx
+│   ├── pages/                  # features.tsx, jupyter-settings.tsx, qamposer.tsx (unlisted experimental)
 │   └── theme/                  # Swizzled: Root (global BetaNotice), CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, NavbarItem/LocaleDropdownNavbarItem, MDXComponents
 ├── i18n/                       # Translations: de/es/fr/it/uk/ja (387 each — 100%), ar (385), pt (386), tl (383), he (47), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34), swg/bad/bar (31 each)
 ├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
@@ -177,7 +183,7 @@ doQumentation/
 └── README.md
 ```
 
-**Generated (gitignored):** `docs/tutorials/`, `docs/guides/`, `docs/learning/`, `notebooks/`, `static/docs/`, `static/learning/images/`, `sidebar-*.json`
+**Generated (gitignored):** `docs/tutorials/`, `docs/guides/`, `docs/learning/`, `docs/qiskit-addons/`, `notebooks/`, `static/docs/`, `static/learning/images/`, `sidebar-*.json`
 
 ---
 
@@ -379,28 +385,25 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - **Translation structural sync script** — ✅ DONE. See `sync-translations.py` in Resolved section below.
 - **Qiskit execution error hints** — When a Binder/thebelab cell raises a common error, surface a helpful inline hint. Typical errors to handle: `IBMRuntimeError`/`QiskitBackendNotFoundError` (no IBM account → hint to run the save-account cell), `ModuleNotFoundError` (package missing → hint to run the prerequisites cell), `QiskitError: 'AerSimulator'` (aer not installed → hint re: kernel restart after pip), kernel restart/dead messages, and `NameError` on common Qiskit objects (cell run out of order → hint to run from top). Hook into thebelab's output area (or a MutationObserver on cell output divs) and match stderr/stdout against known patterns to inject a styled hint below the output.
 
-- **Submodule pointer drift** — `upstream-docs/` submodule is locally at `6f006d7a` ("Fix Binder workflow by adding Accept header for SSE") but committed pointer is `1472ac86`. Need to decide: commit the updated pointer (if the Binder fix should be picked up), or reset to committed state. Check if `sync-content.py` or Binder config depend on this change.
+- **Submodule pointer drift** — `upstream-docs/` submodule is locally at `6f006d7a` but committed pointer is `1472ac86`. Still uncommitted as of April 2026. Decide: commit the bump, or reset to committed state.
 - **Hello World "What's Next" section** — The "What next?" in `tutorials/hello-world.mdx` (self-written) should recommend paths forward in both Qiskit-documentation and doQumentation, since the two projects offer different things.
 - **Workshop mode testing** — Test the multi-instance Code Engine workshop setup end-to-end: deploy 2-3 instances via `codeengine-image.yml` workflow (set `instance_count`/`cpu`/`memory`), generate workshop URL, verify participant auto-import (`#workshop=BASE64`), confirm sticky session assignment, test failover when an instance is stopped, run `scripts/workshop-stress-test.py` to determine per-instance capacity and validate load distribution across the pool. Verify the monitoring dashboard (auto-refresh, memory/connections/busy columns, peak stats, structured logs in CE console). See `src/pages/workshop-setup.mdx` for the instructor guide (published at `/workshop-setup`). Key files: `src/config/jupyter.ts` (pool logic + `InstanceStats` type), `src/pages/jupyter-settings.tsx` (dashboard UI with auto-refresh), `binder/sse-build-server.py` (`/stats` endpoint with memory, counters, structured logging). Optional: enable IBM Cloud Monitoring (Sysdig) for historical metrics — see workshop-setup.mdx "Monitoring" section.
 - **Fork testing** — Verify the repo can be forked with Binder still working
 - **Raspberry Pi** — `scripts/setup-pi.sh` written but untested on actual hardware
 - **IBM Quantum Ecosystem listing** — Submit doQumentation.org to https://www.ibm.com/quantum/ecosystem to increase visibility.
-- **"View in English" button on translated pages** — Add a button/link on translated pages to switch to the original English version. Useful when translations are incomplete or users want to verify against the source. Could use Docusaurus `alternatePageUtils` or a simple link to `https://doqumentation.org/{path}`.
-- **User feedback via Umami** — Lightweight feedback collection using Umami custom events, no backend needed. Top-of-page banner (similar to BetaNotice pattern in `src/theme/Root.tsx`) shown after 3+ page visits on locale sites: "How is the translation quality? 👍 👎". Clicks send Umami event `Translation Feedback` with `{ locale, rating, page }`. On 👎, show follow-up with pre-filled GitHub Issue link (page + locale context). Also consider post-Run-All "Was this tutorial helpful?" prompt. Rules: show once per session, only after meaningful engagement, always dismissable, never block content. Store dismiss state in localStorage (`dq-feedback-dismissed`).
-- **Transparency for code injections/intercepts** — The site silently injects credentials, simulator monkey-patches, warning suppression, and pip install cells into the kernel at startup (`injectKernelSetup()` in `jupyter.ts`). Currently these print `[doQumentation]` messages to cell output, but users may not notice or understand them. Add a visible indicator (e.g. icon or badge in the toolbar) that signals active injections, with an expandable panel or tooltip listing what was injected and why (credentials, simulator mode, session→job mode, warning suppression). Consider linking to a help section on the Settings page explaining each injection.
-- **Video subtitle translations — 22 remaining**: 33/55 videos fully translated (EN + 17 languages: ar, cs, de, es, fr, he, id, it, ja, ko, ms, pl, pt, ro, th, tl, uk). 22 IBM Video transcripts have EN only (committed) — need translation. 4 videos have no transcript at all (guide demos, may lack subtitles). See `.claude/transcript-status.md` for full breakdown by course.
-- **Code Engine startup messages reference Binder** — Some status/phase messages shown during Code Engine kernel startup still mention "Binder" (e.g. cache miss warnings, phase labels). These are misleading when the user is connecting to CE, not Binder. Audit `src/components/ExecutableCode/index.tsx` and `src/components/OpenInLabBanner/index.tsx` for environment-specific message paths and ensure CE shows CE-appropriate messages.
+- **Video subtitles — 4 missing videos**: 55/55 videos fully translated (EN + 17 languages). 4 videos have no transcript at all (134371939, 134371940, 134371941, 134399598 — guide demos, may lack subtitles). See `.claude/transcript-status.md` for full breakdown.
 - **Copy code button** — Add a one-click copy button to code blocks. Docusaurus supports this natively via `themeConfig.prism` — may be disabled or hidden by the swizzled `CodeBlock` component in `src/theme/CodeBlock/`.
-- **Breadcrumbs** — Navigation trail (e.g. "Home > Courses > Basics of Quantum Information > Single Systems") showing page location in hierarchy. Docusaurus has built-in breadcrumb support — may just need enabling in `themeConfig` or checking if the swizzled theme suppresses it.
 - **Video subtitles — remaining work**:
   - **55/59 EN transcripts done** (32 YouTube via youtube-transcript-api + 23 IBM Video via Cowork). 4 IBM Video transcripts remaining — use `scripts/video-subtitle-cowork-prompt.md`.
-  - **33/55 fully translated** (EN + 17 languages). Squash-merged from two branches on 2026-04-04: `archive/claude/check-translation-status-aXqD6` (12 locales) + `archive/claude/translate-video-transcripts-c747O` (5 more: cs, id, ms, pl, ro).
-  - **22 IBM Video EN-only** — translate via `scripts/translate-transcripts.py` (chunked Sonnet workflow). EN transcripts committed.
+  - **55/55 fully translated** (EN + 17 languages: ar, cs, de, es, fr, he, id, it, ja, ko, ms, pl, pt, ro, th, tl, uk). Batch 1 squash-merged 2026-04-04 (33 videos). Batch 2 merged 2026-04-09 from `claude/video-transcript-translations-P5nk1` (22 IBM Video transcripts, 374 VTT files).
   - **4 missing entirely** — 134371939, 134371940, 134371941, 134399598 (guide demos, may lack subtitles).
   - **Full status**: `.claude/transcript-status.md`
   - **Whisper alternative**: `pip install openai-whisper yt-dlp` for higher quality but slower (~5 min/video). Documented in `scripts/generate-transcripts.py` header.
   - **Post-processing**: Corrections dict in `generate-transcripts.py` fixes known errors (Kisket→Qiskit, Watchras→Watrous).
-- **Review IBM tutorial survey links** — ~40 tutorials contain "Tutorial survey" sections linking to IBM's feedback system (`your.feedback.ibm.com`), inherited from upstream. Users on doqumentation.org submitting feedback there are providing it to IBM in the wrong context. Options: (a) strip survey sections in `sync-content.py`, (b) replace with our own feedback (GitHub Issues or Umami event), (c) add a note clarifying it goes to IBM. Note: `sync-translations.py` also syncs these survey URLs into all translations.
+- **Review IBM tutorial survey links** — ~40 tutorials contain "Tutorial survey" sections linking to IBM's feedback system (`your.feedback.ibm.com`), inherited from upstream. Partially addressed: `sync-content.py` now appends a clarifying note ("This survey is by IBM Quantum…") + `<TutorialFeedback />` widget for doQumentation-specific feedback. May still want to further distinguish or strip entirely.
+
+### Resolved (April 2026)
+- **Branch integration (Apr 9)** — Merged 4 `claude/*` branches into main. **`claude/video-transcript-translations-P5nk1`**: 374 new VTT files completing all 17-locale translations for 22 IBM Video transcripts (55/55 videos now fully translated across all locales). **`claude/plan-ai-features-I1bzx`**: cherry-picked — adds `.claude/AI_FEATURES_BRAINSTORMING.md` (~30 AI feature ideas across search, learning, debugging, content, infra — tiered by cost $0 / $0–5 / $140+; Smart Search, Adaptive Learning Paths, Granite/Code Engine RAG). **`claude/document-todos-ideas-UQz3F`**: cherry-picked 8 of 9 commits — Qiskit Addons Phase 1 (7 submodules, sync-content.py extension, `sidebar-addons.json`, navbar entry later hidden via `Hide Qiskit Addons from navbar and main sidebar`), UX polish commit (`86a97b0f`): breadcrumbs enabled, Code Engine status messages (was still saying "Binder" for cache-miss/slow-startup), `TutorialFeedback` widget (Umami-tracked, appended to all tutorial MDX via sync-content.py), `TranslationFeedback` banner on non-EN pages, "View in English" link at top of locale dropdown, code-injection transparency (setup notice cell in exported notebooks, "What's modified?" link on `OpenInLabBanner`, new `/about/code-modifications` page listing every automatic transform). Skipped one commit (`499645f5` regenerated tutorial MDX — reproducible via sync-content.py) and deferred `7e50ebba` (upstream-docs submodule bump). Conflict resolution: 22 tutorial MDX files had bottom-chunk conflicts from the feedback widget injection — resolved with `--theirs` since content is regenerable. **`claude/add-qamposer-doqumentation-4IIR4`**: merged — unlisted `/qamposer` page (see Other features section). Auto-merged cleanly with the UX polish commit on `ExecutableCode/index.tsx` (different regions). Added `@qamposer/react ^0.1.3` npm dependency.
 
 ### Resolved (Feb–Mar 2026)
 - **Backend selection UI** — Radio buttons on settings page when multiple backends available. `detectJupyterConfig()` refactored with `buildConfigFor()` helper and override support (`doqumentation_backend_override` key). Auto-clears stale overrides. Credential save/delete handlers refresh the backend list. Switching backends cancels in-flight builds and clears cached sessions.
@@ -465,7 +468,9 @@ git add -f i18n/{XX}/docusaurus-plugin-content-docs/current/
 - "Add Cell" scratch pad (full JupyterLab available as alternative)
 - **Qiskit Global Summer School content** — Labs from QGSS 2023/2024/2025 repos (`qiskit-community/qgss-2025` etc.) contain high-quality Jupyter lab notebooks. Curated labs could be added as a "Summer School" section. Content is version-pinned to specific Qiskit releases, so would need compatibility review. See [qgss-2025](https://github.com/qiskit-community/qgss-2025) (332 stars, 5 core labs + community labs + lecture notes in separate repo).
 
-### Qiskit Addon Documentation (Plan)
+### Qiskit Addon Documentation (Phase 1 shipped, hidden)
+
+**Status (April 2026):** Phase 1 implemented and on `main`. Seven addon repos are integrated as git submodules in `upstream-addons/`, `sync-content.py` converts their notebooks to MDX under `docs/qiskit-addons/`, and `sidebar-addons.json` is wired into `sidebars.ts`. The navbar entry is **intentionally hidden** (`claude/document-todos-ideas-UQz3F` chain ended with `Hide Qiskit Addons from navbar and main sidebar`) — addon pages are built and reachable via direct URL (`/qiskit-addons/...`) with their own `qiskitAddonsSidebar`, but nothing links to them from the main menus yet. Phase 2 (mthree, opt-mapper, utils — 12 more notebooks) and Phase 3 (qiskit-community application modules) remain future work.
 
 **Goal:** Add tutorial notebooks from official Qiskit addon repos as a new content section in doQumentation, with live code execution and translations.
 
@@ -575,7 +580,7 @@ Follow the existing pattern used for `upstream-docs/` (Qiskit-documentation fork
 
 #### Implementation Phases
 
-- **Phase 1:** Add the 7 core addons with `docs/tutorials/` (cutting, sqd, obp, mpf, aqc-tensor, pna, slc) = 11 notebooks. Small, well-structured, IBM-supported.
+- **Phase 1:** ✅ DONE — 7 core addons with `docs/tutorials/` (cutting, sqd, obp, mpf, aqc-tensor, pna, slc) = 11 notebooks. Submodules + sync-content.py extension + `sidebar-addons.json` all merged. UI entry hidden pending launch decision.
 - **Phase 2:** Add mthree (5 tutorials), opt-mapper (5 how-tos), utils (2 how-tos) = 12 more notebooks. Total: 23 notebooks.
 - **Phase 3 (future):** qiskit-community application modules (ML, nature, optimization, finance, algorithms) = ~59 notebooks. Separate submodules to `qiskit-community` org repos. Some may need Qiskit version compatibility fixes.
 
