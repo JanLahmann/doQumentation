@@ -19,7 +19,7 @@
  * Run button would never actually execute anything.
  */
 
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   type SimulationAdapter,
   type CircuitRequest,
@@ -29,7 +29,6 @@ import {
 import { Qamposer } from '@qamposer/react/visualization';
 import { useColorMode } from '@docusaurus/theme-common';
 import { createThebelabAdapter } from './thebelabAdapter';
-import { createThebelabRealtimeAdapter } from './thebelabRealtimeAdapter';
 import { getExecutionMode, type ExecutionMode } from './executionMode';
 import { ensureKernel, getActiveKernel } from '../ExecutableCode';
 
@@ -250,24 +249,16 @@ export default function QamposerEmbedClient({
     return () => window.clearTimeout(id);
   }, [mode.kind]);
 
-  const adapter = useMemo(
-    () => withRealDeviceGuard(createThebelabAdapter()),
-    [],
-  );
-
-  // IMPORTANT: depend on kernelStatus (and mode.kind), not just []. Qamposer's
-  // QamposerProvider runs `resolvedRealtimeAdapter.isAvailable()` exactly once
-  // per adapter ref change. Our realtimeAdapter.isAvailable() returns false
-  // until a kernel is connected, so if we used `useMemo(..., [])` the result
-  // would be cached as `false` for the entire page lifetime — and the live
-  // preview would never fire even after bootstrap completes. Recreating the
-  // ref when kernel status flips (idle → connecting → ready) forces Qamposer
-  // to re-evaluate isAvailable and turn auto-simulate back on.
-  // Adapter creation is cheap (just a closure with two methods).
-  const realtimeAdapter = useMemo(
-    () => createThebelabRealtimeAdapter(),
-    [kernelStatus, mode.kind],
-  );
+  // Single adapter, recreated on every render — matches upstream
+  // qamposer.org/demo's pattern. Recreating per-render also dodges Qamposer's
+  // stale-canSimulate cache (it runs adapter.isAvailable() exactly once per
+  // adapter ref change, so if we cached the ref before the kernel was up,
+  // canSimulate would stay false forever).
+  // We DON'T pass a separate realtimeAdapter — Qamposer falls back to using
+  // the main adapter for both explicit Run and live preview, same as upstream.
+  // Live preview safety: the kernel is pre-warmed on mount and the
+  // withRealDeviceGuard pops a confirm() before any real-hardware run.
+  const adapter = withRealDeviceGuard(createThebelabAdapter());
 
   const handleSimulationComplete = useCallback(
     (event: SimulationCompleteEvent) => {
@@ -327,7 +318,6 @@ export default function QamposerEmbedClient({
         showHeader={showHeader}
         defaultTheme={colorMode === 'dark' ? 'dark' : 'light'}
         adapter={adapter}
-        realtimeAdapter={realtimeAdapter}
         onSimulationComplete={handleSimulationComplete}
         config={{ maxQubits: 5, maxShots: 10000 }}
         defaultCircuit={{ qubits: defaultQubits, gates: [] }}
