@@ -5,6 +5,7 @@
 
 import React from 'react';
 import Layout from '@theme/Layout';
+import BrowserOnly from '@docusaurus/BrowserOnly';
 
 const GITHUB_REPO = 'https://github.com/JanLahmann/doQumentation';
 
@@ -83,6 +84,22 @@ export default function AdminPage(): JSX.Element {
         <p style={{ color: 'var(--ifm-color-emphasis-600)' }}>
           Internal reference for admins and workshop hosts. Not indexed by search engines.
         </p>
+
+        <Section title="Live Pod Status">
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)', marginBottom: '0.75rem' }}>
+            Real-time health of CE workshop pods. Pulls /stats every 5 seconds and interprets the
+            numbers as healthy / stressed / saturated using thresholds derived from stress test data
+            (~6 sessions per vCPU, memory and CPU saturation lines). Sparklines show the last 15 minutes.
+          </p>
+          <BrowserOnly>
+            {() => {
+              // Lazy load the component to keep it out of the SSR build
+              // (it uses localStorage and live fetch — both browser-only).
+              const PodMonitor = require('@site/src/components/admin/PodMonitor').default;
+              return <PodMonitor />;
+            }}
+          </BrowserOnly>
+        </Section>
 
         <Section title="Analytics">
           <LinkList items={[
