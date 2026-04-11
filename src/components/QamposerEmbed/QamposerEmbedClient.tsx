@@ -272,9 +272,21 @@ export default function QamposerEmbedClient({
   const handleSimulationComplete = useCallback(
     (event: SimulationCompleteEvent) => {
       if (typeof console !== 'undefined') {
+        // TEMPORARY DEBUG: stash the FULL result on window so we can inspect
+        // it from a puppeteer probe even if Qamposer's render crashes
+        // synchronously after this callback returns. Remove once the
+        // React #130 bug is identified and fixed.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (window as any).__qamp_lastEvent = event;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (window as any).__qamp_lastResultJSON = JSON.stringify(event.result, null, 2);
+        } catch {
+          // ignore
+        }
         console.info(
           '[Qamposer] Simulation complete:',
-          event.result.counts,
+          event.result,
           'backend:',
           mode.label,
         );
