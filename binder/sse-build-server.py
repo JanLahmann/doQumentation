@@ -136,17 +136,74 @@ def _read_cpu_count():
         return None
 
 
+async def _fetch_jupyter_with_retry(url: str, max_attempts: int = 3, backoff_s: float = 0.1):
+    """Fetch a Jupyter URL, retrying on the known TraitError race conditions.
+
+    Two race conditions in Jupyter Server 2.16.0 fire under high concurrent load:
+
+      1. /api/status: TraitError: 'last_activity' trait expected datetime, not NoneType
+         (race in ServerKernelManager initialization)
+
+      2. /api/kernels/{id}/channels: AttributeError: 'NoneType' object has no
+         attribute 'kernel_ws_protocol' (race in WebSocket attachment)
+
+    Both surface as HTTP 500 with the traceback in the response body. They are
+    transient — a retry ~100ms later usually succeeds because the underlying
+    object has finished initializing by then.
+
+    This helper detects the races by matching 'TraitError' or 'kernel_ws_protocol'
+    in the response body bytes. Other 500s are NOT retried (we don't want to
+    hide real Jupyter bugs by retrying everything).
+
+    Returns: tornado HTTPResponse from the last attempt (success or final failure).
+             Raises only on non-HTTP exceptions (network, timeout).
+
+    Logs a 'jupyter_race_retry' structured event whenever a retry happens, so
+    races can be counted in stress test output.
+    """
+    last_resp = None
+    for attempt in range(max_attempts):
+        try:
+            resp = await _HTTP_CLIENT.fetch(url, request_timeout=2, raise_error=False)
+        except Exception as e:
+            # Network/timeout error — not a race, don't retry
+            raise e
+        last_resp = resp
+        # Success: return immediately
+        if resp.code == 200:
+            return resp
+        # 500 with race-condition signature: retry
+        if resp.code == 500 and resp.body and (
+            b'TraitError' in resp.body or b'kernel_ws_protocol' in resp.body
+        ):
+            if attempt < max_attempts - 1:
+                _log_event(
+                    "jupyter_race_retry",
+                    url=url.split('?')[0],  # strip token
+                    attempt=attempt + 1,
+                    max_attempts=max_attempts,
+                )
+                await asyncio.sleep(backoff_s)
+                continue
+        # Any other status (404, 401, non-race 500): return immediately
+        return resp
+    return last_resp
+
+
 async def _jupyter_is_ready_async() -> bool:
     """Check if Jupyter server is responding on its local port. Async.
 
     Uses the module-level _HTTP_CLIENT singleton (configured with
     max_clients=500 above), so 100+ concurrent calls don't queue.
+
+    Wraps the fetch in _fetch_jupyter_with_retry() to absorb the
+    'last_activity' TraitError race that fires under high load.
     """
     token = os.environ.get('JUPYTER_TOKEN', '')
     url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
     try:
-        resp = await _HTTP_CLIENT.fetch(url, request_timeout=2, raise_error=False)
-        return resp.code == 200
+        resp = await _fetch_jupyter_with_retry(url)
+        return resp is not None and resp.code == 200
     except Exception:
         return False
 
@@ -251,12 +308,11 @@ class StatsHandler(tornado.web.RequestHandler):
         }
 
         try:
-            # Fetch Jupyter status (connections, started time, kernel count)
+            # Fetch Jupyter status — wrapped in retry helper to absorb the
+            # 'last_activity' TraitError race that fires under high load.
             status_url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
-            status_resp = await _HTTP_CLIENT.fetch(
-                status_url, request_timeout=2, raise_error=False
-            )
-            if status_resp.code == 200:
+            status_resp = await _fetch_jupyter_with_retry(status_url)
+            if status_resp is not None and status_resp.code == 200:
                 status = json.loads(status_resp.body)
                 result['connections'] = status.get('connections', 0)
                 result['kernels'] = status.get('kernels', 0)
@@ -271,12 +327,10 @@ class StatsHandler(tornado.web.RequestHandler):
                     except (ValueError, TypeError):
                         pass
 
-            # Fetch kernel list for busy count
+            # Fetch kernel list for busy count — same retry wrapper
             kernels_url = f'http://127.0.0.1:{JUPYTER_PORT}/api/kernels?token={token}'
-            kernels_resp = await _HTTP_CLIENT.fetch(
-                kernels_url, request_timeout=2, raise_error=False
-            )
-            if kernels_resp.code == 200:
+            kernels_resp = await _fetch_jupyter_with_retry(kernels_url)
+            if kernels_resp is not None and kernels_resp.code == 200:
                 kernels = json.loads(kernels_resp.body)
                 result['kernels'] = len(kernels)
                 result['kernels_busy'] = sum(
