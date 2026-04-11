@@ -3,15 +3,19 @@
 **Date:** 2026-04-11
 **Target:** `ce-doqumentation-01` (single CE app, 1 vCPU / 4 GB, max-scale=1)
 **Harness:** [scripts/workshop-stress-test.py](../scripts/workshop-stress-test.py)
-**Image revision tested:** `ghcr.io/janlahmann/doqumentation-codeengine` pinned `ff8a85` (CE revision `-00021`)
+**Images tested:**
+- **Old**: `ghcr.io/janlahmann/doqumentation-codeengine` pinned `577a63` (CE revision `-00021`) — pre-fix
+- **New**: pinned `7ec50c` (CE revision `-00022`) — post-fix, deployed via CI build `24279189148`
 
 ## TL;DR
 
-Workshop mode is **not currently usable in production** because of a single nginx config line that rate-limits `/build/` SSE connects to 5 per minute per source IP. A 50-person workshop sharing one NAT (campus or conference WiFi) would see all but 5 students fail at the very first click. The fix is a one-line change to `binder/nginx-codeengine.conf` (already applied in this session, awaiting image rebuild + CE redeploy).
+**Initial run** found that workshop mode was unusable because nginx rate-limited `/build/` SSE connects to 5 per minute per source IP. A 50-person workshop sharing one NAT would see all but 5 students fail at the first click.
 
-Beyond the rate limit, **we never reached the actual capacity ceiling** of the pod — every "failure" today was nginx rejecting connections, not the pod running out of CPU or memory. The real per-pod kernel capacity remains unknown until the rate limit fix lands and Step 2 is re-run.
+**Fix applied + redeployed in same session.** New image rebuilt via CI, deployed to `ce-doqumentation-01` revision `-00022`. **Re-ran the same ramp** with the new image and refactored harness — rate limit no longer the bottleneck.
 
-We did discover several other issues worth fixing before any real workshop, listed below by severity.
+**Real per-pod capacity discovered**: at 1 vCPU / 4 GB, the limit is **9-12 concurrent kernel WebSocket handshakes** before CPU starvation causes WebSocket timeouts. Memory is NOT the constraint — idle Qiskit kernels are only ~30-65 MB each (we measured 14 simultaneous kernels in 795 MB / 4 GB cgroup). The bottleneck is **CPU during the initial connect storm**, not memory and not steady-state.
+
+**Implication for sizing**: 50-user workshop needs **4-6 pods at 1 vCPU / 4 GB**, OR a smaller number of larger pods (4 vCPU / 4 GB likely handles 30-40 users — untested but worth a future session). The original design's "1 GB RAM per kernel" estimate was conservative by 10-30x.
 
 ## Test setup
 
@@ -20,17 +24,34 @@ We did discover several other issues worth fixing before any real workshop, list
 - **Workload**: 5-qubit `random_circuit(5, 3, measure=True)` + `AerSimulator().run(qc, shots=1024)` per cell — the harness's default `QISKIT_CELL`.
 - **Conservative ramp**: started with 1-user smoke (`--simple` workload), then 1-user Qiskit, then `3 → 6 → 9` users. Did NOT push to higher counts because the failure mode was already clear at 6.
 
-## Results
+## Results — old image (pre-fix, original harness)
 
-| Step | Users | Workload | Kernels OK | Avg cell | p95 cell | Failures | Notes |
-|---|---|---|---|---|---|---|---|
-| 0 | 1 | `print()` | 1/1 | 0.8s | 1.4s | 0 | Warm pod, end-to-end smoke |
-| 1 | 1 | Qiskit | 1/1 | 1.2s | 3.0s | 0 | Pod cold-started during run |
-| 2a | 3 | Qiskit | **3/3** | 3.4s | 9.5s | 0 | Same warm pod |
-| 2b | 6 | Qiskit | **4/6** | 2.3s | 7.9s | 2 SSE | First failures |
-| 2c | 9 | Qiskit | **4/9** | 2.2s | 7.6s | 5 SSE | >50% failure threshold tripped |
+| Step | Users | Workload | Kernels OK | Avg cell | p95 cell | Failures |
+|---|---|---|---|---|---|---|
+| 0 | 1 | `print()` | 1/1 | 0.8s | 1.4s | 0 |
+| 1 | 1 | Qiskit | 1/1 | 1.2s | 3.0s | 0 |
+| 2a | 3 | Qiskit | **3/3** | 3.4s | 9.5s | 0 |
+| 2b | 6 | Qiskit | **4/6** | 2.3s | 7.9s | 2 SSE drops |
+| 2c | 9 | Qiskit | **4/9** | 2.2s | 7.6s | 5 SSE drops |
 
-**The latency numbers in this table are inflated by ~200ms per cell** vs. real browser clients, because the original harness opened a new WebSocket per cell. The refactored harness (this session) uses one WebSocket per kernel and shows true per-cell latency. Pre-rebuild validation: `print('hello')` 0.8s → 0.0s. Treat the table as an upper bound.
+Latency numbers above are inflated by ~200ms per cell because the original harness opened a new WebSocket per cell.
+
+## Results — new image (post-fix, refactored harness)
+
+Same target, same workload, same `--cells-per-user 3 --idle-between 5`. Different image (CE revision `-00022`, pinned `7ec50c`) and refactored harness (`KernelSession` reuses one WebSocket per kernel).
+
+| Step | Users | Kernels OK | Avg cell | p95 cell | Failures | Pod stats |
+|---|---|---|---|---|---|---|
+| smoke | 1 simple | 1/1 | 0.0s | 0.1s | 0 | `mem=128/3815MB(3%)` |
+| 2a' | 3 Qiskit | **3/3** | **1.9s** | 5.6s | 0 | `peak_k=3 mem=191MB load=6.26/1cpu` (load high from cold start) |
+| 2b' | 6 Qiskit | **6/6** | 3.5s | 12.2s | 0 | `peak_k=6 mem=192MB load=3.13/1cpu` |
+| 2c' | 9 Qiskit | **9/9 kernels started** | 4.6s | 14.5s | **2 WS handshake timeouts** | `peak_k=9 peak_conn=7 mem=288MB` |
+| 2d' | 12 Qiskit | **12/12 kernels started** | 2.1s | 6.1s | **10 WS handshake timeouts** | `peak_k=14 peak_conn=7 mem=795MB(21%)` |
+
+**Notable**:
+- **2c' / 2d' failure mode is different from old image.** Old image (5r/m): `SSE stream ended without ready event` — kernel never allocated. New image: kernel IS allocated (`peak_k=9` and `peak_k=14` respectively), but the user's WebSocket handshake to `/api/kernels/{id}/channels` times out. This is a real CPU-saturation symptom, not a configured rate limit.
+- **`peak_k=14` at users=12** because 2d' inherited 2 leftover kernels from 2c' that hadn't been culled yet (they were created in 2c' by users who timed out at the WS handshake stage but had already gotten past kernel creation). Confirmed by checking `sse_total=21` (= 9 from 2c' + 12 from 2d').
+- **3-user case latency dropped 1.8x** (3.4s → 1.9s) on the same workload — entirely from harness WebSocket reuse, not from the new image. The old image's per-cell connect overhead was being counted as kernel latency.
 
 ## Root cause: nginx `/build/` rate limit
 
@@ -174,24 +195,67 @@ The first cgroup-aware version of `/stats` reported `mem=5330/62349MB(9%)` — t
 
 The IBM Cloud account has no logging service instance bound (`logdna`, `logs`, `sysdig-monitor`, `logdnaat` all return `No service instance found`). When CE reaps a pod, all logs from that pod are lost forever — the logs from Step 0 are gone. For today's stress test we captured logs to local files via `ibmcloud ce app logs --follow`. For ongoing workshop deployments, consider provisioning **IBM Cloud Logs** (free tier covers small workloads, ~$0-5/month for occasional workshop use) and wiring it into the CE project.
 
-## What we did NOT measure
+## Real per-pod capacity (post-fix data)
 
-- **Actual per-pod kernel capacity** — every "failure" today was nginx rate-limiting, not pod resource exhaustion. Once the nginx fix is deployed, Step 2 needs to be re-run to discover the real ceiling. Expected: 8-12 kernels on 1 vCPU / 4 GB before CPU contention dominates.
-- **Cold-start variability across nodes** — only observed two cold starts, one warm-cache (~15s) and one cold-cache (~150s). Statistical distribution unknown.
-- **Multi-instance pool behavior** — never tested workshop pool mode (multiple CE apps with frontend random-assignment).
+At **1 vCPU / 4 GB / max-scale=1**, the empirical ceiling is:
+
+| Concurrent users | Kernels alloc | WS handshake | Latency | Verdict |
+|---|---|---|---|---|
+| 1-6 | 100% | 100% | <12s p95 | **Comfortable** |
+| 7-9 | 100% | 70-80% | <15s p95 | **Marginal — some WS timeouts** |
+| 10-12 | 100% | ~16% | n/a | **Saturated** |
+
+The bottleneck is **not memory** (used <22% of 4 GB at peak) and **not kernel creation** (all kernels allocated successfully even at 12 users). The bottleneck is **CPU during the brief WebSocket handshake storm** — 1 vCPU can't service the cryptographic handshakes for >9 simultaneous WebSocket connects fast enough to keep them under the harness's 30-second timeout.
+
+**Per-kernel resource cost (idle Qiskit kernel)**:
+- Memory: ~30-65 MB (NOT the 300-400 MB I assumed earlier — Aer simulator only allocates real RAM during execution)
+- CPU: negligible at idle, ~100% during `random_circuit + simulator + 1024 shots`
+
+**Sizing implications for real workshops**:
+- 50-user workshop on 1 vCPU pods: **need 4-6 pods** (not the 3 the design doc estimated). Same total CPU as the design doc's 3×4vCPU plan, smaller blast radius per failure.
+- **Or** test bigger pods: 4 vCPU / 4 GB might handle 30-40 users on a single pod. **Untested — worth a future session.**
+- Memory can be smaller than 4 GB safely. **2 GB / 4 vCPU** might be the sweet spot for cost/performance.
+
+## Connect-storm finding (new HIGH-priority issue)
+
+The "WebSocket handshake timeout" failure mode in Step 2c'/2d' is **not a steady-state limit** — it's a **transient connect-storm problem**. If the same 12 users had connected at a steady 1-per-second rate, all of them would probably succeed. The harness fires all users in parallel via `asyncio.gather()`, which is the worst case.
+
+**Real workshop risk**: when an instructor says "click the button now," all 50 students click within ~1 second. This is exactly the connect-storm pattern that breaks at 9-12 users on a single pod.
+
+**Two mitigations to add to backlog**:
+1. **Frontend stagger**: inject a random 0-3s delay in `jupyter.ts` before SSE connect. Turns synchronous click into uniform distribution. Eliminates the connect-storm entirely without changing pod sizing.
+2. **Client-side WebSocket retry**: if the `/api/kernels/{id}/channels` connect fails or times out, retry once after 2s. Cheap, robust against transient saturation.
+
+Either is a 5-10 line change. Both is better.
+
+## What we still did NOT measure
+
+- **Cold-start variability across nodes** — observed two cold starts, one warm-cache (~15s) and one cold-cache (~150s). Statistical distribution unknown.
+- **Multi-instance pool behavior** — never tested workshop pool mode (multiple CE apps with frontend random-assignment). Workflow's `seq -w 1 1` bug had been silently deploying to the wrong app name; fixed in same session.
+- **Larger pod sizing** — 1 vCPU is the only config tested. 4 vCPU / 4 GB could plausibly handle 30-40 users; not validated.
 - **Failover** — the harness has a `failover` mode in its docstring but it's not implemented.
-- **Multi-source-IP load** — the per-IP rate limit cannot be tested from a single laptop. After the fix, it will still be present at 100r/m, so testing higher concurrency would need either (a) source IP rotation or (b) multiple test machines.
+- **Multi-source-IP load** — testing multi-IP concurrency from a single laptop requires source-IP aliasing. After the fix, the 100r/m limit is comfortable enough that single-IP testing is no longer the bottleneck.
 
 ## Backlog
 
-1. **Image rebuild + CE redeploy** — pending in this session. Container changes are on disk but not yet live.
-2. **Re-run Step 2** after the new image is deployed, with the refactored harness, to discover real per-pod capacity.
-3. **Image size reduction** (905 MB → ~400 MB) — strip unused Jupyter extensions, slim down Python deps. Reduces cold-start image-pull from ~98s to ~30-40s.
-4. **`min-scale=1` for workshop deployments** — add as a deploy-time flag to `.github/workflows/codeengine-image.yml`, document the cost trade-off.
-5. **Provision IBM Cloud Logs** for persistent log retention. Optional. Free tier sufficient for occasional workshops.
-6. **Test workshop pool mode** — actually deploy 2-3 CE apps with `max-scale=1`, distribute users via the frontend's random-assignment logic, validate that the design works end-to-end.
-7. **Implement harness failover mode** — the docstring promises it but it's not coded.
-8. **Add `--source-ip-rotate` to harness** — bind to multiple local IPs to bypass per-IP rate limits during testing. Only useful if the host machine has multiple IPs.
+### Done in this session
+1. ✅ nginx rate limit fix (5r/m → 100r/m + burst=50)
+2. ✅ Kernel cull tuning (600s → 300s)
+3. ✅ SSE shim cgroup-aware metrics (memory.max, cpu.max, loadavg)
+4. ✅ Harness `KernelSession` refactor (one WS per kernel)
+5. ✅ Image rebuild + CE redeploy via CI (revision `-00022` deployed)
+6. ✅ Step 2 re-run on new image (real per-pod ceiling discovered)
+7. ✅ CI workflow `seq -w 1 1` zero-padding bug fix (deploys would create `-1` instead of `-01`)
+
+### Open
+1. **Connect-storm mitigation** (HIGH — new from rerun): frontend stagger + client-side WS retry. 5-10 lines each. Without this, 50-user workshops hit the same WS handshake timeout we saw at 12 concurrent connects.
+2. **Larger pod test**: 4 vCPU / 4 GB / max-scale=1, repeat the ramp at 15/20/30/40 users. Probably handles 30-40 users on a single pod, which would simplify deployment dramatically. **Untested.**
+3. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 (switch base from `quay.io/jupyter/base-notebook` to `python:3.12-slim`) is the only one that matters; saves ~450 MB. Reduces cold-start image-pull on a fresh K8s node from ~98s to ~30-40s.
+4. **`min-scale=1` for workshop deployments** — add as a deploy-time flag to `.github/workflows/codeengine-image.yml`, document the ~$5/month cost trade-off.
+5. **Test workshop pool mode end-to-end** — now that the workflow `seq` bug is fixed, actually deploy 2-3 instances and validate the frontend random-assignment with the harness.
+6. **Provision IBM Cloud Logs** — optional. Free tier sufficient for occasional workshops. Currently pod logs evaporate when CE scales to zero.
+7. **`/stats` `status` field bug** — the SSE shim's `_handle_stats` sets `result['status'] = 'ready'` only if the inner try block reaches the end, but the field is initialized to `'unavailable'`. Currently always reports `'unavailable'` even when everything works. Cosmetic, fix in next iteration.
+8. **Implement harness failover mode** — the docstring promises it but it's not coded.
 
 ## Cost spent
 
@@ -201,5 +265,20 @@ CE billed time across all steps + cold-start probes ≈ **6-8 minutes** of pod u
 
 - [binder/nginx-codeengine.conf](../binder/nginx-codeengine.conf) — `/build/` rate limit 5→100 r/m, burst 2→50
 - [binder/codeengine-entrypoint.sh](../binder/codeengine-entrypoint.sh) — `cull_idle_timeout` 600→300, `cull_interval` 120→60, explicit `cull_busy=False`
-- [binder/sse-build-server.py](../binder/sse-build-server.py) — cgroup-aware memory + CPU count, `/proc/loadavg`, `high_cpu` event
+- [binder/sse-build-server.py](../binder/sse-build-server.py) — cgroup-aware memory (`memory.current`/`memory.max`) + CPU count (`cpu.max`), `/proc/loadavg`, `high_cpu` event
 - [scripts/workshop-stress-test.py](../scripts/workshop-stress-test.py) — `KernelSession` (one WS per kernel), per-kernel session ID, real `/stats` polling, `_format_stats` peak-aware output
+- [.github/workflows/codeengine-image.yml](../.github/workflows/codeengine-image.yml) — fix `seq -w 1 1` returning `1` instead of `01`; use `printf "%02d"` for proper zero-padding so `instance_count=1` deploys to `ce-doqumentation-01` matching the documented name
+
+## CE state changes (write operations)
+
+For full audit trail:
+
+| Time (UTC) | Operation | Reason |
+|---|---|---|
+| ~07:50 | `app update --name ce-doqumentation-01 --max-scale 1` | Was 5 (mistake); design requires 1 |
+| ~07:50 | `app delete --name ce-doqumentation-1 --force` | Believed to be stale duplicate (WRONG — was actually CI's deploy target due to `seq -w` bug) |
+| ~09:09 | CI workflow recreated `ce-doqumentation-1` with new image | Workflow's `seq -w 1 1` bug |
+| ~09:18 | `app update --name ce-doqumentation-01 --image ...:latest` | Migrate new image to canonical app name |
+| ~09:19 | `app delete --name ce-doqumentation-1 --force` | Truly stale this time — superseded by `-01` migration |
+
+End state: single app `ce-doqumentation-01` running revision `-00022`, image pinned `7ec50c`, max-scale=1, 1 vCPU / 4 GB.
