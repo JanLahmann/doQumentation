@@ -1,0 +1,95 @@
+## Etapa de traducere {#translation-stage}
+
+Când scrii un Circuit cuantic, ești liber să folosești orice poartă cuantică (operație unitară) dorești, împreună cu o colecție de operații care nu sunt porți, cum ar fi instrucțiunile de măsurare sau resetare a qubiților. Totuși, majoritatea dispozitivelor cuantice acceptă nativ doar un număr mic de operații Gate cuantice și non-Gate. Aceste Gate-uri native fac parte din definiția ISA a unei ținte ([ISA](./transpile#instruction-set-architecture)), iar această etapă a `PassManagers`-elor preset traduce (sau *desfășoară*) Gate-urile specificate într-un Circuit în Gate-urile de bază native ale unui Backend specificat. Aceasta este un pas important, deoarece permite executarea circuitului de către Backend, dar în general duce la o creștere a adâncimii și a numărului de Gate-uri.
+
+Două cazuri speciale sunt deosebit de importante de subliniat și ajută la ilustrarea a ceea ce face această etapă.
+
+1. Dacă un Gate SWAP nu este un Gate nativ al Backend-ului țintă, acesta necesită trei Gate-uri CNOT:
+
+```python
+print("native gates:" + str(sorted(backend.operation_names)))
+qc = QuantumCircuit(2)
+qc.swap(0, 1)
+qc.decompose().draw("mpl")
+```
+
+```text
+native gates:['cx', 'delay', 'for_loop', 'id', 'if_else', 'measure', 'reset', 'rz', 'switch_case', 'sx', 'x']
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/31fcf8b6-4f3a-460e-90fd-446813bd4f28-1.svg)
+
+Ca produs a trei Gate-uri CNOT, un SWAP este o operație costisitoare de efectuat pe dispozitivele cuantice cu zgomot. Cu toate acestea, astfel de operații sunt de obicei necesare pentru a încorpora un Circuit în conectivitățile limitate de Gate ale multor dispozitive. Prin urmare, minimizarea numărului de Gate-uri SWAP dintr-un Circuit este un obiectiv principal în procesul de transpilare.
+
+2. Un Gate Toffoli, sau controlled-controlled-not (`ccx`), este un Gate cu trei qubiți. Deoarece setul nostru de Gate-uri de bază include doar Gate-uri cu unul sau doi qubiți, această operație trebuie descompusă. Cu toate acestea, este destul de costisitoare:
+
+```python
+qc = QuantumCircuit(3)
+qc.ccx(0, 1, 2)
+qc.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/8a2c1913-3324-44b0-859e-d7fd348161c3-0.svg)
+
+Pentru fiecare Gate Toffoli dintr-un Circuit cuantic, hardware-ul poate executa până la șase Gate-uri CNOT și câteva Gate-uri cu un singur qubit. Acest exemplu demonstrează că orice algoritm care utilizează mai multe Gate-uri Toffoli va rezulta într-un Circuit cu adâncime mare și va fi, prin urmare, afectat considerabil de zgomot.
+## Etapa de optimizare {#optimization-stage}
+
+Această etapă se concentrează pe descompunerea circuitelor cuantice în setul de Gate-uri de bază al dispozitivului țintă și trebuie să combată creșterea adâncimii din etapele de layout și rutare. Din fericire, există multe rutine pentru optimizarea circuitelor fie prin combinarea, fie prin eliminarea Gate-urilor. În unele cazuri, aceste metode sunt atât de eficiente încât circuitele de ieșire au adâncime mai mică decât cele de intrare, chiar și după maparea pe topologia hardware prin layout și rutare. În alte cazuri, nu se poate face prea mult, iar calculul poate fi dificil de efectuat pe dispozitivele cu zgomot. Această etapă este locul unde diferitele niveluri de optimizare încep să difere.
+
+- Pentru `optimization_level=1`, această etapă pregătește [`Optimize1qGatesDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition) și [`CXCancellation`](https://docs.quantum.ibm.com/api/qiskit/1.4/qiskit.transpiler.passes.CXCancellation), care combină lanțuri de Gate-uri cu un singur qubit și anulează orice Gate-uri CNOT consecutive.
+- Pentru `optimization_level=2`, această etapă folosește pasul [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation) în locul `CXCancellation`, care elimină Gate-urile redundante prin exploatarea relațiilor de comutativitate.
+- Pentru `optimization_level=3`, această etapă pregătește următorii pași:
+  - [`Collect2qBlocks`](../api/qiskit/qiskit.transpiler.passes.Collect2qBlocks)
+  - [`ConsolidateBlocks`](../api/qiskit/qiskit.transpiler.passes.ConsolidateBlocks)
+  - [`UnitarySynthesis`](../api/qiskit/qiskit.transpiler.passes.UnitarySynthesis)
+  - [`Optimize1qGateDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition)
+  - [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation)
+
+În plus, această etapă execută și câteva verificări finale pentru a se asigura că toate instrucțiunile din Circuit sunt compuse din Gate-urile de bază disponibile pe Backend-ul țintă.
+
+Exemplul de mai jos, folosind o stare GHZ, demonstrează efectele diferitelor setări ale nivelului de optimizare asupra adâncimii circuitului și a numărului de Gate-uri.
+
+<Admonition type="note">
+  Ieșirea transpilării variază din cauza mapperului SWAP stocastic. Prin urmare, numerele de mai jos se vor schimba cel mai probabil de fiecare dată când rulezi codul.
+</Admonition>
+
+![15-qubit GHZ state](/docs/images/guides/transpiler-stages/transpiler-11.avif "15-qubit GHZ state before transpilation")
+
+Următorul cod construiește o stare GHZ cu 15 qubiți și compară `optimization_levels` ale transpilării în termeni de adâncime a circuitului rezultat, număr de Gate-uri și număr de Gate-uri cu mai mulți qubiți.
+
+```python
+ghz = QuantumCircuit(15)
+ghz.h(0)
+ghz.cx(0, range(1, 15))
+
+depths = []
+gate_counts = []
+multiqubit_gate_counts = []
+levels = [str(x) for x in range(4)]
+for level in range(4):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=level,
+        backend=backend,
+        seed_transpiler=1234,
+    )
+    circ = pass_manager.run(ghz)
+    depths.append(circ.depth())
+    gate_counts.append(sum(circ.count_ops().values()))
+    multiqubit_gate_counts.append(circ.count_ops()["cx"])
+
+fig, (ax1, ax2) = plt.subplots(2, 1)
+ax1.bar(levels, depths, label="Depth")
+ax1.set_xlabel("Optimization Level")
+ax1.set_ylabel("Depth")
+ax1.set_title("Output Circuit Depth")
+ax2.bar(levels, gate_counts, label="Number of Circuit Operations")
+ax2.bar(levels, multiqubit_gate_counts, label="Number of CX gates")
+ax2.set_xlabel("Optimization Level")
+ax2.set_ylabel("Number of gates")
+ax2.legend()
+ax2.set_title("Number of output circuit gates")
+fig.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/2507de9c-1b94-4d56-b5a6-0b2bb1719a80-0.svg)
