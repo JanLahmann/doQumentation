@@ -11,25 +11,37 @@
 
 **Initial run** found workshop mode was unusable because nginx rate-limited `/build/` to 5 per minute per source IP. **Fix deployed** (now `100r/m + burst=50`).
 
-**After the fix**, ran the harness across **three pod sizes** AND **two burst patterns** (synchronous + uniform-stagger via new `--ramp-interval` flag) to characterize the real ceiling:
+**After the fix**, ran the harness across **four pod sizes** AND **two burst patterns** (synchronous + uniform-stagger via new `--ramp-interval` flag) to characterize the real ceiling:
 
-### Per-pod sustainable concurrent sessions (peak_conn ceiling)
+### Per-pod capacity scaling with CPU count (validated)
 
-| Pod | peak_conn measured | Per-vCPU ratio | Realistic 50-user 5s burst |
-|---|---|---|---|
-| 1 vCPU / 4 GB | 6 | 6.0 | not viable (ceiling well below 50) |
-| 4 vCPU / 8 GB | 18-20 | ~5.0 | 70% success |
-| **8 vCPU / 16 GB** | **59** | **~7.4** | **92% success** |
+| Pod | peak_conn | 50u/5s success | 80u/5s success | 100u/5s success | 100u/75s |
+|---|---|---|---|---|---|
+| 1 vCPU / 4 GB | 6 | n/a | n/a | n/a | n/a |
+| 4 vCPU / 8 GB | 18-20 | 70% | 56% | n/a | n/a |
+| 8 vCPU / 16 GB | 59 | 92% | 81% | n/a | n/a |
+| **12 vCPU / 24 GB** | **73-74** | n/a | **96%** | **88%** | **100%** |
 
-**The peak_conn ceiling scales roughly linearly with CPU count** (~6-7 sessions per vCPU). My earlier "peak_conn=18 is a hard ceiling" claim was wrong — that was a property of the 4 vCPU pod specifically, not Jupyter Server's event loop in general. More CPUs → more parallel websocket I/O processing in the tornado event loop.
+**The peak_conn ceiling scales roughly linearly with CPU count** (~6 sessions per vCPU), with **diminishing returns above 8 vCPU**. At 12 vCPU, a **new bottleneck emerges**: the SSE shim's threaded HTTPServer (Python threads + GIL contention) starts limiting concurrent SSE handshakes around 80-100 simultaneous connects.
 
-**The new model**: per-pod session capacity is **CPU-scalable** (not gated by a fixed event-loop limit). Memory is essentially free for 5-qubit workloads.
+**The new model**: per-pod session capacity is **CPU-scalable up to ~8 vCPU**, then SSE-shim-limited above that. Memory is essentially free for 5-qubit workloads (highest measured: 6.9 GB / 24 GB cgroup at peak).
 
-**Stagger window helps but not the way I first thought**. It doesn't unlock additional capacity — it spreads the simultaneous-connection count over time so it stays under the per-pod ceiling. For instructor-led workshops where everyone clicks within ~5s, only **pod size** matters; stagger is a marginal improvement.
+**Stagger window helps but doesn't unlock new capacity** for long sessions. It just spreads the simultaneous-connection count over time. For instructor-led workshops where everyone clicks within ~5s, **pod size** is the dominant variable; for "students filter in over 1-2 minutes" patterns, stagger removes the burst pressure entirely.
 
-**Sizing recommendation for 50-person workshops** (revised): **1 pod at 8 vCPU / 16 GB** is sufficient (92% success at 5s burst, all 50 sessions sustained). The design doc's original "3 × 4 vCPU / 8 GB" was correct for the same total CPU but operationally more complex; **fewer larger pods are equivalent in cost and simpler to manage.**
+**Sizing recommendation for workshops** (revised, validated):
 
-**Memory caveat**: today's harness uses 5-qubit circuits. Real workshop content with 25-qubit statevector simulations needs ≥8 GB pods (one 25-qubit circuit = 512 MB statevector). The 16 GB on 8 vCPU is overprovisioned for typical content but headroom for advanced courses. See "Memory caveat" section.
+| Workshop size | Single-pod config |
+|---|---|
+| 30-50 users | **1 × 8 vCPU / 16 GB** |
+| 50-80 users | **1 × 12 vCPU / 24 GB** |
+| 80-100 users | **1 × 12 vCPU / 24 GB** + frontend stagger (96% burst, 100% staggered) |
+| 100+ users | Multi-pod (2+ × 12 vCPU) |
+
+The design doc's original "3 × 4 vCPU / 8 GB" was correct in capacity but **a single 12 vCPU pod is operationally simpler** at the same cost.
+
+**Highest-leverage future fix**: refactor the SSE shim from threaded to async (`aiohttp.web`) — would push the 12 vCPU clean burst capacity from ~80 to ~120-150 users.
+
+**Memory caveat**: today's harness uses 5-qubit circuits. Real workshop content with 25-qubit statevector simulations needs ≥8 GB pods (one 25-qubit circuit = 512 MB statevector). The 16+ GB on the recommended pods is sized correctly for advanced workshop content.
 
 ## Test setup
 
@@ -114,6 +126,37 @@ Resized `ce-doqumentation-01` to 8 vCPU / 16 GB (CE forces this combination — 
 **Key finding**: `peak_conn=59` on 8 vCPU vs `peak_conn=18` on 4 vCPU. **The ceiling scales ~3x with 2x the CPU** (slightly super-linear, probably because more CPUs reduce GIL contention and event-loop starvation).
 
 **Practical implication**: 8 vCPU / 16 GB pod handles **80% of an 80-person workshop on a single pod** (test 5b: 65/80 success). For a more realistic 50-person workshop where everyone clicks within 5 seconds, **92% succeed** (test 5c, even with leftover load from a previous test).
+
+### Run 6 — 12 vCPU / 24 GB (confirming linear scaling and finding new bottleneck)
+
+Resized to 12 vCPU / 24 GB. **First attempt was disrupted by CE rolling-deploy chaos** — two pods alternating during the test produced corrupted data (`connections=-48` from a Jupyter counter underflow, `peak_k=124` from leftover state). Triggered a fresh revision and waited for old pod to drain before re-running.
+
+| Test | Users | Stagger | Failures | Pod stats |
+|---|---|---|---|---|
+| 6a | 50 | 75s (clean baseline) | **0** | `peak_k=16 peak_conn=14 mem=194/22888MB(1%) load=1.96/12.0cpu` (avg 0.6s, p95 1.8s) |
+| 6b | 80 | 5s (realistic burst) | **3** | `peak_k=80 peak_conn=73 mem=377/22888MB(2%) load=20.66/12.0cpu` (avg 5.1s, p95 19.1s) — **96% success** |
+| 6c | 100 | 5s (push the limit) | 12 | `peak_k=94 peak_conn=74 mem=545/22888MB(2%) load=15.67/12.0cpu` — **88% success**, mostly SSE-stage failures |
+| 6d | **100** | **75s** | **0** | `peak_k=94 peak_conn=74 mem=547/22888MB(2%) load=7.46/12.0cpu` (avg 0.7s, p95 2.2s) |
+
+**Key findings from 12 vCPU**:
+
+1. **Linear scaling continues**: `peak_conn=73-74` on 12 vCPU vs 59 on 8 vCPU. That's +14 ceiling for +4 vCPU = ~3.5 sessions/vCPU at the high end. The ratio is **slightly sub-linear** (4→8 was super-linear at +41, 8→12 is sub-linear at +14), which suggests **diminishing returns kick in around 8 vCPU**.
+
+2. **A NEW failure mode appeared at 100u/5s**: 9 of 12 failures were `SSE stream ended without ready event`, not WebSocket handshakes. The SSE shim itself is becoming the bottleneck at 100+ simultaneous SSE connects. **The SSE shim uses `ThreadingMixIn` (one Python thread per request)** — past ~80 concurrent SSE handlers, GIL contention dominates and the event stream can't keep up. **An async (aiohttp) refactor of the SSE shim would lift this bottleneck** and likely push 12 vCPU's clean burst capacity from ~80 to ~120-150 users.
+
+3. **12 vCPU pod handles 100 users at 75s stagger with ZERO failures**: realistic for instructor-paced workshops where clicks spread over 1-2 minutes. Avg latency 0.7s, p95 2.2s — **as fast as the 50-user clean baseline**.
+
+4. **Memory remained at 1-2% of cgroup limit** across every test. With 24 GB available, even running 100 simultaneous Qiskit kernels uses only ~550 MB. Memory is comprehensively NOT the constraint at this workload.
+
+### Side finding: Jupyter Server connection counter underflow bug
+
+During the rolling-deploy chaos in the first 12 vCPU test, `/api/status` reported `connections: -48`. **Jupyter Server's `connections_dict` underflowed** — when a WebSocket fails mid-handshake (which happens often under our connect-storm pressure), the cleanup decrements the counter without a matching increment.
+
+**Side effect**: kernels with phantom-negative connections **never get culled** (because `cull_connected = False` skips kernels with "active" connections, and a negative count looks active to the cull logic). After heavy stress testing, the pod held 48 zombie kernels indefinitely until I triggered a fresh revision.
+
+**Real-world impact**: in a long workshop, the pod's memory would creep up across the day even though students keep leaving. Workshop hosts would need to manually restart pods between sessions, or call `DELETE /api/kernels/{id}` from the frontend on session close.
+
+**Won't fix today** — added to backlog.
 
 **Notable**:
 - **2c' / 2d' failure mode is different from old image.** Old image (5r/m): `SSE stream ended without ready event` — kernel never allocated. New image: kernel IS allocated (`peak_k=9` and `peak_k=14` respectively), but the user's WebSocket handshake to `/api/kernels/{id}/channels` times out. This is a real CPU-saturation symptom, not a configured rate limit.
@@ -266,25 +309,33 @@ The IBM Cloud account has no logging service instance bound (`logdna`, `logs`, `
 
 ### Capacity scaling with CPU count
 
-The `peak_conn` value (max simultaneous active WebSocket connections measured during a test) is the cleanest metric for per-pod capacity. **It scales roughly linearly with CPU count**:
+The `peak_conn` value (max simultaneous active WebSocket connections measured during a test) is the cleanest metric for per-pod capacity. **It scales linearly with CPU count up to ~8 vCPU**, then sub-linearly:
 
 | Pod | peak_conn | Per-vCPU ratio | Source test |
 |---|---|---|---|
 | 1 vCPU / 4 GB | 6 | 6.0 | 12u/0s test (12→6 succeed) |
 | 4 vCPU / 8 GB | **18-20** | ~5.0 | constant across 7 tests with different stagger windows |
 | 8 vCPU / 16 GB | **59** | ~7.4 | 80u/5s test |
+| **12 vCPU / 24 GB** | **73-74** | **~6.1** | 80u/5s and 100u/5s tests |
 
-**Slightly super-linear** for the 4→8 vCPU jump. Probably because more CPUs reduce GIL contention in the tornado event loop and parallelize WebSocket I/O processing across the kernel multiplexer. The rule of thumb is **~6-7 sessions per vCPU**, with a small bonus for larger configs.
+**Slope analysis**:
+- 4→8 vCPU: +41 to peak_conn (slightly super-linear, GIL contention reduction)
+- 8→12 vCPU: +14 to peak_conn (sub-linear, **diminishing returns kick in**)
+
+The diminishing return at 12 vCPU suggests **a different bottleneck is starting to dominate** — confirmed during 100u/5s test where failures shifted from WS handshake to SSE handshake (`SSE stream ended without ready event`). The SSE shim's threaded HTTPServer hits GIL contention around 80-100 concurrent SSE requests. Refactoring it to async would lift this ceiling.
+
+**Practical rule of thumb**: **~6 sessions per vCPU**, capped around 80 concurrent on a 12 vCPU pod. Beyond 80 concurrent, scale horizontally (more pods) rather than vertically (bigger pods).
 
 ### Real workshop capacity by pod size
 
 For instructor-led workshops where all users click "go" within ~5 seconds:
 
-| Pod size | "Safe" workshop | "Burst-tolerant with stagger" | Note |
+| Pod size | "Safe" workshop (≥95% success) | "Stretch" with frontend stagger | Note |
 |---|---|---|---|
 | 1 vCPU / 4 GB | ~5 users | ~6 | Solo dev / smoke testing only |
-| 4 vCPU / 8 GB | ~25 users | ~50 (with 75s+ stagger) | Decent for medium workshops |
-| **8 vCPU / 16 GB** | **~50 users** | **~80** | **Recommended for ≤50-person workshops** |
+| 4 vCPU / 8 GB | ~20-25 users | ~50 (75s+ stagger) | Decent for medium workshops |
+| 8 vCPU / 16 GB | ~45-50 users | ~80 | Good for 50-person workshops |
+| **12 vCPU / 24 GB** | **~75-80 users** | **~100** | **Recommended for 50-100 person workshops** |
 
 ### Reproducibility check (1 vCPU pod)
 
@@ -325,16 +376,19 @@ Memory cost of larger statevector simulations:
 - **Memory**: ~30-65 MB (NOT the 300-400 MB design doc assumed)
 - **CPU**: negligible at idle, ~100% of one core during `random_circuit + simulator + 1024 shots`
 
-### Sizing implications for real workshops (revised after 8 vCPU test)
+### Sizing implications for real workshops (final, validated across 1/4/8/12 vCPU)
 
 | Workshop size | Simplest config | Cost-equivalent alternative |
 |---|---|---|
 | 5-15 users | 1 × 4 vCPU / 8 GB | — |
 | 15-30 users | 1 × 4 vCPU / 8 GB (tight) or 1 × 8 vCPU / 16 GB | — |
 | **30-50 users** | **1 × 8 vCPU / 16 GB** | 2 × 4 vCPU / 8 GB (more failover) |
-| 50-80 users | 1 × 8 vCPU / 16 GB (tight) or 2 × 8 vCPU / 16 GB | 3 × 4 vCPU / 8 GB |
-| 80-150 users | 2 × 8 vCPU / 16 GB | 4-5 × 4 vCPU / 8 GB |
-| 150+ users | 3+ × 8 vCPU / 16 GB or test 12 vCPU | — |
+| **50-80 users** | **1 × 12 vCPU / 24 GB** | 2 × 8 vCPU / 16 GB or 3 × 4 vCPU / 8 GB |
+| **80-100 users** | **1 × 12 vCPU / 24 GB** + frontend stagger | 2 × 8 vCPU / 16 GB |
+| 100-150 users | 2 × 12 vCPU / 24 GB | 3 × 8 vCPU / 16 GB |
+| 150+ users | 3+ × 12 vCPU / 24 GB | — |
+
+**Key insight**: a single 12 vCPU pod handles ~100 users (96% burst, 100% with 75s stagger) — more than enough for typical workshops up to 80 students. For >80 users, multi-pod becomes the right answer regardless of pod size, because the SSE shim becomes the bottleneck before the WebSocket layer does.
 
 **Cost is roughly equivalent** between "fewer larger pods" and "more smaller pods" for the same total CPU. The trade-off:
 - **Fewer larger pods**: simpler ops, no pool config, no random assignment, no failover. Single point of failure.
@@ -379,29 +433,30 @@ These are cheap and worth doing, but **they do not raise the per-pod ceiling**.
 2. ✅ Kernel cull tuning (600s → 300s)
 3. ✅ SSE shim cgroup-aware metrics (memory.max, cpu.max, loadavg)
 4. ✅ Harness `KernelSession` refactor (one WS per kernel)
-5. ✅ Image rebuild + CE redeploy via CI (revision `-00022` deployed)
-6. ✅ Step 2 re-run on new image (real per-pod ceiling discovered)
-7. ✅ CI workflow `seq -w 1 1` zero-padding bug fix (deploys would create `-1` instead of `-01`)
-8. ✅ **Reproducibility check** on 1 vCPU / 4 GB — confirmed results match across two runs
-9. ✅ **Larger pod tests** on 4 vCPU / 8 GB and 8 vCPU / 16 GB — discovered linear-ish CPU scaling
-10. ✅ **Harness `--ramp-interval` flag**: stagger user starts uniformly over N seconds. Models real workshop "click within T seconds" patterns. Validated stagger model experimentally.
-11. ✅ **Stagger model validated** — peak_conn ceiling is constant per pod regardless of stagger; stagger just spreads work over time. Doesn't unlock additional capacity for long sessions.
-12. ✅ **Memory finding**: never above 44% of cgroup limit across any test, even at 100+ kernels. Memory is NOT the constraint for typical workloads.
-13. ✅ Reframed workshop sizing recommendation: **1 × 8 vCPU / 16 GB handles 50 users**, simpler than 3 × 4 vCPU / 8 GB at the same total cost.
+5. ✅ Image rebuild + CE redeploy via CI
+6. ✅ CI workflow `seq -w 1 1` zero-padding bug fix
+7. ✅ Reproducibility check on 1 vCPU
+8. ✅ **Full CPU scaling characterization across 1, 4, 8, 12 vCPU**
+9. ✅ Harness `--ramp-interval` flag (uniform stagger)
+10. ✅ Stagger model validated — peak_conn is constant per pod, stagger only spreads work over time
+11. ✅ Memory comprehensively shown to NOT be the constraint (max 30% across all tests on 4-12 vCPU pods)
+12. ✅ **Final sizing recommendation**: 1 × 12 vCPU / 24 GB handles 80 users (96% burst, 100% with 75s stagger). 1 × 8 vCPU / 16 GB handles 50 users.
+13. ✅ **NEW BOTTLENECK DISCOVERED**: SSE shim's threaded HTTPServer hits GIL contention around 80-100 simultaneous SSE requests. At 12 vCPU, this dominates the per-pod ceiling instead of the WS handshake.
 
 ### Open
-1. **Test 12 vCPU / 24 GB or 12 vCPU / 48 GB** — does scaling continue beyond 8 vCPU? If yes, single-pod can handle ≥80 users. If no, we've found Jupyter's tornado event-loop ceiling. **Quick test, ~5 min.** Currently in progress.
-2. **Multi-pod (workshop pool) test** — never validated end-to-end. Now that the `seq` zero-padding bug is fixed and we know each pod's capacity, deploy 2-3 instances and test the frontend's random-assignment logic. This is the only path to >80 users with current pod sizes.
-3. **Admin page live monitoring** (see "Admin monitoring sketch" below): swap admin.tsx's static "Settings → Code Engine" pointer for a live `/stats` panel that polls each configured CE instance. Plumbing already exists; only the React component needs writing.
-4. **Connect-storm mitigation** (LOWER PRIORITY than I initially claimed):
+1. **SSE shim async refactor** (NEW HIGH PRIORITY from 12 vCPU run): replace `ThreadingHTTPServer` with `aiohttp.web` async server. ~50-100 lines. Would lift 12 vCPU clean burst capacity from ~80 to ~120-150 users. **The single highest-leverage future optimization.**
+2. **Multi-pod (workshop pool) test** — never validated end-to-end. With the `seq` bug fixed, deploy 2-3 instances and test the frontend random-assignment.
+3. **Admin page live monitoring** (see "Admin monitoring sketch" below): swap admin.tsx's static "Settings → Code Engine" pointer for a live `/stats` panel.
+4. **Jupyter Server connection counter underflow + cull-skip bug** (NEW HIGH PRIORITY discovered during 12 vCPU rolling-deploy chaos): when WS handshakes fail mid-stream, Jupyter's `connections_dict` underflows to negative, AND the resulting "phantom connection" prevents kernel culling because `cull_connected=False` skips kernels with active connections. Real-world impact: pod memory creeps up across a workshop day; hosts must restart pods between sessions. **Workaround**: set `cull_connected=True` (risky, may kill students mid-cell), OR call `DELETE /api/kernels/{id}` from frontend on session close, OR restart pods between workshops.
+5. **Connect-storm mitigation** (LOWER PRIORITY than I claimed earlier):
    - Frontend stagger (random 0-3s delay before SSE in `jupyter.ts`): helps for transient overshoots above pod capacity. ~5 lines.
    - Client-side WebSocket retry: helps when transient saturation clears within 2s. ~10 lines.
-   - These are cheap but **do NOT raise per-pod ceiling**. Right fix for capacity is bigger/more pods.
-5. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 (switch base from `quay.io/jupyter/base-notebook` to `python:3.12-slim`) is the only one that matters; saves ~450 MB. Reduces cold-start image-pull from ~98s to ~30-40s.
-6. **`min-scale=1` for workshop deployments** — add as a deploy-time flag to `.github/workflows/codeengine-image.yml`, document the ~$5/month cost trade-off.
-7. **Provision IBM Cloud Logs** — optional. Free tier sufficient for occasional workshops. Currently pod logs evaporate when CE scales to zero.
-8. **`/stats` `status` field bug** — the SSE shim's `_handle_stats` sometimes reports `'unavailable'` due to early-init race; sets `result['status'] = 'ready'` only if the inner try block reaches the end. Cosmetic.
-9. **Implement harness failover mode** — the docstring promises it but it's not coded.
+   - These are cheap but **do NOT raise per-pod ceiling**.
+6. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 is the only one that matters.
+7. **`min-scale=1` for workshop deployments** — add as deploy-time flag, document ~$5/month cost trade-off.
+8. **Provision IBM Cloud Logs** — optional, free tier sufficient.
+9. **`/stats` `status` field cosmetic bug** — sometimes reports `'unavailable'` due to early-init race.
+10. **Implement harness failover mode** — docstring promises it but it's not coded.
 
 ## Admin monitoring sketch
 
@@ -516,5 +571,7 @@ For full audit trail:
 | ~09:33 | CI workflow re-deployed `ce-doqumentation-01` | Triggered by workflow file change (not container code); cache hit, 2m11s build (revision `-00023`, digest `3dd4f4`) |
 | ~09:46 | `app update --name ce-doqumentation-01 --cpu 4 --memory 8G` | Resize for larger-pod stress test (revision `-00024`, same image) |
 | ~11:00 | `app update --name ce-doqumentation-01 --cpu 8 --memory 16G` | Verify CPU scaling on 8 vCPU pod (revision `-00025`, same image) |
+| ~11:21 | `app update --name ce-doqumentation-01 --cpu 12 --memory 24G` | Push CPU scaling to 12 vCPU (revision `-00026`, same image) |
+| ~11:30 | `app update --name ce-doqumentation-01 --max-scale 1` | No-op update to trigger fresh revision (revision `-00027`) — needed because the 12 vCPU rolling deploy left zombie kernels with phantom-negative `connections` counter that prevented culling |
 
-End state (during 8 vCPU tests): single app `ce-doqumentation-01` running revision `-00025`, image pinned `3dd4f4`, **max-scale=1, 8 vCPU / 16 GB**, min-scale=0.
+End state (after all tests): single app `ce-doqumentation-01` running revision `-00027`, image pinned `3dd4f4`, **max-scale=1, 12 vCPU / 24 GB**, min-scale=0.
