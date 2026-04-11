@@ -254,7 +254,20 @@ export default function QamposerEmbedClient({
     () => withRealDeviceGuard(createThebelabAdapter()),
     [],
   );
-  const realtimeAdapter = useMemo(() => createThebelabRealtimeAdapter(), []);
+
+  // IMPORTANT: depend on kernelStatus (and mode.kind), not just []. Qamposer's
+  // QamposerProvider runs `resolvedRealtimeAdapter.isAvailable()` exactly once
+  // per adapter ref change. Our realtimeAdapter.isAvailable() returns false
+  // until a kernel is connected, so if we used `useMemo(..., [])` the result
+  // would be cached as `false` for the entire page lifetime — and the live
+  // preview would never fire even after bootstrap completes. Recreating the
+  // ref when kernel status flips (idle → connecting → ready) forces Qamposer
+  // to re-evaluate isAvailable and turn auto-simulate back on.
+  // Adapter creation is cheap (just a closure with two methods).
+  const realtimeAdapter = useMemo(
+    () => createThebelabRealtimeAdapter(),
+    [kernelStatus, mode.kind],
+  );
 
   const handleSimulationComplete = useCallback(
     (event: SimulationCompleteEvent) => {
