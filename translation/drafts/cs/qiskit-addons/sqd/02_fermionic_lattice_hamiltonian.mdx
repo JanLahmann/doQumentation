@@ -1,0 +1,316 @@
+---
+title: "Zlepšení odhadu energie fermionského mřížkového modelu pomocí SQD"
+description: "Zlepšení odhadu energie fermionského mřížkového modelu pomocí SQD"
+sidebar_label: "Zlepšení odhadu energie fermionského mřížkového modelu pomocí SQD"
+notebook_path: "qiskit-addons/sqd/02_fermionic_lattice_hamiltonian.ipynb"
+---
+{/* doqumentation-source-hash: 460333c8 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/sqd/02_fermionic_lattice_hamiltonian.ipynb" />
+
+
+V tomto tutoriálu implementujeme [Qiskit pattern](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns), který ukazuje, jak post-procesovat zašuměné kvantové vzorky za účelem nalezení aproximace základního stavu fermionského mřížkového Hamiltoniánu známého jako model jedné nečistoty Andersonova typu (single-impurity Anderson model). Budeme následovat přístup kvantové diagonalizace založené na vzorcích (sample-based quantum diagonalization) pro zpracování vzorků odebraných ze sady ``16``-qubitových stavů Krylovovy báze přes rostoucí časové intervaly. Tyto stavy jsou realizovány na kvantovém zařízení pomocí Trotterizace časového vývoje. Aby byl zohledněn vliv kvantového šumu, je použita technika obnovy konfigurací (configuration recovery). Za předpokladu dobrého počátečního stavu a řídkosti základního stavu [je prokázáno, že tento přístup konverguje efektivně](https://arxiv.org/abs/2501.09702).
+
+Pattern lze popsat ve čtyřech krocích:
+
+1. **Krok 1: Mapování na kvantový problém**
+    - Vygeneruj sadu stavů Krylovovy báze (tj. Trotterizované obvody časového vývoje) přes rostoucí časové intervaly pro odhad základního stavu
+2. **Krok 2: Optimalizace problému**
+    - Transpiluj obvody pro Backend
+3. **Krok 3: Provedení experimentů**
+    - Odeber vzorky z obvodů pomocí primitiva ``Sampler``
+4. **Krok 4: Post-procesování výsledků**
+   - Samokonsistentní smyčka obnovy konfigurací
+       - Post-procesuj celou sadu vzorků bitových řetězců s využitím předchozí znalosti počtu částic a průměrné obsazenosti orbitalů vypočítané v posledních iteraci
+       - Pravděpodobnostně vytváří dávky podvzorků z obnovených bitových řetězců
+       - Projektuj a diagonalizuj fermionský mřížkový Hamiltonián přes každý vzorkovaný podprostor
+       - Ulož minimální energii základního stavu nalezenou přes všechny dávky a aktualizuj průměrnou obsazenost orbitalů
+### Krok 1: Mapování problému na kvantový Circuit {#krok-1-mapovani-problemu-na-kvantovy-circuit}
+Nejprve vytvoříme jednočásticové a dvoučásticové Hamiltoniány popisující jednorozměrný model jedné nečistoty Andersonova typu (SIAM) se ``7`` vazebnými místy (``8`` elektronů v ``8`` orbitalech). Tento model se používá k popisu magnetických nečistot zabudovaných v kovech.
+
+Poté vytvoříme ``16``-qubitové Trotterovy obvody použité k vygenerování kvantového Krylovova podprostoru.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy qiskit qiskit-addon-sqd qiskit-ibm-runtime scipy
+```
+
+```python
+import numpy as np
+
+n_bath = 7  # number of bath sites
+
+V = 1  # hybridization amplitude
+t = 1  # bath hopping amplitude
+U = 10  # Impurity onsite repulsion
+eps = -U / 2  # Chemical potential for the impurity
+
+# Place the impurity on the first qubit
+impurity_index = 0
+
+# One body matrix elements in the "position" basis
+h1e = -t * np.diag(np.ones(n_bath), k=1) - t * np.diag(np.ones(n_bath), k=-1)
+h1e[impurity_index, impurity_index + 1] = -V
+h1e[impurity_index + 1, impurity_index] = -V
+h1e[impurity_index, impurity_index] = eps
+
+# Two body matrix elements in the "position" basis
+h2e = np.zeros((n_bath + 1, n_bath + 1, n_bath + 1, n_bath + 1))
+h2e[impurity_index, impurity_index, impurity_index, impurity_index] = U
+```
+
+Dále vygenerujeme kvantový Krylovův podprostor pomocí sady Trotterizovaných kvantových obvodů. Zde vytváříme pomocné funkce pro generování počátečního (referenčního) stavu a také pro časový vývoj jednočásticové a dvoučásticové části Hamiltoniánu. Podrobnější popis tohoto modelu a způsobu návrhu obvodů najdeš v [článku](https://arxiv.org/abs/2501.09702).
+
+```python
+import ffsim
+import scipy
+from qiskit import QuantumCircuit, QuantumRegister
+from qiskit.circuit.library import CPhaseGate, XGate, XXPlusYYGate
+
+n_modes = n_bath + 1
+nelec = (n_modes // 2, n_modes // 2)
+
+dt = 0.2
+Utar = scipy.linalg.expm(-1j * dt * h1e)
+
+# The reference state
+def initial_state(q_circuit, norb, nocc):
+    """Prepare an initial state."""
+    for i in range(nocc):
+        q_circuit.append(XGate(), [i])
+        q_circuit.append(XGate(), [norb + i])
+    rot = XXPlusYYGate(np.pi / 2, -np.pi / 2)
+
+    for i in range(3):
+        for j in range(nocc - i - 1, nocc + i, 2):
+            q_circuit.append(rot, [j, j + 1])
+            q_circuit.append(rot, [norb + j, norb + j + 1])
+    q_circuit.append(rot, [j + 1, j + 2])
+    q_circuit.append(rot, [norb + j + 1, norb + j + 2])
+
+# The one-body time evolution
+free_fermion_evolution = ffsim.qiskit.OrbitalRotationJW(n_modes, Utar)
+
+# The two-body time evolution
+def append_diagonal_evolution(dt, U, impurity_qubit, num_orb, q_circuit):
+    """Append two-body time evolution to a quantum circuit."""
+    if U != 0:
+        q_circuit.append(
+            CPhaseGate(-dt / 2 * U),
+            [impurity_qubit, impurity_qubit + num_orb],
+        )
+```
+
+Vygeneruj ``d`` časově vyvinutých stavů, které specifikují kvantový Krylovův podprostor. Zde jsme zvolili ``d=8``. Chyba ze vzorkování stavů Krylovovy báze konverguje s rostoucím ``d``. Všimni si, že specifika tohoto problému umožňují efektivní kompilaci jednočásticového vývoje pomocí `OrbitalRotationJW`; obecně by však bylo možné použít Qiskitův [PauliEvolutionGate](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.circuit.library.PauliEvolutionGate) pro implementaci Trotterizovaného časového vývoje celého Hamiltoniánu.
+
+```python
+# Generate the initial state
+qubits = QuantumRegister(2 * n_modes, name="q")
+init_state = QuantumCircuit(qubits)
+initial_state(init_state, n_modes, n_modes // 2)
+init_state.draw("mpl", scale=0.4, fold=-1)
+
+d = 8  # Number of Krylov basis states
+circuits = []
+for i in range(d):
+    circ = init_state.copy()
+    circuits.append(circ)
+    for _ in range(i):
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+        circ.append(free_fermion_evolution, qubits)
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+    circ.measure_all()
+```
+
+```python
+circuits[0].draw("mpl", scale=0.4, fold=-1)
+```
+
+![Quantum circuit diagram](./output_1.png)
+
+```python
+circuits[-1].draw("mpl", scale=0.4, fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+### Krok 2: Optimalizace problému {#krok-2-optimalizace-problemu}
+Poté, co jsme vytvořili Trotterizované obvody, je optimalizujeme pro cílový hardware. Před optimalizací je třeba zvolit hardwarové zařízení. Použijeme falešný 127-qubitový Backend z ``qiskit_ibm_runtime`` pro emulaci skutečného zařízení. Chceš-li spustit výpočet na skutečném QPU, nahraď falešný Backend skutečným. Více informací najdeš v [dokumentaci Qiskit IBM Runtime](https://quantum.cloud.ibm.com/docs/guides/get-started-with-primitives#get-started-with-sampler).
+
+```python
+from qiskit_ibm_runtime.fake_provider.backends import FakeSherbrooke
+
+backend = FakeSherbrooke()
+```
+
+Dále transpilujeme obvody na cílový Backend pomocí Qiskitu.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+# The circuit needs to be transpiled to the AerSimulator target
+pass_manager = generate_preset_pass_manager(optimization_level=3, backend=backend)
+isa_circuits = pass_manager.run(circuits)
+```
+
+### Krok 3: Provedení experimentů {#krok-3-provedeni-experimentu}
+Po optimalizaci obvodů pro hardwarové spuštění jsme připraveni spustit je na cílovém hardwaru a sbírat vzorky pro odhad energie základního stavu. Zde používáme ``SamplerV2`` z ``qiskit-ibm-runtime`` pro simulaci zašuměných vzorků odebraných z backendu ``ibm_sherbrooke``. Poté zkombinujeme počty z každého ze stavů Krylovovy báze do jediného slovníku počtů a vykreslíme 20 nejčastěji vzorkovaných bitových řetězců.
+
+***Poznámka: [Qiskit Aer](https://qiskit.github.io/qiskit-aer/index.html) je vyžadován pro simulaci vzorků z transpilovaných obvodů.***
+
+```python
+from qiskit.primitives import BitArray
+from qiskit.visualization import plot_histogram
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# Sample from the circuits
+noisy_sampler = Sampler(backend, options={"simulator": {"seed_simulator": 24}})
+job = noisy_sampler.run(isa_circuits, shots=500)
+
+# Combine the counts from the individual Trotter circuits
+bit_array = BitArray.concatenate_shots([result.data.meas for result in job.result()])
+
+plot_histogram(bit_array.get_counts(), number_to_keep=20)
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+### Krok 4: Post-procesování výsledků {#krok-4-post-procesovani-vysledku}
+Nyní spustíme algoritmus SQD pomocí funkce `diagonalize_fermionic_hamiltonian`. Vysvětlení argumentů této funkce najdeš v [dokumentaci API](../apidocs/qiskit_addon_sqd.fermion.rst#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian).
+
+```python
+from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian
+
+# List to capture intermediate results
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=300,
+    norb=n_modes,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=10,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+```
+
+```text
+Iteration 1
+	Subsample 0
+		Energy: -13.257128325607997
+		Subspace dimension: 3969
+	Subsample 1
+		Energy: -13.257128325607997
+		Subspace dimension: 3969
+	Subsample 2
+		Energy: -13.257128325607997
+		Subspace dimension: 3969
+Iteration 2
+	Subsample 0
+		Energy: -13.319666127542039
+		Subspace dimension: 4096
+	Subsample 1
+		Energy: -13.420534292304595
+		Subspace dimension: 4624
+	Subsample 2
+		Energy: -9.136171594591085
+		Subspace dimension: 4624
+Iteration 3
+	Subsample 0
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 1
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 2
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+Iteration 4
+	Subsample 0
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 1
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 2
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+```
+
+Nyní vykreslíme výsledky. První graf ukazuje, že po několika iteracích získáme přesnou energii základního stavu.
+
+Tento příklad je dostatečně malý, abychom mohli prozkoumat celý Hilbertův prostor, jak je vidět z výpisů výše. Pamatuj, že celý Hilbertův prostor má dimenzi ``(num_orbitals choose nelec_a) * (num_orbitals choose nelec_b)``. Pro tento problém tedy: `(8 choose 4)**2 = 4900`. Dimenze podprostoru rostou díky zlepšené obnově konfigurací a také proto, že algoritmus SQD přenáší důležité konfigurace z jedné iterace do druhé. V poslední iteraci diagonalizujeme v celém Hilbertově prostoru.
+
+Druhý graf zobrazuje průměrnou obsazenost každého prostorového orbitalu přes řešení všech dávek. Vidíme, že s vysokou pravděpodobností obsahuje každý orbital jeden elektron.
+
+```python
+import matplotlib.pyplot as plt
+
+exact_energy = -13.422491814605827
+min_es = [min(result, key=lambda res: res.energy).energy for result in result_history]
+min_id, min_e = min(enumerate(min_es), key=lambda x: x[1])
+
+# Data for energies plot
+x1 = range(len(result_history))
+yt1 = list(np.arange(-13.5, -13.1, 0.1))
+ytl = [f"{i:.1f}" for i in yt1]
+
+# Data for avg spatial orbital occupancy
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, min_es, label="SQD energy", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(ytl)
+axs[0].axhline(y=exact_energy, color="#BF5700", linestyle="--", label="Exact energy")
+axs[0].set_title("Approximated Ground State Energy vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f}")
+print(f"SQD energy: {min_e:.5f}")
+print(f"Absolute error: {abs(min_e - exact_energy):.5f}")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -13.42249
+SQD energy: -13.42249
+Absolute error: 0.00000
+```
+
+![Plot output](./output_4.png)
+
+<TutorialFeedback />
