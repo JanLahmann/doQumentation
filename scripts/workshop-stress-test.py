@@ -53,14 +53,46 @@ SIMPLE_CELL = "print('hello from stress test')"
 
 
 async def get_stats(session: aiohttp.ClientSession, url: str) -> dict:
-    """Query /stats endpoint on an instance."""
+    """Query /stats endpoint on an instance.
+
+    The doQumentation CE container's SSE shim exposes a rich /stats endpoint
+    (kernels, kernels_busy, connections, peak_*, memory_mb, memory_total_mb,
+    load_1m/5m/15m, cpu_count, uptime_seconds). Falls back to {} on error.
+    """
     try:
-        async with session.get(f"{url}/stats", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+        async with session.get(f"{url.rstrip('/')}/stats",
+                               timeout=aiohttp.ClientTimeout(total=5)) as resp:
             if resp.status == 200:
                 return await resp.json()
     except Exception:
         pass
-    return {"kernels": 0, "status": "offline"}
+    return {}
+
+
+def _format_stats(stats: dict) -> str:
+    """Render a /stats dict as a one-line summary for the ramp output.
+
+    Prefers peak_* fields (high-water marks) since /stats is queried after
+    the run finishes — instantaneous k/conn would always be 0.
+    """
+    if not stats:
+        return "stats=offline"
+    parts = []
+    peak_k = stats.get("peak_kernels")
+    if peak_k is not None:
+        parts.append(f"peak_k={peak_k}")
+    peak_c = stats.get("peak_connections")
+    if peak_c is not None:
+        parts.append(f"peak_conn={peak_c}")
+    total_sse = stats.get("total_sse_connections")
+    if total_sse is not None:
+        parts.append(f"sse_total={total_sse}")
+    if stats.get("memory_mb") is not None and stats.get("memory_total_mb"):
+        pct = round(100 * stats["memory_mb"] / stats["memory_total_mb"])
+        parts.append(f"mem={stats['memory_mb']}/{stats['memory_total_mb']}MB({pct}%)")
+    if stats.get("load_1m") is not None and stats.get("cpu_count"):
+        parts.append(f"load={stats['load_1m']:.2f}/{stats['cpu_count']}cpu")
+    return " ".join(parts) if parts else "stats=empty"
 
 
 async def connect_sse(session: aiohttp.ClientSession, url: str, token: str) -> tuple[str, str]:
@@ -93,46 +125,69 @@ async def start_kernel(session: aiohttp.ClientSession, url: str, token: str) -> 
         return data["id"]
 
 
-async def execute_cell(url: str, kernel_id: str, token: str, code: str) -> float:
-    """Execute a cell via WebSocket and return execution time in seconds."""
-    ws_url = url.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_url}api/kernels/{kernel_id}/channels?token={token}"
+class KernelSession:
+    """One persistent WebSocket to a Jupyter kernel, supporting multiple cells.
 
-    msg_id = f"stress_{random.randint(0, 999999):06d}"
-    execute_msg = {
-        "header": {
-            "msg_id": msg_id,
-            "msg_type": "execute_request",
-            "username": "stress-test",
-            "session": msg_id,
-            "version": "5.3",
-        },
-        "parent_header": {},
-        "metadata": {},
-        "content": {
-            "code": code,
-            "silent": False,
-            "store_history": False,
-            "user_expressions": {},
-            "allow_stdin": False,
-            "stop_on_error": True,
-        },
-        "buffers": [],
-        "channel": "shell",
-    }
+    Real browser clients (thebelab, JupyterLab) open ONE websocket per kernel
+    and reuse it across many cell executions. The earlier per-cell connect
+    pattern inflated latencies by ~150-250ms per cell (handshake + Jupyter
+    'Connecting to kernel' setup) and triggered Jupyter 'No session ID'
+    warnings on every cell. This class matches real-client behavior.
+    """
 
-    start = time.monotonic()
-    async with websockets.connect(ws_url, close_timeout=5) as ws:
-        await ws.send(json.dumps(execute_msg))
+    def __init__(self, base_url: str, kernel_id: str, token: str):
+        ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
+        self.ws_url = f"{ws_base}api/kernels/{kernel_id}/channels?token={token}"
+        # session_id is per-kernel, stable across cells (matches real clients,
+        # silences Jupyter's "No session ID specified" warning)
+        self.session_id = f"stress-{random.randint(0, 0xFFFFFFFF):08x}"
+        self.ws = None
+
+    async def __aenter__(self):
+        self.ws = await websockets.connect(self.ws_url, close_timeout=5)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self.ws is not None:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+
+    async def execute(self, code: str) -> float:
+        """Execute one cell on this kernel, return wall time in seconds."""
+        msg_id = f"{self.session_id}-{random.randint(0, 0xFFFF):04x}"
+        execute_msg = {
+            "header": {
+                "msg_id": msg_id,
+                "msg_type": "execute_request",
+                "username": "stress-test",
+                "session": self.session_id,
+                "version": "5.3",
+            },
+            "parent_header": {},
+            "metadata": {},
+            "content": {
+                "code": code,
+                "silent": False,
+                "store_history": False,
+                "user_expressions": {},
+                "allow_stdin": False,
+                "stop_on_error": True,
+            },
+            "buffers": [],
+            "channel": "shell",
+        }
+        start = time.monotonic()
+        await self.ws.send(json.dumps(execute_msg))
         while True:
-            raw = await asyncio.wait_for(ws.recv(), timeout=120)
+            raw = await asyncio.wait_for(self.ws.recv(), timeout=120)
             reply = json.loads(raw)
             if (
                 reply.get("msg_type") == "execute_reply"
                 and reply.get("parent_header", {}).get("msg_id") == msg_id
             ):
-                elapsed = time.monotonic() - start
-                return elapsed
+                return time.monotonic() - start
 
 
 async def shutdown_kernel(session: aiohttp.ClientSession, url: str, token: str, kernel_id: str):
@@ -178,16 +233,18 @@ async def simulate_user(
             kernel_id = await start_kernel(session, server_url, server_token)
             result["kernel_started"] = True
 
-            # Execute cells
+            # Execute cells over ONE persistent websocket (matches real
+            # browser clients — thebelab/JupyterLab reuse one WS per kernel).
             code = QISKIT_CELL if use_qiskit else SIMPLE_CELL
-            for cell_num in range(cells_per_user):
-                latency = await execute_cell(server_url, kernel_id, server_token, code)
-                result["latencies"].append(latency)
-                result["cells_completed"] += 1
+            async with KernelSession(server_url, kernel_id, server_token) as ks:
+                for cell_num in range(cells_per_user):
+                    latency = await ks.execute(code)
+                    result["latencies"].append(latency)
+                    result["cells_completed"] += 1
 
-                # Idle between cells (simulate reading)
-                if cell_num < cells_per_user - 1 and idle_between > 0:
-                    await asyncio.sleep(idle_between)
+                    # Idle between cells (simulate reading)
+                    if cell_num < cells_per_user - 1 and idle_between > 0:
+                        await asyncio.sleep(idle_between)
 
             # Cleanup
             await shutdown_kernel(session, server_url, server_token, kernel_id)
@@ -232,16 +289,17 @@ async def run_single_instance(args):
         avg_lat = statistics.mean(all_latencies) if all_latencies else 0
         p95_lat = sorted(all_latencies)[int(len(all_latencies) * 0.95)] if len(all_latencies) > 1 else avg_lat
 
-        # Get instance stats
+        # Get instance stats from the SSE shim's /stats endpoint
         async with aiohttp.ClientSession() as session:
             stats = await get_stats(session, args.url)
 
         print(
             f"  Kernels: {kernels_ok}/{count} | "
             f"Avg latency: {avg_lat:.1f}s | p95: {p95_lat:.1f}s | "
-            f"Reported kernels: {stats.get('kernels', '?')} | "
             f"Failures: {failures}"
         )
+        if stats:
+            print(f"  Pod stats: {_format_stats(stats)}")
         for r in results:
             if r["error"]:
                 print(f"    User {r['user_id']}: {r['error'][:80]}")

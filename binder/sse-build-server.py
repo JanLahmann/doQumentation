@@ -44,7 +44,26 @@ def _log_event(event_type, **kwargs):
 
 
 def _read_memory_mb():
-    """Read memory usage from /proc/meminfo. Returns (used_mb, total_mb) or (None, None)."""
+    """Read memory usage. Returns (used_mb, total_mb) or (None, None).
+
+    Prefers cgroup v2 (memory.current / memory.max) which reflects the
+    container's actual limit. Falls back to /proc/meminfo (host view).
+    On Code Engine, the cgroup limit is the only meaningful number — the
+    host /proc/meminfo shows the entire Kubernetes node's RAM (~62 GB),
+    not the pod's allocation (~4 GB).
+    """
+    # Try cgroup v2 first
+    try:
+        with open('/sys/fs/cgroup/memory.current') as f:
+            current = int(f.read().strip())
+        with open('/sys/fs/cgroup/memory.max') as f:
+            max_str = f.read().strip()
+        if max_str != 'max':
+            total = int(max_str)
+            return (round(current / 1024 / 1024), round(total / 1024 / 1024))
+    except (FileNotFoundError, ValueError, PermissionError):
+        pass
+    # Fall back to /proc/meminfo (host view, less useful in containers)
     try:
         with open('/proc/meminfo') as f:
             info = {}
@@ -57,6 +76,39 @@ def _read_memory_mb():
             return (round((total - avail) / 1024), round(total / 1024))
     except (FileNotFoundError, KeyError, ValueError):
         return (None, None)
+
+
+def _read_loadavg():
+    """Read system load averages from /proc/loadavg. Returns (1m, 5m, 15m) or (None, None, None)."""
+    try:
+        with open('/proc/loadavg') as f:
+            parts = f.read().split()
+            return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except (FileNotFoundError, IndexError, ValueError):
+        return (None, None, None)
+
+
+def _read_cpu_count():
+    """Count online CPUs visible to the container. Returns int or None.
+
+    On Code Engine, /proc/cpuinfo reflects the host (not the cgroup limit).
+    The CPU *limit* is in cgroup v2's cpu.max — read that for the real value.
+    """
+    try:
+        with open('/sys/fs/cgroup/cpu.max') as f:
+            quota_str, period_str = f.read().split()
+            if quota_str == 'max':
+                # No quota — fall through to /proc count
+                raise ValueError
+            quota = int(quota_str)
+            period = int(period_str)
+            return max(1, round(quota / period, 2))
+    except (FileNotFoundError, ValueError, IndexError):
+        pass
+    try:
+        return os.cpu_count()
+    except Exception:
+        return None
 
 
 def _jupyter_is_ready():
@@ -141,6 +193,8 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
             'kernels': 0, 'kernels_busy': 0, 'connections': 0,
             'uptime_seconds': round(time.time() - _process_start_time),
             'memory_mb': None, 'memory_total_mb': None,
+            'load_1m': None, 'load_5m': None, 'load_15m': None,
+            'cpu_count': None,
             'peak_kernels': _peak_kernels,
             'peak_connections': _peak_connections,
             'total_sse_connections': _total_sse_connections,
@@ -186,10 +240,23 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         result['memory_mb'] = used_mb
         result['memory_total_mb'] = total_mb
 
+        # Read CPU load averages and effective CPU count (cgroup-aware)
+        load_1m, load_5m, load_15m = _read_loadavg()
+        result['load_1m'] = load_1m
+        result['load_5m'] = load_5m
+        result['load_15m'] = load_15m
+        result['cpu_count'] = _read_cpu_count()
+
         # Log high memory warning (>80%)
         if used_mb and total_mb and total_mb > 0 and used_mb > 0.8 * total_mb:
             _log_event("high_memory", used_mb=used_mb, total_mb=total_mb,
                        pct=round(100 * used_mb / total_mb))
+
+        # Log high CPU warning (1m load > cpu_count, i.e., saturated)
+        if load_1m is not None and result['cpu_count']:
+            if load_1m > result['cpu_count']:
+                _log_event("high_cpu", load_1m=load_1m,
+                           cpu_count=result['cpu_count'])
 
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')

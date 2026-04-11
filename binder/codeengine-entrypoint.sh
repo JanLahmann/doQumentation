@@ -58,9 +58,19 @@ c.ServerApp.root_dir = "/home/jovyan"
 # Token auth via Authorization header is the security boundary instead.
 c.ServerApp.disable_check_xsrf = True
 
-# Kernel management — cull idle kernels to save resources
-c.MappingKernelManager.cull_idle_timeout = 600
-c.MappingKernelManager.cull_interval = 120
+# Kernel management — cull idle kernels to save resources.
+# Tuned for workshop scenarios: 300s idle is short enough to reclaim slots
+# from inactive students mid-session, long enough that someone reading a
+# notebook between cells doesn't lose their state.
+# cull_busy=False (default, made explicit): never kill a kernel that's
+# actively executing — this would orphan a student mid-cell.
+# cull_connected=False: keep kernels alive while their websocket is open,
+# even if idle. A student with the tab open but not running cells doesn't
+# lose state. Trade-off: students who close laptops without disconnecting
+# leave kernels around until idle timeout fires.
+c.MappingKernelManager.cull_idle_timeout = 300
+c.MappingKernelManager.cull_interval = 60
+c.MappingKernelManager.cull_busy = False
 c.MappingKernelManager.cull_connected = False
 PYEOF
 
