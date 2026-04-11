@@ -1,0 +1,231 @@
+---
+title: "Začínáme s multi-produktovými formulemi (MPF)"
+sidebar_label: "Začínáme s multi-produktovými formulemi (MPF)"
+description: "Začni používat doplněk MPF na příkladu časového vývoje Isingova řetězce"
+notebook_path: "guides/qiskit-addons-mpf-get-started.ipynb"
+---
+{/* doqumentation-source-hash: dbcaaa7e */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-mpf-get-started.ipynb" />
+
+
+
+## Začínáme s multi-produktovými formulemi (MPF) {#začínáme-s-multi-produktovými-formulemi-mpf}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Verze balíčků</b></summary>
+
+Kód na této stránce byl vyvinut s použitím následujících požadavků.
+Doporučujeme používat tyto verze nebo novější.
+
+```
+qiskit[all]~=2.3.0
+qiskit-addon-utils~=0.3.0
+qiskit-addon-mpf~=0.3.0
+scipy~=1.16.3
+```
+</details>
+Tento průvodce ukazuje, jak používat balíček `qiskit-addon-mpf`, a to na příkladu časového vývoje Isingova modelu. S tímto balíčkem můžeš sestavit Multi-Product Formula (MPF), která dosáhne nižší Trotterovy chyby při měření pozorovatelných veličin. Poskytnuté nástroje ti umožní určit váhy zvoleného MPF, které pak lze použít k rekombinaci odhadovaných střední hodnot z několika Circuit pro časový vývoj, každého s jiným počtem Trotterových kroků.
+
+Začni uvažováním Hamiltoniánu Isingova modelu s 10 místy:
+
+$$ H_{\text{Ising}} = \sum_{i=1}^9 J_{i,(i+1)}Z_iZ_{i+1} + \sum_{i=1}^{10} h_i X_i $$
+
+kde $J_{i,(i+1)}$ je síla vazby a $h_i$ je síla vnějšího magnetického pole. Pro nastavení problému bude měřenou pozorovatelnou veličinou celková magnetizace systému
+
+$$ \langle M \rangle = \sum_{i=1}^{10} \langle Z_i \rangle. $$
+
+Níže uvedený úryvek kódu připraví Hamiltonián Isingova řetězce pomocí balíčku `qiskit-addon-utils` a definuje pozorovatelnou veličinu, která bude měřena.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-mpf qiskit-addon-utils scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit.synthesis import SuzukiTrotter
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.primitives import StatevectorEstimator
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_addon_utils.problem_generators import (
+    generate_xyz_hamiltonian,
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_mpf.costs import (
+    setup_exact_problem,
+    setup_sum_of_squares_problem,
+)
+from qiskit_addon_mpf.static import setup_static_lse
+
+from scipy.linalg import expm
+import numpy as np
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_line(10, bidirectional=False)
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+print(f"Hamiltonian:\n {hamiltonian}\n")
+
+L = coupling_map.size()
+observable = SparsePauliOp.from_sparse_list(
+    [("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L
+)
+print(f"Observable:\n {observable}")
+```
+
+```text
+Hamiltonian:
+ SparsePauliOp(['IIIIIIIZZI', 'IIIIIZZIII', 'IIIZZIIIII', 'IZZIIIIIII', 'IIIIIIIIZZ', 'IIIIIIZZII', 'IIIIZZIIII', 'IIZZIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIXI', 'IIIIIIIXII', 'IIIIIIXIII', 'IIIIIXIIII', 'IIIIXIIIII', 'IIIXIIIIII', 'IIXIIIIIII', 'IXIIIIIIII', 'XIIIIIIIII'],
+              coeffs=[1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j,
+ 1. +0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j,
+ 0.4+0.j, 0.4+0.j, 0.4+0.j])
+
+Observable:
+ SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j,
+ 0.05+0.j, 0.05+0.j, 0.05+0.j])
+```
+
+Dále připravíš MPF. Prvním rozhodnutím je, zda budou koeficienty statické (nezávislé na čase) nebo dynamické; tento návod používá statické MPF. Dalším rozhodnutím je volba hodnot $k_j$. To určuje, kolik členů bude mít MPF, a také kolik Trotterových kroků každý člen používá k simulaci časového vývoje. Volba hodnot $k_j$ je heuristická, takže si musíš sám najít „dobrou" sadu hodnot $k_j$. Pokyny pro nalezení dobré sady hodnot si přečti na konci [stránky Začínáme](/guides/qiskit-addons-mpf#determine-mpf-coefficients).
+
+Jakmile jsou hodnoty $k_j$ určeny, můžeš připravit soustavu rovnic $Ax=b$ k řešení. Matice $A$ je také určena produktovou formulí, která se má použít. Volby zde jsou její *řád*, který je v tomto příkladu nastaven na $2$, a to, zda by produktová formule měla být *symetrická*, což je v tomto příkladu nastaveno na `True`. Níže uvedený úryvek kódu vybírá celkový čas pro vývoj systému, hodnoty $k_j$, které se mají použít, a soustavu rovnic k řešení pomocí metody [`qiskit_addon_mpf.static.setup_static_lse`](../api/qiskit-addon-mpf/static).
+
+```python
+time = 8.0
+trotter_steps = (8, 12, 19)
+
+lse = setup_static_lse(trotter_steps, order=2, symmetric=True)
+print(lse)
+```
+
+```text
+LSE(A=array([[1.00000000e+00, 1.00000000e+00, 1.00000000e+00],
+       [1.56250000e-02, 6.94444444e-03, 2.77008310e-03],
+       [2.44140625e-04, 4.82253086e-05, 7.67336039e-06]]), b=array([1., 0., 0.]))
+```
+
+Jakmile je lineární soustava rovnic vytvořena, lze ji řešit buď přesně, nebo přibližným modelem pomocí součtu čtverců (nebo Frobeniovy normy pro dynamické koeficienty; více informací najdeš v [referenci API](../api/qiskit-addon-mpf/costs)). Volba přibližného modelu obvykle nastává, když je norma koeficientů pro zvolenou sadu hodnot $k_j$ považována za příliš vysokou a jiná sada hodnot $k_j$ nemůže být zvolena. Tento průvodce demonstruje obě možnosti pro porovnání výsledků.
+
+```python
+model_exact, coeffs_exact = setup_exact_problem(lse)
+model_approx, coeffs_approx = setup_sum_of_squares_problem(
+    lse, max_l1_norm=3.0
+)
+model_exact.solve()
+model_approx.solve()
+print(f"Exact solution: {coeffs_exact.value}")
+print(f"Approximate solution: {coeffs_approx.value}")
+```
+
+```text
+Exact solution: [ 0.17239057 -1.19447005  2.02207947]
+Approximate solution: [-0.40454257  0.57553173  0.8290123 ]
+```
+
+<Admonition type="note">
+
+Objekt `LSE` také disponuje metodou `LSE.solve()`, která vyřeší soustavu rovnic přesně. Důvod, proč je v tomto průvodci použita metoda `setup_exact_problem()`, je demonstrace rozhraní poskytovaného ostatními přibližnými metodami.
+
+</Admonition>
+
+## Nastavení a spuštění Trotterových Circuit {#nastavení-a-spuštění-trotterových-circuit}
+
+Nyní, když byly získány koeficienty $x_j$, je posledním krokem vygenerování Circuit pro časový vývoj pro zvolený řád a sadu kroků $k_j$ MPF. Balíček `qiskit-addon-utils` může tento proces urychlit.
+
+```python
+circuits = []
+for k in trotter_steps:
+    circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(order=2, reps=k),
+        time=time,
+    )
+    circuits.append(circ)
+```
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/6edb8bb0-30ee-416e-9804-84372ca091cf-0.svg)
+
+```python
+circuits[1].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/b2360c04-d2f8-4cfb-86c6-b05e71b9b708-0.svg)
+
+```python
+circuits[2].draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-mpf-get-started/extracted-outputs/2fbbe105-269e-4fb1-88b1-b0ba5acee229-0.svg)
+
+Jakmile jsou tyto Circuit sestaveny, můžeš je transpilovat a spustit pomocí QPU. V tomto příkladu použijeme jeden z simulátorů bez šumu, abychom ukázali, jak se Trotterova chyba snižuje.
+
+```python
+backend = GenericBackendV2(num_qubits=10)
+transpiler = generate_preset_pass_manager(
+    optimization_level=2, backend=backend
+)
+
+transpiled_circuits = [transpiler.run(circ) for circ in circuits]
+
+estimator = StatevectorEstimator()
+job = estimator.run([(circ, observable) for circ in transpiled_circuits])
+result = job.result()
+
+mpf_evs = [res.data.evs for res in result]
+print(mpf_evs)
+```
+
+```text
+[array(0.23799162), array(0.35754312), array(0.38649906)]
+```
+
+## Rekonstrukce výsledků {#rekonstrukce-výsledků}
+
+Nyní, když byly Circuit spuštěny, je rekonstrukce výsledků poměrně přímočará. Jak je zmíněno na stránce [přehledu MPF](./qiskit-addons-mpf#theoretical-background), naše pozorovatelná veličina je rekonstruována prostřednictvím váženého součtu
+
+$$ \langle M \rangle = \sum_j x_j \langle M_j \rangle. $$
+
+kde $x_j$ jsou koeficienty, které jsme nalezli, a $\langle M_j \rangle$ je odhad pozorovatelné veličiny $\sum_i \langle Z_i \rangle$ pro každý Circuit. Poté můžeme porovnat získané výsledky s přesnou hodnotou pomocí balíčku `scipy.linalg`.
+
+```python
+exp_H = expm(-1j * time * hamiltonian.to_matrix())
+initial_state = np.zeros(exp_H.shape[0])
+initial_state[0] = 1.0
+
+time_evolved_state = exp_H @ initial_state
+exact_obs = (
+    time_evolved_state.conj() @ observable.to_matrix() @ time_evolved_state
+)
+
+# Print out the different observable measurements
+print(f"Exact value: {exact_obs.real}")
+print(f"PF with 19 steps: {mpf_evs[-1]}")
+print(f"MPF using exact solution: {mpf_evs @ coeffs_exact.value}")
+print(f"MPF using approximate solution: {mpf_evs @ coeffs_approx.value}")
+```
+
+```text
+Exact value: 0.4006024248789992
+PF with 19 steps: 0.3864990619977402
+MPF using exact solution: 0.3954847855979902
+MPF using approximate solution: 0.4299121425348959
+```
+
+Zde vidíš, že MPF snížilo Trotterovu chybu ve srovnání s chybou získanou pouze jedinou PF s $k_j=19$. Přibližný model však vedl k střední hodnotě, která je horší než přesný model. To ukazuje důležitost použití přísných konvergenčních kritérií na přibližný model a nalezení „dobré" sady hodnot $k_j$.
