@@ -1,0 +1,124 @@
+### b.i. Aktualizace sloučených hranic se skutečně naučenými mírami šumu {#b-i-update-merged-bounds-with-actual-learned-noise-rates}
+
+Nyní, když byl naučen konkrétní šumový model, můžeme na předpovězené hranice šumu aplikovat naučené míry šumu a získat konečné určení toho, které hranice mají největší vliv na minimalizaci zkreslení.
+
+```python
+merged_bounds = merge_bounds(
+    boxed_circuit,
+    forward_bounds_tighter,
+    backward_bounds,
+    refs_2_plm,
+)
+```
+
+```text
+2025-11-10 11:22:03,755 WARNING merge Optimal spacetime partitioning not implemented!Just partitioning list of noisy boxes.
+2025-11-10 11:22:03,756 INFO merge Determined Box idx for partitioning to be 20.
+```
+
+#### b.ii. Výpočet `local_scales` pro hardwarové spuštění {#b-ii-compute-the-local-scales-for-the-hardware-execution}
+
+`compute_local_scales` se podívá na každou možnou chybu šumu v Circuit a odhadne, nakolik by tato chyba mohla zkreslovat výsledné měření, a také jak nákladná by byla její oprava. Chyby pak seřadí podle toho, jak výhodné je je zmírnit, a vybere podmnožinu, která co nejvíce snižuje zkreslení, přičemž nepřekračuje povolený rozpočet na vzorkovací náklady (nebo dosahuje požadované přesnosti). Výsledkem je sada škálovacích faktorů označujících, které chyby budou aktivně zmírňovány a které zůstanou nezmírněny (`local_scales`), spolu s předpokládanými celkovými náklady na vzorkování (`sampling_costs`) a zbývajícím zkreslením (`residual_bias_bound`).
+
+Schopnost řídit požadované zbývající zkreslení je klíčovou vlastností implementace PEC v SLC. Zatímco v [původní implementaci](https://arxiv.org/abs/2201.09866) vždy vzorkovací overhead cílil na nulové zkreslení, zde můžeme požadovaný vzorkovací overhead ladit s kompromisem v očekávaném zbývajícím zkreslení. To pomáhá udržet se v rámci pevného vzorkovacího rozpočtu, což může být obzvlášť užitečné při počátečním prototypování workflow.
+
+```python
+id_map = map_modifier_ref_to_ref(boxed_circuit)
+```
+
+```python
+summed_rates = 0.0
+for _box_id, noise_id in id_map.items():
+    learned_plm = refs_2_plm[noise_id]
+    summed_rates += np.sum(learned_plm.rates)
+    # print(f"{_box_id}:\tgamma = {np.exp(2 * summed_rates):1.6e}\tsampling cost = {np.exp(4 * summed_rates):1.6e}")
+total_gamma = np.exp(2 * summed_rates)
+print(f"Full PEC gamma={total_gamma}, sampling cost (gamma^2) = {total_gamma**2}")
+```
+
+```text
+Full PEC gamma=128.56055005423153, sampling cost (gamma^2) = 16527.81503024657
+```
+
+```python
+biases = []
+costs = []
+for bias in [0.0, *np.arange(0.001, 0.102, 0.01).tolist()]:
+    _, cost_, bias_ = compute_local_scales(
+        boxed_circuit,
+        merged_bounds,
+        refs_2_plm,
+        sampling_cost_budget=np.inf,
+        bias_tolerance=bias,
+    )
+    biases.append(bias_)
+    costs.append(cost_)
+```
+
+```python
+biases_cluster = []
+costs_cluster = []
+for bias in [0.0, *np.arange(0.001, 0.102, 0.01).tolist()]:
+    _, cost_, bias_ = compute_local_scales(
+        boxed_circuit,
+        merged_bounds_cluster,
+        refs_2_plm,
+        sampling_cost_budget=np.inf,
+        bias_tolerance=bias,
+    )
+    biases_cluster.append(bias_)
+    costs_cluster.append(cost_)
+```
+
+#### Výhody clusterů pro snížení vzorkovacího overheadu při daném čase klasického výpočtu {#benefits-of-clusters-for-reducing-sampling-overhead-for-a-given-classical-compute-time}
+
+```python
+xticks = np.arange(0, 11)
+
+fig, ax = plt.subplots()
+ax.scatter([0], [total_gamma**2], marker="D", c="tab:orange", label="full PEC")
+ax.plot(100 * np.array(biases), np.array(costs), "o-", c="tab:blue", label="local PEC+SLC")
+ax.plot(
+    100 * np.array(biases_cluster),
+    np.array(costs_cluster),
+    "o-",
+    c="tab:green",
+    label="cluster PEC+SLC",
+)
+ax.set_yscale("log")
+ax.set_ylim([100, 50000])
+ax.set_xticks(xticks, [f"{x:.1f}" for x in xticks])
+
+ax.set_xlabel("Remaining Bias [%]")
+ax.set_ylabel(r"Sampling Overhead, $\gamma^2$")
+ax.grid()
+ax.legend()
+fig.suptitle("PEC sampling overhead reduction due to SLC")
+```
+
+```text
+Text(0.5, 0.98, 'PEC sampling overhead reduction due to SLC')
+```
+
+![Plot output](./output_19.png)
+
+```python
+chosen_bias_thres = 0.1
+```
+
+```python
+local_scales, sampling_cost, residual_bias_bound = compute_local_scales(
+    boxed_circuit,
+    merged_bounds_cluster,
+    refs_2_plm,
+    sampling_cost_budget=np.inf,
+    bias_tolerance=chosen_bias_thres,
+)
+print(
+    f"PEC+SLC sampling cost (gamma^2) = {sampling_cost} w/ remaining bias = {100 * residual_bias_bound:.1f}%"
+)
+```
+
+```text
+PEC+SLC sampling cost (gamma^2) = 563.1803982530477 w/ remaining bias = 9.3%
+```
