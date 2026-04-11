@@ -1,0 +1,234 @@
+---
+title: "Tăierea Gate-urilor pentru Reducerea Adâncimii Circuitului"
+sidebar_label: "Tăierea Gate-urilor pentru Reducerea Adâncimii Circuitului"
+notebook_path: "qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.ipynb"
+---
+
+{/* doqumentation-source-hash: 04893c53 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.ipynb" />
+
+
+În acest tutorial, vom reduce adâncimea unui Circuit prin tăierea gate-urilor îndepărtate, evitând astfel gate-urile swap care altfel ar fi introduse de rutare.
+
+Aceștia sunt pașii pe care îi vom urma în acest [Qiskit pattern](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns):
+
+- **Pasul 1: Maparea problemei pe circuite cuantice și operatori**:
+    - Mapează Hamiltonianul pe un Circuit cuantic.
+- **Pasul 2: Optimizarea pentru hardware-ul țintă** [_Folosește addon-ul de tăiere_]:
+    - <font color='#0F62FE'>Taie Circuitul și observable-ul.</font>
+    - Transpilează subexperimentele pentru hardware.
+- **Pasul 3: Execuția pe hardware-ul țintă**:
+    - Rulează subexperimentele obținute în Pasul 2 folosind primitiva `Sampler`.
+- **Pasul 4: Post-procesarea rezultatelor** [_Folosește addon-ul de tăiere_]:
+    - <font color='#0F62FE'>Combină rezultatele din Pasul 3 pentru a reconstitui valoarea de așteptare a observable-ului în cauză.</font>
+## Pasul 1: Mapare
+
+### Creează un Circuit pentru a rula pe Backend
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+circuit = efficient_su2(num_qubits=4, entanglement="circular")
+circuit.assign_parameters([0.4] * len(circuit.parameters), inplace=True)
+circuit.draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./output_1.png)
+
+### Specifică un observable
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+```
+
+## Pasul 2: Optimizare
+
+### Specifică un Backend
+
+Poți furniza fie un Backend fals, fie un Backend hardware din Qiskit Runtime.
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+
+backend = FakeManilaV2()
+```
+
+### Transpilează Circuitul, vizualizează swap-urile și notează adâncimea
+
+Alegem un layout care necesită două swap-uri pentru a executa gate-urile dintre Qubit-urile 3 și 0 și alte două swap-uri pentru a returna Qubit-urile la pozițiile inițiale.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, backend=backend, initial_layout=[0, 1, 2, 3]
+)
+
+transpiled_qc = pass_manager.run(circuit)
+print(f"Transpiled circuit depth: {transpiled_qc.depth(lambda x: len(x.qubits) >= 2)}")
+```
+
+```text
+Transpiled circuit depth: 30
+```
+
+```python
+transpiled_qc.draw("mpl", scale=0.4, idle_wires=False, fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+### Înlocuiește gate-urile îndepărtate cu `TwoQubitQPDGate`-uri prin specificarea indicilor lor
+
+`cut_gates` va înlocui gate-urile de la indicii specificați cu `TwoQubitQPDGate`-uri și va returna, de asemenea, o listă de instanțe `QPDBasis` — câte una pentru fiecare descompunere de gate.
+
+```python
+from qiskit_addon_cutting import cut_gates
+
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(circuit.data)
+    if {circuit.find_bit(q)[0] for q in instruction.qubits} == {0, 3}
+]
+
+# Decompose distant CNOTs into TwoQubitQPDGate instances
+qpd_circuit, bases = cut_gates(circuit, cut_indices)
+
+qpd_circuit.draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+### Generează subexperimentele pentru a rula pe Backend
+
+`generate_cutting_experiments` acceptă un Circuit care conține instanțe `TwoQubitQPDGate` și observable-uri sub formă de `PauliList`.
+
+Pentru a simula valoarea de așteptare a Circuitului de dimensiune completă, sunt generate multe subexperimente din distribuția de quasiprobabilitate comună a gate-urilor descompuse, iar acestea sunt apoi executate pe unul sau mai multe Backend-uri. Numărul de eșantioane preluate din distribuție este controlat de `num_samples`, iar un coeficient combinat este furnizat pentru fiecare eșantion unic. Pentru mai multe informații despre modul în care sunt calculați coeficienții, consultă [materialul explicativ](../explanation/index.rst).
+
+**Notă:** Argumentul ``observables`` al funcției `generate_cutting_experiments` este de tipul `PauliList`. Coeficienții și fazele termenilor observable sunt ignorați în timpul descompunerii problemei și al execuției subexperimentelor. Acestea pot fi re-aplicate în timpul reconstituirii valorii de așteptare.
+
+```python
+import numpy as np
+from qiskit_addon_cutting import generate_cutting_experiments
+
+# Generate the subexperiments and sampling coefficients
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit, observables=observable.paulis, num_samples=np.inf
+)
+```
+### Calculează overhead-ul de eșantionare pentru tăieturile alese
+
+Aici tăiem trei porți CNOT, rezultând un overhead de eșantionare de $9^3$.
+
+Pentru mai multe informații despre overhead-ul de eșantionare generat de circuit cutting, consultă [materialele explicative](../explanation/index.rst).
+
+```python
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 729.0
+```
+
+### Demonstrează că subexperimentele QPD vor fi mai puțin adânci după tăierea porților îndepărtate
+
+Acesta este un exemplu de subexperiment ales arbitrar, generat din Circuit-ul QPD. Adâncimea sa a fost redusă cu mai mult de jumătate. Multe dintre aceste subexperimente probabilistice trebuie generate și evaluate pentru a reconstitui o valoare de așteptare a Circuit-ului mai adânc.
+
+```python
+# Transpile the decomposed circuit to the same layout
+transpiled_qpd_circuit = pass_manager.run(subexperiments[100])
+
+print(
+    f"Original circuit depth after transpile: {transpiled_qc.depth(lambda x: len(x.qubits) >= 2)}"
+)
+print(
+    f"QPD subexperiment depth after transpile: {transpiled_qpd_circuit.depth(lambda x: len(x.qubits) >= 2)}"
+)
+transpiled_qpd_circuit.draw("mpl", scale=0.8, idle_wires=False, fold=-1)
+```
+
+```text
+Original circuit depth after transpile: 30
+QPD subexperiment depth after transpile: 7
+```
+
+![Quantum circuit diagram](./output_4.png)
+
+### Pregătește subexperimentele pentru Backend
+
+```python
+# Transpile the subeperiments to the backend's instruction set architecture (ISA)
+isa_subexperiments = pass_manager.run(subexperiments)
+```
+
+## Pasul 3: Execuție
+
+### Rulează subexperimentele folosind primitiva Qiskit Runtime Sampler
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+
+# Set up the Qiskit Runtime Sampler primitive.  For a fake backend, this will use a local simulator.
+sampler = SamplerV2(backend)
+
+# Submit the subexperiments
+job = sampler.run(isa_subexperiments)
+```
+
+```python
+# Retrieve the results
+results = job.result()
+```
+
+## Pasul 4: Post-procesare
+
+### Reconstituie valoarea de așteptare
+
+Reconstituie valorile de așteptare pentru fiecare termen al observable-ului și combină-le pentru a reconstitui valoarea de așteptare pentru observable-ul original.
+
+```python
+from qiskit_addon_cutting import reconstruct_expectation_values
+
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    observable.paulis,
+)
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+```
+
+### Compară valoarea de așteptare reconstituită cu valoarea de așteptare exactă din Circuit-ul și observable-ul original
+
+```python
+from qiskit_aer.primitives import EstimatorV2
+
+estimator = EstimatorV2()
+exact_expval = estimator.run([(circuit, observable)]).result()[0].data.evs
+print(f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}")
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}")
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.44018555
+Exact expectation value: 0.50497603
+Error in estimation: -0.06479049
+Relative error in estimation: -0.12830408
+```
+
+<TutorialFeedback />
