@@ -1,0 +1,177 @@
+---
+title: "Depanarea joburilor Qiskit Runtime"
+sidebar_label: "Depanarea joburilor Qiskit Runtime"
+description: "Folosește modulul de instrumente de depanare Qiskit Runtime și clasa `Neat` pentru a depana și analiza joburi."
+notebook_path: "guides/debug-qiskit-runtime-jobs.ipynb"
+---
+
+{/* doqumentation-source-hash: e27fb401 */}
+
+<OpenInLabBanner notebookPath="guides/debug-qiskit-runtime-jobs.ipynb" />
+
+
+
+{/* cspell:ignore ZIIIII, IZIIII,IIZIII, IIIZII, IIIIZI, IIIIIZ, rdiff */}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versiuni de pachete</b></summary>
+
+Codul de pe această pagină a fost dezvoltat folosind următoarele cerințe.
+Îți recomandăm să folosești aceste versiuni sau unele mai noi.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+```
+</details>
+Înainte de a trimite un workload Qiskit Runtime care consumă multe resurse pentru a fi executat pe hardware, poți folosi clasa Qiskit Runtime [`Neat` (Noisy Estimator Analyzer Tool)](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#neat) pentru a verifica că workload-ul tău Estimator este configurat corect, că este probabil să returneze rezultate precise, că folosește cele mai potrivite opțiuni pentru problema specificată și altele.
+
+`Neat` cliffordizează Circuit-urile de intrare pentru o simulare eficientă, păstrând totodată structura și adâncimea acestora. Circuit-urile Clifford suferă niveluri similare de zgomot și sunt un bun substitut pentru studierea Circuit-ului original de interes.
+
+Următoarele exemple ilustrează situații în care `Neat` poate fi o resursă utilă.
+Mai întâi, importă pachetele relevante și [autentifică-te la serviciul Qiskit Runtime.](/guides/cloud-setup)
+## Pregătirea mediului
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+import random
+
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import SparsePauliOp
+
+from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2 as Estimator
+from qiskit_ibm_runtime.debug_tools import Neat
+
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+```
+
+```python
+# Choose the least busy backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Generate a preset pass manager
+# This will be used to convert the abstract circuit to an equivalent Instruction Set Architecture (ISA) circuit.
+pm = generate_preset_pass_manager(backend=backend, optimization_level=0)
+
+# Set the random seed
+random.seed(10)
+```
+
+## Inițializarea unui Circuit țintă
+
+Consideră un Circuit cu șase Qubit-uri care are următoarele proprietăți:
+
+* Alternează între rotații `RZ` aleatorii și straturi de Gate-uri `CNOT`.
+* Are o structură în oglindă, adică aplică un unitar `U` urmat de inversul său.
+
+```python
+def generate_circuit(n_qubits, n_layers):
+    r"""
+    A function to generate a pseudo-random a circuit with ``n_qubits`` qubits and
+    ``2*n_layers`` entangling layers of the type used in this notebook.
+    """
+    # An array of random angles
+    angles = [
+        [random.random() for q in range(n_qubits)] for s in range(n_layers)
+    ]
+
+    qc = QuantumCircuit(n_qubits)
+    qubits = list(range(n_qubits))
+
+    # do random circuit
+    for layer in range(n_layers):
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(angles[layer][q_idx], qubit)
+
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+    # undo random circuit
+    for layer in range(n_layers)[::-1]:
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(-angles[layer][q_idx], qubit)
+
+    return qc
+
+# Generate a random circuit
+qc = generate_circuit(6, 3)
+# Convert the abstract circuit to an equivalent ISA circuit.
+isa_qc = pm.run(qc)
+
+qc.draw("mpl", idle_wires=0)
+```
+
+![Rezultatul celulei de cod anterioare](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/df19af55-897d-4b1f-baf8-fac2641ae87d-0.svg)
+
+Alege operatori `Z` simpli-Pauli ca observabile și folosește-i pentru a inițializa blocurile primitive unificate (PUB-uri).
+
+```python
+# Initialize the observables
+obs = ["ZIIIII", "IZIIII", "IIZIII", "IIIZII", "IIIIZI", "IIIIIZ"]
+print(f"Observables: {obs}")
+
+# Map the observables to the backend's layout
+isa_obs = [SparsePauliOp(o).apply_layout(isa_qc.layout) for o in obs]
+
+# Initialize the PUBs, which consist of six-qubit circuits with `n_layers` 1, ..., 6
+all_n_layers = [1, 2, 3, 4, 5, 6]
+
+pubs = [(pm.run(generate_circuit(6, n)), isa_obs) for n in all_n_layers]
+```
+
+```text
+Observables: ['ZIIIII', 'IZIIII', 'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']
+```
+
+## Cliffordizarea Circuit-urilor
+
+Circuit-urile PUB definite anterior nu sunt Clifford, ceea ce le face dificil de simulat clasic. Totuși, poți folosi metoda `Neat` [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) pentru a le mapa la Circuit-uri Clifford în vederea unei simulări mai eficiente. Metoda [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) este un wrapper în jurul pasului Transpiler [`ConvertISAToClifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-convert-isa-to-clifford), care poate fi folosit și independent. În particular, înlocuiește Gate-urile cu un singur Qubit non-Clifford din Circuit-ul original cu Gate-uri Clifford cu un singur Qubit, dar nu modifică Gate-urile cu doi Qubiți, numărul de Qubiți sau adâncimea Circuit-ului.
+
+Consultă [Simularea eficientă a Circuit-urilor stabilizatoare cu primitivele Qiskit Aer](/guides/simulate-stabilizer-circuits) pentru mai multe informații despre simularea Circuit-urilor Clifford.
+Mai întâi, inițializează `Neat`.
+
+```python
+# You could specify a custom `NoiseModel` here. If `None`, `Neat`
+# pulls the noise model from the given backend
+noise_model = None
+
+# Initialize `Neat`
+analyzer = Neat(backend, noise_model)
+```
+
+Apoi, cliffordizează PUB-urile.
+
+```python
+clifford_pubs = analyzer.to_clifford(pubs)
+
+clifford_pubs[0].circuit.draw("mpl", idle_wires=0)
+```
+
+![Rezultatul celulei de cod anterioare](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/3ad78f41-a2f8-4381-826a-ae728e081ad6-0.svg)
