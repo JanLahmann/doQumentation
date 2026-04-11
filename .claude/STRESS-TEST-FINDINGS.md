@@ -39,7 +39,7 @@
 
 The design doc's original "3 × 4 vCPU / 8 GB" was correct in capacity but **a single 12 vCPU pod is operationally simpler** at the same cost.
 
-**Highest-leverage future fix**: refactor the SSE shim from threaded to async (`aiohttp.web`) — would push the 12 vCPU clean burst capacity from ~80 to ~120-150 users.
+**Originally projected as highest-leverage fix**: SSE shim async refactor. **Did the refactor (commits `dad3d581` + `566b5deb`); it did NOT unlock the projected capacity gain.** The shim itself is no longer the bottleneck after the refactor, but the new bottleneck is **Jupyter Server race conditions** (`TraitError: 'last_activity' expected datetime, not NoneType` and `AttributeError: NoneType.kernel_ws_protocol`) that fire under high concurrent load. Both bugs exist in the threaded version too — they were just hidden by GIL serialization. Honest postmortem in [Run 7](#run-7--sse-async-refactor-postmortem). The async code is kept (architecturally cleaner, no regression at typical workshop loads); fixing Jupyter's races is upstream work or a future client-side retry loop.
 
 **Memory caveat**: today's harness uses 5-qubit circuits. Real workshop content with 25-qubit statevector simulations needs ≥8 GB pods (one 25-qubit circuit = 512 MB statevector). The 16+ GB on the recommended pods is sized correctly for advanced workshop content.
 
@@ -157,6 +157,54 @@ During the rolling-deploy chaos in the first 12 vCPU test, `/api/status` reporte
 **Real-world impact**: in a long workshop, the pod's memory would creep up across the day even though students keep leaving. Workshop hosts would need to manually restart pods between sessions, or call `DELETE /api/kernels/{id}` from the frontend on session close.
 
 **Won't fix today** — added to backlog.
+
+### Run 7 — SSE async refactor postmortem
+
+**Hypothesis going in**: the SSE shim's threaded HTTPServer (one OS thread per request, GIL contention) is the bottleneck at 12 vCPU / 100u/5s burst. Refactoring to async tornado should unlock ~120-150 concurrent users on a single 12 vCPU pod.
+
+**What I did**:
+1. Commit `dad3d581` — full rewrite of [binder/sse-build-server.py](../binder/sse-build-server.py) from `BaseHTTPRequestHandler` + `ThreadingMixIn` to `tornado.web.RequestHandler` + `tornado.ioloop`. ~150 lines diff. Used existing tornado dep (already pinned in security requirements for CVE-2025-47287). Local smoke test confirmed byte-identical SSE protocol output and 50 concurrent `/stats` requests handled in 0.18s by a single Python process.
+2. First validation run failed worse than baseline: **20 failures vs threaded's 12** at 100u/5s on clean 12 vCPU pod. `peak_conn` dropped from 74 → 69.
+3. Diagnosed root cause: tornado's `AsyncHTTPClient` defaults to `max_clients=10`. With 100+ SSE handlers each calling `_jupyter_is_ready_async()`, the queue became a worse serialization point than threaded urllib.
+4. Commit `566b5deb` — configured `SimpleAsyncHTTPClient` with `max_clients=500` and switched to a module-level singleton instead of per-request client construction.
+5. Second validation run: **14 failures vs threaded's 12** at 100u/5s on clean 12 vCPU pod. `peak_conn` recovered to 76 (slightly above threaded's 74).
+
+**The fix didn't unlock the projected capacity.** Why?
+
+Pod logs from Run 7 show **the SSE shim is no longer the bottleneck**. All 100 `sse_connect` events fired within 1-2 seconds — the shim is processing requests fast. But the pod logs also show **29 distinct uncaught exceptions in Jupyter Server during the test**, of two kinds:
+
+```
+[E ServerApp] Uncaught exception GET /api/status?token=...
+TraitError: The 'last_activity' trait of a ServerKernelManager instance
+    expected a datetime, not the NoneType None.
+```
+
+```
+[E ServerApp] Uncaught exception GET /api/kernels/{id}/channels?token=...
+AttributeError: 'NoneType' object has no attribute 'kernel_ws_protocol'
+```
+
+**These are Jupyter Server 2.16.0 race conditions**:
+1. `ServerKernelManager.last_activity` is initialized lazily — under high concurrency, `/api/status` reads `None` instead of a datetime and trips a `TraitError`. This is what causes our shim's `_jupyter_is_ready_async()` checks to fail, surfacing as `SSE stream ended without ready event` from the harness's perspective.
+2. WebSocket attachment to a freshly-created kernel races with the kernel manager's protocol setup — `/api/kernels/{id}/channels` sometimes finds the kernel exists but its WebSocket protocol object is still `None`. Surfaces as `timed out during opening handshake`.
+
+**Both races exist in the threaded version too.** The async version surfaces them more often because requests happen faster — there's less implicit GIL serialization to hide the windows.
+
+**This means the per-pod ceiling of ~75 concurrent kernels was never an SSE shim limit. It was a Jupyter Server race-condition limit, with the SSE shim's GIL contention happening to land at a similar number.** Removing one bottleneck just made the next one visible.
+
+| Variant | Failures | Kernels | peak_conn | Note |
+|---|---|---|---|---|
+| Threaded shim (baseline) | 12 | 91 | 74 | GIL hides Jupyter races, surfaces them less often |
+| Async, max_clients=10 | 20 | 89 | 69 | AsyncHTTPClient queue is the new serialization bottleneck |
+| Async, max_clients=500 (current) | **14** | 90 | **76** | Shim no longer the bottleneck; Jupyter races now dominant |
+
+**Honest assessment**: the refactor was a **lateral move**, not a capacity win. The async code is architecturally cleaner (single event loop, no thread spawning, lower memory footprint, better behavior under sustained load), but the user-visible failure count at the saturation edge is essentially unchanged. **The right write-up of the projection error is "I had the wrong mental model of where the bottleneck was; the data corrected me."**
+
+**Decision**: keep the async code (commits `dad3d581` + `566b5deb`). Reverting would throw away cleaner architecture for ~2 fewer failures within run-to-run noise. The cleaner code is better positioned for **future improvements** — specifically, adding a client-side retry loop for the Jupyter races would unlock the projected capacity, but that work is deferred.
+
+**New backlog item (HIGH priority for any actual >80-person workshop)**: client-side retry loop in `_jupyter_is_ready_async()` and the WS-handshake path. Catch the two Jupyter race errors, sleep 100ms, retry up to 3 times. Estimated +30-50% per-pod capacity at the saturation edge. ~20 lines of code, no new dependencies.
+
+**Alternative real fix (long-term)**: file upstream Jupyter Server issues for both races. Both are reproducible under the load conditions we documented; both have clear fix patterns. Not blocking for doQumentation today.
 
 **Notable**:
 - **2c' / 2d' failure mode is different from old image.** Old image (5r/m): `SSE stream ended without ready event` — kernel never allocated. New image: kernel IS allocated (`peak_k=9` and `peak_k=14` respectively), but the user's WebSocket handshake to `/api/kernels/{id}/channels` times out. This is a real CPU-saturation symptom, not a configured rate limit.
@@ -433,30 +481,32 @@ These are cheap and worth doing, but **they do not raise the per-pod ceiling**.
 2. ✅ Kernel cull tuning (600s → 300s)
 3. ✅ SSE shim cgroup-aware metrics (memory.max, cpu.max, loadavg)
 4. ✅ Harness `KernelSession` refactor (one WS per kernel)
-5. ✅ Image rebuild + CE redeploy via CI
+5. ✅ Image rebuild + CE redeploy via CI (multiple times)
 6. ✅ CI workflow `seq -w 1 1` zero-padding bug fix
 7. ✅ Reproducibility check on 1 vCPU
 8. ✅ **Full CPU scaling characterization across 1, 4, 8, 12 vCPU**
 9. ✅ Harness `--ramp-interval` flag (uniform stagger)
 10. ✅ Stagger model validated — peak_conn is constant per pod, stagger only spreads work over time
-11. ✅ Memory comprehensively shown to NOT be the constraint (max 30% across all tests on 4-12 vCPU pods)
+11. ✅ Memory comprehensively shown to NOT be the constraint (max 44% across all tests)
 12. ✅ **Final sizing recommendation**: 1 × 12 vCPU / 24 GB handles 80 users (96% burst, 100% with 75s stagger). 1 × 8 vCPU / 16 GB handles 50 users.
-13. ✅ **NEW BOTTLENECK DISCOVERED**: SSE shim's threaded HTTPServer hits GIL contention around 80-100 simultaneous SSE requests. At 12 vCPU, this dominates the per-pod ceiling instead of the WS handshake.
+13. ✅ **SSE shim async refactor** (`dad3d581` + `566b5deb`): rewrote shim from threaded `BaseHTTPRequestHandler` to `tornado.web` async, configured `AsyncHTTPClient(max_clients=500)` singleton. Architecturally cleaner, no regression at typical loads.
+14. ✅ **Refactor postmortem (Run 7)**: the projected "120-150 user" capacity gain did NOT materialize. The async shim is no longer the bottleneck, but the new bottleneck is **Jupyter Server race conditions** that fire under high concurrency (`TraitError: 'last_activity'` and `AttributeError: NoneType.kernel_ws_protocol`). Both bugs exist in threaded version too — GIL just hid them. Per-pod ceiling at 100u/5s essentially unchanged (12 → 14 failures, within noise).
 
 ### Open
-1. **SSE shim async refactor** (NEW HIGH PRIORITY from 12 vCPU run): replace `ThreadingHTTPServer` with `aiohttp.web` async server. ~50-100 lines. Would lift 12 vCPU clean burst capacity from ~80 to ~120-150 users. **The single highest-leverage future optimization.**
-2. **Multi-pod (workshop pool) test** — never validated end-to-end. With the `seq` bug fixed, deploy 2-3 instances and test the frontend random-assignment.
-3. **Admin page live monitoring** (see "Admin monitoring sketch" below): swap admin.tsx's static "Settings → Code Engine" pointer for a live `/stats` panel.
-4. **Jupyter Server connection counter underflow + cull-skip bug** (NEW HIGH PRIORITY discovered during 12 vCPU rolling-deploy chaos): when WS handshakes fail mid-stream, Jupyter's `connections_dict` underflows to negative, AND the resulting "phantom connection" prevents kernel culling because `cull_connected=False` skips kernels with active connections. Real-world impact: pod memory creeps up across a workshop day; hosts must restart pods between sessions. **Workaround**: set `cull_connected=True` (risky, may kill students mid-cell), OR call `DELETE /api/kernels/{id}` from frontend on session close, OR restart pods between workshops.
-5. **Connect-storm mitigation** (LOWER PRIORITY than I claimed earlier):
+1. **Jupyter race-condition retries** (NEW HIGH PRIORITY, the actual highest-leverage fix now): catch `TraitError`/`NoneType.kernel_ws_protocol` errors from Jupyter Server, sleep 100ms, retry up to 3 times. Two places: `_jupyter_is_ready_async()` in [binder/sse-build-server.py](../binder/sse-build-server.py), and the frontend WS-handshake path in [src/config/jupyter.ts](../src/config/jupyter.ts). ~20 lines total. Estimated +30-50% per-pod capacity at the saturation edge. **This is what the SSE async refactor was supposed to enable** — the refactor is the prerequisite, the retry loop is the actual lever.
+2. **Upstream Jupyter Server race conditions** (long-term): both bugs are reproducible under documented load conditions. File issues; both have clear fix patterns. Not blocking for doQumentation today since (1) above gives a workaround.
+3. **Multi-pod (workshop pool) test** — never validated end-to-end. With the `seq` bug fixed, deploy 2-3 instances and test the frontend random-assignment.
+4. **Admin page live monitoring** (see "Admin monitoring sketch" below): swap admin.tsx's static "Settings → Code Engine" pointer for a live `/stats` panel.
+5. **Workflow gotcha**: CI deploy step always sets `--cpu 1 --memory 4G` (the workflow_dispatch defaults), resetting the pod size on every container code push. Should only set those flags when the inputs are explicitly provided, otherwise leave existing config alone. ~5 line workflow change.
+6. **Jupyter Server connection counter underflow + cull-skip bug**: when WS handshakes fail mid-stream, Jupyter's `connections_dict` underflows to negative, preventing kernel culling. Real-world impact: pod memory creeps up across a workshop day. **Workaround**: restart pods between sessions, OR explicit `DELETE /api/kernels/{id}` from frontend on session close.
+7. **Connect-storm mitigation** (LOWER PRIORITY than I claimed earlier in this doc):
    - Frontend stagger (random 0-3s delay before SSE in `jupyter.ts`): helps for transient overshoots above pod capacity. ~5 lines.
-   - Client-side WebSocket retry: helps when transient saturation clears within 2s. ~10 lines.
-   - These are cheap but **do NOT raise per-pod ceiling**.
-6. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 is the only one that matters.
-7. **`min-scale=1` for workshop deployments** — add as deploy-time flag, document ~$5/month cost trade-off.
-8. **Provision IBM Cloud Logs** — optional, free tier sufficient.
-9. **`/stats` `status` field cosmetic bug** — sometimes reports `'unavailable'` due to early-init race.
-10. **Implement harness failover mode** — docstring promises it but it's not coded.
+   - Client-side WebSocket retry: helps when transient saturation clears within 2s. ~10 lines. **Subsumed by item (1) above.**
+8. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 is the only one that matters.
+9. **`min-scale=1` for workshop deployments** — add as deploy-time flag, document ~$5/month cost trade-off.
+10. **Provision IBM Cloud Logs** — optional, free tier sufficient.
+11. **`/stats` `status` field cosmetic bug** — sometimes reports `'unavailable'` due to early-init race.
+12. **Implement harness failover mode** — docstring promises it but it's not coded.
 
 ## Admin monitoring sketch
 
@@ -573,5 +623,12 @@ For full audit trail:
 | ~11:00 | `app update --name ce-doqumentation-01 --cpu 8 --memory 16G` | Verify CPU scaling on 8 vCPU pod (revision `-00025`, same image) |
 | ~11:21 | `app update --name ce-doqumentation-01 --cpu 12 --memory 24G` | Push CPU scaling to 12 vCPU (revision `-00026`, same image) |
 | ~11:30 | `app update --name ce-doqumentation-01 --max-scale 1` | No-op update to trigger fresh revision (revision `-00027`) — needed because the 12 vCPU rolling deploy left zombie kernels with phantom-negative `connections` counter that prevented culling |
+| ~11:56 | git push `dad3d581` (perf: SSE async refactor) | CI rebuilt image (digest `2c7001`), auto-deployed via workflow which RESET cpu/memory to 1 vCPU/4 GB defaults (revision `-00029`) |
+| ~12:03 | `app update --cpu 12 --memory 24G` | Restored to 12 vCPU after CI's default-cpu reset (revision `-00030`) |
+| ~13:18 | `app update --max-scale 1` | Trigger fresh revision after first async test (revision `-00031`) — needed because zombie kernels accumulated again from the failed test |
+| ~13:26 | git push `566b5deb` (fix: max_clients=500) | CI rebuilt image (digest `915700`), auto-deployed reset cpu/memory again (revision `-00032`) |
+| ~13:30 | `app update --cpu 12 --memory 24G` | Restored to 12 vCPU after second CI reset (revision `-00033`) |
 
-End state (after all tests): single app `ce-doqumentation-01` running revision `-00027`, image pinned `3dd4f4`, **max-scale=1, 12 vCPU / 24 GB**, min-scale=0.
+End state (after all tests, including SSE refactor + fix): single app `ce-doqumentation-01` running revision `-00033`, image pinned `915700` (async tornado SSE shim with `max_clients=500`), **max-scale=1, 12 vCPU / 24 GB**, min-scale=0.
+
+**Workflow gotcha discovered during the refactor work**: [.github/workflows/codeengine-image.yml](../.github/workflows/codeengine-image.yml) defaults `--cpu 1 --memory 4G` on every deploy, so any push that triggers CI **resets the pod size**. This isn't a bug — it's by design for "default workshop is 1 instance" — but it means every container code change requires a manual `app update` afterward to restore the larger size. Worth fixing in a follow-up: only set `--cpu` and `--memory` if the workflow_dispatch inputs were explicitly provided, otherwise leave the existing config alone.
