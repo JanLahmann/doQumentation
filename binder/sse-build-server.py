@@ -11,16 +11,26 @@ Protocol (matches mybinder.org):
   - Each event: data: {"phase": "<phase>", ...}\n\n
   - Final event includes "url" and "token" fields
 
-Runs on port 9090; nginx reverse-proxies /build/ here.
+Runs on port 9091 (env SSE_PORT to override); nginx reverse-proxies /build/ here.
+
+Implementation: tornado async (single event loop, no threads). The earlier
+threaded version (ThreadingMixIn + BaseHTTPRequestHandler) hit GIL contention
+around 80-100 concurrent SSE requests, surfacing as "SSE stream ended without
+ready event" failures during 12 vCPU stress tests at 100+ concurrent users.
+Tornado is already in the image (Jupyter Server runs on it), so no new deps.
 """
 
+import asyncio
 import json
 import os
 import signal
 import time
-import urllib.request
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
+from datetime import datetime, timezone
+
+import tornado.web
+import tornado.ioloop
+import tornado.httpclient
+import tornado.iostream
 
 
 CORS_ORIGIN = os.environ.get('CORS_ORIGIN', 'https://doqumentation.org')
@@ -29,7 +39,7 @@ SSE_DEFAULT_PORT = '9091'  # Avoid 9090 — Jupyter extensions may bind it
 JUPYTER_READY_TIMEOUT = 30  # seconds to wait for Jupyter to become ready
 JUPYTER_POLL_INTERVAL = 0.5  # seconds between readiness checks
 
-# In-memory counters (GIL-safe for ThreadingMixIn)
+# In-memory counters (single-threaded event loop, no locks needed)
 _total_sse_connections = 0
 _peak_kernels = 0
 _peak_connections = 0
@@ -111,82 +121,105 @@ def _read_cpu_count():
         return None
 
 
-def _jupyter_is_ready():
-    """Check if Jupyter server is responding on its local port."""
+async def _jupyter_is_ready_async(http_client: tornado.httpclient.AsyncHTTPClient) -> bool:
+    """Check if Jupyter server is responding on its local port. Async."""
+    token = os.environ.get('JUPYTER_TOKEN', '')
+    url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
     try:
-        token = os.environ.get('JUPYTER_TOKEN', '')
-        url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
-        req = urllib.request.Request(url, method='GET')
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            return resp.status == 200
+        resp = await http_client.fetch(url, request_timeout=2, raise_error=False)
+        return resp.code == 200
     except Exception:
         return False
 
 
-class SSEBuildHandler(BaseHTTPRequestHandler):
-    """Handle GET /build/* with SSE events."""
+class BuildHandler(tornado.web.RequestHandler):
+    """Handle GET /build/* with SSE events. Async, single coroutine per request."""
 
-    def do_GET(self):
-        if self.path == '/health':
-            # Lightweight health check — no auth required
-            if _jupyter_is_ready():
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(b'ok\n')
-            else:
-                self.send_error(503, 'Jupyter not ready')
-            return
+    def set_default_headers(self):
+        # CORS — set on every response from this handler
+        self.set_header('Access-Control-Allow-Origin', CORS_ORIGIN)
 
-        if self.path == '/stats':
-            self._handle_stats()
-            return
-
-        if not self.path.startswith('/build'):
-            self.send_error(404)
-            return
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/event-stream')
-        self.send_header('Cache-Control', 'no-cache')
-        self.send_header('Connection', 'keep-alive')
-        self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
-        self.end_headers()
+    async def get(self, _tail=''):
+        # Set SSE headers
+        self.set_header('Content-Type', 'text/event-stream')
+        self.set_header('Cache-Control', 'no-cache')
+        self.set_header('Connection', 'keep-alive')
 
         token = os.environ.get('JUPYTER_TOKEN', '')
 
         # Determine the public URL for this server from the Host header.
         # Always use https — CE terminates TLS at the edge, so internal
         # X-Forwarded-Proto may be 'http' even though clients use https.
-        host = self.headers.get('Host', 'localhost:8080')
+        host = self.request.headers.get('Host', 'localhost:8080')
         base_url = f'https://{host}'
 
+        global _total_sse_connections
+        _total_sse_connections += 1
+        _log_event("sse_connect", total=_total_sse_connections)
+
+        http_client = tornado.httpclient.AsyncHTTPClient()
+
         try:
-            global _total_sse_connections
-            _total_sse_connections += 1
-            _log_event("sse_connect", total=_total_sse_connections)
+            # Phase 1: connecting (immediate)
+            await self._send_event({'phase': 'connecting'})
+            await asyncio.sleep(0.3)
 
-            # Emit connecting phase
-            self._send_event({'phase': 'connecting'})
-            time.sleep(0.3)
-
-            # Emit launching phase, then wait for Jupyter to be ready
-            self._send_event({'phase': 'launching'})
-            deadline = time.monotonic() + JUPYTER_READY_TIMEOUT
-            while not _jupyter_is_ready():
-                if time.monotonic() > deadline:
-                    self._send_event({'phase': 'failed', 'message': 'Jupyter server did not become ready in time'})
+            # Phase 2: launching, then poll Jupyter for readiness
+            await self._send_event({'phase': 'launching'})
+            deadline = asyncio.get_event_loop().time() + JUPYTER_READY_TIMEOUT
+            while not await _jupyter_is_ready_async(http_client):
+                if asyncio.get_event_loop().time() > deadline:
+                    await self._send_event(
+                        {'phase': 'failed',
+                         'message': 'Jupyter server did not become ready in time'}
+                    )
                     return
-                time.sleep(JUPYTER_POLL_INTERVAL)
+                await asyncio.sleep(JUPYTER_POLL_INTERVAL)
 
-            # Jupyter confirmed ready — emit ready phase
-            self._send_event({'phase': 'ready', 'url': base_url + '/', 'token': token})
-        except (BrokenPipeError, ConnectionResetError):
+            # Phase 3: ready (final event includes URL and token)
+            await self._send_event(
+                {'phase': 'ready', 'url': base_url + '/', 'token': token}
+            )
+        except (tornado.iostream.StreamClosedError, ConnectionResetError):
             # Client disconnected mid-stream — nothing to do
             pass
 
-    def _handle_stats(self):
-        """Return enriched stats for workshop monitoring dashboard."""
+    async def _send_event(self, event: dict):
+        """Write a single SSE event and flush."""
+        line = f'data: {json.dumps(event)}\n\n'
+        self.write(line)
+        await self.flush()
+
+    async def options(self, _tail=''):
+        """CORS preflight."""
+        self.set_status(204)
+        self.set_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.set_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+
+
+class HealthHandler(tornado.web.RequestHandler):
+    """Lightweight health check — no auth required."""
+
+    def set_default_headers(self):
+        self.set_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+
+    async def get(self):
+        http_client = tornado.httpclient.AsyncHTTPClient()
+        if await _jupyter_is_ready_async(http_client):
+            self.set_header('Content-Type', 'text/plain')
+            self.write('ok\n')
+        else:
+            self.set_status(503)
+            self.write('Jupyter not ready')
+
+
+class StatsHandler(tornado.web.RequestHandler):
+    """Return enriched stats for workshop monitoring dashboard."""
+
+    def set_default_headers(self):
+        self.set_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+
+    async def get(self):
         global _peak_kernels, _peak_connections
         token = os.environ.get('JUPYTER_TOKEN', '')
         result = {
@@ -200,31 +233,40 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
             'total_sse_connections': _total_sse_connections,
             'status': 'unavailable',
         }
+
+        http_client = tornado.httpclient.AsyncHTTPClient()
         try:
             # Fetch Jupyter status (connections, started time, kernel count)
             status_url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
-            with urllib.request.urlopen(status_url, timeout=2) as resp:
-                status = json.loads(resp.read())
-            result['connections'] = status.get('connections', 0)
-            result['kernels'] = status.get('kernels', 0)
-            # Compute uptime from Jupyter's started timestamp
-            started = status.get('started', '')
-            if started:
-                from datetime import datetime, timezone
-                try:
-                    start_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
-                    result['uptime_seconds'] = round((datetime.now(timezone.utc) - start_dt).total_seconds())
-                except (ValueError, TypeError):
-                    pass
+            status_resp = await http_client.fetch(
+                status_url, request_timeout=2, raise_error=False
+            )
+            if status_resp.code == 200:
+                status = json.loads(status_resp.body)
+                result['connections'] = status.get('connections', 0)
+                result['kernels'] = status.get('kernels', 0)
+                # Compute uptime from Jupyter's started timestamp
+                started = status.get('started', '')
+                if started:
+                    try:
+                        start_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
+                        result['uptime_seconds'] = round(
+                            (datetime.now(timezone.utc) - start_dt).total_seconds()
+                        )
+                    except (ValueError, TypeError):
+                        pass
 
             # Fetch kernel list for busy count
             kernels_url = f'http://127.0.0.1:{JUPYTER_PORT}/api/kernels?token={token}'
-            with urllib.request.urlopen(kernels_url, timeout=2) as resp:
-                kernels = json.loads(resp.read())
-            result['kernels'] = len(kernels)
-            result['kernels_busy'] = sum(
-                1 for k in kernels if k.get('execution_state') == 'busy'
+            kernels_resp = await http_client.fetch(
+                kernels_url, request_timeout=2, raise_error=False
             )
+            if kernels_resp.code == 200:
+                kernels = json.loads(kernels_resp.body)
+                result['kernels'] = len(kernels)
+                result['kernels_busy'] = sum(
+                    1 for k in kernels if k.get('execution_state') == 'busy'
+                )
 
             # Update high-water marks
             _peak_kernels = max(_peak_kernels, result['kernels'])
@@ -235,7 +277,7 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
         except Exception:
             pass  # keep unavailable status with counter fields
 
-        # Read system memory (Linux /proc/meminfo)
+        # Read system memory (cgroup-aware)
         used_mb, total_mb = _read_memory_mb()
         result['memory_mb'] = used_mb
         result['memory_total_mb'] = total_mb
@@ -258,53 +300,40 @@ class SSEBuildHandler(BaseHTTPRequestHandler):
                 _log_event("high_cpu", load_1m=load_1m,
                            cpu_count=result['cpu_count'])
 
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
-        self.send_header('Cache-Control', 'no-cache')
-        self.end_headers()
-        self.wfile.write(json.dumps(result).encode())
+        self.set_header('Content-Type', 'application/json')
+        self.set_header('Cache-Control', 'no-cache')
+        self.write(json.dumps(result))
 
-    def _send_event(self, event):
-        """Write a single SSE event."""
-        line = f'data: {json.dumps(event)}\n\n'
-        self.wfile.write(line.encode())
-        self.wfile.flush()
-
-    def do_OPTIONS(self):
-        """Handle CORS preflight for /build and /stats paths."""
-        if not (self.path.startswith('/build') or self.path == '/stats'):
-            self.send_error(404)
-            return
-        self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', CORS_ORIGIN)
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        """Log errors only; suppress routine request logging."""
-        # args[1] is the status code string (e.g. '200', '404')
-        if args and len(args) >= 2:
-            try:
-                code = int(args[1])
-                if code >= 400:
-                    super().log_message(format, *args)
-            except (ValueError, IndexError):
-                super().log_message(format, *args)
+    async def options(self):
+        """CORS preflight."""
+        self.set_status(204)
+        self.set_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.set_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
 
-class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
+def make_app() -> tornado.web.Application:
+    return tornado.web.Application([
+        (r'/build/?(.*)', BuildHandler),
+        (r'/health', HealthHandler),
+        (r'/stats', StatsHandler),
+    ])
 
 
 def main():
     port = int(os.environ.get('SSE_PORT', SSE_DEFAULT_PORT))
-    server = ThreadingHTTPServer(('127.0.0.1', port), SSEBuildHandler)
-    signal.signal(signal.SIGTERM, lambda sig, frame: server.shutdown())
-    print(f'[SSE] Binder-compatible build endpoint on port {port}')
-    server.serve_forever()
+    app = make_app()
+    app.listen(port, address='127.0.0.1')
+
+    loop = tornado.ioloop.IOLoop.current()
+
+    def _shutdown(*_):
+        loop.add_callback_from_signal(loop.stop)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    print(f'[SSE] Binder-compatible build endpoint on port {port} (tornado async)')
+    loop.start()
 
 
 if __name__ == '__main__':
