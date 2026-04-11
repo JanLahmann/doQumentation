@@ -1,0 +1,118 @@
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+import os
+os.environ["NUMBA_CACHE_DIR"] = "/data"
+
+import datetime
+import quimb.tensor
+from scipy.optimize import OptimizeResult, minimize
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+from qiskit_addon_aqc_tensor.ansatz_generation import (
+    generate_ansatz_from_circuit,
+    AnsatzBlock,
+)
+from qiskit_addon_aqc_tensor.simulation import (
+    tensornetwork_from_circuit,
+    compute_overlap,
+)
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_addon_aqc_tensor.objective import OneMinusFidelity
+
+print("Hamiltonian:", hamiltonian)
+print("Observable:", observable)
+simulator_settings = QuimbSimulator(quimb.tensor.CircuitMPS, autodiff_backend="jax")
+
+# Construiește circuitul țintă AQC
+aqc_target_circuit = initial_state.copy()
+if aqc_evolution_time:
+    aqc_target_circuit.compose(
+        generate_time_evolution_circuit(
+            hamiltonian,
+            synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+            time=aqc_evolution_time,
+        ),
+        inplace=True,
+    )
+
+# Construiește reprezentarea matrix-product state a stării țintă AQC
+aqc_target_mps = tensornetwork_from_circuit(aqc_target_circuit, simulator_settings)
+print("Dimensiunea maximă a legăturii MPS țintă:", aqc_target_mps.psi.max_bond())
+output["target_bond_dimension"] = aqc_target_mps.psi.max_bond()
+
+# Generează un ansatz și parametri inițiali dintr-un circuit Trotter cu mai puțini pași
+aqc_good_circuit = initial_state.copy()
+if aqc_evolution_time:
+    aqc_good_circuit.compose(
+        generate_time_evolution_circuit(
+            hamiltonian,
+            synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+            time=aqc_evolution_time,
+        ),
+        inplace=True,
+    )
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(aqc_good_circuit)
+print("Numărul de parametri AQC:", len(aqc_initial_parameters))
+output["num_aqc_parameters"] = len(aqc_initial_parameters)
+
+# Calculează fidelitatea circuitului ansatz față de starea țintă, înainte de optimizare
+good_mps = tensornetwork_from_circuit(aqc_good_circuit, simulator_settings)
+starting_fidelity = abs(compute_overlap(good_mps, aqc_target_mps)) ** 2
+print("Fidelitatea inițială a porțiunii AQC:", starting_fidelity)
+output["aqc_starting_fidelity"] = starting_fidelity
+
+# Optimizează parametrii ansatz folosind calculele MPS
+def callback(intermediate_result: OptimizeResult):
+    fidelity = 1 - intermediate_result.fun
+    print(f"{datetime.datetime.now()} Rezultat intermediar: Fidelitate {fidelity:.8f}")
+    if intermediate_result.fun < stopping_point:
+        raise StopIteration
+
+objective = OneMinusFidelity(aqc_target_mps, aqc_ansatz, simulator_settings)
+stopping_point = 1.0 - aqc_stopping_fidelity
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": aqc_max_iterations},
+    callback=callback,
+)
+if result.status not in (
+    0,
+    1,
+    99,
+):  # 0 => succes; 1 => numărul maxim de iterații atins; 99 => terminare anticipată prin StopIteration
+    raise RuntimeError(
+        f"Optimizarea a eșuat: {result.message} (status={result.status})"
+    )
+print(f"Finalizat după {result.nit} iterații.")
+output["num_iterations"] = result.nit
+aqc_final_parameters = result.x
+output["aqc_final_parameters"] = list(aqc_final_parameters)
+
+# Construiește un circuit optimizat pentru porțiunea inițială a evoluției temporale
+aqc_final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+
+# Calculează fidelitatea după optimizare
+aqc_final_mps = tensornetwork_from_circuit(aqc_final_circuit, simulator_settings)
+aqc_fidelity = abs(compute_overlap(aqc_final_mps, aqc_target_mps)) ** 2
+print("Fidelitatea porțiunii AQC:", aqc_fidelity)
+output["aqc_fidelity"] = aqc_fidelity
+
+# Construiește circuitul final, cu restul evoluției temporale
+final_circuit = aqc_final_circuit.copy()
+if remainder_evolution_time:
+    remainder_circuit = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(reps=remainder_num_trotter_steps),
+        time=remainder_evolution_time,
+    )
+    final_circuit.compose(remainder_circuit, inplace=True)
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
