@@ -1,0 +1,132 @@
+---
+title: "Construiește un șablon de funcție Qiskit pentru simularea Hamiltonian"
+sidebar_label: "Construiește un șablon de funcție Qiskit pentru simularea Hamiltonian"
+description: "Cum să creezi un program de transpilare paralelă și să îl implementezi pe IBM Quantum Platform pentru a-l folosi ca serviciu la distanță reutilizabil."
+notebook_path: "guides/function-template-hamiltonian-simulation.ipynb"
+---
+
+{/* doqumentation-source-hash: e227e7ed */}
+
+<OpenInLabBanner notebookPath="guides/function-template-hamiltonian-simulation.ipynb" />
+
+
+
+# Construiește un șablon de funcție pentru simularea Hamiltonian
+
+Acest șablon încapsulează un flux de lucru pentru a simula evoluția în timp a unei stări inițiale față de un Hamiltonian bazat pe spin definit de utilizator și returnează un set de valori de așteptare specificate, folosind [componenta suplimentară AQC](./qiskit-addons-aqc).
+
+Acest șablon este structurat ca un tipar Qiskit cu următorii pași:
+
+#### 1. Colectarea intrărilor și maparea problemei
+
+Această secțiune primește ca intrare Hamiltonianul de simulat, o stare inițială sub forma unui `QuantumCircuit`, un set de observabile pentru estimarea valorilor de așteptare și o specificație de opțiuni pentru componenta suplimentară AQC. Acest pas validează că toate datele de intrare obligatorii sunt prezente și că se află în formatul corect.
+
+Argumentele de intrare sunt apoi folosite pentru a construi circuitele cuantice și operatorii relevanți pentru flux. Se creează un circuit țintă și se găsește o reprezentare de tip produs matricial al stărilor pentru acest circuit folosind componenta suplimentară AQC. Ulterior, un circuit ansatz este generat și optimizat folosind metode de rețele tensoriale, producând un circuit final care execută restul evoluției în timp.
+
+#### 2. Pregătirea circuitelor generate pentru execuție
+
+Circuitele generate de componenta suplimentară AQC sunt apoi transpilate pentru a fi executate pe un Backend ales. O instanță [`EstimatorV2`](../api/qiskit-ibm-runtime/estimator-v2) este creată cu un set implicit de opțiuni de atenuare a erorilor pentru a gestiona execuția circuitului.
+
+#### 3. Execuție
+
+În final, circuitul ansatz este transpilat și executat pe un QPU și colectează estimări pentru toate valorile de așteptare specificate, care sunt returnate într-un format serializabil pentru a fi accesate de utilizator.
+## Scrie șablonul de funcție
+
+Mai întâi, scrie un șablon de funcție pentru simularea Hamiltonian care folosește [componenta suplimentară AQC-Tensor Qiskit](/guides/qiskit-addons-aqc) pentru a mapa descrierea problemei la un circuit de adâncime redusă pentru execuție pe hardware.
+
+Pe parcurs, codul este salvat în `./source_files/template_hamiltonian_simulation.py`. Acest fișier este șablonul de funcție pe care îl poți încărca și rula de la distanță cu Qiskit Serverless.
+
+```python
+# Adăugat de doQumentation — pachete necesare pentru acest notebook
+!pip install -q mergedeep numpy qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-ibm-catalog qiskit-ibm-runtime qiskit-serverless quimb scipy
+```
+
+```python
+# Această celulă este ascunsă utilizatorilor, creează doar un dosar nou
+from pathlib import Path
+
+Path("./source_files").mkdir(exist_ok=True)
+```
+
+### Colectează și validează intrările
+
+Începe prin obținerea intrărilor pentru șablon. Acest exemplu are intrări specifice domeniului, relevante pentru simularea Hamiltonian (cum ar fi Hamiltonianul și observabilul), și opțiuni specifice capacității (cum ar fi cât de mult vrei să comprimi straturile inițiale ale circuitului Trotter folosind AQC-Tensor, sau opțiuni avansate pentru ajustarea fină a suprimării și atenuării erorilor față de valorile implicite care fac parte din acest exemplu).
+
+```python
+%%writefile ./source_files/template_hamiltonian_simulation.py
+
+from qiskit import QuantumCircuit
+from qiskit_serverless import get_arguments, save_result
+
+# Extrage parametrii din argumente
+#
+# Fă asta la începutul programului, astfel încât să eșueze rapid dacă lipsesc argumente obligatorii sau sunt invalide.
+
+arguments = get_arguments()
+
+dry_run = arguments.get("dry_run", False)
+backend_name = arguments["backend_name"]
+
+aqc_evolution_time = arguments["aqc_evolution_time"]
+aqc_ansatz_num_trotter_steps = arguments["aqc_ansatz_num_trotter_steps"]
+aqc_target_num_trotter_steps = arguments["aqc_target_num_trotter_steps"]
+
+remainder_evolution_time = arguments["remainder_evolution_time"]
+remainder_num_trotter_steps = arguments["remainder_num_trotter_steps"]
+
+# Oprire dacă se atinge această fidelitate
+aqc_stopping_fidelity = arguments.get("aqc_stopping_fidelity", 1.0)
+# Oprire după acest număr de iterații, chiar dacă fidelitatea de oprire nu este atinsă
+aqc_max_iterations = arguments.get("aqc_max_iterations", 500)
+
+hamiltonian = arguments["hamiltonian"]
+observable = arguments["observable"]
+initial_state = arguments.get("initial_state", QuantumCircuit(hamiltonian.num_qubits))
+```
+
+```text
+Writing ./source_files/template_hamiltonian_simulation.py
+```
+
+```python
+%%writefile --append ./source_files/template_hamiltonian_simulation.py
+
+import numpy as np
+import json
+from mergedeep import merge
+
+# Configurează `EstimatorOptions`, pentru a controla parametrii experimentului hardware
+#
+# Setează opțiunile implicite
+estimator_default_options = {
+    "resilience": {
+        "measure_mitigation": True,
+        "zne_mitigation": True,
+        "zne": {
+            "amplifier": "gate_folding",
+            "noise_factors": [1, 2, 3],
+            "extrapolated_noise_factors": list(np.linspace(0, 3, 31)),
+            "extrapolator": ["exponential", "linear", "fallback"],
+        },
+        "measure_noise_learning": {
+            "num_randomizations": 512,
+            "shots_per_randomization": 512,
+        },
+    },
+    "twirling": {
+        "enable_gates": True,
+        "enable_measure": True,
+        "num_randomizations": 300,
+        "shots_per_randomization": 100,
+        "strategy": "active",
+    },
+}
+# Îmbină cu opțiunile furnizate de utilizator
+estimator_options = merge(
+    arguments.get("estimator_options", {}), estimator_default_options
+)
+```
+
+```text
+Appending to ./source_files/template_hamiltonian_simulation.py
+```
