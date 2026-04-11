@@ -1,0 +1,259 @@
+name: Workshop Close (cleanup + final report)
+
+# Workshop lifecycle: CLOSE.
+#
+# Run this workflow at the end of a workshop to:
+#   1. Optionally cancel an in-progress Workshop Start monitor run
+#      (early-end scenario: workshop finished before the requested
+#      duration elapsed)
+#   2. Capture a final /stats snapshot (peak counters at end of workshop)
+#   3. Capture CE app events (pod lifecycle, restarts, OOM)
+#   4. Optionally resize pod back down to an idle-friendly size (saves
+#      CE billing for the next idle period)
+#   5. Optionally trigger a fresh revision to clear any zombie kernels
+#      that accumulated during the workshop (recommended between
+#      back-to-back workshops)
+#   6. Post a final summary report
+#
+# If a Workshop Start run is still active and you run this with
+# cancel_monitor=true, the monitor run's own final report (posted via
+# its `if: always()` step) will include all timeline data captured up
+# to that point.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'CE app name'
+        default: 'ce-doqumentation-01'
+        type: string
+      cancel_monitor:
+        description: 'Cancel any in-progress Workshop Start monitor run (for early workshop ends)'
+        default: false
+        type: boolean
+      resize_down:
+        description: 'Resize pod down (saves cost when idle). Pick (no change) to keep current.'
+        default: '(no change)'
+        type: choice
+        options:
+          - '(no change)'
+          - '1 vCPU / 4 GB'
+          - '2 vCPU / 8 GB'
+          - '4 vCPU / 8 GB'
+      reset_pod:
+        description: 'Trigger fresh revision to clear zombie kernels (recommended between back-to-back workshops)'
+        default: true
+        type: boolean
+      rotate_token:
+        description: 'Set a fresh random Jupyter token (invalidates any workshop URLs still in participants'' hands)'
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write  # needed for cancel_monitor
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel in-progress Workshop Start runs (if requested)
+        if: github.event.inputs.cancel_monitor == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Checking for in-progress Workshop Start runs ==="
+          # List in_progress runs for workshop-start.yml
+          IN_PROGRESS=$(gh run list \
+            --workflow=workshop-start.yml \
+            --status=in_progress \
+            --limit=5 \
+            --json databaseId,status,createdAt \
+            -R "${{ github.repository }}" \
+            2>/dev/null || echo "[]")
+
+          COUNT=$(echo "$IN_PROGRESS" | jq 'length')
+          if [ "$COUNT" = "0" ]; then
+            echo "No in-progress Workshop Start runs found."
+          else
+            echo "$COUNT in-progress run(s) found. Cancelling..."
+            echo "$IN_PROGRESS" | jq -r '.[] | .databaseId' | while read -r run_id; do
+              echo "  Cancelling run $run_id"
+              gh run cancel "$run_id" -R "${{ github.repository }}" || {
+                echo "  (cancel failed — run may have already completed)"
+              }
+            done
+            echo "=== Monitor run(s) cancelled. Their final report step will still post. ==="
+          fi
+
+      - name: Install IBM Cloud CLI
+        run: |
+          curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+          ibmcloud plugin install code-engine -f
+
+      - name: Login and select project
+        env:
+          IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
+        run: |
+          ibmcloud login --apikey "$IBM_CLOUD_API_KEY" -r eu-de -g Default --quiet
+          ibmcloud ce project select --name ce-doqumentation-01
+
+      - name: Capture final /stats
+        id: stats
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+        run: |
+          URL=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+            | jq -r '.status.url // empty')
+          if [ -z "$URL" ]; then
+            echo "ERROR: Could not get URL for app '$APP_NAME'"
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+          echo "=== Fetching final /stats snapshot ==="
+          STATS=$(curl -sS -m 10 "${URL}stats" 2>&1 || echo '{"error": "fetch failed"}')
+          echo "$STATS" > /tmp/final-stats.json
+          echo "$STATS" | jq . || echo "(non-JSON response: $STATS)"
+
+          # Extract key fields for the summary
+          if echo "$STATS" | jq -e . >/dev/null 2>&1; then
+            PEAK_K=$(echo "$STATS" | jq -r '.peak_kernels // 0')
+            PEAK_C=$(echo "$STATS" | jq -r '.peak_connections // 0')
+            TOTAL_SSE=$(echo "$STATS" | jq -r '.total_sse_connections // 0')
+            UPTIME=$(echo "$STATS" | jq -r '.uptime_seconds // 0')
+            MEM_MB=$(echo "$STATS" | jq -r '.memory_mb // 0')
+            MEM_TOTAL=$(echo "$STATS" | jq -r '.memory_total_mb // 0')
+            CPU_COUNT=$(echo "$STATS" | jq -r '.cpu_count // 0')
+          else
+            PEAK_K=0; PEAK_C=0; TOTAL_SSE=0; UPTIME=0
+            MEM_MB=0; MEM_TOTAL=0; CPU_COUNT=0
+          fi
+          echo "peak_k=$PEAK_K" >> "$GITHUB_OUTPUT"
+          echo "peak_c=$PEAK_C" >> "$GITHUB_OUTPUT"
+          echo "total_sse=$TOTAL_SSE" >> "$GITHUB_OUTPUT"
+          echo "uptime=$UPTIME" >> "$GITHUB_OUTPUT"
+          echo "mem_mb=$MEM_MB" >> "$GITHUB_OUTPUT"
+          echo "mem_total=$MEM_TOTAL" >> "$GITHUB_OUTPUT"
+          echo "cpu=$CPU_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Capture CE events
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+        run: |
+          echo "=== Capturing CE app events ==="
+          ibmcloud ce app events --name "$APP_NAME" 2>&1 > /tmp/ce-events.txt
+          head -50 /tmp/ce-events.txt
+
+          RESTART_COUNT=$(grep -c "Warning.*Unhealthy\|OOMKilled\|CrashLoopBackOff" /tmp/ce-events.txt 2>/dev/null || echo 0)
+          echo "restarts=$RESTART_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Apply pod updates (resize + rotate + reset in one call)
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          SIZE: ${{ github.event.inputs.resize_down }}
+          ROTATE_TOKEN: ${{ github.event.inputs.rotate_token }}
+          RESET_POD: ${{ github.event.inputs.reset_pod }}
+        run: |
+          # Build a single update command that applies all requested changes
+          # in one revision bump (rather than multiple revisions for each step).
+          UPDATE_ARGS="--name $APP_NAME"
+          CHANGES=""
+
+          if [ "$SIZE" != "(keep current)" ] && [ "$SIZE" != "(no change)" ]; then
+            CPU=$(echo "$SIZE" | sed -E 's/^([0-9]+) vCPU.*/\1/')
+            MEM=$(echo "$SIZE" | sed -E 's/.*\/ ([0-9]+) GB.*/\1G/')
+            UPDATE_ARGS="$UPDATE_ARGS --cpu $CPU --memory $MEM"
+            CHANGES="$CHANGES resize=${CPU}vCPU/${MEM}"
+          fi
+
+          if [ "$ROTATE_TOKEN" = "true" ]; then
+            # Generate fresh 32-char hex token. This invalidates any workshop
+            # URLs still in participants' hands after the workshop is over.
+            FRESH_TOKEN=$(head -c 16 /dev/urandom | xxd -p)
+            echo "::add-mask::$FRESH_TOKEN"
+            UPDATE_ARGS="$UPDATE_ARGS --env JUPYTER_TOKEN=$FRESH_TOKEN"
+            CHANGES="$CHANGES rotate_token=true"
+          fi
+
+          if [ -z "$CHANGES" ] && [ "$RESET_POD" = "true" ]; then
+            # Only a reset was requested — no other changes. Use the no-op
+            # --max-scale update to force a fresh revision anyway.
+            UPDATE_ARGS="$UPDATE_ARGS --max-scale 1"
+            CHANGES="reset=fresh_revision"
+          fi
+
+          if [ -z "$CHANGES" ]; then
+            echo "=== No changes requested (no resize, no token rotation, no reset). Skipping update. ==="
+            exit 0
+          fi
+
+          echo "=== Applying changes:$CHANGES ==="
+          ibmcloud ce app update $UPDATE_ARGS
+
+      - name: Post final report
+        if: always()
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          URL: ${{ steps.stats.outputs.url }}
+          PEAK_K: ${{ steps.stats.outputs.peak_k }}
+          PEAK_C: ${{ steps.stats.outputs.peak_c }}
+          TOTAL_SSE: ${{ steps.stats.outputs.total_sse }}
+          UPTIME: ${{ steps.stats.outputs.uptime }}
+          MEM_MB: ${{ steps.stats.outputs.mem_mb }}
+          MEM_TOTAL: ${{ steps.stats.outputs.mem_total }}
+          CPU_COUNT: ${{ steps.stats.outputs.cpu }}
+          RESIZE_DOWN: ${{ github.event.inputs.resize_down }}
+          RESET_POD: ${{ github.event.inputs.reset_pod }}
+          CANCEL_MONITOR: ${{ github.event.inputs.cancel_monitor }}
+        run: |
+          UPTIME_FMT=$(awk -v s="$UPTIME" 'BEGIN {
+            h = int(s/3600); m = int((s%3600)/60)
+            printf "%dh %dm", h, m
+          }')
+          MEM_GB=$(awk -v m="$MEM_TOTAL" 'BEGIN { printf "%.0f", m/1024 }')
+          MEM_PCT=0
+          if [ "$MEM_TOTAL" != "0" ]; then
+            MEM_PCT=$(awk -v u="$MEM_MB" -v t="$MEM_TOTAL" 'BEGIN { printf "%.0f", (u/t)*100 }')
+          fi
+
+          {
+            echo "## Workshop Close Report"
+            echo ""
+            echo "### Configuration"
+            echo "- **App:** \`$APP_NAME\`"
+            echo "- **URL:** $URL"
+            echo "- **Pod size:** ${CPU_COUNT} vCPU / ${MEM_GB} GB"
+            echo "- **Pod uptime at close:** $UPTIME_FMT"
+            echo ""
+            echo "### Actions Performed"
+            echo "- Cancel in-progress monitor: $([ "$CANCEL_MONITOR" = "true" ] && echo '✅ requested' || echo '⏭ skipped')"
+            echo "- Resize down: $([ "$RESIZE_DOWN" = '(no change)' ] && echo '⏭ skipped' || echo "✅ to $RESIZE_DOWN")"
+            echo "- Reset pod: $([ "$RESET_POD" = 'true' ] && echo '✅ triggered' || echo '⏭ skipped')"
+            echo ""
+            echo "### Final Peak Counters"
+            echo "- **Peak kernels:** $PEAK_K"
+            echo "- **Peak connections:** $PEAK_C"
+            echo "- **Total SSE connections:** $TOTAL_SSE"
+            echo "- **Current memory:** $MEM_MB / $MEM_TOTAL MB (${MEM_PCT}%)"
+            echo ""
+            echo "### CE Events Summary"
+            echo '```'
+            head -30 /tmp/ce-events.txt 2>/dev/null || echo "(no events captured)"
+            echo '```'
+            echo ""
+            echo "<details><summary>Full CE events</summary>"
+            echo ""
+            echo '```'
+            cat /tmp/ce-events.txt 2>/dev/null
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "### Interpretation"
+            echo "- If peak kernels ≥ ~6× CPU count, pod was at capacity ceiling — consider larger pod next time"
+            echo "- Peak connections should track peak kernels; a gap means users lost websocket connections"
+            echo "- If memory stayed <50%, pod was well-sized on memory"
+            echo ""
+            echo "See [.claude/STRESS-TEST-FINDINGS.md](.claude/STRESS-TEST-FINDINGS.md) for sizing recommendations."
+          } >> "$GITHUB_STEP_SUMMARY"

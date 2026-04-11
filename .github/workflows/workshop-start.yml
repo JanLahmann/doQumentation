@@ -1,0 +1,492 @@
+name: Workshop Start (continuous monitor)
+
+# Workshop lifecycle: START.
+#
+# Run this workflow at the start of a workshop to:
+#   1. Optionally resize the pod to a specific CPU/memory config
+#   2. Optionally reset Jupyter's peak counters (trigger fresh revision)
+#   3. Warm the pod (single /stats request — eliminates cold-start tax
+#      for the first real student)
+#   4. Start a continuous monitor that polls /stats every 30 seconds for
+#      the requested duration (1h / 2h / 3h / 4h / 6h)
+#   5. Post a full timeline report at the end with:
+#      - Peak load (kernels, connections, memory, CPU)
+#      - ASCII sparklines showing load over time
+#      - Summary of pod events (restarts, scale-ups, OOM)
+#      - Estimated CE cost
+#
+# To end early: run the Workshop Close workflow (which can optionally
+# cancel an in-progress monitor) or `gh run cancel <run-id>` from CLI.
+# The final report step uses `if: always()` so even on cancel/crash
+# the partial timeline gets posted.
+#
+# The monitor keeps the GitHub Actions runner active for the full
+# duration. This is fine because CI minutes are free for this repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'CE app name'
+        default: 'ce-doqumentation-01'
+        type: string
+      size:
+        description: 'Pod size (or keep current)'
+        default: '(keep current)'
+        type: choice
+        options:
+          - '(keep current)'
+          - '2 vCPU / 8 GB'
+          - '4 vCPU / 8 GB'
+          - '4 vCPU / 16 GB'
+          - '8 vCPU / 16 GB'
+          - '8 vCPU / 32 GB'
+          - '12 vCPU / 24 GB'
+          - '12 vCPU / 48 GB'
+      duration:
+        description: 'Workshop duration (monitor runs for this long)'
+        default: '3h'
+        type: choice
+        options: ['30m', '1h', '2h', '3h', '4h', '6h']
+      reset_peaks:
+        description: 'Reset pod (fresh revision) to clear leftover zombie kernels and peak counters'
+        default: true
+        type: boolean
+      custom_token:
+        description: 'Jupyter token (leave empty to auto-generate a fresh 32-char random token)'
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    # Convert duration string to minutes for GitHub timeout, plus 10 min buffer
+    timeout-minutes: 370  # 6h max + 10 min buffer
+    steps:
+      - name: Parse duration
+        id: parse
+        env:
+          DURATION: ${{ github.event.inputs.duration }}
+        run: |
+          case "$DURATION" in
+            30m) SECS=1800 ;;
+            1h)  SECS=3600 ;;
+            2h)  SECS=7200 ;;
+            3h)  SECS=10800 ;;
+            4h)  SECS=14400 ;;
+            6h)  SECS=21600 ;;
+            *)   echo "ERROR: Unknown duration '$DURATION'"; exit 1 ;;
+          esac
+          echo "seconds=$SECS" >> "$GITHUB_OUTPUT"
+          echo "Workshop duration: $DURATION ($SECS seconds)"
+
+      - name: Install IBM Cloud CLI
+        run: |
+          curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+          ibmcloud plugin install code-engine -f
+
+      - name: Login and select project
+        env:
+          IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
+        run: |
+          ibmcloud login --apikey "$IBM_CLOUD_API_KEY" -r eu-de -g Default --quiet
+          ibmcloud ce project select --name ce-doqumentation-01
+
+      - name: Generate or validate Jupyter token
+        id: token
+        env:
+          CUSTOM_TOKEN: ${{ github.event.inputs.custom_token }}
+        run: |
+          if [ -z "$CUSTOM_TOKEN" ]; then
+            # Auto-generate a fresh 32-char hex token. /dev/urandom is
+            # cryptographically secure and portable across ubuntu runners.
+            TOKEN=$(head -c 16 /dev/urandom | xxd -p)
+            echo "=== Auto-generated fresh Jupyter token (32 chars) ==="
+          else
+            TOKEN="$CUSTOM_TOKEN"
+            # Validate against the container entrypoint regex (same as
+            # binder/codeengine-entrypoint.sh validation)
+            if [ ${#TOKEN} -lt 32 ]; then
+              echo "ERROR: custom_token must be at least 32 characters (got ${#TOKEN})"
+              exit 1
+            fi
+            if ! echo "$TOKEN" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+              echo "ERROR: custom_token must contain only letters, numbers, dashes, underscores"
+              exit 1
+            fi
+            echo "=== Using instructor-supplied token (${#TOKEN} chars) ==="
+          fi
+          # Mask the token in logs (auto-redacts in subsequent steps)
+          echo "::add-mask::$TOKEN"
+          # Pass to next steps via step output
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Update pod (resize + token + fresh revision in one call)
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          SIZE: ${{ github.event.inputs.size }}
+          RESET_PEAKS: ${{ github.event.inputs.reset_peaks }}
+          TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          # Build update flags. Token is always set (fresh or supplied).
+          # Resize only if size != "(keep current)".
+          # reset_peaks is a no-op flag here because any --env change already
+          # triggers a new revision; we leave it only as a visibility hint.
+          UPDATE_ARGS="--name $APP_NAME --env JUPYTER_TOKEN=$TOKEN"
+
+          if [ "$SIZE" != "(keep current)" ]; then
+            CPU=$(echo "$SIZE" | sed -E 's/^([0-9]+) vCPU.*/\1/')
+            MEM=$(echo "$SIZE" | sed -E 's/.*\/ ([0-9]+) GB.*/\1G/')
+            UPDATE_ARGS="$UPDATE_ARGS --cpu $CPU --memory $MEM"
+            echo "=== Updating $APP_NAME: resize to $CPU vCPU / $MEM + set fresh token ==="
+          else
+            echo "=== Updating $APP_NAME: set fresh token (size preserved) ==="
+          fi
+
+          if [ "$RESET_PEAKS" = "true" ]; then
+            echo "=== reset_peaks=true → any update triggers a fresh revision anyway, ok ==="
+          fi
+
+          # Single update call = single revision
+          ibmcloud ce app update $UPDATE_ARGS
+
+          echo "=== Waiting 60s for new revision to become ready ==="
+          sleep 60
+
+      - name: Discover app URL
+        id: ce
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+        run: |
+          URL=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+            | jq -r '.status.url // empty')
+          if [ -z "$URL" ]; then
+            echo "ERROR: Could not get URL for app '$APP_NAME'"
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "=== Monitoring: $URL ==="
+
+      - name: Warm pod
+        env:
+          URL: ${{ steps.ce.outputs.url }}
+        run: |
+          echo "=== Warming pod with a /stats request (eliminates cold-start tax) ==="
+          for attempt in 1 2 3 4 5; do
+            if curl -sS -m 30 -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" "${URL}stats"; then
+              break
+            fi
+            echo "  attempt $attempt failed, retrying..."
+            sleep 5
+          done
+          echo "=== Pod is warm and ready for workshop ==="
+
+      - name: Build workshop URL and post to summary
+        env:
+          URL: ${{ steps.ce.outputs.url }}
+          TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          # Strip trailing slash from URL for the pool entry
+          POOL_URL="${URL%/}"
+          # Build the workshop config JSON: {"pool": [...], "token": "..."}
+          # The frontend expects a pool array even for single-instance deploys.
+          CONFIG_JSON=$(jq -cn --arg url "$POOL_URL" --arg tok "$TOKEN" \
+            '{pool: [$url], token: $tok}')
+          ENCODED=$(printf '%s' "$CONFIG_JSON" | base64 -w0)
+          WORKSHOP_URL="https://doqumentation.org/jupyter-settings#workshop=${ENCODED}"
+
+          # Write to a file so the final report step can include it too
+          echo "$WORKSHOP_URL" > /tmp/workshop-url.txt
+
+          # Print to job summary NOW so the instructor can copy it immediately —
+          # they don't have to wait for the long monitor to finish
+          {
+            echo "## 🎓 Workshop URL (ready to share)"
+            echo ""
+            echo "Copy this URL and share it with participants (e.g., via QR code, chat, email):"
+            echo ""
+            echo '```'
+            echo "$WORKSHOP_URL"
+            echo '```'
+            echo ""
+            echo "> Participants who click this link will auto-configure their doQumentation settings to use the workshop pod. No IBM Cloud account needed on their end."
+            echo ""
+            echo "> ⚠️ **Security note:** the URL contains the Jupyter token base64-encoded. Anyone with this URL can run code on the pod. Share only with workshop participants. After the workshop, run the [Workshop Close](../../../actions/workflows/workshop-close.yml) workflow with \`rotate_token=true\` (default) to invalidate this URL."
+            echo ""
+            echo "**Token lifetime:** this token was set on the pod when the workshop started and will remain valid until:"
+            echo "- Another Workshop Start run replaces it, OR"
+            echo "- The pod is manually updated with \`ibmcloud ce app update --env JUPYTER_TOKEN=...\`, OR"
+            echo "- The pod is deleted and recreated"
+            echo ""
+            echo "The continuous monitor is now running — final timeline + peak stats report will be appended below when the workshop duration elapses or the run is cancelled."
+            echo ""
+            echo "---"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Also print it to the log (redacted token won't be useful, but the URL structure is)
+          echo "=== Workshop URL posted to job summary ==="
+          echo "Go to the Actions run page in the GitHub UI to copy it"
+
+      - name: Continuous monitor
+        env:
+          URL: ${{ steps.ce.outputs.url }}
+          DURATION_SECS: ${{ steps.parse.outputs.seconds }}
+        run: |
+          POLL_INTERVAL=30
+          SAMPLE_FILE=/tmp/workshop-samples.tsv
+          START_TS=$(date -u +%s)
+          END_TS=$((START_TS + DURATION_SECS))
+          SAMPLE_COUNT=0
+          ERROR_COUNT=0
+
+          # TSV header
+          echo -e "timestamp\tuptime\tkernels\tbusy\tconns\tmem_mb\tmem_total\tload1m\tcpu\tpeak_k\tpeak_conn\tsse_total\tstatus" > "$SAMPLE_FILE"
+
+          echo "=== Workshop monitor started at $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+          echo "=== Polling every ${POLL_INTERVAL}s until $(date -u -d "@$END_TS" +%Y-%m-%dT%H:%M:%SZ) ==="
+          echo ""
+
+          while [ "$(date -u +%s)" -lt "$END_TS" ]; do
+            TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            RESP=$(curl -sS -m 5 "${URL}stats" 2>&1 || echo "CURL_ERROR")
+
+            if echo "$RESP" | jq -e . >/dev/null 2>&1; then
+              # Valid JSON — extract fields
+              UPTIME=$(echo "$RESP" | jq -r '.uptime_seconds // 0')
+              KERNELS=$(echo "$RESP" | jq -r '.kernels // 0')
+              BUSY=$(echo "$RESP" | jq -r '.kernels_busy // 0')
+              CONNS=$(echo "$RESP" | jq -r '.connections // 0')
+              MEM_MB=$(echo "$RESP" | jq -r '.memory_mb // 0')
+              MEM_TOTAL=$(echo "$RESP" | jq -r '.memory_total_mb // 0')
+              LOAD1M=$(echo "$RESP" | jq -r '.load_1m // 0')
+              CPU=$(echo "$RESP" | jq -r '.cpu_count // 0')
+              PEAK_K=$(echo "$RESP" | jq -r '.peak_kernels // 0')
+              PEAK_CONN=$(echo "$RESP" | jq -r '.peak_connections // 0')
+              SSE_TOTAL=$(echo "$RESP" | jq -r '.total_sse_connections // 0')
+              STATUS=$(echo "$RESP" | jq -r '.status // "unknown"')
+
+              echo -e "${TS}\t${UPTIME}\t${KERNELS}\t${BUSY}\t${CONNS}\t${MEM_MB}\t${MEM_TOTAL}\t${LOAD1M}\t${CPU}\t${PEAK_K}\t${PEAK_CONN}\t${SSE_TOTAL}\t${STATUS}" >> "$SAMPLE_FILE"
+              SAMPLE_COUNT=$((SAMPLE_COUNT + 1))
+
+              # Log every 10th sample to avoid spam (one line every 5 min at 30s interval)
+              if [ $((SAMPLE_COUNT % 10)) -eq 0 ]; then
+                echo "[$TS] sample #$SAMPLE_COUNT: kernels=$KERNELS busy=$BUSY conns=$CONNS mem=${MEM_MB}/${MEM_TOTAL}MB load=${LOAD1M}/${CPU} peak_k=$PEAK_K"
+              fi
+            else
+              # Error — log it, continue anyway
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+              echo -e "${TS}\tERROR\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tfetch_error" >> "$SAMPLE_FILE"
+              if [ $((ERROR_COUNT % 5)) -eq 1 ]; then
+                # Log every 5th error
+                echo "[$TS] /stats fetch error #$ERROR_COUNT (pod cold-starting?): $RESP" | head -c 200
+                echo ""
+              fi
+            fi
+
+            sleep "$POLL_INTERVAL"
+          done
+
+          echo ""
+          echo "=== Monitor finished. ${SAMPLE_COUNT} samples captured, ${ERROR_COUNT} fetch errors. ==="
+
+      - name: Upload samples as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workshop-samples-${{ github.run_id }}
+          path: /tmp/workshop-samples.tsv
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Capture CE events
+        if: always()
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+        run: |
+          echo "=== Capturing CE app events ===" | tee /tmp/ce-events.txt
+          ibmcloud ce app events --name "$APP_NAME" 2>&1 | tee -a /tmp/ce-events.txt
+          echo "" >> /tmp/ce-events.txt
+          echo "=== Last 100 log lines ===" >> /tmp/ce-events.txt
+          ibmcloud ce app logs --application "$APP_NAME" --tail 100 2>&1 | tail -100 >> /tmp/ce-events.txt || true
+
+      - name: Build report
+        if: always()
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          URL: ${{ steps.ce.outputs.url }}
+          DURATION: ${{ github.event.inputs.duration }}
+        run: |
+          SAMPLE_FILE=/tmp/workshop-samples.tsv
+          if [ ! -f "$SAMPLE_FILE" ]; then
+            echo "## Workshop Report — no samples captured" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The monitor did not capture any samples. Check the job logs for errors." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Count samples (excluding header)
+          TOTAL_SAMPLES=$(tail -n +2 "$SAMPLE_FILE" | wc -l | tr -d ' ')
+          ERROR_SAMPLES=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' '$2 == "ERROR"' | wc -l | tr -d ' ')
+          OK_SAMPLES=$((TOTAL_SAMPLES - ERROR_SAMPLES))
+
+          # Compute aggregates from OK samples (skip headers and errors)
+          STATS=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' '$2 != "ERROR" {
+            if ($3 > max_k) max_k = $3
+            if ($5 > max_c) max_c = $5
+            if ($6 > max_mem) max_mem = $6
+            if ($8 > max_load) max_load = $8
+            k_sum += $3; c_sum += $5; mem_sum += $6; load_sum += $8
+            n++
+            # Capture last row
+            last_ts = $1; last_k = $3; last_conn = $5; last_mem = $6; last_load = $8
+            last_peak_k = $10; last_peak_c = $11; last_sse = $12
+            last_cpu = $9; last_mem_total = $7; last_uptime = $2
+          }
+          END {
+            if (n > 0) {
+              printf "max_k=%d max_c=%d max_mem=%d max_load=%.2f ", max_k, max_c, max_mem, max_load
+              printf "avg_k=%.1f avg_c=%.1f avg_mem=%.0f avg_load=%.2f ", k_sum/n, c_sum/n, mem_sum/n, load_sum/n
+              printf "last_peak_k=%d last_peak_c=%d last_sse=%d ", last_peak_k, last_peak_c, last_sse
+              printf "last_cpu=%s last_mem_total=%d last_uptime=%s", last_cpu, last_mem_total, last_uptime
+            }
+          }')
+          eval "$STATS"
+
+          # Compute pod size (CPU / memory_total in GB, rounded)
+          POD_MEM_GB=$(awk -v m="$last_mem_total" 'BEGIN { printf "%.0f", m/1024 }')
+          POD_SIZE="${last_cpu} vCPU / ${POD_MEM_GB} GB"
+
+          # Build ASCII sparkline of kernel count over time (ignores errors)
+          # Use 60 characters wide; downsample if needed
+          SPARKLINE_KERNELS=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' -v maxk="$max_k" '
+            $2 != "ERROR" { arr[NR] = $3; n = NR }
+            END {
+              if (n == 0 || maxk == 0) { print "(no data)"; exit }
+              width = 60
+              step = n / width
+              if (step < 1) step = 1
+              chars = " ▁▂▃▄▅▆▇█"
+              for (i = 0; i < width; i++) {
+                idx = int(i * step) + 1
+                if (idx > n) idx = n
+                v = arr[idx]
+                bucket = int((v / maxk) * 8 + 0.5)
+                if (bucket > 8) bucket = 8
+                printf "%s", substr(chars, bucket + 1, 1)
+              }
+              print ""
+            }')
+
+          SPARKLINE_CONNS=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' -v maxc="$max_c" '
+            $2 != "ERROR" { arr[NR] = $5; n = NR }
+            END {
+              if (n == 0 || maxc == 0) { print "(no data)"; exit }
+              width = 60
+              step = n / width
+              if (step < 1) step = 1
+              chars = " ▁▂▃▄▅▆▇█"
+              for (i = 0; i < width; i++) {
+                idx = int(i * step) + 1
+                if (idx > n) idx = n
+                v = arr[idx]
+                bucket = int((v / maxc) * 8 + 0.5)
+                if (bucket > 8) bucket = 8
+                printf "%s", substr(chars, bucket + 1, 1)
+              }
+              print ""
+            }')
+
+          SPARKLINE_LOAD=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' -v maxl="$max_load" '
+            $2 != "ERROR" { arr[NR] = $8; n = NR }
+            END {
+              if (n == 0 || maxl == 0) { print "(no data)"; exit }
+              width = 60
+              step = n / width
+              if (step < 1) step = 1
+              chars = " ▁▂▃▄▅▆▇█"
+              for (i = 0; i < width; i++) {
+                idx = int(i * step) + 1
+                if (idx > n) idx = n
+                v = arr[idx]
+                bucket = int((v / maxl) * 8 + 0.5)
+                if (bucket > 8) bucket = 8
+                printf "%s", substr(chars, bucket + 1, 1)
+              }
+              print ""
+            }')
+
+          # Count CE restart/error events
+          RESTART_COUNT=$(grep -c "Warning.*Unhealthy\|OOMKilled\|CrashLoopBackOff" /tmp/ce-events.txt 2>/dev/null || echo 0)
+
+          # Estimate CE billing (approximate: vCPU × duration in hours × $0.000034/s)
+          # Only counts time the pod was actually running (non-error samples × 30s = active time)
+          ACTIVE_SECONDS=$((OK_SAMPLES * 30))
+          COST_ESTIMATE=$(awk -v cpu="$last_cpu" -v secs="$ACTIVE_SECONDS" 'BEGIN { printf "%.4f", cpu * secs * 0.000034 }')
+
+          # Now build the Markdown report
+          {
+            echo "## Workshop Start Report"
+            echo ""
+            echo "### Configuration"
+            echo "- **App:** \`$APP_NAME\`"
+            echo "- **URL:** $URL"
+            echo "- **Pod size:** $POD_SIZE"
+            echo "- **Duration (requested):** $DURATION"
+            echo "- **Total samples:** $TOTAL_SAMPLES ($OK_SAMPLES ok, $ERROR_SAMPLES errors)"
+            echo ""
+            echo "### Peak Load"
+            echo ""
+            echo "| Metric | Peak | Average | Final |"
+            echo "|---|---|---|---|"
+            echo "| Kernels | $max_k | $avg_k | (see sparkline) |"
+            echo "| Connections | $max_c | $avg_c | (see sparkline) |"
+            echo "| Memory (MB) | $max_mem | $avg_mem | $last_mem |"
+            echo "| CPU load (1min) | $max_load | $avg_load | $last_load |"
+            echo ""
+            echo "Reported peaks from pod counters: **peak_kernels=$last_peak_k, peak_connections=$last_peak_c, total_sse_connections=$last_sse**"
+            echo ""
+            echo "### Timeline (sparklines, left = start, right = end)"
+            echo ""
+            echo '```'
+            echo "Kernels:     $SPARKLINE_KERNELS (0 — $max_k)"
+            echo "Connections: $SPARKLINE_CONNS (0 — $max_c)"
+            echo "CPU load:    $SPARKLINE_LOAD (0 — $max_load)"
+            echo '```'
+            echo ""
+            echo "### CE Events"
+            echo ""
+            if [ "$RESTART_COUNT" = "0" ]; then
+              echo "✅ No pod restarts, OOM kills, or CrashLoopBackoffs detected."
+            else
+              echo "⚠️ **$RESTART_COUNT** restart/crash events detected. Check the \`ce-events.txt\` artifact."
+            fi
+            echo ""
+            echo "<details><summary>Full CE events + last 100 log lines</summary>"
+            echo ""
+            echo '```'
+            head -200 /tmp/ce-events.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "### Estimated Cost"
+            echo "- Active time (samples × 30s): **${ACTIVE_SECONDS}s**"
+            echo "- Approx vCPU-seconds: ${last_cpu} × ${ACTIVE_SECONDS} = $((last_cpu * ACTIVE_SECONDS))"
+            echo "- Rough cost estimate: **\$${COST_ESTIMATE}** (CE rate ≈ \$0.000034 / vCPU-second)"
+            echo ""
+            echo "### Next Steps"
+            echo "- Download the full timeline as artifact \`workshop-samples-${{ github.run_id }}\` (retention: 30 days)"
+            echo "- Run the [Workshop Close](../../../actions/workflows/workshop-close.yml) workflow to restart the pod or resize it down"
+            echo ""
+            echo "### Interpretation"
+            echo "- **Peak kernels near CPU ×6**: approaching saturation, consider larger pod next time"
+            echo "- **High CPU load (>1× CPU count)**: users saw latency spikes during bursts"
+            echo "- **Memory <50%**: sized correctly, no changes needed"
+            echo "- **Memory >80%**: upsize memory for next workshop"
+            echo ""
+            echo "See [.claude/STRESS-TEST-FINDINGS.md](.claude/STRESS-TEST-FINDINGS.md) for sizing data."
+          } >> "$GITHUB_STEP_SUMMARY"
