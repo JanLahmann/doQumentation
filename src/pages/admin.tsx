@@ -87,9 +87,9 @@ export default function AdminPage(): JSX.Element {
 
         <Section title="Live Pod Status">
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)', marginBottom: '0.75rem' }}>
-            Real-time health of CE workshop pods. Pulls /stats every 5 seconds and interprets the
-            numbers as healthy / stressed / saturated using thresholds derived from stress test data
-            (~6 sessions per vCPU, memory and CPU saturation lines). Sparklines show the last 15 minutes.
+            Real-time health of CE workshop pods. Polls each pod's <code>/stats</code> endpoint every
+            5 seconds and shows progress bars + sparklines for the last 15 minutes. Health thresholds
+            derived from stress test data (~6 sessions per vCPU, memory and CPU saturation lines).
           </p>
           <BrowserOnly>
             {() => {
@@ -99,6 +99,99 @@ export default function AdminPage(): JSX.Element {
               return <PodMonitor />;
             }}
           </BrowserOnly>
+
+          <h3 style={{ marginTop: '1.5rem' }}>How to read it</h3>
+
+          <p style={{ fontSize: '0.9rem' }}>
+            <strong>Current value matters less than direction.</strong> A pod at 78% capacity that's
+            been steady for 5 minutes is fine. A pod at 60% capacity that's climbed 30% in the last
+            minute is about to be in trouble. Watch the sparkline shape, not just the number.
+          </p>
+
+          <h4 style={{ marginTop: '1rem' }}>Status colors</h4>
+          <ul style={{ fontSize: '0.9rem' }}>
+            <li>
+              <strong>● healthy (green)</strong> — all signals under 50% of pod capacity. No action.
+              Don't even check the dashboard during this state.
+            </li>
+            <li>
+              <strong>⚠ stressed (yellow)</strong> — one signal between 50% and 80%. Workshop will
+              still work, but new users may see slower kernel starts and slight cell-execution lag.
+              <strong> Watch the sparkline.</strong> If trending up, prepare to act. If flat or down,
+              ignore and check again in a few minutes.
+            </li>
+            <li>
+              <strong>✗ saturated (orange)</strong> — one signal above 80% (or CPU load above 100%).
+              <strong> New users are likely failing right now.</strong> Read the recommendation banner
+              under the card — it tells you whether to restart, escalate pod size, or wait it out.
+              The component will tell you which signal (kernels / memory / load) is the problem.
+            </li>
+            <li>
+              <strong>⛔ unreachable (red)</strong> — pod not responding for {'>'}3 seconds. Either
+              cold-starting (typical 15-150s if image needs to be pulled to a fresh node) or crashed.
+              First user click will auto-restart it. If it stays unreachable for {'>'}3 minutes,
+              check IBM Cloud console.
+            </li>
+          </ul>
+
+          <h4 style={{ marginTop: '1rem' }}>The four metrics</h4>
+          <ul style={{ fontSize: '0.9rem' }}>
+            <li>
+              <strong>Kernels</strong> — number of active Jupyter kernels. Capacity estimate is
+              <code>~6 × cpu_count</code>, derived from stress test measurements (1, 4, 8, 12 vCPU).
+              Each kernel is one workshop participant's session. The threshold line on the sparkline
+              shows 80% of capacity.
+            </li>
+            <li>
+              <strong>Memory</strong> — pod memory used, as percent of cgroup limit (NOT host memory).
+              <strong> Memory is rarely the constraint</strong> for typical 5-15 qubit workshop content
+              — measured max ~44% across all stress tests. If memory crosses 50%, you're either
+              running advanced courses with 25-qubit statevector simulations (expected) or a kernel
+              has leaked (uncommon but possible). Restart the pod if it climbs to {'>'}80%.
+            </li>
+            <li>
+              <strong>CPU load</strong> — Linux 1-minute load average, as percent of vCPU count.
+              <code>50%</code> = half-utilized, <code>100%</code> = fully utilized. Above 100% means
+              the pod is oversubscribed and queue lengths are growing. Threshold line shows
+              <code>cpu_count</code> (= 100% saturation). Sustained {'>'}120% = users will see
+              noticeable cell-execution delays.
+            </li>
+            <li>
+              <strong>Connections</strong> — active WebSocket connections to Jupyter kernels. Should
+              roughly track Kernels (one WS per active user). Big gap between Connections and Kernels
+              means orphaned kernels (users left without disconnecting cleanly). If the gap grows
+              over time without dropping, kernels are leaking — restart between sections.
+            </li>
+          </ul>
+
+          <h4 style={{ marginTop: '1rem' }}>Reading sparklines</h4>
+          <ul style={{ fontSize: '0.9rem' }}>
+            <li><strong>Flat at low value</strong> — comfortable. Don't act.</li>
+            <li><strong>Steady climb</strong> — workshop is filling up. Normal at the start of a session.</li>
+            <li><strong>Sudden spike</strong> — instructor said "click now" and everyone connected. Will normalize within 30-60s if pod has headroom.</li>
+            <li><strong>Spike that doesn't drain</strong> — pod hit a hard limit. Check recommendation, consider restart.</li>
+            <li><strong>Sawtooth (up-down-up-down)</strong> — kernels are starting and culling. Healthy pattern during a workshop with cell runs interspersed with idle reading time.</li>
+            <li><strong>Dashed threshold line on sparkline</strong> — shows 80% of estimated capacity. When the line crosses this, you're in stressed territory.</li>
+          </ul>
+
+          <h4 style={{ marginTop: '1rem' }}>Pause button</h4>
+          <p style={{ fontSize: '0.9rem' }}>
+            The <strong>⏸ Pause</strong> button stops polling without unmounting the component.
+            Use it during a presentation or screen-share when you don't want network noise or constant
+            UI updates. Click <strong>▶ Resume</strong> to restart polling. Note: while paused,
+            sparklines stop updating but existing history is preserved.
+          </p>
+
+          <h4 style={{ marginTop: '1rem' }}>Where the data comes from</h4>
+          <p style={{ fontSize: '0.9rem' }}>
+            The dashboard reads pod URLs from your configured workshop pool in
+            <a href="/jupyter-settings#code-engine"> Settings → Code Engine</a>. If no pool is
+            configured, you can paste a single CE URL into the inline input and monitor that
+            pod directly. The <code>/stats</code> endpoint is unauthenticated (no token needed)
+            and CORS-restricted to <code>https://doqumentation.org</code>, so the dashboard works
+            from this site but not from local development unless you set <code>CORS_ORIGIN=*</code>
+            on the CE app.
+          </p>
         </Section>
 
         <Section title="Analytics">
@@ -122,8 +215,11 @@ export default function AdminPage(): JSX.Element {
               <a href={`${GITHUB_REPO}/actions/workflows/codeengine-image.yml`} target="_blank" rel="noopener noreferrer">
                 Actions &gt; Code Engine Image
               </a>
-              {' '}&gt; Run workflow. Set <code>instance_count</code> (1 for 10-15 users, 2 for 20-30, 3 for 40-50),
-              <code>cpu</code> (4), <code>memory</code> (8G). Wait ~5 min.
+              {' '}&gt; Run workflow. Pick the pod size from the table below based on your workshop
+              size; <code>instance_count=1</code> is fine for up to ~80 users on a single 12 vCPU pod.
+              Wait ~5 min for the build and CE deploy. <strong>Note:</strong> the workflow defaults
+              to <code>cpu=1, memory=4G</code> which is too small for any real workshop — always
+              override these in the workflow_dispatch inputs.
             </li>
             <li>
               <strong>Set Jupyter token</strong> on each instance:
@@ -153,25 +249,136 @@ echo -n "$CONFIG" | base64`}</CodeBlock>
           <ul>
             <li>Share the workshop URL via <strong>QR code</strong> on a slide, chat, or email</li>
             <li>Participants click the link — everything auto-configures. <strong>No IBM Cloud account needed</strong> for participants</li>
-            <li>Monitor: open <strong>Settings &gt; Code Engine</strong> to see instance status, active kernels, and memory usage</li>
-            <li>If an instance goes down, affected users automatically reconnect to another one</li>
+            <li>
+              <strong>Open the <a href="#live-pod-status">Live Pod Status</a> dashboard at the top
+              of this page</strong> on a second screen or browser tab. It shows real-time pod
+              health and tells you when to act. See "How to read it" for color legend and
+              recommendations.
+            </li>
+            <li>
+              <strong>Watch sparkline direction, not just current values.</strong> Steady at 70%
+              is fine; climbing through 70% means trouble in the next 60 seconds.
+            </li>
+            <li>
+              <strong>If status goes orange/red</strong>: read the recommendation banner under the
+              card. Most common fixes: ask students to space out cell runs, restart the pod
+              between sections (clears zombie kernels), or escalate pod size for the next session.
+            </li>
+            <li>If an instance goes down, affected users automatically reconnect to another one (multi-pod mode only).</li>
           </ul>
 
           <h3>After the workshop</h3>
           <ul>
-            <li>Instances scale to zero automatically when idle — no charges outside the workshop</li>
-            <li>To fully remove: <code>ibmcloud ce app delete --name ce-doqumentation-01</code></li>
+            <li>
+              <strong>Pods scale to zero automatically</strong> when idle (no requests for ~30s with
+              <code>scale-down-delay=0</code>). No charges outside the workshop.
+            </li>
+            <li>
+              <strong>Between back-to-back workshops on the same day, restart the pod manually.</strong>
+              {' '}A known Jupyter Server bug under heavy load (uncovered during stress testing)
+              can leave zombie kernels that don't get culled, causing pod memory to creep up.
+              Restart fixes it cleanly:
+              <CodeBlock>{`# Trigger a fresh pod (no-op update creates a new revision)
+ibmcloud ce app update --name ce-doqumentation-01 --max-scale 1`}</CodeBlock>
+            </li>
+            <li>
+              <strong>Resize the pod between workshops if your needs change</strong> (e.g., workshop
+              size grew or shrank). CE forces fixed CPU/memory ratios; valid combinations include
+              <code>1/4, 2/4, 4/8, 8/16, 12/24</code>:
+              <CodeBlock>{`ibmcloud ce app update --name ce-doqumentation-01 --cpu 12 --memory 24G`}</CodeBlock>
+            </li>
+            <li>
+              To fully remove (will rebuild from CI on the next workflow run, so this is a hard
+              teardown): <code>ibmcloud ce app delete --name ce-doqumentation-01 --force</code>
+            </li>
           </ul>
 
-          <h3>Cost estimates</h3>
+          <h3>Sizing &amp; cost estimates</h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-700)' }}>
+            Validated against the stress test harness ({' '}
+            <code>scripts/workshop-stress-test.py</code>) on 1, 4, 8, and 12 vCPU pods. Capacity
+            scales roughly linearly with CPU count (~6 sustained sessions per vCPU). Memory is
+            essentially never the constraint for typical 5-15 qubit workshop content. Multi-pod
+            workshops are not yet validated end-to-end (the frontend pool/random-assignment logic
+            exists but hasn't been stress-tested with real CE deploys).
+          </p>
           <table>
-            <thead><tr><th>Workshop size</th><th>Instances</th><th>Est. cost (3h)</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Workshop size</th>
+                <th>Pod config</th>
+                <th>Instance count</th>
+                <th>Est. cost (3h active)</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
             <tbody>
-              <tr><td>10-15 users</td><td>1</td><td>Free tier</td></tr>
-              <tr><td>20-30 users</td><td>2</td><td>~$1-2</td></tr>
-              <tr><td>40-50 users</td><td>3</td><td>~$2-3</td></tr>
+              <tr>
+                <td>5-15 users</td>
+                <td>4 vCPU / 8 GB</td>
+                <td>1</td>
+                <td>Free tier</td>
+                <td>Simplest config</td>
+              </tr>
+              <tr>
+                <td>15-30 users</td>
+                <td>4 vCPU / 8 GB</td>
+                <td>1</td>
+                <td>~$0.50</td>
+                <td>Tight at upper end</td>
+              </tr>
+              <tr>
+                <td><strong>30-50 users</strong></td>
+                <td><strong>8 vCPU / 16 GB</strong></td>
+                <td><strong>1</strong></td>
+                <td>~$1-2</td>
+                <td>Recommended sweet spot</td>
+              </tr>
+              <tr>
+                <td>50-80 users</td>
+                <td>12 vCPU / 24 GB</td>
+                <td>1</td>
+                <td>~$2-3</td>
+                <td>Single-pod simplicity</td>
+              </tr>
+              <tr>
+                <td>80-100 users</td>
+                <td>12 vCPU / 24 GB</td>
+                <td>1</td>
+                <td>~$2-3</td>
+                <td>Borderline; ~96% success at 5s burst, 100% with 75s+ stagger</td>
+              </tr>
+              <tr>
+                <td>100-150 users</td>
+                <td>12 vCPU / 24 GB</td>
+                <td>2</td>
+                <td>~$4-6</td>
+                <td>Multi-pod (untested end-to-end)</td>
+              </tr>
+              <tr>
+                <td>150+ users</td>
+                <td>12 vCPU / 24 GB</td>
+                <td>3+</td>
+                <td>scale linearly</td>
+                <td>Multi-pod required; test before relying on it</td>
+              </tr>
             </tbody>
           </table>
+
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-700)', marginTop: '0.75rem' }}>
+            <strong>CE billing only counts active vCPU-seconds.</strong> Pods scale to zero when
+            idle (no requests for ~30s with <code>scale-down-delay=0</code>), so the cost only
+            accumulates while the workshop is actually using the pod. Idle cost = $0. The numbers
+            above assume ~3 hours of continuous use at average 50% CPU utilization. Real costs
+            will be lower if students spend most of their time reading rather than executing.
+          </p>
+
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-700)' }}>
+            <strong>Cold-start tax</strong>: the first user of the day pays ~15-150 seconds while
+            CE pulls the 905 MB image and Jupyter Server boots. On a fresh K8s node with no cached
+            image, this can hit 2.5 minutes. Solution: visit each CE URL once in your browser
+            ~5 minutes before the workshop starts to pre-warm the pods.
+          </p>
         </Section>
 
         <Section title="Infrastructure">
