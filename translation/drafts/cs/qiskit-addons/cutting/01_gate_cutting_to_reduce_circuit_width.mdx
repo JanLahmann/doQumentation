@@ -1,0 +1,220 @@
+---
+title: "Řezání Gate pro snížení šířky Circuit"
+sidebar_label: "Řezání Gate pro snížení šířky Circuit"
+notebook_path: "qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb"
+---
+{/* doqumentation-source-hash: 3647f99e */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb" />
+
+
+V tomto notebooku projdeme kroky [Qiskit vzoru](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) a využijeme **řezání Circuit** ke snížení počtu Qubitů v Circuit. Budeme řezat Gate, abychom mohli rekonstruovat střední hodnotu čtyř-qubitového Circuit pomocí pouze dvou-qubitových experimentů.
+
+Zde jsou kroky, které podnikneme:
+
+- **Krok 1: Mapování problému na kvantové Circuit a operátory**:
+    - Namapuj hamiltonián na kvantový Circuit.
+- **Krok 2: Optimalizace pro cílový hardware** [_Používá cutting addon_]:
+    - <font color='#0F62FE'>Rozetni Circuit a pozorovatelnou veličinu.</font>
+    - Transpiluj dílčí experimenty pro hardware.
+- **Krok 3: Spuštění na cílovém hardware**:
+    - Spusť dílčí experimenty získané v Kroku 2 pomocí primitivu `Sampler`.
+- **Krok 4: Post-procesování výsledků** [_Používá cutting addon_]:
+    - <font color='#0F62FE'>Zkombinuj výsledky Kroku 3 pro rekonstrukci střední hodnoty sledované pozorovatelné veličiny.</font>
+## Krok 1: Mapování {#krok-1-mapování}
+
+### Vytvoření Circuit k řezání {#vytvoření-circuit-k-řezání}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(4, entanglement="linear", reps=2)
+qc.assign_parameters([0.4] * len(qc.parameters), inplace=True)
+
+qc.draw("mpl", scale=0.8)
+```
+
+![Diagram kvantového Circuit](./output_1.png)
+
+### Specifikace pozorovatelné veličiny {#specifikace-pozorovatelné-veličiny}
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+```
+
+## Krok 2: Optimalizace {#krok-2-optimalizace}
+
+### Rozdělení Circuit a pozorovatelné veličiny podle zadaného rozdělení Qubitů {#rozdělení-circuit-a-pozorovatelné-veličiny-podle-zadaného-rozdělení-qubitů}
+
+Každý label v `partition_labels` odpovídá Qubitu v `circuit` na stejném indexu. Qubity sdílející společný label oddílu budou seskupeny dohromady a nelokální Gate přesahující více než jeden oddíl budou rozřezány.
+
+**Poznámka:** Argument ``observables`` funkce `partition_problem` je typu `PauliList`. Koeficienty a fáze členů pozorovatelné veličiny jsou při rozkladu problému a spouštění dílčích experimentů ignorovány. Mohou být znovu aplikovány při rekonstrukci střední hodnoty.
+
+```python
+from qiskit_addon_cutting import partition_problem
+
+partitioned_problem = partition_problem(
+    circuit=qc, partition_labels="AABB", observables=observable.paulis
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+```
+
+### Vizualizace rozloženého problému {#vizualizace-rozloženého-problému}
+
+```python
+subobservables
+```
+
+```text
+{'A': PauliList(['II', 'ZI', 'ZZ', 'XI', 'ZZ', 'IX']),
+ 'B': PauliList(['ZZ', 'IZ', 'II', 'XI', 'ZI', 'IX'])}
+```
+
+```python
+subcircuits["A"].draw("mpl", scale=0.8)
+```
+
+![Diagram kvantového Circuit](./output_2.png)
+
+```python
+subcircuits["B"].draw("mpl", scale=0.8)
+```
+
+![Diagram kvantového Circuit](./output_3.png)
+
+### Výpočet overhead vzorkování pro zvolené řezy {#výpočet-overhead-vzorkování-pro-zvolené-řezy}
+
+Zde řežeme dva CNOT Gate, což vede k overhead vzorkování $9^2$.
+
+Více informací o overhead vzorkování způsobeném řezáním Circuit najdeš v [vysvětlujícím materiálu](../explanation/index.rst).
+
+```python
+import numpy as np
+
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 81.0
+```
+
+### Generování dílčích experimentů ke spuštění na Backend {#generování-dílčích-experimentů-ke-spuštění-na-backend}
+
+`generate_cutting_experiments` přijímá argumenty `circuits`/`observables` jako slovníky mapující labely qubitových oddílů na příslušné `subcircuit`/`subobservables`.
+
+Pro simulaci střední hodnoty Circuit plné velikosti je z rozložené společné kvazipravděpodobnostní distribuce Gate generováno mnoho dílčích experimentů, které jsou poté spuštěny na jednom nebo více Backend. Počet vzorků odebraných z distribuce je řízen parametrem `num_samples` a pro každý unikátní vzorek je přiřazen jeden kombinovaný koeficient. Více informací o způsobu výpočtu koeficientů najdeš v [vysvětlujícím materiálu](../explanation/index.rst).
+
+```python
+from qiskit_addon_cutting import generate_cutting_experiments
+
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits, observables=subobservables, num_samples=np.inf
+)
+```
+
+### Výběr Backend {#výběr-backend}
+
+Zde používáme falešný Backend, což způsobí, že Qiskit Runtime poběží v lokálním režimu (tj. na lokálním simulátoru).
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+
+backend = FakeManilaV2()
+```
+
+### Příprava dílčích experimentů pro Backend {#příprava-dílčích-experimentů-pro-backend}
+
+Před odesláním do Qiskit Runtime musíme Circuit transpilovat s naším Backend jako cílem.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+# Transpile the subexperiments to ISA circuits
+pass_manager = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_subexperiments = {
+    label: pass_manager.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+## Krok 3: Spuštění {#krok-3-spuštění}
+
+### Spuštění dílčích experimentů pomocí primitiv Qiskit Runtime Sampler {#spuštění-dílčích-experimentů-pomocí-primitiv-qiskit-runtime-sampler}
+
+```python
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+# Submit each partition's subexperiments to the Qiskit Runtime Sampler
+# primitive, in a single batch so that the jobs will run back-to-back.
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+```text
+/home/garrison/Qiskit/qiskit-ibm-runtime/qiskit_ibm_runtime/session.py:157: UserWarning: Session is not supported in local testing mode or when using a simulator.
+  warnings.warn(
+```
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+## Krok 4: Post-procesování {#krok-4-post-procesování}
+
+### Rekonstrukce střední hodnoty {#rekonstrukce-střední-hodnoty}
+
+Rekonstruuj střední hodnoty pro každý člen pozorovatelné veličiny a zkombinuj je pro rekonstrukci střední hodnoty původní pozorovatelné veličiny.
+
+```python
+from qiskit_addon_cutting import reconstruct_expectation_values
+
+# Get expectation values for each observable term
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+```
+
+### Porovnání rekonstruované střední hodnoty s přesnou střední hodnotou z původního Circuit a pozorovatelné veličiny {#porovnání-rekonstruované-střední-hodnoty-s-přesnou-střední-hodnotou}
+
+```python
+from qiskit_aer.primitives import EstimatorV2
+
+estimator = EstimatorV2()
+exact_expval = estimator.run([(qc, observable)]).result()[0].data.evs
+print(f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}")
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}")
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.6991539
+Exact expectation value: 0.56254612
+Error in estimation: 0.13660778
+Relative error in estimation: 0.24283836
+```
+
+<TutorialFeedback />
