@@ -313,13 +313,26 @@ export function createThebelabAdapter(): SimulationAdapter {
         throw new Error('Failed to parse simulation result from kernel output');
       }
 
-      return {
+      const result: SimulationResult = {
         counts: data.counts,
         execution_time: (performance.now() - startTime) / 1000,
         qsphere: Array.isArray(data.qsphere) && data.qsphere.length > 0
           ? data.qsphere
           : undefined,
       };
+      // TEMPORARY DEBUG: stash the full result on window so we can inspect it
+      // from a puppeteer probe even if Qamposer's render crashes synchronously.
+      // Remove once the React #130 bug is identified and fixed.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__qamp_lastResult = result;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__qamp_lastResultJSON = JSON.stringify(result, null, 2);
+        console.info('[Qamposer DEBUG] Full result:', result);
+      } catch {
+        // ignore
+      }
+      return result;
     },
 
     async getBackends() {
