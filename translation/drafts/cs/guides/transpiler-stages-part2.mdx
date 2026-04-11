@@ -1,0 +1,141 @@
+## Fáze překladu {#translation-stage}
+
+Při psaní kvantového obvodu můžeš volně používat libovolnou kvantovou bránu (unitární operaci), spolu s kolekcí nebránových operací, jako jsou instrukce pro měření qubitů nebo jejich resetování. Většina kvantových zařízení však nativně podporuje jen hrstku kvantových bránových a nebránových operací. Tyto nativní brány jsou součástí definice [ISA](./transpile#instruction-set-architecture) cíle a tato fáze přednastavených `PassManagerů` překládá (neboli *rozbaluje*) brány zadané v obvodu do nativní sady bází bran příslušného Backend. Jde o důležitý krok, protože umožňuje Backend obvod spustit, ale zpravidla vede ke zvýšení hloubky a počtu bran.
+
+Zvláště důležité jsou dva speciální případy, které dobře ilustrují, co tato fáze dělá.
+
+1. Pokud brána SWAP není nativní branou cílového Backend, jsou k její realizaci potřeba tři brány CNOT:
+
+```python
+print("native gates:" + str(sorted(backend.operation_names)))
+qc = QuantumCircuit(2)
+qc.swap(0, 1)
+qc.decompose().draw("mpl")
+```
+
+```text
+native gates:['cx', 'delay', 'for_loop', 'id', 'if_else', 'measure', 'reset', 'rz', 'switch_case', 'sx', 'x']
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/31fcf8b6-4f3a-460e-90fd-446813bd4f28-1.svg)
+
+Jako součin tří bran CNOT je SWAP nákladnou operací na šumových kvantových zařízeních. Takovéto operace jsou však obvykle nezbytné pro vložení obvodu do omezené bránové konektivity mnoha zařízení. Minimalizace počtu bran SWAP v obvodu je proto primárním cílem transpilačního procesu.
+
+2. Toffoliho brána neboli brána řízená-řízená-not (`ccx`) je tříqubitová brána. Protože naše sada bází obsahuje pouze jedno- a dvouqubitové brány, musí být tato operace rozložena. Je to však poměrně nákladné:
+
+```python
+qc = QuantumCircuit(3)
+qc.ccx(0, 1, 2)
+qc.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/8a2c1913-3324-44b0-859e-d7fd348161c3-0.svg)
+
+Za každou Toffoliho bránu v kvantovém obvodu může hardware provést až šest bran CNOT a několik jednoqubitových bran. Tento příklad ukazuje, že každý algoritmus využívající více Toffoliho bran skončí jako obvod s velkou hloubkou, a tedy bude výrazně ovlivněn šumem.
+
+## Fáze optimalizace {#optimization-stage}
+
+Tato fáze se soustředí na rozklad kvantových obvodů do sady bází bran cílového zařízení a musí čelit zvýšené hloubce způsobené fázemi layoutu a routování. Naštěstí existuje mnoho rutin pro optimalizaci obvodů kombinováním nebo eliminováním bran. V některých případech jsou tyto metody tak účinné, že výstupní obvody mají menší hloubku než vstupní, a to i po mapování layoutu a routování na hardwarovou topologii. V jiných případech toho moc udělat nelze a výpočet může být na šumových zařízeních obtížně proveditelný. Právě v této fázi se začínají lišit jednotlivé úrovně optimalizace.
+
+- Pro `optimization_level=1` tato fáze připraví [`Optimize1qGatesDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition) a [`CXCancellation`](https://docs.quantum.ibm.com/api/qiskit/1.4/qiskit.transpiler.passes.CXCancellation), které kombinují řetězce jednoqubitových bran a ruší sousední brány CNOT.
+- Pro `optimization_level=2` tato fáze používá místo `CXCancellation` průchod [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation), který odstraňuje redundantní brány využíváním komutačních vztahů.
+- Pro `optimization_level=3` tato fáze připraví následující průchody:
+  - [`Collect2qBlocks`](../api/qiskit/qiskit.transpiler.passes.Collect2qBlocks)
+  - [`ConsolidateBlocks`](../api/qiskit/qiskit.transpiler.passes.ConsolidateBlocks)
+  - [`UnitarySynthesis`](../api/qiskit/qiskit.transpiler.passes.UnitarySynthesis)
+  - [`Optimize1qGateDecomposition`](../api/qiskit/qiskit.transpiler.passes.Optimize1qGatesDecomposition)
+  - [`CommutativeCancellation`](../api/qiskit/qiskit.transpiler.passes.CommutativeCancellation)
+
+Kromě toho tato fáze také provádí několik závěrečných kontrol, aby se ujistila, že všechny instrukce v obvodu jsou složeny z bází bran dostupných na cílovém Backend.
+
+Níže uvedený příklad se stavem GHZ demonstruje vliv různých nastavení úrovně optimalizace na hloubku obvodu a počet bran.
+
+<Admonition type="note">
+  Výstup transpilace se liší kvůli stochastickému SWAP mapperu. Čísla níže se proto pravděpodobně změní při každém spuštění kódu.
+</Admonition>
+
+![15-qubit GHZ state](/docs/images/guides/transpiler-stages/transpiler-11.avif "15-qubitový stav GHZ před transpilací")
+
+Následující kód sestaví 15-qubitový stav GHZ a porovnává `optimization_levels` transpilace z hlediska výsledné hloubky obvodu, počtu bran a počtu vícequbitových bran.
+
+```python
+ghz = QuantumCircuit(15)
+ghz.h(0)
+ghz.cx(0, range(1, 15))
+
+depths = []
+gate_counts = []
+multiqubit_gate_counts = []
+levels = [str(x) for x in range(4)]
+for level in range(4):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=level,
+        backend=backend,
+        seed_transpiler=1234,
+    )
+    circ = pass_manager.run(ghz)
+    depths.append(circ.depth())
+    gate_counts.append(sum(circ.count_ops().values()))
+    multiqubit_gate_counts.append(circ.count_ops()["cx"])
+
+fig, (ax1, ax2) = plt.subplots(2, 1)
+ax1.bar(levels, depths, label="Depth")
+ax1.set_xlabel("Optimization Level")
+ax1.set_ylabel("Depth")
+ax1.set_title("Output Circuit Depth")
+ax2.bar(levels, gate_counts, label="Number of Circuit Operations")
+ax2.bar(levels, multiqubit_gate_counts, label="Number of CX gates")
+ax2.set_xlabel("Optimization Level")
+ax2.set_ylabel("Number of gates")
+ax2.legend()
+ax2.set_title("Number of output circuit gates")
+fig.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/2507de9c-1b94-4d56-b5a6-0b2bb1719a80-0.svg)
+
+## Plánování {#scheduling}
+
+Tato poslední fáze se spouští, pouze pokud je o ni explicitně požádáno (podobně jako fáze Init) a ve výchozím nastavení se nespouští (přestože metodu lze zadat nastavením argumentu `scheduling_method` při volání `generate_preset_pass_manager`). Fáze plánování se typicky používá poté, co byl obvod přeložen do cílové sady bází, namapován na zařízení a optimalizován. Tyto průchody se zaměřují na zahrnutí veškeré doby nečinnosti v obvodu. Na vysoké úrovni lze průchod plánování chápat jako explicitní vkládání instrukcí zpoždění, které zajišťují dobu nečinnosti mezi spuštěními bran a umožňují zjistit, jak dlouho bude obvod na Backend spuštěn.
+
+Zde je příklad:
+
+```python
+ghz = QuantumCircuit(5)
+ghz.h(0)
+ghz.cx(0, range(1, 5))
+
+# Use fake backend
+backend = FakeWashingtonV2()
+
+# Run with optimization level 3 and 'asap' scheduling pass
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3,
+    backend=backend,
+    scheduling_method="asap",
+    seed_transpiler=1234,
+)
+
+circ = pass_manager.run(ghz)
+circ.draw(output="mpl", idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/transpiler-stages/extracted-outputs/4339deb5-4947-493b-8940-e68c91311631-0.svg)
+
+![Circuit with delay instructions](/docs/images/guides/transpiler-stages/transpiler-16.avif)
+
+Transpiler vložil instrukce `Delay`, aby zohlednil dobu nečinnosti na každém qubitu. Abychom lépe pochopili načasování obvodu, můžeme se na něj podívat také pomocí funkce `timeline.draw()`:
+
+![timeline.draw() view of the same circuit](/docs/images/guides/transpiler-stages/transpiler-17.avif)
+
+Plánování obvodu se skládá ze dvou částí: analýzy a mapování omezení, následovaných průchodem doplňování. První část vyžaduje spuštění průchodu analýzy plánování (ve výchozím nastavení je to [`ALAPSchedulingAnalysis`](../api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis)), který analyzuje obvod a zaznamenává čas zahájení každé instrukce v obvodu do harmonogramu. Jakmile má obvod počáteční harmonogram, lze spustit další průchody, které zohledňují případná časová omezení cílového Backend. Nakonec lze provést průchod doplňování, například [`PadDelay`](../api/qiskit/qiskit.transpiler.passes.PadDelay) nebo [`PadDynamicalDecoupling`](../api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling).
+
+## Další kroky {#next-steps}
+
+<Admonition type="tip" title="Doporučení">
+    - Chceš-li se naučit používat funkci `generate_preset_passmanager`, začni tématem [Výchozí nastavení transpilace a možnosti konfigurace](defaults-and-configuration-options).
+    - Pokračuj ve studiu transpilace s tématem [Transpiler s pass managery](transpile-with-pass-managers).
+    - Vyzkoušej průvodce [Porovnání nastavení Transpileru](/guides/circuit-transpilation-settings).
+    - Viz [dokumentaci Transpile API.](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler)
+</Admonition>
