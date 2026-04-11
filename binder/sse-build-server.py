@@ -39,6 +39,21 @@ SSE_DEFAULT_PORT = '9091'  # Avoid 9090 — Jupyter extensions may bind it
 JUPYTER_READY_TIMEOUT = 30  # seconds to wait for Jupyter to become ready
 JUPYTER_POLL_INTERVAL = 0.5  # seconds between readiness checks
 
+# Tornado's AsyncHTTPClient defaults to max_clients=10 — that means at most
+# 10 simultaneous outgoing fetches per process. With 100+ concurrent SSE
+# requests each polling Jupyter via _jupyter_is_ready_async(), the default
+# becomes a serialization bottleneck WORSE than the threaded urllib version.
+# Raise it well above the expected concurrency ceiling.
+# Must be called BEFORE any AsyncHTTPClient() instance is created.
+tornado.httpclient.AsyncHTTPClient.configure(
+    "tornado.simple_httpclient.SimpleAsyncHTTPClient", max_clients=500
+)
+
+# Module-level singleton: tornado.AsyncHTTPClient is designed to be reused
+# (each instance shares state with all others), so this is fine, but creating
+# it once at startup avoids per-request constructor overhead.
+_HTTP_CLIENT = tornado.httpclient.AsyncHTTPClient()
+
 # In-memory counters (single-threaded event loop, no locks needed)
 _total_sse_connections = 0
 _peak_kernels = 0
@@ -121,12 +136,16 @@ def _read_cpu_count():
         return None
 
 
-async def _jupyter_is_ready_async(http_client: tornado.httpclient.AsyncHTTPClient) -> bool:
-    """Check if Jupyter server is responding on its local port. Async."""
+async def _jupyter_is_ready_async() -> bool:
+    """Check if Jupyter server is responding on its local port. Async.
+
+    Uses the module-level _HTTP_CLIENT singleton (configured with
+    max_clients=500 above), so 100+ concurrent calls don't queue.
+    """
     token = os.environ.get('JUPYTER_TOKEN', '')
     url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
     try:
-        resp = await http_client.fetch(url, request_timeout=2, raise_error=False)
+        resp = await _HTTP_CLIENT.fetch(url, request_timeout=2, raise_error=False)
         return resp.code == 200
     except Exception:
         return False
@@ -157,8 +176,6 @@ class BuildHandler(tornado.web.RequestHandler):
         _total_sse_connections += 1
         _log_event("sse_connect", total=_total_sse_connections)
 
-        http_client = tornado.httpclient.AsyncHTTPClient()
-
         try:
             # Phase 1: connecting (immediate)
             await self._send_event({'phase': 'connecting'})
@@ -167,7 +184,7 @@ class BuildHandler(tornado.web.RequestHandler):
             # Phase 2: launching, then poll Jupyter for readiness
             await self._send_event({'phase': 'launching'})
             deadline = asyncio.get_event_loop().time() + JUPYTER_READY_TIMEOUT
-            while not await _jupyter_is_ready_async(http_client):
+            while not await _jupyter_is_ready_async():
                 if asyncio.get_event_loop().time() > deadline:
                     await self._send_event(
                         {'phase': 'failed',
@@ -204,8 +221,7 @@ class HealthHandler(tornado.web.RequestHandler):
         self.set_header('Access-Control-Allow-Origin', CORS_ORIGIN)
 
     async def get(self):
-        http_client = tornado.httpclient.AsyncHTTPClient()
-        if await _jupyter_is_ready_async(http_client):
+        if await _jupyter_is_ready_async():
             self.set_header('Content-Type', 'text/plain')
             self.write('ok\n')
         else:
@@ -234,11 +250,10 @@ class StatsHandler(tornado.web.RequestHandler):
             'status': 'unavailable',
         }
 
-        http_client = tornado.httpclient.AsyncHTTPClient()
         try:
             # Fetch Jupyter status (connections, started time, kernel count)
             status_url = f'http://127.0.0.1:{JUPYTER_PORT}/api/status?token={token}'
-            status_resp = await http_client.fetch(
+            status_resp = await _HTTP_CLIENT.fetch(
                 status_url, request_timeout=2, raise_error=False
             )
             if status_resp.code == 200:
@@ -258,7 +273,7 @@ class StatsHandler(tornado.web.RequestHandler):
 
             # Fetch kernel list for busy count
             kernels_url = f'http://127.0.0.1:{JUPYTER_PORT}/api/kernels?token={token}'
-            kernels_resp = await http_client.fetch(
+            kernels_resp = await _HTTP_CLIENT.fetch(
                 kernels_url, request_timeout=2, raise_error=False
             )
             if kernels_resp.code == 200:
