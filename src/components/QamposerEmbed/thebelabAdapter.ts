@@ -7,6 +7,29 @@
  * settings (ideal / noisy fake / real device), so this adapter inherits that
  * routing automatically — no duplicate backend selection logic.
  *
+ * ─── Upstream compatibility ─────────────────────────────────────────────────
+ * The Python code we ship to the kernel is a PORT of QAMP-62's qamposer-backend
+ * Python service that powers https://qamposer.org/demo. Specifically:
+ *
+ *   - `measure q -> c;` is appended to the QASM string before sending
+ *     (mirrors QAMP-62/qamposer-backend/src/backend/quantum/converter.py's
+ *     `json_to_qasm()` which always appends `measure q -> c;`).
+ *   - `get_counts()` reads from the single `c` classical register — matching
+ *     upstream's ResultsPanel expectation that count keys are pure binary
+ *     strings with no space separator.
+ *   - The Q-sphere point computation in `qsphereBlock` below is a line-by-line
+ *     port of QAMP-62/qamposer-backend/src/backend/quantum/qsphere.py
+ *     (`compute_qsphere_points()`). Same Hamming-weight grouping, same
+ *     theta/phi formulas, same 5-qubit cap, same probability normalization.
+ *
+ * IMPORTANT: If upstream's simulator.py or qsphere.py change, this file
+ * must be updated to match. See PROJECT_HANDOFF.md → Open Items → TODO →
+ * "Qamposer Python backend reuse" for the long-term plan to package
+ * upstream's code so it can be installed via pip instead of inline-ported.
+ *
+ * Upstream source (Apache 2.0): https://github.com/QAMP-62/qamposer-backend
+ * ────────────────────────────────────────────────────────────────────────────
+ *
  * Mitigations baked in:
  *   1. QASM is base64-encoded in JS and decoded in Python (no string injection)
  *   2. Python code runs in a function scope to avoid kernel-global pollution
@@ -26,14 +49,27 @@ import { executeOnKernelWithOutput, getActiveKernel } from '../ExecutableCode';
 import { getExecutionMode, type ExecutionMode } from './executionMode';
 import { waitForKernelReady } from './kernelReady';
 
-/** Convert a QAMPoser CircuitRequest into an OpenQASM 2.0 string. */
+/**
+ * Convert a QAMPoser CircuitRequest into an OpenQASM 2.0 string with a
+ * trailing `measure q -> c;` line.
+ *
+ * `circuitToQasm` from @qamposer/react only emits `qreg q[N]; creg c[N];`
+ * plus gate instructions — it never adds measurements. If we relied on
+ * `qc.measure_all()` in Python, Qiskit would add a SECOND classical
+ * register (`meas`) alongside the existing `c`, and get_counts() would
+ * return space-delimited keys like "000 000". Those keys break Qamposer's
+ * ResultsPanel which assumes single-register binary strings. Instead we
+ * emulate upstream qamposer-backend's converter: measure into the single
+ * `c` register that's already declared by circuitToQasm.
+ */
 function requestToQasm(request: CircuitRequest): string {
   // QAMPoser's Circuit type requires an id on each gate; reconstruct.
   const circuit: Circuit = {
     qubits: request.qubits,
     gates: request.gates.map((g, i) => ({ ...g, id: `g${i}` })),
   };
-  return circuitToQasm(circuit);
+  const qasm = circuitToQasm(circuit);
+  return qasm.trimEnd() + '\nmeasure q -> c;\n';
 }
 
 /** Generate a short random id suitable for a stdout marker. */
@@ -60,7 +96,9 @@ function buildSimulateCode(
   const resultMarker = `__QAMPOSER_RESULT_${runId}__`;
   const errorMarker = `__QAMPOSER_ERROR_${runId}__`;
 
-  // Execution block differs for real hardware vs. local backends
+  // Execution block differs for real hardware vs. local backends.
+  // The QASM already contains `measure q -> c;` (added by requestToQasm),
+  // so counts come from the single `c` register — no extra measure_all().
   let executionBlock: string;
   if (mode.kind === 'real') {
     executionBlock = `        from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
@@ -71,7 +109,7 @@ function buildSimulateCode(
         sampler = SamplerV2(backend)
         job = sampler.run([tqc], shots=${shots})
         result = job.result()
-        raw_counts = result[0].data.meas.get_counts()
+        raw_counts = result[0].data.c.get_counts()
         backend_name = getattr(backend, "name", str(backend))`;
   } else {
     executionBlock = `        from qiskit import transpile
@@ -89,16 +127,71 @@ function buildSimulateCode(
         backend_name = type(backend).__name__`;
   }
 
+  // Q-sphere computation — ported from QAMP-62/qamposer-backend's qsphere.py.
+  // Produces the same shape QSphereView expects: list of
+  //   {state, x, y, z, probability, phase}
+  // computed from the ideal statevector (noise-free, regardless of backend).
+  // Skipped for >5 qubits because the view is only meaningful up to there.
+  const qsphereBlock = `        # --- Q-sphere points (upstream-compatible) ---
+        _qsphere_points = []
+        try:
+            import numpy as _np
+            from qiskit.quantum_info import Statevector as _QP_Statevector
+            _qc_nomeas = qc.remove_final_measurements(inplace=False)
+            _nq = _qc_nomeas.num_qubits
+            if 1 <= _nq <= 5:
+                _state = _QP_Statevector.from_instruction(_qc_nomeas)
+                _amps = _np.asarray(_state.data)
+                _by_weight = {}
+                for _idx in range(_amps.shape[0]):
+                    _bs = format(_idx, "0" + str(_nq) + "b")
+                    _w = _bs.count("1")
+                    _by_weight.setdefault(_w, []).append(_idx)
+                for _w, _indices in _by_weight.items():
+                    if not _indices:
+                        continue
+                    if _nq <= 1:
+                        _theta = 0.0 if _w == 0 else float(_np.pi)
+                    else:
+                        _theta = float(_np.pi * _w / _nq)
+                    _ring = len(_indices)
+                    for _pos, _idx in enumerate(_indices):
+                        _amp = _amps[_idx]
+                        _prob = float(_np.real(_amp * _np.conj(_amp)))
+                        if _prob < 1e-12:
+                            continue
+                        _phase = float(_np.angle(_amp))
+                        _phi = 2.0 * float(_np.pi) * _pos / _ring
+                        _qsphere_points.append({
+                            "state": format(_idx, "0" + str(_nq) + "b"),
+                            "x": float(_np.sin(_theta) * _np.cos(_phi)),
+                            "y": float(_np.sin(_theta) * _np.sin(_phi)),
+                            "z": float(_np.cos(_theta)),
+                            "probability": _prob,
+                            "phase": _phase,
+                        })
+                _total = sum(_p["probability"] for _p in _qsphere_points) or 1.0
+                for _p in _qsphere_points:
+                    _p["probability"] = _p["probability"] / _total
+        except Exception:
+            # Q-sphere is optional — never block the simulation on its failure.
+            _qsphere_points = []`;
+
   return `def __qamposer_run():
     import base64 as _b64, json as _json
     from qiskit import QuantumCircuit
     try:
         _qasm = _b64.b64decode("${qasmB64}").decode("utf-8")
         qc = QuantumCircuit.from_qasm_str(_qasm)
-        qc.measure_all()
 ${executionBlock}
         _counts = {str(k): int(v) for k, v in raw_counts.items()}
-        print("${resultMarker}" + _json.dumps({"counts": _counts, "backend": str(backend_name)}))
+${qsphereBlock}
+        _payload = {
+            "counts": _counts,
+            "backend": str(backend_name),
+            "qsphere": _qsphere_points,
+        }
+        print("${resultMarker}" + _json.dumps(_payload))
     except Exception as _e:
         print("${errorMarker}" + _json.dumps({"type": type(_e).__name__, "message": str(_e)}))
 
@@ -201,7 +294,19 @@ export function createThebelabAdapter(): SimulationAdapter {
         );
       }
 
-      let data: { counts: Record<string, number>; backend?: string };
+      interface QSpherePointWire {
+        state: string;
+        x: number;
+        y: number;
+        z: number;
+        probability: number;
+        phase: number;
+      }
+      let data: {
+        counts: Record<string, number>;
+        backend?: string;
+        qsphere?: QSpherePointWire[];
+      };
       try {
         data = JSON.parse(resultJson);
       } catch {
@@ -211,6 +316,9 @@ export function createThebelabAdapter(): SimulationAdapter {
       return {
         counts: data.counts,
         execution_time: (performance.now() - startTime) / 1000,
+        qsphere: Array.isArray(data.qsphere) && data.qsphere.length > 0
+          ? data.qsphere
+          : undefined,
       };
     },
 
