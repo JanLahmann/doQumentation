@@ -1,0 +1,159 @@
+---
+title: "Creează un pass manager pentru decuplarea dinamică"
+sidebar_label: "Creează un pass manager pentru decuplarea dinamică"
+description: "Cum să creezi un pass manager pentru decuplarea dinamică în Qiskit."
+notebook_path: "guides/dynamical-decoupling-pass-manager.ipynb"
+---
+
+{/* doqumentation-source-hash: d395a730 */}
+
+<OpenInLabBanner notebookPath="guides/dynamical-decoupling-pass-manager.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Versiuni de pachete</b></summary>
+
+Codul de pe această pagină a fost dezvoltat folosind următoarele cerințe.
+Îți recomandăm să folosești aceste versiuni sau unele mai noi.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+Această pagină demonstrează cum să folosești pass-ul [`PadDynamicalDecoupling`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.PadDynamicalDecoupling) pentru a adăuga o tehnică de suprimare a erorilor numită _decuplare dinamică_ (dynamical decoupling) în Circuit.
+
+Decuplarea dinamică funcționează prin adăugarea de secvențe de impulsuri (cunoscute ca _secvențe de decuplare dinamică_) la Qubiți inactivi, pentru a-i roti în jurul sferei Bloch, ceea ce anulează efectul canalelor de zgomot, suprimând astfel decoerența. Aceste secvențe de impulsuri sunt similare cu impulsurile de refocalizare utilizate în rezonanța magnetică nucleară. Pentru o descriere completă, consultă [A Quantum Engineer's Guide to Superconducting Qubits](https://arxiv.org/abs/1904.06560).
+
+Deoarece pass-ul `PadDynamicalDecoupling` operează doar pe circuite planificate și implică Gate-uri care nu sunt neapărat Gate-uri de bază ale țintei noastre, vei avea nevoie și de pass-urile [`ALAPScheduleAnalysis`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.ALAPScheduleAnalysis) și [`BasisTranslator`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.passes.BasisTranslator).
+
+Acest exemplu folosește `ibm_fez`, care a fost inițializat anterior. Obține informațiile despre `target` din `backend` și salvează numele operațiunilor ca `basis_gates`, deoarece `target`-ul va trebui modificat pentru a adăuga informații de sincronizare pentru Gate-urile utilizate în decuplarea dinamică.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.backend("ibm_fez")
+
+target = backend.target
+basis_gates = list(target.operation_names)
+```
+
+Creează un Circuit `efficient_su2` ca exemplu. Mai întâi, transpilează Circuit-ul pentru Backend, deoarece impulsurile de decuplare dinamică trebuie adăugate după ce Circuit-ul a fost transpilat și planificat. Decuplarea dinamică funcționează cel mai bine atunci când există mult timp inactiv în Circuit-urile cuantice — adică există Qubiți care nu sunt folosiți în timp ce alții sunt activi. Acesta este cazul în acest Circuit, deoarece Gate-urile `ecr` cu doi Qubiți sunt aplicate secvențial în acest ansatz.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(12, entanglement="circular", reps=1)
+pm = generate_preset_pass_manager(1, target=target, seed_transpiler=12345)
+qc_t = pm.run(qc)
+qc_t.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/8228f889-806a-4873-b1da-27c9795d5f5c-0.svg)
+
+O secvență de decuplare dinamică este o serie de Gate-uri care compun identitatea și sunt espaciate regulat în timp. De exemplu, începe prin a crea o secvență simplă numită XY4, formată din patru Gate-uri.
+
+```python
+from qiskit.circuit.library import XGate, YGate
+
+X = XGate()
+Y = YGate()
+
+dd_sequence = [X, Y, X, Y]
+```
+
+Datorită sincronizării regulate a secvențelor de decuplare dinamică, informațiile despre `YGate` trebuie adăugate la `target`, deoarece acesta *nu* este un Gate de bază, spre deosebire de `XGate`. Știm *a priori* că `YGate` are aceeași durată și eroare ca `XGate`, deci putem prelua acele proprietăți din `target` și le putem adăuga înapoi pentru obiectele `YGate`. De aceea `basis_gates` a fost salvat separat, deoarece adăugăm instrucțiunea `YGate` la `target`, deși nu este un Gate de bază real al lui `ibm_fez`.
+
+```python
+from qiskit.transpiler import InstructionProperties
+
+y_gate_properties = {}
+for qubit in range(target.num_qubits):
+    y_gate_properties.update(
+        {
+            (qubit,): InstructionProperties(
+                duration=target["x"][(qubit,)].duration,
+                error=target["x"][(qubit,)].error,
+            )
+        }
+    )
+
+target.add_instruction(YGate(), y_gate_properties)
+```
+
+Circuit-urile ansatz precum `efficient_su2` sunt parametrizate, deci trebuie să li se asocieze valori înainte de a fi trimise la Backend. Aici, atribuie parametri aleatori.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1234)
+qc_t.assign_parameters(
+    rng.uniform(-np.pi, np.pi, qc_t.num_parameters), inplace=True
+)
+```
+
+În continuare, execută pass-urile personalizate. Instanțiază `PassManager`-ul cu `ALAPScheduleAnalysis` și `PadDynamicalDecoupling`. Rulează mai întâi `ALAPScheduleAnalysis` pentru a adăuga informații de sincronizare despre Circuit-ul cuantic, înainte ca secvențele de decuplare dinamică espaciate regulat să poată fi adăugate. Aceste pass-uri sunt rulate pe Circuit cu `.run()`.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes.scheduling import (
+    ALAPScheduleAnalysis,
+    PadDynamicalDecoupling,
+)
+
+dd_pm = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        PadDynamicalDecoupling(target=target, dd_sequence=dd_sequence),
+    ]
+)
+qc_dd = dd_pm.run(qc_t)
+```
+
+Folosește instrumentul de vizualizare [`timeline_drawer`](https://docs.quantum.ibm.com/api/qiskit/qiskit.visualization.timeline_drawer) pentru a vedea sincronizarea Circuit-ului și pentru a confirma că o secvență espaciată regulat de obiecte `XGate` și `YGate` apare în Circuit.
+
+```python
+from qiskit.visualization import timeline_drawer
+
+timeline_drawer(qc_dd, idle_wires=False, target=target)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/cb73e2c4-ab05-4f15-91ae-2fab64028d6e-0.svg)
+
+În final, deoarece `YGate` nu este un Gate de bază real al Backend-ului nostru, aplică manual pass-ul `BasisTranslator` (acesta este un pass implicit, dar este executat înainte de planificare, deci trebuie aplicat din nou). Biblioteca de echivalențe de sesiune este o bibliotecă de echivalențe de Circuit-uri care permite Transpiler-ului să descompună Circuit-urile în Gate-uri de bază, specificată și ea ca argument.
+
+```python
+from qiskit.circuit.equivalence_library import (
+    SessionEquivalenceLibrary as sel,
+)
+from qiskit.transpiler.passes import BasisTranslator
+
+qc_dd = BasisTranslator(sel, basis_gates)(qc_dd)
+qc_dd.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/dynamical-decoupling-pass-manager/extracted-outputs/aaa27ee4-1965-41bf-abd2-1d9176af6dc4-0.svg)
+
+Acum, obiectele `YGate` sunt absente din Circuit-ul nostru și există informații explicite de sincronizare sub forma Gate-urilor `Delay`. Acest Circuit transpilat cu decuplare dinamică este acum gata să fie trimis la Backend.
+## Pașii următori {#next-steps}
+
+<Admonition type="tip" title="Recomandări">
+    - Pentru a afla cum să folosești funcția `generate_preset_passmanager` în loc să îți scrii propriile pass-uri, începe cu subiectul [Setările implicite de transpilare și opțiunile de configurare](defaults-and-configuration-options).
+    - Încearcă ghidul [Compară setările Transpiler-ului](/guides/circuit-transpilation-settings#compare-transpiler-settings).
+    - Consultă [documentația API pentru Transpile.](https://docs.quantum-computing.ibm.com/api/qiskit/transpiler)
+</Admonition>
