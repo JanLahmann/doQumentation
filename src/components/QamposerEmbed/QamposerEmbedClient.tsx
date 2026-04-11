@@ -31,8 +31,16 @@ import { useColorMode } from '@docusaurus/theme-common';
 import { createThebelabAdapter } from './thebelabAdapter';
 import { createThebelabRealtimeAdapter } from './thebelabRealtimeAdapter';
 import { getExecutionMode, type ExecutionMode } from './executionMode';
+import { ensureKernel, getActiveKernel } from '../ExecutableCode';
 
+// Global event names emitted by ExecutableCode's bootstrap / kernel machinery.
+// Kept as string literals because ExecutableCode does not export them; see
+// src/components/ExecutableCode/index.tsx for the source of truth.
 const INJECTION_EVENT = 'executablecode:injection';
+const STATUS_EVENT = 'executablecode:status';
+const BINDER_PHASE_EVENT = 'executablecode:binderphase';
+
+type KernelStatus = 'idle' | 'connecting' | 'ready' | 'error';
 
 interface BackendBadgeProps {
   mode: ExecutionMode;
@@ -93,6 +101,72 @@ function withRealDeviceGuard(inner: SimulationAdapter): SimulationAdapter {
   };
 }
 
+/**
+ * Small status pill above the composer that reflects the kernel's
+ * bootstrap/connected/error lifecycle. Helps users understand why
+ * the composer may not respond immediately when they first load the
+ * page — bootstrap is proactive (see prewarm effect below) but can
+ * take 30s–2min on a Binder cold start.
+ */
+interface KernelStatusStripProps {
+  status: KernelStatus;
+  phase: string | null;
+  modeKind: ExecutionMode['kind'];
+}
+
+function KernelStatusStrip({ status, phase, modeKind }: KernelStatusStripProps): JSX.Element | null {
+  // In real-hardware mode we don't prewarm a local kernel — the dialog's
+  // Run button goes straight to qiskit_ibm_runtime — so no status strip.
+  if (modeKind === 'real') return null;
+
+  // Human-readable labels for the Binder bootstrap phases
+  const phaseLabels: Record<string, string> = {
+    connecting: 'Connecting to Binder…',
+    waiting: 'Waiting for a free server…',
+    fetching: 'Fetching repository (2–5 min)…',
+    building: 'Building container image (5–10 min)…',
+    pushing: 'Pushing image…',
+    launching: 'Launching kernel…',
+    built: 'Finalizing…',
+    ready: 'Kernel ready',
+  };
+
+  let variant: 'info' | 'success' | 'danger' = 'info';
+  let label: string;
+  let detail: string | null = null;
+
+  if (status === 'ready') {
+    variant = 'success';
+    label = 'Simulator ready';
+    detail = 'Live preview is enabled — circuit edits will re-simulate automatically.';
+  } else if (status === 'error') {
+    variant = 'danger';
+    label = 'Simulator unavailable';
+    detail = 'The Jupyter kernel could not be reached. Check your connection or try again.';
+  } else if (status === 'connecting' || phase) {
+    variant = 'info';
+    label = (phase && phaseLabels[phase]) || 'Preparing simulator…';
+    detail = 'First visit can take 1–2 minutes on a cold Binder build.';
+  } else {
+    // status === 'idle' — we will trigger bootstrap momentarily
+    variant = 'info';
+    label = 'Preparing simulator…';
+  }
+
+  return (
+    <div
+      className={`qamposer-embed__kernel-strip qamposer-embed__kernel-strip--${variant}`}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="qamposer-embed__kernel-strip-dot" aria-hidden="true" />
+      <strong>{label}</strong>
+      {detail && <span className="qamposer-embed__kernel-strip-sep">·</span>}
+      {detail && <span>{detail}</span>}
+    </div>
+  );
+}
+
 export interface QamposerEmbedClientProps {
   defaultQubits?: number;
   showHeader?: boolean;
@@ -104,6 +178,10 @@ export default function QamposerEmbedClient({
 }: QamposerEmbedClientProps): JSX.Element {
   const { colorMode } = useColorMode();
   const [mode, setMode] = useState<ExecutionMode>(() => getExecutionMode());
+  const [kernelStatus, setKernelStatus] = useState<KernelStatus>(() =>
+    getActiveKernel() ? 'ready' : 'idle',
+  );
+  const [binderPhase, setBinderPhase] = useState<string | null>(null);
 
   // Re-read the mode whenever the kernel broadcasts an injection event,
   // or when the window regains focus (user may have changed Settings in
@@ -119,6 +197,58 @@ export default function QamposerEmbedClient({
       window.removeEventListener('storage', refresh);
     };
   }, []);
+
+  // Track the kernel's bootstrap/idle/ready lifecycle so we can show a small
+  // status strip above the composer. Source of truth is ExecutableCode, which
+  // broadcasts these global events whenever bootstrap progresses.
+  useEffect(() => {
+    const onStatus = (e: Event) => {
+      const s = (e as CustomEvent<KernelStatus>).detail;
+      setKernelStatus(s);
+      if (s === 'ready' || s === 'error') setBinderPhase(null);
+    };
+    const onPhase = (e: Event) => {
+      const phase = (e as CustomEvent<string>).detail;
+      if (phase === 'ready' || phase === 'failed') {
+        setBinderPhase(null);
+      } else {
+        setBinderPhase(phase);
+      }
+    };
+    window.addEventListener(STATUS_EVENT, onStatus);
+    window.addEventListener(BINDER_PHASE_EVENT, onPhase);
+    return () => {
+      window.removeEventListener(STATUS_EVENT, onStatus);
+      window.removeEventListener(BINDER_PHASE_EVENT, onPhase);
+    };
+  }, []);
+
+  // Pre-warm the kernel on mount so by the time the user has dragged their
+  // first gate, simulation and the QAMPoser live-preview adapter are ready.
+  // Without this, the first click on "Run circuit" triggers a ~30s Binder
+  // cold start — and the real-time auto-simulation on circuit changes never
+  // fires at all, because thebelabRealtimeAdapter intentionally does not
+  // bootstrap. ensureKernel() is idempotent (bootstrapOnce() guards against
+  // repeat bootstraps) and safe to call unconditionally.
+  //
+  // We skip prewarm in real-hardware mode: there is no local kernel to warm
+  // up in that path — execution goes straight to qiskit_ibm_runtime, and
+  // burning a Binder slot would be wasteful.
+  useEffect(() => {
+    if (mode.kind === 'real') return;
+    // Defer one tick so the BrowserOnly loading fallback has painted first
+    // and the page feels responsive even if bootstrap is slow.
+    const id = window.setTimeout(() => {
+      try {
+        setKernelStatus((prev) => (prev === 'ready' ? prev : 'connecting'));
+        ensureKernel();
+      } catch (err) {
+        console.warn('[Qamposer] Kernel pre-warm failed:', err);
+        setKernelStatus('error');
+      }
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [mode.kind]);
 
   const adapter = useMemo(
     () => withRealDeviceGuard(createThebelabAdapter()),
@@ -143,6 +273,11 @@ export default function QamposerEmbedClient({
   return (
     <div className="qamposer-embed">
       <BackendBadge mode={mode} />
+      <KernelStatusStrip
+        status={kernelStatus}
+        phase={binderPhase}
+        modeKind={mode.kind}
+      />
       {mode.kind === 'real' && (
         <div className="qamposer-embed__warning">
           <strong>⚠ Real hardware mode is active.</strong>{' '}
