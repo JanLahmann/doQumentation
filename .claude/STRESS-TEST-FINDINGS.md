@@ -9,6 +9,18 @@
 
 ## TL;DR
 
+**Update 2026-04-11 (later in same session)**: After the SSE async refactor postmortem, added Jupyter race-condition retries in two places. **Both server-side (`/api/status` retry) and client-side (WebSocket handshake retry in harness + frontend) are now in place.** Stress test result on 8 vCPU / 16 GB pod:
+
+| Test | Pre-fix (no retries) | Server-side retry only | **Both retries** |
+|---|---|---|---|
+| 50u/5s | 4 fail (92%) | 5 fail (90%) | **0 fail (100%)** |
+| 80u/5s | 15 fail (81%) | 15 fail (81%) | **0 fail (100%)** |
+| 100u/5s | ~41 fail | ~31 fail | **11 fail (89%)** |
+
+**8 vCPU / 16 GB pod now handles 80 users with ZERO failures at 5-second burst.** That's a meaningful capacity unlock — the 8 vCPU / 16 GB config (the recommended workshop sweet spot) was previously rated for 50 users; it now comfortably handles 80, and 89% at 100u. Details in [Run 8](#run-8--jupyter-race-condition-retry-experiment).
+
+---
+
 **Initial run** found workshop mode was unusable because nginx rate-limited `/build/` to 5 per minute per source IP. **Fix deployed** (now `100r/m + burst=50`).
 
 **After the fix**, ran the harness across **four pod sizes** AND **two burst patterns** (synchronous + uniform-stagger via new `--ramp-interval` flag) to characterize the real ceiling:
@@ -205,6 +217,43 @@ AttributeError: 'NoneType' object has no attribute 'kernel_ws_protocol'
 **New backlog item (HIGH priority for any actual >80-person workshop)**: client-side retry loop in `_jupyter_is_ready_async()` and the WS-handshake path. Catch the two Jupyter race errors, sleep 100ms, retry up to 3 times. Estimated +30-50% per-pod capacity at the saturation edge. ~20 lines of code, no new dependencies.
 
 **Alternative real fix (long-term)**: file upstream Jupyter Server issues for both races. Both are reproducible under the load conditions we documented; both have clear fix patterns. Not blocking for doQumentation today.
+
+### Run 8 — Jupyter race-condition retry experiment
+
+Following the Run 7 postmortem, implemented retries for both Jupyter Server 2.16.0 race conditions. This time the diagnostic-first approach worked.
+
+**Sub-iteration 8a — server-side retry only** ([commit 7a288f3f](https://github.com/JanLahmann/doQumentation/commit/7a288f3f)): added `_fetch_jupyter_with_retry()` helper to the SSE shim that retries 500 responses from `/api/status` and `/api/kernels`. **First attempt was buggy**: I matched on `b'TraitError' in resp.body`, but Jupyter's HTTP client-facing body literally contains the string `'Unhandled error'` — the full traceback only goes to stderr. Pod logs showed **0 `jupyter_race_retry` events** despite 372 TraitError stderr lines. Diagnostic-first approach: I should have grepped Jupyter's actual response body before committing.
+
+**Sub-iteration 8b — fixed server-side retry** ([commit d3d5006e](https://github.com/JanLahmann/doQumentation/commit/d3d5006e)): broadened the detection to retry 500s with `'Unhandled error'`, `'TraitError'`, `'kernel_ws_protocol'`, `'AttributeError'`, OR empty body. Verified: 16+ retry events fired in subsequent test runs. But user-visible failure count was essentially unchanged at 80u/5s (15 fail vs 15 baseline) because **the dominant failure at high load is the WS handshake race, not the SSE-stage race**, and the server-side retry can't help with WS handshake races.
+
+**Sub-iteration 8c — client-side retry added** ([commit 4d14404f](https://github.com/JanLahmann/doQumentation/commit/4d14404f)): added single-retry-with-1s-backoff in two places:
+- `KernelSession.__aenter__` in [scripts/workshop-stress-test.py](../scripts/workshop-stress-test.py) — wraps `websockets.connect()` in a 2-attempt loop
+- `doBootstrap()` kernel error handler in [src/components/ExecutableCode/index.tsx](../src/components/ExecutableCode/index.tsx) — recursively calls itself once on kernel promise rejection, with module-level `kernelRaceRetriesUsed` counter to prevent runaway
+
+**Final stress test results on 8 vCPU / 16 GB pod (clean revision -00039)**:
+
+| Test | Pre-fix (no retries) | Server retry only | **Both retries (final)** | Pod stats |
+|---|---|---|---|---|
+| 50u/5s | 4 fail (92%) | 5 fail (90%) | **0 fail (100%)** | `peak_k=50 peak_conn=44 mem=213/15259MB(1%)` |
+| 80u/5s | 15 fail (81%) | 15 fail (81%) | **0 fail (100%)** | `peak_k=80 peak_conn=66 mem=234/15259MB(2%) load=27/8` |
+| 100u/5s | ~41 fail (~59%) | ~31 fail (69%) | **11 fail (89%)** | `peak_k=89 peak_conn=68 mem=247/15259MB(2%) load=26/8` |
+
+**Headline**: 8 vCPU pod now handles 80 users with ZERO failures at 5-second burst. The 11 remaining failures at 100u are SSE-stage failures where the server-side retry hit its 3-attempt budget under sustained race firings.
+
+**Pod log evidence** (single test run, 50u + 80u + 100u sequentially):
+- **146 `jupyter_race_retry` events** from server-side retry
+- **648 TraitError stderr lines** (most absorbed by server-side retry — each Python traceback is ~5-10 lines, so ~70-130 distinct races)
+- **62 kernel_ws_protocol stderr lines** (most absorbed by client-side retry)
+
+**What I learned about my own forecasting** (third forecasting error of the session, documenting honestly):
+
+Going into 8a, I said "the server-side fix may absorb most of the failures." That was wrong. The server-side fix absorbs the SSE-stage races perfectly (0 events → 16+ events with the bug fix), but at 80+ users **the dominant failure mode is the WS handshake race**, which the server-side fix can't help. **I should have grepped the pre-fix pod logs to count distinct race types per failure stage before committing to the server-side-only approach.**
+
+Same lesson as the SSE async refactor postmortem (Run 7) and the rate-limit attribution error from the morning: **don't commit to a fix without first measuring which bottleneck dominates at the load you care about.**
+
+**Why client-side WS retry worked**: thebelab's kernel promise rejection happens fast (the race fires synchronously when Jupyter returns 500 to the upgrade request). By the time we wait 1 second and call `doBootstrap()` again, Jupyter's `kernel_ws_protocol` object has been attached. Single retry was enough — at 80u/5s we went from 15 failures to 0, meaning every single WS handshake race cleared on the second attempt.
+
+**Frontend rollout caveat**: the client-side retry in `ExecutableCode/index.tsx` is in the most-trafficked code path on the site (every notebook page that loads `<ExecutableCode>` uses it). The change is minimal (single retry, gated by counter, falls through to existing error path) but it's still a change to the hot path. **If anything breaks with code execution after this commit, this is the prime suspect — check `kernelRaceRetriesUsed` in the browser DevTools console.**
 
 **Notable**:
 - **2c' / 2d' failure mode is different from old image.** Old image (5r/m): `SSE stream ended without ready event` — kernel never allocated. New image: kernel IS allocated (`peak_k=9` and `peak_k=14` respectively), but the user's WebSocket handshake to `/api/kernels/{id}/channels` times out. This is a real CPU-saturation symptom, not a configured rate limit.
@@ -491,22 +540,20 @@ These are cheap and worth doing, but **they do not raise the per-pod ceiling**.
 12. ✅ **Final sizing recommendation**: 1 × 12 vCPU / 24 GB handles 80 users (96% burst, 100% with 75s stagger). 1 × 8 vCPU / 16 GB handles 50 users.
 13. ✅ **SSE shim async refactor** (`dad3d581` + `566b5deb`): rewrote shim from threaded `BaseHTTPRequestHandler` to `tornado.web` async, configured `AsyncHTTPClient(max_clients=500)` singleton. Architecturally cleaner, no regression at typical loads.
 14. ✅ **Refactor postmortem (Run 7)**: the projected "120-150 user" capacity gain did NOT materialize. The async shim is no longer the bottleneck, but the new bottleneck is **Jupyter Server race conditions** that fire under high concurrency (`TraitError: 'last_activity'` and `AttributeError: NoneType.kernel_ws_protocol`). Both bugs exist in threaded version too — GIL just hid them. Per-pod ceiling at 100u/5s essentially unchanged (12 → 14 failures, within noise).
+15. ✅ **Jupyter race retries (Run 8)**: implemented server-side retry for `/api/status` race + client-side retry for WS handshake race in both harness and frontend. **8 vCPU / 16 GB pod now handles 80 users with ZERO failures at 5s burst** (was 15 failures = 81%). 100u/5s improved from ~41 fails to 11 fails (89% success). Three commits: `7a288f3f` (server-side, buggy pattern), `d3d5006e` (server-side fix), `4d14404f` (client-side both places).
+16. ✅ **GH Actions automation backlog**: documented four follow-up workflows that the existing `IBM_CLOUD_API_KEY` secret unlocks (smarter deploy step, stress-test job, resize-pod job, daily warm-pod job) — added to PROJECT_HANDOFF.md TODO.
 
 ### Open
-1. **Jupyter race-condition retries** (NEW HIGH PRIORITY, the actual highest-leverage fix now): catch `TraitError`/`NoneType.kernel_ws_protocol` errors from Jupyter Server, sleep 100ms, retry up to 3 times. Two places: `_jupyter_is_ready_async()` in [binder/sse-build-server.py](../binder/sse-build-server.py), and the frontend WS-handshake path in [src/config/jupyter.ts](../src/config/jupyter.ts). ~20 lines total. Estimated +30-50% per-pod capacity at the saturation edge. **This is what the SSE async refactor was supposed to enable** — the refactor is the prerequisite, the retry loop is the actual lever.
-2. **Upstream Jupyter Server race conditions** (long-term): both bugs are reproducible under documented load conditions. File issues; both have clear fix patterns. Not blocking for doQumentation today since (1) above gives a workaround.
-3. **Multi-pod (workshop pool) test** — never validated end-to-end. With the `seq` bug fixed, deploy 2-3 instances and test the frontend random-assignment.
-4. **Admin page live monitoring** (see "Admin monitoring sketch" below): swap admin.tsx's static "Settings → Code Engine" pointer for a live `/stats` panel.
-5. **Workflow gotcha**: CI deploy step always sets `--cpu 1 --memory 4G` (the workflow_dispatch defaults), resetting the pod size on every container code push. Should only set those flags when the inputs are explicitly provided, otherwise leave existing config alone. ~5 line workflow change.
-6. **Jupyter Server connection counter underflow + cull-skip bug**: when WS handshakes fail mid-stream, Jupyter's `connections_dict` underflows to negative, preventing kernel culling. Real-world impact: pod memory creeps up across a workshop day. **Workaround**: restart pods between sessions, OR explicit `DELETE /api/kernels/{id}` from frontend on session close.
-7. **Connect-storm mitigation** (LOWER PRIORITY than I claimed earlier in this doc):
-   - Frontend stagger (random 0-3s delay before SSE in `jupyter.ts`): helps for transient overshoots above pod capacity. ~5 lines.
-   - Client-side WebSocket retry: helps when transient saturation clears within 2s. ~10 lines. **Subsumed by item (1) above.**
-8. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 is the only one that matters.
-9. **`min-scale=1` for workshop deployments** — add as deploy-time flag, document ~$5/month cost trade-off.
-10. **Provision IBM Cloud Logs** — optional, free tier sufficient.
-11. **`/stats` `status` field cosmetic bug** — sometimes reports `'unavailable'` due to early-init race.
-12. **Implement harness failover mode** — docstring promises it but it's not coded.
+1. **Multi-pod (workshop pool) test** — never validated end-to-end. With the `seq` bug fixed AND the retry helpers in place, the per-pod capacity is now well-characterized; what's missing is testing the frontend's random-assignment logic with multiple real CE deploys. Required for any workshop >100 users.
+2. **Upstream Jupyter Server race condition fixes** (long-term): both `TraitError: 'last_activity'` and `AttributeError: NoneType.kernel_ws_protocol` are reproducible under documented load conditions. Now that we have client + server retries as a workaround (Run 8), this is lower priority — but worth filing upstream issues so future Jupyter releases fix the root cause.
+3. **GitHub Actions automations using `IBM_CLOUD_API_KEY`** — moved to PROJECT_HANDOFF.md TODO. Four follow-ups: (a) smarter CI deploy step that preserves pod size, (b) workflow_dispatch stress test job, (c) workflow_dispatch resize pod job, (d) daily warm-pod scheduled job. Highest priority is (a) which fixes the workflow gotcha that burned ~10 min during today's testing.
+4. **Jupyter Server connection counter underflow + cull-skip bug**: when WS handshakes fail mid-stream, Jupyter's `connections_dict` underflows to negative, preventing kernel culling. Real-world impact: pod memory creeps up across a workshop day. **The retry helpers added in Run 8 reduce the rate at which this happens** but don't eliminate it. Workaround: restart pods between sessions, OR explicit `DELETE /api/kernels/{id}` from frontend on session close.
+5. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 is the only one that matters.
+6. **`min-scale=1` for workshop deployments** — add as deploy-time flag, document ~$5/month cost trade-off.
+7. **Provision IBM Cloud Logs** — optional, free tier sufficient.
+8. **`/stats` `status` field cosmetic bug** — sometimes reports `'unavailable'` due to early-init race.
+9. **Implement harness failover mode** — docstring promises it but it's not coded.
+10. **Frontend stagger** (random 0-3s delay before SSE in `jupyter.ts`): with the retries from Run 8 in place, this is now mostly unnecessary at the loads we care about. Could help at >150 users on a single pod, but multi-pod is the better answer at that scale. **Lower priority than I previously claimed.**
 
 ## Admin monitoring sketch
 
@@ -628,7 +675,14 @@ For full audit trail:
 | ~13:18 | `app update --max-scale 1` | Trigger fresh revision after first async test (revision `-00031`) — needed because zombie kernels accumulated again from the failed test |
 | ~13:26 | git push `566b5deb` (fix: max_clients=500) | CI rebuilt image (digest `915700`), auto-deployed reset cpu/memory again (revision `-00032`) |
 | ~13:30 | `app update --cpu 12 --memory 24G` | Restored to 12 vCPU after second CI reset (revision `-00033`) |
+| ~14:27 | git push `7a288f3f` (perf: server-side retry helper, BUGGY) | CI rebuilt image (digest `007b71`), reset cpu/memory (revision `-00035`) |
+| ~14:30 | `app update --cpu 8 --memory 16G` | Resize for retry validation (revision `-00036`) |
+| ~14:39 | git push `d3d5006e` (fix: retry pattern match) | CI rebuilt image (digest `383050`), reset cpu/memory again (revision `-00037`) |
+| ~14:42 | `app update --cpu 8 --memory 16G` | Restored to 8 vCPU (revision `-00038`) |
+| ~14:55 | `app update --max-scale 1` | Trigger fresh revision after retry test left zombie kernels (revision `-00039`) |
 
-End state (after all tests, including SSE refactor + fix): single app `ce-doqumentation-01` running revision `-00033`, image pinned `915700` (async tornado SSE shim with `max_clients=500`), **max-scale=1, 12 vCPU / 24 GB**, min-scale=0.
+End state (after all tests, including all retry experiments): single app `ce-doqumentation-01` running revision `-00039`, image pinned `383050` (server-side retry helper with `Unhandled error` body matching), **max-scale=1, 8 vCPU / 16 GB**, min-scale=0.
+
+**Note**: the `4d14404f` commit (client-side WS retry) only touches `scripts/` and `src/`, NOT `binder/`, so it does NOT trigger a CI rebuild and does NOT affect the running pod. The client-side retry rolls out via the Docusaurus site deploy workflow.
 
 **Workflow gotcha discovered during the refactor work**: [.github/workflows/codeengine-image.yml](../.github/workflows/codeengine-image.yml) defaults `--cpu 1 --memory 4G` on every deploy, so any push that triggers CI **resets the pod size**. This isn't a bug — it's by design for "default workshop is 1 instance" — but it means every container code change requires a manual `app update` afterward to restore the larger size. Worth fixing in a follow-up: only set `--cpu` and `--memory` if the workflow_dispatch inputs were explicitly provided, otherwise leave the existing config alone.
