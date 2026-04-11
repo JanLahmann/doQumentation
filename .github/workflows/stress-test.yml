@@ -1,0 +1,188 @@
+name: Stress Test CE Pod
+
+# Run scripts/workshop-stress-test.py against ce-doqumentation-01 (or any
+# pod by name) without requiring local IBM Cloud login. Useful for instructors
+# who want to validate pod capacity before a workshop.
+#
+# Reads the Jupyter token from the CE app's env vars at runtime, so no
+# additional secrets are needed beyond IBM_CLOUD_API_KEY (already in place
+# for the codeengine-image.yml deploy step).
+#
+# Posts results to the workflow run summary so they're readable from the
+# GitHub UI without diving into raw logs.
+#
+# Sizing recommendations from stress testing (.claude/STRESS-TEST-FINDINGS.md):
+#   1 vCPU /  4 GB → ~5 users (smoke test only)
+#   4 vCPU /  8 GB → ~25 users
+#   8 vCPU / 16 GB → ~80 users with retries (Run 8)
+#   12 vCPU / 24 GB → ~80-100 users
+#
+# Run cost: ~$0.05-0.20 of CE billing for a typical 50-100 user test.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'CE app name to test'
+        default: 'ce-doqumentation-01'
+        type: string
+      users:
+        description: 'Number of simulated concurrent users'
+        default: '50'
+        type: choice
+        options: ['5', '10', '25', '50', '80', '100', '150']
+      ramp_interval:
+        description: 'Stagger user starts uniformly over N seconds (5 = realistic burst, 75 = staggered workshop, 0 = worst-case simultaneous)'
+        default: '5'
+        type: choice
+        options: ['0', '5', '10', '30', '75']
+      cells_per_user:
+        description: 'Cells each simulated user executes'
+        default: '3'
+        type: string
+      simple_workload:
+        description: 'Use simple print() instead of Qiskit (faster, lighter)'
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  stress-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Don't fetch submodules — we only need scripts/ and binder/
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install harness dependencies
+        run: pip install --quiet aiohttp websockets
+
+      - name: Discover CE app URL and token
+        id: ce
+        env:
+          IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
+          APP_NAME: ${{ github.event.inputs.app_name }}
+        run: |
+          curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+          ibmcloud plugin install code-engine -f
+          ibmcloud login --apikey "$IBM_CLOUD_API_KEY" -r eu-de -g Default --quiet
+          ibmcloud ce project select --name ce-doqumentation-01
+
+          # Get the app URL
+          URL=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+            | jq -r '.status.url // empty')
+          if [ -z "$URL" ]; then
+            echo "ERROR: Could not get URL for app '$APP_NAME'. Does it exist?"
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+          # Get the Jupyter token from the app's env vars
+          TOKEN=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+            | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "JUPYTER_TOKEN") | .value')
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: JUPYTER_TOKEN env var not set on app '$APP_NAME'"
+            exit 1
+          fi
+          # Mask the token in logs (GitHub Actions auto-redacts ::add-mask::)
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+          # Get current pod size for context in the summary
+          POD_SIZE=$(ibmcloud ce app get --name "$APP_NAME" 2>/dev/null \
+            | grep -E "CPU:|Memory:" | head -2 | tr '\n' ' ' | tr -s ' ')
+          echo "pod_size=$POD_SIZE" >> "$GITHUB_OUTPUT"
+
+          echo "=== Stress test target ==="
+          echo "  App: $APP_NAME"
+          echo "  URL: $URL"
+          echo "  Pod: $POD_SIZE"
+
+      - name: Run stress test
+        id: stress
+        env:
+          URL: ${{ steps.ce.outputs.url }}
+          TOKEN: ${{ steps.ce.outputs.token }}
+          USERS: ${{ github.event.inputs.users }}
+          RAMP_INTERVAL: ${{ github.event.inputs.ramp_interval }}
+          CELLS: ${{ github.event.inputs.cells_per_user }}
+          SIMPLE: ${{ github.event.inputs.simple_workload }}
+        run: |
+          SIMPLE_FLAG=""
+          if [ "$SIMPLE" = "true" ]; then
+            SIMPLE_FLAG="--simple"
+          fi
+
+          echo "=== Running stress test: $USERS users, ${RAMP_INTERVAL}s stagger, $CELLS cells ==="
+          set -o pipefail
+          python scripts/workshop-stress-test.py \
+            --url "$URL" \
+            --token "$TOKEN" \
+            --users "$USERS" \
+            --cells-per-user "$CELLS" \
+            --idle-between 5 \
+            --ramp-interval "$RAMP_INTERVAL" \
+            $SIMPLE_FLAG \
+            2>&1 | tee /tmp/stress-output.txt
+
+          # Capture key result lines for the summary
+          grep -E "Kernels:|Pod stats:|Capacity estimate" /tmp/stress-output.txt > /tmp/stress-summary.txt || true
+
+      - name: Post results to job summary
+        if: always()
+        env:
+          URL: ${{ steps.ce.outputs.url }}
+          POD_SIZE: ${{ steps.ce.outputs.pod_size }}
+          USERS: ${{ github.event.inputs.users }}
+          RAMP_INTERVAL: ${{ github.event.inputs.ramp_interval }}
+          CELLS: ${{ github.event.inputs.cells_per_user }}
+          SIMPLE: ${{ github.event.inputs.simple_workload }}
+        run: |
+          {
+            echo "## Stress Test Results"
+            echo ""
+            echo "### Configuration"
+            echo "- **App:** ${{ github.event.inputs.app_name }}"
+            echo "- **URL:** \`$URL\`"
+            echo "- **Pod size:** $POD_SIZE"
+            echo "- **Users:** $USERS"
+            echo "- **Stagger:** ${RAMP_INTERVAL}s"
+            echo "- **Cells per user:** $CELLS"
+            echo "- **Workload:** $([ "$SIMPLE" = "true" ] && echo 'print() (simple)' || echo 'Qiskit random_circuit + AerSimulator')"
+            echo ""
+            echo "### Summary"
+            echo '```'
+            if [ -f /tmp/stress-summary.txt ] && [ -s /tmp/stress-summary.txt ]; then
+              cat /tmp/stress-summary.txt
+            else
+              echo "(no summary captured — check raw output below)"
+            fi
+            echo '```'
+            echo ""
+            echo "### Full output"
+            echo '<details><summary>Click to expand</summary>'
+            echo ''
+            echo '```'
+            if [ -f /tmp/stress-output.txt ]; then
+              cat /tmp/stress-output.txt
+            fi
+            echo '```'
+            echo ''
+            echo '</details>'
+            echo ""
+            echo "### Interpretation guide"
+            echo ""
+            echo "- **0 failures** = pod has comfortable headroom"
+            echo "- **<10% failures** = pod is at the edge but workshop will work"
+            echo "- **>10% failures** = scale up the pod or reduce expected user count"
+            echo ""
+            echo "See [STRESS-TEST-FINDINGS.md](.claude/STRESS-TEST-FINDINGS.md) for capacity-vs-pod-size data."
+          } >> "$GITHUB_STEP_SUMMARY"

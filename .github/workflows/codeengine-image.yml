@@ -17,15 +17,15 @@ on:
         type: choice
         options: ['1', '2', '3', '5', '10']
       cpu:
-        description: 'vCPUs per instance'
-        default: '1'
+        description: 'vCPUs per instance (leave empty to preserve current pod size)'
+        default: ''
         type: choice
-        options: ['1', '2', '4', '8', '12']
+        options: ['', '1', '2', '4', '8', '12']
       memory:
-        description: 'Memory per instance'
-        default: '4G'
+        description: 'Memory per instance (leave empty to preserve current pod size)'
+        default: ''
         type: choice
-        options: ['2G', '4G', '8G', '16G', '24G']
+        options: ['', '2G', '4G', '8G', '16G', '24G']
 
 permissions:
   contents: read
@@ -90,13 +90,49 @@ jobs:
         env:
           IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
           INSTANCE_COUNT: ${{ github.event.inputs.instance_count || '1' }}
-          INSTANCE_CPU: ${{ github.event.inputs.cpu || '1' }}
-          INSTANCE_MEMORY: ${{ github.event.inputs.memory || '4G' }}
+          # Empty string by default — only set when user explicitly chose
+          # in workflow_dispatch UI. Preserves existing pod size on push.
+          INSTANCE_CPU: ${{ github.event.inputs.cpu }}
+          INSTANCE_MEMORY: ${{ github.event.inputs.memory }}
+          # Defaults used ONLY when CREATING a new app (cpu/memory required by CE)
+          DEFAULT_CPU: '4'
+          DEFAULT_MEMORY: '8G'
         run: |
           curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
           ibmcloud plugin install code-engine -f
           ibmcloud login --apikey "$IBM_CLOUD_API_KEY" -r eu-de -g Default --quiet
           ibmcloud ce project select --name ce-doqumentation-01
+
+          # Sizing logic:
+          # - On push (no inputs): INSTANCE_CPU and INSTANCE_MEMORY are empty.
+          #   `ce app update` is called WITHOUT --cpu / --memory, preserving
+          #   the current pod size. This fixes the workflow gotcha that
+          #   reset the pod to 1 vCPU / 4 GB on every container code push.
+          # - On workflow_dispatch with user-supplied values: pass those values.
+          # - On `ce app create` (new app, never existed): cpu/memory are
+          #   required by CE, so fall back to DEFAULT_CPU / DEFAULT_MEMORY
+          #   (4 vCPU / 8 GB — actually useful for workshops, unlike the
+          #   old 1 vCPU / 4 GB defaults).
+
+          # Build update args conditionally
+          UPDATE_SIZE_ARGS=""
+          if [ -n "$INSTANCE_CPU" ]; then
+            UPDATE_SIZE_ARGS="$UPDATE_SIZE_ARGS --cpu $INSTANCE_CPU"
+          fi
+          if [ -n "$INSTANCE_MEMORY" ]; then
+            UPDATE_SIZE_ARGS="$UPDATE_SIZE_ARGS --memory $INSTANCE_MEMORY"
+          fi
+
+          # Build create args (cpu/memory required by CE — use overrides if
+          # provided, otherwise sensible defaults)
+          CREATE_CPU="${INSTANCE_CPU:-$DEFAULT_CPU}"
+          CREATE_MEMORY="${INSTANCE_MEMORY:-$DEFAULT_MEMORY}"
+
+          if [ -z "$UPDATE_SIZE_ARGS" ]; then
+            echo "=== Sizing: PRESERVING current pod size on update (no --cpu/--memory args) ==="
+          else
+            echo "=== Sizing override:$UPDATE_SIZE_ARGS ==="
+          fi
 
           # NOTE: must use printf "%02d" not "seq -w" — seq -w only zero-pads
           # when the upper bound has 2+ digits, so "seq -w 1 1" returns "1"
@@ -106,18 +142,19 @@ jobs:
           # and src/pages/admin.tsx.
           for i in $(seq 1 "$INSTANCE_COUNT"); do
             APP_NAME="ce-doqumentation-$(printf "%02d" "$i")"
-            echo "=== Deploying $APP_NAME (${INSTANCE_CPU} vCPU / ${INSTANCE_MEMORY}) ==="
             if ibmcloud ce app get --name "$APP_NAME" &>/dev/null; then
+              echo "=== Updating $APP_NAME (existing app) ==="
               ibmcloud ce app update \
                 --name "$APP_NAME" \
                 --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-                --cpu "$INSTANCE_CPU" --memory "$INSTANCE_MEMORY"
+                $UPDATE_SIZE_ARGS
             else
+              echo "=== Creating $APP_NAME (new app, ${CREATE_CPU} vCPU / ${CREATE_MEMORY}) ==="
               ibmcloud ce app create \
                 --name "$APP_NAME" \
                 --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
                 --port 8080 --min-scale 0 --max-scale 1 \
-                --cpu "$INSTANCE_CPU" --memory "$INSTANCE_MEMORY"
+                --cpu "$CREATE_CPU" --memory "$CREATE_MEMORY"
             fi
           done
 
