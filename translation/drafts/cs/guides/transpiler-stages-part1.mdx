@@ -1,0 +1,132 @@
+---
+title: "Fáze Transpileru"
+sidebar_label: "Fáze Transpileru"
+description: "Výchozí fáze transpilačního pipeline kvantových obvodů v Qiskitu."
+notebook_path: "guides/transpiler-stages.ipynb"
+---
+
+{/* doqumentation-source-hash: 4cbc569d */}
+
+<OpenInLabBanner notebookPath="guides/transpiler-stages.ipynb" />
+
+
+
+{/* cspell:ignore fontsize */}
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>Verze balíčků</b></summary>
+
+Kód na této stránce byl vyvinut s použitím následujících požadavků.
+Doporučujeme používat tyto nebo novější verze.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+```
+</details>
+Tato stránka popisuje fáze předpřipraveného transpilačního pipeline v Qiskit SDK. Existuje šest fází:
+
+1. `init`
+2. `layout`
+3. `routing`
+4. `translation`
+5. `optimization`
+6. `scheduling`
+
+Funkce [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager#qiskit.transpiler.generate_preset_pass_manager) vytvoří přednastavený [staged pass manager](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.StagedPassManager) složený z těchto fází. Konkrétní průchody tvořící každou fázi závisí na argumentech předaných funkci `generate_preset_pass_manager`. Argument `optimization_level` je poziční a musí být zadán; jde o celé číslo, které může být 0, 1, 2 nebo 3. Vyšší hodnoty znamenají intenzivnější, ale nákladnější optimalizaci (viz [Výchozí nastavení Transpileru a možnosti konfigurace](defaults-and-configuration-options)).
+
+Doporučený způsob transpilace obvodu je vytvoření předpřipraveného staged pass manageru a jeho následné spuštění na obvodu, jak je popsáno v části [Transpilace s pass managery](transpile-with-pass-managers). Jednodušší, ale méně přizpůsobitelnou alternativou je použití funkce [`transpile`](https://docs.quantum.ibm.com/api/qiskit/compiler#qiskit.compiler.transpile). Tato funkce přijímá obvod přímo jako argument. Stejně jako u `generate_preset_pass_manager` závisí použité průchody Transpileru na argumentech, jako je `optimization_level`, předaných funkci `transpile`. Interně funkce `transpile` volá `generate_preset_pass_manager`, aby vytvořila předpřipravený staged pass manager, a spustí ho na obvodu.
+## Fáze Init {#init-stage}
+
+Tato první fáze toho ve výchozím nastavení příliš nedělá a je primárně užitečná, pokud chceš zahrnout vlastní počáteční optimalizace. Protože většina algoritmů pro layout a routing je navržena tak, aby pracovala pouze s jednoQubitovými a dvouQubitovými Gate, tato fáze se také používá k překladu Gate operujících na více než dvou Qubitech na Gate operující pouze na jednom nebo dvou Qubitech.
+
+Další informace o implementaci vlastních počátečních optimalizací pro tuto fázi najdeš v části o pluginech a přizpůsobení pass managerů.
+## Fáze Layout {#layout-stage}
+Další fáze se týká layoutu nebo konektivity Backend, na který bude Circuit odeslán. Obecně jsou kvantové Circuit abstraktní entity, jejichž Qubity jsou „virtuální" nebo „logické" reprezentace skutečných Qubitů používaných při výpočtech. Pro provedení posloupnosti Gate je nutné mapování 1:1 z „virtuálních" Qubitů na „fyzické" Qubity ve skutečném kvantovém zařízení. Toto mapování je uloženo jako objekt `Layout` a je součástí omezení definovaných v [instrukční sadě architektury (ISA)](./transpile#instruction-set-architecture) Backend.
+
+![Tento obrázek ilustruje mapování Qubitů z reprezentace drátů do diagramu, který znázorňuje způsob propojení Qubitů na QPU.](/docs/images/guides/transpiler-stages/layout-mapping.avif "Mapování Qubitů")
+
+Volba mapování je nesmírně důležitá pro minimalizaci počtu operací SWAP potřebných k mapování vstupního Circuit na topologii zařízení a pro zajištění použití nejlépe kalibrovaných Qubitů. Vzhledem k důležitosti této fáze přednastavené pass managery zkouší několik různých metod, jak najít nejlepší layout. Obvykle to zahrnuje dva kroky: nejprve se pokusí najít „perfektní" layout (layout, který nevyžaduje žádné operace SWAP), a poté heuristický průchod, který se pokusí najít nejlepší layout, pokud perfektní layout nelze nalézt. Pro tento první krok se typicky používají dva průchody `Passes`:
+
+- `TrivialLayout`: Naivně mapuje každý virtuální Qubit na fyzický Qubit se stejným číslem na zařízení (tj. [`0`,`1`,`1`,`3`] -> [`0`,`1`,`1`,`3`]). Jde o historické chování používané pouze při `optimzation_level=1` k pokusu o nalezení perfektního layoutu. Pokud se to nepodaří, zkusí se jako další `VF2Layout`.
+- `VF2Layout`: Jde o `AnalysisPass`, který vybírá ideální layout tím, že tuto fázi chápe jako problém izomorfismu podgrafů řešeného algoritmem VF2++. Pokud je nalezeno více než jedno mapování, spustí se hodnoticí heuristika, která vybere mapování s nejnižší průměrnou chybovostí.
+
+Poté se pro heuristickou fázi ve výchozím nastavení používají dva průchody:
+
+- `DenseLayout`: Najde podgraf zařízení s největší konektivitou, který má stejný počet Qubitů jako Circuit (používá se pro optimalizační úroveň 1, pokud jsou v Circuit přítomny operace řídicího toku, jako je `IfElseOp`).
+- `SabreLayout`: Tento průchod vybírá layout tak, že začíná od počátečního náhodného layoutu a opakovaně spouští algoritmus `SabreSwap`. Tento průchod se používá pouze na optimalizačních úrovních 1, 2 a 3, pokud není pomocí průchodu `VF2Layout` nalezen perfektní layout. Další podrobnosti o tomto algoritmu najdeš v článku [arXiv:1809.02573.](https://arxiv.org/abs/1809.02573)
+## Fáze Routing {#routing-stage}
+
+Aby bylo možné provést dvouQubitovou Gate mezi Qubity, které nejsou přímo propojeny na kvantovém zařízení, je nutné do Circuit vložit jednu nebo více Gate SWAP, které přesunou stavy Qubitů tak, aby byly sousední na mapě Gate zařízení. Každá Gate SWAP představuje nákladnou a hlučnou operaci k provedení. Nalezení minimálního počtu Gate SWAP potřebných k mapování Circuit na dané zařízení je tedy důležitým krokem v procesu transpilace. Z důvodu efektivity se tato fáze ve výchozím nastavení typicky počítá společně s fází Layout, ale jsou od sebe logicky odděleny. Fáze *Layout* vybírá fyzické Qubity, které se mají použít, zatímco fáze *Routing* vkládá odpovídající počet Gate SWAP, aby bylo možné Circuit provést s použitím vybraného layoutu.
+
+Nalezení optimálního mapování SWAP je však obtížné. Ve skutečnosti jde o NP-těžký problém, a proto je jeho výpočet pro všechna kromě nejmenších kvantových zařízení a vstupních Circuit prohibitivně nákladný. Aby Qiskit toto obešel, používá stochastický heuristický algoritmus `SabreSwap` pro výpočet dobrého, avšak ne nutně optimálního, mapování SWAP. Použití stochastické metody znamená, že generované Circuit nejsou zaručeně stejné při opakovaném spuštění. Opakované spuštění stejného Circuit skutečně vede k distribuci hloubek Circuit a počtů Gate na výstupu. Právě z tohoto důvodu mnoho uživatelů volí spuštění funkce routing (nebo celého `StagedPassManager`) mnohokrát a výběr Circuit s nejmenší hloubkou z distribuce výstupů.
+
+Vezměme si například 15-Qubitový GHZ Circuit spuštěný 100krát s „špatným" (odpojeným) `initial_layout`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib qiskit qiskit-ibm-runtime
+```
+
+```python
+import matplotlib.pyplot as plt
+from qiskit import QuantumCircuit
+from qiskit_ibm_runtime.fake_provider import FakeAuckland, FakeWashingtonV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+backend = FakeAuckland()
+
+ghz = QuantumCircuit(15)
+ghz.h(0)
+ghz.cx(0, range(1, 15))
+
+depths = []
+for seed in range(100):
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=1,
+        backend=backend,
+        layout_method="trivial",  # Fixed layout mapped in circuit order
+        seed_transpiler=seed,  # For reproducible results
+    )
+    depths.append(pass_manager.run(ghz).depth())
+
+plt.figure(figsize=(8, 6))
+plt.hist(depths, align="left", color="#AC557C")
+plt.xlabel("Depth", fontsize=14)
+plt.ylabel("Counts", fontsize=14)
+```
+
+```text
+Text(0, 0.5, 'Counts')
+```
+
+![Výstup předchozí buňky kódu](/docs/images/guides/transpiler-stages/extracted-outputs/358cfb50-02fc-48f2-a4ec-657837e0c304-1.svg)
+
+Toto široké rozdělení ukazuje, jak obtížné je pro mapper SWAP vypočítat nejlepší mapování. Abychom získali určitý náhled, podívejme se jak na Circuit, který se provádí, tak na Qubity vybrané na hardwaru.
+
+```python
+ghz.draw("mpl", idle_wires=False)
+```
+
+![Výstup předchozí buňky kódu](/docs/images/guides/transpiler-stages/extracted-outputs/bb3b8c1f-69fd-4e0c-9b78-9ee67f3361bb-0.svg)
+
+```python
+from qiskit.visualization import plot_circuit_layout
+
+# Plot the hardware graph and indicate which hardware qubits were chosen to run the circuit
+transpiled_circ = pass_manager.run(ghz)
+plot_circuit_layout(transpiled_circ, backend)
+```
+
+![Výstup předchozí buňky kódu](/docs/images/guides/transpiler-stages/extracted-outputs/e4cd49ef-5b3e-4ee0-82f8-c83e1f0ae755-0.svg)
+
+Jak vidíš, tento Circuit musí provést dvouQubitovou Gate mezi Qubity 0 a 14, které jsou na grafu konektivity velmi daleko od sebe. Spuštění tohoto Circuit tedy vyžaduje vložení Gate SWAP k provedení všech dvouQubitových Gate pomocí průchodu `SabreSwap`.
+
+Všimni si také, že algoritmus `SabreSwap` se liší od větší metody `SabreLayout` z předchozí fáze. Ve výchozím nastavení `SabreLayout` spouští jak layout, tak routing a vrací transformovaný Circuit. To se dělá z několika konkrétních technických důvodů uvedených na [referenční stránce API](../api/qiskit/qiskit.transpiler.passes.SabreLayout) průchodu.
