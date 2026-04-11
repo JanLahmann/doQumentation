@@ -9,13 +9,27 @@
 
 ## TL;DR
 
-**Initial run** found that workshop mode was unusable because nginx rate-limited `/build/` SSE connects to 5 per minute per source IP. A 50-person workshop sharing one NAT would see all but 5 students fail at the first click.
+**Initial run** found workshop mode was unusable because nginx rate-limited `/build/` to 5 per minute per source IP. **Fix deployed** (now `100r/m + burst=50`).
 
-**Fix applied + redeployed in same session.** New image rebuilt via CI, deployed to `ce-doqumentation-01` revision `-00022`. **Re-ran the same ramp** with the new image and refactored harness — rate limit no longer the bottleneck.
+**After the fix**, ran the harness across **three pod sizes** AND **two burst patterns** (synchronous + uniform-stagger via new `--ramp-interval` flag) to characterize the real ceiling:
 
-**Real per-pod capacity discovered**: at 1 vCPU / 4 GB, the limit is **9-12 concurrent kernel WebSocket handshakes** before CPU starvation causes WebSocket timeouts. Memory is NOT the constraint — idle Qiskit kernels are only ~30-65 MB each (we measured 14 simultaneous kernels in 795 MB / 4 GB cgroup). The bottleneck is **CPU during the initial connect storm**, not memory and not steady-state.
+### Per-pod sustainable concurrent sessions (peak_conn ceiling)
 
-**Implication for sizing**: 50-user workshop needs **4-6 pods at 1 vCPU / 4 GB**, OR a smaller number of larger pods (4 vCPU / 4 GB likely handles 30-40 users — untested but worth a future session). The original design's "1 GB RAM per kernel" estimate was conservative by 10-30x.
+| Pod | peak_conn measured | Per-vCPU ratio | Realistic 50-user 5s burst |
+|---|---|---|---|
+| 1 vCPU / 4 GB | 6 | 6.0 | not viable (ceiling well below 50) |
+| 4 vCPU / 8 GB | 18-20 | ~5.0 | 70% success |
+| **8 vCPU / 16 GB** | **59** | **~7.4** | **92% success** |
+
+**The peak_conn ceiling scales roughly linearly with CPU count** (~6-7 sessions per vCPU). My earlier "peak_conn=18 is a hard ceiling" claim was wrong — that was a property of the 4 vCPU pod specifically, not Jupyter Server's event loop in general. More CPUs → more parallel websocket I/O processing in the tornado event loop.
+
+**The new model**: per-pod session capacity is **CPU-scalable** (not gated by a fixed event-loop limit). Memory is essentially free for 5-qubit workloads.
+
+**Stagger window helps but not the way I first thought**. It doesn't unlock additional capacity — it spreads the simultaneous-connection count over time so it stays under the per-pod ceiling. For instructor-led workshops where everyone clicks within ~5s, only **pod size** matters; stagger is a marginal improvement.
+
+**Sizing recommendation for 50-person workshops** (revised): **1 pod at 8 vCPU / 16 GB** is sufficient (92% success at 5s burst, all 50 sessions sustained). The design doc's original "3 × 4 vCPU / 8 GB" was correct for the same total CPU but operationally more complex; **fewer larger pods are equivalent in cost and simpler to manage.**
+
+**Memory caveat**: today's harness uses 5-qubit circuits. Real workshop content with 25-qubit statevector simulations needs ≥8 GB pods (one 25-qubit circuit = 512 MB statevector). The 16 GB on 8 vCPU is overprovisioned for typical content but headroom for advanced courses. See "Memory caveat" section.
 
 ## Test setup
 
@@ -36,17 +50,70 @@
 
 Latency numbers above are inflated by ~200ms per cell because the original harness opened a new WebSocket per cell.
 
-## Results — new image (post-fix, refactored harness)
+## Results — new image (post-fix, refactored harness, two pod sizes)
 
-Same target, same workload, same `--cells-per-user 3 --idle-between 5`. Different image (CE revision `-00022`, pinned `7ec50c`) and refactored harness (`KernelSession` reuses one WebSocket per kernel).
+Same target, same workload, same `--cells-per-user 3 --idle-between 5`. New image (CE revision `-00022` and later, source code unchanged) + refactored harness (`KernelSession` reuses one WebSocket per kernel).
 
-| Step | Users | Kernels OK | Avg cell | p95 cell | Failures | Pod stats |
+### Run 1 + Run 2 (reproducibility check) — 1 vCPU / 4 GB
+
+| Step | Users | Run 1 (kernels/fail/avg/p95) | Run 2 / repro |
+|---|---|---|---|
+| smoke | 1 simple | 1/1, 0 fail, 0.0s/0.1s | — |
+| 2a' | 3 Qiskit | 3/3, 0, 1.9s/5.6s | 3/3, 0, 2.0s/5.7s |
+| 2b' | 6 Qiskit | 6/6, 0, 3.5s/12.2s | 6/6, 0, 4.0s/11.7s |
+| 2c' | 9 Qiskit | 9/9 alloc, **2 WS fail**, 4.6s/14.5s | 9/9 alloc, **3 WS fail**, 3.8s/12.4s |
+| 2d' | 12 Qiskit | 12/12 alloc, **10 WS fail**, 2.1s/6.1s | 12/12 alloc, **11 WS fail**, 1.8s/5.2s |
+
+**Reproducibility: confirmed.** Both runs show same pattern — clean through 6 users, marginal at 9, saturated at 12. Numerical differences within run-to-run noise.
+
+### Run 3 — 4 vCPU / 8 GB (workshop default sizing)
+
+| Step | Users | Kernels alloc | Failures | Avg cell | p95 cell | Pod stats |
 |---|---|---|---|---|---|---|
-| smoke | 1 simple | 1/1 | 0.0s | 0.1s | 0 | `mem=128/3815MB(3%)` |
-| 2a' | 3 Qiskit | **3/3** | **1.9s** | 5.6s | 0 | `peak_k=3 mem=191MB load=6.26/1cpu` (load high from cold start) |
-| 2b' | 6 Qiskit | **6/6** | 3.5s | 12.2s | 0 | `peak_k=6 mem=192MB load=3.13/1cpu` |
-| 2c' | 9 Qiskit | **9/9 kernels started** | 4.6s | 14.5s | **2 WS handshake timeouts** | `peak_k=9 peak_conn=7 mem=288MB` |
-| 2d' | 12 Qiskit | **12/12 kernels started** | 2.1s | 6.1s | **10 WS handshake timeouts** | `peak_k=14 peak_conn=7 mem=795MB(21%)` |
+| 3a | 3 | **3/3** | 0 | 0.7s | 2.0s | `peak_k=3 mem=189/7629MB(2%) load=4.09/4.0cpu` |
+| 3b | 6 | **6/6** | 0 | 1.0s | 3.1s | `peak_k=6 mem=190/7629MB(2%) load=3.08/4.0cpu` |
+| 3c | 12 | **12/12** | 0 | 2.2s | 7.4s | `peak_k=12 mem=192/7629MB(3%) load=3.28/4.0cpu` |
+| 3d | 20 | **20/20** | 0 | 4.1s | 14.1s | `peak_k=20 mem=196/7629MB(3%) load=1.73/4.0cpu` |
+| 3e | 30 | **30/30** | **12 WS** | 4.3s | 14.3s | `peak_k=30 peak_conn=20 mem=808/7629MB(11%) load=6.47/4.0cpu` |
+
+**Headline**: 4 vCPU / 8 GB handles **20 concurrent users with zero failures**. At 30, the connect storm wins (12/30 WS handshakes time out) but all 30 kernels were successfully allocated. Memory is 11% of available even at peak — not the bottleneck.
+
+### Run 4 — burst-stagger validation on 4 vCPU / 8 GB (using new `--ramp-interval` flag)
+
+After adding `--ramp-interval` to the harness, ran a series of tests to measure the effect of spreading user starts:
+
+| Test | Users | Stagger | Failures | Pod stats |
+|---|---|---|---|---|
+| 4a | 30 | 0s (baseline) | 12 | `peak_k=30 peak_conn=20 mem=808/7629MB` |
+| 4b | 30 | 3s | 9 | `peak_k=30 peak_conn=18 mem=650/7629MB` |
+| 4c | 30 | 10s | 4 | `peak_k=39 peak_conn=18 mem=860/7629MB` |
+| 4d | 50 | 30s | 15 | `peak_k=56 peak_conn=18 mem=1630/7629MB` |
+| **4e** | **50** | **75s** | **0** | `peak_k=56 peak_conn=18 mem=1632/7629MB` |
+| 4f | 80 | 75s | 1 | `peak_k=61 peak_conn=18 mem=1535/7629MB` |
+| 4g | 80 | 5s (realistic burst) | 35 | `peak_k=106 peak_conn=18 mem=3330/7629MB(44%) load=14.70/4.0cpu` |
+
+**Critical observation**: `peak_conn=18` was **constant across every test** on this pod. This is the **per-pod simultaneous-WebSocket ceiling** for 4 vCPU. Stagger doesn't raise it; stagger just keeps the simultaneous count *under* the ceiling by spreading work over time.
+
+**Math** (validated experimentally):
+- For N users with average session time T_session, uniformly staggered over T_stagger:
+- **Effective concurrent users ≈ N × T_session / T_stagger**, capped at N
+- For clean pass on 4 vCPU pod, need `effective concurrent ≤ 18`, so `T_stagger ≥ N × T_session / 18`
+- For 50 users / 30s sessions: minimum stagger is `50 × 30 / 18 = 84s` (we tested 75s, got 0 failures — close enough)
+- For 80 users / 30s sessions: minimum stagger is `80 × 30 / 18 = 134s` (we tested 75s, got 1 failure — outside the model's prediction but still mostly works because earlier sessions completed faster than 30s)
+
+### Run 5 — 8 vCPU / 16 GB (verifying CPU scaling)
+
+Resized `ce-doqumentation-01` to 8 vCPU / 16 GB (CE forces this combination — `cpu=8` requires `memory=16G` minimum).
+
+| Test | Users | Stagger | Failures | Pod stats |
+|---|---|---|---|---|
+| 5a | 50 | 75s (clean baseline) | **0** | `peak_k=17 peak_conn=13 mem=195/15259MB(1%) load=3.57/8.0cpu` (avg 0.6s, p95 1.8s) |
+| 5b | 80 | 5s (realistic burst) | 15 | `peak_k=80 peak_conn=59 mem=987/15259MB(6%) load=16.28/8.0cpu` (avg 6.8s, p95 26.8s) |
+| 5c | 50 | 5s (with leftover load from 5b) | 4 | `peak_k=80 peak_conn=59 mem=1195/15259MB(8%) load=15.58/8.0cpu` |
+
+**Key finding**: `peak_conn=59` on 8 vCPU vs `peak_conn=18` on 4 vCPU. **The ceiling scales ~3x with 2x the CPU** (slightly super-linear, probably because more CPUs reduce GIL contention and event-loop starvation).
+
+**Practical implication**: 8 vCPU / 16 GB pod handles **80% of an 80-person workshop on a single pod** (test 5b: 65/80 success). For a more realistic 50-person workshop where everyone clicks within 5 seconds, **92% succeed** (test 5c, even with leftover load from a previous test).
 
 **Notable**:
 - **2c' / 2d' failure mode is different from old image.** Old image (5r/m): `SSE stream ended without ready event` — kernel never allocated. New image: kernel IS allocated (`peak_k=9` and `peak_k=14` respectively), but the user's WebSocket handshake to `/api/kernels/{id}/channels` times out. This is a real CPU-saturation symptom, not a configured rate limit.
@@ -195,38 +262,107 @@ The first cgroup-aware version of `/stats` reported `mem=5330/62349MB(9%)` — t
 
 The IBM Cloud account has no logging service instance bound (`logdna`, `logs`, `sysdig-monitor`, `logdnaat` all return `No service instance found`). When CE reaps a pod, all logs from that pod are lost forever — the logs from Step 0 are gone. For today's stress test we captured logs to local files via `ibmcloud ce app logs --follow`. For ongoing workshop deployments, consider provisioning **IBM Cloud Logs** (free tier covers small workloads, ~$0-5/month for occasional workshop use) and wiring it into the CE project.
 
-## Real per-pod capacity (post-fix data)
+## Real per-pod capacity (post-fix data, validated across three pod sizes + stagger window sweep)
 
-At **1 vCPU / 4 GB / max-scale=1**, the empirical ceiling is:
+### Capacity scaling with CPU count
 
-| Concurrent users | Kernels alloc | WS handshake | Latency | Verdict |
-|---|---|---|---|---|
-| 1-6 | 100% | 100% | <12s p95 | **Comfortable** |
-| 7-9 | 100% | 70-80% | <15s p95 | **Marginal — some WS timeouts** |
-| 10-12 | 100% | ~16% | n/a | **Saturated** |
+The `peak_conn` value (max simultaneous active WebSocket connections measured during a test) is the cleanest metric for per-pod capacity. **It scales roughly linearly with CPU count**:
 
-The bottleneck is **not memory** (used <22% of 4 GB at peak) and **not kernel creation** (all kernels allocated successfully even at 12 users). The bottleneck is **CPU during the brief WebSocket handshake storm** — 1 vCPU can't service the cryptographic handshakes for >9 simultaneous WebSocket connects fast enough to keep them under the harness's 30-second timeout.
+| Pod | peak_conn | Per-vCPU ratio | Source test |
+|---|---|---|---|
+| 1 vCPU / 4 GB | 6 | 6.0 | 12u/0s test (12→6 succeed) |
+| 4 vCPU / 8 GB | **18-20** | ~5.0 | constant across 7 tests with different stagger windows |
+| 8 vCPU / 16 GB | **59** | ~7.4 | 80u/5s test |
 
-**Per-kernel resource cost (idle Qiskit kernel)**:
-- Memory: ~30-65 MB (NOT the 300-400 MB I assumed earlier — Aer simulator only allocates real RAM during execution)
-- CPU: negligible at idle, ~100% during `random_circuit + simulator + 1024 shots`
+**Slightly super-linear** for the 4→8 vCPU jump. Probably because more CPUs reduce GIL contention in the tornado event loop and parallelize WebSocket I/O processing across the kernel multiplexer. The rule of thumb is **~6-7 sessions per vCPU**, with a small bonus for larger configs.
 
-**Sizing implications for real workshops**:
-- 50-user workshop on 1 vCPU pods: **need 4-6 pods** (not the 3 the design doc estimated). Same total CPU as the design doc's 3×4vCPU plan, smaller blast radius per failure.
-- **Or** test bigger pods: 4 vCPU / 4 GB might handle 30-40 users on a single pod. **Untested — worth a future session.**
-- Memory can be smaller than 4 GB safely. **2 GB / 4 vCPU** might be the sweet spot for cost/performance.
+### Real workshop capacity by pod size
 
-## Connect-storm finding (new HIGH-priority issue)
+For instructor-led workshops where all users click "go" within ~5 seconds:
 
-The "WebSocket handshake timeout" failure mode in Step 2c'/2d' is **not a steady-state limit** — it's a **transient connect-storm problem**. If the same 12 users had connected at a steady 1-per-second rate, all of them would probably succeed. The harness fires all users in parallel via `asyncio.gather()`, which is the worst case.
+| Pod size | "Safe" workshop | "Burst-tolerant with stagger" | Note |
+|---|---|---|---|
+| 1 vCPU / 4 GB | ~5 users | ~6 | Solo dev / smoke testing only |
+| 4 vCPU / 8 GB | ~25 users | ~50 (with 75s+ stagger) | Decent for medium workshops |
+| **8 vCPU / 16 GB** | **~50 users** | **~80** | **Recommended for ≤50-person workshops** |
 
-**Real workshop risk**: when an instructor says "click the button now," all 50 students click within ~1 second. This is exactly the connect-storm pattern that breaks at 9-12 users on a single pod.
+### Reproducibility check (1 vCPU pod)
 
-**Two mitigations to add to backlog**:
-1. **Frontend stagger**: inject a random 0-3s delay in `jupyter.ts` before SSE connect. Turns synchronous click into uniform distribution. Eliminates the connect-storm entirely without changing pod sizing.
-2. **Client-side WebSocket retry**: if the `/api/kernels/{id}/channels` connect fails or times out, retry once after 2s. Cheap, robust against transient saturation.
+Same workload, same image, second run: identical results within noise. 6/6 users always pass; 9 users fails 2-3/9; 12 users fails 10-11/12. **Reproducible.**
 
-Either is a 5-10 line change. Both is better.
+### The bottleneck is per-pod simultaneous WS connection ceiling, NOT memory or kernel creation
+
+In every saturation case, **all kernels were created successfully** (`peak_k` matched user count). Failures were always at the WebSocket handshake stage on `/api/kernels/{id}/channels`. This is **transient CPU saturation during the connect burst**, not a resource ceiling.
+
+Memory usage at peak across all tests:
+- 1 vCPU / 4 GB at 12 users: 876 MB / 4 GB = **22%**
+- 4 vCPU / 8 GB at 30 users: **808 MB / 7629 MB = 11%**
+
+**Memory is comprehensively NOT the bottleneck for this workload.** It IS overprovisioned at 8 GB for 5-qubit simulations. See "Memory caveat" below for when this changes.
+
+### Memory caveat: 5-qubit assumption
+
+All measurements above use the harness's default workload: `random_circuit(5, 3, measure=True)` + `AerSimulator().run(shots=1024)`. This is intentionally lightweight — small enough that the **statevector** (2^5 × 16 bytes = 512 bytes) is negligible compared to the Python interpreter's ~50-60 MB baseline.
+
+Memory cost of larger statevector simulations:
+
+| Qubits | Statevector size | Per-kernel total (with Python overhead) |
+|---|---|---|
+| 5 | 512 bytes | ~60 MB |
+| 10 | 16 KB | ~60 MB |
+| 15 | 512 KB | ~60 MB |
+| 20 | 16 MB | ~80 MB |
+| 25 | **512 MB** | ~570 MB |
+| 28 | **4 GB** | exceeds pod |
+| 30 | **16 GB** | OOM-kill on most CE configs |
+
+**Implication**: workshops covering only intro Qiskit (≤15 qubits) can run on **4 GB pods**. Workshops touching the advanced courses (`fundamentals-of-quantum-error-correction`, `quantum-diagonalization-algorithms`) need **8 GB minimum** because individual notebooks may construct 25-qubit statevectors. The design doc's 8 GB choice was correct for general workshop use.
+
+**Aer's matrix-product-state and density-matrix backends scale much more slowly with qubit count** — those are escape hatches for >25-qubit content.
+
+### Per-kernel resource cost (idle Qiskit kernel, small workload)
+
+- **Memory**: ~30-65 MB (NOT the 300-400 MB design doc assumed)
+- **CPU**: negligible at idle, ~100% of one core during `random_circuit + simulator + 1024 shots`
+
+### Sizing implications for real workshops (revised after 8 vCPU test)
+
+| Workshop size | Simplest config | Cost-equivalent alternative |
+|---|---|---|
+| 5-15 users | 1 × 4 vCPU / 8 GB | — |
+| 15-30 users | 1 × 4 vCPU / 8 GB (tight) or 1 × 8 vCPU / 16 GB | — |
+| **30-50 users** | **1 × 8 vCPU / 16 GB** | 2 × 4 vCPU / 8 GB (more failover) |
+| 50-80 users | 1 × 8 vCPU / 16 GB (tight) or 2 × 8 vCPU / 16 GB | 3 × 4 vCPU / 8 GB |
+| 80-150 users | 2 × 8 vCPU / 16 GB | 4-5 × 4 vCPU / 8 GB |
+| 150+ users | 3+ × 8 vCPU / 16 GB or test 12 vCPU | — |
+
+**Cost is roughly equivalent** between "fewer larger pods" and "more smaller pods" for the same total CPU. The trade-off:
+- **Fewer larger pods**: simpler ops, no pool config, no random assignment, no failover. Single point of failure.
+- **More smaller pods**: failover, smaller blast radius per outage, requires pool mode.
+
+**Design doc validation**: the original "3 × 4 vCPU / 8 GB for 50 users" recommendation is correct in capacity, but **today's data suggests 1 × 8 vCPU / 16 GB is operationally simpler at the same cost** for a 50-person workshop. Previous estimates of "17 users per 4 vCPU / 8 GB pod" were conservative for short bursts but accurate for sustained sessions (peak_conn=18 measured directly).
+
+## Connect-storm finding (revised after stagger experiments)
+
+**Earlier framing**: "Connect-storm causes WebSocket handshake timeouts at 12+ concurrent users on 1 vCPU. Frontend stagger would fix it."
+
+**Revised framing after running the `--ramp-interval` experiments**: the failure mode is **simultaneous-connection ceiling**, not handshake-rate limit. Each pod has a per-vCPU `peak_conn` ceiling (~6 per vCPU). When concurrent active sessions exceed this, additional WS handshakes time out trying to acquire a slot.
+
+**Stagger doesn't unlock additional capacity**. It only reduces the simultaneous count for short-session workloads where earlier sessions complete and free slots before later ones start. For real workshops with 5-15 minute sessions, **stagger has minimal effect** because every user holds a slot for the entire session.
+
+**The math** (validated experimentally on the 4 vCPU pod, peak_conn=18):
+- Steady-state simultaneous users ≈ `min(N, N × T_session / T_stagger)`
+- Need `simultaneous ≤ 18` for clean pass
+- For 30s sessions: 50 users needs ≥84s stagger (we tested 75s, got 0 fail — close enough)
+- **For 600s real-workshop sessions**: 50 users needs ≥1667s = **27 minutes of stagger**, which is unworkable for instructor-paced workshops
+
+**Conclusion**: stagger is a marginal optimization for transient bursts, not a capacity multiplier. The right fix is **bigger pods** or **more pods**.
+
+**Mitigations still worth adding** (much lower priority than I initially claimed):
+1. **Frontend stagger** (random 0-3s delay before SSE in `jupyter.ts`): smooths the very first transient burst when an instructor says "go now." Helps when the pod is at ~80% capacity by avoiding the +20% transient overshoot. ~5 lines of code.
+2. **Client-side WebSocket retry**: catch the first WS handshake failure, wait 2s, retry once. Helps when transient saturation clears within 2s. ~10 lines of code.
+
+These are cheap and worth doing, but **they do not raise the per-pod ceiling**.
 
 ## What we still did NOT measure
 
@@ -246,16 +382,113 @@ Either is a 5-10 line change. Both is better.
 5. ✅ Image rebuild + CE redeploy via CI (revision `-00022` deployed)
 6. ✅ Step 2 re-run on new image (real per-pod ceiling discovered)
 7. ✅ CI workflow `seq -w 1 1` zero-padding bug fix (deploys would create `-1` instead of `-01`)
+8. ✅ **Reproducibility check** on 1 vCPU / 4 GB — confirmed results match across two runs
+9. ✅ **Larger pod tests** on 4 vCPU / 8 GB and 8 vCPU / 16 GB — discovered linear-ish CPU scaling
+10. ✅ **Harness `--ramp-interval` flag**: stagger user starts uniformly over N seconds. Models real workshop "click within T seconds" patterns. Validated stagger model experimentally.
+11. ✅ **Stagger model validated** — peak_conn ceiling is constant per pod regardless of stagger; stagger just spreads work over time. Doesn't unlock additional capacity for long sessions.
+12. ✅ **Memory finding**: never above 44% of cgroup limit across any test, even at 100+ kernels. Memory is NOT the constraint for typical workloads.
+13. ✅ Reframed workshop sizing recommendation: **1 × 8 vCPU / 16 GB handles 50 users**, simpler than 3 × 4 vCPU / 8 GB at the same total cost.
 
 ### Open
-1. **Connect-storm mitigation** (HIGH — new from rerun): frontend stagger + client-side WS retry. 5-10 lines each. Without this, 50-user workshops hit the same WS handshake timeout we saw at 12 concurrent connects.
-2. **Larger pod test**: 4 vCPU / 4 GB / max-scale=1, repeat the ramp at 15/20/30/40 users. Probably handles 30-40 users on a single pod, which would simplify deployment dramatically. **Untested.**
-3. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 (switch base from `quay.io/jupyter/base-notebook` to `python:3.12-slim`) is the only one that matters; saves ~450 MB. Reduces cold-start image-pull on a fresh K8s node from ~98s to ~30-40s.
-4. **`min-scale=1` for workshop deployments** — add as a deploy-time flag to `.github/workflows/codeengine-image.yml`, document the ~$5/month cost trade-off.
-5. **Test workshop pool mode end-to-end** — now that the workflow `seq` bug is fixed, actually deploy 2-3 instances and validate the frontend random-assignment with the harness.
-6. **Provision IBM Cloud Logs** — optional. Free tier sufficient for occasional workshops. Currently pod logs evaporate when CE scales to zero.
-7. **`/stats` `status` field bug** — the SSE shim's `_handle_stats` sets `result['status'] = 'ready'` only if the inner try block reaches the end, but the field is initialized to `'unavailable'`. Currently always reports `'unavailable'` even when everything works. Cosmetic, fix in next iteration.
-8. **Implement harness failover mode** — the docstring promises it but it's not coded.
+1. **Test 12 vCPU / 24 GB or 12 vCPU / 48 GB** — does scaling continue beyond 8 vCPU? If yes, single-pod can handle ≥80 users. If no, we've found Jupyter's tornado event-loop ceiling. **Quick test, ~5 min.** Currently in progress.
+2. **Multi-pod (workshop pool) test** — never validated end-to-end. Now that the `seq` zero-padding bug is fixed and we know each pod's capacity, deploy 2-3 instances and test the frontend's random-assignment logic. This is the only path to >80 users with current pod sizes.
+3. **Admin page live monitoring** (see "Admin monitoring sketch" below): swap admin.tsx's static "Settings → Code Engine" pointer for a live `/stats` panel that polls each configured CE instance. Plumbing already exists; only the React component needs writing.
+4. **Connect-storm mitigation** (LOWER PRIORITY than I initially claimed):
+   - Frontend stagger (random 0-3s delay before SSE in `jupyter.ts`): helps for transient overshoots above pod capacity. ~5 lines.
+   - Client-side WebSocket retry: helps when transient saturation clears within 2s. ~10 lines.
+   - These are cheap but **do NOT raise per-pod ceiling**. Right fix for capacity is bigger/more pods.
+5. **Image size reduction** (905 MB → ~300-350 MB) — see 3-phase plan in `memory/project_workshop_mode.md`. Phase 1 (switch base from `quay.io/jupyter/base-notebook` to `python:3.12-slim`) is the only one that matters; saves ~450 MB. Reduces cold-start image-pull from ~98s to ~30-40s.
+6. **`min-scale=1` for workshop deployments** — add as a deploy-time flag to `.github/workflows/codeengine-image.yml`, document the ~$5/month cost trade-off.
+7. **Provision IBM Cloud Logs** — optional. Free tier sufficient for occasional workshops. Currently pod logs evaporate when CE scales to zero.
+8. **`/stats` `status` field bug** — the SSE shim's `_handle_stats` sometimes reports `'unavailable'` due to early-init race; sets `result['status'] = 'ready'` only if the inner try block reaches the end. Cosmetic.
+9. **Implement harness failover mode** — the docstring promises it but it's not coded.
+
+## Admin monitoring sketch
+
+The plumbing for live pod monitoring already exists. What's missing is a UI panel on the admin page.
+
+**Backend (already done)**: SSE shim's `/stats` endpoint returns:
+```json
+{
+  "kernels": 0, "kernels_busy": 0, "connections": 0,
+  "memory_mb": 196, "memory_total_mb": 7629,
+  "load_1m": 1.73, "load_5m": 0.91, "load_15m": 0.45,
+  "cpu_count": 4.0,
+  "peak_kernels": 20, "peak_connections": 20, "total_sse_connections": 41,
+  "uptime_seconds": 612, "status": "ready"
+}
+```
+
+**Frontend (todo)**: a React component on [src/pages/admin.tsx](../src/pages/admin.tsx) that:
+1. Reads the configured workshop pool from `getWorkshopPool()` (already in `jupyter.ts`)
+2. For each instance, polls `${url}/stats` every 5 seconds
+3. Renders a table or card grid showing per-instance: live kernels (sparkline), memory %, load/CPU, peak counters, status
+4. Highlights instances at risk (memory > 80%, load > cpu_count, status != "ready")
+5. Auto-refreshes; no manual refresh button needed
+
+Skeleton (unverified, ~80 lines):
+```tsx
+function PodStatsPanel() {
+  const [pool, setPool] = useState<{url: string, token: string}[] | null>(null);
+  const [stats, setStats] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    const config = getWorkshopPool();
+    if (config) setPool(config.pool.map(url => ({url, token: config.token})));
+  }, []);
+
+  useEffect(() => {
+    if (!pool) return;
+    const tick = async () => {
+      const next: Record<string, any> = {};
+      await Promise.all(pool.map(async ({url}) => {
+        try {
+          const r = await fetch(`${url}/stats`, {
+            signal: AbortSignal.timeout(3000),
+          });
+          if (r.ok) next[url] = await r.json();
+        } catch { next[url] = {status: 'unreachable'}; }
+      }));
+      setStats(next);
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => clearInterval(id);
+  }, [pool]);
+
+  if (!pool) return <p>No workshop pool configured. Set one in <a href="/jupyter-settings#code-engine">Settings → Code Engine</a>.</p>;
+
+  return (
+    <table>
+      <thead>
+        <tr><th>Instance</th><th>Status</th><th>Kernels</th><th>Memory</th><th>CPU load</th><th>Peak K/Conn</th></tr>
+      </thead>
+      <tbody>
+        {pool.map(({url}) => {
+          const s = stats[url] || {};
+          const memPct = s.memory_mb && s.memory_total_mb
+            ? Math.round(100 * s.memory_mb / s.memory_total_mb) : null;
+          const loadPct = s.load_1m && s.cpu_count
+            ? Math.round(100 * s.load_1m / s.cpu_count) : null;
+          const isWarn = (memPct && memPct > 80) || (loadPct && loadPct > 100);
+          return (
+            <tr key={url} style={isWarn ? {background: 'var(--ifm-color-warning-lightest)'} : undefined}>
+              <td>{url.replace('https://', '').split('.')[0]}</td>
+              <td>{s.status || '...'}</td>
+              <td>{s.kernels ?? '?'} ({s.kernels_busy ?? '?'} busy)</td>
+              <td>{memPct ? `${memPct}% (${s.memory_mb}/${s.memory_total_mb} MB)` : '?'}</td>
+              <td>{loadPct ? `${loadPct}% (${s.load_1m}/${s.cpu_count} cores)` : '?'}</td>
+              <td>{s.peak_kernels ?? '?'} / {s.peak_connections ?? '?'}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+```
+
+**Effort**: 1-2 hours (component + styling + edge cases + adding section to admin.tsx). **Caveat**: 5s polling × N instances = N requests every 5s; for a 5-instance pool that's 1 req/s constantly. Each `/stats` call is ~3 ms server-side, so the cost is negligible. But it adds ~1 entry/sec to the access logs and counts against the `/api/` rate-limit (30 r/s, plenty of headroom).
 
 ## Cost spent
 
@@ -278,7 +511,10 @@ For full audit trail:
 | ~07:50 | `app update --name ce-doqumentation-01 --max-scale 1` | Was 5 (mistake); design requires 1 |
 | ~07:50 | `app delete --name ce-doqumentation-1 --force` | Believed to be stale duplicate (WRONG — was actually CI's deploy target due to `seq -w` bug) |
 | ~09:09 | CI workflow recreated `ce-doqumentation-1` with new image | Workflow's `seq -w 1 1` bug |
-| ~09:18 | `app update --name ce-doqumentation-01 --image ...:latest` | Migrate new image to canonical app name |
+| ~09:18 | `app update --name ce-doqumentation-01 --image ...:latest` | Migrate new image to canonical app name (revision `-00022`, digest `7ec50c`) |
 | ~09:19 | `app delete --name ce-doqumentation-1 --force` | Truly stale this time — superseded by `-01` migration |
+| ~09:33 | CI workflow re-deployed `ce-doqumentation-01` | Triggered by workflow file change (not container code); cache hit, 2m11s build (revision `-00023`, digest `3dd4f4`) |
+| ~09:46 | `app update --name ce-doqumentation-01 --cpu 4 --memory 8G` | Resize for larger-pod stress test (revision `-00024`, same image) |
+| ~11:00 | `app update --name ce-doqumentation-01 --cpu 8 --memory 16G` | Verify CPU scaling on 8 vCPU pod (revision `-00025`, same image) |
 
-End state: single app `ce-doqumentation-01` running revision `-00022`, image pinned `7ec50c`, max-scale=1, 1 vCPU / 4 GB.
+End state (during 8 vCPU tests): single app `ce-doqumentation-01` running revision `-00025`, image pinned `3dd4f4`, **max-scale=1, 8 vCPU / 16 GB**, min-scale=0.

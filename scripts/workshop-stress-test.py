@@ -268,17 +268,32 @@ def assign_instances(pool: list[str], num_users: int) -> dict[int, str]:
     return shuffled
 
 
+async def _staggered_user(uid, delay, *user_args):
+    """Sleep `delay` seconds before running simulate_user (uniform stagger)."""
+    if delay > 0:
+        await asyncio.sleep(delay)
+    return await simulate_user(uid, *user_args)
+
+
 async def run_single_instance(args):
     """Single-instance capacity test with ramp."""
     user_counts = [int(x) for x in args.users.split(",")]
     print(f"Single-instance test: {args.url}")
-    print(f"Ramp: {user_counts} users, {args.cells_per_user} cells each, {args.idle_between}s idle")
+    stagger_msg = f", stagger over {args.ramp_interval}s" if args.ramp_interval > 0 else " (no stagger)"
+    print(f"Ramp: {user_counts} users, {args.cells_per_user} cells each, {args.idle_between}s idle{stagger_msg}")
     print()
 
     for count in user_counts:
         print(f"--- {count} users ---")
+        # Generate uniformly-spread start delays. Each user waits its assigned
+        # delay before starting, simulating a staggered click distribution.
+        if args.ramp_interval > 0:
+            delays = [random.uniform(0, args.ramp_interval) for _ in range(count)]
+        else:
+            delays = [0.0] * count
         tasks = [
-            simulate_user(i, args.url, args.token, args.cells_per_user, args.idle_between, not args.simple)
+            _staggered_user(i, delays[i], args.url, args.token,
+                            args.cells_per_user, args.idle_between, not args.simple)
             for i in range(count)
         ]
         results = await asyncio.gather(*tasks)
@@ -377,6 +392,7 @@ def main():
     parser.add_argument("--users", default="5", help="User count(s), comma-separated for ramp (e.g. 5,10,15)")
     parser.add_argument("--cells-per-user", type=int, default=3, help="Cells to execute per user")
     parser.add_argument("--idle-between", type=float, default=5, help="Seconds idle between cells")
+    parser.add_argument("--ramp-interval", type=float, default=0, help="Stagger user starts uniformly over N seconds (0 = simultaneous burst, the worst case). Use this to model realistic 'students click within T seconds' workshop patterns.")
     parser.add_argument("--simple", action="store_true", help="Use simple print() instead of Qiskit workload")
     args = parser.parse_args()
 
