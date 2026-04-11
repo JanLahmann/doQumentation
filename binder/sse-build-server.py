@@ -137,7 +137,7 @@ def _read_cpu_count():
 
 
 async def _fetch_jupyter_with_retry(url: str, max_attempts: int = 3, backoff_s: float = 0.1):
-    """Fetch a Jupyter URL, retrying on the known TraitError race conditions.
+    """Fetch a Jupyter URL, retrying on transient 500 errors from race conditions.
 
     Two race conditions in Jupyter Server 2.16.0 fire under high concurrent load:
 
@@ -147,13 +147,21 @@ async def _fetch_jupyter_with_retry(url: str, max_attempts: int = 3, backoff_s: 
       2. /api/kernels/{id}/channels: AttributeError: 'NoneType' object has no
          attribute 'kernel_ws_protocol' (race in WebSocket attachment)
 
-    Both surface as HTTP 500 with the traceback in the response body. They are
-    transient — a retry ~100ms later usually succeeds because the underlying
-    object has finished initializing by then.
+    Both surface as HTTP 500. **The response body is just 'Unhandled error'** —
+    Jupyter logs the full traceback to stderr but returns a sanitized message to
+    the HTTP client. We initially tried matching on 'TraitError' in the body,
+    but that string never appears there. Verified by inspecting pod logs during
+    a failing stress test: every race shows '[W ServerApp] wrote error:
+    "Unhandled error"' in stderr alongside the traceback.
 
-    This helper detects the races by matching 'TraitError' or 'kernel_ws_protocol'
-    in the response body bytes. Other 500s are NOT retried (we don't want to
-    hide real Jupyter bugs by retrying everything).
+    So the detection is now: HTTP 500 on /api/status or /api/kernels endpoints.
+    These endpoints have very few legitimate failure modes — almost any 500 from
+    them in practice IS a race condition. Trade-off: if a real Jupyter bug also
+    returns 500 from these endpoints, we'll retry it 3 times before giving up
+    (200ms added latency, acceptable).
+
+    They are transient — a retry ~100ms later usually succeeds because the
+    underlying object has finished initializing by then.
 
     Returns: tornado HTTPResponse from the last attempt (success or final failure).
              Raises only on non-HTTP exceptions (network, timeout).
@@ -172,20 +180,29 @@ async def _fetch_jupyter_with_retry(url: str, max_attempts: int = 3, backoff_s: 
         # Success: return immediately
         if resp.code == 200:
             return resp
-        # 500 with race-condition signature: retry
-        if resp.code == 500 and resp.body and (
-            b'TraitError' in resp.body or b'kernel_ws_protocol' in resp.body
-        ):
-            if attempt < max_attempts - 1:
+        # 500 — almost always a race on these endpoints. Retry.
+        # (Body check is best-effort: matches the literal 'Unhandled error'
+        # Jupyter writes for these races, OR plain empty body, OR the rare
+        # case where the traceback IS in the body for older Jupyter versions.)
+        if resp.code == 500:
+            body_indicates_race = (
+                not resp.body  # empty body
+                or b'Unhandled error' in resp.body
+                or b'TraitError' in resp.body
+                or b'kernel_ws_protocol' in resp.body
+                or b'AttributeError' in resp.body
+            )
+            if body_indicates_race and attempt < max_attempts - 1:
                 _log_event(
                     "jupyter_race_retry",
                     url=url.split('?')[0],  # strip token
                     attempt=attempt + 1,
                     max_attempts=max_attempts,
+                    code=resp.code,
                 )
                 await asyncio.sleep(backoff_s)
                 continue
-        # Any other status (404, 401, non-race 500): return immediately
+        # Any other status (404, 401) or non-race 500: return immediately
         return resp
     return last_resp
 
