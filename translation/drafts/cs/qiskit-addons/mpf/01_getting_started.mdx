@@ -1,0 +1,356 @@
+---
+title: "Snížení Trotterovy chyby hamiltonské dynamiky pomocí multi-produktových formulí"
+sidebar_label: "Snížení Trotterovy chyby hamiltonské dynamiky pomocí multi-produktových formulí"
+notebook_path: "qiskit-addons/mpf/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: 83f3f681 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/mpf/01_getting_started.ipynb" />
+
+
+V tomto notebooku se naučíš, jak používat **Multi-Product Formula (MPF)** k dosažení nižší Trotterovy chyby na naší observabli ve srovnání s chybou způsobenou nejhlubším Trotterovým obvodem, který skutečně spustíme.
+Uděláš to tak, že projdeš kroky **Qiskit patternu**:
+
+- **Krok 1: Mapování na kvantový problém**
+    - Inicializace Hamiltoniánu našeho problému
+    - <font color="#0F62FE">Použití MPF ke generování Trotterizovaných obvodů pro časový vývoj</font>
+- **Krok 2: Optimalizace problému**
+    - Zde transpilujeme naše obvody pro [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2)
+- **Krok 3: Spuštění experimentů**
+    - Použití [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) pro jednoduchost v tomto notebooku
+- **Krok 4: Rekonstrukce výsledků**
+    - <font color="#0F62FE">Výpočet střední hodnoty MPF</font>
+## Krok 1: Mapování na kvantový problém {#krok-1-mapování-na-kvantový-problém}
+
+### 1a: Nastavení Hamiltoniánu {#1a-nastavení-hamiltoniánu}
+
+Používáme Isingův model na řadě 10 míst:
+
+$$
+\hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{9} J_{i,(i+1)} Z_i Z_{(i+1)} + \sum_{i=1}^{10} h_i X_i \, ,
+$$
+
+kde $J$ je síla vazby mezi dvěma místy a $h$ je vnější magnetické pole.
+Balíček [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) poskytuje znovupoužitelné funkcionality pro různé účely.
+
+Jeho modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) poskytuje funkce pro generování Heisenbergových Hamiltonánů na daném grafu konektivity.
+Tento graf může být buď [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html) nebo [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap), což usnadňuje jeho použití v pracovních postupech orientovaných na Qiskit.
+
+V následujícím příkladu vytvoříme jednoduchou řadu 10 qubitů pomocí metody `CouplingMap.from_line`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-mpf qiskit-addon-utils rustworkx scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_line(10, bidirectional=False)
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+![Code output](./output_1.png)
+
+Dále vygenerujeme [SparsePauliOp](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.quantum_info.SparsePauliOp) na zadané konektivitě s požadovanými konstantami.
+
+```python
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIZZI', 'IIIIIZZIII', 'IIIZZIIIII', 'IZZIIIIIII', 'IIIIIIIIZZ', 'IIIIIIZZII', 'IIIIZZIIII', 'IIZZIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIXI', 'IIIIIIIXII', 'IIIIIIXIII', 'IIIIIXIIII', 'IIIIXIIIII', 'IIIXIIIIII', 'IIXIIIIIII', 'IXIIIIIIII', 'XIIIIIIIII'],
+              coeffs=[1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j,
+ 1. +0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j,
+ 0.4+0.j, 0.4+0.j, 0.4+0.j])
+```
+
+Observabla, kterou budeme měřit, je celková magnetizace, kterou můžeme jednoduše sestavit, jak je ukázáno níže:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+L = coupling_map.size()
+observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
+print(observable)
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j,
+ 0.05+0.j, 0.05+0.j, 0.05+0.j])
+```
+
+### 1b: Multi-Product Formulas {#1b-multi-product-formulas}
+
+MPF snižují Trotterovu chybu hamiltonské dynamiky pomocí váženého součtu několika spuštění obvodů.
+
+Abychom to upřesnili, definujeme MPF jako:
+
+$$
+\mu(t) = \sum_{j} x_j \rho^{k_j}_{j}\left(\frac{t}{k_j}\right) + \text{some remaining Trotter error} \, ,
+$$
+
+kde $x_j$ jsou naše váhové koeficienty, $\rho^{k_j}_j$ je matice hustoty odpovídající čistému stavu získanému vývojem počátečního stavu pomocí produktové formule, $S^{k_j}$, zahrnující $k_j$ Trotterových kroků, a $j$ indexuje počet produktových formulí tvořících MPF.
+
+Klíčové je, že zbývající Trotterova chyba je menší než chyba, které bychom dosáhli pouhým použitím největší hodnoty $k_j$!
+
+Užitečnost MPF lze nahlížet ze dvou perspektiv:
+
+1. Při pevném rozpočtu Trotterových kroků, které jsi schopen spustit, lze dosáhnout výsledků s celkově menší Trotterovou chybou.
+2. Pro počet Trotterových kroků, který vede k hlubokým obvodům, lze pomocí MPF najít několik obvodů s menší hloubkou, jejichž výsledkem je podobná Trotterova chyba.
+#### Úvod do statických MPF {#úvod-do-statických-mpf}
+
+_Statické_ MPF jsou ty, kde hodnoty $x_j$ **nezávisí** na době vývoje, $t$.
+
+Určení koeficientů statické MPF pro danou sadu hodnot $k_j$ spočívá v řešení soustavy lineárních rovnic:
+$Ax=b$, kde $x$ jsou naše hledané koeficienty, $A$ je matice závisející na $k_j$ a typu PF, který používáme ($S$), a $b$ je vektor omezení.
+Pro stručnost zde nebudeme zacházet do dalších podrobností a místo toho tě odkážeme na dokumentaci [LSE](https://qiskit.github.io/qiskit-addon-mpf/apidocs/qiskit_addon_mpf.costs.html#qiskit_addon_mpf.costs.LSE).
+
+Řešení pro $x$ lze nalézt analyticky jako $x = A^{-1}b$, viz např. [Carrera Vazquez et al., 2023] nebo [Zhuk et al., 2023].
+Toto přesné řešení však může být _„špatně podmíněno"_, což vede k velmi vysokým L1-normám našich koeficientů $x$, a může způsobit špatné chování MPF.
+Místo toho lze také získat přibližné řešení, které minimalizuje L1-normu $x$ ve snaze optimalizovat chování MPF.
+
+V následujícím textu se naučíš, jak to vše provést.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+#### Volba $k_j$ {#volba-k_j}
+
+Volba $k_j$ je na koncovém uživateli.
+V zásadě lze zvolit libovolné hodnoty, ale některé hodnoty $k_j$ povedou k většímu zesilování šumu na reálných zařízeních než jiné volby.
+Proto je důležité pokusit se najít _„dobré"_ hodnoty $k_j$.
+
+Zde jednoduše zvolíme některé pevné hodnoty $k_j$.
+Nejmenší hodnota vychází z cílové doby vývoje $t=8.0$, která nás normálně vede k podmínce $t/k_{\text{min}} \lt 1$, ale empiricky víme, že nastavení na hodnotu rovnou $1$ obvykle funguje také.
+Pokud se chceš dozvědět více o tom, jak zvolit ostatní hodnoty $k_j$, viz příslušný průvodce: [How to choose the Trotter steps for an MPF](https://qiskit.github.io/qiskit-addon-mpf/how_tos/choose_trotter_steps.html).
+
+```python
+time = 8.0
+trotter_steps = (8, 12, 19)
+```
+
+#### Nastavení LSE {#nastavení-lse}
+
+Nyní, když jsme zvolili naše $k_j$, musíme nejprve sestavit LSE, $Ax=b$, jak bylo vysvětleno výše.
+Matice $A$ závisí nejen na $k_j$, ale také na naší volbě produktové formule (PF) -- konkrétně na jejím _řádu_.
+Navíc lze zohlednit, zda je PF symetrická nebo ne (viz [Carrera Vazquez et al., 2023]), nastavením `symmetric=True`.
+To však není vyžadováno, jak ukázali [Zhuk et al., 2023].
+
+Zde použijeme Suzuki-Trotterovu formuli druhého řádu, čímž dostaneme `order=2`, a nastavíme `symmetric=True`.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+
+```python
+from qiskit_addon_mpf.static import setup_static_lse
+
+lse = setup_static_lse(trotter_steps, order=2, symmetric=True)
+print(lse)
+```
+
+```text
+LSE(A=array([[1.00000000e+00, 1.00000000e+00, 1.00000000e+00],
+       [1.56250000e-02, 6.94444444e-03, 2.77008310e-03],
+       [2.44140625e-04, 4.82253086e-05, 7.67336039e-06]]), b=array([1., 0., 0.]))
+```
+
+#### Analytické řešení pro $x$ {#analytické-řešení-pro-x}
+
+Jak bylo zmíněno, $x$ lze nalézt analyticky:
+
+```python
+import numpy as np
+
+coeffs_analytical = lse.solve()
+print(coeffs_analytical)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+#### Optimalizace $x$ pomocí přesného modelu {#optimalizace-x-pomocí-přesného-modelu}
+
+Jako alternativu k výpočtu $x=A^{-1}b$ lze také použít [setup_exact_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_exact_problem.html) pro sestavení instance [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem), která používá LSE jako omezení a jejíž optimální řešení poskytne $x$.
+
+V další části bude jasné, proč toto rozhraní existuje.
+
+```python
+from qiskit_addon_mpf.costs import setup_exact_problem
+
+model_exact, coeffs_exact = setup_exact_problem(lse)
+model_exact.solve()
+print(coeffs_exact.value)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+Jako ukazatel toho, zda MPF sestavená s těmito koeficienty přinese dobré výsledky, lze použít L1-normu (viz také [Carrera Vazquez et al., 2023]).
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+
+```python
+print(np.linalg.norm(coeffs_exact.value, ord=1))
+```
+
+```text
+3.3889400921655914
+```
+
+#### Optimalizace $x$ pomocí přibližného modelu {#optimalizace-x-pomocí-přibližného-modelu}
+
+Může se stát, že L1-norma pro zvolenou sadu hodnot $k_j$ je považována za příliš vysokou.
+Pokud tomu tak je a nelze zvolit jinou sadu hodnot $k_j$, lze použít přibližné řešení LSE namísto přesného.
+
+K tomu jednoduše použij [setup_sum_of_squares_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_sum_of_squares_problem.html) pro sestavení jiné instance [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem), která omezuje L1-normu na zvolený práh při minimalizaci rozdílu $Ax$ a $b$.
+
+```python
+from qiskit_addon_mpf.costs import setup_sum_of_squares_problem
+
+model_approx, coeffs_approx = setup_sum_of_squares_problem(lse, max_l1_norm=3.0)
+model_approx.solve()
+print(coeffs_approx.value)
+print(np.linalg.norm(coeffs_approx.value, ord=1))
+```
+
+```text
+[-0.40454257  0.57553173  0.8290123 ]
+1.8090865903790838
+```
+
+Poznamenejme, že máš úplnou svobodu v tom, jak tento optimalizační problém řešit, tj. můžeš změnit solver optimalizace, jeho konvergenční prahy a tak dále.
+Podívej se na příslušného průvodce [How to use the approximate model](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html).
+### 1c: Nastavení Trotterových obvodů {#1c-nastavení-trotterových-obvodů}
+
+V tuto chvíli jsme nalezli naše rozvojové koeficienty $x$ a zbývá pouze vygenerovat Trotterizované kvantové obvody.
+Opět nám k tomu pomůže modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html):
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuits = []
+for k in trotter_steps:
+    circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(order=2, reps=k),
+        time=time,
+    )
+    circuits.append(circ)
+```
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+```python
+circuits[1].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+```python
+circuits[2].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_4.png)
+
+## Krok 2: Optimalizace problému {#krok-2-optimalizace-problému}
+
+Normálně je to krok v patternu, během kterého optimalizuješ své obvody pro spuštění na hardwaru.
+Zde, protože používáme pouze bezšumový simulátor, jednoduše transpilujeme náš Circuit pro [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2).
+
+```python
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+backend = GenericBackendV2(num_qubits=10)
+transpiler = generate_preset_pass_manager(optimization_level=2, backend=backend)
+
+transpiled_circuits = [transpiler.run(circ) for circ in circuits]
+```
+
+## Krok 3: Spuštění kvantových experimentů {#krok-3-spuštění-kvantových-experimentů}
+
+Jak bylo vysvětleno na samém začátku, krok optimalizace 2 přeskočíme, protože jednoduše vypočítáme střední hodnoty naší cílové observably pomocí bezšumového simulátoru, konkrétně [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator).
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+job = estimator.run([(circ, observable) for circ in transpiled_circuits])
+result = job.result()
+```
+
+## Krok 4: Rekonstrukce výsledků {#krok-4-rekonstrukce-výsledků}
+
+Nejprve extrahujeme jednotlivé střední hodnoty získané pro každý z Trotterových obvodů:
+
+```python
+evs = [res.data.evs for res in result]
+print(evs)
+```
+
+```text
+[array(0.23799162), array(0.35754312), array(0.38649906)]
+```
+
+Dále je jednoduše zkombinujeme s koeficienty MPF, abychom získali celkové střední hodnoty MPF. Níže to provedeme pro každý z různých způsobů, jakými jsme vypočítali $x$.
+
+```python
+print("Analytical    solution:", evs @ coeffs_analytical)
+print("Exact model   solution:", evs @ coeffs_exact.value)
+print("Approx. model solution:", evs @ coeffs_approx.value)
+```
+
+```text
+Analytical    solution: 0.3954847855980006
+Exact model   solution: 0.39548478559800204
+Approx. model solution: 0.42991214253489807
+```
+
+Nakonec pro tento malý problém můžeme vypočítat přesnou referenční hodnotu pomocí [scipy.linalg.expm](https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.expm.html) takto:
+
+```python
+from scipy.linalg import expm
+
+exp_H = expm(-1j * time * hamiltonian.to_matrix())
+
+initial_state = np.zeros(exp_H.shape[0])
+initial_state[0] = 1.0
+
+time_evolved_state = exp_H @ initial_state
+
+exact_obs = time_evolved_state.conj() @ observable.to_matrix() @ time_evolved_state
+print(exact_obs.real)
+```
+
+```text
+0.40060242487899755
+```
+
+Jasně vidíme, že MPF snížila Trotterovu chybu ve srovnání s tou, které bylo dosaženo s nejhlubší individuální PF s $k_j=19$.
+Zároveň vidíme, že přibližný model není dokonalý, protože ve skutečnosti vedl ke střední hodnotě, která je horší než přesné řešení. To ukazuje důležitost používání přísných konvergenčních kritérií pro přibližný model, jak se dozvíš v průvodci [How to use the approximate model](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html).
+
+<TutorialFeedback />
