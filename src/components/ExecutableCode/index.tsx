@@ -112,6 +112,7 @@ function resetModuleState(): void {
   executingCell = null;
   lastKernelBusy = false;
   runAllActive = false;
+  kernelRaceRetriesUsed = 0;
   runAllAbort = true;
   runAllPaused = false;
   if (runAllResume) { runAllResume(); runAllResume = null; }
@@ -985,6 +986,16 @@ function broadcastStatus(status: ThebeStatus): void {
  */
 const BOOTSTRAP_MAX_RETRIES = 60; // 60 × 500ms = 30s total timeout
 
+// Jupyter Server 2.16.0 has a race condition under high concurrent load:
+// AttributeError: 'NoneType'.kernel_ws_protocol fires when the WebSocket
+// handshake reaches Jupyter before the kernel's protocol object is attached.
+// The race usually clears within ~500ms-1s. We retry the kernel connect
+// once after a 1-second wait. Tracked per-page-load (not module global)
+// so a fresh navigation gets a fresh retry budget.
+const KERNEL_RACE_MAX_RETRIES = 1;
+const KERNEL_RACE_BACKOFF_MS = 1000;
+let kernelRaceRetriesUsed = 0;
+
 function doBootstrap(thebelabOptions: Record<string, unknown>): void {
   let retryCount = 0;
   const tryBootstrap = () => {
@@ -1069,7 +1080,24 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
             });
           },
           (err) => {
-            console.error('[ExecutableCode] kernel error:', err);
+            // Jupyter race condition mitigation: kernel WS handshake can fail
+            // transiently with `NoneType.kernel_ws_protocol` (race in Jupyter
+            // Server 2.16.0 between kernel creation and WebSocket attachment).
+            // The race clears in ~1 second. Retry once before giving up.
+            if (kernelRaceRetriesUsed < KERNEL_RACE_MAX_RETRIES) {
+              kernelRaceRetriesUsed++;
+              console.warn(
+                `[ExecutableCode] kernel error (attempt ${kernelRaceRetriesUsed}/${KERNEL_RACE_MAX_RETRIES + 1}), ` +
+                `retrying in ${KERNEL_RACE_BACKOFF_MS}ms:`,
+                err
+              );
+              setTimeout(() => {
+                if (DEBUG) console.log('[ExecutableCode] retrying bootstrap after kernel race');
+                doBootstrap(thebelabOptions);
+              }, KERNEL_RACE_BACKOFF_MS);
+              return;
+            }
+            console.error('[ExecutableCode] kernel error (retries exhausted):', err);
             broadcastStatus('error');
           }
         );

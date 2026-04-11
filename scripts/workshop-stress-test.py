@@ -144,8 +144,35 @@ class KernelSession:
         self.ws = None
 
     async def __aenter__(self):
-        self.ws = await websockets.connect(self.ws_url, close_timeout=5)
-        return self
+        # Retry the WebSocket handshake on transient failures.
+        #
+        # Jupyter Server 2.16.0 has a race condition under high concurrent load:
+        # AttributeError: 'NoneType' object has no attribute 'kernel_ws_protocol'
+        # — fires when /api/kernels/{id}/channels is opened immediately after
+        # the kernel was created and the WebSocket protocol object hasn't been
+        # attached yet. The race usually clears within ~500ms-1s.
+        #
+        # We retry once with a 1-second backoff. The race is bounded so a single
+        # retry is enough in most cases. If both attempts fail, surface the
+        # error as before so we don't mask real bugs.
+        max_attempts = 2
+        backoff_s = 1.0
+        last_exc = None
+        for attempt in range(max_attempts):
+            try:
+                self.ws = await websockets.connect(
+                    self.ws_url,
+                    close_timeout=5,
+                    open_timeout=10,
+                )
+                return self
+            except Exception as e:
+                last_exc = e
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(backoff_s)
+                    continue
+        # All attempts exhausted — re-raise the last exception
+        raise last_exc
 
     async def __aexit__(self, exc_type, exc, tb):
         if self.ws is not None:
