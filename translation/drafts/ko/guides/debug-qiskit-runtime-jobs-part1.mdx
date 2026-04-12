@@ -1,0 +1,177 @@
+---
+title: "Qiskit Runtime 작업 디버그"
+sidebar_label: "Qiskit Runtime 작업 디버그"
+description: "Qiskit Runtime 디버깅 도구 모듈과 `Neat` 클래스를 사용하여 작업을 디버그하고 분석합니다."
+notebook_path: "guides/debug-qiskit-runtime-jobs.ipynb"
+---
+
+{/* doqumentation-source-hash: e27fb401 */}
+
+<OpenInLabBanner notebookPath="guides/debug-qiskit-runtime-jobs.ipynb" />
+
+
+
+{/* cspell:ignore ZIIIII, IZIIII,IIZIII, IIIZII, IIIIZI, IIIIIZ, rdiff */}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>패키지 버전</b></summary>
+
+이 페이지의 코드는 다음 요구 사항을 사용하여 개발되었습니다.
+이 버전 이상을 사용하시기를 권장합니다.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+```
+</details>
+리소스를 많이 사용하는 Qiskit Runtime 워크로드를 하드웨어에서 실행하기 위해 제출하기 전에, Qiskit Runtime [`Neat` (Noisy Estimator Analyzer Tool)](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#neat) 클래스를 사용하여 Estimator 워크로드가 올바르게 설정되어 있는지, 정확한 결과를 반환할 가능성이 높은지, 지정된 문제에 가장 적합한 옵션을 사용하는지 등을 확인할 수 있습니다.
+
+`Neat`는 효율적인 시뮬레이션을 위해 입력 Circuit을 클리퍼드화(Cliffordize)하면서 Circuit의 구조와 깊이를 그대로 유지합니다. 클리퍼드 Circuit은 유사한 수준의 노이즈를 겪으며, 관심 있는 원래 Circuit을 연구하기 위한 좋은 대용품이 됩니다.
+
+다음 예제들은 `Neat`가 유용한 자원이 될 수 있는 상황을 보여 줍니다.
+먼저, 관련 패키지를 가져오고 [Qiskit Runtime 서비스에 인증합니다.](/guides/cloud-setup)
+## 환경 준비 {#prepare-the-environment}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+import random
+
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit.quantum_info import SparsePauliOp
+
+from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2 as Estimator
+from qiskit_ibm_runtime.debug_tools import Neat
+
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+```
+
+```python
+# Choose the least busy backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Generate a preset pass manager
+# This will be used to convert the abstract circuit to an equivalent Instruction Set Architecture (ISA) circuit.
+pm = generate_preset_pass_manager(backend=backend, optimization_level=0)
+
+# Set the random seed
+random.seed(10)
+```
+
+## 대상 Circuit 초기화 {#initialize-a-target-circuit}
+
+다음 특성을 가진 6-Qubit Circuit을 고려합니다.
+
+* 무작위 `RZ` 회전과 `CNOT` Gate 레이어를 번갈아 적용합니다.
+* 미러 구조를 가지고 있습니다. 즉, 유니터리 `U`를 적용한 후 그 역을 적용합니다.
+
+```python
+def generate_circuit(n_qubits, n_layers):
+    r"""
+    A function to generate a pseudo-random a circuit with ``n_qubits`` qubits and
+    ``2*n_layers`` entangling layers of the type used in this notebook.
+    """
+    # An array of random angles
+    angles = [
+        [random.random() for q in range(n_qubits)] for s in range(n_layers)
+    ]
+
+    qc = QuantumCircuit(n_qubits)
+    qubits = list(range(n_qubits))
+
+    # do random circuit
+    for layer in range(n_layers):
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(angles[layer][q_idx], qubit)
+
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+    # undo random circuit
+    for layer in range(n_layers)[::-1]:
+        # cx gates
+        control_qubits = (
+            qubits[::2] if layer % 2 == 0 else qubits[1 : n_qubits - 1 : 2]
+        )
+        for qubit in control_qubits:
+            qc.cx(qubit, qubit + 1)
+
+        # rotations
+        for q_idx, qubit in enumerate(qubits):
+            qc.rz(-angles[layer][q_idx], qubit)
+
+    return qc
+
+# Generate a random circuit
+qc = generate_circuit(6, 3)
+# Convert the abstract circuit to an equivalent ISA circuit.
+isa_qc = pm.run(qc)
+
+qc.draw("mpl", idle_wires=0)
+```
+
+![Output of the previous code cell](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/df19af55-897d-4b1f-baf8-fac2641ae87d-0.svg)
+
+단일 파울리 `Z` 연산자를 관측값으로 선택하고, 이를 사용하여 primitive unified bloc(PUB)을 초기화합니다.
+
+```python
+# Initialize the observables
+obs = ["ZIIIII", "IZIIII", "IIZIII", "IIIZII", "IIIIZI", "IIIIIZ"]
+print(f"Observables: {obs}")
+
+# Map the observables to the backend's layout
+isa_obs = [SparsePauliOp(o).apply_layout(isa_qc.layout) for o in obs]
+
+# Initialize the PUBs, which consist of six-qubit circuits with `n_layers` 1, ..., 6
+all_n_layers = [1, 2, 3, 4, 5, 6]
+
+pubs = [(pm.run(generate_circuit(6, n)), isa_obs) for n in all_n_layers]
+```
+
+```text
+Observables: ['ZIIIII', 'IZIIII', 'IIZIII', 'IIIZII', 'IIIIZI', 'IIIIIZ']
+```
+
+## Circuit 클리퍼드화 {#cliffordize-the-circuits}
+
+앞서 정의한 PUB Circuit은 클리퍼드가 아니기 때문에 고전적으로 시뮬레이션하기 어렵습니다. 그러나 `Neat`의 [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) 메서드를 사용하여 더 효율적인 시뮬레이션을 위해 클리퍼드 Circuit으로 매핑할 수 있습니다. [`to_clifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/debug-tools-neat#to_clifford) 메서드는 [`ConvertISAToClifford`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/transpiler-passes-convert-isa-to-clifford) Transpiler 패스의 래퍼로, 독립적으로도 사용할 수 있습니다. 특히, 원래 Circuit의 비-클리퍼드 단일-Qubit Gate를 클리퍼드 단일-Qubit Gate로 대체하지만, 2-Qubit Gate, Qubit 수, Circuit 깊이는 변경하지 않습니다.
+
+클리퍼드 Circuit 시뮬레이션에 대한 자세한 내용은 [Qiskit Aer 프리미티브를 사용한 안정자 Circuit의 효율적인 시뮬레이션](/guides/simulate-stabilizer-circuits)을 참조하세요.
+먼저, `Neat`를 초기화합니다.
+
+```python
+# You could specify a custom `NoiseModel` here. If `None`, `Neat`
+# pulls the noise model from the given backend
+noise_model = None
+
+# Initialize `Neat`
+analyzer = Neat(backend, noise_model)
+```
+
+다음으로, PUB를 클리퍼드화합니다.
+
+```python
+clifford_pubs = analyzer.to_clifford(pubs)
+
+clifford_pubs[0].circuit.draw("mpl", idle_wires=0)
+```
+
+![Output of the previous code cell](/docs/images/guides/debug-qiskit-runtime-jobs/extracted-outputs/3ad78f41-a2f8-4381-826a-ae728e081ad6-0.svg)
