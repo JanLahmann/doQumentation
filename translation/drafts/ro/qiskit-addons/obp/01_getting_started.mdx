@@ -1,0 +1,299 @@
+---
+title: "Reducerea adâncimii circuitelor cu backpropagation pe operatori"
+description: "Reducerea adâncimii circuitelor cu backpropagation pe operatori"
+sidebar_label: "Reducerea adâncimii circuitelor cu backpropagation pe operatori"
+notebook_path: "qiskit-addons/obp/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: bc2344f1 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/obp/01_getting_started.ipynb" />
+
+
+Backpropagation pe operatori este o tehnică care presupune absorbirea operațiilor de la sfârșitul unui Circuit cuantic într-un operator Pauli, reducând în general adâncimea circuitului cu prețul unor termeni suplimentari în operator. Scopul este de a backpropaga cât mai mult din circuit fără a permite operatorului să crească prea mult.
+
+O modalitate de a permite o backpropagare mai adâncă în circuit, prevenind în același timp creșterea excesivă a operatorului, este trunchierea termenilor cu coeficienți mici, în loc să fie adăugați la operator. Trunchierea termenilor poate duce la mai puține Circuit-uri cuantice de executat, însă aceasta introduce o eroare în calculul final al valorii de așteptare, proporțională cu magnitudinea coeficienților termenilor trunchiați.
+În acest tutorial vom implementa un [pattern Qiskit](https://quantum.cloud.ibm.com/docs/guides/serverless#qiskit-patterns-with-quantum-serverless) pentru simularea dinamicii cuantice a unui lanț de spin Heisenberg folosind backpropagation pe operatori:
+
+- **Pasul 1: Maparea la problema cuantică**
+    - Mapează Hamiltonianul evoluat în timp pe un Circuit cuantic
+- **Pasul 2: Optimizarea problemei**
+    - Împarte circuitul în felii (slices)
+    - <font color="#0F62FE">Backpropagă feliile din circuit pe un observabil Pauli</font>
+    - Combină feliile rămase într-un singur Circuit
+    - Transpilează circuitul pentru Backend
+- **Pasul 3: Execuția experimentelor**
+    - Calculează valoarea de așteptare folosind circuitul redus și observabilul extins cu un [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator), pentru simplitate în acest notebook
+- **Pasul 4: Reconstrucția rezultatelor**
+    - N.A.
+
+**Notă:** Qiskit descrie în sens larg [straturile](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.dagcircuit.DAGCircuit) ca partiții de adâncime 1 ale circuitului pe toți Qubiții. Acest pachet folosește termenul **felii** (slices) pentru a descrie straturi de adâncime arbitrară. Funcția [qiskit_addon_obp.backpropagate](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.backpropagate.html) este proiectată să backpropage felii întregi odată, astfel că alegerea modului de feliere a circuitului cuantic poate avea un impact major asupra performanței backpropagării pentru o problemă dată. Vei afla mai multe despre **felii** mai jos.
+## Pasul 1: Maparea la problema cuantică {#pasul-1-maparea-la-problema-cuantica}
+### Mapează evoluția în timp a unui model cuantic Heisenberg la un experiment cuantic. {#mapeaza-evolutia-in-timp-a-unui-model-cuantic-heisenberg-la-un-experiment-cuantic}
+
+Pachetul [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) oferă funcționalități reutilizabile pentru diverse scopuri.
+
+Modulul său [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) oferă funcții pentru generarea de Hamiltonieni de tip Heisenberg pe un graf de conectivitate dat.
+Acest graf poate fi fie un [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html), fie un [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap), ceea ce îl face ușor de utilizat în fluxuri de lucru centrate pe Qiskit.
+
+În continuare, generăm mai întâi un `CouplingMap` de tip heavy-hex din care extragem un lanț liniar de 10 Qubiți. Notă: indicii acestui nou `reduced_coupling_map` sunt din nou bazați pe zero.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime rustworkx
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit linear chain on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 5, 12, 8, 18])
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(reduced_coupling_map.graph, method="circo")
+```
+
+![Code output](./output_1.png)
+
+Apoi, generăm un operator Pauli care modelează un Hamiltonian Heisenberg XYZ.
+
+$$\hat{H} = \sum_{(j,k)\in E} (J_{x} \sigma_j^{x} \sigma_{k}^{x} +
+    J_{y} \sigma_j^{y} \sigma_{k}^{y} + J_{z} \sigma_j^{z} \sigma_{k}^{z}) +
+    \sum_{j\in V} (h_{x} \sigma_j^{x} + h_{y} \sigma_j^{y} + h_{z} \sigma_j^{z})$$
+
+Unde $G(V,E)$ este graful hărții de cuplare furnizate.
+
+```python
+import numpy as np
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIIY', 'IIIIIIIIIZ', 'IIIIIIIIXI', 'IIIIIIIIYI', 'IIIIIIIIZI', 'IIIIIIIXII', 'IIIIIIIYII', 'IIIIIIIZII', 'IIIIIIXIII', 'IIIIIIYIII', 'IIIIIIZIII', 'IIIIIXIIII', 'IIIIIYIIII', 'IIIIIZIIII', 'IIIIXIIIII', 'IIIIYIIIII', 'IIIIZIIIII', 'IIIXIIIIII', 'IIIYIIIIII', 'IIIZIIIIII', 'IIXIIIIIII', 'IIYIIIIIII', 'IIZIIIIIII', 'IXIIIIIIII', 'IYIIIIIIII', 'IZIIIIIIII', 'XIIIIIIIII', 'YIIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+Din operatorul de Qubiți, putem genera un Circuit cuantic care modelează evoluția sa în timp.
+Din nou, modulul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) vine în ajutor cu o funcție utilă exact pentru asta:
+
+```python
+from qiskit.synthesis import LieTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=2),
+)
+circuit.draw("mpl", style="iqp", scale=0.6)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+## Pasul 2: Optimizarea problemei {#pasul-2-optimizarea-problemei}
+### Crearea feliilor de Circuit pentru backpropagare {#crearea-feliilor-de-circuit-pentru-backpropagare}
+
+Reține că funcția ``backpropagate`` va backpropaga felii întregi de circuit odată, astfel că alegerea modului de feliere poate influența performanța backpropagării pentru o problemă dată. Aici, vom grupa Gate-urile de același tip în felii folosind funcția [slice_by_gate_types](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.slicing.slice_by_gate_types.html).
+
+Pentru o discuție mai detaliată despre felierile circuitelor, consultă acest [ghid practic](https://qiskit.github.io/qiskit-addon-utils/how_tos/create_circuit_slices.html) al pachetului [qiskit-addon-utils](https://qiskit.github.io/qiskit-addon-utils/index.html).
+
+```python
+from qiskit_addon_utils.slicing import slice_by_gate_types
+
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+### Limitarea creșterii operatorului în timpul backpropagării {#limitarea-cresterii-operatorului-in-timpul-backpropagarii}
+
+În timpul backpropagării, numărul de termeni din operator va tinde în general să se apropie rapid de $4^N$, unde $N$ este numărul de Qubiți. Dimensiunea operatorului poate fi limitată prin specificarea argumentului ``operator_budget`` al funcției ``backpropagate``, care acceptă o instanță [OperatorBudget](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.simplify.OperatorBudget.html).
+
+Aici specificăm că backpropagarea ar trebui să se oprească când numărul de grupuri Pauli cu comutativitate qubit-wise din operator depășește 8.
+
+```python
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+
+op_budget = OperatorBudget(max_qwc_groups=8)
+```
+
+### Backpropagarea feliilor din circuit {#backpropagarea-feliilor-din-circuit}
+
+Mai întâi, vom specifica observabilul Pauli-Z pe Qubitul 0, și vom backpropaga felii din circuitul de evoluție în timp până când termenii din observabil nu mai pot fi combinați în 8 sau mai puține grupuri Pauli cu comutativitate qubit-wise.
+
+Mai jos vei vedea că am backpropagat 7 felii, dar am folosit doar 6 din cele 8 grupuri Pauli alocate. Aceasta implică faptul că backpropagarea încă unei felii ar face ca numărul de grupuri Pauli să depășească 8. Putem verifica că acesta este cazul inspectând metadatele returnate.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_utils.slicing import combine_slices
+
+# Specify a single-qubit observable
+observable = SparsePauliOp("IIIIIIIIIZ")
+
+# Backpropagate slices onto the observable
+bp_obs, remaining_slices, metadata = backpropagate(observable, slices, operator_budget=op_budget)
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 18 terms, which can be combined into 8 groups.
+Note that backpropagating one more slice would result in 27 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+Apoi, vom specifica aceeași problemă cu aceleași constrângeri asupra dimensiunii observabilului de ieșire. De data aceasta, însă, vom aloca un buget de eroare fiecărei felii folosind funcția [setup_budet](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.truncating.setup_budget.html). Termenii Pauli cu coeficienți mici vor fi trunchiați din fiecare felie până când bugetul de eroare este epuizat, iar bugetul rămas va fi adăugat la bugetul feliei următoare.
+
+Pentru a activa această trunchiere, trebuie să configurăm bugetul de eroare astfel:
+
+```python
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+Notă: alocând o eroare de `5e-3` per felie pentru trunchiere, putem elimina 3 felii suplimentare din circuit, rămânând în același timp în cadrul bugetului inițial de 8 grupuri Pauli comutative în observabil. În mod implicit, `backpropagate` folosește norma L1 a coeficienților trunchiați pentru a limita eroarea totală acumulată din trunchiere. Pentru alte opțiuni, consultă [ghidul practic privind specificarea p_norm](https://qiskit.github.io/qiskit-addon-obp/how_tos/bound_error_using_p_norm.html).
+
+În acest exemplu particular în care am backpropagat 10 felii, eroarea totală de trunchiere nu ar trebui să depășească ``(5e-3 eroare/felie) * (10 felii) = 5e-2``.
+Pentru o discuție suplimentară despre distribuirea unui buget de eroare pe feliile tale, consultă [acest ghid practic](https://qiskit.github.io/qiskit-addon-obp/how_tos/truncate_operator_terms.html).
+
+```python
+# Run the same experiment but truncate observable terms with small coefficients
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget, truncation_error_budget=truncation_error_budget
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(remaining_slices_trunc, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 19 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 4.933e-02
+Note that backpropagating one more slice would result in 27 terms across 13 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./output_4.png)
+
+### Acum că avem ansatze-urile noastre reduse și observabilele extinse, putem transpila experimentele pe Backend. {#acum-ca-avem-ansatze-urile-noastre-reduse-si-observabilele-extinse-putem-transpila-experimentele-pe-backend}
+
+Aici vom folosi [FakeMelbourneV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/fake-provider-fake-melbourne-v2) cu 14 Qubiți din [qiskit-ibm-runtime](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime) pentru a demonstra cum să transpilăm pentru un Backend QPU.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+# Specify a backend and a pass manager for transpilation
+backend = FakeMelbourneV2()
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+## Pasul 3: Executarea experimentelor cuantice {#pasul-3-executarea-experimentelor-cuantice}
+### Calcularea valorii de așteptare {#calcularea-valorii-de-asteptare}
+
+În final, putem rula experimentele backpropagateate și le putem compara cu experimentul complet folosind [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) fără zgomot. Putem observa că valoarea de așteptare backpropagată fără trunchiere este echivalentă cu valoarea exactă în limitele preciziei numerice.
+
+Valoarea de așteptare pe operatorul cu termeni trunchiați are o eroare de ordinul ``1e-4``, care se încadrează în toleranța așteptată.
+
+**Notă:** Folosim un Estimator primitiv bazat pe statevector pentru a ilustra efectul trunchierii asupra rezultatului. Pentru a rula pe Backend-ul pe care experimentele au fost transpilate în Pasul 2, ar trebui să imporți [EstimatorV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/estimator-v2) din ``qiskit-ibm-runtime`` și să pasezi instanța de Backend în constructor.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+estimator = Estimator()
+
+# Run the experiments using Estimator primitive
+result_exact = estimator.run([(circuit_isa, observable_isa)]).result()[0].data.evs.item()
+result_bp = estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+result_bp_trunc = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)]).result()[0].data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+print(f"    - Expected Error for truncated observable: {metadata.accumulated_error(0):.3e}")
+print(f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc):.3e}")
+```
+
+```text
+Exact expectation value: 0.8854160687717507
+Backpropagated expectation value: 0.8854160687717532
+Backpropagated expectation value with truncation: 0.8850236647156059
+    - Expected Error for truncated observable: 4.933e-02
+    - Observed Error for truncated observable: 3.924e-04
+```
+
+<TutorialFeedback />

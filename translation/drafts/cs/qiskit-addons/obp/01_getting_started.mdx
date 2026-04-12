@@ -1,0 +1,298 @@
+---
+title: "Snižování hloubky Circuit pomocí zpětné propagace operátorů"
+sidebar_label: "Snižování hloubky Circuit pomocí zpětné propagace operátorů"
+notebook_path: "qiskit-addons/obp/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: bc2344f1 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/obp/01_getting_started.ipynb" />
+
+
+Zpětná propagace operátorů je technika, při které se operace z konce kvantového Circuit absorbují do Pauliho operátoru. Obecně to vede ke snížení hloubky Circuit za cenu většího počtu členů v operátoru. Cílem je zpětně propagovat co největší část Circuit, aniž by operátor příliš narostl.
+
+Jedním ze způsobů, jak umožnit hlubší zpětnou propagaci do Circuit a zároveň zabránit nadměrnému růstu operátoru, je zkrácení (truncation) členů s malými koeficienty namísto jejich přidávání do operátoru. Zkrácení členů může vést k menšímu počtu kvantových Circuit ke spuštění, avšak způsobuje určitou chybu ve výsledném výpočtu střední hodnoty úměrnou velikosti koeficientů zkrácených členů.
+V tomto tutoriálu implementujeme [Qiskit vzor](https://quantum.cloud.ibm.com/docs/guides/serverless#qiskit-patterns-with-quantum-serverless) pro simulaci kvantové dynamiky Heisenbergova spinového řetězce pomocí zpětné propagace operátorů:
+
+- **Krok 1: Mapování na kvantový problém**
+    - Namapování časově vyvíjeného Hamiltoniánu na kvantový Circuit
+- **Krok 2: Optimalizace problému**
+    - Rozdělení Circuit na řezy (slices)
+    - <font color="#0F62FE">Zpětná propagace řezů z Circuit na Pauliho pozorovatelnou</font>
+    - Sloučení zbývajících řezů do jediného Circuit
+    - Transpilace Circuit pro Backend
+- **Krok 3: Provádění experimentů**
+    - Výpočet střední hodnoty pomocí redukovaného Circuit a rozšířené pozorovatelné se [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) pro jednoduchost v tomto notebooku
+- **Krok 4: Rekonstrukce výsledků**
+    - Netýká se.
+
+**Poznámka:** Qiskit volně popisuje [vrstvy](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.dagcircuit.DAGCircuit) jako oddíly Circuit o hloubce 1 napříč všemi Qubit. Tento balíček používá termín **řezy** (slices) pro vrstvy libovolné hloubky. Funkce [qiskit_addon_obp.backpropagate](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.backpropagate.html) je navržena tak, aby zpětně propagovala celé řezy najednou, takže volba způsobu dělení kvantového Circuit může mít zásadní vliv na to, jak dobře zpětná propagace funguje pro daný problém. O **řezech** se dozvíš více níže.
+## Krok 1: Mapování na kvantový problém {#step-1-map-to-quantum-problem}
+### Mapování časového vývoje kvantového Heisenbergova modelu na kvantový experiment. {#map-the-time-evolution-of-a-quantum-heisenberg-model-to-a-quantum-experiment}
+
+Balíček [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) poskytuje znovupoužitelné funkcionality pro různé účely.
+
+Jeho modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) obsahuje funkce pro generování Heisenbergových Hamiltonánů na zadaném grafu propojení.
+Tento graf může být buď [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html), nebo [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap), což usnadňuje použití v pracovních postupech orientovaných na Qiskit.
+
+V následujícím příkladu nejprve vygenerujeme `CouplingMap` ve tvaru heavy-hex, z nějž vyřízneme lineární řetězec 10 Qubit. Všimni si, že indexy nové `reduced_coupling_map` jsou opět nulové.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime rustworkx
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit linear chain on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 5, 12, 8, 18])
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(reduced_coupling_map.graph, method="circo")
+```
+
+![Code output](./output_1.png)
+
+Dále vygenerujeme Pauliho operátor modelující Heisenbergův XYZ Hamiltonián.
+
+$$\hat{H} = \sum_{(j,k)\in E} (J_{x} \sigma_j^{x} \sigma_{k}^{x} +
+    J_{y} \sigma_j^{y} \sigma_{k}^{y} + J_{z} \sigma_j^{z} \sigma_{k}^{z}) +
+    \sum_{j\in V} (h_{x} \sigma_j^{x} + h_{y} \sigma_j^{y} + h_{z} \sigma_j^{z})$$
+
+Kde $G(V,E)$ je graf zadané mapy propojení.
+
+```python
+import numpy as np
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIIY', 'IIIIIIIIIZ', 'IIIIIIIIXI', 'IIIIIIIIYI', 'IIIIIIIIZI', 'IIIIIIIXII', 'IIIIIIIYII', 'IIIIIIIZII', 'IIIIIIXIII', 'IIIIIIYIII', 'IIIIIIZIII', 'IIIIIXIIII', 'IIIIIYIIII', 'IIIIIZIIII', 'IIIIXIIIII', 'IIIIYIIIII', 'IIIIZIIIII', 'IIIXIIIIII', 'IIIYIIIIII', 'IIIZIIIIII', 'IIXIIIIIII', 'IIYIIIIIII', 'IIZIIIIIII', 'IXIIIIIIII', 'IYIIIIIIII', 'IZIIIIIIII', 'XIIIIIIIII', 'YIIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+Z Qubit operátoru můžeme vygenerovat kvantový Circuit modelující jeho časový vývoj.
+Opět nám přijde vhod modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html), který k tomu poskytuje šikovnou funkci:
+
+```python
+from qiskit.synthesis import LieTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=2),
+)
+circuit.draw("mpl", style="iqp", scale=0.6)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+## Krok 2: Optimalizace problému {#step-2-optimize-the-problem}
+### Vytvoření řezů Circuit pro zpětnou propagaci {#create-circuit-slices-to-backpropagate}
+
+Pamatuj, že funkce ``backpropagate`` bude zpětně propagovat celé řezy Circuit najednou, takže volba způsobu dělení může mít vliv na to, jak dobře zpětná propagace funguje pro daný problém. Zde budeme Gate stejného typu seskupovat do řezů pomocí funkce [slice_by_gate_types](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.slicing.slice_by_gate_types.html).
+
+Podrobnější diskusi o dělení Circuit najdeš v tomto [průvodci](https://qiskit.github.io/qiskit-addon-utils/how_tos/create_circuit_slices.html) balíčku [qiskit-addon-utils](https://qiskit.github.io/qiskit-addon-utils/index.html).
+
+```python
+from qiskit_addon_utils.slicing import slice_by_gate_types
+
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+### Omezení maximální velikosti operátoru během zpětné propagace {#constrain-how-large-the-operator-may-grow-during-backpropagation}
+
+Během zpětné propagace počet členů v operátoru obecně rychle konverguje k $4^N$, kde $N$ je počet Qubit. Velikost operátoru lze omezit zadáním argumentu ``operator_budget`` funkce ``backpropagate``, který přijímá instanci třídy [OperatorBudget](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.simplify.OperatorBudget.html).
+
+Zde specifikujeme, že zpětná propagace by se měla zastavit, jakmile počet kvazibitově komutujících Pauliho skupin v operátoru překročí 8.
+
+```python
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+
+op_budget = OperatorBudget(max_qwc_groups=8)
+```
+
+### Zpětná propagace řezů z Circuit {#backpropagate-slices-from-the-circuit}
+
+Nejprve definujeme pozorovatelnou Pauli-Z na Qubit 0 a zpětně propagujeme řezy z Circuit s časovým vývojem, dokud členy v pozorovatelné nelze sloučit do 8 nebo méně kvazibitově komutujících Pauliho skupin.
+
+Níže uvidíš, že jsme zpětně propagovali 7 řezů, ale využili jsme pouze 6 z 8 přidělených Pauliho skupin. To naznačuje, že zpětná propagace jednoho dalšího řezu by způsobila překročení počtu 8 Pauliho skupin. Můžeme to ověřit prozkoumáním vrácených metadat.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_utils.slicing import combine_slices
+
+# Specify a single-qubit observable
+observable = SparsePauliOp("IIIIIIIIIZ")
+
+# Backpropagate slices onto the observable
+bp_obs, remaining_slices, metadata = backpropagate(observable, slices, operator_budget=op_budget)
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 18 terms, which can be combined into 8 groups.
+Note that backpropagating one more slice would result in 27 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+Dále definujeme stejný problém se stejnými omezeními velikosti výstupní pozorovatelné. Tentokrát však pomocí funkce [setup_budget](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.truncating.setup_budget.html) přidělíme každému řezu chybový rozpočet. Pauliho členy s malými koeficienty budou z každého řezu zkráceny, dokud nebude chybový rozpočet vyčerpán, a nevyužitý rozpočet se přičte k rozpočtu následujícího řezu.
+
+Aby bylo možné toto zkrácení aktivovat, je potřeba nastavit chybový rozpočet takto:
+
+```python
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+Všimni si, že přidělením chyby `5e-3` na řez pro zkrácení jsme schopni odebrat z Circuit o 3 řezy více, přičemž zůstáváme v rámci původního rozpočtu 8 komutujících Pauliho skupin v pozorovatelné. Ve výchozím nastavení používá `backpropagate` normu L1 zkrácených koeficientů k ohraničení celkové chyby vzniklé zkrácením. Další možnosti najdeš v [průvodci specifikací p_norm](https://qiskit.github.io/qiskit-addon-obp/how_tos/bound_error_using_p_norm.html).
+
+V tomto konkrétním příkladu, kde jsme zpětně propagovali 10 řezů, by celková chyba zkrácení neměla překročit ``(5e-3 chyba/řez) * (10 řezů) = 5e-2``.
+Podrobnější diskusi o distribuci chybového rozpočtu napříč řezy najdeš v [tomto průvodci](https://qiskit.github.io/qiskit-addon-obp/how_tos/truncate_operator_terms.html).
+
+```python
+# Run the same experiment but truncate observable terms with small coefficients
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget, truncation_error_budget=truncation_error_budget
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(remaining_slices_trunc, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 19 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 4.933e-02
+Note that backpropagating one more slice would result in 27 terms across 13 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./output_4.png)
+
+### Nyní, když máme redukované ansatz a rozšířené pozorovatelné, můžeme transpilovat naše experimenty pro Backend. {#now-that-we-have-our-reduced-ansatze-and-expanded-observables-we-can-transpile-our-experiments-to-the-backend}
+
+Zde použijeme 14-Qubit [FakeMelbourneV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/fake-provider-fake-melbourne-v2) z [qiskit-ibm-runtime](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime), abychom ukázali, jak provést transpilaci pro Backend QPU.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+# Specify a backend and a pass manager for transpilation
+backend = FakeMelbourneV2()
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+## Krok 3: Provádění kvantových experimentů {#step-3-execute-quantum-experiments}
+### Výpočet střední hodnoty {#calculate-expectation-value}
+
+Nakonec můžeme spustit experimenty se zpětnou propagací a porovnat je s úplným experimentem pomocí bezšumového [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator). Vidíme, že střední hodnota se zpětnou propagací bez zkrácení odpovídá přesné hodnotě v mezích numerické přesnosti.
+
+Střední hodnota na operátoru se zkrácenými členy vykazuje určitou chybu řádu ``1e-4``, která je v rámci očekávané tolerance.
+
+**Poznámka:** Používáme Estimator primitiv založený na stavovém vektoru, abychom ilustrovali vliv zkrácení na výstup. Pro spuštění na Backend, pro který byly experimenty transpilovány v kroku 2, by bylo potřeba importovat [EstimatorV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/estimator-v2) z ``qiskit-ibm-runtime`` a předat instanci Backend do konstruktoru.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+estimator = Estimator()
+
+# Run the experiments using Estimator primitive
+result_exact = estimator.run([(circuit_isa, observable_isa)]).result()[0].data.evs.item()
+result_bp = estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+result_bp_trunc = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)]).result()[0].data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+print(f"    - Expected Error for truncated observable: {metadata.accumulated_error(0):.3e}")
+print(f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc):.3e}")
+```
+
+```text
+Exact expectation value: 0.8854160687717507
+Backpropagated expectation value: 0.8854160687717532
+Backpropagated expectation value with truncation: 0.8850236647156059
+    - Expected Error for truncated observable: 4.933e-02
+    - Observed Error for truncated observable: 3.924e-04
+```
+
+<TutorialFeedback />
