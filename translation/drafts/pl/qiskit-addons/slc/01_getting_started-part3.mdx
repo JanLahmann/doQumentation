@@ -1,0 +1,368 @@
+### Wizualizacja SLC do ręcznej inspekcji {#visualize-the-slc-for-manual-inspection}
+
+Po scaleniu granic wstecznych i zaostrzonych granic wprzód zachowanie połączonych SLC staje się jasne:
+
+- Powyższa funkcja informuje nas, że wybierany jest podział, w którym następuje przejście z granic wstecznych na zaostrzone granice wprzód.
+- Poniżej widać, że SLC zawierają teraz częściowe granice wsteczne i częściowe zaostrzone granice wprzód.
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            merged_bounds,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Diagram kwantowego Circuit](./output_13.png)
+
+![Diagram kwantowego Circuit](./output_14.png)
+
+![Diagram kwantowego Circuit](./output_15.png)
+
+#### Zasoby na poziomie klastra {#cluster-level-resources}
+
+Tutaj pokazujemy, jak wykorzystanie 128 wątków na klastrze pozwala propagować przez znacznie większą część tego większego Circuit w tym samym czasie obliczeniowym co laptop.
+
+```python
+with open("exp_data/merged_bounds_cluster.pickle", "rb") as file:
+    merged_bounds_cluster = pickle.load(file)
+```
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            merged_bounds_cluster,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Diagram kwantowego Circuit](./output_16.png)
+
+![Diagram kwantowego Circuit](./output_17.png)
+
+![Diagram kwantowego Circuit](./output_18.png)
+
+## Krok 3. Wykonanie {#step-3-execute}
+
+W tej sekcji zaczynamy część przepływu pracy korzystającą z prawdziwego urządzenia kwantowego. W przypadku tej opartej na uczeniu metody mitygacji błędów składa się ona z dwóch etapów:
+
+1. Nauczenie szumu przy użyciu `NoiseLeanerV3`.
+2. Wykonanie Circuit mitygacji błędów z nowym frameworkiem Samplomatic i Estimator.
+
+Mając oszacowane błędy naszego kwantowego Circuit, musimy nauczyć się powiązanych współczynników szumu, aby ustalić priorytety naszego budżetu błędów, określić narzut próbkowania i wykonać obliczenia na QPU. Co więcej, dzięki tym informacjom o szumie możemy też pokazać, jak korzystanie z dużych zasobów obliczeniowych klastra pozwala zmniejszyć narzut próbkowania przy zachowaniu tego samego resztkowego obciążenia.
+
+### a. Uczenie współczynników szumu {#a-learn-noise-rates}
+
+Moduł uczenia szumu umożliwia charakteryzację procesów szumowych wpływających na Gate'y w jednym lub wielu Circuit zainteresowania, w oparciu o model szumu Pauliego-Lindblada opisany w artykule [Probabilistic error cancellation with sparse Pauli-Lindblad models on noisy quantum processors](https://arxiv.org/abs/2201.09866). Metoda `run()` uruchamia zadanie uczenia szumu dla dostarczonych unikalnych warstw 2-Qubitowych, na podstawie opcji określonych w konfiguracji modułu uczenia szumu. W tych opcjach możesz dostosować strategię twirlingową Pauliego, co pomaga zapewnić dobre opisanie sprzętu przez model szumu Pauliego-Lindblada.
+
+Szczegóły twojego modelu szumu są narażone na dryfowanie w czasie. Dlatego ustawiamy parametr, który zapewnia ponowne obliczenie nauczonego modelu szumu dla eksperymentów starszych niż cztery godziny. Jest to przybliżona reguła kciuka i należy ją starannie rozważyć przy zastosowaniu we własnej pracy.
+
+```python
+post_selection_enabled = True
+load_cached_noise_results = True
+```
+
+```python
+noise_learner_options = NoiseLearnerV3Options(
+    num_randomizations=64,
+    shots_per_randomization=128,
+    layer_pair_depths=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    post_selection={
+        "enable": post_selection_enabled,
+        "strategy": "edge",
+        "x_pulse_type": "rx",
+    },
+)
+
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+```
+
+```python
+if load_cached_noise_results:
+    noise_learner_job = shared_service.job("d46ssf71gh7s7398k9a0")
+else:
+    noise_learner_job = noise_learner.run(unique_2q_instructions)
+```
+
+```python
+noise_learner_result = noise_learner_job.result()
+```
+
+```python
+if post_selection_enabled:
+    print("Minimum fraction of shots kept for noise learning experiments: ", end="")
+    print(
+        f"{min([min(d.values()) for d in [nlr.metadata['post_selection']['fraction_kept'] for nlr in noise_learner_result[:2]]]):.2f}"
+    )
+```
+
+```text
+Minimum fraction of shots kept for noise learning experiments: 0.58
+```
+
+```python
+# Get a dict mapping InjectNoise.ref to QubitSparsePaulilist
+refs_2_plm = noise_learner_result.to_dict(unique_2q_instructions, require_refs=False)
+```
+
+### b.i. Aktualizacja scalonych granic o rzeczywiste nauczone współczynniki szumu {#bi-update-merged-bounds-with-actual-learned-noise-rates}
+
+Teraz, gdy poznano konkretny model szumu, możemy zastosować nauczone współczynniki szumu do przewidywanych granic szumu i uzyskać ostateczne określenie, które granice mają największy wpływ na minimalizację obciążenia.
+
+```python
+merged_bounds = merge_bounds(
+    boxed_circuit,
+    forward_bounds_tighter,
+    backward_bounds,
+    refs_2_plm,
+)
+```
+
+```text
+2025-11-10 11:22:03,755 WARNING merge Optimal spacetime partitioning not implemented!Just partitioning list of noisy boxes.
+2025-11-10 11:22:03,756 INFO merge Determined Box idx for partitioning to be 20.
+```
+
+#### b.ii. Obliczanie `local_scales` do wykonania sprzętowego {#bii-compute-the-local_scales-for-the-hardware-execution}
+
+`compute_local_scales` analizuje każdy możliwy błąd szumu w Circuit i szacuje, jak bardzo ten błąd mógłby obciążyć końcowy pomiar, a także jak kosztowna byłaby jego korekta. Następnie rankinguje błędy według tego, jak opłacalne jest ich mitygowanie, i wybiera podzbiór, który maksymalnie redukuje obciążenie przy jednoczesnym zachowaniu się w granicach dopuszczalnego budżetu kosztu próbkowania (lub osiągnięciu pożądanej dokładności). Wynikiem jest zbiór współczynników skalowania wskazujących, które błędy będą aktywnie mitygowane, a które pozostaną bez mitygacji (`local_scales`), wraz z przewidywanym całkowitym narzutem kosztu próbkowania (`sampling_costs`) i resztkowym ograniczeniem obciążenia (`residual_bias_bound`).
+
+Możliwość kontrolowania pożądanego resztkowego obciążenia jest kluczową cechą implementacji SLC w PEC. Podczas gdy w [oryginalnej implementacji](https://arxiv.org/abs/2201.09866) narzut próbkowania zawsze dążył do zerowego obciążenia, możemy dostosować wymagany narzut próbkowania w zamian za kompromis w oczekiwanym resztkowym obciążeniu. Pozwala to użytkownikowi pozostać w granicach stałego budżetu próbkowania, co może być szczególnie przydatne przy początkowym prototypowaniu przepływu pracy.
+
+```python
+id_map = map_modifier_ref_to_ref(boxed_circuit)
+```
+
+```python
+summed_rates = 0.0
+for _box_id, noise_id in id_map.items():
+    learned_plm = refs_2_plm[noise_id]
+    summed_rates += np.sum(learned_plm.rates)
+    # print(f"{_box_id}:\tgamma = {np.exp(2 * summed_rates):1.6e}\tsampling cost = {np.exp(4 * summed_rates):1.6e}")
+total_gamma = np.exp(2 * summed_rates)
+print(f"Full PEC gamma={total_gamma}, sampling cost (gamma^2) = {total_gamma**2}")
+```
+
+```text
+Full PEC gamma=128.56055005423153, sampling cost (gamma^2) = 16527.81503024657
+```
+
+```python
+biases = []
+costs = []
+for bias in [0.0, *np.arange(0.001, 0.102, 0.01).tolist()]:
+    _, cost_, bias_ = compute_local_scales(
+        boxed_circuit,
+        merged_bounds,
+        refs_2_plm,
+        sampling_cost_budget=np.inf,
+        bias_tolerance=bias,
+    )
+    biases.append(bias_)
+    costs.append(cost_)
+```
+
+```python
+biases_cluster = []
+costs_cluster = []
+for bias in [0.0, *np.arange(0.001, 0.102, 0.01).tolist()]:
+    _, cost_, bias_ = compute_local_scales(
+        boxed_circuit,
+        merged_bounds_cluster,
+        refs_2_plm,
+        sampling_cost_budget=np.inf,
+        bias_tolerance=bias,
+    )
+    biases_cluster.append(bias_)
+    costs_cluster.append(cost_)
+```
+
+#### Korzyści z klastrów przy redukcji narzutu próbkowania dla danego czasu obliczeń klasycznych {#benefits-of-clusters-for-reducing-sampling-overhead-for-a-given-classical-compute-time}
+
+```python
+xticks = np.arange(0, 11)
+
+fig, ax = plt.subplots()
+ax.scatter([0], [total_gamma**2], marker="D", c="tab:orange", label="full PEC")
+ax.plot(100 * np.array(biases), np.array(costs), "o-", c="tab:blue", label="local PEC+SLC")
+ax.plot(
+    100 * np.array(biases_cluster),
+    np.array(costs_cluster),
+    "o-",
+    c="tab:green",
+    label="cluster PEC+SLC",
+)
+ax.set_yscale("log")
+ax.set_ylim([100, 50000])
+ax.set_xticks(xticks, [f"{x:.1f}" for x in xticks])
+
+ax.set_xlabel("Remaining Bias [%]")
+ax.set_ylabel(r"Sampling Overhead, $\gamma^2$")
+ax.grid()
+ax.legend()
+fig.suptitle("PEC sampling overhead reduction due to SLC")
+```
+
+```text
+Text(0.5, 0.98, 'PEC sampling overhead reduction due to SLC')
+```
+
+![Wyjście wykresu](./output_19.png)
+
+```python
+chosen_bias_thres = 0.1
+```
+
+```python
+local_scales, sampling_cost, residual_bias_bound = compute_local_scales(
+    boxed_circuit,
+    merged_bounds_cluster,
+    refs_2_plm,
+    sampling_cost_budget=np.inf,
+    bias_tolerance=chosen_bias_thres,
+)
+print(
+    f"PEC+SLC sampling cost (gamma^2) = {sampling_cost} w/ remaining bias = {100 * residual_bias_bound:.1f}%"
+)
+```
+
+```text
+PEC+SLC sampling cost (gamma^2) = 563.1803982530477 w/ remaining bias = 9.3%
+```
+
+### c. Wykonanie Circuit zainteresowania z antyszumem {#c-execute-the-circuit-of-interest-with-antinoise}
+
+#### c.i. Przygotowanie Circuit szablonowego przy użyciu `samplex` {#ci-prepare-template-circuit-by-using-samplex}
+
+`samplex` jest wynikiem metody `build` Samplomatic, która koduje wszystkie informacje wymagane do wygenerowania losowych parametrów dla `template_circuit`. Są one następnie używane do konfiguracji obiektów `QuantumProgram`, które z kolei są uruchamiane na QPU z prymitywem `Executor`. Każdy `QuantumProgram` może zawierać kilka elementów, które można traktować jako parę `template` i `samplex`.
+
+Szczegóły znajdziesz w samouczku [Hello samplomatic](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/hello_samplomatic/Samplomatic%20-%20Hello%20World.ipynb).
+
+```python
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+```
+
+```python
+# Set up postselection if it's been enabled
+if post_selection_enabled:
+    # Set up post selection PM (to add PS instructions)
+    post_selection_pm = PassManager(
+        [
+            AddSpectatorMeasures(backend.coupling_map),
+            AddPostSelectionMeasures(x_pulse_type="rx"),
+        ]
+    )
+    final_template_circuit = post_selection_pm.run(template_circuit)
+else:
+    final_template_circuit = template_circuit
+```
+
+```text
+2025-11-10 11:22:04,839 INFO base_tasks Pass: AddSpectatorMeasures - 3.41392 (ms)
+2025-11-10 11:22:04,843 INFO base_tasks Pass: AddPostSelectionMeasures - 2.88510 (ms)
+```
+
+#### c.ii. Konfiguracja `QuantumProgram` {#cii-set-up-the-quantumprogram}
+
+```python
+num_randomizations = 4096
+shots_per_randomization = 64
+chunk_size = 256
+```
+
+```python
+# Set up QuantumProgram
+program = QuantumProgram(shots=shots_per_randomization, noise_maps=refs_2_plm)
+
+# no EM
+
+# Collect up a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(0) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# plain PEC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# PEC+SLC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+samplex_inputs |= {"local_scales": local_scales}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+```
+
+#### c.iii. Wykonanie programu z prymitywem `Executor` {#ciii-execute-program-with-the-executor-primitive}
+
+```python
+executor = Executor(backend)
+```
+
+```python
+load_cached_executor_results = True
+```
+
+```python
+if load_cached_executor_results:
+    job_exec = shared_service.job("d46t1q6qsa9s73cb28g0")
+else:
+    job_exec = executor.run(program)
+```
+
+```python
+results_exec = job_exec.result()
+```

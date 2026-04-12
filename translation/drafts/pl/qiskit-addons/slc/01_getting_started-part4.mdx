@@ -1,0 +1,128 @@
+## Krok 4. Post-processing {#step-4-post-process}
+
+Obliczając końcową wartość oczekiwaną za pomocą `expectation_values`, zastosujemy kilka korzystnych technik post-processingu, aby uzyskać możliwie najwyższej jakości wyniki. Najpierw stosujemy [twirled readout mitigation, TREX](https://quantum.cloud.ibm.com/docs/guides/error-mitigation-and-suppression-techniques#twirled-readout-error-extinction-trex), która uwzględnia błędy pojawiające się podczas procesu odczytu. Następnie naprawiamy błędy spowodowane szumem niemarkowskim na naszych Backend-ach Heron przy użyciu metody post-selekcji. Metoda ta mierzy aktywne i spektatorowe Qubity, następnie stosuje powolny obrót do każdego Qubitu, a potem mierzy ponownie. W przypadkach, gdy dwa pomiary nie potwierdzają odwróconego Qubitu zgodnie z oczekiwaniami, takie pomiary są odrzucane przez zastosowanie `mask` z funkcji `PostSelector`. Podczas obliczania maski można ustawić konkretną strategię filtrowania na podstawie węzłów jednokubitowych lub sąsiednich krawędzi spektatorowych, co może wpływać zarówno na liczbę odfiltrowanych pomiarów, jak i na jakość wyników.
+
+```python
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_scale_factors = trex_factors(measurement_noise_map, reverser_virt)
+```
+
+```python
+post_selection_strategy = "node"
+```
+
+```python
+def post_process_conv(datum, steps=16, gamma=None, ps=False, trex=False):
+    meas = datum["meas"]
+    flips = datum["measurement_flips.meas"]
+    signs = datum.get("pauli_signs", None)
+
+    meas_basis_axis = None
+    avg_axis = 0
+
+    mask = None
+    if ps and post_selection_enabled:
+        # Post-select the results
+        post_selector = PostSelector.from_circuit(
+            circuit=final_template_circuit, coupling_map=backend.coupling_map
+        )
+
+        # Compute the ps mask for filtering results
+        mask = post_selector.compute_mask(datum, strategy=post_selection_strategy)
+
+        # Compute fraction of shots kept from post selection
+        total_num_shots = num_randomizations * shots_per_randomization
+        ps_ratio = np.sum(mask) * 100 / total_num_shots / len(bases_canon)
+        print(
+            f"With {post_selection_strategy}-based post selection ({ps_ratio:.1f}% of shots kept):"
+        )
+
+    results = []
+    for i in range(steps, num_randomizations + 1, steps):
+        # Compute mitigated expvals w/out postselectoion
+        res = executor_expectation_values(
+            meas[:i],
+            reverser_virt,
+            meas_basis_axis,
+            avg_axis=avg_axis,
+            measurement_flips=flips[:i],
+            pauli_signs=signs[:i] if signs is not None else None,
+            postselect_mask=mask[:i] if mask is not None else None,
+            rescale_factors=trex_scale_factors if trex else None,
+            gamma_factor=gamma,
+        )
+        results.append(res[0])
+    return results
+```
+
+```python
+gamma_pec = gamma_from_noisy_boxes(refs_2_plm, id_map)
+gamma_slc = gamma_from_noisy_boxes(refs_2_plm, id_map, local_scales)
+```
+
+```python
+steps = 16
+```
+
+```python
+results = {}
+
+for label, result_idx, gamma, use_ps, use_trex in [
+    ("PEC", 1, gamma_pec, True, True),
+    ("PEC+SLC", 2, gamma_slc, True, True),
+    ("Unmitigated", 0, None, False, False),
+]:
+    res = post_process_conv(
+        results_exec[result_idx], steps=steps, gamma=gamma, ps=use_ps, trex=use_trex
+    )
+    results[label] = res
+```
+
+```text
+With node-based post selection (27.0% of shots kept):
+With node-based post selection (26.8% of shots kept):
+```
+
+Na podstawie analizy wyników eksperymentalnych możemy bezpośrednio porównać zachowanie różnych podejść: PEC, PEC w połączeniu z SLC oraz punktu odniesienia w postaci wyników bez mitygacji. Kilka szczegółów do podkreślenia:
+
+- Wyniki bez mitygacji pozostają poza pożądanym zakresem obciążenia i nie są wrażliwe na narzut próbkowania.
+- Przy wysokim koszcie próbkowania obliczonym powyżej (~10k) samo PEC nie zbiega się w granicach użytej liczby randomizacji.
+- PEC + SLC zbiega się natomiast znacznie szybciej.
+- Granice błędów maleją również znacznie szybciej dla PEC + SLC niż dla zwykłego PEC.
+
+```python
+fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+
+ax.axhline(1.0, color="black", label="Exact")
+ax.fill_between([-50, 4100], -10, 0, color="grey", alpha=0.25, label="Unphysical")
+ax.fill_between([-50, 4100], 1, 10, color="grey", alpha=0.25)
+ax.fill_between([-50, 4100], 0.9, 1.1, color="red", alpha=0.25, label="10% bias")
+
+for label, res in results.items():
+    ax.errorbar(
+        list(range(steps, num_randomizations + 1, steps)),
+        [r[0] for r in res],
+        yerr=[r[1] for r in res],
+        alpha=0.75,
+        marker="o",
+        linestyle="",
+        markerfacecolor="none",
+        label=label,
+    )
+
+ax.set_ylabel(r"$\langle X_{6}Z_{13}\rangle$")
+ax.set_xlabel("# randomizations")
+ax.grid()
+
+ax.legend(ncols=2)
+ax.set_ylim([-0.1, 2.0])
+ax.set_xlim([-50, 4100])
+```
+
+```text
+(-50.0, 4100.0)
+```
+
+![Wyjście wykresu](./output_20.png)
+
+<TutorialFeedback />
