@@ -1,3 +1,169 @@
+---
+title: "Poprawa wartości oczekiwanych: Propagowana absorpcja szumu (PNA)"
+sidebar_label: "Poprawa wartości oczekiwanych: Propagowana absorpcja szumu (PNA)"
+notebook_path: "qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb"
+---
+
+{/* doqumentation-source-hash: a6309ba3 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb" />
+
+
+W tym samouczku nauczysz się, jak korzystać z najnowszych narzędzi ekosystemu Qiskit, aby zaimplementować w pełni konfigurowalny przepływ pracy z mitygacją błędów. Przedstawimy technikę PNA i użyjemy jej do mitygacji błędów bramek. Skorzystamy również z TREX do mitygacji błędów odczytu oraz z post-selekcji, aby mitygować błędy nieuwzględnione w nauczonym modelu szumu.
+
+**Zarys**
+- Krótkie omówienie ``PNA``
+- Stworzenie obwodu kwantowego Trottera i obserwabli. Transpilacja do backendu i dodanie pomiarów post-selekcji.
+- Użycie ``samplomatic`` do twirlingowania warstw bramek 2Q i pomiarów. Znalezienie unikalnych warstw 2Q w celu zmniejszenia kosztu uczenia szumu.
+- Użycie ``NoiseLearnerV3`` do nauczenia modelu błędów wpływającego na bramki 2Q i pomiary.
+- Użycie ``qiskit-addon-pna`` do wygenerowania obserwabli mitygującej szum.
+- Użycie ``qiskit-ibm-runtime.Executor`` do wygenerowania surowych próbek QPU odzwierciedlających każdy strzał dla każdej losowości twirlingowej i zmierzonej bazy.
+- Użycie ``qiskit-addon-utils`` do przetworzenia danych na mitygowaną wartość oczekiwaną.
+### Czym jest propagowana absorpcja szumu (PNA)? {#czym-jest-propagowana-absorpcja-szumu-pna}
+
+***Technika mitygacji błędów bramek polegająca na propagowaniu obserwabli przez odwrotny kanał szumu wpływający na bramki 2-qubitowe, co daje obserwablę mitygującą szum.***
+Bramki 2Q w eksperymencie, który chcemy uruchomić, będą dotknięte znacznym szumem.
+![Zaszumiony eksperyment](../images/noisy_expt.png)
+Jeśli nauczymy się modelu szumu, możemy zastosować jego odwrotność i wyeliminować szum.
+![Eksperyment z mitygacją szumu](../images/noise_mitigated_expt.png)
+Zamiast implementować odwrotny kanał szumu poprzez jego próbkowanie na QPU jak w PEC, możemy zaimplementować go klasycznie w mierzonej obserwabli za pomocą propagacji Pauliego. Daje to bardziej złożoną obserwablę, której pomiar ma efekt mitygowania nauczonych błędów bramek.
+![Przegląd PNA](../images/pna_overview.png)
+### Wygenerowanie lustrzanego obwodu Trottera i obserwabli {#wygenerowanie-lustrzanego-obwodu-trottera-i-obserwabli}
+
+W tym eksperymencie zbadamy dynamikę czasową modelu Isinga z kopnięciami na 30-stanowiskowym łańcuchu spinów 1D. Rozważany hamiltonjan to:
+
+$H = -J\sum\limits_{\langle i,j \rangle} Z_iZ_j + h\sum\limits_iX_i$,
+
+gdzie $J>0$ opisuje sprzężenie spinów najbliższych sąsiadów, $i<j$, a globalne poprzeczne pole, $h$, wynosi $\frac{\pi}{8}$. Im dalej $h$ jest od kąta Clifforda (tj. $\theta=n\frac{\pi}{2}, n \in \mathbb{Z}$), tym trudniejsza staje się propagacja generatorów anty-szumu przez obwód.
+
+Jako obserwablę rozważymy średnie namagnesowanie na jednym stanowisku, $\frac{1}{N} \sum_{i=1}^{N} \langle z_i \rangle$, gdzie $N$ jest liczbą stanowisk.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-pna qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli, SparsePauliOp
+
+num_qubits = 30
+num_trotter_steps = 10
+rx_angle = np.pi / 8
+
+# Avg single-site magnetization
+id_pauli = Pauli("I" * num_qubits)
+observable = SparsePauliOp([id_pauli.dot(Pauli("Z"), [i]) for i in range(num_qubits)]) / num_qubits
+
+# Implement Trotterized kicked-Ising model
+circuit = QuantumCircuit(num_qubits)
+for _step in range(num_trotter_steps):
+    circuit.rx(rx_angle, range(num_qubits))
+    for first_qubit in (1, 2):
+        for idx in range(first_qubit, num_qubits, 2):
+            # equivalent to Rzz(-pi/2):
+            circuit.sdg([idx - 1, idx])
+            circuit.cz(idx - 1, idx)
+circuit.compose(circuit.inverse(), inplace=True)
+circuit.measure_active()
+circuit.draw("mpl", fold=-1)
+```
+
+![Diagram obwodu kwantowego](./output_1.png)
+
+Następnie wybierzemy łańcuch qubitów na ``ibm_kingston``, które wykazują niskie stopy błędów, i transpilujemy obwód do backendu.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+backend_name = "ibm_kingston"
+service = QiskitRuntimeService()
+backend = service.backend(backend_name, use_fractional_gates=True)
+
+# Use a chain of low-noise qubits
+layout = [
+    44,
+    45,
+    46,
+    47,
+    57,
+    67,
+    68,
+    69,
+    78,
+    89,
+    88,
+    87,
+    97,
+    107,
+    106,
+    105,
+    117,
+    125,
+    126,
+    127,
+    128,
+    129,
+    118,
+    109,
+    110,
+    111,
+    98,
+    91,
+    92,
+    93,
+]
+
+pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+isa_circuit = pm.run(circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+isa_circuit.draw("mpl", fold=-1)
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 14:30:57,148: Loading account with the given token. A saved account will not be used.
+```
+
+![Diagram obwodu kwantowego](./output_2.png)
+
+### Twirlingowanie warstw bramek 2-qubitowych i pomiarów oraz znalezienie unikalnych warstw {#twirlingowanie-warstw-bramek-2-qubitowych-i-pomiarow-oraz-znalezienie-unikalnych-warstw}
+
+Tutaj upewniamy się, że menedżer przejść opatruje pudełka adnotacjami ``Twirl`` i ``InjectNoise``, które pozwalają nam nauczyć szumu wpływającego na nasz obwód i powiązać ten szum z odpowiadającą mu warstwą obwodu.
+
+- ``enable_gates/enable_measure: True``: Opakuj wszystkie warstwy bramek 2Q i końcowe pomiary w pudełka. Bramki jednokubitowe zostaną ubrane od lewej strony wewnątrz pudełek.
+- ``measure_annotations: all`` Dołącz adnotacje `Twirl` i `ChangeBasis` do pudełka pomiarowego.
+- ``twirling_strategy: active``: Twirlinguj wszystkie aktywne qubity w każdym pudełku zawierającym bramki splątujące.
+- ``inject_noise_targets: gates``: Adnotacje ``InjectNoise`` powinny być dodane do wszystkich pudełek z adnotacją ``Twirl`` zawierających bramki splątujące.
+- ``inject_noise_strategy: uniform_modification``: Wszystkie warstwy szumu powinny być skalowane równomiernie.
+
+```python
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Box up circuit with Twirl and InjectNoise annotations
+pm = generate_boxing_pass_manager(
+    enable_gates=True,
+    enable_measures=True,
+    measure_annotations="all",
+    twirling_strategy="active",
+    inject_noise_targets="gates",
+    inject_noise_strategy="uniform_modification",
+    remove_barriers=True,
+)
+boxed_circuit = pm.run(isa_circuit)
+```
+
+```python
+draw_circ = QuantumCircuit(boxed_circuit.num_qubits)
+draw_circ.append(boxed_circuit.data[0], qargs=boxed_circuit.data[0].qubits)
+draw_circ.append(boxed_circuit.data[1], qargs=boxed_circuit.data[1].qubits)
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Diagram obwodu kwantowego](./output_3.png)
 ### Wygenerowanie obwodu szablonowego i samplex, zdefiniowanie sposobu próbkowania obwodu {#wygenerowanie-obwodu-szablonowego-i-samplex-zdefiniowanie-sposobu-probkowania-obwodu}
 
 Tutaj dodajemy również pomiary spektatorów i post-selekcji, które są niezbędne do wykonania post-selekcji na próbkach wyjściowych z ``Executor``.
