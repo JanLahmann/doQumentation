@@ -198,3 +198,170 @@ print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
 Gate counts (w/o pre-init passes): OrderedDict({'rz': 4420, 'sx': 3432, 'ecr': 1366, 'x': 239, 'measure': 32, 'barrier': 1})
 Gate counts (w/ pre-init passes): OrderedDict({'rz': 2460, 'sx': 2156, 'ecr': 730, 'x': 71, 'measure': 32, 'barrier': 1})
 ```
+### Pasul 3: Executarea experimentelor {#step-3-execute-experiments}
+După optimizarea circuitului pentru execuția pe hardware, suntem pregătiți să îl rulăm pe hardware-ul țintă și să colectăm mostre pentru estimarea energiei stării fundamentale. Deoarece avem un singur circuit, vom folosi [modul de execuție Job](https://quantum.cloud.ibm.com/docs/guides/execution-modes) din Qiskit Runtime și vom executa circuitul nostru.
+
+***Notă: Am comentat codul pentru rularea circuitului pe un QPU și l-am lăsat ca referință pentru utilizator. În loc să rulăm pe hardware real în acest ghid, vom genera mostre aleatoare extrase din distribuția uniformă.***
+
+```python
+import numpy as np
+from qiskit_addon_sqd.counts import generate_bit_array_uniform
+
+# from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# sampler = Sampler(mode=backend)
+# job = sampler.run([isa_circuit], shots=10_000)
+# primitive_result = job.result()
+# pub_result = primitive_result[0]
+# bit_array = pub_result.data.meas
+
+rng = np.random.default_rng(24)
+bit_array = generate_bit_array_uniform(10_000, num_orbitals * 2, rand_seed=rng)
+```
+
+### Pasul 4: Post-procesarea rezultatelor {#step-4-post-process-results}
+Acum rulăm algoritmul SQD folosind funcția `diagonalize_fermionic_hamiltonian`. Consultă [documentația API](../apidocs/qiskit_addon_sqd.fermion.rst#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian) pentru explicații privind argumentele acestei funcții.
+
+Solverul inclus în addon-ul SQD folosește implementarea CI selectiv din PySCF, mai precis [pyscf.fci.selected_ci.kernel_fixed_space](https://pyscf.org/pyscf_api_docs/pyscf.fci.html#pyscf.fci.selected_ci.kernel_fixed_space). Exemplul de mai jos arată, de asemenea, cum să transmiți argumente cu cuvinte cheie acelei funcții prin intermediul solverului inclus. Aici transmitem argumentul `max_cycle`.
+
+```python
+from functools import partial
+
+from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian, solve_sci_batch
+
+# Opțiuni SQD
+energy_tol = 1e-3
+occupancies_tol = 1e-3
+max_iterations = 5
+
+# Opțiuni pentru solverul stării proprii
+num_batches = 1
+samples_per_batch = 300
+symmetrize_spin = True
+carryover_threshold = 1e-4
+max_cycle = 200
+
+# Transmite opțiuni solverului propriu inclus. Dacă vrei să folosești valorile implicite,
+# poți omite acest pas, caz în care nu ar trebui să specifici argumentul sci_solver
+# în apelul la diagonalize_fermionic_hamiltonian de mai jos.
+sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=max_cycle)
+
+# Listă pentru captarea rezultatelor intermediare
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy + nuclear_repulsion_energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    bit_array,
+    samples_per_batch=samples_per_batch,
+    norb=num_orbitals,
+    nelec=nelec,
+    num_batches=num_batches,
+    energy_tol=energy_tol,
+    occupancies_tol=occupancies_tol,
+    max_iterations=max_iterations,
+    sci_solver=sci_solver,
+    symmetrize_spin=symmetrize_spin,
+    carryover_threshold=carryover_threshold,
+    callback=callback,
+    seed=rng,
+)
+```
+
+```text
+Iteration 1
+	Subsample 0
+		Energy: -105.45358671756313
+		Subspace dimension: 5476
+Iteration 2
+	Subsample 0
+		Energy: -107.95172900082163
+		Subspace dimension: 249001
+Iteration 3
+	Subsample 0
+		Energy: -108.97460330369815
+		Subspace dimension: 339889
+Iteration 4
+	Subsample 0
+		Energy: -109.02739376648793
+		Subspace dimension: 440896
+Iteration 5
+	Subsample 0
+		Energy: -109.030972328451
+		Subspace dimension: 597529
+```
+
+Acum reprezentăm grafic rezultatele.
+
+Primul grafic arată că, după câteva iterații, estimăm energia stării fundamentale cu o eroare de aproximativ ``~16 mH`` (acuratețea chimică este în general acceptată ca fiind ``1 kcal/mol`` $\approx$ ``1.6 mH``). Ține minte că mostrele cuantice din această demonstrație au fost zgomot pur. Semnalul provine din cunoștințele *a priori* despre structura electronică și Hamiltonianul molecular.
+
+Al doilea grafic arată ocupanța medie a fiecărei orbitale spațiale după iterația finală. Putem observa că atât electronii cu spin-up, cât și cei cu spin-down ocupă primele cinci orbitale cu probabilitate ridicată în soluțiile noastre.
+
+```python
+import matplotlib.pyplot as plt
+
+# Date pentru graficul energiilor
+x1 = range(len(result_history))
+min_e = [
+    min(result, key=lambda res: res.energy).energy + nuclear_repulsion_energy
+    for result in result_history
+]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4]
+
+# Acuratețe chimică (+/- 1 mili-Hartree)
+chem_accuracy = 0.001
+
+# Date pentru ocupanța medie a orbitalelor spațiale
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Reprezentare grafică a energiilor
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-4)
+axs[0].axhline(y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy")
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Reprezentare grafică a ocupanței orbitalelor
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.03097 Ha
+Absolute error: 0.01570 Ha
+```
+
+![Plot output](./output_1.png)
+
+<TutorialFeedback />
