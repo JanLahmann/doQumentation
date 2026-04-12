@@ -1,0 +1,183 @@
+---
+title: Podręcznik użytkownika wtyczki SPANK
+description: Podręcznik użytkownika wtyczki SPANK do zarządzania zasobami kwantowymi
+---
+<!-- hash:f4e37287 -->
+{/* cspell:ignore QRMI, SBATCH, srun, Pasqal, slurmd, Doxyfile, Gres */}
+
+# Podręcznik użytkownika wtyczki SPANK
+
+[Wtyczka SPANK](https://github.com/qiskit-community/spank-plugins/) dla [Interfejsu zarządzania zasobami kwantowymi (QRMI)](/guides/qrmi) służy do konfigurowania dostępu do zasobów kwantowych z zadań użytkownika w środowisku obliczeniowym administrowanym przez menedżera obciążeń [Slurm](https://slurm.schedmd.com/quickstart.html). Jest to przewodnik dla użytkowników wtyczki dotyczący konfiguracji alokacji zasobów QPU podczas tworzenia zadań Slurm.
+
+Definicje zasobów QPU Slurm określają, jakie zasoby fizyczne mogą być używane przez zadania Slurm w środowiskach wysokowydajnych (HPC). Kod źródłowy użytkownika powinien być niezależny od konkretnych instancji Backend, a nawet typów Backend, kiedy to możliwe. Dzięki temu kod źródłowy pozostaje przenośny, a kryteria wyboru QPU są częścią definicji zasobu (co jest traktowane jako konfiguracja, a nie kod źródłowy).
+
+## Konfiguracja zasobów QPU podczas tworzenia zadania {#configure-qpu-resources-in-job-creation}
+
+<Admonition type="caution">
+Pamiętaj, że ta wtyczka jest w aktywnym rozwoju i dokładna składnia może ulec zmianie.
+</Admonition>
+
+### Zakres administratora {#administrator-scope}
+
+Administratorzy HPC konfigurują wtyczkę SPANK, aby określić, jakie zasoby fizyczne mogą być udostępniane zadaniom Slurm.
+Ta konfiguracja zawiera wszystkie informacje potrzebne do uzyskania przez zadania Slurm dostępu do zasobów fizycznych, takie jak punkty końcowe i poświadczenia dostępu.
+
+Zapoznaj się z [`qrmi_config.json.example`](https://github.com/qiskit-community/spank-plugins/blob/main/plugins/spank_qrmi/qrmi_config.json.example), aby zobaczyć kompleksowy przykład konfiguracji.
+
+W pliku `slurm.conf` zasoby QPU mogą być przypisane do niektórych lub wszystkich węzłów do użycia:
+```
+...
+GresTypes=qpu,name
+NodeName=node[1-5000] Gres=qpu,name:ibm_fez
+...
+```
+
+### Zakres użytkownika {#user-scope}
+
+Użytkownicy HPC przesyłają zadania korzystające z zasobów QPU powiązanych z zasobami QPU Slurm. Atrybut name odwołuje się do tego, co zdefiniował administrator HPC. Podczas działania zadania Slurm wybór Backend może być oparty na kryteriach innych niż predefiniowana nazwa odwołująca się do konkretnego Backend (na przykład według kryteriów wydajności i współczynnika błędów, aby zawęzić wybór spośród zdefiniowanego zestawu Backend).
+
+Mogą być wymagane dodatkowe zmienne środowiskowe, w zależności od typu Backend.
+
+Parametry `SBATCH` będą wskazywać jeden lub więcej zasobów QPU przypisanych do aplikacji jako zasoby ogólne.
+Zmienne środowiskowe udostępniane przez wtyczkę dostarczą aplikacji niezbędnych informacji (szczegóły znajdziesz w sekcji [Zakres aplikacji HPC](#hpc-application-scope)).
+
+```shell
+#SBATCH --time=100
+#SBATCH --output=<LOGS_PATH>
+#SBATCH --gres=qpu:1
+#SBATCH --qpu=ibm_fez
+#SBATCH --... # other options
+
+srun ...
+```
+
+Aby korzystać z większej liczby zasobów QPU, dodaj więcej QPU do parametru `--qpu`:
+
+```shell
+#SBATCH --time=100
+#SBATCH --output=<LOGS_PATH>
+#SBATCH --gres=qpu:3
+#SBATCH --qpu=my_local_qpu,ibm_fez,ibm_marrakesh
+#SBATCH --... # other options
+
+srun ...
+```
+
+### Zakres aplikacji HPC {#hpc-application-scope}
+
+Aplikacje HPC używają zasobów QPU Slurm przypisanych do zadania Slurm.
+
+Zmienne środowiskowe dostarczają więcej szczegółów do użytku przez aplikację; na przykład `SLURM_JOB_QPU_RESOURCES` wymienia nazwy zasobów kwantowych (oddzielone przecinkami, jeśli podano kilka).
+Te zmienne będą używane przez QRMI. (Więcej szczegółów znajdziesz w plikach README w różnych katalogach QRMI: [IBM](https://github.com/qiskit-community/qrmi/blob/main/examples/qiskit_primitives/ibm/README.md), [pasqal](https://github.com/qiskit-community/qrmi/blob/main/examples/qiskit_primitives/pasqal/README.md).)
+
+```python
+from qiskit import QuantumCircuit
+# Using an IBM QRMI flavor:
+from qrmi.primitives import QRMIService
+from qrmi.primitives.ibm import SamplerV2, get_backend
+
+# define circuit
+
+circuit = QuantumCircuit(2)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.measure_all()
+
+# instantiate QRMI service and get quantum resource (we'll take the first one should there be several of them)
+# inject credentials needed for accessing the service at this point
+load_dotenv()
+service = QRMIService()
+
+resources = service.resources()
+qrmi = resources[0]
+
+# Generate transpiler target from backend configuration & properties and transpile
+backend = get_backend(qrmi)
+pm = generate_preset_pass_manager(
+    optimization_level=1,
+    backend=backend,
+)
+
+isa_circuit = pm.run(circuit)
+
+# Run the circuit
+options = {}
+sampler = SamplerV2(qrmi, options=options)
+
+job = sampler.run([(isa_circuit, isa_observable, param_values)])
+print(f">>> Job ID: {job.job_id()}")
+
+result = job.result()
+
+if job.done():
+    pub_result = result[0]
+    print(f"Counts for the 'meas' output register: {pub_result.data.meas.get_counts()}")
+elif job.cancelled():
+    print("Cancelled")
+elif job.errored():
+    print(qrmi.task_logs(job.job_id()))
+```
+
+Przykładowe pliki znajdziesz w [katalogu examples](https://github.com/qiskit-community/qrmi/tree/main/examples/qiskit_primitives/).
+
+### Szczegóły dotyczące Backend {#backend-specifics}
+
+#### IBM Direct Access API {#ibm-direct-access-api}
+
+##### Zakres administratora {#administrator-scope-1}
+
+Konfiguracja Backend Direct Access API (zakres administratora HPC) obejmuje punkty końcowe i poświadczenia do punktu końcowego Direct Access i usług uwierzytelniania, a także do punktu końcowego S3.
+Obejmuje to w szczególności:
+
+* Klucz API IBM Cloud&reg; do tworzenia tokenów bearer
+* Punkt końcowy Direct Access API
+* Zasobnik S3 i szczegóły dostępu
+
+Poświadczenia dostępu nie powinny być widoczne dla użytkowników HPC ani innych nieuprzywilejowanych użytkowników systemu.
+Dlatego wrażliwe dane można umieszczać w osobnych plikach, które mogą być odpowiednio chronione dostępem.
+
+Pamiętaj, że Slurm ma pełny dostęp do Backend.
+Ma to kilka implikacji:
+
+* Wtyczka Slurm jest odpowiedzialna za wielodostępność (zapewnienie, że użytkownicy nie widzą wyników zadań innych użytkowników)
+* Strona klastra HPC jest odpowiedzialna za weryfikację użytkowników (kto ma dostęp do QPU) i zapewnienie odpowiedniego dostępu
+* Wydajność i priorytet użycia QPU są zarządzane wyłącznie przez Slurm; poza Slurm nie ma żadnego innego harmonogramowania użytkowników
+
+##### Zakres użytkownika {#user-scope-1}
+
+Pasma wykonania nie są bezpośrednio udostępniane administratorowi HPC ani użytkownikowi.
+Zamiast tego w czasie wykonywania użytkownicy HPC mogą korzystać z dwóch różnych trybów:
+
+* `exclusive=true` oznacza, że żadne inne zadanie nie może jednocześnie używać zasobu. Zadanie w trybie ekskluzywnym uzyskuje wszystkie pasma wykonania i nie może działać jednocześnie z zadaniem nieekskluzywnym
+* `exclusive=false` pozwala innym zadaniom działać równolegle. W tym przypadku może być tyle zadań, ile jest pasm wykonania – wszystkie działają jednocześnie, a zadaniu przypisuje się jedno pasmo
+
+#### Qiskit Runtime Service {#qiskit-runtime-service}
+
+##### Zakres użytkownika {#user-scope-2}
+
+Oczekuje się, że użytkownicy podadzą dodatkowe szczegóły dostępu w zmiennych środowiskowych.
+Obejmuje to w szczególności:
+
+* Instancję usługi Qiskit Runtime (CRN, Cloud Resource Name)
+* Punkt końcowy dla Qiskit Runtime (o ile nie jest automatycznie wykrywany z CRN)
+* Klucz API z dostępem do CRN
+* Instancję S3, zasobnik i token/poświadczenia dostępu do transferów danych
+
+Te szczegóły określają, pod którym użytkownikiem i instancją usługi jest używana usługa Qiskit Runtime.
+Odpowiednio, harmonogramowanie IBM Quantum&reg; Platform uwzględnia możliwości użytkownika i instancji usługi przy harmonogramowaniu.
+
+Obecnie użytkownicy muszą podawać powyższe szczegóły (brak współdzielonego dostępu kwantowego na poziomie całego klastra).
+
+#### Usługi chmurowe Pasqal {#pasqal-cloud-services}
+
+##### Zakres administratora HPC {#hpc-admin-scope}
+
+Nie jest wymagana żadna specyficzna konfiguracja od administratorów HPC w celu korzystania z PCS.
+
+##### Zakres użytkownika HPC {#hpc-user-scope}
+
+Oczekuje się, że użytkownicy podadzą dodatkowe szczegóły dostępu w zmiennych środowiskowych.
+Obecnie obejmuje to:
+
+* Zasób PCS jako cel (FRESNEL, EMU_FRESNEL, EMU_MPS)
+* Token autoryzacyjny
