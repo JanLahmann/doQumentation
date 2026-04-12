@@ -1,0 +1,334 @@
+---
+title: "AQC-Tensor 시작하기"
+sidebar_label: "AQC-Tensor 시작하기"
+description: "근사 양자 컴파일을 사용하여 Circuit을 압축하는 예제 워크플로"
+notebook_path: "guides/qiskit-addons-aqc-get-started.ipynb"
+---
+
+{/* doqumentation-source-hash: 5f94ca58 */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-addons-aqc-get-started.ipynb" />
+
+
+
+# 텐서 네트워크를 활용한 근사 양자 컴파일(AQC-Tensor) 시작하기 {#getting-started-with-approximate-quantum-compilation-with-tensor-networks-aqc-tensor}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>패키지 버전</b></summary>
+
+이 페이지의 코드는 다음 요구 사항을 사용하여 개발되었습니다.
+이 버전 이상을 사용하시길 권장합니다.
+
+```
+qiskit[all]~=2.3.0
+qiskit-aer~=0.17
+qiskit-addon-utils~=0.3.0
+qiskit-addon-aqc-tensor[aer,quimb-jax]~=0.2.0; sys.platform != 'darwin'
+scipy~=1.16.3
+```
+</details>
+이 가이드는 AQC-Tensor를 시작하기 위한 간단한 동작 예제를 보여줍니다. 이 예제에서는 횡방향 자기장 이징 모델의 시간 진화를 시뮬레이션하는 Trotter Circuit을 가져와 AQC-Tensor 방법을 사용하여 결과 Circuit 깊이를 줄이게 됩니다. 또한 이 예제에서는 문제 생성기를 위한 `qiskit-addon-utils` 패키지, 텐서 네트워크 시뮬레이션을 위한 `qiskit-aer`, 그리고 파라미터 최적화를 위한 `scipy`가 필요합니다.
+
+시작하기 전에, 횡방향 자기장 이징 모델의 해밀토니안은 다음과 같은 형태를 가짐을 상기하세요.
+
+$$ \mathcal{H}_{Ising} = \sum_{i=1}^N J_{i,(i+1)}Z_iZ_{i+1} + h_i X_i $$
+
+여기서 주기적 경계 조건을 가정하며, 이는 $i=10$일 때 $i+1=11\rightarrow 1$을 의미하고, $J$는 두 사이트 사이의 결합 강도이며 $h$는 외부 자기장의 세기입니다.
+
+다음 코드 스니펫은 주기적 경계 조건을 가진 10-사이트 이징 체인의 해밀토니안을 생성합니다.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-aer scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import (
+    generate_time_evolution_circuit,
+)
+from qiskit_addon_aqc_tensor import generate_ansatz_from_circuit
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+from qiskit_aer import AerSimulator
+from scipy.optimize import OptimizeResult, minimize
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit circle on this coupling map
+reduced_coupling_map = coupling_map.reduce(
+    [0, 13, 1, 14, 10, 16, 4, 15, 3, 9]
+)
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+```
+
+## 고전 및 양자 실행을 위한 시간 진화를 두 부분으로 분할 {#split-the-time-evolution-into-two-pieces-for-classical-and-quantum-execution}
+
+이 예제의 전반적인 목표는 모델 해밀토니안의 시간 진화를 시뮬레이션하는 것입니다. 여기서는 Trotter 진화를 통해 이를 수행하며, 두 부분으로 나누게 됩니다.
+
+1. 행렬 곱 상태(MPS)를 사용하여 시뮬레이션 가능한 초기 부분. 이것이 AQC-Tensor를 사용하여 '컴파일'될 부분입니다.
+2. 양자 하드웨어에서 실행될 후속 부분.
+
+시스템을 시간 $t_f=5$까지 진화시키고, AQC-Tensor를 사용하여 $t=4$까지의 시간 진화를 압축한 다음, $t_f$까지 일반 Trotter 단계를 사용하여 진화시키도록 선택하겠습니다.
+
+여기서부터 두 개의 Circuit을 생성합니다. 하나는 AQC-Tensor를 사용하여 압축될 Circuit이고, 다른 하나는 QPU에서 실행될 Circuit입니다. 첫 번째 Circuit의 경우, 행렬 곱 상태를 사용하여 고전적으로 시뮬레이션될 것이므로 Trotter 오차를 최소화하기 위해 충분한 수의 레이어를 사용합니다. 한편 $t_i=4$에서 $t_f=5$까지의 시간 진화를 시뮬레이션하는 두 번째 Circuit은 깊이를 최소화하기 위해 훨씬 적은 수의 레이어를 사용합니다.
+
+```python
+# Generate circuit to be compressed
+aqc_evolution_time = 4.0
+aqc_target_num_trotter_steps = 45
+
+aqc_target_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+
+# Generate circuit to execute on hardware
+subsequent_evolution_time = 1.0
+subsequent_num_trotter_steps = 5
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+```
+
+비교 목적으로 세 번째 Circuit도 생성합니다. $t=4$까지 진화하지만 $t_i=4$에서 $t_f=5$까지 진화하는 두 번째 Circuit과 동일한 수의 레이어를 가진 Circuit입니다. 이것은 AQC-Tensor 기법을 사용하지 않았을 경우 실행했을 Circuit입니다. 지금은 이것을 *비교* Circuit이라고 부르겠습니다.
+
+```python
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps
+    / subsequent_evolution_time
+    * aqc_evolution_time
+)
+aqc_comparison_num_trotter_steps
+
+comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+## Ansatz 생성 및 MPS 시뮬레이션 구성 {#generate-ansatz-and-construct-mps-simulation}
+
+다음으로 최적화할 ansatz를 생성합니다. 첫 번째 Circuit과 동일한 진화 시간($t_i=0$에서 $t_f=4$까지)으로 진화하지만 Trotter 단계 수는 더 적습니다.
+
+Circuit이 생성되면, AQC-Tensor의 `generate_ansatz_from_circuit()` 함수에 전달합니다. 이 함수는 2-Qubit 연결성을 분석하여 두 가지를 반환합니다. 첫 번째는 동일한 2-Qubit 연결성을 가진 생성된 ansatz Circuit이고, 두 번째는 ansatz에 대입했을 때 입력 Circuit을 생성하는 파라미터 집합입니다.
+
+```python
+aqc_ansatz_num_trotter_steps = 5
+
+aqc_good_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit, qubits_initially_zero=True
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-aqc-get-started/extracted-outputs/e08edb92-da1f-4131-85f5-f89006f7a2dd-0.svg)
+
+다음으로 AQC로 근사할 상태의 MPS 표현을 구축합니다. 또한 비교 Circuit이 준비하는 상태와 목표 상태를 생성하는 Circuit(더 많은 Trotter 단계를 사용) 사이의 충실도 $|\langle\psi_1 | \psi_2 \rangle |^2$를 계산합니다.
+
+```python
+# Generate MPS simulator settings and obtain the MPS representation of the target state
+simulator_settings = AerSimulator(
+    method="matrix_product_state",
+    matrix_product_state_max_bond_dimension=100,
+)
+aqc_target_mps = tensornetwork_from_circuit(
+    aqc_target_circuit, simulator_settings
+)
+
+# Compute the fidelity between the MPS representation of the target state and the state produced by the comparison circuit
+comparison_mps = tensornetwork_from_circuit(
+    comparison_circuit, simulator_settings
+)
+comparison_fidelity = (
+    abs(compute_overlap(comparison_mps, aqc_target_mps)) ** 2
+)
+print(f"Comparison fidelity: {comparison_fidelity}")
+```
+
+```text
+Comparison fidelity: 0.9997111919739693
+```
+
+## MPS를 사용하여 Ansatz의 파라미터 최적화 {#optimize-the-parameters-of-the-ansatz-using-the-mps}
+
+마지막으로, ansatz Circuit이 `comparison_fidelity`보다 더 높은 충실도로 목표 상태를 생성하도록 최적화합니다. 최소화할 비용 함수는 `MaximizeStateFidelity`이며 scipy의 L-BFGS 최적화기를 사용하여 최적화됩니다.
+
+```python
+objective = MaximizeStateFidelity(
+    aqc_target_mps, aqc_ansatz, simulator_settings
+)
+
+stopping_point = 1 - comparison_fidelity
+
+def callback(intermediate_result: OptimizeResult):
+    print(f"Intermediate result: Fidelity {1 - intermediate_result.fun:.8}")
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": 100},
+    callback=callback,
+)
+if (
+    result.status
+    not in (
+        0,
+        1,
+        99,
+    )
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(
+        f"Optimization failed: {result.message} (status={result.status})"
+    )
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+Intermediate result: Fidelity 0.95084365
+```
+
+```text
+Intermediate result: Fidelity 0.98409893
+```
+
+```text
+Intermediate result: Fidelity 0.99142033
+```
+
+```text
+Intermediate result: Fidelity 0.99521405
+```
+
+```text
+Intermediate result: Fidelity 0.99566673
+```
+
+```text
+Intermediate result: Fidelity 0.99650054
+```
+
+```text
+Intermediate result: Fidelity 0.99683487
+```
+
+```text
+Intermediate result: Fidelity 0.99720426
+```
+
+```text
+Intermediate result: Fidelity 0.99761726
+```
+
+```text
+Intermediate result: Fidelity 0.99809073
+```
+
+```text
+Intermediate result: Fidelity 0.99838244
+```
+
+```text
+Intermediate result: Fidelity 0.99861841
+```
+
+```text
+Intermediate result: Fidelity 0.99874617
+```
+
+```text
+Intermediate result: Fidelity 0.99892696
+```
+
+```text
+Intermediate result: Fidelity 0.99908129
+```
+
+```text
+Intermediate result: Fidelity 0.99917737
+```
+
+```text
+Intermediate result: Fidelity 0.99925456
+```
+
+```text
+Intermediate result: Fidelity 0.99933134
+```
+
+```text
+Intermediate result: Fidelity 0.99947173
+```
+
+```text
+Intermediate result: Fidelity 0.99956469
+```
+
+```text
+Intermediate result: Fidelity 0.99964488
+```
+
+```text
+Intermediate result: Fidelity 0.99967419
+```
+
+```text
+Intermediate result: Fidelity 0.99968821
+```
+
+```text
+Intermediate result: Fidelity 0.9997448
+Done after 24 iterations.
+```
+
+이 시점에서 우리는 AQC를 사용하지 않았을 때 비교 Circuit이 생성했을 것보다 더 높은 충실도로 목표 상태를 생성하는 파라미터 집합을 갖게 되었습니다. 이 최적 파라미터로 압축된 Circuit은 원래 Circuit보다 Trotter 오차가 *적고* 깊이도 *더 얕습니다*.
+
+마지막 단계로, 다음 코드 스니펫은 Transpiler 파이프라인에 전달하여 양자 하드웨어에서 실행할 수 있는 전체 시간 진화 Circuit을 구성합니다.
+
+```python
+final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+final_circuit.compose(subsequent_circuit, inplace=True)
+final_circuit.draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/docs/images/guides/qiskit-addons-aqc-get-started/extracted-outputs/45abbabe-0289-4a09-aa99-89f70bdc535d-0.svg)
+
+## 다음 단계 {#next-steps}
+
+<Admonition type="tip" title="권장 사항">
+    - [시간 진화 Circuit을 위한 근사 양자 컴파일](/tutorials/approximate-quantum-compilation-for-time-evolution) 튜토리얼을 시도해 보세요.
+</Admonition>
