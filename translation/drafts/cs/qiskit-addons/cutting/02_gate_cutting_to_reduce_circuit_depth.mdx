@@ -1,0 +1,234 @@
+---
+title: "Gate Cutting pro snížení hloubky Circuit"
+sidebar_label: "Gate Cutting pro snížení hloubky Circuit"
+notebook_path: "qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.ipynb"
+---
+{/* doqumentation-source-hash: 04893c53 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.ipynb" />
+
+
+V tomto tutoriálu snížíme hloubku Circuit tím, že přestřihneme vzdálené Gate, čímž se vyhneme SWAP Gate, které by jinak byly zavedeny při routování.
+
+Toto jsou kroky, které v tomto [Qiskit vzoru](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) provedeme:
+
+- **Krok 1: Namapování problému na kvantové Circuit a operátory**:
+    - Namapuj hamiltonián na kvantový Circuit.
+- **Krok 2: Optimalizace pro cílový hardware** [_Využívá cutting addon_]:
+    - <font color='#0F62FE'>Přestřihni Circuit a observablu.</font>
+    - Transpiluj dílčí experimenty pro hardware.
+- **Krok 3: Spuštění na cílovém hardwaru**:
+    - Spusť dílčí experimenty získané v Kroku 2 pomocí primitiva `Sampler`.
+- **Krok 4: Následné zpracování výsledků** [_Využívá cutting addon_]:
+    - <font color='#0F62FE'>Zkombinuj výsledky Kroku 3 a rekonstruuj očekávanou hodnotu sledované observably.</font>
+## Krok 1: Mapování {#krok-1-mapování}
+
+### Vytvoření Circuit pro spuštění na Backend {#vytvoření-circuit-pro-spuštění-na-backend}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+circuit = efficient_su2(num_qubits=4, entanglement="circular")
+circuit.assign_parameters([0.4] * len(circuit.parameters), inplace=True)
+circuit.draw("mpl", scale=0.8)
+```
+
+![Diagram kvantového Circuit](./output_1.png)
+
+### Specifikace observably {#specifikace-observably}
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+```
+
+## Krok 2: Optimalizace {#krok-2-optimalizace}
+
+### Specifikace Backend {#specifikace-backend}
+
+Můžeš zadat buď falešný Backend, nebo hardwarový Backend z Qiskit Runtime.
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+
+backend = FakeManilaV2()
+```
+
+### Transpilace Circuit, vizualizace SWAP a zaznamenání hloubky {#transpilace-circuit-vizualizace-swap-a-zaznamenání-hloubky}
+
+Zvolíme rozvržení, které vyžaduje dva SWAP pro provedení Gate mezi Qubit 3 a 0 a další dva SWAP pro vrácení Qubit do jejich počátečních pozic.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=1, backend=backend, initial_layout=[0, 1, 2, 3]
+)
+
+transpiled_qc = pass_manager.run(circuit)
+print(f"Transpiled circuit depth: {transpiled_qc.depth(lambda x: len(x.qubits) >= 2)}")
+```
+
+```text
+Transpiled circuit depth: 30
+```
+
+```python
+transpiled_qc.draw("mpl", scale=0.4, idle_wires=False, fold=-1)
+```
+
+![Diagram kvantového Circuit](./output_2.png)
+
+### Nahrazení vzdálených Gate pomocí `TwoQubitQPDGate` zadáním jejich indexů {#nahrazení-vzdálených-gate-pomocí-twoqubitqpdgate-zadáním-jejich-indexů}
+
+`cut_gates` nahradí Gate na zadaných indexech instancemi `TwoQubitQPDGate` a také vrátí seznam instancí `QPDBasis` — jednu pro každý rozklad Gate.
+
+```python
+from qiskit_addon_cutting import cut_gates
+
+# Find the indices of the distant gates
+cut_indices = [
+    i
+    for i, instruction in enumerate(circuit.data)
+    if {circuit.find_bit(q)[0] for q in instruction.qubits} == {0, 3}
+]
+
+# Decompose distant CNOTs into TwoQubitQPDGate instances
+qpd_circuit, bases = cut_gates(circuit, cut_indices)
+
+qpd_circuit.draw("mpl", scale=0.8)
+```
+
+![Diagram kvantového Circuit](./output_3.png)
+
+### Generování dílčích experimentů pro spuštění na Backend {#generování-dílčích-experimentů-pro-spuštění-na-backend}
+
+`generate_cutting_experiments` přijímá Circuit obsahující instance `TwoQubitQPDGate` a observably jako `PauliList`.
+
+Aby bylo možné simulovat očekávanou hodnotu Circuit v plné velikosti, generuje se z sdružené kvazipravděpodobnostní distribuce rozložených Gate mnoho dílčích experimentů, které se poté spouštějí na jednom nebo více Backend. Počet vzorků odebraných z distribuce je řízen parametrem `num_samples` a pro každý jedinečný vzorek je uveden jeden kombinovaný koeficient. Více informací o způsobu výpočtu koeficientů najdeš v [vysvětlujícím materiálu](../explanation/index.rst).
+
+**Poznámka:** Argument ``observables`` funkce `generate_cutting_experiments` je typu `PauliList`. Koeficienty a fáze členů observably jsou při rozkladu problému a spouštění dílčích experimentů ignorovány. Mohou být znovu použity při rekonstrukci očekávané hodnoty.
+
+```python
+import numpy as np
+from qiskit_addon_cutting import generate_cutting_experiments
+
+# Generate the subexperiments and sampling coefficients
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=qpd_circuit, observables=observable.paulis, num_samples=np.inf
+)
+```
+
+### Výpočet vzorkovací režie pro zvolené přestřižení {#výpočet-vzorkovací-režie-pro-zvolené-přestřižení}
+
+Zde přestřihneme tři CNOT Gate, což má za následek vzorkovací režii $9^3$.
+
+Více informací o vzorkovací režii způsobené přestřižením Circuit najdeš v [vysvětlujícím materiálu](../explanation/index.rst).
+
+```python
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 729.0
+```
+
+### Ukázka, že dílčí experimenty QPD budou po přestřižení vzdálených Gate mělčí {#ukázka-že-dílčí-experimenty-qpd-budou-po-přestřižení-vzdálených-gate-mělčí}
+
+Zde je příklad libovolně zvoleného dílčího experimentu generovaného z QPD Circuit. Jeho hloubka byla snížena o více než polovinu. Aby bylo možné rekonstruovat očekávanou hodnotu hlubšího Circuit, je třeba vygenerovat a vyhodnotit mnoho těchto probabilistických dílčích experimentů.
+
+```python
+# Transpile the decomposed circuit to the same layout
+transpiled_qpd_circuit = pass_manager.run(subexperiments[100])
+
+print(
+    f"Original circuit depth after transpile: {transpiled_qc.depth(lambda x: len(x.qubits) >= 2)}"
+)
+print(
+    f"QPD subexperiment depth after transpile: {transpiled_qpd_circuit.depth(lambda x: len(x.qubits) >= 2)}"
+)
+transpiled_qpd_circuit.draw("mpl", scale=0.8, idle_wires=False, fold=-1)
+```
+
+```text
+Original circuit depth after transpile: 30
+QPD subexperiment depth after transpile: 7
+```
+
+![Diagram kvantového Circuit](./output_4.png)
+
+### Příprava dílčích experimentů pro Backend {#příprava-dílčích-experimentů-pro-backend}
+
+```python
+# Transpile the subeperiments to the backend's instruction set architecture (ISA)
+isa_subexperiments = pass_manager.run(subexperiments)
+```
+
+## Krok 3: Spuštění {#krok-3-spuštění}
+
+### Spuštění dílčích experimentů pomocí primitiva Qiskit Runtime Sampler {#spuštění-dílčích-experimentů-pomocí-primitiva-qiskit-runtime-sampler}
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+
+# Set up the Qiskit Runtime Sampler primitive.  For a fake backend, this will use a local simulator.
+sampler = SamplerV2(backend)
+
+# Submit the subexperiments
+job = sampler.run(isa_subexperiments)
+```
+
+```python
+# Retrieve the results
+results = job.result()
+```
+
+## Krok 4: Následné zpracování {#krok-4-následné-zpracování}
+
+### Rekonstrukce očekávané hodnoty {#rekonstrukce-očekávané-hodnoty}
+
+Rekonstruuj očekávané hodnoty pro každý člen observably a zkombinuj je pro rekonstrukci očekávané hodnoty původní observably.
+
+```python
+from qiskit_addon_cutting import reconstruct_expectation_values
+
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    observable.paulis,
+)
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+```
+
+### Porovnání rekonstruované očekávané hodnoty s přesnou očekávanou hodnotou původního Circuit a observably {#porovnání-rekonstruované-očekávané-hodnoty-s-přesnou-očekávanou-hodnotou-původního-circuit-a-observably}
+
+```python
+from qiskit_aer.primitives import EstimatorV2
+
+estimator = EstimatorV2()
+exact_expval = estimator.run([(circuit, observable)]).result()[0].data.evs
+print(f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}")
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}")
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.44018555
+Exact expectation value: 0.50497603
+Error in estimation: -0.06479049
+Relative error in estimation: -0.12830408
+```
+
+<TutorialFeedback />
