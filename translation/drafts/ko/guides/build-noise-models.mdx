@@ -1,0 +1,551 @@
+---
+title: "노이즈 모델 구축하기"
+sidebar_label: "노이즈 모델 구축하기"
+description: "Qiskit Aer를 사용하여 노이즈 시뮬레이션을 위한 커스텀 노이즈 모델 구축하기"
+notebook_path: "guides/build-noise-models.ipynb"
+---
+
+{/* doqumentation-source-hash: dfd05919 */}
+
+<OpenInLabBanner notebookPath="guides/build-noise-models.ipynb" />
+
+
+
+# 노이즈 모델 구축하기 {#build-noise-models}
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<details>
+<summary><b>패키지 버전</b></summary>
+
+이 페이지의 코드는 다음 요구 사항을 사용하여 개발되었습니다.
+아래 버전 또는 그 이상을 사용하는 것을 권장합니다.
+
+```
+qiskit[all]~=2.3.0
+qiskit-ibm-runtime~=0.43.1
+qiskit-aer~=0.17
+```
+</details>
+이 페이지에서는 Qiskit Aer의 [`noise`](https://qiskit.org/ecosystem/aer/apidocs/aer_noise.html) 모듈을 사용하여 오류가 있는 환경에서 양자 회로를 시뮬레이션하기 위한 노이즈 모델을 구축하는 방법을 설명합니다. 이는 노이즈가 있는 양자 프로세서를 에뮬레이션하고, 양자 알고리즘 실행에 노이즈가 미치는 영향을 연구하는 데 유용합니다.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Kraus, SuperOp
+from qiskit.visualization import plot_histogram
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_aer import AerSimulator
+
+# Import from Qiskit Aer noise module
+from qiskit_aer.noise import (
+    NoiseModel,
+    QuantumError,
+    ReadoutError,
+    depolarizing_error,
+    pauli_error,
+    thermal_relaxation_error,
+)
+```
+
+## Qiskit Aer `noise` 모듈 {#qiskit-aer-noise-module}
+
+Qiskit Aer의 `noise` 모듈에는 시뮬레이션을 위한 커스텀 노이즈 모델을 구축하는 Python 클래스가 포함되어 있습니다. 세 가지 핵심 클래스가 있습니다:
+
+1. 노이즈 시뮬레이션에 사용되는 노이즈 모델을 저장하는 `NoiseModel` 클래스
+2. CPTP Gate 오류를 설명하는 `QuantumError` 클래스. 이 오류는 다음에 적용될 수 있습니다:
+    * *Gate* 또는 *reset* 명령어 이후
+    * *measure* 명령어 이전
+
+3. 고전적인 판독 오류를 설명하는 `ReadoutError` 클래스
+
+## Backend로부터 노이즈 모델 초기화하기 {#initializing-a-noise-model-from-a-backend}
+
+물리적 Backend의 최신 캘리브레이션 데이터에서 가져온 파라미터로 노이즈 모델을 초기화할 수 있습니다:
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.backend("ibm_fez")
+noise_model = NoiseModel.from_backend(backend)
+```
+
+이렇게 하면 해당 Backend를 사용할 때 발생하는 오류를 대략적으로 근사하는 노이즈 모델이 생성됩니다. 노이즈 모델의 파라미터를 더 세밀하게 제어하고 싶다면, 이 페이지의 나머지 부분에서 설명하는 것처럼 직접 노이즈 모델을 만들어야 합니다.
+
+## 양자 오류 {#quantum-errors}
+
+`QuantumError` 객체를 직접 다루는 대신, 특정 유형의 파라미터화된 양자 오류를 자동으로 생성하는 다양한 헬퍼 함수가 있습니다. 이 함수들은 `noise` 모듈에 포함되어 있으며, 양자 컴퓨팅 연구에서 일반적으로 사용되는 많은 오류 유형을 지원합니다. 함수 이름과 반환하는 오류 유형은 다음과 같습니다:
+
+| 표준 오류 함수 | 상세 설명 |
+| --- | --- |
+| `kraus_error` | Kraus 행렬 목록 $[K_0, ...]$으로 주어지는 일반적인 n-Qubit CPTP 오류 채널 |
+| `mixed_unitary_error` | 유니터리 행렬과 확률의 목록 $[(U_0, p_0),...]$으로 주어지는 n-Qubit 혼합 유니터리 오류 |
+| `coherent_unitary_error` | 단일 유니터리 행렬 $U$로 주어지는 n-Qubit 결맞음 유니터리 오류 |
+| `pauli_error` | 파울리 연산자와 확률의 목록 $[(P_0, p_0),...]$으로 주어지는 n-Qubit 파울리 오류 채널 (혼합 유니터리) |
+| `depolarizing_error` | 탈분극화 확률 $p$로 파라미터화된 n-Qubit 탈분극화 오류 채널 |
+| `reset_error` | $\vert0\rangle$, $\vert1\rangle$ 상태로 리셋될 확률 $p_0, p_1$로 파라미터화된 단일 Qubit 리셋 오류 |
+| `thermal_relaxation_error` | 완화 시간 상수 $T_1$, $T_2$, Gate 시간 $t$, 여기 상태 열적 분포 $p_1$로 파라미터화된 단일 Qubit 열적 완화 채널 |
+| `phase_amplitude_damping_error` | 진폭 감쇠 파라미터 $\lambda$, 위상 감쇠 파라미터 $\gamma$, 여기 상태 열적 분포 $p_1$로 주어지는 단일 Qubit 일반화된 결합 위상 및 진폭 감쇠 오류 채널 |
+| `amplitude_damping_error` | 진폭 감쇠 파라미터 $\lambda$와 여기 상태 열적 분포 $p_1$로 주어지는 단일 Qubit 일반화된 진폭 감쇠 오류 채널 |
+| `phase_damping_error` | 위상 감쇠 파라미터 $\gamma$로 주어지는 단일 Qubit 위상 감쇠 오류 채널 |
+
+### 양자 오류 결합하기 {#combining-quantum-errors}
+
+`QuantumError` 인스턴스는 합성(composition), 텐서 곱(tensor product), 텐서 확장(reversed order tensor product)을 사용하여 결합함으로써 새로운 `QuantumError`를 만들 수 있습니다:
+
+ * 합성: $\cal{E}(\rho)=\cal{E_2}(\cal{E_1}(\rho))$ → `error = error1.compose(error2)`
+ * 텐서 곱: $\cal{E}(\rho) =(\cal{E_1}\otimes\cal{E_2})(\rho)$ → `error = error1.tensor(error2)`
+ * 확장 곱: $\cal{E}(\rho) =(\cal{E_2}\otimes\cal{E_1})(\rho)$ → `error = error1.expand(error2)`
+
+### 예시 {#example}
+
+5% 단일 Qubit 비트 반전 오류를 구성하려면 다음과 같이 합니다:
+
+```python
+# Construct a 1-qubit bit-flip and phase-flip errors
+p_error = 0.05
+bit_flip = pauli_error([("X", p_error), ("I", 1 - p_error)])
+phase_flip = pauli_error([("Z", p_error), ("I", 1 - p_error)])
+print(bit_flip)
+print(phase_flip)
+```
+
+```text
+QuantumError on 1 qubits. Noise circuits:
+  P(0) = 0.05, Circuit = 
+   ┌───┐
+q: ┤ X ├
+   └───┘
+  P(1) = 0.95, Circuit = 
+   ┌───┐
+q: ┤ I ├
+   └───┘
+QuantumError on 1 qubits. Noise circuits:
+  P(0) = 0.05, Circuit = 
+   ┌───┐
+q: ┤ Z ├
+   └───┘
+  P(1) = 0.95, Circuit = 
+   ┌───┐
+q: ┤ I ├
+   └───┘
+```
+
+```python
+# Compose two bit-flip and phase-flip errors
+bitphase_flip = bit_flip.compose(phase_flip)
+print(bitphase_flip)
+```
+
+```text
+QuantumError on 1 qubits. Noise circuits:
+  P(0) = 0.0025000000000000005, Circuit = 
+   ┌───┐┌───┐
+q: ┤ X ├┤ Z ├
+   └───┘└───┘
+  P(1) = 0.0475, Circuit = 
+   ┌───┐┌───┐
+q: ┤ X ├┤ I ├
+   └───┘└───┘
+  P(2) = 0.0475, Circuit = 
+   ┌───┐┌───┐
+q: ┤ I ├┤ Z ├
+   └───┘└───┘
+  P(3) = 0.9025, Circuit = 
+   ┌───┐┌───┐
+q: ┤ I ├┤ I ├
+   └───┘└───┘
+```
+
+```python
+# Tensor product two bit-flip and phase-flip errors with
+# bit-flip on qubit-0, phase-flip on qubit-1
+error2 = phase_flip.tensor(bit_flip)
+print(error2)
+```
+
+```text
+QuantumError on 2 qubits. Noise circuits:
+  P(0) = 0.0025000000000000005, Circuit = 
+     ┌───┐
+q_0: ┤ X ├
+     ├───┤
+q_1: ┤ Z ├
+     └───┘
+  P(1) = 0.0475, Circuit = 
+     ┌───┐
+q_0: ┤ I ├
+     ├───┤
+q_1: ┤ Z ├
+     └───┘
+  P(2) = 0.0475, Circuit = 
+     ┌───┐
+q_0: ┤ X ├
+     ├───┤
+q_1: ┤ I ├
+     └───┘
+  P(3) = 0.9025, Circuit = 
+     ┌───┐
+q_0: ┤ I ├
+     ├───┤
+q_1: ┤ I ├
+     └───┘
+```
+
+### QuantumChannel 연산자와의 상호 변환 {#converting-to-and-from-quantumchannel-operators}
+
+Qiskit Aer의 `QuantumError` 객체와 Qiskit의 `QuantumChannel` 객체 사이에서 서로 변환할 수도 있습니다.
+
+```python
+# Convert to Kraus operator
+bit_flip_kraus = Kraus(bit_flip)
+print(bit_flip_kraus)
+```
+
+```text
+Kraus([[[-9.74679434e-01+0.j,  0.00000000e+00+0.j],
+        [ 0.00000000e+00+0.j, -9.74679434e-01+0.j]],
+
+       [[ 0.00000000e+00+0.j,  2.23606798e-01+0.j],
+        [ 2.23606798e-01+0.j, -4.96506831e-17+0.j]]],
+      input_dims=(2,), output_dims=(2,))
+```
+
+```python
+# Convert to Superoperator
+phase_flip_sop = SuperOp(phase_flip)
+print(phase_flip_sop)
+```
+
+```text
+SuperOp([[1. +0.j, 0. +0.j, 0. +0.j, 0. +0.j],
+         [0. +0.j, 0.9+0.j, 0. +0.j, 0. +0.j],
+         [0. +0.j, 0. +0.j, 0.9+0.j, 0. +0.j],
+         [0. +0.j, 0. +0.j, 0. +0.j, 1. +0.j]],
+        input_dims=(2,), output_dims=(2,))
+```
+
+```python
+# Convert back to a quantum error
+print(QuantumError(bit_flip_kraus))
+
+# Check conversion is equivalent to original error
+QuantumError(bit_flip_kraus) == bit_flip
+```
+
+```text
+QuantumError on 1 qubits. Noise circuits:
+  P(0) = 1.0, Circuit = 
+   ┌───────┐
+q: ┤ kraus ├
+   └───────┘
+```
+
+```text
+True
+```
+
+### 판독 오류 {#readout-error}
+
+고전적인 판독 오류는 할당 확률 벡터 $P(A|B)$의 목록으로 지정됩니다:
+
+  * $A$는 *기록된* 고전 비트 값입니다
+  * $B$는 측정에서 반환된 *실제* 비트 값입니다
+
+예를 들어, 하나의 Qubit에 대해: $ P(A|B) = [P(A|0), P(A|1)]$.
+
+```python
+# Measurement misassignment probabilities
+p0given1 = 0.1
+p1given0 = 0.05
+
+ReadoutError([[1 - p1given0, p1given0], [p0given1, 1 - p0given1]])
+```
+
+```text
+ReadoutError([[0.95 0.05]
+ [0.1  0.9 ]])
+```
+
+판독 오류도 양자 오류와 마찬가지로 `compose`, `tensor`, `expand`를 사용하여 결합할 수 있습니다.
+
+## 노이즈 모델에 오류 추가하기 {#add-errors-to-a-noise-model}
+
+노이즈 모델에 양자 오류를 추가할 때는 적용할 *명령어*의 유형과 적용할 Qubit을 지정해야 합니다. 양자 오류에는 두 가지 경우가 있습니다:
+
+ 1. 전체 Qubit 양자 오류
+ 2. 특정 Qubit 양자 오류
+
+### 1. 전체 Qubit 양자 오류 {#1-all-qubit-quantum-error}
+
+이 방식은 어떤 Qubit에 적용되는지에 관계없이 명령어가 나타날 때마다 동일한 오류를 적용합니다.
+
+`noise_model.add_all_qubit_quantum_error(error, instructions)`로 추가합니다:
+
+```python
+# Create an empty noise model
+noise_model = NoiseModel()
+
+# Add depolarizing error to all single qubit u1, u2, u3 gates
+error = depolarizing_error(0.05, 1)
+noise_model.add_all_qubit_quantum_error(error, ["u1", "u2", "u3"])
+
+# Print noise model info
+print(noise_model)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u1', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'u1']
+  All-qubits errors: ['u1', 'u2', 'u3']
+```
+
+### 2. 특정 Qubit 양자 오류 {#2-specific-qubit-quantum-error}
+
+이 방식은 지정된 Qubit 목록에 작용하는 명령어가 나타날 때마다 오류를 적용합니다. Qubit의 순서가 중요합니다. 예를 들어, 2-Qubit Gate에서 Qubit [0, 1]에 적용되는 오류와 Qubit [1, 0]에 적용되는 오류는 서로 다릅니다.
+
+`noise_model.add_quantum_error(error, instructions, qubits)`로 추가합니다:
+
+```python
+# Create an empty noise model
+noise_model = NoiseModel()
+
+# Add depolarizing error to all single qubit u1, u2, u3 gates on qubit 0 only
+error = depolarizing_error(0.05, 1)
+noise_model.add_quantum_error(error, ["u1", "u2", "u3"], [0])
+
+# Print noise model info
+print(noise_model)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u1', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'u1']
+  Qubits with noise: [0]
+  Specific qubit errors: [('u1', (0,)), ('u2', (0,)), ('u3', (0,))]
+```
+
+### 비국소 Qubit 양자 오류에 관한 참고 사항 {#note-on-non-local-qubit-quantum-error}
+
+`NoiseModel`은 비국소 Qubit 양자 오류의 추가를 지원하지 않습니다. 이는 `NoiseModel` 외부에서 처리해야 합니다. 따라서 자신의 조건에 맞게 Circuit에 양자 오류를 삽입해야 한다면, [커스텀 Transpiler 패스 작성하기](./custom-transpiler-pass) (`TransformationPass`)를 통해 시뮬레이터 실행 직전에 해당 패스를 실행하는 것이 좋습니다.
+
+### 노이즈 모델로 노이즈 시뮬레이션 실행하기 {#execute-a-noisy-simulation-with-a-noise-model}
+
+`AerSimulator(noise_model=noise_model)` 명령어는 주어진 노이즈 모델로 구성된 시뮬레이터를 반환합니다. 시뮬레이터의 노이즈 모델을 설정하는 것 외에도, 노이즈 모델의 Gate에 따라 시뮬레이터의 기저 Gate도 재정의합니다.
+## 노이즈 모델 예시 {#noise-model-examples}
+
+이제 노이즈 모델의 몇 가지 예시를 살펴보겠습니다. 시연에는 n-Qubit GHZ 상태를 생성하는 간단한 테스트 Circuit을 사용합니다.
+
+```python
+# System Specification
+n_qubits = 4
+circ = QuantumCircuit(n_qubits)
+
+# Test Circuit
+circ.h(0)
+for qubit in range(n_qubits - 1):
+    circ.cx(qubit, qubit + 1)
+circ.measure_all()
+print(circ)
+```
+
+```text
+┌───┐                ░ ┌─┐         
+   q_0: ┤ H ├──■─────────────░─┤M├─────────
+        └───┘┌─┴─┐           ░ └╥┘┌─┐      
+   q_1: ─────┤ X ├──■────────░──╫─┤M├──────
+             └───┘┌─┴─┐      ░  ║ └╥┘┌─┐   
+   q_2: ──────────┤ X ├──■───░──╫──╫─┤M├───
+                  └───┘┌─┴─┐ ░  ║  ║ └╥┘┌─┐
+   q_3: ───────────────┤ X ├─░──╫──╫──╫─┤M├
+                       └───┘ ░  ║  ║  ║ └╥┘
+meas: 4/════════════════════════╩══╩══╩══╩═
+                                0  1  2  3
+```
+
+### 이상적인 시뮬레이션 {#ideal-simulation}
+
+```python
+# Ideal simulator and execution
+sim_ideal = AerSimulator()
+result_ideal = sim_ideal.run(circ).result()
+plot_histogram(result_ideal.get_counts(0))
+```
+
+![이전 코드 셀의 출력](/docs/images/guides/build-noise-models/extracted-outputs/6fe5c53d-3536-471f-aceb-b4b48a8a5889-0.svg)
+
+## 노이즈 예시 1: 기본 비트 반전 오류 노이즈 모델 {#noise-example-1-basic-bit-flip-error-noise-model}
+
+양자 정보 이론 연구에서 흔히 사용되는 간단한 노이즈 모델 예시를 살펴보겠습니다.
+
+* 단일 Qubit Gate를 적용할 때, 확률 `p_gate1`로 Qubit의 상태를 반전합니다.
+* 2-Qubit Gate를 적용할 때, 각 Qubit에 단일 Qubit 오류를 적용합니다.
+* Qubit을 리셋할 때, 확률 `p_reset`으로 0 대신 1로 리셋합니다.
+* Qubit을 측정할 때, 확률 `p_meas`로 Qubit의 상태를 반전합니다.
+
+```python
+# Example error probabilities
+p_reset = 0.03
+p_meas = 0.1
+p_gate1 = 0.05
+
+# QuantumError objects
+error_reset = pauli_error([("X", p_reset), ("I", 1 - p_reset)])
+error_meas = pauli_error([("X", p_meas), ("I", 1 - p_meas)])
+error_gate1 = pauli_error([("X", p_gate1), ("I", 1 - p_gate1)])
+error_gate2 = error_gate1.tensor(error_gate1)
+
+# Add errors to noise model
+noise_bit_flip = NoiseModel()
+noise_bit_flip.add_all_qubit_quantum_error(error_reset, "reset")
+noise_bit_flip.add_all_qubit_quantum_error(error_meas, "measure")
+noise_bit_flip.add_all_qubit_quantum_error(error_gate1, ["u1", "u2", "u3"])
+noise_bit_flip.add_all_qubit_quantum_error(error_gate2, ["cx"])
+
+print(noise_bit_flip)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u1', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'measure', 'cx', 'reset', 'u1']
+  All-qubits errors: ['reset', 'measure', 'u1', 'u2', 'u3', 'cx']
+```
+
+### 노이즈 시뮬레이션 실행 {#execute-the-noisy-simulation}
+
+```python
+# Create noisy simulator backend
+sim_noise = AerSimulator(noise_model=noise_bit_flip)
+
+# Transpile circuit for noisy basis gates
+passmanager = generate_preset_pass_manager(
+    optimization_level=3, backend=sim_noise
+)
+circ_tnoise = passmanager.run(circ)
+
+# Run and get counts
+result_bit_flip = sim_noise.run(circ_tnoise).result()
+counts_bit_flip = result_bit_flip.get_counts(0)
+
+# Plot noisy output
+plot_histogram(counts_bit_flip)
+```
+
+![이전 코드 셀의 출력](/docs/images/guides/build-noise-models/extracted-outputs/e38e4581-7718-4dc0-a550-e6b3168bd400-0.svg)
+
+## 예시 2: T1/T2 열 이완 {#example-2-t1t2-thermal-relaxation}
+
+이번에는 Qubit 환경과의 열 이완을 기반으로 한 보다 현실적인 오류 모델을 살펴보겠습니다.
+* 각 Qubit은 열 이완 시간 상수 $T_1$과 위상 이완 시간 상수 $T_2$로 매개변수화됩니다.
+* $T_2 \le 2 T_1$ 조건을 반드시 만족해야 합니다.
+* 명령어의 오류율은 Gate 시간과 Qubit의 $T_1$, $T_2$ 값에 의해 결정됩니다.
+
+```python
+# T1 and T2 values for qubits 0-3
+T1s = np.random.normal(
+    50e3, 10e3, 4
+)  # Sampled from normal distribution mean 50 microsec
+T2s = np.random.normal(
+    70e3, 10e3, 4
+)  # Sampled from normal distribution mean 50 microsec
+
+# Truncate random T2s <= T1s
+T2s = np.array([min(T2s[j], 2 * T1s[j]) for j in range(4)])
+
+# Instruction times (in nanoseconds)
+time_u1 = 0  # virtual gate
+time_u2 = 50  # (single X90 pulse)
+time_u3 = 100  # (two X90 pulses)
+time_cx = 300
+time_reset = 1000  # 1 microsecond
+time_measure = 1000  # 1 microsecond
+
+# QuantumError objects
+errors_reset = [
+    thermal_relaxation_error(t1, t2, time_reset) for t1, t2 in zip(T1s, T2s)
+]
+errors_measure = [
+    thermal_relaxation_error(t1, t2, time_measure) for t1, t2 in zip(T1s, T2s)
+]
+errors_u1 = [
+    thermal_relaxation_error(t1, t2, time_u1) for t1, t2 in zip(T1s, T2s)
+]
+errors_u2 = [
+    thermal_relaxation_error(t1, t2, time_u2) for t1, t2 in zip(T1s, T2s)
+]
+errors_u3 = [
+    thermal_relaxation_error(t1, t2, time_u3) for t1, t2 in zip(T1s, T2s)
+]
+errors_cx = [
+    [
+        thermal_relaxation_error(t1a, t2a, time_cx).expand(
+            thermal_relaxation_error(t1b, t2b, time_cx)
+        )
+        for t1a, t2a in zip(T1s, T2s)
+    ]
+    for t1b, t2b in zip(T1s, T2s)
+]
+
+# Add errors to noise model
+noise_thermal = NoiseModel()
+for j in range(4):
+    noise_thermal.add_quantum_error(errors_reset[j], "reset", [j])
+    noise_thermal.add_quantum_error(errors_measure[j], "measure", [j])
+    noise_thermal.add_quantum_error(errors_u1[j], "u1", [j])
+    noise_thermal.add_quantum_error(errors_u2[j], "u2", [j])
+    noise_thermal.add_quantum_error(errors_u3[j], "u3", [j])
+    for k in range(4):
+        noise_thermal.add_quantum_error(errors_cx[j][k], "cx", [j, k])
+
+print(noise_thermal)
+```
+
+```text
+NoiseModel:
+  Basis gates: ['cx', 'id', 'rz', 'sx', 'u2', 'u3']
+  Instructions with noise: ['u3', 'u2', 'measure', 'cx', 'reset']
+  Qubits with noise: [0, 1, 2, 3]
+  Specific qubit errors: [('reset', (0,)), ('reset', (1,)), ('reset', (2,)), ('reset', (3,)), ('measure', (0,)), ('measure', (1,)), ('measure', (2,)), ('measure', (3,)), ('u2', (0,)), ('u2', (1,)), ('u2', (2,)), ('u2', (3,)), ('u3', (0,)), ('u3', (1,)), ('u3', (2,)), ('u3', (3,)), ('cx', (0, 0)), ('cx', (0, 1)), ('cx', (0, 2)), ('cx', (0, 3)), ('cx', (1, 0)), ('cx', (1, 1)), ('cx', (1, 2)), ('cx', (1, 3)), ('cx', (2, 0)), ('cx', (2, 1)), ('cx', (2, 2)), ('cx', (2, 3)), ('cx', (3, 0)), ('cx', (3, 1)), ('cx', (3, 2)), ('cx', (3, 3))]
+```
+
+### 노이즈 시뮬레이션 실행 {#execute-the-noisy-simulation-1}
+
+```python
+# Run the noisy simulation
+sim_thermal = AerSimulator(noise_model=noise_thermal)
+
+# Transpile circuit for noisy basis gates
+passmanager = generate_preset_pass_manager(
+    optimization_level=3, backend=sim_thermal
+)
+circ_tthermal = passmanager.run(circ)
+
+# Run and get counts
+result_thermal = sim_thermal.run(circ_tthermal).result()
+counts_thermal = result_thermal.get_counts(0)
+
+# Plot noisy output
+plot_histogram(counts_thermal)
+```
+
+![이전 코드 셀의 출력](/docs/images/guides/build-noise-models/extracted-outputs/284e4fb1-726e-4ecf-a200-cbfae8baaef7-0.svg)
+
+## 다음 단계 {#next-steps}
+
+<Admonition type="tip" title="권장 사항">
+  - 노이즈가 있는 Circuit을 시뮬레이션하려면 [Qiskit Aer 프리미티브를 사용한 정확한 시뮬레이션 및 노이즈 시뮬레이션](./simulate-with-qiskit-sdk-primitives)을 참조하세요.
+  - [Qiskit Aer 노이즈 모듈](https://qiskit.org/ecosystem/aer/apidocs/aer_noise.html) 레퍼런스를 검토하세요.
+</Admonition>
