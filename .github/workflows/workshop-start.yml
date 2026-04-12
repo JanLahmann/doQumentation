@@ -27,9 +27,14 @@ on:
   workflow_dispatch:
     inputs:
       app_name:
-        description: 'CE app name'
-        default: 'ce-doqumentation-01'
+        description: 'CE app name prefix (instances are named prefix-01, prefix-02, ...)'
+        default: 'ce-doqumentation'
         type: string
+      instance_count:
+        description: 'Number of CE instances (1 for ≤80 users, 2-3 for larger workshops)'
+        default: '1'
+        type: choice
+        options: ['1', '2', '3', '5']
       size:
         description: 'Pod size (or keep current)'
         default: '(keep current)'
@@ -124,51 +129,80 @@ jobs:
           # Pass to next steps via step output
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Update pod (resize + token + fresh revision in one call)
+      - name: Update pod(s) (resize + token + fresh revision)
         env:
-          APP_NAME: ${{ github.event.inputs.app_name }}
+          APP_PREFIX: ${{ github.event.inputs.app_name }}
+          INSTANCE_COUNT: ${{ github.event.inputs.instance_count }}
           SIZE: ${{ github.event.inputs.size }}
-          RESET_PEAKS: ${{ github.event.inputs.reset_peaks }}
           TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          # Build update flags. Token is always set (fresh or supplied).
-          # Resize only if size != "(keep current)".
-          # reset_peaks is a no-op flag here because any --env change already
-          # triggers a new revision; we leave it only as a visibility hint.
-          UPDATE_ARGS="--name $APP_NAME --env JUPYTER_TOKEN=$TOKEN"
-
+          # Build sizing flags (shared across all instances)
+          SIZE_ARGS=""
           if [ "$SIZE" != "(keep current)" ]; then
             CPU=$(echo "$SIZE" | sed -E 's/^([0-9]+) vCPU.*/\1/')
             MEM=$(echo "$SIZE" | sed -E 's/.*\/ ([0-9]+) GB.*/\1G/')
-            UPDATE_ARGS="$UPDATE_ARGS --cpu $CPU --memory $MEM"
-            echo "=== Updating $APP_NAME: resize to $CPU vCPU / $MEM + set fresh token ==="
-          else
-            echo "=== Updating $APP_NAME: set fresh token (size preserved) ==="
+            SIZE_ARGS="--cpu $CPU --memory $MEM"
           fi
 
-          if [ "$RESET_PEAKS" = "true" ]; then
-            echo "=== reset_peaks=true → any update triggers a fresh revision anyway, ok ==="
-          fi
+          # Update each instance with the SAME token + optional resize
+          for i in $(seq 1 "$INSTANCE_COUNT"); do
+            APP_NAME="${APP_PREFIX}-$(printf "%02d" "$i")"
+            UPDATE_ARGS="--name $APP_NAME --env JUPYTER_TOKEN=$TOKEN $SIZE_ARGS"
 
-          # Single update call = single revision
-          ibmcloud ce app update $UPDATE_ARGS
+            if ibmcloud ce app get --name "$APP_NAME" &>/dev/null; then
+              echo "=== Updating $APP_NAME ==="
+              ibmcloud ce app update $UPDATE_ARGS
+            else
+              echo "=== WARNING: $APP_NAME does not exist. Run the Code Engine Image workflow first to create it. ==="
+            fi
+          done
 
-          echo "=== Waiting 60s for new revision to become ready ==="
+          echo "=== Waiting 60s for new revision(s) to become ready ==="
           sleep 60
 
-      - name: Discover app URL
+      - name: Discover app URL(s) and build pool config
         id: ce
         env:
-          APP_NAME: ${{ github.event.inputs.app_name }}
+          APP_PREFIX: ${{ github.event.inputs.app_name }}
+          INSTANCE_COUNT: ${{ github.event.inputs.instance_count }}
         run: |
-          URL=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
-            | jq -r '.status.url // empty')
-          if [ -z "$URL" ]; then
-            echo "ERROR: Could not get URL for app '$APP_NAME'"
+          # Collect URLs from all instances
+          URLS=""
+          POOL_JSON="["
+          for i in $(seq 1 "$INSTANCE_COUNT"); do
+            APP_NAME="${APP_PREFIX}-$(printf "%02d" "$i")"
+            URL=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+              | jq -r '.status.url // empty')
+            if [ -n "$URL" ]; then
+              URL="${URL%/}"  # strip trailing slash
+              [ "$POOL_JSON" != "[" ] && POOL_JSON="${POOL_JSON},"
+              POOL_JSON="${POOL_JSON}\"${URL}\""
+              # First URL is the primary (used for /stats monitoring + warm-up)
+              [ -z "$URLS" ] && URLS="$URL"
+            else
+              echo "WARNING: Could not get URL for $APP_NAME"
+            fi
+          done
+          POOL_JSON="${POOL_JSON}]"
+
+          if [ -z "$URLS" ]; then
+            echo "ERROR: No instance URLs found"
             exit 1
           fi
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "=== Monitoring: $URL ==="
+
+          echo "url=$URLS" >> "$GITHUB_OUTPUT"
+          echo "instance_count=$INSTANCE_COUNT" >> "$GITHUB_OUTPUT"
+
+          # Build base64-encoded pool config (NO token inside — security)
+          # Students paste this into the "Workshop Pod URL(s)" field on the
+          # Settings page, then enter the token separately.
+          POOL_CONFIG="{\"pool\":${POOL_JSON}}"
+          POOL_B64=$(printf '%s' "$POOL_CONFIG" | base64 -w0)
+          echo "pool_b64=$POOL_B64" >> "$GITHUB_OUTPUT"
+          echo "pool_json=$POOL_CONFIG" >> "$GITHUB_OUTPUT"
+
+          echo "=== Pool: $POOL_CONFIG ==="
+          echo "=== Monitoring primary: $URLS ==="
 
       - name: Warm pod
         env:
@@ -187,28 +221,50 @@ jobs:
       - name: Post workshop setup instructions to summary
         env:
           URL: ${{ steps.ce.outputs.url }}
-          APP_NAME: ${{ github.event.inputs.app_name }}
+          INSTANCE_COUNT: ${{ steps.ce.outputs.instance_count }}
+          POOL_B64: ${{ steps.ce.outputs.pool_b64 }}
+          POOL_JSON: ${{ steps.ce.outputs.pool_json }}
+          APP_PREFIX: ${{ github.event.inputs.app_name }}
         run: |
           POOL_URL="${URL%/}"
 
-          # Post setup instructions for the instructor — no token in the summary.
-          # The instructor retrieves the token from IBM Cloud Console or CLI,
-          # then shares both the URL and token with students via their preferred
-          # channel (slide, chat, handout). Students enter both on the Settings page.
+          # Decide what to show students for the URL field:
+          # - Single pod: just the URL (simplest)
+          # - Multi-pod: base64-encoded pool config (students paste this opaque string)
+          if [ "$INSTANCE_COUNT" = "1" ]; then
+            STUDENT_URL_VALUE="$POOL_URL"
+            STUDENT_URL_LABEL="the pod URL"
+          else
+            STUDENT_URL_VALUE="$POOL_B64"
+            STUDENT_URL_LABEL="the pool config string below"
+          fi
+
           {
             echo "## Workshop Ready"
             echo ""
             echo "### For the instructor"
             echo ""
-            echo "**Pod URL (share with participants):**"
-            echo '```'
-            echo "$POOL_URL"
-            echo '```'
+            if [ "$INSTANCE_COUNT" = "1" ]; then
+              echo "**Pod URL (share with participants):**"
+              echo '```'
+              echo "$POOL_URL"
+              echo '```'
+            else
+              echo "**$INSTANCE_COUNT instances configured.** Pool:"
+              echo '```json'
+              echo "$POOL_JSON"
+              echo '```'
+              echo ""
+              echo "**Pool config for students** (paste this into the URL field — no token inside, safe to share publicly):"
+              echo '```'
+              echo "$POOL_B64"
+              echo '```'
+            fi
             echo ""
             echo "**Retrieve the Jupyter token** (do NOT share via public channels — share verbally, via printed handout, or private chat):"
             echo ""
-            echo "- **IBM Cloud Console:** [Environment Variables page](https://cloud.ibm.com/codeengine/project/eu-de/cd264608-e0e8-4802-baf2-e8eb04899eed/application/$APP_NAME/configuration) → find \`JUPYTER_TOKEN\`"
-            echo "- **CLI:** \`ibmcloud ce app get --name $APP_NAME --output json | jq -r '.spec.template.spec.containers[0].env[] | select(.name==\"JUPYTER_TOKEN\") | .value'\`"
+            echo "- **IBM Cloud Console:** [Environment Variables page](https://cloud.ibm.com/codeengine/project/eu-de/cd264608-e0e8-4802-baf2-e8eb04899eed/application/${APP_PREFIX}-01/configuration) → find \`JUPYTER_TOKEN\`"
+            echo "- **CLI:** \`ibmcloud ce app get --name ${APP_PREFIX}-01 --output json | jq -r '.spec.template.spec.containers[0].env[] | select(.name==\"JUPYTER_TOKEN\") | .value'\`"
             echo ""
             echo "### For participants"
             echo ""
@@ -216,16 +272,17 @@ jobs:
             echo ""
             echo "1. Open [doqumentation.org/jupyter-settings](https://doqumentation.org/jupyter-settings#code-engine)"
             echo "2. Scroll to **Code Engine** → **Join Workshop**"
-            echo "3. Enter the **Workshop Pod URL** and **Workshop Token** provided by the instructor"
-            echo "4. Click **Join Workshop**"
-            echo "5. Navigate to any tutorial or guide and click **Run** — code executes on the workshop pod"
+            echo "3. Paste $STUDENT_URL_LABEL into the **Workshop Pod URL(s)** field"
+            echo "4. Enter the **Workshop Token** (from the instructor)"
+            echo "5. Click **Join Workshop**"
+            echo "6. Navigate to any tutorial or guide and click **Run** — code executes on the workshop pod"
             echo ""
             echo "### Token security"
             echo ""
-            echo "- The token was freshly generated for this workshop and set on the pod"
+            echo "- The token was freshly generated for this workshop and set on all pod(s)"
             echo "- The token is NOT posted in this summary (this repo is public)"
+            echo "- The pool config above contains only URLs, no token"
             echo "- After the workshop, run [Workshop Close](../../../actions/workflows/workshop-close.yml) with \`rotate_token=true\` (default) to invalidate the token"
-            echo "- Token remains valid until rotated by Workshop Close, another Workshop Start, or manual \`ibmcloud ce app update --env JUPYTER_TOKEN=...\`"
             echo ""
             echo "The continuous monitor is now running — timeline report will be appended below when the duration elapses or the run is cancelled."
             echo ""
@@ -234,7 +291,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "=== Workshop instructions posted to job summary ==="
-          echo "=== Token NOT in summary — retrieve from IBM Cloud Console or CLI ==="
+          echo "=== Token NOT in summary — pool config is safe (no token inside) ==="
 
       - name: Continuous monitor
         env:

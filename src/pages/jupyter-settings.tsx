@@ -430,27 +430,56 @@ export default function JupyterSettings(): JSX.Element {
 
   // Workshop handlers
   const handleWorkshopJoinFields = () => {
-    const url = workshopUrlInput.trim().replace(/\/+$/, '');
+    const rawUrl = workshopUrlInput.trim();
     const token = workshopTokenInput.trim();
-    if (!url || !token) return;
-    if (!/^https?:\/\//i.test(url)) {
-      setWorkshopResult('URL must start with https://');
-      setWorkshopResultType('warning');
-      return;
-    }
+    if (!rawUrl || !token) return;
     if (token.length < 8) {
       setWorkshopResult('Token is too short — check with your instructor.');
       setWorkshopResultType('warning');
       return;
     }
-    saveWorkshopPool([url], token);
+
+    // Smart URL field parsing — accepts three formats:
+    //   1. Single URL:          https://ce-01.xxx.cloud
+    //   2. Comma-separated:     https://ce-01.xxx.cloud, https://ce-02.xxx.cloud
+    //   3. Base64-encoded pool: eyJwb29sIjpbImh0dHBzOi8v...
+    //      Decodes to {"pool":["url1","url2",...]} — no token inside (security)
+    let urls: string[] = [];
+
+    // Try base64 decode first (if it doesn't look like a URL)
+    if (!rawUrl.startsWith('http')) {
+      try {
+        const decoded = JSON.parse(atob(rawUrl));
+        if (Array.isArray(decoded.pool) && decoded.pool.length > 0) {
+          urls = decoded.pool.map((u: string) => String(u).trim().replace(/\/+$/, ''));
+        }
+      } catch {
+        // Not valid base64/JSON — fall through to URL parsing
+      }
+    }
+
+    // If base64 didn't produce URLs, parse as plain URL(s)
+    if (urls.length === 0) {
+      urls = rawUrl
+        .split(',')
+        .map(u => u.trim().replace(/\/+$/, ''))
+        .filter(u => /^https?:\/\//i.test(u));
+    }
+
+    if (urls.length === 0) {
+      setWorkshopResult('Enter a valid URL (https://...), comma-separated URLs, or a base64-encoded pool config.');
+      setWorkshopResultType('warning');
+      return;
+    }
+
+    saveWorkshopPool(urls, token);
     const pool = getWorkshopPool();
     setWorkshopPoolState(pool);
     setWorkshopAssignedState(getWorkshopAssignment());
     refreshBackends();
     setWorkshopUrlInput('');
     setWorkshopTokenInput('');
-    setWorkshopResult('Joined workshop. You can now run code on the workshop pod.');
+    setWorkshopResult(`Joined workshop with ${urls.length} instance(s).`);
     setWorkshopResultType('success');
   };
 
@@ -1235,13 +1264,13 @@ export default function JupyterSettings(): JSX.Element {
                       {/* URL + Token separate fields (primary join path) */}
                       <div className="margin-bottom--sm">
                         <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600, fontSize: '0.85rem' }}>
-                          Workshop Pod URL
+                          Workshop Pod URL(s)
                         </label>
                         <input
-                          type="url"
+                          type="text"
                           value={workshopUrlInput}
                           onChange={e => { setWorkshopUrlInput(e.target.value); setWorkshopResult(null); }}
-                          placeholder="https://ce-doqumentation-01.xxx.eu-de.codeengine.appdomain.cloud"
+                          placeholder="URL, comma-separated URLs, or base64 pool config from instructor"
                           style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
                         />
                       </div>
