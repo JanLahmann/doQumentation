@@ -1,0 +1,369 @@
+name: Workshop Monitor (continuous polling)
+
+# Standalone continuous monitor for CE workshop pods.
+#
+# Polls the primary pod's /stats endpoint every 30 seconds for the
+# requested duration, then posts a full timeline report with sparklines,
+# peak load, CE events, and cost estimate.
+#
+# Designed to be run independently of Workshop Start — either manually
+# or triggered automatically by Workshop Start via workflow_call.
+#
+# To end early: run Workshop Close with cancel_monitor=true, or
+# `gh run cancel <run-id>` from CLI. The final report step uses
+# `if: always()` so even on cancel/crash the partial timeline is posted.
+#
+# Separating the monitor from Workshop Start means:
+#   - Workshop Start completes quickly (pod setup only, ~2 min)
+#   - The monitor can be skipped entirely (no 6h runner cost)
+#   - The monitor can be started/stopped independently
+#   - workshop-close.yml cancels this workflow, not workshop-start
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'CE app name (for /stats polling and CE events)'
+        default: 'ce-doqumentation-01'
+        type: string
+      stats_url:
+        description: 'Pod URL to poll (auto-discovered from app_name if empty)'
+        default: ''
+        type: string
+      duration:
+        description: 'Monitor duration'
+        default: '3h'
+        type: choice
+        options: ['30m', '1h', '2h', '3h', '4h', '6h']
+
+  workflow_call:
+    inputs:
+      app_name:
+        description: 'CE app name'
+        type: string
+        required: true
+      stats_url:
+        description: 'Pod URL to poll'
+        type: string
+        required: true
+      duration:
+        description: 'Monitor duration'
+        type: string
+        required: true
+    secrets:
+      IBM_CLOUD_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 370  # 6h max + 10 min buffer
+    steps:
+      - name: Parse duration
+        id: parse
+        env:
+          DURATION: ${{ inputs.duration }}
+        run: |
+          case "$DURATION" in
+            30m) SECS=1800 ;;
+            1h)  SECS=3600 ;;
+            2h)  SECS=7200 ;;
+            3h)  SECS=10800 ;;
+            4h)  SECS=14400 ;;
+            6h)  SECS=21600 ;;
+            *)   echo "ERROR: Unknown duration '$DURATION'"; exit 1 ;;
+          esac
+          echo "seconds=$SECS" >> "$GITHUB_OUTPUT"
+          echo "Monitor duration: $DURATION ($SECS seconds)"
+
+      - name: Install IBM Cloud CLI
+        run: |
+          curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+          ibmcloud plugin install code-engine -f
+
+      - name: Login and select project
+        env:
+          IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
+        run: |
+          ibmcloud login --apikey "$IBM_CLOUD_API_KEY" -r eu-de -g Default --quiet
+          ibmcloud ce project select --name ce-doqumentation-01
+
+      - name: Discover or validate stats URL
+        id: ce
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          STATS_URL: ${{ inputs.stats_url }}
+        run: |
+          if [ -n "$STATS_URL" ]; then
+            URL="${STATS_URL%/}"
+            echo "=== Using provided URL: $URL ==="
+          else
+            URL=$(ibmcloud ce app get --name "$APP_NAME" --output json 2>/dev/null \
+              | jq -r '.status.url // empty')
+            if [ -z "$URL" ]; then
+              echo "ERROR: Could not get URL for app '$APP_NAME'"
+              exit 1
+            fi
+            URL="${URL%/}"
+            echo "=== Discovered URL: $URL ==="
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Continuous monitor
+        env:
+          URL: ${{ steps.ce.outputs.url }}
+          DURATION_SECS: ${{ steps.parse.outputs.seconds }}
+        run: |
+          POLL_INTERVAL=30
+          SAMPLE_FILE=/tmp/workshop-samples.tsv
+          START_TS=$(date -u +%s)
+          END_TS=$((START_TS + DURATION_SECS))
+          SAMPLE_COUNT=0
+          ERROR_COUNT=0
+
+          # TSV header
+          echo -e "timestamp\tuptime\tkernels\tbusy\tconns\tmem_mb\tmem_total\tload1m\tcpu\tpeak_k\tpeak_conn\tsse_total\tstatus" > "$SAMPLE_FILE"
+
+          echo "=== Workshop monitor started at $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+          echo "=== Polling every ${POLL_INTERVAL}s until $(date -u -d "@$END_TS" +%Y-%m-%dT%H:%M:%SZ) ==="
+          echo ""
+
+          while [ "$(date -u +%s)" -lt "$END_TS" ]; do
+            TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            RESP=$(curl -sS -m 5 "${URL}/stats" 2>&1 || echo "CURL_ERROR")
+
+            if echo "$RESP" | jq -e . >/dev/null 2>&1; then
+              # Valid JSON — extract fields
+              UPTIME=$(echo "$RESP" | jq -r '.uptime_seconds // 0')
+              KERNELS=$(echo "$RESP" | jq -r '.kernels // 0')
+              BUSY=$(echo "$RESP" | jq -r '.kernels_busy // 0')
+              CONNS=$(echo "$RESP" | jq -r '.connections // 0')
+              MEM_MB=$(echo "$RESP" | jq -r '.memory_mb // 0')
+              MEM_TOTAL=$(echo "$RESP" | jq -r '.memory_total_mb // 0')
+              LOAD1M=$(echo "$RESP" | jq -r '.load_1m // 0')
+              CPU=$(echo "$RESP" | jq -r '.cpu_count // 0')
+              PEAK_K=$(echo "$RESP" | jq -r '.peak_kernels // 0')
+              PEAK_CONN=$(echo "$RESP" | jq -r '.peak_connections // 0')
+              SSE_TOTAL=$(echo "$RESP" | jq -r '.total_sse_connections // 0')
+              STATUS=$(echo "$RESP" | jq -r '.status // "unknown"')
+
+              echo -e "${TS}\t${UPTIME}\t${KERNELS}\t${BUSY}\t${CONNS}\t${MEM_MB}\t${MEM_TOTAL}\t${LOAD1M}\t${CPU}\t${PEAK_K}\t${PEAK_CONN}\t${SSE_TOTAL}\t${STATUS}" >> "$SAMPLE_FILE"
+              SAMPLE_COUNT=$((SAMPLE_COUNT + 1))
+
+              # Log every 10th sample to avoid spam (one line every 5 min at 30s interval)
+              if [ $((SAMPLE_COUNT % 10)) -eq 0 ]; then
+                echo "[$TS] sample #$SAMPLE_COUNT: kernels=$KERNELS busy=$BUSY conns=$CONNS mem=${MEM_MB}/${MEM_TOTAL}MB load=${LOAD1M}/${CPU} peak_k=$PEAK_K"
+              fi
+            else
+              # Error — log it, continue anyway
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+              echo -e "${TS}\tERROR\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tfetch_error" >> "$SAMPLE_FILE"
+              if [ $((ERROR_COUNT % 5)) -eq 1 ]; then
+                # Log every 5th error
+                echo "[$TS] /stats fetch error #$ERROR_COUNT (pod cold-starting?): $RESP" | head -c 200
+                echo ""
+              fi
+            fi
+
+            sleep "$POLL_INTERVAL"
+          done
+
+          echo ""
+          echo "=== Monitor finished. ${SAMPLE_COUNT} samples captured, ${ERROR_COUNT} fetch errors. ==="
+
+      - name: Upload samples as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workshop-samples-${{ github.run_id }}
+          path: /tmp/workshop-samples.tsv
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Capture CE events
+        if: always()
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+        run: |
+          echo "=== Capturing CE app events ===" | tee /tmp/ce-events.txt
+          ibmcloud ce app events --name "$APP_NAME" 2>&1 | tee -a /tmp/ce-events.txt
+          echo "" >> /tmp/ce-events.txt
+          echo "=== Last 100 log lines ===" >> /tmp/ce-events.txt
+          ibmcloud ce app logs --application "$APP_NAME" --tail 100 2>&1 | tail -100 >> /tmp/ce-events.txt || true
+
+      - name: Build report
+        if: always()
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          URL: ${{ steps.ce.outputs.url }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          SAMPLE_FILE=/tmp/workshop-samples.tsv
+          if [ ! -f "$SAMPLE_FILE" ]; then
+            echo "## Workshop Monitor Report — no samples captured" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The monitor did not capture any samples. Check the job logs for errors." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Count samples (excluding header)
+          TOTAL_SAMPLES=$(tail -n +2 "$SAMPLE_FILE" | wc -l | tr -d ' ')
+          ERROR_SAMPLES=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' '$2 == "ERROR"' | wc -l | tr -d ' ')
+          OK_SAMPLES=$((TOTAL_SAMPLES - ERROR_SAMPLES))
+
+          # Compute aggregates from OK samples (skip headers and errors)
+          STATS=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' '$2 != "ERROR" {
+            if ($3 > max_k) max_k = $3
+            if ($5 > max_c) max_c = $5
+            if ($6 > max_mem) max_mem = $6
+            if ($8 > max_load) max_load = $8
+            k_sum += $3; c_sum += $5; mem_sum += $6; load_sum += $8
+            n++
+            # Capture last row
+            last_ts = $1; last_k = $3; last_conn = $5; last_mem = $6; last_load = $8
+            last_peak_k = $10; last_peak_c = $11; last_sse = $12
+            last_cpu = $9; last_mem_total = $7; last_uptime = $2
+          }
+          END {
+            if (n > 0) {
+              printf "max_k=%d max_c=%d max_mem=%d max_load=%.2f ", max_k, max_c, max_mem, max_load
+              printf "avg_k=%.1f avg_c=%.1f avg_mem=%.0f avg_load=%.2f ", k_sum/n, c_sum/n, mem_sum/n, load_sum/n
+              printf "last_peak_k=%d last_peak_c=%d last_sse=%d ", last_peak_k, last_peak_c, last_sse
+              printf "last_cpu=%s last_mem_total=%d last_uptime=%s", last_cpu, last_mem_total, last_uptime
+            }
+          }')
+          eval "$STATS"
+
+          # Compute pod size (CPU / memory_total in GB, rounded)
+          POD_MEM_GB=$(awk -v m="$last_mem_total" 'BEGIN { printf "%.0f", m/1024 }')
+          POD_SIZE="${last_cpu} vCPU / ${POD_MEM_GB} GB"
+
+          # Build ASCII sparkline of kernel count over time (ignores errors)
+          # Use 60 characters wide; downsample if needed
+          SPARKLINE_KERNELS=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' -v maxk="$max_k" '
+            $2 != "ERROR" { arr[NR] = $3; n = NR }
+            END {
+              if (n == 0 || maxk == 0) { print "(no data)"; exit }
+              width = 60
+              step = n / width
+              if (step < 1) step = 1
+              chars = " ▁▂▃▄▅▆▇█"
+              for (i = 0; i < width; i++) {
+                idx = int(i * step) + 1
+                if (idx > n) idx = n
+                v = arr[idx]
+                bucket = int((v / maxk) * 8 + 0.5)
+                if (bucket > 8) bucket = 8
+                printf "%s", substr(chars, bucket + 1, 1)
+              }
+              print ""
+            }')
+
+          SPARKLINE_CONNS=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' -v maxc="$max_c" '
+            $2 != "ERROR" { arr[NR] = $5; n = NR }
+            END {
+              if (n == 0 || maxc == 0) { print "(no data)"; exit }
+              width = 60
+              step = n / width
+              if (step < 1) step = 1
+              chars = " ▁▂▃▄▅▆▇█"
+              for (i = 0; i < width; i++) {
+                idx = int(i * step) + 1
+                if (idx > n) idx = n
+                v = arr[idx]
+                bucket = int((v / maxc) * 8 + 0.5)
+                if (bucket > 8) bucket = 8
+                printf "%s", substr(chars, bucket + 1, 1)
+              }
+              print ""
+            }')
+
+          SPARKLINE_LOAD=$(tail -n +2 "$SAMPLE_FILE" | awk -F'\t' -v maxl="$max_load" '
+            $2 != "ERROR" { arr[NR] = $8; n = NR }
+            END {
+              if (n == 0 || maxl == 0) { print "(no data)"; exit }
+              width = 60
+              step = n / width
+              if (step < 1) step = 1
+              chars = " ▁▂▃▄▅▆▇█"
+              for (i = 0; i < width; i++) {
+                idx = int(i * step) + 1
+                if (idx > n) idx = n
+                v = arr[idx]
+                bucket = int((v / maxl) * 8 + 0.5)
+                if (bucket > 8) bucket = 8
+                printf "%s", substr(chars, bucket + 1, 1)
+              }
+              print ""
+            }')
+
+          # Count CE restart/error events
+          RESTART_COUNT=$(grep -c "Warning.*Unhealthy\|OOMKilled\|CrashLoopBackOff" /tmp/ce-events.txt 2>/dev/null || echo 0)
+
+          # Estimate CE billing (approximate: vCPU × duration in hours × $0.000034/s)
+          # Only counts time the pod was actually running (non-error samples × 30s = active time)
+          ACTIVE_SECONDS=$((OK_SAMPLES * 30))
+          COST_ESTIMATE=$(awk -v cpu="$last_cpu" -v secs="$ACTIVE_SECONDS" 'BEGIN { printf "%.4f", cpu * secs * 0.000034 }')
+
+          # Now build the Markdown report
+          {
+            echo "## Workshop Monitor Report"
+            echo ""
+            echo "### Configuration"
+            echo "- **App:** \`$APP_NAME\`"
+            echo "- **URL:** $URL"
+            echo "- **Pod size:** $POD_SIZE"
+            echo "- **Duration (requested):** $DURATION"
+            echo "- **Total samples:** $TOTAL_SAMPLES ($OK_SAMPLES ok, $ERROR_SAMPLES errors)"
+            echo ""
+            echo "### Peak Load"
+            echo ""
+            echo "| Metric | Peak | Average | Final |"
+            echo "|---|---|---|---|"
+            echo "| Kernels | $max_k | $avg_k | (see sparkline) |"
+            echo "| Connections | $max_c | $avg_c | (see sparkline) |"
+            echo "| Memory (MB) | $max_mem | $avg_mem | $last_mem |"
+            echo "| CPU load (1min) | $max_load | $avg_load | $last_load |"
+            echo ""
+            echo "Reported peaks from pod counters: **peak_kernels=$last_peak_k, peak_connections=$last_peak_c, total_sse_connections=$last_sse**"
+            echo ""
+            echo "### Timeline (sparklines, left = start, right = end)"
+            echo ""
+            echo '```'
+            echo "Kernels:     $SPARKLINE_KERNELS (0 — $max_k)"
+            echo "Connections: $SPARKLINE_CONNS (0 — $max_c)"
+            echo "CPU load:    $SPARKLINE_LOAD (0 — $max_load)"
+            echo '```'
+            echo ""
+            echo "### CE Events"
+            echo ""
+            if [ "$RESTART_COUNT" = "0" ]; then
+              echo "No pod restarts, OOM kills, or CrashLoopBackoffs detected."
+            else
+              echo "**$RESTART_COUNT** restart/crash events detected. Check the \`ce-events.txt\` artifact."
+            fi
+            echo ""
+            echo "<details><summary>Full CE events + last 100 log lines</summary>"
+            echo ""
+            echo '```'
+            head -200 /tmp/ce-events.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "### Estimated Cost"
+            echo "- Active time (samples x 30s): **${ACTIVE_SECONDS}s**"
+            echo "- Approx vCPU-seconds: ${last_cpu} x ${ACTIVE_SECONDS} = $((last_cpu * ACTIVE_SECONDS))"
+            echo "- Rough cost estimate: **\$${COST_ESTIMATE}** (CE rate ~ \$0.000034 / vCPU-second)"
+            echo ""
+            echo "### Interpretation"
+            echo "- **Peak kernels near CPU x6**: approaching saturation, consider larger pod next time"
+            echo "- **High CPU load (>1x CPU count)**: users saw latency spikes during bursts"
+            echo "- **Memory <50%**: sized correctly, no changes needed"
+            echo "- **Memory >80%**: upsize memory for next workshop"
+            echo ""
+            echo "See [.claude/STRESS-TEST-FINDINGS.md](.claude/STRESS-TEST-FINDINGS.md) for sizing data."
+          } >> "$GITHUB_STEP_SUMMARY"

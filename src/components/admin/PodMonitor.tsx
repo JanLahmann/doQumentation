@@ -19,7 +19,7 @@
  * CORS is whitelisted to https://doqumentation.org in the SSE shim.
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { getWorkshopPool } from '@site/src/config/jupyter';
 
 // ─────────────────────────── types ───────────────────────────
@@ -61,6 +61,8 @@ const POLL_INTERVAL_MS = 5000;
 const HISTORY_SIZE = 180; // 15 min at 5s polling
 const FETCH_TIMEOUT_MS = 3000;
 const SESSIONS_PER_VCPU = 6; // From stress test data
+const TIMER_STEP_MS = 15 * 60 * 1000; // 15 min per step
+const TIMER_MAX_MS = 5 * 60 * 60 * 1000; // 5h max
 
 // ─────────────────────────── health interpretation ───────────────────────────
 
@@ -582,11 +584,57 @@ function PodCard({ url, paused }: PodCardProps) {
 
 // ─────────────────────────── top-level component ───────────────────────────
 
+function formatTimeRemaining(ms: number): string {
+  if (ms <= 0) return '0:00';
+  const totalSec = Math.ceil(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
 export default function PodMonitor() {
   const [pool, setPool] = useState<string[] | null>(null);
-  const [paused, setPaused] = useState(false);
   const [manualUrl, setManualUrl] = useState('');
   const [manualUrls, setManualUrls] = useState<string[]>([]);
+
+  // Timer-based polling: starts at 15 min, extendable in 15 min steps up to 5h
+  const [timerEnd, setTimerEnd] = useState<number | null>(null); // null = not started
+  const [remaining, setRemaining] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Derived: polling is active when timer is running and has time left
+  const paused = timerEnd == null || remaining <= 0;
+
+  // Start the countdown ticker
+  useEffect(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (timerEnd == null) { setRemaining(0); return; }
+    const tick = () => {
+      const left = Math.max(0, timerEnd - Date.now());
+      setRemaining(left);
+      if (left <= 0 && timerRef.current) clearInterval(timerRef.current);
+    };
+    tick();
+    timerRef.current = setInterval(tick, 1000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [timerEnd]);
+
+  const startTimer = useCallback(() => {
+    setTimerEnd(Date.now() + TIMER_STEP_MS);
+  }, []);
+
+  const extendTimer = useCallback(() => {
+    setTimerEnd((prev) => {
+      const base = prev && prev > Date.now() ? prev : Date.now();
+      const newEnd = base + TIMER_STEP_MS;
+      const maxEnd = Date.now() + TIMER_MAX_MS;
+      return Math.min(newEnd, maxEnd);
+    });
+  }, []);
+
+  const stopTimer = useCallback(() => {
+    setTimerEnd(null);
+  }, []);
 
   // Read workshop pool from localStorage on mount
   useEffect(() => {
@@ -639,27 +687,69 @@ export default function PodMonitor() {
               : 'No workshop pool configured.'}{' '}
           {hasUrls && (
             <span>
-              Polling every {POLL_INTERVAL_MS / 1000}s. Sparklines show last{' '}
-              {Math.round((HISTORY_SIZE * POLL_INTERVAL_MS) / 60000)} min.
+              {paused
+                ? 'Polling paused. Click Start to begin monitoring (auto-stops after 15 min to prevent keeping the pod alive).'
+                : `Polling every ${POLL_INTERVAL_MS / 1000}s. Sparklines show last ${Math.round((HISTORY_SIZE * POLL_INTERVAL_MS) / 60000)} min.`}
             </span>
           )}
         </div>
         {hasUrls && (
-          <button
-            type="button"
-            onClick={() => setPaused((p) => !p)}
-            style={{
-              padding: '0.25rem 0.75rem',
-              fontSize: '0.85rem',
-              background: paused ? 'var(--ifm-color-success)' : 'var(--ifm-color-emphasis-200)',
-              color: paused ? 'white' : 'var(--ifm-color-emphasis-800)',
-              border: 'none',
-              borderRadius: 4,
-              cursor: 'pointer',
-            }}
-          >
-            {paused ? '▶ Resume' : '⏸ Pause'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {paused ? (
+              <button
+                type="button"
+                onClick={timerEnd == null || remaining <= 0 ? startTimer : startTimer}
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  fontSize: '0.85rem',
+                  background: 'var(--ifm-color-success)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                ▶ Start (15 min)
+              </button>
+            ) : (
+              <>
+                <span style={{ fontSize: '0.85rem', fontFamily: 'var(--ifm-font-family-monospace)', fontWeight: 600 }}>
+                  {formatTimeRemaining(remaining)}
+                </span>
+                <button
+                  type="button"
+                  onClick={extendTimer}
+                  title="Extend polling by 15 min (max 5h total)"
+                  style={{
+                    padding: '0.25rem 0.75rem',
+                    fontSize: '0.85rem',
+                    background: 'var(--ifm-color-emphasis-200)',
+                    color: 'var(--ifm-color-emphasis-800)',
+                    border: 'none',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                  }}
+                >
+                  +15 min
+                </button>
+                <button
+                  type="button"
+                  onClick={stopTimer}
+                  style={{
+                    padding: '0.25rem 0.75rem',
+                    fontSize: '0.85rem',
+                    background: 'var(--ifm-color-emphasis-200)',
+                    color: 'var(--ifm-color-emphasis-800)',
+                    border: 'none',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ⏸ Stop
+                </button>
+              </>
+            )}
+          </div>
         )}
       </div>
 
