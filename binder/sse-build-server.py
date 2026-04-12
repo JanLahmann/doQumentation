@@ -56,18 +56,9 @@ _HTTP_CLIENT = tornado.httpclient.AsyncHTTPClient()
 
 # In-memory counters (single-threaded event loop, no locks needed)
 _total_sse_connections = 0
-_active_sse_connections = 0
 _peak_kernels = 0
 _peak_connections = 0
 _process_start_time = time.time()
-
-# Idle shutdown: CE/Knative doesn't reliably scale multi-process containers
-# to zero (Istio mesh connections keep the pod looking "active"). This
-# watchdog checks every 60s and kills supervisord (PID 1) after
-# IDLE_SHUTDOWN_MINUTES of zero kernels + zero connections + zero SSE,
-# letting CE honour minScale=0. Set to 0 to disable.
-IDLE_SHUTDOWN_MINUTES = int(os.environ.get('IDLE_SHUTDOWN_MINUTES', '15'))
-_last_activity_time = time.time()
 
 
 def _log_event(event_type, **kwargs):
@@ -255,12 +246,9 @@ class BuildHandler(tornado.web.RequestHandler):
         host = self.request.headers.get('Host', 'localhost:8080')
         base_url = f'https://{host}'
 
-        global _total_sse_connections, _active_sse_connections, _last_activity_time
+        global _total_sse_connections
         _total_sse_connections += 1
-        _active_sse_connections += 1
-        _last_activity_time = time.time()
-        _log_event("sse_connect", total=_total_sse_connections,
-                   active=_active_sse_connections)
+        _log_event("sse_connect", total=_total_sse_connections)
 
         try:
             # Phase 1: connecting (immediate)
@@ -286,8 +274,6 @@ class BuildHandler(tornado.web.RequestHandler):
         except (tornado.iostream.StreamClosedError, ConnectionResetError):
             # Client disconnected mid-stream — nothing to do
             pass
-        finally:
-            _active_sse_connections -= 1
 
     async def _send_event(self, event: dict):
         """Write a single SSE event and flush."""
@@ -374,11 +360,6 @@ class StatsHandler(tornado.web.RequestHandler):
             result['peak_kernels'] = _peak_kernels
             result['peak_connections'] = _peak_connections
             result['status'] = 'ready'
-
-            # Reset idle timer if any activity
-            if result['kernels'] > 0 or result['connections'] > 0:
-                global _last_activity_time
-                _last_activity_time = time.time()
         except Exception:
             pass  # keep unavailable status with counter fields
 
@@ -424,33 +405,6 @@ def make_app() -> tornado.web.Application:
     ])
 
 
-def _check_idle_shutdown():
-    """Kill supervisord (PID 1) if the pod has been idle too long.
-
-    CE/Knative doesn't reliably scale multi-process containers to zero.
-    This watchdog provides a reliable fallback: after IDLE_SHUTDOWN_MINUTES
-    of zero activity, SIGTERM PID 1 → supervisord stops all processes →
-    pod terminates → CE won't restart it (minScale=0).
-    """
-    if IDLE_SHUTDOWN_MINUTES <= 0:
-        return
-    idle_seconds = time.time() - _last_activity_time
-    idle_threshold = IDLE_SHUTDOWN_MINUTES * 60
-    if idle_seconds < idle_threshold:
-        return
-    if _active_sse_connections > 0:
-        return
-    _log_event("idle_shutdown",
-               idle_minutes=round(idle_seconds / 60, 1),
-               threshold_minutes=IDLE_SHUTDOWN_MINUTES)
-    # SIGTERM PID 1 (supervisord) → all processes stop → container exits.
-    # With minScale=0 and no traffic, CE should not start a new pod.
-    # Even if CE restarts the container once, the fresh instance gets
-    # another 15-min idle timer and self-terminates again; CE backs off
-    # exponentially (CrashLoopBackOff) and eventually stops.
-    os.kill(1, signal.SIGTERM)
-
-
 def main():
     port = int(os.environ.get('SSE_PORT', SSE_DEFAULT_PORT))
     app = make_app()
@@ -463,11 +417,6 @@ def main():
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-
-    # Idle shutdown watchdog — check every 60s
-    if IDLE_SHUTDOWN_MINUTES > 0:
-        tornado.ioloop.PeriodicCallback(_check_idle_shutdown, 60_000).start()
-        print(f'[SSE] Idle shutdown enabled: {IDLE_SHUTDOWN_MINUTES}m')
 
     print(f'[SSE] Binder-compatible build endpoint on port {port} (tornado async)')
     loop.start()
