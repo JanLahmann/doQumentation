@@ -443,8 +443,17 @@ def _check_idle_shutdown():
     _log_event("idle_shutdown",
                idle_minutes=round(idle_seconds / 60, 1),
                threshold_minutes=IDLE_SHUTDOWN_MINUTES)
-    # SIGTERM to PID 1 (supervisord) → graceful shutdown of all processes
-    os.kill(1, signal.SIGTERM)
+    # Stop nginx via supervisorctl so the TCP readiness probe (port 8080)
+    # fails. CE marks the pod not-ready → autoscaler scales to zero.
+    # supervisorctl stop prevents autorestart from bringing nginx back.
+    # We don't kill PID 1 (supervisord) because CE just restarts the
+    # container instead of terminating the pod.
+    import subprocess
+    subprocess.run(
+        ['supervisorctl', '-s', 'unix:///tmp/supervisor.sock',
+         'stop', 'nginx'],
+        timeout=10,
+    )
 
 
 def main():
