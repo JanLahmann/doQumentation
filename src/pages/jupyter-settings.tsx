@@ -197,7 +197,8 @@ export default function JupyterSettings(): JSX.Element {
   const [workshopPool, setWorkshopPoolState] = useState<WorkshopPool | null>(null);
   const [workshopAssigned, setWorkshopAssignedState] = useState<string | null>(null);
   const [workshopStats, setWorkshopStats] = useState<InstanceStats[] | null>(null);
-  const [workshopConfigInput, setWorkshopConfigInput] = useState('');
+  const [workshopUrlInput, setWorkshopUrlInput] = useState('');
+  const [workshopTokenInput, setWorkshopTokenInput] = useState('');
   const [workshopResult, setWorkshopResult] = useState<string | null>(null);
   const [workshopResultType, setWorkshopResultType] = useState<'success' | 'warning' | 'info'>('success');
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -271,35 +272,12 @@ export default function JupyterSettings(): JSX.Element {
     setBookmarkCount(getBookmarks().length);
   }, []);
 
-  // Auto-import workshop config from URL fragment (#workshop=BASE64)
-  // and auto-open <details> when URL has a hash anchor
+  // Auto-open <details> when URL has a hash anchor (e.g., #code-engine)
   useEffect(() => {
     const hash = window.location.hash?.slice(1);
     if (!hash) return;
 
-    // Workshop auto-import: #workshop=BASE64_JSON
-    if (hash.startsWith('workshop=')) {
-      try {
-        const configStr = atob(hash.slice('workshop='.length));
-        const config = JSON.parse(configStr);
-        if (Array.isArray(config.pool) && config.pool.length > 0 && config.token) {
-          saveWorkshopPool(config.pool, config.token);
-          const pool = getWorkshopPool();
-          setWorkshopPoolState(pool);
-          setWorkshopAssignedState(getWorkshopAssignment());
-          setAvailableBackends(getAvailableBackends());
-          setWorkshopResult(`Joined workshop with ${config.pool.length} instance(s).`);
-          setWorkshopResultType('success');
-          // Replace hash so the config isn't visible in the URL bar
-          window.history.replaceState(null, '', window.location.pathname + '#code-engine');
-        }
-      } catch {
-        setWorkshopResult('Invalid workshop config in URL.');
-        setWorkshopResultType('warning');
-      }
-    }
-
-    const target = document.getElementById(hash.startsWith('workshop=') ? 'code-engine' : hash);
+    const target = document.getElementById(hash);
     if (!target) return;
     // Walk up to find enclosing <details> and open it
     let el: HTMLElement | null = target;
@@ -451,28 +429,29 @@ export default function JupyterSettings(): JSX.Element {
   };
 
   // Workshop handlers
-  const handleWorkshopJoin = () => {
-    if (!workshopConfigInput.trim()) return;
-    try {
-      const configStr = atob(workshopConfigInput.trim());
-      const config = JSON.parse(configStr);
-      if (!Array.isArray(config.pool) || config.pool.length === 0 || !config.token) {
-        setWorkshopResult('Invalid config: must contain "pool" (array of URLs) and "token".');
-        setWorkshopResultType('warning');
-        return;
-      }
-      saveWorkshopPool(config.pool, config.token);
-      const pool = getWorkshopPool();
-      setWorkshopPoolState(pool);
-      setWorkshopAssignedState(getWorkshopAssignment());
-      refreshBackends();
-      setWorkshopConfigInput('');
-      setWorkshopResult(`Joined workshop with ${config.pool.length} instance(s).`);
-      setWorkshopResultType('success');
-    } catch {
-      setWorkshopResult('Invalid config — must be a base64-encoded JSON string.');
+  const handleWorkshopJoinFields = () => {
+    const url = workshopUrlInput.trim().replace(/\/+$/, '');
+    const token = workshopTokenInput.trim();
+    if (!url || !token) return;
+    if (!/^https?:\/\//i.test(url)) {
+      setWorkshopResult('URL must start with https://');
       setWorkshopResultType('warning');
+      return;
     }
+    if (token.length < 8) {
+      setWorkshopResult('Token is too short — check with your instructor.');
+      setWorkshopResultType('warning');
+      return;
+    }
+    saveWorkshopPool([url], token);
+    const pool = getWorkshopPool();
+    setWorkshopPoolState(pool);
+    setWorkshopAssignedState(getWorkshopAssignment());
+    refreshBackends();
+    setWorkshopUrlInput('');
+    setWorkshopTokenInput('');
+    setWorkshopResult('Joined workshop. You can now run code on the workshop pod.');
+    setWorkshopResultType('success');
   };
 
   const handleWorkshopLeave = () => {
@@ -480,7 +459,8 @@ export default function JupyterSettings(): JSX.Element {
     setWorkshopPoolState(null);
     setWorkshopAssignedState(null);
     setWorkshopStats(null);
-    setWorkshopConfigInput('');
+    setWorkshopUrlInput('');
+    setWorkshopTokenInput('');
     setAutoRefresh(false);
     setLastUpdated(null);
     refreshBackends('code-engine');
@@ -1248,24 +1228,44 @@ export default function JupyterSettings(): JSX.Element {
                     </summary>
                     <div style={{ marginTop: '0.5rem' }}>
                       <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)' }}>
-                        Paste the workshop config string provided by your instructor.
-                        This connects you to a pool of Code Engine instances for the class.
+                        Enter the workshop URL and token provided by your instructor.
+                        This connects you to the workshop's Code Engine instance.
                       </p>
-                      <input
-                        type="text"
-                        value={workshopConfigInput}
-                        onChange={e => { setWorkshopConfigInput(e.target.value); setWorkshopResult(null); }}
-                        placeholder="Paste base64 workshop config here..."
-                        style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
-                      />
+
+                      {/* URL + Token separate fields (primary join path) */}
+                      <div className="margin-bottom--sm">
+                        <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600, fontSize: '0.85rem' }}>
+                          Workshop Pod URL
+                        </label>
+                        <input
+                          type="url"
+                          value={workshopUrlInput}
+                          onChange={e => { setWorkshopUrlInput(e.target.value); setWorkshopResult(null); }}
+                          placeholder="https://ce-doqumentation-01.xxx.eu-de.codeengine.appdomain.cloud"
+                          style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
+                        />
+                      </div>
+                      <div className="margin-bottom--sm">
+                        <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600, fontSize: '0.85rem' }}>
+                          Workshop Token
+                        </label>
+                        <input
+                          type="password"
+                          value={workshopTokenInput}
+                          onChange={e => { setWorkshopTokenInput(e.target.value); setWorkshopResult(null); }}
+                          placeholder="Token from your instructor"
+                          style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
+                        />
+                      </div>
                       <button
                         className="button button--primary button--sm"
-                        onClick={handleWorkshopJoin}
-                        disabled={!workshopConfigInput.trim()}
-                        style={{ marginTop: '0.5rem' }}
+                        onClick={handleWorkshopJoinFields}
+                        disabled={!workshopUrlInput.trim() || !workshopTokenInput.trim()}
+                        style={{ marginBottom: '0.75rem' }}
                       >
-                        Join
+                        Join Workshop
                       </button>
+
                     </div>
                   </details>
                 </>
