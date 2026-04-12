@@ -1,0 +1,331 @@
+---
+title: "Reducerea adâncimii Circuit-ului cu addon-ul AQC-Tensor pentru Qiskit"
+sidebar_label: "Reducerea adâncimii Circuit-ului cu addon-ul AQC-Tensor pentru Qiskit"
+notebook_path: "qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb"
+---
+{/* doqumentation-source-hash: c409baa3 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb" />
+
+
+În acest notebook, vom parcurge pașii unui [pattern Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) folosind **compilarea cuantică aproximativă cu rețele tensoriale (AQC-Tensor)** pentru a obține o adâncime a Circuit-ului mai mică decât ar fi necesară în mod obișnuit pentru a efectua evoluția Trotter.
+
+Aceștia sunt pașii pe care îi vom urma:
+
+- **Pasul 1: Maparea la problema cuantică**
+    - Inițializarea Hamiltonianului problemei și a observabilului (observabilelor)
+    - <font color='#0F62FE'>Generarea unei stări țintă tip rețea tensorială pentru porțiunea inițială a Circuit-ului</font>
+    - <font color='#0F62FE'>Generarea unui Circuit cu adâncime redusă care aproximează porțiunea ce urmează a fi comprimată</font>
+    - <font color='#0F62FE'>Generarea unui ansatz general din acel Circuit</font>
+    - <font color='#0F62FE'>Optimizarea parametrilor pentru a aduce ansatz-ul cât mai aproape de țintă</font>
+    - <font color='#0F62FE'>Adăugarea pașilor Trotter următori la ansatz-ul optimizat</font>
+- **Pasul 2: Optimizarea pentru hardware-ul țintă**
+    - Transpilarea Circuit-ului pentru hardware
+- **Pasul 3: Executarea experimentelor**
+    - Folosirea unui Backend fals pentru simplitate
+- **Pasul 4: Reconstruirea rezultatelor**
+    - N/A; în schimb, afișăm pur și simplu observabilul măsurat
+## Pasul 1: Maparea la Circuit-ul cuantic și operator {#step-1-map-to-quantum-circuit-and-operator}
+
+### Configurarea unui Hamiltonian model și a unui observabil {#set-up-a-model-hamiltonian-and-observable}
+
+În acest notebook, folosim modelul Ising pe un cerc de 10 site-uri:
+$$
+\hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{10} J_{i,(i+1)} Z_i Z_{(i+1)} + h_i X_i \, ,
+$$
+unde condițiile periodice la frontieră implică faptul că pentru $i=10$ obținem $i+1=11\rightarrow1$, $J$ este intensitatea cuplajului dintre două site-uri, iar $h$ este câmpul magnetic extern.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-ibm-runtime quimb scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit circle on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 4, 15, 3, 9])
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+```
+
+Observabilul pe care îl vom măsura este magnetizarea totală.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+L = reduced_coupling_map.size()
+observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
+```
+
+### Determinarea cât din evoluția temporală urmează să fie simulată clasic {#determine-how-much-of-the-time-evolution-to-simulate-classically}
+
+Scopul nostru general este de a simula evoluția temporală a Hamiltonianului model de mai sus. Facem acest lucru prin evoluție Trotter, pe care o împărțim în două porțiuni:
+
+1. O porțiune inițială care poate fi simulată cu stări produs matriceal (MPS). Vom „compila" această porțiune folosind AQC, conform prezentării din https://arxiv.org/abs/2301.08609.
+2. O porțiune ulterioară a Circuit-ului, care va fi executată pe hardware.
+Planificăm să folosim AQC-Tensor pentru a comprima Circuit-ul nostru de evoluție temporală până la momentul $t=4$, apoi să evoluăm folosind pași Trotter obișnuiți până la $t=5$.
+### Generarea Circuit-urilor înainte și după împărțire {#generate-circuits-before-and-after-split}
+
+Acum că am ales să facem împărțirea la $t=4$, vom genera două Circuit-uri:
+
+1. Un Circuit „țintă" pentru porțiunea AQC a evoluției, de la $t_i=0$ până la $t_f=4$. Deoarece aceasta este simulată de un simulator bazat pe rețele tensoriale, numărul de straturi afectează timpul de execuție doar cu un factor constant, deci putem folosi un număr generos de straturi pentru a minimiza eroarea Trotter.
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+aqc_evolution_time = 4.0
+aqc_target_num_trotter_steps = 45
+
+aqc_target_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+2. Un Circuit de evoluție ulterioară, care evoluează de la $t_i=4$ până la $t_f=5$. Deoarece acesta va fi rulat pe hardware cuantic, este de dorit să folosim cât mai puține straturi Trotter.
+
+```python
+subsequent_evolution_time = 1.0
+subsequent_num_trotter_steps = 5
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+```
+
+Pentru o comparație ulterioară, să generăm și un al treilea Circuit: unul care evoluează pentru `aqc_evolution_time`, dar care are același timp de evoluție per pas Trotter ca Circuit-ul ulterior. Acesta este Circuit-ul cu care am fi lucrat dacă nu am fi folosit un număr generos de pași Trotter pentru Circuit-ul țintă. Îl vom numi _Circuit-ul de comparație_.
+
+```python
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps / subsequent_evolution_time * aqc_evolution_time
+)
+aqc_comparison_num_trotter_steps
+```
+
+```text
+20
+```
+
+```python
+comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+### Generarea unui ansatz și a parametrilor inițiali dintr-un Circuit Trotter cu mai puțini pași {#generate-an-ansatz-and-initial-parameters-from-a-trotter-circuit-with-fewer-steps}
+
+Mai întâi, construim un Circuit „bun" care are același timp de evoluție ca Circuit-ul țintă, dar cu mai puțini pași Trotter (și, astfel, mai puține straturi).
+
+Apoi, transmitem acest Circuit „bun" funcției `generate_ansatz_from_circuit` din AQC-Tensor. Această funcție analizează conectivitatea cu doi Qubiți a Circuit-ului și returnează două lucruri:
+1. un Circuit ansatz general, parametrizat, cu aceeași conectivitate cu doi Qubiți ca Circuit-ul de intrare; și
+2. parametri care, introduși în ansatz, reproduc Circuit-ul de intrare (bun).
+
+În curând, vom lua acești parametri și îi vom ajusta iterativ pentru a aduce Circuit-ul ansatz cât mai aproape de MPS-ul țintă.
+
+```python
+from qiskit_addon_aqc_tensor import generate_ansatz_from_circuit
+
+aqc_ansatz_num_trotter_steps = 5
+
+aqc_good_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit, qubits_initially_zero=True
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_1.png)
+
+```python
+print(f"Comparison circuit: depth {comparison_circuit.depth()}")
+print(f"Target circuit: depth {aqc_target_circuit.depth()}")
+print(f"Ansatz circuit: depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters")
+```
+
+```text
+Comparison circuit: depth 120
+Target circuit: depth 270
+Ansatz circuit: depth 23, with 515 parameters
+```
+
+### Alegerea setărilor pentru simularea rețelei tensoriale {#choose-settings-for-tensor-network-simulation}
+
+Aici, folosim simulatorul de rețele tensoriale bazat pe [quimb](http://quimb.readthedocs.io/). În acest exemplu, folosim simulatorul de stări produs matriceal (MPS) din quimb și folosim [JAX](https://docs.jax.dev/en/latest/) pentru diferențierea automată. Consultă [documentația API](../stubs/qiskit_addon_aqc_tensor.simulation.quimb.QuimbSimulator.rst) pentru mai multe informații despre cum să folosești simulatorul quimb.
+
+```python
+from functools import partial
+
+import quimb.tensor
+
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+
+simulator_settings = QuimbSimulator(
+    partial(quimb.tensor.CircuitMPS, max_bond=100, cutoff=1e-8),
+    autodiff_backend="jax",
+)
+```
+
+### Construirea reprezentării de stare produs matriceal a stării țintă AQC {#construct-matrix-product-state-representation-of-the-aqc-target-state}
+
+În continuare, construim o reprezentare tip produs matriceal a stării ce urmează a fi aproximată prin AQC.
+
+```python
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+
+aqc_target_mps = tensornetwork_from_circuit(aqc_target_circuit, simulator_settings)
+```
+
+Rețineți că, deoarece am ales un număr generos de pași Trotter pentru starea țintă, aceasta are de fapt mai puțină eroare Trotter decât Circuit-ul de comparație. Putem calcula fidelitatea ($| \langle \psi_1 | \psi_2 \rangle |^2$) a stării pregătite de Circuit-ul de comparație față de starea țintă:
+
+```python
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+
+comparison_mps = tensornetwork_from_circuit(comparison_circuit, simulator_settings)
+comparison_fidelity = abs(compute_overlap(comparison_mps, aqc_target_mps)) ** 2
+comparison_fidelity
+```
+
+```text
+0.9996761790297157
+```
+
+### Optimizarea parametrilor ansatz-ului folosind calcule MPS {#optimizarea-parametrilor-ansatz-ului-folosind-calcule-mps}
+
+Aici, minimizăm cea mai simplă funcție de cost posibilă, `MaximizeStateFidelity`, folosind optimizatorul L-BFGS din scipy.
+
+Alegem un punct de oprire pentru fidelitate astfel încât aceasta să fie peste valoarea pe care ar fi avut-o Circuit-ul de comparație fără AQC. Odată atins acest punct, Circuit-ul comprimat are atât mai puțină eroare Trotter, _cât și_ o adâncime mai mică decât Circuit-ul original. Cu mai mult timp de procesare, se pot efectua pași suplimentari de optimizare pentru a crește și mai mult fidelitatea.
+
+```python
+from scipy.optimize import OptimizeResult, minimize
+
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+
+objective = MaximizeStateFidelity(aqc_target_mps, aqc_ansatz, simulator_settings)
+
+stopping_point = 1 - comparison_fidelity
+
+def callback(intermediate_result: OptimizeResult):
+    print(f"Intermediate result: Fidelity {1 - intermediate_result.fun:.8}")
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective.loss_function,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": 100},
+    callback=callback,
+)
+if result.status not in (
+    0,
+    1,
+    99,
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(f"Optimization failed: {result.message} (status={result.status})")
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+Intermediate result: Fidelity 0.95080335
+Intermediate result: Fidelity 0.98408927
+Intermediate result: Fidelity 0.99140876
+Intermediate result: Fidelity 0.9951876
+Intermediate result: Fidelity 0.99563147
+Intermediate result: Fidelity 0.99646297
+Intermediate result: Fidelity 0.99679298
+Intermediate result: Fidelity 0.99715793
+Intermediate result: Fidelity 0.99756604
+Intermediate result: Fidelity 0.99804283
+Intermediate result: Fidelity 0.99832283
+Intermediate result: Fidelity 0.99856583
+Intermediate result: Fidelity 0.99868698
+Intermediate result: Fidelity 0.998867
+Intermediate result: Fidelity 0.99902237
+Intermediate result: Fidelity 0.99912174
+Intermediate result: Fidelity 0.99919705
+Intermediate result: Fidelity 0.99926724
+Intermediate result: Fidelity 0.99938605
+Intermediate result: Fidelity 0.99951297
+Intermediate result: Fidelity 0.99956172
+Intermediate result: Fidelity 0.99962274
+Intermediate result: Fidelity 0.99963919
+Intermediate result: Fidelity 0.99967423
+Intermediate result: Fidelity 0.9997101
+Done after 25 iterations.
+```
+
+### Construirea Circuit-ului final de transmis Transpiler-ului {#construirea-circuit-ului-final-de-transmis-transpiler-ului}
+
+```python
+final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+final_circuit.compose(subsequent_circuit, inplace=True)
+final_circuit.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+## Pasul 2: Transpilarea pentru execuția pe hardware-ul țintă {#step-2-transpile-for-execution-on-target-hardware}
+
+În Pasul 2 al unui [pattern Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns), transpilăm acest Circuit și orice observabil(e) dorit(e) pentru execuția pe un dispozitiv țintă. Aici folosim un Backend fals furnizat de `qiskit-ibm-runtime`.
+
+```python
+from qiskit import transpile
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+backend = FakeMelbourneV2()
+
+isa_circuit = transpile(final_circuit, backend)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+```
+
+Circuit-ul ISA rezultat poate fi trimis ulterior pentru execuție pe Backend (pasul 3 al unui [pattern Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)).
+## Pasul 3: Executarea pe hardware cuantic {#pasul-3-executarea-pe-hardware-cuantic}
+
+```python
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+estimator = Estimator(backend)
+job = estimator.run([(isa_circuit, isa_observable)])
+pub_result = job.result()[0]
+```
+
+## Pasul 4: Reconstruirea {#pasul-4-reconstruirea}
+
+Reconstruirea nu este necesară în cazul nostru. Putem să ne uităm direct la rezultat.
+
+```python
+pub_result.data.evs[()]
+```
+
+```text
+np.float64(0.047998046875000006)
+```
+
+<TutorialFeedback />
