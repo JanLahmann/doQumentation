@@ -845,6 +845,19 @@ export function ensureBinderSession(
 ): Promise<BinderSession> {
   const existing = getBinderSession();
   if (existing) {
+    // Discard sessions from a different environment (e.g. a mybinder.org session
+    // cached while on github-pages, now reused after configuring CE). Probing a
+    // foreign host wastes 5s and always fails. CE sessions have the CE host in
+    // their URL; Binder sessions have mybinder.org federation hosts.
+    try {
+      const sessionHost = new URL(existing.url).host;
+      const isBinder = sessionHost.includes('mybinder.org');
+      const configIsBinder = config.environment === 'github-pages';
+      if (isBinder !== configIsBinder) {
+        clearBinderSession();
+        return ensureBinderSession(config, onProgress);
+      }
+    } catch { /* malformed URL — probe will catch it */ }
     // Probe the server to confirm the container is still alive.
     // A dead/culled container returns a network error or non-200 status.
     return fetch(`${existing.url}api/status?token=${encodeURIComponent(existing.token)}`, {
