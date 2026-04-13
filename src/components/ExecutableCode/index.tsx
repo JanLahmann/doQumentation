@@ -553,8 +553,8 @@ function setupCellFeedback(): void {
 /** After injection, show a skip-hint on cells that contain save_account().
  *  Prevents users from overwriting injected credentials with placeholder values. */
 function annotateSaveAccountCells(): void {
-  if (isSimulatorExemptPage()) return;
-  const simMode = getSimulatorMode();
+  const exempt = isSimulatorExemptPage();
+  const simMode = exempt ? false : getSimulatorMode();
   const hasCredentials = !!getIBMQuantumToken();
   if (!simMode && !hasCredentials) return;
 

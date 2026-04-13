@@ -845,9 +845,25 @@ export function ensureBinderSession(
 ): Promise<BinderSession> {
   const existing = getBinderSession();
   if (existing) {
-    touchBinderSession();
-    onProgress?.('ready');
-    return Promise.resolve(existing);
+    // Probe the server to confirm the container is still alive.
+    // A dead/culled container returns a network error or non-200 status.
+    return fetch(`${existing.url}api/status?token=${encodeURIComponent(existing.token)}`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000),
+    }).then((resp) => {
+      if (resp.ok) {
+        touchBinderSession();
+        onProgress?.('ready');
+        return existing;
+      }
+      // Server responded but session is invalid — clear and rebuild
+      clearBinderSession();
+      return ensureBinderSession(config, onProgress);
+    }).catch(() => {
+      // Network error / timeout — container is gone, clear and rebuild
+      clearBinderSession();
+      return ensureBinderSession(config, onProgress);
+    });
   }
 
   if (!config.binderUrl) return Promise.reject(new Error('No Binder URL'));
