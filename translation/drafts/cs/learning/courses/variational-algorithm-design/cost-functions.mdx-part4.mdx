@@ -1,0 +1,115 @@
+## Cenové funkce {#cost-functions}
+
+Cenové funkce se obecně používají k popisu cíle problému a k tomu, jak dobře si zkušební stav vede vzhledem k tomuto cíli. Tuto definici lze aplikovat na různé příklady v chemii, strojovém učení, financích, optimalizaci a tak dále.
+
+Uvažujme jednoduchý příklad hledání základního stavu systému. Naším cílem je minimalizovat střední hodnotu pozorovatelné veličiny představující energii (Hamiltonián $\hat{\mathcal{H}}$):
+
+$$
+\min_{\vec\theta} \langle\psi(\vec\theta)|\hat{\mathcal{H}}|\psi(\vec\theta)\rangle
+$$
+
+Pomocí `Estimator` můžeme vyhodnotit střední hodnotu a předat tuto hodnotu optimalizátoru k minimalizaci. Pokud je optimalizace úspěšná, vrátí sadu optimálních hodnot parametrů $\vec\theta^*$, ze kterých budeme moci sestavit navrhovaný stavový vektor $|\psi(\vec\theta^*)\rangle$ a vypočítat pozorovanou střední hodnotu jako $C(\vec\theta^*)$.
+
+Všimni si, že cenovou funkci budeme moci minimalizovat pouze pro omezený soubor stavů, které zvažujeme. To nás vede ke dvěma různým možnostem:
+
+- **Náš ansatz nedefinuje řešení v celém prohledávaném prostoru**: V takovém případě optimalizátor řešení nikdy nenajde a musíme experimentovat s jinými ansatzy, které by mohly lépe reprezentovat náš prohledávaný prostor.
+- **Náš optimalizátor není schopen toto platné řešení nalézt**: Optimalizace může být definována globálně i lokálně. Co to znamená, prozkoumáme v pozdější části.
+
+Celkově vzato budeme provádět klasickou optimalizační smyčku, přičemž se budeme spoléhat na vyhodnocení cenové funkce kvantovým počítačem. Z tohoto pohledu by bylo možné na optimalizaci nahlížet jako na čistě klasické úsilí, při němž pokaždé, když optimalizátor potřebuje vyhodnotit cenovou funkci, voláme jakýsi <DefinitionTooltip definition="A hypothetical device or software component that performs a specific function, but the internal workings of which are unknown. A user is only aware of the inputs and outputs of the black box, and has no knowledge of how the black box processes the inputs to produce the outputs.">kvantový orákulum černé skříňky</DefinitionTooltip>.
+
+```python
+def cost_func_vqe(params, circuit, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+    pub = (circuit, hamiltonian, params)
+    cost = estimator.run([pub]).result()[0].data.evs
+    return cost
+```
+
+```python
+from qiskit.circuit.library import TwoLocal
+
+observable = SparsePauliOp.from_list([("XX", 1), ("YY", -3)])
+
+reference_circuit = QuantumCircuit(2)
+reference_circuit.x(0)
+
+variational_form = TwoLocal(
+    2,
+    rotation_blocks=["rz", "ry"],
+    entanglement_blocks="cx",
+    entanglement="linear",
+    reps=1,
+)
+ansatz = reference_circuit.compose(variational_form)
+
+theta_list = (2 * np.pi * np.random.rand(1, 8)).tolist()
+ansatz.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/cost-functions/extracted-outputs/a01a54f2-da16-4008-b422-fa7ded531f67-0.avif)
+
+Nejprve to provedeme pomocí simulátoru: StatevectorEstimator. To se obvykle doporučuje pro ladění, ale ihned po ladicím spuštění provedeme výpočet na skutečném kvantovém hardware. Problémy, které nás zajímají, jsou stále méně klasicky simulovatelné bez nejmodernějších superpočítačových zařízení.
+
+```python
+estimator = StatevectorEstimator()
+cost = cost_func_vqe(theta_list, ansatz, observable, estimator)
+print(cost)
+```
+
+```text
+[-0.58744589]
+```
+
+Nyní přistoupíme ke spuštění na skutečném kvantovém počítači. Všimni si změn v syntaxi. Kroky zahrnující pass_manager budou podrobněji probrány v dalším příkladu. Jedním obzvláště důležitým krokem ve variačních algoritmech je použití Session Qiskit Runtime. Zahájení session ti umožňuje spouštět více iterací variačního algoritmu, aniž bys pokaždé čekal/a v nové frontě, když se aktualizují parametry. To je důležité, pokud jsou časy front dlouhé nebo je potřeba mnoho iterací. Runtime sessions mohou používat pouze partneři v síti IBM Quantum&reg; Network. Pokud k sessions nemáš přístup, můžeš snížit počet iterací, které odešleš najednou, a uložit nejnovější parametry pro použití v budoucích spuštěních. Pokud odešleš příliš mnoho iterací nebo narazíš na příliš dlouhé časy front, může se objevit chybový kód 1217, který označuje dlouhé prodlevy mezi odesláním úloh.
+
+```python
+# Estimated usage: < 1 min. Benchmarked at 7 seconds on an Eagle processor
+# Load necessary packages:
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Session,
+    EstimatorOptions,
+    EstimatorV2 as Estimator,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+# Select the least busy backend:
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=ansatz.num_qubits, simulator=False
+)
+# Or get a specific backend:
+# backend = service.backend("ibm_brisbane")
+
+# Use a pass manager to transpile the circuit and observable for the specific backend being used:
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+isa_ansatz = pm.run(ansatz)
+isa_observable = observable.apply_layout(layout=isa_ansatz.layout)
+
+# Set estimator options
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+# Open a Runtime session:
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+    cost = cost_func_vqe(theta_list, isa_ansatz, isa_observable, estimator)
+
+session.close()
+print(cost)
+```
+
+Všimni si, že hodnoty získané z obou výpočtů výše jsou velmi podobné. Techniky pro zlepšení výsledků budou dále probrány níže.
