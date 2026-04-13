@@ -461,7 +461,10 @@ def check_line_count(en_content: str, tr_content: str,
 
 
 # Files where ``` appears inside a code block value, making fence detection unreliable
-CODE_BLOCK_SKIP = {"guides/qiskit-code-assistant-local.mdx"}
+CODE_BLOCK_SKIP = {
+    "guides/qiskit-code-assistant-local.mdx",
+    "learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx",
+}
 
 # Files where Hebrew compression causes false-positive line count failures
 # (verified complete by checking last lines match source endings)
