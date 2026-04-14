@@ -24,15 +24,11 @@ import {
   getCredentialDaysRemaining,
   saveIBMQuantumCredentials,
   clearIBMQuantumCredentials,
-  getSimulatorMode,
-  setSimulatorMode,
-  getSimulatorBackend,
-  setSimulatorBackend,
+  getExecutionMode,
+  setExecutionMode,
   getFakeDevice,
   setFakeDevice,
   getCachedFakeBackends,
-  getActiveMode,
-  setActiveMode,
   getCredentialTTLDays,
   setCredentialTTLDays,
   getSuppressWarnings,
@@ -53,8 +49,7 @@ import {
   type WorkshopPool,
   type InstanceStats,
   type JupyterConfig,
-  type SimulatorBackend,
-  type ActiveMode,
+  type ExecutionMode,
   type AvailableBackend,
   getIBMQuantumPlan,
   setIBMQuantumPlan,
@@ -178,12 +173,10 @@ export default function JupyterSettings(): JSX.Element {
   const [suppressWarnings, setSuppressWarningsState] = useState(true);
   const [bookmarkCount, setBookmarkCount] = useState(0);
 
-  // Simulator mode state
-  const [simEnabled, setSimEnabled] = useState(false);
-  const [simBackend, setSimBackend] = useState<SimulatorBackend>('aer');
+  // Execution mode state
+  const [executionMode, setExecutionModeState] = useState<ExecutionMode>('aer');
   const [fakeDevice, setFakeDeviceState] = useState('FakeSherbrooke');
   const [fakeBackends, setFakeBackends] = useState(FALLBACK_BACKENDS);
-  const [activeMode, setActiveModeState] = useState<ActiveMode | null>(null);
   const [ttlDays, setTtlDaysState] = useState(7);
 
   // Code Engine state
@@ -229,11 +222,9 @@ export default function JupyterSettings(): JSX.Element {
       setIbmCrn(getIBMQuantumCRN());
     }
 
-    // Load simulator mode state
-    setSimEnabled(getSimulatorMode());
-    setSimBackend(getSimulatorBackend());
+    // Load execution mode state
+    setExecutionModeState(getExecutionMode());
     setFakeDeviceState(getFakeDevice());
-    setActiveModeState(getActiveMode());
     setTtlDaysState(getCredentialTTLDays());
     setIbmPlanState(getIBMQuantumPlan());
 
@@ -378,8 +369,10 @@ export default function JupyterSettings(): JSX.Element {
     setIbmCrn('');
     setIbmDaysRemaining(-1);
     setIbmSaveResult(translate({id: 'settings.ibm.deleteSuccess', message: 'Credentials deleted.'}));
-    setActiveModeState(null);
-    setActiveMode(null);
+    if (executionMode === 'credentials') {
+      setExecutionModeState('aer');
+      setExecutionMode('aer');
+    }
   };
 
   // Code Engine handlers
@@ -515,26 +508,15 @@ export default function JupyterSettings(): JSX.Element {
     setWorkshopResultType(online === stats.length ? 'success' : 'warning');
   };
 
-  // Simulator mode handlers
-  const handleSimToggle = () => {
-    const newVal = !simEnabled;
-    setSimEnabled(newVal);
-    setSimulatorMode(newVal);
-  };
-
-  const handleSimBackendChange = (value: SimulatorBackend) => {
-    setSimBackend(value);
-    setSimulatorBackend(value);
+  // Execution mode handler
+  const handleExecutionModeChange = (mode: ExecutionMode) => {
+    setExecutionModeState(mode);
+    setExecutionMode(mode);
   };
 
   const handleFakeDeviceChange = (name: string) => {
     setFakeDeviceState(name);
     setFakeDevice(name);
-  };
-
-  const handleActiveModeChange = (mode: ActiveMode) => {
-    setActiveModeState(mode);
-    setActiveMode(mode);
   };
 
   // Group fake backends by qubit count for <optgroup>
@@ -546,8 +528,6 @@ export default function JupyterSettings(): JSX.Element {
     backendsByQubits.get(b.qubits)!.push(b);
   }
   const sortedQubitGroups = Array.from(backendsByQubits.entries()).sort((a, b) => a[0] - b[0]);
-
-  const hasBothConfigured = simEnabled && ibmDaysRemaining >= 0;
 
   return (
     <Layout
@@ -564,50 +544,6 @@ export default function JupyterSettings(): JSX.Element {
             </Translate>
           </p>
 
-          {/* Current Environment Status */}
-          <div className="alert alert--info margin-bottom--md">
-            <strong><Translate id="settings.env.label">Current Environment:</Translate></strong>{' '}
-            {config?.environment === 'code-engine' && (
-              <Translate
-                id="settings.env.codeEngine"
-                values={{url: config.baseUrl}}
-              >
-                {'IBM Cloud Code Engine — Connected to {url}'}
-              </Translate>
-            )}
-            {config?.environment === 'github-pages' && (
-              <Translate
-                id="settings.env.githubPages"
-                values={{
-                  binder: <a href="https://mybinder.org" target="_blank" rel="noopener noreferrer">Binder</a>,
-                  ceLink: <a href="#code-engine"><Translate id="settings.env.ceLink">Code Engine</Translate></a>,
-                }}
-              >
-                {'GitHub Pages — Code execution uses {binder}. For faster startup, configure {ceLink} below.'}
-              </Translate>
-            )}
-            {config?.environment === 'rasqberry' && (
-              <Translate
-                id="settings.env.rasqberry"
-                values={{url: config.baseUrl}}
-              >
-                {'RasQberry / Local - Connected to {url}'}
-              </Translate>
-            )}
-            {config?.environment === 'custom' && (
-              <Translate
-                id="settings.env.custom"
-                values={{url: config.baseUrl}}
-              >
-                {'Custom Server - {url}'}
-              </Translate>
-            )}
-            {config?.environment === 'unknown' && (
-              <Translate id="settings.env.unknown">
-                Unknown - Code execution disabled
-              </Translate>
-            )}
-          </div>
 
           {/* Backend Selection — only shown when multiple backends are available */}
           {availableBackends.length > 1 && (
@@ -658,153 +594,95 @@ export default function JupyterSettings(): JSX.Element {
               ESSENTIALS — always visible
               ═══════════════════════════════════════════════════════════════ */}
 
-          {/* Simulator Mode */}
-          <h2 id="simulator-mode" style={{ marginTop: '2rem' }}><Translate id="settings.simulator.heading">Simulator Mode</Translate><InfoIcon tooltip={translate({id: 'settings.info.simulatorMode', message: 'Run quantum circuits locally without an IBM Quantum account. Results approximate real hardware.'})} /></h2>
+          {/* Execution Mode */}
+          <h2 id="execution-mode" style={{ marginTop: '2rem' }}>
+            <Translate id="settings.executionMode.heading">Execution Mode</Translate>
+            <InfoIcon tooltip={translate({id: 'settings.info.executionMode', message: 'Choose how quantum circuits are executed when you click Run on tutorial pages.'})} />
+          </h2>
 
           <p>
-            <Translate
-              id="settings.simulator.desc"
-              values={{service: <code>QiskitRuntimeService</code>}}
-            >
-              {'Enable to run notebooks without an IBM Quantum account. All {service} calls are redirected to a local simulator. No cell modifications needed. This applies to embedded code execution on this site only — opening a notebook in JupyterLab uses the standard Qiskit runtime.'}
+            <Translate id="settings.executionMode.desc">
+              Choose what happens when you click Run on tutorial pages. This applies to embedded code execution on this site only — opening a notebook in JupyterLab uses the standard Qiskit runtime.
             </Translate>
           </p>
 
-          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-            <Translate id="settings.simulator.caveat">
-              Transpiled circuits and backend-specific results will differ from real hardware
-              when using simulator mode. Static expected outputs shown on pages reflect real IBM backends.
-            </Translate>
-          </p>
-
-          <div className="jupyter-settings__field">
-            <label className="jupyter-settings__toggle">
-              <input
-                type="checkbox"
-                checked={simEnabled}
-                onChange={handleSimToggle}
-              />
-              <span className="jupyter-settings__toggle-track">
-                <span className="jupyter-settings__toggle-thumb" />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+              <input type="radio" name="execution-mode" value="aer"
+                checked={executionMode === 'aer'}
+                onChange={() => handleExecutionModeChange('aer')}
+                style={{ marginTop: '0.25rem' }} />
+              <span>
+                <strong>AerSimulator</strong> — <Translate id="settings.executionMode.aerDesc">Ideal simulation, no noise. Fast, works for all circuits.</Translate>
               </span>
-              <span style={{ marginLeft: '0.5rem' }}>
-                {simEnabled
-                  ? translate({id: 'settings.simulator.toggleOn', message: 'Simulator mode enabled'})
-                  : translate({id: 'settings.simulator.toggleOff', message: 'Simulator mode disabled'})}
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+              <input type="radio" name="execution-mode" value="fake"
+                checked={executionMode === 'fake'}
+                onChange={() => handleExecutionModeChange('fake')}
+                style={{ marginTop: '0.25rem' }} />
+              <span>
+                <strong>FakeBackend</strong> — <Translate id="settings.executionMode.fakeDesc">Simulates real IBM device noise. More realistic but slower.</Translate>
+              </span>
+            </label>
+
+            {executionMode === 'fake' && (
+              <div className="jupyter-settings__field" style={{ marginLeft: '1.5rem' }}>
+                <label className="jupyter-settings__label" htmlFor="fake-device">
+                  <Translate id="settings.executionMode.deviceLabel">Device</Translate>
+                </label>
+                <select id="fake-device" className="jupyter-settings__input"
+                  value={fakeDevice}
+                  onChange={(e) => handleFakeDeviceChange(e.target.value)}>
+                  {sortedQubitGroups.map(([qubits, backends]) => (
+                    <optgroup key={qubits} label={`${qubits} qubits`}>
+                      {backends.map((b) => (
+                        <option key={b.name} value={b.name}>{b.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                  <Translate id="settings.executionMode.deviceHint">Device list is updated automatically when you run code.</Translate>
+                </small>
+              </div>
+            )}
+
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+              <input type="radio" name="execution-mode" value="credentials"
+                checked={executionMode === 'credentials'}
+                onChange={() => handleExecutionModeChange('credentials')}
+                style={{ marginTop: '0.25rem' }} />
+              <span>
+                <strong><Translate id="settings.executionMode.ibm">IBM Quantum (real hardware)</Translate></strong> — <Translate id="settings.executionMode.ibmDesc">Connect to real quantum hardware via IBM Quantum credentials.</Translate>
+              </span>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+              <input type="radio" name="execution-mode" value="none"
+                checked={executionMode === 'none'}
+                onChange={() => handleExecutionModeChange('none')}
+                style={{ marginTop: '0.25rem' }} />
+              <span>
+                <strong><Translate id="settings.executionMode.none">No automatic injection</Translate></strong> — <Translate id="settings.executionMode.noneDesc">Manage credentials and backend in code cells yourself.</Translate>
               </span>
             </label>
           </div>
 
-          {simEnabled && (
-            <>
-              <div className="jupyter-settings__field">
-                <label className="jupyter-settings__label"><Translate id="settings.simulator.backendLabel">Backend</Translate></label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <input
-                      type="radio"
-                      name="sim-backend"
-                      value="aer"
-                      checked={simBackend === 'aer'}
-                      onChange={() => handleSimBackendChange('aer')}
-                    />
-                    <span>
-                      <strong>AerSimulator</strong> — <Translate id="settings.simulator.aerDesc">Ideal simulation, no noise. Fast, works for all circuits.</Translate>
-                    </span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <input
-                      type="radio"
-                      name="sim-backend"
-                      value="fake"
-                      checked={simBackend === 'fake'}
-                      onChange={() => handleSimBackendChange('fake')}
-                    />
-                    <span>
-                      <strong>FakeBackend</strong> — <Translate id="settings.simulator.fakeDesc">Simulates real IBM device noise. More realistic but slower.</Translate>
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              {simBackend === 'fake' && (
-                <div className="jupyter-settings__field">
-                  <label className="jupyter-settings__label" htmlFor="fake-device">
-                    <Translate id="settings.simulator.deviceLabel">Device</Translate>
-                  </label>
-                  <select
-                    id="fake-device"
-                    className="jupyter-settings__input"
-                    value={fakeDevice}
-                    onChange={(e) => handleFakeDeviceChange(e.target.value)}
-                  >
-                    {sortedQubitGroups.map(([qubits, backends]) => (
-                      <optgroup key={qubits} label={`${qubits} qubits`}>
-                        {backends.map((b) => (
-                          <option key={b.name} value={b.name}>
-                            {b.name}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                  <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-                    <Translate id="settings.simulator.deviceHint">Device list is updated automatically when you run code.</Translate>
-                  </small>
-                </div>
-              )}
-
-              <div className="alert alert--info margin-top--md">
-                <Translate id="settings.simulator.applyHint">
-                  Changes take effect on the next kernel session. If code is running,
-                  click Back then Run to apply.
-                </Translate>
-              </div>
-            </>
+          {executionMode === 'credentials' && ibmDaysRemaining < 0 && (
+            <div className="alert alert--warning margin-top--md">
+              <Translate id="settings.executionMode.noCredentials">
+                IBM Quantum mode selected but no credentials saved. Enter your token and CRN below.
+              </Translate>
+            </div>
           )}
 
-          {/* Active mode selector when both are configured */}
-          {hasBothConfigured && (
-            <>
-              <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.activeMode.heading">Active Mode</Translate></h3>
-              <p>
-                <Translate id="settings.activeMode.desc">
-                  You have both IBM credentials and simulator mode configured.
-                  Choose which to use when the kernel starts:
-                </Translate>
-              </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="radio"
-                    name="active-mode"
-                    value="credentials"
-                    checked={activeMode === 'credentials'}
-                    onChange={() => handleActiveModeChange('credentials')}
-                  />
-                  <span><Translate id="settings.activeMode.credentials">Use IBM credentials (connect to real hardware)</Translate></span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="radio"
-                    name="active-mode"
-                    value="simulator"
-                    checked={activeMode === 'simulator'}
-                    onChange={() => handleActiveModeChange('simulator')}
-                  />
-                  <span><Translate id="settings.activeMode.simulator">Use simulator (no real hardware access)</Translate></span>
-                </label>
-              </div>
-              {!activeMode && (
-                <div className="alert alert--warning margin-top--md">
-                  <Translate id="settings.activeMode.warning">
-                    Please select an active mode. Without a selection, simulator
-                    mode will be used by default and a reminder banner will appear.
-                  </Translate>
-                </div>
-              )}
-            </>
-          )}
+          <div className="alert alert--info margin-top--md">
+            <Translate id="settings.executionMode.applyHint">
+              Changes take effect on the next kernel session. If code is running, click Back then Run to apply.
+            </Translate>
+          </div>
 
           {/* Display Preferences */}
           <h2 id="display" style={{ marginTop: '2rem' }}><Translate id="settings.display.heading">Display Preferences</Translate></h2>
@@ -1076,15 +954,38 @@ export default function JupyterSettings(): JSX.Element {
           </button>
 
           {/* ═══════════════════════════════════════════════════════════════
-              ADVANCED — collapsed by default
+              COMPUTE BACKEND
               ═══════════════════════════════════════════════════════════════ */}
 
-          <h2 id="advanced-settings" style={{ marginTop: '2.5rem' }}>
-            <Translate id="settings.advancedSettings.heading">Advanced Settings</Translate>
+          <h2 id="compute-backend" style={{ marginTop: '2.5rem' }}>
+            <Translate id="settings.computeBackend.heading">Compute Backend</Translate>
           </h2>
+          <p>
+            <Translate id="settings.computeBackend.desc">
+              Where code runs when you click Run. Auto-detected based on your configuration.
+            </Translate>
+          </p>
+          <div className="alert alert--info margin-bottom--md">
+            <strong><Translate id="settings.env.label">Current:</Translate></strong>{' '}
+            {config?.environment === 'code-engine' && (
+              <Translate id="settings.computeBackend.envCE" values={{url: config.baseUrl}}>{'Code Engine — {url}'}</Translate>
+            )}
+            {config?.environment === 'github-pages' && (
+              <Translate id="settings.computeBackend.envBinder">Binder (mybinder.org)</Translate>
+            )}
+            {config?.environment === 'rasqberry' && (
+              <Translate id="settings.computeBackend.envLocal" values={{url: config.baseUrl}}>{'Local — {url}'}</Translate>
+            )}
+            {config?.environment === 'custom' && (
+              <Translate id="settings.computeBackend.envCustom" values={{url: config.baseUrl}}>{'Custom — {url}'}</Translate>
+            )}
+            {(!config?.environment || config?.environment === 'unknown') && (
+              <Translate id="settings.computeBackend.envUnknown">Not detected</Translate>
+            )}
+          </div>
 
           {/* Code Engine */}
-          <details className="jupyter-settings__details">
+          <details className="jupyter-settings__details" open={config?.environment === 'code-engine' || ceDaysRemaining >= 0}>
             <summary>
               <h3 id="code-engine" className="jupyter-settings__details-heading">
                 <Translate id="settings.ce.heading">IBM Cloud Code Engine</Translate>
@@ -1562,6 +1463,14 @@ QiskitRuntimeService.save_account(
               </details>
             </div>
           </details>
+
+          {/* ═══════════════════════════════════════════════════════════════
+              ADVANCED — collapsed by default
+              ═══════════════════════════════════════════════════════════════ */}
+
+          <h2 id="advanced-settings" style={{ marginTop: '2.5rem' }}>
+            <Translate id="settings.advancedSettings.heading">Advanced Settings</Translate>
+          </h2>
 
           {/* Binder Packages */}
           <details className="jupyter-settings__details">

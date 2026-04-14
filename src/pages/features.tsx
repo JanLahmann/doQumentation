@@ -80,7 +80,7 @@ export default function Features(): JSX.Element {
               <FeatureCard
                 title={translate({id: 'features.execution.backends.title', message: 'Four Execution Backends'})}
                 description={translate({id: 'features.execution.backends.desc', message: 'Free remote execution via Binder or Google Colab, fast serverless kernels via IBM Cloud Code Engine, or full offline via Docker and RasQberry Pi. When multiple backends are available, choose which one to use from the Settings page.'})}
-                link="/jupyter-settings#backend-selection"
+                link="/jupyter-settings#compute-backend"
                 linkLabel={translate({id: 'features.execution.backends.link', message: 'Choose backend'})}
               />
               <FeatureCard
@@ -145,7 +145,7 @@ export default function Features(): JSX.Element {
               <FeatureCard
                 title={translate({id: 'features.ibm.simulator.title', message: 'Simulator Mode'})}
                 description={translate({id: 'features.ibm.simulator.desc', message: 'Run all notebooks without an IBM Quantum account. Choose AerSimulator for ideal simulation, or pick from dozens of FakeBackends that model real device noise. Zero setup required.'})}
-                link="/jupyter-settings#simulator-mode"
+                link="/jupyter-settings#execution-mode"
                 linkLabel={translate({id: 'features.ibm.simulator.link', message: 'Enable simulator'})}
               />
               <FeatureCard

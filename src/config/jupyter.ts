@@ -33,7 +33,8 @@ const STORAGE_KEY_SIM_MODE = 'doqumentation_simulator_mode';
 const STORAGE_KEY_SIM_BACKEND = 'doqumentation_simulator_backend';
 const STORAGE_KEY_FAKE_DEVICE = 'doqumentation_fake_device';
 const STORAGE_KEY_FAKE_BACKENDS_CACHE = 'doqumentation_fake_backends';
-const STORAGE_KEY_ACTIVE_MODE = 'doqumentation_active_mode';
+const STORAGE_KEY_ACTIVE_MODE = 'doqumentation_active_mode'; // deprecated — migrated to EXECUTION_MODE
+const STORAGE_KEY_EXECUTION_MODE = 'doqumentation_execution_mode';
 
 const STORAGE_KEY_IBM_TTL_DAYS = 'doqumentation_ibm_ttl_days';
 const STORAGE_KEY_SUPPRESS_WARNINGS = 'doqumentation_suppress_warnings';
@@ -63,7 +64,7 @@ export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_IBM_TOKEN, STORAGE_KEY_IBM_CRN, STORAGE_KEY_IBM_SAVED_AT,
   STORAGE_KEY_IBM_TTL_DAYS, STORAGE_KEY_SIM_MODE, STORAGE_KEY_SIM_BACKEND,
   STORAGE_KEY_FAKE_DEVICE, STORAGE_KEY_FAKE_BACKENDS_CACHE,
-  STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
+  STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_EXECUTION_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
   STORAGE_KEY_CE_URL, STORAGE_KEY_CE_TOKEN, STORAGE_KEY_CE_SAVED_AT,
   STORAGE_KEY_BACKEND_OVERRIDE, STORAGE_KEY_IBM_PLAN,
   STORAGE_KEY_WORKSHOP_POOL,
@@ -601,34 +602,65 @@ export async function getWorkshopInstanceStats(
   return results;
 }
 
-// ── Simulator mode ──
+// ── Execution mode ──
 
+export type ExecutionMode = 'aer' | 'fake' | 'credentials' | 'none';
 export type SimulatorBackend = 'aer' | 'fake';
 
-export function getSimulatorMode(): boolean {
-  if (typeof window === 'undefined') return false;
-  const stored = getItem(STORAGE_KEY_SIM_MODE);
-  return stored === null ? true : stored === 'true';
+const VALID_EXECUTION_MODES: readonly ExecutionMode[] = ['aer', 'fake', 'credentials', 'none'];
+
+/** One-time migration from old keys (simulator_mode + active_mode) to execution_mode. */
+let executionModeMigrated = false;
+function migrateExecutionMode(): void {
+  if (executionModeMigrated) return;
+  executionModeMigrated = true;
+  if (getItem(STORAGE_KEY_EXECUTION_MODE)) return; // already migrated
+
+  const simMode = getItem(STORAGE_KEY_SIM_MODE);
+  const activeMode = getItem(STORAGE_KEY_ACTIVE_MODE);
+  const simBackend = getItem(STORAGE_KEY_SIM_BACKEND);
+
+  let mode: ExecutionMode = 'aer'; // default
+  if (activeMode === 'credentials') {
+    mode = 'credentials';
+  } else if (simMode === 'false') {
+    mode = getItem(STORAGE_KEY_IBM_TOKEN) ? 'credentials' : 'none';
+  } else {
+    // simMode was true or unset (default true)
+    mode = simBackend === 'fake' ? 'fake' : 'aer';
+  }
+
+  // Only write if we had old keys to migrate from
+  if (simMode !== null || activeMode !== null) {
+    setItem(STORAGE_KEY_EXECUTION_MODE, mode);
+    removeItem(STORAGE_KEY_SIM_MODE);
+    removeItem(STORAGE_KEY_ACTIVE_MODE);
+  }
 }
 
-export function setSimulatorMode(enabled: boolean): void {
-  if (typeof window === 'undefined') return;
-  setItem(STORAGE_KEY_SIM_MODE, String(enabled));
-}
-
-const VALID_SIMULATOR_BACKENDS: readonly SimulatorBackend[] = ['aer', 'fake'];
-
-export function getSimulatorBackend(): SimulatorBackend {
+export function getExecutionMode(): ExecutionMode {
   if (typeof window === 'undefined') return 'aer';
-  const stored = getItem(STORAGE_KEY_SIM_BACKEND);
-  return stored && VALID_SIMULATOR_BACKENDS.includes(stored as SimulatorBackend)
-    ? (stored as SimulatorBackend)
+  migrateExecutionMode();
+  const stored = getItem(STORAGE_KEY_EXECUTION_MODE);
+  return stored && VALID_EXECUTION_MODES.includes(stored as ExecutionMode)
+    ? (stored as ExecutionMode)
     : 'aer';
 }
 
-export function setSimulatorBackend(backend: SimulatorBackend): void {
+export function setExecutionMode(mode: ExecutionMode): void {
   if (typeof window === 'undefined') return;
-  setItem(STORAGE_KEY_SIM_BACKEND, backend);
+  setItem(STORAGE_KEY_EXECUTION_MODE, mode);
+}
+
+/** Derived: true when execution mode is a simulator (aer or fake). */
+export function getSimulatorMode(): boolean {
+  const mode = getExecutionMode();
+  return mode === 'aer' || mode === 'fake';
+}
+
+/** Derived: returns the simulator backend type from execution mode. */
+export function getSimulatorBackend(): SimulatorBackend {
+  return getExecutionMode() === 'fake' ? 'fake' : 'aer';
 }
 
 export function getFakeDevice(): string {
@@ -654,29 +686,6 @@ export function getCachedFakeBackends(): Array<{name: string; qubits: number}> |
 export function setCachedFakeBackends(backends: Array<{name: string; qubits: number}>): void {
   if (typeof window === 'undefined') return;
   setItem(STORAGE_KEY_FAKE_BACKENDS_CACHE, JSON.stringify(backends));
-}
-
-// ── Active mode (conflict resolution when both credentials + simulator set) ──
-
-export type ActiveMode = 'credentials' | 'simulator';
-
-const VALID_ACTIVE_MODES: readonly ActiveMode[] = ['credentials', 'simulator'];
-
-export function getActiveMode(): ActiveMode | null {
-  if (typeof window === 'undefined') return null;
-  const stored = getItem(STORAGE_KEY_ACTIVE_MODE);
-  return stored && VALID_ACTIVE_MODES.includes(stored as ActiveMode)
-    ? (stored as ActiveMode)
-    : null;
-}
-
-export function setActiveMode(mode: ActiveMode | null): void {
-  if (typeof window === 'undefined') return;
-  if (mode) {
-    setItem(STORAGE_KEY_ACTIVE_MODE, mode);
-  } else {
-    removeItem(STORAGE_KEY_ACTIVE_MODE);
-  }
 }
 
 /**

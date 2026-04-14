@@ -11,11 +11,8 @@
  */
 
 import {
-  getSimulatorMode,
-  getSimulatorBackend,
+  getExecutionMode as getConfigMode,
   getFakeDevice,
-  getIBMQuantumToken,
-  getActiveMode,
 } from '../../config/jupyter';
 
 export type ExecutionMode =
@@ -29,28 +26,17 @@ export type ExecutionMode =
  * Mirrors the decision logic in injectKernelSetup() in ExecutableCode.
  */
 export function getExecutionMode(): ExecutionMode {
-  const simMode = getSimulatorMode();
-  const token = getIBMQuantumToken();
-  const activeMode = getActiveMode();
-
-  const hasBoth = simMode && !!token;
-  const useSimulator = simMode && (!hasBoth || activeMode === 'simulator');
-  const useCredentials = !!token && (!simMode || activeMode === 'credentials');
-
-  // If both are configured but no choice made, default to simulator (matches ExecutableCode)
-  if (useSimulator || (hasBoth && !activeMode)) {
-    const backend = getSimulatorBackend();
-    if (backend === 'fake') {
+  const mode = getConfigMode();
+  switch (mode) {
+    case 'aer':
+      return { kind: 'ideal', label: 'AerSimulator' };
+    case 'fake': {
       const device = getFakeDevice();
       return { kind: 'noisy_fake', label: device, device };
     }
-    return { kind: 'ideal', label: 'AerSimulator' };
+    case 'credentials':
+      return { kind: 'real', label: 'IBM Quantum' };
+    case 'none':
+      return { kind: 'none', label: 'AerSimulator (fallback)' };
   }
-
-  if (useCredentials) {
-    return { kind: 'real', label: 'IBM Quantum' };
-  }
-
-  // No mode configured — adapter will fall back to local AerSimulator
-  return { kind: 'none', label: 'AerSimulator (fallback)' };
 }

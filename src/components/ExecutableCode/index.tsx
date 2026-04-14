@@ -25,10 +25,9 @@ import {
   getColabUrl,
   getIBMQuantumToken,
   getIBMQuantumCRN,
-  getSimulatorMode,
+  getExecutionMode,
   getSimulatorBackend,
   getFakeDevice,
-  getActiveMode,
   setCachedFakeBackends,
   getSuppressWarnings,
   ensureBinderSession,
@@ -231,7 +230,7 @@ function buildReportUrl(cell: Element, error: { type: string; name?: string }): 
 
   const pagePath = window.location.pathname;
   const env = lastJupyterConfig?.environment || 'unknown';
-  const simMode = getSimulatorMode();
+  const execMode = getExecutionMode();
 
   const title = `Execution error on ${pagePath}`;
   const body = [
@@ -254,7 +253,7 @@ function buildReportUrl(cell: Element, error: { type: string; name?: string }): 
     '## Context',
     `- **Page:** ${window.location.href}`,
     `- **Environment:** ${env}`,
-    `- **Simulator mode:** ${simMode}`,
+    `- **Execution mode:** ${execMode}`,
     `- **Error type:** ${error.type}${error.name ? ` (${error.name})` : ''}`,
     `- **User agent:** ${navigator.userAgent}`,
   ].join('\n');
@@ -553,10 +552,13 @@ function setupCellFeedback(): void {
 /** After injection, show a skip-hint on cells that contain save_account().
  *  Prevents users from overwriting injected credentials with placeholder values. */
 function annotateSaveAccountCells(): void {
-  const exempt = isSimulatorExemptPage();
-  const simMode = exempt ? false : getSimulatorMode();
-  const hasCredentials = !!getIBMQuantumToken();
-  if (!simMode && !hasCredentials) return;
+  const mode = getExecutionMode();
+  if (mode === 'none') return;
+  const effectiveMode = isSimulatorExemptPage() && (mode === 'aer' || mode === 'fake')
+    ? (getIBMQuantumToken() ? 'credentials' : 'none')
+    : mode;
+  if (effectiveMode === 'none') return;
+  const simMode = effectiveMode === 'aer' || effectiveMode === 'fake';
 
   // Wait for thebelab to render cells (same delay as setupCellFeedback)
   setTimeout(() => {
@@ -626,7 +628,7 @@ function annotateSaveAccountCells(): void {
 function annotateSessionCells(): void {
   if (isSimulatorExemptPage()) return;
   if (getIBMQuantumPlan() !== 'open') return;
-  if (!getIBMQuantumToken() || getSimulatorMode()) return;
+  if (getExecutionMode() !== 'credentials' || !getIBMQuantumToken()) return;
 
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
@@ -652,10 +654,8 @@ function annotateSessionCells(): void {
 /** After injection, show per-cell badges explaining what doQumentation will
  *  intercept when a cell runs (simulator redirect or credential usage). */
 function annotateInjectedCells(): void {
-  const exempt = isSimulatorExemptPage();
-  const simMode = exempt ? false : getSimulatorMode();
-  const hasCredentials = !!getIBMQuantumToken();
-  if (!simMode && !hasCredentials) return;
+  const mode = getExecutionMode();
+  if (mode === 'none') return;
 
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
@@ -673,7 +673,7 @@ function annotateInjectedCells(): void {
 
       const badges: string[] = [];
 
-      if (simMode) {
+      if (mode === 'aer' || mode === 'fake') {
         if (code.includes('QiskitRuntimeService(') || code.includes('QiskitRuntimeService ('))
           badges.push(translate({
             id: 'executable.injection.serviceIntercepted',
@@ -689,7 +689,7 @@ function annotateInjectedCells(): void {
             id: 'executable.injection.backend',
             message: 'backend() → {device}',
           }, {device}));
-      } else if (hasCredentials) {
+      } else if (mode === 'credentials') {
         if (code.includes('QiskitRuntimeService(') || code.includes('QiskitRuntimeService ('))
           badges.push(translate({
             id: 'executable.injection.credentialsUsed',
@@ -721,8 +721,6 @@ function isSimulatorExemptPage(): boolean {
   const path = window.location.pathname.replace(/\/$/, '');
   return SIMULATOR_EXEMPT_PAGES.some(p => path === p || path.endsWith(p));
 }
-
-const CONFLICT_EVENT = 'executablecode:conflict';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export async function executeOnKernel(kernelObj: unknown, code: string): Promise<boolean> {
@@ -887,56 +885,55 @@ if _m: _m.Session = _DQ_JobModeSession
 print("[doQumentation] Session patched for Open Plan (job mode)")`;
 }
 
-function broadcastConflictBanner(usingMode: string): void {
-  window.dispatchEvent(new CustomEvent(CONFLICT_EVENT, { detail: usingMode }));
-}
-
 function broadcastInjection(info: InjectionInfo): void {
   window.dispatchEvent(new CustomEvent(INJECTION_EVENT, { detail: info }));
 }
 
 async function injectKernelSetup(kernelObj: unknown): Promise<void> {
-  const exempt = isSimulatorExemptPage();
-  const simMode = exempt ? false : getSimulatorMode();
-  const token = getIBMQuantumToken();
-  const activeMode = getActiveMode();
+  let mode = getExecutionMode();
 
-  const hasBoth = simMode && !!token;
-  const useSimulator = simMode && (!hasBoth || activeMode === 'simulator');
-  const useCredentials = !!token && (!simMode || activeMode === 'credentials');
-
-  if (hasBoth && !activeMode) {
-    broadcastConflictBanner('simulator');
+  if (isSimulatorExemptPage() && (mode === 'aer' || mode === 'fake')) {
+    mode = getIBMQuantumToken() ? 'credentials' : 'none';
   }
 
-  if (useSimulator || (hasBoth && !activeMode)) {
-    const ok = await executeOnKernel(kernelObj, getSimulatorPatchCode());
-    if (ok) {
-      const backend = getSimulatorBackend();
-      const device = backend === 'fake' ? getFakeDevice() : 'AerSimulator';
-      broadcastInjection({
-        mode: 'simulator',
-        label: device,
-        message: `Simulator active \u2014 using ${device}`,
-      });
-    }
-  } else if (useCredentials) {
-    const crn = getIBMQuantumCRN();
-    const ok = await executeOnKernel(kernelObj, getSaveAccountCode(token, crn));
-    if (ok) {
-      const plan = getIBMQuantumPlan();
-      const isOpenPlan = plan === 'open';
-      if (isOpenPlan) {
-        await executeOnKernel(kernelObj, getOpenPlanPatchCode());
+  switch (mode) {
+    case 'aer':
+    case 'fake': {
+      const ok = await executeOnKernel(kernelObj, getSimulatorPatchCode());
+      if (ok) {
+        const device = mode === 'fake' ? getFakeDevice() : 'AerSimulator';
+        broadcastInjection({
+          mode: 'simulator',
+          label: device,
+          message: `Simulator active \u2014 using ${device}`,
+        });
       }
-      broadcastInjection({
-        mode: 'credentials',
-        label: 'IBM Quantum',
-        message: isOpenPlan
-          ? 'IBM Quantum credentials applied \u00B7 Session \u2192 job mode'
-          : 'IBM Quantum credentials applied',
-      });
+      break;
     }
+    case 'credentials': {
+      const token = getIBMQuantumToken();
+      if (token) {
+        const crn = getIBMQuantumCRN();
+        const ok = await executeOnKernel(kernelObj, getSaveAccountCode(token, crn));
+        if (ok) {
+          const plan = getIBMQuantumPlan();
+          const isOpenPlan = plan === 'open';
+          if (isOpenPlan) {
+            await executeOnKernel(kernelObj, getOpenPlanPatchCode());
+          }
+          broadcastInjection({
+            mode: 'credentials',
+            label: 'IBM Quantum',
+            message: isOpenPlan
+              ? 'IBM Quantum credentials applied \u00B7 Session \u2192 job mode'
+              : 'IBM Quantum credentials applied',
+          });
+        }
+      }
+      break;
+    }
+    case 'none':
+      break;
   }
 
   discoverFakeBackends(kernelObj);
@@ -1289,7 +1286,6 @@ export default function ExecutableCode({
   const [thebeStatus, setThebeStatus] = useState<ThebeStatus>('idle');
   const [jupyterConfig, setJupyterConfig] = useState<JupyterConfig | null>(null);
   const [isFirstCell, setIsFirstCell] = useState(false);
-  const [conflictBanner, setConflictBanner] = useState<string | null>(null);
   const [injectionInfo, setInjectionInfo] = useState<InjectionInfo | null>(null);
   const [injectionToast, setInjectionToast] = useState<string | null>(null);
   const [binderHintDismissed, setBinderHintDismissed] = useState(false);
@@ -1424,22 +1420,6 @@ export default function ExecutableCode({
     }, 1000);
     return () => clearInterval(interval);
   }, [binderPhase]);
-
-  // Listen for conflict banner (both credentials + simulator configured, no explicit choice)
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const onConflict = (e: Event) => {
-      const usingMode = (e as CustomEvent<string>).detail;
-      setConflictBanner(usingMode);
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => setConflictBanner(null), 5000);
-    };
-    window.addEventListener(CONFLICT_EVENT, onConflict);
-    return () => {
-      window.removeEventListener(CONFLICT_EVENT, onConflict);
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
 
   // Listen for injection feedback (simulator or credentials applied)
   useEffect(() => {
@@ -1800,7 +1780,7 @@ export default function ExecutableCode({
 
           {thebeStatus === 'ready' && injectionInfo && injectionInfo.mode !== 'none' && (
             <a
-              href="/jupyter-settings#simulator-mode"
+              href="/jupyter-settings#execution-mode"
               className={`executable-code__mode-badge executable-code__mode-badge--${injectionInfo.mode}`}
               style={{ textDecoration: 'none', color: 'inherit' }}
               title={translate({id: 'executable.badge.settingsTitle', message: 'Go to Settings to change execution mode'})}
@@ -1837,24 +1817,6 @@ export default function ExecutableCode({
           {jupyterConfig?.environment === 'code-engine'
             ? translate({id: 'executable.status.ceSlowStartup', message: 'Code Engine startup is taking longer than expected. You can cancel and try again later, or use Colab or Docker instead.'})
             : translate({id: 'executable.status.binderSlowStartup', message: 'Binder startup is taking longer than expected. You can cancel and try again later, or use one of the other backends (Colab, Docker, or Code Engine).'})}
-        </div>
-      )}
-
-      {isFirstCell && conflictBanner && (
-        <div className="executable-code__conflict-banner" role="alert">
-          <Translate
-            id="executable.conflict"
-            values={{
-              mode: <strong>{conflictBanner}</strong>,
-              settingsLink: (
-                <a href="/jupyter-settings#ibm-quantum">
-                  <Translate id="executable.conflict.settingsLink">Change in Settings</Translate>
-                </a>
-              ),
-            }}
-          >
-            {'Both IBM credentials and simulator mode are configured. Using {mode}. {settingsLink}.'}
-          </Translate>
         </div>
       )}
 
