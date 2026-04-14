@@ -1,3 +1,132 @@
+---
+title: "Sample-based Krylov Quantum Diagonalization"
+sidebar_label: "Sample-based Krylov Quantum Diagonalization"
+description: "Tematy z poprzednich lekcji są łączone, aby wykorzystać gwarancje zbieżności QKD i szybkość SQD w SKQD."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/skqd.ipynb"
+---
+
+{/* doqumentation-source-hash: 0d650fd4 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/skqd.ipynb" />
+
+
+
+{/* cspell:ignore arxiv Neel probs eigenvals Hatano */}
+
+# Sample-based Krylov Quantum Diagonalization (SKQD) {#sample-based-krylov-quantum-diagonalization-skqd}
+Ta lekcja poświęcona Sample-based Krylov quantum diagonalization (SKQD) łączy metody opisane w poprzednich lekcjach. Składa się z jednego przykładu wykorzystującego framework Qiskit patterns:
+
+    - Krok 1: Mapowanie problemu na obwody kwantowe i operatory
+    - Krok 2: Optymalizacja pod docelowy sprzęt
+    - Krok 3: Wykonanie z użyciem Qiskit Primitives
+    - Krok 4: Post-processing
+
+Ważnym krokiem w metodzie sample-based quantum diagonalization jest generowanie wektorów wysokiej jakości dla podprzestrzeni. W poprzedniej lekcji używaliśmy ansatzu LUCJ do generowania wektorów podprzestrzeni dla chemicznego Hamiltonianu. W tej lekcji użyjemy kwantowych stanów Krylov[\[1\]](#references), tak jak omówiono w lekcji 2. Najpierw przypomnimy, jak tworzyć przestrzeń Krylov na komputerze kwantowym z użyciem operacji ewolucji czasowej. Następnie będziemy z niej próbkować. Rzutujemy Hamiltonian układu na spróbkowaną podprzestrzeń i dokonamy jego diagonalizacji, aby oszacować energię stanu podstawowego. Algorytm zbieżnie i efektywnie dąży do stanu podstawowego, przy założeniach opisanych w lekcji 2.
+
+## 0. The Krylov space {#the-krylov-space}
+
+Przypomnijmy, że przestrzeń Krylov $\mathcal{K}^r$ rzędu $r$ to przestrzeń rozpiętą przez wektory otrzymane przez mnożenie kolejnych potęg macierzy $A$ — do $r-1$ — przez wektor referencyjny $\vert v \rangle$.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+Jeśli macierz $A$ jest Hamiltonianem $H$, odpowiadająca mu przestrzeń nazywana jest _potęgową przestrzenią Krylov_ $\mathcal{K}_P$. W przypadku gdy $A$ jest operatorem ewolucji czasowej generowanym przez Hamiltonian $U=e^{-iH(dt)}$, przestrzeń ta nosi nazwę unitarnej przestrzeni Krylov $\mathcal{K}_U$. Potęgowa podprzestrzeń Krylov nie może być generowana bezpośrednio na komputerze kwantowym, ponieważ $H$ nie jest operatorem unitarnym. Zamiast tego możemy użyć operatora ewolucji czasowej $U = e^{-iH(dt)}$, który, jak można pokazać, daje podobne [gwarancje zbieżności](https://arxiv.org/abs/2110.07492) jak potęgowa przestrzeń Krylov. Potęgi $U$ stają się wówczas różnymi krokami czasowymi $U^k = e^{-iH(k dt)}$, gdzie $k = 0, 1, 2, ..., (r-1)$.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+## 1. Map problem to quantum circuits and operators {#map-problem-to-quantum-circuits-and-operators}
+W tej lekcji rozważamy Hamiltonian dla antysferromagnetycznego łańcucha spinowego XX-Z o spinie 1/2 z $L = 22$ węzłami i periodycznym warunkiem brzegowym:
+$$
+    H = \sum_{i, j}^{N} J_{xy} (X_{i} X_{j} + Y_{i} Y_{j}) + Z_{i} Z_{j}
+$$
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-sqd qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+num_spins = 22
+coupling_map = CouplingMap.from_ring(num_spins)
+H_op = generate_xyz_hamiltonian(coupling_map, coupling_constants=(0.3, 0.3, 1.0))
+```
+
+Aby zbudować przestrzeń Krylov, potrzebujemy trzech głównych składników:
+
+1. Wyboru wymiaru Krylov ($r$) i kroku czasowego ($dt$).
+2. Stanu początkowego (referencyjnego) (wektor $\vert v \rangle$ powyżej) o wielomianowym pokryciu z docelowym (podstawowym) stanem, gdzie stan docelowy jest rzadki. Wymaganie wielomianowego pokrycia jest takie samo jak w algorytmie kwantowej estymacji fazy.
+3. Operatorów ewolucji czasowej $U^{k}=e^{-iH(k * dt)}$ ($k = 0, 1, 2, ..., r-1$).
+
+Dla wybranej wartości $r$ (i $dt$) tworzymy $r$ osobnych obwodów kwantowych i próbkujemy z nich. Każdy obwód kwantowy powstaje przez połączenie kwantowej reprezentacji obwodowej stanu referencyjnego z operatorem ewolucji czasowej dla danej wartości $k$.
+
+Większy wymiar Krylov poprawia zbieżność estymowanej energii. W tej lekcji ustawiamy wymiar na $5$, aby zilustrować trend zbieżności.
+
+Ref [\[2\]](#references) wykazał, że wystarczająco mały krok czasowy dla KQD wynosi $\pi / \vert \vert H \vert \vert$, i że lepiej go niedoszacować niż przeszacować. Z drugiej strony, zbyt małe $dt$ prowadzi do gorszego uwarunkowania podprzestrzeni Krylov, ponieważ wektory bazy Krylov mniej różnią się między kolejnymi krokami czasowymi. Ponadto, choć ten wybór $dt$ jest provably wystarczający dla zbieżności SKQD, w tym kontekście opartym na próbkowaniu optymalny dobór $dt$ w praktyce jest nadal przedmiotem badań. W tej lekcji ustawiamy $dt = 0.15$.
+
+Oprócz wymiaru Krylov i kroku czasowego musimy ustalić liczbę kroków Trottera dla ewolucji czasowej. Zbyt mała liczba kroków prowadzi do większych błędów troterizacji, podczas gdy zbyt duża — do głębszych obwodów. W tej lekcji ustawiamy liczbę kroków Trottera na $6$.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of krylov subspace
+dt = 0.15
+num_trotter_steps = 6
+```
+
+Następnie musimy wybrać stan referencyjny $\vert \psi \rangle$, który ma pewne pokrycie ze stanem podstawowym. Dla tego Hamiltonianu jako stan referencyjny używamy stanu _Neel_ z naprzemiennymi jedynkami i zerami $\vert ...101...010...101 \rangle$.
+
+```python
+# Prep `Neel` state as the reference state for evolution
+from qiskit import QuantumCircuit
+
+qc_state_prep = QuantumCircuit(num_spins)
+for i in range(num_spins):
+    if i % 2 == 0:
+        qc_state_prep.x(i)
+```
+
+Na koniec musimy odwzorować operator ewolucji czasowej na obwód kwantowy. Zostało to zrobione w lekcji 2, ale tutaj skorzystamy z metod dostępnych w Qiskit, a konkretnie z metody o nazwie _synthesis_. Istnieją różne metody syntezowania operatorów matematycznych na obwody kwantowe z bramkami kwantowymi. Wiele takich technik dostępnych jest w [module syntezy Qiskit](https://docs.quantum.ibm.com/api/qiskit/synthesis). Użyjemy podejścia [`LieTrotter`](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter) do syntezy [\[3\]](#references) [\[4\]](#references).
+
+```python
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+
+evol_gate = PauliEvolutionGate(
+    H_op, time=(dt / num_trotter_steps), synthesis=LieTrotter(reps=num_trotter_steps)
+)  # `U` operator
+
+qr = QuantumRegister(num_spins)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+
+circuits = []
+for rep in range(krylov_dim):
+    circ = qc_state_prep.copy()
+
+    # Repeating the `U` operator to implement U^0, U^1, U^2, and so on, for power Krylov space
+    for _ in range(rep):
+        circ.compose(other=qc_evol, inplace=True)
+
+    circ.measure_all()
+    circuits.append(circ)
+```
+
+```python
+circuits[1].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/7ffc3eaa-9563-4c89-9d7b-808a3a37b275-0.avif)
+
+```python
+circuits[2].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/bdbc0881-06b0-49f2-8919-a376aa7f08e3-0.avif)
 ## 2. Optimize for target hardware {#optimize-for-target-hardware}
 Mając już gotowe Circuit, możemy je zoptymalizować pod kątem docelowego sprzętu. Wybieramy QPU w skali użytkowej.
 
