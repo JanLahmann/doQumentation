@@ -1,0 +1,200 @@
+#### Spuštění {#run}
+
+Primitivy nabízejí různé [režimy spouštění](/guides/execution-modes) pro plánování úloh na kvantových zařízeních a pracovní postup QAOA běží iterativně v rámci Session.
+!["execution mode"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/execution-mode.avif)
+Funkci nákladů založenou na Sampleru lze zapojit do minimalizační rutiny SciPy a nalézt optimální parametry.
+
+```python
+def cost_func_estimator(params, ansatz, hamiltonian, estimator):
+    # transform the observable defined on virtual qubits to
+    # an observable defined on all physical qubits
+    isa_hamiltonian = hamiltonian.apply_layout(ansatz.layout)
+
+    pub = (ansatz, isa_hamiltonian, params)
+    job = estimator.run([pub])
+
+    results = job.result()[0]
+    cost = results.data.evs
+
+    objective_func_vals.append(cost)
+
+    return cost
+```
+
+```python
+from qiskit_ibm_runtime import Session, EstimatorV2
+from scipy.optimize import minimize
+
+objective_func_vals = []  # Global variable
+with Session(backend=backend) as session:
+    # If using qiskit-ibm-runtime<0.24.0, change `mode=` to `session=`
+    estimator = EstimatorV2(mode=session)
+    estimator.options.default_shots = 1000
+
+    # Set simple error suppression/mitigation options
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XY4"
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+
+    result = minimize(
+        cost_func_estimator,
+        init_params,
+        args=(candidate_circuit, cost_hamiltonian, estimator),
+        method="COBYLA",
+        tol=1e-2,
+    )
+    print(result)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -0.6557925874481715
+       x: [ 2.873e+00  9.414e-01]
+    nfev: 21
+   maxcv: 0.0
+```
+
+Optimalizátor dokázal snížit náklady a nalézt lepší parametry pro Circuit.
+
+```python
+plt.figure(figsize=(12, 6))
+plt.plot(objective_func_vals)
+plt.xlabel("Iteration")
+plt.ylabel("Cost")
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/f923dd5d-0.avif)
+
+Jakmile najdeš optimální parametry pro Circuit, můžeš je přiřadit a vzorkovat výsledné rozdělení získané s optimalizovanými parametry. Právě zde by měla být použita primitiva *Sampler*, protože jde o rozdělení pravděpodobnosti měření bitových řetězců, které odpovídají optimálnímu řezu grafu.
+
+**Poznámka:** To znamená připravit kvantový stav $\psi$ v počítači a pak ho změřit. Měření zkolabuje stav do jediného výpočetního bázového stavu – například `010101110000...` – který odpovídá kandidátskému řešení $x$ našeho původního optimalizačního problému ($\max f(x)$ nebo $\min f(x)$ podle zadání).
+
+```python
+optimized_circuit = candidate_circuit.assign_parameters(result.x)
+optimized_circuit.draw("mpl", fold=False, idle_wires=False)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/f8dddf5a-0.avif)
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+
+# If using qiskit-ibm-runtime<0.24.0, change `mode=` to `backend=`
+sampler = SamplerV2(mode=backend)
+
+# Set simple error suppression/mitigation options
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XY4"
+sampler.options.twirling.enable_gates = True
+sampler.options.twirling.num_randomizations = "auto"
+
+pub = (optimized_circuit,)
+job = sampler.run([pub], shots=int(1e4))
+counts_int = job.result()[0].data.meas.get_int_counts()
+counts_bin = job.result()[0].data.meas.get_counts()
+shots = sum(counts_int.values())
+final_distribution_int = {key: val / shots for key, val in counts_int.items()}
+final_distribution_bin = {key: val / shots for key, val in counts_bin.items()}
+print(final_distribution_int)
+```
+
+```text
+{12: 0.0652, 31: 0.0089, 4: 0.0085, 13: 0.0731, 26: 0.0256, 28: 0.0246, 17: 0.0405, 25: 0.0591, 20: 0.031, 15: 0.0221, 8: 0.017, 21: 0.0371, 14: 0.0461, 16: 0.0229, 19: 0.0723, 23: 0.0199, 22: 0.0478, 18: 0.0708, 24: 0.0165, 6: 0.0525, 7: 0.0155, 5: 0.0245, 3: 0.0231, 29: 0.0121, 30: 0.0062, 10: 0.0363, 1: 0.0097, 9: 0.042, 27: 0.0094, 11: 0.0349, 0: 0.0129, 2: 0.0119}
+```
+
+### 3.5 Krok 4. Post-processing, vrácení výsledku v klasickém formátu {#35-step-4-post-process-return-result-in-classical-format}
+
+Krok post-processingu interpretuje výstup vzorkování a vrací řešení původního problému. V tomto případě tě zajímá bitový řetězec s nejvyšší pravděpodobností, protože ten určuje optimální řez. Symetrie problému umožňují čtyři možná řešení a proces vzorkování vrátí jedno z nich s o něco vyšší pravděpodobností, ale v níže zobrazeném rozdělení vidíš, že čtyři bitové řetězce jsou výrazně pravděpodobnější než ostatní.
+
+```python
+# auxiliary functions to sample most likely bitstring
+def to_bitstring(integer, num_bits):
+    result = np.binary_repr(integer, width=num_bits)
+    return [int(digit) for digit in result]
+
+keys = list(final_distribution_int.keys())
+values = list(final_distribution_int.values())
+most_likely = keys[np.argmax(np.abs(values))]
+most_likely_bitstring = to_bitstring(most_likely, len(graph))
+most_likely_bitstring.reverse()
+
+print("Result bitstring:", most_likely_bitstring)
+```
+
+```text
+Result bitstring: [1, 0, 1, 1, 0]
+```
+
+```python
+import matplotlib.pyplot as plt
+
+matplotlib.rcParams.update({"font.size": 10})
+final_bits = final_distribution_bin
+values = np.abs(list(final_bits.values()))
+top_4_values = sorted(values, reverse=True)[:4]
+positions = []
+for value in top_4_values:
+    positions.append(np.where(values == value)[0])
+fig = plt.figure(figsize=(11, 6))
+ax = fig.add_subplot(1, 1, 1)
+plt.xticks(rotation=45)
+plt.title("Result Distribution")
+plt.xlabel("Bitstrings (reversed)")
+plt.ylabel("Probability")
+ax.bar(list(final_bits.keys()), list(final_bits.values()), color="tab:grey")
+for p in positions:
+    ax.get_children()[p[0].item()].set_color("tab:purple")
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/32a3020e-c1ea-4aff-988c-d7910a690fa8-0.avif)
+
+#### Vizualizace nejlepšího řezu {#visualize-best-cut}
+
+Z optimálního bitového řetězce pak můžeš vizualizovat tento řez na původním grafu.
+
+```python
+colors = ["tab:grey" if i == 0 else "tab:purple" for i in most_likely_bitstring]
+mpl_draw(graph, node_size=600, pos=pos, with_labels=True, labels=str, node_color=colors)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/22a48124-e6b4-4144-bee1-f01fa4c7ccbb-0.avif)
+
+A vypočítat hodnotu řezu. Řešení není optimální kvůli šumu (hodnota řezu optimálního řešení je 5).
+
+```python
+from typing import Sequence
+
+def evaluate_sample(x: Sequence[int], graph: rx.PyGraph) -> float:
+    assert len(x) == len(
+        list(graph.nodes())
+    ), "The length of x must coincide with the number of nodes in the graph."
+    return sum(
+        x[u] * (1 - x[v]) + x[v] * (1 - x[u]) for u, v in list(graph.edge_list())
+    )
+
+cut_value = evaluate_sample(most_likely_bitstring, graph)
+print("The value of the cut is:", cut_value)
+```
+
+```text
+The value of the cut is: 5
+```
+
+Tím je malý tutoriál k QAOA uzavřen.
+Naučíš se, jak přizpůsobit QAOA na úrovni utility, v části „Part 2: scale it up!" tutoriálu [Quantum approximate optimization algorithm](/tutorials/quantum-approximate-optimization-algorithm).
+
+```python
+# Check Qiskit version
+import qiskit
+
+qiskit.__version__
+```
+
+```text
+'2.0.2'
+```

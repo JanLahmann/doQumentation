@@ -1,0 +1,167 @@
+### Ztrátová funkce {#loss-function}
+Dále potřebujeme ztrátovou funkci, která vypočítá rozdíl mezi předpovězenými a skutečnými hodnotami štítků. Funkce přijme štítky předpovězené algoritmem a správné štítky a vrátí průměrnou kvadratickou odchylku. Existuje mnoho různých ztrátových funkcí. Zde jako příklad použijeme MSE.
+
+```python
+def mse_loss(predict: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """
+    Mean squared error (MSE).
+
+    prediction: predictions from the forward pass of neural network.
+    target: true labels.
+
+    output: MSE loss.
+    """
+    if len(predict.shape) <= 1:
+        return ((predict - target) ** 2).mean()
+    else:
+        raise AssertionError("input should be 1d-array")
+```
+
+Definujme také mírně odlišnou ztrátovou funkci, která je funkcí proměnných parametrů (vah), určenou pro klasický optimalizátor. Tato funkce přijímá jako vstup pouze parametry Ansatzu; ostatní proměnné pro dopředný průchod a ztrátu jsou nastaveny jako globální parametry. Optimalizátor natrénuje model vzorkováním různých vah a snahou o snížení výstupu funkce nákladů/ztráty.
+
+```python
+def mse_loss_weights(weight_params: np.ndarray) -> np.ndarray:
+    """
+    Cost function for the optimizer to update the ansatz parameters.
+
+    weight_params: ansatz parameters to be updated by the optimizer.
+
+    output: MSE loss.
+    """
+    predictions = forward(
+        circuit=circuit,
+        input_params=input_params,
+        weight_params=weight_params,
+        estimator=estimator,
+        observable=observable,
+    )
+
+    cost = mse_loss(predict=predictions, target=target)
+    objective_func_vals.append(cost)
+
+    global iter
+    if iter % 50 == 0:
+        print(f"Iter: {iter}, loss: {cost}")
+    iter += 1
+
+    return cost
+```
+
+Výše jsme zmínili použití klasického optimalizátoru. Až přejdeme k prohledávání vah za účelem minimalizace funkce nákladů, použijeme optimalizátor COBYLA:
+
+```python
+from scipy.optimize import minimize
+```
+
+Nastavíme některé počáteční globální proměnné pro funkci nákladů.
+
+```python
+# Globals
+circuit = full_circuit
+observables = observable
+# input_params = train_images_batch
+# target = train_labels_batch
+objective_func_vals = []
+iter = 0
+```
+
+## Krok 2 Qiskit Patterns: Optimalizace problému pro kvantové spuštění
+Začneme výběrem Backend pro spuštění. V tomto případě použijeme nejméně vytížený Backend.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+print(backend.name)
+```
+
+```text
+ibm_brisbane
+```
+
+Zde optimalizujeme Circuit pro spuštění na reálném Backend zadáním optimization_level a přidáním dynamického oddělování. Níže uvedený kód generuje správce průchodů (pass manager) pomocí přednastavených správců průchodů z qiskit.transpiler.
+
+```python
+from qiskit.circuit.library import XGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    ConstrainedReschedule,
+    PadDynamicalDecoupling,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+Nyní použijeme správce průchodů na Circuit. Výsledné změny rozložení je nutné aplikovat také na observable. U velmi velkých Circuit nemusí heuristiky použité při optimalizaci Circuit vždy přinést nejlepší a nejplošší Circuit. V takových případech má smysl spustit tyto správce průchodů několikrát a použít nejlepší Circuit. Uvidíme to později, až budeme škálovat naše výpočty.
+
+```python
+circuit_ibm = pm.run(full_circuit)
+observable_ibm = observable.apply_layout(circuit_ibm.layout)
+```
+
+## Krok 3 Qiskit Patterns: Spuštění pomocí Qiskit Primitives
+
+### Procházení datasetu v dávkách a epochách
+Nejprve implementujeme celý algoritmus pomocí simulátoru pro rychlé ladění a odhady chyb. Nyní můžeme procházet celý dataset v dávkách v požadovaném počtu epoch a trénovat naši kvantovou neuronovou síť.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+batch_size = 140
+num_epochs = 1
+num_samples = len(train_images)
+
+# Globals
+circuit = full_circuit
+estimator = Estimator()  # simulator for debugging
+observables = observable
+objective_func_vals = []
+iter = 0
+
+# Random initial weights for the ansatz
+np.random.seed(42)
+weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+
+for epoch in range(num_epochs):
+    for i in range((num_samples - 1) // batch_size + 1):
+        print(f"Epoch: {epoch}, batch: {i}")
+        start_i = i * batch_size
+        end_i = start_i + batch_size
+        train_images_batch = np.array(train_images[start_i:end_i])
+        train_labels_batch = np.array(train_labels[start_i:end_i])
+        input_params = train_images_batch
+        target = train_labels_batch
+        iter = 0
+        res = minimize(
+            mse_loss_weights, weight_params, method="COBYLA", options={"maxiter": 100}
+        )
+        weight_params = res["x"]
+```
+
+```text
+Epoch: 0, batch: 0
+Iter: 0, loss: 1.0002309063537163
+Iter: 50, loss: 0.9434121445008878
+```
+
+## Krok 4 Qiskit Patterns: Následné zpracování, vrácení výsledku v klasickém formátu
