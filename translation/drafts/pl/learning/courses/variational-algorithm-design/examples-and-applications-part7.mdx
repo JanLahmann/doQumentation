@@ -1,0 +1,174 @@
+```
+
+```text
+[-1.8572671093941977, -1.0322873777662176]
+```
+
+### Prawdziwy sprzęt i końcowe przestrogi {#real-hardware-and-a-final-cautionary-message}
+
+Aby uruchomić to na prawdziwym sprzęcie, musimy zoptymalizować obwody kwantowe pod kątem wybranego komputera kwantowego. Na nasze potrzeby użyjemy po prostu najmniej obciążonego backendu.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import Session, EstimatorOptions
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+```
+
+Do transpilacji użyjemy predefiniowanego pass managera i zmaksymalizujemy optymalizację naszego obwodu, stosując poziom optymalizacji 3.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_ansatz = pm.run(ansatz)
+isa_observable = H2_op.apply_layout(layout=isa_ansatz.layout)
+```
+
+Ponieważ VQD jest silnie iteracyjne, wykonamy wszystkie kroki wewnątrz sesji Runtime, tak aby nasze zadania były kolejkowane tylko na początku, a nie pomiędzy każdą aktualizacją parametrów. Nic innego nie zmienia się w składni funkcji kosztu ani estymatora.
+
+```python
+x0 = [
+    1.306e00,
+    -2.284e-01,
+    6.913e-02,
+    -2.530e-02,
+    1.849e00,
+    7.433e-02,
+    6.366e-01,
+    5.600e-01,
+]
+```
+
+```python
+# Estimated hardware usage: 20 min benchmarked on an Eagle r3 processor on 5-30-24
+
+real_prev_states = []
+real_prev_opt_parameters = []
+real_eigenvalues = []
+
+realbackend = 1
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=4096)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session)
+    sampler = Sampler(mode=session)
+
+    for step in range(1, k + 1):
+        if step > 1:
+            real_prev_states.append(
+                isa_ansatz.assign_parameters(real_prev_opt_parameters)
+            )
+
+        result = minimize(
+            cost_func_vqd,
+            x0,
+            args=(
+                isa_ansatz,
+                real_prev_states,
+                step,
+                betas,
+                estimator,
+                sampler,
+                isa_observable,
+                realbackend,
+                backend,
+            ),
+            method="COBYLA",
+            options={"tol": 0.001, "maxiter": 300},
+        )
+        print(result)
+
+        real_prev_opt_parameters = result.x
+        real_eigenvalues.append(result.fun)
+
+session.close()
+print(real_eigenvalues)
+```
+
+Uzyskana energia stanu podstawowego (-1,83 hartree) nie jest zbyt daleka od poprawnej wartości (-1,85 hartree). Jednak energia stanu wzbudzonego jest znacznie odchylona. Przypomina to błędne zachowanie, które widzieliśmy wcześniej w tej lekcji. Energia raportowana dla stanu wzbudzonego jest niemal taka sama jak dla stanu podstawowego. W poprzednim przypadku widzieliśmy nawet energię stanu wzbudzonego, która była _niższa_ niż raportowana energia stanu podstawowego.
+
+Nie jest możliwe, by obliczenie wariacyjne dało energię niższą niż prawdziwa energia stanu podstawowego. W poprzednim przypadku uzyskana przez nas energia stanu podstawowego nie była zbyt bliska prawdziwemu stanowi podstawowemu. Ponieważ nie uzyskaliśmy wtedy prawdziwej energii stanu podstawowego, nie ma sprzeczności. W obecnym przypadku energia stanu podstawowego była dość bliska poprawnej wartości, a mimo to energia stanu wzbudzonego wydaje się dziwnie bliska tej samej wartości.
+
+Aby lepiej zrozumieć, jak do tego doszło, przypomnijmy, że sposób, w jaki znajdujemy stan wzbudzony, polega na wymaganiu, aby stan wariacyjny był ortogonalny do stanu podstawowego (za pomocą obwodów overlap i wyrazów karnych). Jeśli nie uda nam się uzyskać dokładnej energii stanu podstawowego (lub jesteśmy oddaleni o kilka procent), to nie uda nam się także uzyskać dokładnego wektora stanu podstawowego! Tak więc, gdy wymagamy, aby stan wzbudzony był ortogonalny do pierwszego znalezionego przez nas stanu, nie narzucamy ortogonalności z prawdziwym stanem podstawowym, lecz z pewnym jego przybliżeniem (czasami słabym przybliżeniem). W rezultacie stan wzbudzony nie był zmuszony do ortogonalności z prawdziwym stanem podstawowym, a nasze oszacowania energii dla stanów wzbudzonych były w rzeczywistości dość bliskie energii stanu podstawowego.
+
+Będzie to zawsze problem w VQD. Ale zasadniczo można to poprawić poprzez zwiększenie maksymalnej liczby iteracji klasycznego optymalizatora, narzucenie niższej tolerancji klasycznego optymalizatora i ewentualnie wypróbowanie innego ansatzu, jeśli zwykle pomijamy prawdziwy stan podstawowy. Jak widzieliśmy, może być również konieczne zmodyfikowanie kar za overlap (bety). Ale to tak naprawdę osobna kwestia. Żadna kara za overlap nie powstrzyma nas od prawdziwego stanu podstawowego, jeśli nie znaleźliśmy bardzo dobrego oszacowania prawdziwego stanu podstawowego dla obwodu overlap.
+## Optymalizacja: Max-Cut {#optimization-max-cut}
+
+Problem maksymalnego cięcia (Max-Cut) jest problemem optymalizacji kombinatorycznej, który polega na podziale wierzchołków grafu na dwa rozłączne zbiory w taki sposób, aby liczba krawędzi między tymi dwoma zbiorami była maksymalna. Bardziej formalnie, mając dany graf nieskierowany $G=(V,E)$, gdzie $V$ to zbiór wierzchołków, a $E$ to zbiór krawędzi, problem Max-Cut wymaga podziału wierzchołków na dwa rozłączne podzbiory $S$ i $T$ tak, aby liczba krawędzi mających jeden koniec w $S$, a drugi w $T$, była maksymalna.
+
+Możemy zastosować Max-Cut do rozwiązania różnych problemów, takich jak klasteryzacja, projektowanie sieci i przejścia fazowe. Zaczniemy od stworzenia grafu problemu:
+
+```python
+import rustworkx as rx
+from rustworkx.visualization import mpl_draw
+
+n = 4
+G = rx.PyGraph()
+G.add_nodes_from(range(n))
+# The edge syntax is (start, end, weight)
+edges = [(0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0), (1, 2, 1.0), (2, 3, 1.0)]
+G.add_edges_from(edges)
+
+mpl_draw(
+    G, pos=rx.shell_layout(G), with_labels=True, edge_labels=str, node_color="#1192E8"
+)
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/3eb71b79-a988-4807-aa88-7fb25a78a236-0.avif)
+
+Ten problem można wyrazić jako problem optymalizacji binarnej. Dla każdego węzła $0 \leq i < n$, gdzie $n$ to liczba węzłów grafu (w tym przypadku $n=4$), rozważymy zmienną binarną $x_i$. Zmienna ta przyjmie wartość $1$, jeśli węzeł $i$ należy do jednej z grup, którą oznaczymy jako $1$, oraz $0$, jeśli należy do drugiej grupy, którą oznaczymy jako $0$. Oznaczymy również przez $w_{ij}$ (element $(i,j)$ macierzy sąsiedztwa $w$) wagę krawędzi prowadzącej od węzła $i$ do węzła $j$. Ponieważ graf jest nieskierowany, $w_{ij}=w_{ji}$. Następnie możemy sformułować nasz problem jako maksymalizację następującej funkcji kosztu:
+
+$$
+\begin{aligned}
+C(\vec{x})
+& =\sum_{i,j=0}^n w_{ij} x_i(1-x_j)\\[1mm]
+
+& = \sum_{i,j=0}^n w_{ij} x_i - \sum_{i,j=0}^n w_{ij} x_ix_j\\[1mm]
+
+& = \sum_{i,j=0}^n w_{ij} x_i - \sum_{i=0}^n \sum_{j=0}^i 2w_{ij} x_ix_j
+\end{aligned}
+$$
+
+Aby rozwiązać ten problem za pomocą komputera kwantowego, wyrazimy funkcję kosztu jako wartość oczekiwaną obserwabli. Jednakże obserwable, które Qiskit obsługuje natywnie, składają się z operatorów Pauli, które mają wartości własne $1$ i $-1$ zamiast $0$ i $1$. Dlatego dokonamy następującej zmiany zmiennej:
+
+Gdzie $\vec{x}=(x_0,x_1,\cdots ,x_{n-1})$. Możemy użyć macierzy sąsiedztwa $w$, aby wygodnie uzyskać dostęp do wag wszystkich krawędzi. Zostanie to wykorzystane do uzyskania naszej funkcji kosztu:
+
+$$
+z_i = 1-2x_i \rightarrow x_i = \frac{1-z_i}{2}
+$$
+
+Oznacza to, że:
+
+$$
+\begin{array}{lcl} x_i=0 & \rightarrow & z_i=1 \\ x_i=1 & \rightarrow & z_i=-1.\end{array}
+$$
+
+Zatem nowa funkcja kosztu, którą chcemy maksymalizować, to:
+
+$$
+\begin{aligned}
+C(\vec{z})
+& = \sum_{i,j=0}^n w_{ij} \bigg(\frac{1-z_i}{2}\bigg)\bigg(1-\frac{1-z_j}{2}\bigg)\\[1mm]
+
+& = \sum_{i,j=0}^n \frac{w_{ij}}{4} - \sum_{i,j=0}^n \frac{w_{ij}}{4} z_iz_j\\[1mm]
+
+& = \sum_{i=0}^n \sum_{j=0}^i \frac{w_{ij}}{2} -  \sum_{i=0}^n \sum_{j=0}^i \frac{w_{ij}}{2} z_iz_j
+\end{aligned}
+$$
+
+Ponadto naturalną tendencją komputera kwantowego jest znajdowanie minimów (zazwyczaj najniższej energii) zamiast maksimów, więc zamiast maksymalizować $C(\vec{z})$ będziemy minimalizować:
+
+$$
+-C(\vec{z}) =  \sum_{i=0}^n \sum_{j=0}^i \frac{w_{ij}}{2} z_iz_j -  \sum_{i=0}^n \sum_{j=0}^i \frac{w_{ij}}{2}
+$$
+
+Teraz, gdy mamy funkcję kosztu do minimalizacji, której zmienne mogą przyjmować wartości $-1$ i $1$, możemy przeprowadzić następującą analogię z Pauli $Z$:
+
+$$
+z_i \equiv Z_i = \overbrace{I}^{n-1}\otimes ... \otimes \overbrace{Z}^{i} \otimes ... \otimes \overbrace{I}^{0}
+$$
