@@ -1,0 +1,120 @@
+q_4: ┤ Ry(θ[4]) ├┤ Rx(θ[12]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤                                     
+q_5: ┤ Ry(θ[5]) ├┤ Rx(θ[13]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤                                     
+q_6: ┤ Ry(θ[6]) ├┤ Rx(θ[14]) ├─────────────────────────────────────
+     ├──────────┤├───────────┤                                     
+q_7: ┤ Ry(θ[7]) ├┤ Rx(θ[15]) ├─────────────────────────────────────
+     └──────────┘└───────────┘
+```
+
+Cu codificarea datelor și circuitul variațional pregătite, le putem combina pentru a forma ansatz-ul nostru complet. În acest caz, componentele circuitului nostru cuantic sunt destul de analoge cu cele din rețelele neuronale: $U(\vec{x})$ seamănă cel mai mult cu stratul care încarcă valorile de intrare din imagine, iar $W(\theta)$ este similar cu stratul de „ponderi" variabile. Deoarece această analogie se aplică în acest caz, adoptăm „qnn" în unele dintre convențiile noastre de denumire; însă această analogie nu ar trebui să îți limiteze explorarea VQC-urilor.
+
+![QML_CR_background_QNN_circuit-2.png](/learning/images/courses/quantum-machine-learning/qvc-qnn/qml-cr-background-qnn-circuit.avif)
+
+```python
+# QNN ansatz
+ansatz = qnn_circuit
+
+# Combine the feature map with the ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Display the circuit
+full_circuit.decompose().draw("mpl", style="clifford", fold=-1)
+```
+
+![Rezultatul celulei de cod anterioare](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/e84e5ac1-d5fb-4ec0-8a23-5a2c417a4088-0.avif)
+
+Trebuie acum să definim un observabil, pentru a-l putea folosi în funcția noastră de cost. Vom obține o valoare de așteptare pentru acest observabil folosind Estimator. Dacă am ales un ansatz bun, motivat de problemă, atunci fiecare qubit va conține informații relevante pentru clasificare. Se pot adăuga straturi pentru a combina informațiile pe mai puțini qubiți (numit *strat convoluțional*), astfel încât măsurătorile să fie necesare doar pe un subset al qubiților din circuit (ca în rețelele neuronale convoluționale). Sau se poate măsura un atribut de la fiecare qubit. Aici vom opta pentru aceasta din urmă, deci includem un operator ```Z``` pentru fiecare qubit. Nu există nimic special în alegerea $Z$, dar este bine motivată:
+* Aceasta este o sarcină de clasificare binară, iar o măsurătoare a $Z$ poate produce două rezultate posibile.
+* Valorile proprii ale $Z$ ($\pm 1$) sunt rezonabil de bine separate și produc un rezultat al estimatorului în intervalul [-1, +1], unde 0 poate fi folosit pur și simplu ca valoare de prag.
+* Este simplu să măsori în baza Pauli Z fără overhead suplimentar de porți.
+
+Deci, Z este o alegere foarte naturală.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("Z" * (num_qubits), 1)])
+```
+
+Avem circuitul cuantic și observabilul pe care vrem să îl estimăm. Acum avem nevoie de câteva lucruri pentru a rula și optimiza acest circuit. În primul rând, avem nevoie de o funcție pentru a rula o trecere înainte (forward pass). Observă că funcția de mai jos primește separat `input_params` și `weight_params`. Prima este setul de parametri statici care descriu datele dintr-o imagine, iar cea de-a doua este setul de parametri variabili care urmează să fie optimizați.
+
+```python
+from qiskit.primitives import BaseEstimatorV2
+from qiskit.quantum_info.operators.base_operator import BaseOperator
+
+def forward(
+    circuit: QuantumCircuit,
+    input_params: np.ndarray,
+    weight_params: np.ndarray,
+    estimator: BaseEstimatorV2,
+    observable: BaseOperator,
+) -> np.ndarray:
+    """
+    Forward pass of the neural network.
+
+    Args:
+        circuit: circuit consisting of data loader gates and the neural network ansatz.
+        input_params: data encoding parameters.
+        weight_params: neural network ansatz parameters.
+        estimator: EstimatorV2 primitive.
+        observable: a single observable to compute the expectation over.
+
+    Returns:
+        expectation_values: an array (for one observable) or a matrix (for a sequence of observables) of expectation values.
+        Rows correspond to observables and columns to data samples.
+    """
+    num_samples = input_params.shape[0]
+    weights = np.broadcast_to(weight_params, (num_samples, len(weight_params)))
+    params = np.concatenate((input_params, weights), axis=1)
+    pub = (circuit, observable, params)
+    job = estimator.run([pub])
+    result = job.result()[0]
+    expectation_values = result.data.evs
+
+    return expectation_values
+```
+
+### Funcția de pierdere {#loss-function}
+În continuare, avem nevoie de o funcție de pierdere pentru a calcula diferența dintre valorile prezise și cele calculate ale etichetelor. Funcția va primi etichetele prezise de algoritm și etichetele corecte și va returna diferența medie pătratică. Există multe funcții de pierdere diferite. Aici, MSE este un exemplu pe care l-am ales.
+
+```python
+def mse_loss(predict: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """
+    Mean squared error (MSE).
+
+    prediction: predictions from the forward pass of neural network.
+    target: true labels.
+
+    output: MSE loss.
+    """
+    if len(predict.shape) <= 1:
+        return ((predict - target) ** 2).mean()
+    else:
+        raise AssertionError("input should be 1d-array")
+```
+
+Să definim și o funcție de pierdere ușor diferită, care este o funcție a parametrilor variabili (ponderi), pentru a fi utilizată de optimizatorul clasic. Această funcție primește ca intrare doar parametrii ansatz; celelalte variabile pentru trecerea înainte și pierdere sunt setate ca parametri globali. Optimizatorul va antrena modelul eșantionând diferite ponderi și încercând să reducă ieșirea funcției de cost/pierdere.
+
+```python
+def mse_loss_weights(weight_params: np.ndarray) -> np.ndarray:
+    """
+    Cost function for the optimizer to update the ansatz parameters.
+
+    weight_params: ansatz parameters to be updated by the optimizer.
+
+    output: MSE loss.
+    """
+    predictions = forward(
+        circuit=circuit,
+        input_params=input_params,
+        weight_params=weight_params,
+        estimator=estimator,
+        observable=observable,
+    )
+
+    cost = mse_loss(predict=predictions, target=target)
+    objective_func_vals.append(cost)
