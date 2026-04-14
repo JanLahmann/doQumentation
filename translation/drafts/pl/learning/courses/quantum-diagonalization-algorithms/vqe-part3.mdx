@@ -1,0 +1,155 @@
+## 3. Przykładowy Hamiltonian {#example-hamiltonian}
+
+Zastosujmy ten algorytm w praktyce, używając niewielkiej macierzy Hamiltonianu, aby zobaczyć, co dzieje się na każdym kroku. Skorzystamy z frameworka wzorców Qiskit (Qiskit patterns):
+
+-__Krok 1__: Odwzorowanie problemu na obwody kwantowe i operatory
+-__Krok 2__: Optymalizacja pod docelowy sprzęt
+-__Krok 3__: Uruchomienie na docelowym sprzęcie
+-__Krok 4__: Przetwarzanie końcowe wyników
+
+### 3.1 Krok 1: Odwzorowanie problemu na obwody kwantowe i operatory {#step-1-map-the-problem-to-quantum-circuits-and-operators}
+
+Użyjemy tego zdefiniowanego powyżej w kontekście chemicznym. Zaczynamy od kilku ogólnych importów.
+
+```python
+# General imports
+import numpy as np
+
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+# Plotting functions
+import matplotlib.pyplot as plt
+```
+
+Ponownie zakładamy, że interesujący nas Hamiltonian jest znany. Użyjemy tutaj bardzo małego Hamiltonianu, ponieważ inne metody omawiane w tym kursie będą bardziej efektywne przy rozwiązywaniu większych problemów.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+import numpy as np
+
+hamiltonian = SparsePauliOp.from_list(
+    [("YZ", 0.3980), ("ZI", -0.3980), ("ZZ", -0.0113), ("XX", 0.1810)]
+)
+
+A = np.array(hamiltonian)
+eigenvalues, eigenvectors = np.linalg.eigh(A)
+print("The ground state energy is ", min(eigenvalues))
+```
+
+```text
+The ground state energy is  -0.702930394459531
+```
+
+W Qiskit dostępnych jest wiele gotowych ansatzów. Użyjemy ```efficient_su2```.
+
+```python
+# Pre-defined ansatz circuit and operator class for Hamiltonian
+from qiskit.circuit.library import efficient_su2
+
+# Note that it is more common to place initial 'h' gates outside the ansatz. Here we specifically wanted this layer structure.
+ansatz = efficient_su2(
+    hamiltonian.num_qubits, su2_gates=["h", "rz", "y"], entanglement="circular", reps=1
+)
+
+num_params = ansatz.num_parameters
+print("This circuit has ", num_params, "parameters")
+
+ansatz.decompose().draw("mpl", style="iqp")
+```
+
+```text
+This circuit has  4 parameters
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/courses/quantum-diagonalization-algorithms/vqe/extracted-outputs/84d6380e-8ee8-4340-a416-c07900fe4c5b-1.avif)
+
+Różne ansatze mają różne struktury splątujące i różne bramki rotacyjne. Ten przedstawiony tutaj wykorzystuje bramki CNOT do splątywania, oraz zarówno bramki Y, jak i parametryzowane bramki RZ do rotacji. Zwróć uwagę na rozmiar tej przestrzeni parametrów; oznacza to, że musimy zminimalizować funkcję kosztu po 4 zmiennych (parametrach dla bramek RZ). Można to skalować, ale nie w nieskończoność. Uruchomienie podobnego problemu na 4 kubitach, przy domyślnych 3 powtórzeniach dla ```efficient_su2```, daje 16 parametrów wariacyjnych.
+### 3.2 Krok 2: Optymalizacja pod docelowy sprzęt {#step-2-optimize-for-target-hardware}
+
+Ansatz został zapisany z użyciem znanych bramek, ale nasz obwód musi zostać przetranspilowany, aby wykorzystać bramki bazowe, które można zaimplementować na każdym komputerze kwantowym. Wybieramy najmniej obciążony backend.
+
+```python
+# runtime imports
+from qiskit_ibm_runtime import QiskitRuntimeService, Session
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_torino')>
+```
+
+Teraz możemy przetranspilować nasz obwód pod ten sprzęt i zwizualizować przetranspilowany ansatz.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+
+ansatz_isa = pm.run(ansatz)
+
+ansatz_isa.draw(output="mpl", idle_wires=False, style="iqp")
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/courses/quantum-diagonalization-algorithms/vqe/extracted-outputs/4a1cdcf3-7d94-4a1f-b675-9549bf28d956-0.avif)
+
+Zwróć uwagę, że użyte bramki uległy zmianie, a kubity w naszym abstrakcyjnym obwodzie zostały odwzorowane na inaczej ponumerowane kubity w komputerze kwantowym. Musimy odwzorować nasz Hamiltonian identycznie, aby nasze wyniki były znaczące.
+
+```python
+hamiltonian_isa = hamiltonian.apply_layout(layout=ansatz_isa.layout)
+```
+
+### 3.3 Krok 3: Uruchomienie na docelowym sprzęcie {#step-3-execute-on-target-hardware}
+
+#### 3.3.1 Raportowanie wartości {#reporting-out-values}
+
+Definiujemy tutaj funkcję kosztu, która przyjmuje jako argumenty struktury zbudowane w poprzednich krokach: parametry, ansatz oraz Hamiltonian. Korzysta ona także z estymatora (Estimator), którego jeszcze nie zdefiniowaliśmy. Dołączamy kod śledzący historię funkcji kosztu, abyśmy mogli sprawdzić zachowanie zbieżności.
+
+```python
+def cost_func(params, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (EstimatorV2): Estimator primitive instance
+        cost_history_dict: Dictionary for storing intermediate results
+
+    Returns:
+        float: Energy estimate
+    """
+    pub = (ansatz, [hamiltonian], [params])
+    result = estimator.run(pubs=[pub]).result()
+    energy = result[0].data.evs[0]
+
+    cost_history_dict["iters"] += 1
+    cost_history_dict["prev_vector"] = params
+    cost_history_dict["cost_history"].append(energy)
+    print(f"Iters. done: {cost_history_dict['iters']} [Current cost: {energy}]")
+
+    return energy
+
+cost_history_dict = {
+    "prev_vector": None,
+    "iters": 0,
+    "cost_history": [],
+}
+```
+
+Bardzo korzystnie jest móc dobrać wartości początkowe parametrów na podstawie wiedzy o rozważanym problemie i charakterystyce stanu docelowego. Nie będziemy zakładać takiej wiedzy i użyjemy losowych wartości początkowych.
+
+```python
+x0 = 2 * np.pi * np.random.random(num_params)
+```
+
+```python
+# This required 13 min, 20 s QPU time on an Eagle processor, 28 min total time.
+with Session(backend=backend) as session:
