@@ -1,0 +1,175 @@
+## 2. Optimize for target hardware {#optimize-for-target-hardware}
+Mając już gotowe Circuit, możemy je zoptymalizować pod kątem docelowego sprzętu. Wybieramy QPU w skali użytkowej.
+
+```python
+import warnings
+
+from qiskit import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+warnings.filterwarnings("ignore")
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+Teraz wykonujemy transpilację Circuit do docelowego backendu przy użyciu wstępnie zdefiniowanego menedżera przejść.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuits = pm.run(circuits=circuits)
+```
+
+## 3. Execute on target hardware {#execute-on-target-hardware}
+Po zoptymalizowaniu Circuit do uruchomienia na sprzęcie jesteśmy gotowi, aby uruchomić je na docelowym sprzęcie i zebrać próbki potrzebne do estymacji energii stanu podstawowego.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+job = sampler.run(isa_circuits, shots=100_000)  # Takes approximately 2m 58s of QPU time
+```
+
+```python
+counts_all = [job.result()[k].data.meas.get_counts() for k in range(krylov_dim)]
+```
+
+## 4. Post-process results {#post-process-results}
+Następnie agregujemy zliczenia dla rosnących wymiarów Kryłowa w sposób kumulatywny. Korzystając ze skumulowanych zliczeń, będziemy rozpiąć podprzestrzenie dla rosnących wymiarów Kryłowa i analizować zachowanie zbieżności.
+
+```python
+from collections import Counter
+
+counts_cumulative = []
+for i in range(krylov_dim):
+    counter = Counter()
+    for d in counts_all[: i + 1]:
+        counter.update(d)
+
+    counts = dict(counter)
+    counts_cumulative.append(counts)
+```
+
+Aby rzutować i diagonalizować Hamiltonian, korzystamy z możliwości biblioteki [`qiskit-addon-sqd`](https://qiskit.github.io/qiskit-addon-sqd/). Addon oferuje funkcje do rzutowania Hamiltonianów opartych na ciągach Pauli na podprzestrzeń i rozwiązuje problem własny przy użyciu `SciPy`.
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.qubit import solve_qubit
+```
+
+Co do zasady możemy odfiltrować ciągi bitów z nieprawidłowym wzorcem przed rozwinięciem podprzestrzeni. Na przykład stan podstawowy dla Hamiltonianu antysferromagnetycznego w tej lekcji ma zazwyczaj tyle samo spinów „w górę", co „w dół" — liczba jedynek „1" w ciągu bitów powinna być dokładnie połową łącznej liczby bitów (spinów) w układzie. Poniższa funkcja odfiltrowuje ciągi bitów z nieprawidłową liczbą jedynek „1" ze zliczeń.
+
+```python
+# Filters out bitstrings that do not have specified number (`num_ones`) of `1` bits.
+def postselect_counts(counts, num_ones):
+    filtered_counts = {}
+    for bitstring, freq in counts.items():
+        if bitstring.count("1") == num_ones:
+            filtered_counts[bitstring] = freq
+
+    return filtered_counts
+```
+
+Korzystając z ciągów bitów z prawidłową liczbą elektronów „w górę"/„w dół", rozwijamy podprzestrzenie i obliczamy wartości własne dla rosnącego wymiaru Kryłowa. W zależności od rozmiaru problemu i dostępnych zasobów klasycznych możemy potrzebować podpróbkowania (podobnie jak w [lekcji o SQD](/learning/courses/quantum-diagonalization-algorithms/sqd-implementation)), aby utrzymać wymiar podprzestrzeni w ryzach. Ponadto możemy zastosować koncepcję odtwarzania konfiguracji podobną do tej z lekcji 4. Możemy obliczyć obsadzenie elektronowe na węzeł z odtworzonych stanów własnych i wykorzystać tę informację do korekcji ciągów bitów z nieprawidłową liczbą elektronów „w górę"/„w dół". Pozostawiamy to jako ćwiczenie dla zainteresowanych czytelników.
+
+```python
+import numpy as np
+
+num_batches = 10
+rand_seed = 0
+scipy_kwargs = {"k": 2, "which": "SA"}
+
+ground_state_energies = []
+for idx, counts in enumerate(counts_cumulative):
+    counts = postselect_counts(counts, num_ones=num_spins // 2)
+    bitstring_matrix, probs = counts_to_arrays(counts=counts)
+
+    eigenvals, eigenstates = solve_qubit(
+        bitstring_matrix, H_op, verbose=False, **scipy_kwargs
+    )
+    gs_en = np.min(eigenvals)
+    ground_state_energies.append(gs_en)
+```
+
+Następnie wykreślamy obliczoną energię w funkcji wymiaru Kryłowa i porównujemy z energią dokładną. Energia dokładna jest obliczona osobno metodą klasyczną brute-force. Widzimy, że estymowana energia stanu podstawowego zbiega się wraz ze wzrostem wymiaru przestrzeni Kryłowa. Choć wymiar Kryłowa równy $5$ jest ograniczający, wyniki nadal wykazują imponującą zbieżność, która powinna się poprawiać wraz ze wzrostem wymiaru Kryłowa [\[1\]](#references).
+
+```python
+import matplotlib.pyplot as plt
+
+exact_gs_en = -23.934184
+plt.plot(
+    range(1, krylov_dim + 1),
+    ground_state_energies,
+    color="blue",
+    linestyle="-.",
+    label="estimate",
+)
+plt.plot(
+    range(1, krylov_dim + 1),
+    [exact_gs_en] * krylov_dim,
+    color="red",
+    linestyle="-",
+    label="exact",
+)
+plt.xticks(range(1, krylov_dim + 1), range(1, krylov_dim + 1))
+plt.legend()
+plt.xlabel("Krylov space dimension")
+plt.ylabel("Energy")
+plt.ylim([-24, -22.50])
+plt.title(
+    "Estimating Ground state energy with Sample-based Krylov Quantum Diagonalization"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/debca96a-e0e3-4342-a755-8204dba50d74-0.avif)
+
+### Check your understanding {#check-your-understanding}
+Przeczytaj poniższe pytania, zastanów się nad odpowiedziami, a następnie kliknij trójkąty, aby zobaczyć rozwiązania.
+
+<details>
+<summary>
+
+Co można zrobić, aby poprawić zbieżność na powyższym wykresie?
+
+</summary>
+
+__Odpowiedź:__
+
+Zwiększyć wymiar Kryłowa. Ogólnie rzecz biorąc, można by też zwiększyć liczbę pomiarów (shots), ale w powyższych obliczeniach jest ona już dość wysoka.
+
+</details>
+
+<details>
+<summary>
+
+Jakie są główne zalety SKQD w porównaniu z (a) SQD i (b) KQD?
+
+</summary>
+
+__Odpowiedź:__
+
+Mogą istnieć inne poprawne odpowiedzi, ale kompletna odpowiedź powinna zawierać następujące punkty:
+
+   (a) SKQD posiada gwarancje zbieżności, których SQD nie daje. W SQD albo trzeba bardzo dobrze dobrać ansatz, który ma doskonałe pokrycie z nośnikiem stanu podstawowego w bazie obliczeniowej, albo trzeba wprowadzić do obliczeń element wariacyjny, aby próbkować rodzinę ansatze.
+
+   (b) SKQD wymaga znacznie mniej czasu QPU, ponieważ unika kosztownego obliczania elementów macierzowych za pomocą testu Hadamarda.
+
+</details>
+
+## 5. Summary {#summary}
+
+- Estymacja energii stanu podstawowego poprzez próbkowanie stanów bazy Kryłowa doskonale nadaje się do modeli sieciowych, w tym układów spinowych, problemów fizyki materii skondensowanej oraz sieciowych teorii cechowania. To podejście skaluje się znacznie lepiej niż VQE, ponieważ nie wymaga optymalizacji po wielu parametrach wariacyjnego ansatzu jak w VQE ani stosowania heurystycznego ansatzu w SQD (na przykład problemu chemicznego z poprzedniej lekcji).
+    - Aby utrzymać głębokość Circuit na niskim poziomie, warto podejmować problemy sieciowe podatne na sprzęt przed osiągnięciem tolerancji na błędy.
+- SKQD nie napotyka kwantowego problemu pomiarowego jak w VQE. Nie ma grup komutujących operatorów Pauli, które trzeba estymować.
+- SKQD jest odporne na zaszumione próbki, ponieważ można zastosować selekcję wstępną specyficzną dla problemu (na przykład odfiltrowanie ciągów bitów niespełniających wzorców charakterystycznych dla problemu) lub ponieść klasyczny narzut diagonalizacyjny (czyli diagonalizować w większej podprzestrzeni), aby skutecznie wyeliminować wpływ szumu.
+
+## References {#references}
+
+\[1] Jeffery Yu et al., "Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization" (2025). [arxiv:quant-ph/2501.09702](https://arxiv.org/abs/2501.09702).
+
+\[2] Ethan N. Epperly, Lin Lin, and Yuji Nakatsukasa. "A theory of quantum subspace diagonalization". SIAM Journal on Matrix Analysis and Applications 43, 1263–1290 (2022).
+
+\[2] N. Hatano and M. Suzuki, "Finding Exponential Product Formulas of Higher Orders" (2005). [arXiv:math-ph/0506007](https://arxiv.org/abs/math-ph/0506007).
