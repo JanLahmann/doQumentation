@@ -1,0 +1,117 @@
+Să trasăm câteva elemente din setul nostru de date pentru a vedea cum arată aceste linii:
+
+```python
+import matplotlib.pyplot as plt
+
+# Make subplot titles so we can identify categories
+titles = []
+for i in range(8):
+    title = "category: " + str(train_labels[i])
+    titles.append(title)
+
+# Generate a figure with nested images using subplots.
+fig, ax = plt.subplots(4, 2, figsize=(10, 6), subplot_kw={"xticks": [], "yticks": []})
+
+for i in range(8):
+    ax[i // 2, i % 2].imshow(
+        train_images[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+    ax[i // 2, i % 2].set_title(titles[i])
+plt.subplots_adjust(wspace=0.1, hspace=0.3)
+```
+
+![Rezultatul celulei de cod anterioare](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/ac9e4239-8c1a-4798-a8e7-80347c29150c-0.avif)
+
+Fiecare dintre aceste imagini este în continuare asociată cu eticheta sa în ```train_labels```, sub formă de listă simplă:
+
+```python
+print(train_labels[:8])
+```
+
+```text
+[1, 1, 1, 1, -1, 1, 1, 1]
+```
+
+## Clasificatorul cuantic variațional: o primă încercare {#variational-quantum-classifier-a-first-attempt}
+
+### Pasul 1 din tiparele Qiskit: Maparea problemei pe un circuit cuantic {#qiskit-patterns-step-1-map-the-problem-to-a-quantum-circuit}
+
+Scopul este să găsim o funcție $f$ cu parametrii $\theta$ care mapează un vector de date / o imagine $\vec{x}$ la categoria corectă: $f_\theta(\vec{x}) \rightarrow \pm1$. Aceasta va fi realizată folosind un VQC cu câteva straturi ce pot fi identificate prin scopurile lor distincte:
+$$
+f_\theta(\vec{x}) = \langle 0|U^{\dagger}(\vec{x})W^\dagger(\theta)OW(\theta)U(\vec{x})|0\rangle
+$$
+Aici, $U(\vec{x})$ este circuitul de codificare, pentru care avem multe opțiuni, după cum am văzut în lecțiile anterioare. $W(\theta)$ este un bloc de circuit variațional, sau antrenabil, iar $\theta$ este mulțimea parametrilor de antrenat. Acești parametri vor fi variați de algoritmi clasici de optimizare pentru a găsi mulțimea de parametri care produce cea mai bună clasificare a imaginilor de către circuitul cuantic. Acest circuit variațional este uneori numit „ansatz". În final, $O$ este un observabil oarecare care va fi estimat folosind primitiva Estimator. Nu există nicio constrângere care să forțeze straturile să fie în această ordine sau să fie complet separate. Se pot avea mai multe straturi variaționale și/sau de codificare în orice ordine motivată tehnic.
+
+Începem prin alegerea unei hărți de caracteristici pentru codificarea datelor. Vom folosi ```z_feature_map```, deoarece menține adâncimile circuitelor reduse față de alte mapări de caracteristici.
+
+```python
+from qiskit.circuit.library import z_feature_map
+
+# One qubit per data feature
+num_qubits = len(train_images[0])
+
+# Data encoding
+# Note that qiskit orders parameters alphabetically. We assign the parameter prefix "a" to ensure our data encoding goes to the first part of the circuit, the feature mapping.
+feature_map = z_feature_map(num_qubits, parameter_prefix="a")
+```
+
+Trebuie acum să alegem un ansatz care să fie antrenat. Există multe considerente la selectarea unui ansatz. O descriere completă depășește scopul acestei introduceri; menționăm aici doar câteva categorii de considerente.
+
+1. **Hardware:** Toate calculatoarele cuantice moderne sunt mai predispuse la erori și mai susceptibile la zgomot decât omologii lor clasici. Folosirea unui ansatz excesiv de adânc (în special în adâncimea transpilată a porților cu doi cubiți) nu va produce rezultate bune. O problemă conexă este că calculatoarele cuantice au un anumit aranjament de cubiți, ceea ce înseamnă că unii cubiți fizici sunt adiacenți pe calculatorul cuantic, iar alții pot fi foarte departe unii de alții. Întrețeserea cubiților adiacenți nu mărește prea mult adâncimea, dar întrețeserea cubiților foarte distanți poate crește semnificativ adâncimea, deoarece trebuie să inserăm porți swap pentru a muta informația pe cubiți care sunt adiacenți, astfel încât să poată fi întrețesuți.
+2. **Problema:** Ori de câte ori ai informații despre problema ta care ar putea ghida alegerea ansatz-ului, folosește-le. De exemplu, datele din această lecție sunt formate din imagini de linii orizontale și verticale. S-ar putea lua în considerare ce corelație între culorile/valorile adiacente identifică o imagine de linie orizontală sau verticală. Ce atribute ale unui ansatz ar corespunde acestei corelații dintre pixelii adiacenți? Vom reveni la acest punct mai tehnic mai târziu în această lecție. Dar deocamdată, să spunem pur și simplu că includerea întrețeserii și a porților CNOT între cubiții corespunzători pixelilor adiacenți pare o idee bună. În imaginea de ansamblu, gândește-te dacă problema este cel mai bine rezolvată folosind un circuit cuantic sau dacă există algoritmi clasici care pot face o treabă la fel de bună.
+3. **Numărul de parametri:** Fiecare poartă cuantică parametrizată independent în circuit mărește spațiul care trebuie optimizat clasic, ceea ce duce la o convergență mai lentă. Dar pe măsură ce problemele se extind, se pot întâlni *platouri sterile* (*barren plateaus*). Acest termen se referă la un fenomen în care peisajul de optimizare al unui algoritm cuantic variațional devine exponențial plat și lipsit de caracteristici pe măsură ce dimensiunea problemei crește. Aceasta cauzează dispariția gradienților, îngreunând antrenarea eficientă a algoritmului[\[1\]](#references). Platoarele sterile sunt relevante pentru algoritmii cuantici variaționale precum VQC-urile/QNN-urile. Trebuie menționat că numărul crescând de parametri nu este singurul considerent în evitarea platounelor sterile; alte considerente includ funcțiile de cost globale și inițializarea aleatorie a parametrilor.
+
+În această lecție vom vedea câteva exemple simple de bune practici în construcția ansatz-ului. Să încercăm mai întâi ansatz-ul de mai jos. Vom reveni să îl revizuim mai târziu.
+
+```python
+# Import the necessary packages
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+
+# Initialize the circuit using the same number of qubits as the image has pixels
+qnn_circuit = QuantumCircuit(size)
+
+# We choose to have two variational parameters for each qubit.
+params = ParameterVector("θ", length=2 * size)
+
+# A first variational layer:
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# Here is a list of qubit pairs between which we want CNOT gates. The choice of these is not yet obvious.
+qnn_cnot_list = [[0, 1], [1, 2], [2, 3]]
+
+for i in range(len(qnn_cnot_list)):
+    qnn_circuit.cx(qnn_cnot_list[i][0], qnn_cnot_list[i][1])
+
+# The second variational layer:
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+
+# Check the circuit depth, and the two-qubit gate depth
+print(qnn_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+
+# Draw the circuit
+qnn_circuit.draw("mpl")
+```
+
+```text
+5
+2+ qubit depth: 3
+```
+
+```text
+┌──────────┐             ┌──────────┐                         
+q_0: ┤ Ry(θ[0]) ├──────■──────┤ Rx(θ[8]) ├─────────────────────────
+     ├──────────┤    ┌─┴─┐    └──────────┘┌──────────┐             
+q_1: ┤ Ry(θ[1]) ├────┤ X ├─────────■──────┤ Rx(θ[9]) ├─────────────
+     ├──────────┤    └───┘       ┌─┴─┐    └──────────┘┌───────────┐
+q_2: ┤ Ry(θ[2]) ├────────────────┤ X ├─────────■──────┤ Rx(θ[10]) ├
+     ├──────────┤                └───┘       ┌─┴─┐    ├───────────┤
+q_3: ┤ Ry(θ[3]) ├────────────────────────────┤ X ├────┤ Rx(θ[11]) ├
+     ├──────────┤┌───────────┐               └───┘    └───────────┘
+```
