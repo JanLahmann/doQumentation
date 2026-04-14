@@ -1,0 +1,135 @@
+# Konwersja zliczeń na tablice bitstring i prawdopodobieństw
+bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts)
+```
+
+Istnieje kilka opcji kontrolowanych przez użytkownika, które są ważne dla tej techniki:
+
+- ``iterations``: Liczba iteracji self-consistent configuration recovery
+- ``n_batches``: Liczba partii konfiguracji używanych przez różne wywołania eigenstate solvera
+- ``samples_per_batch``: Liczba unikalnych konfiguracji uwzględnionych w każdej partii
+- ``max_davidson_cycles``: Maksymalna liczba cykli Davidsona uruchamianych przez każdy eigensolver
+
+```python
+import numpy as np
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_fermion,
+)
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+
+rng = np.random.default_rng(24)
+# Opcje SQD
+iterations = 5
+
+# Opcje eigenstate solvera
+n_batches = 5
+samples_per_batch = 500
+max_davidson_cycles = 300
+
+# Pętla self-consistent configuration recovery
+e_hist = np.zeros((iterations, n_batches))  # historia energii
+s_hist = np.zeros((iterations, n_batches))  # historia spinu
+occupancy_hist = []
+avg_occupancy = None
+for i in range(iterations):
+    print(f"Starting configuration recovery iteration {i}")
+    # W pierwszej iteracji nie mamy informacji o obsadzeniu orbitali z solvera,
+    # więc zaczynamy od pełnego zbioru zaszumionych konfiguracji.
+    if avg_occupancy is None:
+        bs_mat_tmp = bitstring_matrix_full
+        probs_arr_tmp = probs_arr_full
+
+    # Jeśli mamy informacje o średnim obsadzeniu orbitali, używamy ich do udoskonalenia pełnego zbioru zaszumionych konfiguracji
+    else:
+        bs_mat_tmp, probs_arr_tmp = recover_configurations(
+            bitstring_matrix_full,
+            probs_arr_full,
+            avg_occupancy,
+            num_elec_a,
+            num_elec_b,
+            rand_seed=rng,
+        )
+
+    # Tworzenie partii podpróbek. Stosujemy tutaj post-selekcję, aby usunąć konfiguracje
+    # o nieprawidłowej wadze Hamminga podczas iteracji 0, ponieważ nie wykonano wtedy configuration recovery.
+    batches = postselect_and_subsample(
+        bs_mat_tmp,
+        probs_arr_tmp,
+        hamming_right=num_elec_a,
+        hamming_left=num_elec_b,
+        samples_per_batch=samples_per_batch,
+        num_batches=n_batches,
+        rand_seed=rng,
+    )
+
+    # Uruchomienie eigenstate solverów w pętli. Ta pętla powinna być zrównoleglona dla większych problemów.
+    e_tmp = np.zeros(n_batches)
+    s_tmp = np.zeros(n_batches)
+    occs_tmp = []
+    coeffs = []
+    for j in range(n_batches):
+        strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+        print(f"  Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+        energy_sci, coeffs_sci, avg_occs, spin = solve_fermion(
+            batches[j],
+            hcore,
+            eri,
+            open_shell=open_shell,
+            spin_sq=spin_sq,
+            max_davidson=max_davidson_cycles,
+        )
+        energy_sci += nuclear_repulsion_energy
+        e_tmp[j] = energy_sci
+        s_tmp[j] = spin
+        occs_tmp.append(avg_occs)
+        coeffs.append(coeffs_sci)
+
+    # Łączenie wyników z partii
+    avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+    # Śledzenie historii optymalizacji
+    e_hist[i, :] = e_tmp
+    s_hist[i, :] = s_tmp
+    occupancy_hist.append(avg_occupancy)
+```
+
+```text
+Starting configuration recovery iteration 0
+  Batch 0 subspace dimension: 21609
+  Batch 1 subspace dimension: 21609
+  Batch 2 subspace dimension: 21609
+  Batch 3 subspace dimension: 21609
+  Batch 4 subspace dimension: 21609
+Starting configuration recovery iteration 1
+  Batch 0 subspace dimension: 609961
+  Batch 1 subspace dimension: 616225
+  Batch 2 subspace dimension: 627264
+  Batch 3 subspace dimension: 633616
+  Batch 4 subspace dimension: 624100
+Starting configuration recovery iteration 2
+  Batch 0 subspace dimension: 564001
+  Batch 1 subspace dimension: 605284
+  Batch 2 subspace dimension: 582169
+  Batch 3 subspace dimension: 559504
+  Batch 4 subspace dimension: 591361
+Starting configuration recovery iteration 3
+  Batch 0 subspace dimension: 550564
+  Batch 1 subspace dimension: 549081
+  Batch 2 subspace dimension: 531441
+  Batch 3 subspace dimension: 527076
+  Batch 4 subspace dimension: 531441
+Starting configuration recovery iteration 4
+  Batch 0 subspace dimension: 544644
+  Batch 1 subspace dimension: 580644
+  Batch 2 subspace dimension: 527076
+  Batch 3 subspace dimension: 531441
+  Batch 4 subspace dimension: 537289
+```
+
+### 4.3 Omówienie wyników
+Pierwszy wykres pokazuje, że po kilku iteracjach szacujemy ground state energy z dokładnością do ~24 mH (dokładność chemiczna jest zwykle przyjmowana jako 1 kcal/mol $\approx$ 1,6 mH). Drugi wykres pokazuje średnie obsadzenie każdego orbitalu przestrzennego po ostatniej iteracji. Widzimy, że zarówno elektrony o spinie w górę, jak i w dół z wysokim prawdopodobieństwem zajmują w naszych rozwiązaniach pierwsze pięć orbitali.
+
+Chociaż oszacowana ground state energy jest przyzwoita, nie mieści się w granicach dokładności chemicznej ($\pm \approx 1,6$ mH). Tę rozbieżność można przypisać małemu wymiarowi podprzestrzeni, który wykorzystaliśmy powyżej do projekcji i diagonalizacji. Ponieważ użyliśmy `samples_per_batch=500`, podprzestrzeń jest rozpięta przez maksymalnie $500$ wektorów, co oznacza brak wektorów należących do nośnika stanu podstawowego. Zwiększenie parametru `samples_per_batch` powinno poprawić dokładność kosztem większych klasycznych zasobów obliczeniowych i dłuższego czasu działania.
+
+```python
