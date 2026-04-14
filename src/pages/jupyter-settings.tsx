@@ -549,7 +549,7 @@ export default function JupyterSettings(): JSX.Element {
           {availableBackends.length > 1 && (
             <>
               <h3 id="backend-selection" style={{ marginTop: '1.5rem' }}>
-                <Translate id="settings.backend.heading">Execution Backend</Translate>
+                <Translate id="settings.backend.heading">Server Backend</Translate>
               </h3>
               <p style={{ fontSize: '0.9rem' }}>
                 <Translate id="settings.backend.description">
@@ -651,6 +651,8 @@ export default function JupyterSettings(): JSX.Element {
           )}
 
           {/* Execution Mode */}
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
+
           <h2 id="execution-mode" style={{ marginTop: '2rem' }}>
             <Translate id="settings.executionMode.heading">Execution Mode</Translate>
             <InfoIcon tooltip={translate({id: 'settings.info.executionMode', message: 'Choose how quantum circuits are executed when you click Run on tutorial pages.'})} />
@@ -891,6 +893,8 @@ QiskitRuntimeService.save_account(
 
 
           {/* Display Preferences */}
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
+
           <h2 id="display" style={{ marginTop: '2rem' }}><Translate id="settings.display.heading">Display Preferences</Translate></h2>
 
           <h3><Translate id="settings.display.fontSize.heading">Code Font Size</Translate></h3>
@@ -991,6 +995,8 @@ QiskitRuntimeService.save_account(
           </div>
 
           {/* Learning Progress */}
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
+
           <h2 id="learning-progress" style={{ marginTop: '2rem' }}><Translate id="settings.progress.heading">Learning Progress</Translate></h2>
 
           <p>
@@ -1162,6 +1168,8 @@ QiskitRuntimeService.save_account(
           {/* ═══════════════════════════════════════════════════════════════
               COMPUTE BACKEND
               ═══════════════════════════════════════════════════════════════ */}
+
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
           <h2 id="compute-backend" style={{ marginTop: '2.5rem' }}>
             <Translate id="settings.computeBackend.heading">Compute Backend</Translate>
@@ -1336,61 +1344,6 @@ QiskitRuntimeService.save_account(
                     </ol>
                   </details>
 
-                  {ceDaysRemaining >= 0 && (
-                    <div className="alert alert--info margin-bottom--md">
-                      <Translate
-                        id="settings.ce.daysRemaining"
-                        values={{days: ceDaysRemaining}}
-                      >
-                        {'Code Engine settings will auto-delete in {days} day(s).'}
-                      </Translate>
-                    </div>
-                  )}
-
-                  <div className="margin-bottom--sm">
-                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                      <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'The public URL of your Code Engine application (from IBM Cloud console).'})} />
-                    </label>
-                    <input
-                      type="url"
-                      value={ceUrl}
-                      onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
-                      placeholder="https://your-app.region.codeengine.appdomain.cloud"
-                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
-                    />
-                  </div>
-
-                  <div className="margin-bottom--md">
-                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                      <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
-                    </label>
-                    <input
-                      type="password"
-                      value={ceToken}
-                      onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
-                      placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
-                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                    <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
-                      <Translate id="settings.ce.save">Save</Translate>
-                    </button>
-                    <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
-                      <Translate id="settings.ce.test">Test Connection</Translate>
-                    </button>
-                    <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
-                      <Translate id="settings.ce.clear">Clear</Translate>
-                    </button>
-                  </div>
-
-                  {ceSaveResult && (
-                    <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
-                      {ceSaveResult}
-                    </div>
-                  )}
-
                   {/* ── Join Workshop ── */}
                   <details className="margin-bottom--md" style={{ marginTop: '1rem' }}>
                     <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
@@ -1452,6 +1405,8 @@ QiskitRuntimeService.save_account(
           {/* ═══════════════════════════════════════════════════════════════
               ADVANCED — collapsed by default
               ═══════════════════════════════════════════════════════════════ */}
+
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
           <h2 id="advanced-settings" style={{ marginTop: '2.5rem' }}>
             <Translate id="settings.advancedSettings.heading">Advanced Settings</Translate>
