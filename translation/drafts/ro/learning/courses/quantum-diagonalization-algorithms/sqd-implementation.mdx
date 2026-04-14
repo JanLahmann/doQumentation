@@ -1,0 +1,576 @@
+---
+title: "Implementarea SQD"
+sidebar_label: "Implementarea SQD"
+description: "Diagonalizarea cuantică bazată pe eșantioane (SQD) este implementată în contextul rezolvării stării fundamentale a unei molecule de azot."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb"
+---
+
+{/* doqumentation-source-hash: 672f3c67 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize milli hcore ccsd Motta */}
+
+# SQD pentru estimarea energiei unui Hamiltonian chimic {#sqd-for-energy-estimation-of-a-chemistry-hamiltonian}
+În această lecție, vom aplica SQD pentru a estima energia stării fundamentale a unei molecule.
+
+În special, vom discuta următoarele subiecte folosind abordarea cu $4$ pași a pattern-ului Qiskit:
+
+1. Pasul 1: Maparea problemei pe circuite cuantice și operatori
+    - Configurarea Hamiltonianului molecular pentru $N_2$.
+    - Explicarea ansatz-ului local unitary cluster Jastrow (LUCJ) [\[1\]](#references), inspirat din chimie și prietenos cu hardware-ul
+2. Pasul 2: Optimizarea pentru hardware-ul țintă
+    - Optimizarea numărului de porți și a layout-ului ansatz-ului pentru execuția pe hardware
+3. Pasul 3: Execuția pe hardware-ul țintă
+    - Rularea circuitului optimizat pe un QPU real pentru a genera eșantioane ale subspațiului.
+4. Pasul 4: Post-procesarea rezultatelor
+    - Introducerea buclei de recuperare a configurației self-consistente [\[2\]](#references)
+        - Post-procesarea întregului set de eșantioane de bitstring-uri, folosind cunoașterea prealabilă a numărului de particule și a ocupanței medii orbitale calculate la iterația anterioară.
+        - Crearea probabilistică a loturilor de subeșantioane din bitstring-uri recuperate.
+        - Proiectarea și diagonalizarea Hamiltonianului molecular pentru fiecare subspațiu eșantionat.
+        - Salvarea energiei minime a stării fundamentale găsite în toate loturile și actualizarea ocupanței medii orbitale.
+
+Vom folosi mai multe pachete software pe parcursul lecției.
+- `PySCF` pentru definirea moleculei și configurarea Hamiltonianului.
+- Pachetul `ffsim` pentru construirea ansatz-ului LUCJ.
+- `Qiskit` pentru transpilarea ansatz-ului în vederea execuției pe hardware.
+- `Qiskit IBM Runtime` pentru a executa circuitul pe un QPU și a colecta eșantioane.
+- `Qiskit addon SQD` pentru recuperarea configurației și estimarea energiei stării fundamentale folosind proiecția pe subspațiu și diagonalizarea matriceală.
+## 1. Maparea problemei pe circuite cuantice și operatori {#1-map-problem-to-quantum-circuits-and-operators}
+### Hamiltonianul molecular {#molecular-hamiltonian}
+Un Hamiltonian molecular are forma generică:
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \,
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+$\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$ sunt operatorii fermionici de creare/anihilare asociați cu al $p$-lea element al setului de baze și spin-ul $\sigma$. $h_{pr}$ și $(pr|qs)$ sunt integralele electronice de un corp și, respectiv, de două corpuri. Folosind pySCF, vom defini molecula și vom calcula integralele de un corp și de două corpuri ale Hamiltonianului pentru setul de baze `6-31g`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+warnings.filterwarnings("ignore")
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],  # Two N atoms 1 angstrom apart
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)  # hcore: one-body integrals
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)  # eri: two-body integrals
+
+# Compute exact energy for comparison
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570774
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+În această lecție, vom folosi transformarea Jordan-Wigner (JW) pentru a mapa o funcție de undă fermionică pe o funcție de undă cu qubiți, astfel încât aceasta să poată fi pregătită folosind un Circuit cuantic. Transformarea JW mapează spațiul Fock al fermionilor din M orbitale spațiale pe spațiul Hilbert al $2M$ qubiți, adică un orbital spațial este împărțit în două _orbitale de spin_, unul asociat cu un electron cu spin up ($\alpha$) și altul cu spin down ($\beta$). Un orbital de spin poate fi ocupat sau neocupat. De obicei, când ne referim la numărul de orbitale, vom folosi numărul de orbitale _spațiale_. Numărul de orbitale de spin va fi dublu. În Circuitele cuantice, vom reprezenta fiecare orbital de spin cu un qubit. Astfel, un set de qubiți va reprezenta orbitalele cu spin-up sau $\alpha$, iar alt set va reprezenta orbitalele cu spin-down sau $\beta$. De exemplu, molecula $N_2$ pentru setul de baze `6-31g` are $16$ orbitale spațiale (adică $16$ $\alpha$ + $16$ $\beta$ = $32$ orbitale de spin). Astfel, vom avea nevoie de un Circuit cuantic cu $32$ qubiți (este posibil să fie nevoie de qubiți ancila suplimentari, după cum vom discuta mai târziu). Qubiții sunt măsurați în baza computațională pentru a genera bitstring-uri, care reprezintă configurații electronice sau determinanți (Slater). Pe parcursul acestei lecții, vom folosi termenii bitstring-uri, configurații și determinanți în mod interschimbabil. Bitstring-urile ne spun cum sunt ocupate orbitalele de spin de către electroni: un $1$ într-o poziție de bit înseamnă că orbitalul de spin corespunzător este ocupat, în timp ce un $0$ înseamnă că orbitalul de spin este gol. Deoarece problemele de structură electronică conservă particule, doar un număr fix de orbitale de spin trebuie să fie ocupate. Molecula $N_2$ are $5$ electroni cu spin-up ($\alpha$) și $5$ cu spin-down ($\beta$). Astfel, orice bitstring care reprezintă orbitalele $\alpha$ și $\beta$ trebuie să aibă câte cinci $1$ fiecare pentru molecula $N_2$.
+### 1.1 Circuit cuantic pentru generarea de eșantioane: ansatz-ul LUCJ {#11-quantum-circuit-for-sample-generation-the-lucj-ansatz}
+În această lecție, vom folosi ansatz-ul local unitary coupled cluster Jastrow (LUCJ) [\\[1\\]](#references) pentru pregătirea stărilor cuantice și eșantionarea ulterioară. Mai întâi, vom explica diferitele blocuri de construcție ale ansatz-ului complet UCJ și aproximările realizate în versiunea sa locală. Apoi, folosind pachetul ffsim, vom construi ansatz-ul LUCJ și îl vom optimiza cu transpilerul Qiskit pentru execuția pe hardware.
+
+Ansatz-ul UCJ are forma următoare (pentru un produs de $L$ straturi sau repetări ale operatorului UCJ):
+
+$$
+|\psi\rangle = \prod_{\mu=1}^{L}{(e^{K^{\mu}} \times {e^{iJ^{\mu}}} \times {e^{-K^{\mu}}})} |\Phi_{0}\rangle
+$$
+
+unde $\vert \Phi_{0} \rangle$ este o stare de referință, luată de obicei ca starea Hartree-Fock (HF). Deoarece starea Hartree-Fock este definită ca având orbitalele cu numerele cele mai mici ocupate, pregătirea stării HF va implica aplicarea porților X pentru a seta qubiții corespunzători orbitalelor ocupate la unu. De exemplu, blocul de pregătire a stării HF pentru 4 orbitale spațiale și 2 spin-uri up și 2 spin-uri down poate arăta astfel:
+![A circuit diagram showing 8 qubits, 4 called alpha orbitals and 4 called beta orbitals. The top two alpha and the top two beta have a "not" gate.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig1.avif)
+O singură repetare a operatorului UCJ ${(e^{K^{(\mu)}} \times {e^{iJ^{(\mu)}}} \times {e^{-K^{(\mu)}}})}$ constă dintr-o evoluție Coulomb diagonală ($e^{iJ^{(\mu)}}$) încadrată de rotații orbitale ($e^{K^{(\mu)}}$ și $e^{-K^{(\mu)}}$).
+![A circuit diagram showing that the UCJ circuit can be broken down into rotation layers and a diagonal Coulomb evolution layer.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig2.avif)
+Blocurile de rotație orbitală acționează pe o singură specie de spin ($\alpha$ (spin-up)/$\beta$ (spin-down)). Pentru fiecare specie de electroni, rotația orbitală constă dintr-un strat de porți $R_{z}$ cu un singur qubit urmate de o secvență de porți de rotație Givens cu 2 qubiți ($XX + YY$).
+
+Porțile cu 2 qubiți acționează pe orbitale de spin adiacente (qubiți vecini imediați) și, prin urmare, pot fi implementate pe QPU-urile IBM&reg; fără a fi nevoie de porți SWAP.
+![A circuit diagram showing 4 alpha orbital qubits and 4 beta orbital qubits. The circuits start with R-Z gates, and then have a series of Given's rotation gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig3.avif)
+$e^{iJ^{(\mu)}}$, cunoscut și ca operatorul Coulomb diagonal, constă din trei blocuri. Două dintre ele acționează pe sectoare cu același spin ($e^{iJ_{\alpha \alpha}^{(\mu)}}$ și $e^{iJ_{\beta \beta}^{(\mu)}}$), iar unul acționează între cele două sectoare de spin ($e^{iJ_{\alpha \beta}^{(\mu)}}$).
+
+Toate blocurile din $e^{iJ^{(\mu)}}$ constau din porți number-number $U_{nn}(\phi)$ [\[1\]](#references). O poartă $U_{nn}(\phi)$ poate fi descompusă în continuare într-o poartă $R_{ZZ}(\frac{\phi}{2})$ urmată de două porți $Rz(-\frac{\phi}{2})$ cu un singur qubit care acționează pe doi qubiți separați.
+
+Componentele cu același spin ($J_{\alpha \alpha}$ și $J_{\beta \beta}$) au porți $U_{nn}$ între toate perechile posibile de qubiți. Cu toate acestea, deoarece QPU-urile supraconductoare au conectivitate restrictivă, qubiții trebuie să fie swapați pentru a realiza porți între qubiți non-adiacenți.
+
+De exemplu, consideră blocul $e^{iJ_{\alpha \alpha}^{(\mu)}}$ (sau $e^{iJ_{\beta \beta}^{(\mu)}}$) pentru $N = 4$ orbitale spațiale. Pentru o conectivitate liniară a qubiților, ultimele trei porți nu pot fi implementate direct, deoarece acționează între qubiți non-adiacenți (de exemplu, Q0 și Q2 nu sunt conectați direct). Prin urmare, avem nevoie de porți SWAP pentru a-i face adiacenți (figura următoare arată un exemplu cu $3$ porți SWAP).
+![A circuit diagram showing linearly-coupled qubits and corresponding alpha/beta circuits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig4.avif)
+Apoi, $J_{\alpha \beta}$ implementează porți între orbitale cu același indice din sectoare de spin diferite (de exemplu, între $0\alpha$ și $0\beta$). Similar, dacă qubiții nu sunt adiacenți fizic pe un QPU, aceste porți vor necesita de asemenea SWAP-uri.
+![A circuit diagram showing 4 alpha qubits connected to the 4 beta qubits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig5.avif)
+Din discuția de mai sus, ansatz-ul UCJ se confruntă cu unele obstacole pentru execuția pe HW, deoarece necesită porți SWAP din cauza interacțiunilor între qubiți non-adiacenți. Varianta locală a ansatz-ului UCJ, LUCJ, abordează această provocare eliminând unii $U_{nn}$ din operatorul Coulomb diagonal.
+
+În blocurile cu aceeași specie de electroni, $J_{\alpha \alpha}$ și $J_{\beta \beta}$), în versiunea LUCJ păstrăm doar porțile $U_{nn}$ compatibile cu conectivitatea vecin-imediat și eliminăm porțile între qubiți non-adiacenți. Figura următoare arată blocul LUCJ după eliminarea porților non-adiacente.
+![A circuit diagram showing 4 alpha qubits and 4 beta qubits each with R-Z gates, followed by two-qubit gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig6.avif)
+Apoi, versiunea LUCJ a blocului $J_{\alpha \beta}$, care acționează între specii diferite de electroni, poate lua forme diferite în funcție de topologia dispozitivului.
+
+Și aici, versiunea LUCJ elimină porțile incompatibile. Figura de mai jos arată variante ale blocului $J_{\alpha \beta}$ pentru diferite topologii de qubiți, inclusiv grilă, hexagonală, heavy-hex și liniară.
+
+- **Pătrat**: putem avea porți $U_{nn}$ între toate orbitalele $\alpha$ și $\beta$ fără niciun SWAP și, prin urmare, nu trebuie să eliminăm nicio poartă $U_{nn}$.
+- **Heavy-hex**: interacțiunile $\alpha$-$\beta$ sunt păstrate între orbitale cu indexul multiplu de $4$ (cum ar fi al 0-lea, al 4-lea și al 8-lea) și sunt mediate de _ancila_, adică avem nevoie de qubiți ancila între lanțurile liniare care reprezintă orbitalele $\alpha$ și $\beta$. Această aranjare necesită un număr limitat de SWAP-uri.
+- **Hexagonal**: fiecare al doilea orbital, cum ar fi orbitalele cu indexul 0, 2 și 4, devine vecin imediat atunci când $\alpha$ și $\beta$ sunt dispuse în două lanțuri liniare adiacente.
+- **Linear**: doar un orbital $\alpha$ și un orbital $\beta$ sunt conectate, ceea ce înseamnă că blocul $J_{\alpha \beta}$ va avea o singură poartă.
+![Connectivity diagrams for different qubit layouts. They show qubits arranged on a square grid, a hexagonal lattice, a heavy-hex lattice (hexagonal lattice with one extra qubit along each side of the hexagon), and a linear chain.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig7.avif)
+Deși eliminarea porților din ansatz-ul UCJ pentru a construi versiunea LUCJ îl face mai compatibil cu HW-ul, ansatz-ul pierde din expresivitate. Prin urmare, pot fi necesare mai multe repetări ($L$) ale operatorului UCJ modificat atunci când folosești ansatz-ul LUCJ.
+### 1.2 Inițializarea ansatz-ului LUCJ {#12-lucj-ansatz-initialization}
+LUCJ este un ansatz parametrizat și trebuie să inițializăm parametrii înainte de execuția pe hardware. O modalitate de a inițializa ansatz-ul este prin utilizarea amplitudinilor `t1` și `t2` din metoda clasică coupled cluster singles and doubles (CCSD), unde amplitudinile `t1` sunt coeficienții operatorilor de excitație simplă și amplitudinile `t2` sunt pentru operatorii de excitație dublă.
+
+Rețineți că, deși inițializarea ansatz-ului LUCJ cu amplitudinile `t1` și `t2` generează rezultate rezonabile, parametrii ansatz-ului pot necesita o optimizare suplimentară.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(
+    scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]
+)
+ccsd.run()
+
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929733  E_corr = -0.20458912219883
+```
+
+### 1.3 Construirea ansatz-ului LUCJ folosind `ffsim` {#13-constructing-the-lucj-ansatz-using-ffsim}
+Vom folosi pachetul [ffsim](https://github.com/qiskit-community/ffsim/tree/main) pentru a crea și inițializa ansatz-ul cu amplitudinile `t1` și `t2` calculate mai sus. Deoarece molecula noastră are o stare Hartree-Fock cu coajă închisă, vom folosi varianta echilibrată ca spin a ansatz-ului UCJ, [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced).
+
+Deoarece hardware-ul IBM are o topologie heavy-hex, vom adopta pattern-ul _zig-zag_ folosit în [\[1\]](#references) și explicat mai sus pentru interacțiunile dintre qubiți. În acest pattern, orbitalele (qubiții) cu același spin sunt conectate cu o topologie liniară (cercuri roșii și albastre). Datorită topologiei heavy-hex, orbitalele pentru spin-uri diferite au conexiuni între fiecare al 4-lea orbital, adică al 0-lea, al 4-lea, al 8-lea și așa mai departe (cercuri violet).
+
+![A zig-zag pattern traced out along a heavy-hex lattice.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig8.avif)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 2
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+# circuit.decompose().draw("mpl", scale=0.5, fold=-1)
+```
+Ansatz-ul LUCJ cu straturi repetate poate fi optimizat prin fuzionarea unor blocuri adiacente. Consideră cazul pentru `n_reps=2`. Cele două blocuri de rotație orbitală din mijloc pot fi fuzionate într-un singur bloc de rotație orbitală. Pachetul `ffsim` dispune de un manager de pași numit `ffsim.qiskit.PRE_INIT` pentru a optimiza circuitul prin fuzionarea unor astfel de blocuri adiacente.
+![A diagram showing layers of the LUCJ ansatz.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig9.avif)
+## 2. Optimizarea pentru hardware-ul țintă {#2-optimize-for-target-hardware}
+Mai întâi, obținem un Backend la alegere. Vom optimiza circuitul nostru pentru Backend și vom executa circuitul optimizat pe același Backend pentru a genera eșantioane pentru subspațiu.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+În continuare, recomandăm următorii pași pentru a optimiza ansatz-ul și a-l face compatibil cu hardware-ul.
+
+- Selectează qubiți fizici (`initial_layout`) din hardware-ul țintă care respectă pattern-ul zig-zag (două lanțuri liniare cu un qubit ancila între ele) descris mai sus. Dispunerea qubiților în acest pattern duce la un circuit eficient, compatibil cu hardware-ul și cu mai puține porți.
+- Generează un manager de pași etapizat folosind funcția [`generate_preset_pass_manager`](https://docs.quantum.ibm.com/api/qiskit/qiskit.transpiler.generate_preset_pass_manager) din Qiskit cu Backend-ul și `initial_layout`-ul ales.
+- Setează etapa `pre_init` a managerului tău de pași etapizat la `ffsim.qiskit.PRE_INIT`. `ffsim.qiskit.PRE_INIT` include pași de transpilare Qiskit care descompun porțile în rotații orbitale și apoi fuzionează rotațiile orbitale, rezultând mai puține porți în circuitul final.
+- Rulează managerul de pași pe circuitul tău.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+spin_a_layout = [0, 14, 18, 19, 20, 33, 39, 40, 41, 53, 60, 61, 62, 72, 81, 82]
+spin_b_layout = [2, 3, 4, 15, 22, 23, 24, 34, 43, 44, 45, 54, 64, 65, 66, 73]
+
+initial_layout = spin_a_layout + spin_b_layout
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=initial_layout
+)
+
+# without PRE_INIT passes
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/o pre-init passes): {isa_circuit.count_ops()}")
+
+# with PRE_INIT passes
+# We will use the circuit generated by this pass manager for hardware execution
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
+```
+
+```text
+Gate counts (w/o pre-init passes): OrderedDict({'rz': 7579, 'sx': 6106, 'ecr': 2316, 'x': 336, 'measure': 32, 'barrier': 1})
+Gate counts (w/ pre-init passes): OrderedDict({'rz': 4088, 'sx': 3125, 'ecr': 1262, 'x': 201, 'measure': 32, 'barrier': 1})
+```
+
+## 3. Execuția pe hardware-ul țintă {#3-execute-on-target-hardware}
+După optimizarea circuitului pentru execuția pe hardware, suntem gata să îl rulăm pe hardware-ul țintă și să colectăm eșantioane pentru estimarea energiei stării fundamentale. Deoarece avem un singur circuit, vom folosi [modul de execuție Job](/guides/execution-modes) din Qiskit Runtime și vom executa circuitul nostru.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+sampler.options.dynamical_decoupling.enable = True
+
+job = sampler.run([isa_circuit], shots=10_000)  # Takes approximately 5sec of QPU time
+```
+
+```python
+# Run cell after IQX job completion
+primitive_result = job.result()
+pub_result = primitive_result[0]
+counts = pub_result.data.meas.get_counts()
+```
+
+## 4. Post-procesarea rezultatelor {#4-post-process-results}
+Partea de post-procesare a fluxului de lucru SQD poate fi rezumată cu ajutorul diagramei următoare.
+
+![A flow chart showing how sampled states are used to determine ground state eigenvalues and eigenvectors.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig10.avif)
+Eșantionarea ansatz-ului LUCJ în baza computațională generează un grup de configurații zgomotoase $\tilde{\mathcal{\chi}}$, care sunt utilizate în rutina de post-procesare. Aceasta implică o metodă numită _recuperare a configurației_ (detalii discutate mai târziu) pentru a corecta probabilistic configurațiile cu număr incorect de electroni. Configurațiile cu număr corect de electroni $\tilde{\mathcal{\chi}}_{R}$ sunt apoi sub-eșantionate și distribuite în mai multe loturi în funcție de frecvența de apariție a fiecărei configurații unice. Fiecare lot de eșantioane definește un subspațiu ($\mathcal{S^{(k)}}$). Apoi, Hamiltonianul molecular, $H$, este proiectat pe subspații:
+$$
+H_{\mathcal{S}^{(k)}} = P_{\mathcal{S}^{(k)}} H _{\mathcal{S}^{(k)}} \text{ with } P_{\mathcal{S}^{(k)}} = \sum_{x \in \mathcal{S}^{(k)}} \vert x \rangle \langle x \vert
+$$
+
+Fiecare Hamiltonian proiectat $H_{\mathcal{S}^{(k)}}$ este apoi introdus într-un solver de stări proprii, unde este diagonalizat pentru a calcula valorile proprii și vectorii proprii și pentru a reconstrui o stare proprie. În această lecție, proiectăm și diagonalizăm Hamiltonianul folosind pachetul `qiskit-addon-sqd`, care utilizează metoda Davidson din PySCF pentru diagonalizare.
+
+$$
+H_{\mathcal{S}^{(k)}} \vert \psi^{(k)} \rangle = E^{(k)} \vert \psi^{(k)} \rangle
+$$
+
+Colectăm apoi cea mai mică valoare proprie (energie) din loturi și calculăm, de asemenea, ocupanța medie orbitală, $\text{n}$. Informațiile despre ocupanța medie sunt utilizate în etapa de recuperare a configurației pentru a corecta probabilistic configurațiile zgomotoase.
+
+Urmează explicarea în detaliu a buclei de recuperare a configurației self-consistente și exemple concrete de cod pentru implementarea pașilor menționați mai sus în vederea estimării energiei stării fundamentale a Hamiltonianului $N_2$.
+### 4.1 Recuperarea configurației: prezentare generală {#41-configuration-recovery-overview}
+Fiecare bit dintr-un bitstring (determinant Slater) reprezintă un orbital de spin. Jumătatea dreaptă a unui bitstring reprezintă orbitalele cu spin-up, iar jumătatea stângă reprezintă orbitalele cu spin-down. Un `1` înseamnă că orbitalul este ocupat de un electron, iar un `0` înseamnă că orbitalul este gol. Cunoaștem a priori numărul corect de particule (atât electroni cu spin-up, cât și cu spin-down). Să presupunem că avem un determinant $x$ cu $N_x$ electroni (adică există $N_x$ cifre de $1$ în bitstring) în el. Numărul corect de particule este $N$. Dacă $N_x \neq N$, știm că bitstring-ul este corupt de zgomot. Rutina de configurație self-consistentă încearcă să corecteze bitstring-ul prin răsturnarea probabilistică a $|N_x - N|$ biți, valorificând informațiile despre ocupanța medie orbitală. Ocupanța medie orbitală ($n$) ne spune cât de probabil este ca un orbital să fie ocupat de un electron. Dacă $N_x < N$, avem mai puțini electroni și trebuie să transformăm unii $0$ în $1$ și invers.
+
+Probabilitatea de răsturnare poate fi $|x[i] - avg\_occupancy[i]|$ pentru orbitalul de spin de rang `i`. În [\[2\]](#references), autorii au folosit o probabilitate de răsturnare ponderată folosind o funcție ReLU modificată.
+
+$$
+\begin{align}
+    w(y) = \begin{cases}
+
+    \delta \frac{y}{h} & \text{if }  y \leq h\\ \nonumber
+
+    \delta + (1 - \delta) \frac{y - h}{1 - h} & \text{if } y > h
+
+\end{cases}
+\end{align}
+$$
+
+Aici $h$ definește locația „colțului" funcției ReLU, iar parametrul $\delta$ definește valoarea funcției ReLU la colț. Pentru $\delta = 0$, $w$ devine funcția ReLU adevărată, iar pentru $\delta >0$, devine ReLU _modificat_. În lucrare, autorii au folosit $\delta = 0.01$ și $h =$ numărul de particule alfa (sau beta)/numărul de orbitale de spin alfa (sau beta) $= N/M$ (factorul de umplere).
+
+Ocupanța medie orbitală ($n$) nu este cunoscuta a priori. Prima iterație a estimării stării fundamentale începe cu configurații care au doar numere corecte de particule în ambele specii de spin. După prima iterație, avem o estimare a stării fundamentale și, folosind această estimare, putem construi prima aproximare a lui $n$. Această aproximare a lui $n$ este folosită pentru a recupera configurații, a rula următoarea iterație de estimare a stării fundamentale și a rafina auto-consistent aproximarea lui $n$. Procesul se repetă până când este îndeplinit un criteriu de oprire.
+
+Consideră exemplul următor pentru $N = 2$ și $x = |1000\rangle$ ($N_x = 1$). Trebuie să transformăm unul dintre $0$ în $1$ pentru a-l corecta pentru numărul de particule, iar alegerile sunt `1100`, `1010` și `1001`. Pe baza probabilității de răsturnare, una dintre alegeri va fi selectată ca _configurație recuperată_ (sau bitstring-ul cu numărul corect de particule).
+
+Să presupunem că în prima iterație rulăm două loturi, iar stările fundamentale estimate din ele sunt:
+
+$$
+\begin{align}\nonumber
+    \text{Batch0: } \vert \psi \rangle &= 0.8 \times \vert 1001 \rangle + 0.6 \times \vert 0110 \rangle \\ \nonumber
+    \text{Batch1: } \vert \psi \rangle &= \frac{1}{\sqrt{3}} \left( \vert 1001 \rangle + \vert 0101 \rangle + \vert 0110 \rangle \right) \nonumber
+\end{align}
+$$
+
+Folosind stările din baza computațională și amplitudinile lor, putem calcula probabilitățile de ocupanță electronică (pe scurt _ocupanțe_) per orbital de spin (qubit) (rețineți că probabilitate = |amplitudine|$^2$). Mai jos tabelăm ocupanțele per qubit pentru fiecare bitstring apărând în starea fundamentală estimată și calculăm ocupanța orbitală totală pentru un lot. Rețineți că, conform convenției de ordonare Qiskit, bitul din dreapta reprezintă qubit-0 (Q0), iar bitul din stânga reprezintă Q3.
+
+Ocupanță (Batch0):
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |   0.64   |    0.0   |    0.0   |   0.64   |
+|    0110   |    0.0   |   0.36   |   0.36   |    0.0   |
+| **n** _(Batch0)_ | **0.64** | **0.36** | **0.36** | **0.64** |
+
+Ocupanță (Batch1)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |    0.33   |   0.00   |   0.00   |    0.33   |
+|    0101   |    0.0   |   0.33   |   0.00   |    0.33   |
+|    0110   |    0.0   |   0.33   |   0.33   |    0.00   |
+| **n** _(Batch1)_ | **0.33** | **0.66** | **0.33** | **0.66** |
+
+Ocupanță (medie pe loturi)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| **n** _(Batch0)_ | 0.64 | 0.36 | 0.36 | 0.64 |
+| **n** _(Batch1)_ | 0.33 | 0.66 | 0.33 | 0.66 |
+| **n** _(average)_ | **0.49** | **0.51** | **0.35** | **0.65** |
+
+Folosind ocupanța medie orbitală calculată mai sus, putem găsi probabilitățile de răsturnare pentru diferite orbitale în configurația $x = \vert 1000 \rangle$. Deoarece orbitalul reprezentat de Q3 este deja ocupat și nu trebuie răsturnat, setăm p(flip) la $0$. Pentru orbitalele rămase, care sunt neocupate, probabilitatea de răsturnare este $\vert x[i] - \text{n}[i] \vert$ fiecare. Împreună cu p(flip), calculăm și ponderea probabilistică asociată răsturnării folosind funcția ReLU modificată descrisă mai sus.
+
+Probabilitatea de răsturnare ($x = \vert 1000 \rangle$, $\delta = 0.01$, $h = N/M = 2/4 = 0.50$)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| p(flip) ($\vert x[i] - \text{n}[i] \vert$) | 0 | 0.51 | 0.35 | 0.65 |
+| w(p(flip)) | 0 | 0.03 | 0.007 | 0.31 |
+
+În final, folosind probabilitățile ponderate de mai sus, putem răsturna unul dintre orbitalele neocupate Q2, Q1 și Q0. Pe baza valorilor de mai sus, Q0 va fi răsturnat cel mai probabil, iar o posibilă configurație recuperată poate fi $\vert \text{1001} \rangle$.
+![A diagram of configuration recovery.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig11.avif)
+Procesul complet de recuperare a configurației self-consistente poate fi rezumat astfel:
+
+**Prima iterație:** Să presupunem că bitstring-urile (configurații sau determinanți Slater) generate de calculatorul cuantic formează mulțimea $\widetilde{\chi}$, care include atât configurații cu număr corect ($\widetilde{\chi}_{correct}$), cât și incorect ($\widetilde{\chi}_{incorrect}$) de particule în fiecare sector de spin.
+1. Configurațiile din ($\widetilde{\chi}_{correct}$) sunt eșantionate aleatoriu pentru a crea loturi $(\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)})$ de vectori pentru proiecția pe subspațiu. Numărul de loturi și de eșantioane din fiecare lot sunt parametri definiți de utilizator. Cu cât numărul de eșantioane din fiecare lot este mai mare, cu atât dimensiunea subspațiului este mai mare și diagonalizarea devine mai costisitoare computațional. Pe de altă parte, un număr prea mic de eșantioane poate rata vectorii de suport ai stării fundamentale și duce la o estimare incorectă.
+2. Rulează solverul de stări proprii (adică proiecția pe subspațiu și diagonalizarea) pe loturi și obține stări proprii aproximative. $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+3. Din stările proprii aproximative, construiește prima aproximare pentru $n$.
+
+**Iterații ulterioare:**
+1. Folosind $n$, corectează configurațiile cu număr greșit de particule din $\widetilde{\chi}_{incorrect}$. Să le numim $\widetilde{\chi}_{correct\_new}$. Atunci, $\widetilde{\chi}_{recovered} (\widetilde{\chi}_{R}) = \widetilde{\chi}_{correct} \cup \widetilde{\chi}_{correct\_new}$ formează noul set de configurații cu numere corecte de particule.
+2. $\widetilde{\chi}_{R}$ este eșantionat pentru a crea loturi $\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)}$.
+3. Solverul de stări proprii rulează cu noile loturi și generează noi estimări ale stărilor fundamentale $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+4. Din stările proprii aproximative, construiește o aproximare rafinată pentru $n$.
+5. Dacă criteriul de oprire nu este îndeplinit, revino la pasul `2.1`.
+### 4.2 Estimarea energiei stării fundamentale {#42-ground-state-estimation}
+Mai întâi, vom transforma contorizările într-o matrice de bitstring-uri și un array de probabilități pentru post-procesare.
+
+Fiecare rând din matrice reprezintă un bitstring unic. Deoarece qubiții sunt indexați de la dreapta unui bitstring în Qiskit, coloana ``0`` reprezintă qubitul ``N-1``, iar coloana ``N-1`` reprezintă qubitul ``0``, unde ``N`` este numărul de qubiți.
+
+Orbitalele alfa sunt reprezentate în intervalul de indici de coloană ``(N, N/2]`` (jumătatea dreaptă), iar orbitalele beta sunt reprezentate în intervalul de coloane ``(N/2, 0]`` (jumătatea stângă).
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+
+# Convert counts into bitstring and probability arrays
+bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts)
+```
+
+Există câteva opțiuni controlate de utilizator care sunt importante pentru această tehnică:
+
+- ``iterations``: Numărul de iterații ale recuperării configurației self-consistente
+- ``n_batches``: Numărul de loturi de configurații folosite de diferitele apeluri ale solverului de stări proprii
+- ``samples_per_batch``: Numărul de configurații unice incluse în fiecare lot
+- ``max_davidson_cycles``: Numărul maxim de cicluri Davidson rulate de fiecare solver de stări proprii
+```python
+import numpy as np
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_fermion,
+)
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+
+rng = np.random.default_rng(24)
+# SQD options
+iterations = 5
+
+# Eigenstate solver options
+n_batches = 5
+samples_per_batch = 500
+max_davidson_cycles = 300
+
+# Self-consistent configuration recovery loop
+e_hist = np.zeros((iterations, n_batches))  # energy history
+s_hist = np.zeros((iterations, n_batches))  # spin history
+occupancy_hist = []
+avg_occupancy = None
+for i in range(iterations):
+    print(f"Starting configuration recovery iteration {i}")
+    # On the first iteration, we have no orbital occupancy information from the
+    # solver, so we begin with the full set of noisy configurations.
+    if avg_occupancy is None:
+        bs_mat_tmp = bitstring_matrix_full
+        probs_arr_tmp = probs_arr_full
+
+    # If we have average orbital occupancy information, we use it to refine the full set of noisy configurations
+    else:
+        bs_mat_tmp, probs_arr_tmp = recover_configurations(
+            bitstring_matrix_full,
+            probs_arr_full,
+            avg_occupancy,
+            num_elec_a,
+            num_elec_b,
+            rand_seed=rng,
+        )
+
+    # Create batches of subsamples. We post-select here to remove configurations
+    # with incorrect hamming weight during iteration 0, since no config recovery was performed.
+    batches = postselect_and_subsample(
+        bs_mat_tmp,
+        probs_arr_tmp,
+        hamming_right=num_elec_a,
+        hamming_left=num_elec_b,
+        samples_per_batch=samples_per_batch,
+        num_batches=n_batches,
+        rand_seed=rng,
+    )
+
+    # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
+    e_tmp = np.zeros(n_batches)
+    s_tmp = np.zeros(n_batches)
+    occs_tmp = []
+    coeffs = []
+    for j in range(n_batches):
+        strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+        print(f"  Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+        energy_sci, coeffs_sci, avg_occs, spin = solve_fermion(
+            batches[j],
+            hcore,
+            eri,
+            open_shell=open_shell,
+            spin_sq=spin_sq,
+            max_davidson=max_davidson_cycles,
+        )
+        energy_sci += nuclear_repulsion_energy
+        e_tmp[j] = energy_sci
+        s_tmp[j] = spin
+        occs_tmp.append(avg_occs)
+        coeffs.append(coeffs_sci)
+
+    # Combine batch results
+    avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+    # Track optimization history
+    e_hist[i, :] = e_tmp
+    s_hist[i, :] = s_tmp
+    occupancy_hist.append(avg_occupancy)
+```
+
+```text
+Starting configuration recovery iteration 0
+  Batch 0 subspace dimension: 21609
+  Batch 1 subspace dimension: 21609
+  Batch 2 subspace dimension: 21609
+  Batch 3 subspace dimension: 21609
+  Batch 4 subspace dimension: 21609
+Starting configuration recovery iteration 1
+  Batch 0 subspace dimension: 609961
+  Batch 1 subspace dimension: 616225
+  Batch 2 subspace dimension: 627264
+  Batch 3 subspace dimension: 633616
+  Batch 4 subspace dimension: 624100
+Starting configuration recovery iteration 2
+  Batch 0 subspace dimension: 564001
+  Batch 1 subspace dimension: 605284
+  Batch 2 subspace dimension: 582169
+  Batch 3 subspace dimension: 559504
+  Batch 4 subspace dimension: 591361
+Starting configuration recovery iteration 3
+  Batch 0 subspace dimension: 550564
+  Batch 1 subspace dimension: 549081
+  Batch 2 subspace dimension: 531441
+  Batch 3 subspace dimension: 527076
+  Batch 4 subspace dimension: 531441
+Starting configuration recovery iteration 4
+  Batch 0 subspace dimension: 544644
+  Batch 1 subspace dimension: 580644
+  Batch 2 subspace dimension: 527076
+  Batch 3 subspace dimension: 531441
+  Batch 4 subspace dimension: 537289
+```
+
+### 4.3 Discuție despre rezultate {#43-discussion-of-results}
+Primul grafic arată că după câteva iterații estimăm energia stării fundamentale cu o eroare de ~24 mH (precizia chimică este acceptată în mod tipic ca fiind 1 kcal/mol $\approx$ 1.6 mH). Al doilea grafic arată ocupanța medie a fiecărui orbital spațial după ultima iterație. Putem vedea că atât electronii cu spin-up, cât și cei cu spin-down ocupă primele cinci orbitale cu probabilitate ridicată în soluțiile noastre.
+
+Deși energia estimată a stării fundamentale este rezonabilă, aceasta nu se încadrează în limita de precizie chimică ($\pm \approx 1.6$ mH). Această diferență poate fi atribuită dimensiunii mici a subspațiului folosit mai sus pentru proiecție și diagonalizare. Deoarece am folosit `samples_per_batch=500`, subspațiul este acoperit de maximum $500$ de vectori, lipsind vectorii din suportul stării fundamentale. Creșterea parametrului `samples_per_batch` ar trebui să îmbunătățească precizia cu prețul unor resurse clasice de calcul și timp de execuție mai mari.
+
+```python
+# Data for energies plot
+x1 = range(iterations)
+min_e = [np.min(e) for e in e_hist]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = occupancy_hist[-1][0] + occupancy_hist[-1][1]
+x2 = range(len(y2))
+```
+
+```python
+import matplotlib.pyplot as plt
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-6)
+axs[0].axhline(
+    y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy"
+)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.02234 Ha
+Absolute error: 0.02434 Ha
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-4-sqd-implementation/extracted-outputs/8cd90034-6ef3-41bd-a847-c115cade82f7-1.avif)
+
+#### Exercițiu pentru cititor {#exercise-for-the-reader}
+Crește progresiv parametrul `samples_per_batch` (de exemplu, de la $1000$ la $10000$ cu un pas de $1000$; permis de memoria calculatorului tău) și compară energiile estimate ale stărilor fundamentale.
+## Referințe {#references}
+
+\[1] M. Motta et al., "Bridging physical intuition and hardware efficiency for correlated electronic states: the local unitary cluster Jastrow ansatz for electronic structure" (2023). [Chem. Sci., 2023, 14, 11213](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k).
