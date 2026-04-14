@@ -1,0 +1,204 @@
+---
+title: "Implementarea SQD"
+sidebar_label: "Implementarea SQD"
+description: "Diagonalizarea cuantică bazată pe eșantioane (SQD) este implementată în contextul rezolvării stării fundamentale a unei molecule de azot."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb"
+---
+
+{/* doqumentation-source-hash: 672f3c67 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize milli hcore ccsd Motta */}
+
+# SQD pentru estimarea energiei unui Hamiltonian chimic {#sqd-for-energy-estimation-of-a-chemistry-hamiltonian}
+În această lecție, vom aplica SQD pentru a estima energia stării fundamentale a unei molecule.
+
+În special, vom discuta următoarele subiecte folosind abordarea cu $4$ pași a pattern-ului Qiskit:
+
+1. Pasul 1: Maparea problemei pe circuite cuantice și operatori
+    - Configurarea Hamiltonianului molecular pentru $N_2$.
+    - Explicarea ansatz-ului local unitary cluster Jastrow (LUCJ) [\[1\]](#references), inspirat din chimie și prietenos cu hardware-ul
+2. Pasul 2: Optimizarea pentru hardware-ul țintă
+    - Optimizarea numărului de porți și a layout-ului ansatz-ului pentru execuția pe hardware
+3. Pasul 3: Execuția pe hardware-ul țintă
+    - Rularea circuitului optimizat pe un QPU real pentru a genera eșantioane ale subspațiului.
+4. Pasul 4: Post-procesarea rezultatelor
+    - Introducerea buclei de recuperare a configurației self-consistente [\[2\]](#references)
+        - Post-procesarea întregului set de eșantioane de bitstring-uri, folosind cunoașterea prealabilă a numărului de particule și a ocupanței medii orbitale calculate la iterația anterioară.
+        - Crearea probabilistică a loturilor de subeșantioane din bitstring-uri recuperate.
+        - Proiectarea și diagonalizarea Hamiltonianului molecular pentru fiecare subspațiu eșantionat.
+        - Salvarea energiei minime a stării fundamentale găsite în toate loturile și actualizarea ocupanței medii orbitale.
+
+Vom folosi mai multe pachete software pe parcursul lecției.
+- `PySCF` pentru definirea moleculei și configurarea Hamiltonianului.
+- Pachetul `ffsim` pentru construirea ansatz-ului LUCJ.
+- `Qiskit` pentru transpilarea ansatz-ului în vederea execuției pe hardware.
+- `Qiskit IBM Runtime` pentru a executa circuitul pe un QPU și a colecta eșantioane.
+- `Qiskit addon SQD` pentru recuperarea configurației și estimarea energiei stării fundamentale folosind proiecția pe subspațiu și diagonalizarea matriceală.
+## 1. Maparea problemei pe circuite cuantice și operatori {#1-map-problem-to-quantum-circuits-and-operators}
+### Hamiltonianul molecular {#molecular-hamiltonian}
+Un Hamiltonian molecular are forma generică:
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \,
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+$\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$ sunt operatorii fermionici de creare/anihilare asociați cu al $p$-lea element al setului de baze și spin-ul $\sigma$. $h_{pr}$ și $(pr|qs)$ sunt integralele electronice de un corp și, respectiv, de două corpuri. Folosind pySCF, vom defini molecula și vom calcula integralele de un corp și de două corpuri ale Hamiltonianului pentru setul de baze `6-31g`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+warnings.filterwarnings("ignore")
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],  # Two N atoms 1 angstrom apart
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)  # hcore: one-body integrals
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)  # eri: two-body integrals
+
+# Compute exact energy for comparison
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570774
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+În această lecție, vom folosi transformarea Jordan-Wigner (JW) pentru a mapa o funcție de undă fermionică pe o funcție de undă cu qubiți, astfel încât aceasta să poată fi pregătită folosind un Circuit cuantic. Transformarea JW mapează spațiul Fock al fermionilor din M orbitale spațiale pe spațiul Hilbert al $2M$ qubiți, adică un orbital spațial este împărțit în două _orbitale de spin_, unul asociat cu un electron cu spin up ($\alpha$) și altul cu spin down ($\beta$). Un orbital de spin poate fi ocupat sau neocupat. De obicei, când ne referim la numărul de orbitale, vom folosi numărul de orbitale _spațiale_. Numărul de orbitale de spin va fi dublu. În Circuitele cuantice, vom reprezenta fiecare orbital de spin cu un qubit. Astfel, un set de qubiți va reprezenta orbitalele cu spin-up sau $\alpha$, iar alt set va reprezenta orbitalele cu spin-down sau $\beta$. De exemplu, molecula $N_2$ pentru setul de baze `6-31g` are $16$ orbitale spațiale (adică $16$ $\alpha$ + $16$ $\beta$ = $32$ orbitale de spin). Astfel, vom avea nevoie de un Circuit cuantic cu $32$ qubiți (este posibil să fie nevoie de qubiți ancila suplimentari, după cum vom discuta mai târziu). Qubiții sunt măsurați în baza computațională pentru a genera bitstring-uri, care reprezintă configurații electronice sau determinanți (Slater). Pe parcursul acestei lecții, vom folosi termenii bitstring-uri, configurații și determinanți în mod interschimbabil. Bitstring-urile ne spun cum sunt ocupate orbitalele de spin de către electroni: un $1$ într-o poziție de bit înseamnă că orbitalul de spin corespunzător este ocupat, în timp ce un $0$ înseamnă că orbitalul de spin este gol. Deoarece problemele de structură electronică conservă particule, doar un număr fix de orbitale de spin trebuie să fie ocupate. Molecula $N_2$ are $5$ electroni cu spin-up ($\alpha$) și $5$ cu spin-down ($\beta$). Astfel, orice bitstring care reprezintă orbitalele $\alpha$ și $\beta$ trebuie să aibă câte cinci $1$ fiecare pentru molecula $N_2$.
+### 1.1 Circuit cuantic pentru generarea de eșantioane: ansatz-ul LUCJ {#11-quantum-circuit-for-sample-generation-the-lucj-ansatz}
+În această lecție, vom folosi ansatz-ul local unitary coupled cluster Jastrow (LUCJ) [\\[1\\]](#references) pentru pregătirea stărilor cuantice și eșantionarea ulterioară. Mai întâi, vom explica diferitele blocuri de construcție ale ansatz-ului complet UCJ și aproximările realizate în versiunea sa locală. Apoi, folosind pachetul ffsim, vom construi ansatz-ul LUCJ și îl vom optimiza cu transpilerul Qiskit pentru execuția pe hardware.
+
+Ansatz-ul UCJ are forma următoare (pentru un produs de $L$ straturi sau repetări ale operatorului UCJ):
+
+$$
+|\psi\rangle = \prod_{\mu=1}^{L}{(e^{K^{\mu}} \times {e^{iJ^{\mu}}} \times {e^{-K^{\mu}}})} |\Phi_{0}\rangle
+$$
+
+unde $\vert \Phi_{0} \rangle$ este o stare de referință, luată de obicei ca starea Hartree-Fock (HF). Deoarece starea Hartree-Fock este definită ca având orbitalele cu numerele cele mai mici ocupate, pregătirea stării HF va implica aplicarea porților X pentru a seta qubiții corespunzători orbitalelor ocupate la unu. De exemplu, blocul de pregătire a stării HF pentru 4 orbitale spațiale și 2 spin-uri up și 2 spin-uri down poate arăta astfel:
+![A circuit diagram showing 8 qubits, 4 called alpha orbitals and 4 called beta orbitals. The top two alpha and the top two beta have a "not" gate.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig1.avif)
+O singură repetare a operatorului UCJ ${(e^{K^{(\mu)}} \times {e^{iJ^{(\mu)}}} \times {e^{-K^{(\mu)}}})}$ constă dintr-o evoluție Coulomb diagonală ($e^{iJ^{(\mu)}}$) încadrată de rotații orbitale ($e^{K^{(\mu)}}$ și $e^{-K^{(\mu)}}$).
+![A circuit diagram showing that the UCJ circuit can be broken down into rotation layers and a diagonal Coulomb evolution layer.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig2.avif)
+Blocurile de rotație orbitală acționează pe o singură specie de spin ($\alpha$ (spin-up)/$\beta$ (spin-down)). Pentru fiecare specie de electroni, rotația orbitală constă dintr-un strat de porți $R_{z}$ cu un singur qubit urmate de o secvență de porți de rotație Givens cu 2 qubiți ($XX + YY$).
+
+Porțile cu 2 qubiți acționează pe orbitale de spin adiacente (qubiți vecini imediați) și, prin urmare, pot fi implementate pe QPU-urile IBM&reg; fără a fi nevoie de porți SWAP.
+![A circuit diagram showing 4 alpha orbital qubits and 4 beta orbital qubits. The circuits start with R-Z gates, and then have a series of Given's rotation gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig3.avif)
+$e^{iJ^{(\mu)}}$, cunoscut și ca operatorul Coulomb diagonal, constă din trei blocuri. Două dintre ele acționează pe sectoare cu același spin ($e^{iJ_{\alpha \alpha}^{(\mu)}}$ și $e^{iJ_{\beta \beta}^{(\mu)}}$), iar unul acționează între cele două sectoare de spin ($e^{iJ_{\alpha \beta}^{(\mu)}}$).
+
+Toate blocurile din $e^{iJ^{(\mu)}}$ constau din porți number-number $U_{nn}(\phi)$ [\[1\]](#references). O poartă $U_{nn}(\phi)$ poate fi descompusă în continuare într-o poartă $R_{ZZ}(\frac{\phi}{2})$ urmată de două porți $Rz(-\frac{\phi}{2})$ cu un singur qubit care acționează pe doi qubiți separați.
+
+Componentele cu același spin ($J_{\alpha \alpha}$ și $J_{\beta \beta}$) au porți $U_{nn}$ între toate perechile posibile de qubiți. Cu toate acestea, deoarece QPU-urile supraconductoare au conectivitate restrictivă, qubiții trebuie să fie swapați pentru a realiza porți între qubiți non-adiacenți.
+
+De exemplu, consideră blocul $e^{iJ_{\alpha \alpha}^{(\mu)}}$ (sau $e^{iJ_{\beta \beta}^{(\mu)}}$) pentru $N = 4$ orbitale spațiale. Pentru o conectivitate liniară a qubiților, ultimele trei porți nu pot fi implementate direct, deoarece acționează între qubiți non-adiacenți (de exemplu, Q0 și Q2 nu sunt conectați direct). Prin urmare, avem nevoie de porți SWAP pentru a-i face adiacenți (figura următoare arată un exemplu cu $3$ porți SWAP).
+![A circuit diagram showing linearly-coupled qubits and corresponding alpha/beta circuits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig4.avif)
+Apoi, $J_{\alpha \beta}$ implementează porți între orbitale cu același indice din sectoare de spin diferite (de exemplu, între $0\alpha$ și $0\beta$). Similar, dacă qubiții nu sunt adiacenți fizic pe un QPU, aceste porți vor necesita de asemenea SWAP-uri.
+![A circuit diagram showing 4 alpha qubits connected to the 4 beta qubits.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig5.avif)
+Din discuția de mai sus, ansatz-ul UCJ se confruntă cu unele obstacole pentru execuția pe HW, deoarece necesită porți SWAP din cauza interacțiunilor între qubiți non-adiacenți. Varianta locală a ansatz-ului UCJ, LUCJ, abordează această provocare eliminând unii $U_{nn}$ din operatorul Coulomb diagonal.
+
+În blocurile cu aceeași specie de electroni, $J_{\alpha \alpha}$ și $J_{\beta \beta}$), în versiunea LUCJ păstrăm doar porțile $U_{nn}$ compatibile cu conectivitatea vecin-imediat și eliminăm porțile între qubiți non-adiacenți. Figura următoare arată blocul LUCJ după eliminarea porților non-adiacente.
+![A circuit diagram showing 4 alpha qubits and 4 beta qubits each with R-Z gates, followed by two-qubit gates.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig6.avif)
+Apoi, versiunea LUCJ a blocului $J_{\alpha \beta}$, care acționează între specii diferite de electroni, poate lua forme diferite în funcție de topologia dispozitivului.
+
+Și aici, versiunea LUCJ elimină porțile incompatibile. Figura de mai jos arată variante ale blocului $J_{\alpha \beta}$ pentru diferite topologii de qubiți, inclusiv grilă, hexagonală, heavy-hex și liniară.
+
+- **Pătrat**: putem avea porți $U_{nn}$ între toate orbitalele $\alpha$ și $\beta$ fără niciun SWAP și, prin urmare, nu trebuie să eliminăm nicio poartă $U_{nn}$.
+- **Heavy-hex**: interacțiunile $\alpha$-$\beta$ sunt păstrate între orbitale cu indexul multiplu de $4$ (cum ar fi al 0-lea, al 4-lea și al 8-lea) și sunt mediate de _ancila_, adică avem nevoie de qubiți ancila între lanțurile liniare care reprezintă orbitalele $\alpha$ și $\beta$. Această aranjare necesită un număr limitat de SWAP-uri.
+- **Hexagonal**: fiecare al doilea orbital, cum ar fi orbitalele cu indexul 0, 2 și 4, devine vecin imediat atunci când $\alpha$ și $\beta$ sunt dispuse în două lanțuri liniare adiacente.
+- **Linear**: doar un orbital $\alpha$ și un orbital $\beta$ sunt conectate, ceea ce înseamnă că blocul $J_{\alpha \beta}$ va avea o singură poartă.
+![Connectivity diagrams for different qubit layouts. They show qubits arranged on a square grid, a hexagonal lattice, a heavy-hex lattice (hexagonal lattice with one extra qubit along each side of the hexagon), and a linear chain.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig7.avif)
+Deși eliminarea porților din ansatz-ul UCJ pentru a construi versiunea LUCJ îl face mai compatibil cu HW-ul, ansatz-ul pierde din expresivitate. Prin urmare, pot fi necesare mai multe repetări ($L$) ale operatorului UCJ modificat atunci când folosești ansatz-ul LUCJ.
+### 1.2 Inițializarea ansatz-ului LUCJ {#12-lucj-ansatz-initialization}
+LUCJ este un ansatz parametrizat și trebuie să inițializăm parametrii înainte de execuția pe hardware. O modalitate de a inițializa ansatz-ul este prin utilizarea amplitudinilor `t1` și `t2` din metoda clasică coupled cluster singles and doubles (CCSD), unde amplitudinile `t1` sunt coeficienții operatorilor de excitație simplă și amplitudinile `t2` sunt pentru operatorii de excitație dublă.
+
+Rețineți că, deși inițializarea ansatz-ului LUCJ cu amplitudinile `t1` și `t2` generează rezultate rezonabile, parametrii ansatz-ului pot necesita o optimizare suplimentară.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(
+    scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]
+)
+ccsd.run()
+
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929733  E_corr = -0.20458912219883
+```
+
+### 1.3 Construirea ansatz-ului LUCJ folosind `ffsim` {#13-constructing-the-lucj-ansatz-using-ffsim}
+Vom folosi pachetul [ffsim](https://github.com/qiskit-community/ffsim/tree/main) pentru a crea și inițializa ansatz-ul cu amplitudinile `t1` și `t2` calculate mai sus. Deoarece molecula noastră are o stare Hartree-Fock cu coajă închisă, vom folosi varianta echilibrată ca spin a ansatz-ului UCJ, [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced).
+
+Deoarece hardware-ul IBM are o topologie heavy-hex, vom adopta pattern-ul _zig-zag_ folosit în [\[1\]](#references) și explicat mai sus pentru interacțiunile dintre qubiți. În acest pattern, orbitalele (qubiții) cu același spin sunt conectate cu o topologie liniară (cercuri roșii și albastre). Datorită topologiei heavy-hex, orbitalele pentru spin-uri diferite au conexiuni între fiecare al 4-lea orbital, adică al 0-lea, al 4-lea, al 8-lea și așa mai departe (cercuri violet).
+
+![A zig-zag pattern traced out along a heavy-hex lattice.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig8.avif)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 2
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+# circuit.decompose().draw("mpl", scale=0.5, fold=-1)
+```
