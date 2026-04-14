@@ -649,6 +649,64 @@ function annotateSessionCells(): void {
   }, 1200);
 }
 
+/** After injection, show per-cell badges explaining what doQumentation will
+ *  intercept when a cell runs (simulator redirect or credential usage). */
+function annotateInjectedCells(): void {
+  const exempt = isSimulatorExemptPage();
+  const simMode = exempt ? false : getSimulatorMode();
+  const hasCredentials = !!getIBMQuantumToken();
+  if (!simMode && !hasCredentials) return;
+
+  setTimeout(() => {
+    const cells = document.querySelectorAll('.thebelab-cell');
+    const backend = getSimulatorBackend();
+    const device = backend === 'fake' ? getFakeDevice() : 'AerSimulator';
+
+    cells.forEach((cell) => {
+      // Skip cells that already have a more specific annotation
+      if (cell.querySelector('.thebelab-cell__skip-hint')) return;
+      if (cell.querySelector('.thebelab-cell__session-hint')) return;
+      if (cell.querySelector('.thebelab-cell__injection-badge')) return;
+
+      const code = cell.querySelector('.CodeMirror')?.textContent ||
+                   cell.querySelector('pre')?.textContent || '';
+
+      const badges: string[] = [];
+
+      if (simMode) {
+        if (code.includes('QiskitRuntimeService(') || code.includes('QiskitRuntimeService ('))
+          badges.push(translate({
+            id: 'executable.injection.serviceIntercepted',
+            message: 'QiskitRuntimeService intercepted → {device}',
+          }, {device}));
+        if (code.includes('.least_busy('))
+          badges.push(translate({
+            id: 'executable.injection.leastBusy',
+            message: 'least_busy() → {device}',
+          }, {device}));
+        if (code.includes('.backend(') && !code.includes('.backends('))
+          badges.push(translate({
+            id: 'executable.injection.backend',
+            message: 'backend() → {device}',
+          }, {device}));
+      } else if (hasCredentials) {
+        if (code.includes('QiskitRuntimeService(') || code.includes('QiskitRuntimeService ('))
+          badges.push(translate({
+            id: 'executable.injection.credentialsUsed',
+            message: 'Using saved IBM Quantum credentials',
+          }));
+      }
+
+      if (badges.length === 0) return;
+
+      const div = document.createElement('div');
+      div.className = 'thebelab-cell__injection-badge';
+      div.textContent = `\u2699 ${badges.join(' \u00B7 ')}`;
+      cell.insertBefore(div, cell.firstChild);
+    });
+  }, 1200);
+}
+
 // ── Kernel injection for IBM credentials / simulator mode ──
 
 /**
@@ -1077,6 +1135,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
               setupCellFeedback();
               annotateSaveAccountCells();
               annotateSessionCells();
+              annotateInjectedCells();
             });
           },
           (err) => {

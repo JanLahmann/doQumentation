@@ -633,6 +633,8 @@ Live test session with multiple users. Overall reception very positive — "grea
 
 4. **~~Japanese: nakaguro (・) rule~~** — Fixed: added to `translation/translation-prompt.md` JA locale instructions.
 
+5. **~~Per-cell injection annotations~~** — Fixed: `annotateInjectedCells()` in `ExecutableCode/index.tsx` scans cell content and adds compact badges showing what doQumentation intercepts (e.g. "⚙ QiskitRuntimeService intercepted → AerSimulator", "⚙ least_busy() → AerSimulator", "⚙ Using saved IBM Quantum credentials"). Complements existing skip-hint/session-hint banners without duplicating them.
+
 ### Open (needs investigation)
 
 5. **API key error on real hardware (copy-paste)** — User saved valid IBM Quantum API token via copy-paste, got `InvalidAccountError: Unable to retrieve instances`. Token confirmed not expired. Possible whitespace/newline from copy-paste or save_account protection logic interfering.
