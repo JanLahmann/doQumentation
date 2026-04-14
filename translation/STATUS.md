@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-04-13 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-04-14 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -11,32 +11,32 @@ python translation/scripts/translation-status.py --write-status
 
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Spanish | `es` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Ukrainian | `uk` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Japanese | `ja` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| French | `fr` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Italian | `it` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Portuguese | `pt` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Tagalog | `tl` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Arabic | `ar` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Hebrew | `he` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Malay | `ms` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Indonesian | `id` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Thai | `th` | 44/44 | 172/172 | 154/1 | 15/0 | 387/221 |
-| Korean | `ko` | 44/44 | 0/172 | 0/1 | 0/0 | 45/221 |
-| Polish | `pl` | 44/44 | 172/172 | 1/1 | 0/0 | 218/221 |
-| Romanian | `ro` | 44/44 | 161/172 | 97/1 | 3/0 | 320/221 |
-| Czech | `cs` | 44/44 | 172/172 | 1/1 | 0/0 | 231/221 |
-| Swabian | `swg` | 14/44 | 1/172 | 13/1 | 2/0 | 31/221 |
-| Badisch | `bad` | 14/44 | 1/172 | 13/1 | 2/0 | 31/221 |
-| Bavarian | `bar` | 14/44 | 1/172 | 13/1 | 2/0 | 31/221 |
-| Kölsch | `ksh` | 29/44 | 1/172 | 13/1 | 2/0 | 46/221 |
-| Low German | `nds` | 26/44 | 1/172 | 13/1 | 2/0 | 43/221 |
-| Swiss German | `gsw` | 25/44 | 1/172 | 13/1 | 2/0 | 42/221 |
-| Saxon | `sax` | 22/44 | 1/172 | 13/1 | 2/0 | 39/221 |
-| Berlinerisch | `bln` | 19/44 | 1/172 | 13/1 | 2/0 | 36/221 |
-| Austrian | `aut` | 17/44 | 1/172 | 13/1 | 2/0 | 34/221 |
+| German | `de` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Spanish | `es` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Ukrainian | `uk` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Japanese | `ja` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| French | `fr` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Italian | `it` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Portuguese | `pt` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Tagalog | `tl` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Arabic | `ar` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Hebrew | `he` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Malay | `ms` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Indonesian | `id` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Thai | `th` | 44/44 | 172/172 | 154/154 | 15/15 | 387/400 |
+| Korean | `ko` | 44/44 | 166/172 | 1/154 | 0/15 | 214/400 |
+| Polish | `pl` | 44/44 | 172/172 | 47/154 | 3/15 | 268/400 |
+| Romanian | `ro` | 44/44 | 170/172 | 103/154 | 3/15 | 335/400 |
+| Czech | `cs` | 44/44 | 172/172 | 148/154 | 3/15 | 382/400 |
+| Swabian | `swg` | 14/44 | 1/172 | 13/154 | 2/15 | 31/400 |
+| Badisch | `bad` | 14/44 | 1/172 | 13/154 | 2/15 | 31/400 |
+| Bavarian | `bar` | 14/44 | 1/172 | 13/154 | 2/15 | 31/400 |
+| Kölsch | `ksh` | 29/44 | 1/172 | 13/154 | 2/15 | 46/400 |
+| Low German | `nds` | 26/44 | 1/172 | 13/154 | 2/15 | 43/400 |
+| Swiss German | `gsw` | 25/44 | 1/172 | 13/154 | 2/15 | 42/400 |
+| Saxon | `sax` | 22/44 | 1/172 | 13/154 | 2/15 | 39/400 |
+| Berlinerisch | `bln` | 19/44 | 1/172 | 13/154 | 2/15 | 36/400 |
+| Austrian | `aut` | 17/44 | 1/172 | 13/154 | 2/15 | 34/400 |
 
 ## Per-Locale Detail
 
@@ -46,9 +46,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (409 files in status.json)</summary>
@@ -473,9 +473,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -878,9 +878,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -1283,9 +1283,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (388 files in status.json)</summary>
@@ -1689,9 +1689,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -2094,9 +2094,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -2499,9 +2499,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -2904,9 +2904,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 1 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **1** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **1** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -3309,9 +3309,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -3714,9 +3714,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -4119,9 +4119,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 171 | — | 0 |
-| Courses | 154/1 | 0 | 152 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **382** | **—** | **-168** |
+| Courses | 154/154 | 0 | 152 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **382** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (386 files in status.json)</summary>
@@ -4523,9 +4523,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 170 | — | 0 |
-| Courses | 154/1 | 0 | 153 | 1 | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **382** | **1** | **-168** |
+| Courses | 154/154 | 0 | 153 | 1 | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **382** | **1** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -4928,9 +4928,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 40 | — | 0 |
 | Guides | 172/172 | 0 | 164 | 7 | 0 |
-| Courses | 154/1 | 0 | 151 | 6 | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **370** | **13** | **-168** |
+| Courses | 154/154 | 0 | 151 | 6 | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **370** | **13** | **0** |
 
 <details>
 <summary>Pipeline history (396 files in status.json)</summary>
@@ -5341,10 +5341,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 0/172 | 171 | — | — | 172 |
-| Courses | 0/1 | 1 | — | — | 1 |
-| Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **44/217** | **172** | **44** | **—** | **173** |
+| Guides | 166/172 | 171 | — | — | 6 |
+| Courses | 1/154 | 1 | — | — | 153 |
+| Modules | 0/15 | 0 | — | — | 15 |
+| **Total** | **211/385** | **172** | **44** | **—** | **174** |
 
 <details>
 <summary>Pipeline history (44 files in status.json)</summary>
@@ -5404,9 +5404,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 1/1 | 46 | 1 | — | 0 |
-| Modules | 0/0 | 3 | — | — | 0 |
-| **Total** | **217/217** | **49** | **217** | **—** | **0** |
+| Courses | 47/154 | 46 | 1 | — | 107 |
+| Modules | 3/15 | 3 | — | — | 12 |
+| **Total** | **266/385** | **49** | **217** | **—** | **119** |
 
 <details>
 <summary>Pipeline history (230 files in status.json)</summary>
@@ -5651,13 +5651,13 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 161/172 | 11 | 161 | 12 | 11 |
-| Courses | 97/1 | 0 | 1 | — | -96 |
-| Modules | 3/0 | 0 | — | — | -3 |
-| **Total** | **305/217** | **11** | **206** | **12** | **-88** |
+| Guides | 170/172 | 2 | 161 | 12 | 2 |
+| Courses | 103/154 | 0 | 7 | — | 51 |
+| Modules | 3/15 | 0 | — | — | 12 |
+| **Total** | **320/385** | **2** | **212** | **12** | **65** |
 
 <details>
-<summary>Pipeline history (231 files in status.json)</summary>
+<summary>Pipeline history (237 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -5711,8 +5711,8 @@ python translation/scripts/translation-status.py --write-status
 | `guides/fair-share-scheduler.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/faq.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/fractional-gates.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/function-template-chemistry-workflow.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `guides/function-template-hamiltonian-simulation.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/function-template-chemistry-workflow.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `guides/function-template-hamiltonian-simulation.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/functions.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/get-qpu-information.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/get-started-with-primitives.mdx` | promoted | PASS | 2026-04-11 |
@@ -5733,7 +5733,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/invite-and-manage-users.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/job-limits.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/kipu-optimization.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/latest-updates-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/latest-updates-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/latest-updates.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/local-simulators.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/local-testing-mode.mdx` | promoted | PASS | 2026-04-11 |
@@ -5746,7 +5746,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/metapackage-migration.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/minimize-time.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/monitor-job.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/multiverse-computing-singularity.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/multiverse-computing-singularity.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/noise-learning.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/observability.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/online-lab-environments.mdx` | promoted | PASS | 2026-04-11 |
@@ -5755,8 +5755,8 @@ python translation/scripts/translation-status.py --write-status
 | `guides/operators-overview.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/plans-overview.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/plot-quantum-states.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/primitive-input-output.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `guides/primitives-examples.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/primitive-input-output.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `guides/primitives-examples.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/primitives-rest-api.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/primitives.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/processor-types.mdx` | promoted | PASS | 2026-04-11 |
@@ -5765,8 +5765,8 @@ python translation/scripts/translation-status.py --write-status
 | `guides/q-ctrl-performance-management.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qasm-feature-table.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qedma-qesem.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/qiskit-1.0-features.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `guides/qiskit-1.0-installation.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/qiskit-1.0-features.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `guides/qiskit-1.0-installation.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/qiskit-1.0.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-2.0.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-aqc-get-started.mdx` | promoted | PASS | 2026-04-11 |
@@ -5778,10 +5778,10 @@ python translation/scripts/translation-status.py --write-status
 | `guides/qiskit-addons-mpf.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-obp-get-started.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-obp.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/qiskit-addons-sqd-get-started.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/qiskit-addons-sqd-get-started.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/qiskit-addons-sqd.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-utils.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/qiskit-backendv1-to-v2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/qiskit-backendv1-to-v2.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/qiskit-code-assistant-jupyterlab.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-code-assistant-local.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-code-assistant-openai-api.mdx` | promoted | PASS | 2026-04-11 |
@@ -5802,10 +5802,10 @@ python translation/scripts/translation-status.py --write-status
 | `guides/retired-qpus.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/run-jobs-batch.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/run-jobs-session.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/runtime-options-overview.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/runtime-options-overview.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/save-circuits.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/save-credentials.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/save-jobs.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `guides/save-jobs.mdx` | needs-fix | FAIL | 2026-04-13 |
 | `guides/secure-data.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/serverless-first-program.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/serverless-manage-resources.mdx` | promoted | PASS | 2026-04-11 |
@@ -5835,6 +5835,12 @@ python translation/scripts/translation-status.py --write-status
 | `guides/visualize-circuit-timing.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/visualize-circuits.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/visualize-results.mdx` | promoted | PASS | 2026-04-11 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/limitations-on-quantum-information.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/single-systems/qiskit-implementation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/analysis.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/number-of-iterations.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/convex-combinations.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` | promoted | PASS | 2026-04-11 |
 | `qiskit-addons/aqc-tensor/01_initial_state_aqc.mdx` | promoted | PASS | 2026-04-12 |
 | `qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.mdx` | promoted | PASS | 2026-04-12 |
@@ -5901,12 +5907,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 1/1 | 48 | 1 | 176 | 0 |
-| Modules | 0/0 | 0 | — | — | 0 |
-| **Total** | **217/217** | **48** | **217** | **176** | **0** |
+| Courses | 148/154 | 0 | 148 | 172 | 6 |
+| Modules | 3/15 | 0 | 3 | — | 12 |
+| **Total** | **367/385** | **0** | **367** | **172** | **18** |
 
 <details>
-<summary>Pipeline history (406 files in status.json)</summary>
+<summary>Pipeline history (553 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -6086,180 +6092,327 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/chsh-game-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/chsh-game-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/chsh-game-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/entanglement-in-action/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/chsh-game.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation-part1b.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/qiskit-implementation.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/quantum-teleportation-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/entanglement-in-action/quantum-teleportation-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/entanglement-in-action/superdense-coding.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/exam.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/quantum-teleportation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/entanglement-in-action/superdense-coding.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/classical-information-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/classical-information-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/classical-information-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/classical-information-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/classical-information-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/multiple-systems/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/multiple-systems/qiskit-implementation.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/classical-information.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/qiskit-implementation.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information-part6.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/multiple-systems/quantum-information.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/circuits-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/circuits-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/circuits.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/inner-products-and-projections-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/inner-products-and-projections-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/inner-products-and-projections-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/inner-products-and-projections-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/quantum-circuits/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/inner-products-and-projections.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/limitations-on-quantum-information-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/quantum-circuits/limitations-on-quantum-information-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/quantum-circuits/limitations-on-quantum-information.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/single-systems/classical-information-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/single-systems/classical-information-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/single-systems/classical-information-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/basics-of-quantum-information/single-systems/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/single-systems/classical-information.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/basics-of-quantum-information/single-systems/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/single-systems/qiskit-implementation-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/single-systems/qiskit-implementation-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/single-systems/qiskit-implementation.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/basics-of-quantum-information/single-systems/quantum-information-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/single-systems/quantum-information-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/single-systems/quantum-information-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/single-systems/quantum-information-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/basics-of-quantum-information/single-systems/quantum-information-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/discretization-of-errors.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/basics-of-quantum-information/single-systems/quantum-information.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/discretization-of-errors.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/repetition-codes-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/repetition-codes-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/repetition-codes.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/shor-code-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/shor-code-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/exam.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/shor-code.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation-part2a.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation-part2b.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/threshold-theorem.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/threshold-theorem.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/css-codes-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/css-codes-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/css-codes-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/other-code-families.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/css-codes.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/other-code-families.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/toric-code-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/toric-code-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/foundations-of-quantum-error-correction/quantum-code-constructions/toric-code.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/pauli-operations-and-observables-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/pauli-operations-and-observables-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/repetition-code-revisited.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/pauli-operations-and-observables.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/repetition-code-revisited.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes-part4a.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes-part4b.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/exam.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/foundations-of-quantum-error-correction/stabilizer-formalism/stabilizer-codes.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/exam.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/analysis-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/analysis-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/analysis-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/concluding-remarks.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/grover-algorithm-description.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/analysis.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/concluding-remarks.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/grover-algorithm-description.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/number-of-iterations-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/number-of-iterations-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/number-of-iterations-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/unstructured-search.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/number-of-iterations.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/grover-algorithm/unstructured-search.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-problem-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-problem-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-problem.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure-part6.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/factoring-and-gcd.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/factoring-and-gcd.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part3a.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part3b.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/simulating-classical-computations.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/simulating-classical-computations.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/query-model-of-computation.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/query-model-of-computation.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/simon-algorithm-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/simon-algorithm-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/general-formulation-of-quantum-information/density-matrices/bloch-sphere.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/simon-algorithm.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/bloch-sphere.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/convex-combinations-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/convex-combinations-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/convex-combinations-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/convex-combinations.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/density-matrix-basics-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/density-matrix-basics-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/general-formulation-of-quantum-information/density-matrices/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/density-matrix-basics.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/multiple-systems-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/multiple-systems-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/multiple-systems-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/density-matrices/multiple-systems-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/general-formulation-of-quantum-information/exam.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/density-matrices/multiple-systems.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/exam.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/discrimination-and-tomography-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/discrimination-and-tomography-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/discrimination-and-tomography-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/discrimination-and-tomography.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/general-formulation-of-quantum-information/general-measurements/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/formulations-of-measurements.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/naimark-theorem-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/general-measurements/naimark-theorem-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/general-measurements/naimark-theorem.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/fidelity-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/fidelity-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/fidelity.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/purifications-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/purifications-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/purifications-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/purifications-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/general-formulation-of-quantum-information/quantum-channels/introduction.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/purifications-and-fidelity/purifications.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/quantum-channel-basics-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/quantum-channel-basics-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/quantum-channel-basics-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/quantum-channel-basics.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representation-equivalence-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representation-equivalence-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representation-equivalence-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representation-equivalence-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/representation-equivalence.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels-part3.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels-part4.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels-part5.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels-part6.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/quantum-business-foundations/exam.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/quantum-business-foundations/index.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/general-formulation-of-quantum-information/quantum-channels/representations-of-channels.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/compute-resources.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/next-steps.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/programming-models.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/integrating-quantum-and-high-performance-computing/sqd-skqd.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-business-foundations/business-impacts.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-business-foundations/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-business-foundations/how-to-become-quantum-ready.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-business-foundations/introduction-to-quantum-computing-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/quantum-business-foundations/introduction-to-quantum-computing-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/quantum-business-foundations/introduction-to-quantum-computing.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-business-foundations/quantum-computing-fundamentals-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/quantum-business-foundations/quantum-computing-fundamentals-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/quantum-business-foundations/quantum-computing-fundamentals.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-business-foundations/quantum-technology-part1.mdx` | needs-fix | FAIL | 2026-04-12 |
 | `learning/courses/quantum-business-foundations/quantum-technology-part2.mdx` | needs-fix | FAIL | 2026-04-12 |
-| `learning/courses/quantum-business-foundations/start-your-quantum-journey.mdx` | needs-fix | FAIL | 2026-04-12 |
+| `learning/courses/quantum-business-foundations/quantum-technology.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-business-foundations/start-your-quantum-journey.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/ansatz.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/geometry.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/ground-state.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/hamiltonian-construction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-chem-with-vqe/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-computing-in-practice/applications-of-qc.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-computing-in-practice/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-computing-in-practice/mapping.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-computing-in-practice/running-quantum-circuits.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-computing-in-practice/simulating-nature.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-computing-in-practice/utility-scale-qaoa.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/skqd.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/sqd-implementation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/sqd-overview.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx-part3.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx-part4.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx-part5.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-diagonalization-algorithms/vqe.mdx-part6.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/classical-ml-review.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx-part3.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx-part4.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx-part5.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx-part6.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/introduction.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/cryptographic-hash-functions.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/introduction-to-this-course.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx-part3.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx-part4.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/grovers-algorithm.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/hardware.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` | promoted | PASS | 2026-04-11 |
+| `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx-part3.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx-part3.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx-part4.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/teleportation.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/teleportation.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/teleportation.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/utility-i.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/utility-ii.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/utility-ii.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/utility-ii.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/utility-scale-quantum-computing/utility-ii.mdx-part3.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/ansaetze-and-variational-forms.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx-part1.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx-part2.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx-part3.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx-part4.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx-part5.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/cost-functions.mdx-part6.mdx` | needs-fix | FAIL | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/exam.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/instances-and-extensions.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/optimization-loops.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/reference-states.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/variational-algorithm-design/variational-algorithms.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/modules/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-04-13 |
 | `qiskit-addons/aqc-tensor/01_initial_state_aqc.mdx` | promoted | PASS | 2026-04-12 |
 | `qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.mdx` | promoted | PASS | 2026-04-12 |
 | `qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.mdx` | promoted | PASS | 2026-04-12 |
@@ -6325,9 +6478,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/385** | **0** | **30** | **—** | **355** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -6374,9 +6527,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/385** | **0** | **30** | **—** | **355** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -6423,9 +6576,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/385** | **0** | **30** | **—** | **355** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -6472,9 +6625,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 29/44 | 0 | 29 | — | 15 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **45/217** | **0** | **45** | **—** | **172** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **45/385** | **0** | **45** | **—** | **340** |
 
 <details>
 <summary>Pipeline history (46 files in status.json)</summary>
@@ -6536,9 +6689,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 26/44 | 0 | 26 | — | 18 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **42/217** | **0** | **42** | **—** | **175** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **42/385** | **0** | **42** | **—** | **343** |
 
 <details>
 <summary>Pipeline history (43 files in status.json)</summary>
@@ -6597,9 +6750,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 25/44 | 0 | 25 | — | 19 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **41/217** | **0** | **41** | **—** | **176** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **41/385** | **0** | **41** | **—** | **344** |
 
 <details>
 <summary>Pipeline history (42 files in status.json)</summary>
@@ -6657,9 +6810,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 22/44 | 0 | 22 | — | 22 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **38/217** | **0** | **38** | **—** | **179** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **38/385** | **0** | **38** | **—** | **347** |
 
 <details>
 <summary>Pipeline history (39 files in status.json)</summary>
@@ -6714,9 +6867,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 19/44 | 0 | 19 | — | 25 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **35/217** | **0** | **35** | **—** | **182** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **35/385** | **0** | **35** | **—** | **350** |
 
 <details>
 <summary>Pipeline history (36 files in status.json)</summary>
@@ -6768,9 +6921,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 17/44 | 0 | 17 | — | 27 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **33/217** | **0** | **33** | **—** | **184** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **33/385** | **0** | **33** | **—** | **352** |
 
 <details>
 <summary>Pipeline history (34 files in status.json)</summary>
