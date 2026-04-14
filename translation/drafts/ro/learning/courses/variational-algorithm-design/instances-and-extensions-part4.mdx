@@ -1,0 +1,120 @@
+  - Funcția de cost ar trebui să returneze suma acestor doi termeni
+- Folosește un optimizer clasic pentru a alege următorul set de parametri $\Theta_{i+1}$.
+- Repetă acest proces până la convergență.
+### Implementare {#implementation-vqd}
+
+Pentru această implementare, vom crea o funcție pentru o penalizare de suprapunere. Această penalizare va fi folosită în funcția de cost la fiecare iterație. Acest proces va fi repetat pentru fiecare stare excitată.
+
+```python
+from qiskit.circuit.library import TwoLocal
+
+ansatz = TwoLocal(2, rotation_blocks=["ry", "rz"], entanglement_blocks="cz", reps=1)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Rezultatul celulei de cod anterioare](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/9d368de5-d512-4fe8-8842-9c735944b22b-0.avif)
+
+Mai întâi, vom configura o funcție care calculează fidelitatea stării — un procent de suprapunere între două stări, pe care îl vom folosi ca penalizare pentru VQD:
+
+```python
+import numpy as np
+
+def calculate_overlaps(ansatz, prev_circuits, parameters, sampler):
+    def create_fidelity_circuit(circuit_1, circuit_2):
+        """
+        Constructs the list of fidelity circuits to be evaluated.
+        These circuits represent the state overlap between pairs of input circuits,
+        and their construction depends on the fidelity method implementations.
+        """
+
+        if len(circuit_1.clbits) > 0:
+            circuit_1.remove_final_measurements()
+        if len(circuit_2.clbits) > 0:
+            circuit_2.remove_final_measurements()
+
+        circuit = circuit_1.compose(circuit_2.inverse())
+        circuit.measure_all()
+        return circuit
+
+    overlaps = []
+
+    for prev_circuit in prev_circuits:
+        fidelity_circuit = create_fidelity_circuit(ansatz, prev_circuit)
+        sampler_job = sampler.run([(fidelity_circuit, parameters)])
+        meas_data = sampler_job.result()[0].data.meas
+
+        counts_0 = meas_data.get_int_counts().get(0, 0)
+        shots = meas_data.num_shots
+        overlap = counts_0 / shots
+        overlaps.append(overlap)
+
+    return np.array(overlaps)
+```
+
+Este momentul să scriem funcția de cost a VQD. Ca și înainte, când am calculat doar starea fundamentală, vom determina cea mai mică stare de energie folosind primitiva Estimator. Cu toate acestea, după cum s-a descris mai sus, vom adăuga acum un termen de penalizare pentru a asigura ortogonalitatea stărilor de energie mai înaltă. Adică, pentru fiecare nouă stare excitată, se adaugă o penalizare pentru orice suprapunere între starea variațională curentă și stările proprii de energie mai mică deja găsite.
+
+```python
+def cost_func_vqd(
+    parameters, ansatz, prev_states, step, betas, estimator, sampler, hamiltonian
+):
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+
+    total_cost = 0
+
+    if step > 1:
+        overlaps = calculate_overlaps(ansatz, prev_states, parameters, sampler)
+        total_cost = np.sum(
+            [np.real(betas[state] * overlap) for state, overlap in enumerate(overlaps)]
+        )
+
+    estimator_result = estimator_job.result()[0]
+
+    value = estimator_result.data.evs[0] + total_cost
+
+    return value
+```
+
+Remarcă în special că funcția de cost de mai sus face referire la funcția `calculate_overlaps`, care creează de fapt un nou Circuit cuantic. Dacă vrem să rulăm pe hardware real, acel nou Circuit trebuie să fie transpilat, de preferință într-un mod optim, pentru a rula pe Backend-ul pe care îl selectăm. Remarcă că transpilarea a fost inclusă în funcțiile `calculate_overlaps` sau `cost_func_vqd`. Simte-te liber să încerci să modifici codul pentru a include această transpilare suplimentară (și condiționată) — dar aceasta va fi realizată și în lecția următoare.
+
+În această lecție, vom rula algoritmul VQD folosind Statevector Sampler și Statevector Estimator:
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+sampler = Sampler()
+estimator = Estimator()
+```
+
+Vom introduce un operator observabil de estimat. În lecția următoare, vom adăuga un context fizic, cum ar fi starea excitată a unei molecule. Poate fi util să te gândești la acest operator observabil ca la Hamiltonianul unui sistem care poate avea stări excitate, chiar dacă acesta nu a fost ales să corespundă niciunei molecule sau atom particular.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+```
+
+Aici stabilim numărul total de stări pe care dorim să le calculăm (starea fundamentală și stările excitate, k), precum și penalizările (betas) pentru suprapunerea dintre vectorii de stare care ar trebui să fie ortogonali. Consecințele alegerii unor betas prea mari sau prea mici vor fi explorate în lecția următoare. Deocamdată, vom folosi pur și simplu pe cele furnizate mai jos. Vom începe prin a folosi toți zero ca parametri inițiali. În propriile calcule, poate vei dori să folosești parametri inițiali mai inteligenți bazați pe cunoașterea sistemului sau pe calcule anterioare.
+
+```python
+k = 3
+betas = [33, 33, 33]
+x0 = np.zeros(8)
+```
+
+Putem acum rula calculul:
+
+```python
+from scipy.optimize import minimize
+
+prev_states = []
+prev_opt_parameters = []
+eigenvalues = []
+
+for step in range(1, k + 1):
+    if step > 1:
+        prev_states.append(ansatz.assign_parameters(prev_opt_parameters))
+
+    result = minimize(
+        cost_func_vqd,
+        x0,
