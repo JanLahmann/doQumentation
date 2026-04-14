@@ -1,0 +1,131 @@
+### Rozložení operátoru časového vývoje pomocí Trotter dekompozice {#decompose-time-evolution-operator-with-trotter-decomposition}
+
+Místo přesné implementace operátoru časového vývoje můžeme použít Trotter dekompozici a implementovat jeho aproximaci. Opakováním Trotter dekompozice určitého řádu vícekrát dosáhneme dalšího snížení chyby vzniklé z aproximace. V následujícím textu přímo sestavíme Trotter implementaci nejefektivnějším způsobem pro interakční graf Hamiltoniánu, který uvažujeme (pouze interakce nejbližších sousedů). V praxi vkládáme Pauli rotace $R_{xx}$, $R_{yy}$, $R_{zz}$ s parametrizovaným úhlem $t$, které odpovídají přibližné implementaci $e^{-i (XX + YY + ZZ) t}$. Vzhledem k rozdílu v definici Pauli rotací a časového vývoje, který se snažíme implementovat, budeme muset použít parametr $2*dt$ pro dosažení časového vývoje $dt$. Navíc obrátíme pořadí operací pro lichý počet opakování Trotter kroků, což je funkčně ekvivalentní, ale umožňuje syntézu sousedních operací do jediného $SU(2)$ unitárního operátoru. To dává mnohem mělčí Circuit než ten, který se získá pomocí generické funkcionality `PauliEvolutionGate()`.
+
+```python
+t = Parameter("t")
+
+# Create instruction for rotation about XX+YY-ZZ:
+Rxyz_circ = QuantumCircuit(2)
+Rxyz_circ.rxx(2 * t, 0, 1)
+Rxyz_circ.ryy(2 * t, 0, 1)
+Rxyz_circ.rzz(-2 * t, 0, 1)
+Rxyz_instr = Rxyz_circ.to_instruction(label="RXX+YY-ZZ")
+
+interaction_list = [
+    [[i, i + 1] for i in range(0, n_qubits - 1, 2)],
+    [[i, i + 1] for i in range(1, n_qubits - 1, 2)],
+]  # linear chain
+
+qr = QuantumRegister(n_qubits)
+trotter_step_circ = QuantumCircuit(qr)
+for i, color in enumerate(interaction_list):
+    for interaction in color:
+        trotter_step_circ.append(Rxyz_instr, interaction)
+    if i < len(interaction_list) - 1:
+        trotter_step_circ.barrier()
+reverse_trotter_step_circ = trotter_step_circ.reverse_ops()
+
+qc_evol = QuantumCircuit(qr)
+for step in range(num_trotter_steps):
+    if step % 2 == 0:
+        qc_evol = qc_evol.compose(trotter_step_circ)
+    else:
+        qc_evol = qc_evol.compose(reverse_trotter_step_circ)
+
+qc_evol.decompose().draw("mpl", fold=-1, scale=0.5)
+```
+
+![Výstup předchozí buňky kódu](/learning/images/courses/quantum-diagonalization-algorithms/qda-2-krylov/extracted-outputs/8d35e6cd-c0f6-4871-83da-86472d66be2c-0.avif)
+
+Pro tento efektivní Hadamardův test opět připravíme počáteční stav.
+
+```python
+control = 0
+excitation = int(n_qubits / 2) + 1
+controlled_state_prep = QuantumCircuit(n_qubits + 1)
+controlled_state_prep.cx(control, excitation)
+controlled_state_prep.draw("mpl", fold=-1, scale=0.5)
+```
+
+![Výstup předchozí buňky kódu](/learning/images/courses/quantum-diagonalization-algorithms/qda-2-krylov/extracted-outputs/d1d0b9de-65d4-4a46-975d-6cfaaac05f9a-0.avif)
+
+#### Šablonové Circuit pro výpočet maticových prvků $\tilde{S}$ a $\tilde{H}$ pomocí Hadamardova testu
+
+Jediný rozdíl mezi Circuit použitými v Hadamardově testu bude fáze v operátoru časového vývoje a měřené observabely. Proto můžeme připravit šablonový Circuit, který reprezentuje obecný Circuit pro Hadamardův test, se zástupnými místy pro Gate závisející na operátoru časového vývoje.
+
+```python
+# Parameters for the template circuits
+parameters = []
+for idx in range(1, krylov_dim):
+    parameters.append(dt_circ * (idx))
+```
+
+```python
+# Create modified hadamard test circuit
+qr = QuantumRegister(n_qubits + 1)
+qc = QuantumCircuit(qr)
+qc.h(0)
+qc.compose(controlled_state_prep, list(range(n_qubits + 1)), inplace=True)
+qc.barrier()
+qc.compose(qc_evol, list(range(1, n_qubits + 1)), inplace=True)
+qc.barrier()
+qc.x(0)
+qc.compose(controlled_state_prep.inverse(), list(range(n_qubits + 1)), inplace=True)
+qc.x(0)
+
+qc.decompose().draw("mpl", fold=-1)
+```
+
+![Výstup předchozí buňky kódu](/learning/images/courses/quantum-diagonalization-algorithms/qda-2-krylov/extracted-outputs/37382668-1999-4475-b50f-2887449d5c93-0.avif)
+
+```python
+print(
+    "The optimized circuit has 2Q gates depth: ",
+    qc.decompose().decompose().depth(lambda x: x[0].num_qubits == 2),
+)
+```
+
+```text
+The optimized circuit has 2Q gates depth:  74
+```
+
+Tato hloubka je výrazně snížena ve srovnání s původním Hadamardovým testem. Tato hloubka je zvládnutelná na moderních kvantových počítačích, ačkoli je stále poměrně vysoká. Budeme muset použít nejmodernější potlačení chyb, abychom získali užitečné výsledky.
+
+Vyber Backend, na kterém spustíš kvantový Krylov výpočet, abychom mohli náš Circuit transpilovat pro spuštění na tom kvantovém počítači.
+
+```python
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_torino")
+```
+
+Nyní transpilujeme naše Circuit a operátory.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+basis_gates = list(target.operation_names)
+pm = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, basis_gates=basis_gates
+)
+
+qc_trans = pm.run(qc)
+```
+
+```python
+print(qc_trans.depth(lambda x: x[0].num_qubits == 2))
+print(qc_trans.count_ops())
+qc_trans.draw("mpl", fold=-1, idle_wires=False, scale=0.5)
+```
+
+```text
+52
+OrderedDict({'rz': 630, 'sx': 521, 'cz': 228, 'x': 14, 'barrier': 8})
+```
+
+![Výstup předchozí buňky kódu](/learning/images/courses/quantum-diagonalization-algorithms/qda-2-krylov/extracted-outputs/054bcfba-fde3-4213-bbd7-d7a6dd6c03c8-1.avif)
+
+Po optimalizaci je hloubka dvoQubitových Gate našeho transpilovaného Circuit dále snížena.
