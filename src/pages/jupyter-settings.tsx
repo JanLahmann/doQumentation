@@ -1382,62 +1382,52 @@ export default function JupyterSettings(): JSX.Element {
                       link: <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com/registration</a>,
                     }}
                   >
-                    {'{strong} at {link} — no credit card required for the first 30 days'}
+                    {'{strong} at {link} (free, no credit card required)'}
                   </Translate>
                 </li>
                 <li>
                   <Translate
                     id="settings.ibm.step2"
                     values={{
-                      strong: <strong><Translate id="settings.ibm.step2.label">Sign in</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com</a>,
+                      strong: <strong><Translate id="settings.ibm.step2.label">Create an instance</Translate></strong>,
+                      link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step2.instances">Instances</Translate></a>,
                     }}
                   >
-                    {'{strong} at {link}'}
+                    {'{strong} — go to {link}, click "Create instance +", select the Open (free) plan, and follow the wizard'}
                   </Translate>
                 </li>
                 <li>
                   <Translate
                     id="settings.ibm.step3"
                     values={{
-                      strong: <strong><Translate id="settings.ibm.step3.label">Instance</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step3.instances">Instances</Translate></a>,
+                      strong: <strong><Translate id="settings.ibm.step3.label">Copy CRN</Translate></strong>,
+                      link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step3.home">home page</Translate></a>,
                     }}
                   >
-                    {'{strong} — Create a free Open Plan instance at {link} if you don\'t have one yet'}
+                    {'{strong} — back on the {link}, find your instance under "Instances" and click the copy icon next to "CRN"'}
                   </Translate>
                 </li>
                 <li>
                   <Translate
                     id="settings.ibm.step4"
                     values={{
-                      strong: <strong><Translate id="settings.ibm.step4.label">API Token</Translate></strong>,
+                      strong: <strong><Translate id="settings.ibm.step4.label">Create API key</Translate></strong>,
+                      link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step4.home">home page</Translate></a>,
                     }}
                   >
-                    {'{strong} — Click your profile icon (top right), then "API token". Copy the key.'}
-                  </Translate>
-                </li>
-                <li>
-                  <Translate
-                    id="settings.ibm.step5"
-                    values={{
-                      strong: <strong>CRN</strong>,
-                      link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step5.instances">Instances</Translate></a>,
-                    }}
-                  >
-                    {'{strong} — Copy the CRN string from your {link} page'}
+                    {'{strong} — on the {link}, find "API key" and click "Create +"'}
                   </Translate>
                 </li>
               </ol>
 
-              <p>
+              <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
                 <Translate
                   id="settings.ibm.guideLink"
                   values={{
-                    link: <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.guideLink.text">Set up authentication</Translate></a>,
+                    link: <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.guideLink.text">IBM's authentication guide</Translate></a>,
                   }}
                 >
-                  {'For detailed steps, see IBM\'s {link} guide (step 2).'}
+                  {'Need more help? See {link} for screenshots and detailed steps.'}
                 </Translate>
               </p>
 

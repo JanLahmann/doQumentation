@@ -635,11 +635,13 @@ Live test session with multiple users. Overall reception very positive — "grea
 
 5. **~~Per-cell injection annotations~~** — Fixed: `annotateInjectedCells()` in `ExecutableCode/index.tsx` scans cell content and adds compact badges showing what doQumentation intercepts (e.g. "⚙ QiskitRuntimeService intercepted → AerSimulator", "⚙ least_busy() → AerSimulator", "⚙ Using saved IBM Quantum credentials"). Complements existing skip-hint/session-hint banners without duplicating them.
 
+6. **~~IBM Quantum setup instructions unclear~~** — Fixed: compact 4-step list matching current IBM Quantum Platform UI. Register → Create instance (via Instances page) → Copy CRN (home page, copy icon) → Create API key (home page, "Create +"). Previous instructions incorrectly referenced a profile dropdown for API token.
+
 ### Open (needs investigation)
 
-5. **API key error on real hardware (copy-paste)** — User saved valid IBM Quantum API token via copy-paste, got `InvalidAccountError: Unable to retrieve instances`. Token confirmed not expired. Possible whitespace/newline from copy-paste or save_account protection logic interfering.
+7. **API key error on real hardware (copy-paste)** — User saved valid IBM Quantum API token via copy-paste, got `InvalidAccountError: Unable to retrieve instances`. Token confirmed not expired. Possible whitespace/newline from copy-paste or save_account protection logic interfering.
 
-6. **Kernel session interrupted on navigation** — Inherent to thebelab architecture (per-page kernel bootstrap). Cross-page persistence would require major architectural changes. Documented as known behavior.
+8. **Kernel session interrupted on navigation** — Inherent to thebelab architecture (per-page kernel bootstrap). Cross-page persistence would require major architectural changes. Documented as known behavior.
 
 ---
 
