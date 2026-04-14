@@ -1,0 +1,119 @@
+## Fluxuri de sarcini {#task-workflows}
+
+Acum să vorbim despre modelul de programare pentru fluxurile de sarcini. Un flux de sarcini abstractizează computația într-un graf aciclic orientat (DAG). În acest graf, fiecare nod reprezintă o sarcină sau un job particular, iar muchiile (săgețile care conectează nodurile) reprezintă dependențele (de date și de ordine) dintre ele. Un planificator este componenta care mapează sarcinile la resurse și orchestrează execuția.
+
+Un exemplu concret de model de flux de sarcini aplicat calculului cuantic este [cadrul Qiskit patterns](/guides/intro-to-patterns). Un Qiskit pattern este un cadru general conceput pentru a descompune problemele specifice domeniului într-o secvență de etape, mai ales pentru sarcinile cuantice. Aceasta permite compozabilitatea perfectă a noilor capabilități dezvoltate de cercetătorii IBM Quantum&reg; (și de alții) și permite un viitor în care sarcinile de calcul cuantic sunt realizate de o infrastructură de calcul eterogenă (CPU/GPU/QPU) puternică. Cele patru etape ale unui Qiskit pattern sunt maparea, optimizarea, execuția și post-procesarea, unde toate sarcinile sunt executate una după alta într-un pipeline. Dar cu fluxurile de sarcini nu suntem legați de o ordine de execuție liniară și putem executa sarcini în paralel. Fiecare sarcină a unui flux poate fi ea însăși un întreg job paralel. Deci poți combina aceste modele pentru a descrie algoritmi de complexitate arbitrară, iar un manager de sarcini precum SLURM le va gestiona.
+
+![O diagramă a sarcinilor de calcul organizate într-un flux de lucru în care unele procese sunt executate în paralel și altele în secvență.](/learning/images/courses/integrating-quantum-and-high-performance-computing/programming-models/workflow.svg)
+
+Imaginea de mai sus ilustrează Qiskit pattern în acțiune. Fluxul de lucru are o structură de graf cu patru etape. Această structură ramificată este orchestrată și executată de planificator. Problema este mapată în formă executabilă cuantic (circuit cuantic) în etapa inițială. În etapa următoare, acest circuit cuantic este optimizat pentru hardware-ul cuantic specific. Imaginea arată aceasta ca un proces paralel, demonstrând cum mai multe strategii de optimizare ar putea fi aplicate simultan. Circuitul cuantic optimizat este apoi executat pe hardware-ul cuantic real. Aceasta este a treia etapă a imaginii, în care planificatorul lucrează cu o unitate de procesare cuantică violet. În final, rezultatele sunt post-procesate de resursele clasice.
+### De ce ambele? {#why-both}
+
+Deci de ce avem nevoie atât de programarea paralelă, cât și de fluxurile de sarcini? Cu toată discuția despre paralelismul cuantic, merită să clarificăm că nu totul este paralel în calculul cuantic.
+
+Lecția anterioară despre fluxul de lucru SQD a menționat câteva procese care nu pot fi paralelizate. De exemplu, avem nevoie de rezultatele multor măsurători cuantice pentru a proiecta matricea noastră într-un subspațiu de dimensiune gestionabilă. La rândul lui, avem nevoie de matricea diagonalizată și de vectorii de stare asociați pentru a verifica auto-consistența măsurătorilor cuantice (folosind, de exemplu, conservarea sarcinii). După toate acestea, trebuie să decidem dacă energia stării fundamentale a conversat suficient pentru scopurile noastre. Acești pași sunt în mod necesar secvențiali și necesită testarea condițiilor de convergență și auto-consistență înainte de a continua.
+
+![O schemă a fluxului de lucru specific pentru diagonalizarea cuantică bazată pe eșantionare. Pașii includ un circuit cuantic variațional, folosirea măsurătorilor pentru a proiecta Hamiltonianul într-un subspațiu, apoi folosirea unui optimizator clasic pentru a actualiza parametrii variationali din circuit și repetarea.](/learning/images/courses/integrating-quantum-and-high-performance-computing/programming-models/sqd-workflow.svg)
+
+Acest flux de lucru va fi revizuit mai detaliat și implementat în secțiunea următoare. Singurul lucru pe care trebuie să-l reții din această secțiune este că fluxurile de sarcini sunt necesare.
+## Practică de programare {#programming-practice}
+
+Frumusețea modelelor de programare este că le poți combina pe toate împreună. Cunoscând modelele de programare cuantică și clasică, poți descrie o computație eterogenă de complexitate arbitrară și o poți executa pe hardware. Să exersăm aceasta cu un mic exemplu de flux de lucru combinat, care implementează Qiskit pattern (map, optimize, execute și post-process) în SLURM, pe care l-am învățat în ultimul capitol. Fiecare dintre cele patru sarcini va fi un job SLURM separat, fiecare cu propriile resurse. Sarcina de optimizare va folosi MPI pentru a optimiza circuitele în paralel (doar ca exemplu, ca în imaginea de mai sus). Sarcina de execuție va folosi resurse cuantice și modele de programare cuantică (Circuit și Sampler). Ultima sarcină — post-procesarea — va folosi din nou MPI în paralel cu resursele clasice.
+### Mapare {#mapping}
+
+Programul `mapping.py` este conceput pentru a construi un circuit `PauliTwoDesign`, care este frecvent folosit în literatura de machine learning cuantic și în literatura de benchmark cuantic, cu un observabil simplu care măsoară qubit-ul $(n-1)^\text{th}$ în direcția $Z$ a unui sistem cu $n$ qubiți, cu parametri inițiali aleatori. Fiecare dintre acestea (circuitul cuantic convertit într-un fișier qasm, observabilul și parametrii) va fi salvat într-un fișier separat în directorul de date și va fi folosit ca intrare în etapa de optimizare.
+
+Scriptul shell al acestei etape (`mapping.sh`) este
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=mapping
+#SBATCH --output=mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch3/workflows/mapping.py
+```
+
+care definește numele jobului, formatul de ieșire și numărul de noduri/sarcini/CPU-uri.
+### Optimizare {#optimization}
+
+Programul `optimization.py` începe prin a aduce fișierele din etapa de mapare. Aici vei folosi `QRMI` pentru a aduce resurse cuantice în acest program.
+
+```python
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+...
+```
+
+Apoi efectuează o optimizare ușoară setând `optimization_level=1` pentru a transpila circuitul cuantic și a aplica layout-ul circuitului asupra observabilului, după care le salvează în folderul de date.
+
+Scriptul shell al acestei etape (`optimization.sh`) este
+
+```shell
+#!/bin/bash
+#SBATCH --job-name=optimization
+#SBATCH --output=output/optimization.out
+#SBATCH --ntasks=4
+#SBATCH --partition=classical
+
+srun python3 /tmp/optimization.py
+```
+Aici `--ntasks=4` solicită patru sarcini clasice din SLURM pentru un proces paralel.
+### Execuție {#execution}
+
+Aceasta este etapa cuantică principală în care circuitul cuantic optimizat din pasul anterior este rulat pe QPU de către Estimator. Pentru a face aceasta, mai întâi vom aduce trei fișiere — circuitul cuantic transpilat, observabilul și parametrii inițiali — apoi le vom transmite la `Estimator`. Acesta produce valoarea estimată a observabilului și o afișează.
+
+Scriptul `execution.sh` folosește un plugin SLURM pentru a utiliza o resursă cuantică.
+
+```
+#!/bin/bash
+#
+#SBATCH --job-name=execution
+#SBATCH --output=execution.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=quantum
+#SBATCH --gres=qpu:1
+
+srun python /data/ch3/workflows/execution.py
+```
+### Post-procesare {#post-processing}
+
+Etapa de post-procesare implică adesea diagonalizarea clasică și verificări de auto-consistență. Poate fi și iterativă. Este cel mai util să consideri etapa de post-procesare în lecția următoare, în care contextul fizic și scopul pașilor iterativi sunt clare.
+### Combinând totul împreună {#combining-it-all-together}
+
+Putem înlănțui toate aceste sarcini într-un flux de lucru folosind argumentul de dependență pentru comanda `sbatch`:
+
+``` shell
+$ MAPPING_JOB=$(sbatch --parsable mapping.sh)
+$ OPTIMIZE_JOB=$(sbatch --parsable --dependency=afterok:$MAPPING_JOB optimization.sh)
+$ EXECUTE_JOB=$(sbatch --parsable --dependency=afterok:$OPTIMIZE_JOB execute.sh)
+
+```
+
+Și putem verifica coada de execuție SLURM.
+
+```shell
+$ squeue
+#             JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
+#                 3 classical  mapping    admin PD       0:00      1 (None)
+#                 4 classical optimiza    admin PD       0:00      1 (Dependency)
+#                 5   quantum  execute    admin PD       0:00      1 (Dependency)
+```
+
+Acesta a fost un exemplu demonstrativ pentru a ilustra mixul de modele de programare. În capitolul următor vom analiza algoritmi din lumea reală și vom demonstra modele de programare și gestionarea resurselor pe fluxuri de lucru utile.
+## Rezumat {#summary}
+
+În această lecție am demonstrat cum să combini mai multe modele de programare clasice și cuantice pentru a construi, gestiona și executa un flux de lucru complet în patru etape. Am început cu conceptele fundamentale ale circuitelor cuantice și primitivelor, apoi am explorat modelele clasice precum programarea paralelă și fluxurile de sarcini. Combinând toate conceptele, am construit un Qiskit pattern — map, optimize, execute și post-process — orchestrat de managerul de sarcini SLURM, cu un circuit cuantic simplu și un observabil.
+
+În lecția următoare vom folosi acest cadru pentru a rula algoritmi cuantici bazați pe eșantionare, arătând cum acest flux de lucru poate fi aplicat pentru a rezolva probleme relevante.
+
+<div class="alert alert-block alert-info">
+Tot codul și scripturile folosite în acest capitol îți sunt disponibile în acest [repository Github](https://github.com/christopherporter1/hpc-course-demos).
+</div>
