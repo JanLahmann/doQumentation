@@ -594,6 +594,62 @@ export default function JupyterSettings(): JSX.Element {
               ESSENTIALS — always visible
               ═══════════════════════════════════════════════════════════════ */}
 
+
+          {/* CE Quick Config — shown when CE is available */}
+          {(config?.environment === 'code-engine' || ceDaysRemaining >= 0 || availableBackends.some(b => b.environment === 'code-engine')) && (
+            <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
+              <h3 id="code-engine-config" style={{ marginTop: 0 }}>
+                <Translate id="settings.ce.quickHeading">Code Engine</Translate>
+              </h3>
+              {ceDaysRemaining >= 0 && (
+                <div className="alert alert--info margin-bottom--md">
+                  <Translate id="settings.ce.daysRemaining" values={{days: ceDaysRemaining}}>
+                    {'Code Engine settings will auto-delete in {days} day(s).'}
+                  </Translate>
+                </div>
+              )}
+              <div className="margin-bottom--sm">
+                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'The public URL of your Code Engine application (from IBM Cloud console).'})} />
+                </label>
+                <input type="url" value={ceUrl}
+                  onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
+                  placeholder="https://your-app.region.codeengine.appdomain.cloud"
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
+              </div>
+              <div className="margin-bottom--md">
+                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                  <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
+                </label>
+                <input type="password" value={ceToken}
+                  onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
+                  placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
+                  <Translate id="settings.ce.save">Save</Translate>
+                </button>
+                <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
+                  <Translate id="settings.ce.test">Test Connection</Translate>
+                </button>
+                <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
+                  <Translate id="settings.ce.clear">Clear</Translate>
+                </button>
+              </div>
+              {ceSaveResult && (
+                <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
+                  {ceSaveResult}
+                </div>
+              )}
+              <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                <Translate id="settings.ce.setupLink" values={{link: <a href="#code-engine"><Translate id="settings.ce.setupLinkText">setup instructions</Translate></a>}}>
+                  {'Need help? See {link} below.'}
+                </Translate>
+              </small>
+            </div>
+          )}
+
           {/* Execution Mode */}
           <h2 id="execution-mode" style={{ marginTop: '2rem' }}>
             <Translate id="settings.executionMode.heading">Execution Mode</Translate>
@@ -692,86 +748,14 @@ export default function JupyterSettings(): JSX.Element {
               </h3>
             </summary>
             <div className="jupyter-settings__details-content">
-              <div className="alert alert--warning margin-bottom--md">
-                <Translate
-                  id="settings.ibm.securityNote"
-                  values={{
-                    strong: <strong>{translate({id: 'settings.ibm.securityNoteLabel', message: 'Security note:'})}</strong>,
-                    saveAccount: <code>save_account()</code>,
-                  }}
-                >
-                  {'{strong} Credentials are stored in your browser\'s localStorage in plain text. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
-                </Translate>
-              </div>
 
-              <p>
-                <Translate
-                  id="settings.ibm.autoInjectDesc"
-                  values={{
-                    saveAccount: <code>save_account()</code>,
-                  }}
-                >
-                  {'Enter your IBM Quantum credentials once here. They will be auto-injected via {saveAccount} when the kernel starts, so you don\'t need to enter them in every notebook. This applies to embedded code execution on this site only — opening a notebook in JupyterLab requires calling {saveAccount} manually.'}
-                </Translate>
-              </p>
-
-              <ol>
-                <li>
-                  <Translate
-                    id="settings.ibm.step1"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step1.label">Register</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com/registration</a>,
-                    }}
-                  >
-                    {'{strong} at {link} (free, no credit card required)'}
-                  </Translate>
-                </li>
-                <li>
-                  <Translate
-                    id="settings.ibm.step2"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step2.label">Create an instance</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step2.instances">Instances</Translate></a>,
-                    }}
-                  >
-                    {'{strong} — go to {link}, click "Create instance +", select the Open (free) plan, and follow the wizard'}
-                  </Translate>
-                </li>
-                <li>
-                  <Translate
-                    id="settings.ibm.step3"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step3.label">Copy CRN</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step3.home">home page</Translate></a>,
-                    }}
-                  >
-                    {'{strong} — back on the {link}, find your instance under "Instances" and click the copy icon next to "CRN"'}
-                  </Translate>
-                </li>
-                <li>
-                  <Translate
-                    id="settings.ibm.step4"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step4.label">Create API key</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step4.home">home page</Translate></a>,
-                    }}
-                  >
-                    {'{strong} — on the {link}, find "API key" and click "Create +"'}
-                  </Translate>
-                </li>
-              </ol>
-
-              <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-                <Translate
-                  id="settings.ibm.guideLink"
-                  values={{
-                    link: <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.guideLink.text">IBM's authentication guide</Translate></a>,
-                  }}
-                >
-                  {'Need more help? See {link} for screenshots and detailed steps.'}
-                </Translate>
-              </p>
+              <details style={{ marginBottom: '1rem' }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                  <Translate id="settings.ibm.setupInstructions">Setup instructions &amp; security notes</Translate>
+                </summary>
+                <div style={{ marginTop: '0.5rem' }}>
+                </div>
+              </details>
 
               {ibmDaysRemaining >= 0 && (
                 <div className="alert alert--info margin-bottom--md" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
