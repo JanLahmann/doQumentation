@@ -1,0 +1,188 @@
+Innymi słowy, zmienna $z_i$ będzie równoważna bramce $Z$ działającej na kubicie $i$. Ponadto:
+
+$$
+Z_i|x_{n-1}\cdots x_0\rangle = z_i|x_{n-1}\cdots x_0\rangle \rightarrow \langle x_{n-1}\cdots x_0 |Z_i|x_{n-1}\cdots x_0\rangle = z_i
+$$
+
+Wtedy obserwabla, którą będziemy rozważać, to:
+
+$$
+\hat{H} = \sum_{i=0}^n \sum_{j=0}^i \frac{w_{ij}}{2} Z_iZ_j
+$$
+
+do której będziemy musieli później dodać człon niezależny:
+
+$$
+\texttt{offset} = - \sum_{i=0}^n \sum_{j=0}^i \frac{w_{ij}}{2}
+$$
+Operator jest kombinacją liniową wyrazów z operatorami Z na węzłach połączonych krawędzią (pamiętaj, że 0-ty kubit znajduje się najbardziej po prawej stronie): $IIZZ + IZIZ + IZZI + ZIIZ + ZZII$. Po skonstruowaniu operatora, ansatz dla algorytmu QAOA można łatwo zbudować, korzystając z obwodu `QAOAAnsatz` z biblioteki obwodów Qiskit.
+
+```python
+from qiskit.circuit.library import QAOAAnsatz
+from qiskit.quantum_info import SparsePauliOp
+
+max_hamiltonian = SparsePauliOp.from_list(
+    [("IIZZ", 1), ("IZIZ", 1), ("IZZI", 1), ("ZIIZ", 1), ("ZZII", 1)]
+)
+
+max_ansatz = QAOAAnsatz(max_hamiltonian, reps=2)
+# Draw
+max_ansatz.decompose(reps=3).draw("mpl")
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/d28c4262-a080-4fe4-9427-762326184cd8-0.avif)
+
+```python
+# Sum the weights, and divide by 2
+
+offset = -sum(edge[2] for edge in edges) / 2
+print(f"""Offset: {offset}""")
+```
+
+```text
+Offset: -2.5
+```
+
+```python
+def cost_func(params, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+    pub = (ansatz, hamiltonian, params)
+    cost = estimator.run([pub]).result()[0].data.evs
+    #    cost = estimator.run(ansatz, hamiltonian, parameter_values=params).result().values[0]
+    return cost
+```
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+from qiskit.primitives import StatevectorSampler as Sampler
+
+estimator = Estimator()
+sampler = Sampler()
+```
+
+Ustawiamy teraz początkowy zestaw losowych parametrów:
+
+```python
+import numpy as np
+
+x0 = 2 * np.pi * np.random.rand(max_ansatz.num_parameters)
+print(x0)
+```
+
+```text
+[6.0252949  0.58448176 2.15785731 1.13646074]
+```
+
+Do minimalizacji funkcji kosztu można użyć dowolnego optymalizatora klasycznego. Na rzeczywistym systemie kwantowym optymalizator zaprojektowany dla niegładkich krajobrazów funkcji kosztu zwykle radzi sobie lepiej. Tutaj używamy [procedury COBYLA](https://docs.scipy.org/doc/scipy/reference/optimize.minimize-cobyla.html#optimize-minimize-cobyla) z SciPy za pośrednictwem funkcji minimize.
+
+Ponieważ iteracyjnie wykonujemy wiele wywołań do Runtime, korzystamy z sesji, aby wykonać wszystkie wywołania w obrębie jednego bloku. Co więcej, dla QAOA rozwiązanie jest zakodowane w rozkładzie wyjściowym obwodu ansatz powiązanego z optymalnymi parametrami z minimalizacji. Dlatego będziemy potrzebować prymitywu Sampler i utworzymy jego instancję w tej samej sesji.
+Uruchamiamy naszą procedurę minimalizacji:
+
+```python
+result = minimize(
+    cost_func, x0, args=(max_ansatz, max_hamiltonian, estimator), method="COBYLA"
+)
+```
+
+```python
+print(result)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -2.585287311689236
+       x: [ 7.332e+00  3.904e-01  2.045e+00  1.028e+00]
+    nfev: 80
+   maxcv: 0.0
+```
+
+Wektor rozwiązania kątów parametrów (`x`), po podstawieniu do obwodu ansatz, daje poszukiwany przez nas podział grafu.
+
+```python
+eigenvalue = cost_func(result.x, max_ansatz, max_hamiltonian, estimator)
+print(f"""Eigenvalue: {eigenvalue}""")
+print(f"""Max-Cut Objective: {eigenvalue + offset}""")
+```
+
+```text
+Eigenvalue: -2.585287311689236
+Max-Cut Objective: -5.085287311689235
+```
+
+```python
+from qiskit.result import QuasiDistribution
+from qiskit.primitives import StatevectorSampler
+
+sampler = StatevectorSampler()
+
+# Assign solution parameters to ansatz
+qc = max_ansatz.assign_parameters(result.x)
+
+# Add measurements to our circuit
+qc.measure_all()
+
+# Sample ansatz at optimal parameters
+# samp_dist = sampler.run(qc).result().quasi_dists[0]
+
+shots = 1024
+job = sampler.run([qc], shots=shots)
+```
+
+```python
+qc.decompose().draw("mpl")
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/686ee28e-9327-40d1-8d7c-3ec527160f01-0.avif)
+
+```python
+data_pub = job.result()[0].data
+bitstrings = data_pub.meas.get_bitstrings()
+counts = data_pub.meas.get_counts()
+quasi_dist = QuasiDistribution(
+    {outcome: freq / shots for outcome, freq in counts.items()}
+)
+probabilities = quasi_dist
+
+# Close the session since we are now done with it
+# session.close()
+```
+
+```python
+from qiskit.visualization import plot_distribution
+
+plot_distribution(counts)
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/13a4c371-fd40-4ce3-b737-268d4a4c9c2c-0.avif)
+
+```python
+binary_string = max(counts.items(), key=lambda kv: kv[1])[0]
+x = np.asarray([int(y) for y in reversed(list(binary_string))])
+
+colors = ["r" if x[i] == 0 else "c" for i in range(n)]
+mpl_draw(
+    G, pos=rx.shell_layout(G), with_labels=True, edge_labels=str, node_color=colors
+)
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/4238cc64-6910-43d2-889e-6322bf2864eb-0.avif)
+
+## Podsumowanie {#summary}
+
+Dzięki tej lekcji nauczyłeś się:
+
+- Jak napisać własny algorytm wariacyjny
+- Jak zastosować algorytm wariacyjny do znajdowania minimalnych wartości własnych
+- Jak wykorzystać algorytmy wariacyjne do rozwiązywania przypadków użycia w zastosowaniach
