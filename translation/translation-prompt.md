@@ -17,7 +17,7 @@ The language in the user message determines the target. Look up LOCALE and infor
 | French | fr | "tu" not "vous" |
 | Italian | it | "tu" not "Lei" |
 | Ukrainian | uk | "ти" not "Ві" |
-| Japanese | ja | polite (です/ます) but not overly formal |
+| Japanese | ja | polite (です/ます) but not overly formal; use nakaguro (・) between compound katakana terms (e.g. クォンタム・コンピューティング not クォンタムコンピューティング) |
 | Portuguese | pt | "você" casual |
 | Filipino | tl | casual (no po/opo) |
 | Arabic | ar | informal register |

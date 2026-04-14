@@ -619,6 +619,28 @@ Follow the existing pattern used for `upstream-docs/` (Qiskit-documentation fork
 
 ---
 
+## User Test Session Feedback (April 14, 2026)
+
+Live test session with multiple users. Overall reception very positive — "great experience, very fast, saved lots of hours, all functionality working as expected."
+
+### Resolved
+
+1. **~~Dark mode: black text in thebelab cells after "Run All"~~** — Fixed: added comprehensive dark mode CSS for CodeMirror 5 (background, text, cursor, selection, gutters, syntax highlighting tokens, output area) in `src/css/custom.css`.
+
+2. **~~Add "Clear all data" option~~** — Fixed: "Reset Everything" button on Settings page with confirmation dialog. Clears all progress, bookmarks, preferences, onboarding, recent history, sidebar state, Binder session, and credentials.
+
+3. **~~Settings page hard to find~~** — Fixed: responsive navbar — shows "Settings" text + gear icon on wide screens (≥1200px), icon-only on narrow screens.
+
+4. **~~Japanese: nakaguro (・) rule~~** — Fixed: added to `translation/translation-prompt.md` JA locale instructions.
+
+### Open (needs investigation)
+
+5. **API key error on real hardware (copy-paste)** — User saved valid IBM Quantum API token via copy-paste, got `InvalidAccountError: Unable to retrieve instances`. Token confirmed not expired. Possible whitespace/newline from copy-paste or save_account protection logic interfering.
+
+6. **Kernel session interrupted on navigation** — Inherent to thebelab architecture (per-page kernel bootstrap). Cross-page persistence would require major architectural changes. Documented as known behavior.
+
+---
+
 ## Related Resources
 
 - **RasQberry:** https://github.com/JanLahmann/RasQberry-Two
@@ -629,4 +651,4 @@ Follow the existing pattern used for `upstream-docs/` (Qiskit-documentation fork
 
 ---
 
-*Last updated: April 4, 2026 (Qiskit addon docs plan added, summer school future idea added)*
+*Last updated: April 14, 2026 (test session feedback: 4 of 6 items resolved)*

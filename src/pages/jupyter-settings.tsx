@@ -1041,6 +1041,40 @@ export default function JupyterSettings(): JSX.Element {
             </button>
           </div>
 
+          {/* Reset Everything */}
+          <h3 style={{ marginTop: '2rem' }}><Translate id="settings.resetAll.heading">Reset Everything</Translate></h3>
+          <p style={{ fontSize: '0.9rem', color: 'var(--ifm-color-emphasis-600)' }}>
+            <Translate id="settings.resetAll.description">
+              Remove all saved data including progress, bookmarks, preferences, and credentials.
+            </Translate>
+          </p>
+          <button
+            className="jupyter-settings__button jupyter-settings__button--danger"
+            onClick={() => {
+              if (window.confirm(translate({
+                id: 'settings.resetAll.confirm',
+                message: 'This will remove all your progress, bookmarks, preferences, and saved credentials. This cannot be undone. Continue?',
+              }))) {
+                clearAllVisited();
+                clearAllExecuted();
+                clearAllPreferences();
+                clearAllBookmarks();
+                resetOnboarding();
+                clearRecentAndLastPage();
+                clearSidebarCollapseStates();
+                clearBinderSession();
+                clearIBMQuantumCredentials();
+                clearCodeEngineCredentials();
+                clearWorkshopPool();
+                clearJupyterConfig();
+                setProgressStats(getProgressStats());
+                setBookmarkCount(0);
+              }
+            }}
+          >
+            <Translate id="settings.resetAll.button">Reset Everything</Translate>
+          </button>
+
           {/* ═══════════════════════════════════════════════════════════════
               ADVANCED — collapsed by default
               ═══════════════════════════════════════════════════════════════ */}
