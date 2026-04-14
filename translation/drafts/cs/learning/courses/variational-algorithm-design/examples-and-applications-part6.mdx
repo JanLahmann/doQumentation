@@ -1,0 +1,181 @@
+### Excitované stavy {#excited-states}
+
+Můžeme také využít VQD k výpočtu $k=2$ celkových stavů (základního stavu a prvního excitovaného stavu).
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+import numpy as np
+
+k = 2
+betas = [33, 33]
+# x0 = np.zeros(ansatz.num_parameters)
+x0 = [
+    1.164e00,
+    -2.438e-01,
+    9.358e-04,
+    6.745e-02,
+    1.990e00,
+    9.810e-02,
+    6.154e-01,
+    5.454e-01,
+]
+```
+
+Přidáme výpočet překryvu:
+
+```python
+from scipy.optimize import minimize
+
+prev_states = []
+prev_opt_parameters = []
+eigenvalues = []
+
+realbackend = 0
+
+for step in range(1, k + 1):
+    if step > 1:
+        prev_states.append(ansatz.assign_parameters(prev_opt_parameters))
+
+    result = minimize(
+        cost_func_vqd,
+        x0,
+        args=(
+            ansatz,
+            prev_states,
+            step,
+            betas,
+            estimator,
+            sampler,
+            H2_op,
+            realbackend,
+            None,
+        ),
+        method="COBYLA",
+        options={"tol": 0.001, "maxiter": 2000},
+    )
+    print(result)
+
+    prev_opt_parameters = result.x
+    eigenvalues.append(result.fun)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -1.8572671093941977
+       x: [ 1.164e+00 -2.437e-01  2.118e-03  6.448e-02  1.990e+00
+            9.870e-02  6.167e-01  5.476e-01]
+    nfev: 58
+   maxcv: 0.0
+ message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -1.0322873777662176
+       x: [ 3.205e+00  1.502e+00  1.699e+00 -1.107e-02  3.086e+00
+            1.530e+00  4.445e-02  7.013e-02]
+    nfev: 99
+   maxcv: 0.0
+```
+
+```python
+eigenvalues
+```
+
+```text
+[-1.8572671093941977, -1.0322873777662176]
+```
+
+### Reálný hardware a závěrečné varování {#real-hardware-and-a-final-cautionary-message}
+
+Abychom mohli tento výpočet spustit na reálném hardwaru, musíme kvantové obvody optimalizovat pro námi zvolený kvantový počítač. Pro naše účely jednoduše použijeme nejméně vytížený Backend.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import Session, EstimatorOptions
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+```
+
+Použijeme přednastavený pass manager pro transpilaci a náš Circuit maximálně optimalizujeme pomocí úrovně optimalizace 3.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_ansatz = pm.run(ansatz)
+isa_observable = H2_op.apply_layout(layout=isa_ansatz.layout)
+```
+
+Protože VQD je vysoce iterativní, provedeme všechny kroky uvnitř Runtime Session, takže naše úlohy budou zařazeny do fronty jen jednou na začátku — ne při každé aktualizaci parametrů. Syntaxe cost funkce ani Estimatoru se nijak nemění.
+
+```python
+x0 = [
+    1.306e00,
+    -2.284e-01,
+    6.913e-02,
+    -2.530e-02,
+    1.849e00,
+    7.433e-02,
+    6.366e-01,
+    5.600e-01,
+]
+```
+
+```python
+# Estimated hardware usage: 20 min benchmarked on an Eagle r3 processor on 5-30-24
+
+real_prev_states = []
+real_prev_opt_parameters = []
+real_eigenvalues = []
+
+realbackend = 1
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=4096)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session)
+    sampler = Sampler(mode=session)
+
+    for step in range(1, k + 1):
+        if step > 1:
+            real_prev_states.append(
+                isa_ansatz.assign_parameters(real_prev_opt_parameters)
+            )
+
+        result = minimize(
+            cost_func_vqd,
+            x0,
+            args=(
+                isa_ansatz,
+                real_prev_states,
+                step,
+                betas,
+                estimator,
+                sampler,
+                isa_observable,
+                realbackend,
+                backend,
+            ),
+            method="COBYLA",
+            options={"tol": 0.001, "maxiter": 300},
+        )
+        print(result)
+
+        real_prev_opt_parameters = result.x
+        real_eigenvalues.append(result.fun)
+
+session.close()
+print(real_eigenvalues)
+```
+
+Energie základního stavu získaná tímto výpočtem (-1,83 hartree) se od správné hodnoty (-1,85 hartree) příliš neliší. Energie excitovaného stavu je ale dost nepřesná. Toto chování je podobné chybám, které jsme viděli dříve v této lekci. Naměřená energie excitovaného stavu je téměř totožná s energií základního stavu. V předchozím případě jsme dokonce dostali energii excitovaného stavu, která byla _nižší_ než naměřená energie základního stavu.
+
+Variační výpočet nemůže dát energii nižší, než je skutečná energie základního stavu. V dřívějším případě se energie základního stavu, kterou jsme dostali, příliš nelišila od skutečné hodnoty, takže nevznikl žádný rozpor. V aktuálním případě byla energie základního stavu poměrně blízká správné hodnotě, a přesto je energie excitovaného stavu podivně blízká téže hodnotě.
+
+Abychom lépe porozuměli tomu, jak k tomu došlo, připomeňme si, že excitovaný stav hledáme tak, že požadujeme, aby variační stav byl ortogonální k základnímu stavu (pomocí obvodů překryvu a penalizačních členů). Pokud se nám nepodaří přesně určit energii základního stavu (nebo jsme o několik procent mimo), pak zároveň nezísáme přesný vektor základního stavu! Když tedy požadujeme, aby byl excitovaný stav ortogonální k prvnímu nalezenému stavu, nevynucujeme ortogonalitu s pravým základním stavem, nýbrž jen s jeho přibližnou verzí (někdy velmi nepřesnou). Excitovaný stav tedy nebyl nucen být ortogonální k pravému základnímu stavu a naše odhady energií excitovaných stavů byly ve skutečnosti velmi blízké energii základního stavu.
+
+Toto bude vždy představovat riziko při použití VQD. V principu to lze napravit zvýšením maximálního počtu iterací klasického optimalizátoru, snížením tolerance klasického optimalizátoru a případně také vyzkoušením jiného Ansatzu, pokud pravý základní stav opakovaně nenajdeme. Jak jsme viděli, může být také nutné upravit penalizace překryvu (betas). To je však v podstatě samostatný problém. Žádná penalizace za překryv tě neochrání před základním stavem, pokud jsi ještě nenašel dobrý odhad skutečného základního stavu pro Circuit překryvu.

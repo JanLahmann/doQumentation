@@ -1,0 +1,155 @@
+### Krok 3: Spuštění pomocí Qiskit primitiv {#step-3-execute-using-qiskit-primitives}
+
+Poté, co resetujeme naše bety na dostatečně vysoké hodnoty, můžeme provést výpočet na skutečném kvantovém hardwaru.
+
+```python
+# Estimated compute resource usage: 25 minutes. Benchmarked at 24 min, 30 sec on an Eagle r3 processor on 5-30-24
+
+k = 2
+betas = [30, 50, 80]
+x0 = np.zeros(8)
+
+real_prev_states = []
+real_prev_opt_parameters = []
+real_eigenvalues = []
+
+realbackend = 1
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+    sampler = Sampler(mode=session)
+
+    for step in range(1, k + 1):
+        if step > 1:
+            real_prev_states.append(isa_ansatz.assign_parameters(prev_opt_parameters))
+
+        result = minimize(
+            cost_func_vqd,
+            x0,
+            args=(
+                isa_ansatz,
+                real_prev_states,
+                step,
+                betas,
+                estimator,
+                sampler,
+                isa_observable,
+                realbackend,
+                backend,
+            ),
+            method="COBYLA",
+            options={"maxiter": 200},
+        )
+        print(result)
+
+        real_prev_opt_parameters = result.x
+        real_eigenvalues.append(result.fun)
+
+session.close()
+print(real_eigenvalues)
+```
+
+### Krok 4: Následné zpracování, vrácení výsledku v klasickém formátu
+
+Náš výstup je strukturálně podobný tomu, co bylo probráno v předchozích lekcích a příkladech. Ve výsledcích výše je však něco problematického, z čeho si můžeme vzít ponaučení pro kontext excitovaných stavů. Abychom omezili výpočetní čas využitý v tomto výukovém příkladu, nastavili jsme maximální počet iterací klasického optimalizátoru, který byl potenciálně příliš nízký: 200 iterací. Předchozí výpočet na simulátoru se v 200 iteracích nepodařilo konvergovat. Tentokrát náš výpočet konvergoval... ale s jakou přesností? Neurčili jsme toleranci, při které by COBYLA považoval výpočet za „konvergovaný". Pohled na hodnotu funkce a srovnání s předchozími běhy nám říká, že COBYLA nebyl ani blízko konvergenci na požadovanou přesnost.
+
+Existuje ještě jeden problém: energie prvního excitovaného stavu se zdá být nižší než energie základního stavu! Zkus vysvětlit, jak k tomu mohlo dojít. Nápověda: souvisí to s bodem konvergence, který jsme právě zmínili. Toto chování je podrobně vysvětleno níže poté, co je VQD aplikováno na molekulu H2.
+
+## Kvantová chemie: řešič základního a excitovaného energetického stavu
+
+Naším cílem je minimalizovat střední hodnotu pozorovatelné veličiny reprezentující energii (Hamiltonian $\hat{\mathcal{H}}$):
+
+$$
+\min_{\vec\theta} \langle\psi(\vec\theta)|\hat{\mathcal{H}}|\psi(\vec\theta)\rangle
+$$
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import efficient_su2
+
+H2_op = SparsePauliOp.from_list(
+    [
+        ("II", -1.052373245772859),
+        ("IZ", 0.39793742484318045),
+        ("ZI", -0.39793742484318045),
+        ("ZZ", -0.01128010425623538),
+        ("XX", 0.18093119978423156),
+    ]
+)
+
+chem_ansatz = efficient_su2(H2_op.num_qubits)
+
+chem_ansatz.decompose().draw("mpl")
+```
+
+![Výstup předchozí buňky kódu](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/de006d72-db04-49d4-806b-89bd1e5b9947-0.avif)
+
+```python
+from qiskit import QuantumCircuit
+
+def cost_func_vqe(params, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+    pub = (ansatz, hamiltonian, params)
+    cost = estimator.run([pub]).result()[0].data.evs
+    #    cost = estimator.run(ansatz, hamiltonian, parameter_values=params).result().values[0]
+    return cost
+```
+
+Nyní nastavíme počáteční sadu parametrů:
+
+```python
+import numpy as np
+
+x0 = np.ones(chem_ansatz.num_parameters)
+```
+
+Tuto nákladovou funkci můžeme minimalizovat pro výpočet optimálních parametrů a náš kód si nejprve ověříme pomocí lokálního simulátoru.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+from qiskit.primitives import StatevectorSampler as Sampler
+
+estimator = Estimator()
+sampler = Sampler()
+```
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+import time
+
+start_time = time.time()
+
+result = minimize(
+    cost_func_vqe, x0, args=(chem_ansatz, H2_op, estimator), method="COBYLA"
+)
+
+end_time = time.time()
+execution_time = end_time - start_time
+
+result
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -1.857275029048451
+       x: [ 7.326e-01  1.354e+00 ...  1.040e+00  1.508e+00]
+    nfev: 242
+   maxcv: 0.0
+```
+
+Minimální hodnota nákladové funkce (-1.857...) je energie základního stavu molekuly H2 v jednotkách hartree.
