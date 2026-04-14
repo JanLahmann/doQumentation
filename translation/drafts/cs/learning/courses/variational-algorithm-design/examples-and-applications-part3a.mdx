@@ -1,0 +1,154 @@
+### Krok 1: Mapování klasických vstupů na kvantový problém {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Nyní místo hledání pouze nejnižší vlastní hodnoty našich pozorovatelných budeme hledat všechny $4$, (kde $k=4$).
+
+Připomeň si, že účelové funkce VQD jsou:
+
+$$
+C_{l}(\vec{\theta}) :=
+\langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle +
+\sum_{j=0}^{l-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle  |^2
+\quad \forall l\in\{1,\cdots,k\}=\{1,\cdots,4\}
+$$
+
+To je zvláště důležité, protože vektor $\vec{\beta}=(\beta_0,\cdots,\beta_{k-1})$ (v tomto případě $(\beta_0, \beta_1, \beta_2, \beta_3)$) musí být předán jako argument při definování objektu `VQD`.
+
+Také v Qiskitově implementaci VQD se místo uvažování efektivních pozorovatelných popsaných v předchozím notebooku počítají věrnosti $|\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle  |^2$ přímo pomocí algoritmu `ComputeUncompute`, který využívá primitivum `Sampler` k vzorkování pravděpodobnosti získání $|0\rangle$ pro Circuit
+$U_A^\dagger(\vec{\theta})U_A(\vec{\theta^j})$. To funguje právě proto, že tato pravděpodobnost je
+
+$$
+\begin{aligned}
+
+p_0
+
+& = |\langle 0|U_A^\dagger(\vec{\theta})U_A(\vec{\theta^j})|0\rangle|^2 \\[1mm]
+
+& = |\big(\langle 0|U_A^\dagger(\vec{\theta})\big)\big(U_A(\vec{\theta^j})|0\rangle\big)|^2 \\[1mm]
+
+& = |\langle \psi(\vec{\theta}) |\psi(\vec{\theta^j}) \rangle|^2 \\[1mm]
+
+\end{aligned}
+$$
+
+```python
+ansatz = n_local(
+    num_qubits=2,
+    rotation_blocks=["ry", "rz"],
+    entanglement_blocks="cz",
+    #    entanglement="linear",
+    reps=1,
+)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/e4d59381-43ff-4322-a6f2-df55cef18536-0.avif)
+
+Začněme tím, že prozkoumáme následující pozorovatelnou:
+
+$$
+\hat{O}_2 := 2 II - 3 XX + 2 YY - 4 ZZ
+$$
+
+Tato pozorovatelná má následující vlastní hodnoty:
+
+$$
+\left\{
+\begin{array}{c}
+\lambda_0 = -7 \\
+\lambda_1 = 3\\
+\lambda_2 = 5 \\
+\lambda_3 = 7
+\end{array}
+\right\}
+$$
+
+A vlastní stavy:
+
+$$
+\left\{
+\begin{array}{c}
+|\phi_0\rangle = \frac{1}{\sqrt{2}}(|00\rangle + |11\rangle)\\
+|\phi_1\rangle = \frac{1}{\sqrt{2}}(|00\rangle - |11\rangle)\\
+|\phi_2\rangle = \frac{1}{\sqrt{2}}(|01\rangle + |10\rangle)\\
+|\phi_3\rangle = \frac{1}{\sqrt{2}}(|01\rangle - |10\rangle)
+\end{array}
+\right\}
+$$
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable_2 = SparsePauliOp.from_list([("II", 2), ("XX", -3), ("YY", 2), ("ZZ", -4)])
+```
+
+Budeme používat následující funkci pro výpočet penalizace překryvu. Všimni si, že toto je stále součástí mapování problému na kvantové Circuity. Jak však bylo probráno v předchozí lekci, tato funkce počítá překryv mezi aktuálním variačním Circuitem a optimalizovaným Circuitem z předchozího stavu s nižší energií/náklady. Nový generovaný Circuit musí být také transpilován pro spuštění na skutečném hardwaru. Tuto funkci jsme viděli dříve, použitou na simulátoru. Zde musíme již zohlednit transpilaci a související optimalizaci pro případ, kdy použijeme skutečný Backend — odtud řádky kolem `if realbackend == 1`. To trochu mísí krok 2, ale krok 2 výslovně zmíníme později.
+
+```python
+import numpy as np
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+def calculate_overlaps(
+    ansatz, prev_circuits, parameters, sampler, realbackend, backend
+):
+    def create_fidelity_circuit(circuit_1, circuit_2):
+        if len(circuit_1.clbits) > 0:
+            circuit_1.remove_final_measurements()
+        if len(circuit_2.clbits) > 0:
+            circuit_2.remove_final_measurements()
+
+        circuit = circuit_1.compose(circuit_2.inverse())
+        circuit.measure_all()
+        return circuit
+
+    overlaps = []
+
+    for prev_circuit in prev_circuits:
+        fidelity_circuit = create_fidelity_circuit(ansatz, prev_circuit)
+        if realbackend == 1:
+            pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+            fidelity_circuit = pm.run(fidelity_circuit)
+        sampler_job = sampler.run([(fidelity_circuit, parameters)])
+        meas_data = sampler_job.result()[0].data.meas
+
+        counts_0 = meas_data.get_int_counts().get(0, 0)
+        shots = meas_data.num_shots
+        overlap = counts_0 / shots
+        overlaps.append(overlap)
+
+    return np.array(overlaps)
+```
+
+Nyní přidáme účelovou funkci VQD. Všimni si, že ve srovnání s předchozí lekcí máme nyní dva další argumenty (`realbackend` a `backend`), které nám pomáhají s transpilací při použití skutečných Backendů.
+
+```python
+def cost_func_vqd(
+    parameters,
+    ansatz,
+    prev_states,
+    step,
+    betas,
+    estimator,
+    sampler,
+    hamiltonian,
+    realbackend,
+    backend,
+):
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+
+    total_cost = 0
+
+    if step > 1:
+        overlaps = calculate_overlaps(
+            ansatz, prev_states, parameters, sampler, realbackend, backend
+        )
+        total_cost = np.sum(
+            [np.real(betas[state] * overlap) for state, overlap in enumerate(overlaps)]
+        )
+
+    estimator_result = estimator_job.result()[0]
+
+    value = estimator_result.data.evs[0] + total_cost
+
+    return value
+```
