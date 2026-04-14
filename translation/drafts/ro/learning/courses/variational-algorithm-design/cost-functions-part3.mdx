@@ -1,0 +1,165 @@
+## Funcții de cost {#cost-functions}
+
+În general, funcțiile de cost sunt folosite pentru a descrie obiectivul unei probleme și cât de bine performează o stare de testare față de acel obiectiv. Această definiție poate fi aplicată la diverse exemple din chimie, învățare automată, finanțe, optimizare și altele.
+
+Să considerăm un exemplu simplu de găsire a stării fundamentale a unui sistem. Obiectivul nostru este să minimizăm valoarea de așteptare a observabilului care reprezintă energia (Hamiltonian $\hat{\mathcal{H}}$):
+
+$$
+\min_{\vec\theta} \langle\psi(\vec\theta)|\hat{\mathcal{H}}|\psi(\vec\theta)\rangle
+$$
+
+Putem folosi `Estimator` pentru a evalua valoarea de așteptare și a transmite această valoare unui optimizator pentru a o minimiza. Dacă optimizarea reușește, va returna un set de valori optime ale parametrilor $\vec\theta^*$, din care vom putea construi starea soluție propusă $|\psi(\vec\theta^*)\rangle$ și calcula valoarea de așteptare observată ca $C(\vec\theta^*)$.
+
+Observă că vom putea minimiza funcția de cost doar pentru setul limitat de stări pe care le luăm în considerare. Aceasta ne conduce la două posibilități separate:
+
+- **ansatz-ul nostru nu definește starea soluție în tot spațiul de căutare**: Dacă acesta este cazul, optimizatorul nu va găsi niciodată soluția și trebuie să experimentăm cu alte ansatz-uri care ar putea reprezenta spațiul nostru de căutare mai precis.
+- **Optimizatorul nostru este incapabil să găsească această soluție validă**: Optimizarea poate fi definită global și local. Vom explora ce înseamnă aceasta în secțiunea ulterioară.
+
+În general, vom efectua o buclă de optimizare clasică, bazându-ne pe evaluarea funcției de cost pe un calculator cuantic. Din această perspectivă, s-ar putea considera optimizarea ca o sarcină pur clasică în care apelăm un <DefinitionTooltip definition="Un dispozitiv sau componentă software ipotetică care efectuează o funcție specifică, dar al cărei mecanism intern este necunoscut. Un utilizator este conștient doar de intrările și ieșirile cutiei negre, fără cunoașterea modului în care aceasta procesează intrările pentru a produce ieșirile.">oracol cuantic de tip cutie neagră</DefinitionTooltip> de fiecare dată când optimizatorul trebuie să evalueze funcția de cost.
+
+```python
+def cost_func_vqe(params, circuit, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+    pub = (circuit, hamiltonian, params)
+    cost = estimator.run([pub]).result()[0].data.evs
+    return cost
+```
+
+```python
+from qiskit.circuit.library import TwoLocal
+
+observable = SparsePauliOp.from_list([("XX", 1), ("YY", -3)])
+
+reference_circuit = QuantumCircuit(2)
+reference_circuit.x(0)
+
+variational_form = TwoLocal(
+    2,
+    rotation_blocks=["rz", "ry"],
+    entanglement_blocks="cx",
+    entanglement="linear",
+    reps=1,
+)
+ansatz = reference_circuit.compose(variational_form)
+
+theta_list = (2 * np.pi * np.random.rand(1, 8)).tolist()
+ansatz.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/cost-functions/extracted-outputs/a01a54f2-da16-4008-b422-fa7ded531f67-0.avif)
+
+Vom efectua mai întâi acest lucru folosind un simulator: StatevectorEstimator. Aceasta este de obicei recomandabilă pentru depanare, dar vom urma imediat rularea de depanare cu un calcul pe hardware cuantic real. Din ce în ce mai mult, problemele de interes nu mai sunt simulabile clasic fără facilități de supercalculare de ultimă generație.
+
+```python
+estimator = StatevectorEstimator()
+cost = cost_func_vqe(theta_list, ansatz, observable, estimator)
+print(cost)
+```
+
+```text
+[-0.58744589]
+```
+
+Vom continua acum cu rularea pe un calculator cuantic real. Observă modificările de sintaxă. Pașii care implică pass_manager vor fi discutați mai departe în exemplul următor. Un pas de importanță deosebită în algoritmii variaționali este utilizarea unei sesiuni Qiskit Runtime. Deschiderea unei sesiuni îți permite să rulezi mai multe iterații ale unui algoritm variațional fără a aștepta într-o coadă nouă de fiecare dată când parametrii sunt actualizați. Aceasta este importantă dacă timpii de coadă sunt lungi și/sau sunt necesare multe iterații. Numai partenerii din IBM Quantum&reg; Network pot folosi sesiunile Runtime. Dacă nu ai acces la sesiuni, poți reduce numărul de iterații pe care le trimiți la un moment dat și salva cei mai recenți parametri pentru utilizare în rulări viitoare. Dacă trimiți prea multe iterații sau întâlnești timpi de coadă prea lungi, poți întâlni codul de eroare 1217, care se referă la întârzieri mari între trimiteri de joburi.
+
+```python
+# Estimated usage: < 1 min. Benchmarked at 7 seconds on an Eagle processor
+# Load necessary packages:
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    Session,
+    EstimatorOptions,
+    EstimatorV2 as Estimator,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+# Select the least busy backend:
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, min_num_qubits=ansatz.num_qubits, simulator=False
+)
+# Or get a specific backend:
+# backend = service.backend("ibm_brisbane")
+
+# Use a pass manager to transpile the circuit and observable for the specific backend being used:
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+isa_ansatz = pm.run(ansatz)
+isa_observable = observable.apply_layout(layout=isa_ansatz.layout)
+
+# Set estimator options
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+# Open a Runtime session:
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+    cost = cost_func_vqe(theta_list, isa_ansatz, isa_observable, estimator)
+
+session.close()
+print(cost)
+```
+
+Observă că valorile obținute din cele două calculări de mai sus sunt foarte similare. Tehnicile pentru îmbunătățirea rezultatelor vor fi discutate mai departe mai jos.
+### Exemplu de mapare la sisteme ne-fizice {#example-mapping-to-non-physical-systems}
+
+Problema tăieturii maxime (Max-Cut) este o problemă de optimizare combinatorică care implică împărțirea vârfurilor unui graf în două seturi disjuncte astfel încât numărul de muchii dintre cele două seturi să fie maximizat. Mai formal, dat un graf neorientat $G=(V,E)$, unde $V$ este setul de vârfuri și $E$ este setul de muchii, problema Max-Cut cere partiționarea vârfurilor în două subseturi disjuncte, $S$ și $T$, astfel încât numărul de muchii cu un capăt în $S$ și celălalt în $T$ să fie maximizat.
+
+Putem aplica Max-Cut pentru a rezolva diverse probleme, inclusiv: clasificare, proiectarea rețelelor, tranziții de fază și altele. Vom începe prin crearea unui graf al problemei:
+
+```python
+import rustworkx as rx
+from rustworkx.visualization import mpl_draw
+
+n = 4
+G = rx.PyGraph()
+G.add_nodes_from(range(n))
+# The edge syntax is (start, end, weight)
+edges = [(0, 1, 1.0), (0, 2, 1.0), (0, 3, 1.0), (1, 2, 1.0), (2, 3, 1.0)]
+G.add_edges_from(edges)
+
+mpl_draw(
+    G, pos=rx.shell_layout(G), with_labels=True, edge_labels=str, node_color="#1192E8"
+)
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/cost-functions/extracted-outputs/739ca7a0-fae3-4389-a8de-7ae93c13b9e1-0.avif)
+
+Această problemă poate fi exprimată ca o problemă de optimizare binară. Pentru fiecare nod $0 \leq i < n$, unde $n$ este numărul de noduri ale grafului (în acest caz $n=4$), vom considera variabila binară $x_i$. Această variabilă va avea valoarea $1$ dacă nodul $i$ se află în unul din grupuri pe care îl vom eticheta $1$ și $0$ dacă se află în celălalt grup, pe care îl vom eticheta ca $0$. De asemenea, vom nota cu $w_{ij}$ (elementul $(i,j)$ al matricei de adiacență $w$) greutatea muchiei care merge de la nodul $i$ la nodul $j$. Deoarece graful este neorientat, $w_{ij}=w_{ji}$. Putem formula astfel problema noastră ca maximizarea următoarei funcții de cost:
+
+$$
+\begin{aligned}
+C(\vec{x})
+& =\sum_{i,j=0}^n w_{ij} x_i(1-x_j)\\[1mm]
+
+& = \sum_{i,j=0}^n w_{ij} x_i - \sum_{i,j=0}^n w_{ij} x_ix_j\\[1mm]
+
+& = \sum_{i,j=0}^n w_{ij} x_i - \sum_{i=0}^n \sum_{j=0}^i 2w_{ij} x_ix_j
+\end{aligned}
+$$
+
+Pentru a rezolva această problemă cu un calculator cuantic, vom exprima funcția de cost ca valoarea de așteptare a unui observabil. Cu toate acestea, observabilele pe care Qiskit le acceptă nativ constau din operatori Pauli, care au valorile proprii $1$ și $-1$ în loc de $0$ și $1$. De aceea vom face următoarea schimbare de variabilă:
+
+Unde $\vec{x}=(x_0,x_1,\cdots ,x_{n-1})$. Putem folosi matricea de adiacență $w$ pentru a accesa convenabil ponderile tuturor muchiilor. Aceasta va fi folosită pentru a obține funcția noastră de cost:
+
+$$
+z_i = 1-2x_i \rightarrow x_i = \frac{1-z_i}{2}
+$$
+
+Aceasta implică că:
+
+$$
+\begin{array}{lcl} x_i=0 & \rightarrow & z_i=1 \\ x_i=1 & \rightarrow & z_i=-1.\end{array}
+$$
