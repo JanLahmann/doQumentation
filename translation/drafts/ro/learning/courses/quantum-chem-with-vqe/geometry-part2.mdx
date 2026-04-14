@@ -1,0 +1,120 @@
+        spin=0,
+        charge=0,
+        symmetry="Dooh",
+    )
+
+    # mf = scf.RHF(mol)
+    # mx = mcscf.CASCI(mf, ncas=2, nelecas=(1, 1))
+    # mx.kernel()
+
+    mf = scf.RHF(mol)
+    mf.kernel()
+    if not mf.converged:
+        raise RuntimeError(f"SCF did not converge for distance {x}")
+
+    mx = mcscf.CASCI(mf, ncas=2, nelecas=(1, 1))
+    casci_energy = mx.kernel()
+    if casci_energy is None:
+        raise RuntimeError(f"CASCI failed for distance {x}")
+
+    # Other variables that might come in handy:
+    # active_space = range(mol.nelectron // 2 - 1, mol.nelectron // 2 + 1)
+    #    E1 = mf.kernel()
+    # mo = mx.sort_mo(active_space, base=0)
+    #    E2 = mx.kernel(mo)[:2]
+
+    h1e, ecore = mx.get_h1eff()
+    h2e = ao2mo.restore(1, mx.get_h2eff(), mx.ncas)
+    return ecore, h1e, h2e
+```
+
+Reamintește-ți că construcția de mai sus creează un Hamiltonian fermionic bazat pe speciile atomice, geometrie și orbitalii electronici. Mai jos, mapăm acest Hamiltonian fermionic pe operatori Pauli. Această funcție `build_hamiltonian` va include, de asemenea, o variabilă geometrică ca argument.
+
+```python
+def build_hamiltonian(distx: float) -> SparsePauliOp:
+    ecore = ham_terms(distx)[0]
+    h1e = ham_terms(distx)[1]
+    h2e = ham_terms(distx)[2]
+
+    ncas, _ = h1e.shape
+
+    C, D = creators_destructors(2 * ncas, mapping="jordan_wigner")
+    Exc = []
+    for p in range(ncas):
+        Excp = [C[p] @ D[p] + C[ncas + p] @ D[ncas + p]]
+        for r in range(p + 1, ncas):
+            Excp.append(
+                C[p] @ D[r]
+                + C[ncas + p] @ D[ncas + r]
+                + C[r] @ D[p]
+                + C[ncas + r] @ D[ncas + p]
+            )
+        Exc.append(Excp)
+
+    # low-rank decomposition of the Hamiltonian
+    Lop, ng = cholesky(h2e, 1e-6)
+    t1e = h1e - 0.5 * np.einsum("pxxr->pr", h2e)
+
+    H = ecore * identity(2 * ncas)
+    # one-body term
+    for p in range(ncas):
+        for r in range(p, ncas):
+            H += t1e[p, r] * Exc[p][r - p]
+    # two-body term
+    for g in range(ng):
+        Lg = 0 * identity(2 * ncas)
+        for p in range(ncas):
+            for r in range(p, ncas):
+                Lg += Lop[p, r, g] * Exc[p][r - p]
+        H += 0.5 * Lg @ Lg
+
+    return H.chop().simplify()
+```
+
+Vom încărca pachetele rămase pentru rularea VQE în sine, cum ar fi ansatz-ul efficient_su2 și minimizatorii SciPy:
+
+```python
+# General imports
+
+# Pre-defined ansatz circuit and operator class for Hamiltonian
+from qiskit.circuit.library import efficient_su2
+from qiskit.quantum_info import SparsePauliOp
+
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+# Plotting functions
+
+# Qiskit Runtime tools
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+```
+
+Vom defini din nou funcția de cost, dar aceasta a luat întotdeauna un Hamiltonian complet construit și mapat ca argument, deci nimic nu se schimbă în privința acestei funcții.
+
+```python
+def cost_func(params, ansatz, H, estimator):
+    pub = (ansatz, [H], [params])
+    result = estimator.run(pubs=[pub]).result()
+    energy = result[0].data.evs[0]
+    return energy
+
+# def cost_func_sim(params, ansatz, H, estimator):
+#    energy = estimator.run(ansatz, H, parameter_values=params).result().values[0]
+#    return energy
+```
+
+## Pasul 2: Optimizează problema pentru execuția pe calculator cuantic {#step-2-optimize-problem-for-quantum-execution}
+
+Deoarece Hamiltonianul se va schimba cu fiecare geometrie nouă, transpilarea operatorului se va schimba la fiecare pas. Putem totuși defini un pass manager general care să fie aplicat la fiecare pas, specific hardware-ului pe care dorim să îl folosim.
+
+Aici vom folosi backend-ul cel mai puțin ocupat disponibil. Vom folosi acel backend ca model pentru AerSimulator-ul nostru, permițând simulatorului să imite, de exemplu, comportamentul de zgomot al backend-ului real. Aceste modele de zgomot nu sunt perfecte, dar te pot ajuta să știi la ce să te aștepți de la hardware-ul real.
+
+```python
+# Here, we select the least busy backend available:
+backend = service.least_busy(operational=True, simulator=False)
+print(backend)
+# Or to select a specific real backend use the line below, and substitute 'ibm_strasbourg' for your chosen device.
+# backend = service.get_backend('ibm_strasbourg')
+```
