@@ -1,0 +1,115 @@
+    if term.count("Y") == 2
+    else (term, JX)
+    for term in H_int
+]
+
+# Get operator
+H_op = SparsePauliOp.from_list(H_tot)
+print(H_tot)
+```
+
+```text
+[('ZZIIIIIIII', 2), ('IZZIIIIIII', 2), ('IIZZIIIIII', 2), ('IIIZZIIIII', 2), ('IIIIZZIIII', 2), ('IIIIIZZIII', 2), ('IIIIIIZZII', 2), ('IIIIIIIZZI', 2), ('IIIIIIIIZZ', 2), ('XXIIIIIIII', 1), ('IXXIIIIIII', 1), ('IIXXIIIIII', 1), ('IIIXXIIIII', 1), ('IIIIXXIIII', 1), ('IIIIIXXIII', 1), ('IIIIIIXXII', 1), ('IIIIIIIXXI', 1), ('IIIIIIIIXX', 1), ('YYIIIIIIII', 3), ('IYYIIIIIII', 3), ('IIYYIIIIII', 3), ('IIIYYIIIII', 3), ('IIIIYYIIII', 3), ('IIIIIYYIII', 3), ('IIIIIIYYII', 3), ('IIIIIIIYYI', 3), ('IIIIIIIIYY', 3)]
+```
+
+Codul de mai jos restricționează Hamiltonianul la stări cu o singură particulă și utilizează norma spectrală pentru a stabili o dimensiune potrivită a pasului de timp $dt$. Alegem euristic o valoare pentru pasul de timp `dt` (bazată pe margini superioare ale normei Hamiltonianului). Ref [\[9\]](#references) a arătat că un pas de timp suficient de mic este $\pi/\vert \vert H \vert \vert$ și că este preferabil, până la un anumit punct, să subestimezi această valoare în loc să o supraestimezi, deoarece supraestimarea poate permite contribuțiilor de la stările de înaltă energie să corupă chiar și starea optimă din spațiul Krylov. Pe de altă parte, alegerea unui $dt$ prea mic duce la un condiționament mai slab al subspațiului Krylov, deoarece vectorii bazei Krylov diferă mai puțin de la un pas de timp la altul.
+
+```python
+# Get Hamiltonian restricted to single-particle states
+single_particle_H = np.zeros((n_qubits, n_qubits))
+for i in range(n_qubits):
+    for j in range(i + 1):
+        for p, coeff in H_op.to_list():
+            p_x = Pauli(p).x
+            p_z = Pauli(p).z
+            if all(p_x[k] == ((i == k) + (j == k)) % 2 for k in range(n_qubits)):
+                sgn = ((-1j) ** sum(p_z[k] and p_x[k] for k in range(n_qubits))) * (
+                    (-1) ** p_z[i]
+                )
+            else:
+                sgn = 0
+            single_particle_H[i, j] += sgn * coeff
+for i in range(n_qubits):
+    for j in range(i + 1, n_qubits):
+        single_particle_H[i, j] = np.conj(single_particle_H[j, i])
+
+# Set dt according to spectral norm
+dt = np.pi / np.linalg.norm(single_particle_H, ord=2)
+dt
+```
+
+```text
+np.float64(0.17453292519943295)
+```
+
+Să specificăm dimensiunea maximă Krylov pe care dorim să o utilizăm, deși vom verifica convergența la dimensiuni mai mici. Specificăm, de asemenea, numărul de pași Trotter de utilizat în evoluția temporală. De dragul acestei lecții, vom alege o dimensiune Krylov mică de doar 5. Aceasta este destul de limitată în contextul aplicațiilor realiste, dar este suficientă pentru acest exemplu. Vom explora metode în lecțiile ulterioare care ne permit să scalăm și să proiectăm Hamiltonianele noastre pe subspații mai mari.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of krylov subspace
+num_trotter_steps = 6
+dt_circ = dt / num_trotter_steps
+```
+
+#### Pregătirea stării {#state-preparation}
+
+Alege o stare de referință $\vert \psi \rangle$ care are o anumită suprapunere cu starea fundamentală. Pentru acest Hamiltonian, utilizăm o stare cu o excitație în qubitul din mijloc $\vert 00..010...00 \rangle$ ca stare de referință.
+
+```python
+qc_state_prep = QuantumCircuit(n_qubits)
+qc_state_prep.x(int(n_qubits / 2) + 1)
+qc_state_prep.draw("mpl", scale=0.5)
+```
+
+![Rezultatul celulei de cod anterioare](/learning/images/courses/quantum-diagonalization-algorithms/krylov/extracted-outputs/410192fb-8197-4860-8c3a-2e874e2f9c56-0.avif)
+
+#### Evoluție temporală {#time-evolution}
+
+Putem realiza operatorul de evoluție temporală generat de un Hamiltonian dat: $U=e^{-iHt}$ prin [aproximarea Lie-Trotter](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter). Pentru simplitate, utilizăm ```PauliEvolutionGate``` integrat în circuitul de evoluție temporală. Sintaxa generală pentru aceasta este următoarea.
+
+```python
+t = Parameter("t")
+
+## Create the time-evo op circuit
+evol_gate = PauliEvolutionGate(
+    H_op, time=t, synthesis=LieTrotter(reps=num_trotter_steps)
+)
+
+qr = QuantumRegister(n_qubits)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+```
+
+```text
+<qiskit.circuit.instructionset.InstructionSet at 0x7f486e895900>
+```
+
+Vom folosi o versiune a acestuia mai jos în testul Hadamard, avansând cu timpi $dt$.
+#### Testul Hadamard {#hadamard-test}
+
+Reamintim că dorim să calculăm elementele de matrice atât ale lui $\tilde{H}$, cât și ale matricei Gram $\tilde{S}$ folosind testul Hadamard. Să revedem cum funcționează acest lucru în acest context, concentrându-ne mai întâi pe construcția lui $\tilde{H}.$ Procesul general este reprezentat grafic mai jos. Straturile de blocuri colorate de pregătire a stării $\text{Prep}|\psi_i\rangle$ servesc ca un memento că acest proces este realizat pentru toate combinațiile de $|\psi_i\rangle$ și $|\psi_j\rangle$ din subspațiul nostru.
+
+![O imagine a unei diagrame de Circuit cuantic cu multe straturi care indică faptul că circuitul trebuie evaluat pentru multe stări diferite pentru a efectua testul Hadamard.](/learning/images/courses/quantum-diagonalization-algorithms/krylov/kqd-fig5.avif)
+
+Stările sistemului la pașii indicați sunt:
+$$
+\begin{aligned}
+    \text{Step 0:}\qquad|\Psi\rangle & = |0\rangle|0\rangle^N \\
+    \text{Step 1:}\qquad|\Psi\rangle & = \frac{1}{\sqrt{2}}\Big(|0\rangle + |1\rangle \Big)|0\rangle^N \\
+    \text{Step 2:}\qquad|\Psi\rangle & = \frac{1}{\sqrt{2}}\Big(|0\rangle|0\rangle^N+|1\rangle |\psi_i\rangle\Big)\\
+    \text{Step 3:}\qquad|\Psi\rangle & = \frac{1}{\sqrt{2}}\Big(|0\rangle |0\rangle^N+|1\rangle P |\psi_i\rangle\Big) \\
+    \text{Step 4:}\qquad|\Psi\rangle & = \frac{1}{\sqrt{2}}\Big(|0\rangle |\psi_j\rangle+|1\rangle P|\psi_i\rangle\Big)
+\end{aligned}
+$$
+
+Aici $P$ este un termen Pauli în descompunerea Hamiltonianului (rețineți că nu poate fi o combinație liniară de mai mulți termeni Pauli care comută, deoarece aceasta nu ar fi unitară — gruparea este posibilă folosind o altă construcție pe care o vom arăta mai târziu) $\text{Prep} \; \psi_i$, $\text{Prep} \; \psi_j$ sunt operații controlate care pregătesc vectorii $|\psi_i\rangle$, $|\psi_j\rangle$ ai spațiului Krylov unitar, cu $|\psi_k\rangle = e^{-i H k dt } \vert \psi \rangle = e^{-i H k dt } U_{\psi} \vert 0 \rangle^N$. Aplicarea măsurătorilor $X$ și $Y$ acestui Circuit calculează respectiv părțile reală și imaginară ale elementelor de matrice necesare.
+
+Pornind de la Pasul 4 de mai sus, aplică Gate-ul Hadamard $H$ qubitului zero.
+
+$$
+\begin{equation*}
+   |\Psi\rangle \longrightarrow\quad\frac{1}{2}|0\rangle\Big( |\psi_j\rangle + P|\psi_i\rangle\Big) + \frac{1}{2}|1\rangle\Big(|\psi_j\rangle - P|\psi_i\rangle\Big)
+\end{equation*}
+$$
+
+Apoi măsoară fie $X$, fie $Y$.
