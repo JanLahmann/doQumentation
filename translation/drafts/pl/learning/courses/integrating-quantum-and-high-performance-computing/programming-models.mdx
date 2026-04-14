@@ -151,3 +151,130 @@ $ cat mpi-hello-world.out | grep Rank
 [Rank 1] Received: {'answer': 42, 'pi': 3.14}
 ```
 Tutaj użyliśmy dwóch węzłów, a proces na każdym węźle jest teraz identyfikowany przez rangę — Ranga 0 i Ranga 1 — które służą do określania przepływu sterowania programem.
+## Task workflows {#task-workflows}
+
+Porozmawiajmy teraz o modelu programowania opartym na potoku zadań. Potok zadań abstrahuje obliczenia do postaci skierowanego grafu acyklicznego (DAG). W tym grafie każdy węzeł reprezentuje konkretne zadanie lub proces, a krawędzie (strzałki łączące węzły) reprezentują zależności (danych i kolejności) między nimi. Harmonogram to komponent, który przypisuje zadania do zasobów i organizuje ich wykonanie.
+
+Konkretnym przykładem modelu potoku zadań zastosowanego w obliczeniach kwantowych jest [framework Qiskit patterns](/guides/intro-to-patterns). Wzorzec Qiskit to ogólny framework zaprojektowany w celu rozkładu problemów dziedzinowych na sekwencję etapów, szczególnie w przypadku zadań kwantowych. Umożliwia to bezproblemową kompozycyjność nowych możliwości opracowywanych przez badaczy IBM Quantum&reg; (i innych) oraz otwiera drogę do przyszłości, w której zadania obliczeniowe na komputerach kwantowych są realizowane przez wydajną, heterogeniczną infrastrukturę obliczeniową (CPU/GPU/QPU). Cztery kroki wzorca Qiskit to: mapowanie, optymalizacja, wykonanie i post-przetwarzanie — wszystkie zadania są wykonywane jedno po drugim w potoku. Jednak w przypadku potoków zadań nie jesteśmy ograniczeni do liniowej kolejności wykonywania i możemy uruchamiać zadania równolegle. Każde zadanie w potoku może być samo w sobie odrębnym zadaniem równoległym. Możesz więc dowolnie łączyć te modele, aby opisywać algorytmy o dowolnej złożoności, a menedżer obciążenia, taki jak Slurm, zajmie się ich obsługą.
+
+![A diagram of computing tasks organized into a workflow in which some processes are executed in parallel and others in sequence.](/learning/images/courses/integrating-quantum-and-high-performance-computing/programming-models/workflow.svg)
+
+Powyższy obraz ilustruje wzorzec Qiskit w działaniu. Potok ma strukturę grafu złożonego z czterech etapów. Ta rozgałęziona struktura jest zarządzana i wykonywana przez harmonogram. Na początkowym etapie problem jest mapowany do postaci wykonywalnej kwantowo (Circuit kwantowy). W kolejnym etapie ten Circuit kwantowy jest optymalizowany pod kątem konkretnego sprzętu kwantowego. Na obrazie jest to pokazane jako proces równoległy, co demonstruje, jak jednocześnie można stosować wiele strategii optymalizacji. Zoptymalizowany Circuit kwantowy jest następnie wykonywany na rzeczywistym sprzęcie kwantowym. To trzeci etap obrazu, na którym harmonogram współpracuje z jedną fioletową jednostką przetwarzania kwantowego. Na koniec wyniki są post-przetwarzane przez zasoby klasyczne.
+
+### Why both? {#why-both}
+
+Po co nam zatem zarówno programowanie równoległe, jak i potoki zadań? Przy całej dyskusji o równoległości kwantowej warto wyjaśnić, że nie wszystko w obliczeniach kwantowych jest równoległe.
+
+Poprzednia lekcja na temat potoku SQD wspominała o procesach, których nie można zrównoleglić. Na przykład potrzebujemy wyników wielu pomiarów kwantowych, aby zrzutować naszą macierz na podprzestrzeń o wymiarze, który można efektywnie przetworzyć. Z kolei potrzebujemy zdiagonalizowanej macierzy i powiązanych wektorów stanu, aby sprawdzić spójność samoistną pomiarów kwantowych (używając na przykład zasady zachowania ładunku). Po tym wszystkim musimy zdecydować, czy energia stanu podstawowego dostatecznie zbiegła się do naszych celów. Te kroki są z konieczności sekwencyjne i wymagają testowania warunków zbieżności i spójności samoistnej przed przejściem do kolejnych etapów.
+
+![A schematic of the workflow specific to sample-based quantum diagonalization. The steps include a variational quantum circuit, using measurements to project the Hamiltonian into a subspace, then using a classical optimizer to update variational parameters in the circuit and repeating.](/learning/images/courses/integrating-quantum-and-high-performance-computing/programming-models/sqd-workflow.svg)
+
+Do tego potoku wrócimy bardziej szczegółowo i zaimplementujemy go w następnej sekcji. Jedyne, co powinieneś wynieść z tej sekcji, to fakt, że potoki zadań są niezbędne.
+
+## Programming practice {#programming-practice}
+
+Piękno modeli programowania polega na tym, że można je dowolnie łączyć. Znając kwantowe i klasyczne modele programowania, możesz opisać heterogeniczne obliczenia o dowolnej złożoności i wykonać je na sprzęcie. Przećwiczmy to na małym przykładzie połączonego potoku, który implementuje wzorzec Qiskit (mapuj, optymalizuj, wykonaj i post-przetwórz) w ramach Slurma, którego nauczyliśmy się w poprzednim rozdziale. Każde z czterech zadań będzie oddzielnym zadaniem Slurm, każde z własnymi zasobami. Zadanie optymalizacji użyje MPI do równoległej optymalizacji Circuitów (wyłącznie dla przykładu, jak na powyższym obrazie). Zadanie wykonania użyje zasobów kwantowych i kwantowych modeli programowania (Circuit i sampler). Ostatnie zadanie — post-przetwarzanie — znów użyje MPI równolegle z zasobami klasycznymi.
+
+### Mapping {#mapping}
+
+Program `mapping.py` jest zaprojektowany do budowania Circuitu `PauliTwoDesign`, który jest powszechnie stosowany w literaturze dotyczącej kwantowego uczenia maszynowego oraz benchmarkingu kwantowego, z prostą obserwowalną mierzącą $(n-1)^\text{th}$ Qubit w kierunku $Z$ systemu $n$-qubitowego z losowymi parametrami początkowymi. Każdy z tych elementów (Circuit kwantowy przekonwertowany do pliku qasm, obserwowalana i parametry) zostanie zapisany do osobnego pliku w katalogu danych i będzie używany jako dane wejściowe na etapie optymalizacji.
+
+Skrypt powłoki dla tego etapu (`mapping.sh`) to
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=mapping
+#SBATCH --output=mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch3/workflows/mapping.py
+```
+
+który definiuje nazwę zadania, format wyjścia oraz liczbę węzłów/zadań/CPU.
+
+### Optimization {#optimization}
+
+Program `optimization.py` rozpoczyna się od pobrania plików z etapu mapowania. Tutaj użyjesz `QRMI`, aby wprowadzić zasoby kwantowe do tego programu.
+
+```python
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+...
+```
+
+Następnie wykonuje lekką optymalizację, ustawiając `optimization_level=1` w celu transpilacji Circuitu kwantowego i zastosowania układu Circuitu do obserwowalnej, a następnie zapisuje je do folderu danych.
+
+Skrypt powłoki dla tego etapu (`optimization.sh`) to
+
+```shell
+#!/bin/bash
+#SBATCH --job-name=optimization
+#SBATCH --output=output/optimization.out
+#SBATCH --ntasks=4
+#SBATCH --partition=classical
+
+srun python3 /tmp/optimization.py
+```
+
+Tutaj `--ntasks=4` żąda czterech klasycznych zadań od Slurma dla procesu równoległego.
+
+### Execution {#execution}
+
+To jest główny etap kwantowy, na którym zoptymalizowany Circuit kwantowy z poprzedniego kroku jest uruchamiany na QPU przez Estimator. W tym celu najpierw pobierzemy trzy pliki — transpilowany Circuit kwantowy, obserwowalną i parametry początkowe — a następnie przekażemy je do `Estimator`. Zwraca on szacowaną wartość obserwowalnej i ją wyświetla.
+
+Skrypt `execution.sh` korzysta z wtyczki Slurm, aby użyć zasobu kwantowego.
+
+```
+#!/bin/bash
+#
+#SBATCH --job-name=execution
+#SBATCH --output=execution.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=quantum
+#SBATCH --gres=qpu:1
+
+srun python /data/ch3/workflows/execution.py
+```
+
+### Post-processing {#post-processing}
+
+Etap post-przetwarzania często obejmuje klasyczną diagonalizację i sprawdzanie spójności samoistnej. Może być również iteracyjny. Najlepiej omówić etap post-przetwarzania w następnej lekcji, w której jasny jest kontekst fizyczny i cel kroków iteracyjnych.
+
+### Combining it all together {#combining-it-all-together}
+
+Możemy połączyć wszystkie te zadania w potok, używając argumentu dependency dla polecenia `sbatch`:
+
+``` shell
+$ MAPPING_JOB=$(sbatch --parsable mapping.sh)
+$ OPTIMIZE_JOB=$(sbatch --parsable --dependency=afterok:$MAPPING_JOB optimization.sh)
+$ EXECUTE_JOB=$(sbatch --parsable --dependency=afterok:$OPTIMIZE_JOB execute.sh)
+
+```
+
+Możemy też sprawdzić kolejkę wykonania Slurma.
+
+```shell
+$ squeue
+#             JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
+#                 3 classical  mapping    admin PD       0:00      1 (None)
+#                 4 classical optimiza    admin PD       0:00      1 (Dependency)
+#                 5   quantum  execute    admin PD       0:00      1 (Dependency)
+```
+
+Był to przykład-zabawka demonstrujący mieszanie modeli programowania. W następnym rozdziale przyjrzymy się algorytmom ze świata rzeczywistego i zaprezentujemy modele programowania oraz zarządzanie zasobami na użytecznych potokach.
+
+## Summary {#summary}
+
+W tej lekcji zademonstrowano, jak łączyć wiele klasycznych i kwantowych modeli programowania, aby budować, zarządzać i wykonywać kompletny potok czterech etapów. Zaczęliśmy od podstawowych koncepcji Circuitów kwantowych i prymitywów, a następnie zbadaliśmy klasyczne modele, takie jak programowanie równoległe i potoki zadań. Łącząc wszystkie koncepcje, zbudowaliśmy wzorzec Qiskit — mapuj, optymalizuj, wykonaj i post-przetwórz — zarządzany przez menedżer obciążenia Slurm z prostym Circuitem kwantowym i obserwowalną.
+
+W następnej lekcji użyjemy tego frameworku do uruchamiania opartych na próbkowaniu algorytmów kwantowych, pokazując, jak ten potok można zastosować do rozwiązywania rzeczywistych problemów.
+
+<div class="alert alert-block alert-info">
+All the code and scripts used in this chapter are available to you within this [Github repository](https://github.com/christopherporter1/hpc-course-demos).
