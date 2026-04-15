@@ -1,0 +1,209 @@
+
+![Wynik poprzedniej komórki kodu](/learning/images/modules/computer-science/shors-algorithm/extracted-outputs/37caf888-276e-4f19-a0d0-59517c5ee44e-0.avif)
+
+Teraz możemy złożyć to wszystko razem, aby znaleźć rząd $2\bmod 15$ za pomocą Circuit kwantowego, korzystając z estymacji fazy:
+
+```python
+# Order finding problem for N = 15 with a = 2
+N = 15
+a = 2
+
+# Number of qubits
+num_target = floor(log(N - 1, 2)) + 1  # for modular exponentiation operators
+num_control = 2 * num_target  # for enough precision of estimation
+
+# List of M_b operators in order
+k_list = range(num_control)
+b_list = [a2kmodN(2, k, 15) for k in k_list]
+
+# Initialize the circuit
+control = QuantumRegister(num_control, name="C")
+target = QuantumRegister(num_target, name="T")
+output = ClassicalRegister(num_control, name="out")
+circuit = QuantumCircuit(control, target, output)
+
+# Initialize the target register to the state |1>
+circuit.x(num_control)
+
+# Add the Hadamard gates and controlled versions of the
+# multiplication gates
+for k, qubit in enumerate(control):
+    circuit.h(k)
+    b = b_list[k]
+    if b == 2:
+        circuit.compose(
+            M2mod15().control(), qubits=[qubit] + list(target), inplace=True
+        )
+    elif b == 4:
+        circuit.compose(
+            M4mod15().control(), qubits=[qubit] + list(target), inplace=True
+        )
+    else:
+        continue  # M1 is the identity operator
+
+# Apply the inverse QFT to the control register
+circuit.compose(QFTGate(num_control).inverse(), qubits=control, inplace=True)
+
+# Measure the control register
+circuit.measure(control, output)
+
+circuit.draw("mpl", fold=-1)
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/modules/computer-science/shors-algorithm/extracted-outputs/d1b111c8-1a12-420b-bbc2-4ecdd1ac5a97-0.avif)
+
+### 2. Optymalizacja {#2-optimize}
+
+Teraz, gdy zmapowaliśmy nasz Circuit, kolejnym krokiem jest jego optymalizacja pod kątem uruchomienia na konkretnym komputerze kwantowym. Najpierw musimy załadować Backend.
+
+```python
+service = QiskitRuntimeService()
+
+backend = service.backend("ibm_marrakesh")
+```
+
+Jeśli nie masz dostępnego czasu na swoim koncie lub chcesz z jakiegoś powodu użyć symulatora, możesz uruchomić poniższą komórkę, aby skonfigurować symulator imitujący wybrane przez nas urządzenie kwantowe:
+
+```python
+pm = generate_preset_pass_manager(optimization_level=2, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+
+print(f"2q-depth: {transpiled_circuit.depth(lambda x: x.operation.num_qubits==2)}")
+print(f"2q-size: {transpiled_circuit.size(lambda x: x.operation.num_qubits==2)}")
+print(f"Operator counts: {transpiled_circuit.count_ops()}")
+transpiled_circuit.draw(output="mpl", fold=-1, style="clifford", idle_wires=False)
+```
+
+```text
+2q-depth: 188
+2q-size: 281
+Operator counts: OrderedDict({'sx': 548, 'rz': 380, 'cz': 281, 'measure': 8, 'x': 6})
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/modules/computer-science/shors-algorithm/extracted-outputs/4aa86bd6-1240-49cb-aad0-c3dbc64602c5-1.avif)
+
+### 3. Wykonanie {#3-execute}
+
+```python
+# Sampler primitive to obtain the probability distribution
+sampler = Sampler(backend)
+
+# Turn on dynamical decoupling with sequence XpXm
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XpXm"
+# Enable gate twirling
+sampler.options.twirling.enable_gates = True
+
+pub = transpiled_circuit
+job = sampler.run([pub], shots=1024)
+```
+
+```python
+result = job.result()[0]
+counts = result.data["out"].get_counts()
+```
+
+```python
+plot_histogram(counts, figsize=(35, 5))
+```
+
+![Wynik poprzedniej komórki kodu](/learning/images/modules/computer-science/shors-algorithm/extracted-outputs/6744e165-6929-46c6-9cad-55e78fe21f07-0.avif)
+
+Widzimy cztery wyraźne piki przy `00000000`, `01000000`, `10000000` i `11000000`, z pewną liczbą pomiarów w innych ciągach bitów wynikającą z szumu w komputerze kwantowym. Zignorujemy je i zachowamy tylko dominujące cztery, stosując próg: tylko liczby pomiarów powyżej tego progu są uznawane za prawdziwy sygnał powyżej szumu.
+
+```python
+# Dictionary of bitstrings and their counts to keep
+counts_keep = {}
+# Threshold to filter
+threshold = np.max(list(counts.values())) / 2
+
+for key, value in counts.items():
+    if value > threshold:
+        counts_keep[key] = value
+
+print(counts_keep)
+```
+
+### 4. Post-processing {#4-post-process}
+
+W algorytmie Shora znaczna część algorytmu jest wykonywana klasycznie. Dlatego resztę umieścimy w kroku „post-processingu", po uzyskaniu wyników pomiarów z komputera kwantowego. Każdy z powyższych wyników pomiarów można przekształcić w liczbę całkowitą, która po podzieleniu przez $2^m$ stanowi nasze przybliżenie $\frac{k}{r}$, gdzie $k$ jest każdorazowo losowe.
+
+```python
+a = 2
+N = 15
+
+FACTOR_FOUND = False
+num_attempt = 0
+
+while not FACTOR_FOUND:
+    print(f"\nATTEMPT {num_attempt}:")
+    # Here, we get the bitstring by iterating over outcomes
+    # of a previous hardware run with multiple shots.
+    # Instead, we can also perform a single-shot measurement
+    # here in the loop.
+    bitstring = list(counts_keep.keys())[num_attempt]
+    num_attempt += 1
+    # Find the phase from measurement
+    decimal = int(bitstring, 2)
+    phase = decimal / (2**num_control)  # phase = k / r
+    print(f"Phase: theta = {phase}")
+
+    # Guess the order from phase
+    frac = Fraction(phase).limit_denominator(N)
+    r = frac.denominator  # order = r
+    print(f"Order of {a} modulo {N} estimated as: r = {r}")
+
+    if phase != 0:
+        # Guesses for factors are gcd(a^{r / 2} ± 1, 15)
+        if r % 2 == 0:
+            x = pow(a, r // 2, N) - 1
+            d = gcd(x, N)
+            if d > 1:
+                FACTOR_FOUND = True
+                print(f"*** Non-trivial factor found: {x} ***")
+```
+
+```text
+ATTEMPT 0:
+Phase: theta = 0.0
+Order of 2 modulo 15 estimated as: r = 1
+
+ATTEMPT 1:
+Phase: theta = 0.75
+Order of 2 modulo 15 estimated as: r = 4
+*** Non-trivial factor found: 3 ***
+```
+
+## Podsumowanie {#conclusion}
+
+Po przejściu przez ten moduł możesz poczuć nowy podziw dla geniuszu Petera Shora, który wymyślił tak sprytny algorytm. Masz jednak nadzieję, że osiągnąłeś też nowy poziom zrozumienia jego zwodniczej prostoty. Choć algorytm może wydawać się imponująco (lub onieśmielająco) złożony, jeśli rozłożysz go na poszczególne kroki logiki i przejdziesz przez nie powoli, ty również będziesz w stanie uruchomić algorytm Shora.
+
+Choć jesteśmy daleko od używania tego algorytmu do faktoryzowania liczb takich jak RSA1024, nasze komputery kwantowe poprawiają się z każdym dniem, a po osiągnięciu progu zwanego *tolerancją na błędy* takie algorytmy będą wkrótce dostępne. To ekscytujący czas, żeby uczyć się o obliczeniach kwantowych!
+
+## Zadania {#problems}
+
+### Kluczowe pojęcia: {#critical-concepts}
+
+- Nowoczesne systemy kryptograficzne opierają się na klasycznej trudności faktoryzacji dużych liczb całkowitych.
+- Arytmetyka modułowa — w tym struktury $\mathbb{Z}_N$ i $\mathbb{Z}_N^*$ — stanowi matematyczną podstawę algorytmu Shora.
+- Problem faktoryzacji liczby całkowitej $N$ można sprowadzić do problemu wyznaczenia rzędu liczby modulo $N$.
+- Kwantowe wyznaczanie rzędu wykorzystuje techniki kwantowej estymacji fazy do określenia okresu funkcji $a^x \mod N$.
+- Algorytm Shora składa się z klasyczno-kwantowego przepływu pracy, który wybiera podstawę, wykonuje kwantowe wyznaczanie rzędu, a następnie klasycznie oblicza czynniki z wyniku.
+
+### Prawda/Fałsz: {#true-false}
+1. P/F Skuteczność algorytmu Shora zagraża bezpieczeństwu szyfrowania RSA.
+2. P/F Algorytm Shora można efektywnie wykonać na dowolnym współczesnym komputerze kwantowym.
+3. P/F Algorytm Shora używa kwantowej estymacji fazy (QPE) jako kluczowej podprocedury.
+4. P/F Klasyczna część algorytmu Shora polega na obliczeniu największego wspólnego dzielnika (NWD).
+5. P/F Algorytm Shora działa tylko przy faktoryzacji liczb parzystych.
+6. P/F Pomyślne uruchomienie algorytmu Shora zawsze gwarantuje poprawne czynniki.
+
+### Krótkie odpowiedzi: {#short-answer}
+1. Dlaczego algorytm Shora jest uważany za potencjalne przyszłe zagrożenie dla szyfrowania RSA?
+2. Dlaczego znalezienie okresu, czyli rzędu, modularnej funkcji wykładniczej jest pomocne przy faktoryzacji liczby w algorytmie Shora?
+
+### Zadania dodatkowe: {#challenge-problems}
+1. Ile Qubitów kontrolnych $m$ potrzebujemy dla danej liczby $N$, którą chcemy faktoryzować, aby uzyskać wymaganą precyzję w QPE niezbędną do znalezienia poprawnej wartości rzędu $r$?
+
+2. Korzystając z procedury, którą tu opisaliśmy do faktoryzacji 15, spróbuj teraz sfaktoryzować 21.
