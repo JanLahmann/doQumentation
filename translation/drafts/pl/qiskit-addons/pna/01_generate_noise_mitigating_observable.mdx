@@ -1,0 +1,543 @@
+---
+title: "Poprawa wartości oczekiwanych: Pochłanianie Propagowanego Szumu (PNA)"
+sidebar_label: "Poprawa wartości oczekiwanych: Pochłanianie Propagowanego Szumu (PNA)"
+notebook_path: "qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb"
+---
+{/* doqumentation-source-hash: a6309ba3 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb" />
+
+
+W tym samouczku nauczysz się, jak wykorzystać najnowsze narzędzia ekosystemu Qiskit do zaimplementowania w pełni konfigurowalnego przepływu pracy z mitygacją błędów. Przedstawimy technikę PNA i użyjemy jej do mitygacji błędów bramek. Zastosujemy też TREX do mitygacji błędów odczytu oraz post-selekcję do mitygacji błędów nieuwzględnionych w wyuczonym modelu szumu.
+
+**Zarys**
+- Krótki przegląd techniki ``PNA``
+- Stworzenie troterowskiego Circuit kwantowego i obserwowalnej. Transpilacja do Backend i dodanie pomiarów post-selekcji.
+- Użycie ``samplomatic`` do twirlingowania warstw 2-Qubitowych Gate i pomiarów. Znalezienie unikalnych warstw 2Q w celu redukcji kosztu uczenia szumu.
+- Użycie ``NoiseLearnerV3`` do wyuczenia modelu błędów wpływającego na Gate 2Q i pomiary.
+- Użycie ``qiskit-addon-pna`` do wygenerowania obserwowalnej mitygującej szum.
+- Użycie primitywu ``qiskit-ibm-runtime.Executor`` do wygenerowania surowych próbek z QPU odzwierciedlających każdy strzał dla każdej losowości twirlingowej i mierzonej bazy.
+- Użycie ``qiskit-addon-utils`` do przetworzenia danych w mitygowaną wartość oczekiwaną.
+
+### Czym jest pochłanianie propagowanego szumu (PNA)? {#what-is-propagated-noise-absorption-pna}
+
+***Technika mitygacji błędów bramek polegająca na propagowaniu obserwowalnej przez odwrotny kanał szumu wpływający na 2-Qubitowe Gate, czego wynikiem jest obserwowalna mitygująca szum.***
+Gate 2Q w eksperymencie, który chcemy przeprowadzić, będą dotknięte znacznym szumem.
+![Zaszumiony eksperyment](../images/noisy_expt.png)
+Jeśli wyuczymy model szumu, możemy zastosować jego odwrotność i wyeliminować szum.
+![Eksperyment z mitygacją szumu](../images/noise_mitigated_expt.png)
+Zamiast implementować odwrotny kanał szumu przez próbkowanie go na QPU jak w PEC, możemy zaimplementować go klasycznie w mierzonej obserwowalnej za pomocą propagacji Pauliego. Prowadzi to do bardziej złożonej obserwowalnej, która podczas pomiaru ma efekt mitygowania wyuczonego szumu bramek.
+![Przegląd PNA](../images/pna_overview.png)
+
+### Generowanie lustrzanego Circuit Trottera i obserwowalnej {#generate-the-mirrored-trotter-circuit-and-observable}
+
+W tym eksperymencie będziemy badać dynamikę czasową modelu kopniętego Isinga na 30 węzłach w jednowymiarowym łańcuchu spinowym. Rozważany Hamiltonian to:
+
+$H = -J\sum\limits_{\langle i,j \rangle} Z_iZ_j + h\sum\limits_iX_i$,
+
+gdzie $J>0$ opisuje sprzężenie spinów najbliższych sąsiadów, $i<j$, a globalne poprzeczne pole $h$ jest ustawione na $\frac{\pi}{8}$. Im dalej $h$ jest od kąta Clifforda (tzn. $\theta=n\frac{\pi}{2}, n \in \mathbb{Z}$), tym trudniejsze staje się propagowanie generatorów anty-szumu przez Circuit.
+
+Jako obserwowalną wybierzemy średnią jednowęzłową magnetyzację, $\frac{1}{N} \sum_{i=1}^{N} \langle z_i \rangle$, gdzie $N$ to liczba węzłów.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-pna qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli, SparsePauliOp
+
+num_qubits = 30
+num_trotter_steps = 10
+rx_angle = np.pi / 8
+
+# Avg single-site magnetization
+id_pauli = Pauli("I" * num_qubits)
+observable = SparsePauliOp([id_pauli.dot(Pauli("Z"), [i]) for i in range(num_qubits)]) / num_qubits
+
+# Implement Trotterized kicked-Ising model
+circuit = QuantumCircuit(num_qubits)
+for _step in range(num_trotter_steps):
+    circuit.rx(rx_angle, range(num_qubits))
+    for first_qubit in (1, 2):
+        for idx in range(first_qubit, num_qubits, 2):
+            # equivalent to Rzz(-pi/2):
+            circuit.sdg([idx - 1, idx])
+            circuit.cz(idx - 1, idx)
+circuit.compose(circuit.inverse(), inplace=True)
+circuit.measure_active()
+circuit.draw("mpl", fold=-1)
+```
+
+![Diagram Circuit kwantowego](./output_1.png)
+
+Następnie wybierzemy łańcuch Qubitów na ``ibm_kingston``, które zgłaszają niskie współczynniki błędów, i przeprowadzimy transpilację Circuit do Backend.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+backend_name = "ibm_kingston"
+service = QiskitRuntimeService()
+backend = service.backend(backend_name, use_fractional_gates=True)
+
+# Use a chain of low-noise qubits
+layout = [
+    44,
+    45,
+    46,
+    47,
+    57,
+    67,
+    68,
+    69,
+    78,
+    89,
+    88,
+    87,
+    97,
+    107,
+    106,
+    105,
+    117,
+    125,
+    126,
+    127,
+    128,
+    129,
+    118,
+    109,
+    110,
+    111,
+    98,
+    91,
+    92,
+    93,
+]
+
+pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+isa_circuit = pm.run(circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+isa_circuit.draw("mpl", fold=-1)
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 14:30:57,148: Loading account with the given token. A saved account will not be used.
+```
+
+![Diagram Circuit kwantowego](./output_2.png)
+
+### Twirlingowanie warstw 2-Qubitowych Gate i pomiarów oraz znajdowanie unikalnych warstw {#twirl-the-2-qubit-gate-layers-and-measurements-and-find-unique-layers}
+
+Tutaj upewniamy się, że menedżer przejść opatruje boxy adnotacjami ``Twirl`` i ``InjectNoise``, które pozwalają nam wyuczyć szum wpływający na nasz Circuit i powiązać ten szum z odpowiadającą mu warstwą Circuit.
+
+- ``enable_gates/enable_measure: True``: Opakuj wszystkie warstwy Gate 2Q i końcowe pomiary w boxy. Gate jednokubitowe będą lewostronnie ubierane wewnątrz boxów.
+- ``measure_annotations: all`` Dołącz adnotacje `Twirl` i `ChangeBasis` do boksa pomiaru.
+- ``twirling_strategy: active``: Twirlinguj wszystkie aktywne Qubity w każdym boksie zawierającym Gate splątujące.
+- ``inject_noise_targets: gates``: Adnotacje ``InjectNoise`` powinny być dodane do wszystkich boxów opatrzonych adnotacją ``Twirl``, zawierających Gate splątujące.
+- ``inject_noise_strategy: uniform_modification``: Wszystkie warstwy szumu powinny być skalowane równoważnie.
+
+```python
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Box up circuit with Twirl and InjectNoise annotations
+pm = generate_boxing_pass_manager(
+    enable_gates=True,
+    enable_measures=True,
+    measure_annotations="all",
+    twirling_strategy="active",
+    inject_noise_targets="gates",
+    inject_noise_strategy="uniform_modification",
+    remove_barriers=True,
+)
+boxed_circuit = pm.run(isa_circuit)
+```
+
+```python
+draw_circ = QuantumCircuit(boxed_circuit.num_qubits)
+draw_circ.append(boxed_circuit.data[0], qargs=boxed_circuit.data[0].qubits)
+draw_circ.append(boxed_circuit.data[1], qargs=boxed_circuit.data[1].qubits)
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Diagram Circuit kwantowego](./output_3.png)
+
+### Generowanie Circuit szablonu i samplex — definiowanie sposobu próbkowania Circuit {#generate-the-template-circuit-and-samplex-define-how-the-circuit-will-be-sampled}
+
+Tutaj dodajemy również pomiary spektatorów i post-selekcji, które są potrzebne do wykonania post-selekcji na próbkach wyjściowych z ``Executor``.
+
+```python
+import samplomatic
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+```
+
+# Dodaj instrukcje post-selekcji do szablonu Circuit
+
+```python
+# Add post-selection instructions to the template circuit
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+template_circuit = post_selection_pm.run(template_circuit)
+```
+
+```python
+draw_circ = template_circuit.copy_empty_like()
+draw_circ.data = template_circuit.data[:324]
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Diagram kwantowego Circuit](./output_4.png)
+
+#### Uczenie szumu {#learn-the-noise}
+
+Zanim uruchomimy eksperymenty, uczymy modelu szumu wpływającego na bramki splątujące i pomiary w Circuit. Posiadanie dokładnego modelu szumu jest niezbędne do skutecznego łagodzenia błędów. Uczenie szumu tuż przed wykonaniem eksperymentów daje najlepszą szansę na to, by model szumu wiernie opisywał rzeczywisty szum wpływający na bramki podczas wykonania.
+
+Zanim przystąpimy do uczenia szumu, musimy znaleźć unikalne warstwy 2-Qubitowe w naszym Circuit, aby zminimalizować liczbę strzałów potrzebnych do nauczenia szumu dla całego Circuit. Używamy ``find_unique_box_instructions`` z ``samplomatic``, aby dostarczyć nam unikalne warstwy z Circuit podzielonego na bloki, łącznie z warstwą pomiarową. To są warstwy, które przekazujemy do narzędzia do uczenia szumu.
+
+Gdy znamy już warstwy, możemy przystąpić do uczenia szumu. Jest kilka parametrów, które bierzemy pod uwagę:
+
+- `num_randomizations`: Liczba losowych Circuit używanych na każdą konfigurację Circuit uczącego
+- `shots_per_randomization`: Całkowita liczba strzałów używanych na każdy losowy Circuit uczący
+- `layer_pair_depths`: Głębokości Circuit (mierzone liczbą par) używane w eksperymentach uczących.
+- `post_selection`: Podczas uczenia będziemy używać post-selekcji opartej na krawędziach z użyciem bramek `rx` do implementacji impulsów po pomiarze
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.utils import find_unique_box_instructions
+
+# Load noise learner data from a shared job
+load_saved_nl_result = True
+
+# Noise learning parameters
+num_randomizations_nl = 64
+shots_per_randomization_nl = 128
+strategy = "edge"
+enable_postsel = True
+x_pulse_type = "rx"
+
+# Find the unique instructions (layers) from boxed-up circuit
+unique_2q_layers_and_meas = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+
+noise_learner_params = {
+    "num_randomizations": num_randomizations_nl,
+    "shots_per_randomization": shots_per_randomization_nl,
+    "layer_pair_depths": [1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    "post_selection": {
+        "enable": enable_postsel,
+        "strategy": strategy,
+        "x_pulse_type": x_pulse_type,
+    },
+    "experimental": {},
+}
+# set the options
+noise_learner_options = NoiseLearnerV3Options(**noise_learner_params)
+
+# run the noise learner job
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+noise_learner_job = noise_learner.run(unique_2q_layers_and_meas)
+noise_learner_result = noise_learner_job.result()
+
+nl_metadata = noise_learner_params | {"layout": layout}
+```
+
+```python
+import matplotlib.pyplot as plt
+
+hw_rates_1q = []
+hw_rates_2q = []
+for nlr in noise_learner_result[:2]:
+    plm_list = nlr.to_pauli_lindblad_map().to_sparse_list()
+    hw_rates_1q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 1]
+    hw_rates_2q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 2]
+hw_rates_1q = sorted(hw_rates_1q)
+hw_rates_2q = sorted(hw_rates_2q)
+median_1q = hw_rates_1q[len(hw_rates_1q) // 2]
+median_2q = hw_rates_2q[len(hw_rates_2q) // 2]
+fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+ax.scatter(
+    (hw_rates_1q),
+    [(i) / (len(hw_rates_1q) - 1) for i in range(len(hw_rates_1q))],
+    color="red",
+    label="1q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_1q, 0, 1, color="red")
+ax.text(median_1q * 1.1, 0.1, f"{median_1q:.2e}")
+ax.scatter(
+    (hw_rates_2q),
+    [(i) / (len(hw_rates_2q) - 1) for i in range(len(hw_rates_2q))],
+    color="blue",
+    label="2q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_2q, 0, 1, color="blue")
+ax.text(median_2q * 1.1, 0.2, f"{median_2q:.2e}")
+ax.set_title("Learned noise rates")
+ax.set_xlabel("Noise rate")
+ax.set_yticks([])
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x321dd63f0>
+```
+
+![Wynik wykresu](./output_5.png)
+
+#### Powiązanie bloków Circuit z nauczonym szumem {#associate-circuit-boxes-with-learned-noise}
+
+Tutaj tworzymy mapowanie między identyfikatorami referencyjnymi ``InjectNoise`` każdego bloku a nauczonym modelem szumu (`PauliLindbladMap`) wpływającym na bramki splątujące w tym bloku.
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### Propagacja obserwowalnej przez nauczony anty-szum w celu uzyskania obserwowalnej łagodzącej szum {#propagate-the-observable-through-the-learned-anti-noise-to-get-a-noise-mitigating-observable}
+
+Jak omówiono powyżej, odbywa się to w dwóch krokach. Najpierw propagujemy generator anty-szumu do końca Circuit. Następnie propagujemy obserwowalną przez ten wyewoluowany generator. Proces ten jest powtarzany dla każdego generatora anty-szumu w Circuit. W tej implementacji każdy generator w danej warstwie jest propagowany do końca Circuit równolegle. Dodatkowo, wieloprocesowość Pythona jest używana do wykonywania zarówno propagacji do przodu anty-szumu, jak i propagacji wstecznej obserwowalnej równolegle. Zapobiega to gromadzeniu się wyewoluowanych generatorów w pamięci i maksymalizuje wykorzystanie zasobów obliczeniowych.
+
+Podczas uruchamiania PNA zawsze musisz podać zaszumiony Circuit i obserwowalną. Jeśli twój zaszumiony Circuit jest Circuit podzielonym na bloki z adnotacjami `InjectNoise`, musisz podać mapowanie, które stworzyliśmy w powyższym kroku. Można też przekazać Circuit niepodzielony na bloki, zawierający instrukcje ``PauliLindbladError`` z ``qiskit-aer``. W takim przypadku nie trzeba podawać ``refs_to_noise_models``. Oprócz podstawowych danych wejściowych, użytkownicy powinni rozważyć:
+
+- `max_err_terms`: Liczba wyrazów do zachowania w każdym generatorze anty-szumu podczas jego propagacji do przodu. Pozwolenie na większą wartość generalnie zwiększa dokładność, choć takie zachowanie nie musi być monotonicznie zagwarantowane.
+- `max_obs_terms`: Liczba wyrazów do zachowania w obserwowalnej łagodzącej szum, $\tilde{O}$, podczas jej propagacji wstecznej przez wyewoluowany anty-szum. Większe wartości generalnie zwiększają dokładność, choć nie jest to monotonicznie gwarantowane.
+- `num_processes`: Liczba rdzeni dedykowanych do procesu. Pamiętaj, że generatory są propagowane do przodu i stosowane do obserwowalnej równolegle.
+- `search_step`: Krok propagacji wstecznej używa metody zachłannej do przybliżonego sprzężenia dwóch operatorów w bazie Pauliego. Metodę tę można przyspieszyć, zwiększając ``search_step``. Więcej informacji znajdziesz w [dokumentacji pauli-prop](https://qiskit.github.io/pauli-prop/).
+- `num_to_measure`: Choć ta zmienna nie jest wejściem do ``generate_noise_mitigating_observable``, używamy jej do kontrolowania, ile wyrazów z $\tilde{O}$ faktycznie chcemy mierzyć. Tutaj zmierzymy tylko 30 najważniejszych wyrazów, które są oryginalnymi wyrazami naszej obserwowalnej. Wyrazy te zostały teraz przeskalowane tak, że ich pomiar ma efekt łagodzenia nauczonych błędów bramek. Choć mierzymy tylko 30 wyrazów z $\tilde{O}$, często nadal warto pozwolić mu rosnąć, ponieważ zwiększa to precyzję współczynników skalowania wiodących wyrazów.
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
+Gotowe! Propagowano 13560 / 13560 generatorów.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![Wyjście wykresu](./output_6.png)
+
+#### Przekształcenie baz pomiarowych do postaci kanonicznej {#transform-the-measurement-bases-to-canonical-form}
+
+Następnie znajdziemy minimalny zestaw baz do pomiaru, który pozwoli w pełni pokryć każdy wyraz Pauliego w mierzonym obserwowalnym (***wiele obserwowalnych może być mierzonych jednocześnie, jeśli komutują one qubit po Qubit***). Ponieważ mierzymy wyłącznie wyrazy naszego oryginalnego obserwowalnego, będącego sumą wszystkich jednoQubitowych Paulich `Z`, wystarczy jedna baza — baza całkowicie-`Z`.
+
+Oprócz wyznaczenia zbioru baz pomiarowych Pauliego, musimy odwzorować te wyrazy na postać kanoniczną oczekiwaną przez prymityw ``Executor``. Więcej informacji na temat kanonicznego porządkowania Qubitów znajdziesz w [dokumentacji samplomatic](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention).
+
+```python
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}  # canonical -> physical
+p_2_v = {p: v for v, p in enumerate(layout)}  # physical -> virtual
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}  # canonical -> virtual
+meas_bases, bases_reverser = get_measurement_bases(obs_tilde_virtual)
+meas_bases_canonical = [
+    np.array([base[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base in meas_bases
+]
+```
+
+#### Określenie sposobu próbkowania w ``QuantumProgram`` {#specify-how-to-sample-in-the-quantumprogram}
+
+``QuantumProgram`` to miejsce, w którym określamy sposób próbkowania eksperymentu:
+
+- ``template_circuit``: Circuit zawierający wszystkie Gate konieczne do implementacji wszystkich pożądanych randomizacji (wynikające z randomizacji twirlingiem, parametrów itd.).
+- ``samplex``: Obiekt definiujący rozkład prawdopodobieństwa dla wszystkich możliwych randomizacji Circuit, z których będziemy próbkować.
+- ``samplex_arguments``: Przypisania niezbędne do pełnego zdefiniowania samplex:
+    - ``basis_changes``: Tu wskazujemy zestaw baz pomiarowych pokrywających wszystkie wyrazy Pauliego w mierzonym obserwowalnym.
+    - ``noise_scales.ref``: Ustawiamy skalę każdej warstwy szumu na `0.0`, aby zapobiec wprowadzaniu dodatkowego szumu do próbek.
+    - ``pauli_lindblad_maps``: Wymagane, gdy przekazywane są ``noise_scales``. Odwzorowuje warstwy szumu na powiązany model szumu.
+- ``shape``: Krotka kształtu rozszerzająca niejawny kształt zdefiniowany przez ``samplex_arguments``. Osie nie-trywialne wprowadzone przez to rozszerzenie enumerują randomizacje.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram
+
+# Kontroluj liczbę strzałów podczas wykonania
+shots_per_randomization_exec = 64
+num_randomizations_exec = 6144
+
+# Wyzeruj szum, aby zapobiec jego wprowadzaniu podczas wykonania.
+# Adnotacje InjectNoise dodaliśmy wyłącznie po to, aby PNA mogło
+# powiązać szum z warstwami Circuit
+samplex_inputs = {f"noise_scales.{ref}": 0.0 for ref in refs_to_noise_models}
+samplex_inputs |= {"pauli_lindblad_maps": refs_to_noise_models}
+
+# Określ bazy do pomiaru
+bases_broadcastable = np.expand_dims(np.array(meas_bases_canonical), axis=1)
+samplex_inputs |= {"basis_changes": {"basis0": bases_broadcastable}}
+
+# Przekształć samplex_inputs w słownik do przekazania do QuantumProgram
+samplex_arguments = samplex.inputs().make_broadcastable().bind(**samplex_inputs)
+
+# Utwórz instancję QuantumProgram z podanymi parametrami
+program = QuantumProgram(shots=shots_per_randomization_exec)
+program.append(
+    circuit=template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations_exec),
+)
+```
+
+#### Próbkowanie Circuit z użyciem prototypu prymitywu ``Executor`` {#sample-the-circuit-using-the-executor-primitive-prototype}
+
+Teraz, gdy zdefiniowaliśmy nasz ``QuantumProgram``, wykonanie eksperymentu jest proste. Wystarczy utworzyć instancję obiektu ``Executor``, podać mu Backend i uruchomić program.
+
+```python
+from qiskit_ibm_runtime import Executor
+
+# Wykonaj (próbkuj) Circuit
+executor = Executor(backend)
+job_exec = executor.run(program)
+exec_results = job_exec.result()
+```
+
+#### Przetwarzanie końcowe próbek w celu obliczenia wartości oczekiwanej z korekcją błędów {#post-process-the-samples-to-calculate-an-error-mitigated-expectation-value}
+
+Aby obliczyć wartość oczekiwaną z korekcją błędów, wykonamy następujące kroki:
+
+- Obliczymy czynniki skalujące TREX na podstawie wyuczonego szumu wpływającego na pomiary.
+- Wygenerujemy maskę służącą do zachowania wyłącznie próbek po post-selekcji.
+- Użyjemy funkcji ``executor_expectation_values`` z ``qiskit-addon-utils`` do połączenia wszystkich danych w wartość oczekiwaną z korekcją błędów.
+
+```python
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.noise_management import trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+
+# Obliczanie czynników TREX
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_rescale_factors = trex_factors(measurement_noise_map, bases_reverser)
+
+# Post-selekcja wyników
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit, coupling_map=backend.coupling_map
+)
+
+# Oblicz maskę post-selekcji do filtrowania wyników
+mask = post_selector.compute_mask(exec_results[0], strategy="edge")
+
+# Oblicz wartości oczekiwane na podstawie wyników po post-selekcji
+results = executor_expectation_values(
+    exec_results[0]["meas"],
+    bases_reverser,
+    meas_basis_axis=0,
+    avg_axis=1,
+    measurement_flips=exec_results[0]["measurement_flips.meas"],
+    pauli_signs=exec_results[0].get("pauli_signs", None),
+    postselect_mask=mask,
+    rescale_factors=trex_rescale_factors,
+)
+```
+
+```python
+bases_reverser_unmit = {Pauli("Z" * num_qubits): [observable]}
+args = [
+    (bases_reverser_unmit, None, None),
+    (bases_reverser, None, None),
+    (bases_reverser, None, trex_rescale_factors),
+    (bases_reverser, mask, None),
+    (bases_reverser, mask, trex_rescale_factors),
+]
+
+evs = []
+for reverser, postsel_mask, factors in args:
+    # Oblicz wartości oczekiwane na podstawie wyników po post-selekcji
+    res_ps = executor_expectation_values(
+        exec_results[0]["meas"],
+        reverser,
+        meas_basis_axis=0,
+        avg_axis=1,
+        measurement_flips=exec_results[0]["measurement_flips.meas"],
+        pauli_signs=exec_results[0].get("pauli_signs", None),
+        postselect_mask=postsel_mask,
+        rescale_factors=factors,
+    )
+    res_ps = np.array(res_ps)
+    evs.append(res_ps[:, 0][0])
+
+experiments = ["PNA", "PNA+TREX", "PNA+PS", "PNA+PS+TREX"]
+colors = ["#d9d9d9", "#b0b0b0", "#7f7f7f", "#4c4c4c"]
+plt.bar(experiments, evs[1:], color=colors)
+plt.axhline(y=1, color="green", linestyle="--", linewidth=2, label="Ideal")
+plt.axhline(y=evs[0], color="red", linestyle="--", linewidth=2, label="Unmitigated")
+plt.ylabel("Expectation value", fontsize=14)
+
+plt.title(r"30q Mirrored Ising, 10 Trotter steps, $\theta_{rx}=\frac{\pi}{8}$", fontsize=14)
+plt.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+![Wyjście wykresu](./output_7.png)
+
+<TutorialFeedback />
