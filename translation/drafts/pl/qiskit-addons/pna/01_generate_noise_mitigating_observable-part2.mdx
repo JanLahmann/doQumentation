@@ -1,0 +1,183 @@
+
+# Dodaj instrukcje post-selekcji do szablonu Circuit
+
+```python
+# Add post-selection instructions to the template circuit
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+template_circuit = post_selection_pm.run(template_circuit)
+```
+
+```python
+draw_circ = template_circuit.copy_empty_like()
+draw_circ.data = template_circuit.data[:324]
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Diagram kwantowego Circuit](./output_4.png)
+
+#### Uczenie szumu {#learn-the-noise}
+
+Zanim uruchomimy eksperymenty, uczymy modelu szumu wpływającego na bramki splątujące i pomiary w Circuit. Posiadanie dokładnego modelu szumu jest niezbędne do skutecznego łagodzenia błędów. Uczenie szumu tuż przed wykonaniem eksperymentów daje najlepszą szansę na to, by model szumu wiernie opisywał rzeczywisty szum wpływający na bramki podczas wykonania.
+
+Zanim przystąpimy do uczenia szumu, musimy znaleźć unikalne warstwy 2-Qubitowe w naszym Circuit, aby zminimalizować liczbę strzałów potrzebnych do nauczenia szumu dla całego Circuit. Używamy ``find_unique_box_instructions`` z ``samplomatic``, aby dostarczyć nam unikalne warstwy z Circuit podzielonego na bloki, łącznie z warstwą pomiarową. To są warstwy, które przekazujemy do narzędzia do uczenia szumu.
+
+Gdy znamy już warstwy, możemy przystąpić do uczenia szumu. Jest kilka parametrów, które bierzemy pod uwagę:
+
+- `num_randomizations`: Liczba losowych Circuit używanych na każdą konfigurację Circuit uczącego
+- `shots_per_randomization`: Całkowita liczba strzałów używanych na każdy losowy Circuit uczący
+- `layer_pair_depths`: Głębokości Circuit (mierzone liczbą par) używane w eksperymentach uczących.
+- `post_selection`: Podczas uczenia będziemy używać post-selekcji opartej na krawędziach z użyciem bramek `rx` do implementacji impulsów po pomiarze
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.utils import find_unique_box_instructions
+
+# Load noise learner data from a shared job
+load_saved_nl_result = True
+
+# Noise learning parameters
+num_randomizations_nl = 64
+shots_per_randomization_nl = 128
+strategy = "edge"
+enable_postsel = True
+x_pulse_type = "rx"
+
+# Find the unique instructions (layers) from boxed-up circuit
+unique_2q_layers_and_meas = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+
+noise_learner_params = {
+    "num_randomizations": num_randomizations_nl,
+    "shots_per_randomization": shots_per_randomization_nl,
+    "layer_pair_depths": [1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    "post_selection": {
+        "enable": enable_postsel,
+        "strategy": strategy,
+        "x_pulse_type": x_pulse_type,
+    },
+    "experimental": {},
+}
+# set the options
+noise_learner_options = NoiseLearnerV3Options(**noise_learner_params)
+
+# run the noise learner job
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+noise_learner_job = noise_learner.run(unique_2q_layers_and_meas)
+noise_learner_result = noise_learner_job.result()
+
+nl_metadata = noise_learner_params | {"layout": layout}
+```
+
+```python
+import matplotlib.pyplot as plt
+
+hw_rates_1q = []
+hw_rates_2q = []
+for nlr in noise_learner_result[:2]:
+    plm_list = nlr.to_pauli_lindblad_map().to_sparse_list()
+    hw_rates_1q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 1]
+    hw_rates_2q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 2]
+hw_rates_1q = sorted(hw_rates_1q)
+hw_rates_2q = sorted(hw_rates_2q)
+median_1q = hw_rates_1q[len(hw_rates_1q) // 2]
+median_2q = hw_rates_2q[len(hw_rates_2q) // 2]
+fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+ax.scatter(
+    (hw_rates_1q),
+    [(i) / (len(hw_rates_1q) - 1) for i in range(len(hw_rates_1q))],
+    color="red",
+    label="1q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_1q, 0, 1, color="red")
+ax.text(median_1q * 1.1, 0.1, f"{median_1q:.2e}")
+ax.scatter(
+    (hw_rates_2q),
+    [(i) / (len(hw_rates_2q) - 1) for i in range(len(hw_rates_2q))],
+    color="blue",
+    label="2q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_2q, 0, 1, color="blue")
+ax.text(median_2q * 1.1, 0.2, f"{median_2q:.2e}")
+ax.set_title("Learned noise rates")
+ax.set_xlabel("Noise rate")
+ax.set_yticks([])
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x321dd63f0>
+```
+
+![Wynik wykresu](./output_5.png)
+
+#### Powiązanie bloków Circuit z nauczonym szumem {#associate-circuit-boxes-with-learned-noise}
+
+Tutaj tworzymy mapowanie między identyfikatorami referencyjnymi ``InjectNoise`` każdego bloku a nauczonym modelem szumu (`PauliLindbladMap`) wpływającym na bramki splątujące w tym bloku.
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### Propagacja obserwowalnej przez nauczony anty-szum w celu uzyskania obserwowalnej łagodzącej szum {#propagate-the-observable-through-the-learned-anti-noise-to-get-a-noise-mitigating-observable}
+
+Jak omówiono powyżej, odbywa się to w dwóch krokach. Najpierw propagujemy generator anty-szumu do końca Circuit. Następnie propagujemy obserwowalną przez ten wyewoluowany generator. Proces ten jest powtarzany dla każdego generatora anty-szumu w Circuit. W tej implementacji każdy generator w danej warstwie jest propagowany do końca Circuit równolegle. Dodatkowo, wieloprocesowość Pythona jest używana do wykonywania zarówno propagacji do przodu anty-szumu, jak i propagacji wstecznej obserwowalnej równolegle. Zapobiega to gromadzeniu się wyewoluowanych generatorów w pamięci i maksymalizuje wykorzystanie zasobów obliczeniowych.
+
+Podczas uruchamiania PNA zawsze musisz podać zaszumiony Circuit i obserwowalną. Jeśli twój zaszumiony Circuit jest Circuit podzielonym na bloki z adnotacjami `InjectNoise`, musisz podać mapowanie, które stworzyliśmy w powyższym kroku. Można też przekazać Circuit niepodzielony na bloki, zawierający instrukcje ``PauliLindbladError`` z ``qiskit-aer``. W takim przypadku nie trzeba podawać ``refs_to_noise_models``. Oprócz podstawowych danych wejściowych, użytkownicy powinni rozważyć:
+
+- `max_err_terms`: Liczba wyrazów do zachowania w każdym generatorze anty-szumu podczas jego propagacji do przodu. Pozwolenie na większą wartość generalnie zwiększa dokładność, choć takie zachowanie nie musi być monotonicznie zagwarantowane.
+- `max_obs_terms`: Liczba wyrazów do zachowania w obserwowalnej łagodzącej szum, $\tilde{O}$, podczas jej propagacji wstecznej przez wyewoluowany anty-szum. Większe wartości generalnie zwiększają dokładność, choć nie jest to monotonicznie gwarantowane.
+- `num_processes`: Liczba rdzeni dedykowanych do procesu. Pamiętaj, że generatory są propagowane do przodu i stosowane do obserwowalnej równolegle.
+- `search_step`: Krok propagacji wstecznej używa metody zachłannej do przybliżonego sprzężenia dwóch operatorów w bazie Pauliego. Metodę tę można przyspieszyć, zwiększając ``search_step``. Więcej informacji znajdziesz w [dokumentacji pauli-prop](https://qiskit.github.io/pauli-prop/).
+- `num_to_measure`: Choć ta zmienna nie jest wejściem do ``generate_noise_mitigating_observable``, używamy jej do kontrolowania, ile wyrazów z $\tilde{O}$ faktycznie chcemy mierzyć. Tutaj zmierzymy tylko 30 najważniejszych wyrazów, które są oryginalnymi wyrazami naszej obserwowalnej. Wyrazy te zostały teraz przeskalowane tak, że ich pomiar ma efekt łagodzenia nauczonych błędów bramek. Choć mierzymy tylko 30 wyrazów z $\tilde{O}$, często nadal warto pozwolić mu rosnąć, ponieważ zwiększa to precyzję współczynników skalowania wiodących wyrazów.
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
