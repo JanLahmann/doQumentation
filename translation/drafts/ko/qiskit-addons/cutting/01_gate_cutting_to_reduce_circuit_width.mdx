@@ -1,0 +1,219 @@
+---
+title: "회로 폭을 줄이기 위한 게이트 커팅"
+sidebar_label: "회로 폭을 줄이기 위한 게이트 커팅"
+notebook_path: "qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb" />
+
+
+이 노트북에서는 **회로 커팅(circuit cutting)** 을 사용하여 회로의 큐비트 수를 줄이는 과정을 [Qiskit 패턴](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)의 단계에 따라 진행합니다. 게이트를 커팅하여 2큐비트 실험만으로 4큐비트 회로의 기댓값을 재구성할 수 있도록 만들겠습니다.
+
+다음 단계를 따라 진행합니다.
+
+- **1단계: 문제를 양자 회로와 연산자로 매핑**:
+    - 해밀토니안을 양자 회로에 매핑합니다.
+- **2단계: 타겟 하드웨어에 맞게 최적화** [_커팅 애드온 사용_]:
+    - <font color='#0F62FE'>회로와 관측가능량을 커팅합니다.</font>
+    - 하드웨어에 맞게 서브실험을 트랜스파일합니다.
+- **3단계: 타겟 하드웨어에서 실행**:
+    - 2단계에서 얻은 서브실험을 `Sampler` 프리미티브를 사용하여 실행합니다.
+- **4단계: 결과 후처리** [_커팅 애드온 사용_]:
+    - <font color='#0F62FE'>3단계의 결과를 결합하여 대상 관측가능량의 기댓값을 재구성합니다.</font>
+## 1단계: 매핑 {#step-1-map}
+
+### 커팅할 회로 생성 {#create-a-circuit-to-cut}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(4, entanglement="linear", reps=2)
+qc.assign_parameters([0.4] * len(qc.parameters), inplace=True)
+
+qc.draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./output_1.png)
+
+### 관측가능량 지정 {#specify-an-observable}
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+```
+
+## 2단계: 최적화 {#step-2-optimize}
+
+### 지정된 큐비트 분할에 따라 회로와 관측가능량 분리 {#separate-the-circuit-and-observable-according-to-a-specified-qubit-partitioning}
+
+`partition_labels`의 각 레이블은 동일한 인덱스의 `circuit` Qubit에 대응합니다. 공통된 분할 레이블을 공유하는 Qubit들은 함께 그룹화되며, 여러 분할에 걸쳐 있는 비로컬 게이트는 커팅됩니다.
+
+**참고:** `partition_problem`의 ``observables`` 키워드 인자는 `PauliList` 타입입니다. 관측가능량 항의 계수와 위상은 문제 분해 및 서브실험 실행 중에는 무시됩니다. 이들은 기댓값 재구성 시 다시 적용될 수 있습니다.
+
+```python
+from qiskit_addon_cutting import partition_problem
+
+partitioned_problem = partition_problem(
+    circuit=qc, partition_labels="AABB", observables=observable.paulis
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+```
+
+### 분해된 문제 시각화 {#visualize-the-decomposed-problem}
+
+```python
+subobservables
+```
+
+```text
+{'A': PauliList(['II', 'ZI', 'ZZ', 'XI', 'ZZ', 'IX']),
+ 'B': PauliList(['ZZ', 'IZ', 'II', 'XI', 'ZI', 'IX'])}
+```
+
+```python
+subcircuits["A"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+```python
+subcircuits["B"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+### 선택된 커팅에 대한 샘플링 오버헤드 계산 {#calculate-the-sampling-overhead-for-the-chosen-cuts}
+
+여기서는 두 개의 CNOT Gate를 커팅하여 $9^2$의 샘플링 오버헤드가 발생합니다.
+
+회로 커팅에서 발생하는 샘플링 오버헤드에 대한 자세한 내용은 [설명 자료](../explanation/index.rst)를 참고하시기 바랍니다.
+
+```python
+import numpy as np
+
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 81.0
+```
+
+### Backend에서 실행할 서브실험 생성 {#generate-the-subexperiments-to-run-on-the-backend}
+
+`generate_cutting_experiments`는 `circuits`/`observables` 인자를 Qubit 분할 레이블과 각각의 `subcircuit`/`subobservables`를 매핑하는 딕셔너리로 받습니다.
+
+전체 크기 회로의 기댓값을 시뮬레이션하기 위해, 분해된 게이트들의 결합 준확률 분포로부터 다수의 서브실험이 생성되고 하나 이상의 Backend에서 실행됩니다. 분포에서 추출되는 샘플의 수는 `num_samples`로 제어되며, 각 고유 샘플마다 결합된 하나의 계수가 주어집니다. 계수가 계산되는 방식에 대한 자세한 내용은 [설명 자료](../explanation/index.rst)를 참고하시기 바랍니다.
+
+```python
+from qiskit_addon_cutting import generate_cutting_experiments
+
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits, observables=subobservables, num_samples=np.inf
+)
+```
+
+### Backend 선택 {#choose-a-backend}
+
+여기서는 가짜 Backend를 사용하며, 그 결과 Qiskit Runtime이 로컬 모드(즉, 로컬 시뮬레이터)에서 실행됩니다.
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+
+backend = FakeManilaV2()
+```
+
+### Backend용 서브실험 준비 {#prepare-the-subexperiments-for-the-backend}
+
+Qiskit Runtime에 제출하기 전에 Backend를 타겟으로 하여 회로를 트랜스파일해야 합니다.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+# Transpile the subexperiments to ISA circuits
+pass_manager = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_subexperiments = {
+    label: pass_manager.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+## 3단계: 실행 {#step-3-execute}
+
+### Qiskit Runtime Sampler 프리미티브를 사용하여 서브실험 실행 {#run-the-subexperiments-using-the-qiskit-runtime-sampler-primitive}
+
+```python
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+# Submit each partition's subexperiments to the Qiskit Runtime Sampler
+# primitive, in a single batch so that the jobs will run back-to-back.
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+```text
+/home/garrison/Qiskit/qiskit-ibm-runtime/qiskit_ibm_runtime/session.py:157: UserWarning: Session is not supported in local testing mode or when using a simulator.
+  warnings.warn(
+```
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+## 4단계: 후처리 {#step-4-post-process}
+
+### 기댓값 재구성 {#reconstruct-the-expectation-value}
+
+각 관측가능량 항에 대한 기댓값을 재구성하고 이를 결합하여 원래 관측가능량의 기댓값을 재구성합니다.
+
+```python
+from qiskit_addon_cutting import reconstruct_expectation_values
+
+# Get expectation values for each observable term
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+```
+
+### 재구성된 기댓값과 원래 회로 및 관측가능량의 정확한 기댓값 비교 {#compare-the-reconstructed-expectation-value-with-the-exact-expectation-value-from-the-original-circuit-and-observable}
+
+```python
+from qiskit_aer.primitives import EstimatorV2
+
+estimator = EstimatorV2()
+exact_expval = estimator.run([(qc, observable)]).result()[0].data.evs
+print(f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}")
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}")
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.6991539
+Exact expectation value: 0.56254612
+Error in estimation: 0.13660778
+Relative error in estimation: 0.24283836
+```
+
+<TutorialFeedback />
