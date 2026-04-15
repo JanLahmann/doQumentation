@@ -1,0 +1,194 @@
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# plain PEC
+
+# Zbierz słownik pozostałych argumentów, które należy powiązać z samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Przekształć samplex_inputs w słownik do przekazania do QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# PEC+SLC
+
+# Zbierz słownik pozostałych argumentów, które należy powiązać z samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+samplex_inputs |= {"local_scales": local_scales}
+
+# Przekształć samplex_inputs w słownik do przekazania do QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+```
+
+#### c.iii. Wykonaj program za pomocą prymitywu `Executor` {#c-iii-execute-program-with-the-executor-primitive}
+
+```python
+executor = Executor(backend)
+```
+
+```python
+load_cached_executor_results = True
+```
+
+```python
+if load_cached_executor_results:
+    job_exec = shared_service.job("d46t1q6qsa9s73cb28g0")
+else:
+    job_exec = executor.run(program)
+```
+
+```python
+results_exec = job_exec.result()
+```
+
+## Krok 4. Post-processing {#step-4-post-process}
+
+Obliczając końcową wartość oczekiwaną za pomocą `expectation_values`, zastosujemy kilka korzystnych technik post-processingu, aby zapewnić jak najwyższą jakość wyników. Najpierw stosujemy [mitigację odczytu metodą twirl, TREX](https://quantum.cloud.ibm.com/docs/guides/error-mitigation-and-suppression-techniques#twirled-readout-error-extinction-trex), która uwzględnia błędy powstające podczas procesu odczytu. Następnie naprawiamy błędy wynikające z szumu nie-Markowskiego na naszych Backendach Heron, stosując metodę post-selekcji. Metoda ta mierzy aktywne i widmowe Qubity, a następnie stosuje powolną rotację dla każdego Qubitu i ponownie wykonuje pomiar. W przypadkach, gdy dwa pomiary nie potwierdzają oczekiwanego przerzucenia Qubitu, te strzały (shots) są odrzucane przez zastosowanie `mask` z funkcji `PostSelector`. W ramach obliczania maski można ustawić konkretną strategię filtrowania na podstawie węzłów pojedynczego Qubitu lub krawędzi sąsiednich Qubitów widmowych, co może wpływać zarówno na liczbę odfiltrowanych strzałów, jak i na jakość wyników.
+
+```python
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_scale_factors = trex_factors(measurement_noise_map, reverser_virt)
+```
+
+```python
+post_selection_strategy = "node"
+```
+
+```python
+def post_process_conv(datum, steps=16, gamma=None, ps=False, trex=False):
+    meas = datum["meas"]
+    flips = datum["measurement_flips.meas"]
+    signs = datum.get("pauli_signs", None)
+
+    meas_basis_axis = None
+    avg_axis = 0
+
+    mask = None
+    if ps and post_selection_enabled:
+        # Post-selekcja wyników
+        post_selector = PostSelector.from_circuit(
+            circuit=final_template_circuit, coupling_map=backend.coupling_map
+        )
+
+        # Oblicz maskę ps do filtrowania wyników
+        mask = post_selector.compute_mask(datum, strategy=post_selection_strategy)
+
+        # Oblicz odsetek zachowanych strzałów po post-selekcji
+        total_num_shots = num_randomizations * shots_per_randomization
+        ps_ratio = np.sum(mask) * 100 / total_num_shots / len(bases_canon)
+        print(
+            f"With {post_selection_strategy}-based post selection ({ps_ratio:.1f}% of shots kept):"
+        )
+
+    results = []
+    for i in range(steps, num_randomizations + 1, steps):
+        # Oblicz mitigowane wartości oczekiwane bez post-selekcji
+        res = executor_expectation_values(
+            meas[:i],
+            reverser_virt,
+            meas_basis_axis,
+            avg_axis=avg_axis,
+            measurement_flips=flips[:i],
+            pauli_signs=signs[:i] if signs is not None else None,
+            postselect_mask=mask[:i] if mask is not None else None,
+            rescale_factors=trex_scale_factors if trex else None,
+            gamma_factor=gamma,
+        )
+        results.append(res[0])
+    return results
+```
+
+```python
+gamma_pec = gamma_from_noisy_boxes(refs_2_plm, id_map)
+gamma_slc = gamma_from_noisy_boxes(refs_2_plm, id_map, local_scales)
+```
+
+```python
+steps = 16
+```
+
+```python
+results = {}
+
+for label, result_idx, gamma, use_ps, use_trex in [
+    ("PEC", 1, gamma_pec, True, True),
+    ("PEC+SLC", 2, gamma_slc, True, True),
+    ("Unmitigated", 0, None, False, False),
+]:
+    res = post_process_conv(
+        results_exec[result_idx], steps=steps, gamma=gamma, ps=use_ps, trex=use_trex
+    )
+    results[label] = res
+```
+
+```text
+With node-based post selection (27.0% of shots kept):
+With node-based post selection (26.8% of shots kept):
+```
+
+Na podstawie analizy wyników eksperymentalnych możemy bezpośrednio porównać zachowanie różnych podejść: PEC, PEC w połączeniu z SLC oraz wartości bazowe bez mitigacji. Kilka szczegółów wartych podkreślenia:
+
+- Wyniki bez mitigacji pozostają poza pożądanym zakresem odchylenia i nie są wrażliwe na narzut związany z próbkowaniem.
+- Przy wysokim koszcie próbkowania obliczonym powyżej (~10k) samo PEC nie zbiega się w granicach użytej liczby randomizacji.
+- PEC + SLC natomiast zbiega się znacznie szybciej.
+- Granice błędów maleją też zdecydowanie szybciej dla PEC + SLC niż dla samego PEC.
+
+```python
+fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+
+ax.axhline(1.0, color="black", label="Exact")
+ax.fill_between([-50, 4100], -10, 0, color="grey", alpha=0.25, label="Unphysical")
+ax.fill_between([-50, 4100], 1, 10, color="grey", alpha=0.25)
+ax.fill_between([-50, 4100], 0.9, 1.1, color="red", alpha=0.25, label="10% bias")
+
+for label, res in results.items():
+    ax.errorbar(
+        list(range(steps, num_randomizations + 1, steps)),
+        [r[0] for r in res],
+        yerr=[r[1] for r in res],
+        alpha=0.75,
+        marker="o",
+        linestyle="",
+        markerfacecolor="none",
+        label=label,
+    )
+
+ax.set_ylabel(r"$\langle X_{6}Z_{13}\rangle$")
+ax.set_xlabel("# randomizations")
+ax.grid()
+
+ax.legend(ncols=2)
+ax.set_ylim([-0.1, 2.0])
+ax.set_xlim([-50, 4100])
+```
+
+```text
+(-50.0, 4100.0)
+```
+
+![Wynik wykresu](./output_20.png)
+
+<TutorialFeedback />
