@@ -1,47 +1,40 @@
 ---
-title: "Reducing circuit depth with the AQC-Tensor Qiskit addon"
-sidebar_label: "Reducing circuit depth with the AQC-Tensor Qiskit addon"
+title: "AQC-Tensor Qiskit 애드온으로 Circuit 깊이 줄이기"
+sidebar_label: "AQC-Tensor Qiskit 애드온으로 Circuit 깊이 줄이기"
 notebook_path: "qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb"
 ---
-{/* doqumentation-untranslated-fallback */}
-
-:::note[번역 미완료]
-이 페이지는 아직 한국어로 번역되지 않았습니다. 영어 원본을 보고 있습니다.
-:::
-
-
 
 import TutorialFeedback from '@site/src/components/TutorialFeedback';
 
 <OpenInLabBanner notebookPath="qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb" />
 
 
-In this notebook, we will work through the steps of a [Qiskit pattern](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) while using **approximate quantum compilation with tensor networks (AQC-Tensor)** to achieve a lower circuit depth than would ordinarily be needed to perform Trotter evolution.
+이 노트북에서는 **tensor 네트워크를 사용한 근사 양자 컴파일(AQC-Tensor)** 을 활용하여 일반적으로 Trotter 시간 발전을 수행하는 데 필요한 것보다 더 낮은 Circuit 깊이를 달성하면서 [Qiskit 패턴](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)의 각 단계를 차례로 진행합니다.
 
-These are the steps that we will take:
+다음과 같은 단계를 진행합니다:
 
-- **Step 1: Map to quantum problem**
-    - Initialize our problem's Hamiltonian and observable(s)
-    - <font color='#0F62FE'>Generate a target tensor-network state for the initial portion of the circuit</font>
-    - <font color='#0F62FE'>Generate a low-depth circuit which approximates the portion being compressed</font>
-    - <font color='#0F62FE'>Generate a general ansatz from that circuit</font>
-    - <font color='#0F62FE'>Optimize the parameters to bring the ansatz as close as possible to the target</font>
-    - <font color='#0F62FE'>Add subsequent Trotter steps to the optimized ansatz</font>
-- **Step 2: Optimize for target hardware**
-    - Transpile the circuit for hardware
-- **Step 3: Execute experiments**
-    - Use a fake backend for simplicity
-- **Step 4: Reconstruct results**
-    - N/A; instead, we just output the measured observable
-## Step 1: Map to quantum circuit and operator
+- **1단계: 양자 문제로 매핑**
+    - 문제의 Hamiltonian과 관측량(observable)을 초기화합니다
+    - <font color='#0F62FE'>Circuit의 초기 부분에 대한 목표 tensor 네트워크 상태를 생성합니다</font>
+    - <font color='#0F62FE'>압축될 부분을 근사하는 낮은 깊이의 Circuit을 생성합니다</font>
+    - <font color='#0F62FE'>해당 Circuit으로부터 일반적인 ansatz를 생성합니다</font>
+    - <font color='#0F62FE'>ansatz가 목표에 최대한 가까워지도록 매개변수를 최적화합니다</font>
+    - <font color='#0F62FE'>최적화된 ansatz에 이후의 Trotter 단계를 추가합니다</font>
+- **2단계: 목표 하드웨어에 맞게 최적화**
+    - 하드웨어용 Circuit을 Transpile합니다
+- **3단계: 실험 실행**
+    - 간편함을 위해 가짜 Backend를 사용합니다
+- **4단계: 결과 재구성**
+    - 해당 없음; 대신 측정된 관측량만 출력합니다
+## 1단계: 양자 Circuit 및 연산자로 매핑 {#step-1-map-to-quantum-circuit-and-operator}
 
-### Set up a model Hamiltonian and observable
+### 모델 Hamiltonian과 관측량 설정 {#set-up-a-model-hamiltonian-and-observable}
 
-In this notebook, we use the Ising model on a circle of 10 sites:
+이 노트북에서는 10개 사이트의 원 위에서 Ising 모델을 사용합니다:
 $$
 \hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{10} J_{i,(i+1)} Z_i Z_{(i+1)} + h_i X_i \, ,
 $$
-where the periodic boundary conditions imply that for $i=10$ we obtain $i+1=11\rightarrow1$, $J$ is the coupling strength between two sites and $h$ is the external magnetic field.
+여기서 주기적 경계 조건에 의해 $i=10$일 때 $i+1=11\rightarrow1$이 되고, $J$는 두 사이트 간의 결합 강도, $h$는 외부 자기장입니다.
 
 ```python
 # Added by doQumentation — required packages for this notebook
@@ -66,7 +59,7 @@ hamiltonian = generate_xyz_hamiltonian(
 )
 ```
 
-The observable we will measure is the total magnetization.
+측정할 관측량은 총 자화(total magnetization)입니다.
 
 ```python
 from qiskit.quantum_info import SparsePauliOp
@@ -75,18 +68,18 @@ L = reduced_coupling_map.size()
 observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
 ```
 
-### Determine how much of the time evolution to simulate classically
+### 고전적으로 시뮬레이션할 시간 발전의 범위 결정 {#determine-how-much-of-the-time-evolution-to-simulate-classically}
 
-Our overall goal is to simulate time evolution of the above model Hamiltonian.  We do so by Trotter evolution, which we split into two portions:
+전체적인 목표는 위 모델 Hamiltonian의 시간 발전을 시뮬레이션하는 것입니다. 이를 Trotter 시간 발전으로 수행하며, 두 부분으로 나눕니다:
 
-1. An initial portion that is simulable with matrix product states (MPS).  We will "compile" this portion using AQC as presented in https://arxiv.org/abs/2301.08609.
-2. A subsequent portion of the circuit that will be executed on hardware.
-Let's plan to use AQC-Tensor to compress our time evolution circuit up to time $t=4$, then evolve using ordinary Trotter steps up to $t=5$.
-### Generate circuits before and after split
+1. 행렬곱 상태(MPS, matrix product states)로 시뮬레이션 가능한 초기 부분. 이 부분은 https://arxiv.org/abs/2301.08609 에 제시된 바와 같이 AQC를 사용하여 "컴파일"합니다.
+2. 하드웨어에서 실행될 Circuit의 이후 부분.
+AQC-Tensor를 사용해 시간 $t=4$까지의 시간 발전 Circuit을 압축한 다음, $t=5$까지는 일반적인 Trotter 단계로 발전시키는 계획을 세워봅시다.
+### 분할 전후의 Circuit 생성 {#generate-circuits-before-and-after-split}
 
-Now that we have chosen to split at $t=4$, we will generate two circuits:
+이제 $t=4$에서 분할하기로 결정했으므로, 두 개의 Circuit을 생성합니다:
 
-1. A "target" circuit for the AQC portion of the evolution, from $t_i=0$ to $t_f=4$.  Because this is being simulated by a tensor-network simulator, the number of layers affects execution time only by a constant factor, so we might as well use a generous number of layers to minimize Trotter error.
+1. $t_i=0$에서 $t_f=4$까지 발전의 AQC 부분에 대한 "목표" Circuit. 이는 tensor 네트워크 시뮬레이터로 시뮬레이션되기 때문에, 레이어 수는 실행 시간에 상수 배 만큼만 영향을 주므로 Trotter 오차를 최소화하기 위해 넉넉한 수의 레이어를 사용하는 것이 좋습니다.
 
 ```python
 from qiskit.synthesis import SuzukiTrotter
@@ -102,7 +95,7 @@ aqc_target_circuit = generate_time_evolution_circuit(
 )
 ```
 
-2. A subsequent evolution circuit, which evolves from $t_i=4$ to $t_f=5$.  Because this is being run on quantum hardware, it is desirable to use as few Trotter layers as possible.
+2. $t_i=4$에서 $t_f=5$까지 발전하는 후속 발전 Circuit. 이는 양자 하드웨어에서 실행되므로 Trotter 레이어를 가능한 한 적게 사용하는 것이 바람직합니다.
 
 ```python
 subsequent_evolution_time = 1.0
@@ -115,7 +108,7 @@ subsequent_circuit = generate_time_evolution_circuit(
 )
 ```
 
-For the sake of later comparison, let's also generate a third circuit: one that evolves for `aqc_evolution_time` but which has the same evolution time per Trotter step as the subsequent circuit.  This is the circuit we would have working with had we not used a generous number of Trotter steps for the target circuit.  We will refer to this as the _comparison circuit_.
+나중에 비교할 수 있도록 세 번째 Circuit도 생성합니다: `aqc_evolution_time` 동안 발전하지만 Trotter 단계당 발전 시간이 후속 Circuit과 동일한 Circuit입니다. 이는 목표 Circuit에 넉넉한 수의 Trotter 단계를 사용하지 않았다면 사용하게 되었을 Circuit입니다. 이를 _비교 Circuit(comparison circuit)_ 이라 부릅니다.
 
 ```python
 aqc_comparison_num_trotter_steps = int(
@@ -136,15 +129,15 @@ comparison_circuit = generate_time_evolution_circuit(
 )
 ```
 
-### Generate an ansatz and initial parameters from a Trotter circuit with fewer steps
+### 더 적은 단계의 Trotter Circuit으로부터 ansatz와 초기 매개변수 생성 {#generate-an-ansatz-and-initial-parameters-from-a-trotter-circuit-with-fewer-steps}
 
-First, we construct a "good" circuit that has the same evolution time as the target circuit, but with fewer Trotter steps (and thus fewer layers).
+먼저, 목표 Circuit과 동일한 발전 시간을 가지지만 더 적은 Trotter 단계(따라서 더 적은 레이어)를 가지는 "좋은" Circuit을 구성합니다.
 
-Then we pass this "good" circuit to AQC-Tensor's `generate_ansatz_from_circuit` function.  This function analyzes the two-qubit connectivity of the circuit and returns two things:
-1. a general, parametrized ansatz circuit with the same two-qubit connectivity as the input circuit; and,
-2. parameters that, when plugged into the ansatz, yield the input (good) circuit.
+그런 다음 이 "좋은" Circuit을 AQC-Tensor의 `generate_ansatz_from_circuit` 함수에 전달합니다. 이 함수는 Circuit의 2-Qubit 연결성을 분석하여 두 가지를 반환합니다:
+1. 입력 Circuit과 동일한 2-Qubit 연결성을 가진 일반적인 매개변수화된 ansatz Circuit; 그리고,
+2. ansatz에 대입하면 입력("좋은") Circuit을 산출하는 매개변수.
 
-Soon we will take these parameters and iteratively adjust them to bring the ansatz circuit as close as possible to the target MPS.
+곧 이 매개변수를 가져와 반복적으로 조정하여 ansatz Circuit을 목표 MPS에 최대한 가깝게 만들 것입니다.
 
 ```python
 from qiskit_addon_aqc_tensor import generate_ansatz_from_circuit
@@ -177,9 +170,9 @@ Target circuit: depth 270
 Ansatz circuit: depth 23, with 515 parameters
 ```
 
-### Choose settings for tensor network simulation
+### tensor 네트워크 시뮬레이션 설정 선택 {#choose-settings-for-tensor-network-simulation}
 
-Here, we use the tensor network simulator based on [quimb](http://quimb.readthedocs.io/). In this example, we use quimb's matrix-product state (MPS) simulator, and we use [JAX](https://docs.jax.dev/en/latest/) for automatic differentiation. See the [API documentation](../stubs/qiskit_addon_aqc_tensor.simulation.quimb.QuimbSimulator.rst) for more information on how to use the quimb simulator.
+여기서는 [quimb](http://quimb.readthedocs.io/) 기반의 tensor 네트워크 시뮬레이터를 사용합니다. 이 예제에서는 quimb의 행렬곱 상태(MPS) 시뮬레이터를 사용하고, 자동 미분을 위해 [JAX](https://docs.jax.dev/en/latest/)를 사용합니다. quimb 시뮬레이터 사용 방법에 대한 자세한 내용은 [API 문서](../stubs/qiskit_addon_aqc_tensor.simulation.quimb.QuimbSimulator.rst)를 참조하십시오.
 
 ```python
 from functools import partial
@@ -194,9 +187,9 @@ simulator_settings = QuimbSimulator(
 )
 ```
 
-### Construct matrix-product state representation of the AQC target state
+### AQC 목표 상태의 행렬곱 상태 표현 구성 {#construct-matrix-product-state-representation-of-the-aqc-target-state}
 
-Next, we build a matrix-product representation of the state to be approximated by AQC.
+다음으로, AQC로 근사할 상태의 행렬곱 표현을 구축합니다.
 
 ```python
 from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
@@ -204,7 +197,7 @@ from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
 aqc_target_mps = tensornetwork_from_circuit(aqc_target_circuit, simulator_settings)
 ```
 
-Note that because we chose a generous number of Trotter steps for the target state, it actually has less Trotter error than the comparison circuit.  We can calculate the fidelity ($| \langle \psi_1 | \psi_2 \rangle |^2$) of the state prepared by the comparison circuit vs. the target state:
+목표 상태에 넉넉한 수의 Trotter 단계를 선택했기 때문에, 실제로 비교 Circuit보다 Trotter 오차가 더 적습니다. 비교 Circuit이 준비한 상태와 목표 상태의 충실도($| \langle \psi_1 | \psi_2 \rangle |^2$)를 계산할 수 있습니다:
 
 ```python
 from qiskit_addon_aqc_tensor.simulation import compute_overlap
@@ -218,11 +211,11 @@ comparison_fidelity
 0.9996761790297157
 ```
 
-### Optimize the parameters of the ansatz using MPS calculations
+### MPS 계산을 사용한 ansatz 매개변수 최적화 {#optimize-the-parameters-of-the-ansatz-using-mps-calculations}
 
-Here, we minimize the simplest possible cost function, `MaximizeStateFidelity`, by using the L-BFGS optimizer from scipy.
+여기서는 scipy의 L-BFGS 옵티마이저를 사용하여 가장 간단한 비용 함수인 `MaximizeStateFidelity`를 최소화합니다.
 
-We choose a stopping point for the fidelity such that it will be above what the comparison circuit would have been, without using AQC.  Once this is reached, the compressed circuit has less Trotter error _and_ less depth than the original circuit.  Given more processing time, further optimization steps can be performed to bring the fidelity even higher.
+AQC를 사용하지 않았을 때 비교 Circuit이 도달했을 값 이상이 되도록 충실도의 중단 지점을 선택합니다. 이 값에 도달하면 압축된 Circuit은 원래 Circuit보다 Trotter 오차가 더 적고 깊이도 더 얕습니다. 처리 시간이 더 주어진다면, 충실도를 더욱 높이기 위해 추가적인 최적화 단계를 수행할 수 있습니다.
 
 ```python
 from scipy.optimize import OptimizeResult, minimize
@@ -287,7 +280,7 @@ Intermediate result: Fidelity 0.9997101
 Done after 25 iterations.
 ```
 
-### Construct the final circuit to pass to the transpiler
+### Transpiler에 전달할 최종 Circuit 구성 {#construct-the-final-circuit-to-pass-to-the-transpiler}
 
 ```python
 final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
@@ -297,9 +290,9 @@ final_circuit.draw("mpl", fold=-1)
 
 ![Quantum circuit diagram](./output_2.png)
 
-## Step 2: Transpile for execution on target hardware
+## 2단계: 목표 하드웨어에서 실행하기 위해 Transpile {#step-2-transpile-for-execution-on-target-hardware}
 
-In Step 2 of a [Qiskit pattern](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns), we  transpile this circuit and any desired observable(s) for execution on a target device.  Here we are using a fake backend provided by `qiskit-ibm-runtime`.
+[Qiskit 패턴](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)의 2단계에서는 이 Circuit과 원하는 관측량을 목표 장치에서 실행하기 위해 Transpile합니다. 여기서는 `qiskit-ibm-runtime`이 제공하는 가짜 Backend를 사용합니다.
 
 ```python
 from qiskit import transpile
@@ -311,8 +304,8 @@ isa_circuit = transpile(final_circuit, backend)
 isa_observable = observable.apply_layout(isa_circuit.layout)
 ```
 
-The resulting ISA circuit can then be sent for execution on the backend (step 3 of a [Qiskit pattern](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)).
-## Step 3: Execute on quantum hardware
+그 결과로 얻은 ISA Circuit은 Backend에서 실행하기 위해 전송될 수 있습니다([Qiskit 패턴](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)의 3단계).
+## 3단계: 양자 하드웨어에서 실행 {#step-3-execute-on-quantum-hardware}
 
 ```python
 from qiskit_ibm_runtime import EstimatorV2 as Estimator
@@ -322,9 +315,9 @@ job = estimator.run([(isa_circuit, isa_observable)])
 pub_result = job.result()[0]
 ```
 
-## Step 4: Reconstruct
+## 4단계: 재구성 {#step-4-reconstruct}
 
-Reconstruction is not necessary in our case.  We can just look at the result.
+우리의 경우 재구성이 필요하지 않습니다. 단지 결과를 확인하면 됩니다.
 
 ```python
 pub_result.data.evs[()]
