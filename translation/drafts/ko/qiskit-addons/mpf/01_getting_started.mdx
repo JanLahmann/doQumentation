@@ -1,0 +1,355 @@
+---
+title: "다중곱 공식으로 Hamiltonian 동역학의 Trotter 오차 줄이기"
+sidebar_label: "다중곱 공식으로 Hamiltonian 동역학의 Trotter 오차 줄이기"
+notebook_path: "qiskit-addons/mpf/01_getting_started.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/mpf/01_getting_started.ipynb" />
+
+
+이 노트북에서는 **다중곱 공식(Multi-Product Formula, MPF)** 을 사용하여, 실제로 실행할 가장 깊은 Trotter 회로에서 발생하는 Trotter 오차보다 더 낮은 Trotter 오차를 관측가능량에서 얻는 방법을 배웁니다.
+이를 위해 **Qiskit 패턴** 의 단계를 따라가며 진행하게 됩니다.
+
+- **1단계: 양자 문제로 매핑**
+    - 문제의 Hamiltonian 초기화
+    - <font color="#0F62FE">MPF를 사용하여 Trotter화된 시간 변화 회로 생성</font>
+- **2단계: 문제 최적화**
+    - 여기에서는 [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2) 용으로 회로를 Transpile합니다
+- **3단계: 실험 실행**
+    - 이 노트북에서는 간단함을 위해 [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) 를 사용합니다
+- **4단계: 결과 재구성**
+    - <font color="#0F62FE">MPF 기댓값 계산</font>
+## 1단계: 양자 문제로 매핑 {#step-1-map-to-quantum-problem}
+
+### 1a: Hamiltonian 설정 {#1a-setting-up-our-hamiltonian}
+
+10개 사이트로 이루어진 직선 위의 Ising 모델을 사용합니다:
+
+$$
+\hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{9} J_{i,(i+1)} Z_i Z_{(i+1)} + \sum_{i=1}^{10} h_i X_i \, ,
+$$
+
+여기서 $J$ 는 두 사이트 간의 결합 강도이고, $h$ 는 외부 자기장입니다.
+[qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) 패키지는 다양한 목적에 재사용할 수 있는 기능들을 제공합니다.
+
+이 패키지의 [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) 모듈은 주어진 연결성 그래프 위에서 Heisenberg 형태의 Hamiltonian을 생성하는 함수들을 제공합니다.
+이 그래프는 [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html) 또는 [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap) 중 어느 것이든 될 수 있어 Qiskit 중심 워크플로우에서 쉽게 사용할 수 있습니다.
+
+아래에서는 `CouplingMap.from_line` 메서드를 사용하여 10개의 Qubit으로 이루어진 간단한 직선을 만듭니다.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-mpf qiskit-addon-utils rustworkx scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_line(10, bidirectional=False)
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+![Code output](./output_1.png)
+
+다음으로, 주어진 연결성 위에서 원하는 상수를 가진 [SparsePauliOp](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.quantum_info.SparsePauliOp) 를 생성합니다.
+
+```python
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIZZI', 'IIIIIZZIII', 'IIIZZIIIII', 'IZZIIIIIII', 'IIIIIIIIZZ', 'IIIIIIZZII', 'IIIIZZIIII', 'IIZZIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIXI', 'IIIIIIIXII', 'IIIIIIXIII', 'IIIIIXIIII', 'IIIIXIIIII', 'IIIXIIIIII', 'IIXIIIIIII', 'IXIIIIIIII', 'XIIIIIIIII'],
+              coeffs=[1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j,
+ 1. +0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j,
+ 0.4+0.j, 0.4+0.j, 0.4+0.j])
+```
+
+측정할 관측가능량은 전체 자화(total magnetization)이며, 다음과 같이 간단하게 구성할 수 있습니다:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+L = coupling_map.size()
+observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
+print(observable)
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j,
+ 0.05+0.j, 0.05+0.j, 0.05+0.j])
+```
+
+### 1b: 다중곱 공식 {#1b-multi-product-formulas}
+
+MPF는 여러 회로 실행의 가중 조합을 통해 Hamiltonian 동역학의 Trotter 오차를 줄입니다.
+
+보다 구체적으로, MPF를 다음과 같이 정의합니다:
+
+$$
+\mu(t) = \sum_{j} x_j \rho^{k_j}_{j}\left(\frac{t}{k_j}\right) + \text{some remaining Trotter error} \, ,
+$$
+
+여기서 $x_j$ 는 가중 계수이고, $\rho^{k_j}_j$ 는 $k_j$ 개의 Trotter 단계를 포함하는 곱 공식 $S^{k_j}$ 로 초기 상태를 시간 변화시켜 얻은 순수 상태에 해당하는 밀도 행렬이며, $j$ 는 MPF를 구성하는 곱 공식의 개수를 인덱싱합니다.
+
+여기서 핵심은, 남아 있는 Trotter 오차가 단순히 가장 큰 $k_j$ 값을 사용했을 때 얻을 수 있는 Trotter 오차보다 작다는 점입니다!
+
+MPF의 유용성은 두 가지 관점에서 볼 수 있습니다:
+
+1. 실행할 수 있는 Trotter 단계의 예산이 정해져 있을 때, 전체적으로 더 작은 Trotter 오차를 갖는 결과를 얻을 수 있습니다.
+2. 회로가 깊어지는 Trotter 단계 수에 대해, MPF를 사용하여 비슷한 Trotter 오차를 가지면서 실행할 수 있는 여러 개의 얕은 회로를 찾을 수 있습니다.
+#### 정적 MPF 소개 {#an-introduction-to-static-mpfs}
+
+_정적_ MPF는 $x_j$ 값이 시간 변화 시간 $t$ 에 의존 **하지 않는** MPF입니다.
+
+주어진 $k_j$ 값들에 대해 정적 MPF 계수를 결정하는 것은 선형 방정식계를 푸는 것과 같습니다:
+$Ax=b$, 여기서 $x$ 는 관심 있는 계수이고, $A$ 는 $k_j$ 와 우리가 사용하는 PF의 유형($S$)에 따라 달라지는 행렬이며, $b$ 는 제약 조건의 벡터입니다.
+간결함을 위해 여기서는 더 자세히 다루지 않고 [LSE](https://qiskit.github.io/qiskit-addon-mpf/apidocs/qiskit_addon_mpf.costs.html#qiskit_addon_mpf.costs.LSE) 문서를 참조하도록 안내합니다.
+
+$x$ 는 해석적으로 $x = A^{-1}b$ 로 구할 수 있습니다. 예를 들어 [Carrera Vazquez et al., 2023] 또는 [Zhuk et al., 2023] 을 참조하세요.
+그러나 이러한 정확 해는 _"ill-conditioned"_ 일 수 있으며, 계수 $x$ 의 L1 노름이 매우 커져서 MPF 성능이 나빠질 수 있습니다.
+대신, $x$ 의 L1 노름을 최소화하는 근사 해를 얻어 MPF 동작을 최적화하려 할 수도 있습니다.
+
+아래에서는 이 모든 것을 수행하는 방법을 배웁니다.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+#### $k_j$ 선택하기 {#choosing-k_j}
+
+$k_j$ 의 선택은 최종 사용자에게 달려 있습니다.
+원칙적으로 어떤 값도 선택할 수 있지만, 일부 $k_j$ 는 실제 장치에서 다른 선택보다 더 큰 잡음 증폭을 초래합니다.
+따라서 _"좋은"_ $k_j$ 값을 찾는 것이 중요합니다.
+
+여기에서는 $k_j$ 에 대해 고정된 값을 단순히 고릅니다.
+가장 작은 값은 목표 시간 변화 시간 $t=8.0$ 에 의해 동기 부여되며, 보통 $t/k_{\text{min}} \lt 1$ 을 만족하도록 요구되지만, 경험적으로 이 값을 $1$ 로 설정해도 보통 잘 작동한다고 알려져 있습니다.
+이에 대해 더 자세히 알고 싶거나 다른 $k_j$ 값을 선택하는 방법을 알고 싶다면 해당 가이드 [How to choose the Trotter steps for an MPF](https://qiskit.github.io/qiskit-addon-mpf/how_tos/choose_trotter_steps.html) 를 참조하세요.
+
+```python
+time = 8.0
+trotter_steps = (8, 12, 19)
+```
+
+#### LSE 설정하기 {#setting-up-the-lse}
+
+이제 $k_j$ 를 선택했으니, 위에서 설명한 대로 LSE $Ax=b$ 를 먼저 구성해야 합니다.
+행렬 $A$ 는 $k_j$ 뿐만 아니라 우리가 선택한 곱 공식(PF) -- 특히 그 _차수_ 에도 의존합니다.
+추가로, `symmetric=True` 로 설정하여 PF가 대칭인지 여부를 고려할 수도 있습니다(참고: [Carrera Vazquez et al., 2023]).
+그러나 이는 [Zhuk et al., 2023] 에서 보이듯 필수는 아닙니다.
+
+여기서는 2차 Suzuki-Trotter 공식을 사용하여 `order=2` 를 지정하고, `symmetric=True` 로 설정합니다.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+
+```python
+from qiskit_addon_mpf.static import setup_static_lse
+
+lse = setup_static_lse(trotter_steps, order=2, symmetric=True)
+print(lse)
+```
+
+```text
+LSE(A=array([[1.00000000e+00, 1.00000000e+00, 1.00000000e+00],
+       [1.56250000e-02, 6.94444444e-03, 2.77008310e-03],
+       [2.44140625e-04, 4.82253086e-05, 7.67336039e-06]]), b=array([1., 0., 0.]))
+```
+
+#### $x$ 를 해석적으로 풀기 {#solving-for-x-analytically}
+
+앞서 언급했듯이, $x$ 는 해석적으로 구할 수 있습니다:
+
+```python
+import numpy as np
+
+coeffs_analytical = lse.solve()
+print(coeffs_analytical)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+#### 정확 모델을 사용하여 $x$ 최적화하기 {#optimizing-for-x-using-an-exact-model}
+
+$x=A^{-1}b$ 를 계산하는 대신, [setup_exact_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_exact_problem.html) 을 사용하여 LSE를 제약 조건으로 하는 [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem) 인스턴스를 구성할 수도 있으며, 이 최적 해가 $x$ 를 산출합니다.
+
+다음 섹션에서는 왜 이 인터페이스가 존재하는지 명확해질 것입니다.
+
+```python
+from qiskit_addon_mpf.costs import setup_exact_problem
+
+model_exact, coeffs_exact = setup_exact_problem(lse)
+model_exact.solve()
+print(coeffs_exact.value)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+이러한 계수로 구성된 MPF가 좋은 결과를 줄지 여부에 대한 지표로 L1 노름을 사용할 수 있습니다(참고: [Carrera Vazquez et al., 2023]).
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+
+```python
+print(np.linalg.norm(coeffs_exact.value, ord=1))
+```
+
+```text
+3.3889400921655914
+```
+
+#### 근사 모델을 사용하여 $x$ 최적화하기 {#optimizing-for-x-using-an-approximate-model}
+
+선택한 $k_j$ 값 집합에 대한 L1 노름이 너무 높다고 판단되는 경우가 있을 수 있습니다.
+그런 경우에 다른 $k_j$ 값 집합을 선택할 수 없다면, 정확한 해 대신 LSE의 근사 해를 사용할 수 있습니다.
+
+이를 위해 [setup_sum_of_squares_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_sum_of_squares_problem.html) 을 사용하여, 선택한 임계값으로 L1 노름을 제약하면서 $Ax$ 와 $b$ 의 차이를 최소화하는 다른 [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem) 인스턴스를 구성합니다.
+
+```python
+from qiskit_addon_mpf.costs import setup_sum_of_squares_problem
+
+model_approx, coeffs_approx = setup_sum_of_squares_problem(lse, max_l1_norm=3.0)
+model_approx.solve()
+print(coeffs_approx.value)
+print(np.linalg.norm(coeffs_approx.value, ord=1))
+```
+
+```text
+[-0.40454257  0.57553173  0.8290123 ]
+1.8090865903790838
+```
+
+이 최적화 문제를 어떻게 풀지에 대해 완전한 자유가 있다는 점에 주의하세요. 즉, 최적화 솔버, 수렴 임계값 등을 변경할 수 있습니다.
+해당 가이드 [How to use the approximate model](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html) 을 확인해 보세요.
+### 1c: Trotter 회로 설정 {#1c-setting-up-the-trotter-circuits}
+
+이 시점에서 우리는 확장 계수 $x$ 를 찾았고, 남은 일은 Trotter화된 양자 회로를 생성하는 것뿐입니다.
+다시 한 번 [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) 모듈이 이를 수행하는 데 도움을 줍니다:
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuits = []
+for k in trotter_steps:
+    circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(order=2, reps=k),
+        time=time,
+    )
+    circuits.append(circ)
+```
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+```python
+circuits[1].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+```python
+circuits[2].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_4.png)
+
+## 2단계: 문제 최적화 {#step-2-optimize-the-problem}
+
+일반적으로 이 단계는 하드웨어에서 실행하기 위해 회로를 최적화하는 패턴의 단계입니다.
+여기에서는 잡음 없는 시뮬레이터만 사용하기 때문에, [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2) 용으로 회로를 단순히 Transpile합니다.
+
+```python
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+backend = GenericBackendV2(num_qubits=10)
+transpiler = generate_preset_pass_manager(optimization_level=2, backend=backend)
+
+transpiled_circuits = [transpiler.run(circ) for circ in circuits]
+```
+
+## 3단계: 양자 실험 실행 {#step-3-execute-quantum-experiments}
+
+처음에 설명했듯이, 잡음이 없는 시뮬레이터인 [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) 를 사용하여 목표 관측가능량의 기댓값을 단순히 계산할 것이므로 최적화 2단계는 건너뜁니다.
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+job = estimator.run([(circ, observable) for circ in transpiled_circuits])
+result = job.result()
+```
+
+## 4단계: 결과 재구성 {#step-4-reconstruct-results}
+
+먼저, 각 Trotter 회로에 대해 얻은 개별 기댓값을 추출합니다:
+
+```python
+evs = [res.data.evs for res in result]
+print(evs)
+```
+
+```text
+[array(0.23799162), array(0.35754312), array(0.38649906)]
+```
+
+다음으로, MPF 계수와 함께 이들을 단순히 재결합하여 MPF의 총 기댓값을 산출합니다. 아래에서는 $x$ 를 계산한 각기 다른 방식 각각에 대해 수행합니다.
+
+```python
+print("Analytical    solution:", evs @ coeffs_analytical)
+print("Exact model   solution:", evs @ coeffs_exact.value)
+print("Approx. model solution:", evs @ coeffs_approx.value)
+```
+
+```text
+Analytical    solution: 0.3954847855980006
+Exact model   solution: 0.39548478559800204
+Approx. model solution: 0.42991214253489807
+```
+
+마지막으로, 이 작은 문제에 대해서는 [scipy.linalg.expm](https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.expm.html) 을 사용하여 다음과 같이 정확한 기준 값을 계산할 수 있습니다:
+
+```python
+from scipy.linalg import expm
+
+exp_H = expm(-1j * time * hamiltonian.to_matrix())
+
+initial_state = np.zeros(exp_H.shape[0])
+initial_state[0] = 1.0
+
+time_evolved_state = exp_H @ initial_state
+
+exact_obs = time_evolved_state.conj() @ observable.to_matrix() @ time_evolved_state
+print(exact_obs.real)
+```
+
+```text
+0.40060242487899755
+```
+
+MPF가 $k_j=19$ 를 사용하는 가장 깊은 개별 PF에서 얻은 Trotter 오차에 비해 Trotter 오차를 줄였음을 명확히 볼 수 있습니다.
+그러나 근사 모델이 완벽하지 않다는 것도 볼 수 있습니다. 실제로 정확한 해보다 더 나쁜 기댓값을 산출했기 때문입니다. 이는 [How to use the approximate model](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html) 가이드에서 배우게 될, 근사 모델에 엄격한 수렴 기준을 사용하는 것의 중요성을 보여줍니다.
+
+<TutorialFeedback />
