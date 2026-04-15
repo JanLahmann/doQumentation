@@ -1,0 +1,177 @@
+Gotowe! Propagowano 13560 / 13560 generatorów.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![Wyjście wykresu](./output_6.png)
+
+#### Przekształcenie baz pomiarowych do postaci kanonicznej {#transform-the-measurement-bases-to-canonical-form}
+
+Następnie znajdziemy minimalny zestaw baz do pomiaru, który pozwoli w pełni pokryć każdy wyraz Pauliego w mierzonym obserwowalnym (***wiele obserwowalnych może być mierzonych jednocześnie, jeśli komutują one qubit po Qubit***). Ponieważ mierzymy wyłącznie wyrazy naszego oryginalnego obserwowalnego, będącego sumą wszystkich jednoQubitowych Paulich `Z`, wystarczy jedna baza — baza całkowicie-`Z`.
+
+Oprócz wyznaczenia zbioru baz pomiarowych Pauliego, musimy odwzorować te wyrazy na postać kanoniczną oczekiwaną przez prymityw ``Executor``. Więcej informacji na temat kanonicznego porządkowania Qubitów znajdziesz w [dokumentacji samplomatic](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention).
+
+```python
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}  # canonical -> physical
+p_2_v = {p: v for v, p in enumerate(layout)}  # physical -> virtual
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}  # canonical -> virtual
+meas_bases, bases_reverser = get_measurement_bases(obs_tilde_virtual)
+meas_bases_canonical = [
+    np.array([base[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base in meas_bases
+]
+```
+
+#### Określenie sposobu próbkowania w ``QuantumProgram`` {#specify-how-to-sample-in-the-quantumprogram}
+
+``QuantumProgram`` to miejsce, w którym określamy sposób próbkowania eksperymentu:
+
+- ``template_circuit``: Circuit zawierający wszystkie Gate konieczne do implementacji wszystkich pożądanych randomizacji (wynikające z randomizacji twirlingiem, parametrów itd.).
+- ``samplex``: Obiekt definiujący rozkład prawdopodobieństwa dla wszystkich możliwych randomizacji Circuit, z których będziemy próbkować.
+- ``samplex_arguments``: Przypisania niezbędne do pełnego zdefiniowania samplex:
+    - ``basis_changes``: Tu wskazujemy zestaw baz pomiarowych pokrywających wszystkie wyrazy Pauliego w mierzonym obserwowalnym.
+    - ``noise_scales.ref``: Ustawiamy skalę każdej warstwy szumu na `0.0`, aby zapobiec wprowadzaniu dodatkowego szumu do próbek.
+    - ``pauli_lindblad_maps``: Wymagane, gdy przekazywane są ``noise_scales``. Odwzorowuje warstwy szumu na powiązany model szumu.
+- ``shape``: Krotka kształtu rozszerzająca niejawny kształt zdefiniowany przez ``samplex_arguments``. Osie nie-trywialne wprowadzone przez to rozszerzenie enumerują randomizacje.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram
+
+# Kontroluj liczbę strzałów podczas wykonania
+shots_per_randomization_exec = 64
+num_randomizations_exec = 6144
+
+# Wyzeruj szum, aby zapobiec jego wprowadzaniu podczas wykonania.
+# Adnotacje InjectNoise dodaliśmy wyłącznie po to, aby PNA mogło
+# powiązać szum z warstwami Circuit
+samplex_inputs = {f"noise_scales.{ref}": 0.0 for ref in refs_to_noise_models}
+samplex_inputs |= {"pauli_lindblad_maps": refs_to_noise_models}
+
+# Określ bazy do pomiaru
+bases_broadcastable = np.expand_dims(np.array(meas_bases_canonical), axis=1)
+samplex_inputs |= {"basis_changes": {"basis0": bases_broadcastable}}
+
+# Przekształć samplex_inputs w słownik do przekazania do QuantumProgram
+samplex_arguments = samplex.inputs().make_broadcastable().bind(**samplex_inputs)
+
+# Utwórz instancję QuantumProgram z podanymi parametrami
+program = QuantumProgram(shots=shots_per_randomization_exec)
+program.append(
+    circuit=template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations_exec),
+)
+```
+
+#### Próbkowanie Circuit z użyciem prototypu prymitywu ``Executor`` {#sample-the-circuit-using-the-executor-primitive-prototype}
+
+Teraz, gdy zdefiniowaliśmy nasz ``QuantumProgram``, wykonanie eksperymentu jest proste. Wystarczy utworzyć instancję obiektu ``Executor``, podać mu Backend i uruchomić program.
+
+```python
+from qiskit_ibm_runtime import Executor
+
+# Wykonaj (próbkuj) Circuit
+executor = Executor(backend)
+job_exec = executor.run(program)
+exec_results = job_exec.result()
+```
+
+#### Przetwarzanie końcowe próbek w celu obliczenia wartości oczekiwanej z korekcją błędów {#post-process-the-samples-to-calculate-an-error-mitigated-expectation-value}
+
+Aby obliczyć wartość oczekiwaną z korekcją błędów, wykonamy następujące kroki:
+
+- Obliczymy czynniki skalujące TREX na podstawie wyuczonego szumu wpływającego na pomiary.
+- Wygenerujemy maskę służącą do zachowania wyłącznie próbek po post-selekcji.
+- Użyjemy funkcji ``executor_expectation_values`` z ``qiskit-addon-utils`` do połączenia wszystkich danych w wartość oczekiwaną z korekcją błędów.
+
+```python
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.noise_management import trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+
+# Obliczanie czynników TREX
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_rescale_factors = trex_factors(measurement_noise_map, bases_reverser)
+
+# Post-selekcja wyników
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit, coupling_map=backend.coupling_map
+)
+
+# Oblicz maskę post-selekcji do filtrowania wyników
+mask = post_selector.compute_mask(exec_results[0], strategy="edge")
+
+# Oblicz wartości oczekiwane na podstawie wyników po post-selekcji
+results = executor_expectation_values(
+    exec_results[0]["meas"],
+    bases_reverser,
+    meas_basis_axis=0,
+    avg_axis=1,
+    measurement_flips=exec_results[0]["measurement_flips.meas"],
+    pauli_signs=exec_results[0].get("pauli_signs", None),
+    postselect_mask=mask,
+    rescale_factors=trex_rescale_factors,
+)
+```
+
+```python
+bases_reverser_unmit = {Pauli("Z" * num_qubits): [observable]}
+args = [
+    (bases_reverser_unmit, None, None),
+    (bases_reverser, None, None),
+    (bases_reverser, None, trex_rescale_factors),
+    (bases_reverser, mask, None),
+    (bases_reverser, mask, trex_rescale_factors),
+]
+
+evs = []
+for reverser, postsel_mask, factors in args:
+    # Oblicz wartości oczekiwane na podstawie wyników po post-selekcji
+    res_ps = executor_expectation_values(
+        exec_results[0]["meas"],
+        reverser,
+        meas_basis_axis=0,
+        avg_axis=1,
+        measurement_flips=exec_results[0]["measurement_flips.meas"],
+        pauli_signs=exec_results[0].get("pauli_signs", None),
+        postselect_mask=postsel_mask,
+        rescale_factors=factors,
+    )
+    res_ps = np.array(res_ps)
+    evs.append(res_ps[:, 0][0])
+
+experiments = ["PNA", "PNA+TREX", "PNA+PS", "PNA+PS+TREX"]
+colors = ["#d9d9d9", "#b0b0b0", "#7f7f7f", "#4c4c4c"]
+plt.bar(experiments, evs[1:], color=colors)
+plt.axhline(y=1, color="green", linestyle="--", linewidth=2, label="Ideal")
+plt.axhline(y=evs[0], color="red", linestyle="--", linewidth=2, label="Unmitigated")
+plt.ylabel("Expectation value", fontsize=14)
+
+plt.title(r"30q Mirrored Ising, 10 Trotter steps, $\theta_{rx}=\frac{\pi}{8}$", fontsize=14)
+plt.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+![Wyjście wykresu](./output_7.png)
+
+<TutorialFeedback />
