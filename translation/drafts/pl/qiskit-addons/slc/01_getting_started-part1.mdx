@@ -1,0 +1,193 @@
+---
+title: "Probabilistyczne anulowanie błędów z zacienionymi stożkami świetlnymi"
+description: "Probabilistyczne anulowanie błędów z zacienionymi stożkami świetlnymi"
+sidebar_label: "Probabilistyczne anulowanie błędów z zacienionymi stożkami świetlnymi"
+notebook_path: "qiskit-addons/slc/01_getting_started.ipynb"
+---
+
+{/* doqumentation-source-hash: 3238351c */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/slc/01_getting_started.ipynb" />
+
+
+##  Tło {#background}
+Ten samouczek demonstruje, jak łagodzić błędy przy użyciu dodatku Shaded lightcone (SLC). Dodatek ten jest ewolucją [techniki probabilistycznego anulowania błędów (PEC)](https://quantum.cloud.ibm.com/docs/guides/error-mitigation-and-suppression-techniques#probabilistic-error-cancellation-pec), w której użytkownik uczy się szumu unikalnych warstw w Circuit, a następnie anuluje szum, stosując Gate'y jednoQubitowe i techniki post-processingu. W porównaniu z innymi metodami, PEC oferuje bardziej solidne ograniczenia na odchylenie (bias) złagodzonego wyniku, ale zwykle wiąże się z wyższym narzutem pod względem czasu QPU. Podczas PEC, aby skompensować tłumienie wartości oczekiwanej przez szum, średni wynik jest przeskalowywany przez czynnik $\gamma = \exp(\sum_{l,\sigma} 2\lambda_{l,\sigma})$, gdzie $\lambda_{l,\sigma}$ jest wyuczoną szybkością szumu błędu Pauliego $\sigma$ w warstwie $l$ Circuit. To przeskalowanie zwiększa wariancję o czynnik $\gamma^2$, a co za tym idzie — mnoży też liczbę wykonań Circuit potrzebnych na QPU przez $\gamma^2$, co nazywamy kosztem próbkowania lub narzutem próbkowania. Ponieważ $\gamma$ rośnie wykładniczo, PEC jest często ograniczone do płytkich Circuit lub Circuit z małą liczbą Qubitów. Więcej informacji o PEC znajdziesz w artykule [Probabilistic error cancellation with sparse Pauli-Lindblad models on noisy quantum processors.](https://arxiv.org/abs/2201.09866)
+
+Jeśli uda nam się zidentyfikować błędy, które nie wymagają łagodzenia, możemy zmniejszyć ten koszt próbkowania wykładniczo. Pierwszym krokiem w tym kierunku jest implementacja lokalnie świadomego łagodzenia błędów, które używa szybko obliczalnego klasycznego „stożka świetlnego" (lightcone), aby zmniejszyć narzut PEC poprzez ograniczenie czułości obserwowalnej na błędy w całym Circuit, rozszerzając wykonalność PEC na większą skalę dla pewnych problemów. Błędy poza tym stożkiem świetlnym nie mogą wpływać na mierzony wynik i dlatego mogą zostać wykluczone z procedury anulowania błędów. Takie wykluczenie zmniejsza narzut próbkowania — w niektórych przypadkach znacząco — bez wprowadzania dodatkowego odchylenia. W szczególności, przy pomiarze lokalnej obserwowalnej $O$ Circuit o stałej głębokości, wymagany narzut próbkowania ostatecznie plateau'uje przy skalowaniu liczby Qubitów w Circuit (patrz rys. 2b w [Locality and Error Mitigation of Quantum Circuits.](https://arxiv.org/abs/2303.06496))
+
+Zacienione stożki świetlne (SLC) idą dalej, używając klasycznych symulacji do dokładniejszego ograniczenia czułości na błędy w całym Circuit. Powoduje to zamianę części czasu QPU na czas CPU i redukuje narzut próbkowania potrzebny do renormalizacji odchylenia. Zamiast twardego progu, każdemu potencjalnemu błędowi w Circuit przypisuje się stopniowany „cień" (shade), który stanowi górne ograniczenie podatności obserwowalnej na ten błąd. Ta dokładniejsza charakterystyka pozwala na bardziej efektywne, ukierunkowane zastosowania PEC ze zredukowaną wariancją, dając jednocześnie użytkownikowi możliwość kontrolowanego regulowania odchylenia w estymacji obserwowalnej. Więcej szczegółów znajdziesz w artykule [Lightcone shading for classically accelerated quantum error mitigation](https://arxiv.org/abs/2409.04401).
+
+Nasz przepływ pracy dla dodatku SLC wykorzystuje nowe środowisko Samplomatic i Executor, które pozwala użytkownikom na bardziej modułową kontrolę ustawień wykonania dla suppresji i łagodzenia błędów, zachowując jednocześnie łatwość użycia dla zaawansowanych użytkowników. Aby lepiej zrozumieć zalety tego środowiska i jego ogólne funkcje, zapoznaj się z samouczkiem [Hello samplomatic](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/hello_samplomatic/Samplomatic%20-%20Hello%20World.ipynb).
+
+### Przepływ pracy dla zacieniania stożków świetlnych, uczenia szumu i wstrzykiwania anty-szumu {#workflow-for-lightcone-shading-noise-learning-and-anti-noise-injection}
+Do modelowania szumu QPU wybraliśmy rzadki model szumu Pauliego-Lindblada z 1- i 2-Qubitowymi szybkościami błędów Pauliego, generowanymi lokalnie na każdym Qubicie i krawędzi urządzenia. Przy tym wyborze, przedstawiony w tym samouczku przepływ pracy łagodzenia błędów PEC-SLC wygląda następująco:
+
+a. CPU — Ograniczenie wpływu poszczególnych błędów Pauliego na 1 i 2 Qubitach
+
+  1. Propagacja w przód (ograniczenie wpływu na obserwowalną). Propaguj każdy błąd do końca Circuit i oblicz jego komutator z obserwowalną.  
+      - Obcinaj człony operatora podczas ewolucji, aby utrzymać obliczenia w granicach możliwości.  
+      - Zacieśnij te ograniczenia przez luźną propagację obserwowalnej w tył, opartą na kwantowych limitach prędkości.
+  2. Propagacja w tył (ograniczenie wpływu na stan początkowy). Propaguj każdy błąd do początku Circuit i oblicz jego komutator ze stanem początkowym.
+
+b. QPU — Ucz się szybkości szumu. Użyj `NoiseLearner`, aby estymować szybkości modelu szumu Pauliego-Lindblada.
+
+c. CPU — Priorytetyzuj łagodzenie
+
+  1. Aktualizuj scalone ograniczenia za pomocą wyuczonych szybkości szumu. Połącz uprzednio obliczone ograniczenia propagacji w przód i w tył, a następnie zaktualizuj je o wyuczone szybkości szumu.  
+  2. Ranguj komponenty szumu do złagodzenia, używając obliczonych ograniczeń i wyuczonych szybkości. Priorytetyzuj każdy możliwy błąd szumu na podstawie jego szacowanego wpływu na odchylenie i związanych z tym kosztów korekcji.
+
+d. QPU — Wstaw anty-szum i uruchom. Wykonaj interesujący Circuit z anty-szumem (odwrotnym szumem) określonym za pomocą adnotacji `Box`.
+
+e. CPU — Estymuj obserwowalną. Oblicz wartość oczekiwaną, stosując post-selekcję opartą na pomiarach w celu zmniejszenia wpływu szumu nie-Markowskiego.
+
+### Przegląd uczenia szumu {#noise-learning-overview}
+Uczenie szumu jest wspólnym krokiem w kilku metodach łagodzenia błędów, realizowanym przez [NoiseLearner](https://quantum.cloud.ibm.com/docs/en/guides/noise-learning), co można zobaczyć w naszym samouczku [PEA error mitigation](https://quantum.cloud.ibm.com/docs/tutorials/probabilistic-error-amplification), a także w [samouczku Propagated noise absorption (PNA)](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/pna/propagated_noise_absorption.ipynb). W `NoiseLearnerV3` użytkownik może konkretnie wskazać warstwy szumu do nauczenia jako obiekty [`CircuitInstruction`](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.circuit.CircuitInstruction), co pozwala użytkownikom obliczać pożądane ograniczenia szumu SLC dla każdej warstwy w sposób opisany powyżej. Wyuczony model Pauliego-Lindblada dostarcza współczynniki do użycia w priorytetyzacji PEC-SLC. Sposób, w jaki Gate'y są zbierane w warstwy, można określić używając funkcji pomocniczych `generate_boxing_pass_manager` i `unique_2q_instructions`, a następnie przekazać do funkcji narzędziowej SLC `generate_noise_model_paulis`, jak opisano w Kroku 2 poniżej.
+
+| **Część 1** | **Część 2** | **Część 3** |
+|-----------|-----------|-----------|
+| Splatanie Pauliego warstw Gate'ów dwu-Qubitowych | Powtarzanie identycznych par warstw i uczenie szumu | Wyznaczanie wierności (błędu dla każdego kanału szumu) |
+| ![paulitwirling.png](exp_data/paulitwirl.png) | ![learnlayer.png](exp_data/learnlayer.png) | ![curvefit.png](exp_data/curvefit.png) |
+
+### Przegląd post-processingu {#post-processing-overview}
+Po wykonaniu na sprzęcie kwantowym przy użyciu środowiska Samplomatic i Executor, konwertujemy nasze pomiary bitstring na pożądaną wartość obserwowalnej. W przypadku naszego lustrzanego Circuit Isinga, idealnie powinniśmy uzyskać zmierzoną obserwowalną równą 1, ponieważ wszystkie Qubity powinny idealnie powrócić do swojego punktu startowego $\ket{0}$. Obliczając wartość obserwowalnej za pomocą naszej funkcji `expectation_values`, zastosujemy kilka technik post-processingu, które zmniejszają wpływ szumu. Obejmuje to usuwanie shotów dotkniętych szumem nie-Markowskim, łagodzenie błędów odczytu (readout-error mitigation) oraz uwzględnienie szczegółów naszej implementacji PEC. Szczegóły omówiono w Kroku 4 poniżej.
+
+## Wymagania {#requirements}
+Przed rozpoczęciem tego samouczka upewnij się, że masz zainstalowane następujące pakiety:
+
+- Qiskit IBM Runtime z prymitywem Executor (`pip install "qiskit-ibm-runtime @ git+https://github.com/Qiskit/qiskit-ibm-runtime.git"`)
+- Qiskit addon Shaded lightcone 0.1 (`pip install "qiskit-addon-slc~=0.1.0`")
+- Qiskit addon utils (`pip install "qiskit-addon-utils~=0.3.0"`)
+- Samplomatic v0.16 lub nowszy (`pip install samplomatic`)
+- Wsparcie wizualizacji Qiskit (`pip install "qiskit[visualization]"`)
+## Krok 0. Konfiguracja {#step-0-setup}
+Najpierw zaimportuj pakiety i funkcje potrzebne do pomyślnego uruchomienia tego notatnika.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-slc qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(module)s %(message)s")
+
+# Setting this value prevents itertools.starmap deadlock on UNIX systems
+from multiprocessing import set_start_method
+
+set_start_method("spawn")
+
+# Needed to prevent PySCF from parallelizing internally (SLC only)
+%set_env OMP_NUM_THREADS=1
+```
+
+```text
+env: OMP_NUM_THREADS=1
+```
+
+```python
+import pickle
+
+import numpy as np
+import samplomatic
+from matplotlib import pyplot as plt
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import PassManager, generate_preset_pass_manager
+from qiskit_addon_slc.bounds import (
+    compute_backward_bounds,
+    compute_forward_bounds,
+    compute_local_scales,
+    merge_bounds,
+    tighten_with_speed_limit,
+)
+from qiskit_addon_slc.utils import generate_noise_model_paulis, map_modifier_ref_to_ref
+from qiskit_addon_slc.visualization import draw_shaded_lightcone
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+from qiskit_addon_utils.noise_management import gamma_from_noisy_boxes, trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+from qiskit_ibm_runtime import Executor, QiskitRuntimeService, QuantumProgram
+from qiskit_ibm_runtime.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.transpiler import generate_boxing_pass_manager
+from samplomatic.utils import find_unique_box_instructions
+```
+
+## Krok 1. Zmapowanie problemu {#step-1-map-the-problem}
+Dla uproszczenia demonstracji wybieramy jednowymiarowy lustrzany łańcuch Isinga. Łańcuch Isinga 1D daje ładnie gęstą strukturę Circuit, co jest wygodne do prezentowania implementacji PEC. Lustrzany Circuit sprawia, że łatwo znać oczekiwany wynik (a mianowicie, powinniśmy zmierzyć obserwowalną równą 1).
+
+Co więcej, chcemy uruchomić lustrzany Circuit, więc dla każdego Gate'a w drugiej połowie Circuit musi istnieć odwrotny Gate w pierwszej połowie. Ponieważ mierzona obserwoalna **$<X_6 Z_{13}>$** ma pomiary nie-Z-bazowe, a Executor uwzględnia pożądaną bazę na końcu Circuit, dostarczamy funkcję `prepare_basis`, która wstawia odpowiednie Gate'y na początku lustrzanego Circuit. Ten szczegół jest specyficzny dla naszej demonstracji z lustrzanym Circuit. Funkcja `get_measurement_bases` pozwala nam łatwo zidentyfikować, które Gate'y są potrzebne i gdzie je dołączyć, a także śledzić subtelności indeksów Qubitów wynikające z konwencji adnotacji `box`, jak omówiono w sekcji „Przygotowanie kanonicznych pomiarów bazowych".
+
+```python
+num_qubits = 20
+target_obs_sparse = [("XZ", [6, 13], 1.0)]
+```
+
+```python
+observable = SparsePauliOp.from_sparse_list(target_obs_sparse, num_qubits=num_qubits)
+```
+
+```python
+bases_virt, reverser_virt = get_measurement_bases(observable)
+```
+
+```python
+num_trotter_steps = 10
+rx_angle = np.pi / 4
+```
+
+```python
+def construct_ising_circuit(
+    num_qubits: int, num_trotter_steps: int, rx_angle: float, barrier: bool = True
+) -> QuantumCircuit:
+    circuit = QuantumCircuit(num_qubits)
+
+    for _step in range(num_trotter_steps):
+        circuit.rx(rx_angle, range(num_qubits))
+        if barrier:
+            circuit.barrier()
+        for first_qubit in (1, 2):
+            for idx in range(first_qubit, num_qubits, 2):
+                # equivalent to Rzz(-pi/2):
+                circuit.sdg([idx - 1, idx])
+                circuit.cz(idx - 1, idx)
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+
+def prepare_basis(circuit: QuantumCircuit, basis: list[int]) -> QuantumCircuit:
+    # basis is a list of integer values from 0 to 3. These map to the basis measurement as:
+    # 0 = I; 1 = Z; 2 = X; 3 = Y
+    assert len(basis) == circuit.num_qubits
+
+    out_circ = circuit.copy_empty_like()
+    for qb, bas in enumerate(basis):
+        if bas in {0, 1}:
+            continue
+        if bas == 2:
+            out_circ.h(qb)
+        elif bas == 3:
+            out_circ.rx(-np.pi / 2, qb)
+
+    out_circ.barrier()
+    out_circ.compose(circuit, inplace=True)
+    return out_circ
+
+def mirror_circuit(circuit: QuantumCircuit, *, inverse_first: bool = False) -> QuantumCircuit:
+    mirror_circ = circuit.copy_empty_like()
+    mirror_circ.compose(circuit.inverse() if inverse_first else circuit, inplace=True)
+    mirror_circ.barrier()
+    mirror_circ.compose(circuit if inverse_first else circuit.inverse(), inplace=True)
+    mirror_circ.measure_active()
+    return mirror_circ
+```
+
+```python
