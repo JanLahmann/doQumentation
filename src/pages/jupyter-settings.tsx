@@ -190,8 +190,6 @@ export default function JupyterSettings(): JSX.Element {
   const [workshopPool, setWorkshopPoolState] = useState<WorkshopPool | null>(null);
   const [workshopAssigned, setWorkshopAssignedState] = useState<string | null>(null);
   const [workshopStats, setWorkshopStats] = useState<InstanceStats[] | null>(null);
-  const [workshopUrlInput, setWorkshopUrlInput] = useState('');
-  const [workshopTokenInput, setWorkshopTokenInput] = useState('');
   const [workshopResult, setWorkshopResult] = useState<string | null>(null);
   const [workshopResultType, setWorkshopResultType] = useState<'success' | 'warning' | 'info'>('success');
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -376,14 +374,50 @@ export default function JupyterSettings(): JSX.Element {
   };
 
   // Code Engine handlers
+  // Smart save: detects single URL, comma-separated URLs, or base64 pool config.
+  // Single URL → saves as CE credentials. Multiple URLs / pool → saves as workshop pool.
   const handleCeSave = () => {
-    if (!ceUrl) return;
-    if (!/^https:\/\//i.test(ceUrl)) {
-      setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'URL must start with https://'}));
+    const raw = ceUrl.trim();
+    if (!raw) return;
+    if (!ceToken || ceToken.length < 8) {
+      setCeSaveResult(translate({id: 'settings.ce.tokenRequired', message: 'Token is required (min 8 characters).'}));
       setCeSaveResultType('warning');
       return;
     }
-    saveCodeEngineCredentials(ceUrl, ceToken);
+
+    // Detect format: try base64 pool config first, then comma-separated, then single URL
+    let urls: string[] = [];
+    if (!raw.startsWith('http')) {
+      try {
+        const decoded = JSON.parse(atob(raw));
+        if (Array.isArray(decoded.pool) && decoded.pool.length > 0) {
+          urls = decoded.pool.map((u: string) => String(u).trim().replace(/\/+$/, ''));
+        }
+      } catch { /* not base64 */ }
+    }
+    if (urls.length === 0 && raw.includes(',')) {
+      urls = raw.split(',').map(u => u.trim().replace(/\/+$/, '')).filter(u => /^https?:\/\//i.test(u));
+    }
+
+    if (urls.length > 1) {
+      // Multi-URL → save as workshop pool
+      saveWorkshopPool(urls, ceToken);
+      const pool = getWorkshopPool();
+      setWorkshopPoolState(pool);
+      setWorkshopAssignedState(getWorkshopAssignment());
+      refreshBackends();
+      setCeSaveResult(translate({id: 'settings.ce.workshopJoined', message: 'Joined workshop pool with {n} instance(s).'}).replace('{n}', String(urls.length)));
+      setCeSaveResultType('success');
+      return;
+    }
+
+    // Single URL path
+    if (!/^https:\/\//i.test(raw)) {
+      setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'URL must start with https:// (or paste comma-separated URLs / base64 pool config for workshops).'}));
+      setCeSaveResultType('warning');
+      return;
+    }
+    saveCodeEngineCredentials(raw, ceToken);
     setCeDaysRemaining(ttlDays);
     refreshBackends();
     setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'Code Engine settings saved! Code will now execute via your CE instance.'}));
@@ -422,67 +456,14 @@ export default function JupyterSettings(): JSX.Element {
   };
 
   // Workshop handlers
-  const handleWorkshopJoinFields = () => {
-    const rawUrl = workshopUrlInput.trim();
-    const token = workshopTokenInput.trim();
-    if (!rawUrl || !token) return;
-    if (token.length < 8) {
-      setWorkshopResult('Token is too short — check with your instructor.');
-      setWorkshopResultType('warning');
-      return;
-    }
-
-    // Smart URL field parsing — accepts three formats:
-    //   1. Single URL:          https://ce-01.xxx.cloud
-    //   2. Comma-separated:     https://ce-01.xxx.cloud, https://ce-02.xxx.cloud
-    //   3. Base64-encoded pool: eyJwb29sIjpbImh0dHBzOi8v...
-    //      Decodes to {"pool":["url1","url2",...]} — no token inside (security)
-    let urls: string[] = [];
-
-    // Try base64 decode first (if it doesn't look like a URL)
-    if (!rawUrl.startsWith('http')) {
-      try {
-        const decoded = JSON.parse(atob(rawUrl));
-        if (Array.isArray(decoded.pool) && decoded.pool.length > 0) {
-          urls = decoded.pool.map((u: string) => String(u).trim().replace(/\/+$/, ''));
-        }
-      } catch {
-        // Not valid base64/JSON — fall through to URL parsing
-      }
-    }
-
-    // If base64 didn't produce URLs, parse as plain URL(s)
-    if (urls.length === 0) {
-      urls = rawUrl
-        .split(',')
-        .map(u => u.trim().replace(/\/+$/, ''))
-        .filter(u => /^https?:\/\//i.test(u));
-    }
-
-    if (urls.length === 0) {
-      setWorkshopResult('Enter a valid URL (https://...), comma-separated URLs, or a base64-encoded pool config.');
-      setWorkshopResultType('warning');
-      return;
-    }
-
-    saveWorkshopPool(urls, token);
-    const pool = getWorkshopPool();
-    setWorkshopPoolState(pool);
-    setWorkshopAssignedState(getWorkshopAssignment());
-    refreshBackends();
-    setWorkshopUrlInput('');
-    setWorkshopTokenInput('');
-    setWorkshopResult(`Joined workshop with ${urls.length} instance(s).`);
-    setWorkshopResultType('success');
-  };
+  // Workshop join is now handled in handleCeSave() — single URL field accepts
+  // CE URL, comma-separated workshop URLs, or base64 pool config.
 
   const handleWorkshopLeave = () => {
     clearWorkshopPool();
     setWorkshopPoolState(null);
     setWorkshopAssignedState(null);
     setWorkshopStats(null);
-    setWorkshopUrlInput('');
-    setWorkshopTokenInput('');
     setAutoRefresh(false);
     setLastUpdated(null);
     refreshBackends('code-engine');
@@ -610,12 +591,15 @@ export default function JupyterSettings(): JSX.Element {
               )}
               <div className="margin-bottom--sm">
                 <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'The public URL of your Code Engine application (from IBM Cloud console).'})} />
+                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'Your Code Engine app URL, OR comma-separated URLs / base64 pool config from a workshop instructor.'})} />
                 </label>
-                <input type="url" value={ceUrl}
+                <input type="text" value={ceUrl}
                   onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
                   placeholder="https://your-app.region.codeengine.appdomain.cloud"
                   style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
+                <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                  <Translate id="settings.ce.urlHint">For workshops: paste comma-separated URLs or the base64 pool config from your instructor.</Translate>
+                </small>
               </div>
               <div className="margin-bottom--md">
                 <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
@@ -756,6 +740,86 @@ export default function JupyterSettings(): JSX.Element {
                   <Translate id="settings.ibm.setupInstructions">Setup instructions &amp; security notes</Translate>
                 </summary>
                 <div style={{ marginTop: '0.5rem' }}>
+                  <div className="alert alert--warning margin-bottom--md">
+                    <Translate
+                      id="settings.ibm.securityNote"
+                      values={{
+                        strong: <strong>{translate({id: 'settings.ibm.securityNoteLabel', message: 'Security note:'})}</strong>,
+                        saveAccount: <code>save_account()</code>,
+                      }}
+                    >
+                      {'{strong} Credentials are stored in your browser\'s localStorage in plain text. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
+                    </Translate>
+                  </div>
+
+                  <p>
+                    <Translate
+                      id="settings.ibm.autoInjectDesc"
+                      values={{
+                        saveAccount: <code>save_account()</code>,
+                      }}
+                    >
+                      {'Enter your IBM Quantum credentials once here. They will be auto-injected via {saveAccount} when the kernel starts, so you don\'t need to enter them in every notebook. This applies to embedded code execution on this site only — opening a notebook in JupyterLab requires calling {saveAccount} manually.'}
+                    </Translate>
+                  </p>
+
+                  <ol>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step1"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step1.label">Register</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com/registration</a>,
+                        }}
+                      >
+                        {'{strong} at {link} (free, no credit card required)'}
+                      </Translate>
+                    </li>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step2"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step2.label">Create an instance</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step2.instances">Instances</Translate></a>,
+                        }}
+                      >
+                        {'{strong} — go to {link}, click "Create instance +", select the Open (free) plan, and follow the wizard'}
+                      </Translate>
+                    </li>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step3"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step3.label">Copy CRN</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step3.home">home page</Translate></a>,
+                        }}
+                      >
+                        {'{strong} — back on the {link}, find your instance under "Instances" and click the copy icon next to "CRN"'}
+                      </Translate>
+                    </li>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step4"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step4.label">Create API key</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step4.home">home page</Translate></a>,
+                        }}
+                      >
+                        {'{strong} — on the {link}, find "API key" and click "Create +"'}
+                      </Translate>
+                    </li>
+                  </ol>
+
+                  <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+                    <Translate
+                      id="settings.ibm.guideLink"
+                      values={{
+                        link: <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.guideLink.text">IBM's authentication guide</Translate></a>,
+                      }}
+                    >
+                      {'Need more help? See {link} for screenshots and detailed steps.'}
+                    </Translate>
+                  </p>
                 </div>
               </details>
 
@@ -1344,53 +1408,6 @@ QiskitRuntimeService.save_account(
                     </ol>
                   </details>
 
-                  {/* ── Join Workshop ── */}
-                  <details className="margin-bottom--md" style={{ marginTop: '1rem' }}>
-                    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
-                      Join Workshop
-                    </summary>
-                    <div style={{ marginTop: '0.5rem' }}>
-                      <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)' }}>
-                        Enter the workshop URL and token provided by your instructor.
-                        This connects you to the workshop's Code Engine instance.
-                      </p>
-
-                      {/* URL + Token separate fields (primary join path) */}
-                      <div className="margin-bottom--sm">
-                        <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600, fontSize: '0.85rem' }}>
-                          Workshop Pod URL(s)
-                        </label>
-                        <input
-                          type="text"
-                          value={workshopUrlInput}
-                          onChange={e => { setWorkshopUrlInput(e.target.value); setWorkshopResult(null); }}
-                          placeholder="URL, comma-separated URLs, or base64 pool config from instructor"
-                          style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
-                        />
-                      </div>
-                      <div className="margin-bottom--sm">
-                        <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600, fontSize: '0.85rem' }}>
-                          Workshop Token
-                        </label>
-                        <input
-                          type="password"
-                          value={workshopTokenInput}
-                          onChange={e => { setWorkshopTokenInput(e.target.value); setWorkshopResult(null); }}
-                          placeholder="Token from your instructor"
-                          style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
-                        />
-                      </div>
-                      <button
-                        className="button button--primary button--sm"
-                        onClick={handleWorkshopJoinFields}
-                        disabled={!workshopUrlInput.trim() || !workshopTokenInput.trim()}
-                        style={{ marginBottom: '0.75rem' }}
-                      >
-                        Join Workshop
-                      </button>
-
-                    </div>
-                  </details>
                 </>
               )}
 
