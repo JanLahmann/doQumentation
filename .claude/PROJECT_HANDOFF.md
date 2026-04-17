@@ -268,6 +268,8 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | BAD | [bad.doqumentation.org](https://bad.doqumentation.org) | 31 + UI | Live |
 | BAR | [bar.doqumentation.org](https://bar.doqumentation.org) | 31 + UI | Live |
 
+**Potential future locales:** Turkish (TR)
+
 - **Config**: `docusaurus.config.ts` — `locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut', 'ms', 'id', 'th']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. Built-in `LocaleDropdown` handles cross-domain links natively. hreflang tags auto-generated.
 - **RTL support**: AR and HE have `direction: 'rtl'` in `localeConfigs`. CSS uses logical properties (`border-inline-start`, `margin-inline-start`, `inset-inline-end`) throughout — direction-agnostic for both LTR and RTL. Noto Sans Arabic/Hebrew fonts loaded via Google Fonts. `[dir="rtl"]` overrides in `custom.css`. **KaTeX math forced LTR** (`direction: ltr` on `.katex`, `.katex-display`) to prevent browser bidi from flipping parentheses/operators on RTL pages.
 - **CI**: `deploy.yml` builds EN only (`--locale en`). `deploy-locales.yml` matrix builds all 22 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{DE,ES,UK,FR,IT,PT,JA,TL,AR,HE,SWG,BAD,BAR,KSH,NDS,GSW,SAX,BLN,AUT,MS,ID,TH}`).

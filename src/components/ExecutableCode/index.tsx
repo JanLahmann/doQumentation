@@ -553,7 +553,8 @@ function setupCellFeedback(): void {
  *  Prevents users from overwriting injected credentials with placeholder values. */
 function annotateSaveAccountCells(): void {
   const mode = getExecutionMode();
-  if (mode === 'none') return;
+  if (mode === 'none') return; // no injection → no skip hints needed
+  // On exempt pages, simulators fall back to credentials
   const effectiveMode = isSimulatorExemptPage() && (mode === 'aer' || mode === 'fake')
     ? (getIBMQuantumToken() ? 'credentials' : 'none')
     : mode;
@@ -892,6 +893,7 @@ function broadcastInjection(info: InjectionInfo): void {
 async function injectKernelSetup(kernelObj: unknown): Promise<void> {
   let mode = getExecutionMode();
 
+  // Simulator-exempt pages (e.g. hello-world) fall back to credentials or none
   if (isSimulatorExemptPage() && (mode === 'aer' || mode === 'fake')) {
     mode = getIBMQuantumToken() ? 'credentials' : 'none';
   }
