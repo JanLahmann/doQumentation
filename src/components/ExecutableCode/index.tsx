@@ -1539,10 +1539,17 @@ export default function ExecutableCode({
     // Tell ALL cells on the page to switch to run mode
     window.dispatchEvent(new CustomEvent(ACTIVATE_EVENT));
 
-    // Defer bootstrap to next frame so React can render <pre data-executable> first
-    requestAnimationFrame(() => {
-      bootstrapOnce(jupyterConfig);
-    });
+    // Defer bootstrap until <pre data-executable> elements are in the DOM.
+    // After SPA navigation, React may need multiple frames to render.
+    const waitForCellsThenBootstrap = (attempts = 0) => {
+      const cells = document.querySelectorAll('pre[data-executable="true"]');
+      if (cells.length > 0 || attempts > 10) {
+        bootstrapOnce(jupyterConfig);
+      } else {
+        requestAnimationFrame(() => waitForCellsThenBootstrap(attempts + 1));
+      }
+    };
+    requestAnimationFrame(() => waitForCellsThenBootstrap());
   }, [jupyterConfig, hideStaticOutputs]);
 
   const handleReset = useCallback(() => {
