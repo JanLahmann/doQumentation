@@ -1125,12 +1125,24 @@ QiskitRuntimeService.save_account(
             </label>
           </div>
 
-          {/* Learning Progress */}
+          {/* ═══════════════════════════════════════════════════════════════
+              MANAGE YOUR DATA
+              ═══════════════════════════════════════════════════════════════ */}
+
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
-          <h2 id="learning-progress" style={{ marginTop: '2rem' }}><Translate id="settings.progress.heading">Learning Progress</Translate></h2>
+          <h2 id="manage-data" style={{ marginTop: '2rem' }}><Translate id="settings.data.heading">Manage Your Data</Translate></h2>
 
-          <p>
+          <p style={{ fontSize: '0.9rem', color: 'var(--ifm-color-emphasis-600)' }}>
+            <Translate id="settings.data.privacy">
+              All data is stored locally in your browser (localStorage). Nothing is sent to our servers.
+              Clearing your browser data or using a different browser/device starts fresh.
+            </Translate>
+          </p>
+
+          {/* ── Progress ── */}
+          <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.progress.heading">Progress</Translate></h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
             <Translate
               id="settings.progress.desc"
               values={{
@@ -1138,7 +1150,7 @@ QiskitRuntimeService.save_account(
                 play: <strong>&#9654;</strong>,
               }}
             >
-              {'Your reading and execution progress is tracked locally in your browser. Visited pages show a {check} in the sidebar; executed notebooks show a {play}.'}
+              {'Visited pages show a {check} in the sidebar; executed notebooks show a {play}.'}
             </Translate>
           </p>
 
@@ -1160,25 +1172,27 @@ QiskitRuntimeService.save_account(
                   </div>
                 ))}
               </div>
-
-              <h3><Translate id="settings.progress.clearHeading">Clear Progress</Translate></h3>
               <div className="dq-clear-buttons">
-                {Object.keys(progressStats.visitedByCategory).map((cat) => (
-                  <button
-                    key={cat}
-                    className="jupyter-settings__button jupyter-settings__button--secondary"
-                    onClick={() => {
-                      const prefix = cat === 'courses' ? '/learning/courses'
-                        : cat === 'modules' ? '/learning/modules'
-                        : `/${cat}`;
-                      clearVisitedByPrefix(prefix);
-                      clearExecutedByPrefix(prefix);
-                      setProgressStats(getProgressStats());
-                    }}
-                  >
-                    {translate({id: 'settings.progress.clearCategory', message: 'Clear {category}'}, {category: cat.charAt(0).toUpperCase() + cat.slice(1)})}
-                  </button>
-                ))}
+                {['tutorials', 'guides', 'courses', 'modules'].map((cat) => {
+                  const count = progressStats.visitedByCategory[cat];
+                  if (!count) return null;
+                  return (
+                    <button
+                      key={cat}
+                      className="jupyter-settings__button jupyter-settings__button--secondary"
+                      onClick={() => {
+                        const prefix = cat === 'courses' ? '/learning/courses'
+                          : cat === 'modules' ? '/learning/modules'
+                          : `/${cat}`;
+                        clearVisitedByPrefix(prefix);
+                        clearExecutedByPrefix(prefix);
+                        setProgressStats(getProgressStats());
+                      }}
+                    >
+                      {translate({id: 'settings.progress.clearCategory', message: 'Clear {category}'}, {category: cat.charAt(0).toUpperCase() + cat.slice(1)})}
+                    </button>
+                  );
+                })}
                 <button
                   className="jupyter-settings__button jupyter-settings__button--secondary"
                   onClick={() => {
@@ -1189,30 +1203,23 @@ QiskitRuntimeService.save_account(
                 >
                   <Translate id="settings.progress.clearAll">Clear All Progress</Translate>
                 </button>
-                <button
-                  className="jupyter-settings__button jupyter-settings__button--secondary"
-                  onClick={() => {
-                    clearAllPreferences();
-                    setProgressStats(getProgressStats());
-                  }}
-                >
-                  <Translate id="settings.progress.clearPrefs">Clear Learning Data</Translate>
-                </button>
               </div>
             </>
           ) : (
-            <div className="alert alert--info margin-bottom--md">
+            <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)' }}>
               <Translate id="settings.progress.empty">
                 No progress tracked yet. Visit tutorials and guides to start tracking.
               </Translate>
-            </div>
+            </p>
           )}
 
-          {/* Bookmarks */}
-          {bookmarkCount > 0 && (
+          {/* ── Bookmarks ── */}
+          <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.bookmarks.heading">Bookmarks</Translate></h3>
+          {bookmarkCount > 0 ? (
             <>
-              <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.bookmarks.heading">Bookmarks</Translate></h3>
-              <p>{translate({id: 'settings.bookmarks.count', message: '{count} bookmarked page(s)'}, {count: String(bookmarkCount)})}</p>
+              <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+                {translate({id: 'settings.bookmarks.count', message: '{count} bookmarked page(s) — shown on the homepage'}, {count: String(bookmarkCount)})}
+              </p>
               <button
                 className="jupyter-settings__button jupyter-settings__button--secondary"
                 onClick={() => {
@@ -1223,50 +1230,69 @@ QiskitRuntimeService.save_account(
                 <Translate id="settings.bookmarks.clearBtn">Clear All Bookmarks</Translate>
               </button>
             </>
+          ) : (
+            <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)' }}>
+              <Translate id="settings.bookmarks.empty">No bookmarks yet. Use the bookmark button on any page to save it here.</Translate>
+            </p>
           )}
 
-          {/* Other preferences */}
-          <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.other.heading">Other</Translate></h3>
+          {/* ── Display & UI ── */}
+          <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.dataUI.heading">Display & UI</Translate></h3>
           <div className="dq-clear-buttons">
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
-              onClick={() => {
-                resetOnboarding();
-              }}
+              onClick={() => { resetOnboarding(); }}
             >
               <Translate id="settings.other.resetOnboarding">Reset Onboarding Tips</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
-              onClick={() => {
-                clearRecentAndLastPage();
-              }}
+              onClick={() => { clearRecentAndLastPage(); }}
             >
               <Translate id="settings.other.clearRecent">Clear Recent History</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
-              onClick={() => {
-                clearSidebarCollapseStates();
-              }}
+              onClick={() => { clearSidebarCollapseStates(); }}
             >
               <Translate id="settings.other.resetSidebar">Reset Sidebar Layout</Translate>
+            </button>
+          </div>
+
+          {/* ── Sessions & Credentials ── */}
+          <h3 style={{ marginTop: '1.5rem' }}><Translate id="settings.dataCreds.heading">Sessions & Credentials</Translate></h3>
+          <div className="dq-clear-buttons">
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={() => { clearBinderSession(); }}
+            >
+              <Translate id="settings.other.clearBinderSession">Clear Binder Session</Translate>
             </button>
             <button
               className="jupyter-settings__button jupyter-settings__button--secondary"
               onClick={() => {
-                clearBinderSession();
+                clearIBMQuantumCredentials();
+                setIbmToken(''); setIbmCrn(''); setIbmDaysRemaining(-1);
               }}
             >
-              <Translate id="settings.other.clearBinderSession">Clear Binder Session</Translate>
+              <Translate id="settings.dataCreds.clearIBM">Clear IBM Quantum Credentials</Translate>
+            </button>
+            <button
+              className="jupyter-settings__button jupyter-settings__button--secondary"
+              onClick={() => {
+                clearCodeEngineCredentials();
+                setCeUrl(''); setCeToken(''); setCeDaysRemaining(-1);
+              }}
+            >
+              <Translate id="settings.dataCreds.clearCE">Clear IBM Cloud Code Engine</Translate>
             </button>
           </div>
 
-          {/* Reset Everything */}
+          {/* ── Reset Everything ── */}
           <h3 style={{ marginTop: '2rem' }}><Translate id="settings.resetAll.heading">Reset Everything</Translate></h3>
-          <p style={{ fontSize: '0.9rem', color: 'var(--ifm-color-emphasis-600)' }}>
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)' }}>
             <Translate id="settings.resetAll.description">
-              Remove all saved data including progress, bookmarks, preferences, and credentials.
+              Remove all saved data including progress, bookmarks, display preferences, and credentials.
             </Translate>
           </p>
           <button
@@ -1290,6 +1316,8 @@ QiskitRuntimeService.save_account(
                 clearJupyterConfig();
                 setProgressStats(getProgressStats());
                 setBookmarkCount(0);
+                setIbmToken(''); setIbmCrn(''); setIbmDaysRemaining(-1);
+                setCeUrl(''); setCeToken(''); setCeDaysRemaining(-1);
               }
             }}
           >
