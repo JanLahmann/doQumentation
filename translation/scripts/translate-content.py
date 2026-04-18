@@ -226,6 +226,10 @@ def cmd_populate_locale(args):
         rel = str(src.relative_to(DOCS_DIR))
         dest = locale_dir / rel
 
+        # Skip workshop notebooks — they're language-agnostic code
+        if rel.startswith("workshop/") or rel.startswith("workshop\\"):
+            continue
+
         if rel in existing_translations:
             skipped += 1
             continue
