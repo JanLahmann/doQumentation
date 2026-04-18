@@ -690,8 +690,9 @@ Follow-up fixes from continued testing and feedback:
 - **Admin page: no link from Settings** — Admin page kept undiscoverable for regular users
 - **CE + Custom Server consolidated** — Single URL/Token section switches between CE and Custom based on radio selection (was two near-identical sections stacked)
 - **Admin PodMonitor reads single CE URL** — Falls back to Settings CE URL when no workshop pool configured
-- **Workshop notebooks** — `workshop-notebooks/` source dir + `sync-content.py` converts `.ipynb` → `docs/workshop/*.mdx`. 4 notebooks added (01–04 prefix ordering). Accessible at `/workshop/`, not in navigation.
-- **Cell execution labels visible** — "► Running…", "✓ Done", "✗ Error" now render as visible text above cells (was clipped `::after` icons). Run All clears all previous labels for clean slate.
+- **Workshop notebooks** — `workshop-notebooks/` source dir + `sync-content.py` converts `.ipynb` → `docs/workshop/*.mdx`. 4 notebooks added (01–04 prefix ordering): Qiskit 101, Hands-on Intro, Hello World Patterns, DiVincenzo Criteria Lab. Accessible at `/workshop/`, not in main navigation. Index page uses `DocCardList` for automatic listing. Notebooks with `_solution` or `_hidden` in filename are hidden from sidebar but accessible via direct URL (`sidebar_class_name: hidden`). Generated files gitignored; source `.ipynb` tracked.
+- **Cell execution labels visible** — "► Running…", "✓ Done", "✗ Error" now render as visible `::before` text above cells (was clipped `::after` icons). Run All clears all previous labels for clean slate.
+- **"Manage Your Data" section restructured** — Replaced flat/confusing layout with grouped categories: Progress (per-category: Tutorials→Guides→Courses→Modules + Clear All), Bookmarks (always visible), Display & UI, Sessions & Credentials (Binder, IBM Quantum, IBM Cloud Code Engine). Privacy note added: "All data is stored locally in your browser. Nothing is sent to our servers." Removed confusing "Clear Learning Data" button.
 
 ---
 
@@ -705,4 +706,4 @@ Follow-up fixes from continued testing and feedback:
 
 ---
 
-*Last updated: April 18, 2026 (additional follow-up fixes + workshop notebooks)*
+*Last updated: April 18, 2026 (workshop notebooks, data management restructure, cell labels, CE naming)*
