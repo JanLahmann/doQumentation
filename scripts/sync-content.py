@@ -1867,16 +1867,51 @@ def process_workshops():
                 nb_slug = f"./{src_path.stem}"
             if convert_notebook(src_path, dst_path, notebook_path=nb_path, slug=nb_slug):
                 stats["ipynb"] += 1
+                # Post-process: fix common MDX issues in workshop notebooks
+                content = dst_path.read_text()
+                # Fix non-self-closing <img> tags (MDX requires <img ... />)
+                content = re.sub(r'<img\b(.*?)(?<!\/)>', r'<img\1 />', content)
+                # Fix LaTeX math in workshop notebooks:
+                # 1. Undo brace escaping inside LaTeX environments
+                def unescape_math_env(m):
+                    return m.group(0).replace('\\{', '{').replace('\\}', '}')
+                content = re.sub(
+                    r'\\begin\\\{.*?\\end\\\{[^}]*\\\}',
+                    unescape_math_env, content, flags=re.DOTALL
+                )
+                # 2. Wrap bare \begin{env}...\end{env} in $$ if not already in math
+                lines = content.split('\n')
+                out_lines = []
+                i = 0
+                in_math = False
+                while i < len(lines):
+                    line = lines[i]
+                    if line.strip() == '$$':
+                        in_math = not in_math
+                    if not in_math and re.match(r'^\s*\\begin\{', line):
+                        out_lines.append('$$')
+                        while i < len(lines):
+                            out_lines.append(lines[i])
+                            if re.match(r'^\s*\\end\{', lines[i]):
+                                i += 1
+                                break
+                            i += 1
+                        out_lines.append('$$')
+                    else:
+                        out_lines.append(line)
+                    i += 1
+                content = '\n'.join(out_lines)
+                # 3. Fix $$$ (triple dollar) → $$ + newline
+                content = content.replace('$$$', '$$\n$$')
                 # Hide notebooks with _solution or _hidden in filename from sidebar
                 stem_lower = src_path.stem.lower()
                 if '_solution' in stem_lower or '_hidden' in stem_lower:
-                    content = dst_path.read_text()
                     if content.startswith('---'):
                         content = content.replace('---\n', '---\nsidebar_class_name: hidden\n', 1)
-                        dst_path.write_text(content)
                     print(f"    ✓ {rel_path} → .mdx (hidden from sidebar)")
                 else:
                     print(f"    ✓ {rel_path} → .mdx")
+                dst_path.write_text(content)
             else:
                 stats["skipped"] += 1
 
