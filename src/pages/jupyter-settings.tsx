@@ -190,8 +190,6 @@ export default function JupyterSettings(): JSX.Element {
   const [workshopPool, setWorkshopPoolState] = useState<WorkshopPool | null>(null);
   const [workshopAssigned, setWorkshopAssignedState] = useState<string | null>(null);
   const [workshopStats, setWorkshopStats] = useState<InstanceStats[] | null>(null);
-  const [workshopUrlInput, setWorkshopUrlInput] = useState('');
-  const [workshopTokenInput, setWorkshopTokenInput] = useState('');
   const [workshopResult, setWorkshopResult] = useState<string | null>(null);
   const [workshopResultType, setWorkshopResultType] = useState<'success' | 'warning' | 'info'>('success');
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -369,7 +367,6 @@ export default function JupyterSettings(): JSX.Element {
     setIbmCrn('');
     setIbmDaysRemaining(-1);
     setIbmSaveResult(translate({id: 'settings.ibm.deleteSuccess', message: 'Credentials deleted.'}));
-    // If execution mode was 'credentials', fall back to 'aer'
     if (executionMode === 'credentials') {
       setExecutionModeState('aer');
       setExecutionMode('aer');
@@ -377,14 +374,50 @@ export default function JupyterSettings(): JSX.Element {
   };
 
   // Code Engine handlers
+  // Smart save: detects single URL, comma-separated URLs, or base64 pool config.
+  // Single URL → saves as CE credentials. Multiple URLs / pool → saves as workshop pool.
   const handleCeSave = () => {
-    if (!ceUrl) return;
-    if (!/^https:\/\//i.test(ceUrl)) {
-      setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'URL must start with https://'}));
+    const raw = ceUrl.trim();
+    if (!raw) return;
+    if (!ceToken || ceToken.length < 8) {
+      setCeSaveResult(translate({id: 'settings.ce.tokenRequired', message: 'Token is required (min 8 characters).'}));
       setCeSaveResultType('warning');
       return;
     }
-    saveCodeEngineCredentials(ceUrl, ceToken);
+
+    // Detect format: try base64 pool config first, then comma-separated, then single URL
+    let urls: string[] = [];
+    if (!raw.startsWith('http')) {
+      try {
+        const decoded = JSON.parse(atob(raw));
+        if (Array.isArray(decoded.pool) && decoded.pool.length > 0) {
+          urls = decoded.pool.map((u: string) => String(u).trim().replace(/\/+$/, ''));
+        }
+      } catch { /* not base64 */ }
+    }
+    if (urls.length === 0 && raw.includes(',')) {
+      urls = raw.split(',').map(u => u.trim().replace(/\/+$/, '')).filter(u => /^https?:\/\//i.test(u));
+    }
+
+    if (urls.length > 1) {
+      // Multi-URL → save as workshop pool
+      saveWorkshopPool(urls, ceToken);
+      const pool = getWorkshopPool();
+      setWorkshopPoolState(pool);
+      setWorkshopAssignedState(getWorkshopAssignment());
+      refreshBackends();
+      setCeSaveResult(translate({id: 'settings.ce.workshopJoined', message: 'Joined workshop pool with {n} instance(s).'}).replace('{n}', String(urls.length)));
+      setCeSaveResultType('success');
+      return;
+    }
+
+    // Single URL path
+    if (!/^https:\/\//i.test(raw)) {
+      setCeSaveResult(translate({id: 'settings.ce.httpsRequired', message: 'URL must start with https:// (or paste comma-separated URLs / base64 pool config for workshops).'}));
+      setCeSaveResultType('warning');
+      return;
+    }
+    saveCodeEngineCredentials(raw, ceToken);
     setCeDaysRemaining(ttlDays);
     refreshBackends();
     setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'Code Engine settings saved! Code will now execute via your CE instance.'}));
@@ -423,67 +456,14 @@ export default function JupyterSettings(): JSX.Element {
   };
 
   // Workshop handlers
-  const handleWorkshopJoinFields = () => {
-    const rawUrl = workshopUrlInput.trim();
-    const token = workshopTokenInput.trim();
-    if (!rawUrl || !token) return;
-    if (token.length < 8) {
-      setWorkshopResult('Token is too short — check with your instructor.');
-      setWorkshopResultType('warning');
-      return;
-    }
-
-    // Smart URL field parsing — accepts three formats:
-    //   1. Single URL:          https://ce-01.xxx.cloud
-    //   2. Comma-separated:     https://ce-01.xxx.cloud, https://ce-02.xxx.cloud
-    //   3. Base64-encoded pool: eyJwb29sIjpbImh0dHBzOi8v...
-    //      Decodes to {"pool":["url1","url2",...]} — no token inside (security)
-    let urls: string[] = [];
-
-    // Try base64 decode first (if it doesn't look like a URL)
-    if (!rawUrl.startsWith('http')) {
-      try {
-        const decoded = JSON.parse(atob(rawUrl));
-        if (Array.isArray(decoded.pool) && decoded.pool.length > 0) {
-          urls = decoded.pool.map((u: string) => String(u).trim().replace(/\/+$/, ''));
-        }
-      } catch {
-        // Not valid base64/JSON — fall through to URL parsing
-      }
-    }
-
-    // If base64 didn't produce URLs, parse as plain URL(s)
-    if (urls.length === 0) {
-      urls = rawUrl
-        .split(',')
-        .map(u => u.trim().replace(/\/+$/, ''))
-        .filter(u => /^https?:\/\//i.test(u));
-    }
-
-    if (urls.length === 0) {
-      setWorkshopResult('Enter a valid URL (https://...), comma-separated URLs, or a base64-encoded pool config.');
-      setWorkshopResultType('warning');
-      return;
-    }
-
-    saveWorkshopPool(urls, token);
-    const pool = getWorkshopPool();
-    setWorkshopPoolState(pool);
-    setWorkshopAssignedState(getWorkshopAssignment());
-    refreshBackends();
-    setWorkshopUrlInput('');
-    setWorkshopTokenInput('');
-    setWorkshopResult(`Joined workshop with ${urls.length} instance(s).`);
-    setWorkshopResultType('success');
-  };
+  // Workshop join is now handled in handleCeSave() — single URL field accepts
+  // CE URL, comma-separated workshop URLs, or base64 pool config.
 
   const handleWorkshopLeave = () => {
     clearWorkshopPool();
     setWorkshopPoolState(null);
     setWorkshopAssignedState(null);
     setWorkshopStats(null);
-    setWorkshopUrlInput('');
-    setWorkshopTokenInput('');
     setAutoRefresh(false);
     setLastUpdated(null);
     refreshBackends('code-engine');
@@ -550,7 +530,7 @@ export default function JupyterSettings(): JSX.Element {
           {availableBackends.length > 1 && (
             <>
               <h3 id="backend-selection" style={{ marginTop: '1.5rem' }}>
-                <Translate id="settings.backend.heading">Execution Backend</Translate>
+                <Translate id="settings.backend.heading">Server Backend</Translate>
               </h3>
               <p style={{ fontSize: '0.9rem' }}>
                 <Translate id="settings.backend.description">
@@ -595,7 +575,68 @@ export default function JupyterSettings(): JSX.Element {
               ESSENTIALS — always visible
               ═══════════════════════════════════════════════════════════════ */}
 
+
+          {/* CE Quick Config — shown when CE is available */}
+          {(config?.environment === 'code-engine' || ceDaysRemaining >= 0 || availableBackends.some(b => b.environment === 'code-engine')) && (
+            <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
+              <h3 id="code-engine-config" style={{ marginTop: 0 }}>
+                <Translate id="settings.ce.quickHeading">Code Engine</Translate>
+              </h3>
+              {ceDaysRemaining >= 0 && (
+                <div className="alert alert--info margin-bottom--md">
+                  <Translate id="settings.ce.daysRemaining" values={{days: ceDaysRemaining}}>
+                    {'Code Engine settings will auto-delete in {days} day(s).'}
+                  </Translate>
+                </div>
+              )}
+              <div className="margin-bottom--sm">
+                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'Your Code Engine app URL, OR comma-separated URLs / base64 pool config from a workshop instructor.'})} />
+                </label>
+                <input type="text" value={ceUrl}
+                  onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
+                  placeholder="https://your-app.region.codeengine.appdomain.cloud"
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
+                <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                  <Translate id="settings.ce.urlHint">For workshops: paste comma-separated URLs or the base64 pool config from your instructor.</Translate>
+                </small>
+              </div>
+              <div className="margin-bottom--md">
+                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                  <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
+                </label>
+                <input type="password" value={ceToken}
+                  onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
+                  placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
+                  <Translate id="settings.ce.save">Save</Translate>
+                </button>
+                <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
+                  <Translate id="settings.ce.test">Test Connection</Translate>
+                </button>
+                <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
+                  <Translate id="settings.ce.clear">Clear</Translate>
+                </button>
+              </div>
+              {ceSaveResult && (
+                <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
+                  {ceSaveResult}
+                </div>
+              )}
+              <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                <Translate id="settings.ce.setupLink" values={{link: <a href="#code-engine"><Translate id="settings.ce.setupLinkText">setup instructions</Translate></a>}}>
+                  {'Need help? See {link} below.'}
+                </Translate>
+              </small>
+            </div>
+          )}
+
           {/* Execution Mode */}
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
+
           <h2 id="execution-mode" style={{ marginTop: '2rem' }}>
             <Translate id="settings.executionMode.heading">Execution Mode</Translate>
             <InfoIcon tooltip={translate({id: 'settings.info.executionMode', message: 'Choose how quantum circuits are executed when you click Run on tutorial pages.'})} />
@@ -608,54 +649,38 @@ export default function JupyterSettings(): JSX.Element {
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {/* AerSimulator */}
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
-              <input
-                type="radio"
-                name="execution-mode"
-                value="aer"
+              <input type="radio" name="execution-mode" value="aer"
                 checked={executionMode === 'aer'}
                 onChange={() => handleExecutionModeChange('aer')}
-                style={{ marginTop: '0.25rem' }}
-              />
+                style={{ marginTop: '0.25rem' }} />
               <span>
                 <strong>AerSimulator</strong> — <Translate id="settings.executionMode.aerDesc">Ideal simulation, no noise. Fast, works for all circuits.</Translate>
               </span>
             </label>
 
-            {/* FakeBackend */}
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
-              <input
-                type="radio"
-                name="execution-mode"
-                value="fake"
+              <input type="radio" name="execution-mode" value="fake"
                 checked={executionMode === 'fake'}
                 onChange={() => handleExecutionModeChange('fake')}
-                style={{ marginTop: '0.25rem' }}
-              />
+                style={{ marginTop: '0.25rem' }} />
               <span>
                 <strong>FakeBackend</strong> — <Translate id="settings.executionMode.fakeDesc">Simulates real IBM device noise. More realistic but slower.</Translate>
               </span>
             </label>
 
-            {/* Device dropdown when fake is selected */}
             {executionMode === 'fake' && (
               <div className="jupyter-settings__field" style={{ marginLeft: '1.5rem' }}>
                 <label className="jupyter-settings__label" htmlFor="fake-device">
                   <Translate id="settings.executionMode.deviceLabel">Device</Translate>
                 </label>
-                <select
-                  id="fake-device"
-                  className="jupyter-settings__input"
+                <select id="fake-device" className="jupyter-settings__input"
                   value={fakeDevice}
-                  onChange={(e) => handleFakeDeviceChange(e.target.value)}
-                >
+                  onChange={(e) => handleFakeDeviceChange(e.target.value)}>
                   {sortedQubitGroups.map(([qubits, backends]) => (
                     <optgroup key={qubits} label={`${qubits} qubits`}>
                       {backends.map((b) => (
-                        <option key={b.name} value={b.name}>
-                          {b.name}
-                        </option>
+                        <option key={b.name} value={b.name}>{b.name}</option>
                       ))}
                     </optgroup>
                   ))}
@@ -666,31 +691,21 @@ export default function JupyterSettings(): JSX.Element {
               </div>
             )}
 
-            {/* IBM Quantum */}
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
-              <input
-                type="radio"
-                name="execution-mode"
-                value="credentials"
+              <input type="radio" name="execution-mode" value="credentials"
                 checked={executionMode === 'credentials'}
                 onChange={() => handleExecutionModeChange('credentials')}
-                style={{ marginTop: '0.25rem' }}
-              />
+                style={{ marginTop: '0.25rem' }} />
               <span>
                 <strong><Translate id="settings.executionMode.ibm">IBM Quantum (real hardware)</Translate></strong> — <Translate id="settings.executionMode.ibmDesc">Connect to real quantum hardware via IBM Quantum credentials.</Translate>
               </span>
             </label>
 
-            {/* No injection */}
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
-              <input
-                type="radio"
-                name="execution-mode"
-                value="none"
+              <input type="radio" name="execution-mode" value="none"
                 checked={executionMode === 'none'}
                 onChange={() => handleExecutionModeChange('none')}
-                style={{ marginTop: '0.25rem' }}
-              />
+                style={{ marginTop: '0.25rem' }} />
               <span>
                 <strong><Translate id="settings.executionMode.none">No automatic injection</Translate></strong> — <Translate id="settings.executionMode.noneDesc">Manage credentials and backend in code cells yourself.</Translate>
               </span>
@@ -707,12 +722,243 @@ export default function JupyterSettings(): JSX.Element {
 
           <div className="alert alert--info margin-top--md">
             <Translate id="settings.executionMode.applyHint">
-              Changes take effect on the next kernel session. If code is running,
-              click Back then Run to apply.
+              Changes take effect on the next kernel session. If code is running, click Back then Run to apply.
             </Translate>
           </div>
 
+          {/* IBM Quantum Account */}
+          <details className="jupyter-settings__details" open={executionMode === 'credentials' || ibmDaysRemaining >= 0}>
+            <summary>
+              <h3 id="ibm-quantum" className="jupyter-settings__details-heading">
+                <Translate id="settings.ibm.heading">IBM Quantum Account</Translate>
+              </h3>
+            </summary>
+            <div className="jupyter-settings__details-content">
+
+              <details style={{ marginBottom: '1rem' }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                  <Translate id="settings.ibm.setupInstructions">Setup instructions &amp; security notes</Translate>
+                </summary>
+                <div style={{ marginTop: '0.5rem' }}>
+                  <div className="alert alert--warning margin-bottom--md">
+                    <Translate
+                      id="settings.ibm.securityNote"
+                      values={{
+                        strong: <strong>{translate({id: 'settings.ibm.securityNoteLabel', message: 'Security note:'})}</strong>,
+                        saveAccount: <code>save_account()</code>,
+                      }}
+                    >
+                      {'{strong} Credentials are stored in your browser\'s localStorage in plain text. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
+                    </Translate>
+                  </div>
+
+                  <p>
+                    <Translate
+                      id="settings.ibm.autoInjectDesc"
+                      values={{
+                        saveAccount: <code>save_account()</code>,
+                      }}
+                    >
+                      {'Enter your IBM Quantum credentials once here. They will be auto-injected via {saveAccount} when the kernel starts, so you don\'t need to enter them in every notebook. This applies to embedded code execution on this site only — opening a notebook in JupyterLab requires calling {saveAccount} manually.'}
+                    </Translate>
+                  </p>
+
+                  <ol>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step1"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step1.label">Register</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com/registration</a>,
+                        }}
+                      >
+                        {'{strong} at {link} (free, no credit card required)'}
+                      </Translate>
+                    </li>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step2"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step2.label">Create an instance</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step2.instances">Instances</Translate></a>,
+                        }}
+                      >
+                        {'{strong} — go to {link}, click "Create instance +", select the Open (free) plan, and follow the wizard'}
+                      </Translate>
+                    </li>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step3"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step3.label">Copy CRN</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step3.home">home page</Translate></a>,
+                        }}
+                      >
+                        {'{strong} — back on the {link}, find your instance under "Instances" and click the copy icon next to "CRN"'}
+                      </Translate>
+                    </li>
+                    <li>
+                      <Translate
+                        id="settings.ibm.step4"
+                        values={{
+                          strong: <strong><Translate id="settings.ibm.step4.label">Create API key</Translate></strong>,
+                          link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step4.home">home page</Translate></a>,
+                        }}
+                      >
+                        {'{strong} — on the {link}, find "API key" and click "Create +"'}
+                      </Translate>
+                    </li>
+                  </ol>
+
+                  <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+                    <Translate
+                      id="settings.ibm.guideLink"
+                      values={{
+                        link: <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.guideLink.text">IBM's authentication guide</Translate></a>,
+                      }}
+                    >
+                      {'Need more help? See {link} for screenshots and detailed steps.'}
+                    </Translate>
+                  </p>
+                </div>
+              </details>
+
+              {ibmDaysRemaining >= 0 && (
+                <div className="alert alert--info margin-bottom--md" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <span>
+                    <Translate
+                      id="settings.ibm.expiryNotice"
+                      values={{days: <strong>{ibmDaysRemaining} {ibmDaysRemaining !== 1 ? translate({id: 'settings.ibm.days', message: 'days'}) : translate({id: 'settings.ibm.day', message: 'day'})}</strong>}}
+                    >
+                      {'Credentials expire in {days}.'}
+                    </Translate>
+                  </span>
+                  <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                    <Translate id="settings.ibm.autoDelete">Auto-delete after:</Translate>{' '}
+                    <select
+                      value={ttlDays}
+                      onChange={(e) => {
+                        const days = Number(e.target.value);
+                        setTtlDaysState(days);
+                        setCredentialTTLDays(days);
+                        setIbmDaysRemaining(getCredentialDaysRemaining());
+                      }}
+                      style={{
+                        padding: '0.15rem 0.3rem',
+                        borderRadius: '4px',
+                        border: '1px solid var(--ifm-color-emphasis-300)',
+                        background: 'var(--ifm-background-color)',
+                        fontSize: '0.85rem',
+                      }}
+                    >
+                      <option value={1}>{translate({id: 'settings.ibm.ttl.1day', message: '1 day'})}</option>
+                      <option value={3}>{translate({id: 'settings.ibm.ttl.3days', message: '3 days'})}</option>
+                      <option value={7}>{translate({id: 'settings.ibm.ttl.7days', message: '7 days'})}</option>
+                    </select>
+                  </span>
+                </div>
+              )}
+
+              <div className="jupyter-settings__field">
+                <label className="jupyter-settings__label" htmlFor="ibm-token">
+                  <Translate id="settings.ibm.tokenLabel">API Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.apiToken', message: 'Find your API token at quantum.cloud.ibm.com under your profile.'})} />
+                </label>
+                <input
+                  id="ibm-token"
+                  type="password"
+                  className="jupyter-settings__input"
+                  placeholder={translate({id: 'settings.ibm.tokenPlaceholder', message: '44-character API key'})}
+                  value={ibmToken}
+                  onChange={(e) => setIbmToken(e.target.value)}
+                />
+              </div>
+
+              <div className="jupyter-settings__field">
+                <label className="jupyter-settings__label" htmlFor="ibm-crn">
+                  <Translate id="settings.ibm.crnLabel">Cloud Resource Name (CRN) / Instance</Translate><InfoIcon tooltip={translate({id: 'settings.info.crn', message: 'Cloud Resource Name — copy from the Instances page on IBM Quantum Platform.'})} />
+                </label>
+                <input
+                  id="ibm-crn"
+                  type="text"
+                  className="jupyter-settings__input"
+                  placeholder="crn:v1:bluemix:public:quantum-computing:..."
+                  value={ibmCrn}
+                  onChange={(e) => setIbmCrn(e.target.value)}
+                />
+              </div>
+
+              <div className="jupyter-settings__field">
+                <label className="jupyter-settings__label" htmlFor="ibm-plan">
+                  <Translate id="settings.ibm.planLabel">Plan type</Translate><InfoIcon tooltip={translate({id: 'settings.info.ibmPlan', message: 'Open Plan does not support Sessions. When set to Open, Session calls are automatically converted to job mode so tutorials run without errors.'})} />
+                </label>
+                <select
+                  id="ibm-plan"
+                  value={ibmPlan}
+                  onChange={(e) => {
+                    const plan = e.target.value as IBMQuantumPlan;
+                    setIbmPlanState(plan);
+                    setIBMQuantumPlan(plan);
+                  }}
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    borderRadius: '4px',
+                    border: '1px solid var(--ifm-color-emphasis-300)',
+                    background: 'var(--ifm-background-color)',
+                    fontSize: '0.85rem',
+                    maxWidth: '200px',
+                  }}
+                >
+                  <option value="open">{translate({id: 'settings.ibm.plan.open', message: 'Open (free)'})}</option>
+                  <option value="payg">{translate({id: 'settings.ibm.plan.payg', message: 'Pay-as-you-go'})}</option>
+                  <option value="premium">{translate({id: 'settings.ibm.plan.premium', message: 'Premium'})}</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+                <button
+                  className="jupyter-settings__button jupyter-settings__button--primary"
+                  onClick={handleIbmSave}
+                  disabled={!ibmToken}
+                >
+                  <Translate id="settings.ibm.saveBtn">Save Credentials</Translate>
+                </button>
+                <button
+                  className="jupyter-settings__button jupyter-settings__button--secondary"
+                  onClick={handleIbmDelete}
+                >
+                  <Translate id="settings.ibm.deleteBtn">Delete Credentials</Translate>
+                </button>
+              </div>
+
+              {ibmSaveResult && (
+                <div className="alert alert--success margin-top--md">
+                  {ibmSaveResult}
+                </div>
+              )}
+
+              <details style={{ marginTop: '1rem' }}>
+                <summary><strong><Translate id="settings.ibm.manualSummary">Alternative: Run save_account() manually in a notebook cell</Translate></strong></summary>
+                <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+                  <Translate id="settings.ibm.manualDesc">
+                    If you prefer not to store credentials in this browser, paste this into any
+                    code cell and run it. Credentials are saved in the Binder kernel's temporary
+                    storage and lost when the session ends.
+                  </Translate>
+                </p>
+                <pre><code>{`from qiskit_ibm_runtime import QiskitRuntimeService
+QiskitRuntimeService.save_account(
+    token="YOUR_API_TOKEN",
+    instance="YOUR_CRN",
+    overwrite=True
+)`}</code></pre>
+              </details>
+            </div>
+          </details>
+
+
           {/* Display Preferences */}
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
+
           <h2 id="display" style={{ marginTop: '2rem' }}><Translate id="settings.display.heading">Display Preferences</Translate></h2>
 
           <h3><Translate id="settings.display.fontSize.heading">Code Font Size</Translate></h3>
@@ -813,6 +1059,8 @@ export default function JupyterSettings(): JSX.Element {
           </div>
 
           {/* Learning Progress */}
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
+
           <h2 id="learning-progress" style={{ marginTop: '2rem' }}><Translate id="settings.progress.heading">Learning Progress</Translate></h2>
 
           <p>
@@ -985,6 +1233,8 @@ export default function JupyterSettings(): JSX.Element {
               COMPUTE BACKEND
               ═══════════════════════════════════════════════════════════════ */}
 
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
+
           <h2 id="compute-backend" style={{ marginTop: '2.5rem' }}>
             <Translate id="settings.computeBackend.heading">Compute Backend</Translate>
           </h2>
@@ -994,7 +1244,7 @@ export default function JupyterSettings(): JSX.Element {
             </Translate>
           </p>
           <div className="alert alert--info margin-bottom--md">
-            <strong><Translate id="settings.env.label">Current Environment:</Translate></strong>{' '}
+            <strong><Translate id="settings.env.label">Current:</Translate></strong>{' '}
             {config?.environment === 'code-engine' && (
               <Translate id="settings.computeBackend.envCE" values={{url: config.baseUrl}}>{'Code Engine — {url}'}</Translate>
             )}
@@ -1007,9 +1257,9 @@ export default function JupyterSettings(): JSX.Element {
             {config?.environment === 'custom' && (
               <Translate id="settings.computeBackend.envCustom" values={{url: config.baseUrl}}>{'Custom — {url}'}</Translate>
             )}
-            {!config?.environment || config?.environment === 'unknown' ? (
+            {(!config?.environment || config?.environment === 'unknown') && (
               <Translate id="settings.computeBackend.envUnknown">Not detected</Translate>
-            ) : null}
+            )}
           </div>
 
           {/* Code Engine */}
@@ -1158,108 +1408,6 @@ export default function JupyterSettings(): JSX.Element {
                     </ol>
                   </details>
 
-                  {ceDaysRemaining >= 0 && (
-                    <div className="alert alert--info margin-bottom--md">
-                      <Translate
-                        id="settings.ce.daysRemaining"
-                        values={{days: ceDaysRemaining}}
-                      >
-                        {'Code Engine settings will auto-delete in {days} day(s).'}
-                      </Translate>
-                    </div>
-                  )}
-
-                  <div className="margin-bottom--sm">
-                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                      <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'The public URL of your Code Engine application (from IBM Cloud console).'})} />
-                    </label>
-                    <input
-                      type="url"
-                      value={ceUrl}
-                      onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
-                      placeholder="https://your-app.region.codeengine.appdomain.cloud"
-                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
-                    />
-                  </div>
-
-                  <div className="margin-bottom--md">
-                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                      <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
-                    </label>
-                    <input
-                      type="password"
-                      value={ceToken}
-                      onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
-                      placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
-                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }}
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                    <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
-                      <Translate id="settings.ce.save">Save</Translate>
-                    </button>
-                    <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
-                      <Translate id="settings.ce.test">Test Connection</Translate>
-                    </button>
-                    <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
-                      <Translate id="settings.ce.clear">Clear</Translate>
-                    </button>
-                  </div>
-
-                  {ceSaveResult && (
-                    <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
-                      {ceSaveResult}
-                    </div>
-                  )}
-
-                  {/* ── Join Workshop ── */}
-                  <details className="margin-bottom--md" style={{ marginTop: '1rem' }}>
-                    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
-                      Join Workshop
-                    </summary>
-                    <div style={{ marginTop: '0.5rem' }}>
-                      <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)' }}>
-                        Enter the workshop URL and token provided by your instructor.
-                        This connects you to the workshop's Code Engine instance.
-                      </p>
-
-                      {/* URL + Token separate fields (primary join path) */}
-                      <div className="margin-bottom--sm">
-                        <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600, fontSize: '0.85rem' }}>
-                          Workshop Pod URL(s)
-                        </label>
-                        <input
-                          type="text"
-                          value={workshopUrlInput}
-                          onChange={e => { setWorkshopUrlInput(e.target.value); setWorkshopResult(null); }}
-                          placeholder="URL, comma-separated URLs, or base64 pool config from instructor"
-                          style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
-                        />
-                      </div>
-                      <div className="margin-bottom--sm">
-                        <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600, fontSize: '0.85rem' }}>
-                          Workshop Token
-                        </label>
-                        <input
-                          type="password"
-                          value={workshopTokenInput}
-                          onChange={e => { setWorkshopTokenInput(e.target.value); setWorkshopResult(null); }}
-                          placeholder="Token from your instructor"
-                          style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)', fontFamily: 'monospace', fontSize: '0.85rem' }}
-                        />
-                      </div>
-                      <button
-                        className="button button--primary button--sm"
-                        onClick={handleWorkshopJoinFields}
-                        disabled={!workshopUrlInput.trim() || !workshopTokenInput.trim()}
-                        style={{ marginBottom: '0.75rem' }}
-                      >
-                        Join Workshop
-                      </button>
-
-                    </div>
-                  </details>
                 </>
               )}
 
@@ -1271,230 +1419,11 @@ export default function JupyterSettings(): JSX.Element {
             </div>
           </details>
 
-          {/* IBM Quantum Account */}
-          <details className="jupyter-settings__details">
-            <summary>
-              <h3 id="ibm-quantum" className="jupyter-settings__details-heading">
-                <Translate id="settings.ibm.heading">IBM Quantum Account</Translate>
-              </h3>
-            </summary>
-            <div className="jupyter-settings__details-content">
-              <div className="alert alert--warning margin-bottom--md">
-                <Translate
-                  id="settings.ibm.securityNote"
-                  values={{
-                    strong: <strong>{translate({id: 'settings.ibm.securityNoteLabel', message: 'Security note:'})}</strong>,
-                    saveAccount: <code>save_account()</code>,
-                  }}
-                >
-                  {'{strong} Credentials are stored in your browser\'s localStorage in plain text. They are not encrypted and can be read by browser extensions or anyone with access to this device. Use the expiry setting below to limit exposure, and delete credentials when you\'re done. For shared or public computers, prefer the manual {saveAccount} method described below instead.'}
-                </Translate>
-              </div>
-
-              <p>
-                <Translate
-                  id="settings.ibm.autoInjectDesc"
-                  values={{
-                    saveAccount: <code>save_account()</code>,
-                  }}
-                >
-                  {'Enter your IBM Quantum credentials once here. They will be auto-injected via {saveAccount} when the kernel starts, so you don\'t need to enter them in every notebook. This applies to embedded code execution on this site only — opening a notebook in JupyterLab requires calling {saveAccount} manually.'}
-                </Translate>
-              </p>
-
-              <ol>
-                <li>
-                  <Translate
-                    id="settings.ibm.step1"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step1.label">Register</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">quantum.cloud.ibm.com/registration</a>,
-                    }}
-                  >
-                    {'{strong} at {link} (free, no credit card required)'}
-                  </Translate>
-                </li>
-                <li>
-                  <Translate
-                    id="settings.ibm.step2"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step2.label">Create an instance</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com/instances" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step2.instances">Instances</Translate></a>,
-                    }}
-                  >
-                    {'{strong} — go to {link}, click "Create instance +", select the Open (free) plan, and follow the wizard'}
-                  </Translate>
-                </li>
-                <li>
-                  <Translate
-                    id="settings.ibm.step3"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step3.label">Copy CRN</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step3.home">home page</Translate></a>,
-                    }}
-                  >
-                    {'{strong} — back on the {link}, find your instance under "Instances" and click the copy icon next to "CRN"'}
-                  </Translate>
-                </li>
-                <li>
-                  <Translate
-                    id="settings.ibm.step4"
-                    values={{
-                      strong: <strong><Translate id="settings.ibm.step4.label">Create API key</Translate></strong>,
-                      link: <a href="https://quantum.cloud.ibm.com" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.step4.home">home page</Translate></a>,
-                    }}
-                  >
-                    {'{strong} — on the {link}, find "API key" and click "Create +"'}
-                  </Translate>
-                </li>
-              </ol>
-
-              <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-                <Translate
-                  id="settings.ibm.guideLink"
-                  values={{
-                    link: <a href="https://quantum.cloud.ibm.com/docs/en/guides/hello-world#install-and-authenticate" target="_blank" rel="noopener noreferrer"><Translate id="settings.ibm.guideLink.text">IBM's authentication guide</Translate></a>,
-                  }}
-                >
-                  {'Need more help? See {link} for screenshots and detailed steps.'}
-                </Translate>
-              </p>
-
-              {ibmDaysRemaining >= 0 && (
-                <div className="alert alert--info margin-bottom--md" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                  <span>
-                    <Translate
-                      id="settings.ibm.expiryNotice"
-                      values={{days: <strong>{ibmDaysRemaining} {ibmDaysRemaining !== 1 ? translate({id: 'settings.ibm.days', message: 'days'}) : translate({id: 'settings.ibm.day', message: 'day'})}</strong>}}
-                    >
-                      {'Credentials expire in {days}.'}
-                    </Translate>
-                  </span>
-                  <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                    <Translate id="settings.ibm.autoDelete">Auto-delete after:</Translate>{' '}
-                    <select
-                      value={ttlDays}
-                      onChange={(e) => {
-                        const days = Number(e.target.value);
-                        setTtlDaysState(days);
-                        setCredentialTTLDays(days);
-                        setIbmDaysRemaining(getCredentialDaysRemaining());
-                      }}
-                      style={{
-                        padding: '0.15rem 0.3rem',
-                        borderRadius: '4px',
-                        border: '1px solid var(--ifm-color-emphasis-300)',
-                        background: 'var(--ifm-background-color)',
-                        fontSize: '0.85rem',
-                      }}
-                    >
-                      <option value={1}>{translate({id: 'settings.ibm.ttl.1day', message: '1 day'})}</option>
-                      <option value={3}>{translate({id: 'settings.ibm.ttl.3days', message: '3 days'})}</option>
-                      <option value={7}>{translate({id: 'settings.ibm.ttl.7days', message: '7 days'})}</option>
-                    </select>
-                  </span>
-                </div>
-              )}
-
-              <div className="jupyter-settings__field">
-                <label className="jupyter-settings__label" htmlFor="ibm-token">
-                  <Translate id="settings.ibm.tokenLabel">API Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.apiToken', message: 'Find your API token at quantum.cloud.ibm.com under your profile.'})} />
-                </label>
-                <input
-                  id="ibm-token"
-                  type="password"
-                  className="jupyter-settings__input"
-                  placeholder={translate({id: 'settings.ibm.tokenPlaceholder', message: '44-character API key'})}
-                  value={ibmToken}
-                  onChange={(e) => setIbmToken(e.target.value)}
-                />
-              </div>
-
-              <div className="jupyter-settings__field">
-                <label className="jupyter-settings__label" htmlFor="ibm-crn">
-                  <Translate id="settings.ibm.crnLabel">Cloud Resource Name (CRN) / Instance</Translate><InfoIcon tooltip={translate({id: 'settings.info.crn', message: 'Cloud Resource Name — copy from the Instances page on IBM Quantum Platform.'})} />
-                </label>
-                <input
-                  id="ibm-crn"
-                  type="text"
-                  className="jupyter-settings__input"
-                  placeholder="crn:v1:bluemix:public:quantum-computing:..."
-                  value={ibmCrn}
-                  onChange={(e) => setIbmCrn(e.target.value)}
-                />
-              </div>
-
-              <div className="jupyter-settings__field">
-                <label className="jupyter-settings__label" htmlFor="ibm-plan">
-                  <Translate id="settings.ibm.planLabel">Plan type</Translate><InfoIcon tooltip={translate({id: 'settings.info.ibmPlan', message: 'Open Plan does not support Sessions. When set to Open, Session calls are automatically converted to job mode so tutorials run without errors.'})} />
-                </label>
-                <select
-                  id="ibm-plan"
-                  value={ibmPlan}
-                  onChange={(e) => {
-                    const plan = e.target.value as IBMQuantumPlan;
-                    setIbmPlanState(plan);
-                    setIBMQuantumPlan(plan);
-                  }}
-                  style={{
-                    padding: '0.35rem 0.5rem',
-                    borderRadius: '4px',
-                    border: '1px solid var(--ifm-color-emphasis-300)',
-                    background: 'var(--ifm-background-color)',
-                    fontSize: '0.85rem',
-                    maxWidth: '200px',
-                  }}
-                >
-                  <option value="open">{translate({id: 'settings.ibm.plan.open', message: 'Open (free)'})}</option>
-                  <option value="payg">{translate({id: 'settings.ibm.plan.payg', message: 'Pay-as-you-go'})}</option>
-                  <option value="premium">{translate({id: 'settings.ibm.plan.premium', message: 'Premium'})}</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
-                <button
-                  className="jupyter-settings__button jupyter-settings__button--primary"
-                  onClick={handleIbmSave}
-                  disabled={!ibmToken}
-                >
-                  <Translate id="settings.ibm.saveBtn">Save Credentials</Translate>
-                </button>
-                <button
-                  className="jupyter-settings__button jupyter-settings__button--secondary"
-                  onClick={handleIbmDelete}
-                >
-                  <Translate id="settings.ibm.deleteBtn">Delete Credentials</Translate>
-                </button>
-              </div>
-
-              {ibmSaveResult && (
-                <div className="alert alert--success margin-top--md">
-                  {ibmSaveResult}
-                </div>
-              )}
-
-              <details style={{ marginTop: '1rem' }}>
-                <summary><strong><Translate id="settings.ibm.manualSummary">Alternative: Run save_account() manually in a notebook cell</Translate></strong></summary>
-                <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-                  <Translate id="settings.ibm.manualDesc">
-                    If you prefer not to store credentials in this browser, paste this into any
-                    code cell and run it. Credentials are saved in the Binder kernel's temporary
-                    storage and lost when the session ends.
-                  </Translate>
-                </p>
-                <pre><code>{`from qiskit_ibm_runtime import QiskitRuntimeService
-QiskitRuntimeService.save_account(
-    token="YOUR_API_TOKEN",
-    instance="YOUR_CRN",
-    overwrite=True
-)`}</code></pre>
-              </details>
-            </div>
-          </details>
-
           {/* ═══════════════════════════════════════════════════════════════
               ADVANCED — collapsed by default
               ═══════════════════════════════════════════════════════════════ */}
+
+          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
           <h2 id="advanced-settings" style={{ marginTop: '2.5rem' }}>
             <Translate id="settings.advancedSettings.heading">Advanced Settings</Translate>
