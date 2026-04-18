@@ -20,7 +20,7 @@
  */
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { getWorkshopPool } from '@site/src/config/jupyter';
+import { getWorkshopPool, getCodeEngineUrl } from '@site/src/config/jupyter';
 
 // ─────────────────────────── types ───────────────────────────
 
@@ -636,11 +636,17 @@ export default function PodMonitor() {
     setTimerEnd(null);
   }, []);
 
-  // Read workshop pool from localStorage on mount
+  // Read workshop pool or single CE URL from localStorage on mount
   useEffect(() => {
     const wsPool = getWorkshopPool();
     if (wsPool && wsPool.pool.length > 0) {
       setPool(wsPool.pool);
+    } else {
+      // Fall back to single CE URL from Settings
+      const singleCeUrl = getCodeEngineUrl();
+      if (singleCeUrl) {
+        setManualUrls([singleCeUrl.replace(/\/+$/, '')]);
+      }
     }
   }, []);
 
