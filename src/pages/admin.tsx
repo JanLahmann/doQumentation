@@ -212,7 +212,7 @@ export default function AdminPage(): JSX.Element {
           <h3>Before the workshop</h3>
           <ol>
             <li>
-              <strong>Deploy Code Engine instances</strong> — Go to{' '}
+              <strong>Deploy IBM Cloud Code Engine instances</strong> — Go to{' '}
               <a href={`${GITHUB_REPO}/actions/workflows/codeengine-image.yml`} target="_blank" rel="noopener noreferrer">
                 Actions &gt; Code Engine Image
               </a>

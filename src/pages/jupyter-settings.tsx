@@ -410,7 +410,7 @@ export default function JupyterSettings(): JSX.Element {
     saveCodeEngineCredentials(raw, ceToken);
     setCeDaysRemaining(ttlDays);
     refreshBackends();
-    setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'Code Engine settings saved! Code will now execute via your CE instance.'}));
+    setCeSaveResult(translate({id: 'settings.ce.saveSuccess', message: 'IBM Cloud Code Engine settings saved! Code will now execute via your instance.'}));
     setCeSaveResultType('success');
   };
 
@@ -420,7 +420,7 @@ export default function JupyterSettings(): JSX.Element {
     setCeToken('');
     setCeDaysRemaining(-1);
     refreshBackends('code-engine');
-    setCeSaveResult(translate({id: 'settings.ce.deleteSuccess', message: 'Code Engine settings cleared. Falling back to Binder.'}));
+    setCeSaveResult(translate({id: 'settings.ce.deleteSuccess', message: 'IBM Cloud Code Engine settings cleared. Falling back to Binder.'}));
     setCeSaveResultType('success');
   };
 
@@ -544,7 +544,7 @@ export default function JupyterSettings(): JSX.Element {
               detected.get('github-pages') ?? { environment: 'github-pages', label: 'Binder', detail: 'mybinder.org' },
               detected.get('code-engine') ?? {
                 environment: 'code-engine',
-                label: translate({id: 'settings.backend.ce.label', message: 'Code Engine'}),
+                label: translate({id: 'settings.backend.ce.label', message: 'IBM Cloud Code Engine'}),
                 detail: translate({id: 'settings.backend.ce.notConfigured', message: 'not configured — set up below'}),
               },
               detected.get('custom') ?? {
@@ -608,12 +608,12 @@ export default function JupyterSettings(): JSX.Element {
               <h3 id="code-engine-config" style={{ marginTop: 0 }}>
                 {(backendOverride === 'custom' || (config?.environment === 'custom' && backendOverride !== 'code-engine'))
                   ? <Translate id="settings.server.customHeading">Custom Server</Translate>
-                  : <Translate id="settings.ce.quickHeading">Code Engine</Translate>}
+                  : <Translate id="settings.ce.quickHeading">IBM Cloud Code Engine</Translate>}
               </h3>
               {ceDaysRemaining >= 0 && backendOverride !== 'custom' && (
                 <div className="alert alert--info margin-bottom--md">
                   <Translate id="settings.ce.daysRemaining" values={{days: ceDaysRemaining}}>
-                    {'Code Engine settings will auto-delete in {days} day(s).'}
+                    {'IBM Cloud Code Engine settings will auto-delete in {days} day(s).'}
                   </Translate>
                 </div>
               )}
@@ -668,7 +668,7 @@ export default function JupyterSettings(): JSX.Element {
                   </div>
                   <div className="margin-bottom--md">
                     <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                      <Translate id="settings.ce.tokenLabel">Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
+                      <Translate id="settings.ce.tokenLabel">Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the IBM Cloud Code Engine app.'})} />
                     </label>
                     <input type="password" value={ceToken}
                       onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
@@ -1316,7 +1316,7 @@ QiskitRuntimeService.save_account(
             <div className="jupyter-settings__details-content">
               <p>
                 <Translate id="settings.ce.description">
-                  Code Engine provides a fast, serverless Jupyter kernel powered by your own IBM Cloud account.
+                  IBM Cloud Code Engine provides a fast, serverless Jupyter kernel powered by your own IBM Cloud account.
                   Startup takes seconds instead of minutes. Free tier covers ~14 hours/month.
                 </Translate>
               </p>
@@ -1449,7 +1449,7 @@ QiskitRuntimeService.save_account(
                       <li>
                         <Translate
                           id="settings.ce.step2"
-                          values={{link: <a href="https://cloud.ibm.com/codeengine/projects" target="_blank" rel="noopener noreferrer">Code Engine console</a>}}
+                          values={{link: <a href="https://cloud.ibm.com/codeengine/projects" target="_blank" rel="noopener noreferrer">IBM Cloud Code Engine console</a>}}
                         >
                           {'Go to the {link} and create a new project in your preferred region'}
                         </Translate>
