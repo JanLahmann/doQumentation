@@ -34,6 +34,7 @@ DOCS_OUTPUT = PROJECT_ROOT / "docs"
 NOTEBOOKS_OUTPUT = PROJECT_ROOT / "notebooks"
 STATIC_DIR = PROJECT_ROOT / "static"
 ADDONS_DIR = PROJECT_ROOT / "upstream-addons"
+WORKSHOP_DIR = PROJECT_ROOT / "workshop-notebooks"
 
 # Qiskit Addon sources — Phase 1: core addons with docs/tutorials/
 # Each entry: display name → {submodule dir name, notebook path within repo, pip package}
@@ -1834,6 +1835,69 @@ def process_modules():
           f"{stats['images']} images, {stats['skipped']} skipped")
 
 
+def process_workshops():
+    """Convert workshop notebooks from workshop-notebooks/ to docs/workshop/."""
+    print("\n🛠️  Processing workshop notebooks...")
+
+    if not WORKSHOP_DIR.exists():
+        print(f"  No workshop-notebooks/ directory found — skipping")
+        return
+
+    workshop_dst = DOCS_OUTPUT / "workshop"
+    notebooks_dst = NOTEBOOKS_OUTPUT / "workshop"
+
+    # Don't nuke docs/workshop/index.mdx — preserve it
+    # Only clean converted .mdx files that came from .ipynb
+    notebooks_dst.mkdir(parents=True, exist_ok=True)
+
+    stats = {"ipynb": 0, "mdx": 0, "images": 0, "skipped": 0}
+
+    for src_path in sorted(WORKSHOP_DIR.rglob('*')):
+        if src_path.is_dir():
+            continue
+
+        rel_path = src_path.relative_to(WORKSHOP_DIR)
+
+        if src_path.suffix == '.ipynb':
+            dst_path = workshop_dst / rel_path.with_suffix('.mdx')
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            nb_path = f"workshop/{rel_path}"
+            nb_slug = None
+            if src_path.stem == src_path.parent.name:
+                nb_slug = f"./{src_path.stem}"
+            if convert_notebook(src_path, dst_path, notebook_path=nb_path, slug=nb_slug):
+                stats["ipynb"] += 1
+                print(f"    ✓ {rel_path} → .mdx")
+            else:
+                stats["skipped"] += 1
+
+            # Copy original notebook for "Open in Lab"
+            nb_dst = notebooks_dst / rel_path
+            nb_dst.parent.mkdir(parents=True, exist_ok=True)
+            copy_notebook_with_rewrite(src_path, nb_dst, Path('workshop') / rel_path)
+
+        elif src_path.suffix == '.mdx':
+            dst_path = workshop_dst / rel_path
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            content = src_path.read_text()
+            transformed = transform_mdx(content, src_path)
+            dst_path.write_text(transformed)
+            stats["mdx"] += 1
+            print(f"    ✓ {rel_path}")
+
+        elif src_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif'):
+            dst_path = workshop_dst / rel_path
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(src_path, dst_path)
+            stats["images"] += 1
+
+        else:
+            stats["skipped"] += 1
+
+    print(f"\n  Summary: {stats['mdx']} MDX, {stats['ipynb']} notebooks, "
+          f"{stats['images']} images, {stats['skipped']} skipped")
+
+
 def generate_module_sidebar():
     """Generate sidebar configuration for modules from per-module _toc.json files."""
     print("\n📋 Generating module sidebar...")
@@ -2326,7 +2390,7 @@ def main():
     parser.add_argument("--sample-only", action="store_true",
                         help="Only create sample content (for testing)")
     parser.add_argument("--skip", action="append", default=[],
-                        choices=["tutorials", "courses", "modules", "guides", "addons"],
+                        choices=["tutorials", "courses", "modules", "guides", "addons", "workshops"],
                         help="Skip specific content types (can be repeated)")
     parser.add_argument("--scan-deps", action="store_true",
                         help="Scan notebooks for missing deps (report only, no conversion)")
@@ -2383,6 +2447,8 @@ def main():
             process_modules()
         if "addons" not in skip:
             process_addons()
+        if "workshops" not in skip:
+            process_workshops()
 
         create_learning_landing_pages()
 
