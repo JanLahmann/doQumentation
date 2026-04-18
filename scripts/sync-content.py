@@ -220,7 +220,7 @@ def escape_mdx_outside_code(content: str) -> str:
     Leaves code blocks (``` ... ```), inline code (` ... `),
     math blocks ($$ ... $$ and $ ... $), and JSX comments ({/* ... */}) untouched.
     """
-    parts = re.split(r'(\$\$[\s\S]*?\$\$|```[\s\S]*?```|`[^`]+`|\$[^$\n]+\$|\{/\*[\s\S]*?\*/\})', content)
+    parts = re.split(r'(\$\$[\s\S]*?\$\$|```[\s\S]*?```|`[^`]+`|\$(?:[^$\n]|\n(?!\n))+\$|\{/\*[\s\S]*?\*/\})', content)
     for i in range(0, len(parts), 2):  # even indices are outside code
         # Escape lone { } that aren't JSX expressions
         # Skip patterns like {' '} which are valid JSX
