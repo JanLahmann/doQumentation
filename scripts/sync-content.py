@@ -1871,6 +1871,12 @@ def process_workshops():
                 content = dst_path.read_text()
                 # Fix non-self-closing <img> tags (MDX requires <img ... />)
                 content = re.sub(r'<img\b(.*?)(?<!\/)>', r'<img\1 />', content)
+                # Add onerror fallback for external images
+                content = re.sub(
+                    r'<img\b(.*?src="https?://[^"]*".*?)\s*/>',
+                    r'<img\1 onerror="this.style.display=\'none\'" />',
+                    content
+                )
                 # Fix LaTeX math in workshop notebooks:
                 # 1. Undo brace escaping inside LaTeX environments
                 def unescape_math_env(m):
@@ -1903,6 +1909,33 @@ def process_workshops():
                 content = '\n'.join(out_lines)
                 # 3. Fix $$$ (triple dollar) → $$ + newline
                 content = content.replace('$$$', '$$\n$$')
+                # Add source filename and description to frontmatter
+                if content.startswith('---'):
+                    fm_end = content.index('\n---', 3)
+                    fm = content[3:fm_end]
+                    body = content[fm_end + 4:]
+                    extra_fm = ''
+                    # Source filename
+                    extra_fm += f'\nsource_file: "{src_path.name}"'
+                    # Extract description if missing
+                    if 'description:' not in fm:
+                        # Scan body for first substantive paragraph (>30 chars, starts with letter)
+                        desc = ''
+                        for para in re.split(r'\n\n+', body):
+                            text = para.strip()
+                            # Skip headings, code blocks, imports, images, frontmatter-like lines
+                            if (text and not text.startswith('#') and not text.startswith('```')
+                                and not text.startswith('<') and not text.startswith('import ')
+                                and not text.startswith('$$') and not text.startswith('---')
+                                and len(text) > 30 and text[0].isalpha()):
+                                # Truncate at 160 chars
+                                desc = text[:160].replace('"', '\\"')
+                                if len(text) > 160:
+                                    desc = desc.rsplit(' ', 1)[0] + '...'
+                                break
+                        if desc:
+                            extra_fm += f'\ndescription: "{desc}"'
+                    content = f'---{fm}{extra_fm}\n---{body}'
                 # Hide notebooks with _solution or _hidden in filename from sidebar
                 stem_lower = src_path.stem.lower()
                 if '_solution' in stem_lower or '_hidden' in stem_lower:

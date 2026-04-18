@@ -162,7 +162,14 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
             }}
           >
             <span>&#128221;</span>
-            <span>{description || 'This page was generated from a Jupyter notebook.'}</span>
+            <span>
+              {description || 'This page was generated from a Jupyter notebook.'}
+              {notebookPath.startsWith('workshop/') && (
+                <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--ifm-color-content-secondary)', marginTop: '0.15rem' }}>
+                  Source: <code>{notebookPath.split('/').pop()}</code>
+                </span>
+              )}
+            </span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Open in:<InfoIcon tooltip={translate({id: 'openInLab.info.openIn', message: 'JupyterLab: full notebook editor with all packages pre-installed. Colab: Google\'s free cloud notebooks (requires a Google account).'})} position="below" /></span>
               {labUrl && (

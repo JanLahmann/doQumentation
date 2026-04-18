@@ -723,6 +723,69 @@ function annotateInjectedCells(): void {
   }, 1200);
 }
 
+/** Show hints on cells with placeholder credentials (YOUR_API_KEY etc.)
+ *  so users know they need to configure credentials or they'll be injected. */
+function annotatePlaceholderCells(): void {
+  const hasCredentials = !!getIBMQuantumToken();
+
+  setTimeout(() => {
+    const cells = document.querySelectorAll('.thebelab-cell');
+    const placeholderPattern = /your_api_key|YOUR_API_KEY|YOUR_API_TOKEN|deleteThisAndPaste|YOUR_CRN|your_crn|your_token/i;
+
+    cells.forEach((cell) => {
+      if (cell.querySelector('.thebelab-cell__skip-hint')) return;
+      if (cell.querySelector('.thebelab-cell__placeholder-hint')) return;
+
+      const code = cell.querySelector('.CodeMirror')?.textContent ||
+                   cell.querySelector('pre')?.textContent || '';
+
+      if (!placeholderPattern.test(code)) return;
+
+      const div = document.createElement('div');
+      div.className = 'thebelab-cell__placeholder-hint';
+      const strong = document.createElement('strong');
+
+      if (hasCredentials) {
+        strong.textContent = translate({
+          id: 'executable.placeholder.hasCredentials',
+          message: 'Placeholder credentials detected',
+        });
+        div.appendChild(strong);
+        div.appendChild(document.createTextNode(` \u2014 `));
+        div.appendChild(document.createTextNode(translate({
+          id: 'executable.placeholder.willInject',
+          message: 'Your credentials from Settings will be used automatically. You can skip this cell.',
+        })));
+      } else {
+        strong.textContent = translate({
+          id: 'executable.placeholder.noCredentials',
+          message: 'Placeholder credentials detected',
+        });
+        div.appendChild(strong);
+        div.appendChild(document.createTextNode(` \u2014 `));
+        const text = translate({
+          id: 'executable.placeholder.configure',
+          message: 'Configure your IBM Quantum credentials in ',
+        });
+        div.appendChild(document.createTextNode(text));
+        const a = document.createElement('a');
+        a.href = '/jupyter-settings#ibm-quantum';
+        a.textContent = translate({
+          id: 'executable.placeholder.settingsLink',
+          message: 'Settings',
+        });
+        div.appendChild(a);
+        div.appendChild(document.createTextNode(translate({
+          id: 'executable.placeholder.toAutoInject',
+          message: ' to auto-inject them.',
+        })));
+      }
+
+      cell.insertBefore(div, cell.firstChild);
+    });
+  }, 1200);
+}
+
 // ── Kernel injection for IBM credentials / simulator mode ──
 
 /**
@@ -1150,6 +1213,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
               annotateSaveAccountCells();
               annotateSessionCells();
               annotateInjectedCells();
+              annotatePlaceholderCells();
             });
           },
           (err) => {
