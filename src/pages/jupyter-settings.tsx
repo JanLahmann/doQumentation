@@ -526,15 +526,45 @@ export default function JupyterSettings(): JSX.Element {
           </p>
 
 
-          {/* Backend Selection — only shown when multiple backends are available */}
-          {availableBackends.length > 1 && (
+          {/* Current backend status — always visible */}
+          <div className="alert alert--info margin-bottom--md" id="compute-backend">
+            <strong><Translate id="settings.env.label">Current:</Translate></strong>{' '}
+            {config?.environment === 'code-engine' && (
+              <Translate id="settings.computeBackend.envCE" values={{url: config.baseUrl}}>{'Code Engine — {url}'}</Translate>
+            )}
+            {config?.environment === 'github-pages' && (
+              <Translate id="settings.computeBackend.envBinder">Binder (mybinder.org)</Translate>
+            )}
+            {config?.environment === 'rasqberry' && (
+              <Translate id="settings.computeBackend.envLocal" values={{url: config.baseUrl}}>{'Local — {url}'}</Translate>
+            )}
+            {config?.environment === 'custom' && (
+              <Translate id="settings.computeBackend.envCustom" values={{url: config.baseUrl}}>{'Custom — {url}'}</Translate>
+            )}
+            {(!config?.environment || config?.environment === 'unknown') && (
+              <Translate id="settings.computeBackend.envUnknown">Not detected</Translate>
+            )}
+          </div>
+
+          {/* Backend Selection — always visible so users can discover CE */}
+          {(() => {
+            // Build display list: detected backends + CE if not already present
+            const displayBackends = [...availableBackends];
+            if (!displayBackends.some(b => b.environment === 'code-engine')) {
+              displayBackends.push({
+                environment: 'code-engine',
+                label: translate({id: 'settings.backend.ce.label', message: 'Code Engine'}),
+                detail: translate({id: 'settings.backend.ce.notConfigured', message: 'not configured — set up below'}),
+              });
+            }
+            return (
             <>
               <h3 id="backend-selection" style={{ marginTop: '1.5rem' }}>
                 <Translate id="settings.backend.heading">Server Backend</Translate>
               </h3>
               <p style={{ fontSize: '0.9rem' }}>
                 <Translate id="settings.backend.description">
-                  Multiple execution backends are available. Choose which one to use for code execution:
+                  Choose which backend to use for code execution:
                 </Translate>
               </p>
               <div className="jupyter-settings__radio-group">
@@ -549,7 +579,7 @@ export default function JupyterSettings(): JSX.Element {
                     <Translate id="settings.backend.auto">Auto-detect (recommended)</Translate>
                   </span>
                 </label>
-                {availableBackends.map((b) => (
+                {displayBackends.map((b) => (
                   <label key={b.environment} className="jupyter-settings__radio-label">
                     <input
                       type="radio"
@@ -569,7 +599,8 @@ export default function JupyterSettings(): JSX.Element {
                 ))}
               </div>
             </>
-          )}
+            );
+          })()}
 
           {/* ═══════════════════════════════════════════════════════════════
               ESSENTIALS — always visible
@@ -1230,37 +1261,14 @@ QiskitRuntimeService.save_account(
           </button>
 
           {/* ═══════════════════════════════════════════════════════════════
-              COMPUTE BACKEND
+              ADVANCED — collapsed by default
               ═══════════════════════════════════════════════════════════════ */}
 
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
 
-          <h2 id="compute-backend" style={{ marginTop: '2.5rem' }}>
-            <Translate id="settings.computeBackend.heading">Compute Backend</Translate>
+          <h2 id="advanced-settings" style={{ marginTop: '2.5rem' }}>
+            <Translate id="settings.advancedSettings.heading">Advanced Settings</Translate>
           </h2>
-          <p>
-            <Translate id="settings.computeBackend.desc">
-              Where code runs when you click Run. Auto-detected based on your configuration.
-            </Translate>
-          </p>
-          <div className="alert alert--info margin-bottom--md">
-            <strong><Translate id="settings.env.label">Current:</Translate></strong>{' '}
-            {config?.environment === 'code-engine' && (
-              <Translate id="settings.computeBackend.envCE" values={{url: config.baseUrl}}>{'Code Engine — {url}'}</Translate>
-            )}
-            {config?.environment === 'github-pages' && (
-              <Translate id="settings.computeBackend.envBinder">Binder (mybinder.org)</Translate>
-            )}
-            {config?.environment === 'rasqberry' && (
-              <Translate id="settings.computeBackend.envLocal" values={{url: config.baseUrl}}>{'Local — {url}'}</Translate>
-            )}
-            {config?.environment === 'custom' && (
-              <Translate id="settings.computeBackend.envCustom" values={{url: config.baseUrl}}>{'Custom — {url}'}</Translate>
-            )}
-            {(!config?.environment || config?.environment === 'unknown') && (
-              <Translate id="settings.computeBackend.envUnknown">Not detected</Translate>
-            )}
-          </div>
 
           {/* Code Engine */}
           <details className="jupyter-settings__details" open={config?.environment === 'code-engine' || ceDaysRemaining >= 0}>
@@ -1418,16 +1426,6 @@ QiskitRuntimeService.save_account(
               )}
             </div>
           </details>
-
-          {/* ═══════════════════════════════════════════════════════════════
-              ADVANCED — collapsed by default
-              ═══════════════════════════════════════════════════════════════ */}
-
-          <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
-
-          <h2 id="advanced-settings" style={{ marginTop: '2.5rem' }}>
-            <Translate id="settings.advancedSettings.heading">Advanced Settings</Translate>
-          </h2>
 
           {/* Binder Packages */}
           <details className="jupyter-settings__details">
