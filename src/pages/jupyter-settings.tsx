@@ -1464,7 +1464,7 @@ QiskitRuntimeService.save_account(
                         <br />
                         <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
                           <Translate id="settings.ce.step3sizing">
-                            Sizing: 2 vCPU / 4 GB for single user, 8 vCPU / 16 GB for workshops (up to 80 users)
+                            Sizing: 1 vCPU / 2 GB for single user, 8 vCPU / 16 GB for workshops (up to 80 users)
                           </Translate>
                         </small>
                       </li>
