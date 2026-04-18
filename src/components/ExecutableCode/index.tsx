@@ -505,15 +505,21 @@ function markCellExecuting(cell: Element): void {
 }
 
 /** After thebelab cells are rendered, attach listeners for execution feedback. */
-function setupCellFeedback(): void {
+function setupCellFeedback(attempt = 0): void {
   // Clean up listeners from any previous bootstrap
-  feedbackCleanupFns.forEach(fn => fn());
-  feedbackCleanupFns = [];
+  if (attempt === 0) {
+    feedbackCleanupFns.forEach(fn => fn());
+    feedbackCleanupFns = [];
+  }
+
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000;
 
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
-    if (DEBUG) console.log(`[ExecutableCode] Setting up feedback for ${cells.length} cell(s)`);
+    if (DEBUG) console.log(`[ExecutableCode] Setting up feedback for ${cells.length} cell(s) (attempt ${attempt})`);
 
+    let cellsWithRunBtn = 0;
     cells.forEach((cell) => {
       const buttons = cell.querySelectorAll('button');
 
@@ -529,6 +535,7 @@ function setupCellFeedback(): void {
         b => b.textContent?.trim().toLowerCase() === 'run'
       );
       if (runBtn) {
+        cellsWithRunBtn++;
         const handler = () => markCellExecuting(cell);
         runBtn.addEventListener('click', handler);
         feedbackCleanupFns.push(() => runBtn.removeEventListener('click', handler));
@@ -546,7 +553,15 @@ function setupCellFeedback(): void {
         feedbackCleanupFns.push(() => cm.removeEventListener('keydown', handler));
       }
     });
-  }, 1000);
+
+    // Retry if cells exist but no run buttons found (thebelab may still be rendering)
+    if (cells.length > 0 && cellsWithRunBtn === 0 && attempt < MAX_RETRIES) {
+      if (DEBUG) console.log(`[ExecutableCode] No run buttons found, retrying in ${RETRY_DELAY_MS}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      setTimeout(() => setupCellFeedback(attempt + 1), RETRY_DELAY_MS);
+    } else if (cells.length > 0 && cellsWithRunBtn === 0) {
+      console.warn('[ExecutableCode] Run buttons not found after retries — cells may need a Back→Run cycle');
+    }
+  }, attempt === 0 ? 1000 : 0);
 }
 
 /** After injection, show a skip-hint on cells that contain save_account().

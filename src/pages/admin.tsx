@@ -90,6 +90,7 @@ export default function AdminPage(): JSX.Element {
             Real-time health of CE workshop pods. Polls each pod's <code>/stats</code> endpoint every
             5 seconds and shows progress bars + sparklines for the last 15 minutes. Health thresholds
             derived from stress test data (~6 sessions per vCPU, memory and CPU saturation lines).
+            CE credentials are read from the <a href="/jupyter-settings#code-engine-config">Settings page</a>.
           </p>
           <BrowserOnly>
             {() => {
@@ -387,6 +388,16 @@ ibmcloud ce app update --name ce-doqumentation-01 --max-scale 1`}</CodeBlock>
             { label: 'Live Site', url: 'https://doqumentation.org' },
             { label: 'Binder', url: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks' },
             { label: 'Docker Image', url: 'https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation' },
+          ]} />
+
+          <h3>Binder Federation (cache warming)</h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)', marginBottom: '0.5rem' }}>
+            Click a link to check if the Binder image is cached on that federation member. A cached image starts in seconds; uncached triggers a rebuild (~2-5 min).
+          </p>
+          <LinkList items={[
+            { label: '2i2c (primary, ~70% traffic)', url: 'https://2i2c.mybinder.org/build/gh/JanLahmann/doQumentation/notebooks' },
+            { label: 'BIDS (UC Berkeley)', url: 'https://bids.mybinder.org/build/gh/JanLahmann/doQumentation/notebooks' },
+            { label: 'GESIS (Germany)', url: 'https://notebooks.gesis.org/binder/build/gh/JanLahmann/doQumentation/notebooks' },
           ]} />
 
           <h3>Satellite Repos (locale deploys)</h3>

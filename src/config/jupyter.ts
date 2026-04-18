@@ -38,7 +38,7 @@ const STORAGE_KEY_EXECUTION_MODE = 'doqumentation_execution_mode';
 
 const STORAGE_KEY_IBM_TTL_DAYS = 'doqumentation_ibm_ttl_days';
 const STORAGE_KEY_SUPPRESS_WARNINGS = 'doqumentation_suppress_warnings';
-const DEFAULT_TTL_DAYS = 7;
+const DEFAULT_TTL_DAYS = 1;
 
 // Code Engine credential storage
 const STORAGE_KEY_CE_URL = 'doqumentation_ce_url';

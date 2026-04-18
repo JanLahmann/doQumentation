@@ -177,7 +177,7 @@ export default function JupyterSettings(): JSX.Element {
   const [executionMode, setExecutionModeState] = useState<ExecutionMode>('aer');
   const [fakeDevice, setFakeDeviceState] = useState('FakeSherbrooke');
   const [fakeBackends, setFakeBackends] = useState(FALLBACK_BACKENDS);
-  const [ttlDays, setTtlDaysState] = useState(7);
+  const [ttlDays, setTtlDaysState] = useState(1);
 
   // Code Engine state
   const [ceUrl, setCeUrl] = useState('');
@@ -337,16 +337,6 @@ export default function JupyterSettings(): JSX.Element {
       success: true,
       message: translate({id: 'settings.advanced.clearSuccess', message: 'Custom settings cleared. Using auto-detected configuration.'}),
     });
-  };
-
-  const handleUseDefault = () => {
-    if (config?.environment === 'rasqberry') {
-      setCustomUrl(config.baseUrl);
-      setCustomToken(config.token);
-    } else {
-      setCustomUrl('http://localhost:8888');
-      setCustomToken('rasqberry');
-    }
   };
 
   // IBM Quantum credential handlers
@@ -548,13 +538,20 @@ export default function JupyterSettings(): JSX.Element {
 
           {/* Backend Selection — always visible so users can discover CE */}
           {(() => {
-            // Build display list: detected backends + CE if not already present
+            // Build display list: detected backends + CE and Custom if not already present
             const displayBackends = [...availableBackends];
             if (!displayBackends.some(b => b.environment === 'code-engine')) {
               displayBackends.push({
                 environment: 'code-engine',
                 label: translate({id: 'settings.backend.ce.label', message: 'Code Engine'}),
                 detail: translate({id: 'settings.backend.ce.notConfigured', message: 'not configured — set up below'}),
+              });
+            }
+            if (!displayBackends.some(b => b.environment === 'custom')) {
+              displayBackends.push({
+                environment: 'custom',
+                label: translate({id: 'settings.backend.custom.label', message: 'Custom Server'}),
+                detail: translate({id: 'settings.backend.custom.notConfigured', message: 'not configured — enter URL below'}),
               });
             }
             return (
@@ -598,6 +595,54 @@ export default function JupyterSettings(): JSX.Element {
                   </label>
                 ))}
               </div>
+
+              {/* Inline Custom Server fields — shown when custom is selected or configured */}
+              {(backendOverride === 'custom' || config?.environment === 'custom') && (
+                <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
+                  <div className="jupyter-settings__field">
+                    <label className="jupyter-settings__label" htmlFor="jupyter-url">
+                      <Translate id="settings.advanced.urlLabel">Jupyter Server URL</Translate>
+                    </label>
+                    <input
+                      id="jupyter-url"
+                      type="url"
+                      className="jupyter-settings__input"
+                      placeholder="http://localhost:8888"
+                      value={customUrl}
+                      onChange={(e) => setCustomUrl(e.target.value)}
+                    />
+                  </div>
+                  <div className="jupyter-settings__field">
+                    <label className="jupyter-settings__label" htmlFor="jupyter-token">
+                      <Translate id="settings.advanced.tokenLabel">Authentication Token</Translate>
+                    </label>
+                    <input
+                      id="jupyter-token"
+                      type="password"
+                      className="jupyter-settings__input"
+                      placeholder={translate({id: 'settings.advanced.tokenPlaceholder', message: '(optional)'})}
+                      value={customToken}
+                      onChange={(e) => setCustomToken(e.target.value)}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                    <button className="jupyter-settings__button jupyter-settings__button--primary" onClick={handleTest} disabled={!customUrl || isTesting}>
+                      {isTesting ? translate({id: 'settings.advanced.testing', message: 'Testing...'}) : translate({id: 'settings.advanced.testBtn', message: 'Test Connection'})}
+                    </button>
+                    <button className="jupyter-settings__button jupyter-settings__button--primary" onClick={handleSave} disabled={!customUrl}>
+                      <Translate id="settings.advanced.saveBtn">Save Settings</Translate>
+                    </button>
+                    <button className="jupyter-settings__button jupyter-settings__button--secondary" onClick={handleClear}>
+                      <Translate id="settings.advanced.clearBtn">Clear</Translate>
+                    </button>
+                  </div>
+                  {testResult && (
+                    <div className={`alert margin-top--md ${testResult.success ? 'alert--success' : 'alert--danger'}`}>
+                      {testResult.message}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
             );
           })()}
@@ -607,9 +652,8 @@ export default function JupyterSettings(): JSX.Element {
               ═══════════════════════════════════════════════════════════════ */}
 
 
-          {/* CE Quick Config — shown when CE is available */}
-          {(config?.environment === 'code-engine' || ceDaysRemaining >= 0 || availableBackends.some(b => b.environment === 'code-engine')) && (
-            <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
+          {/* CE Quick Config — always visible so users can configure CE */}
+          <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
               <h3 id="code-engine-config" style={{ marginTop: 0 }}>
                 <Translate id="settings.ce.quickHeading">Code Engine</Translate>
               </h3>
@@ -663,7 +707,6 @@ export default function JupyterSettings(): JSX.Element {
                 </Translate>
               </small>
             </div>
-          )}
 
           {/* Execution Mode */}
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
@@ -1160,7 +1203,7 @@ QiskitRuntimeService.save_account(
                     setProgressStats(getProgressStats());
                   }}
                 >
-                  <Translate id="settings.progress.clearPrefs">Clear All Preferences</Translate>
+                  <Translate id="settings.progress.clearPrefs">Clear Learning Data</Translate>
                 </button>
               </div>
             </>
@@ -1402,18 +1445,57 @@ QiskitRuntimeService.save_account(
                       <Translate id="settings.ce.setupTitle">Setup Instructions</Translate>
                     </summary>
                     <ol style={{ marginTop: '0.5rem' }}>
-                      <li><Translate id="settings.ce.step1">Create an IBM Cloud account at cloud.ibm.com (free tier available)</Translate></li>
-                      <li><Translate id="settings.ce.step2">Create a Code Engine project in your preferred region</Translate></li>
+                      <li>
+                        <Translate
+                          id="settings.ce.step1"
+                          values={{link: <a href="https://cloud.ibm.com/registration" target="_blank" rel="noopener noreferrer">cloud.ibm.com</a>}}
+                        >
+                          {'Create an IBM Cloud account at {link} (free tier available)'}
+                        </Translate>
+                      </li>
+                      <li>
+                        <Translate
+                          id="settings.ce.step2"
+                          values={{link: <a href="https://cloud.ibm.com/codeengine/projects" target="_blank" rel="noopener noreferrer">Code Engine console</a>}}
+                        >
+                          {'Go to the {link} and create a new project in your preferred region'}
+                        </Translate>
+                      </li>
                       <li>
                         <Translate
                           id="settings.ce.step3"
                           values={{image: <code>ghcr.io/janlahmann/doqumentation-codeengine:latest</code>}}
                         >
-                          {'Deploy a new application with image {image}, port 8080'}
+                          {'Create a new application with image {image}, listening port 8080'}
+                        </Translate>
+                        <br />
+                        <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                          <Translate id="settings.ce.step3sizing">
+                            Sizing: 2 vCPU / 4 GB for single user, 8 vCPU / 16 GB for workshops (up to 80 users)
+                          </Translate>
+                        </small>
+                      </li>
+                      <li>
+                        <Translate
+                          id="settings.ce.step4"
+                          values={{
+                            token: <code>JUPYTER_TOKEN</code>,
+                            cors: <code>CORS_ORIGIN</code>,
+                            domain: <code>https://doqumentation.org</code>,
+                          }}
+                        >
+                          {'Set environment variables: {token} to a secure token (min 32 characters) and {cors} to your domain (e.g. {domain})'}
                         </Translate>
                       </li>
-                      <li><Translate id="settings.ce.step4">Set environment variable JUPYTER_TOKEN to a secure token (min 32 characters) and CORS_ORIGIN to your domain</Translate></li>
                     </ol>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
+                      <Translate
+                        id="settings.ce.adminLink"
+                        values={{link: <a href="/admin">admin page</a>}}
+                      >
+                        {'For workshop sizing details and stress testing, see the {link}.'}
+                      </Translate>
+                    </p>
                   </details>
 
                 </>
@@ -1473,90 +1555,7 @@ qiskit-ibm-catalog, qiskit-addon-utils, pyscf`}</code>
             </div>
           </details>
 
-          {/* Custom Jupyter Server */}
-          <details className="jupyter-settings__details">
-            <summary>
-              <h3 id="advanced" className="jupyter-settings__details-heading">
-                <Translate id="settings.advanced.heading">Custom Jupyter Server</Translate>
-              </h3>
-            </summary>
-            <div className="jupyter-settings__details-content">
-              <div className="jupyter-settings__field">
-                <label className="jupyter-settings__label" htmlFor="jupyter-url">
-                  <Translate id="settings.advanced.urlLabel">Jupyter Server URL</Translate>
-                </label>
-                <input
-                  id="jupyter-url"
-                  type="url"
-                  className="jupyter-settings__input"
-                  placeholder="http://localhost:8888"
-                  value={customUrl}
-                  onChange={(e) => setCustomUrl(e.target.value)}
-                />
-                <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-                  <Translate id="settings.advanced.urlHint">The base URL of your Jupyter server (e.g., http://localhost:8888)</Translate>
-                </small>
-              </div>
-
-              <div className="jupyter-settings__field">
-                <label className="jupyter-settings__label" htmlFor="jupyter-token">
-                  <Translate id="settings.advanced.tokenLabel">Authentication Token</Translate>
-                </label>
-                <input
-                  id="jupyter-token"
-                  type="password"
-                  className="jupyter-settings__input"
-                  placeholder={translate({id: 'settings.advanced.tokenPlaceholder', message: '(optional)'})}
-                  value={customToken}
-                  onChange={(e) => setCustomToken(e.target.value)}
-                />
-                <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-                  <Translate id="settings.advanced.tokenHint">Token from jupyter server --generate-config or displayed at startup</Translate>
-                </small>
-              </div>
-
-              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
-                <button
-                  className="jupyter-settings__button jupyter-settings__button--primary"
-                  onClick={handleTest}
-                  disabled={!customUrl || isTesting}
-                >
-                  {isTesting
-                    ? translate({id: 'settings.advanced.testing', message: 'Testing...'})
-                    : translate({id: 'settings.advanced.testBtn', message: 'Test Connection'})}
-                </button>
-                <button
-                  className="jupyter-settings__button jupyter-settings__button--primary"
-                  onClick={handleSave}
-                  disabled={!customUrl}
-                >
-                  <Translate id="settings.advanced.saveBtn">Save Settings</Translate>
-                </button>
-                <button
-                  className="jupyter-settings__button jupyter-settings__button--secondary"
-                  onClick={handleUseDefault}
-                >
-                  <Translate id="settings.advanced.defaultBtn">Use Default</Translate>
-                </button>
-                <button
-                  className="jupyter-settings__button jupyter-settings__button--secondary"
-                  onClick={handleClear}
-                >
-                  <Translate id="settings.advanced.clearBtn">Clear Custom</Translate>
-                </button>
-              </div>
-
-              {testResult && (
-                <div
-                  className={`alert margin-top--md ${
-                    testResult.success ? 'alert--success' : 'alert--danger'
-                  }`}
-                >
-                  {testResult.message}
-                </div>
-              )}
-            </div>
-          </details>
+          {/* Custom Jupyter Server — merged into backend selector above */}
 
           {/* Setup Help */}
           <details className="jupyter-settings__details">

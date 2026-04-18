@@ -645,6 +645,42 @@ Live test session with multiple users. Overall reception very positive — "grea
 
 8. **Kernel session interrupted on navigation** — Inherent to thebelab architecture (per-page kernel bootstrap). Cross-page persistence would require major architectural changes. Documented as known behavior.
 
+## User Test Session Feedback (April 17–18, 2026)
+
+Second round of feedback from multiple users. 12 actionable items.
+
+### Settings Page UX
+
+1. **Default API key TTL → 1 day** — Change default auto-delete from 7 days to 1 day for IBM Quantum API key storage.
+
+2. **Merge custom Jupyter server fields** — The separate "Configure other Jupyter server" section may be redundant. Consider merging into the normal connection fields.
+
+3. **Add "Clear CE config" button** — No way to clear Code Engine credentials from Settings. Need a delete/clear button.
+
+4. **Clarify "Clear All Preferences" vs "Reset Everything"** — Users don't understand the difference. Clarify labels or merge into one action.
+
+5. **Merge Compute Backend + CE sections** — The CE backend setup appears both in "Compute Backend" (top) and further down as a separate collapsed section. Merge into one compact section; reorder radio buttons to put CE last.
+
+6. **Compute Backend section hidden for some users** — Multiple users (Firefox) see Settings page starting at "Execution Mode" — the "Compute Backend" section (showing "Current: Code Engine — ..." or "Current: Binder — ...") is missing. Consistent across users. Likely conditional rendering logic or prior localStorage state. Needs investigation.
+
+### Admin Page
+
+7. **Reuse CE backend info from Settings** — Admin page asks for CE URL/token again. Should pull credentials from Settings page instead of re-entering.
+
+8. **Show Binder cache warming URLs on admin** — Display the 3 Binder federation URLs (2i2c, BIDS, GESIS) to help instructors check mybinder status/issues.
+
+9. **Improve CE setup instructions** — Instructions for users setting up their own CE instance on IBM public cloud need to be clearer and more detailed.
+
+### Code Execution
+
+10. **Run button not appearing after connection** — After clicking "Run" and successfully connecting to mybinder/CE, the run buttons inside individual code cells sometimes don't appear. Need to detect this state and auto-trigger a Back→Run cycle to recover.
+
+### Content / Navigation
+
+11. **Link to original IBM Quantum page** — Add a frontend-generated link on each page pointing to the original page on IBM Quantum Learning (or addons repo). Should be computed from the page path, not hardcoded in content.
+
+12. **Hidden workshop notebooks directory** — Add a directory for additional notebooks that can be run in thebelab/mybinder/CE but aren't visible in navigation/menus — accessible only via direct URL. Enables providing specific notebooks for hands-on workshops.
+
 ---
 
 ## Related Resources
@@ -657,4 +693,4 @@ Live test session with multiple users. Overall reception very positive — "grea
 
 ---
 
-*Last updated: April 14, 2026 (test session feedback: 4 of 6 items resolved)*
+*Last updated: April 18, 2026 (second test session feedback: 12 new items added)*
