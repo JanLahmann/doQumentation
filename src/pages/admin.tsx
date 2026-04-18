@@ -386,7 +386,7 @@ ibmcloud ce app update --name ce-doqumentation-01 --max-scale 1`}</CodeBlock>
           <LinkList items={[
             { label: 'Main Repository', url: GITHUB_REPO },
             { label: 'Live Site', url: 'https://doqumentation.org' },
-            { label: 'Binder', url: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks' },
+            { label: 'Binder', url: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/0fc67252' },
             { label: 'Docker Image', url: 'https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation' },
           ]} />
 

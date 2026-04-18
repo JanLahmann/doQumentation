@@ -231,7 +231,10 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
         token: '',
         thebeEnabled: true,
         labEnabled: false,
-        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/notebooks',
+        // Pinned to last working image (Apr 13) — mybinder Docker 28 upgrade broke cold builds
+        // See: https://github.com/jupyterhub/mybinder.org-deploy/pull/3768
+        // TODO: revert to 'notebooks' once mybinder builds work again
+        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/0fc67252',
         environment: 'github-pages',
       };
     }
