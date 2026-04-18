@@ -677,6 +677,22 @@ Second round of feedback from multiple users. 12 items — all resolved.
 
 12. **~~Hidden workshop notebooks directory~~** — `docs/workshop/` with `workshopSidebar` in `sidebars.ts`. Accessible at `/workshop/` via direct URL, not in navigation. `noindex` meta tag. Instructors add notebooks via PRs.
 
+## Additional Changes (April 18, 2026)
+
+Follow-up fixes from continued testing and feedback:
+
+- **CE sizing corrected** — 1 vCPU / 2 GB for single user (was 2 vCPU / 4 GB)
+- **"IBM Cloud Code Engine"** — Official product name used consistently across Settings + admin pages
+- **Backend selector order fixed** — Always: Binder → IBM Cloud Code Engine → Custom Server (was dynamic, CE jumped around when configured)
+- **Bookmark tooltip improved** — "Save to your bookmarks list on the homepage" (users didn't know what bookmark did)
+- **"View original" link renamed** — "View original on IBM Quantum Platform"
+- **Execution mode reordered** — No automatic injection first, then AerSimulator (default), FakeBackend, IBM Quantum
+- **Admin page: no link from Settings** — Admin page kept undiscoverable for regular users
+- **CE + Custom Server consolidated** — Single URL/Token section switches between CE and Custom based on radio selection (was two near-identical sections stacked)
+- **Admin PodMonitor reads single CE URL** — Falls back to Settings CE URL when no workshop pool configured
+- **Workshop notebooks** — `workshop-notebooks/` source dir + `sync-content.py` converts `.ipynb` → `docs/workshop/*.mdx`. 4 notebooks added (01–04 prefix ordering). Accessible at `/workshop/`, not in navigation.
+- **Cell execution labels visible** — "► Running…", "✓ Done", "✗ Error" now render as visible text above cells (was clipped `::after` icons). Run All clears all previous labels for clean slate.
+
 ---
 
 ## Related Resources
@@ -689,4 +705,4 @@ Second round of feedback from multiple users. 12 items — all resolved.
 
 ---
 
-*Last updated: April 18, 2026 (second test session: all 12 items resolved)*
+*Last updated: April 18, 2026 (additional follow-up fixes + workshop notebooks)*
