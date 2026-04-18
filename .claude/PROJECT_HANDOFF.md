@@ -647,39 +647,33 @@ Live test session with multiple users. Overall reception very positive — "grea
 
 ## User Test Session Feedback (April 17–18, 2026)
 
-Second round of feedback from multiple users. 12 actionable items.
+Second round of feedback from multiple users. 12 items — all resolved.
 
-### Settings Page UX
+### Resolved
 
-1. **Default API key TTL → 1 day** — Change default auto-delete from 7 days to 1 day for IBM Quantum API key storage.
+1. **~~Default API key TTL → 1 day~~** — Changed `DEFAULT_TTL_DAYS` from 7 to 1 in `jupyter.ts`.
 
-2. **Merge custom Jupyter server fields** — The separate "Configure other Jupyter server" section may be redundant. Consider merging into the normal connection fields.
+2. **~~Merge custom Jupyter server fields~~** — Removed separate "Custom Jupyter Server" `<details>` section from Advanced Settings. Added "Custom Server" as a radio button in the backend selector with inline URL/Token fields shown when selected.
 
-3. **Add "Clear CE config" button** — No way to clear Code Engine credentials from Settings. Need a delete/clear button.
+3. **~~Add "Clear CE config" button~~** — CE Quick Config (with Clear button) now always visible, not just when CE is detected.
 
-4. **Clarify "Clear All Preferences" vs "Reset Everything"** — Users don't understand the difference. Clarify labels or merge into one action.
+4. **~~Clarify "Clear All Preferences" vs "Reset Everything"~~** — Renamed to "Clear Learning Data" (progress, bookmarks, display settings only). "Reset Everything" unchanged (clears all data including credentials).
 
-5. **Merge Compute Backend + CE sections** — The CE backend setup appears both in "Compute Backend" (top) and further down as a separate collapsed section. Merge into one compact section; reorder radio buttons to put CE last.
+5. **~~Merge Compute Backend + CE sections~~** — Removed duplicate "Compute Backend" section. Current backend status always visible at top. CE config moved to Advanced Settings. Backend selector always shows all options.
 
-6. **Compute Backend section hidden for some users** — Multiple users (Firefox) see Settings page starting at "Execution Mode" — the "Compute Backend" section (showing "Current: Code Engine — ..." or "Current: Binder — ...") is missing. Consistent across users. Likely conditional rendering logic or prior localStorage state. Needs investigation.
+6. **~~Compute Backend section hidden~~** — Fixed: backend status banner and selector always rendered at top of Settings page. CE and Custom Server always appear as options even when not configured.
 
-### Admin Page
+7. **~~Reuse CE backend info from Settings~~** — Admin PodMonitor already reads from Settings localStorage. Added visible note: "CE credentials are read from the Settings page."
 
-7. **Reuse CE backend info from Settings** — Admin page asks for CE URL/token again. Should pull credentials from Settings page instead of re-entering.
+8. **~~Show Binder cache warming URLs on admin~~** — Added "Binder Federation Status" section with 3 clickable links (2i2c, BIDS, GESIS) in admin Infrastructure section.
 
-8. **Show Binder cache warming URLs on admin** — Display the 3 Binder federation URLs (2i2c, BIDS, GESIS) to help instructors check mybinder status/issues.
+9. **~~Improve CE setup instructions~~** — Expanded with direct IBM Cloud console link, sizing guidance (2 vCPU/4 GB → 8 vCPU/16 GB), CORS_ORIGIN example, link to admin sizing table.
 
-9. **Improve CE setup instructions** — Instructions for users setting up their own CE instance on IBM public cloud need to be clearer and more detailed.
+10. **~~Run button not appearing after connection~~** — Added retry logic: `setupCellFeedback()` retries up to 3× at 2s intervals if cells exist but no run buttons found (thebelab render lag).
 
-### Code Execution
+11. **~~Link to original IBM Quantum page~~** — `getOriginalPageUrl()` in `EditThisPage/index.tsx` computes IBM URL from page path. Renders "View original" link next to "Edit this page" and bookmark. Maps guides → docs.quantum.ibm.com, tutorials → learning.quantum.ibm.com, courses → learning.quantum.ibm.com/course, addons → qiskit.github.io.
 
-10. **Run button not appearing after connection** — After clicking "Run" and successfully connecting to mybinder/CE, the run buttons inside individual code cells sometimes don't appear. Need to detect this state and auto-trigger a Back→Run cycle to recover.
-
-### Content / Navigation
-
-11. **Link to original IBM Quantum page** — Add a frontend-generated link on each page pointing to the original page on IBM Quantum Learning (or addons repo). Should be computed from the page path, not hardcoded in content.
-
-12. **Hidden workshop notebooks directory** — Add a directory for additional notebooks that can be run in thebelab/mybinder/CE but aren't visible in navigation/menus — accessible only via direct URL. Enables providing specific notebooks for hands-on workshops.
+12. **~~Hidden workshop notebooks directory~~** — `docs/workshop/` with `workshopSidebar` in `sidebars.ts`. Accessible at `/workshop/` via direct URL, not in navigation. `noindex` meta tag. Instructors add notebooks via PRs.
 
 ---
 
@@ -693,4 +687,4 @@ Second round of feedback from multiple users. 12 actionable items.
 
 ---
 
-*Last updated: April 18, 2026 (second test session feedback: 12 new items added)*
+*Last updated: April 18, 2026 (second test session: all 12 items resolved)*
