@@ -87,11 +87,11 @@ export default function EditThisPage(props: Props): JSX.Element {
         className={`dq-bookmark-button${bookmarked ? ' dq-bookmark-button--active' : ''}`}
         onClick={handleToggle}
         title={bookmarked
-          ? translate({id: 'bookmark.remove', message: 'Remove bookmark'})
-          : translate({id: 'bookmark.add', message: 'Bookmark this page'})}
+          ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
+          : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
         aria-label={bookmarked
-          ? translate({id: 'bookmark.remove', message: 'Remove bookmark'})
-          : translate({id: 'bookmark.add', message: 'Bookmark this page'})}
+          ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
+          : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
       >
         <span className="dq-bookmark-button__icon" aria-hidden="true">
           {bookmarked ? '\u2605' : '\u2606'}

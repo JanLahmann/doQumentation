@@ -538,22 +538,23 @@ export default function JupyterSettings(): JSX.Element {
 
           {/* Backend Selection — always visible so users can discover CE */}
           {(() => {
-            // Build display list: detected backends + CE and Custom if not already present
-            const displayBackends = [...availableBackends];
-            if (!displayBackends.some(b => b.environment === 'code-engine')) {
-              displayBackends.push({
+            // Fixed order: Binder → CE → Custom. Merge detected details with defaults.
+            const detected = new Map(availableBackends.map(b => [b.environment, b]));
+            const displayBackends: typeof availableBackends = [
+              detected.get('github-pages') ?? { environment: 'github-pages', label: 'Binder', detail: 'mybinder.org' },
+              detected.get('code-engine') ?? {
                 environment: 'code-engine',
                 label: translate({id: 'settings.backend.ce.label', message: 'Code Engine'}),
                 detail: translate({id: 'settings.backend.ce.notConfigured', message: 'not configured — set up below'}),
-              });
-            }
-            if (!displayBackends.some(b => b.environment === 'custom')) {
-              displayBackends.push({
+              },
+              detected.get('custom') ?? {
                 environment: 'custom',
                 label: translate({id: 'settings.backend.custom.label', message: 'Custom Server'}),
                 detail: translate({id: 'settings.backend.custom.notConfigured', message: 'not configured — enter URL below'}),
-              });
-            }
+              },
+              // Include local/rasqberry if detected
+              ...(detected.has('rasqberry') ? [detected.get('rasqberry')!] : []),
+            ];
             return (
             <>
               <h3 id="backend-selection" style={{ marginTop: '1.5rem' }}>
