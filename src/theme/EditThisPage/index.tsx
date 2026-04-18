@@ -78,9 +78,9 @@ export default function EditThisPage(props: Props): JSX.Element {
           target="_blank"
           rel="noopener noreferrer"
           className="dq-original-link"
-          title={translate({id: 'original.tooltip', message: 'View original page on IBM Quantum'})}
+          title={translate({id: 'original.tooltip', message: 'View this page on the IBM Quantum Platform'})}
         >
-          {translate({id: 'original.label', message: 'View original'})}
+          {translate({id: 'original.label', message: 'View original on IBM Quantum Platform'})}
         </a>
       )}
       <button
