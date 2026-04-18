@@ -163,7 +163,9 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
           >
             <span>&#128221;</span>
             <span>
-              {description || 'This page was generated from a Jupyter notebook.'}
+              {notebookPath.startsWith('workshop/')
+                ? translate({id: 'openInLab.workshopBanner', message: 'Community workshop notebook — not part of the official IBM Quantum documentation.'})
+                : (description || 'This page was generated from a Jupyter notebook.')}
               {notebookPath.startsWith('workshop/') && (
                 <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--ifm-color-content-secondary)', marginTop: '0.15rem' }}>
                   Source: <code>{notebookPath.split('/').pop()}</code>

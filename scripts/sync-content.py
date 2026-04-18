@@ -1871,10 +1871,10 @@ def process_workshops():
                 content = dst_path.read_text()
                 # Fix non-self-closing <img> tags (MDX requires <img ... />)
                 content = re.sub(r'<img\b(.*?)(?<!\/)>', r'<img\1 />', content)
-                # Add onerror fallback for external images
+                # Add onError fallback for external images (JSX syntax for MDX)
                 content = re.sub(
                     r'<img\b(.*?src="https?://[^"]*".*?)\s*/>',
-                    r'<img\1 onerror="this.style.display=\'none\'" />',
+                    r'<img\1 onError={(e) => e.target.style.display="none"} />',
                     content
                 )
                 # Fix LaTeX math in workshop notebooks:
