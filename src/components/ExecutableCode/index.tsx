@@ -1522,6 +1522,11 @@ export default function ExecutableCode({
     runAllAbort = false;
     trackEvent('Run All', { page: window.location.pathname });
 
+    // Clear all previous execution state labels so users see a clean slate
+    document.querySelectorAll('.thebelab-cell--running, .thebelab-cell--done, .thebelab-cell--error').forEach(cell => {
+      cell.classList.remove('thebelab-cell--running', 'thebelab-cell--done', 'thebelab-cell--error');
+    });
+
     // Collect all thebelab cells and find their run buttons
     const cells = document.querySelectorAll('.thebelab-cell');
     const runBtns: HTMLButtonElement[] = [];
