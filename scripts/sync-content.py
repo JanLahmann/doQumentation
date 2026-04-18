@@ -1867,7 +1867,16 @@ def process_workshops():
                 nb_slug = f"./{src_path.stem}"
             if convert_notebook(src_path, dst_path, notebook_path=nb_path, slug=nb_slug):
                 stats["ipynb"] += 1
-                print(f"    ✓ {rel_path} → .mdx")
+                # Hide notebooks with _solution or _hidden in filename from sidebar
+                stem_lower = src_path.stem.lower()
+                if '_solution' in stem_lower or '_hidden' in stem_lower:
+                    content = dst_path.read_text()
+                    if content.startswith('---'):
+                        content = content.replace('---\n', '---\nsidebar_class_name: hidden\n', 1)
+                        dst_path.write_text(content)
+                    print(f"    ✓ {rel_path} → .mdx (hidden from sidebar)")
+                else:
+                    print(f"    ✓ {rel_path} → .mdx")
             else:
                 stats["skipped"] += 1
 
