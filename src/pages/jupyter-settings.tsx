@@ -596,43 +596,52 @@ export default function JupyterSettings(): JSX.Element {
                 ))}
               </div>
 
-              {/* Inline Custom Server fields — shown when custom is selected or configured */}
-              {(backendOverride === 'custom' || config?.environment === 'custom') && (
-                <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
+            </>
+            );
+          })()}
+
+          {/* Unified server config — shows for CE or Custom selection */}
+          {(backendOverride === 'code-engine' || backendOverride === 'custom' ||
+            config?.environment === 'code-engine' || config?.environment === 'custom') && (
+          <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
+              <h3 id="code-engine-config" style={{ marginTop: 0 }}>
+                {(backendOverride === 'custom' || (config?.environment === 'custom' && backendOverride !== 'code-engine'))
+                  ? <Translate id="settings.server.customHeading">Custom Server</Translate>
+                  : <Translate id="settings.ce.quickHeading">Code Engine</Translate>}
+              </h3>
+              {ceDaysRemaining >= 0 && backendOverride !== 'custom' && (
+                <div className="alert alert--info margin-bottom--md">
+                  <Translate id="settings.ce.daysRemaining" values={{days: ceDaysRemaining}}>
+                    {'Code Engine settings will auto-delete in {days} day(s).'}
+                  </Translate>
+                </div>
+              )}
+              {(backendOverride === 'custom' || (config?.environment === 'custom' && backendOverride !== 'code-engine')) ? (
+                <>
                   <div className="jupyter-settings__field">
                     <label className="jupyter-settings__label" htmlFor="jupyter-url">
-                      <Translate id="settings.advanced.urlLabel">Jupyter Server URL</Translate>
+                      <Translate id="settings.advanced.urlLabel">Server URL</Translate>
                     </label>
-                    <input
-                      id="jupyter-url"
-                      type="url"
-                      className="jupyter-settings__input"
+                    <input id="jupyter-url" type="url" className="jupyter-settings__input"
                       placeholder="http://localhost:8888"
-                      value={customUrl}
-                      onChange={(e) => setCustomUrl(e.target.value)}
-                    />
+                      value={customUrl} onChange={(e) => setCustomUrl(e.target.value)} />
                   </div>
                   <div className="jupyter-settings__field">
                     <label className="jupyter-settings__label" htmlFor="jupyter-token">
-                      <Translate id="settings.advanced.tokenLabel">Authentication Token</Translate>
+                      <Translate id="settings.advanced.tokenLabel">Token</Translate>
                     </label>
-                    <input
-                      id="jupyter-token"
-                      type="password"
-                      className="jupyter-settings__input"
+                    <input id="jupyter-token" type="password" className="jupyter-settings__input"
                       placeholder={translate({id: 'settings.advanced.tokenPlaceholder', message: '(optional)'})}
-                      value={customToken}
-                      onChange={(e) => setCustomToken(e.target.value)}
-                    />
+                      value={customToken} onChange={(e) => setCustomToken(e.target.value)} />
                   </div>
                   <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
-                    <button className="jupyter-settings__button jupyter-settings__button--primary" onClick={handleTest} disabled={!customUrl || isTesting}>
+                    <button className="button button--primary button--sm" onClick={handleTest} disabled={!customUrl || isTesting}>
                       {isTesting ? translate({id: 'settings.advanced.testing', message: 'Testing...'}) : translate({id: 'settings.advanced.testBtn', message: 'Test Connection'})}
                     </button>
-                    <button className="jupyter-settings__button jupyter-settings__button--primary" onClick={handleSave} disabled={!customUrl}>
-                      <Translate id="settings.advanced.saveBtn">Save Settings</Translate>
+                    <button className="button button--primary button--sm" onClick={handleSave} disabled={!customUrl}>
+                      <Translate id="settings.advanced.saveBtn">Save</Translate>
                     </button>
-                    <button className="jupyter-settings__button jupyter-settings__button--secondary" onClick={handleClear}>
+                    <button className="button button--secondary button--sm" onClick={handleClear}>
                       <Translate id="settings.advanced.clearBtn">Clear</Translate>
                     </button>
                   </div>
@@ -641,72 +650,55 @@ export default function JupyterSettings(): JSX.Element {
                       {testResult.message}
                     </div>
                   )}
-                </div>
+                </>
+              ) : (
+                <>
+                  <div className="margin-bottom--sm">
+                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                      <Translate id="settings.ce.urlLabel">Server URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'Your Code Engine app URL, OR comma-separated URLs / base64 pool config from a workshop instructor.'})} />
+                    </label>
+                    <input type="text" value={ceUrl}
+                      onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
+                      placeholder="https://your-app.region.codeengine.appdomain.cloud"
+                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
+                    <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                      <Translate id="settings.ce.urlHint">For workshops: paste comma-separated URLs or the base64 pool config from your instructor.</Translate>
+                    </small>
+                  </div>
+                  <div className="margin-bottom--md">
+                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                      <Translate id="settings.ce.tokenLabel">Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
+                    </label>
+                    <input type="password" value={ceToken}
+                      onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
+                      placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
+                      style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                    <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
+                      <Translate id="settings.ce.save">Save</Translate>
+                    </button>
+                    <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
+                      <Translate id="settings.ce.test">Test Connection</Translate>
+                    </button>
+                    <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
+                      <Translate id="settings.ce.clear">Clear</Translate>
+                    </button>
+                  </div>
+                  {ceSaveResult && (
+                    <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
+                      {ceSaveResult}
+                    </div>
+                  )}
+                  <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
+                    <Translate id="settings.ce.setupLink" values={{link: <a href="#code-engine"><Translate id="settings.ce.setupLinkText">setup instructions</Translate></a>}}>
+                      {'Need help? See {link} below.'}
+                    </Translate>
+                  </small>
+                </>
               )}
-            </>
-            );
-          })()}
-
-          {/* ═══════════════════════════════════════════════════════════════
-              ESSENTIALS — always visible
-              ═══════════════════════════════════════════════════════════════ */}
-
-
-          {/* CE Quick Config — always visible so users can configure CE */}
-          <div style={{ marginTop: '1rem', padding: '1rem', border: '1px solid var(--ifm-color-emphasis-200)', borderRadius: '8px' }}>
-              <h3 id="code-engine-config" style={{ marginTop: 0 }}>
-                <Translate id="settings.ce.quickHeading">Code Engine</Translate>
-              </h3>
-              {ceDaysRemaining >= 0 && (
-                <div className="alert alert--info margin-bottom--md">
-                  <Translate id="settings.ce.daysRemaining" values={{days: ceDaysRemaining}}>
-                    {'Code Engine settings will auto-delete in {days} day(s).'}
-                  </Translate>
-                </div>
-              )}
-              <div className="margin-bottom--sm">
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                  <Translate id="settings.ce.urlLabel">Code Engine URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'Your Code Engine app URL, OR comma-separated URLs / base64 pool config from a workshop instructor.'})} />
-                </label>
-                <input type="text" value={ceUrl}
-                  onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
-                  placeholder="https://your-app.region.codeengine.appdomain.cloud"
-                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
-                <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-                  <Translate id="settings.ce.urlHint">For workshops: paste comma-separated URLs or the base64 pool config from your instructor.</Translate>
-                </small>
-              </div>
-              <div className="margin-bottom--md">
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
-                  <Translate id="settings.ce.tokenLabel">Jupyter Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the Code Engine app.'})} />
-                </label>
-                <input type="password" value={ceToken}
-                  onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
-                  placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
-                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                <button className="button button--primary button--sm" onClick={handleCeSave} disabled={!ceUrl}>
-                  <Translate id="settings.ce.save">Save</Translate>
-                </button>
-                <button className="button button--secondary button--sm" onClick={handleCeTest} disabled={!ceUrl}>
-                  <Translate id="settings.ce.test">Test Connection</Translate>
-                </button>
-                <button className="button button--outline button--danger button--sm" onClick={handleCeDelete} disabled={ceDaysRemaining < 0 && !ceUrl}>
-                  <Translate id="settings.ce.clear">Clear</Translate>
-                </button>
-              </div>
-              {ceSaveResult && (
-                <div className={`alert alert--${ceSaveResultType} margin-bottom--md`}>
-                  {ceSaveResult}
-                </div>
-              )}
-              <small style={{ color: 'var(--ifm-color-content-secondary)' }}>
-                <Translate id="settings.ce.setupLink" values={{link: <a href="#code-engine"><Translate id="settings.ce.setupLinkText">setup instructions</Translate></a>}}>
-                  {'Need help? See {link} below.'}
-                </Translate>
-              </small>
-            </div>
+          </div>
+          )}
 
           {/* Execution Mode */}
           <hr style={{ margin: '2rem 0', borderColor: 'var(--ifm-color-emphasis-200)' }} />
