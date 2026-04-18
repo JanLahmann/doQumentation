@@ -716,6 +716,16 @@ export default function JupyterSettings(): JSX.Element {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+              <input type="radio" name="execution-mode" value="none"
+                checked={executionMode === 'none'}
+                onChange={() => handleExecutionModeChange('none')}
+                style={{ marginTop: '0.25rem' }} />
+              <span>
+                <strong><Translate id="settings.executionMode.none">No automatic injection</Translate></strong> — <Translate id="settings.executionMode.noneDesc">Manage credentials and backend in code cells yourself.</Translate>
+              </span>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
               <input type="radio" name="execution-mode" value="aer"
                 checked={executionMode === 'aer'}
                 onChange={() => handleExecutionModeChange('aer')}
@@ -764,16 +774,6 @@ export default function JupyterSettings(): JSX.Element {
                 style={{ marginTop: '0.25rem' }} />
               <span>
                 <strong><Translate id="settings.executionMode.ibm">IBM Quantum (real hardware)</Translate></strong> — <Translate id="settings.executionMode.ibmDesc">Connect to real quantum hardware via IBM Quantum credentials.</Translate>
-              </span>
-            </label>
-
-            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
-              <input type="radio" name="execution-mode" value="none"
-                checked={executionMode === 'none'}
-                onChange={() => handleExecutionModeChange('none')}
-                style={{ marginTop: '0.25rem' }} />
-              <span>
-                <strong><Translate id="settings.executionMode.none">No automatic injection</Translate></strong> — <Translate id="settings.executionMode.noneDesc">Manage credentials and backend in code cells yourself.</Translate>
               </span>
             </label>
           </div>
@@ -1481,11 +1481,8 @@ QiskitRuntimeService.save_account(
                       </li>
                     </ol>
                     <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)' }}>
-                      <Translate
-                        id="settings.ce.adminLink"
-                        values={{link: <a href="/admin">admin page</a>}}
-                      >
-                        {'For workshop sizing details and stress testing, see the {link}.'}
+                      <Translate id="settings.ce.sizingNote">
+                        For workshop sizing details, see the workshop setup documentation.
                       </Translate>
                     </p>
                   </details>
