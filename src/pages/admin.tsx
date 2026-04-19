@@ -3,9 +3,10 @@
  * Not linked from navbar. Access via /admin.
  */
 
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Layout from '@theme/Layout';
 import BrowserOnly from '@docusaurus/BrowserOnly';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
 const GITHUB_REPO = 'https://github.com/JanLahmann/doQumentation';
 
@@ -76,10 +77,114 @@ function CodeBlock({ children }: { children: string }) {
   );
 }
 
+/** Hash a string with SHA-256 using the Web Crypto API. */
+async function sha256(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+const SESSION_KEY = 'dq-admin-auth';
+
+function AdminGate({ children }: { children: React.ReactNode }) {
+  const { siteConfig } = useDocusaurusContext();
+  const expectedHash = (siteConfig.customFields?.adminPasswordHash as string) || '';
+
+  const [authorized, setAuthorized] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [input, setInput] = useState('');
+  const [error, setError] = useState(false);
+
+  // Check sessionStorage on mount
+  useEffect(() => {
+    if (!expectedHash) {
+      // No password configured — allow access (local dev)
+      setAuthorized(true);
+      setChecking(false);
+      return;
+    }
+    const stored = sessionStorage.getItem(SESSION_KEY);
+    if (stored === expectedHash) {
+      setAuthorized(true);
+    }
+    setChecking(false);
+  }, [expectedHash]);
+
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(false);
+    const hash = await sha256(input);
+    if (hash === expectedHash) {
+      sessionStorage.setItem(SESSION_KEY, hash);
+      setAuthorized(true);
+    } else {
+      setError(true);
+      setInput('');
+    }
+  }, [input, expectedHash]);
+
+  if (checking) return null;
+
+  if (!authorized) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '40vh',
+        gap: '1rem',
+      }}>
+        <h2>Admin Access</h2>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '0.5rem' }}>
+          <input
+            type="password"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Password"
+            autoFocus
+            style={{
+              padding: '0.5rem 0.75rem',
+              fontSize: '1rem',
+              border: `1px solid ${error ? 'var(--ifm-color-danger)' : 'var(--ifm-color-emphasis-300)'}`,
+              borderRadius: 4,
+              width: '220px',
+            }}
+          />
+          <button
+            type="submit"
+            style={{
+              padding: '0.5rem 1rem',
+              fontSize: '1rem',
+              background: 'var(--ifm-color-primary)',
+              color: 'white',
+              border: 'none',
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
+          >
+            Enter
+          </button>
+        </form>
+        {error && (
+          <p style={{ color: 'var(--ifm-color-danger)', fontSize: '0.85rem', margin: 0 }}>
+            Incorrect password.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
 export default function AdminPage(): JSX.Element {
   return (
     <Layout title="Admin" description="Admin reference page" noIndex>
       <main className="container margin-vert--lg" style={{ maxWidth: '800px' }} data-umami-ignore>
+        <AdminGate>
         <h1>Admin Panel</h1>
         <p style={{ color: 'var(--ifm-color-emphasis-600)' }}>
           Internal reference for admins and workshop hosts. Not indexed by search engines.
@@ -419,6 +524,7 @@ ibmcloud ce app update --name ce-doqumentation-01 --max-scale 1`}</CodeBlock>
             ))}
           </div>
         </Section>
+        </AdminGate>
       </main>
     </Layout>
   );

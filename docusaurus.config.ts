@@ -153,6 +153,11 @@ const config: Config = {
   // Remove or set to undefined to show all locales.
   customFields: {
     visibleLocales: ['en', 'de', 'es'],
+    // SHA-256 hash of ADMIN_PASSWORD env var, injected at build time.
+    // If not set, admin page is unprotected (local dev convenience).
+    adminPasswordHash: process.env.ADMIN_PASSWORD
+      ? require('crypto').createHash('sha256').update(process.env.ADMIN_PASSWORD).digest('hex')
+      : '',
   },
 
   // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
