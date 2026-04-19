@@ -1936,12 +1936,14 @@ def process_workshops():
                         if desc:
                             extra_fm += f'\ndescription: "{desc}"'
                     content = f'---{fm}{extra_fm}\n---{body}'
-                # Hide notebooks with _solution or _hidden in filename from sidebar
+                # Hide notebooks with _solution or _hidden in filename
+                # unlisted: true hides from generated-index cards and search
+                # sidebar_class_name: hidden hides from sidebar navigation
                 stem_lower = src_path.stem.lower()
                 if '_solution' in stem_lower or '_hidden' in stem_lower:
                     if content.startswith('---'):
-                        content = content.replace('---\n', '---\nsidebar_class_name: hidden\n', 1)
-                    print(f"    ✓ {rel_path} → .mdx (hidden from sidebar)")
+                        content = content.replace('---\n', '---\nunlisted: true\nsidebar_class_name: hidden\n', 1)
+                    print(f"    ✓ {rel_path} → .mdx (unlisted — direct URL only)")
                 else:
                     print(f"    ✓ {rel_path} → .mdx")
                 dst_path.write_text(content)
