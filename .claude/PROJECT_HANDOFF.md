@@ -690,9 +690,13 @@ Follow-up fixes from continued testing and feedback:
 - **Admin page: no link from Settings** — Admin page kept undiscoverable for regular users
 - **CE + Custom Server consolidated** — Single URL/Token section switches between CE and Custom based on radio selection (was two near-identical sections stacked)
 - **Admin PodMonitor reads single CE URL** — Falls back to Settings CE URL when no workshop pool configured
-- **Workshop notebooks** — `workshop-notebooks/` source dir + `sync-content.py` converts `.ipynb` → `docs/workshop/*.mdx`. 4 notebooks added (01–04 prefix ordering): Qiskit 101, Hands-on Intro, Hello World Patterns, DiVincenzo Criteria Lab. Accessible at `/workshop/`, not in main navigation. Index page uses `DocCardList` for automatic listing. Notebooks with `_solution` or `_hidden` in filename are hidden from sidebar but accessible via direct URL (`sidebar_class_name: hidden`). Generated files gitignored; source `.ipynb` tracked.
+- **Workshop notebooks** — `workshop-notebooks/` source dir + `sync-content.py` converts `.ipynb` → `docs/workshop/*.mdx`. 4 notebooks (01–04 prefix): Qiskit 101, Hands-on Intro, Hello World Patterns, DiVincenzo Criteria Lab. 2 solution notebooks (01, 04) with filled-in exercises. Category page at `/workshop/` uses `generated-index` (clickable heading = card listing, no duplicate sidebar entry). Solution/hidden notebooks get `unlisted: true` + `sidebar_class_name: hidden` — excluded from cards, search, and sidebar but accessible via direct URL. Community banner: "not part of the official IBM Quantum documentation". Auto-extracted descriptions for cards. Source filename shown in OpenInLabBanner. External `<img>` tags get JSX `onError` fallback. Generated files gitignored; source `.ipynb` tracked.
 - **Cell execution labels visible** — "► Running…", "✓ Done", "✗ Error" now render as visible `::before` text above cells (was clipped `::after` icons). Run All clears all previous labels for clean slate.
 - **"Manage Your Data" section restructured** — Replaced flat/confusing layout with grouped categories: Progress (per-category: Tutorials→Guides→Courses→Modules + Clear All), Bookmarks (always visible), Display & UI, Sessions & Credentials (Binder, IBM Quantum, IBM Cloud Code Engine). Privacy note added: "All data is stored locally in your browser. Nothing is sent to our servers." Removed confusing "Clear Learning Data" button.
+- **Placeholder credential detection** — `annotatePlaceholderCells()` detects cells with `YOUR_API_KEY`, `deleteThisAndPaste`, etc. Shows red hint banner offering to inject saved credentials or link to Settings.
+- **SPA navigation fix** — Bootstrap now polls up to 10 frames waiting for `<pre data-executable>` elements before calling thebelab (was single `requestAnimationFrame`, too early after client-side navigation).
+- **Multi-line inline math fix** — `escape_mdx_outside_code()` regex now protects `$...$` spanning multiple lines (was single-line only, corrupting `\frac{}{}` and `\begin{pmatrix}` in workshop notebooks).
+- **UI translations 100%** — 210 new keys translated across all 17 non-dialect locales (DE, ES, FR, IT, UK, JA, PT, TL, AR, HE, TH, MS, ID, KO, PL, RO, CS). Coverage: 308/484 → 518+/518. Covers Settings, ExecutableCode, Features, Qamposer, feedback widgets, "View original" link, workshop banner.
 
 ---
 
@@ -706,4 +710,4 @@ Follow-up fixes from continued testing and feedback:
 
 ---
 
-*Last updated: April 18, 2026 (workshop notebooks, data management restructure, cell labels, CE naming)*
+*Last updated: April 19, 2026 (workshop solutions, unlisted pages, SPA fix, math fix, full UI i18n)*
