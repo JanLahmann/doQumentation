@@ -45,7 +45,7 @@ export default function Features(): JSX.Element {
               doQumentation turns IBM Quantum's open-source content into an
               interactive learning platform with live code execution, IBM Cloud
               Code Engine, simulator mode, learning progress tracking, and
-              support for 20 languages.
+              multi-language support.
             </Translate>
           </p>
 
@@ -54,8 +54,8 @@ export default function Features(): JSX.Element {
             <h2><Translate id="features.contentLibrary.heading">Content Library</Translate></h2>
             <div className="features-page__grid">
               <FeatureCard
-                title={translate({id: 'features.contentLibrary.pages.title', message: '381 Pages of Content'})}
-                description={translate({id: 'features.contentLibrary.pages.desc', message: "42 Tutorials, 171 Guides, 154 Course pages, and 14 Modules — all sourced from IBM Quantum's open-source Qiskit documentation."})}
+                title={translate({id: 'features.contentLibrary.pages.title', message: 'Hundreds of Pages of Content'})}
+                description={translate({id: 'features.contentLibrary.pages.desc', message: "Tutorials, Guides, Courses, and Modules — all sourced from IBM Quantum's open-source Qiskit documentation."})}
                 link="/tutorials"
                 linkLabel={translate({id: 'features.contentLibrary.pages.link', message: 'Browse tutorials'})}
               />
@@ -212,8 +212,8 @@ export default function Features(): JSX.Element {
             <h2><Translate id="features.i18n.heading">Multi-Language</Translate></h2>
             <div className="features-page__grid">
               <FeatureCard
-                title={translate({id: 'features.i18n.locales.title', message: '20 Languages'})}
-                description={translate({id: 'features.i18n.locales.desc', message: 'The full site is available in 20 languages including German, Japanese, Spanish, French, and more. Each locale runs on its own subdomain with translated UI.'})}
+                title={translate({id: 'features.i18n.locales.title', message: 'Multi-Language Support'})}
+                description={translate({id: 'features.i18n.locales.desc', message: 'The full site is available in many languages including German, Japanese, Spanish, French, and more. Each locale runs on its own subdomain with translated UI.'})}
               />
               <FeatureCard
                 title={translate({id: 'features.i18n.fallback.title', message: 'Automatic Fallback'})}
@@ -228,7 +228,7 @@ export default function Features(): JSX.Element {
             <div className="features-page__grid">
               <FeatureCard
                 title={translate({id: 'features.ui.search.title', message: 'Local Search'})}
-                description={translate({id: 'features.ui.search.desc', message: 'Full-text search across all 381 pages, works offline. Results appear instantly as you type.'})}
+                description={translate({id: 'features.ui.search.desc', message: 'Full-text search across all pages, works offline. Results appear instantly as you type.'})}
               />
               <FeatureCard
                 title={translate({id: 'features.ui.dark.title', message: 'Dark Mode'})}
