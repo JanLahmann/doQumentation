@@ -8,6 +8,7 @@
 import React from 'react';
 import Layout from '@theme/Layout';
 import Translate, {translate} from '@docusaurus/Translate';
+import {UPSTREAM_COMMIT, UPSTREAM_COMMIT_DATE} from '@site/src/config/contentMeta';
 
 interface FeatureCardProps {
   title: string;
@@ -60,7 +61,15 @@ export default function Features(): JSX.Element {
               />
               <FeatureCard
                 title={translate({id: 'features.contentLibrary.sync.title', message: 'Auto-Sync from Upstream'})}
-                description={translate({id: 'features.contentLibrary.sync.desc', message: "Content is automatically synced from IBM's GitHub repository, keeping tutorials and courses up to date with the latest Qiskit releases."})}
+                description={
+                  translate({id: 'features.contentLibrary.sync.desc', message: "Content is automatically synced from IBM's GitHub repository, keeping tutorials and courses up to date with the latest Qiskit releases."})
+                  + (UPSTREAM_COMMIT_DATE
+                    ? ' ' + translate(
+                        {id: 'features.contentLibrary.sync.lastUpdate', message: 'Last upstream content update: {date} (commit {commit}).'},
+                        {date: UPSTREAM_COMMIT_DATE, commit: UPSTREAM_COMMIT}
+                      )
+                    : '')
+                }
               />
               <FeatureCard
                 title={translate({id: 'features.contentLibrary.nav.title', message: 'Structured Navigation'})}
