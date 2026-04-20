@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-04-19 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-04-20 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
