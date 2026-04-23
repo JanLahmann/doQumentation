@@ -289,7 +289,7 @@ def _text_to_output(text: str) -> str:
     return f'\n```text\n{text}\n```\n'
 
 
-def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str:
+def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list, img_ref_prefix: str = '') -> str:
     """Convert notebook cell outputs to markdown text.
 
     Handles text/plain, image/png (saved as files), and stderr/stdout streams.
@@ -318,7 +318,7 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list) -> str
                 img_path = output_dir / img_name
                 img_path.parent.mkdir(parents=True, exist_ok=True)
                 img_path.write_bytes(img_bytes)
-                parts.append(f'\n![{alt}](./{img_name})\n')
+                parts.append(f'\n![{alt}](./{img_ref_prefix}{img_name})\n')
             elif 'text/latex' in data:
                 latex = data['text/latex']
                 if isinstance(latex, list):
@@ -454,8 +454,14 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
             print(f"    Warning: Empty notebook {ipynb_path.name}")
             return False
 
-        # Directory for extracted output images (beside the .mdx file)
-        img_dir = output_path.parent
+        # Directory for extracted output images.
+        # Use a per-notebook subdir (output_path.stem) to avoid filename
+        # collisions when multiple notebooks share the same parent dir
+        # (e.g. workshop/ where all notebooks live at the top level and
+        # all reference output_1.png, output_2.png, ...).
+        img_subdir_name = f'_{output_path.stem}_imgs'
+        img_dir = output_path.parent / img_subdir_name
+        img_ref_prefix = f'{img_subdir_name}/'
         img_counter = [0]  # mutable counter for image filenames
 
         title = None
@@ -500,7 +506,7 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
                 body_parts.append(f'\n```{lang}\n{source.rstrip()}\n```\n')
 
                 # Include cell outputs (images, text)
-                output_text = extract_cell_outputs(cell, img_dir, img_counter)
+                output_text = extract_cell_outputs(cell, img_dir, img_counter, img_ref_prefix)
                 if output_text:
                     body_parts.append(output_text)
 
@@ -1846,8 +1852,27 @@ def process_workshops():
     workshop_dst = DOCS_OUTPUT / "workshop"
     notebooks_dst = NOTEBOOKS_OUTPUT / "workshop"
 
-    # Don't nuke docs/workshop/index.mdx — preserve it
-    # Only clean converted .mdx files that came from .ipynb
+    # Clean stale generated files — keep only index.mdx (manually maintained).
+    # Removes stale converted .mdx + extracted image dirs from previous runs
+    # (e.g. after notebooks are renamed/renumbered, old files would otherwise
+    # remain and serve their old images to renamed notebooks via filename
+    # collision on shared output_N.png).
+    if workshop_dst.exists():
+        import shutil
+        workshop_src_files = {p.stem for p in WORKSHOP_DIR.rglob('*.ipynb')}
+        valid_img_dirs = {f'_{stem}_imgs' for stem in workshop_src_files}
+        for existing in workshop_dst.iterdir():
+            if existing.name == 'index.mdx':
+                continue
+            if existing.suffix == '.mdx' and existing.stem not in workshop_src_files:
+                existing.unlink()
+            elif existing.is_dir():
+                # Remove unknown image dirs and any old extracted-output dirs
+                if existing.name not in valid_img_dirs:
+                    shutil.rmtree(existing)
+            elif existing.name.startswith('output_') and existing.suffix == '.png':
+                # Old flat-layout images from before per-notebook subdirs
+                existing.unlink()
     notebooks_dst.mkdir(parents=True, exist_ok=True)
 
     stats = {"ipynb": 0, "mdx": 0, "images": 0, "skipped": 0}
