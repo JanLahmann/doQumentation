@@ -670,7 +670,12 @@ function annotateSessionCells(): void {
 /** After injection, show per-cell badges explaining what doQumentation will
  *  intercept when a cell runs (simulator redirect or credential usage). */
 function annotateInjectedCells(): void {
-  const mode = getExecutionMode();
+  let mode = getExecutionMode();
+  // Mirror the fallback in injectKernelSetup(): on simulator-exempt pages
+  // (e.g. hello-world), simulators fall back to credentials or none.
+  if (isSimulatorExemptPage() && (mode === 'aer' || mode === 'fake')) {
+    mode = getIBMQuantumToken() ? 'credentials' : 'none';
+  }
   if (mode === 'none') return;
 
   setTimeout(() => {
