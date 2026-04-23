@@ -490,6 +490,23 @@ function markCellExecuting(cell: Element): void {
     return;
   }
 
+  // If a previous cell is still showing "running" (e.g. its idle event was
+  // missed because this cell started executing first), settle it now so the
+  // label clears. Cells execute sequentially in a Jupyter kernel — only one
+  // can actually be running at a time.
+  if (executingCell && executingCell !== cell) {
+    const prev = executingCell;
+    if (feedbackIdleDebounceTimer) {
+      clearTimeout(feedbackIdleDebounceTimer);
+      feedbackIdleDebounceTimer = null;
+    }
+    if (feedbackFallbackTimer) {
+      clearTimeout(feedbackFallbackTimer);
+      feedbackFallbackTimer = null;
+    }
+    waitForOutputStable(prev).then(() => settleCellFeedback(prev));
+  }
+
   executingCell = cell;
   cell.classList.remove('thebelab-cell--done', 'thebelab-cell--error');
   cell.classList.add('thebelab-cell--running');
