@@ -602,55 +602,111 @@ function annotateSaveAccountCells(): void {
       if (!code.includes('save_account(')) return;
       if (cell.querySelector('.thebelab-cell__skip-hint')) return;
 
-      const skipLabel = translate({
-        id: 'executable.skipCell',
-        message: 'Skip this cell',
-        description: 'Bold label on save_account() cells when simulator/credentials active',
-      });
+      // Classify the cell: "pure" (only save_account + comments/blanks/import)
+      // vs "mixed" (other executable code present). Mixed cells should run as-is;
+      // the kernel-side guard silently skips save_account() with placeholders.
+      const stripped = code
+        .replace(/QiskitRuntimeService\.save_account\s*\([\s\S]*?\)/g, '')
+        .replace(/^\s*from\s+qiskit_ibm_runtime\s+import.*$/gm, '')
+        .replace(/^\s*#.*$/gm, '')
+        .replace(/^\s*$/gm, '')
+        .trim();
+      const isPureCell = stripped.length === 0;
+
       const div = document.createElement('div');
       div.className = 'thebelab-cell__skip-hint';
-      const strong = document.createElement('strong');
-      strong.textContent = skipLabel;
-      div.appendChild(strong);
-      if (simMode) {
-        const simText = translate({
-          id: 'executable.skipCell.simulatorActive',
-          message: 'Simulator Mode is active. Running it has no effect.',
-          description: 'Explanation shown on save_account() cells when simulator mode is on',
+
+      if (isPureCell) {
+        const skipLabel = translate({
+          id: 'executable.skipCell',
+          message: 'Skip this cell',
+          description: 'Bold label on save_account() cells when simulator/credentials active',
         });
-        div.appendChild(document.createTextNode(` \u2014 ${simText}`));
+        const strong = document.createElement('strong');
+        strong.textContent = skipLabel;
+        div.appendChild(strong);
+        if (simMode) {
+          const simText = translate({
+            id: 'executable.skipCell.simulatorActive',
+            message: 'Simulator Mode is active. Running it has no effect.',
+            description: 'Explanation shown on save_account() cells when simulator mode is on',
+          });
+          div.appendChild(document.createTextNode(` \u2014 ${simText}`));
+        } else {
+          const credsBefore = translate({
+            id: 'executable.skipCell.credentialsBefore',
+            message: 'your credentials are already configured via ',
+            description: 'Text before the Settings link on save_account() cells (include trailing space if needed)',
+          });
+          const settingsLabel = translate({
+            id: 'executable.skipCell.settingsLink',
+            message: 'Settings',
+            description: 'Link text pointing to the Settings page',
+          });
+          const credsAfter = translate({
+            id: 'executable.skipCell.credentialsAfter',
+            message: '. Running it with placeholder values is automatically blocked.',
+            description: 'Text after the Settings link on save_account() cells (include leading punctuation)',
+          });
+          div.appendChild(document.createTextNode(` \u2014 `));
+          div.appendChild(document.createTextNode(credsBefore));
+          const a = document.createElement('a');
+          a.href = '/jupyter-settings#ibm-quantum';
+          a.textContent = settingsLabel;
+          div.appendChild(a);
+          div.appendChild(document.createTextNode(credsAfter));
+        }
       } else {
-        const credsBefore = translate({
-          id: 'executable.skipCell.credentialsBefore',
-          message: 'your credentials are already configured via ',
-          description: 'Text before the Settings link on save_account() cells (include trailing space if needed)',
+        // Mixed cell: tip + run as-is; kernel guard skips placeholder save_account()
+        const tipLabel = translate({
+          id: 'executable.mixedCell.tip',
+          message: 'Tip',
+          description: 'Bold label on cells where save_account() is mixed with other code',
         });
-        const settingsLabel = translate({
-          id: 'executable.skipCell.settingsLink',
-          message: 'Settings',
-          description: 'Link text pointing to the Settings page',
-        });
-        const credsAfter = translate({
-          id: 'executable.skipCell.credentialsAfter',
-          message: '. Running it with placeholder values will overwrite them.',
-          description: 'Text after the Settings link on save_account() cells (include leading punctuation)',
-        });
-        div.appendChild(document.createTextNode(` \u2014 `));
-        div.appendChild(document.createTextNode(credsBefore));
-        const a = document.createElement('a');
-        a.href = '/jupyter-settings#ibm-quantum';
-        a.textContent = settingsLabel;
-        div.appendChild(a);
-        div.appendChild(document.createTextNode(credsAfter));
+        const strong = document.createElement('strong');
+        strong.textContent = tipLabel;
+        div.appendChild(strong);
+        if (simMode) {
+          const mixedSim = translate({
+            id: 'executable.mixedCell.simulator',
+            message: ' \u2014 Simulator Mode is active. The save_account() call here has no effect; the rest of the cell runs against the simulator.',
+            description: 'Hint on mixed save_account cells when simulator mode is on',
+          });
+          div.appendChild(document.createTextNode(mixedSim));
+        } else {
+          const mixedBefore = translate({
+            id: 'executable.mixedCell.credentialsBefore',
+            message: ' \u2014 your credentials are already configured via ',
+            description: 'Mixed cell hint, text before Settings link',
+          });
+          const settingsLabel = translate({
+            id: 'executable.skipCell.settingsLink',
+            message: 'Settings',
+          });
+          const mixedAfter = translate({
+            id: 'executable.mixedCell.credentialsAfter',
+            message: '. The save_account() call with placeholder values is silently skipped \u2014 run the cell as-is.',
+            description: 'Mixed cell hint, text after Settings link',
+          });
+          div.appendChild(document.createTextNode(mixedBefore));
+          const a = document.createElement('a');
+          a.href = '/jupyter-settings#ibm-quantum';
+          a.textContent = settingsLabel;
+          div.appendChild(a);
+          div.appendChild(document.createTextNode(mixedAfter));
+        }
       }
-      // Add InfoIcon (vanilla DOM — not React)
+
+      // Add InfoIcon (vanilla DOM \u2014 not React)
       const infoSpan = document.createElement('span');
       infoSpan.className = 'dq-info-icon dq-info-icon--below';
       infoSpan.setAttribute('data-tooltip', translate({
         id: 'executable.info.skipCell',
-        message: 'Your credentials are already injected automatically. Running this cell would overwrite them.',
+        message: isPureCell
+          ? 'Your credentials are already injected automatically. Running this cell would overwrite them.'
+          : 'save_account() with placeholder values is silently skipped by a kernel-side guard. The rest of the cell runs normally.',
       }));
-      infoSpan.textContent = '\u24D8'; // ⓘ character
+      infoSpan.textContent = '\u24D8'; // \u24D8 character
       div.appendChild(infoSpan);
 
       cell.insertBefore(div, cell.firstChild);
@@ -913,7 +969,27 @@ try:
     )
     print("[doQumentation] IBM Quantum credentials injected from Settings")
 except Exception as e:
-    print(f"[doQumentation] Credential setup: {e}")`;
+    print(f"[doQumentation] Credential setup: {e}")
+
+# Guard save_account() against placeholder values so cells with mixed code
+# (save_account + actual logic) don't overwrite the injected credentials.
+# Real save_account() calls (with non-placeholder values) still work.
+_DQ_PLACEHOLDER_TOKENS = (
+    "YOUR_TOKEN_HERE", "YOUR_API_KEY", "YOUR_API_TOKEN",
+    "deleteThisAndPaste", "your_api_key", "your_token",
+    "<MY_IBM_QUANTUM_TOKEN>", "<MY_IBM_CLOUD_API_KEY>",
+)
+_DQ_PLACEHOLDER_INSTANCES = ("YOUR_CRN", "your_crn", "<MY_IBM_CLOUD_CRN>", "<MY_IBM_CLOUD_INSTANCE>")
+_DQ_real_save_account = QiskitRuntimeService.save_account
+def _dq_guarded_save_account(*args, **kwargs):
+    token_arg = kwargs.get("token", args[0] if args else "")
+    instance_arg = kwargs.get("instance", "")
+    if any(p in str(token_arg) for p in _DQ_PLACEHOLDER_TOKENS) or \\
+       any(p in str(instance_arg) for p in _DQ_PLACEHOLDER_INSTANCES):
+        print("[doQumentation] save_account() with placeholder values skipped \\u2014 using injected credentials")
+        return None
+    return _DQ_real_save_account(*args, **kwargs)
+QiskitRuntimeService.save_account = staticmethod(_dq_guarded_save_account)`;
 }
 
 function getSimulatorPatchCode(): string {
