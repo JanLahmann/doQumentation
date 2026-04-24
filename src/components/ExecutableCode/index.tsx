@@ -669,7 +669,7 @@ function annotateSaveAccountCells(): void {
         if (simMode) {
           const mixedSim = translate({
             id: 'executable.mixedCell.simulator',
-            message: ' \u2014 Simulator Mode is active. The save_account() call here has no effect; the rest of the cell runs against the simulator.',
+            message: ' \u2014 You can run this cell unchanged. Simulator Mode is active, so the save_account() call has no effect and the rest of the code runs against the simulator.',
             description: 'Hint on mixed save_account cells when simulator mode is on',
           });
           div.appendChild(document.createTextNode(mixedSim));
@@ -685,7 +685,7 @@ function annotateSaveAccountCells(): void {
           });
           const mixedAfter = translate({
             id: 'executable.mixedCell.credentialsAfter',
-            message: '. The save_account() call with placeholder values is silently skipped \u2014 run the cell as-is.',
+            message: '. You can run this cell unchanged \u2014 the save_account() call with placeholder values will be skipped, and the rest of the code uses your saved credentials.',
             description: 'Mixed cell hint, text after Settings link',
           });
           div.appendChild(document.createTextNode(mixedBefore));
