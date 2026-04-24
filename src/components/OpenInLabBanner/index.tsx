@@ -103,6 +103,10 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
 
         const colabUrl = getColabUrl(notebookPath, currentLocale);
 
+        // Download URL: notebooks are in static/notebooks/{path}.ipynb
+        const dlPath = notebookPath.includes('/') ? notebookPath : `tutorials/${notebookPath}`;
+        const downloadUrl = `/notebooks/${dlPath}.ipynb`;
+
         const handleBinderClick = (e: React.MouseEvent) => {
           trackEvent('Binder Launch', { notebook: notebookPath, page: window.location.pathname });
           // CE with labEnabled: direct link works, no SSE needed
@@ -173,7 +177,7 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
               )}
             </span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Open in:<InfoIcon tooltip={translate({id: 'openInLab.info.openIn', message: 'JupyterLab: full notebook editor with all packages pre-installed. Colab: Google\'s free cloud notebooks (requires a Google account).'})} position="below" /></span>
+              <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>Open in:<InfoIcon tooltip={translate({id: 'openInLab.info.openIn', message: 'JupyterLab: full notebook editor with all packages pre-installed. Colab: Google\'s free cloud notebooks (requires a Google account). Download: save the .ipynb file to your machine.'})} position="below" /></span>
               {labUrl && (
                 <a
                   href={labUrl}
@@ -217,6 +221,23 @@ export default function OpenInLabBanner({ notebookPath, description }: OpenInLab
                 }}
               >
                 Colab &#8599;
+              </a>
+              <a
+                href={downloadUrl}
+                download
+                title={translate({id: 'openInLab.download.title', message: 'Download the original Jupyter notebook (.ipynb)'})}
+                onClick={() => trackEvent('Notebook Download', { notebook: notebookPath, page: window.location.pathname })}
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  border: '1px solid var(--ifm-color-emphasis-400)',
+                  color: 'var(--ifm-color-emphasis-700)',
+                  borderRadius: '4px',
+                  fontWeight: 600,
+                  textDecoration: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {translate({id: 'openInLab.download', message: 'Download'})} ↓
               </a>
               <a
                 href="/about/code-modifications"

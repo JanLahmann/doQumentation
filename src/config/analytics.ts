@@ -12,7 +12,8 @@ type AnalyticsEvent =
   | 'Binder Launch'
   | 'Colab Open'
   | 'Tutorial Feedback'
-  | 'Translation Feedback';
+  | 'Translation Feedback'
+  | 'Notebook Download';
 
 interface EventProps {
   page?: string;
