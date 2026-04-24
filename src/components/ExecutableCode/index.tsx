@@ -614,7 +614,12 @@ function annotateSaveAccountCells(): void {
       const isPureCell = stripped.length === 0;
 
       const div = document.createElement('div');
-      div.className = 'thebelab-cell__skip-hint';
+      // Add --pure modifier for pure save_account cells so Run All can skip
+      // them. Mixed cells have the same base class (for shared styling) but
+      // no modifier, so Run All executes them normally.
+      div.className = isPureCell
+        ? 'thebelab-cell__skip-hint thebelab-cell__skip-hint--pure'
+        : 'thebelab-cell__skip-hint';
 
       if (isPureCell) {
         const skipLabel = translate({
@@ -1705,10 +1710,12 @@ export default function ExecutableCode({
       if (btn) runBtns.push(btn as HTMLButtonElement);
     });
 
-    // Filter out save_account cells that have a skip hint (credentials/simulator active)
+    // Filter out pure save_account cells (credentials/simulator already injected).
+    // Mixed cells (save_account + other code) use the same base class but lack
+    // the --pure modifier — they should run, the kernel guard skips placeholders.
     const execBtns = runBtns.filter(btn => {
       const cell = btn.closest('.thebelab-cell');
-      return !cell?.querySelector('.thebelab-cell__skip-hint');
+      return !cell?.querySelector('.thebelab-cell__skip-hint--pure');
     });
 
     if (execBtns.length === 0) {
