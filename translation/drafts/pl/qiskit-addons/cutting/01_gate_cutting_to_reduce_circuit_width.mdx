@@ -1,0 +1,220 @@
+---
+title: "Cięcie Gate'ów w celu zmniejszenia szerokości Circuit"
+sidebar_label: "Cięcie Gate'ów w celu zmniejszenia szerokości Circuit"
+notebook_path: "qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb"
+---
+{/* doqumentation-source-hash: 00531414 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb" />
+
+
+W tym notebooku przejdziemy przez kolejne kroki [wzorca Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns), korzystając z **cięcia Circuit** w celu zmniejszenia liczby Qubitów w Circuit. Będziemy ciąć Gate'y, aby móc zrekonstruować wartość oczekiwaną czteroqubitowego Circuit przy użyciu jedynie dwuqubitowych eksperymentów.
+
+Oto kroki, które wykonamy:
+
+- **Krok 1: Odwzorowanie problemu na Circuit i operatory kwantowe**:
+    - Odwzorowanie hamiltonianu na Circuit kwantowy.
+- **Krok 2: Optymalizacja pod kątem docelowego sprzętu** [_Używa dodatku cutting_]:
+    - <font color='#0F62FE'>Cięcie Circuit i obserwowalnej.</font>
+    - Transpilacja podeksperymentów pod kątem sprzętu.
+- **Krok 3: Wykonanie na docelowym sprzęcie**:
+    - Uruchomienie podeksperymentów uzyskanych w Kroku 2 przy użyciu prymitywu `Sampler`.
+- **Krok 4: Przetwarzanie końcowe wyników** [_Używa dodatku cutting_]:
+    - <font color='#0F62FE'>Połączenie wyników Kroku 3 w celu zrekonstruowania wartości oczekiwanej rozważanej obserwowalnej.</font>
+## Krok 1: Odwzorowanie {#krok-1-odwzorowanie}
+
+### Tworzenie Circuit do cięcia {#tworzenie-circuit-do-cięcia}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(4, entanglement="linear", reps=2)
+qc.assign_parameters([0.4] * len(qc.parameters), inplace=True)
+
+qc.draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_1.png)
+
+### Określenie obserwowalnej {#określenie-obserwowalnej}
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+```
+
+## Krok 2: Optymalizacja {#krok-2-optymalizacja}
+
+### Rozdzielenie Circuit i obserwowalnej zgodnie z określonym podziałem Qubitów {#rozdzielenie-circuit-i-obserwowalnej}
+
+Każda etykieta w `partition_labels` odpowiada Qubitowi `circuit` o tym samym indeksie. Qubity o wspólnej etykiecie partycji zostaną zgrupowane razem, a nielokalne Gate'y obejmujące więcej niż jedną partycję zostaną przecięte.
+
+**Uwaga:** Argument ``observables`` funkcji `partition_problem` jest typu `PauliList`. Współczynniki i fazy składników obserwowalnych są ignorowane podczas dekompozycji problemu i wykonywania podeksperymentów. Mogą zostać ponownie zastosowane podczas rekonstrukcji wartości oczekiwanej.
+
+```python
+from qiskit_addon_cutting import partition_problem
+
+partitioned_problem = partition_problem(
+    circuit=qc, partition_labels="AABB", observables=observable.paulis
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+```
+
+### Wizualizacja zdekompozycjonowanego problemu {#wizualizacja-zdekompozycjonowanego-problemu}
+
+```python
+subobservables
+```
+
+```text
+{'A': PauliList(['II', 'ZI', 'ZZ', 'XI', 'ZZ', 'IX']),
+ 'B': PauliList(['ZZ', 'IZ', 'II', 'XI', 'ZI', 'IX'])}
+```
+
+```python
+subcircuits["A"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_2.png)
+
+```python
+subcircuits["B"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_3.png)
+
+### Obliczenie narzutu próbkowania dla wybranych cięć {#obliczenie-narzutu-próbkowania}
+
+W tym miejscu tniemy dwa Gate'y CNOT, co skutkuje narzutem próbkowania wynoszącym $9^2$.
+
+Więcej informacji na temat narzutu próbkowania wynikającego z cięcia Circuit znajdziesz w [materiałach objaśniających](../explanation/index.rst).
+
+```python
+import numpy as np
+
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 81.0
+```
+
+### Generowanie podeksperymentów do uruchomienia na Backend {#generowanie-podeksperymentów}
+
+`generate_cutting_experiments` przyjmuje argumenty `circuits`/`observables` jako słowniki mapujące etykiety partycji Qubitów na odpowiednie `subcircuit`/`subobservables`.
+
+Aby zasymulować wartość oczekiwaną pełnowymiarowego Circuit, z rozkładu quasi-prawdopodobieństwa zdekompozycjonowanych Gate'ów generowanych jest wiele podeksperymentów, które następnie są wykonywane na jednym lub kilku Backend. Liczba próbek pobieranych z rozkładu jest kontrolowana przez `num_samples`, a dla każdej unikalnej próbki podawany jest jeden łączny współczynnik. Więcej informacji na temat sposobu obliczania współczynników znajdziesz w [materiałach objaśniających](../explanation/index.rst).
+
+```python
+from qiskit_addon_cutting import generate_cutting_experiments
+
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits, observables=subobservables, num_samples=np.inf
+)
+```
+
+### Wybór Backend {#wybór-backend}
+
+Używamy tutaj fałszywego Backend, co spowoduje uruchomienie Qiskit Runtime w trybie lokalnym (tj. na lokalnym symulatorze).
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+
+backend = FakeManilaV2()
+```
+
+### Przygotowanie podeksperymentów dla Backend {#przygotowanie-podeksperymentów-dla-backend}
+
+Przed przesłaniem Circuit do Qiskit Runtime musimy je transpilować, podając nasz Backend jako cel.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+# Transpile the subexperiments to ISA circuits
+pass_manager = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_subexperiments = {
+    label: pass_manager.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+## Krok 3: Wykonanie {#krok-3-wykonanie}
+
+### Uruchamianie podeksperymentów przy użyciu prymitywu Sampler Qiskit Runtime {#uruchamianie-podeksperymentów}
+
+```python
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+# Submit each partition's subexperiments to the Qiskit Runtime Sampler
+# primitive, in a single batch so that the jobs will run back-to-back.
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+```text
+/home/garrison/Qiskit/qiskit-ibm-runtime/qiskit_ibm_runtime/session.py:157: UserWarning: Session is not supported in local testing mode or when using a simulator.
+  warnings.warn(
+```
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+## Krok 4: Przetwarzanie końcowe {#krok-4-przetwarzanie-końcowe}
+
+### Rekonstrukcja wartości oczekiwanej {#rekonstrukcja-wartości-oczekiwanej}
+
+Zrekonstruuj wartości oczekiwane dla każdego składnika obserwowalnej i połącz je, aby zrekonstruować wartość oczekiwaną dla pierwotnej obserwowalnej.
+
+```python
+from qiskit_addon_cutting import reconstruct_expectation_values
+
+# Get expectation values for each observable term
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+```
+
+### Porównanie zrekonstruowanej wartości oczekiwanej z dokładną wartością oczekiwaną z pierwotnego Circuit i obserwowalnej {#porównanie-wartości-oczekiwanych}
+
+```python
+from qiskit_aer.primitives import EstimatorV2
+
+estimator = EstimatorV2()
+exact_expval = estimator.run([(qc, observable)]).result()[0].data.evs
+print(f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}")
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}")
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.6991539
+Exact expectation value: 0.56254612
+Error in estimation: 0.13660778
+Relative error in estimation: 0.24283836
+```
+
+<TutorialFeedback />
