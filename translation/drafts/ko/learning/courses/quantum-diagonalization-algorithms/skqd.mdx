@@ -1,0 +1,305 @@
+---
+title: "샘플 기반 크릴로프 양자 대각화"
+sidebar_label: "샘플 기반 크릴로프 양자 대각화"
+description: "이전 단원의 주제들을 결합하여 QKD의 수렴 보장과 SQD의 속도를 SKQD에서 활용합니다."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/skqd.ipynb"
+---
+
+{/* doqumentation-source-hash: 0d650fd4 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/skqd.ipynb" />
+
+
+
+{/* cspell:ignore arxiv Neel probs eigenvals Hatano */}
+
+# 샘플 기반 크릴로프 양자 대각화 (SKQD)
+이 샘플 기반 크릴로프 양자 대각화(SKQD) 단원은 이전 방법들에서 설명한 방법들을 결합합니다. Qiskit 패턴 프레임워크를 활용한 단일 예제로 구성되어 있습니다:
+
+    - 단계 1: 문제를 양자 회로와 연산자로 매핑
+    - 단계 2: 대상 하드웨어에 최적화
+    - 단계 3: Qiskit Primitives를 사용하여 실행
+    - 단계 4: 후처리
+
+샘플 기반 양자 대각화 방법의 중요한 단계는 부분공간에 대한 고품질 벡터를 생성하는 것입니다. 이전 단원에서는 LUCJ 앤셰츠를 사용하여 화학 해밀턴 행렬식의 부분공간 벡터를 생성했습니다. 이 단원에서는 단원 2에서 논의한 양자 크릴로프 상태[[1]](#references)를 사용합니다. 먼저 시간 진화 연산을 사용하여 양자 컴퓨터에서 크릴로프 공간을 만드는 방법을 검토합니다. 그 다음 이것으로부터 샘플을 추출합니다. 시스템 해밀턴 행렬식을 샘플링된 부분공간에 투영하고 대각화하여 바닥상태 에너지를 추정합니다. 이 알고리즘은 단원 2에서 설명한 가정 하에서 바닥상태로 증명 가능하고 효율적으로 수렴합니다.
+
+## 0. 크릴로프 공간
+
+$r$차 크릴로프 공간 $\mathcal{K}^r$은 행렬 $A$의 더 높은 거듭제곱에 기준 벡터 $\vert v \rangle$를 곱하여 얻은 벡터들로 이루어진 공간이며, 최대 $r-1$까지입니다.
+
+$$
+\mathcal{K}^r = \left\{ \vert v \rangle, A \vert v \rangle, A^2 \vert v \rangle, ..., A^{r-1} \vert v \rangle \right\}
+$$
+
+행렬 $A$가 해밀턴 행렬식 $H$인 경우, 해당 공간을 _거듭제곱 크릴로프 공간_ $\mathcal{K}_P$라고 합니다. $A$가 해밀턴 행렬식으로 생성된 시간 진화 연산자 $U=e^{-iH(dt)}$인 경우, 이 공간을 단위 크릴로프 공간 $\mathcal{K}_U$라고 합니다. 거듭제곱 크릴로프 부분공간은 $H$가 단위 연산자가 아니기 때문에 양자 컴퓨터에서 직접 생성할 수 없습니다. 대신, 거듭제곱 크릴로프 공간과 유사한 [수렴 보장](https://arxiv.org/abs/2110.07492)을 제공할 수 있는 시간 진화 연산자 $U = e^{-iH(dt)}$를 사용할 수 있습니다. 그러면 $U$의 거듭제곱은 서로 다른 시간 단계 $U^k = e^{-iH(k dt)}$ (여기서 $k = 0, 1, 2, ..., (r-1)$)가 됩니다.
+
+$$
+\mathcal{K}_U^r = \left\{ \vert \psi \rangle, U \vert \psi \rangle, U^2 \vert \psi \rangle, ..., U^{r-1} \vert \psi \rangle \right\}
+$$
+## 1. 문제를 양자 회로와 연산자로 매핑
+이 단원에서는 주기 경계 조건을 갖는 $L = 22$ 사이트의 반강자성 XX-Z 스핀-1/2 체인에 대한 해밀턴 행렬식을 고려합니다:
+$$
+    H = \sum_{i, j}^{N} J_{xy} (X_{i} X_{j} + Y_{i} Y_{j}) + Z_{i} Z_{j}
+$$
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-sqd qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+num_spins = 22
+coupling_map = CouplingMap.from_ring(num_spins)
+H_op = generate_xyz_hamiltonian(coupling_map, coupling_constants=(0.3, 0.3, 1.0))
+```
+
+크릴로프 공간을 구성하기 위해 세 가지 주요 요소가 필요합니다:
+
+1. 크릴로프 차원($r$)과 시간 단계($dt$)의 선택.
+2. 대상(바닥) 상태와의 다항식 겹침을 가진 초기(기준) 상태(위의 벡터 $\vert v \rangle$)이며, 대상 상태는 희소입니다. 다항식 겹침에 대한 이 요구사항은 양자 위상 추정 알고리즘과 동일합니다.
+3. 시간 진화 연산자 $U^{k}=e^{-iH(k * dt)}$ ($k = 0, 1, 2, ..., r-1$).
+
+선택된 $r$ 값(그리고 $dt$)에 대해, 우리는 $r$개의 별도 양자 회로를 만들고 이들로부터 샘플을 추출합니다. 각 양자 회로는 기준 상태의 양자 회로 표현과 $k$ 값에 대한 시간 진화 연산자를 연결하여 생성합니다.
+
+더 큰 크릴로프 차원은 추정된 에너지의 수렴을 개선합니다. 이 단원에서 수렴 추세를 설명하기 위해 차원을 $5$로 설정합니다.
+
+참고 [[2]](#references)에 따르면 KQD에 충분히 작은 시간 단계는 $\pi / \vert \vert H \vert \vert$이며, 이 값을 과대평가하기보다는 과소평가하는 것이 좋습니다. 한편, $dt$를 너무 작게 선택하면 크릴로프 부분공간의 조건이 악화됩니다. 크릴로프 기저 벡터들이 시간 단계마다 덜 달라지기 때문입니다. 또한 이러한 $dt$ 선택은 SKQD 수렴에 증명 가능하게 적절하지만, 이 샘플링 기반 문맥에서 실제로 최적인 $dt$ 선택은 진행 중인 연구 주제입니다. 이 단원에서 $dt = 0.15$로 설정합니다.
+
+크릴로프 차원과 시간 단계 외에도 시간 진화를 위한 트로터 단계의 개수를 설정해야 합니다. 너무 적은 단계를 사용하면 더 큰 트로터화 오류가 발생하는 반면, 너무 많은 단계는 더 깊은 회로로 이어집니다. 이 단원에서 트로터 단계의 개수를 $6$으로 설정합니다.
+
+```python
+# Set parameters for quantum Krylov algorithm
+krylov_dim = 5  # size of krylov subspace
+dt = 0.15
+num_trotter_steps = 6
+```
+
+다음으로, 바닥상태와의 겹침을 갖는 기준 상태 $\vert \psi \rangle$를 선택해야 합니다. 이 해밀턴 행렬식의 경우, 교대하는 1과 0 $\vert ...101...010...101 \rangle$을 가진 _Neel_ 상태를 기준 상태로 사용합니다.
+
+```python
+# Prep `Neel` state as the reference state for evolution
+from qiskit import QuantumCircuit
+
+qc_state_prep = QuantumCircuit(num_spins)
+for i in range(num_spins):
+    if i % 2 == 0:
+        qc_state_prep.x(i)
+```
+
+마지막으로, 시간 진화 연산자를 양자 회로에 매핑해야 합니다. 이는 단원 2에서 수행되었지만, 여기서는 Qiskit의 메서드, 특히 _synthesis_라는 이름의 메서드를 활용합니다. 수학적 연산자를 양자 게이트를 가진 양자 회로로 합성하는 여러 방법이 있습니다. 많은 이러한 기법들은 [Qiskit 합성 모듈](https://docs.quantum.ibm.com/api/qiskit/synthesis)에서 사용 가능합니다. 우리는 합성을 위해 [`LieTrotter`](https://docs.quantum.ibm.com/api/qiskit/qiskit.synthesis.LieTrotter) 접근법 [[3]](#references) [[4]](#references)을 사용합니다.
+
+```python
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.synthesis import LieTrotter
+
+evol_gate = PauliEvolutionGate(
+    H_op, time=(dt / num_trotter_steps), synthesis=LieTrotter(reps=num_trotter_steps)
+)  # `U` operator
+
+qr = QuantumRegister(num_spins)
+qc_evol = QuantumCircuit(qr)
+qc_evol.append(evol_gate, qargs=qr)
+
+circuits = []
+for rep in range(krylov_dim):
+    circ = qc_state_prep.copy()
+
+    # Repeating the `U` operator to implement U^0, U^1, U^2, and so on, for power Krylov space
+    for _ in range(rep):
+        circ.compose(other=qc_evol, inplace=True)
+
+    circ.measure_all()
+    circuits.append(circ)
+```
+
+```python
+circuits[1].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/7ffc3eaa-9563-4c89-9d7b-808a3a37b275-0.avif)
+
+```python
+circuits[2].decompose().draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/bdbc0881-06b0-49f2-8919-a376aa7f08e3-0.avif)
+
+## 2. 대상 하드웨어에 최적화
+회로를 생성했으므로 대상 하드웨어에 최적화할 수 있습니다. 유틸리티 규모 QPU를 선택합니다.
+
+```python
+import warnings
+
+from qiskit import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+warnings.filterwarnings("ignore")
+
+service = QiskitRuntimeService()
+# Use the least-busy backend or specify a quantum computer using the syntax commented out below.
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbane")
+```
+
+이제 사전 설정된 통과 관리자를 사용하여 회로를 대상 백엔드로 변환합니다.
+
+```python
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_circuits = pm.run(circuits=circuits)
+```
+
+## 3. 대상 하드웨어에서 실행
+하드웨어 실행을 위해 회로를 최적화한 후, 대상 하드웨어에서 회로를 실행할 준비가 되었으며 바닥상태 에너지 추정을 위한 샘플을 수집합니다.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+job = sampler.run(isa_circuits, shots=100_000)  # Takes approximately 2m 58s of QPU time
+```
+
+```python
+counts_all = [job.result()[k].data.meas.get_counts() for k in range(krylov_dim)]
+```
+
+## 4. 결과 후처리
+다음으로, 증가하는 크릴로프 차원에 대한 개수를 누적 방식으로 집계합니다. 누적된 개수를 사용하여 증가하는 크릴로프 차원에 대한 부분공간을 확장하고 수렴 동작을 분석합니다.
+
+```python
+from collections import Counter
+
+counts_cumulative = []
+for i in range(krylov_dim):
+    counter = Counter()
+    for d in counts_all[: i + 1]:
+        counter.update(d)
+
+    counts = dict(counter)
+    counts_cumulative.append(counts)
+```
+
+해밀턴 행렬식을 투영하고 대각화하기 위해 [`qiskit-addon-sqd`](https://qiskit.github.io/qiskit-addon-sqd/)의 기능을 사용합니다. 애드온은 Pauli 문자열 기반 해밀턴 행렬식을 부분공간에 투영하고 `SciPy`를 사용하여 고유값을 해결하기 위한 기능을 제공합니다.
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+from qiskit_addon_sqd.qubit import solve_qubit
+```
+
+원칙적으로, 부분공간을 확장하기 전에 부정확한 패턴을 가진 비트 문자열을 필터링할 수 있습니다. 예를 들어, 이 단원의 반강자성 해밀턴 행렬식의 바닥상태는 일반적으로 "상향" 및 "하향" 스핀의 개수가 같으므로, 비트 문자열의 "1"의 개수는 시스템의 비트(스핀) 총 개수의 정확히 절반이어야 합니다. 다음 함수는 개수에서 지정된 개수("1" 비트)를 갖지 않는 비트 문자열을 필터링합니다.
+
+```python
+# Filters out bitstrings that do not have specified number (`num_ones`) of `1` bits.
+def postselect_counts(counts, num_ones):
+    filtered_counts = {}
+    for bitstring, freq in counts.items():
+        if bitstring.count("1") == num_ones:
+            filtered_counts[bitstring] = freq
+
+    return filtered_counts
+```
+
+올바른 개수의 상향/하향 전자를 가진 비트 문자열을 사용하여 증가하는 크릴로프 차원에 대한 부분공간을 확장하고 고유값을 계산합니다. 문제 크기와 사용 가능한 고전 리소스에 따라, 부분공간 차원을 확인하기 위해 서브샘플링을 도입해야 할 수도 있습니다([SQD 단원](/learning/courses/quantum-diagonalization-algorithms/sqd-implementation)의 단원과 유사함). 또한 단원 4와 유사하게 구성 복구의 개념을 적용할 수 있습니다. 재구성된 고유상태에서 사이트 당 전자 점유도를 계산하고 그 정보를 사용하여 잘못된 개수의 상향/하향 전자를 가진 비트 문자열을 수정할 수 있습니다. 관심 있는 독자를 위해 이를 연습 과제로 남겨두겠습니다.
+
+```python
+import numpy as np
+
+num_batches = 10
+rand_seed = 0
+scipy_kwargs = {"k": 2, "which": "SA"}
+
+ground_state_energies = []
+for idx, counts in enumerate(counts_cumulative):
+    counts = postselect_counts(counts, num_ones=num_spins // 2)
+    bitstring_matrix, probs = counts_to_arrays(counts=counts)
+
+    eigenvals, eigenstates = solve_qubit(
+        bitstring_matrix, H_op, verbose=False, **scipy_kwargs
+    )
+    gs_en = np.min(eigenvals)
+    ground_state_energies.append(gs_en)
+```
+
+다음으로, 크릴로프 차원의 함수로 계산된 에너지를 플로팅하고 정확한 에너지와 비교합니다. 정확한 에너지는 고전 무차별 대입 방법을 사용하여 별도로 계산됩니다. 증가하는 크릴로프 공간 차원과 함께 추정된 바닥상태 에너지가 수렴함을 알 수 있습니다. 크릴로프 차원 $5$는 제한적이지만, 결과는 여전히 인상적인 수렴을 보여주며, 이는 더 큰 크릴로프 차원으로 개선될 것으로 예상됩니다 [[1]](#references).
+
+```python
+import matplotlib.pyplot as plt
+
+exact_gs_en = -23.934184
+plt.plot(
+    range(1, krylov_dim + 1),
+    ground_state_energies,
+    color="blue",
+    linestyle="-.",
+    label="estimate",
+)
+plt.plot(
+    range(1, krylov_dim + 1),
+    [exact_gs_en] * krylov_dim,
+    color="red",
+    linestyle="-",
+    label="exact",
+)
+plt.xticks(range(1, krylov_dim + 1), range(1, krylov_dim + 1))
+plt.legend()
+plt.xlabel("Krylov space dimension")
+plt.ylabel("Energy")
+plt.ylim([-24, -22.50])
+plt.title(
+    "Estimating Ground state energy with Sample-based Krylov Quantum Diagonalization"
+)
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-diagonalization-algorithms/qda-5-skqd/extracted-outputs/debca96a-e0e3-4342-a755-8204dba50d74-0.avif)
+
+### 이해도 확인
+아래 질문을 읽고 답변을 생각한 다음, 삼각형을 클릭하여 솔루션을 공개합니다.
+
+<details>
+<summary>
+
+위의 플롯에서 수렴을 개선하기 위해 무엇을 할 수 있을까요?
+
+</summary>
+
+__답변:__
+
+크릴로프 차원을 증가시킵니다. 일반적으로 쇼트의 개수를 늘릴 수도 있지만, 위의 계산에서는 이미 매우 높습니다.
+
+</details>
+
+<details>
+<summary>
+
+SKQD의 주요 장점은 (a) SQD와 (b) KQD에 비해 무엇입니까?
+
+</summary>
+
+__답변:__
+
+다른 타당한 답변이 있을 수 있지만, 완전한 답변은 다음을 포함해야 합니다:
+
+   (a) SKQD는 SQD가 하지 않는 수렴 보장을 제공합니다. SQD에서는 바닥상태 지원과 우수한 겹침을 가진 매우 좋은 앤셰츠를 추측하거나, 앤셰츠 계열을 샘플링하기 위해 계산에 변분 구성 요소를 도입해야 합니다.
+
+   (b) SKQD는 Hadamard 테스트를 통한 행렬 요소의 비용이 많이 드는 계산을 회피하기 때문에 훨씬 적은 QPU 시간이 필요합니다.
+
+</details>
+## 5. 요약
+
+- 크릴로프 기저 상태 샘플링을 통한 바닥상태 에너지 추정은 스핀 시스템, 응축 물질 문제, 격자 게이지 이론을 포함한 격자 모델에 매우 적합합니다. 이 접근법은 VQE보다 훨씬 더 나은 스케일링을 이루는데, VQE처럼 변분 앤셰츠의 많은 매개변수에 대한 최적화가 필요하거나, 발견적 앤셰츠 기반 SQD(예: 이전 단원의 화학 문제)가 필요하지 않기 때문입니다.
+    - 회로 깊이를 낮게 유지하기 위해, 결함 전 하드웨어에 접근 가능한 격자 문제를 다루는 것이 현명합니다.
+- SKQD는 VQE처럼 양자 측정 문제를 야기하지 않습니다. 추정할 교환 파울리 연산자 그룹이 없습니다.
+- SKQD는 노이즈가 있는 샘플에 강건하므로 문제별 후선택 루틴(예: 문제별 패턴을 따르지 않는 비트 문자열 필터링)을 사용하거나 고전 대각화 오버헤드를 야기할 수 있습니다(즉, 더 큰 부분공간에서 대각화하여 노이즈의 영향을 효과적으로 제거합니다).
+## 참고자료
+
+\[1] Jeffery Yu et al., "Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization" (2025). [arxiv:quant-ph/2501.09702](https://arxiv.org/abs/2501.09702).
+
+\[2] Ethan N. Epperly, Lin Lin, and Yuji Nakatsukasa. "A theory of quantum subspace diagonalization". SIAM Journal on Matrix Analysis and Applications 43, 1263–1290 (2022).
+
+\[2] N. Hatano and M. Suzuki, "Finding Exponential Product Formulas of Higher Orders" (2005). [arXiv:math-ph/0506007](https://arxiv.org/abs/math-ph/0506007).
+
+\[4] D. Berry, G. Ahokas, R. Cleve and B. Sanders, "Efficient quantum algorithms for simulating sparse Hamiltonians" (2006). [arXiv:quant-ph/0508139](https://arxiv.org/abs/quant-ph/0508139).
