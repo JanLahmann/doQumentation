@@ -1,0 +1,240 @@
+## 프로그래밍 실습
+
+이전에 설명한 이종 워크플로를 시연하며 SKQD 알고리즘을 실습해 보겠습니다. 이 과정은 네 가지 별개의 단계로 구분되며, 각 단계마다 해당 Python 스크립트와 작업 제출용 셸 스크립트가 있습니다.
+
+### 매핑 (`mapping.py` 및 `mapping.sh`)
+
+워크플로의 첫 번째 단계는 물리적 문제를 정의하고 이를 양자 Circuit 집합으로 매핑하는 것입니다.
+
+`mapping.py`는 특정 물리 문제의 매개변수를 정의합니다. 여기서는 7개의 배스 사이트(`n_bath = 7`)를 가진 Anderson 불순물 모델을 다룹니다. 이 스크립트는 시스템의 해밀토니안을 나타내는 일체(`h1e`) 및 이체(`h2e`) 적분을 구성합니다.
+
+```python
+
+...
+
+n_bath = 7  # number of bath sites
+
+...
+
+# One body matrix elements in the "position" basis
+h1e = -t * np.diag(np.ones(n_bath), k=1) - t * np.diag(np.ones(n_bath), k=-1)
+h1e[impurity_index, impurity_index + 1] = -V
+h1e[impurity_index + 1, impurity_index] = -V
+h1e[impurity_index, impurity_index] = eps
+
+# Two body matrix elements in the "position" basis
+h2e = np.zeros((n_bath + 1, n_bath + 1, n_bath + 1, n_bath + 1))
+h2e[impurity_index, impurity_index, impurity_index, impurity_index] = U
+
+...
+
+# The one-body time evolution
+free_fermion_evolution = ffsim.qiskit.OrbitalRotationJW(n_modes, Utar)
+
+# The two-body time evolution
+def append_diagonal_evolution(dt, U, impurity_qubit, num_orb, q_circuit):
+    """Append two-body time evolution to a quantum circuit."""
+    if U != 0:
+        q_circuit.append(
+            CPhaseGate(-dt / 2 * U),
+            [impurity_qubit, impurity_qubit + num_orb],
+        )
+
+```
+그런 다음 이 스크립트는 SKQD 알고리즘에 필요한 양자 Circuit을 생성합니다. 초기 상태(`initial_state`)를 만드는 것으로 시작하여, 서로 다른 단계 수(`d = 8`)에 대해 시간 발전 연산자를 적용해 다양한 크릴로프 기저 상태 $|\phi_j\rangle = (e^{-iHt})^j |\phi_0\rangle$를 생성합니다.
+
+```python
+
+# The reference state
+def initial_state(q_circuit, norb, nocc):
+    """Prepare an initial state."""
+    for i in range(nocc):
+        q_circuit.append(XGate(), [i])
+        q_circuit.append(XGate(), [norb + i])
+    rot = XXPlusYYGate(np.pi / 2, -np.pi / 2)
+
+    for i in range(3):
+        for j in range(nocc - i - 1, nocc + i, 2):
+            q_circuit.append(rot, [j, j + 1])
+            q_circuit.append(rot, [norb + j, norb + j + 1])
+    q_circuit.append(rot, [j + 1, j + 2])
+    q_circuit.append(rot, [norb + j + 1, norb + j + 2])
+
+...
+
+# Generate the initial state
+qubits = QuantumRegister(2 * n_modes, name="q")
+init_state = QuantumCircuit(qubits)
+initial_state(init_state, n_modes, n_modes // 2)
+
+...
+
+d = 8  # Number of Krylov basis states
+circuits = []
+for i in range(d):
+    circ = init_state.copy()
+    circuits.append(circ)
+    for _ in range(i):
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+        circ.append(free_fermion_evolution, qubits)
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+    circ.measure_all()
+
+print(circuits[0].draw(scale=0.4, fold=-1))
+
+```
+이 스크립트는 측정이 추가된 8개의 생성된 Circuit 목록을 `circuits.qpy` 파일에 저장합니다.
+
+`mapping.sh`는 `mapping.py` 작업을 제출하는 데 사용되는 Slurm 배치 스크립트입니다. 이 단계는 고전적 계산이므로 표준 CPU 파티션(`--partition=normal`)에서 리소스를 요청합니다.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+### 최적화 (`optimization.py` 및 `optimization.sh`)
+
+Circuit이 준비되면, 대상 양자 하드웨어에서 효율적으로 실행될 수 있도록 최적화하고 컴파일해야 합니다.
+
+`optimization.py`는 먼저 매핑 단계에서 생성된 `circuits.qpy` 파일을 불러오고, 양자 리소스 매니저인 `QRMI()`를 통해 양자 리소스 정보를 가져옵니다. 그런 다음 Qiskit의 `generate_preset_pass_manager`를 높은 최적화 수준(`optimization_level=3`)으로 사용하여 추상적인 논리 Circuit을 ISA(Instruction Set Architecture) Circuit으로 변환합니다. 이 과정에서 하드웨어의 네이티브 Gate를 사용하도록 Circuit을 재작성하고, 깊이를 줄이며 오류를 최소화하는 방향으로 최적화합니다.
+
+```python
+
+...
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+target = quantum_resource.target
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3,
+    target=target
+)
+isa_circuits = pass_manager.run(circuits)
+
+```
+
+트랜스파일된 하드웨어용 Circuit은 새 파일 `isa_circuits.qpy`에 저장됩니다.
+
+매핑 스크립트와 마찬가지로 이 Slurm 작업도 고전적 CPU 파티션(`--partition=normal`)에서 실행됩니다. Transpiler 작업은 고전적 작업이기 때문입니다.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-mapping
+#SBATCH --output=sqd-mapping.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/mapping.py
+```
+
+### 실행 (`execution.py` 및 `execution.sh`)
+
+이 단계는 양자 컴퓨터가 사용되는 유일한 단계입니다. 여기서는 최적화된 Circuit을 실행하고 측정 샘플을 수집합니다.
+
+`execution.py`는 최적화된 `isa_circuits.qpy` 파일을 불러온 다음, 양자 리소스에 연결된 `SamplerV2` Primitive를 초기화합니다. 그런 다음 `sampler.run()`을 호출하여 지정된 샷 수(`shots=500`)로 QPU에서 Circuit을 실행합니다.
+
+```python
+
+...
+
+qrmi = QRMI()
+resources = qrmi.resources()
+quantum_resource = resources[0]
+
+# Sample from the circuits
+noisy_sampler = Sampler(quantum_resource)
+job = noisy_sampler.run(isa_circuits, shots=500)
+
+```
+실행이 끝나면 모든 Circuit에서 측정된 결과(비트스트링)가 수집 및 합산되어, 그 카운트가 `counts.json` 파일에 저장됩니다.
+
+Slurm 스크립트 `execution.sh`는 이 단계에서 다른 스크립트들과 다릅니다. 양자 파티션(`--partition=quantum`)에서 실행하도록 요청하며, QPU 1개(`--gres=qpu:1`)를 명시적으로 요청합니다.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-execution
+#SBATCH --output=sqd-execution.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=quantum
+#SBATCH --gres=qpu:1
+
+srun python /data/ch4/sqd/execution.py
+```
+
+### 후처리 (`postprocessing.py` 및 `postprocessing.sh`)
+
+마지막 단계에서는 다시 고전적 컴퓨터로 돌아와 양자 실험의 데이터를 분석하고 최종 결과인 대상 시스템의 기저 상태 에너지를 계산합니다.
+
+`postprocessing.py` 프로그램은 먼저 측정 결과가 담긴 `counts.json` 파일을 읽습니다. 그런 다음 Anderson 모델의 해밀토니안을 재구성합니다(`mapping.py`와 동일한 매개변수 사용). 이후 측정된 비트스트링과 해밀토니안 정의를 `diagonalize_fermionic_hamiltonian` 함수에 전달합니다. 이 함수는 SKQD의 핵심 로직을 수행합니다. 즉, 비트스트링을 사용해 투영된 해밀토니안 $\tilde{H}$를 구성하고 이를 대각화하여 기저 상태 에너지를 구합니다.
+
+```python
+
+...
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=300,
+    norb=n_modes,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=10,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+
+```
+
+마지막으로 계산된 SKQD 에너지를 출력하고, 이 문제의 알려진 정확한 에너지와 비교하여 최종 절대 오차를 보여줍니다.
+
+최종 작업 스크립트는 모든 분석이 고전적으로 수행되므로 고전적 파티션(`--partition=normal`)에서 실행됩니다. 부분 공간이 큰 경우 이 단계에서 더 많은 고전적 HPC 리소스가 필요할 수 있습니다.
+
+```shell
+#!/bin/bash
+#
+#SBATCH --job-name=sqd-postprocessing
+#SBATCH --output=sqd-postprocessing.out
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=normal
+
+srun python /data/ch4/sqd/postprocessing.py
+```
+## 요약
+
+이것으로 마무리입니다! 복잡한 하이브리드 프로그램을 관리하는 데 도움이 되는 여러 개념과 예시를 살펴보았습니다. 물론 이것은 양자와 고전적 HPC 리소스의 조합으로 할 수 있는 것들의 시작에 불과합니다.
+
+더 많은 사용 사례와 알고리즘을 탐구하려면 IBM Quantum Platform의 [문서](https://docs.quantum.ibm.com/guides)와 [튜토리얼](https://docs.quantum.ibm.com/tutorials)을 참고하세요. 또한 다음 레슨에서 공유되는 리소스도 꼭 방문해 보시기 바랍니다. 계산 과학자와 데이터 센터 관리자 모두를 위한 알고리즘 및 소프트웨어에 관한 더 많은 정보를 얻을 수 있습니다.
+
+## 참고 문헌
+
+[1] Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization. https://arxiv.org/abs/2501.09702
+
+[2] Chemistry beyond the scale of exact diagonalization on a quantum-centric supercomputer. https://www.science.org/doi/10.1126/sciadv.adu9991
