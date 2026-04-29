@@ -1,0 +1,282 @@
+## VQD 예제 {#vqd-example}
+여기서는 Qiskit 패턴 프레임워크를 명시적으로 구현합니다.
+### 1단계: 고전적 입력을 양자 문제로 매핑하기 {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+이제 관측 가능량의 가장 낮은 고유값만 찾는 것이 아니라, 모든 $4$개의 고유값을 찾겠습니다 ($k=4$).
+
+VQD의 비용 함수는 다음과 같다는 점을 기억하세요:
+
+$$
+C_{l}(\vec{\theta}) :=
+\langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle +
+\sum_{j=0}^{l-1}\beta_j |\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle  |^2
+\quad \forall l\in\{1,\cdots,k\}=\{1,\cdots,4\}
+$$
+
+이 점이 특히 중요한 이유는, `VQD` 객체를 정의할 때 벡터 $\vec{\beta}=(\beta_0,\cdots,\beta_{k-1})$ (이 경우에는 $(\beta_0, \beta_1, \beta_2, \beta_3)$)를 인수로 전달해야 하기 때문입니다.
+
+또한 Qiskit의 VQD 구현에서는, 이전 노트북에서 설명한 유효 관측 가능량을 고려하는 대신, 충실도(fidelity) $|\langle \psi(\vec{\theta})| \psi(\vec{\theta^j})\rangle  |^2$를 `ComputeUncompute` 알고리즘을 통해 직접 계산합니다. 이 알고리즘은 `Sampler` 프리미티브를 활용하여 회로
+$U_A^\dagger(\vec{\theta})U_A(\vec{\theta^j})$에서 $|0\rangle$을 얻을 확률을 샘플링합니다. 이 확률이 정확히
+
+$$
+\begin{aligned}
+
+p_0
+
+& = |\langle 0|U_A^\dagger(\vec{\theta})U_A(\vec{\theta^j})|0\rangle|^2 \\[1mm]
+
+& = |\big(\langle 0|U_A^\dagger(\vec{\theta})\big)\big(U_A(\vec{\theta^j})|0\rangle\big)|^2 \\[1mm]
+
+& = |\langle \psi(\vec{\theta}) |\psi(\vec{\theta^j}) \rangle|^2 \\[1mm]
+
+\end{aligned}
+$$
+
+이기 때문에 이 방법이 성립합니다.
+
+```python
+ansatz = n_local(
+    num_qubits=2,
+    rotation_blocks=["ry", "rz"],
+    entanglement_blocks="cz",
+    #    entanglement="linear",
+    reps=1,
+)
+
+ansatz.decompose().draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/variational-algorithm-design/examples-and-applications/extracted-outputs/e4d59381-43ff-4322-a6f2-df55cef18536-0.avif)
+
+다음 관측 가능량을 살펴보겠습니다:
+
+$$
+\hat{O}_2 := 2 II - 3 XX + 2 YY - 4 ZZ
+$$
+
+이 관측 가능량의 고유값은 다음과 같습니다:
+
+$$
+\left\{
+\begin{array}{c}
+\lambda_0 = -7 \\
+\lambda_1 = 3\\
+\lambda_2 = 5 \\
+\lambda_3 = 7
+\end{array}
+\right\}
+$$
+
+그리고 고유 상태는 다음과 같습니다:
+
+$$
+\left\{
+\begin{array}{c}
+|\phi_0\rangle = \frac{1}{\sqrt{2}}(|00\rangle + |11\rangle)\\
+|\phi_1\rangle = \frac{1}{\sqrt{2}}(|00\rangle - |11\rangle)\\
+|\phi_2\rangle = \frac{1}{\sqrt{2}}(|01\rangle + |10\rangle)\\
+|\phi_3\rangle = \frac{1}{\sqrt{2}}(|01\rangle - |10\rangle)
+\end{array}
+\right\}
+$$
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable_2 = SparsePauliOp.from_list([("II", 2), ("XX", -3), ("YY", 2), ("ZZ", -4)])
+```
+
+이제 겹침 페널티(overlap penalty)를 계산하는 함수를 추가합니다. 이 함수는 여전히 문제를 양자 회로에 매핑하는 단계의 일부입니다. 하지만 이전 강의에서 설명한 바와 같이, 이 함수는 현재 변분 회로와 이전에 최적화된 회로(더 낮은 에너지/비용 상태에서 얻은 것) 사이의 겹침을 계산합니다. 새로 생성되는 회로도 실제 하드웨어에서 실행하려면 Transpile이 필요합니다. 이 함수는 이전에 시뮬레이터에서 사용하는 것을 본 적이 있습니다. 여기서는 실제 Backend를 사용할 때의 Transpile 및 관련 최적화를 미리 고려해야 하므로, `if realbackend == 1` 주변의 코드가 추가되었습니다. 이는 2단계의 내용이 일부 섞인 것이지만, 2단계는 이후에 명시적으로 다루겠습니다.
+
+```python
+import numpy as np
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+def calculate_overlaps(
+    ansatz, prev_circuits, parameters, sampler, realbackend, backend
+):
+    def create_fidelity_circuit(circuit_1, circuit_2):
+        if len(circuit_1.clbits) > 0:
+            circuit_1.remove_final_measurements()
+        if len(circuit_2.clbits) > 0:
+            circuit_2.remove_final_measurements()
+
+        circuit = circuit_1.compose(circuit_2.inverse())
+        circuit.measure_all()
+        return circuit
+
+    overlaps = []
+
+    for prev_circuit in prev_circuits:
+        fidelity_circuit = create_fidelity_circuit(ansatz, prev_circuit)
+        if realbackend == 1:
+            pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+            fidelity_circuit = pm.run(fidelity_circuit)
+        sampler_job = sampler.run([(fidelity_circuit, parameters)])
+        meas_data = sampler_job.result()[0].data.meas
+
+        counts_0 = meas_data.get_int_counts().get(0, 0)
+        shots = meas_data.num_shots
+        overlap = counts_0 / shots
+        overlaps.append(overlap)
+
+    return np.array(overlaps)
+```
+
+이제 VQD의 비용 함수를 추가합니다. 이전 강의와 비교하면, 실제 Backend를 사용할 때 Transpile을 처리하기 위한 두 개의 추가 인수(`realbackend`와 `backend`)가 포함되어 있습니다.
+
+```python
+def cost_func_vqd(
+    parameters,
+    ansatz,
+    prev_states,
+    step,
+    betas,
+    estimator,
+    sampler,
+    hamiltonian,
+    realbackend,
+    backend,
+):
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+
+    total_cost = 0
+
+    if step > 1:
+        overlaps = calculate_overlaps(
+            ansatz, prev_states, parameters, sampler, realbackend, backend
+        )
+        total_cost = np.sum(
+            [np.real(betas[state] * overlap) for state, overlap in enumerate(overlaps)]
+        )
+
+    estimator_result = estimator_job.result()[0]
+
+    value = estimator_result.data.evs[0] + total_cost
+
+    return value
+```
+
+다시 한번, 디버깅에는 시뮬레이터를 사용한 후 실제 하드웨어로 이동하겠습니다.
+
+```python
+from qiskit.primitives import StatevectorSampler
+from qiskit.primitives import StatevectorEstimator
+
+sampler = StatevectorSampler(default_shots=4092)
+estimator = StatevectorEstimator()
+```
+
+여기서는 계산하고자 하는 상태의 수, 페널티, 그리고 초기 파라미터 집합 x0를 설정합니다.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+k = 4
+betas = [50, 60, 40]
+x0 = np.ones(8)
+```
+
+이제 시뮬레이터를 사용하여 알고리즘을 테스트해 보겠습니다:
+
+```python
+from scipy.optimize import minimize
+
+prev_states = []
+prev_opt_parameters = []
+eigenvalues = []
+
+realbackend = 0
+
+for step in range(1, k + 1):
+    if step > 1:
+        prev_states.append(ansatz.assign_parameters(prev_opt_parameters))
+
+    result = minimize(
+        cost_func_vqd,
+        x0,
+        args=(
+            ansatz,
+            prev_states,
+            step,
+            betas,
+            estimator,
+            sampler,
+            observable_2,
+            realbackend,
+            None,
+        ),
+        method="COBYLA",
+        options={"maxiter": 200, "tol": 0.000001},
+    )
+    print(result)
+
+    prev_opt_parameters = result.x
+    eigenvalues.append(result.fun)
+```
+
+```text
+message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: -6.9999999999996
+       x: [ 1.571e+00  1.571e+00  2.519e+00  2.100e+00  1.242e+00
+            6.935e-01  2.298e+00  1.991e+00]
+    nfev: 151
+   maxcv: 0.0
+ message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: 3.698974255258432
+       x: [ 1.269e+00  1.109e+00  1.080e+00  1.200e+00  1.094e+00
+            1.163e+00  9.752e-01  9.519e-01]
+    nfev: 103
+   maxcv: 0.0
+ message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: 4.731320121938101
+       x: [ 1.533e+00  2.451e+00  2.526e+00  2.406e+00  1.968e+00
+            2.105e+00  8.537e-01  8.442e-01]
+    nfev: 110
+   maxcv: 0.0
+ message: Return from COBYLA because the trust region radius reaches its lower bound.
+ success: True
+  status: 0
+     fun: 7.008239313655201
+       x: [ 4.150e+00  2.120e+00  3.495e+00  7.262e-01  1.953e+00
+           -1.982e-01  3.263e-01  2.563e+00]
+    nfev: 126
+   maxcv: 0.0
+```
+
+```python
+eigenvalues
+```
+
+```text
+[np.float64(-6.9999999999996),
+ np.float64(3.698974255258432),
+ np.float64(4.731320121938101),
+ np.float64(7.008239313655201)]
+```
+
+이 결과는 근사 오차와 전역 위상을 제외하면 예상 결과에 상당히 근접합니다. 고전 최적화기의 허용 오차(tolerance)와 상태 벡터 겹침에 대한 페널티를 조정하면 더 정밀한 값을 얻을 수 있습니다.
+
+```python
+solution_eigenvalues = [-7, 3, 5, 7]
+
+for index, experimental_eigenvalue in enumerate(eigenvalues):
+    solution_eigenvalue = solution_eigenvalues[index]
+
+    print(
+        f"Percent error: {abs((experimental_eigenvalue - solution_eigenvalue)/solution_eigenvalue):.2e}"
+    )
+```
+
+```text
+Percent error: 5.71e-14
+Percent error: 2.33e-01
+Percent error: 5.37e-02
+Percent error: 1.18e-03
+```
