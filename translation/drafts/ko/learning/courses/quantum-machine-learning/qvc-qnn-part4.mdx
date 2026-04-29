@@ -1,0 +1,279 @@
+## 실제 양자 컴퓨터에서의 확장 및 실행
+
+### 데이터
+
+먼저 이미지 크기를 늘려 보겠습니다. 6x6 격자를 선택한 것은 특별한 이유가 있는 것이 아니라, 비-Clifford 게이트를 사용하는 회로를 시뮬레이션할 수 있는 Qubit 수(32개)를 초과하기 때문입니다.
+
+```python
+# This code defines the images to be classified:
+
+import numpy as np
+
+# Total number of "pixels"/qubits
+size = 36
+# One dimension of the image (called vertical, but it doesn't matter). Must be a divisor of `size`
+vert_size = 6
+# The length of the line to be detected (yellow). Must be less than or equal to the smallest dimension of the image (`<=min(vert_size,size/vert_size)`
+line_size = 6
+
+def generate_dataset(num_images):
+    images = []
+    labels = []
+    hor_array = np.zeros((size - (line_size - 1) * vert_size, size))
+    ver_array = np.zeros((round(size / vert_size) * (vert_size - line_size + 1), size))
+
+    j = 0
+    for i in range(0, size - 1):
+        if i % (size / vert_size) <= (size / vert_size) - line_size:
+            for p in range(0, line_size):
+                hor_array[j][i + p] = np.pi / 2
+            j += 1
+
+    # Make two adjacent entries pi/2, then move down to the next row. Careful to avoid the "pixels" at size/vert_size - linesize, because we want to fold this list into a grid.
+
+    j = 0
+    for i in range(0, round(size / vert_size) * (vert_size - line_size + 1)):
+        for p in range(0, line_size):
+            ver_array[j][i + p * round(size / vert_size)] = np.pi / 2
+        j += 1
+
+    # Make entries pi/2, spaced by the length/rows, so that when folded, the entries appear on top of each other.
+
+    for n in range(num_images):
+        rng = np.random.randint(0, 2)
+        if rng == 0:
+            labels.append(-1)
+            random_image = np.random.randint(0, len(hor_array))
+            images.append(np.array(hor_array[random_image]))
+            # Randomly select one of the several rows you made above.
+        elif rng == 1:
+            labels.append(1)
+            random_image = np.random.randint(0, len(ver_array))
+            images.append(np.array(ver_array[random_image]))
+            # Randomly select one of the several rows you made above.
+
+        # Create noise
+        for i in range(size):
+            if images[-1][i] == 0:
+                images[-1][i] = np.random.rand() * np.pi / 4
+    return images, labels
+
+hor_size = round(size / vert_size)
+```
+
+양자 컴퓨팅 시간은 매우 귀중한 자원이므로, 훈련 데이터 셋을 매우 작게 설정하고 최적화 단계도 최소화할 것입니다. 이 정도로도 워크플로를 시연하기에는 충분합니다.
+
+```python
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+# Here we specify a very small data set. Increase for realism, but monitor use of quantum computing time.
+images, labels = generate_dataset(10)
+
+train_images, test_images, train_labels, test_labels = train_test_split(
+    images, labels, test_size=0.3, random_state=246
+)
+```
+
+```python
+import matplotlib.pyplot as plt
+
+# Generate a figure with nested images using subplots.
+
+fig, ax = plt.subplots(2, 2, figsize=(10, 6), subplot_kw={"xticks": [], "yticks": []})
+for i in range(4):
+    ax[i // 2, i % 2].imshow(
+        train_images[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+plt.subplots_adjust(wspace=0.1, hspace=0.025)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/b106d32c-cd1f-4463-97fe-2f41695402fb-0.avif)
+
+### Step 1: 문제를 양자 Circuit으로 매핑하기
+
+```python
+from qiskit.circuit.library import z_feature_map
+
+# One qubit per data feature
+num_qubits = len(train_images[0])
+
+# Data encoding
+# Note that qiskit orders parameters alphabetically. We assign the parameter prefix "a" to ensure our data encoding goes to the first part of the circuit, the feature mapping.
+feature_map = z_feature_map(num_qubits, parameter_prefix="a")
+```
+
+```python
+# This creates a circuit with the cxs in the compressed order.
+
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+
+qnn_circuit = QuantumCircuit(size)
+params = ParameterVector("θ", length=2 * size)
+for i in range(size):
+    qnn_circuit.ry(params[i], i)
+
+# CNOT gates between horizontally adjacent qubits.
+for i in range(vert_size):
+    for j in range(hor_size):
+        if j < hor_size - 1:
+            qnn_circuit.cx((i * hor_size) + j, (i * hor_size) + j + 1)
+
+# CNOT gates between vertically adjacent qubits, likely not necessary based on our preliminary simulation.
+#        if i<vert_size-1:
+#            qnn_circuit.cx((i*hor_size)+j,(i*hor_size)+j+hor_size)
+for i in range(size):
+    qnn_circuit.rx(params[size + i], i)
+qnn_circuit_large = qnn_circuit
+
+print(qnn_circuit_large.decompose().depth())
+print(
+    f"2+ qubit depth: {qnn_circuit_large.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+# qnn_circuit_large.draw()
+```
+
+```text
+7
+2+ qubit depth: 5
+```
+
+이는 적절한 2-Qubit 깊이입니다. 실제 양자 컴퓨터에서 고품질의 결과를 얻을 수 있을 것입니다.
+
+```python
+# Combine the feature map and variational circuit
+ansatz = qnn_circuit
+
+# Combine the feature map with the ansatz
+full_circuit = QuantumCircuit(num_qubits)
+full_circuit.compose(feature_map, range(num_qubits), inplace=True)
+full_circuit.compose(ansatz, range(num_qubits), inplace=True)
+
+# Check the depth of the full circuit
+print(full_circuit.decompose().depth())
+print(
+    f"2+ qubit depth: {full_circuit.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+```
+
+```text
+11
+2+ qubit depth: 5
+```
+
+CNOT Gate가 없는 ```z_feature_map```을 사용하고 있기 때문에, 인코딩 레이어를 추가해도 2-Qubit 깊이가 증가하지 않습니다. 전체 Circuit은 여기서 시각화할 수 있습니다.
+
+```python
+full_circuit.decompose().draw("mpl", style="clifford", idle_wires=False, fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/b43806aa-7d41-40b8-9e43-a604f0e42c26-0.avif)
+
+2-Qubit 깊이를 최소화하는 것이 가장 중요하다면, 위의 Circuit 다이어그램에서 CNOT 게이트의 순서를 변경하여 깊이를 약간 줄일 수 있다는 점을 눈치채셨을 수도 있습니다. 예를 들어, $q_{35}$와 $q_{34}$의 CNOT 게이트를 Circuit 다이어그램 왼쪽으로 이동하여 $q_{30}$, $q_{31}$의 CNOT 게이트 바로 아래에 배치할 수 있습니다. 2-Qubit 게이트 깊이가 5인 경우, Transpiler 이후에 이것이 차이를 만들지는 분명하지 않지만, 염두에 둘 만한 사항입니다. CNOT 게이트의 순서가 문제를 논리적으로 매핑하는 데 중요하다면 현재 깊이로도 충분합니다. 이미지의 데이터 구조를 모델링하는 데 CNOT 순서가 중요하지 않다면, 깊이를 최소화하도록 CNOT 게이트 순서를 재정렬하는 스크립트를 작성할 수도 있습니다.
+
+더 큰 이미지에 맞게 관측량(observable)도 다시 정의해야 합니다:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp.from_list([("Z" * (num_qubits), 1)])
+```
+
+## Qiskit Patterns Step 2: 양자 실행을 위한 문제 최적화
+
+먼저 실행에 사용할 Backend를 선택합니다. 여기서는 가장 대기 시간이 짧은 Backend를 사용할 것입니다.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+# To run on hardware, select the least busy quantum computer or specify a particular one.
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbaneane")
+
+print(backend.name)
+```
+
+```text
+ibm_brisbane
+```
+
+이전과 마찬가지로, 최적화 수준을 3으로 설정한 패스 매니저를 정의합니다.
+
+```python
+from qiskit.circuit.library import XGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    ConstrainedReschedule,
+    PadDynamicalDecoupling,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+이제 패스 매니저를 여러 번 적용할 것입니다. 회로가 매우 넓거나 깊은 경우, Transpiler가 반환하는 2-Qubit 깊이에 큰 차이가 생길 수 있습니다. 이러한 회로의 경우, 패스 매니저를 여러 번 시도하고 가장 얕은(최선의) 결과를 사용하는 것이 중요합니다.
+
+```python
+# Try pass manager several times, since heuristics can return various transpilations on large circuits, and we want the shallowest.
+
+transpiled_qcs = []
+transpiled_depths = []
+transpiled_2q_depths = []
+for i in range(1, 10):
+    circuit_ibm = pm.run(full_circuit)
+    transpiled_qcs.append(circuit_ibm)
+    transpiled_depths.append(circuit_ibm.decompose().depth())
+    transpiled_2q_depths.append(
+        circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)
+    )
+    # print(i)
+
+print(transpiled_depths)
+print(transpiled_2q_depths)
+
+# Use the shallowest
+
+minpos = transpiled_2q_depths.index(min(transpiled_2q_depths))
+```
+
+```text
+[85, 85, 81, 89, 81, 81, 89, 85, 85]
+[10, 10, 10, 10, 10, 10, 10, 10, 10]
+```
+
+이 경우 Transpiler가 적용된 2-Qubit 깊이는 항상 10임을 확인할 수 있습니다. 단일-Qubit 깊이에는 약간의 차이가 있었으며, 가장 얕은 결과를 사용할 것입니다. 그러나 이 36-Qubit 회로에서는 이것이 결정적인 개선은 아닙니다. Transpiler가 적용된 회로를 시각화할 수 있지만, 이 규모에서는 시각적으로 해석하기가 점점 더 어려워집니다.
+
+```python
+circuit_ibm = transpiled_qcs[2]
+observable_ibm = observable.apply_layout(circuit_ibm.layout)
+print(circuit_ibm.decompose().depth())
+print(
+    f"2+ qubit depth: {circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+```
+
+```text
+81
+2+ qubit depth: 10
+```
