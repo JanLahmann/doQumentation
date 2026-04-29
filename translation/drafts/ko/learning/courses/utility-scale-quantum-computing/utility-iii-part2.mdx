@@ -1,0 +1,238 @@
+## 2. 전략 1. 노이즈 인식 Qubit 선택 {#2-strategy-1-noise-aware-qubit-selection}
+
+먼저 Backend를 지정합니다. 특정 Backend의 속성을 집중적으로 다룰 예정이므로, `least_busy` 옵션을 사용하는 대신 하나의 Backend를 명시적으로 지정하는 것이 좋습니다.
+
+```python
+backend = service.backend("ibm_strasbourg")  # eagle
+twoq_gate = "ecr"
+print(f"Device {backend.name} Loaded with {backend.num_qubits} qubits")
+print(f"Two Qubit Gate: {twoq_gate}")
+```
+
+```text
+Device ibm_strasbourg Loaded with 127 qubits
+Two Qubit Gate: ecr
+```
+
+이제 2-Qubit Gate가 많이 포함된 Circuit을 구성할 예정입니다. 2-Qubit Gate 실행 시 오류율이 가장 낮은 Qubit을 사용하는 것이 합리적입니다. 보고된 2-Qubit Gate 오류를 기준으로 최적의 "Qubit 체인"을 찾는 것은 간단하지 않은 문제입니다. 하지만 최적의 Qubit을 결정하는 데 도움이 되는 몇 가지 함수를 정의할 수 있습니다.
+
+```python
+coupling_map = backend.target.build_coupling_map(twoq_gate)
+G = coupling_map.graph
+```
+
+```python
+def to_edges(path):  # create edges list from node paths
+    edges = []
+    prev_node = None
+    for node in path:
+        if prev_node is not None:
+            if G.has_edge(prev_node, node):
+                edges.append((prev_node, node))
+            else:
+                edges.append((node, prev_node))
+        prev_node = node
+    return edges
+
+def path_fidelity(path, correct_by_duration: bool = True, readout_scale: float = None):
+    """Compute an estimate of the total fidelity of 2-qubit gates on a path.
+    If `correct_by_duration` is true, each gate fidelity is worsen by
+    scale = max_duration / duration, that is, gate_fidelity^scale.
+    If `readout_scale` > 0 is supplied, readout_fidelity^readout_scale
+    for each qubit on the path is multiplied to the total fielity.
+    The path is given in node indices form, for example, [0, 1, 2].
+    An external function `to_edges` is used to obtain edge list, for example, [(0, 1), (1, 2)]."""
+    path_edges = to_edges(path)
+    max_duration = max(backend.target[twoq_gate][qs].duration for qs in path_edges)
+
+    def gate_fidelity(qpair):
+        duration = backend.target[twoq_gate][qpair].duration
+        scale = max_duration / duration if correct_by_duration else 1.0
+        # 1.25 = (d+1)/d with d = 4
+        return max(0.25, 1 - (1.25 * backend.target[twoq_gate][qpair].error)) ** scale
+
+    def readout_fidelity(qubit):
+        return max(0.25, 1 - backend.target["measure"][(qubit,)].error)
+
+    total_fidelity = np.prod(
+        [gate_fidelity(qs) for qs in path_edges]
+    )  # two qubits gate fidelity for each path
+    if readout_scale:
+        total_fidelity *= (
+            np.prod([readout_fidelity(q) for q in path]) ** readout_scale
+        )  # multiply readout fidelity
+    return total_fidelity
+
+def flatten(paths, cutoff=None):  # cutoff is for not making run time too large
+    return [
+        path
+        for s, s_paths in paths.items()
+        for t, st_paths in s_paths.items()
+        for path in st_paths[:cutoff]
+        if s < t
+    ]
+```
+
+```python
+N = 16  # Number of qubits to use in the GHZ circuit
+num_qubits_in_chain = N
+```
+
+위 함수들을 활용해 그래프의 모든 노드 쌍 사이에서 N개의 Qubit으로 구성된 단순 경로를 모두 탐색합니다 (참고: [all_pairs_all_simple_paths](https://www.rustworkx.org/apiref/rustworkx.all_pairs_all_simple_paths.html#rustworkx-all-pairs-all-simple-paths)).
+
+그런 다음, 위에서 정의한 `path_fidelity` 함수를 사용하여 경로 충실도(path fidelity)가 가장 높은 최적의 Qubit 체인을 찾습니다.
+
+```python
+from functools import partial
+
+%%time
+paths = rx.all_pairs_all_simple_paths(
+    G.to_undirected(multigraph=False),
+    min_depth=num_qubits_in_chain,
+    cutoff=num_qubits_in_chain,
+)
+paths = flatten(paths, cutoff=25)  # If you have time, you could set a larger cutoff.
+if not paths:
+    raise Exception(
+        f"No qubit chain with length={num_qubits_in_chain} exists in {backend.name}. Try smaller num_qubits_in_chain."
+    )
+
+print(f"Selecting the best from {len(paths)} candidate paths")
+
+best_qubit_chain = max(
+    paths, key=partial(path_fidelity, correct_by_duration=True, readout_scale=1.0)
+)
+assert len(best_qubit_chain) == num_qubits_in_chain
+print(f"Predicted (best possible) process fidelity: {path_fidelity(best_qubit_chain)}")
+```
+
+```text
+Selecting the best from 6046 candidate paths
+Predicted (best possible) process fidelity: 0.8929026784775056
+CPU times: user 284 ms, sys: 10.9 ms, total: 295 ms
+Wall time: 295 ms
+```
+
+```python
+np.array(best_qubit_chain)
+```
+
+```text
+array([55, 49, 48, 47, 46, 45, 54, 64, 65, 66, 73, 85, 86, 87, 88, 89],
+      dtype=uint64)
+```
+
+커플링 맵 다이어그램에서 최적의 Qubit 체인을 분홍색으로 표시해 보겠습니다.
+
+```python
+qubit_color = []
+for i in range(133):
+    if i in best_qubit_chain:
+        qubit_color.append("#ff00dd")  # pink
+    else:
+        qubit_color.append("#8c00ff")  # purple
+plot_gate_map(
+    backend, qubit_color=qubit_color, qubit_size=50, font_size=25, figsize=(6, 6)
+)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-iii/extracted-outputs/a1c164a4-0.avif)
+
+### 2.1 최적 Qubit 체인 위에 GHZ Circuit 구성하기 {#21-build-a-ghz-circuit-on-the-best-qubit-chain}
+
+체인의 중앙에 위치한 Qubit에 먼저 H Gate를 적용합니다. 이렇게 하면 Circuit의 깊이가 약 절반으로 줄어듭니다.
+
+```python
+ghz1 = QuantumCircuit(max(best_qubit_chain) + 1, N)
+ghz1.h(best_qubit_chain[N // 2])
+for i in range(N // 2, 0, -1):
+    ghz1.cx(best_qubit_chain[i], best_qubit_chain[i - 1])
+for i in range(N // 2, N - 1, +1):
+    ghz1.cx(best_qubit_chain[i], best_qubit_chain[i + 1])
+ghz1.barrier()  # for visualization
+ghz1.measure(best_qubit_chain, list(range(N)))
+ghz1.draw(output="mpl", idle_wires=False, scale=0.5, fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-iii/extracted-outputs/1336fba0-0.avif)
+
+```python
+ghz1.depth()
+```
+
+```text
+10
+```
+
+```python
+pm = generate_preset_pass_manager(1, backend=backend)
+ghz1_transpiled = pm.run(ghz1)
+ghz1_transpiled.draw(output="mpl", idle_wires=False, fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-iii/extracted-outputs/71874b6d-eb9b-4ff5-b673-944191f67010-0.avif)
+
+```python
+print("Depth:", ghz1_transpiled.depth())
+print(
+    "Two-qubit Depth:",
+    ghz1_transpiled.depth(filter_function=lambda x: x.operation.num_qubits == 2),
+)
+```
+
+```text
+Depth: 27
+Two-qubit Depth: 8
+```
+
+```python
+opts = SamplerOptions()
+```
+
+```python
+res = execute_ghz_fidelity(
+    ghz_circuit=ghz1,
+    physical_qubits=best_qubit_chain,
+    backend=backend,
+    sampler_options=opts,
+)
+```
+
+```python
+job_s = service.job(res[0])  # Use your job id showed above.
+job_e = service.job(res[1])
+print(job_s.status(), job_e.status())
+```
+
+```text
+DONE DONE
+```
+
+위 작업의 상태가 'DONE'이 된 것을 확인한 후에 다음 셀을 실행하여 `check_ghz_fidelity_from_jobs` 함수로 결과를 확인하세요.
+
+```python
+N = 16
+# Check fidelity from job IDs
+res = check_ghz_fidelity_from_jobs(
+    sampler_job=job_s,
+    estimator_job=job_e,
+    num_qubits=N,
+)
+```
+
+```text
+N=16: |00..0>: 153, |11..1>: 8681, |3rd>: 2262 (1111111111101111)
+P(|00..0>)=0.003825, P(|11..1>)=0.217025
+REM: Coherence (non-diagonal): 0.073809
+GHZ fidelity = 0.147329 ± 0.002438
+GME (genuinely multipartite entangled) test: Failed
+```
+
+```python
+result = job_s.result()
+plot_histogram(result[0].data.c.get_counts(), figsize=(30, 5))
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/utility-iii/extracted-outputs/236126cb-0.avif)
+
+이 결과는 기준을 충족하지 못합니다. 다음 아이디어로 넘어가겠습니다.
