@@ -1,0 +1,182 @@
+### 3.3 Step 2. 양자 하드웨어 실행을 위한 Circuit 최적화
+
+위의 Circuit에는 양자 알고리즘을 사고하는 데 유용한 여러 추상화 요소가 포함되어 있지만, 실제 하드웨어에서는 바로 실행할 수 없습니다. QPU에서 실행하려면 Circuit이 패턴의 **트랜스파일(transpilation)** 또는 **Circuit 최적화** 단계를 구성하는 일련의 연산을 거쳐야 합니다.
+
+Qiskit 라이브러리는 다양한 Circuit 변환을 지원하는 일련의 **트랜스파일 패스(transpilation passes)**를 제공합니다. 목적에 맞게 Circuit이 **최적화**되어 있는지 확인해야 합니다.
+
+트랜스파일에는 다음과 같은 여러 단계가 포함될 수 있습니다.
+
+* Circuit 내 Qubit(의사결정 변수 등)을 디바이스의 물리적 Qubit에 **초기 매핑**합니다.
+* 양자 Circuit의 명령어를 Backend가 이해하는 하드웨어 네이티브 명령어로 **언롤링(unrolling)**합니다.
+* 서로 상호작용하는 Qubit를 인접한 물리적 Qubit에 배치하도록 **라우팅(routing)**합니다.
+* 동적 디커플링(dynamical decoupling)을 위한 단일 Qubit Gate를 추가하여 노이즈를 억제하는 **오류 억제(error suppression)**를 수행합니다.
+
+트랜스파일에 대한 자세한 내용은 [문서](/guides/transpile)를 참고하세요.
+
+아래 코드는 **Qiskit IBM&reg; Runtime 서비스**를 통해 클라우드에서 접근 가능한 디바이스 중 하나에서 실행할 수 있는 형식으로 추상 Circuit을 변환하고 최적화합니다.
+
+실제 양자 컴퓨터로 전송하기 전에 "로컬 테스트 모드(local testing mode)"를 사용하여 프로그램을 로컬에서 테스트할 수 있습니다.
+로컬 테스트 모드에 대한 자세한 내용은 [문서](/guides/local-testing-mode)를 참고하세요.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+# Use a quantum device
+service = QiskitRuntimeService()
+backend = service.least_busy(min_num_qubits=127)
+# backend = service.backend("ibm_kingston")
+
+# You can test your programs locally with a fake backend (local testing mode)
+# backend = FakeBrisbane()
+
+print(backend)
+
+# Create pass manager for transpilation
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+candidate_circuit = pm.run(circuit)
+candidate_circuit.draw("mpl", fold=False, idle_wires=False)
+```
+
+```text
+service = QiskitRuntimeService(channel="ibm_quantum_platform")
+```
+
+```text
+<IBMBackend('ibm_strasbourg')>
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/95cd3eed-0348-4373-b664-16a65d42f1e7-2.avif)
+
+### 3.4 Step 3. Qiskit 프리미티브를 사용한 실행
+
+QAOA 워크플로에서는 일련의 Circuit 평가를 실행하고 고전적 최적화기를 사용하여 최적의 $\beta_k$ 및 $\gamma_k$ 매개변수를 찾는 반복 최적화 루프를 통해 최적의 QAOA 매개변수를 구합니다. 이 실행 루프는 다음 단계를 통해 수행됩니다.
+
+1. 초기 매개변수를 정의합니다.
+2. 최적화 루프와 Circuit 샘플링에 사용할 프리미티브를 포함하는 새 `Session`을 인스턴스화합니다.
+3. 최적의 매개변수 집합을 찾으면, 사후 처리 단계에서 사용할 최종 분포를 얻기 위해 Circuit을 마지막으로 한 번 더 실행합니다.
+
+#### 초기 매개변수로 Circuit 정의하기
+
+임의로 선택한 매개변수부터 시작합니다.
+
+```python
+initial_gamma = np.pi
+initial_beta = np.pi / 2
+init_params = [initial_gamma, initial_beta]
+```
+
+#### Backend 및 실행 프리미티브 정의하기
+
+IBM&reg; Backend와 상호작용하려면 **Qiskit Runtime 프리미티브**를 사용하세요. 두 가지 프리미티브는 Sampler와 Estimator이며, 양자 컴퓨터에서 실행할 측정 유형에 따라 프리미티브를 선택합니다. $H_C$의 최솟값 구하기에는 비용 함수 측정이 단순히 $\langle H_C \rangle$의 기댓값이므로 Estimator를 사용합니다.
+
+#### 실행하기
+
+프리미티브는 양자 디바이스에서 워크로드를 스케줄링하기 위한 다양한 [실행 모드](/guides/execution-modes)를 제공하며, QAOA 워크플로는 Session 안에서 반복적으로 실행됩니다.
+
+!["execution mode"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/execution-mode.avif)
+
+Sampler 기반 비용 함수를 SciPy 최소화 루틴에 연결하여 최적의 매개변수를 찾을 수 있습니다.
+
+```python
+def cost_func_estimator(params, ansatz, hamiltonian, estimator):
+    # transform the observable defined on virtual qubits to
+    # an observable defined on all physical qubits
+    isa_hamiltonian = hamiltonian.apply_layout(ansatz.layout)
+
+    pub = (ansatz, isa_hamiltonian, params)
+    job = estimator.run([pub])
+
+    results = job.result()[0]
+    cost = results.data.evs
+
+    objective_func_vals.append(cost)
+
+    return cost
+```
+
+```python
+from qiskit_ibm_runtime import Session, EstimatorV2
+from scipy.optimize import minimize
+
+objective_func_vals = []  # Global variable
+with Session(backend=backend) as session:
+    # If using qiskit-ibm-runtime<0.24.0, change `mode=` to `session=`
+    estimator = EstimatorV2(mode=session)
+    estimator.options.default_shots = 1000
+
+    # Set simple error suppression/mitigation options
+    estimator.options.dynamical_decoupling.enable = True
+    estimator.options.dynamical_decoupling.sequence_type = "XY4"
+    estimator.options.twirling.enable_gates = True
+    estimator.options.twirling.num_randomizations = "auto"
+
+    result = minimize(
+        cost_func_estimator,
+        init_params,
+        args=(candidate_circuit, cost_hamiltonian, estimator),
+        method="COBYLA",
+        tol=1e-2,
+    )
+    print(result)
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -0.6557925874481715
+       x: [ 2.873e+00  9.414e-01]
+    nfev: 21
+   maxcv: 0.0
+```
+
+최적화기가 비용을 줄이고 Circuit에 더 나은 매개변수를 찾을 수 있었습니다.
+
+```python
+plt.figure(figsize=(12, 6))
+plt.plot(objective_func_vals)
+plt.xlabel("Iteration")
+plt.ylabel("Cost")
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/f923dd5d-0.avif)
+
+최적의 매개변수를 찾은 후에는 이 매개변수를 Circuit에 할당하고, 최적화된 매개변수로 얻은 최종 분포를 샘플링할 수 있습니다. 여기서는 그래프의 최적 컷에 해당하는 비트스트링 측정값의 확률 분포가 필요하므로 *Sampler* 프리미티브를 사용해야 합니다.
+
+**참고:** 이는 양자 컴퓨터에서 양자 상태 $\psi$를 준비한 후 측정하는 것을 의미합니다. 측정을 수행하면 상태가 단일 계산 기저 상태(예: `010101110000...`)로 붕괴되며, 이는 초기 최적화 문제($\max f(x)$ 또는 $\min f(x)$)에 대한 후보 해 $x$에 해당합니다.
+
+```python
+optimized_circuit = candidate_circuit.assign_parameters(result.x)
+optimized_circuit.draw("mpl", fold=False, idle_wires=False)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/f8dddf5a-0.avif)
+
+```python
+from qiskit_ibm_runtime import SamplerV2
+
+# If using qiskit-ibm-runtime<0.24.0, change `mode=` to `backend=`
+sampler = SamplerV2(mode=backend)
+
+# Set simple error suppression/mitigation options
+sampler.options.dynamical_decoupling.enable = True
+sampler.options.dynamical_decoupling.sequence_type = "XY4"
+sampler.options.twirling.enable_gates = True
+sampler.options.twirling.num_randomizations = "auto"
+
+pub = (optimized_circuit,)
+job = sampler.run([pub], shots=int(1e4))
+counts_int = job.result()[0].data.meas.get_int_counts()
+counts_bin = job.result()[0].data.meas.get_counts()
+shots = sum(counts_int.values())
+final_distribution_int = {key: val / shots for key, val in counts_int.items()}
+final_distribution_bin = {key: val / shots for key, val in counts_bin.items()}
+print(final_distribution_int)
+```
+
+```text
+{12: 0.0652, 31: 0.0089, 4: 0.0085, 13: 0.0731, 26: 0.0256, 28: 0.0246, 17: 0.0405, 25: 0.0591, 20: 0.031, 15: 0.0221, 8: 0.017, 21: 0.0371, 14: 0.0461, 16: 0.0229, 19: 0.0723, 23: 0.0199, 22: 0.0478, 18: 0.0708, 24: 0.0165, 6: 0.0525, 7: 0.0155, 5: 0.0245, 3: 0.0231, 29: 0.0121, 30: 0.0062, 10: 0.0363, 1: 0.0097, 9: 0.042, 27: 0.0094, 11: 0.0349, 0: 0.0129, 2: 0.0119}
+```
