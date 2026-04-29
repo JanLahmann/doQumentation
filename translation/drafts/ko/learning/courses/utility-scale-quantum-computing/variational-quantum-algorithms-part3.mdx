@@ -1,0 +1,200 @@
+## 3. Qiskit 패턴을 활용한 양자 최적화
+
+이 실습에서는 Qiskit 패턴과 양자 근사 최적화에 대해 배웁니다. Qiskit 패턴이란 양자 컴퓨팅 워크플로를 구현하기 위한 직관적이고 반복 가능한 일련의 단계입니다:
+!["Qiskit function"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/qiskit-function.avif)
+**조합 최적화** 문제에 이 패턴을 적용하여, 하이브리드(양자-고전) 반복 방법인 **양자 근사 최적화 알고리즘(QAOA)**을 사용해 **Max-Cut** 문제를 푸는 방법을 보여 드리겠습니다.
+
+이 QAOA 부분은 [양자 근사 최적화 알고리즘](/tutorials/quantum-approximate-optimization-algorithm) 튜토리얼의 "Part 1: Small-scale QAOA"를 기반으로 합니다. 이를 확장하는 방법은 해당 튜토리얼을 참조하세요.
+### 3.1 (소규모) 최적화를 위한 Qiskit 패턴
+이 부분에서는 소규모 Max-Cut 문제를 사용하여 양자 컴퓨터로 최적화 문제를 푸는 데 필요한 단계를 설명합니다.
+Max-Cut 문제는 풀기 어려운 최적화 문제로(구체적으로는 NP-hard 문제), 클러스터링, 네트워크 과학, 통계 물리학 등 다양한 분야에 응용됩니다. 이 튜토리얼에서는 노드가 엣지로 연결된 그래프를 다루며, 자르는 엣지의 수를 최대화하도록 노드를 두 집합으로 분할하는 것을 목표로 합니다.
+!["Maxcut"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/maxcut.avif)
+이 문제를 양자 알고리즘에 매핑하기 전에, Max-Cut 문제가 어떻게 고전적인 조합 최적화 문제가 되는지 먼저 함수 $f(x)$의 최소화를 고려해 이해할 수 있습니다.
+
+$$
+\min_{x\in \{0, 1\}^n}f(x),
+$$
+
+여기서 입력 $x$는 각 성분이 그래프의 각 노드에 대응하는 벡터입니다. 그런 다음 각 성분을 $0$ 또는 $1$로 제한합니다(이는 컷에 포함되거나 포함되지 않음을 나타냅니다). 이 소규모 예제는 $n=5$개의 노드를 가진 그래프를 사용합니다.
+
+노드 쌍 $i, j$에 대해, 대응하는 엣지 $(i,j)$가 컷에 포함되는지를 나타내는 함수를 작성할 수 있습니다. 예를 들어, 함수 $x_i + x_j - 2 x_i x_j$는 $x_i$ 또는 $x_j$ 중 하나만 1일 때(즉, 해당 엣지가 컷에 있을 때)만 1이 되고, 그 외에는 0입니다. 컷의 엣지 수를 최대화하는 문제는 다음과 같이 정식화할 수 있습니다.
+
+$$
+\max_{x\in \{0, 1\}^n} \sum_{(i,j)} x_i + x_j - 2 x_i x_j,
+$$
+
+이는 다음과 같은 최소화 형태로 다시 쓸 수 있습니다.
+
+$$
+\min_{x\in \{0, 1\}^n} \sum_{(i,j)}  2 x_i x_j - x_i - x_j.
+$$
+
+이 경우 $f(x)$의 최솟값은 컷이 통과하는 엣지의 수가 최대일 때입니다. 보시다시피, 아직 양자 컴퓨팅과 관련된 내용은 없습니다. 이 문제를 양자 컴퓨터가 이해할 수 있는 형태로 재정식화해야 합니다.
+$n=5$개의 노드를 가진 그래프를 생성하여 문제를 초기화합니다.
+
+```python
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import rustworkx as rx
+from rustworkx.visualization import mpl_draw
+```
+
+```python
+n = 5
+
+graph = rx.PyGraph()
+graph.add_nodes_from(range(1, n + 1))
+edge_list = [
+    (0, 1, 1.0),
+    (0, 2, 1.0),
+    (1, 2, 1.0),
+    (1, 3, 1.0),
+    (2, 4, 1.0),
+    (3, 4, 1.0),
+]
+graph.add_edges_from(edge_list)
+pos = rx.spring_layout(graph, seed=2)
+mpl_draw(graph, node_size=600, pos=pos, with_labels=True, labels=str)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/99e763fe-0.avif)
+
+### 3.2 1단계. 고전적 입력을 양자 문제로 매핑
+
+패턴의 첫 번째 단계는 고전적인 문제(그래프)를 양자 **Circuit**과 **연산자**로 매핑하는 것입니다. 이를 위해 다음 세 가지 주요 단계를 수행합니다:
+
+1. 일련의 수학적 재정식화를 활용하여 이 문제를 이차 제약 없는 이진 최적화(QUBO) 문제 표기법으로 표현합니다.
+2. 최적화 문제를 기저 상태가 비용 함수를 최소화하는 해에 대응하는 해밀토니안으로 재작성합니다.
+3. 양자 어닐링과 유사한 과정을 통해 이 해밀토니안의 기저 상태를 준비할 양자 Circuit을 생성합니다.
+
+**참고:** QAOA 방법론에서 최종적으로는 하이브리드 알고리즘의 **비용 함수**를 나타내는 연산자(**해밀토니안**)와, 문제에 대한 후보 해를 가진 양자 상태를 나타내는 매개변수화된 Circuit(**Ansatz**)이 필요합니다. 이 후보 상태에서 샘플링하고 비용 함수를 사용해 평가할 수 있습니다.
+
+#### 그래프 &rarr; 최적화 문제
+
+매핑의 첫 번째 단계는 표기법을 변경하는 것입니다. 다음은 QUBO 표기법으로 문제를 표현한 것입니다:
+
+$$
+\min_{x\in \{0, 1\}^n}x^T Q x,
+$$
+
+여기서 $Q$는 실수로 이루어진 $n\times n$ 행렬, $n$은 그래프의 노드 수, $x$는 위에서 소개한 이진 변수 벡터, $x^T$는 벡터 $x$의 전치를 나타냅니다.
+```
+Problem name: maxcut
+
+Minimize
+  2*x_1*x_2 + 2*x_1*x_3 + 2*x_2*x_3 + 2*x_2*x_4 + 2*x_3*x_5 + 2*x_4*x_5 - 2*x_1
+  - 3*x_2 - 3*x_3 - 2*x_4 - 2*x_5
+
+Subject to
+  No constraints
+
+  Binary variables (5)
+    x_1 x_2 x_3 x_4 x_5
+```
+#### 최적화 문제 &rarr; 해밀토니안
+
+그런 다음 QUBO 문제를 **해밀토니안**(시스템의 에너지를 나타내는 행렬)으로 재정식화할 수 있습니다:
+
+$$
+H_C=\sum_{ij}Q_{ij}Z_iZ_j + \sum_i b_iZ_i.
+$$
+
+**QAOA 문제에서 해밀토니안으로의 재정식화 단계**
+
+QAOA 문제를 이런 방식으로 재작성하는 방법을 보여 드리기 위해, 먼저 이진 변수 $x_i$를 다음 식을 통해 새로운 변수 $z_i\in\{-1, 1\}$로 대체합니다:
+
+$$
+x_i = \frac{1-z_i}{2}.
+$$
+
+여기서 $x_i$가 $0$이면 $z_i$는 $1$이 되어야 합니다. 최적화 문제($x^TQx$)에서 $x_i$를 $z_i$로 치환하면 동등한 정식화를 얻을 수 있습니다.
+
+$$
+x^TQx=\sum_{ij}Q_{ij}x_ix_j \\ =\frac{1}{4}\sum_{ij}Q_{ij}(1-z_i)(1-z_j) \\=\frac{1}{4}\sum_{ij}Q_{ij}z_iz_j-\frac{1}{4}\sum_{ij}(Q_{ij}+Q_{ji})z_i + \frac{n^2}{4}.
+$$
+
+이제 $b_i=-\sum_{j}(Q_{ij}+Q_{ji})$로 정의하고, 전치인수와 상수항 $n^2$을 제거하면, 동일한 최적화 문제의 두 가지 동등한 정식화에 도달합니다.
+
+$$
+min_{x\in\{0,1\}^n} x^TQx\Longleftrightarrow \min_{z\in\{-1,1\}^n}z^TQz + b^Tz
+$$
+
+여기서 $b$는 $Q$에 의존합니다. $z^TQz + b^Tz$를 얻기 위해 최적화에 영향을 미치지 않는 1/4 인수와 상수 오프셋 $n^2$을 생략했음에 유의하세요.
+
+이제 문제의 양자적 정식화를 얻기 위해, $z_i$ 변수를 다음과 같은 형태의 $2\times 2$ 행렬인 파울리 $Z$ 행렬로 승격합니다:
+
+$$
+Z_i = \begin{pmatrix}1 & 0 \\ 0 & -1\end{pmatrix}.
+ $$
+
+이 행렬을 위의 최적화 문제에 대입하면 다음 해밀토니안을 얻습니다:
+
+$$
+H_C=\sum_{ij}Q_{ij}Z_iZ_j + \sum_i b_iZ_i.
+$$
+
+*$Z$ 행렬은 양자 컴퓨터의 계산 공간, 즉 크기 $2^n\times 2^n$의 힐베르트 공간에 내장되어 있음을 기억하세요. 따라서 $Z_iZ_j$와 같은 항은 $2^n\times 2^n$ 힐베르트 공간에 내장된 텐서 곱 $Z_i\otimes Z_j$로 이해해야 합니다. 예를 들어, 결정 변수가 5개인 문제에서 $Z_1Z_3$ 항은 $I\otimes Z_3\otimes I\otimes Z_1\otimes I$를 의미하며, 여기서 $I$는 $2\times 2$ 항등 행렬입니다.*
+
+이 해밀토니안을 <b>비용 함수 해밀토니안</b>이라고 합니다. 이 해밀토니안은 기저 상태가 <b>비용 함수 $f(x)$를 최소화하는 해</b>에 대응한다는 특성을 갖습니다.
+따라서 최적화 문제를 풀기 위해서는 이제 양자 컴퓨터에서 $H_C$의 기저 상태(또는 기저 상태와 높은 중첩을 가진 상태)를 준비해야 합니다. 그러면 이 상태에서 샘플링하면 높은 확률로 $\min~f(x)$의 해를 얻을 수 있습니다.
+
+```python
+def build_max_cut_operator(graph: rx.PyGraph) -> tuple[SparsePauliOp, float]:
+    sp_list = []
+    constant = 0
+    for s, t in graph.edge_list():
+        w = graph.get_edge_data(s, t)
+        sp_list.append(("ZZ", [s, t], w / 2))
+        constant -= 1 / 2
+    return SparsePauliOp.from_sparse_list(
+        sp_list, num_qubits=graph.num_nodes()
+    ), constant
+```
+
+```python
+cost_hamiltonian, constant = build_max_cut_operator(graph)
+print("Cost Function Hamiltonian:", cost_hamiltonian)
+print("Constant:", constant)
+```
+
+```text
+Cost Function Hamiltonian: SparsePauliOp(['IIIZZ', 'IIZIZ', 'IIZZI', 'IZIZI', 'ZIZII', 'ZZIII'],
+              coeffs=[0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j, 0.5+0.j])
+Constant: -3.0
+```
+
+#### 해밀토니안 &rarr; 양자 Circuit
+해밀토니안 $H_C$에는 문제의 양자적 정의가 담겨 있습니다. 이제 양자 컴퓨터에서 좋은 해를 *샘플링*하는 데 도움이 될 양자 Circuit을 만들 수 있습니다. QAOA는 양자 어닐링에서 영감을 받아 양자 Circuit에서 연산자를 번갈아 가며 레이어로 적용합니다.
+
+일반적인 아이디어는 알려진 시스템의 기저 상태인 $H^{\otimes n}|0\rangle$에서 시작하여, 관심 있는 비용 연산자의 기저 상태로 시스템을 유도하는 것입니다. 이는 각도 $\gamma_1,...,\gamma_p$ 및 $\beta_1,...,\beta_p~$를 가진 연산자 $\exp\{-i\gamma_k H_C\}$와 $\exp\{-i\beta_k H_m\}$를 적용함으로써 이루어집니다.
+
+생성된 양자 Circuit은 $\gamma_i$와 $\beta_i$로 **매개변수화**되어 있어, 다양한 $\gamma_i$ 및 $\beta_i$ 값을 시도하고 결과 상태에서 샘플링할 수 있습니다.
+!["QAOA circuit diagram"](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/circuit-diagram.svg)
+이 경우, 두 개의 매개변수 $\gamma_1$과 $\beta_1$을 포함하는 1개의 QAOA 레이어를 사용한 예제를 시도해 보겠습니다.
+
+```python
+from qiskit.circuit.library import QAOAAnsatz
+```
+
+```python
+circuit = QAOAAnsatz(cost_operator=cost_hamiltonian, reps=1)
+circuit.measure_all()
+circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/7bd8c6d4-f40f-4a11-a440-0b26d9021b53-0.avif)
+
+```python
+circuit.decompose(reps=3).draw("mpl", fold=-1)
+```
+
+![Output of the previous code cell](/learning/images/courses/utility-scale-quantum-computing/variational-quantum-algorithms/extracted-outputs/148d2d62-0.avif)
+
+```python
+circuit.parameters
+```
+
+```text
+ParameterView([ParameterVectorElement(β[0]), ParameterVectorElement(γ[0])])
+```
