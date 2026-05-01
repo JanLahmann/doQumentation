@@ -1,0 +1,207 @@
+---
+title: "SQD 구현"
+sidebar_label: "SQD 구현"
+description: "샘플 기반 양자 대각화(SQD)를 질소 분자의 기저 상태 에너지 계산에 적용하는 방법을 설명합니다."
+notebook_path: "learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb"
+---
+
+{/* doqumentation-source-hash: 672f3c67 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-diagonalization-algorithms/sqd-implementation.ipynb" />
+
+
+
+{/* cspell:ignore fontdict fontsize milli hcore ccsd Motta */}
+
+# 화학 해밀토니안의 에너지 추정을 위한 SQD {#sqd-for-energy-estimation-of-a-chemistry-hamiltonian}
+이 레슨에서는 SQD를 적용하여 분자의 기저 상태 에너지를 추정하는 방법을 살펴보겠습니다.
+
+특히, $4$단계 Qiskit 패턴 접근법을 사용하여 다음 주제들을 다룹니다.
+
+1. 1단계: 문제를 양자 회로 및 연산자로 매핑
+    - $N_2$의 분자 해밀토니안을 설정합니다.
+    - 화학적 직관에 기반하면서도 하드웨어 효율적인 로컬 유니터리 클러스터 재스트로우(LUCJ) [\[1\]](#references) 앤사츠를 설명합니다.
+2. 2단계: 대상 하드웨어에 맞게 최적화
+    - 하드웨어 실행을 위해 앤사츠의 Gate 수와 레이아웃을 최적화합니다.
+3. 3단계: 대상 하드웨어에서 실행
+    - 실제 QPU에서 최적화된 Circuit을 실행하여 부분 공간의 샘플을 생성합니다.
+4. 4단계: 결과 후처리
+    - 자기 일관적 배열 복구 루프 [\[2\]](#references)를 소개합니다.
+        - 입자 수에 대한 사전 지식과 가장 최근 반복에서 계산된 평균 궤도 점유율을 이용하여 비트스트링 샘플 전체를 후처리합니다.
+        - 복구된 비트스트링으로부터 확률적으로 서브샘플 배치를 생성합니다.
+        - 각 샘플링된 부분 공간에 분자 해밀토니안을 투영하고 대각화합니다.
+        - 모든 배치에서 찾은 최소 기저 상태 에너지를 저장하고 평균 궤도 점유율을 업데이트합니다.
+
+이 레슨 전반에 걸쳐 여러 소프트웨어 패키지를 사용합니다.
+- `PySCF`: 분자를 정의하고 해밀토니안을 설정합니다.
+- `ffsim`: LUCJ 앤사츠를 구성합니다.
+- `Qiskit`: 앤사츠를 하드웨어 실행을 위해 Transpile합니다.
+- `Qiskit IBM Runtime`: QPU에서 Circuit을 실행하고 샘플을 수집합니다.
+- `Qiskit addon SQD`: 배열 복구 및 부분 공간 투영과 행렬 대각화를 이용한 기저 상태 에너지 추정을 수행합니다.
+## 1. 문제를 양자 회로 및 연산자로 매핑 {#map-problem-to-quantum-circuits-and-operators}
+### 분자 해밀토니안 {#molecular-hamiltonian}
+분자 해밀토니안은 일반적으로 다음과 같은 형태를 가집니다.
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \,
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+$\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$는 $p$번째 기저 함수 원소와 스핀 $\sigma$에 대응하는 페르미온 생성/소멸 연산자입니다. $h_{pr}$과 $(pr|qs)$는 1체 및 2체 전자 적분입니다. pySCF를 사용하여 분자를 정의하고 기저 함수 `6-31g`에 대한 해밀토니안의 1체 및 2체 적분을 계산합니다.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+warnings.filterwarnings("ignore")
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],  # Two N atoms 1 angstrom apart
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)  # hcore: one-body integrals
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)  # eri: two-body integrals
+
+# Compute exact energy for comparison
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570774
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+이 레슨에서는 조르단-위그너(JW) 변환을 사용하여 페르미온 파동 함수를 Qubit 파동 함수로 매핑하고, 이를 양자 Circuit으로 준비할 수 있도록 합니다. JW 변환은 M개의 공간 궤도에 있는 페르미온의 Fock 공간을 2M개의 Qubit의 힐베르트 공간으로 매핑합니다. 즉, 하나의 공간 궤도는 스핀-업($\alpha$) 전자에 대응하는 스핀 궤도와 스핀-다운($\beta$) 전자에 대응하는 스핀 궤도, 두 개의 _스핀 궤도_로 분리됩니다. 스핀 궤도는 점유 또는 비점유 상태가 될 수 있습니다. 일반적으로 궤도 수를 언급할 때는 _공간_ 궤도의 수를 사용하며, 스핀 궤도의 수는 그 두 배가 됩니다. 양자 Circuit에서는 각 스핀 궤도를 하나의 Qubit으로 표현합니다. 따라서 일부 Qubit 집합은 스핀-업 또는 $\alpha$-궤도를, 다른 집합은 스핀-다운 또는 $\beta$-궤도를 표현합니다. 예를 들어, `6-31g` 기저 함수에서 $N_2$ 분자는 $16$개의 공간 궤도($16$개의 $\alpha$ + $16$개의 $\beta$ = $32$개의 스핀 궤도)를 가집니다. 따라서 $32$-Qubit 양자 Circuit이 필요합니다(나중에 설명할 추가 앤실라 Qubit이 필요할 수 있습니다). Qubit은 계산 기저에서 측정되어 전자 배열 또는 (슬레이터) 행렬식을 나타내는 비트스트링을 생성합니다. 이 레슨 전반에 걸쳐 비트스트링, 배열, 행렬식이라는 용어를 혼용합니다. 비트스트링은 스핀 궤도의 전자 점유 여부를 나타내며, 비트 위치의 $1$은 해당 스핀 궤도가 점유되어 있음을, $0$은 비어 있음을 의미합니다. 전자 구조 문제는 입자 수 보존을 따르므로 고정된 수의 스핀 궤도만 점유되어야 합니다. $N_2$ 분자는 스핀-업($\alpha$) 전자 $5$개와 스핀-다운($\beta$) 전자 $5$개를 가집니다. 따라서 $N_2$ 분자에서 $\alpha$ 및 $\beta$ 궤도를 나타내는 비트스트링은 각각 $1$이 다섯 개여야 합니다.
+### 1.1 샘플 생성을 위한 Quantum Circuit: LUCJ 앤사츠 {#quantum-circuit-for-sample-generation-the-lucj-ansatz}
+이 레슨에서는 양자 상태 준비 및 후속 샘플링을 위해 국소 단일 클러스터 재스트로(LUCJ) [\\[1\\]](#references) 앤사츠를 사용합니다. 먼저 전체 UCJ 앤사츠의 다양한 구성 요소와 그 국소 버전에서 이루어진 근사에 대해 설명합니다. 다음으로, ffsim 패키지를 사용하여 LUCJ 앤사츠를 구성하고, Qiskit Transpiler를 통해 하드웨어 실행에 맞게 최적화합니다.
+
+UCJ 앤사츠는 다음과 같은 형태를 가집니다 (UCJ 연산자의 $L$개 층(layer) 또는 반복(repetition)의 곱으로 표현됩니다).
+
+$$
+|\psi\rangle = \prod_{\mu=1}^{L}{(e^{K^{\mu}} \times {e^{iJ^{\mu}}} \times {e^{-K^{\mu}}})} |\Phi_{0}\rangle
+$$
+
+여기서 $\vert \Phi_{0} \rangle$는 기준 상태(reference state)로, 보통 하트리-폭(HF) 상태를 사용합니다. 하트리-폭 상태는 번호가 가장 낮은 오비탈이 점유된 상태로 정의되므로, HF 상태 준비 단계에서는 점유 오비탈에 해당하는 Qubit에 X Gate를 적용하여 값을 1로 설정합니다. 예를 들어, 4개의 공간 오비탈과 스핀-업 2개, 스핀-다운 2개를 갖는 경우의 HF 상태 준비 블록은 다음과 같습니다:
+![8개의 Qubit으로 구성된 Circuit 다이어그램으로, 4개는 알파 오비탈, 4개는 베타 오비탈로 명명됩니다. 상위 2개의 알파 Qubit과 상위 2개의 베타 Qubit에는 "NOT" Gate가 적용되어 있습니다.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig1.avif)
+UCJ 연산자 ${(e^{K^{(\mu)}} \times {e^{iJ^{(\mu)}}} \times {e^{-K^{(\mu)}}})}$의 단일 반복은 대각 쿨롱 진화($e^{iJ^{(\mu)}}$)를 오비탈 회전($e^{K^{(\mu)}}$ 및 $e^{-K^{(\mu)}}$)이 샌드위치 형태로 감싸는 구조입니다.
+![UCJ Circuit이 회전 층(rotation layer)과 대각 쿨롱 진화 층(diagonal Coulomb evolution layer)으로 분해될 수 있음을 보여주는 Circuit 다이어그램.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig2.avif)
+오비탈 회전 블록은 단일 스핀 종($\alpha$(업-스핀)/$\beta$(다운-스핀))에 대해 작동합니다. 각 전자 종에 대해, 오비탈 회전은 단일 Qubit $R_{z}$ Gate 층(layer)에 이어 2-Qubit 기번스 회전 Gate($XX + YY$ Gate)의 시퀀스로 구성됩니다.
+
+2-Qubit Gate는 인접한 스핀-오비탈(최근접 이웃 Qubit)에 작동하므로, SWAP Gate 없이 IBM&reg; QPU에서 구현 가능합니다.
+![4개의 알파 오비탈 Qubit과 4개의 베타 오비탈 Qubit으로 구성된 Circuit 다이어그램. R-Z Gate로 시작하여 기번스 회전 Gate가 이어집니다.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig3.avif)
+대각 쿨롱 연산자라고도 불리는 $e^{iJ^{(\mu)}}$는 세 개의 블록으로 구성됩니다. 그 중 두 블록은 동일 스핀 섹터($e^{iJ_{\alpha \alpha}^{(\mu)}}$와 $e^{iJ_{\beta \beta}^{(\mu)}}$)에, 하나는 두 스핀 섹터 사이($e^{iJ_{\alpha \beta}^{(\mu)}}$)에 작동합니다.
+
+$e^{iJ^{(\mu)}}$의 모든 블록은 숫자-숫자 Gate $U_{nn}(\phi)$ [\[1\]](#references)로 구성됩니다. $U_{nn}(\phi)$ Gate는 $R_{ZZ}(\frac{\phi}{2})$ Gate와 이어서 두 개의 서로 다른 Qubit에 작용하는 단일 Qubit $Rz(-\frac{\phi}{2})$ Gate로 더 분해될 수 있습니다.
+
+동일 스핀 성분($J_{\alpha \alpha}$ 및 $J_{\beta \beta}$)은 가능한 모든 Qubit 쌍 사이에 $U_{nn}$ Gate를 가집니다. 그러나 초전도 QPU는 연결성에 제약이 있으므로, 인접하지 않은 Qubit 사이의 Gate를 구현하려면 Qubit을 SWAP해야 합니다.
+
+예를 들어, $N = 4$ 공간 오비탈에 대한 $e^{iJ_{\alpha \alpha}^{(\mu)}}$(또는 $e^{iJ_{\beta \beta}^{(\mu)}}$) 블록을 생각해 봅시다. 선형 Qubit 연결성에서 마지막 세 Gate는 인접하지 않은 Qubit 사이에 작동하기 때문에 직접 구현할 수 없습니다(예: Q0과 Q2는 직접 연결되지 않음). 따라서 이들을 인접하게 만들기 위해 SWAP Gate가 필요합니다(아래 그림은 3개의 SWAP Gate를 사용하는 예를 보여줍니다).
+![선형으로 결합된 Qubit과 그에 해당하는 알파/베타 Circuit을 보여주는 Circuit 다이어그램.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig4.avif)
+다음으로, $J_{\alpha \beta}$는 서로 다른 스핀 섹터의 동일 인덱스 오비탈 사이(예: $0\alpha$와 $0\beta$ 사이)에 Gate를 구현합니다. 마찬가지로, Qubit들이 QPU에서 물리적으로 인접하지 않은 경우 이 Gate들도 SWAP이 필요합니다.
+![4개의 알파 Qubit이 4개의 베타 Qubit에 연결된 Circuit 다이어그램.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig5.avif)
+위의 논의에서 알 수 있듯이, UCJ 앤사츠는 인접하지 않은 Qubit 간의 상호작용으로 인해 SWAP Gate가 필요하여 하드웨어 실행에 어려움이 있습니다. UCJ 앤사츠의 국소 변형인 LUCJ는 대각 쿨롱 연산자에서 일부 $U_{nn}$을 제거함으로써 이 문제를 해결합니다.
+
+동일 전자 종 블록($J_{\alpha \alpha}$ 및 $J_{\beta \beta}$)에서는, LUCJ 버전에서 최근접 이웃 연결성과 호환되는 $U_{nn}$ Gate만 유지하고 인접하지 않은 Qubit 간의 Gate는 제거합니다. 아래 그림은 인접하지 않은 Gate를 제거한 후의 LUCJ 블록을 보여줍니다.
+![4개의 알파 Qubit과 4개의 베타 Qubit에 R-Z Gate가 적용되고, 이어서 2-Qubit Gate가 있는 Circuit 다이어그램.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig6.avif)
+다음으로, 서로 다른 전자 종 사이에 작동하는 $J_{\alpha \beta}$ 블록의 LUCJ 버전은 소자 토폴로지에 따라 다른 형태를 가질 수 있습니다.
+
+여기서도 LUCJ 버전은 호환되지 않는 Gate를 제거합니다. 아래 그림은 격자(grid), 육각형(hexagonal), 헤비-헥스(heavy-hex), 선형(linear) 등 다양한 Qubit 토폴로지에 대한 $J_{\alpha \beta}$ 블록의 변형을 보여줍니다.
+
+- **정사각형(Square)**: 모든 $\alpha$와 $\beta$ 오비탈 사이에 SWAP 없이 $U_{nn}$ Gate를 가질 수 있으므로, 제거해야 할 $U_{nn}$ Gate가 없습니다.
+- **헤비-헥스(Heavy-hex)**: $\alpha$-$\beta$ 상호작용은 4번째마다 인덱싱된 스핀 오비탈(예: 0번째, 4번째, 8번째) 사이에 유지되며, _앤실라(ancilla)_ 매개 방식을 사용합니다. 즉, $\alpha$와 $\beta$ 오비탈을 나타내는 선형 체인 사이에 앤실라 Qubit이 필요합니다. 이 구성은 제한된 수의 SWAP만 필요합니다.
+- **육각형(Hexagonal)**: $\alpha$와 $\beta$가 두 인접 선형 체인에 배치될 때, 0번째, 2번째, 4번째와 같이 하나 건너 하나씩의 오비탈이 최근접 이웃이 됩니다.
+- **선형(Linear)**: 하나의 $\alpha$ 오비탈과 하나의 $\beta$ 오비탈만 연결되어 있으므로, $J_{\alpha \beta}$ 블록에는 Gate가 하나뿐입니다.
+![다양한 Qubit 레이아웃의 연결성 다이어그램. 정사각형 격자, 육각형 격자, 헤비-헥스 격자(육각형의 각 변을 따라 Qubit이 하나씩 추가된 형태), 선형 체인 순서로 배열된 Qubit을 보여줍니다.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig7.avif)
+UCJ 앤사츠에서 Gate를 제거하여 LUCJ 버전을 구성하면 하드웨어 호환성은 높아지지만, 앤사츠의 표현력이 일부 손실됩니다. 따라서 LUCJ 앤사츠를 사용할 때는 수정된 UCJ 연산자의 더 많은 반복 횟수($L$)가 필요할 수 있습니다.
+### 1.2 LUCJ 앤사츠 초기화 {#lucj-ansatz-initialization}
+LUCJ는 매개변수화된 앤사츠이므로, 하드웨어 실행 전에 매개변수를 초기화해야 합니다. 앤사츠를 초기화하는 한 가지 방법은 고전적인 결합 클러스터 단일 및 이중(CCSD) 방법의 `t1` 및 `t2` 진폭을 사용하는 것입니다. 여기서 `t1` 진폭은 단일 들뜸 연산자의 계수이고, `t2` 진폭은 이중 들뜸 연산자의 계수입니다.
+
+`t1` 및 `t2` 진폭으로 LUCJ 앤사츠를 초기화하면 좋은 결과를 얻을 수 있지만, 앤사츠의 매개변수에 추가적인 최적화가 필요할 수 있습니다.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(
+    scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]
+)
+ccsd.run()
+
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929733  E_corr = -0.20458912219883
+```
+
+### 1.3 `ffsim`을 사용한 LUCJ 앤사츠 구성 {#constructing-the-lucj-ansatz-using-ffsim}
+위에서 계산한 `t1` 및 `t2` 진폭으로 앤사츠를 생성하고 초기화하기 위해 [ffsim](https://github.com/qiskit-community/ffsim/tree/main) 패키지를 사용합니다. 이 분자는 폐각(closed-shell) 하트리-폭 상태를 가지므로, UCJ 앤사츠의 스핀 균형(spin-balanced) 변형인 [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced)를 사용합니다.
+
+IBM 하드웨어는 헤비-헥스 토폴로지를 사용하므로, [\[1\]](#references)에서 사용되고 위에서 설명한 _지그재그(zig-zag)_ 패턴을 Qubit 상호작용에 채택합니다. 이 패턴에서 동일 스핀의 오비탈(Qubit)은 선형 토폴로지로 연결됩니다(빨간색과 파란색 원). 헤비-헥스 토폴로지의 특성상, 서로 다른 스핀의 오비탈은 4번째마다(즉, 0번째, 4번째, 8번째 등) 연결됩니다(보라색 원).
+
+![헤비-헥스 격자를 따라 그려진 지그재그 패턴.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig8.avif)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 2
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+# circuit.decompose().draw("mpl", scale=0.5, fold=-1)
+```
+
+반복 층(layer)이 있는 LUCJ 앤사츠는 일부 인접 블록을 병합하여 최적화할 수 있습니다. `n_reps=2`인 경우를 예로 들면, 중간에 있는 두 오비탈 회전 블록을 하나의 오비탈 회전 블록으로 병합할 수 있습니다. `ffsim` 패키지에는 이러한 인접 블록을 병합하여 Circuit을 최적화하는 `ffsim.qiskit.PRE_INIT`라는 패스 매니저가 포함되어 있습니다.
+![LUCJ 앤사츠의 층(layer) 구조를 보여주는 다이어그램.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig9.avif)
