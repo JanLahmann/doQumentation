@@ -158,6 +158,9 @@ const config: Config = {
     adminPasswordHash: process.env.ADMIN_PASSWORD
       ? require('crypto').createHash('sha256').update(process.env.ADMIN_PASSWORD).digest('hex')
       : '',
+    // AES-256-GCM encrypted URLs, decrypted client-side with the admin password.
+    // Generate with: ADMIN_PASSWORD=secret node scripts/encrypt-for-admin.mjs "https://..."
+    adminEncryptedUmamiShareUrl: process.env.ADMIN_ENCRYPTED_UMAMI_SHARE_URL || '',
   },
 
   // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
