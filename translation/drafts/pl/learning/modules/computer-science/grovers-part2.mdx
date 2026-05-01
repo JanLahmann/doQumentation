@@ -1,0 +1,274 @@
+## Ogólne importy i podejście
+
+Zaczynamy od zaimportowania kilku niezbędnych pakietów.
+
+```python
+# Built-in modules
+import math
+
+# Imports from Qiskit
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import grover_operator, MCMTGate, ZGate
+from qiskit.visualization import plot_distribution
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+```
+
+W tym i w innych samouczkach będziemy korzystać z podejścia do obliczeń kwantowych zwanego „wzorcami Qiskit" (Qiskit patterns), które dzieli przepływy pracy na następujące kroki:
+
+- Krok 1: Odwzorowanie klasycznych danych wejściowych na problem kwantowy
+- Krok 2: Optymalizacja problemu pod kątem wykonania kwantowego
+- Krok 3: Wykonanie przy użyciu prymitywów Qiskit Runtime
+- Krok 4: Przetwarzanie końcowe i klasyczna analiza
+
+Będziemy generalnie trzymać się tych kroków, choć nie zawsze będziemy je jawnie oznaczać.
+## Aktywność 1: Znajdź pojedynczy zadany stan docelowy
+## Krok 1: Odwzorowanie klasycznych danych wejściowych na problem kwantowy
+
+Potrzebujemy bramki zapytania fazowego, która nada stałą fazę (-1) stanom będącym rozwiązaniami, a stany niebędące rozwiązaniami pozostawi bez zmian. Inaczej mówiąc, algorytm Grovera wymaga wyroczni, która wskazuje jeden lub więcej zaznaczonych stanów bazowych przestrzeni obliczeniowej, gdzie „zaznaczony" oznacza stan z fazą -1. Realizuje się to przy użyciu bramki kontrolowanej Z lub jej wielokontrolowanego uogólnienia na $N$ Qubitów. Aby zobaczyć, jak to działa, rozważmy konkretny przykład ciągu bitowego `{110}`. Chcemy Circuit, który działa na stanie $|\psi\rangle = |q_2,q_1,q_0\rangle$ i stosuje fazę, jeśli $|\psi\rangle = |011\rangle$ (kolejność bitów binarnych jest odwrócona ze względu na konwencję w Qiskit, która umieszcza najmniej znaczący Qubit — często oznaczony 0 — po prawej stronie).
+
+Chcemy zatem Circuit $Z_f$, który realizuje
+
+$$
+Z_f|\psi\rangle = \begin{cases} -|\psi\rangle \qquad \text{if} \qquad |\psi\rangle = |011\rangle \\ |\psi\rangle \qquad \text{if} \qquad |\psi\rangle \neq |011\rangle\end{cases}
+$$
+Możemy użyć bramki wielokrotnie kontrolowanej z wieloma celami (`MCMTGate`), aby zastosować bramkę Z kontrolowaną przez wszystkie Quibty (odwrócenie fazy, gdy wszystkie Qubity są w stanie $|1\rangle$). Oczywiście niektóre Qubity w naszym docelowym stanie mogą być w stanie $|0\rangle$. Dlatego dla tych Qubitów musimy najpierw zastosować bramkę X, następnie wykonać wielokrotnie kontrolowaną bramkę Z, a potem zastosować kolejną bramkę X, aby cofnąć naszą zmianę. Wygląd `MCMTGate`:
+
+```python
+mcmt_ex = QuantumCircuit(3)
+mcmt_ex.compose(MCMTGate(ZGate(), 3 - 1, 1), inplace=True)
+mcmt_ex.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/learning/images/modules/computer-science/grovers/extracted-outputs/66aeceae-0.avif)
+
+Zauważ, że w procesie kontroli może uczestniczyć wiele Qubitów (tutaj trzy), ale żaden z nich nie jest oznaczony jako cel. Dzieje się tak, ponieważ cały stan otrzymuje ogólną zmianę znaku (odwrócenie fazy); bramka oddziałuje na wszystkie Qubity jednakowo. Różni się to od wielu innych bramek wieloqubitowych, takich jak bramka `CX`, która ma jeden Qubit kontrolny i jeden Qubit docelowy.
+
+W poniższym kodzie definiujemy bramkę zapytania fazowego (wyrocznię), która robi dokładnie to, co opisaliśmy powyżej: zaznacza jeden lub więcej wejściowych stanów bazowych określonych przez ich reprezentację w postaci ciągu bitowego. Bramka MCMT służy do implementacji wielokontrolowanej bramki Z.
+
+```python
+def grover_oracle(marked_states):
+    """Build a Grover oracle for multiple marked states
+
+    Here we assume all input marked states have the same number of bits
+
+    Parameters:
+        marked_states (str or list): Marked states of oracle
+
+    Returns:
+        QuantumCircuit: Quantum circuit representing Grover oracle
+    """
+    if not isinstance(marked_states, list):
+        marked_states = [marked_states]
+    # Compute the number of qubits in circuit
+    num_qubits = len(marked_states[0])
+
+    qc = QuantumCircuit(num_qubits)
+    # Mark each target state in the input list
+    for target in marked_states:
+        # Flip target bitstring to match Qiskit bit-ordering
+        rev_target = target[::-1]
+        # Find the indices of all the '0' elements in bitstring
+        zero_inds = [
+            ind for ind in range(num_qubits) if rev_target.startswith("0", ind)
+        ]
+        # Add a multi-controlled Z-gate with pre- and post-applied X-gates (open-controls)
+        # where the target bitstring has a '0' entry
+        qc.x(zero_inds)
+        qc.compose(MCMTGate(ZGate(), num_qubits - 1, 1), inplace=True)
+        qc.x(zero_inds)
+    return qc
+```
+
+Teraz wybieramy konkretny „zaznaczony" stan jako nasz cel i stosujemy właśnie zdefiniowaną funkcję. Zobaczmy, jaki Circuit został stworzony.
+
+```python
+marked_states = ["1110"]
+oracle = grover_oracle(marked_states)
+oracle.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/learning/images/modules/computer-science/grovers/extracted-outputs/6cb8ce21-0.avif)
+
+Jeśli Qubity 1–3 są w stanie $|1\rangle$, a Qubit 0 jest początkowo w stanie $|0\rangle$, pierwsza bramka X przerzuci Qubit 0 do $|1\rangle$ i wszystkie Qubity będą w stanie $|1\rangle.$ Oznacza to, że bramka MCMT zastosuje ogólną zmianę znaku, czyli odwrócenie fazy, zgodnie z zamierzeniem. W każdym innym przypadku albo Qubity 1–3 są w stanie $|0\rangle$, albo Qubit 0 zostaje przerzucony do stanu $|0\rangle$ i odwrócenie fazy nie zostanie zastosowane. Widzimy, że ten Circuit rzeczywiście zaznacza nasz pożądany stan $|0111\rangle$, czyli ciąg bitowy `{1110}`.
+Pełny operator Grovera składa się z bramki zapytania fazowego (wyroczni), warstw Hadamarda i operatora $Z_\text{OR}$. Możemy użyć wbudowanej funkcji `grover_operator`, aby zbudować go na podstawie wyroczni zdefiniowanej powyżej.
+
+```python
+grover_op = grover_operator(oracle)
+grover_op.decompose(reps=0).draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/learning/images/modules/computer-science/grovers/extracted-outputs/9426f7a5-0.avif)
+
+Jak argumentowaliśmy powyżej, może być konieczne wielokrotne stosowanie operatora Grovera. Optymalną liczbę iteracji $t$, która maksymalizuje amplitudę stanu docelowego przy braku szumów, można uzyskać z następującego wyrażenia:
+$$
+(2t+1)\theta = (2t+1)\sin^{-1}\left( \sqrt{\frac{|A_1|}{N}}\right) \approx (2t+1)\sqrt{\frac{|A_1|}{N}} \approx \frac{\pi}{2}\\
+t\approx \frac{\pi}{4} \sqrt{\frac{N}{|A_1|}}-\frac{1}{2}
+$$
+Tutaj $A_1$ to liczba rozwiązań lub stanów docelowych. Na nowoczesnych, zaszumionych komputerach kwantowych eksperymentalnie optymalna liczba iteracji może być inna — ale tutaj obliczamy i stosujemy tę teoretyczną, optymalną liczbę, przyjmując $A_1=1$.
+
+```python
+optimal_num_iterations = math.floor(
+    math.pi / (4 * math.asin(math.sqrt(len(marked_states) / 2**grover_op.num_qubits)))
+)
+print(optimal_num_iterations)
+```
+
+```text
+3
+```
+
+Zbudujmy teraz Circuit zawierający początkowe bramki Hadamarda, które tworzą superpozycję wszystkich możliwych stanów, i zastosujmy operator Grovera optymalną liczbę razy.
+
+```python
+qc = QuantumCircuit(grover_op.num_qubits)
+# Create even superposition of all basis states
+qc.h(range(grover_op.num_qubits))
+# Apply Grover operator the optimal number of times
+qc.compose(grover_op.power(optimal_num_iterations), inplace=True)
+# Measure all qubits
+qc.measure_all()
+qc.draw(output="mpl", style="iqp")
+```
+
+![Output of the previous code cell](/learning/images/modules/computer-science/grovers/extracted-outputs/63006e25-0.avif)
+
+Nasz Circuit Grovera został zbudowany!
+
+## Krok 2: Optymalizacja problemu pod kątem wykonania na sprzęcie kwantowym
+
+Zdefiniowaliśmy nasz abstrakcyjny Circuit kwantowy, ale musimy go przepisać w kategoriach bramek natywnych dla komputera kwantowego, którego faktycznie chcemy użyć. Musimy też wskazać, które Qubity na komputerze kwantowym powinny zostać użyte. Z tych i innych powodów musimy teraz dokonać transpilacji naszego Circuitu. Najpierw określmy komputer kwantowy, którego chcemy użyć.
+
+Poniżej znajduje się kod do jednorazowego zapisania danych uwierzytelniających. Pamiętaj, aby usunąć te informacje z notatnika po ich zapisaniu w środowisku, tak aby dane uwierzytelniające nie zostały przypadkowo udostępnione razem z notatnikiem. Więcej wskazówek znajdziesz w [Skonfiguruj swoje konto IBM Cloud](/guides/initialize-account) oraz [Zainicjuj usługę w niezaufanym środowisku](/guides/cloud-setup-untrusted).
+
+```python
+# To run on hardware, select the backend with the fewest number of jobs in the queue
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+# Syntax for first saving your token.  Delete these lines after saving your credentials.
+# QiskitRuntimeService.save_account(channel='ibm_quantum_platform', instance = '<YOUR_IBM_INSTANCE_CRN>', token='<YOUR_API_KEY>', overwrite=True, set_as_default=True)
+# service = QiskitRuntimeService(channel='ibm_quantum_platform')
+
+# Load saved credentials
+service = QiskitRuntimeService()
+
+backend = service.least_busy(operational=True, simulator=False)
+backend.name
+```
+
+```text
+qiskit_runtime_service._resolve_cloud_instances:WARNING:2025-08-08 14:14:19,931: Default instance not set. Searching all available instances.
+```
+
+```text
+'ibm_brisbane'
+```
+
+Teraz używamy wstępnie skonfigurowanego menedżera przebiegów (pass manager), aby zoptymalizować nasz Circuit kwantowy dla wybranego Backend.
+
+```python
+target = backend.target
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+
+circuit_isa = pm.run(qc)
+# The transpiled circuit will be very large. Only draw it if you are really curious.
+# circuit_isa.draw(output="mpl", idle_wires=False, style="iqp")
+```
+
+Warto zauważyć, że głębokość przetranspilowanego Circuitu kwantowego jest znaczna.
+
+```python
+print("The total depth is ", circuit_isa.depth())
+print(
+    "The depth of two-qubit gates is ",
+    circuit_isa.depth(lambda instruction: instruction.operation.num_qubits == 2),
+)
+```
+
+```text
+The total depth is  439
+The depth of two-qubit gates is  113
+```
+
+To naprawdę dość duże liczby, nawet w tym prostym przypadku. Ponieważ wszystkie bramki kwantowe (a zwłaszcza bramki dwuQubitowe) są podatne na błędy i szumy, seria ponad 100 bramek dwuQubitowych dałaby w wyniku jedynie szum, gdyby Qubity nie były wyjątkowo wysokiej jakości. Zobaczmy, jak sobie poradzą.
+
+## Wykonanie przy użyciu prymitywów Qiskit
+
+Chcemy wykonać wiele pomiarów i sprawdzić, który stan jest najbardziej prawdopodobny. Takie wzmacnianie amplitudy jest problemem próbkowania, odpowiednim do wykonania przy użyciu prymitywu Qiskit Runtime `Sampler`.
+
+Zauważ, że metoda `run()` Qiskit Runtime SamplerV2 przyjmuje iterowalną kolekcję prymitywnych zunifikowanych bloków (PUBs). Dla Samplera każdy PUB to iterowalny element w formacie (circuit, parameter_values). Jednak co najmniej wymaga listy Circuit(ów) kwantowych.
+
+```python
+# To run on a real quantum computer (this was tested on a Heron r2 processor and used 4 sec. of QPU time)
+
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+sampler = Sampler(mode=backend)
+sampler.options.default_shots = 10_000
+result = sampler.run([circuit_isa]).result()
+dist = result[0].data.meas.get_counts()
+```
+
+Aby jak najlepiej wykorzystać to doświadczenie, gorąco zachęcamy do uruchamiania eksperymentów na prawdziwych komputerach kwantowych dostępnych w IBM Quantum. Jeśli jednak wyczerpałeś swój czas QPU, możesz odkomentować poniższe linie i ukończyć tę aktywność przy użyciu symulatora.
+
+```python
+# To run on local simulator:
+# from qiskit.primitives import StatevectorSampler as Sampler
+# sampler = Sampler()
+# result = sampler.run([qc]).result()
+# dist = result[0].data.meas.get_counts()
+```
+
+## Krok 4: Przetwarzanie końcowe i zwrócenie wyniku w pożądanym formacie klasycznym
+
+Teraz możemy przedstawić wyniki próbkowania w postaci histogramu.
+
+```python
+plot_distribution(dist)
+```
+
+![Output of the previous code cell](/learning/images/modules/computer-science/grovers/extracted-outputs/96a9107e-0.avif)
+
+Widzimy, że algorytm Grovera zwrócił pożądany stan z najwyższym prawdopodobieństwem — przynajmniej o rząd wielkości wyższym niż pozostałe opcje. W następnej aktywności użyjemy algorytmu w sposób bardziej spójny z dwustronnym przepływem pracy algorytmu zapytaniowego.
+
+### Sprawdź swoje zrozumienie
+Przeczytaj poniższe pytania, zastanów się nad odpowiedzią, a następnie kliknij trójkąt, aby odkryć rozwiązanie.
+
+<details>
+<summary>
+
+Właśnie szukaliśmy jednego rozwiązania w zbiorze $2^4=16$ możliwych stanów. Ustaliliśmy, że optymalna liczba powtórzeń operatora Grovera wynosi $t=3$. Czy ta optymalna liczba wzrosłaby, czy zmalała, gdybyśmy szukali (a) któregokolwiek z kilku rozwiązań, lub (b) jednego rozwiązania w przestrzeni większej liczby możliwych stanów?
+
+</summary>
+
+__Odpowiedź:__
+
+Przypomnij sobie, że dopóki liczba rozwiązań jest mała w porównaniu z całą przestrzenią rozwiązań, możemy rozwinąć funkcję sinus dla małych kątów i skorzystać z
+
+$$
+(2t+1)\theta = (2t+1) \sin^{-1}{\sqrt{\frac{|\mathcal{A}_1|}{N}}}\approx (2t+1) \sqrt{\frac{|\mathcal{A}_1|}{N}} \approx \pi/2\\
+
+t \approx \frac{\pi}{4}\sqrt{\frac{N}{|\mathcal{A}_1|}}-\frac{1}{2}
+$$
+
+(a) Z powyższego wyrażenia widzimy, że zwiększenie liczby stanów będących rozwiązaniami zmniejszyłoby liczbę iteracji. Zakładając, że ułamek $\frac{|\mathcal{A}_1|}{N}$ jest nadal mały, możemy opisać, jak $t$ maleje: $t~\frac{1}{\sqrt{|\mathcal{A}_1|}}.$
+
+(b) Wraz ze wzrostem przestrzeni możliwych rozwiązań ($N$) wymagana liczba iteracji rośnie, ale jedynie jak $t~\sqrt{N}$.
+
+</details>
+
+<details>
+<summary>
+
+Załóżmy, że możemy dowolnie wydłużać docelowy ciąg bitowy i nadal uzyskiwać wynik, w którym amplituda prawdopodobieństwa stanu docelowego jest co najmniej o rząd wielkości większa niż każdego innego stanu. Czy oznacza to, że moglibyśmy używać algorytmu Grovera do niezawodnego znajdowania stanu docelowego?
+
+</summary>
+
+__Odpowiedź:__
+
+Nie. Załóżmy, że powtórzymy pierwszą aktywność z 20 Qubitami i uruchomimy Circuit kwantowy pewną liczbę razy `num_shots = 10,000`. Równomierny rozkład prawdopodobieństwa oznaczałby, że każdy stan ma prawdopodobieństwo $10\,000/2^{20}=0{,}00954$ zmierzenia choćby raz. Gdyby prawdopodobieństwo zmierzenia stanu docelowego było 10 razy większe niż dla nie-rozwiązań (a prawdopodobieństwo każdego nie-rozwiązania odpowiednio nieznacznie zmalało), szansa na zmierzenie stanu docelowego choćby raz wynosiłaby tylko około 10%. Wielokrotne zmierzenie stanu docelowego byłoby wysoce nieprawdopodobne, co czyniłoby go nieodróżnialnym od wielu losowo uzyskanych stanów nie-rozwiązań. Dobra wiadomość jest taka, że możemy uzyskać wyniki o wyższej wierności, stosując tłumienie i mitygację błędów.
+
+</details>
+
+# Aktywność 2: Dokładny przepływ pracy algorytmu zapytaniowego
+
+Zaczniemy tę aktywność dokładnie tak jak pierwszą, z tą różnicą, że teraz dobierzesz się w parę z innym entuzjastą Qiskit. Wybierzesz tajny ciąg bitowy, a twój partner wybierze (zazwyczaj) inny ciąg. Każde z was wygeneruje Circuit kwantowy działający jako wyrocznia i wymienicie się nimi. Następnie użyjesz algorytmu Grovera z tą wyrocznią, aby określić tajny ciąg bitowy swojego partnera.
