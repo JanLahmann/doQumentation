@@ -1,0 +1,131 @@
+---
+title: "Poprawa wartości oczekiwanych: pochłanianie propagowanego szumu (PNA)"
+sidebar_label: "Poprawa wartości oczekiwanych: pochłanianie propagowanego szumu (PNA)"
+notebook_path: "qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb"
+---
+
+{/* doqumentation-source-hash: 3f45752c */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb" />
+
+
+W tym samouczku nauczysz się, jak korzystać z najnowszych narzędzi ekosystemu Qiskit, aby zaimplementować w pełni konfigurowalny przepływ pracy z mitygacją błędów. Przedstawimy technikę PNA i użyjemy jej do mitygacji błędów bramek. Skorzystamy też z TREX do mitygacji błędów odczytu oraz z selekcji post-selekcji, aby mitygować błędy nieuwzględnione w nauczonym modelu szumu.
+
+**Zarys**
+- Krótki przegląd ``PNA``
+- Tworzenie obwodu kwantowego opartego na metodzie Trottera i odpowiadającego obserwowalnego. Transpilacja do Backend i dodanie pomiarów post-selekcji.
+- Użycie ``samplomatic`` do twirling warstw bramek 2-Qubitowych i pomiarów. Znajdowanie unikalnych warstw 2Q w celu zmniejszenia kosztu uczenia szumu.
+- Użycie ``NoiseLearnerV3`` do nauczenia modelu błędów wpływającego na bramki 2Q i pomiary.
+- Użycie ``qiskit-addon-pna`` do wygenerowania obserwowalnego mitygującego szum.
+- Użycie prymitywu ``qiskit-ibm-runtime.Executor`` do wygenerowania surowych próbek QPU odzwierciedlających każdy strzał dla każdej losowej randomizacji twirling i zmierzonej bazy.
+- Użycie ``qiskit-addon-utils`` do post-przetwarzania danych w mitygowaną wartość oczekiwaną.
+### Co to jest pochłanianie propagowanego szumu (PNA)? {#co-to-jest-pochłanianie-propagowanego-szumu-pna}
+
+***Technika mitygacji błędów bramek polegająca na propagowaniu obserwowalnego przez odwrotny kanał szumu wpływający na bramki 2-Qubitowe, co daje w efekcie obserwowalny mitygujący szum.***
+Bramki 2Q w eksperymencie, który chcemy uruchomić, będą dotknięte znacznym szumem.
+![Zaszumiony eksperyment](../images/noisy_expt.png)
+Jeśli nauczymy się modelu szumu, możemy zastosować jego odwrotność i anulować szum.
+![Eksperyment z mitygacją szumu](../images/noise_mitigated_expt.png)
+Zamiast implementować odwrotny kanał szumu poprzez jego próbkowanie na QPU (jak w PEC), możemy zaimplementować go klasycznie w mierzonym obserwowalnym, korzystając z propagacji Pauliego. Skutkuje to bardziej złożonym obserwowalnym, którego zmierzenie ma efekt mitygowania nauczonych błędów bramek.
+![Przegląd PNA](../images/pna_overview.png)
+### Generowanie lustrzanego obwodu Trottera i obserwowalnego {#generowanie-lustrzanego-obwodu-trottera-i-obserwowalnego}
+
+W tym eksperymencie zbadamy dynamikę czasową modelu kicked Ising na 30 węzłach, ułożonego na jednowymiarowym łańcuchu spinowym. Rozważany Hamiltonian ma postać:
+
+$H = -J\sum\limits_{\langle i,j \rangle} Z_iZ_j + h\sum\limits_iX_i$,
+
+gdzie $J>0$ opisuje sprzężenie sąsiednich spinów, $i<j$, a globalne poprzeczne pole $h$ jest ustawione na $\frac{\pi}{8}$. Im dalej $h$ jest od kąta Clifforda (tj. $\theta=n\frac{\pi}{2}, n \in \mathbb{Z}$), tym trudniej propagować generatory anty-szumu przez obwód.
+
+Jako obserwowalny wybierzemy średnią magnetyzację na węzeł: $\frac{1}{N} \sum_{i=1}^{N} \langle z_i \rangle$, gdzie $N$ to liczba węzłów.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-pna qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli, SparsePauliOp
+
+num_qubits = 30
+num_trotter_steps = 10
+rx_angle = np.pi / 8
+
+# Avg single-site magnetization
+id_pauli = Pauli("I" * num_qubits)
+observable = SparsePauliOp([id_pauli.dot(Pauli("Z"), [i]) for i in range(num_qubits)]) / num_qubits
+
+# Implement Trotterized kicked-Ising model
+circuit = QuantumCircuit(num_qubits)
+for _step in range(num_trotter_steps):
+    circuit.rx(rx_angle, range(num_qubits))
+    for first_qubit in (1, 2):
+        for idx in range(first_qubit, num_qubits, 2):
+            # equivalent to Rzz(-pi/2):
+            circuit.sdg([idx - 1, idx])
+            circuit.cz(idx - 1, idx)
+circuit.compose(circuit.inverse(), inplace=True)
+circuit.measure_active()
+circuit.draw("mpl", fold=-1)
+```
+
+![Diagram obwodu kwantowego](./_01_generate_noise_mitigating_observable_imgs/output_1.png)
+
+Następnie wybierzemy łańcuch Qubitów na ``ibm_kingston``, które wykazują niskie wskaźniki błędów, i transpilujemy obwód do Backend.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+backend_name = "ibm_kingston"
+service = QiskitRuntimeService()
+backend = service.backend(backend_name, use_fractional_gates=True)
+
+# Use a chain of low-noise qubits
+layout = [
+    44,
+    45,
+    46,
+    47,
+    57,
+    67,
+    68,
+    69,
+    78,
+    89,
+    88,
+    87,
+    97,
+    107,
+    106,
+    105,
+    117,
+    125,
+    126,
+    127,
+    128,
+    129,
+    118,
+    109,
+    110,
+    111,
+    98,
+    91,
+    92,
+    93,
+]
+
+pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+isa_circuit = pm.run(circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+isa_circuit.draw("mpl", fold=-1)
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 14:30:57,148: Loading account with the given token. A saved account will not be used.
+```
+
+![Diagram obwodu kwantowego](./_01_generate_noise_mitigating_observable_imgs/output_2.png)
