@@ -1,0 +1,536 @@
+---
+title: "Erwartungswerte verbessern: Propagated Noise Absorption (PNA)"
+sidebar_label: "Erwartungswerte verbessern: Propagated Noise Absorption (PNA)"
+notebook_path: "qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb"
+---
+
+{/* doqumentation-source-hash: 3f45752c */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb" />
+
+
+In diesem Tutorial lernst du, wie du die neuesten Werkzeuge im Qiskit-Ökosystem nutzen kannst, um einen vollständig anpassbaren, fehlergeminderten Workflow zu implementieren. Wir stellen die PNA-Technik vor und verwenden sie, um Gate-Fehler zu mindern. Außerdem verwenden wir TREX, um Auslesefehler zu mindern, sowie Post-Selection, um Fehler zu mindern, die nicht im erlernten Rauschmodell erfasst sind.
+
+**Übersicht**
+- Kurze Einführung in ``PNA``
+- Erstellung eines trotterisierten Quantencircuits und eines Observablen. Transpilierung zum Backend und Hinzufügen von Post-Selection-Messungen.
+- Verwendung von ``samplomatic``, um Schichten aus 2Q-Gates und Messungen zu twirlen. Einzigartige 2Q-Schichten finden, um den Aufwand für das Rauschen-Lernen zu reduzieren.
+- Verwendung von ``NoiseLearnerV3``, um das Fehlermodell zu erlernen, das die 2Q-Gates und Messungen beeinflusst.
+- Verwendung von ``qiskit-addon-pna``, um einen rauschreduzierenden Observablen zu erzeugen.
+- Verwendung des ``qiskit-ibm-runtime.Executor``-Primitives, um die rohen QPU-Samples zu erzeugen, die jeden Shot für jede Twirling-Randomisierung und jede gemessene Basis widerspiegeln.
+- Verwendung von ``qiskit-addon-utils``, um die Daten zu einem geminderten Erwartungswert nachzuverarbeiten.
+### Was ist Propagated Noise Absorption (PNA)? {#what-is-propagated-noise-absorption-pna}
+
+***Eine Technik zur Minderung von Gate-Fehlern, indem der Observable durch den inversen Rauschkanal propagiert wird, der 2-Qubit-Gates betrifft, und so ein rauschreduzierender Observabler entsteht.***
+Die 2Q-Gates in dem Experiment, das wir durchführen möchten, werden von erheblichem Rauschen beeinflusst.
+![Verrauschtes Experiment](../images/noisy_expt.png)
+Wenn wir das Rauschmodell erlernen, können wir dessen Inverse anwenden und das Rauschen aufheben.
+![Rauschgemindertes Experiment](../images/noise_mitigated_expt.png)
+Anstatt den inversen Rauschkanal durch Sampling auf dem QPU wie bei PEC zu implementieren, können wir ihn klassisch im gemessenen Observablen mithilfe von Pauli-Propagation implementieren. Dies ergibt einen komplexeren Observablen, der beim Messen die Wirkung hat, das erlernte Gate-Rauschen zu mindern.
+![PNA-Übersicht](../images/pna_overview.png)
+### Den gespiegelten Trotter-Circuit und den Observablen erzeugen {#generate-the-mirrored-trotter-circuit-and-observable}
+
+Für dieses Experiment untersuchen wir die Zeitdynamik eines gekickten Ising-Modells mit 30 Gitterplätzen auf einer 1D-Spinkette. Der betrachtete Hamiltonoperator lautet:
+
+$H = -J\sum\limits_{\langle i,j \rangle} Z_iZ_j + h\sum\limits_iX_i$,
+
+wobei $J>0$ die Kopplung nächster Nachbarspins, $i<j$, beschreibt und das globale transversale Feld, $h$, auf $\frac{\pi}{8}$ gesetzt ist. Je weiter $h$ von einem Clifford-Winkel entfernt ist (d. h. $\theta=n\frac{\pi}{2}, n \in \mathbb{Z}$), desto schwieriger wird es, die Anti-Rausch-Generatoren durch den Circuit zu propagieren.
+
+Als Observablen wählen wir die mittlere Einzelplatz-Magnetisierung, $\frac{1}{N} \sum_{i=1}^{N} \langle z_i \rangle$, wobei $N$ die Anzahl der Gitterplätze ist.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-pna qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli, SparsePauliOp
+
+num_qubits = 30
+num_trotter_steps = 10
+rx_angle = np.pi / 8
+
+# Avg single-site magnetization
+id_pauli = Pauli("I" * num_qubits)
+observable = SparsePauliOp([id_pauli.dot(Pauli("Z"), [i]) for i in range(num_qubits)]) / num_qubits
+
+# Implement Trotterized kicked-Ising model
+circuit = QuantumCircuit(num_qubits)
+for _step in range(num_trotter_steps):
+    circuit.rx(rx_angle, range(num_qubits))
+    for first_qubit in (1, 2):
+        for idx in range(first_qubit, num_qubits, 2):
+            # equivalent to Rzz(-pi/2):
+            circuit.sdg([idx - 1, idx])
+            circuit.cz(idx - 1, idx)
+circuit.compose(circuit.inverse(), inplace=True)
+circuit.measure_active()
+circuit.draw("mpl", fold=-1)
+```
+
+![Quantencircuit-Diagramm](./_01_generate_noise_mitigating_observable_imgs/output_1.png)
+
+Als Nächstes wählen wir eine Qubit-Kette auf ``ibm_kingston``, die niedrige Fehlerraten aufweist, und transpilieren den Circuit zum Backend.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+backend_name = "ibm_kingston"
+service = QiskitRuntimeService()
+backend = service.backend(backend_name, use_fractional_gates=True)
+
+# Use a chain of low-noise qubits
+layout = [
+    44,
+    45,
+    46,
+    47,
+    57,
+    67,
+    68,
+    69,
+    78,
+    89,
+    88,
+    87,
+    97,
+    107,
+    106,
+    105,
+    117,
+    125,
+    126,
+    127,
+    128,
+    129,
+    118,
+    109,
+    110,
+    111,
+    98,
+    91,
+    92,
+    93,
+]
+
+pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+isa_circuit = pm.run(circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+isa_circuit.draw("mpl", fold=-1)
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 14:30:57,148: Loading account with the given token. A saved account will not be used.
+```
+
+![Quantencircuit-Diagramm](./_01_generate_noise_mitigating_observable_imgs/output_2.png)
+
+### Die 2-Qubit-Gate-Schichten und Messungen twirlen und einzigartige Schichten finden {#twirl-the-2-qubit-gate-layers-and-measurements-and-find-unique-layers}
+
+Hier stellen wir sicher, dass der Pass Manager die Boxen mit ``Twirl``- und ``InjectNoise``-Annotationen versieht, die es uns ermöglichen, das Rauschen zu erlernen, das unseren Circuit beeinflusst, und dieses Rauschen der entsprechenden Circuit-Schicht zuzuordnen.
+
+- ``enable_gates/enable_measure: True``: Alle 2Q-Gate-Schichten und abschließenden Messungen einrahmen. Einzel-Qubit-Gates werden innerhalb der Boxen links eingekleidet.
+- ``measure_annotations: all`` `Twirl`- und `ChangeBasis`-Annotationen auf der Mess-Box einschließen.
+- ``twirling_strategy: active``: Alle aktiven Qubits in jeder Box, die verschränkende Gates enthält, twirlen.
+- ``inject_noise_targets: gates``: ``InjectNoise``-Annotationen sollen zu allen ``Twirl``-annotierten Boxen hinzugefügt werden, die verschränkende Gates enthalten.
+- ``inject_noise_strategy: uniform_modification``: Alle Rausch-Schichten sollen gleichwertig skaliert werden.
+
+```python
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Box up circuit with Twirl and InjectNoise annotations
+pm = generate_boxing_pass_manager(
+    enable_gates=True,
+    enable_measures=True,
+    measure_annotations="all",
+    twirling_strategy="active",
+    inject_noise_targets="gates",
+    inject_noise_strategy="uniform_modification",
+    remove_barriers=True,
+)
+boxed_circuit = pm.run(isa_circuit)
+```
+
+```python
+draw_circ = QuantumCircuit(boxed_circuit.num_qubits)
+draw_circ.append(boxed_circuit.data[0], qargs=boxed_circuit.data[0].qubits)
+draw_circ.append(boxed_circuit.data[1], qargs=boxed_circuit.data[1].qubits)
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Quantencircuit-Diagramm](./_01_generate_noise_mitigating_observable_imgs/output_3.png)
+
+### Den Template-Circuit und den Samplex erzeugen, festlegen wie der Circuit gesamplet wird {#generate-the-template-circuit-and-samplex-define-how-the-circuit-will-be-sampled}
+
+Hier fügen wir auch Spectator- und Post-Selection-Messungen hinzu, die benötigt werden, um Post-Selection auf den Samples durchzuführen, die vom ``Executor`` ausgegeben werden.
+
+```python
+import samplomatic
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+
+# Add post-selection instructions to the template circuit
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+template_circuit = post_selection_pm.run(template_circuit)
+```
+
+```python
+draw_circ = template_circuit.copy_empty_like()
+draw_circ.data = template_circuit.data[:324]
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Quantencircuit-Diagramm](./_01_generate_noise_mitigating_observable_imgs/output_4.png)
+#### Learn the noise
+
+Bevor wir die Experimente ausführen, lernen wir das Rauschmodell, das die verschränkenden Gates und Messungen im Circuit beeinflusst. Ein genaues Rauschmodell ist notwendig, um Fehler effektiv zu mitigieren. Das Rauschen unmittelbar vor der Ausführung der Experimente zu lernen, gibt die beste Chance, dass das Rauschmodell das tatsächliche Rauschen, das die Gates während der Ausführung beeinflusst, getreu beschreibt.
+
+Bevor wir das Rauschen lernen, müssen wir die einzigartigen 2-Qubit-Schichten in unserem Circuit finden, damit wir die Anzahl der Shots minimieren können, die benötigt werden, um das Rauschen für den gesamten Circuit zu lernen. Wir verwenden ``find_unique_box_instructions`` aus ``samplomatic``, um uns die einzigartigen Schichten aus dem geboxter Circuit bereitzustellen, einschließlich der Messschicht. Diese Schichten übergeben wir dem Noise Learner.
+
+Sobald wir die Schichten kennen, können wir das Rauschen lernen. Es gibt einige Parameter, die wir berücksichtigen:
+
+- `num_randomizations`: Die Anzahl der zufälligen Circuits, die pro Lern-Circuit-Konfiguration verwendet werden sollen
+- `shots_per_randomization`: Gesamtanzahl der Shots, die pro zufälligem Lern-Circuit verwendet werden sollen
+- `layer_pair_depths`: Die Circuit-Tiefen (gemessen in der Anzahl von Paaren), die in Lernexperimenten verwendet werden sollen.
+- `post_selection`: Wir verwenden kantenbasierte Post-Selektion beim Lernen mit `rx`-Gates zur Implementierung der Post-Mess-Pulse
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.utils import find_unique_box_instructions
+
+# Load noise learner data from a shared job
+load_saved_nl_result = True
+
+# Noise learning parameters
+num_randomizations_nl = 64
+shots_per_randomization_nl = 128
+strategy = "edge"
+enable_postsel = True
+x_pulse_type = "rx"
+
+# Find the unique instructions (layers) from boxed-up circuit
+unique_2q_layers_and_meas = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+
+noise_learner_params = {
+    "num_randomizations": num_randomizations_nl,
+    "shots_per_randomization": shots_per_randomization_nl,
+    "layer_pair_depths": [1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    "post_selection": {
+        "enable": enable_postsel,
+        "strategy": strategy,
+        "x_pulse_type": x_pulse_type,
+    },
+    "experimental": {},
+}
+# set the options
+noise_learner_options = NoiseLearnerV3Options(**noise_learner_params)
+
+# run the noise learner job
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+noise_learner_job = noise_learner.run(unique_2q_layers_and_meas)
+noise_learner_result = noise_learner_job.result()
+
+nl_metadata = noise_learner_params | {"layout": layout}
+```
+
+```python
+import matplotlib.pyplot as plt
+
+hw_rates_1q = []
+hw_rates_2q = []
+for nlr in noise_learner_result[:2]:
+    plm_list = nlr.to_pauli_lindblad_map().to_sparse_list()
+    hw_rates_1q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 1]
+    hw_rates_2q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 2]
+hw_rates_1q = sorted(hw_rates_1q)
+hw_rates_2q = sorted(hw_rates_2q)
+median_1q = hw_rates_1q[len(hw_rates_1q) // 2]
+median_2q = hw_rates_2q[len(hw_rates_2q) // 2]
+fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+ax.scatter(
+    (hw_rates_1q),
+    [(i) / (len(hw_rates_1q) - 1) for i in range(len(hw_rates_1q))],
+    color="red",
+    label="1q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_1q, 0, 1, color="red")
+ax.text(median_1q * 1.1, 0.1, f"{median_1q:.2e}")
+ax.scatter(
+    (hw_rates_2q),
+    [(i) / (len(hw_rates_2q) - 1) for i in range(len(hw_rates_2q))],
+    color="blue",
+    label="2q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_2q, 0, 1, color="blue")
+ax.text(median_2q * 1.1, 0.2, f"{median_2q:.2e}")
+ax.set_title("Learned noise rates")
+ax.set_xlabel("Noise rate")
+ax.set_yticks([])
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x321dd63f0>
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_5.png)
+
+#### Associate circuit boxes with learned noise
+
+Hier erstellen wir eine Zuordnung zwischen den ``InjectNoise``-Referenz-IDs jeder Box und dem gelernten Rauschmodell (`PauliLindbladMap`), das die verschränkenden Gates in dieser Box beeinflusst.
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### Propagate the observable through the learned anti-noise to get a noise-mitigating observable
+
+Wie oben besprochen, geschieht dies in zwei Schritten. Zunächst propagieren wir einen Anti-Rausch-Generator an das Ende des Circuits. Danach propagieren wir den Observable durch diesen entwickelten Generator. Dieser Prozess wird für jeden Anti-Rausch-Generator im Circuit wiederholt. In dieser Implementierung wird jeder Generator einer bestimmten Schicht parallel an das Ende des Circuits propagiert. Zusätzlich wird Python-Multiprocessing verwendet, um sowohl die Vorwärtspropagation des Anti-Rauschens als auch die Rückwärtspropagation des Observables parallel durchzuführen. Dies verhindert ein Anhäufen von entwickelten Generatoren im Arbeitsspeicher und maximiert gleichzeitig die Rechenressourcen.
+
+Wenn du PNA ausführst, musst du immer einen verrauschten Circuit und einen Observable angeben. Wenn dein verrauschter Circuit ein geboxter Circuit mit `InjectNoise`-Annotierungen ist, musst du die Zuordnung angeben, die wir im obigen Schritt erstellt haben. Man kann auch einen nicht-geboxter Circuit übergeben, der ``PauliLindbladError``-Anweisungen aus ``qiskit-aer`` enthält. In diesem Fall muss ``refs_to_noise_models`` nicht angegeben werden. Zusätzlich zu den primären Eingaben sollten Nutzer folgendes in Betracht ziehen:
+
+- `max_err_terms`: Die Anzahl der Terme, die in jedem Anti-Rausch-Generator behalten werden, während er vorwärtspropagiert wird. Ein größerer Wert erhöht im Allgemeinen die Genauigkeit, aber dieses Verhalten ist nicht garantiert monoton.
+- `max_obs_terms`: Die Anzahl der Terme, die im rauschmitigierenden Observable $\tilde{O}$ behalten werden, während er durch den entwickelten Anti-Rausch rückwärtspropagiert wird. Größere Werte erhöhen im Allgemeinen die Genauigkeit, aber es ist nicht garantiert, dass dies monoton geschieht.
+- `num_processes`: Die Anzahl der Kerne, die dem Prozess gewidmet werden. Denk daran, dass die Generatoren vorwärtspropagiert und parallel auf den Observable angewendet werden.
+- `search_step`: Der Rückwärtspropagationsschritt verwendet eine gierige Methode, um zwei Operatoren in der Pauli-Basis näherungsweise zu konjugieren. Diese Methode kann beschleunigt werden, indem ``search_step`` erhöht wird. Weitere Informationen findest du in der [pauli-prop-Dokumentation](https://qiskit.github.io/pauli-prop/).
+- `num_to_measure`: Obwohl diese Variable kein Eingabeparameter für ``generate_noise_mitigating_observable`` ist, verwenden wir sie, um zu steuern, wie viele Terme aus $\tilde{O}$ wir tatsächlich messen möchten. Hier werden wir nur die obersten 30 Terme messen, d.h. die ursprünglichen Terme in unserem Observable. Die Terme wurden nun so neu skaliert, dass ihre Messung die Wirkung hat, das gelernte Gate-Rauschen zu mitigieren. Obwohl wir nur 30 Terme aus $\tilde{O}$ messen, ist es oft dennoch nützlich, ihm zu erlauben, groß zu werden, da dies die Präzision der Skalierungsfaktoren der führenden Terme erhöht.
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
+Finished! 13560 / 13560 generators propagated.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_6.png)
+#### Messbases in kanonische Form umwandeln {#transform-the-measurement-bases-to-canonical-form}
+
+Als Nächstes finden wir eine minimale Menge von Basen, die gemessen werden sollen, sodass wir jeden Pauli-Term im gemessenen Observablen vollständig abdecken können (***viele Observablen können gleichzeitig gemessen werden, wenn sie qubitweise kommutieren***). Da wir nur die Terme unseres ursprünglichen Observablen messen – also die Summe aller Einzel-`Z`-Paulis –, wird eine einzige Basis benötigt: die All-`Z`-Basis.
+
+Neben dem Finden einer Menge von Pauli-Messbasen müssen wir diese Pauli-Terme auf die kanonische Form abbilden, die der ``Executor``-Primitive erwartet. Weitere Informationen zur kanonischen Qubit-Reihenfolge findest du in der [samplomatic-Dokumentation](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention).
+
+```python
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}  # canonical -> physical
+p_2_v = {p: v for v, p in enumerate(layout)}  # physical -> virtual
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}  # canonical -> virtual
+meas_bases, bases_reverser = get_measurement_bases(obs_tilde_virtual)
+meas_bases_canonical = [
+    np.array([base[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base in meas_bases
+]
+```
+
+#### Festlegen, wie im ``QuantumProgram`` gesampelt werden soll {#specify-how-to-sample-in-the-quantumprogram}
+
+Das ``QuantumProgram`` ist der Ort, an dem wir angeben, wie das Experiment gesampelt werden soll:
+
+- ``template_circuit``: Der Circuit, der alle Gates enthält, die zur Implementierung aller gewünschten Randomisierungen (aus Twirling-Randomisierungen, Parametern usw.) notwendig sind.
+- ``samplex``: Ein Objekt, das eine Wahrscheinlichkeitsverteilung über alle möglichen Circuit-Randomisierungen definiert, aus der gesampelt werden soll.
+- ``samplex_arguments``: Bindungen, die zur vollständigen Definition des Samplex notwendig sind
+    - ``basis_changes``: Hier geben wir eine Menge von zu messenden Basen an, die alle Pauli-Terme im gemessenen Observablen abdecken.
+    - ``noise_scales.ref``: Wir setzen die Skalierung jeder Rausch-Schicht auf `0.0`, um zu verhindern, dass zusätzliches Rauschen in unsere Samples injiziert wird.
+    - ``pauli_lindblad_maps``: Erforderlich, wenn ``noise_scales`` übergeben werden. Dies bildet nur Rausch-Schichten auf das zugehörige Rauschmodell ab.
+- ``shape``: Ein Shape-Tupel, das die implizite Form erweitert, die durch ``samplex_arguments`` definiert wird. Nicht-triviale Achsen, die durch diese Erweiterung eingeführt werden, zählen Randomisierungen auf.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram
+
+# Control the # of shots during execution
+shots_per_randomization_exec = 64
+num_randomizations_exec = 6144
+
+# Zero out the noise to prevent noise from being injected during execution.
+# We only added InjectNoise annotations so PNA could associate the noise
+# to layers in the circuit
+samplex_inputs = {f"noise_scales.{ref}": 0.0 for ref in refs_to_noise_models}
+samplex_inputs |= {"pauli_lindblad_maps": refs_to_noise_models}
+
+# Specify the bases to measure
+bases_broadcastable = np.expand_dims(np.array(meas_bases_canonical), axis=1)
+samplex_inputs |= {"basis_changes": {"basis0": bases_broadcastable}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().make_broadcastable().bind(**samplex_inputs)
+
+# Instantiate the QuantumProgram with the specified parameters
+program = QuantumProgram(shots=shots_per_randomization_exec)
+program.append(
+    circuit=template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations_exec),
+)
+```
+
+#### Den Circuit mit dem ``Executor``-Primitive-Prototyp sampeln {#sample-the-circuit-using-the-executor-primitive-prototype}
+
+Jetzt, da wir unser ``QuantumProgram`` definiert haben, ist die Ausführung des Experiments unkompliziert. Wir instanziieren einfach das ``Executor``-Objekt, übergeben ihm das Backend und führen das Programm aus.
+
+```python
+from qiskit_ibm_runtime import Executor
+
+# Execute (sample) the circuit
+executor = Executor(backend)
+job_exec = executor.run(program)
+exec_results = job_exec.result()
+```
+
+#### Die Samples nachverarbeiten, um einen fehlergeminderten Erwartungswert zu berechnen {#post-process-the-samples-to-calculate-an-error-mitigated-expectation-value}
+
+Um einen fehlergeminderten Erwartungswert zu berechnen, werden wir:
+
+- Die TREX-Skalierungsfaktoren auf Basis des gelernten Rauschens, das die Messungen beeinflusst, berechnen
+- Eine Maske erzeugen, um nur post-selektierte Samples zu behalten
+- Die Funktion ``executor_expectation_values`` aus ``qiskit-addon-utils`` verwenden, um alle Daten zu einem fehlergeminderten Erwartungswert zusammenzuführen.
+
+```python
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.noise_management import trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+
+# Computing the TREX factors
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_rescale_factors = trex_factors(measurement_noise_map, bases_reverser)
+
+# Post-select the results
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit, coupling_map=backend.coupling_map
+)
+
+# Compute the ps mask for filtering results
+mask = post_selector.compute_mask(exec_results[0], strategy="edge")
+
+# Compute expvals using post selected results
+results = executor_expectation_values(
+    exec_results[0]["meas"],
+    bases_reverser,
+    meas_basis_axis=0,
+    avg_axis=1,
+    measurement_flips=exec_results[0]["measurement_flips.meas"],
+    pauli_signs=exec_results[0].get("pauli_signs", None),
+    postselect_mask=mask,
+    rescale_factors=trex_rescale_factors,
+)
+```
+
+```python
+bases_reverser_unmit = {Pauli("Z" * num_qubits): [observable]}
+args = [
+    (bases_reverser_unmit, None, None),
+    (bases_reverser, None, None),
+    (bases_reverser, None, trex_rescale_factors),
+    (bases_reverser, mask, None),
+    (bases_reverser, mask, trex_rescale_factors),
+]
+
+evs = []
+for reverser, postsel_mask, factors in args:
+    # Compute expvals using post selected results
+    res_ps = executor_expectation_values(
+        exec_results[0]["meas"],
+        reverser,
+        meas_basis_axis=0,
+        avg_axis=1,
+        measurement_flips=exec_results[0]["measurement_flips.meas"],
+        pauli_signs=exec_results[0].get("pauli_signs", None),
+        postselect_mask=postsel_mask,
+        rescale_factors=factors,
+    )
+    res_ps = np.array(res_ps)
+    evs.append(res_ps[:, 0][0])
+
+experiments = ["PNA", "PNA+TREX", "PNA+PS", "PNA+PS+TREX"]
+colors = ["#d9d9d9", "#b0b0b0", "#7f7f7f", "#4c4c4c"]
+plt.bar(experiments, evs[1:], color=colors)
+plt.axhline(y=1, color="green", linestyle="--", linewidth=2, label="Ideal")
+plt.axhline(y=evs[0], color="red", linestyle="--", linewidth=2, label="Unmitigated")
+plt.ylabel("Expectation value", fontsize=14)
+
+plt.title(r"30q Mirrored Ising, 10 Trotter steps, $\theta_{rx}=\frac{\pi}{8}$", fontsize=14)
+plt.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_7.png)
+
+<TutorialFeedback />
