@@ -1,0 +1,311 @@
+## Qiskit Patterns 2단계: 양자 실행을 위한 문제 최적화
+Backend 실행을 위한 Backend를 선택하는 것부터 시작합니다. 여기서는 가장 바쁘지 않은 Backend를 사용합니다.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+# To run on hardware, select the least busy quantum computer or specify a particular one.
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+# backend = service.backend("ibm_brisbaneane")
+
+print(backend.name)
+```
+
+```text
+ibm_brisbane
+```
+
+다시 한번, 최적화 수준을 3으로 설정하여 pass manager를 정의합니다.
+
+```python
+from qiskit.circuit.library import XGate
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import (
+    ALAPScheduleAnalysis,
+    ConstrainedReschedule,
+    PadDynamicalDecoupling,
+)
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+target = backend.target
+
+pm = generate_preset_pass_manager(target=target, optimization_level=3)
+pm.scheduling = PassManager(
+    [
+        ALAPScheduleAnalysis(target=target),
+        ConstrainedReschedule(
+            acquire_alignment=target.acquire_alignment,
+            pulse_alignment=target.pulse_alignment,
+            target=target,
+        ),
+        PadDynamicalDecoupling(
+            target=target,
+            dd_sequence=[XGate(), XGate()],
+            pulse_alignment=target.pulse_alignment,
+        ),
+    ]
+)
+```
+
+이제 pass manager를 여러 번 적용합니다. 매우 넓거나 깊은 Circuit의 경우, 트랜스파일된 2-Qubit 깊이에 큰 변동이 있을 수 있습니다. 이러한 Circuit의 경우, pass manager를 여러 번 시도하고 가장 얕은(최선의) 결과를 사용하는 것이 중요합니다.
+
+```python
+# Try pass manager several times, since heuristics can return various transpilations on large circuits, and we want the shallowest.
+
+transpiled_qcs = []
+transpiled_depths = []
+transpiled_2q_depths = []
+for i in range(1, 10):
+    circuit_ibm = pm.run(full_circuit)
+    transpiled_qcs.append(circuit_ibm)
+    transpiled_depths.append(circuit_ibm.decompose().depth())
+    transpiled_2q_depths.append(
+        circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)
+    )
+    # print(i)
+
+print(transpiled_depths)
+print(transpiled_2q_depths)
+
+# Use the shallowest
+
+minpos = transpiled_2q_depths.index(min(transpiled_2q_depths))
+```
+
+```text
+[85, 85, 81, 89, 81, 81, 89, 85, 85]
+[10, 10, 10, 10, 10, 10, 10, 10, 10]
+```
+
+이 경우, 트랜스파일된 2-Qubit 깊이는 항상 10이었음을 알 수 있습니다. 단일 Qubit 깊이에는 약간의 변동이 있었으며, 가장 얕은 것을 사용합니다. 하지만 이 36-Qubit Circuit에서는 이것이 결정적인 개선은 아닙니다. 트랜스파일된 Circuit을 시각화할 수 있지만, 이 규모에서는 시각적으로 파악하기가 점점 어려워집니다.
+
+```python
+circuit_ibm = transpiled_qcs[2]
+observable_ibm = observable.apply_layout(circuit_ibm.layout)
+print(circuit_ibm.decompose().depth())
+print(
+    f"2+ qubit depth: {circuit_ibm.decompose().depth(lambda instr: len(instr.qubits) > 1)}"
+)
+```
+
+```text
+81
+2+ qubit depth: 10
+```
+
+## Qiskit Patterns 3단계: Qiskit Primitives를 사용한 실행
+
+실제 양자 컴퓨터에서 사용되는 시간을 제한하기 위해, 여기서는 최적화 단계를 몇 번만 수행하며 매우 작은 훈련 데이터셋을 사용합니다. 하지만 더 많은 최적화 단계와 더 큰 테스트 데이터셋으로의 확장은 이 레슨 전반에 걸친 지침에서 명확하게 설명됩니다.
+
+```python
+# This was run on an Eagle r3 processor on 10-4-24, and took 7 min.
+
+from qiskit_ibm_runtime import EstimatorV2 as Estimator, Session
+
+batch_size = 7
+num_epochs = 1
+num_samples = len(train_images)
+
+# Globals
+circuit = circuit_ibm
+observable = observable_ibm
+objective_func_vals = []
+iter = 0
+
+# Random initial weights for the ansatz
+np.random.seed(42)
+# weight_params = np.random.rand(len(ansatz.parameters)) * 2 * np.pi
+# Or re-load weights from a previous calculation
+weight_params = np.array(
+    [
+        3.35330497,
+        5.97351416,
+        4.59925358,
+        3.76148219,
+        0.98029403,
+        0.98014248,
+        0.3649501,
+        6.44234523,
+        3.77691701,
+        4.44895122,
+        0.12933619,
+        6.09412333,
+        5.23039137,
+        1.33416598,
+        1.14243996,
+        1.15236452,
+        1.91161039,
+        3.2971419,
+        3.71399059,
+        1.82984665,
+        3.84438512,
+        0.87646578,
+        1.83559896,
+        2.30191935,
+        2.86557222,
+        4.93340606,
+        1.25458737,
+        3.23103027,
+        3.72225051,
+        0.29185655,
+        3.81731689,
+        1.07143467,
+        0.40873121,
+        5.96202367,
+        6.067245,
+        5.07931034,
+        1.91394476,
+        0.61369199,
+        4.2991629,
+        2.76555968,
+        0.76678884,
+        3.11128829,
+        0.21606945,
+        5.71342859,
+        1.62596258,
+        4.16275028,
+        1.95853845,
+        3.26768375,
+        3.43508199,
+        1.1614748,
+        6.09207989,
+        4.87030317,
+        5.90304595,
+        5.62236606,
+        3.75671636,
+        5.79230665,
+        0.55601479,
+        1.23139664,
+        0.28417144,
+        2.04411075,
+        2.44213144,
+        1.70493625,
+        5.20711134,
+        2.24154726,
+        1.76516358,
+        3.40986006,
+        0.88545302,
+        5.04035228,
+        0.46841551,
+        6.2007935,
+        4.85215699,
+        1.24856745,
+    ]
+)
+
+# Running in a session avoids repeated queuing. This is available to Premium Plan, Flex Plan, and On-Prem (IBM Quantum Platform API) Plan users.
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options={"resilience_level": 1})
+
+    for epoch in range(num_epochs):
+        for i in range((num_samples - 1) // batch_size + 1):
+            print(f"Epoch: {epoch}, batch: {i}")
+            start_i = i * batch_size
+            end_i = start_i + batch_size
+            train_images_batch = np.array(train_images[start_i:end_i])
+            train_labels_batch = np.array(train_labels[start_i:end_i])
+            input_params = train_images_batch
+            target = train_labels_batch
+            iter = 0
+            # We can increase maxiter to do a full optimization.
+            res = minimize(
+                mse_loss_weights,
+                weight_params,
+                method="COBYLA",
+                options={"maxiter": 20},
+            )
+            weight_params = res["x"]
+session.close()
+
+# Open users can carry out the same calculation using a batch, but repeated queuing is possible.
+# from qiskit_ibm_runtime import Batch
+
+# with Batch(backend=backend) as batch:
+#    estimator = Estimator(
+#        mode=batch, options={"resilience_level": 1}
+#    )
+#
+#    for epoch in range(num_epochs):
+#        for i in range((num_samples - 1) // batch_size + 1):
+#            print(f"Epoch: {epoch}, batch: {i}")
+#            start_i = i * batch_size
+#            end_i = start_i + batch_size
+#            train_images_batch = np.array(train_images[start_i:end_i])
+#            train_labels_batch = np.array(train_labels[start_i:end_i])
+#            input_params = train_images_batch
+#            target = train_labels_batch
+#            iter = 0
+#            # We can increase maxiter to do a full optimization.
+#            res = minimize(
+#                mse_loss_weights,
+#                weight_params,
+#                method="COBYLA",
+#                options={"maxiter": 20},
+#            )
+#            weight_params = res["x"]
+# batch.close()
+```
+
+이 계산에서 반환된 가중치 파라미터를 저장해 두는 것을 권장합니다. 추후 반복 계산을 진행하고자 할 때 유용합니다.
+
+```python
+weight_params
+```
+
+```text
+array([3.35330497, 6.97351416, 5.59925358, 3.76148219, 0.98029403,
+       0.98014248, 0.3649501 , 6.44234523, 3.77691701, 4.44895122,
+       1.12933619, 7.09412333, 5.23039137, 1.33416598, 1.14243996,
+       1.15236452, 1.91161039, 3.2971419 , 3.71399059, 1.82984665,
+       3.84438512, 0.87646578, 1.83559896, 2.30191935, 2.86557222,
+       4.93340606, 1.25458737, 3.23103027, 3.72225051, 0.29185655,
+       3.81731689, 1.07143467, 0.40873121, 5.96202367, 6.067245  ,
+       5.07931034, 1.91394476, 0.61369199, 4.2991629 , 2.76555968,
+       0.76678884, 3.11128829, 0.21606945, 5.71342859, 1.62596258,
+       4.16275028, 1.95853845, 3.26768375, 3.43508199, 1.1614748 ,
+       6.09207989, 4.87030317, 5.90304595, 5.62236606, 3.75671636,
+       5.79230665, 0.55601479, 1.23139664, 0.28417144, 2.04411075,
+       2.44213144, 1.70493625, 5.20711134, 2.24154726, 1.76516358,
+       3.40986006, 0.88545302, 5.04035228, 0.46841551, 6.2007935 ,
+       4.85215699, 1.24856745])
+```
+
+처음 몇 번의 최적화 단계를 플롯할 수 있지만, 단 몇 단계만으로는 수렴을 기대할 수 없습니다. 시뮬레이터를 사용하더라도 처음 몇 단계에서는 이 곡선들이 비교적 평탄한 경향을 보였습니다. 그러나 현재 최적화에는 72개의 자유 파라미터가 있다는 점을 주목해야 합니다. 예를 들어, 전체 행과 열의 일부 데이터에 해당하는 Qubit를 파라미터화하는 방식으로 결과를 저하시키지 않고 파라미터 공간을 최소 2~3배 줄일 수 있습니다. 실제로 손실 함수를 최소화하는 데 더 많은 양자 컴퓨팅 시간을 투자하기 전에 파라미터 공간을 줄여야 합니다.
+
+```python
+obj_func_vals_qc = objective_func_vals
+# import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(obj_func_vals_qc, label="revised ansatz")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.legend()
+plt.show()
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/d8244ff1-a7c5-46e1-87b1-e20b506ef4d8-0.avif)
+
+### 마무리
+
+요약하자면, 이 레슨에서는 양자 신경망을 사용한 이미지 이진 분류 워크플로를 학습했습니다. 각 Qiskit Patterns 단계에서의 주요 고려 사항은 다음과 같습니다:
+
+__Step 1:__ 문제를 양자 Circuit으로 매핑하기
+* 훈련 데이터를 로드합니다. 이는 "수동으로" 하거나 ```z_feature_map```과 같은 사전 구축된 feature map을 사용해서 할 수 있습니다.
+* 문제에 적합한 회전 및 얽힘 레이어를 포함하는 ansatz를 구성합니다.
+* 양자 컴퓨터에서 품질 높은 결과를 보장하기 위해 Circuit 깊이를 모니터링합니다.
+
+__Step 2:__ 양자 실행을 위한 문제 최적화
+* Backend를 선택합니다. 보통 가장 바쁘지 않은 것을 선택합니다.
+* pass manager를 사용하여 Circuit과 Observable을 선택한 Backend의 아키텍처에 맞게 트랜스파일합니다.
+* 매우 깊거나 넓은 Circuit의 경우, 여러 번 트랜스파일하고 가장 얕은 Circuit을 선택합니다.
+
+__Step 3:__ Qiskit (Runtime) Primitives를 사용하여 실행하기
+* 시뮬레이터에서 예비 시험을 수행하여 ansatz를 디버그하고 최적화합니다.
+* IBM&reg; 양자 컴퓨터에서 실행합니다.
+
+__Step 4:__ 후처리, 고전적 형식으로 결과 반환하기
+* 훈련 데이터와 테스트 데이터에 대한 모델 정확도를 계산합니다.
+* 고전적 최적화의 수렴을 모니터링합니다.
