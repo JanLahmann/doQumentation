@@ -1,0 +1,307 @@
+## 4. 결과 후처리 {#4-post-process-results}
+SQD 워크플로의 후처리 단계는 다음 다이어그램으로 요약할 수 있습니다.
+
+![샘플링된 상태가 기저 상태 고유값 및 고유벡터를 결정하는 데 어떻게 사용되는지를 보여주는 흐름도.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig10.avif)
+계산 기저에서 LUCJ 앤자츠를 샘플링하면 잡음이 있는 구성(configuration)의 풀인 $\tilde{\mathcal{\chi}}$가 생성되며, 이는 후처리 루틴에 사용됩니다. 이 루틴에는 _구성 복구(configuration recovery)_라는 방법(세부 사항은 나중에 설명)이 포함되어 있으며, 전자 수가 올바르지 않은 구성을 확률적으로 보정합니다. 올바른 전자 수를 가진 구성인 $\tilde{\mathcal{\chi}}_{R}$만 부분 샘플링되어, 각 고유 구성의 출현 빈도를 기반으로 여러 배치에 분산됩니다. 각 샘플 배치는 부분 공간($\mathcal{S^{(k)}}$)을 정의합니다. 다음으로 분자 해밀토니안 $H$가 부분 공간에 투영됩니다:
+$$
+H_{\mathcal{S}^{(k)}} = P_{\mathcal{S}^{(k)}} H _{\mathcal{S}^{(k)}} \text{ with } P_{\mathcal{S}^{(k)}} = \sum_{x \in \mathcal{S}^{(k)}} \vert x \rangle \langle x \vert
+$$
+
+각 투영된 해밀토니안 $H_{\mathcal{S}^{(k)}}$는 고유값 풀이기(Eigensolver)에 입력되어 대각화를 통해 고유값과 고유벡터를 계산하고 고유 상태를 재구성합니다. 이 레슨에서는 PySCF의 Davidson 방법을 사용하여 대각화를 수행하는 `qiskit-addon-sqd` 패키지로 해밀토니안을 투영하고 대각화합니다.
+
+$$
+H_{\mathcal{S}^{(k)}} \vert \psi^{(k)} \rangle = E^{(k)} \vert \psi^{(k)} \rangle
+$$
+
+그런 다음 배치에서 최저 고유값(에너지)을 수집하고, 평균 궤도 점유율 $\text{n}$도 계산합니다. 평균 점유율 정보는 구성 복구 단계에서 잡음 구성을 확률적으로 보정하는 데 사용됩니다.
+
+다음으로 자기 일관 구성 복구 루프를 자세히 설명하고, $N_2$ 해밀토니안의 기저 상태 에너지를 추정하기 위한 위의 단계를 구현하는 구체적인 코드 예제를 제시합니다.
+### 4.1 구성 복구: 개요 {#41-configuration-recovery-overview}
+비트스트링(Slater 행렬식)의 각 비트는 스핀 궤도를 나타냅니다. 비트스트링의 오른쪽 절반은 스핀업 궤도를, 왼쪽 절반은 스핀다운 궤도를 나타냅니다. `1`은 해당 궤도가 전자로 채워져 있음을, `0`은 비어 있음을 의미합니다. 올바른 입자 수(스핀업 전자와 스핀다운 전자 모두)는 사전에 알 수 있습니다. 비트스트링 $x$에 $N_x$개의 전자(즉, 비트스트링에 $N_x$개의 `1`이 있음)가 있다고 가정합니다. 올바른 입자 수는 $N$입니다. $N_x \neq N$이면, 비트스트링이 잡음에 의해 손상된 것임을 알 수 있습니다. 자기 일관 구성 루틴은 평균 궤도 점유율 정보를 활용하여 $|N_x - N|$개의 비트를 확률적으로 뒤집어 비트스트링을 보정하려 합니다. 평균 궤도 점유율($n$)은 궤도가 전자로 채워질 확률을 알려줍니다. $N_x < N$이면 전자가 부족하므로 일부 `0`을 `1`로 바꿔야 하며, 그 반대도 마찬가지입니다.
+
+뒤집기 확률은 `i`번째 스핀 궤도에 대해 $|x[i] - avg\_occupancy[i]|$가 될 수 있습니다. [\[2\]](#references)에서 저자들은 수정된 ReLU 함수를 사용한 가중 뒤집기 확률을 사용했습니다.
+
+$$
+\begin{align}
+    w(y) = \begin{cases}
+
+    \delta \frac{y}{h} & \text{if }  y \leq h\\ \nonumber
+
+    \delta + (1 - \delta) \frac{y - h}{1 - h} & \text{if } y > h
+
+\end{cases}
+\end{align}
+$$
+
+여기서 $h$는 ReLU 함수의 "꺾임" 위치를 정의하고, 매개변수 $\delta$는 꺾임 점에서 ReLU 함수의 값을 정의합니다. $\delta = 0$이면 $w$는 진짜 ReLU 함수가 되고, $\delta > 0$이면 _수정된_ ReLU가 됩니다. 논문에서 저자들은 $\delta = 0.01$과 $h =$ 알파(또는 베타) 입자 수/알파(또는 베타) 스핀 궤도 수 $= N/M$(채움 인수)를 사용했습니다.
+
+평균 궤도 점유율($n$)은 사전에 알 수 없습니다. 기저 상태 추정의 첫 번째 반복은 두 스핀 종 모두에서 올바른 입자 수를 가진 구성만으로 시작합니다. 첫 번째 반복 후 기저 상태의 추정값을 얻고, 이 추정값을 이용해 $n$의 초기 추측값을 구성할 수 있습니다. 이 $n$의 추측값은 구성을 복구하고, 다음 기저 상태 추정 반복을 실행하여 자기 일관적으로 $n$의 추측값을 정제하는 데 사용됩니다. 이 과정은 중단 기준이 충족될 때까지 반복됩니다.
+
+$N = 2$이고 $x = |1000\rangle$ ($N_x = 1$)인 다음 예제를 살펴보세요. 입자 수를 보정하기 위해 0 중 하나를 1로 뒤집어야 하며, 선택지는 `1100`, `1010`, `1001`입니다. 뒤집기 확률에 따라 선택지 중 하나가 _복구된 구성_(즉, 올바른 수의 입자를 가진 비트스트링)으로 선택됩니다.
+
+첫 번째 반복에서 두 배치를 실행하고 추정된 기저 상태가 다음과 같다고 가정합니다:
+
+$$
+\begin{align}\nonumber
+    \text{Batch0: } \vert \psi \rangle &= 0.8 \times \vert 1001 \rangle + 0.6 \times \vert 0110 \rangle \\ \nonumber
+    \text{Batch1: } \vert \psi \rangle &= \frac{1}{\sqrt{3}} \left( \vert 1001 \rangle + \vert 0101 \rangle + \vert 0110 \rangle \right) \nonumber
+\end{align}
+$$
+
+계산 기저 상태와 그 진폭을 이용하여 각 스핀 궤도(Qubit)별 전자 점유 확률(줄여서 _점유율_)을 계산할 수 있습니다 (확률 = |진폭|$^2$). 아래는 추정 기저 상태에 나타나는 각 비트스트링의 Qubit 별 점유율과 배치 별 총 궤도 점유율을 나타낸 표입니다. Qiskit 순서 규칙에 따라 가장 오른쪽 비트가 Qubit-0(Q0)을, 가장 왼쪽 비트가 Q3을 나타냅니다.
+
+점유율 (Batch0):
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |   0.64   |    0.0   |    0.0   |   0.64   |
+|    0110   |    0.0   |   0.36   |   0.36   |    0.0   |
+| **n** _(Batch0)_ | **0.64** | **0.36** | **0.36** | **0.64** |
+
+점유율 (Batch1)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+|    1001   |    0.33   |   0.00   |   0.00   |    0.33   |
+|    0101   |    0.0   |   0.33   |   0.00   |    0.33   |
+|    0110   |    0.0   |   0.33   |   0.33   |    0.00   |
+| **n** _(Batch1)_ | **0.33** | **0.66** | **0.33** | **0.66** |
+
+점유율 (배치 평균)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| **n** _(Batch0)_ | 0.64 | 0.36 | 0.36 | 0.64 |
+| **n** _(Batch1)_ | 0.33 | 0.66 | 0.33 | 0.66 |
+| **n** _(average)_ | **0.49** | **0.51** | **0.35** | **0.65** |
+
+위에서 계산한 평균 궤도 점유율을 이용하여 구성 $x = \vert 1000 \rangle$에서 서로 다른 궤도에 대한 뒤집기 확률을 구할 수 있습니다. Q3이 나타내는 궤도는 이미 채워져 있어 뒤집을 필요가 없으므로 p(뒤집기)를 $0$으로 설정합니다. 나머지 비어 있는 궤도에 대한 뒤집기 확률은 각각 $\vert x[i] - \text{n}[i] \vert$입니다. p(뒤집기)와 함께, 위에서 설명한 수정된 ReLU 함수를 사용한 뒤집기 확률 가중치도 계산합니다.
+
+뒤집기 확률 ($x = \vert 1000 \rangle$, $\delta = 0.01$, $h = N/M = 2/4 = 0.50$)
+|           |    Q3    |    Q2    |    Q1    |    Q0    |
+|:---------:|:--------:|:--------:|:--------:|:--------:|
+| p(뒤집기) ($\vert x[i] - \text{n}[i] \vert$) | 0 | 0.51 | 0.35 | 0.65 |
+| w(p(뒤집기)) | 0 | 0.03 | 0.007 | 0.31 |
+
+마지막으로, 위의 가중 확률을 이용하여 채워지지 않은 Q2, Q1, Q0 궤도 중 하나를 뒤집을 수 있습니다. 위의 값에 따르면 Q0이 가장 뒤집힐 가능성이 높으며, 가능한 복구 구성은 $\vert \text{1001} \rangle$이 됩니다.
+![구성 복구 다이어그램.](/learning/images/courses/quantum-diagonalization-algorithms/sqd2/sqd2-fig11.avif)
+완전한 자기 일관 구성 복구 과정은 다음과 같이 요약할 수 있습니다:
+
+**첫 번째 반복:** 양자 컴퓨터가 생성한 비트스트링(구성 또는 Slater 행렬식)이 집합 $\widetilde{\chi}$를 형성한다고 가정합니다. 이 집합에는 각 스핀 섹터에서 올바른($\widetilde{\chi}_{correct}$) 입자 수와 올바르지 않은($\widetilde{\chi}_{incorrect}$) 입자 수를 가진 구성이 모두 포함됩니다.
+1. ($\widetilde{\chi}_{correct}$)의 구성이 무작위로 샘플링되어 부분 공간 투영을 위한 벡터 배치 $(\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)})$를 생성합니다. 배치 수와 각 배치의 샘플 수는 사용자 정의 매개변수입니다. 배치당 샘플 수가 많을수록 부분 공간 차원이 커지고 대각화 계산 비용도 높아집니다. 반면, 샘플 수가 너무 적으면 기저 상태 지지 벡터를 놓쳐 잘못된 추정이 나올 수 있습니다.
+2. 배치에 대해 고유 상태 풀이기(부분 공간 투영 및 대각화)를 실행하고 근사 고유 상태를 얻습니다. $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$.
+3. 근사 고유 상태에서 $n$의 초기 추측값을 구성합니다.
+
+**이후 반복:**
+1. $n$을 이용하여 $\widetilde{\chi}_{incorrect}$에서 잘못된 입자 수를 가진 구성을 보정합니다. 이를 $\widetilde{\chi}_{correct\_new}$라 하면, $\widetilde{\chi}_{recovered} (\widetilde{\chi}_{R}) = \widetilde{\chi}_{correct} \cup \widetilde{\chi}_{correct\_new}$가 올바른 입자 수를 가진 새로운 구성 집합을 형성합니다.
+2. $\widetilde{\chi}_{R}$을 샘플링하여 배치 $\mathcal{S}^{(1)}, \cdots, \mathcal{S}^{(K)}$를 생성합니다.
+3. 고유 상태 풀이기가 새 배치로 실행되어 기저 상태의 새 추정값 $|\psi^{(1)}\rangle, \cdots, |\psi^{(K)}\rangle$을 생성합니다.
+4. 근사 고유 상태에서 $n$의 정제된 추측값을 구성합니다.
+5. 중단 기준이 충족되지 않으면 `2.1` 단계로 돌아갑니다.
+### 4.2 기저 상태 추정 {#42-ground-state-estimation}
+먼저, 후처리를 위해 카운트를 비트스트링 행렬과 확률 배열로 변환합니다.
+
+행렬의 각 행은 하나의 고유 비트스트링을 나타냅니다. Qiskit에서는 비트스트링의 오른쪽부터 Qubit 인덱스가 시작되므로, 열 ``0``은 Qubit ``N-1``을, 열 ``N-1``은 Qubit ``0``을 나타내며, ``N``은 Qubit 수입니다.
+
+알파 궤도는 열 인덱스 범위 ``(N, N/2]``(오른쪽 절반)에, 베타 궤도는 열 범위 ``(N/2, 0]``(왼쪽 절반)에 표현됩니다.
+
+```python
+from qiskit_addon_sqd.counts import counts_to_arrays
+
+# Convert counts into bitstring and probability arrays
+bitstring_matrix_full, probs_arr_full = counts_to_arrays(counts)
+```
+
+이 기법에서 중요한 사용자 제어 옵션이 몇 가지 있습니다:
+
+- ``iterations``: 자기 일관 구성 복구 반복 횟수
+- ``n_batches``: 고유 상태 풀이기의 다양한 호출에 사용되는 구성 배치 수
+- ``samples_per_batch``: 각 배치에 포함할 고유 구성 수
+- ``max_davidson_cycles``: 각 고유값 풀이기가 실행하는 최대 Davidson 사이클 수
+
+```python
+import numpy as np
+from qiskit_addon_sqd.configuration_recovery import recover_configurations
+from qiskit_addon_sqd.fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_fermion,
+)
+from qiskit_addon_sqd.subsampling import postselect_and_subsample
+
+rng = np.random.default_rng(24)
+# SQD options
+iterations = 5
+
+# Eigenstate solver options
+n_batches = 5
+samples_per_batch = 500
+max_davidson_cycles = 300
+
+# Self-consistent configuration recovery loop
+e_hist = np.zeros((iterations, n_batches))  # energy history
+s_hist = np.zeros((iterations, n_batches))  # spin history
+occupancy_hist = []
+avg_occupancy = None
+for i in range(iterations):
+    print(f"Starting configuration recovery iteration {i}")
+    # On the first iteration, we have no orbital occupancy information from the
+    # solver, so we begin with the full set of noisy configurations.
+    if avg_occupancy is None:
+        bs_mat_tmp = bitstring_matrix_full
+        probs_arr_tmp = probs_arr_full
+
+    # If we have average orbital occupancy information, we use it to refine the full set of noisy configurations
+    else:
+        bs_mat_tmp, probs_arr_tmp = recover_configurations(
+            bitstring_matrix_full,
+            probs_arr_full,
+            avg_occupancy,
+            num_elec_a,
+            num_elec_b,
+            rand_seed=rng,
+        )
+
+    # Create batches of subsamples. We post-select here to remove configurations
+    # with incorrect hamming weight during iteration 0, since no config recovery was performed.
+    batches = postselect_and_subsample(
+        bs_mat_tmp,
+        probs_arr_tmp,
+        hamming_right=num_elec_a,
+        hamming_left=num_elec_b,
+        samples_per_batch=samples_per_batch,
+        num_batches=n_batches,
+        rand_seed=rng,
+    )
+
+    # Run eigenstate solvers in a loop. This loop should be parallelized for larger problems.
+    e_tmp = np.zeros(n_batches)
+    s_tmp = np.zeros(n_batches)
+    occs_tmp = []
+    coeffs = []
+    for j in range(n_batches):
+        strs_a, strs_b = bitstring_matrix_to_ci_strs(batches[j])
+        print(f"  Batch {j} subspace dimension: {len(strs_a) * len(strs_b)}")
+        energy_sci, coeffs_sci, avg_occs, spin = solve_fermion(
+            batches[j],
+            hcore,
+            eri,
+            open_shell=open_shell,
+            spin_sq=spin_sq,
+            max_davidson=max_davidson_cycles,
+        )
+        energy_sci += nuclear_repulsion_energy
+        e_tmp[j] = energy_sci
+        s_tmp[j] = spin
+        occs_tmp.append(avg_occs)
+        coeffs.append(coeffs_sci)
+
+    # Combine batch results
+    avg_occupancy = tuple(np.mean(occs_tmp, axis=0))
+
+    # Track optimization history
+    e_hist[i, :] = e_tmp
+    s_hist[i, :] = s_tmp
+    occupancy_hist.append(avg_occupancy)
+```
+
+```text
+Starting configuration recovery iteration 0
+  Batch 0 subspace dimension: 21609
+  Batch 1 subspace dimension: 21609
+  Batch 2 subspace dimension: 21609
+  Batch 3 subspace dimension: 21609
+  Batch 4 subspace dimension: 21609
+Starting configuration recovery iteration 1
+  Batch 0 subspace dimension: 609961
+  Batch 1 subspace dimension: 616225
+  Batch 2 subspace dimension: 627264
+  Batch 3 subspace dimension: 633616
+  Batch 4 subspace dimension: 624100
+Starting configuration recovery iteration 2
+  Batch 0 subspace dimension: 564001
+  Batch 1 subspace dimension: 605284
+  Batch 2 subspace dimension: 582169
+  Batch 3 subspace dimension: 559504
+  Batch 4 subspace dimension: 591361
+Starting configuration recovery iteration 3
+  Batch 0 subspace dimension: 550564
+  Batch 1 subspace dimension: 549081
+  Batch 2 subspace dimension: 531441
+  Batch 3 subspace dimension: 527076
+  Batch 4 subspace dimension: 531441
+Starting configuration recovery iteration 4
+  Batch 0 subspace dimension: 544644
+  Batch 1 subspace dimension: 580644
+  Batch 2 subspace dimension: 527076
+  Batch 3 subspace dimension: 531441
+  Batch 4 subspace dimension: 537289
+```
+
+### 4.3 결과 논의 {#43-discussion-of-results}
+첫 번째 플롯은 몇 번의 반복 후 기저 상태 에너지를 약 24 mH 이내로 추정함을 보여줍니다 (화학적 정확도는 일반적으로 1 kcal/mol $\approx$ 1.6 mH로 허용됩니다). 두 번째 플롯은 최종 반복 후 각 공간 궤도의 평균 점유율을 보여줍니다. 우리의 해에서 스핀업과 스핀다운 전자 모두 처음 다섯 궤도를 높은 확률로 점유하고 있음을 알 수 있습니다.
+
+추정된 기저 상태 에너지는 괜찮지만, 화학적 정확도 한계($\pm \approx 1.6$ mH) 이내는 아닙니다. 이 차이는 투영 및 대각화에 사용한 작은 부분 공간 차원에 기인합니다. `samples_per_batch=500`을 사용했기 때문에 부분 공간이 최대 $500$개의 벡터로 구성되어 기저 상태 지지에 필요한 벡터가 누락되어 있습니다. `samples_per_batch` 매개변수를 늘리면 더 많은 고전 계산 자원과 실행 시간을 대가로 정확도가 향상될 수 있습니다.
+
+```python
+# Data for energies plot
+x1 = range(iterations)
+min_e = [np.min(e) for e in e_hist]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = occupancy_hist[-1][0] + occupancy_hist[-1][1]
+x2 = range(len(y2))
+```
+
+```python
+import matplotlib.pyplot as plt
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-6)
+axs[0].axhline(
+    y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy"
+)
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.02234 Ha
+Absolute error: 0.02434 Ha
+```
+
+![이전 코드 셀의 출력](/learning/images/courses/quantum-diagonalization-algorithms/qda-4-sqd-implementation/extracted-outputs/8cd90034-6ef3-41bd-a847-c115cade82f7-1.avif)
+
+#### 독자를 위한 연습 문제
+`samples_per_batch` 매개변수를 점진적으로 늘리며(예: $1000$에서 $10000$까지 $1000$ 단위로; 컴퓨터 메모리가 허용하는 범위 내에서) 추정된 기저 상태 에너지를 비교해 보세요.
+## References
+
+\[1] M. Motta et al., "Bridging physical intuition and hardware efficiency for correlated electronic states: the local unitary cluster Jastrow ansatz for electronic structure" (2023). [Chem. Sci., 2023, 14, 11213](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k).
+
+\[2] J. Robledo-Moreno et al., "Chemistry Beyond Exact Solutions on a Quantum-Centric Supercomputer" (2024). [arXiv:quant-ph/2405.05068](https://arxiv.org/abs/2405.05068).
