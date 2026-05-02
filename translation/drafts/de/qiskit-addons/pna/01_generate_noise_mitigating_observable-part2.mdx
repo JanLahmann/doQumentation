@@ -1,0 +1,179 @@
+#### Learn the noise
+
+Bevor wir die Experimente ausführen, lernen wir das Rauschmodell, das die verschränkenden Gates und Messungen im Circuit beeinflusst. Ein genaues Rauschmodell ist notwendig, um Fehler effektiv zu mitigieren. Das Rauschen unmittelbar vor der Ausführung der Experimente zu lernen, gibt die beste Chance, dass das Rauschmodell das tatsächliche Rauschen, das die Gates während der Ausführung beeinflusst, getreu beschreibt.
+
+Bevor wir das Rauschen lernen, müssen wir die einzigartigen 2-Qubit-Schichten in unserem Circuit finden, damit wir die Anzahl der Shots minimieren können, die benötigt werden, um das Rauschen für den gesamten Circuit zu lernen. Wir verwenden ``find_unique_box_instructions`` aus ``samplomatic``, um uns die einzigartigen Schichten aus dem geboxter Circuit bereitzustellen, einschließlich der Messschicht. Diese Schichten übergeben wir dem Noise Learner.
+
+Sobald wir die Schichten kennen, können wir das Rauschen lernen. Es gibt einige Parameter, die wir berücksichtigen:
+
+- `num_randomizations`: Die Anzahl der zufälligen Circuits, die pro Lern-Circuit-Konfiguration verwendet werden sollen
+- `shots_per_randomization`: Gesamtanzahl der Shots, die pro zufälligem Lern-Circuit verwendet werden sollen
+- `layer_pair_depths`: Die Circuit-Tiefen (gemessen in der Anzahl von Paaren), die in Lernexperimenten verwendet werden sollen.
+- `post_selection`: Wir verwenden kantenbasierte Post-Selektion beim Lernen mit `rx`-Gates zur Implementierung der Post-Mess-Pulse
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.utils import find_unique_box_instructions
+
+# Load noise learner data from a shared job
+load_saved_nl_result = True
+
+# Noise learning parameters
+num_randomizations_nl = 64
+shots_per_randomization_nl = 128
+strategy = "edge"
+enable_postsel = True
+x_pulse_type = "rx"
+
+# Find the unique instructions (layers) from boxed-up circuit
+unique_2q_layers_and_meas = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+
+noise_learner_params = {
+    "num_randomizations": num_randomizations_nl,
+    "shots_per_randomization": shots_per_randomization_nl,
+    "layer_pair_depths": [1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    "post_selection": {
+        "enable": enable_postsel,
+        "strategy": strategy,
+        "x_pulse_type": x_pulse_type,
+    },
+    "experimental": {},
+}
+# set the options
+noise_learner_options = NoiseLearnerV3Options(**noise_learner_params)
+
+# run the noise learner job
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+noise_learner_job = noise_learner.run(unique_2q_layers_and_meas)
+noise_learner_result = noise_learner_job.result()
+
+nl_metadata = noise_learner_params | {"layout": layout}
+```
+
+```python
+import matplotlib.pyplot as plt
+
+hw_rates_1q = []
+hw_rates_2q = []
+for nlr in noise_learner_result[:2]:
+    plm_list = nlr.to_pauli_lindblad_map().to_sparse_list()
+    hw_rates_1q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 1]
+    hw_rates_2q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 2]
+hw_rates_1q = sorted(hw_rates_1q)
+hw_rates_2q = sorted(hw_rates_2q)
+median_1q = hw_rates_1q[len(hw_rates_1q) // 2]
+median_2q = hw_rates_2q[len(hw_rates_2q) // 2]
+fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+ax.scatter(
+    (hw_rates_1q),
+    [(i) / (len(hw_rates_1q) - 1) for i in range(len(hw_rates_1q))],
+    color="red",
+    label="1q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_1q, 0, 1, color="red")
+ax.text(median_1q * 1.1, 0.1, f"{median_1q:.2e}")
+ax.scatter(
+    (hw_rates_2q),
+    [(i) / (len(hw_rates_2q) - 1) for i in range(len(hw_rates_2q))],
+    color="blue",
+    label="2q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_2q, 0, 1, color="blue")
+ax.text(median_2q * 1.1, 0.2, f"{median_2q:.2e}")
+ax.set_title("Learned noise rates")
+ax.set_xlabel("Noise rate")
+ax.set_yticks([])
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x321dd63f0>
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_5.png)
+
+#### Associate circuit boxes with learned noise
+
+Hier erstellen wir eine Zuordnung zwischen den ``InjectNoise``-Referenz-IDs jeder Box und dem gelernten Rauschmodell (`PauliLindbladMap`), das die verschränkenden Gates in dieser Box beeinflusst.
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### Propagate the observable through the learned anti-noise to get a noise-mitigating observable
+
+Wie oben besprochen, geschieht dies in zwei Schritten. Zunächst propagieren wir einen Anti-Rausch-Generator an das Ende des Circuits. Danach propagieren wir den Observable durch diesen entwickelten Generator. Dieser Prozess wird für jeden Anti-Rausch-Generator im Circuit wiederholt. In dieser Implementierung wird jeder Generator einer bestimmten Schicht parallel an das Ende des Circuits propagiert. Zusätzlich wird Python-Multiprocessing verwendet, um sowohl die Vorwärtspropagation des Anti-Rauschens als auch die Rückwärtspropagation des Observables parallel durchzuführen. Dies verhindert ein Anhäufen von entwickelten Generatoren im Arbeitsspeicher und maximiert gleichzeitig die Rechenressourcen.
+
+Wenn du PNA ausführst, musst du immer einen verrauschten Circuit und einen Observable angeben. Wenn dein verrauschter Circuit ein geboxter Circuit mit `InjectNoise`-Annotierungen ist, musst du die Zuordnung angeben, die wir im obigen Schritt erstellt haben. Man kann auch einen nicht-geboxter Circuit übergeben, der ``PauliLindbladError``-Anweisungen aus ``qiskit-aer`` enthält. In diesem Fall muss ``refs_to_noise_models`` nicht angegeben werden. Zusätzlich zu den primären Eingaben sollten Nutzer folgendes in Betracht ziehen:
+
+- `max_err_terms`: Die Anzahl der Terme, die in jedem Anti-Rausch-Generator behalten werden, während er vorwärtspropagiert wird. Ein größerer Wert erhöht im Allgemeinen die Genauigkeit, aber dieses Verhalten ist nicht garantiert monoton.
+- `max_obs_terms`: Die Anzahl der Terme, die im rauschmitigierenden Observable $\tilde{O}$ behalten werden, während er durch den entwickelten Anti-Rausch rückwärtspropagiert wird. Größere Werte erhöhen im Allgemeinen die Genauigkeit, aber es ist nicht garantiert, dass dies monoton geschieht.
+- `num_processes`: Die Anzahl der Kerne, die dem Prozess gewidmet werden. Denk daran, dass die Generatoren vorwärtspropagiert und parallel auf den Observable angewendet werden.
+- `search_step`: Der Rückwärtspropagationsschritt verwendet eine gierige Methode, um zwei Operatoren in der Pauli-Basis näherungsweise zu konjugieren. Diese Methode kann beschleunigt werden, indem ``search_step`` erhöht wird. Weitere Informationen findest du in der [pauli-prop-Dokumentation](https://qiskit.github.io/pauli-prop/).
+- `num_to_measure`: Obwohl diese Variable kein Eingabeparameter für ``generate_noise_mitigating_observable`` ist, verwenden wir sie, um zu steuern, wie viele Terme aus $\tilde{O}$ wir tatsächlich messen möchten. Hier werden wir nur die obersten 30 Terme messen, d.h. die ursprünglichen Terme in unserem Observable. Die Terme wurden nun so neu skaliert, dass ihre Messung die Wirkung hat, das gelernte Gate-Rauschen zu mitigieren. Obwohl wir nur 30 Terme aus $\tilde{O}$ messen, ist es oft dennoch nützlich, ihm zu erlauben, groß zu werden, da dies die Präzision der Skalierungsfaktoren der führenden Terme erhöht.
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
+Finished! 13560 / 13560 generators propagated.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_6.png)
