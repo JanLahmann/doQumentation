@@ -1,0 +1,356 @@
+---
+title: "Reducir el error de Trotter en la dinámica hamiltoniana con fórmulas multiproducto"
+sidebar_label: "Reducir el error de Trotter en la dinámica hamiltoniana con fórmulas multiproducto"
+notebook_path: "qiskit-addons/mpf/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: 90759f5f */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/mpf/01_getting_started.ipynb" />
+
+
+En este notebook, aprenderás a usar una **Fórmula Multiproducto (MPF)** para lograr un error de Trotter menor en nuestro observable en comparación con el incurrido por el Circuit de Trotter más profundo que realmente ejecutaremos.
+Lo harás trabajando a través de los pasos de un **patrón de Qiskit**:
+
+- **Paso 1: Mapear al problema cuántico**
+    - Inicializar el hamiltoniano de nuestro problema
+    - <font color="#0F62FE">Usar una MPF para generar los Circuit de evolución temporal con Trotter</font>
+- **Paso 2: Optimizar el problema**
+    - Aquí transpilamos nuestros Circuit para un [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2)
+- **Paso 3: Ejecutar experimentos**
+    - Usar un [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) por simplicidad en este notebook
+- **Paso 4: Reconstruir resultados**
+    - <font color="#0F62FE">Calcular el valor esperado de la MPF</font>
+## Paso 1: Mapear al problema cuántico
+
+### 1a: Configurar nuestro hamiltoniano
+
+Usamos el modelo de Ising en una línea de 10 sitios:
+
+$$
+\hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{9} J_{i,(i+1)} Z_i Z_{(i+1)} + \sum_{i=1}^{10} h_i X_i \, ,
+$$
+
+donde $J$ es la fuerza de acoplamiento entre dos sitios y $h$ es el campo magnético externo.
+El paquete [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) proporciona algunas funcionalidades reutilizables para diversos propósitos.
+
+Su módulo [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) proporciona funciones para generar hamiltonianos tipo Heisenberg en un grafo de conectividad dado.
+Este grafo puede ser un [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html) o un [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap), lo que facilita su uso en flujos de trabajo centrados en Qiskit.
+
+A continuación, creamos una línea simple de 10 Qubits usando el método `CouplingMap.from_line`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-mpf qiskit-addon-utils rustworkx scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_line(10, bidirectional=False)
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+![Code output](./_01_getting_started_imgs/output_1.png)
+
+A continuación, generamos el [SparsePauliOp](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.quantum_info.SparsePauliOp) en la conectividad proporcionada con las constantes deseadas.
+
+```python
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIZZI', 'IIIIIZZIII', 'IIIZZIIIII', 'IZZIIIIIII', 'IIIIIIIIZZ', 'IIIIIIZZII', 'IIIIZZIIII', 'IIZZIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIXI', 'IIIIIIIXII', 'IIIIIIXIII', 'IIIIIXIIII', 'IIIIXIIIII', 'IIIXIIIIII', 'IIXIIIIIII', 'IXIIIIIIII', 'XIIIIIIIII'],
+              coeffs=[1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j,
+ 1. +0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j,
+ 0.4+0.j, 0.4+0.j, 0.4+0.j])
+```
+
+El observable que mediremos es la magnetización total, que podemos construir simplemente como se muestra a continuación:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+L = coupling_map.size()
+observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
+print(observable)
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j,
+ 0.05+0.j, 0.05+0.j, 0.05+0.j])
+```
+
+### 1b: Fórmulas Multiproducto
+
+Las MPFs reducen el error de Trotter de la dinámica hamiltoniana mediante una combinación ponderada de varias ejecuciones de Circuit.
+
+Para concretar esto, definimos una MPF como:
+
+$$
+\mu(t) = \sum_{j} x_j \rho^{k_j}_{j}\left(\frac{t}{k_j}\right) + \text{some remaining Trotter error} \, ,
+$$
+
+donde $x_j$ son nuestros coeficientes de ponderación, $\rho^{k_j}_j$ es la matriz de densidad correspondiente al estado puro obtenido al evolucionar el estado inicial con la fórmula producto, $S^{k_j}$, que involucra $k_j$ pasos de Trotter, y $j$ indexa el número de fórmulas producto que componen la MPF.
+
+La clave aquí es que el error de Trotter restante es menor que el error de Trotter que se obtendría simplemente usando el valor más grande de $k_j$.
+
+Puedes ver la utilidad de la MPF desde dos perspectivas:
+
+1. Para un presupuesto fijo de pasos de Trotter que puedes ejecutar, puedes obtener resultados con un error de Trotter que es menor en total.
+2. Para un número de pasos de Trotter que resulta en Circuit profundos, puedes usar MPF para encontrar varios Circuit de menor profundidad que ejecutar, los cuales resultan en un error de Trotter similar.
+#### Introducción a las MPF estáticas
+
+Las MPF _estáticas_ son aquellas en las que los valores $x_j$ **NO** dependen del tiempo de evolución, $t$.
+
+Determinar los coeficientes de la MPF estática para un conjunto dado de valores $k_j$ equivale a resolver un sistema lineal de ecuaciones:
+$Ax=b$, donde $x$ son nuestros coeficientes de interés, $A$ es una matriz que depende de $k_j$ y del tipo de PF que usamos ($S$), y $b$ es un vector de restricciones.
+Por brevedad, no entraremos en más detalles aquí y en su lugar te remitimos a la documentación de [LSE](https://qiskit.github.io/qiskit-addon-mpf/apidocs/qiskit_addon_mpf.costs.html#qiskit_addon_mpf.costs.LSE).
+
+Podemos encontrar una solución para $x$ analíticamente como $x = A^{-1}b$, ver por ejemplo [Carrera Vazquez et al., 2023] o [Zhuk et al., 2023].
+Sin embargo, esta solución exacta puede estar _"mal condicionada"_, lo que resulta en normas L1 muy grandes de nuestros coeficientes, $x$, que pueden conducir a un mal rendimiento de la MPF.
+En cambio, también se puede obtener una solución aproximada que minimiza la norma L1 de $x$ con el fin de intentar optimizar el comportamiento de la MPF.
+
+A continuación, aprenderás a hacer todo esto.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+#### Elegir $k_j$
+
+La elección de $k_j$ depende del usuario final.
+En principio, se puede elegir cualquier valor, pero algunos $k_j$ conducirán a una mayor amplificación del ruido en dispositivos reales que otras elecciones.
+Por lo tanto, es importante intentar encontrar valores _"buenos"_ de $k_j$.
+
+Aquí simplemente elegiremos algunos valores fijos para $k_j$.
+El valor más pequeño está motivado por el tiempo de evolución objetivo de $t=8.0$ que normalmente nos indica satisfacer $t/k_{\text{min}} \lt 1$, pero empíricamente sabemos que establecerlo igual a $1$ también suele funcionar.
+Si quieres saber más sobre esto y cómo elegir tus otros valores de $k_j$, consulta la guía correspondiente: [Cómo elegir los pasos de Trotter para una MPF](https://qiskit.github.io/qiskit-addon-mpf/how_tos/choose_trotter_steps.html).
+
+```python
+time = 8.0
+trotter_steps = (8, 12, 19)
+```
+
+#### Configurar la LSE
+
+Ahora que hemos elegido nuestros $k_j$, primero debemos construir la LSE, $Ax=b$ como se explicó anteriormente.
+La matriz $A$ depende no solo de $k_j$ sino también de nuestra elección de fórmula producto (PF) -- en particular su _orden_.
+Además, se puede tener en cuenta si la PF es simétrica o no (ver [Carrera Vazquez et al., 2023]), estableciendo `symmetric=True`.
+Sin embargo, esto no es obligatorio como muestra [Zhuk et al., 2023].
+
+Aquí vamos a usar una fórmula de Suzuki-Trotter de segundo orden que produce `order=2` y estableceremos `symmetric=True`.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+
+```python
+from qiskit_addon_mpf.static import setup_static_lse
+
+lse = setup_static_lse(trotter_steps, order=2, symmetric=True)
+print(lse)
+```
+
+```text
+LSE(A=array([[1.00000000e+00, 1.00000000e+00, 1.00000000e+00],
+       [1.56250000e-02, 6.94444444e-03, 2.77008310e-03],
+       [2.44140625e-04, 4.82253086e-05, 7.67336039e-06]]), b=array([1., 0., 0.]))
+```
+
+#### Resolver para $x$ analíticamente
+
+Como se mencionó antes, podemos encontrar $x$ analíticamente:
+
+```python
+import numpy as np
+
+coeffs_analytical = lse.solve()
+print(coeffs_analytical)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+#### Optimizar para $x$ usando un modelo exacto
+
+Como alternativa a calcular $x=A^{-1}b$, también puedes usar [setup_exact_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_exact_problem.html) para construir una instancia de [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem) que usa la LSE como restricciones y cuya solución óptima producirá $x$.
+
+En la siguiente sección, quedará claro por qué existe esta interfaz.
+
+```python
+from qiskit_addon_mpf.costs import setup_exact_problem
+
+model_exact, coeffs_exact = setup_exact_problem(lse)
+model_exact.solve()
+print(coeffs_exact.value)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+Como indicador de si una MPF construida con estos coeficientes producirá buenos resultados, podemos usar la norma L1 (ver también [Carrera Vazquez et al., 2023]).
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+
+```python
+print(np.linalg.norm(coeffs_exact.value, ord=1))
+```
+
+```text
+3.3889400921655914
+```
+
+#### Optimizar para $x$ usando un modelo aproximado
+
+Puede ocurrir que la norma L1 para el conjunto elegido de valores $k_j$ se considere demasiado alta.
+Si ese es el caso y no puedes elegir un conjunto diferente de valores $k_j$, puedes usar una solución aproximada a la LSE en lugar de una exacta.
+
+Para ello, simplemente usa [setup_sum_of_squares_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_sum_of_squares_problem.html) para construir una instancia diferente de [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem) que restringe la norma L1 a un umbral elegido mientras minimiza la diferencia de $Ax$ y $b$.
+
+```python
+from qiskit_addon_mpf.costs import setup_sum_of_squares_problem
+
+model_approx, coeffs_approx = setup_sum_of_squares_problem(lse, max_l1_norm=3.0)
+model_approx.solve()
+print(coeffs_approx.value)
+print(np.linalg.norm(coeffs_approx.value, ord=1))
+```
+
+```text
+[-0.40454257  0.57553173  0.8290123 ]
+1.8090865903790838
+```
+
+Ten en cuenta que tienes total libertad sobre cómo resolver este problema de optimización, lo que significa que puedes cambiar el solver de optimización, sus umbrales de convergencia, y así sucesivamente.
+Consulta la guía correspondiente sobre [Cómo usar el modelo aproximado](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html).
+### 1c: Configurar los Circuit de Trotter
+
+En este punto, hemos encontrado nuestros coeficientes de expansión, $x$, y todo lo que queda por hacer es generar los Circuit cuánticos con Trotter.
+Una vez más, el módulo [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) viene al rescate para hacer exactamente eso:
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuits = []
+for k in trotter_steps:
+    circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(order=2, reps=k),
+        time=time,
+    )
+    circuits.append(circ)
+```
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_2.png)
+
+```python
+circuits[1].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_3.png)
+
+```python
+circuits[2].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_4.png)
+
+## Paso 2: Optimizar el problema
+
+Normalmente, este es el paso del patrón durante el cual optimizas tus Circuit para su ejecución en hardware.
+Aquí, dado que solo usamos un simulador sin ruido, simplemente transpilamos nuestro Circuit para un [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2).
+
+```python
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+backend = GenericBackendV2(num_qubits=10)
+transpiler = generate_preset_pass_manager(optimization_level=2, backend=backend)
+
+transpiled_circuits = [transpiler.run(circ) for circ in circuits]
+```
+
+## Paso 3: Ejecutar experimentos cuánticos
+
+Como se explicó al principio, omitiremos el paso de optimización 2 porque simplemente vamos a calcular los valores esperados de nuestro observable objetivo usando un simulador sin ruido, concretamente el [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator).
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+job = estimator.run([(circ, observable) for circ in transpiled_circuits])
+result = job.result()
+```
+
+## Paso 4: Reconstruir resultados
+
+Primero, extraemos los valores esperados individuales obtenidos para cada uno de los Circuit de Trotter:
+
+```python
+evs = [res.data.evs for res in result]
+print(evs)
+```
+
+```text
+[array(0.23799162), array(0.35754312), array(0.38649906)]
+```
+
+A continuación, simplemente los recombinamos con nuestros coeficientes MPF para obtener los valores esperados totales de la MPF. A continuación, lo hacemos para cada una de las diferentes formas en que hemos calculado $x$.
+
+```python
+print("Analytical    solution:", evs @ coeffs_analytical)
+print("Exact model   solution:", evs @ coeffs_exact.value)
+print("Approx. model solution:", evs @ coeffs_approx.value)
+```
+
+```text
+Analytical    solution: 0.3954847855980006
+Exact model   solution: 0.39548478559800204
+Approx. model solution: 0.42991214253489807
+```
+
+Finalmente, para este pequeño problema podemos calcular el valor de referencia exacto usando [scipy.linalg.expm](https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.expm.html) de la siguiente manera:
+
+```python
+from scipy.linalg import expm
+
+exp_H = expm(-1j * time * hamiltonian.to_matrix())
+
+initial_state = np.zeros(exp_H.shape[0])
+initial_state[0] = 1.0
+
+time_evolved_state = exp_H @ initial_state
+
+exact_obs = time_evolved_state.conj() @ observable.to_matrix() @ time_evolved_state
+print(exact_obs.real)
+```
+
+```text
+0.40060242487899755
+```
+
+Podemos ver claramente que la MPF ha reducido el error de Trotter en comparación con el obtenido con la PF individual más profunda con $k_j=19$.
+Sin embargo, también vemos que el modelo aproximado no es perfecto, ya que en realidad resultó en un valor esperado que es peor que la solución exacta. Esto muestra la importancia de usar criterios de convergencia estrictos en el modelo aproximado, como aprenderás en la guía [Cómo usar el modelo aproximado](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html).
+
+<TutorialFeedback />
