@@ -1,0 +1,132 @@
+## Schritt 2. Optimieren
+Wir optimieren Details in Bezug auf den auszuführenden Circuit, das zu messende Observable und die Rausch-Lernparameter. Als Ausgangspunkt stellen wir sicher, dass wir ein Backend mit aktivierten fraktionalen Gates instanziieren. Diese fraktionalen Gates ermöglichen eine höhere Empfindlichkeit bei einigen unserer Post-Selection-Filter.
+
+```python
+token = "<YOUR_TOKEN>"
+instance = "<YOUR_INSTANCE>"
+
+# This is used to retrieve shared results
+shared_service = QiskitRuntimeService(
+    channel="ibm_quantum_platform",
+    token=token,
+    instance=instance,
+)
+
+# This is used to run on real hardware
+service = service = QiskitRuntimeService()
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 11:19:40,108: Loading account with the given token. A saved account will not be used.
+```
+
+```python
+backend = service.backend("ibm_kingston", use_fractional_gates=True)
+```
+
+Zuerst transpilieren wir unseren Circuit in ISA-Anweisungen, [wie für die Ausführung auf unseren QPUs erforderlich](https://www.ibm.com/quantum/blog/isa-circuits). Für die in diesem Experiment gesammelten Daten wählen wir unsere Qubits manuell anhand der Bewertung der hochwertigsten Kette aus.
+
+```python
+layout = [44, 45, 46, 47, 57, 67, 68, 69, 78, 89, 88, 87, 97, 107, 106, 105, 104, 103, 96, 83]
+```
+
+```python
+isa_pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+
+isa_circuit = isa_pm.run(mirrored_circuit)
+assert isa_circuit.layout.final_index_layout() == layout
+
+isa_observable = observable.apply_layout(layout, num_qubits=isa_circuit.num_qubits)
+```
+
+```text
+2025-11-10 11:19:57,810 INFO base_tasks Pass: ContainsInstruction - 0.00715 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: UnitarySynthesis - 0.00525 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: HighLevelSynthesis - 0.02599 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: BasisTranslator - 0.09131 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: SetLayout - 0.02623 (ms)
+2025-11-10 11:19:57,812 INFO base_tasks Pass: FullAncillaAllocation - 0.14400 (ms)
+2025-11-10 11:19:57,812 INFO base_tasks Pass: EnlargeWithAncilla - 0.06318 (ms)
+2025-11-10 11:19:57,813 INFO base_tasks Pass: ApplyLayout - 0.29802 (ms)
+2025-11-10 11:19:57,813 INFO base_tasks Pass: CheckMap - 0.07820 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: FilterOpNodes - 0.33283 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: UnitarySynthesis - 0.00691 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: HighLevelSynthesis - 0.13208 (ms)
+2025-11-10 11:19:57,816 INFO base_tasks Pass: BasisTranslator - 1.00303 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: FoldRzzAngle - 1.78719 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: ContainsInstruction - 0.00691 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: InstructionDurationCheck - 0.00405 (ms)
+```
+
+```python
+wire_order = layout + [q for q in range(isa_circuit.num_qubits) if q not in layout]
+isa_circuit.draw(
+    "mpl", fold=-1, scale=0.3, idle_wires=False, wire_order=wire_order, measure_arrows=False
+)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_2.png)
+
+### Den Circuit in Boxes aufteilen
+Zur einfachen Implementierung verwenden wir den Transpilationspass `generate_boxing_pass_manager`, der die Circuit-Anweisungen in annotierte Boxes platziert. Diese Boxes geben klar an, wo im Fall von PEC Antirauschen in den Circuit injiziert werden soll. Für Details zu den Einstellungen siehe die [Samplomatic-Dokumentation.](https://qiskit.github.io/samplomatic/)
+
+Beachte, dass der SLC-Workflow die Verwendung von `inject_noise_strategy="individual_modification"` später im Prozess erfordert, da dies es uns ermöglicht, jede `BoxOp` im Circuit eindeutig zu identifizieren.
+
+Die Funktion `find_unique_box_instructions` durchläuft den bereitgestellten Circuit mit Boxes und identifiziert jene mit eindeutigen 2Q-Schichten oder Messungen, zum Zweck des Rausch-Lernens und der Rausch-Injektion.
+
+```python
+# Box circuit with Twirl and InjectNoise annotations
+boxes_pm = generate_boxing_pass_manager(
+    twirling_strategy="active",
+    inject_noise_strategy="individual_modification",
+    inject_noise_targets="gates",
+    measure_annotations="all",
+)
+
+boxed_circuit = boxes_pm.run(isa_circuit)
+
+# Find the unique instructions (layers) from boxed circuit
+unique_2q_instructions = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+```
+
+```text
+2025-11-10 11:20:01,088 INFO base_tasks Pass: RemoveBarriers - 0.02289 (ms)
+2025-11-10 11:20:01,100 INFO base_tasks Pass: GroupGatesIntoBoxes - 12.38990 (ms)
+2025-11-10 11:20:01,101 INFO base_tasks Pass: GroupMeasIntoBoxes - 0.47898 (ms)
+2025-11-10 11:20:01,104 INFO base_tasks Pass: AddTerminalRightDressedBoxes - 2.88177 (ms)
+2025-11-10 11:20:01,111 INFO base_tasks Pass: AddInjectNoise - 6.66904 (ms)
+```
+
+```python
+boxed_circuit.draw(
+    "mpl", fold=-1, scale=0.3, idle_wires=False, wire_order=wire_order, measure_arrows=False
+)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_3.png)
+
+### Kanonische Basismessungen vorbereiten
+Aufgrund der Art und Weise, wie Qubits bei der Identifizierung eindeutiger 2Q-Schichten beschriftet werden, muss besondere Sorgfalt beim Verfolgen der Qubit-Reihenfolge aufgewendet werden. Im Folgenden führen wir den Begriff `canonical_qubits` ein, um die Qubit-Reihenfolge bei der Übergabe an den Executor angemessen zu aktualisieren, was sich daraus ergibt, wie die Qubit-Reihenfolge beim Boxing von Circuits und beim Finden eindeutiger Anweisungen erfasst wird. Einzelheiten findest du in der Dokumentation zur [Qubit-Reihenfolge-Konvention](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention).
+
+```python
+# Determine the canonical qubits order
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+
+# map canonical qubit to physical (isa) qubit
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}
+# map physical (isa) qubit to virtual qubit (index in original circuit)
+p_2_v = {p: v for v, p in enumerate(layout)}
+# compute map between virtual and canonical qubit indices.
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}
+
+assert len(c_2_v) == num_qubits
+
+bases_canon = [
+    np.array([base_i[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base_i in bases_virt
+]
+```
