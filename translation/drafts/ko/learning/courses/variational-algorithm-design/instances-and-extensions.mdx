@@ -1,3 +1,288 @@
+---
+title: "인스턴스와 확장"
+sidebar_label: "인스턴스와 확장"
+description: "이 강의에서는 몇 가지 변분 접근법의 전체 워크플로우를 보여주고, 이를 어떻게 변형할 수 있는지 설명합니다."
+notebook_path: "learning/courses/variational-algorithm-design/instances-and-extensions.ipynb"
+---
+
+{/* doqumentation-source-hash: 71761846 */}
+
+<OpenInLabBanner notebookPath="learning/courses/variational-algorithm-design/instances-and-extensions.ipynb" />
+
+
+
+{/* cspell: ignore disp SSVQE's forall */}
+
+이 챕터에서는 다음과 같은 여러 양자 변분 알고리즘을 다룹니다.
+
+* [변분 양자 고유값 해법 (VQE)](https://arxiv.org/abs/1304.3061)
+* [부분 공간 탐색 VQE (SSVQE)](https://arxiv.org/abs/1810.09434)
+* [변분 양자 편향 (VQD)](https://arxiv.org/abs/1805.08138)
+* [양자 샘플링 회귀 (QSR)](https://arxiv.org/pdf/2012.02338)
+
+이 알고리즘들을 활용하면서, 가중치, 페널티, 과다 샘플링, 과소 샘플링 등 맞춤형 변분 알고리즘에 적용할 수 있는 여러 설계 아이디어를 배우게 됩니다. 이러한 개념을 직접 실험해 보고, 그 결과를 커뮤니티와 공유해 주시기 바랍니다.
+
+Qiskit 패턴 프레임워크는 이 모든 알고리즘에 적용됩니다. 단, 단계별로 명시적으로 설명하는 것은 첫 번째 예제에서만 진행합니다.
+## 변분 양자 고유값 해법 (VQE) {#variational-quantum-eigensolver-vqe}
+
+[VQE](https://arxiv.org/abs/1304.3061)는 가장 널리 사용되는 변분 양자 알고리즘 중 하나로, 다른 알고리즘들이 기반으로 삼는 템플릿을 제공합니다.
+
+![VQE가 참조 상태와 안사츠를 사용하여 비용 함수를 추정하고, 변분 파라미터를 통해 반복하는 방식을 보여주는 다이어그램.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-vqe.svg)
+### 1단계: 고전적 입력을 양자 문제로 매핑 {#step-1-map-classical-inputs-to-a-quantum-problem}
+### 이론적 구성 {#theoretical-layout}
+
+VQE의 구성은 간단합니다:
+
+- 참조 연산자 $U_R$ 준비
+  - $|0\rangle$ 상태에서 시작하여 참조 상태 $|\rho\rangle$로 이동합니다.
+- 변분 폼 $U_V(\vec\theta_{i,j})$를 적용하여 안사츠 $U_A(\vec\theta_{i,j})$ 생성
+  - $|\rho\rangle$ 상태에서 $U_V(\vec\theta_{i,j})|\rho\rangle = |\psi(\vec\theta_{i,j})\rangle$로 이동합니다.
+- 유사한 문제가 있는 경우 $i=0$에서 부트스트랩 (일반적으로 고전적 시뮬레이션 또는 샘플링으로 확인)
+  - 각 옵티마이저는 서로 다른 방식으로 부트스트랩되며, 초기 파라미터 벡터 집합 $\Theta_0 := \\{ {\vec\theta_{0,j} | j \in \mathcal{J}_\text{opt}^0} \\}$을 생성합니다 (예: 초기 점 $\vec\theta_0$으로부터).
+- 양자 컴퓨터에서 준비된 모든 상태에 대해 비용 함수 $C(\vec\theta_{i,j}) := \langle \psi(\vec{\theta}) | \hat{H} | \psi(\vec{\theta})\rangle$ 평가.
+- 고전적 옵티마이저를 사용하여 다음 파라미터 집합 $\Theta_{i+1}$ 선택.
+- 수렴에 도달할 때까지 과정 반복.
+
+이것은 비용 함수를 평가하는 단순한 고전적 최적화 루프입니다. 일부 옵티마이저는 기울기 계산, 다음 반복 결정, 또는 수렴 평가를 위해 여러 번의 평가가 필요할 수 있습니다.
+
+다음 관측 가능량에 대한 예제입니다:
+
+$$
+\hat{O}_1 = 2 II - 2 XX + 3 YY - 3 ZZ,
+$$
+### 구현 {#implementation}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime scipy
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import TwoLocal
+import numpy as np
+
+theta_list = (2 * np.pi * np.random.rand(1, 8)).tolist()
+observable = SparsePauliOp.from_list([("II", 2), ("XX", -2), ("YY", 3), ("ZZ", -3)])
+
+reference_circuit = QuantumCircuit(2)
+reference_circuit.x(0)
+
+variational_form = TwoLocal(
+    2,
+    rotation_blocks=["rz", "ry"],
+    entanglement_blocks="cx",
+    entanglement="linear",
+    reps=1,
+)
+
+ansatz = reference_circuit.compose(variational_form)
+
+ansatz.decompose().draw("mpl")
+```
+
+![이전 코드 셀의 출력](/learning/images/courses/variational-algorithm-design/instances-and-extensions/extracted-outputs/db20526e-48d4-44eb-9d2b-6c5d2ce5777e-0.avif)
+
+```python
+def cost_func_vqe(parameters, ansatz, hamiltonian, estimator):
+    """Return estimate of energy from estimator
+
+    Parameters:
+        params (ndarray): Array of ansatz parameters
+        ansatz (QuantumCircuit): Parameterized ansatz circuit
+        hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+        estimator (Estimator): Estimator primitive instance
+
+    Returns:
+        float: Energy estimate
+    """
+
+    estimator_job = estimator.run([(ansatz, hamiltonian, [parameters])])
+    estimator_result = estimator_job.result()[0]
+
+    cost = estimator_result.data.evs[0]
+    return cost
+```
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+```
+
+이 비용 함수를 사용하여 최적 파라미터를 계산할 수 있습니다.
+
+```python
+# SciPy minimizer routine
+from scipy.optimize import minimize
+
+x0 = np.ones(8)
+
+result = minimize(
+    cost_func_vqe, x0, args=(ansatz, observable, estimator), method="COBYLA"
+)
+
+result
+```
+
+```text
+message: Optimization terminated successfully.
+ success: True
+  status: 1
+     fun: -5.999999982445723
+       x: [ 1.741e+00  9.606e-01  1.571e+00  2.115e-05  1.899e+00
+            1.243e+00  6.063e-01  6.063e-01]
+    nfev: 136
+   maxcv: 0.0
+```
+
+### 2단계: 양자 실행을 위한 문제 최적화 {#step-2-optimize-problem-for-quantum-execution}
+
+가장 여유 있는 Backend를 선택하고, `qiskit_ibm_runtime`에서 필요한 컴포넌트를 임포트합니다.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import Session, EstimatorOptions
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+print(backend)
+```
+
+```text
+<IBMBackend('ibm_brisbane')>
+```
+
+최적화 레벨 3의 프리셋 패스 매니저를 사용하여 Circuit을 Transpile하고, 관측 가능량에 해당 레이아웃을 적용합니다.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+isa_ansatz = pm.run(ansatz)
+isa_observable = observable.apply_layout(layout=isa_ansatz.layout)
+```
+
+### 3단계: Qiskit Runtime 프리미티브를 사용한 실행 {#step-3-execute-using-qiskit-runtime-primitives}
+
+이제 IBM Quantum&reg; 하드웨어에서 계산을 실행할 준비가 되었습니다. 비용 함수 최소화는 반복 횟수가 매우 많기 때문에, Runtime Session을 시작합니다. 이렇게 하면 큐에서 한 번만 기다리면 됩니다. 작업이 실행되기 시작하면, 파라미터가 업데이트된 각 반복은 즉시 실행됩니다.
+
+```python
+x0 = np.ones(8)
+
+estimator_options = EstimatorOptions(resilience_level=1, default_shots=10_000)
+
+with Session(backend=backend) as session:
+    estimator = Estimator(mode=session, options=estimator_options)
+
+    result = minimize(
+        cost_func_vqe,
+        x0,
+        args=(isa_ansatz, isa_observable, estimator),
+        method="COBYLA",
+        options={"maxiter": 200, "disp": True},
+    )
+session.close()
+print(result)
+```
+
+### 4단계: 후처리 및 고전적 형식으로 결과 반환 {#step-4-post-process-return-result-in-classical-format}
+
+최소화 루틴이 성공적으로 종료되었음을 확인할 수 있으며, 이는 COBYLA 고전적 옵티마이저의 기본 허용 오차에 도달했음을 의미합니다. 더 정밀한 결과가 필요하다면 더 작은 허용 오차를 지정할 수 있습니다. 위의 시뮬레이터로 얻은 결과와 비교했을 때 결과가 몇 퍼센트 차이가 나므로, 실제로 그럴 필요가 있을 수 있습니다.
+
+얻어진 x 값은 비용 함수를 최소화하는 파라미터에 대한 현재 최선의 추정값입니다. 더 높은 정밀도를 위해 반복하는 경우, 처음에 사용한 x0(1의 벡터) 대신 해당 값을 사용해야 합니다.
+
+마지막으로, 최적화 과정에서 함수가 96번 평가되었음을 확인할 수 있습니다. 이는 최적화 단계 수와 다를 수 있는데, 기울기 추정 시와 같이 일부 옵티마이저는 단일 단계에서 여러 번의 함수 평가를 필요로 하기 때문입니다.
+## 부분 공간 탐색 VQE (SSVQE) {#subspace-search-vqe-ssvqe}
+
+[SSVQE](https://arxiv.org/abs/1810.09434)는 VQE의 변형으로, 고유값이 $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$이고 $N\geq k$인 관측 가능량 $\hat{H}$의 처음 $k$개 고유값을 구할 수 있습니다. 일반성을 잃지 않고 $\lambda_0<\lambda_1<...<\lambda_{N-1}$로 가정합니다. SSVQE는 가중치가 가장 큰 항의 최적화를 우선시하는 가중치를 추가하는 새로운 아이디어를 도입합니다.
+
+![부분 공간 탐색 VQE가 변분 알고리즘의 컴포넌트를 사용하는 방식을 보여주는 다이어그램.](/learning/images/courses/variational-algorithm-design/instances-and-extensions/instances-ssvqe.svg)
+
+이 알고리즘을 구현하려면 $k$개의 상호 직교하는 참조 상태 $\{ |\rho_j\rangle \}_{j=0}^{k-1}$가 필요합니다. 즉, $j,l<k$에 대해 $\langle \rho_j | \rho_l \rangle = \delta_{jl}$이어야 합니다. 이 상태들은 Pauli 연산자를 사용하여 구성할 수 있습니다. 이 알고리즘의 비용 함수는 다음과 같습니다:
+
+$$
+\begin{aligned}
+C(\vec{\theta})
+
+& := \sum_{j=0}^{k-1} w_j \langle \rho_j | U_{V}^{\dagger}(\vec{\theta})\hat{H} U_{V}(\vec{\theta})|\rho_j \rangle \\[1mm]
+
+& := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle \\[1mm]
+
+\end{aligned}
+$$
+
+여기서 $w_j$는 $j<l<k$이면 $w_j>w_l$을 만족하는 임의의 양수이며, $U_V(\vec{\theta})$는 사용자 정의 변분 폼입니다.
+
+SSVQE 알고리즘은 서로 다른 고유값에 해당하는 고유 상태가 상호 직교한다는 사실에 기반합니다. 구체적으로, $U_V(\vec{\theta})|\rho_j\rangle$와 $U_V(\vec{\theta})|\rho_l\rangle$의 내적은 다음과 같이 표현할 수 있습니다:
+
+$$
+\begin{aligned}
+\langle \rho_j | U_{V}^{\dagger}(\vec{\theta})U_{V}(\vec{\theta})|\rho_l \rangle
+
+& = \langle \rho_j | I |\rho_l \rangle \\[1mm]
+
+& = \langle \rho_j | \rho_l \rangle \\[1mm]
+
+& = \delta_{jl}
+
+\end{aligned}
+$$
+
+첫 번째 등식은 $U_{V}(\vec{\theta})$가 양자 연산자이므로 유니타리하기 때문에 성립합니다. 마지막 등식은 참조 상태 $|\rho_j\rangle$의 직교성 때문에 성립합니다. 유니타리 변환을 통해 직교성이 보존된다는 사실은 양자 정보 과학에서 표현되는 정보 보존 원리와 깊이 연관되어 있습니다. 이 관점에서, 비유니타리 변환은 정보가 손실되거나 주입되는 과정을 나타냅니다.
+
+가중치 $w_j$는 모든 상태가 고유 상태가 되도록 보장하는 데 도움이 됩니다. 가중치가 충분히 다를 경우, 가장 큰 가중치(즉, $w_0$)를 가진 항이 최적화 과정에서 다른 항들보다 우선시됩니다. 그 결과, 상태 $U_{V}(\vec{\theta})|\rho_0 \rangle$는 $\lambda_0$에 해당하는 고유 상태가 됩니다. $\{ U_{V}(\vec{\theta})|\rho_j\rangle \}_{j=0}^{k-1}$가 상호 직교하기 때문에, 나머지 상태들은 이에 직교하며, 따라서 고유값 $\{\lambda_1,...,\lambda_{N-1}\}$에 해당하는 부분 공간 내에 포함됩니다.
+
+나머지 항들에 동일한 논리를 적용하면, 다음 우선순위는 가중치 $w_1$을 가진 항이 됩니다. 따라서 $U_{V}(\vec{\theta})|\rho_1 \rangle$은 $\lambda_1$에 해당하는 고유 상태가 되고, 다른 항들은 $\{\lambda_2,...,\lambda_{N-1}\}$의 고유 공간에 포함됩니다.
+
+귀납적으로 추론하면, $0\leq j < k$에 대해 $U_{V}(\vec{\theta})|\rho_j \rangle$는 $\lambda_j$의 근사 고유 상태가 됩니다.
+
+### 이론적 구성 {#theoretical-layout}
+
+SSVQE의 구성은 다음과 같이 요약할 수 있습니다:
+
+- 유니타리 U_R을 $k$개의 서로 다른 계산 기저 상태에 적용하여 여러 참조 상태 준비
+   - 이 알고리즘은 $j,l<k$에 대해 $\langle \rho_j | \rho_l \rangle = \delta_{jl}$을 만족하는 $k$개의 상호 직교 참조 상태 $\{ |\rho_j\rangle \}_{j=0}^{k-1}$가 필요합니다.
+- 각 참조 상태에 변분 폼 $U_V(\vec\theta_{i,j})$를 적용하여 안사츠 $U_A(\vec\theta_{i,j})$ 생성.
+- 유사한 문제가 있는 경우 $i=0$에서 부트스트랩 (일반적으로 고전적 시뮬레이션 또는 샘플링으로 확인).
+- 양자 컴퓨터에서 준비된 모든 상태에 대해 비용 함수 $C(\vec\theta_{i,j}) := \sum_{j=0}^{k-1} w_j \langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$ 평가.
+  - 이는 관측 가능량에 대한 기댓값 $\langle \psi_{j}(\vec{\theta}) | \hat{H} | \psi_{j}(\vec{\theta}) \rangle$을 계산하고 그 결과에 $w_j$를 곱하는 것으로 분리할 수 있습니다.
+  - 이후, 비용 함수는 가중된 모든 기댓값의 합을 반환합니다.
+- 고전적 옵티마이저를 사용하여 다음 파라미터 집합 $\Theta_{i+1}$ 결정.
+- 수렴에 도달할 때까지 위 단계를 반복.
+
+평가에서 SSVQE의 비용 함수를 재구성하게 되지만, 솔루션을 이해하는 데 도움이 되는 코드 스니펫을 먼저 살펴보겠습니다:
+
+```python
+import numpy as np
+
+def cost_func_ssvqe(
+    params, initialized_anastz_list, weights, ansatz, hamiltonian, estimator
+):
+    # """Return estimate of energy from estimator
+
+    # Parameters:
+    #     params (ndarray): Array of ansatz parameters
+    #     initialized_anastz_list (list QuantumCircuit): Array of initialised ansatz with reference
+    #     weights (list): List of weights
+    #     ansatz (QuantumCircuit): Parameterized ansatz circuit
+    #     hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
+    #     estimator (Estimator): Estimator primitive instance
+
+    # Returns:
+    #     float: Weighted energy estimate
+    # """
+
+    energies = []
+
+    # Define SSVQE
+
+    weighted_energy_sum = np.dot(energies, weights)
+    return weighted_energy_sum
+```
 ## Variational Quantum Deflation (VQD)
 
 [VQD](https://arxiv.org/abs/1805.08138)는 VQE를 확장하여, 고유값이 $\{\lambda_0, \lambda_1,...,\lambda_{N-1}\}$인 관측량 $\hat{H}$에서 ($N\geq k$인 경우) 첫 번째 고유값 하나만이 아니라 처음 $k$개의 고유값을 구하는 반복적인 방법입니다. 이 절의 나머지 부분에서는 일반성을 잃지 않고 $\lambda_0\leq\lambda_1\leq...\leq\lambda_{N-1}$이라고 가정합니다. VQD는 최적화 과정을 안내하기 위한 페널티 비용의 개념을 도입합니다.
