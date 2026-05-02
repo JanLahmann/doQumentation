@@ -1,0 +1,139 @@
+---
+title: "QVC와 QNN"
+sidebar_label: "QVC와 QNN"
+description: "양자 변분 회로를 이미지의 패턴 인식에 적용합니다. 고전 신경망과의 유사점도 함께 살펴봅니다."
+notebook_path: "learning/courses/quantum-machine-learning/qvc-qnn.ipynb"
+---
+
+{/* doqumentation-source-hash: 1b2506a4 */}
+
+<OpenInLabBanner notebookPath="learning/courses/quantum-machine-learning/qvc-qnn.ipynb" />
+
+
+
+{/* cspell:ignore yticks hspace VQCs linesize, imshow, minpos, nonumber, zzcircuit, zcircuit, pcircuit, zzcx, Schuld, Francesco, Peruccione, Vojtech, Adrian, Perez, Cervera, Lierta, Elies, Fuster, Jose, Latorre, Sweke, Jakob */}
+
+# 양자 변분 Circuit과 양자 신경망
+
+이 강의에서는 데이터 분류 작업을 위한 여러 변분 양자 회로를 구현합니다. 이를 변분 양자 분류기(VQC)라고 합니다. 한때는 고전 신경망과의 유사성을 들어 VQC의 일부를 양자 신경망(QNN)이라고 부르는 것이 일반적이었습니다. 실제로 컨볼루션 레이어와 같이 고전 신경망에서 차용한 구조가 VQC에서 중요한 역할을 하는 경우가 있습니다. 이처럼 유사성이 강한 경우에는 QNN이 유용한 표현일 수 있습니다. 하지만 매개변수화된 양자 회로가 반드시 신경망의 일반적인 구조를 따를 필요는 없습니다. 예를 들어, 모든 데이터를 첫 번째(입력) 레이어에서 로드할 필요는 없으며, 일부 데이터를 첫 번째 레이어에서 로드하고 몇 가지 Gate를 적용한 후 추가 데이터를 로드하는 방식(데이터 "재업로드"라고 불리는 과정)도 가능합니다. 따라서 QNN은 매개변수화된 양자 회로의 부분 집합으로 생각해야 하며, 고전 신경망과의 유사성에만 얽매여 유용한 양자 회로를 탐색하는 것을 제한해서는 안 됩니다.
+
+이 강의에서 다루는 데이터셋은 수평 및 수직 줄무늬가 포함된 이미지로 구성되며, 목표는 줄의 방향에 따라 새로운 이미지를 두 범주 중 하나로 분류하는 것입니다. 이를 VQC를 사용하여 수행합니다. 진행하면서 계산을 개선하고 확장하는 방법도 살펴봅니다. 여기서 사용하는 데이터셋은 고전적으로 분류하기가 매우 쉽습니다. 단순함 때문에 선택한 것으로, 이 문제의 양자적 측면에 집중하고 데이터셋의 특성이 양자 회로의 어떤 부분으로 변환될 수 있는지 살펴보기 위함입니다. 고전 알고리즘이 매우 효율적인 이처럼 단순한 경우에는 양자 속도 향상을 기대하는 것이 합리적이지 않습니다.
+
+이 강의를 마치면 다음을 할 수 있어야 합니다:
+* 이미지에서 양자 Circuit으로 데이터 로드하기
+* VQC(또는 QNN)용 Ansatz를 구성하고 문제에 맞게 조정하기
+* VQC/QNN을 훈련하고 테스트 데이터에서 정확한 예측에 사용하기
+* 문제를 확장하고 현재 양자 컴퓨터의 한계 인식하기
+## 데이터 생성 {#data-generation}
+
+먼저 데이터를 구성하겠습니다. 데이터셋은 Qiskit 패턴 프레임워크의 일부로 명시적으로 생성되지 않는 경우가 많습니다. 하지만 데이터 유형과 준비는 머신러닝에 양자 컴퓨팅을 성공적으로 적용하는 데 매우 중요합니다. 아래 코드는 정해진 픽셀 크기의 이미지 데이터셋을 정의합니다. 이미지의 전체 행 또는 열 하나는 $\pi/2$ 값이 할당되고, 나머지 픽셀에는 구간 $(0,\pi/4)$의 무작위 값이 할당됩니다. 무작위 값은 데이터의 노이즈입니다. 코드를 훑어보며 이미지가 어떻게 생성되는지 이해해 보세요. 나중에 이미지를 더 크게 확장할 것입니다.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-ibm-runtime scipy scikit-learn
+```
+
+```python
+# This code defines the images to be classified:
+
+import numpy as np
+
+# Total number of "pixels"/qubits
+size = 8
+# One dimension of the image (called vertical, but it doesn't matter). Must be a divisor of `size`
+vert_size = 2
+# The length of the line to be detected (yellow). Must be less than or equal to the smallest dimension of the image (`<=min(vert_size,size/vert_size)`
+line_size = 2
+
+def generate_dataset(num_images):
+    images = []
+    labels = []
+    hor_array = np.zeros((size - (line_size - 1) * vert_size, size))
+    ver_array = np.zeros((round(size / vert_size) * (vert_size - line_size + 1), size))
+
+    j = 0
+    for i in range(0, size - 1):
+        if i % (size / vert_size) <= (size / vert_size) - line_size:
+            for p in range(0, line_size):
+                hor_array[j][i + p] = np.pi / 2
+            j += 1
+
+    # Make two adjacent entries pi/2, then move down to the next row. Careful to avoid the "pixels" at size/vert_size - linesize, because we want to fold this list into a grid.
+
+    j = 0
+    for i in range(0, round(size / vert_size) * (vert_size - line_size + 1)):
+        for p in range(0, line_size):
+            ver_array[j][i + p * round(size / vert_size)] = np.pi / 2
+        j += 1
+
+    # Make entries pi/2, spaced by the length/rows, so that when folded, the entries appear on top of each other.
+
+    for n in range(num_images):
+        rng = np.random.randint(0, 2)
+        if rng == 0:
+            labels.append(-1)
+            random_image = np.random.randint(0, len(hor_array))
+            images.append(np.array(hor_array[random_image]))
+
+        elif rng == 1:
+            labels.append(1)
+            random_image = np.random.randint(0, len(ver_array))
+            images.append(np.array(ver_array[random_image]))
+            # Randomly select 0 or 1 for a horizontal or vertical array, assign the corresponding label.
+
+        # Create noise
+        for i in range(size):
+            if images[-1][i] == 0:
+                images[-1][i] = np.random.rand() * np.pi / 4
+    return images, labels
+
+hor_size = round(size / vert_size)
+```
+
+위 코드는 이미지에 수직선(+1) 또는 수평선(-1)이 포함되어 있는지를 나타내는 레이블도 생성했습니다. 이제 sklearn을 사용하여 100개의 이미지 데이터셋을 훈련 세트와 테스트 세트(해당 레이블 포함)로 분할합니다. 여기서는 데이터셋의 $70%$를 훈련에 사용하고 나머지 $30%$는 테스트용으로 보류합니다.
+
+```python
+from sklearn.model_selection import train_test_split
+
+np.random.seed(42)
+images, labels = generate_dataset(200)
+
+train_images, test_images, train_labels, test_labels = train_test_split(
+    images, labels, test_size=0.3, random_state=246
+)
+```
+
+데이터셋의 몇 가지 요소를 그려서 이 줄들이 어떻게 생겼는지 확인해 보겠습니다:
+
+```python
+import matplotlib.pyplot as plt
+
+# Make subplot titles so we can identify categories
+titles = []
+for i in range(8):
+    title = "category: " + str(train_labels[i])
+    titles.append(title)
+
+# Generate a figure with nested images using subplots.
+fig, ax = plt.subplots(4, 2, figsize=(10, 6), subplot_kw={"xticks": [], "yticks": []})
+
+for i in range(8):
+    ax[i // 2, i % 2].imshow(
+        train_images[i].reshape(vert_size, hor_size),
+        aspect="equal",
+    )
+    ax[i // 2, i % 2].set_title(titles[i])
+plt.subplots_adjust(wspace=0.1, hspace=0.3)
+```
+
+![Output of the previous code cell](/learning/images/courses/quantum-machine-learning/qvc-qnn/extracted-outputs/ac9e4239-8c1a-4798-a8e7-80347c29150c-0.avif)
+
+각 이미지는 간단한 리스트 형태로 ```train_labels```에 레이블과 함께 저장되어 있습니다:
+
+```python
+print(train_labels[:8])
+```
+
+```text
+[1, 1, 1, 1, -1, 1, 1, 1]
+```
