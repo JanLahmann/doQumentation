@@ -1,0 +1,220 @@
+---
+title: "Розрізання вентилів для зменшення ширини схеми"
+sidebar_label: "Розрізання вентилів для зменшення ширини схеми"
+notebook_path: "qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb"
+---
+{/* doqumentation-source-hash: 00531414 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb" />
+
+
+У цьому блокноті ми пройдемо кроки [шаблону Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns), використовуючи **розрізання схем** для зменшення кількості кубітів у схемі. Ми розріжемо вентилі, щоб мати змогу відновити математичне сподівання чотирикубітної схеми, використовуючи лише двокубітні експерименти.
+
+Ось кроки, які ми виконаємо:
+
+- **Крок 1: Відображення задачі на квантові схеми та оператори**:
+    - Відобразити гамільтоніан на квантову схему.
+- **Крок 2: Оптимізація для цільового апаратного забезпечення** [_Використовує аддон cutting_]:
+    - <font color='#0F62FE'>Розрізати схему та спостережуваний оператор.</font>
+    - Транспілювати підексперименти для апаратного забезпечення.
+- **Крок 3: Виконання на цільовому апаратному забезпеченні**:
+    - Запустити підексперименти, отримані на кроці 2, використовуючи примітив `Sampler`.
+- **Крок 4: Постобробка результатів** [_Використовує аддон cutting_]:
+    - <font color='#0F62FE'>Об'єднати результати кроку 3 для відновлення математичного сподівання відповідного спостережуваного оператора.</font>
+## Крок 1: Відображення
+
+### Створення схеми для розрізання
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(4, entanglement="linear", reps=2)
+qc.assign_parameters([0.4] * len(qc.parameters), inplace=True)
+
+qc.draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_1.png)
+
+### Задання спостережуваного оператора
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+```
+
+## Крок 2: Оптимізація
+
+### Розділення схеми та спостережуваного оператора відповідно до заданого розбиття кубітів
+
+Кожна мітка в `partition_labels` відповідає кубіту `circuit` з тим самим індексом. Кубіти зі спільною міткою розбиття будуть згруповані разом, а нелокальні вентилі, що охоплюють більше одного розбиття, будуть розрізані.
+
+**Примітка:** Аргумент ``observables`` функції `partition_problem` має тип `PauliList`. Коефіцієнти та фази доданків спостережуваного оператора ігноруються під час розкладання задачі та виконання підекспериментів. Їх можна повторно застосувати під час відновлення математичного сподівання.
+
+```python
+from qiskit_addon_cutting import partition_problem
+
+partitioned_problem = partition_problem(
+    circuit=qc, partition_labels="AABB", observables=observable.paulis
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+```
+
+### Візуалізація розкладеної задачі
+
+```python
+subobservables
+```
+
+```text
+{'A': PauliList(['II', 'ZI', 'ZZ', 'XI', 'ZZ', 'IX']),
+ 'B': PauliList(['ZZ', 'IZ', 'II', 'XI', 'ZI', 'IX'])}
+```
+
+```python
+subcircuits["A"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_2.png)
+
+```python
+subcircuits["B"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_3.png)
+
+### Обчислення надлишку вибірки для обраних розрізів
+
+Тут ми розрізаємо два вентилі CNOT, що призводить до надлишку вибірки $9^2$.
+
+Докладніше про надлишок вибірки, що виникає внаслідок розрізання схем, дивись у [пояснювальних матеріалах](../explanation/index.rst).
+
+```python
+import numpy as np
+
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 81.0
+```
+
+### Генерація підекспериментів для запуску на бекенді
+
+`generate_cutting_experiments` приймає аргументи `circuits`/`observables` як словники, що відображають мітки розбиття кубітів на відповідні `subcircuit`/`subobservables`.
+
+Для симуляції математичного сподівання повнорозмірної схеми з розкладених вентилів генерується спільний квазіймовірнісний розподіл, з якого породжується велика кількість підекспериментів, які потім виконуються на одному або кількох бекендах. Кількість вибірок з розподілу контролюється параметром `num_samples`, і для кожної унікальної вибірки задається один об'єднаний коефіцієнт. Докладніше про обчислення коефіцієнтів дивись у [пояснювальних матеріалах](../explanation/index.rst).
+
+```python
+from qiskit_addon_cutting import generate_cutting_experiments
+
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits, observables=subobservables, num_samples=np.inf
+)
+```
+
+### Вибір бекенду
+
+Тут ми використовуємо фейковий бекенд, що змусить Qiskit Runtime працювати в локальному режимі (тобто на локальному симуляторі).
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+
+backend = FakeManilaV2()
+```
+
+### Підготовка підекспериментів для бекенду
+
+Перед надсиланням схем до Qiskit Runtime їх необхідно транспілювати з нашим бекендом як цільовим.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+# Transpile the subexperiments to ISA circuits
+pass_manager = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_subexperiments = {
+    label: pass_manager.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+## Крок 3: Виконання
+
+### Запуск підекспериментів за допомогою примітиву Qiskit Runtime Sampler
+
+```python
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+# Submit each partition's subexperiments to the Qiskit Runtime Sampler
+# primitive, in a single batch so that the jobs will run back-to-back.
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+```text
+/home/garrison/Qiskit/qiskit-ibm-runtime/qiskit_ibm_runtime/session.py:157: UserWarning: Session is not supported in local testing mode or when using a simulator.
+  warnings.warn(
+```
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+## Крок 4: Постобробка
+
+### Відновлення математичного сподівання
+
+Відновлюємо математичні сподівання для кожного доданку спостережуваного оператора та об'єднуємо їх для відновлення математичного сподівання вихідного спостережуваного оператора.
+
+```python
+from qiskit_addon_cutting import reconstruct_expectation_values
+
+# Get expectation values for each observable term
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+```
+
+### Порівняння відновленого математичного сподівання з точним математичним сподіванням для вихідної схеми та спостережуваного оператора
+
+```python
+from qiskit_aer.primitives import EstimatorV2
+
+estimator = EstimatorV2()
+exact_expval = estimator.run([(qc, observable)]).result()[0].data.evs
+print(f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}")
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}")
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.6991539
+Exact expectation value: 0.56254612
+Error in estimation: 0.13660778
+Relative error in estimation: 0.24283836
+```
+
+<TutorialFeedback />
