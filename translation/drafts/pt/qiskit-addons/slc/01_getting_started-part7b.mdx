@@ -1,0 +1,170 @@
+
+#### Benefícios dos clusters para reduzir o overhead de amostragem para um dado tempo de computação clássica
+
+```python
+xticks = np.arange(0, 11)
+
+fig, ax = plt.subplots()
+ax.scatter([0], [total_gamma**2], marker="D", c="tab:orange", label="full PEC")
+ax.plot(100 * np.array(biases), np.array(costs), "o-", c="tab:blue", label="local PEC+SLC")
+ax.plot(
+    100 * np.array(biases_cluster),
+    np.array(costs_cluster),
+    "o-",
+    c="tab:green",
+    label="cluster PEC+SLC",
+)
+ax.set_yscale("log")
+ax.set_ylim([100, 50000])
+ax.set_xticks(xticks, [f"{x:.1f}" for x in xticks])
+
+ax.set_xlabel("Remaining Bias [%]")
+ax.set_ylabel(r"Sampling Overhead, $\gamma^2$")
+ax.grid()
+ax.legend()
+fig.suptitle("PEC sampling overhead reduction due to SLC")
+```
+
+```text
+Text(0.5, 0.98, 'PEC sampling overhead reduction due to SLC')
+```
+
+![Plot output](./_01_getting_started_imgs/output_19.png)
+
+```python
+chosen_bias_thres = 0.1
+```
+
+```python
+local_scales, sampling_cost, residual_bias_bound = compute_local_scales(
+    boxed_circuit,
+    merged_bounds_cluster,
+    refs_2_plm,
+    sampling_cost_budget=np.inf,
+    bias_tolerance=chosen_bias_thres,
+)
+print(
+    f"PEC+SLC sampling cost (gamma^2) = {sampling_cost} w/ remaining bias = {100 * residual_bias_bound:.1f}%"
+)
+```
+
+```text
+PEC+SLC sampling cost (gamma^2) = 563.1803982530477 w/ remaining bias = 9.3%
+```
+
+### c. Execute o circuito de interesse com antirruído
+#### c.i. Prepare o circuito template usando `samplex`
+O `samplex` é uma saída do método `build` do Samplomatic, que codifica todas as informações necessárias para gerar parâmetros aleatorizados para o `template_circuit`. Esses parâmetros são então usados para configurar os objetos `QuantumProgram`, que por sua vez são executados em uma QPU com o primitivo `Executor`. Cada `QuantumProgram` pode conter vários itens, que você pode imaginar como um par de `template` e `samplex`.
+
+Consulte o tutorial [Hello samplomatic](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/hello_samplomatic/Samplomatic%20-%20Hello%20World.ipynb) para mais detalhes.
+
+```python
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+```
+
+```python
+# Set up postselection if it's been enabled
+if post_selection_enabled:
+    # Set up post selection PM (to add PS instructions)
+    post_selection_pm = PassManager(
+        [
+            AddSpectatorMeasures(backend.coupling_map),
+            AddPostSelectionMeasures(x_pulse_type="rx"),
+        ]
+    )
+    final_template_circuit = post_selection_pm.run(template_circuit)
+else:
+    final_template_circuit = template_circuit
+```
+
+```text
+2025-11-10 11:22:04,839 INFO base_tasks Pass: AddSpectatorMeasures - 3.41392 (ms)
+2025-11-10 11:22:04,843 INFO base_tasks Pass: AddPostSelectionMeasures - 2.88510 (ms)
+```
+
+#### c.ii. Configure o `QuantumProgram`
+
+```python
+num_randomizations = 4096
+shots_per_randomization = 64
+chunk_size = 256
+```
+
+```python
+# Set up QuantumProgram
+program = QuantumProgram(shots=shots_per_randomization, noise_maps=refs_2_plm)
+
+# no EM
+
+# Collect up a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(0) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# plain PEC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# PEC+SLC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+samplex_inputs |= {"local_scales": local_scales}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+```
+
+#### c.iii. Execute o programa com o primitivo `Executor`
+
+```python
+executor = Executor(backend)
+```
+
+```python
+load_cached_executor_results = True
+```
+
+```python
+if load_cached_executor_results:
+    job_exec = shared_service.job("d46t1q6qsa9s73cb28g0")
+else:
+    job_exec = executor.run(program)
+```
+
+```python
+results_exec = job_exec.result()
+```
