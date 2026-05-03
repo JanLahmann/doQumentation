@@ -1,0 +1,298 @@
+---
+title: "Зменшення глибини схем за допомогою зворотного поширення операторів"
+sidebar_label: "Зменшення глибини схем за допомогою зворотного поширення операторів"
+notebook_path: "qiskit-addons/obp/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: 43a12650 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/obp/01_getting_started.ipynb" />
+
+
+Зворотне поширення операторів — це техніка, яка передбачає поглинання операцій з кінця квантової схеми в оператор Паулі, що зазвичай зменшує глибину схеми ціною збільшення кількості доданків у операторі. Мета полягає в тому, щоб виконати зворотне поширення якомога глибше у схему, не допускаючи надмірного зростання оператора.
+
+Один зі способів дозволити глибше зворотне поширення у схему, водночас запобігаючи надмірному зростанню оператора, — це відкидати доданки з малими коефіцієнтами, замість того щоб додавати їх до оператора. Відкидання доданків може призвести до меншої кількості квантових схем для виконання, однак це спричиняє деяку похибку в кінцевому обчисленні значення очікування, пропорційну величині коефіцієнтів відкинутих доданків.
+У цьому посібнику ми реалізуємо [шаблон Qiskit](https://quantum.cloud.ibm.com/docs/guides/serverless#qiskit-patterns-with-quantum-serverless) для моделювання квантової динаміки ланцюжка спінів Гейзенберга за допомогою зворотного поширення операторів:
+
+- **Крок 1: Відображення на квантову задачу**
+    - Відображення Гамільтоніана, еволюційованого в часі, на квантову схему
+- **Крок 2: Оптимізація задачі**
+    - Розбиття схеми на зрізи
+    - <font color="#0F62FE">Зворотне поширення зрізів зі схеми на спостережуваний оператор Паулі</font>
+    - Об'єднання зрізів, що залишились, в єдину схему
+    - Транспіляція схеми для Backend
+- **Крок 3: Виконання експериментів**
+    - Обчислення значення очікування за допомогою зменшеної схеми та розширеного спостережуваного оператора за допомогою [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) для простоти в цьому блокноті
+- **Крок 4: Відновлення результатів**
+    - Н/Д
+
+**Примітка:** Qiskit умовно описує [шари](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.dagcircuit.DAGCircuit) як розбиття глибини 1 схеми по всіх Qubit. Цей пакет використовує термін **зрізи** для опису шарів довільної глибини. Функція [qiskit_addon_obp.backpropagate](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.backpropagate.html) призначена для зворотного поширення цілих зрізів за раз, тому вибір способу розбиття квантової схеми може суттєво вплинути на ефективність зворотного поширення для конкретної задачі. Більше про **зрізи** ти дізнаєшся нижче.
+## Крок 1: Відображення на квантову задачу {#step-1-map-to-quantum-problem}
+### Відображення часової еволюції квантової моделі Гейзенберга на квантовий експеримент. {#map-the-time-evolution-of-a-quantum-heisenberg-model-to-a-quantum-experiment}
+
+Пакет [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) надає деякі функції багаторазового використання для різних цілей.
+
+Його модуль [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) надає функції для генерації Гамільтоніанів гейзенберзького типу на заданому графі зв'язності.
+Цей граф може бути або [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html), або [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap), що робить його зручним для використання у робочих процесах на базі Qiskit.
+
+Нижче ми спочатку генеруємо `CouplingMap` типу heavy-hex, з якого виділяємо лінійний ланцюжок із 10 Qubit. Зверни увагу, що індекси цієї нової `reduced_coupling_map` знову починаються з нуля.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime rustworkx
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit linear chain on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 5, 12, 8, 18])
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(reduced_coupling_map.graph, method="circo")
+```
+
+![Code output](./_01_getting_started_imgs/output_1.png)
+
+Далі ми генеруємо оператор Паулі, що моделює Гамільтоніан Гейзенберга XYZ.
+
+$$\hat{H} = \sum_{(j,k)\in E} (J_{x} \sigma_j^{x} \sigma_{k}^{x} +
+    J_{y} \sigma_j^{y} \sigma_{k}^{y} + J_{z} \sigma_j^{z} \sigma_{k}^{z}) +
+    \sum_{j\in V} (h_{x} \sigma_j^{x} + h_{y} \sigma_j^{y} + h_{z} \sigma_j^{z})$$
+
+Де $G(V,E)$ — граф наданої карти зв'язності.
+
+```python
+import numpy as np
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIIY', 'IIIIIIIIIZ', 'IIIIIIIIXI', 'IIIIIIIIYI', 'IIIIIIIIZI', 'IIIIIIIXII', 'IIIIIIIYII', 'IIIIIIIZII', 'IIIIIIXIII', 'IIIIIIYIII', 'IIIIIIZIII', 'IIIIIXIIII', 'IIIIIYIIII', 'IIIIIZIIII', 'IIIIXIIIII', 'IIIIYIIIII', 'IIIIZIIIII', 'IIIXIIIIII', 'IIIYIIIIII', 'IIIZIIIIII', 'IIXIIIIIII', 'IIYIIIIIII', 'IIZIIIIIII', 'IXIIIIIIII', 'IYIIIIIIII', 'IZIIIIIIII', 'XIIIIIIIII', 'YIIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+З оператора Qubit ми можемо згенерувати квантову схему, що моделює його часову еволюцію.
+Знову ж таки, модуль [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) приходить на допомогу з зручною функцією саме для цього:
+
+```python
+from qiskit.synthesis import LieTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=2),
+)
+circuit.draw("mpl", style="iqp", scale=0.6)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_2.png)
+
+## Крок 2: Оптимізація задачі {#step-2-optimize-the-problem}
+### Створення зрізів схеми для зворотного поширення {#create-circuit-slices-to-backpropagate}
+
+Пам'ятай, що функція ``backpropagate`` виконуватиме зворотне поширення цілих зрізів схеми за раз, тому вибір способу розбиття може вплинути на ефективність зворотного поширення для конкретної задачі. Тут ми згрупуємо Gate одного типу у зрізи за допомогою функції [slice_by_gate_types](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.slicing.slice_by_gate_types.html).
+
+Для детальнішого обговорення розбиття схем на зрізи перегляньте цей [посібник](https://qiskit.github.io/qiskit-addon-utils/how_tos/create_circuit_slices.html) пакету [qiskit-addon-utils](https://qiskit.github.io/qiskit-addon-utils/index.html).
+
+```python
+from qiskit_addon_utils.slicing import slice_by_gate_types
+
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+### Обмеження розміру оператора під час зворотного поширення {#constrain-how-large-the-operator-may-grow-during-backpropagation}
+
+Під час зворотного поширення кількість доданків в операторі, як правило, швидко наближається до $4^N$, де $N$ — кількість Qubit. Розмір оператора можна обмежити, задавши аргумент ``operator_budget`` функції ``backpropagate``, який приймає екземпляр [OperatorBudget](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.simplify.OperatorBudget.html).
+
+Тут ми вказуємо, що зворотне поширення має зупинитися, коли кількість поквантово комутуючих груп Паулі в операторі перевищить 8.
+
+```python
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+
+op_budget = OperatorBudget(max_qwc_groups=8)
+```
+
+### Зворотне поширення зрізів зі схеми {#backpropagate-slices-from-the-circuit}
+
+Спочатку ми задамо спостережуваний оператор Паулі-Z на Qubit 0 і виконаємо зворотне поширення зрізів зі схеми часової еволюції доти, доки доданки спостережуваного оператора більше не вдаватиметься об'єднати у 8 або менше поквантово комутуючих груп Паулі.
+
+Нижче ти побачиш, що ми виконали зворотне поширення 7 зрізів, але використали лише 6 із 8 відведених груп Паулі. Це означає, що зворотне поширення ще одного зрізу призведе до перевищення кількості груп Паулі понад 8. Ми можемо перевірити це, перевіривши повернуті метадані.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_utils.slicing import combine_slices
+
+# Specify a single-qubit observable
+observable = SparsePauliOp("IIIIIIIIIZ")
+
+# Backpropagate slices onto the observable
+bp_obs, remaining_slices, metadata = backpropagate(observable, slices, operator_budget=op_budget)
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 18 terms, which can be combined into 8 groups.
+Note that backpropagating one more slice would result in 27 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_3.png)
+
+Далі ми задамо ту саму задачу з тими самими обмеженнями на розмір вихідного спостережуваного оператора. Однак цього разу ми виділимо бюджет похибки для кожного зрізу за допомогою функції [setup_budet](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.truncating.setup_budget.html). Доданки Паулі з малими коефіцієнтами відкидатимуться з кожного зрізу до вичерпання бюджету похибки, а залишок бюджету переноситиметься до наступного зрізу.
+
+Щоб увімкнути це відкидання, нам потрібно налаштувати бюджет похибки наступним чином:
+
+```python
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+Зверни увагу, що виділяючи похибку `5e-3` на зріз для відкидання, ми можемо прибрати ще 3 зрізи зі схеми, залишаючись у межах початкового бюджету з 8 комутуючих груп Паулі в спостережуваному операторі. За замовчуванням `backpropagate` використовує норму L1 відкинутих коефіцієнтів для обмеження загальної похибки від відкидання. Щодо інших варіантів зверніться до [посібника про задання p_norm](https://qiskit.github.io/qiskit-addon-obp/how_tos/bound_error_using_p_norm.html).
+
+У цьому конкретному прикладі, де ми виконали зворотне поширення 10 зрізів, загальна похибка від відкидання не має перевищувати ``(5e-3 error/slice) * (10 slices) = 5e-2``.
+Для детальнішого обговорення розподілу бюджету похибки по зрізах перегляньте [цей посібник](https://qiskit.github.io/qiskit-addon-obp/how_tos/truncate_operator_terms.html).
+
+```python
+# Run the same experiment but truncate observable terms with small coefficients
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget, truncation_error_budget=truncation_error_budget
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(remaining_slices_trunc, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 19 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 4.933e-02
+Note that backpropagating one more slice would result in 27 terms across 13 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_4.png)
+
+### Тепер, коли у нас є зменшені анзаці та розширені спостережувані оператори, ми можемо транспілювати наші експерименти для Backend. {#now-that-we-have-our-reduced-ansatze-and-expanded-observables-we-can-transpile-our-experiments-to-the-backend}
+
+Тут ми використаємо 14-Qubit [FakeMelbourneV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/fake-provider-fake-melbourne-v2) з [qiskit-ibm-runtime](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime), щоб продемонструвати, як виконати транспіляцію для QPU Backend.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+# Specify a backend and a pass manager for transpilation
+backend = FakeMelbourneV2()
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+## Крок 3: Виконання квантових експериментів {#step-3-execute-quantum-experiments}
+### Обчислення значення очікування {#calculate-expectation-value}
+
+Нарешті, ми можемо запустити експерименти зі зворотним поширенням і порівняти їх із повним експериментом за допомогою безшумного [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator). Можна побачити, що значення очікування після зворотного поширення без відкидання еквівалентне точному значенню в межах числової точності.
+
+Значення очікування на операторі з відкинутими доданками має деяку похибку порядку ``1e-4``, що знаходиться в межах очікуваного допуску.
+
+**Примітка:** Ми використовуємо примітив Estimator на основі вектора стану, щоб проілюструвати вплив відкидання на вихідні дані. Для запуску на Backend, для якого були транспільовані експерименти на Кроці 2, слід імпортувати [EstimatorV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/estimator-v2) з ``qiskit-ibm-runtime`` і передати екземпляр Backend до конструктора.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+estimator = Estimator()
+
+# Run the experiments using Estimator primitive
+result_exact = estimator.run([(circuit_isa, observable_isa)]).result()[0].data.evs.item()
+result_bp = estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+result_bp_trunc = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)]).result()[0].data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+print(f"    - Expected Error for truncated observable: {metadata.accumulated_error(0):.3e}")
+print(f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc):.3e}")
+```
+
+```text
+Exact expectation value: 0.8854160687717507
+Backpropagated expectation value: 0.8854160687717532
+Backpropagated expectation value with truncation: 0.8850236647156059
+    - Expected Error for truncated observable: 4.933e-02
+    - Observed Error for truncated observable: 3.924e-04
+```
+
+<TutorialFeedback />
