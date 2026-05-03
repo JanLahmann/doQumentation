@@ -1,0 +1,179 @@
+#### ノイズを学習する
+
+実験を実行する前に、Circuit内のエンタングリングゲートと測定に影響するノイズモデルを学習します。誤りを効果的に軽減するためには、正確なノイズモデルが必要です。実験を実行する直前にノイズを学習することで、ゲートの実行中に実際に影響するノイズをノイズモデルが忠実に記述できる可能性が最も高くなります。
+
+ノイズを学習する前に、Circuit内のユニークな2-Qubitレイヤーを特定する必要があります。これにより、Circuit全体のノイズを学習するために必要なショット数を最小限に抑えることができます。``samplomatic``の``find_unique_box_instructions``を使用して、測定レイヤーを含むボックス化されたCircuitからユニークなレイヤーを取得します。これらが、ノイズ学習器に渡すレイヤーです。
+
+レイヤーがわかったら、ノイズを学習できます。考慮するパラメーターはいくつかあります：
+
+- `num_randomizations`: 学習Circuit構成ごとに使用するランダムCircuitの数
+- `shots_per_randomization`: ランダム学習Circuitごとに使用するショットの合計数
+- `layer_pair_depths`: 学習実験で使用するCircuit深さ（ペア数で測定）
+- `post_selection`: 測定後のパルスを実装するために`rx`ゲートを使用して、学習中にエッジベースのポスト選択を使用します
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.utils import find_unique_box_instructions
+
+# Load noise learner data from a shared job
+load_saved_nl_result = True
+
+# Noise learning parameters
+num_randomizations_nl = 64
+shots_per_randomization_nl = 128
+strategy = "edge"
+enable_postsel = True
+x_pulse_type = "rx"
+
+# Find the unique instructions (layers) from boxed-up circuit
+unique_2q_layers_and_meas = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+
+noise_learner_params = {
+    "num_randomizations": num_randomizations_nl,
+    "shots_per_randomization": shots_per_randomization_nl,
+    "layer_pair_depths": [1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    "post_selection": {
+        "enable": enable_postsel,
+        "strategy": strategy,
+        "x_pulse_type": x_pulse_type,
+    },
+    "experimental": {},
+}
+# set the options
+noise_learner_options = NoiseLearnerV3Options(**noise_learner_params)
+
+# run the noise learner job
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+noise_learner_job = noise_learner.run(unique_2q_layers_and_meas)
+noise_learner_result = noise_learner_job.result()
+
+nl_metadata = noise_learner_params | {"layout": layout}
+```
+
+```python
+import matplotlib.pyplot as plt
+
+hw_rates_1q = []
+hw_rates_2q = []
+for nlr in noise_learner_result[:2]:
+    plm_list = nlr.to_pauli_lindblad_map().to_sparse_list()
+    hw_rates_1q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 1]
+    hw_rates_2q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 2]
+hw_rates_1q = sorted(hw_rates_1q)
+hw_rates_2q = sorted(hw_rates_2q)
+median_1q = hw_rates_1q[len(hw_rates_1q) // 2]
+median_2q = hw_rates_2q[len(hw_rates_2q) // 2]
+fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+ax.scatter(
+    (hw_rates_1q),
+    [(i) / (len(hw_rates_1q) - 1) for i in range(len(hw_rates_1q))],
+    color="red",
+    label="1q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_1q, 0, 1, color="red")
+ax.text(median_1q * 1.1, 0.1, f"{median_1q:.2e}")
+ax.scatter(
+    (hw_rates_2q),
+    [(i) / (len(hw_rates_2q) - 1) for i in range(len(hw_rates_2q))],
+    color="blue",
+    label="2q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_2q, 0, 1, color="blue")
+ax.text(median_2q * 1.1, 0.2, f"{median_2q:.2e}")
+ax.set_title("Learned noise rates")
+ax.set_xlabel("Noise rate")
+ax.set_yticks([])
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x321dd63f0>
+```
+
+![プロット出力](./_01_generate_noise_mitigating_observable_imgs/output_5.png)
+
+#### Circuit のボックスを学習済みノイズに関連付ける
+
+ここでは、各ボックスの``InjectNoise``参照IDと、そのボックス内のエンタングリングゲートに影響する学習済みノイズモデル（`PauliLindbladMap`）との間のマッピングを作成します。
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### 学習済みのアンチノイズを通じてオブザーバブルを伝播させ、ノイズ緩和オブザーバブルを取得する
+
+上述のように、これは2つのステップで行われます。まず、アンチノイズ生成器をCircuitの末端まで伝播させます。その後、その発展した生成器を通じてオブザーバブルを伝播させます。このプロセスは、Circuit内の各アンチノイズ生成器に対して繰り返されます。この実装では、特定のレイヤー内の各生成器がCircuitの末端まで並列に伝播されます。さらに、Pythonのマルチプロセッシングを使用して、アンチノイズの順伝播とオブザーバブルの逆伝播の両方を並列に実行します。これにより、発展した生成器がメモリに蓄積されることを防ぎ、計算リソースの活用を最大化します。
+
+PNAを実行する際は、常にノイジーなCircuitとオブザーバブルを提供する必要があります。ノイジーなCircuitが``InjectNoise``アノテーションを持つボックス化されたCircuitである場合、上記のステップで作成したマッピングを提供する必要があります。``qiskit-aer``の``PauliLindbladError``命令を含む非ボックス化Circuitを渡すこともできます。その場合、``refs_to_noise_models``を提供する必要はありません。主要な入力に加えて、ユーザーが考慮すべきパラメーターは以下の通りです：
+
+- `max_err_terms`: 各アンチノイズ生成器が順伝播される際に保持する項の数。これを大きくすると一般的に精度が向上しますが、この動作が単調に保証されるわけではありません。
+- `max_obs_terms`: 発展したアンチノイズを通じて逆伝播される際に、ノイズ緩和オブザーバブル$\tilde{O}$に保持する項の数。値が大きいほど一般的に精度が向上しますが、単調に保証されるわけではありません。
+- `num_processes`: プロセスに割り当てるコア数。生成器は順伝播され、オブザーバブルに並列に適用されることを覚えておいてください。
+- `search_step`: 逆伝播ステップでは、Pauli基底で2つの演算子を近似的に共役にするための貪欲法が使用されます。この手法は``search_step``を増やすことで高速化できます。詳細については、[pauli-prop ドキュメント](https://qiskit.github.io/pauli-prop/)を参照してください。
+- `num_to_measure`: この変数は``generate_noise_mitigating_observable``の入力ではありませんが、$\tilde{O}$から実際に測定したい項の数を制御するために使用します。ここでは、元のオブザーバブルの項である上位30項のみを測定します。これらの項は、測定することで学習済みゲートノイズを緩和する効果が得られるように再スケーリングされています。$\tilde{O}$から30項しか測定しない場合でも、大きく成長させることは依然として有用であることが多く、先頭の項のスケーリング係数の精度が向上するためです。
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
+Finished! 13560 / 13560 generators propagated.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![プロット出力](./_01_generate_noise_mitigating_observable_imgs/output_6.png)
