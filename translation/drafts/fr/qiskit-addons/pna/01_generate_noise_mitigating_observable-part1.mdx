@@ -1,0 +1,199 @@
+---
+title: "Améliorer les valeurs d'espérance : Absorption du bruit propagé (PNA)"
+sidebar_label: "Améliorer les valeurs d'espérance : Absorption du bruit propagé (PNA)"
+notebook_path: "qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb"
+---
+
+{/* doqumentation-source-hash: 3f45752c */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb" />
+
+
+Dans ce tutoriel, tu vas apprendre à exploiter les derniers outils de l'écosystème Qiskit pour mettre en œuvre un workflow entièrement personnalisable avec atténuation des erreurs. Nous allons présenter la technique PNA et l'utiliser pour atténuer les erreurs de Gate. Nous utiliserons également TREX pour atténuer les erreurs de lecture et la post-sélection pour atténuer les erreurs non capturées dans le modèle de bruit appris.
+
+**Plan**
+- Donner un bref aperçu de ``PNA``
+- Créer un Circuit quantique Trotterisé et un observable. Le transpiler vers le Backend et inclure des mesures de post-sélection.
+- Utiliser ``samplomatic`` pour tournoyer des couches de portes 2Q et des mesures. Trouver les couches 2Q uniques pour réduire le coût d'apprentissage du bruit.
+- Utiliser ``NoiseLearnerV3`` pour apprendre le modèle d'erreur affectant les portes 2Q et les mesures.
+- Utiliser ``qiskit-addon-pna`` pour générer un observable atténuant le bruit
+- Utiliser la primitive ``qiskit-ibm-runtime.Executor`` pour générer les échantillons bruts du QPU reflétant chaque shot pour chaque randomisation de tournoiement et chaque base mesurée
+- Utiliser ``qiskit-addon-utils`` pour post-traiter les données en une valeur d'espérance atténuée.
+### Qu'est-ce que l'absorption du bruit propagé (PNA) ?
+
+***Une technique pour atténuer les erreurs de Gate en propagant l'observable à travers le canal de bruit inverse affectant les portes à 2 qubits, aboutissant à un observable atténuant le bruit.***
+Les portes 2Q dans l'expérience que nous voulons exécuter seront affectées par un bruit substantiel.
+![Noisy experiment](../images/noisy_expt.png)
+Si nous apprenons le modèle de bruit, nous pouvons appliquer son inverse et annuler le bruit.
+![Noise-mitigated experiment](../images/noise_mitigated_expt.png)
+Au lieu d'implémenter le canal de bruit inverse en l'échantillonnant sur le QPU comme dans PEC, nous pouvons l'implémenter classiquement dans l'observable mesuré en utilisant la propagation de Pauli. Cela donne un observable plus complexe qui, lorsqu'il est mesuré, a pour effet d'atténuer le bruit de Gate appris.
+![PNA overview](../images/pna_overview.png)
+### Générer le Circuit Trotter en miroir et l'observable
+
+Pour cette expérience, nous allons étudier la dynamique temporelle d'un modèle d'Ising frappé à 30 sites sur une chaîne de spins 1D. L'Hamiltonien considéré est :
+
+$H = -J\sum\limits_{\langle i,j \rangle} Z_iZ_j + h\sum\limits_iX_i$,
+
+où $J>0$ décrit le couplage des spins voisins les plus proches, $i<j$, et le champ transverse global, $h$, est fixé à $\frac{\pi}{8}$. Plus $h$ est éloigné d'un angle de Clifford (c'est-à-dire $\theta=n\frac{\pi}{2}, n \in \mathbb{Z}$), plus il devient difficile de propager les générateurs d'anti-bruit à travers le Circuit.
+
+Pour le choix de l'observable, nous considérons l'aimantation moyenne par site, $\frac{1}{N} \sum_{i=1}^{N} \langle z_i \rangle$, où $N$ est le nombre de sites.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-pna qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli, SparsePauliOp
+
+num_qubits = 30
+num_trotter_steps = 10
+rx_angle = np.pi / 8
+
+# Avg single-site magnetization
+id_pauli = Pauli("I" * num_qubits)
+observable = SparsePauliOp([id_pauli.dot(Pauli("Z"), [i]) for i in range(num_qubits)]) / num_qubits
+
+# Implement Trotterized kicked-Ising model
+circuit = QuantumCircuit(num_qubits)
+for _step in range(num_trotter_steps):
+    circuit.rx(rx_angle, range(num_qubits))
+    for first_qubit in (1, 2):
+        for idx in range(first_qubit, num_qubits, 2):
+            # equivalent to Rzz(-pi/2):
+            circuit.sdg([idx - 1, idx])
+            circuit.cz(idx - 1, idx)
+circuit.compose(circuit.inverse(), inplace=True)
+circuit.measure_active()
+circuit.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_1.png)
+
+Ensuite, nous allons choisir une chaîne de Qubits sur ``ibm_kingston`` qui affichent de faibles taux d'erreur et transpiler le Circuit vers le Backend.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+backend_name = "ibm_kingston"
+service = QiskitRuntimeService()
+backend = service.backend(backend_name, use_fractional_gates=True)
+
+# Use a chain of low-noise qubits
+layout = [
+    44,
+    45,
+    46,
+    47,
+    57,
+    67,
+    68,
+    69,
+    78,
+    89,
+    88,
+    87,
+    97,
+    107,
+    106,
+    105,
+    117,
+    125,
+    126,
+    127,
+    128,
+    129,
+    118,
+    109,
+    110,
+    111,
+    98,
+    91,
+    92,
+    93,
+]
+
+pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+isa_circuit = pm.run(circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+isa_circuit.draw("mpl", fold=-1)
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 14:30:57,148: Loading account with the given token. A saved account will not be used.
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_2.png)
+
+### Tournoyer les couches de portes 2 Qubits et les mesures, et trouver les couches uniques
+
+Ici, nous nous assurons que le pass manager annote les boîtes avec les annotations ``Twirl`` et ``InjectNoise``, ce qui nous permet d'apprendre le bruit qui affectera notre Circuit et d'associer ce bruit à la couche de Circuit correspondante.
+
+- ``enable_gates/enable_measure: True`` : Encadrer toutes les couches de portes 2q et les mesures terminales. Les portes à un Qubit seront habillées à gauche à l'intérieur des boîtes.
+- ``measure_annotations: all`` Inclure les annotations `Twirl` et `ChangeBasis` sur la boîte de mesure
+- ``twirling_strategy: active`` : Tournoyer tous les Qubits actifs dans chaque boîte contenant des portes intriquées
+- ``inject_noise_targets: gates`` : Les annotations ``InjectNoise`` doivent être ajoutées à toutes les boîtes annotées avec ``Twirl`` contenant des portes intriquées
+- ``inject_noise_strategy: uniform_modification`` : Toutes les couches de bruit doivent être mises à l'échelle de manière équivalente.
+
+```python
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Box up circuit with Twirl and InjectNoise annotations
+pm = generate_boxing_pass_manager(
+    enable_gates=True,
+    enable_measures=True,
+    measure_annotations="all",
+    twirling_strategy="active",
+    inject_noise_targets="gates",
+    inject_noise_strategy="uniform_modification",
+    remove_barriers=True,
+)
+boxed_circuit = pm.run(isa_circuit)
+```
+
+```python
+draw_circ = QuantumCircuit(boxed_circuit.num_qubits)
+draw_circ.append(boxed_circuit.data[0], qargs=boxed_circuit.data[0].qubits)
+draw_circ.append(boxed_circuit.data[1], qargs=boxed_circuit.data[1].qubits)
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_3.png)
+
+### Générer le Circuit modèle et le samplex, définir la façon dont le Circuit sera échantillonné
+
+Ici, nous ajoutons également des mesures spectatrices et de post-sélection, qui sont nécessaires pour effectuer la post-sélection sur les échantillons produits par ``Executor``.
+
+```python
+import samplomatic
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+
+# Add post-selection instructions to the template circuit
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+template_circuit = post_selection_pm.run(template_circuit)
+```
+
+```python
+draw_circ = template_circuit.copy_empty_like()
+draw_circ.data = template_circuit.data[:324]
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_4.png)
