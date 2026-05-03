@@ -1,0 +1,368 @@
+---
+title: "Pagpapabuti ng pagtatantya ng enerhiya ng chemistry Hamiltonian gamit ang SQD"
+sidebar_label: "Pagpapabuti ng pagtatantya ng enerhiya ng chemistry Hamiltonian gamit ang SQD"
+notebook_path: "qiskit-addons/sqd/01_chemistry_hamiltonian.ipynb"
+---
+
+{/* doqumentation-source-hash: 16b72ae6 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/sqd/01_chemistry_hamiltonian.ipynb" />
+
+
+Sa tutorial na ito, nagpapatupad tayo ng isang [Qiskit pattern](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) na nagpapakita kung paano i-post-process ang maingay na quantum samples para mahanap ang pagtatantya ng ground state ng isang chemistry Hamiltonian: ang $N_2$ na molekula sa ekwilibriyo sa 6-31G basis set. Susundin natin ang isang [sample-based quantum diagonalization approach](https://arxiv.org/abs/2405.05068) para i-process ang mga samples mula sa isang ``36``-qubit quantum circuit ansatz (sa kasong ito, isang LUCJ circuit). Para matugunan ang epekto ng quantum noise, ginagamit ang configuration recovery technique.
+
+Maaaring ilarawan ang pattern sa apat na hakbang:
+
+1. **Hakbang 1: Mag-map sa quantum problem**
+    - Gumawa ng ansatz para sa pagtatantya ng ground state
+2. **Hakbang 2: I-optimize ang problem**
+    - I-transpile ang ansatz para sa backend
+3. **Hakbang 3: Magsagawa ng mga eksperimento**
+    - Kumuha ng mga sample mula sa ansatz gamit ang ``Sampler`` primitive
+4. **Hakbang 4: I-post-process ang mga resulta**
+   - Self-consistent configuration recovery loop
+       - I-post-process ang buong set ng bitstring samples, gamit ang naunang kaalaman sa bilang ng particle at ang average orbital occupancy na kinakalkula sa pinakabagong iteration.
+       - Probabilistically lumikha ng mga batch ng subsamples mula sa mga na-recover na bitstring.
+       - I-project at i-diagonalize ang molecular Hamiltonian sa bawat sampled subspace.
+       - I-save ang pinakamaliit na ground state energy na nahanap sa lahat ng batch at i-update ang average orbital occupancy.
+
+Para sa halimbawang ito, ang interacting-electron Hamiltonian ay may generic na anyo:
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++ 
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \, 
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+Ang $\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$ ang mga fermionic creation/annihalation operator na nauugnay sa $p$-th basis set element at spin $\sigma$. Ang $h_{pr}$ at $(pr|qs)$ ang mga one- at two-body electronic integral.
+
+Ang SQD workflow na may self-consistent configuration recovery ay inilalarawan sa sumusunod na diagram.
+
+![SQD diagram](../_static/images/sqd_diagram.png)
+
+Kilala ang SQD na gumagana nang maayos kapag ang target eigenstate ay sparse: ang wave function ay sinusuportahan ng isang set ng basis states $\mathcal{S} = \{|x\rangle \}$ na ang laki ay hindi lumalaki nang exponential kasabay ng laki ng problema. Sa sitwasyong ito, ang diagonalization ng Hamiltonian na na-project sa subspace na tinukoy ng $\mathcal{S}$:
+$$
+H_\mathcal{S} = P_\mathcal{S} H  P_\mathcal{S} \textrm{ with } P_\mathcal{S} = \sum_{x \in \mathcal{S}} |x \rangle \langle x |;
+$$
+ay nagbibigay ng magandang pagtatantya sa target eigenstate. Ang papel ng quantum device ay ang mag-produce ng mga sample ng mga miyembro ng $\mathcal{S}$ lamang. Una, inihahanda ng isang quantum circuit ang estado $|\Psi\rangle$ sa quantum device. Ginagamit ang Jordan-Wigner encoding. Dahil dito, ang mga miyembro ng computational basis ay kumakatawan sa Fock states (electronic configurations/determinants). Ang circuit ay sini-sample sa computational basis, na nagbubunga ng set ng maingay na configurations $\tilde{\mathcal{X}}$. Ang mga configuration ay kinakatawan ng mga bitstring. Ang set $\tilde{\mathcal{X}}$ ay ipinipasa sa classical post-processing block, kung saan ginagamit ang [self-consistent configuration recovery technique](https://arxiv.org/abs/2405.05068). Sa loob ng SQD framework, ang papel ng quantum device ay ang mag-produce ng probability distribution.
+### Hakbang 1: Mag-map ng problema sa isang quantum circuit
+
+Sa tutorial na ito, tatantiyahin natin ang ground state energy ng isang $N_2$ na molekula. Una, titukuyin natin ang molekula at ang mga katangian nito. Susunod, gagawa tayo ng isang [local unitary cluster Jastrow (LUCJ)](https://pubs.rsc.org/en/content/articlelanding/2023/sc/d3sc02516k) ansatz (quantum circuit) para makakuha ng mga sample mula sa isang quantum computer para sa pagtatantya ng ground state energy.
+
+Una, titukuyin natin ang molekula at ang mga katangian nito.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+
+warnings.filterwarnings("ignore")
+
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)
+
+# Compute exact energy
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570775
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+Susunod, gagawa tayo ng ansatz. Ang ``LUCJ`` ansatz ay isang parameterized quantum circuit, at ilalagay natin ito sa panimula gamit ang `t2` at `t1` amplitudes na nakuha mula sa isang CCSD na kalkulasyon.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]).run()
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929734  E_corr = -0.2045891221988311
+```
+
+Gagamitin natin ang [ffsim](https://github.com/qiskit-community/ffsim/tree/main) package para likhain at simulan ang ansatz gamit ang `t2` at `t1` amplitudes na nakalkulang nasa itaas. Dahil ang ating molekula ay may closed-shell Hartree-Fock state, gagamitin natin ang spin-balanced variant ng UCJ ansatz, [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced).
+
+Dahil ang ating target na IBM hardware ay may heavy-hex topology, gagamitin natin ang [_zig-zag_ pattern para sa qubit interactions](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k). Sa pattern na ito, ang mga orbital (kinakatawan ng mga qubit) na may parehong spin ay konektado sa isang line topology (pula at asul na bilog) kung saan ang bawat linya ay kumukuha ng zig-zag na hugis dahil sa heavy-hex connectivity ng target hardware. Muli, dahil sa heavy-hex topology, ang mga orbital para sa iba't ibang spin ay may mga koneksyon sa bawat ika-4 na orbital (0, 4, 8, atbp.) (purple na bilog).
+
+![lucj_ansatz](../_static/images/lucj_ansatz_zig_zag_pattern.jpg)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 1
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+```
+
+### Hakbang 2: I-optimize ang problema
+Susunod, io-optimize natin ang ating circuit para sa isang target hardware. Kailangan nating piliin ang hardware device na gagamitin bago i-optimize ang ating circuit. Gagamit tayo ng isang fake 127-qubit backend mula sa ``qiskit_ibm_runtime`` para tularan ang isang tunay na device. Para tumakbo sa isang tunay na QPU, palitan lang ang fake backend ng isang tunay na backend. Tingnan ang [Qiskit IBM Runtime docs](https://quantum.cloud.ibm.com/docs/guides/get-started-with-primitives#get-started-with-sampler) para sa karagdagang impormasyon.
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeSherbrooke
+
+backend = FakeSherbrooke()
+```
+
+Susunod, inirerekomenda namin ang mga sumusunod na hakbang para i-optimize ang ansatz at gawing compatible ito sa hardware.
+
+- Pumili ng mga physical qubit (`initial_layout`) mula sa target hardware na sumusunod sa zig-zag pattern na inilarawan sa itaas. Ang pag-aayos ng mga qubit sa pattern na ito ay nagdudulot ng isang mahusay na hardware-compatible na circuit na may mas kaunting gate.
+- Gumawa ng staged pass manager gamit ang [generate_preset_pass_manager](https://quantum.cloud.ibm.com/docs/api/qiskit/transpiler_preset#generate_preset_pass_manager) function mula sa Qiskit na may iyong piniling `backend` at `initial_layout`.
+- Itakda ang `pre_init` stage ng iyong staged pass manager sa `ffsim.qiskit.PRE_INIT`. Ang `ffsim.qiskit.PRE_INIT` ay naglalaman ng mga Qiskit transpiler pass na nagde-decompose ng mga gate sa mga orbital rotation at pagkatapos ay nag-e-merge ng mga orbital rotation, na nagresulta sa mas kaunting gate sa panghuling circuit.
+- Patakbuhin ang pass manager sa iyong circuit.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+spin_a_layout = [0, 14, 18, 19, 20, 33, 39, 40, 41, 53, 60, 61, 62, 72, 81, 82]
+spin_b_layout = [2, 3, 4, 15, 22, 23, 24, 34, 43, 44, 45, 54, 64, 65, 66, 73]
+initial_layout = spin_a_layout + spin_b_layout
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=initial_layout
+)
+
+# without PRE_INIT passes
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/o pre-init passes): {isa_circuit.count_ops()}")
+
+# with PRE_INIT passes
+# We will use the circuit generated by this pass manager for hardware execution
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
+```
+
+```text
+Gate counts (w/o pre-init passes): OrderedDict({'rz': 4420, 'sx': 3432, 'ecr': 1366, 'x': 239, 'measure': 32, 'barrier': 1})
+Gate counts (w/ pre-init passes): OrderedDict({'rz': 2460, 'sx': 2156, 'ecr': 730, 'x': 71, 'measure': 32, 'barrier': 1})
+```
+
+### Hakbang 3: Magsagawa ng mga eksperimento
+Pagkatapos i-optimize ang circuit para sa pagsasagawa sa hardware, handa na tayong patakbuhin ito sa target hardware at mangolekta ng mga sample para sa pagtatantya ng ground state energy. Dahil isa lang ang ating circuit, gagamitin natin ang [Job execution mode](https://quantum.cloud.ibm.com/docs/guides/execution-modes) ng Qiskit Runtime at isasagawa ang ating circuit.
+
+***Tandaan: Ni-comment out namin ang code para sa pagpapatakbo ng circuit sa isang QPU at iniiwan ito para sa sanggunian ng gumagamit. Sa halip na tumakbo sa tunay na hardware sa gabay na ito, magsasagawa lang tayo ng mga random sample na hinango mula sa uniform distribution.***
+
+```python
+import numpy as np
+from qiskit_addon_sqd.counts import generate_bit_array_uniform
+
+# from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# sampler = Sampler(mode=backend)
+# job = sampler.run([isa_circuit], shots=10_000)
+# primitive_result = job.result()
+# pub_result = primitive_result[0]
+# bit_array = pub_result.data.meas
+
+rng = np.random.default_rng(24)
+bit_array = generate_bit_array_uniform(10_000, num_orbitals * 2, rand_seed=rng)
+```
+
+### Hakbang 4: I-post-process ang mga resulta
+Ngayon, pinapatakbo natin ang SQD algorithm gamit ang `diagonalize_fermionic_hamiltonian` function. Tingnan ang [API documentation](../apidocs/qiskit_addon_sqd.fermion.rst#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian) para sa mga paliwanag ng mga argumento sa function na ito.
+
+Ang solver na kasama sa SQD addon ay gumagamit ng implementasyon ng selected CI ng PySCF, partikular ang [pyscf.fci.selected_ci.kernel_fixed_space](https://pyscf.org/pyscf_api_docs/pyscf.fci.html#pyscf.fci.selected_ci.kernel_fixed_space). Ang halimbawa sa ibaba ay nagpapakita rin kung paano magpasa ng mga keyword argument sa function na iyon sa pamamagitan ng kasama na solver. Dito ipinapasa natin ang `max_cycle` argument.
+
+```python
+from functools import partial
+
+from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian, solve_sci_batch
+
+# SQD options
+energy_tol = 1e-3
+occupancies_tol = 1e-3
+max_iterations = 5
+
+# Eigenstate solver options
+num_batches = 1
+samples_per_batch = 300
+symmetrize_spin = True
+carryover_threshold = 1e-4
+max_cycle = 200
+
+# Pass options to the built-in eigensolver. If you just want to use the defaults,
+# you can omit this step, in which case you would not specify the sci_solver argument
+# in the call to diagonalize_fermionic_hamiltonian below.
+sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=max_cycle)
+
+# List to capture intermediate results
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy + nuclear_repulsion_energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    bit_array,
+    samples_per_batch=samples_per_batch,
+    norb=num_orbitals,
+    nelec=nelec,
+    num_batches=num_batches,
+    energy_tol=energy_tol,
+    occupancies_tol=occupancies_tol,
+    max_iterations=max_iterations,
+    sci_solver=sci_solver,
+    symmetrize_spin=symmetrize_spin,
+    carryover_threshold=carryover_threshold,
+    callback=callback,
+    seed=rng,
+)
+```
+
+```text
+Iteration 1
+	Subsample 0
+		Energy: -105.45358671756313
+		Subspace dimension: 5476
+Iteration 2
+	Subsample 0
+		Energy: -107.95172900082163
+		Subspace dimension: 249001
+Iteration 3
+	Subsample 0
+		Energy: -108.97460330369815
+		Subspace dimension: 339889
+Iteration 4
+	Subsample 0
+		Energy: -109.02739376648793
+		Subspace dimension: 440896
+Iteration 5
+	Subsample 0
+		Energy: -109.030972328451
+		Subspace dimension: 597529
+```
+
+Ngayon, ipi-plot natin ang mga resulta.
+
+Ipinapakita ng unang plot na pagkatapos ng ilang iteration, natantya natin ang ground state energy sa loob ng ``~16 mH`` (ang chemical accuracy ay karaniwang tinatanggap na ``1 kcal/mol`` $\approx$ ``1.6 mH``). Tandaan, ang mga quantum sample sa demo na ito ay purong ingay. Ang signal dito ay nagmumula sa *a priori* na kaalaman ng electronic structure at molecular Hamiltonian.
+
+Ipinapakita ng ikalawang plot ang average occupancy ng bawat spatial orbital pagkatapos ng huling iteration. Makikita natin na ang parehong spin-up at spin-down na elektron ay sumasaklaw sa unang limang orbital na may mataas na probabilidad sa ating mga solusyon.
+
+```python
+import matplotlib.pyplot as plt
+
+# Data for energies plot
+x1 = range(len(result_history))
+min_e = [
+    min(result, key=lambda res: res.energy).energy + nuclear_repulsion_energy
+    for result in result_history
+]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-4)
+axs[0].axhline(y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy")
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.03097 Ha
+Absolute error: 0.01570 Ha
+```
+
+![Plot output](./_01_chemistry_hamiltonian_imgs/output_1.png)
+
+<TutorialFeedback />
