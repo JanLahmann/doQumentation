@@ -1,0 +1,132 @@
+## Step 3. Execute
+In questa sezione iniziamo la parte del flusso di lavoro che utilizza un vero dispositivo quantistico. Per questo metodo di mitigazione degli errori basato sull'apprendimento, ci sono due passaggi: 
+
+1. Apprendere il rumore usando `NoiseLeanerV3`.
+2. Eseguire un circuito di mitigazione degli errori con il nuovo framework Samplomatic ed Estimator. 
+
+Con gli errori limitati del nostro circuito quantistico, dobbiamo apprendere i tassi di rumore associati per prioritizzare il nostro budget di errori, determinare l'overhead di campionamento ed eseguire su una QPU. Inoltre, con queste informazioni sui tassi di rumore, possiamo anche evidenziare come, sfruttando le potenti risorse di calcolo del nostro cluster, si riduca l'overhead di campionamento mantenendo lo stesso bias residuo.
+### a. Apprendere i tassi di rumore
+
+Il noise learner permette la caratterizzazione dei processi di rumore che influenzano i Gate in uno o più Circuit di interesse, basandosi sul modello di rumore di Pauli-Lindblad descritto nel paper [Probabilistic error cancellation with sparse Pauli-Lindblad models on noisy quantum processors](https://arxiv.org/abs/2201.09866). Il metodo `run()` avvia un job di apprendimento del rumore per i layer univoci a 2-Qubit forniti, in base alle opzioni specificate nella configurazione del noise learner. In queste opzioni, puoi regolare la strategia di Pauli-twirling, che aiuta a garantire che l'hardware sia ben descritto dal modello di rumore di Pauli-Lindblad.
+
+I dettagli del tuo modello di rumore rischiano di derivare nel tempo. Per questo motivo, impostiamo un parametro per assicurarci che il modello di rumore appreso venga ricalcolato per gli esperimenti più vecchi di quattro ore. Questa è una regola empirica approssimativa e dovrebbe essere considerata attentamente quando la si applica al proprio lavoro.
+
+```python
+post_selection_enabled = True
+load_cached_noise_results = True
+```
+
+```python
+noise_learner_options = NoiseLearnerV3Options(
+    num_randomizations=64,
+    shots_per_randomization=128,
+    layer_pair_depths=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    post_selection={
+        "enable": post_selection_enabled,
+        "strategy": "edge",
+        "x_pulse_type": "rx",
+    },
+)
+
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+```
+
+```python
+if load_cached_noise_results:
+    noise_learner_job = shared_service.job("d46ssf71gh7s7398k9a0")
+else:
+    noise_learner_job = noise_learner.run(unique_2q_instructions)
+```
+
+```python
+noise_learner_result = noise_learner_job.result()
+```
+
+```python
+if post_selection_enabled:
+    print("Minimum fraction of shots kept for noise learning experiments: ", end="")
+    print(
+        f"{min([min(d.values()) for d in [nlr.metadata['post_selection']['fraction_kept'] for nlr in noise_learner_result[:2]]]):.2f}"
+    )
+```
+
+```text
+Minimum fraction of shots kept for noise learning experiments: 0.58
+```
+
+```python
+# Get a dict mapping InjectNoise.ref to QubitSparsePaulilist
+refs_2_plm = noise_learner_result.to_dict(unique_2q_instructions, require_refs=False)
+```
+
+### b.i. Aggiornare i bounds uniti con i tassi di rumore effettivamente appresi
+
+Ora che il modello di rumore specifico è stato appreso, possiamo applicare i tassi di rumore appresi ai bounds di rumore previsti e ottenere una determinazione finale di quali bounds abbiano il maggiore impatto sulla minimizzazione del bias.
+
+```python
+merged_bounds = merge_bounds(
+    boxed_circuit,
+    forward_bounds_tighter,
+    backward_bounds,
+    refs_2_plm,
+)
+```
+
+```text
+2025-11-10 11:22:03,755 WARNING merge Optimal spacetime partitioning not implemented!Just partitioning list of noisy boxes.
+2025-11-10 11:22:03,756 INFO merge Determined Box idx for partitioning to be 20.
+```
+
+#### b.ii. Calcolare i `local_scales` per l'esecuzione hardware
+
+`compute_local_scales` esamina ogni possibile errore di rumore nel Circuit e stima quanto quell'errore potrebbe distorcere la misurazione finale, nonché quanto sarebbe costoso correggerlo. Ordina quindi gli errori in base alla loro convenienza da mitigare e seleziona il sottoinsieme che riduce il bias il più possibile, rimanendo entro il budget di costo di campionamento consentito (o raggiungendo una precisione desiderata). Il risultato è un insieme di fattori di scala che indicano quali errori saranno attivamente mitigati e quali saranno lasciati non mitigati (`local_scales`), insieme al costo totale di overhead di campionamento previsto (`sampling_costs`) e al bias residuo rimanente (`residual_bias_bound`).
+
+La possibilità di controllare il bias residuo desiderato è una caratteristica critica dell'implementazione SLC di PEC. Mentre nell'[implementazione originale](https://arxiv.org/abs/2201.09866), l'overhead di campionamento mirava sempre a zero bias, possiamo regolare l'overhead di campionamento richiesto con un compromesso nel bias residuo atteso. Questo aiuta l'utente a rimanere entro un budget di campionamento fisso, il che può essere particolarmente utile quando si prototipa inizialmente un flusso di lavoro.
+
+```python
+id_map = map_modifier_ref_to_ref(boxed_circuit)
+```
+
+```python
+summed_rates = 0.0
+for _box_id, noise_id in id_map.items():
+    learned_plm = refs_2_plm[noise_id]
+    summed_rates += np.sum(learned_plm.rates)
+    # print(f"{_box_id}:\tgamma = {np.exp(2 * summed_rates):1.6e}\tsampling cost = {np.exp(4 * summed_rates):1.6e}")
+total_gamma = np.exp(2 * summed_rates)
+print(f"Full PEC gamma={total_gamma}, sampling cost (gamma^2) = {total_gamma**2}")
+```
+
+```text
+Full PEC gamma=128.56055005423153, sampling cost (gamma^2) = 16527.81503024657
+```
+
+```python
+biases = []
+costs = []
+for bias in [0.0, *np.arange(0.001, 0.102, 0.01).tolist()]:
+    _, cost_, bias_ = compute_local_scales(
+        boxed_circuit,
+        merged_bounds,
+        refs_2_plm,
+        sampling_cost_budget=np.inf,
+        bias_tolerance=bias,
+    )
+    biases.append(bias_)
+    costs.append(cost_)
+```
+
+```python
+biases_cluster = []
+costs_cluster = []
+for bias in [0.0, *np.arange(0.001, 0.102, 0.01).tolist()]:
+    _, cost_, bias_ = compute_local_scales(
+        boxed_circuit,
+        merged_bounds_cluster,
+        refs_2_plm,
+        sampling_cost_budget=np.inf,
+        bias_tolerance=bias,
+    )
+    biases_cluster.append(bias_)
+    costs_cluster.append(cost_)
+```
