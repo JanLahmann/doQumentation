@@ -1,0 +1,158 @@
+#### Перетворення базисів вимірювань до канонічної форми
+
+Далі ми знайдемо мінімальний набір базисів для вимірювання, який повністю охоплює всі терми Паулі у вимірюваному операторі (***багато операторів можна вимірювати одночасно, якщо вони комутують поквітово***). Оскільки ми вимірюємо лише терми нашого початкового оператора — суми всіх одноквітових `Z`-Паулі — достатньо одного базису: базису «лише `Z`».
+
+Окрім знаходження набору базисів вимірювань Паулі, нам потрібно відобразити ці терми Паулі в канонічну форму, якої очікує примітив ``Executor``. Докладніше про канонічний порядок Qubit-ів можна дізнатися у [документації samplomatic](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention).
+
+```python
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}  # canonical -> physical
+p_2_v = {p: v for v, p in enumerate(layout)}  # physical -> virtual
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}  # canonical -> virtual
+meas_bases, bases_reverser = get_measurement_bases(obs_tilde_virtual)
+meas_bases_canonical = [
+    np.array([base[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base in meas_bases
+]
+```
+
+#### Визначення способу семплювання у ``QuantumProgram``
+
+У ``QuantumProgram`` ми вказуємо, як семплювати експеримент:
+
+- ``template_circuit``: Circuit, що містить усі Gate, необхідні для реалізації всіх потрібних рандомізацій (від рандомізацій twirl-ювання, параметрів тощо).
+- ``samplex``: Об'єкт, що визначає розподіл імовірностей по всіх можливих рандомізаціях Circuit, з якого виконується семплювання.
+- ``samplex_arguments``: Прив'язки, необхідні для повного визначення samplex
+    - ``basis_changes``: Тут ми вказуємо набір базисів для вимірювання, який охоплює всі терми Паулі у вимірюваному операторі.
+    - ``noise_scales.ref``: Ми встановлюємо масштаб кожного шару шуму в `0.0`, щоб запобігти вносу додаткового шуму в наші семпли.
+    - ``pauli_lindblad_maps``: Обов'язково, якщо передаються ``noise_scales``. Просто відображає шари шуму на відповідну модель шуму.
+- ``shape``: Кортеж форми для розширення неявної форми, заданої ``samplex_arguments``. Нетривіальні осі, введені таким розширенням, перераховують рандомізації.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram
+
+# Control the # of shots during execution
+shots_per_randomization_exec = 64
+num_randomizations_exec = 6144
+
+# Zero out the noise to prevent noise from being injected during execution.
+# We only added InjectNoise annotations so PNA could associate the noise
+# to layers in the circuit
+samplex_inputs = {f"noise_scales.{ref}": 0.0 for ref in refs_to_noise_models}
+samplex_inputs |= {"pauli_lindblad_maps": refs_to_noise_models}
+
+# Specify the bases to measure
+bases_broadcastable = np.expand_dims(np.array(meas_bases_canonical), axis=1)
+samplex_inputs |= {"basis_changes": {"basis0": bases_broadcastable}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().make_broadcastable().bind(**samplex_inputs)
+
+# Instantiate the QuantumProgram with the specified parameters
+program = QuantumProgram(shots=shots_per_randomization_exec)
+program.append(
+    circuit=template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations_exec),
+)
+```
+
+#### Семплювання Circuit за допомогою прототипу примітива ``Executor``
+
+Тепер, коли ми визначили наш ``QuantumProgram``, виконання експерименту є простим. Ми просто створюємо об'єкт ``Executor``, передаємо йому Backend і запускаємо програму.
+
+```python
+from qiskit_ibm_runtime import Executor
+
+# Execute (sample) the circuit
+executor = Executor(backend)
+job_exec = executor.run(program)
+exec_results = job_exec.result()
+```
+
+#### Постобробка семплів для обчислення очікуваного значення зі зменшенням похибок
+
+Щоб обчислити очікуване значення зі зменшенням похибок, ми:
+
+- Обчислимо коефіцієнти масштабування TREX на основі вивченого шуму, що впливає на вимірювання.
+- Сформуємо маску для збереження лише постселектованих семплів.
+- Використаємо функцію ``executor_expectation_values`` з ``qiskit-addon-utils`` для об'єднання всіх даних в очікуване значення зі зменшенням похибок.
+
+```python
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.noise_management import trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+
+# Computing the TREX factors
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_rescale_factors = trex_factors(measurement_noise_map, bases_reverser)
+
+# Post-select the results
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit, coupling_map=backend.coupling_map
+)
+
+# Compute the ps mask for filtering results
+mask = post_selector.compute_mask(exec_results[0], strategy="edge")
+
+# Compute expvals using post selected results
+results = executor_expectation_values(
+    exec_results[0]["meas"],
+    bases_reverser,
+    meas_basis_axis=0,
+    avg_axis=1,
+    measurement_flips=exec_results[0]["measurement_flips.meas"],
+    pauli_signs=exec_results[0].get("pauli_signs", None),
+    postselect_mask=mask,
+    rescale_factors=trex_rescale_factors,
+)
+```
+
+```python
+bases_reverser_unmit = {Pauli("Z" * num_qubits): [observable]}
+args = [
+    (bases_reverser_unmit, None, None),
+    (bases_reverser, None, None),
+    (bases_reverser, None, trex_rescale_factors),
+    (bases_reverser, mask, None),
+    (bases_reverser, mask, trex_rescale_factors),
+]
+
+evs = []
+for reverser, postsel_mask, factors in args:
+    # Compute expvals using post selected results
+    res_ps = executor_expectation_values(
+        exec_results[0]["meas"],
+        reverser,
+        meas_basis_axis=0,
+        avg_axis=1,
+        measurement_flips=exec_results[0]["measurement_flips.meas"],
+        pauli_signs=exec_results[0].get("pauli_signs", None),
+        postselect_mask=postsel_mask,
+        rescale_factors=factors,
+    )
+    res_ps = np.array(res_ps)
+    evs.append(res_ps[:, 0][0])
+
+experiments = ["PNA", "PNA+TREX", "PNA+PS", "PNA+PS+TREX"]
+colors = ["#d9d9d9", "#b0b0b0", "#7f7f7f", "#4c4c4c"]
+plt.bar(experiments, evs[1:], color=colors)
+plt.axhline(y=1, color="green", linestyle="--", linewidth=2, label="Ideal")
+plt.axhline(y=evs[0], color="red", linestyle="--", linewidth=2, label="Unmitigated")
+plt.ylabel("Expectation value", fontsize=14)
+
+plt.title(r"30q Mirrored Ising, 10 Trotter steps, $\theta_{rx}=\frac{\pi}{8}$", fontsize=14)
+plt.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_7.png)
+
+<TutorialFeedback />
