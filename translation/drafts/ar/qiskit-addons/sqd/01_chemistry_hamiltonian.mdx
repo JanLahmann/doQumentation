@@ -1,0 +1,368 @@
+---
+title: "تحسين تقدير الطاقة لـ Hamiltonian الكيميائي باستخدام SQD"
+sidebar_label: "تحسين تقدير الطاقة لـ Hamiltonian الكيميائي باستخدام SQD"
+notebook_path: "qiskit-addons/sqd/01_chemistry_hamiltonian.ipynb"
+---
+
+{/* doqumentation-source-hash: 16b72ae6 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/sqd/01_chemistry_hamiltonian.ipynb" />
+
+
+في هذا الدرس التعليمي، هنطبّق [نمط Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) اللي بيوضح كيف نعالج عينات الكم الصاخبة بعد التنفيذ عشان نلاقي تقريب لحالة الأساس لـ Hamiltonian الكيميائي: جزيء $N_2$ عند الاتزان في مجموعة الأساس 6-31G. هنتبع [نهج التقطير الكمي المبني على العينات](https://arxiv.org/abs/2405.05068) لمعالجة العينات المأخوذة من ansatz دائرة كمية من ``36``-qubit (في الحالة دي، دائرة LUCJ). وعشان نأخذ في الاعتبار تأثير الضوضاء الكمية، بنستخدم تقنية الاسترداد التهيؤي.
+
+النمط ممكن نوصفه في أربع خطوات:
+
+1. **الخطوة 1: الربط بالمسألة الكمية**
+    - توليد ansatz لتقدير حالة الأساس
+2. **الخطوة 2: تحسين المسألة**
+    - تحويل الـ ansatz ليتوافق مع الجهاز
+3. **الخطوة 3: تنفيذ التجارب**
+    - سحب عينات من الـ ansatz باستخدام الأداة الأساسية ``Sampler``
+4. **الخطوة 4: معالجة النتائج بعد التنفيذ**
+   - حلقة الاسترداد التهيؤي للتهيؤات
+       - معالجة المجموعة الكاملة من عينات bitstring، باستخدام المعرفة المسبقة بعدد الجسيمات ومتوسط إشغال المدارات المحسوب في آخر تكرار.
+       - إنشاء دفعات من العينات الفرعية من الـ bitstrings المستردة باحتمالية.
+       - إسقاط Hamiltonian الجزيئي وتقطيره على كل فضاء فرعي من العينات.
+       - حفظ أدنى طاقة لحالة الأساس وجدت عبر جميع الدفعات وتحديث متوسط إشغال المدارات.
+
+في المثال ده، يأخذ Hamiltonian الإلكتروني المتفاعل الشكل العام:
+
+$$
+\hat{H} = \sum_{ \substack{pr\\\sigma} } h_{pr} \, \hat{a}^\dagger_{p\sigma} \hat{a}_{r\sigma}
++ 
+\sum_{ \substack{prqs\\\sigma\tau} }
+\frac{(pr|qs)}{2} \, 
+\hat{a}^\dagger_{p\sigma}
+\hat{a}^\dagger_{q\tau}
+\hat{a}_{s\tau}
+\hat{a}_{r\sigma}
+$$
+
+$\hat{a}^\dagger_{p\sigma}$/$\hat{a}_{p\sigma}$ هم عوامل الإنشاء/الإفناء الفيرمي المرتبطة بالعنصر $p$ في مجموعة الأساس والسبين $\sigma$. $h_{pr}$ و$(pr|qs)$ هم التكاملات الإلكترونية أحادية الجسيم وثنائية الجسيم.
+
+سير عمل SQD مع الاسترداد التهيؤي للتهيؤات موضّح في المخطط التالي.
+
+![SQD diagram](../_static/images/sqd_diagram.png)
+
+من المعروف أن SQD يشتغل كويس لما تكون حالة القيمة الذاتية المستهدفة متفرقة: الدالة الموجية مدعومة في مجموعة من حالات الأساس $\mathcal{S} = \{|x\rangle \}$ اللي حجمها ما يزيدش بشكل أسي مع حجم المسألة. في الحالة دي، تقطير الـ Hamiltonian المُسقَط على الفضاء الفرعي المعرّف بـ $\mathcal{S}$:
+$$
+H_\mathcal{S} = P_\mathcal{S} H  P_\mathcal{S} \textrm{ with } P_\mathcal{S} = \sum_{x \in \mathcal{S}} |x \rangle \langle x |;
+$$
+بيدي تقريب كويس لحالة القيمة الذاتية المستهدفة. دور الجهاز الكمي هو إنتاج عينات من عناصر $\mathcal{S}$ فقط. أولاً، دائرة كمية بتحضّر الحالة $|\Psi\rangle$ على الجهاز الكمي. بيتم استخدام ترميز Jordan-Wigner. وبناءً على ده، عناصر الأساس الحسابي بتمثّل حالات Fock (التهيؤات/المحددات الإلكترونية). يتم أخذ عينات من الدائرة في الأساس الحسابي، وده بيعطي مجموعة التهيؤات الصاخبة $\tilde{\mathcal{X}}$. التهيؤات بتتمثل بـ bitstrings. بعدين المجموعة $\tilde{\mathcal{X}}$ بتتمرر لكتلة المعالجة الكلاسيكية بعد التنفيذ، حيث بتتم استخدام [تقنية الاسترداد التهيؤي التهيؤي](https://arxiv.org/abs/2405.05068). في إطار SQD، دور الجهاز الكمي هو إنتاج توزيع احتمالي.
+### الخطوة 1: ربط المسألة بدائرة كمية
+
+في هذا الدرس التعليمي، هنقدّر طاقة حالة الأساس لجزيء $N_2$. أولاً، هنحدد الجزيء وخصائصه. بعدين، هننشئ ansatz من نوع [local unitary cluster Jastrow (LUCJ)](https://pubs.rsc.org/en/content/articlelanding/2023/sc/d3sc02516k) (دائرة كمية) عشان نولّد عينات من حاسوب كمي لتقدير طاقة حالة الأساس.
+
+أولاً، هنحدد الجزيء وخصائصه.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime
+```
+
+```python
+import warnings
+
+warnings.filterwarnings("ignore")
+
+import pyscf
+import pyscf.cc
+import pyscf.mcscf
+
+# Specify molecule properties
+open_shell = False
+spin_sq = 0
+
+# Build N2 molecule
+mol = pyscf.gto.Mole()
+mol.build(
+    atom=[["N", (0, 0, 0)], ["N", (1.0, 0, 0)]],
+    basis="6-31g",
+    symmetry="Dooh",
+)
+
+# Define active space
+n_frozen = 2
+active_space = range(n_frozen, mol.nao_nr())
+
+# Get molecular integrals
+scf = pyscf.scf.RHF(mol).run()
+num_orbitals = len(active_space)
+n_electrons = int(sum(scf.mo_occ[active_space]))
+num_elec_a = (n_electrons + mol.spin) // 2
+num_elec_b = (n_electrons - mol.spin) // 2
+cas = pyscf.mcscf.CASCI(scf, num_orbitals, (num_elec_a, num_elec_b))
+mo = cas.sort_mo(active_space, base=0)
+hcore, nuclear_repulsion_energy = cas.get_h1cas(mo)
+eri = pyscf.ao2mo.restore(1, cas.get_h2cas(mo), num_orbitals)
+
+# Compute exact energy
+exact_energy = cas.run().e_tot
+```
+
+```text
+converged SCF energy = -108.835236570775
+CASCI E = -109.046671778080  E(CI) = -32.8155692383188  S^2 = 0.0000000
+```
+
+بعدين، هننشئ الـ ansatz. الـ ``LUCJ`` ansatz هو دائرة كمية مُعاملة، وهنبدأ بتهيئته بامتدادات `t2` و`t1` المحصولة من حساب CCSD.
+
+```python
+# Get CCSD t2 amplitudes for initializing the ansatz
+ccsd = pyscf.cc.CCSD(scf, frozen=[i for i in range(mol.nao_nr()) if i not in active_space]).run()
+t1 = ccsd.t1
+t2 = ccsd.t2
+```
+
+```text
+E(CCSD) = -109.0398256929734  E_corr = -0.2045891221988311
+```
+
+هنستخدم حزمة [ffsim](https://github.com/qiskit-community/ffsim/tree/main) عشان ننشئ الـ ansatz ونهيّئه بامتدادات `t2` و`t1` المحسوبة فوق. بما إن جزيئنا عنده حالة Hartree-Fock مغلقة القشرة، هنستخدم النسخة متوازنة السبين من ansatz الـ UCJ، وهي [UCJOpSpinBalanced](https://qiskit-community.github.io/ffsim/api/ffsim.html#ffsim.UCJOpSpinBalanced).
+
+بما إن جهاز IBM المستهدف عنده طوبولوجيا سداسية ثقيلة (heavy-hex)، هنتبنى [نمط _zig-zag_ لتفاعلات الـ qubit](https://pubs.rsc.org/en/content/articlehtml/2023/sc/d3sc02516k). في النمط ده، المدارات (المُمثَّلة بـ qubits) بنفس السبين بتتوصل بطوبولوجيا خطية (الدوائر الحمرا والزرقا) حيث كل خط بياخد شكل zig-zag بسبب الاتصال السداسي الثقيل للجهاز المستهدف. وكمان، بسبب طوبولوجيا السداسية الثقيلة، المدارات بأسبين مختلفة عندها اتصالات بين كل 4 مدارات (0، 4، 8، إلخ) (الدوائر البنفسجية).
+
+![lucj_ansatz](../_static/images/lucj_ansatz_zig_zag_pattern.jpg)
+
+```python
+import ffsim
+from qiskit import QuantumCircuit, QuantumRegister
+
+n_reps = 1
+alpha_alpha_indices = [(p, p + 1) for p in range(num_orbitals - 1)]
+alpha_beta_indices = [(p, p) for p in range(0, num_orbitals, 4)]
+
+ucj_op = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+    t2=t2,
+    t1=t1,
+    n_reps=n_reps,
+    interaction_pairs=(alpha_alpha_indices, alpha_beta_indices),
+)
+
+nelec = (num_elec_a, num_elec_b)
+
+# create an empty quantum circuit
+qubits = QuantumRegister(2 * num_orbitals, name="q")
+circuit = QuantumCircuit(qubits)
+
+# prepare Hartree-Fock state as the reference state and append it to the quantum circuit
+circuit.append(ffsim.qiskit.PrepareHartreeFockJW(num_orbitals, nelec), qubits)
+
+# apply the UCJ operator to the reference state
+circuit.append(ffsim.qiskit.UCJOpSpinBalancedJW(ucj_op), qubits)
+circuit.measure_all()
+```
+
+### الخطوة 2: تحسين المسألة
+بعدين، هنحسّن الدائرة بتاعتنا لجهاز مستهدف. لازم نختار جهاز الهاردوير اللي هنستخدمه قبل ما نحسّن الدائرة. هنستخدم جهاز خلفية وهمي من 127-qubit من ``qiskit_ibm_runtime`` عشان نحاكي جهاز حقيقي. عشان تشتغل على QPU حقيقي، بدّل الجهاز الوهمي بجهاز حقيقي. اطّلع على [وثائق Qiskit IBM Runtime](https://quantum.cloud.ibm.com/docs/guides/get-started-with-primitives#get-started-with-sampler) لمزيد من المعلومات.
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeSherbrooke
+
+backend = FakeSherbrooke()
+```
+
+بعدين، بنوصي بالخطوات دي عشان تحسّن الـ ansatz وتخليه متوافق مع الهاردوير.
+
+- اختار qubits فيزيائية (`initial_layout`) من الهاردوير المستهدف بتتبع نمط الـ zig-zag اللي اتوصفنا فوق. ترتيب الـ qubits في النمط ده بيوصلك لدائرة متوافقة مع الهاردوير بكفاءة أكبر وعدد gates أقل.
+- ولّد مدير تمرير مُدرَّج باستخدام دالة [generate_preset_pass_manager](https://quantum.cloud.ibm.com/docs/api/qiskit/transpiler_preset#generate_preset_pass_manager) من Qiskit بالـ `backend` والـ `initial_layout` اللي اخترتهم.
+- اضبط مرحلة `pre_init` لمدير التمرير المُدرَّج على `ffsim.qiskit.PRE_INIT`. `ffsim.qiskit.PRE_INIT` بيتضمن تمريرات مُحوِّل Qiskit اللي بتحلل الـ gates لدورانات مدارية وبعدين بتدمج الدورانات المدارية، وده بيوصلك لعدد gates أقل في الدائرة النهائية.
+- شغّل مدير التمرير على دائرتك. 
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+spin_a_layout = [0, 14, 18, 19, 20, 33, 39, 40, 41, 53, 60, 61, 62, 72, 81, 82]
+spin_b_layout = [2, 3, 4, 15, 22, 23, 24, 34, 43, 44, 45, 54, 64, 65, 66, 73]
+initial_layout = spin_a_layout + spin_b_layout
+
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend, initial_layout=initial_layout
+)
+
+# without PRE_INIT passes
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/o pre-init passes): {isa_circuit.count_ops()}")
+
+# with PRE_INIT passes
+# We will use the circuit generated by this pass manager for hardware execution
+pass_manager.pre_init = ffsim.qiskit.PRE_INIT
+isa_circuit = pass_manager.run(circuit)
+print(f"Gate counts (w/ pre-init passes): {isa_circuit.count_ops()}")
+```
+
+```text
+Gate counts (w/o pre-init passes): OrderedDict({'rz': 4420, 'sx': 3432, 'ecr': 1366, 'x': 239, 'measure': 32, 'barrier': 1})
+Gate counts (w/ pre-init passes): OrderedDict({'rz': 2460, 'sx': 2156, 'ecr': 730, 'x': 71, 'measure': 32, 'barrier': 1})
+```
+
+### الخطوة 3: تنفيذ التجارب
+بعد ما حسّنا الدائرة لتنفيذها على الهاردوير، إحنا جاهزين نشغّلها على الهاردوير المستهدف ونجمع عينات لتقدير طاقة حالة الأساس. بما إن عندنا دائرة واحدة بس، هنستخدم [وضع تنفيذ Job](https://quantum.cloud.ibm.com/docs/guides/execution-modes) في Qiskit Runtime وننفّذ الدائرة بتاعتنا.
+
+***ملاحظة: عملنا تعليق على الكود الخاص بتشغيل الدائرة على QPU وتركناه كمرجع للمستخدم. بدلاً من التشغيل على هاردوير حقيقي في هذا الدليل، هنولّد فقط عينات عشوائية مسحوبة من التوزيع الموحد.***
+
+```python
+import numpy as np
+from qiskit_addon_sqd.counts import generate_bit_array_uniform
+
+# from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# sampler = Sampler(mode=backend)
+# job = sampler.run([isa_circuit], shots=10_000)
+# primitive_result = job.result()
+# pub_result = primitive_result[0]
+# bit_array = pub_result.data.meas
+
+rng = np.random.default_rng(24)
+bit_array = generate_bit_array_uniform(10_000, num_orbitals * 2, rand_seed=rng)
+```
+
+### الخطوة 4: معالجة النتائج بعد التنفيذ
+دلوقتي، هنشغّل خوارزمية SQD باستخدام دالة `diagonalize_fermionic_hamiltonian`. اطّلع على [وثائق الـ API](../apidocs/qiskit_addon_sqd.fermion.rst#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian) لشرح حجج هذه الدالة.
+
+الحلّال المضمّن في إضافة SQD بيستخدم تطبيق PySCF للـ selected CI، وتحديداً [pyscf.fci.selected_ci.kernel_fixed_space](https://pyscf.org/pyscf_api_docs/pyscf.fci.html#pyscf.fci.selected_ci.kernel_fixed_space). المثال أدناه بيوضح كمان كيف تمرّر حجج الكلمات المفتاحية لتلك الدالة عبر الحلّال المضمّن. هنا بنمرّر حجة `max_cycle`.
+
+```python
+from functools import partial
+
+from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian, solve_sci_batch
+
+# SQD options
+energy_tol = 1e-3
+occupancies_tol = 1e-3
+max_iterations = 5
+
+# Eigenstate solver options
+num_batches = 1
+samples_per_batch = 300
+symmetrize_spin = True
+carryover_threshold = 1e-4
+max_cycle = 200
+
+# Pass options to the built-in eigensolver. If you just want to use the defaults,
+# you can omit this step, in which case you would not specify the sci_solver argument
+# in the call to diagonalize_fermionic_hamiltonian below.
+sci_solver = partial(solve_sci_batch, spin_sq=0.0, max_cycle=max_cycle)
+
+# List to capture intermediate results
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy + nuclear_repulsion_energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+result = diagonalize_fermionic_hamiltonian(
+    hcore,
+    eri,
+    bit_array,
+    samples_per_batch=samples_per_batch,
+    norb=num_orbitals,
+    nelec=nelec,
+    num_batches=num_batches,
+    energy_tol=energy_tol,
+    occupancies_tol=occupancies_tol,
+    max_iterations=max_iterations,
+    sci_solver=sci_solver,
+    symmetrize_spin=symmetrize_spin,
+    carryover_threshold=carryover_threshold,
+    callback=callback,
+    seed=rng,
+)
+```
+
+```text
+Iteration 1
+	Subsample 0
+		Energy: -105.45358671756313
+		Subspace dimension: 5476
+Iteration 2
+	Subsample 0
+		Energy: -107.95172900082163
+		Subspace dimension: 249001
+Iteration 3
+	Subsample 0
+		Energy: -108.97460330369815
+		Subspace dimension: 339889
+Iteration 4
+	Subsample 0
+		Energy: -109.02739376648793
+		Subspace dimension: 440896
+Iteration 5
+	Subsample 0
+		Energy: -109.030972328451
+		Subspace dimension: 597529
+```
+
+دلوقتي، هنرسم النتائج.
+
+الرسم الأول بيوضح إنه بعد بضع تكرارات بنقدّر طاقة حالة الأساس في حدود ``~16 mH`` (الدقة الكيميائية بتتقبّل عادةً عند ``1 kcal/mol`` $\approx$ ``1.6 mH``). اتذكّر، عينات الكم في هذا العرض التوضيحي كانت ضوضاء خالصة. الإشارة هنا بتيجي من *المعرفة المسبقة* بالبنية الإلكترونية وHamiltonian الجزيئي.
+
+الرسم الثاني بيوضح متوسط إشغال كل مدار فضائي بعد التكرار الأخير. ممكن نشوف إن إلكترونات السبين الصاعد والسبين الهابط بتشغل المدارات الخمسة الأولى باحتمالية عالية في حلولنا.
+
+```python
+import matplotlib.pyplot as plt
+
+# Data for energies plot
+x1 = range(len(result_history))
+min_e = [
+    min(result, key=lambda res: res.energy).energy + nuclear_repulsion_energy
+    for result in result_history
+]
+e_diff = [abs(e - exact_energy) for e in min_e]
+yt1 = [1.0, 1e-1, 1e-2, 1e-3, 1e-4]
+
+# Chemical accuracy (+/- 1 milli-Hartree)
+chem_accuracy = 0.001
+
+# Data for avg spatial orbital occupancy
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, e_diff, label="energy error", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(yt1)
+axs[0].set_yscale("log")
+axs[0].set_ylim(1e-4)
+axs[0].axhline(y=chem_accuracy, color="#BF5700", linestyle="--", label="chemical accuracy")
+axs[0].set_title("Approximated Ground State Energy Error vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy Error (Ha)", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f} Ha")
+print(f"SQD energy: {min_e[-1]:.5f} Ha")
+print(f"Absolute error: {e_diff[-1]:.5f} Ha")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -109.04667 Ha
+SQD energy: -109.03097 Ha
+Absolute error: 0.01570 Ha
+```
+
+![Plot output](./_01_chemistry_hamiltonian_imgs/output_1.png)
+
+<TutorialFeedback />
