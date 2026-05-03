@@ -1,0 +1,179 @@
+#### Навчання шуму
+
+Перш ніж запускати експерименти, ми навчаємо модель шуму, що впливає на заплутувальні вентилі та вимірювання в схемі. Наявність точної моделі шуму необхідна для ефективного пом'якшення помилок. Навчання шуму безпосередньо перед виконанням експериментів дає найкращі шанси на те, що модель шуму точно описуватиме реальний шум, який впливає на вентилі під час виконання.
+
+Перш ніж навчати шум, нам потрібно знайти унікальні двокубітні шари в нашій схемі, щоб мінімізувати кількість вимірів, потрібних для навчання шуму для всієї схеми. Ми використовуємо ``find_unique_box_instructions`` з ``samplomatic``, щоб отримати унікальні шари з обрамленої схеми, включаючи шар вимірювань. Саме ці шари ми передаємо навчальнику шуму.
+
+Коли шари визначено, можна навчати шум. Є кілька параметрів, які варто розглянути:
+
+- `num_randomizations`: Кількість випадкових схем для кожної конфігурації навчальної схеми
+- `shots_per_randomization`: Загальна кількість вимірів на одну випадкову навчальну схему
+- `layer_pair_depths`: Глибини схеми (вимірювані в кількості пар), що використовуються в навчальних експериментах
+- `post_selection`: Ми будемо застосовувати постселекцію на основі ребер під час навчання з використанням вентилів `rx` для реалізації поствимірювальних імпульсів
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.utils import find_unique_box_instructions
+
+# Load noise learner data from a shared job
+load_saved_nl_result = True
+
+# Noise learning parameters
+num_randomizations_nl = 64
+shots_per_randomization_nl = 128
+strategy = "edge"
+enable_postsel = True
+x_pulse_type = "rx"
+
+# Find the unique instructions (layers) from boxed-up circuit
+unique_2q_layers_and_meas = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+
+noise_learner_params = {
+    "num_randomizations": num_randomizations_nl,
+    "shots_per_randomization": shots_per_randomization_nl,
+    "layer_pair_depths": [1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    "post_selection": {
+        "enable": enable_postsel,
+        "strategy": strategy,
+        "x_pulse_type": x_pulse_type,
+    },
+    "experimental": {},
+}
+# set the options
+noise_learner_options = NoiseLearnerV3Options(**noise_learner_params)
+
+# run the noise learner job
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+noise_learner_job = noise_learner.run(unique_2q_layers_and_meas)
+noise_learner_result = noise_learner_job.result()
+
+nl_metadata = noise_learner_params | {"layout": layout}
+```
+
+```python
+import matplotlib.pyplot as plt
+
+hw_rates_1q = []
+hw_rates_2q = []
+for nlr in noise_learner_result[:2]:
+    plm_list = nlr.to_pauli_lindblad_map().to_sparse_list()
+    hw_rates_1q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 1]
+    hw_rates_2q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 2]
+hw_rates_1q = sorted(hw_rates_1q)
+hw_rates_2q = sorted(hw_rates_2q)
+median_1q = hw_rates_1q[len(hw_rates_1q) // 2]
+median_2q = hw_rates_2q[len(hw_rates_2q) // 2]
+fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+ax.scatter(
+    (hw_rates_1q),
+    [(i) / (len(hw_rates_1q) - 1) for i in range(len(hw_rates_1q))],
+    color="red",
+    label="1q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_1q, 0, 1, color="red")
+ax.text(median_1q * 1.1, 0.1, f"{median_1q:.2e}")
+ax.scatter(
+    (hw_rates_2q),
+    [(i) / (len(hw_rates_2q) - 1) for i in range(len(hw_rates_2q))],
+    color="blue",
+    label="2q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_2q, 0, 1, color="blue")
+ax.text(median_2q * 1.1, 0.2, f"{median_2q:.2e}")
+ax.set_title("Learned noise rates")
+ax.set_xlabel("Noise rate")
+ax.set_yticks([])
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x321dd63f0>
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_5.png)
+
+#### Асоціювання блоків схеми з навченим шумом
+
+Тут ми створюємо відображення між ідентифікаторами посилань ``InjectNoise`` кожного блоку та навченою моделлю шуму (`PauliLindbladMap`), що впливає на заплутувальні вентилі в цьому блоці.
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### Поширення спостережуваної через навчений антишум для отримання спостережуваної, що пом'якшує шум
+
+Як зазначалося вище, це робиться у два кроки. Спочатку ми поширюємо генератор антишуму на кінець схеми. Після цього ми поширюємо спостережувану через цей еволюційований генератор. Цей процес повторюється для кожного генератора антишуму в схемі. У цій реалізації кожен генератор у заданому шарі поширюється до кінця схеми паралельно. Крім того, Python multiprocessing використовується для паралельного виконання як прямого поширення антишуму, так і зворотного поширення спостережуваної. Це запобігає накопиченню еволюційованих генераторів у пам'яті та максимально використовує обчислювальні ресурси.
+
+Під час запуску PNA завжди потрібно надавати шумну схему та спостережувану. Якщо твоя шумна схема є обрамленою схемою з анотаціями `InjectNoise`, тобі потрібно надати відображення, яке ми створили на кроці вище. Також можна передати необрамлену схему, що містить інструкції ``PauliLindbladError`` з ``qiskit-aer``. У такому випадку надавати ``refs_to_noise_models`` не потрібно. Окрім основних вхідних даних, варто звернути увагу на такі параметри:
+
+- `max_err_terms`: Кількість членів, що зберігаються в кожному генераторі антишуму під час його прямого поширення. Більше значення зазвичай підвищує точність, але ця залежність не гарантована як монотонна.
+- `max_obs_terms`: Кількість членів, що зберігаються в спостережуваній, яка пом'якшує шум, $\tilde{O}$, під час її зворотного поширення через еволюційований антишум. Більші значення зазвичай підвищують точність, але це не гарантовано монотонно.
+- `num_processes`: Кількість ядер, що виділяються для процесу. Пам'ятай, генератори поширюються прямо та застосовуються до спостережуваної паралельно.
+- `search_step`: Крок зворотного поширення використовує жадібний метод для приблизного спряження двох операторів у базисі Паулі. Цей метод можна прискорити, збільшивши ``search_step``. Дивись [документацію pauli-prop](https://qiskit.github.io/pauli-prop/) для отримання додаткової інформації.
+- `num_to_measure`: Хоча ця змінна не є вхідним параметром ``generate_noise_mitigating_observable``, ми використовуємо її для контролю того, скільки членів з $\tilde{O}$ ми фактично хочемо виміряти. Тут ми вимірюємо лише 30 найбільших членів, які є вихідними членами нашої спостережуваної. Члени тепер перемасштабовані так, що їх вимірювання має ефект пом'якшення навченого шуму вентилів. Хоча ми вимірюємо лише 30 членів з $\tilde{O}$, все ж часто корисно дозволяти їй зростати, оскільки це підвищує точність масштабувальних коефіцієнтів провідних членів.
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
+Finished! 13560 / 13560 generators propagated.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_6.png)
