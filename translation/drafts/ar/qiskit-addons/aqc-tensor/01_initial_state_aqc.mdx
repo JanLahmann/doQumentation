@@ -1,0 +1,332 @@
+---
+title: "تقليل عمق الدائرة باستخدام إضافة AQC-Tensor لـ Qiskit"
+sidebar_label: "تقليل عمق الدائرة باستخدام إضافة AQC-Tensor لـ Qiskit"
+notebook_path: "qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb"
+---
+
+{/* doqumentation-source-hash: f202cfc1 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb" />
+
+
+في هذا الـ notebook، هنمر على خطوات [نمط Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) مع استخدام **التجميع الكمي التقريبي باستخدام tensor networks (AQC-Tensor)** لتحقيق عمق circuit أقل مما هو مطلوب عادةً لإجراء تطور Trotter.
+
+دي هي الخطوات اللي هناخدها:
+
+- **الخطوة 1: التعيين على المسألة الكمية**
+    - تهيئة الـ Hamiltonian والـ observable(s) بتاعة مسألتنا
+    - <font color='#0F62FE'>توليد حالة tensor-network مستهدفة للجزء الأول من الـ circuit</font>
+    - <font color='#0F62FE'>توليد circuit بعمق منخفض يقرّب الجزء المضغوط</font>
+    - <font color='#0F62FE'>توليد ansatz عام من الـ circuit ده</font>
+    - <font color='#0F62FE'>تحسين البارامترات لتقريب الـ ansatz قدر الإمكان من الهدف</font>
+    - <font color='#0F62FE'>إضافة خطوات Trotter اللاحقة للـ ansatz المُحسَّن</font>
+- **الخطوة 2: التحسين للعتاد المستهدف**
+    - تحويل الـ circuit للعتاد
+- **الخطوة 3: تنفيذ التجارب**
+    - استخدام backend وهمي للتبسيط
+- **الخطوة 4: إعادة بناء النتائج**
+    - غير مطلوب؛ بدلاً من ذلك، بنطبع الـ observable المقيس فقط
+## الخطوة 1: التعيين على الدائرة الكمية والعامل
+
+### إعداد نموذج Hamiltonian والـ observable
+
+في هذا الـ notebook، بنستخدم نموذج Ising على دائرة من 10 مواقع:
+$$
+\hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{10} J_{i,(i+1)} Z_i Z_{(i+1)} + h_i X_i \, ,
+$$
+حيث شروط الحدود الدورية تعني أنه عند $i=10$ نحصل على $i+1=11\rightarrow1$، و$J$ هي قوة الترابط بين موقعين و$h$ هي المجال المغناطيسي الخارجي.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-ibm-runtime quimb scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit circle on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 4, 15, 3, 9])
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+```
+
+الـ observable اللي هنقيسه هو المغنطة الكلية.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+L = reduced_coupling_map.size()
+observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
+```
+
+### تحديد كمية التطور الزمني اللي هنحاكيه كلاسيكياً
+
+هدفنا الرئيسي هو محاكاة التطور الزمني للـ Hamiltonian اللي عندنا. بنعمل ده عن طريق تطور Trotter، اللي بنقسمه لجزأين:
+
+1. جزء أولي قابل للمحاكاة باستخدام matrix product states (MPS). هنعمل "تجميع" لهذا الجزء باستخدام AQC كما هو مقدَّم في https://arxiv.org/abs/2301.08609.
+2. جزء لاحق من الـ circuit هيتنفذ على العتاد.
+خلينا نخطط لاستخدام AQC-Tensor لضغط circuit التطور الزمني بتاعتنا حتى الزمن $t=4$، ثم نطور باستخدام خطوات Trotter العادية حتى $t=5$.
+### توليد الدوائر قبل وبعد نقطة الفصل
+
+بما أننا اخترنا الفصل عند $t=4$، هنولد دائرتين:
+
+1. دائرة "مستهدفة" لجزء AQC من التطور، من $t_i=0$ إلى $t_f=4$. لأن ده بيتحاكى بمحاكي tensor-network، عدد الطبقات بيأثر على وقت التنفيذ بعامل ثابت بس، فمنطقي نستخدم عدد طبقات كبير لتقليل خطأ Trotter.
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+aqc_evolution_time = 4.0
+aqc_target_num_trotter_steps = 45
+
+aqc_target_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+2. دائرة تطور لاحقة، بتطور من $t_i=4$ إلى $t_f=5$. لأن هذه ستُشغَّل على العتاد الكمي، من المرغوب فيه استخدام أقل عدد ممكن من طبقات Trotter.
+
+```python
+subsequent_evolution_time = 1.0
+subsequent_num_trotter_steps = 5
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+```
+
+للمقارنة لاحقاً، خلينا نولد كمان دائرة ثالثة: واحدة بتطور لمدة `aqc_evolution_time` لكن بنفس وقت التطور لكل خطوة Trotter زي الدائرة اللاحقة. هذه هي الدائرة اللي كنا هنشتغل بيها لو ما استخدمناش عدداً سخياً من خطوات Trotter للدائرة المستهدفة. هنسميها _دائرة المقارنة_.
+
+```python
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps / subsequent_evolution_time * aqc_evolution_time
+)
+aqc_comparison_num_trotter_steps
+```
+
+```text
+20
+```
+
+```python
+comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+### توليد ansatz وبارامترات أولية من دائرة Trotter بخطوات أقل
+
+أولاً، بنبني دائرة "جيدة" بنفس وقت التطور زي الدائرة المستهدفة، لكن بخطوات Trotter أقل (وبالتالي طبقات أقل).
+
+بعدين بنمرر هذه الدائرة "الجيدة" لدالة `generate_ansatz_from_circuit` في AQC-Tensor. هذه الدالة بتحلل ترابط الـ qubit ثنائي في الدائرة وبترجع حاجتين:
+1. دائرة ansatz عامة ومُبرمَجة بنفس ترابط الـ qubit ثنائي زي الدائرة المدخلة؛ و
+2. بارامترات لما تتحط في الـ ansatz، بتنتج الدائرة المدخلة (الجيدة).
+
+بعد شوية هناخد هذه البارامترات ونعدّلها تكرارياً لتقريب دائرة الـ ansatz قدر الإمكان من الـ MPS المستهدف.
+
+```python
+from qiskit_addon_aqc_tensor import generate_ansatz_from_circuit
+
+aqc_ansatz_num_trotter_steps = 5
+
+aqc_good_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit, qubits_initially_zero=True
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./_01_initial_state_aqc_imgs/output_1.png)
+
+```python
+print(f"Comparison circuit: depth {comparison_circuit.depth()}")
+print(f"Target circuit: depth {aqc_target_circuit.depth()}")
+print(f"Ansatz circuit: depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters")
+```
+
+```text
+Comparison circuit: depth 120
+Target circuit: depth 270
+Ansatz circuit: depth 23, with 515 parameters
+```
+
+### اختيار إعدادات محاكاة tensor network
+
+هنا، بنستخدم محاكي tensor network المبني على [quimb](http://quimb.readthedocs.io/). في هذا المثال، بنستخدم محاكي matrix-product state (MPS) الخاص بـ quimb، وبنستخدم [JAX](https://docs.jax.dev/en/latest/) للتفاضل التلقائي. شوف [توثيق الـ API](../stubs/qiskit_addon_aqc_tensor.simulation.quimb.QuimbSimulator.rst) لمزيد من المعلومات عن كيفية استخدام محاكي quimb.
+
+```python
+from functools import partial
+
+import quimb.tensor
+
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+
+simulator_settings = QuimbSimulator(
+    partial(quimb.tensor.CircuitMPS, max_bond=100, cutoff=1e-8),
+    autodiff_backend="jax",
+)
+```
+
+### بناء تمثيل matrix-product state لحالة هدف AQC
+
+بعدين، بنبني تمثيل matrix-product للحالة اللي هيقربها AQC.
+
+```python
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+
+aqc_target_mps = tensornetwork_from_circuit(aqc_target_circuit, simulator_settings)
+```
+
+لاحظ أنه لأننا اخترنا عدداً سخياً من خطوات Trotter للحالة المستهدفة، فهي في الواقع بيها خطأ Trotter أقل من دائرة المقارنة. ممكن نحسب الـ fidelity ($| \langle \psi_1 | \psi_2 \rangle |^2$) للحالة اللي بتحضرها دائرة المقارنة مقارنةً بالحالة المستهدفة:
+
+```python
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+
+comparison_mps = tensornetwork_from_circuit(comparison_circuit, simulator_settings)
+comparison_fidelity = abs(compute_overlap(comparison_mps, aqc_target_mps)) ** 2
+comparison_fidelity
+```
+
+```text
+0.9996761790297157
+```
+
+### تحسين بارامترات الـ ansatz باستخدام حسابات MPS
+
+هنا، بنصغّر أبسط دالة تكلفة ممكنة، وهي `MaximizeStateFidelity`، باستخدام محسّن L-BFGS من scipy.
+
+بنختار نقطة توقف للـ fidelity بحيث تكون أعلى من ما كانت ستكون عليه دائرة المقارنة لو ما استخدمناش AQC. لما نوصل لهذه النقطة، يكون الـ circuit المضغوط بيه خطأ Trotter أقل _وعمق أقل_ من الـ circuit الأصلي. لو عندنا وقت معالجة أكثر، ممكن نعمل خطوات تحسين إضافية لرفع الـ fidelity أكثر.
+
+```python
+from scipy.optimize import OptimizeResult, minimize
+
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+
+objective = MaximizeStateFidelity(aqc_target_mps, aqc_ansatz, simulator_settings)
+
+stopping_point = 1 - comparison_fidelity
+
+def callback(intermediate_result: OptimizeResult):
+    print(f"Intermediate result: Fidelity {1 - intermediate_result.fun:.8}")
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective.loss_function,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": 100},
+    callback=callback,
+)
+if result.status not in (
+    0,
+    1,
+    99,
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(f"Optimization failed: {result.message} (status={result.status})")
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+Intermediate result: Fidelity 0.95080335
+Intermediate result: Fidelity 0.98408927
+Intermediate result: Fidelity 0.99140876
+Intermediate result: Fidelity 0.9951876
+Intermediate result: Fidelity 0.99563147
+Intermediate result: Fidelity 0.99646297
+Intermediate result: Fidelity 0.99679298
+Intermediate result: Fidelity 0.99715793
+Intermediate result: Fidelity 0.99756604
+Intermediate result: Fidelity 0.99804283
+Intermediate result: Fidelity 0.99832283
+Intermediate result: Fidelity 0.99856583
+Intermediate result: Fidelity 0.99868698
+Intermediate result: Fidelity 0.998867
+Intermediate result: Fidelity 0.99902237
+Intermediate result: Fidelity 0.99912174
+Intermediate result: Fidelity 0.99919705
+Intermediate result: Fidelity 0.99926724
+Intermediate result: Fidelity 0.99938605
+Intermediate result: Fidelity 0.99951297
+Intermediate result: Fidelity 0.99956172
+Intermediate result: Fidelity 0.99962274
+Intermediate result: Fidelity 0.99963919
+Intermediate result: Fidelity 0.99967423
+Intermediate result: Fidelity 0.9997101
+Done after 25 iterations.
+```
+
+### بناء الدائرة النهائية لتمريرها للـ transpiler
+
+```python
+final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+final_circuit.compose(subsequent_circuit, inplace=True)
+final_circuit.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./_01_initial_state_aqc_imgs/output_2.png)
+
+## الخطوة 2: التحويل للتنفيذ على العتاد المستهدف
+
+في الخطوة 2 من [نمط Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)، بنحول هذا الـ circuit وأي observable(s) مطلوبة للتنفيذ على جهاز مستهدف. هنا بنستخدم backend وهمي مقدَّم من `qiskit-ibm-runtime`.
+
+```python
+from qiskit import transpile
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+backend = FakeMelbourneV2()
+
+isa_circuit = transpile(final_circuit, backend)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+```
+
+الـ ISA circuit الناتج يمكن بعدين إرساله للتنفيذ على الـ backend (الخطوة 3 من [نمط Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)).
+## الخطوة 3: التنفيذ على العتاد الكمي
+
+```python
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+estimator = Estimator(backend)
+job = estimator.run([(isa_circuit, isa_observable)])
+pub_result = job.result()[0]
+```
+
+## الخطوة 4: إعادة البناء
+
+إعادة البناء مش ضرورية في حالتنا. ممكن نبص على النتيجة مباشرةً.
+
+```python
+pub_result.data.evs[()]
+```
+
+```text
+np.float64(0.047998046875000006)
+```
+
+<TutorialFeedback />
