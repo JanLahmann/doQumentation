@@ -1,0 +1,237 @@
+#### ربط صناديق الدوائر بالضوضاء المُتعلَّمة {#associate-circuit-boxes-with-learned-noise}
+
+هنا، نُنشئ تعييناً بين معرّفات مرجع `InjectNoise` لكل صندوق ونموذج الضوضاء المُتعلَّم (`PauliLindbladMap`) الذي يؤثر على البوابات الثنائية في ذلك الصندوق.
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### نشر المؤثِّر عبر نموذج مضاد للضوضاء للحصول على مؤثِّر مخفِّف للضوضاء {#propagate-the-observable-through-the-learned-anti-noise-to-get-a-noise-mitigating-observable}
+
+كما ناقشنا أعلاه، يتم ذلك في خطوتين. أولاً، نشر مولّد مضاد للضوضاء إلى نهاية الدائرة. بعد ذلك، نشر المؤثِّر عبر ذلك المولّد المتطوّر. تتكرر هذه العملية لكل مولّد مضاد للضوضاء في الدائرة. في هذا التطبيق، يُنشر كل مولّد في طبقة معيّنة إلى نهاية الدائرة بالتوازي. علاوة على ذلك، يُستخدم معالجة Python المتعددة لتنفيذ كل من النشر الأمامي للضوضاء المضادة والنشر الخلفي للمؤثِّر بالتوازي. يمنع هذا تراكم المولّدات المتطوّرة في الذاكرة ويعظّم موارد الحوسبة كذلك.
+
+عند تشغيل PNA، ستحتاج دائماً إلى توفير دائرة كمومية مضوضاة ومؤثِّر. إذا كانت دائرتك المضوضاة عبارة عن دائرة في صناديق تحتوي على تعليقات توضيحية `InjectNoise`، فستحتاج إلى توفير التعيين الذي أنشأناه في الخطوة أعلاه. يمكن أيضاً تمرير دائرة غير معبّأة في صناديق تحتوي على تعليمات ``PauliLindbladError`` من ``qiskit-aer``. في هذه الحالة، لا حاجة لتوفير ``refs_to_noise_models``. بالإضافة إلى المدخلات الأساسية، يجدر بالمستخدمين النظر في:
+
+- `max_err_terms`: عدد المصطلحات الواجب الاحتفاظ بها في كل مولّد مضاد للضوضاء أثناء نشره للأمام. السماح بقيمة أكبر يزيد الدقة بشكل عام، لكن هذا السلوك لا يُضمن أن يكون رتيباً.
+- `max_obs_terms`: عدد المصطلحات الواجب الاحتفاظ بها في المؤثِّر المخفِّف للضوضاء، $\tilde{O}$، أثناء نشره خلفياً عبر الضوضاء المضادة المتطوّرة. القيم الأكبر تزيد الدقة بشكل عام، لكنها لا تضمن ذلك بصورة رتيبة.
+- `num_processes`: عدد الأنوية المخصّصة للعملية. تذكّر أن المولّدات تُنشر للأمام وتُطبَّق على المؤثِّر بالتوازي.
+- `search_step`: تستخدم خطوة النشر الخلفي طريقة جشعة لتقريب اقتران عاملين في أساس باولي. يمكن تسريع هذه الطريقة عن طريق زيادة ``search_step``. راجع [توثيق pauli-prop](https://qiskit.github.io/pauli-prop/) للمزيد من المعلومات.
+- `num_to_measure`: رغم أن هذا المتغير ليس مدخلاً لـ ``generate_noise_mitigating_observable``، نستخدمه للتحكم في عدد المصطلحات من $\tilde{O}$ التي نريد قياسها فعلياً. هنا سنقيس فقط أعلى 30 مصطلحاً، وهي المصطلحات الأصلية في مؤثِّرنا. تمت إعادة قياس هذه المصطلحات بحيث يكون لقياسها تأثير تخفيف ضوضاء البوابات المُتعلَّمة. على الرغم من أننا نقيس 30 مصطلحاً فقط من $\tilde{O}$، لا يزال من المفيد في الغالب السماح له بالنمو، إذ يزيد ذلك من دقة عوامل قياس المصطلحات الرائدة.
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
+Finished! 13560 / 13560 generators propagated.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_6.png)
+
+#### تحويل أسس القياس إلى الشكل القانوني {#transform-the-measurement-bases-to-canonical-form}
+
+بعد ذلك، سنجد مجموعة أدنى من الأسس للقياس بحيث نغطي كل مصطلح باولي في المؤثِّر المقيس (***يمكن قياس العديد من المؤثِّرات في آن واحد إذا كانت تتبادل الاقتران بشكل كمّي***). بما أننا نقيس فقط مصطلحات مؤثِّرنا الأصلي، وهو مجموع جميع باوليات `Z` أحادية الموقع، فإن أساساً واحداً كافٍ وهو أساس `Z` الكلي.
+
+بالإضافة إلى إيجاد مجموعة من أسس قياس باولي، نحتاج إلى تعيين هذه المصطلحات إلى الشكل القانوني المتوقع من أمر ``Executor``. للمزيد من المعلومات حول ترتيب الكيوبت القانوني، تفضّل بزيارة [توثيق samplomatic](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention).
+
+```python
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}  # canonical -> physical
+p_2_v = {p: v for v, p in enumerate(layout)}  # physical -> virtual
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}  # canonical -> virtual
+meas_bases, bases_reverser = get_measurement_bases(obs_tilde_virtual)
+meas_bases_canonical = [
+    np.array([base[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base in meas_bases
+]
+```
+
+#### تحديد طريقة أخذ العيّنات في ``QuantumProgram`` {#specify-how-to-sample-in-the-quantumprogram}
+
+في ``QuantumProgram`` نحدد كيفية أخذ عيّنات التجربة:
+
+- ``template_circuit``: الدائرة التي تحتوي على جميع البوابات اللازمة لتنفيذ جميع التوزيعات العشوائية المطلوبة (من توزيعات التشابك، والمعاملات، وغيرها).
+- ``samplex``: كائن يُعرّف توزيع احتمالات على جميع توزيعات الدائرة العشوائية الممكنة للأخذ منها عيّنات.
+- ``samplex_arguments``: الربطات اللازمة لتعريف samplex بالكامل
+    - ``basis_changes``: هنا نحدد مجموعة من الأسس للقياس تغطي جميع مصطلحات باولي في المؤثِّر المقيس.
+    - ``noise_scales.ref``: نضبط مقياس كل طبقة ضوضاء على `0.0` لمنع حقن أي ضوضاء إضافية في عيّناتنا.
+    - ``pauli_lindblad_maps``: مطلوب عند تمرير ``noise_scales``. يُعيّن فقط طبقات الضوضاء إلى نموذج الضوضاء المرتبط بها.
+- ``shape``: صف شكل لتوسيع الشكل الضمني المعرَّف بواسطة ``samplex_arguments``. تُعدِّد المحاور غير البديهية التي يُدخلها هذا التوسيع التوزيعات العشوائية.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram
+
+# Control the # of shots during execution
+shots_per_randomization_exec = 64
+num_randomizations_exec = 6144
+
+# Zero out the noise to prevent noise from being injected during execution.
+# We only added InjectNoise annotations so PNA could associate the noise
+# to layers in the circuit
+samplex_inputs = {f"noise_scales.{ref}": 0.0 for ref in refs_to_noise_models}
+samplex_inputs |= {"pauli_lindblad_maps": refs_to_noise_models}
+
+# Specify the bases to measure
+bases_broadcastable = np.expand_dims(np.array(meas_bases_canonical), axis=1)
+samplex_inputs |= {"basis_changes": {"basis0": bases_broadcastable}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().make_broadcastable().bind(**samplex_inputs)
+
+# Instantiate the QuantumProgram with the specified parameters
+program = QuantumProgram(shots=shots_per_randomization_exec)
+program.append(
+    circuit=template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations_exec),
+)
+```
+
+#### أخذ عيّنات من الدائرة باستخدام النموذج الأوّلي ``Executor`` {#sample-the-circuit-using-the-executor-primitive-prototype}
+
+الآن بعد أن عرّفنا ``QuantumProgram``، أصبح تنفيذ التجربة أمراً مباشراً. نكتفي بإنشاء كائن ``Executor``، وتزويده بالواجهة الخلفية، ثم تشغيل البرنامج.
+
+```python
+from qiskit_ibm_runtime import Executor
+
+# Execute (sample) the circuit
+executor = Executor(backend)
+job_exec = executor.run(program)
+exec_results = job_exec.result()
+```
+
+#### معالجة العيّنات لحساب قيمة توقع مخففة للأخطاء {#post-process-the-samples-to-calculate-an-error-mitigated-expectation-value}
+
+لحساب قيمة توقع مخففة للأخطاء، سنقوم بما يلي:
+
+- حساب عوامل تحجيم TREX بناءً على الضوضاء المُتعلَّمة المؤثِّرة على القياسات
+- توليد قناع للاحتفاظ فقط بالعيّنات المُختارة بعد التصفية
+- استخدام دالة ``executor_expectation_values`` من ``qiskit-addon-utils`` لدمج جميع البيانات في قيمة توقع مخففة للأخطاء.
+
+```python
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.noise_management import trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+
+# Computing the TREX factors
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_rescale_factors = trex_factors(measurement_noise_map, bases_reverser)
+
+# Post-select the results
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit, coupling_map=backend.coupling_map
+)
+
+# Compute the ps mask for filtering results
+mask = post_selector.compute_mask(exec_results[0], strategy="edge")
+
+# Compute expvals using post selected results
+results = executor_expectation_values(
+    exec_results[0]["meas"],
+    bases_reverser,
+    meas_basis_axis=0,
+    avg_axis=1,
+    measurement_flips=exec_results[0]["measurement_flips.meas"],
+    pauli_signs=exec_results[0].get("pauli_signs", None),
+    postselect_mask=mask,
+    rescale_factors=trex_rescale_factors,
+)
+```
+
+```python
+bases_reverser_unmit = {Pauli("Z" * num_qubits): [observable]}
+args = [
+    (bases_reverser_unmit, None, None),
+    (bases_reverser, None, None),
+    (bases_reverser, None, trex_rescale_factors),
+    (bases_reverser, mask, None),
+    (bases_reverser, mask, trex_rescale_factors),
+]
+
+evs = []
+for reverser, postsel_mask, factors in args:
+    # Compute expvals using post selected results
+    res_ps = executor_expectation_values(
+        exec_results[0]["meas"],
+        reverser,
+        meas_basis_axis=0,
+        avg_axis=1,
+        measurement_flips=exec_results[0]["measurement_flips.meas"],
+        pauli_signs=exec_results[0].get("pauli_signs", None),
+        postselect_mask=postsel_mask,
+        rescale_factors=factors,
+    )
+    res_ps = np.array(res_ps)
+    evs.append(res_ps[:, 0][0])
+
+experiments = ["PNA", "PNA+TREX", "PNA+PS", "PNA+PS+TREX"]
+colors = ["#d9d9d9", "#b0b0b0", "#7f7f7f", "#4c4c4c"]
+plt.bar(experiments, evs[1:], color=colors)
+plt.axhline(y=1, color="green", linestyle="--", linewidth=2, label="Ideal")
+plt.axhline(y=evs[0], color="red", linestyle="--", linewidth=2, label="Unmitigated")
+plt.ylabel("Expectation value", fontsize=14)
+
+plt.title(r"30q Mirrored Ising, 10 Trotter steps, $\theta_{rx}=\frac{\pi}{8}$", fontsize=14)
+plt.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_7.png)
+
+<TutorialFeedback />
