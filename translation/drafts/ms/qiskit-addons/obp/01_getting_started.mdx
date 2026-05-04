@@ -1,0 +1,298 @@
+---
+title: "Mengurangkan kedalaman litar dengan backpropagation operator"
+sidebar_label: "Mengurangkan kedalaman litar dengan backpropagation operator"
+notebook_path: "qiskit-addons/obp/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: 43a12650 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/obp/01_getting_started.ipynb" />
+
+
+Backpropagation operator adalah satu teknik yang melibatkan penyerapan operasi dari hujung litar kuantum ke dalam operator Pauli, yang secara amnya mengurangkan kedalaman litar dengan kos tambahan dalam bentuk lebih banyak terma dalam operator tu. Matlamatnya adalah untuk backpropagate sebanyak mungkin litar tanpa biarkan operator jadi terlalu besar.
+
+Salah satu cara untuk membenarkan backpropagation yang lebih dalam ke dalam litar, sambil menghalang operator daripada membesar terlalu banyak, adalah dengan memotong terma yang mempunyai pekali kecil, daripada menambahnya ke dalam operator. Memotong terma boleh menghasilkan lebih sedikit litar kuantum untuk dilaksanakan, tapi berbuat begitu akan mengakibatkan sedikit ralat dalam pengiraan nilai jangkaan akhir, yang berkadar dengan magnitud pekali terma yang dipotong tu.
+Dalam tutorial ini kita akan laksanakan satu [corak Qiskit](https://quantum.cloud.ibm.com/docs/guides/serverless#qiskit-patterns-with-quantum-serverless) untuk mensimulasikan dinamik kuantum rantai spin Heisenberg menggunakan backpropagation operator:
+
+- **Langkah 1: Petakan kepada masalah kuantum**
+    - Petakan Hamiltonian yang telah berevolusi masa kepada litar kuantum
+- **Langkah 2: Optimumkan masalah**
+    - Hirisan litar
+    - <font color="#0F62FE">Backpropagate hirisan dari litar kepada observable Pauli</font>
+    - Gabungkan hirisan yang tinggal menjadi satu litar tunggal
+    - Transpile litar untuk Backend
+- **Langkah 3: Jalankan eksperimen**
+    - Kira nilai jangkaan menggunakan litar yang dikurangkan dan observable yang dikembangkan dengan [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) demi kesederhanaan dalam notebook ini
+- **Langkah 4: Bina semula keputusan**
+    - Tiada.
+
+**Nota:** Qiskit secara longgar menerangkan [lapisan](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.dagcircuit.DAGCircuit) sebagai partition kedalaman-1 bagi litar merentasi semua Qubit. Pakej ini menggunakan istilah **hirisan** untuk menerangkan lapisan dengan kedalaman sewenang-wenangnya. Fungsi [qiskit_addon_obp.backpropagate](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.backpropagate.html) direka untuk backpropagate keseluruhan hirisan pada satu masa, jadi pilihan cara untuk menghiris litar kuantum boleh memberi kesan besar kepada seberapa baik backpropagation berfungsi untuk masalah tertentu. Kamu akan belajar lebih lanjut tentang **hirisan** di bawah.
+## Langkah 1: Petakan kepada masalah kuantum {#step-1-map-to-quantum-problem}
+### Petakan evolusi masa model Heisenberg kuantum kepada eksperimen kuantum. {#map-the-time-evolution-of-a-quantum-heisenberg-model-to-a-quantum-experiment}
+
+Pakej [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) menyediakan beberapa fungsi yang boleh diguna semula untuk pelbagai tujuan.
+
+Modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) menyediakan fungsi untuk menjana Hamiltonian seperti Heisenberg pada graf sambungan yang diberikan.
+Graf ini boleh berupa sama ada [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html) atau [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap) yang memudahkan penggunaannya dalam aliran kerja berpusatkan Qiskit.
+
+Dalam bahagian berikut, kita mula-mula menjana `CouplingMap` heavy-hex yang daripadanya kita ukir rantai linear 10 Qubit. Perlu diingat bahawa indeks `reduced_coupling_map` baru ini bermula semula dari sifar.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime rustworkx
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit linear chain on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 5, 12, 8, 18])
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(reduced_coupling_map.graph, method="circo")
+```
+
+![Code output](./_01_getting_started_imgs/output_1.png)
+
+Seterusnya, kita jana operator Pauli yang memodelkan Hamiltonian Heisenberg XYZ.
+
+$$\hat{H} = \sum_{(j,k)\in E} (J_{x} \sigma_j^{x} \sigma_{k}^{x} +
+    J_{y} \sigma_j^{y} \sigma_{k}^{y} + J_{z} \sigma_j^{z} \sigma_{k}^{z}) +
+    \sum_{j\in V} (h_{x} \sigma_j^{x} + h_{y} \sigma_j^{y} + h_{z} \sigma_j^{z})$$
+
+Di mana $G(V,E)$ ialah graf bagi coupling map yang diberikan.
+
+```python
+import numpy as np
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIIY', 'IIIIIIIIIZ', 'IIIIIIIIXI', 'IIIIIIIIYI', 'IIIIIIIIZI', 'IIIIIIIXII', 'IIIIIIIYII', 'IIIIIIIZII', 'IIIIIIXIII', 'IIIIIIYIII', 'IIIIIIZIII', 'IIIIIXIIII', 'IIIIIYIIII', 'IIIIIZIIII', 'IIIIXIIIII', 'IIIIYIIIII', 'IIIIZIIIII', 'IIIXIIIIII', 'IIIYIIIIII', 'IIIZIIIIII', 'IIXIIIIIII', 'IIYIIIIIII', 'IIZIIIIIII', 'IXIIIIIIII', 'IYIIIIIIII', 'IZIIIIIIII', 'XIIIIIIIII', 'YIIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+Daripada operator Qubit, kita boleh jana litar kuantum yang memodelkan evolusi masanya.
+Sekali lagi, modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) datang membantu dengan fungsi yang berguna untuk melakukan tepat tu:
+
+```python
+from qiskit.synthesis import LieTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=2),
+)
+circuit.draw("mpl", style="iqp", scale=0.6)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_2.png)
+
+## Langkah 2: Optimumkan masalah {#step-2-optimize-the-problem}
+### Buat hirisan litar untuk backpropagate {#create-circuit-slices-to-backpropagate}
+
+Ingat, fungsi ``backpropagate`` akan backpropagate keseluruhan hirisan litar pada satu masa, jadi pilihan cara untuk menghiris boleh memberi kesan kepada seberapa baik backpropagation berfungsi untuk masalah tertentu. Di sini, kita akan mengumpulkan Gate yang sama jenis ke dalam hirisan menggunakan fungsi [slice_by_gate_types](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.slicing.slice_by_gate_types.html).
+
+Untuk perbincangan yang lebih terperinci tentang penghirisan litar, tengok [panduan cara-cara](https://qiskit.github.io/qiskit-addon-utils/how_tos/create_circuit_slices.html) ini dari pakej [qiskit-addon-utils](https://qiskit.github.io/qiskit-addon-utils/index.html).
+
+```python
+from qiskit_addon_utils.slicing import slice_by_gate_types
+
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+### Hadkan saiz pertumbuhan operator semasa backpropagation {#constrain-how-large-the-operator-may-grow-during-backpropagation}
+
+Semasa backpropagation, bilangan terma dalam operator secara amnya akan mendekati $4^N$ dengan cepat, di mana $N$ ialah bilangan Qubit. Saiz operator boleh dibatas dengan menyatakan kwarg ``operator_budget`` bagi fungsi ``backpropagate``, yang menerima contoh [OperatorBudget](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.simplify.OperatorBudget.html).
+
+Di sini kita nyatakan bahawa backpropagation patut berhenti apabila bilangan kumpulan Pauli yang komut mengikut Qubit dalam operator melebihi 8.
+
+```python
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+
+op_budget = OperatorBudget(max_qwc_groups=8)
+```
+
+### Backpropagate hirisan dari litar {#backpropagate-slices-from-the-circuit}
+
+Pertama, kita akan nyatakan observable Pauli-Z pada Qubit 0, dan kita akan backpropagate hirisan dari litar evolusi masa sehingga terma dalam observable tidak lagi boleh digabungkan menjadi 8 atau kurang kumpulan Pauli yang komut mengikut Qubit.
+
+Di bawah kamu akan nampak bahawa kita telah backpropagate 7 hirisan tetapi hanya menggunakan 6 daripada 8 kumpulan Pauli yang diperuntukkan. Ini bermakna backpropagating satu lagi hirisan akan menyebabkan bilangan kumpulan Pauli melebihi 8. Kita boleh sahkan ini dengan memeriksa metadata yang dikembalikan.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_utils.slicing import combine_slices
+
+# Specify a single-qubit observable
+observable = SparsePauliOp("IIIIIIIIIZ")
+
+# Backpropagate slices onto the observable
+bp_obs, remaining_slices, metadata = backpropagate(observable, slices, operator_budget=op_budget)
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 18 terms, which can be combined into 8 groups.
+Note that backpropagating one more slice would result in 27 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_3.png)
+
+Seterusnya, kita akan nyatakan masalah yang sama dengan kekangan yang sama pada saiz observable output. Walau bagaimanapun, kali ini, kita memperuntukkan bajet ralat untuk setiap hirisan menggunakan fungsi [setup_budet](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.truncating.setup_budget.html). Terma Pauli dengan pekali kecil akan dipotong dari setiap hirisan sehingga bajet ralat dipenuhi, dan bajet lebihan akan ditambah kepada bajet hirisan berikutnya.
+
+Untuk membolehkan pemotongan ini, kita perlu sediakan bajet ralat kita seperti ini:
+
+```python
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+Perlu diambil perhatian bahawa dengan memperuntukkan ralat `5e-3` setiap hirisan untuk pemotongan, kita dapat membuang 3 lagi hirisan dari litar, sambil kekal dalam bajet asal 8 kumpulan Pauli yang komut dalam observable. Secara lalai, `backpropagate` menggunakan norma L1 bagi pekali yang dipotong untuk membatas jumlah ralat yang ditanggung akibat pemotongan. Untuk pilihan lain rujuk [panduan cara-cara tentang menentukan p_norm](https://qiskit.github.io/qiskit-addon-obp/how_tos/bound_error_using_p_norm.html).
+
+Dalam contoh khusus ini di mana kita telah backpropagate 10 hirisan, jumlah ralat pemotongan tidak sepatutnya melebihi ``(5e-3 error/slice) * (10 slices) = 5e-2``.
+Untuk perbincangan lanjut tentang pengagihan bajet ralat merentasi hirisan kamu, tengok [panduan cara-cara ini](https://qiskit.github.io/qiskit-addon-obp/how_tos/truncate_operator_terms.html).
+
+```python
+# Run the same experiment but truncate observable terms with small coefficients
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget, truncation_error_budget=truncation_error_budget
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(remaining_slices_trunc, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 19 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 4.933e-02
+Note that backpropagating one more slice would result in 27 terms across 13 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_4.png)
+
+### Sekarang kita dah ada ansatz yang dikurangkan dan observable yang dikembangkan, kita boleh transpile eksperimen kita ke Backend. {#now-that-we-have-our-reduced-ansatze-and-expanded-observables-we-can-transpile-our-experiments-to-the-backend}
+
+Di sini kita akan guna [FakeMelbourneV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/fake-provider-fake-melbourne-v2) 14-Qubit dari [qiskit-ibm-runtime](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime) untuk menunjukkan cara untuk transpile ke Backend QPU.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+# Specify a backend and a pass manager for transpilation
+backend = FakeMelbourneV2()
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+## Langkah 3: Jalankan eksperimen kuantum {#step-3-execute-quantum-experiments}
+### Kira nilai jangkaan {#calculate-expectation-value}
+
+Akhirnya, kita boleh jalankan eksperimen yang telah di-backpropagate dan bandingkan dengan eksperimen penuh menggunakan [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) yang bebas hingar. Kita boleh nampak bahawa nilai jangkaan yang di-backpropagate tanpa pemotongan adalah bersamaan dengan nilai tepat dalam had ketepatan berangka.
+
+Nilai jangkaan pada operator dengan terma yang dipotong mempunyai sedikit ralat pada susunan ``1e-4``, yang berada dalam toleransi yang dijangkakan.
+
+**Nota:** Kita guna primitif ``Estimator`` berasaskan statevector untuk menggambarkan kesan pemotongan pada output. Untuk jalankan pada Backend yang mana eksperimen telah di-transpile dalam Langkah 2, seseorang perlu import [EstimatorV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/estimator-v2) dari ``qiskit-ibm-runtime`` dan masukkan contoh Backend ke dalam konstruktor.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+estimator = Estimator()
+
+# Run the experiments using Estimator primitive
+result_exact = estimator.run([(circuit_isa, observable_isa)]).result()[0].data.evs.item()
+result_bp = estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+result_bp_trunc = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)]).result()[0].data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+print(f"    - Expected Error for truncated observable: {metadata.accumulated_error(0):.3e}")
+print(f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc):.3e}")
+```
+
+```text
+Exact expectation value: 0.8854160687717507
+Backpropagated expectation value: 0.8854160687717532
+Backpropagated expectation value with truncation: 0.8850236647156059
+    - Expected Error for truncated observable: 4.933e-02
+    - Observed Error for truncated observable: 3.924e-04
+```
+
+<TutorialFeedback />
