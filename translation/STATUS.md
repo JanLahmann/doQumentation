@@ -20,7 +20,7 @@ python translation/scripts/translation-status.py --write-status
 | Portuguese | `pt` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
 | Tagalog | `tl` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
 | Arabic | `ar` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
-| Hebrew | `he` | 44/44 | 172/172 | 154/154 | 15/15 | 387/408 |
+| Hebrew | `he` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
 | Malay | `ms` | 44/44 | 172/172 | 154/154 | 15/15 | 387/408 |
 | Indonesian | `id` | 44/44 | 172/172 | 154/154 | 15/15 | 387/408 |
 | Thai | `th` | 44/44 | 172/172 | 154/154 | 15/15 | 387/408 |
@@ -3908,10 +3908,11 @@ python translation/scripts/translation-status.py --write-status
 | **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (387 files in status.json)</summary>
+<summary>Pipeline history (408 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
+| `about/code-modifications.mdx` | promoted | PASS | 2026-05-04 |
 | `guides/DAG-representation.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/access-groups.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/access-instances-platform-apis.mdx` | promoted | PASS | 2026-03-26 |
@@ -4255,6 +4256,18 @@ python translation/scripts/translation-status.py --write-status
 | `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/modules/quantum-mechanics/stern-gerlach-measurements-with-qiskit.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/modules/quantum-mechanics/superposition-with-qiskit.mdx` | promoted | PASS | 2026-03-26 |
+| `qiskit-addons/aqc-tensor/01_initial_state_aqc.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/cutting/03_wire_cutting_via_move_instruction.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/cutting/04_automatic_cut_finding.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/index.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/mpf/01_getting_started.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/obp/01_getting_started.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/pna/01_generate_noise_mitigating_observable.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/slc/01_getting_started.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/sqd/01_chemistry_hamiltonian.mdx` | promoted | PASS | 2026-05-04 |
+| `qiskit-addons/sqd/02_fermionic_lattice_hamiltonian.mdx` | promoted | PASS | 2026-05-04 |
 | `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-20 |
 | `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-20 |
 | `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-20 |
@@ -4299,6 +4312,14 @@ python translation/scripts/translation-status.py --write-status
 | `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | PASS | 2026-03-20 |
 | `tutorials/transverse-field-ising-model.mdx` | promoted | PASS | 2026-03-20 |
 | `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-03-20 |
+| `workshop/01_build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-04 |
+| `workshop/02_quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-04 |
+| `workshop/03_Qiskit 101 Hands-on.mdx` | promoted | PASS | 2026-05-04 |
+| `workshop/03_Qiskit 101 Hands-on_solution.mdx` | promoted | PASS | 2026-05-04 |
+| `workshop/04_Hands-on Introduction to Qiskit.mdx` | promoted | PASS | 2026-05-04 |
+| `workshop/05_Hello_World_Qiskit_Malaysia_Workshop_Nov25.mdx` | promoted | PASS | 2026-05-04 |
+| `workshop/06_divincenzo_criteria_lab-2.mdx` | promoted | PASS | 2026-05-04 |
+| `workshop/06_divincenzo_criteria_lab-2_solution.mdx` | promoted | PASS | 2026-05-04 |
 
 </details>
 
