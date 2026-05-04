@@ -1,0 +1,237 @@
+#### שיוך תיבות Circuit למודל הרעש שנלמד {#associate-circuit-boxes-with-learned-noise}
+
+כאן אנחנו יוצרים מיפוי בין מזהי ה-`InjectNoise` של כל תיבה לבין מודל הרעש שנלמד (`PauliLindbladMap`) המשפיע על שערי ה-Qubit הדו-ביטיים באותה תיבה.
+
+```python
+from samplomatic.annotations import InjectNoise
+from samplomatic.utils import get_annotation
+
+# map inject noise refs to pauli lindblad maps
+refs_to_noise_models = {}
+for instruction, result in zip(unique_2q_layers_and_meas, noise_learner_result, strict=False):
+    if inject_noise_annot := get_annotation(instruction.operation, InjectNoise):
+        refs_to_noise_models[inject_noise_annot.ref] = result.to_pauli_lindblad_map()
+```
+
+#### הפצת ה-Observable דרך האנטי-רעש שנלמד לקבלת Observable מקזז-רעש {#propagate-the-observable-through-the-learned-anti-noise-to-get-a-noise-mitigating-observable}
+
+כפי שהוסבר לעיל, הדבר נעשה בשני שלבים. ראשית, אנחנו מפיצים גנרטור אנטי-רעש לסוף ה-Circuit. לאחר מכן, אנחנו מפיצים את ה-Observable דרך אותו גנרטור מתפתח. תהליך זה חוזר על עצמו עבור כל גנרטור אנטי-רעש ב-Circuit. במימוש זה, כל גנרטור בשכבה נתונה מופץ לסוף ה-Circuit במקביל. בנוסף, מולטי-פרוססינג של Python משמש לביצוע גם הפצה-קדמית של האנטי-רעש וגם הפצה-אחורית של ה-Observable במקביל. זה מונע הצטברות של גנרטורים מתפתחים בזיכרון וגם ממקסם את משאבי המחשוב.
+
+כאשר מריצים PNA, תמיד יש לספק Circuit רועש ו-Observable. אם ה-Circuit הרועש שלך הוא Circuit ממוסגר עם אנוטציות `InjectNoise`, יש לספק את המיפוי שיצרנו בשלב לעיל. ניתן גם להעביר Circuit לא-ממוסגר המכיל הוראות `PauliLindbladError` מ-`qiskit-aer`. במקרה זה, אין צורך לספק את `refs_to_noise_models`. בנוסף לקלטים הראשיים, המשתמשים כדאי שישקלו:
+
+- `max_err_terms`: מספר האיברים לשמור בכל גנרטור אנטי-רעש כאשר הוא מופץ קדמית. מתן ערך גדול יותר בדרך כלל מגדיל את הדיוק, אך ההתנהגות הזו אינה מובטחת להיות מונוטונית.
+- `max_obs_terms`: מספר האיברים לשמור ב-Observable מקזז-הרעש, $\tilde{O}$, כאשר הוא מופץ אחורית דרך האנטי-רעש המתפתח. ערכים גדולים יותר בדרך כלל מגדילים את הדיוק, אך לא מובטח שהם יעשו זאת בצורה מונוטונית.
+- `num_processes`: מספר הליבות להקצות לתהליך. זכור, הגנרטורים מופצים קדמית ומוחלים על ה-Observable במקביל.
+- `search_step`: שלב ההפצה-האחורית משתמש בשיטה חמדנית כדי לקרב שני אופרטורים בבסיס הפאולי. ניתן להאיץ שיטה זו על ידי הגדלת ``search_step``. ראה את [תיעוד pauli-prop](https://qiskit.github.io/pauli-prop/) למידע נוסף.
+- `num_to_measure`: למרות שמשתנה זה אינו קלט ל-``generate_noise_mitigating_observable``, אנחנו משתמשים בו כדי לשלוט בכמה איברים מ-$\tilde{O}$ אנחנו רוצים למדוד בפועל. כאן נמדוד רק את 30 האיברים העליונים, שהם האיברים המקוריים ב-Observable שלנו. האיברים עוצבו מחדש כך שמדידתם מביאה לאפקט של הפחתת רעש השערים שנלמד. למרות שאנחנו מודדים רק 30 איברים מ-$\tilde{O}$, עדיין לעתים קרובות שימושי לאפשר לו לגדול, שכן זה מגדיל את הדיוק של גורמי ה-scaling של האיברים המובילים.
+
+```python
+from qiskit_addon_pna import generate_noise_mitigating_observable
+
+# PNA parameters
+num_processes = 8
+max_err_terms = 10_000
+max_obs_terms = 10_000
+num_to_measure = num_qubits
+
+obs_tilde_isa = generate_noise_mitigating_observable(
+    boxed_circuit,
+    isa_observable,
+    refs_to_noise_models,
+    max_err_terms=max_err_terms,
+    max_obs_terms=max_obs_terms,
+    num_processes=num_processes,
+    print_progress=True,
+    search_step=8,
+)
+p_2_v = {p: v for v, p in enumerate(layout)}
+obs_tilde_virtual = SparsePauliOp.from_sparse_list(
+    [
+        (pstr, [p_2_v[p] for p in p_qubits], coeff)
+        for (pstr, p_qubits, coeff) in obs_tilde_isa.to_sparse_list()
+    ],
+    num_qubits=num_qubits,
+)
+obs_tilde_virtual = obs_tilde_virtual[np.argsort(np.abs(obs_tilde_virtual.coeffs))[::-1]][
+    :num_to_measure
+]
+```
+
+```text
+Finished! 13560 / 13560 generators propagated.
+```
+
+```python
+obs_tilde_isa = obs_tilde_isa[np.argsort(np.abs(obs_tilde_isa.coeffs))][::-1]
+plt.xscale("log")
+plt.yscale("log")
+plt.title(r"$\tilde{O}$ coeff magnitudes")
+plt.ylabel("Magnitude")
+plt.xlabel("Pauli term index")
+plt.plot(np.abs(obs_tilde_isa.coeffs), ".")
+```
+
+```text
+[<matplotlib.lines.Line2D at 0x16b69e840>]
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_6.png)
+
+#### המרת בסיסי המדידה לצורה קנונית {#transform-the-measurement-bases-to-canonical-form}
+
+בשלב הבא, נמצא קבוצה מינימלית של בסיסים למדידה כך שנוכל לכסות כל איבר פאולי ב-Observable הנמדד (***ניתן למדוד observables רבים בו-זמנית אם הם מתחלפים Qubit-wise***). מאחר שאנחנו מודדים רק את האיברים ב-Observable המקורי שלנו, שהוא סכום כל הפאוליים הבודדי-`Z`, נדרש בסיס יחיד — בסיס ה-`Z` הכולל.
+
+בנוסף למציאת קבוצת בסיסי מדידת פאולי, עלינו למפות איברים אלה לצורה הקנונית המצופה על ידי ה-Primitive ``Executor``. למידע נוסף על סדר Qubit קנוני, בקר ב-[תיעוד samplomatic](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention).
+
+```python
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}  # canonical -> physical
+p_2_v = {p: v for v, p in enumerate(layout)}  # physical -> virtual
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}  # canonical -> virtual
+meas_bases, bases_reverser = get_measurement_bases(obs_tilde_virtual)
+meas_bases_canonical = [
+    np.array([base[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base in meas_bases
+]
+```
+
+#### הגדרת אופן הדגימה ב-``QuantumProgram`` {#specify-how-to-sample-in-the-quantumprogram}
+
+ה-``QuantumProgram`` הוא המקום בו אנחנו מגדירים כיצד לדגום את הניסוי:
+
+- ``template_circuit``: ה-Circuit המכיל את כל השערים הנדרשים לביצוע כל האקראיות הרצויות (מאקראיות twirling, פרמטרים וכדומה).
+- ``samplex``: אובייקט המגדיר התפלגות הסתברות על פני כל אקראיות ה-Circuit האפשריות שממנה לדגום.
+- ``samplex_arguments``: קשירות הנדרשות להגדרה מלאה של ה-samplex
+    - ``basis_changes``: כאן אנחנו מציינים קבוצת בסיסים למדידה שתכסה את כל איברי הפאולי ב-Observable הנמדד.
+    - ``noise_scales.ref``: אנחנו מגדירים את scale של כל שכבת רעש ל-`0.0` כדי למנוע הזרקת רעש נוסף לדגימות שלנו
+    - ``pauli_lindblad_maps``: נדרש אם מעבירים ``noise_scales``. זה פשוט ממפה שכבות רעש למודל הרעש המשויך.
+- ``shape``: tuple של צורה להרחבת הצורה הסמויה המוגדרת על ידי ``samplex_arguments``. צירים לא-טריביאליים שהוכנסו על ידי הרחבה זו מונים אקראיות.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram
+
+# Control the # of shots during execution
+shots_per_randomization_exec = 64
+num_randomizations_exec = 6144
+
+# Zero out the noise to prevent noise from being injected during execution.
+# We only added InjectNoise annotations so PNA could associate the noise
+# to layers in the circuit
+samplex_inputs = {f"noise_scales.{ref}": 0.0 for ref in refs_to_noise_models}
+samplex_inputs |= {"pauli_lindblad_maps": refs_to_noise_models}
+
+# Specify the bases to measure
+bases_broadcastable = np.expand_dims(np.array(meas_bases_canonical), axis=1)
+samplex_inputs |= {"basis_changes": {"basis0": bases_broadcastable}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().make_broadcastable().bind(**samplex_inputs)
+
+# Instantiate the QuantumProgram with the specified parameters
+program = QuantumProgram(shots=shots_per_randomization_exec)
+program.append(
+    circuit=template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations_exec),
+)
+```
+
+#### דגימת ה-Circuit באמצעות ה-Primitive ``Executor`` {#sample-the-circuit-using-the-executor-primitive-prototype}
+
+עכשיו שהגדרנו את ה-``QuantumProgram`` שלנו, ביצוע הניסוי הוא פשוט. אנחנו פשוט יוצרים מופע של אובייקט ה-``Executor``, מספקים לו את ה-Backend, ומריצים את התוכנית.
+
+```python
+from qiskit_ibm_runtime import Executor
+
+# Execute (sample) the circuit
+executor = Executor(backend)
+job_exec = executor.run(program)
+exec_results = job_exec.result()
+```
+
+#### עיבוד-לאחר של הדגימות לחישוב ערך צפיה מופחת-שגיאות {#post-process-the-samples-to-calculate-an-error-mitigated-expectation-value}
+
+כדי לחשב ערך צפיה מופחת-שגיאות, נבצע את הפעולות הבאות:
+
+- חישוב גורמי ה-scaling של TREX בהתבסס על הרעש שנלמד המשפיע על המדידות
+- יצירת מסכה לשמירת דגימות עם post-selection בלבד
+- שימוש בפונקציה ``executor_expectation_values`` מ-``qiskit-addon-utils`` לשילוב כל הנתונים לערך צפיה מופחת-שגיאות.
+
+```python
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.noise_management import trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+
+# Computing the TREX factors
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_rescale_factors = trex_factors(measurement_noise_map, bases_reverser)
+
+# Post-select the results
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit, coupling_map=backend.coupling_map
+)
+
+# Compute the ps mask for filtering results
+mask = post_selector.compute_mask(exec_results[0], strategy="edge")
+
+# Compute expvals using post selected results
+results = executor_expectation_values(
+    exec_results[0]["meas"],
+    bases_reverser,
+    meas_basis_axis=0,
+    avg_axis=1,
+    measurement_flips=exec_results[0]["measurement_flips.meas"],
+    pauli_signs=exec_results[0].get("pauli_signs", None),
+    postselect_mask=mask,
+    rescale_factors=trex_rescale_factors,
+)
+```
+
+```python
+bases_reverser_unmit = {Pauli("Z" * num_qubits): [observable]}
+args = [
+    (bases_reverser_unmit, None, None),
+    (bases_reverser, None, None),
+    (bases_reverser, None, trex_rescale_factors),
+    (bases_reverser, mask, None),
+    (bases_reverser, mask, trex_rescale_factors),
+]
+
+evs = []
+for reverser, postsel_mask, factors in args:
+    # Compute expvals using post selected results
+    res_ps = executor_expectation_values(
+        exec_results[0]["meas"],
+        reverser,
+        meas_basis_axis=0,
+        avg_axis=1,
+        measurement_flips=exec_results[0]["measurement_flips.meas"],
+        pauli_signs=exec_results[0].get("pauli_signs", None),
+        postselect_mask=postsel_mask,
+        rescale_factors=factors,
+    )
+    res_ps = np.array(res_ps)
+    evs.append(res_ps[:, 0][0])
+
+experiments = ["PNA", "PNA+TREX", "PNA+PS", "PNA+PS+TREX"]
+colors = ["#d9d9d9", "#b0b0b0", "#7f7f7f", "#4c4c4c"]
+plt.bar(experiments, evs[1:], color=colors)
+plt.axhline(y=1, color="green", linestyle="--", linewidth=2, label="Ideal")
+plt.axhline(y=evs[0], color="red", linestyle="--", linewidth=2, label="Unmitigated")
+plt.ylabel("Expectation value", fontsize=14)
+
+plt.title(r"30q Mirrored Ising, 10 Trotter steps, $\theta_{rx}=\frac{\pi}{8}$", fontsize=14)
+plt.legend(loc="upper left", bbox_to_anchor=(1.05, 1), borderaxespad=0.0)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_7.png)
+
+<TutorialFeedback />
