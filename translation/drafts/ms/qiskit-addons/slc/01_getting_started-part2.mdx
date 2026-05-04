@@ -1,0 +1,337 @@
+## Langkah 2. Optimumkan {#step-2-optimize}
+Kita akan optimumkan butiran yang berkaitan dengan litar yang akan dijalankan, pemerhatian yang akan diukur, dan parameter pembelajaran hingar. Sebagai titik permulaan, kita pastikan kita mewujudkan backend dengan gerbang pecahan dihidupkan sebagai pilihan. Gerbang pecahan ini akan membolehkan kepekaan yang lebih tinggi dalam beberapa penapisan pasca-pemilihan kita.
+
+```python
+token = "<YOUR_TOKEN>"
+instance = "<YOUR_INSTANCE>"
+
+# This is used to retrieve shared results
+shared_service = QiskitRuntimeService(
+    channel="ibm_quantum_platform",
+    token=token,
+    instance=instance,
+)
+
+# This is used to run on real hardware
+service = service = QiskitRuntimeService()
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 11:19:40,108: Loading account with the given token. A saved account will not be used.
+```
+
+```python
+backend = service.backend("ibm_kingston", use_fractional_gates=True)
+```
+
+Pertama, kita akan transpilkan litar kita kepada arahan ISA, [seperti yang diperlukan untuk pelaksanaan pada QPU kita](https://www.ibm.com/quantum/blog/isa-circuits). Untuk data yang dikumpul dalam eksperimen ini, kita pilih sendiri Qubit kita berdasarkan penilaian rantai kualiti tertinggi.
+
+```python
+layout = [44, 45, 46, 47, 57, 67, 68, 69, 78, 89, 88, 87, 97, 107, 106, 105, 104, 103, 96, 83]
+```
+
+```python
+isa_pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+
+isa_circuit = isa_pm.run(mirrored_circuit)
+assert isa_circuit.layout.final_index_layout() == layout
+
+isa_observable = observable.apply_layout(layout, num_qubits=isa_circuit.num_qubits)
+```
+
+```text
+2025-11-10 11:19:57,810 INFO base_tasks Pass: ContainsInstruction - 0.00715 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: UnitarySynthesis - 0.00525 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: HighLevelSynthesis - 0.02599 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: BasisTranslator - 0.09131 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: SetLayout - 0.02623 (ms)
+2025-11-10 11:19:57,812 INFO base_tasks Pass: FullAncillaAllocation - 0.14400 (ms)
+2025-11-10 11:19:57,812 INFO base_tasks Pass: EnlargeWithAncilla - 0.06318 (ms)
+2025-11-10 11:19:57,813 INFO base_tasks Pass: ApplyLayout - 0.29802 (ms)
+2025-11-10 11:19:57,813 INFO base_tasks Pass: CheckMap - 0.07820 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: FilterOpNodes - 0.33283 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: UnitarySynthesis - 0.00691 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: HighLevelSynthesis - 0.13208 (ms)
+2025-11-10 11:19:57,816 INFO base_tasks Pass: BasisTranslator - 1.00303 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: FoldRzzAngle - 1.78719 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: ContainsInstruction - 0.00691 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: InstructionDurationCheck - 0.00405 (ms)
+```
+
+```python
+wire_order = layout + [q for q in range(isa_circuit.num_qubits) if q not in layout]
+isa_circuit.draw(
+    "mpl", fold=-1, scale=0.3, idle_wires=False, wire_order=wire_order, measure_arrows=False
+)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_2.png)
+
+### Masukkan litar ke dalam kotak {#box-the-circuit}
+Untuk kemudahan pelaksanaan, kita akan menggunakan laluan transpilasi `generate_boxing_pass_manager`, yang menempatkan arahan litar ke dalam kotak-kotak beranotasi. Kotak-kotak ini menunjukkan dengan jelas di mana, dalam kes PEC, antihingar perlu disuntik ke dalam litar. Untuk butiran tentang tetapan, rujuk [dokumentasi Samplomatic.](https://qiskit.github.io/samplomatic/)
+
+Perhatikan bahawa aliran kerja SLC menggunakan `inject_noise_strategy="individual_modification"` kemudian dalam proses kerana ini membolehkan kita mengenal pasti setiap `BoxOp` dalam litar secara unik.
+
+Fungsi `find_unique_box_instructions` melalui litar berkotak yang diberikan dan mengenal pasti yang mempunyai lapisan 2Q unik atau pengukuran, untuk tujuan pembelajaran hingar dan suntikan hingar.
+
+```python
+# Box circuit with Twirl and InjectNoise annotations
+boxes_pm = generate_boxing_pass_manager(
+    twirling_strategy="active",
+    inject_noise_strategy="individual_modification",
+    inject_noise_targets="gates",
+    measure_annotations="all",
+)
+
+boxed_circuit = boxes_pm.run(isa_circuit)
+
+# Find the unique instructions (layers) from boxed circuit
+unique_2q_instructions = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+```
+
+```text
+2025-11-10 11:20:01,088 INFO base_tasks Pass: RemoveBarriers - 0.02289 (ms)
+2025-11-10 11:20:01,100 INFO base_tasks Pass: GroupGatesIntoBoxes - 12.38990 (ms)
+2025-11-10 11:20:01,101 INFO base_tasks Pass: GroupMeasIntoBoxes - 0.47898 (ms)
+2025-11-10 11:20:01,104 INFO base_tasks Pass: AddTerminalRightDressedBoxes - 2.88177 (ms)
+2025-11-10 11:20:01,111 INFO base_tasks Pass: AddInjectNoise - 6.66904 (ms)
+```
+
+```python
+boxed_circuit.draw(
+    "mpl", fold=-1, scale=0.3, idle_wires=False, wire_order=wire_order, measure_arrows=False
+)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_3.png)
+
+### Sediakan pengukuran asas kanonik {#prepare-canonical-bases-measurements}
+Disebabkan cara Qubit dilabelkan semasa mengenal pasti lapisan 2Q unik, seseorang perlu berhati-hati untuk menjejaki urutan Qubit. Di bawah, kita memperkenalkan konsep `canonical_qubits` sebagai cara untuk mengemas kini urutan Qubit dengan sewajarnya apabila menyerahkannya kepada executor, hasil daripada cara urutan Qubit direkodkan semasa melakukan boxing litar dan mencari arahan unik. Lihat dokumentasi [konvensyen urutan Qubit](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention) untuk butiran.
+
+```python
+# Determine the canonical qubits order
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx for idx, qubit in enumerate(boxed_circuit.qubits) if qubit in meas_box.qubits
+]
+
+# map canonical qubit to physical (isa) qubit
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}
+# map physical (isa) qubit to virtual qubit (index in original circuit)
+p_2_v = {p: v for v, p in enumerate(layout)}
+# compute map between virtual and canonical qubit indices.
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}
+
+assert len(c_2_v) == num_qubits
+
+bases_canon = [
+    np.array([base_i[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8) for base_i in bases_virt
+]
+```
+
+### Aliran kerja untuk pemeringkatan lightcone, pembelajaran hingar, dan suntikan antihingar {#workflow-for-lightcone-shading-noise-learning-and-anti-noise-injection}
+
+> **Nota**: Untuk pelaksanaan SLC-PEC dalam tutorial ini, kita jalankan pengiraan sempadan SLC **sebelum** pembelajaran hingar selesai, supaya litar yang akan dimitigasi dijalankan sedekat mungkin dari segi masa dengan model hingar yang dipelajari. Pada dasarnya, aliran kerja ini boleh ditingkatkan lagi untuk dilaksanakan secara serentak. Iaitu, kerja pembelajaran hingar dijalankan sementara, secara selari, sempadan hingar dianggarkan. Untuk litar kuantum yang sewenang-wenangnya, pengiraan sempadan hingar boleh berskala dengan kebergantungan eksponen yang lemah. Oleh itu, mungkin bijak untuk menggunakan pelaksanaan selarian apabila cuba memaksimumkan kecekapan aliran kerja. Untuk tujuan ini, kita tunjukkan secara ringkas perkara ini dengan memasukkan sumber berasaskan kluster (128 benang) dan menunjukkan bagaimana anda boleh mencapai set sempadan yang lebih halus untuk litar yang diberikan apabila terhad kepada had masa pengiraan yang sama, berbanding dengan komputer riba kita (8 benang). Tambahan pula, walaupun tidak dilaksanakan dalam aliran kerja ini, anda boleh memparalelkan pelaksanaan QPU untuk pembelajaran hingar dan pengiraan sempadan hingar bagi mencapai aliran kerja yang paling cekap.
+
+#### Ramalkan Pauli model hingar yang akan dipelajari {#predict-to-be-learned-noise-model-paulis}
+
+Fungsi `generate_noise_model_paulis` melalui setiap lapisan berkotak dalam litar yang diberikan dan menjana semua sebutan Pauli berat-satu dan berat-dua yang relevan, dengan mengambil kira kesambungan Qubit litar, dan memilih sebutan yang relevan dengan nod dan tepi aktif. Sebutan-sebutan ini kemudian digunakan untuk mengira sempadan hingar ke hadapan dan ke belakang.
+
+```python
+noise_model_paulis = generate_noise_model_paulis(
+    unique_2q_instructions, backend.coupling_map, boxed_circuit
+)
+```
+
+```python
+noise_model_rates = {ref: None for ref in noise_model_paulis}
+```
+
+##### a. Kira dan ketatkan sempadan ke hadapan {#a-compute-and-tighten-forward-bounds}
+
+Fungsi `compute_forward_bounds` menilai hubungan penukaran antara gerbang dalam setiap lapisan dan sebutan Pauli yang dijana di atas dari segi bagaimana ralat penyebaran ke hadapan mempengaruhi pemerhatian yang dikehendaki $A$. Untuk gerbang yang bertukar dengan sebutan Pauli, tiada apa yang dilakukan. Untuk gerbang Clifford, ia ditolak ke arah permulaan litar. Untuk gerbang bukan-Clifford, kita menghampiri pengaruh mereka ke atas pemerhatian sasaran untuk kemudiannya diprioritikan untuk pembatalan hingar (selepas semua sempadan digabungkan). Sempadan ini dicapai dengan terlebih dahulu menggunakan norma L2 (iaitu, punca kuasa dua hasil tambah kuasa dua bagi pekali sebutan Pauli yang relevan). Apabila terdapat terlalu banyak sebutan Qubit yang terlibat, kita kembali kepada sempadan yang lebih longgar yang menggunakan ketaksamaan segitiga.
+#### Sumber peringkat komputer riba {#laptop-level-resources}
+
+```python
+slc_atol = 1e-8
+slc_eigval_max_qubits = 18
+slc_evolution_max_terms = 1000
+slc_num_processes = 8
+slc_timeout = 60
+```
+
+```python
+forward_bounds = compute_forward_bounds(
+    boxed_circuit,
+    noise_model_paulis,
+    isa_observable,
+    evolution_max_terms=slc_evolution_max_terms,
+    eigval_max_qubits=slc_eigval_max_qubits,
+    atol=slc_atol,
+    num_processes=slc_num_processes,
+    timeout=slc_timeout,
+)
+```
+
+```text
+2025-11-10 11:20:04,344 INFO forward Evolving Pauli error terms forwards through the circuit.
+2025-11-10 11:20:04,344 INFO forward Modelling errors as though they happen *after* each noise layer.
+2025-11-10 11:20:04,345 INFO remove_measure Removing ANY Measure operations from the provided circuit!
+2025-11-10 11:20:04,453 INFO circuit_iter Noisy box 'm39'
+2025-11-10 11:20:05,254 INFO circuit_iter Noisy box 'm38'
+2025-11-10 11:20:05,304 INFO circuit_iter Noisy box 'm37'
+2025-11-10 11:20:05,382 INFO circuit_iter Noisy box 'm36'
+2025-11-10 11:20:05,467 INFO circuit_iter Noisy box 'm35'
+2025-11-10 11:20:05,580 INFO circuit_iter Noisy box 'm34'
+2025-11-10 11:20:05,705 INFO circuit_iter Noisy box 'm33'
+2025-11-10 11:20:05,857 INFO circuit_iter Noisy box 'm32'
+2025-11-10 11:20:06,034 INFO circuit_iter Noisy box 'm31'
+2025-11-10 11:20:06,221 INFO circuit_iter Noisy box 'm30'
+2025-11-10 11:20:06,449 INFO circuit_iter Noisy box 'm29'
+2025-11-10 11:20:06,724 INFO circuit_iter Noisy box 'm28'
+2025-11-10 11:20:07,628 INFO circuit_iter Noisy box 'm27'
+2025-11-10 11:20:09,110 INFO circuit_iter Noisy box 'm26'
+2025-11-10 11:20:11,696 INFO circuit_iter Noisy box 'm25'
+2025-11-10 11:20:16,100 INFO circuit_iter Noisy box 'm24'
+2025-11-10 11:20:21,781 INFO circuit_iter Noisy box 'm23'
+2025-11-10 11:20:30,244 INFO circuit_iter Noisy box 'm22'
+2025-11-10 11:20:40,416 INFO circuit_iter Noisy box 'm21'
+2025-11-10 11:20:53,437 INFO circuit_iter Noisy box 'm20'
+2025-11-10 11:21:06,038 INFO circuit_iter Noisy box 'm19'
+2025-11-10 11:21:06,038 WARNING commutator_bounds Bounds computation timed out.
+2025-11-10 11:21:06,039 INFO circuit_iter Noisy box 'm18'
+2025-11-10 11:21:06,039 INFO circuit_iter Noisy box 'm17'
+2025-11-10 11:21:06,039 INFO circuit_iter Noisy box 'm16'
+2025-11-10 11:21:06,040 INFO circuit_iter Noisy box 'm15'
+2025-11-10 11:21:06,040 INFO circuit_iter Noisy box 'm14'
+2025-11-10 11:21:06,040 INFO circuit_iter Noisy box 'm13'
+2025-11-10 11:21:06,040 INFO circuit_iter Noisy box 'm12'
+2025-11-10 11:21:06,041 INFO circuit_iter Noisy box 'm11'
+2025-11-10 11:21:06,041 INFO circuit_iter Noisy box 'm10'
+2025-11-10 11:21:06,041 INFO circuit_iter Noisy box 'm9'
+2025-11-10 11:21:06,042 INFO circuit_iter Noisy box 'm8'
+2025-11-10 11:21:06,042 INFO circuit_iter Noisy box 'm7'
+2025-11-10 11:21:06,042 INFO circuit_iter Noisy box 'm6'
+2025-11-10 11:21:06,042 INFO circuit_iter Noisy box 'm5'
+2025-11-10 11:21:06,043 INFO circuit_iter Noisy box 'm4'
+2025-11-10 11:21:06,043 INFO circuit_iter Noisy box 'm3'
+2025-11-10 11:21:06,043 INFO circuit_iter Noisy box 'm2'
+2025-11-10 11:21:06,043 INFO circuit_iter Noisy box 'm1'
+2025-11-10 11:21:06,044 INFO circuit_iter Noisy box 'm0'
+```
+
+#### Visualisasikan SLC untuk pemeriksaan manual {#visualize-the-slc-for-manual-inspection}
+
+Anda boleh mentafsir tingkah laku sempadan berbayang dengan memeriksa cara pengukuran dan sebutan Pauli berinteraksi dengan ralat tempatan. Corak-corak ini adalah ciri khas masalah evolusi masa Hamiltonian Ising tertendang ini dan juga muncul dalam kertas [Lightcone Shading for Classically Accelerated Quantum Error Mitigation](https://arxiv.org/abs/2409.04401), dengan beberapa ciri yang ketara:
+
+- Kita dapat membezakan dengan jelas dua kon yang timbul daripada dua Pauli bukan identiti dalam pemerhatian.
+- Kita dapat melihat bahawa pengukuran X pada Qubit 6 bertukar dengan ralat X dalam lapisan paling kanan.
+- Kita dapat melihat bahawa Pauli Z pada Qubit 13 bertukar dengan ralat Z dalam lapisan paling kanan.
+- Apabila kita mencapai tamat masa yang ditetapkan di atas, lapisan-lapisan yang tersisa ke kiri diisi sepenuhnya dengan sempadan remeh sebesar dua.
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            forward_bounds,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_4.png)
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_5.png)
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_6.png)
+
+#### b. Kira dan ketatkan sempadan ke hadapan {#b-compute-and-tighten-forward-bounds}
+Seterusnya kita ketatkan sempadan dengan menggunakan fungsi `tighten_with_speed_limit`, yang menjejaki cara pemerhatian merebak ke belakang melalui litar dan menggunakan rebakan itu untuk menetapkan had atas pada kesan setiap operator hingar, mengambil yang lebih kecil antara sempadan ke hadapan yang baru dikira, dan sempadan penyebaran ke belakang.
+
+```python
+forward_bounds_tighter = tighten_with_speed_limit(
+    forward_bounds, boxed_circuit, noise_model_paulis, isa_observable
+)
+```
+
+```text
+2025-11-10 11:21:08,270 INFO speed_limit Tighting bounds using information propagation speed limits
+2025-11-10 11:21:08,270 INFO speed_limit Modelling errors as though they happen *after* each noise layer.
+2025-11-10 11:21:08,298 INFO remove_measure Removing ANY Measure operations from the provided circuit!
+2025-11-10 11:21:08,310 INFO circuit_iter Noisy box 'm39'
+2025-11-10 11:21:08,314 INFO circuit_iter Noisy box 'm38'
+2025-11-10 11:21:08,317 INFO circuit_iter Noisy box 'm37'
+2025-11-10 11:21:08,319 INFO circuit_iter Noisy box 'm36'
+2025-11-10 11:21:08,323 INFO circuit_iter Noisy box 'm35'
+2025-11-10 11:21:08,325 INFO circuit_iter Noisy box 'm34'
+2025-11-10 11:21:08,328 INFO circuit_iter Noisy box 'm33'
+2025-11-10 11:21:08,330 INFO circuit_iter Noisy box 'm32'
+2025-11-10 11:21:08,334 INFO circuit_iter Noisy box 'm31'
+2025-11-10 11:21:08,336 INFO circuit_iter Noisy box 'm30'
+2025-11-10 11:21:08,338 INFO circuit_iter Noisy box 'm29'
+2025-11-10 11:21:08,340 INFO circuit_iter Noisy box 'm28'
+2025-11-10 11:21:08,344 INFO circuit_iter Noisy box 'm27'
+2025-11-10 11:21:08,346 INFO circuit_iter Noisy box 'm26'
+2025-11-10 11:21:08,349 INFO circuit_iter Noisy box 'm25'
+2025-11-10 11:21:08,351 INFO circuit_iter Noisy box 'm24'
+2025-11-10 11:21:08,355 INFO circuit_iter Noisy box 'm23'
+2025-11-10 11:21:08,357 INFO circuit_iter Noisy box 'm22'
+2025-11-10 11:21:08,360 INFO circuit_iter Noisy box 'm21'
+2025-11-10 11:21:08,362 INFO circuit_iter Noisy box 'm20'
+2025-11-10 11:21:08,367 INFO circuit_iter Noisy box 'm19'
+2025-11-10 11:21:08,369 INFO circuit_iter Noisy box 'm18'
+2025-11-10 11:21:08,372 INFO circuit_iter Noisy box 'm17'
+2025-11-10 11:21:08,375 INFO circuit_iter Noisy box 'm16'
+2025-11-10 11:21:08,378 INFO circuit_iter Noisy box 'm15'
+2025-11-10 11:21:08,380 INFO circuit_iter Noisy box 'm14'
+2025-11-10 11:21:08,383 INFO circuit_iter Noisy box 'm13'
+2025-11-10 11:21:08,386 INFO circuit_iter Noisy box 'm12'
+2025-11-10 11:21:08,389 INFO circuit_iter Noisy box 'm11'
+2025-11-10 11:21:08,391 INFO circuit_iter Noisy box 'm10'
+2025-11-10 11:21:08,394 INFO circuit_iter Noisy box 'm9'
+2025-11-10 11:21:08,396 INFO circuit_iter Noisy box 'm8'
+2025-11-10 11:21:08,399 INFO circuit_iter Noisy box 'm7'
+2025-11-10 11:21:08,401 INFO circuit_iter Noisy box 'm6'
+2025-11-10 11:21:08,404 INFO circuit_iter Noisy box 'm5'
+2025-11-10 11:21:08,406 INFO circuit_iter Noisy box 'm4'
+2025-11-10 11:21:08,410 INFO circuit_iter Noisy box 'm3'
+2025-11-10 11:21:08,412 INFO circuit_iter Noisy box 'm2'
+2025-11-10 11:21:08,415 INFO circuit_iter Noisy box 'm1'
+2025-11-10 11:21:08,417 INFO circuit_iter Noisy box 'm0'
+```
+
+#### Visualisasikan SLC untuk pemeriksaan manual {#visualize-the-slc-for-manual-inspection}
+
+Kita boleh mengetatkan lagi sempadan dengan mengambil kira had lightcone. Pada dasarnya, ini memberi kita peralihan yang lebih lancar daripada sempadan yang dikira kepada sempadan remeh yang ditetapkan selepas tamat masa dicapai. Di sini, kesannya tidak begitu ketara kerana lightcone sudah pun mencapai tepi litar.
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            forward_bounds_tighter,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_7.png)
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_8.png)
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_9.png)
