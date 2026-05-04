@@ -1,0 +1,271 @@
+---
+title: "Probabilistic error cancellation with shaded lightcones"
+sidebar_label: "Probabilistic error cancellation with shaded lightcones"
+notebook_path: "qiskit-addons/slc/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: d7518943 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/slc/01_getting_started.ipynb" />
+
+
+##  Latar Belakang
+Tutorial ini menunjukkan cara memitigasi error dengan menggunakan addon Shaded lightcone (SLC). Addon ini merupakan evolusi dari [teknik probabilistic error cancellation (PEC)](https://quantum.cloud.ibm.com/docs/guides/error-mitigation-and-suppression-techniques#probabilistic-error-cancellation-pec), di mana pengguna mempelajari noise dari layer-layer unik dalam suatu Circuit, lalu menghapus noise tersebut dengan menerapkan Gate satu Qubit dan teknik pasca-pemrosesan. Dibandingkan metode lain, PEC menawarkan batas bias yang lebih kuat pada hasil yang dimitigasi, tapi cenderung membutuhkan overhead yang lebih tinggi dalam hal waktu QPU. Saat PEC berlangsung, untuk mengkompensasi pelemahan nilai ekspektasi akibat noise, rata-rata hasil diskalakan ulang dengan faktor $\gamma = \exp(\sum_{l,\sigma} 2\lambda_{l,\sigma})$, di mana $\lambda_{l,\sigma}$ adalah laju noise yang dipelajari dari error Pauli $\sigma$ pada layer $l$ dalam Circuit. Penyekalaan ulang ini meningkatkan varians dengan faktor $\gamma^2$, sehingga juga mengalikan jumlah eksekusi Circuit yang dibutuhkan pada QPU dengan $\gamma^2$, yang kita sebut sebagai biaya sampling atau sampling overhead. Karena $\gamma$ tumbuh secara eksponensial, PEC sering kali terbatas pada Circuit yang dangkal atau sedikit Qubit. Pelajari lebih lanjut tentang PEC di [Probabilistic error cancellation with sparse Pauli-Lindblad models on noisy quantum processors.](https://arxiv.org/abs/2201.09866)
+
+Jika kita bisa mengidentifikasi error yang tidak perlu dimitigasi, kita dapat menurunkan biaya sampling ini secara eksponensial. Langkah pertama ke arah itu adalah menerapkan locally aware error mitigation, yang menggunakan "lightcone" konvensional yang dapat dihitung dengan cepat untuk mengurangi overhead PEC dengan membatasi sensitivitas observable terhadap error di seluruh Circuit, sehingga memperluas kelayakan PEC ke skala yang lebih besar untuk beberapa masalah. Error yang berada di luar lightcone ini tidak dapat memengaruhi hasil pengukuran, sehingga bisa dikecualikan dari prosedur pembatalan error. Pengecualian ini menurunkan sampling overhead—dalam beberapa kasus secara substansial—tanpa menambah bias tambahan. Secara khusus, untuk mengukur observable lokal $O$ dari Circuit dengan kedalaman tetap, sampling overhead yang diperlukan akhirnya mencapai plateau ketika jumlah Qubit dalam Circuit ditingkatkan (lihat Gbr. 2b di [Locality and Error Mitigation of Quantum Circuits.](https://arxiv.org/abs/2303.06496))
+
+Shaded lightcone (SLC) melangkah lebih jauh, menggunakan simulasi klasik untuk membatasi sensitivitas terhadap error di seluruh Circuit dengan lebih ketat. Ini menukar sebagian waktu QPU dengan waktu CPU dan mengurangi sampling overhead yang diperlukan untuk menormalisasi ulang bias. Alih-alih menggunakan cutoff yang keras, setiap potensi error dalam Circuit diberi "shade" berperingkat yang membatasi kerentanan observable terhadap error tersebut. Karakterisasi yang lebih halus ini memungkinkan penerapan PEC yang lebih efisien dan terarah dengan varians yang berkurang, sekaligus memberi pengguna kemampuan untuk mengontrol bias dalam estimasi observable secara terukur. Lihat [Lightcone shading for classically accelerated quantum error mitigation](https://arxiv.org/abs/2409.04401) untuk detail lebih lanjut.
+
+Alur kerja kita untuk addon SLC memanfaatkan framework Samplomatic dan Executor yang baru, yang memungkinkan pengguna memiliki kontrol lebih modular atas pengaturan eksekusi untuk error suppression dan mitigation, sambil tetap mempertahankan kemudahan penggunaan bagi pengguna tingkat lanjut. Untuk pemahaman yang lebih mendalam tentang manfaat framework ini dan fitur-fitur umumnya, lihat tutorial [Hello samplomatic](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/hello_samplomatic/Samplomatic%20-%20Hello%20World.ipynb).
+
+### Alur kerja untuk lightcone shading, noise learning, dan injeksi anti-noise {#workflow-for-lightcone-shading-noise-learning-and-anti-noise-injection}
+Untuk memodelkan noise QPU, kita memilih menggunakan model noise sparse Pauli-Lindblad dengan laju error Pauli 1 dan 2 Qubit, yang dihasilkan secara lokal pada setiap Qubit dan edge perangkat. Dengan pilihan ini, alur kerja mitigasi error SLC yang disajikan dalam tutorial ini adalah sebagai berikut:
+
+a. CPU — Batasi dampak per-error dari error Pauli 1 dan 2 Qubit
+
+  1. Propagasi maju (batas efek pada observable). Propagasikan setiap error ke akhir Circuit dan hitung komutatornya dengan observable.
+      - Potong term operator selama evolusi agar komputasi tetap terkendali.
+      - Perketat batas-batas ini lebih lanjut dengan back-propagation longgar dari observable berdasarkan batas kecepatan kuantum.
+  2. Propagasi mundur (batas efek pada state awal). Propagasikan setiap error ke awal Circuit dan hitung komutatornya dengan state awal.
+
+b. QPU — Pelajari laju noise. Gunakan `NoiseLearner` untuk memperkirakan laju model noise Pauli-Lindblad.
+
+c. CPU — Prioritaskan mitigasi
+
+  1. Perbarui batas yang telah digabungkan dengan laju noise yang dipelajari. Gabungkan batas maju dan mundur yang telah dihitung sebelumnya dan perbarui dengan laju noise yang dipelajari.
+  2. Urutkan komponen noise yang akan dimitigasi menggunakan batas yang dihitung dan laju yang dipelajari. Prioritaskan setiap kemungkinan error noise berdasarkan perkiraan dampaknya terhadap bias dan biaya yang diperlukan untuk mengoreksinya.
+
+d. QPU — Sisipkan antinoise dan jalankan. Eksekusi Circuit yang diminati dengan antinoise (kebalikan noise) yang ditentukan menggunakan anotasi `Box`.
+
+e. CPU — Estimasi observable. Hitung nilai ekspektasi, dengan menerapkan post-selection berbasis pengukuran untuk mengurangi dampak noise non-Markovian.
+
+### Ikhtisar noise learning {#noise-learning-overview}
+Noise learning adalah langkah umum dalam beberapa metode mitigasi error, yang dilakukan oleh [NoiseLearner](https://quantum.cloud.ibm.com/docs/en/guides/noise-learning), dan bisa dilihat di tutorial [PEA error mitigation](https://quantum.cloud.ibm.com/docs/tutorials/probabilistic-error-amplification) kami, serta [tutorial Propagated noise absorption (PNA)](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/pna/propagated_noise_absorption.ipynb). Dalam `NoiseLearnerV3`, pengguna dapat secara khusus mengidentifikasi layer noise yang akan dipelajari sebagai objek [`CircuitInstruction`](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.circuit.CircuitInstruction), yang memungkinkan pengguna menghitung batas noise SLC yang diinginkan untuk setiap layer dengan cara yang dijelaskan di atas. Model Pauli-Lindblad yang dipelajari menyediakan koefisien yang digunakan dalam prioritisasi PEC-SLC. Cara gate-gate dikumpulkan ke dalam layer dapat ditentukan dengan menggunakan fungsi kemudahan `generate_boxing_pass_manager` dan `unique_2q_instructions`, lalu dimasukkan ke fungsi utilitas SLC `generate_noise_model_paulis`, seperti yang dijelaskan di Langkah 2 di bawah.
+
+| **Bagian 1** | **Bagian 2** | **Bagian 3** |
+|-----------|-----------|-----------|
+| Pauli-twirl layer Gate dua Qubit | Ulangi pasangan layer identitas dan pelajari noise | Turunkan fidelitas (error untuk setiap channel noise) |
+| ![paulitwirling.png](exp_data/paulitwirl.png) | ![learnlayer.png](exp_data/learnlayer.png) | ![curvefit.png](exp_data/curvefit.png) |
+
+### Ikhtisar pasca-pemrosesan {#post-processing-overview}
+Setelah dieksekusi pada hardware kuantum menggunakan framework Samplomatic dan Executor, kita mengubah pengukuran bitstring menjadi nilai observable yang diinginkan. Dalam kasus Circuit Ising yang dimirroring, kita idealnya mendapatkan observable terukur sebesar 1, karena semua Qubit idealnya kembali ke titik awalnya yaitu $\ket{0}$. Saat menghitung nilai observable dengan fungsi `expectation_values` kita, kita akan menerapkan beberapa teknik pasca-pemrosesan yang mengurangi dampak noise. Ini mencakup penghapusan shot yang dipengaruhi noise non-Markovian, mitigasi readout-error, serta memperhitungkan detail implementasi PEC kita. Detail dibahas di Langkah 4 di bawah.
+
+## Persyaratan {#requirements}
+Sebelum memulai tutorial ini, pastikan kamu sudah menginstal paket-paket berikut:
+
+- Qiskit IBM Runtime dengan Executor primitive (`pip install "qiskit-ibm-runtime @ git+https://github.com/Qiskit/qiskit-ibm-runtime.git"`)
+- Qiskit addon Shaded lightcone 0.1 (`pip install "qiskit-addon-slc~=0.1.0`")
+- Qiskit addon utils (`pip install "qiskit-addon-utils~=0.3.0"`)
+- Samplomatic v0.16 atau lebih baru(`pip install samplomatic`)
+- Dukungan Qiskit Visualization (`pip install "qiskit[visualization]"`)
+## Langkah 0. Setup {#step-0-setup}
+Pertama, impor paket dan fungsi yang diperlukan agar notebook ini dapat berjalan dengan benar.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-slc qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(module)s %(message)s")
+
+# Setting this value prevents itertools.starmap deadlock on UNIX systems
+from multiprocessing import set_start_method
+
+set_start_method("spawn")
+
+# Needed to prevent PySCF from parallelizing internally (SLC only)
+%set_env OMP_NUM_THREADS=1
+```
+
+```text
+env: OMP_NUM_THREADS=1
+```
+
+```python
+import pickle
+
+import numpy as np
+import samplomatic
+from matplotlib import pyplot as plt
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import PassManager, generate_preset_pass_manager
+from qiskit_addon_slc.bounds import (
+    compute_backward_bounds,
+    compute_forward_bounds,
+    compute_local_scales,
+    merge_bounds,
+    tighten_with_speed_limit,
+)
+from qiskit_addon_slc.utils import generate_noise_model_paulis, map_modifier_ref_to_ref
+from qiskit_addon_slc.visualization import draw_shaded_lightcone
+from qiskit_addon_utils.exp_vals.expectation_values import executor_expectation_values
+from qiskit_addon_utils.exp_vals.measurement_bases import get_measurement_bases
+from qiskit_addon_utils.noise_management import gamma_from_noisy_boxes, trex_factors
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+from qiskit_ibm_runtime import Executor, QiskitRuntimeService, QuantumProgram
+from qiskit_ibm_runtime.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.transpiler import generate_boxing_pass_manager
+from samplomatic.utils import find_unique_box_instructions
+```
+
+## Langkah 1. Petakan masalah {#step-1-map-the-problem}
+Untuk kemudahan demonstrasi, kita pilih 1D mirror Ising chain. Rantai Ising 1D menghasilkan struktur Circuit yang cukup padat, yang nyaman untuk memamerkan implementasi PEC. Circuit mirror memudahkan kita mengetahui hasil yang diharapkan (yaitu, kita seharusnya mengukur observable sebesar 1).
+
+Selain itu, kita ingin menjalankan Circuit mirror, jadi untuk setiap Gate di paruh kedua Circuit, harus ada Gate invers di paruh pertama. Karena observable yang diukur **$<X_6 Z_{13}>$** memiliki pengukuran basis non-Z, dan executor memperhitungkan basis yang diinginkan di akhir Circuit, kita menyediakan fungsi `prepare_basis` yang menyisipkan Gate yang sesuai di awal Circuit mirror. Detail ini spesifik untuk demonstrasi Circuit mirror kita. Fungsi `get_measurement_bases` memungkinkan kita mengidentifikasi dengan mudah Gate mana yang diperlukan dan di mana harus ditambahkan, serta melacak keunikan indeks Qubit yang muncul dari konvensi dalam anotasi `box` seperti yang dibahas di bagian "Siapkan pengukuran basis kanonik".
+
+```python
+num_qubits = 20
+target_obs_sparse = [("XZ", [6, 13], 1.0)]
+```
+
+```python
+observable = SparsePauliOp.from_sparse_list(target_obs_sparse, num_qubits=num_qubits)
+```
+
+```python
+bases_virt, reverser_virt = get_measurement_bases(observable)
+```
+
+```python
+num_trotter_steps = 10
+rx_angle = np.pi / 4
+```
+
+```python
+def construct_ising_circuit(
+    num_qubits: int, num_trotter_steps: int, rx_angle: float, barrier: bool = True
+) -> QuantumCircuit:
+    circuit = QuantumCircuit(num_qubits)
+
+    for _step in range(num_trotter_steps):
+        circuit.rx(rx_angle, range(num_qubits))
+        if barrier:
+            circuit.barrier()
+        for first_qubit in (1, 2):
+            for idx in range(first_qubit, num_qubits, 2):
+                # equivalent to Rzz(-pi/2):
+                circuit.sdg([idx - 1, idx])
+                circuit.cz(idx - 1, idx)
+        if barrier:
+            circuit.barrier()
+
+    return circuit
+
+def prepare_basis(circuit: QuantumCircuit, basis: list[int]) -> QuantumCircuit:
+    # basis is a list of integer values from 0 to 3. These map to the basis measurement as:
+    # 0 = I; 1 = Z; 2 = X; 3 = Y
+    assert len(basis) == circuit.num_qubits
+
+    out_circ = circuit.copy_empty_like()
+    for qb, bas in enumerate(basis):
+        if bas in {0, 1}:
+            continue
+        if bas == 2:
+            out_circ.h(qb)
+        elif bas == 3:
+            out_circ.rx(-np.pi / 2, qb)
+
+    out_circ.barrier()
+    out_circ.compose(circuit, inplace=True)
+    return out_circ
+
+def mirror_circuit(circuit: QuantumCircuit, *, inverse_first: bool = False) -> QuantumCircuit:
+    mirror_circ = circuit.copy_empty_like()
+    mirror_circ.compose(circuit.inverse() if inverse_first else circuit, inplace=True)
+    mirror_circ.barrier()
+    mirror_circ.compose(circuit if inverse_first else circuit.inverse(), inplace=True)
+    mirror_circ.measure_active()
+    return mirror_circ
+```
+
+```python
+# Instantiate circuit
+circuit = construct_ising_circuit(num_qubits, num_trotter_steps, rx_angle, barrier=False)
+mirrored_circuit = mirror_circuit(circuit, inverse_first=True)
+mirrored_circuit = prepare_basis(mirrored_circuit, bases_virt[0])
+```
+
+```python
+mirrored_circuit.draw("mpl", fold=-1, scale=0.3, idle_wires=False, measure_arrows=False)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_1.png)
+
+## Langkah 2. Optimalkan {#step-2-optimize}
+Kita akan mengoptimalkan detail yang berkaitan dengan Circuit yang akan dijalankan, observable yang akan diukur, dan parameter noise-learning. Sebagai titik awal, kita pastikan untuk menginstansiasi Backend dengan fractional gates yang diaktifkan sebagai opsi. Fractional gates ini akan memungkinkan sensitivitas yang lebih besar dalam beberapa pemfilteran post-selection kita.
+
+```python
+token = "<YOUR_TOKEN>"
+instance = "<YOUR_INSTANCE>"
+
+# This is used to retrieve shared results
+shared_service = QiskitRuntimeService(
+    channel="ibm_quantum_platform",
+    token=token,
+    instance=instance,
+)
+
+# This is used to run on real hardware
+service = service = QiskitRuntimeService()
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 11:19:40,108: Loading account with the given token. A saved account will not be used.
+```
+
+```python
+backend = service.backend("ibm_kingston", use_fractional_gates=True)
+```
+
+Pertama, kita akan mentranspilasi Circuit kita ke instruksi ISA, [seperti yang diperlukan untuk eksekusi pada QPU kita](https://www.ibm.com/quantum/blog/isa-circuits). Untuk data yang dikumpulkan dalam eksperimen ini, kita memilih Qubit kita secara manual berdasarkan evaluasi rantai berkualitas tertinggi.
+
+```python
+layout = [44, 45, 46, 47, 57, 67, 68, 69, 78, 89, 88, 87, 97, 107, 106, 105, 104, 103, 96, 83]
+```
+
+```python
+isa_pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+
+isa_circuit = isa_pm.run(mirrored_circuit)
+assert isa_circuit.layout.final_index_layout() == layout
+
+isa_observable = observable.apply_layout(layout, num_qubits=isa_circuit.num_qubits)
+```
+
+```text
+2025-11-10 11:19:57,810 INFO base_tasks Pass: ContainsInstruction - 0.00715 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: UnitarySynthesis - 0.00525 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: HighLevelSynthesis - 0.02599 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: BasisTranslator - 0.09131 (ms)
+2025-11-10 11:19:57,811 INFO base_tasks Pass: SetLayout - 0.02623 (ms)
+2025-11-10 11:19:57,812 INFO base_tasks Pass: FullAncillaAllocation - 0.14400 (ms)
+2025-11-10 11:19:57,812 INFO base_tasks Pass: EnlargeWithAncilla - 0.06318 (ms)
+2025-11-10 11:19:57,813 INFO base_tasks Pass: ApplyLayout - 0.29802 (ms)
+2025-11-10 11:19:57,813 INFO base_tasks Pass: CheckMap - 0.07820 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: FilterOpNodes - 0.33283 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: UnitarySynthesis - 0.00691 (ms)
+2025-11-10 11:19:57,814 INFO base_tasks Pass: HighLevelSynthesis - 0.13208 (ms)
+2025-11-10 11:19:57,816 INFO base_tasks Pass: BasisTranslator - 1.00303 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: FoldRzzAngle - 1.78719 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: ContainsInstruction - 0.00691 (ms)
+2025-11-10 11:19:57,818 INFO base_tasks Pass: InstructionDurationCheck - 0.00405 (ms)
+```
+
+```python
+wire_order = layout + [q for q in range(isa_circuit.num_qubits) if q not in layout]
+isa_circuit.draw(
+    "mpl", fold=-1, scale=0.3, idle_wires=False, wire_order=wire_order, measure_arrows=False
+)
+```
+
+![Quantum circuit diagram](./_01_getting_started_imgs/output_2.png)
