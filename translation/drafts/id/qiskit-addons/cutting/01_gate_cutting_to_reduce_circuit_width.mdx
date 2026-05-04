@@ -1,0 +1,220 @@
+---
+title: "Gate Cutting untuk Mengurangi Lebar Circuit"
+sidebar_label: "Gate Cutting untuk Mengurangi Lebar Circuit"
+notebook_path: "qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb"
+---
+{/* doqumentation-source-hash: 00531414 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.ipynb" />
+
+
+Di notebook ini, kita akan menjalani langkah-langkah [pola Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) sambil menggunakan **circuit cutting** untuk mengurangi jumlah Qubit dalam sebuah Circuit. Kita akan memotong Gate agar bisa merekonstruksi nilai ekspektasi dari Circuit empat-Qubit menggunakan eksperimen dua-Qubit saja.
+
+Berikut adalah langkah-langkah yang akan kita ambil:
+
+- **Langkah 1: Petakan masalah ke Circuit dan operator kuantum**:
+    - Petakan Hamiltonian ke Circuit kuantum.
+- **Langkah 2: Optimalkan untuk hardware target** [_Menggunakan cutting addon_]:
+    - <font color='#0F62FE'>Potong Circuit dan observable.</font>
+    - Transpile subeksperimen untuk hardware.
+- **Langkah 3: Eksekusi di hardware target**:
+    - Jalankan subeksperimen yang didapat di Langkah 2 menggunakan primitif `Sampler`.
+- **Langkah 4: Post-process hasil** [_Menggunakan cutting addon_]:
+    - <font color='#0F62FE'>Gabungkan hasil Langkah 3 untuk merekonstruksi nilai ekspektasi dari observable yang bersangkutan.</font>
+## Langkah 1: Pemetaan
+
+### Buat Circuit yang akan dipotong
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-cutting qiskit-aer qiskit-ibm-runtime
+```
+
+```python
+from qiskit.circuit.library import efficient_su2
+
+qc = efficient_su2(4, entanglement="linear", reps=2)
+qc.assign_parameters([0.4] * len(qc.parameters), inplace=True)
+
+qc.draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_1.png)
+
+### Tentukan sebuah observable
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+observable = SparsePauliOp(["ZZII", "IZZI", "-IIZZ", "XIXI", "ZIZZ", "IXIX"])
+```
+
+## Langkah 2: Optimasi
+
+### Pisahkan Circuit dan observable sesuai pembagian Qubit yang ditentukan
+
+Setiap label dalam `partition_labels` sesuai dengan Qubit `circuit` pada indeks yang sama. Qubit yang memiliki label partisi yang sama akan dikelompokkan bersama, dan Gate non-lokal yang menjangkau lebih dari satu partisi akan dipotong.
+
+**Catatan:** Argumen ``observables`` pada `partition_problem` bertipe `PauliList`. Koefisien dan fase pada suku observable diabaikan saat dekomposisi masalah dan eksekusi subeksperimen. Keduanya bisa diterapkan kembali saat rekonstruksi nilai ekspektasi.
+
+```python
+from qiskit_addon_cutting import partition_problem
+
+partitioned_problem = partition_problem(
+    circuit=qc, partition_labels="AABB", observables=observable.paulis
+)
+subcircuits = partitioned_problem.subcircuits
+subobservables = partitioned_problem.subobservables
+bases = partitioned_problem.bases
+```
+
+### Visualisasikan masalah yang sudah didekomposisi
+
+```python
+subobservables
+```
+
+```text
+{'A': PauliList(['II', 'ZI', 'ZZ', 'XI', 'ZZ', 'IX']),
+ 'B': PauliList(['ZZ', 'IZ', 'II', 'XI', 'ZI', 'IX'])}
+```
+
+```python
+subcircuits["A"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_2.png)
+
+```python
+subcircuits["B"].draw("mpl", scale=0.8)
+```
+
+![Quantum circuit diagram](./_01_gate_cutting_to_reduce_circuit_width_imgs/output_3.png)
+
+### Hitung overhead sampling untuk potongan yang dipilih
+
+Di sini kita memotong dua Gate CNOT, sehingga menghasilkan overhead sampling sebesar $9^2$.
+
+Untuk info lebih lanjut tentang overhead sampling akibat circuit cutting, lihat [materi penjelasan](../explanation/index.rst).
+
+```python
+import numpy as np
+
+print(f"Sampling overhead: {np.prod([basis.overhead for basis in bases])}")
+```
+
+```text
+Sampling overhead: 81.0
+```
+
+### Generate subeksperimen untuk dijalankan di Backend
+
+`generate_cutting_experiments` menerima argumen `circuits`/`observables` berupa kamus yang memetakan label partisi Qubit ke `subcircuit`/`subobservables` masing-masing.
+
+Untuk mensimulasikan nilai ekspektasi Circuit berukuran penuh, banyak subeksperimen di-generate dari distribusi kuasiprobabilitas bersama Gate yang didekomposisi, lalu dieksekusi di satu atau lebih Backend. Jumlah sampel yang diambil dari distribusi dikontrol oleh `num_samples`, dan satu koefisien gabungan diberikan untuk setiap sampel yang unik. Untuk info lebih lanjut tentang cara penghitungan koefisien, lihat [materi penjelasan](../explanation/index.rst).
+
+```python
+from qiskit_addon_cutting import generate_cutting_experiments
+
+subexperiments, coefficients = generate_cutting_experiments(
+    circuits=subcircuits, observables=subobservables, num_samples=np.inf
+)
+```
+
+### Pilih Backend
+
+Di sini kita menggunakan fake Backend, yang akan membuat Qiskit Runtime berjalan dalam mode lokal (yaitu, di simulator lokal).
+
+```python
+from qiskit_ibm_runtime.fake_provider import FakeManilaV2
+
+backend = FakeManilaV2()
+```
+
+### Siapkan subeksperimen untuk Backend
+
+Kita harus melakukan transpile Circuit dengan Backend kita sebagai target sebelum mengirimkannya ke Qiskit Runtime.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+# Transpile the subexperiments to ISA circuits
+pass_manager = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_subexperiments = {
+    label: pass_manager.run(partition_subexpts)
+    for label, partition_subexpts in subexperiments.items()
+}
+```
+
+## Langkah 3: Eksekusi
+
+### Jalankan subeksperimen menggunakan primitif Sampler Qiskit Runtime
+
+```python
+from qiskit_ibm_runtime import SamplerV2, Batch
+
+# Submit each partition's subexperiments to the Qiskit Runtime Sampler
+# primitive, in a single batch so that the jobs will run back-to-back.
+with Batch(backend=backend) as batch:
+    sampler = SamplerV2(mode=batch)
+    jobs = {
+        label: sampler.run(subsystem_subexpts, shots=2**12)
+        for label, subsystem_subexpts in isa_subexperiments.items()
+    }
+```
+
+```text
+/home/garrison/Qiskit/qiskit-ibm-runtime/qiskit_ibm_runtime/session.py:157: UserWarning: Session is not supported in local testing mode or when using a simulator.
+  warnings.warn(
+```
+
+```python
+# Retrieve results
+results = {label: job.result() for label, job in jobs.items()}
+```
+
+## Langkah 4: Post-process
+
+### Rekonstruksi nilai ekspektasi
+
+Rekonstruksi nilai ekspektasi untuk setiap suku observable dan gabungkan untuk merekonstruksi nilai ekspektasi observable asal.
+
+```python
+from qiskit_addon_cutting import reconstruct_expectation_values
+
+# Get expectation values for each observable term
+reconstructed_expval_terms = reconstruct_expectation_values(
+    results,
+    coefficients,
+    subobservables,
+)
+
+# Reconstruct final expectation value
+reconstructed_expval = np.dot(reconstructed_expval_terms, observable.coeffs)
+```
+
+### Bandingkan nilai ekspektasi yang direkonstruksi dengan nilai ekspektasi eksak dari Circuit dan observable asal
+
+```python
+from qiskit_aer.primitives import EstimatorV2
+
+estimator = EstimatorV2()
+exact_expval = estimator.run([(qc, observable)]).result()[0].data.evs
+print(f"Reconstructed expectation value: {np.real(np.round(reconstructed_expval, 8))}")
+print(f"Exact expectation value: {np.round(exact_expval, 8)}")
+print(f"Error in estimation: {np.real(np.round(reconstructed_expval-exact_expval, 8))}")
+print(
+    f"Relative error in estimation: {np.real(np.round((reconstructed_expval-exact_expval) / exact_expval, 8))}"
+)
+```
+
+```text
+Reconstructed expectation value: 0.6991539
+Exact expectation value: 0.56254612
+Error in estimation: 0.13660778
+Relative error in estimation: 0.24283836
+```
+
+<TutorialFeedback />
