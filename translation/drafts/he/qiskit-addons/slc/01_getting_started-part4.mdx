@@ -1,0 +1,297 @@
+#### יתרונות של אשכולות להפחתת תקורת הדגימה עבור זמן חישוב קלאסי נתון {#benefits-of-clusters-for-reducing-sampling-overhead-for-a-given-classical-compute-time}
+
+```python
+xticks = np.arange(0, 11)
+
+fig, ax = plt.subplots()
+ax.scatter([0], [total_gamma**2], marker="D", c="tab:orange", label="full PEC")
+ax.plot(100 * np.array(biases), np.array(costs), "o-", c="tab:blue", label="local PEC+SLC")
+ax.plot(
+    100 * np.array(biases_cluster),
+    np.array(costs_cluster),
+    "o-",
+    c="tab:green",
+    label="cluster PEC+SLC",
+)
+ax.set_yscale("log")
+ax.set_ylim([100, 50000])
+ax.set_xticks(xticks, [f"{x:.1f}" for x in xticks])
+
+ax.set_xlabel("Remaining Bias [%]")
+ax.set_ylabel(r"Sampling Overhead, $\gamma^2$")
+ax.grid()
+ax.legend()
+fig.suptitle("PEC sampling overhead reduction due to SLC")
+```
+
+```text
+Text(0.5, 0.98, 'PEC sampling overhead reduction due to SLC')
+```
+
+![Plot output](./_01_getting_started_imgs/output_19.png)
+
+```python
+chosen_bias_thres = 0.1
+```
+
+```python
+local_scales, sampling_cost, residual_bias_bound = compute_local_scales(
+    boxed_circuit,
+    merged_bounds_cluster,
+    refs_2_plm,
+    sampling_cost_budget=np.inf,
+    bias_tolerance=chosen_bias_thres,
+)
+print(
+    f"PEC+SLC sampling cost (gamma^2) = {sampling_cost} w/ remaining bias = {100 * residual_bias_bound:.1f}%"
+)
+```
+
+```text
+PEC+SLC sampling cost (gamma^2) = 563.1803982530477 w/ remaining bias = 9.3%
+```
+
+### ג. הרצת ה-Circuit עם אנטי-רעש {#c-execute-the-circuit-of-interest-with-antinoise}
+#### ג.i. הכנת Circuit תבנית באמצעות `samplex` {#c.i-prepare-template-circuit-by-using-samplex}
+ה-`samplex` הוא פלט של מתודת ה-`build` של Samplomatic, שמקודדת את כל המידע הדרוש ליצירת פרמטרים אקראיים עבור `template_circuit`. אלה משמשים לאחר מכן להגדרת אובייקטי ה-`QuantumProgram`, שמורצים בתורם על QPU באמצעות ה-Executor primitive. כל `QuantumProgram` יכול להכיל מספר פריטים, שאפשר לחשוב עליהם כזוג של `template` ו-`samplex`.
+
+ראה את המדריך [Hello samplomatic](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/hello_samplomatic/Samplomatic%20-%20Hello%20World.ipynb) לפרטים נוספים.
+
+```python
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+```
+
+```python
+# Set up postselection if it's been enabled
+if post_selection_enabled:
+    # Set up post selection PM (to add PS instructions)
+    post_selection_pm = PassManager(
+        [
+            AddSpectatorMeasures(backend.coupling_map),
+            AddPostSelectionMeasures(x_pulse_type="rx"),
+        ]
+    )
+    final_template_circuit = post_selection_pm.run(template_circuit)
+else:
+    final_template_circuit = template_circuit
+```
+
+```text
+2025-11-10 11:22:04,839 INFO base_tasks Pass: AddSpectatorMeasures - 3.41392 (ms)
+2025-11-10 11:22:04,843 INFO base_tasks Pass: AddPostSelectionMeasures - 2.88510 (ms)
+```
+
+#### ג.ii. הגדרת ה-`QuantumProgram` {#c.ii-set-up-the-quantumprogram}
+
+```python
+num_randomizations = 4096
+shots_per_randomization = 64
+chunk_size = 256
+```
+
+```python
+# Set up QuantumProgram
+program = QuantumProgram(shots=shots_per_randomization, noise_maps=refs_2_plm)
+
+# no EM
+
+# Collect up a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(0) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# plain PEC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# PEC+SLC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {f"noise_scales.{ref}": float(-1) for ref in local_scales}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+samplex_inputs |= {"local_scales": local_scales}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+
+program.append(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+```
+
+#### ג.iii. הרצת התוכנית עם ה-Executor primitive {#c.iii-execute-program-with-the-executor-primitive}
+
+```python
+executor = Executor(backend)
+```
+
+```python
+load_cached_executor_results = True
+```
+
+```python
+if load_cached_executor_results:
+    job_exec = shared_service.job("d46t1q6qsa9s73cb28g0")
+else:
+    job_exec = executor.run(program)
+```
+
+```python
+results_exec = job_exec.result()
+```
+
+## שלב 4. עיבוד לאחר ביצוע {#step-4-post-process}
+כשאנחנו מחשבים את ערך הציפייה הסופי באמצעות `expectation_values`, נממש כמה טכניקות עיבוד לאחר ביצוע שמסייעות להבטיח שנקבל את התוצאות באיכות הגבוהה ביותר האפשרית. ראשית, אנחנו מיישמים את [twirled readout mitigation, TREX](https://quantum.cloud.ibm.com/docs/guides/error-mitigation-and-suppression-techniques#twirled-readout-error-extinction-trex), שמתחשב בשגיאות המתרחשות במהלך תהליך הקריאה. לאחר מכן, אנחנו מתקנים שגיאות הנובעות מרעש לא-מרקובי בבאקאנדים מסוג Heron שלנו באמצעות שיטת בחירה לאחר ביצוע. שיטה זו מודדת Qubitים פעילים ו-Qubitים ספקטטוריים, מיישמת סיבוב איטי על כל Qubit, ואז מודדת שוב. במקרים שבהם שתי המדידות אינן מאשרות היפוך Qubit כצפוי, הצילומים הללו נדחים על ידי יישום `mask` מפונקציית ה-`PostSelector`. בתוך חישוב המסכה, ניתן להגדיר אסטרטגיה ספציפית לסינון על בסיס צמתים חד-Qubit או קצוות ספקטוריים שכנים, מה שיכול להשפיע הן על מספר הצילומים שנסוננו והן על איכות התוצאות.
+
+```python
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_scale_factors = trex_factors(measurement_noise_map, reverser_virt)
+```
+
+```python
+post_selection_strategy = "node"
+```
+
+```python
+def post_process_conv(datum, steps=16, gamma=None, ps=False, trex=False):
+    meas = datum["meas"]
+    flips = datum["measurement_flips.meas"]
+    signs = datum.get("pauli_signs", None)
+
+    meas_basis_axis = None
+    avg_axis = 0
+
+    mask = None
+    if ps and post_selection_enabled:
+        # Post-select the results
+        post_selector = PostSelector.from_circuit(
+            circuit=final_template_circuit, coupling_map=backend.coupling_map
+        )
+
+        # Compute the ps mask for filtering results
+        mask = post_selector.compute_mask(datum, strategy=post_selection_strategy)
+
+        # Compute fraction of shots kept from post selection
+        total_num_shots = num_randomizations * shots_per_randomization
+        ps_ratio = np.sum(mask) * 100 / total_num_shots / len(bases_canon)
+        print(
+            f"With {post_selection_strategy}-based post selection ({ps_ratio:.1f}% of shots kept):"
+        )
+
+    results = []
+    for i in range(steps, num_randomizations + 1, steps):
+        # Compute mitigated expvals w/out postselectoion
+        res = executor_expectation_values(
+            meas[:i],
+            reverser_virt,
+            meas_basis_axis,
+            avg_axis=avg_axis,
+            measurement_flips=flips[:i],
+            pauli_signs=signs[:i] if signs is not None else None,
+            postselect_mask=mask[:i] if mask is not None else None,
+            rescale_factors=trex_scale_factors if trex else None,
+            gamma_factor=gamma,
+        )
+        results.append(res[0])
+    return results
+```
+
+```python
+gamma_pec = gamma_from_noisy_boxes(refs_2_plm, id_map)
+gamma_slc = gamma_from_noisy_boxes(refs_2_plm, id_map, local_scales)
+```
+
+```python
+steps = 16
+```
+
+```python
+results = {}
+
+for label, result_idx, gamma, use_ps, use_trex in [
+    ("PEC", 1, gamma_pec, True, True),
+    ("PEC+SLC", 2, gamma_slc, True, True),
+    ("Unmitigated", 0, None, False, False),
+]:
+    res = post_process_conv(
+        results_exec[result_idx], steps=steps, gamma=gamma, ps=use_ps, trex=use_trex
+    )
+    results[label] = res
+```
+
+```text
+With node-based post selection (27.0% of shots kept):
+With node-based post selection (26.8% of shots kept):
+```
+
+מבחינת התוצאות הניסיוניות, אנחנו יכולים להשוות ישירות בין ההתנהגות של גישות שונות: PEC, שילוב של PEC עם SLC, וקו הבסיס של תוצאות ללא הפחתה. כמה פרטים ספציפיים שכדאי להדגיש:
+
+- תוצאות ללא הפחתה נשארות מחוץ לטווח ההטיה הרצוי ואינן מושפעות מתקורת הדגימה.
+- בהתחשב בעלות הדגימה הגבוהה שחושבה לעיל (~10k), PEC לבדו אינו מתכנס בתוך מגבלות האקראיות בשימוש.
+- PEC + SLC, לעומת זאת, מתכנס הרבה יותר מהר.
+- גבולות השגיאה יורדים גם הם באופן משמעותי מהיר יותר עבור PEC + SLC לעומת PEC רגיל.
+
+```python
+fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+
+ax.axhline(1.0, color="black", label="Exact")
+ax.fill_between([-50, 4100], -10, 0, color="grey", alpha=0.25, label="Unphysical")
+ax.fill_between([-50, 4100], 1, 10, color="grey", alpha=0.25)
+ax.fill_between([-50, 4100], 0.9, 1.1, color="red", alpha=0.25, label="10% bias")
+
+for label, res in results.items():
+    ax.errorbar(
+        list(range(steps, num_randomizations + 1, steps)),
+        [r[0] for r in res],
+        yerr=[r[1] for r in res],
+        alpha=0.75,
+        marker="o",
+        linestyle="",
+        markerfacecolor="none",
+        label=label,
+    )
+
+ax.set_ylabel(r"$\langle X_{6}Z_{13}\rangle$")
+ax.set_xlabel("# randomizations")
+ax.grid()
+
+ax.legend(ncols=2)
+ax.set_ylim([-0.1, 2.0])
+ax.set_xlim([-50, 4100])
+```
+
+```text
+(-50.0, 4100.0)
+```
+
+![Plot output](./_01_getting_started_imgs/output_20.png)
+
+<TutorialFeedback />
