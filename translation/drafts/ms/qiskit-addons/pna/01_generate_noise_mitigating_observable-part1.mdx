@@ -1,0 +1,299 @@
+---
+title: "Meningkatkan Nilai Jangkaan: Propagated Noise Absorption (PNA)"
+sidebar_label: "Meningkatkan Nilai Jangkaan: Propagated Noise Absorption (PNA)"
+notebook_path: "qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb"
+---
+{/* doqumentation-source-hash: 3f45752c */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/pna/01_generate_noise_mitigating_observable.ipynb" />
+
+
+Dalam tutorial ni, kita akan belajar cara guna alat terbaru dalam ekosistem Qiskit untuk melaksanakan aliran kerja yang boleh disesuaikan sepenuhnya dengan pengurangan ralat. Kita akan perkenalkan teknik PNA dan gunakannya untuk mengurangkan ralat Gate. Kita juga akan guna TREX untuk mengurangkan ralat pembacaan dan post-selection untuk mengurangkan ralat yang tak tertangkap dalam model hingar yang dipelajari.
+
+**Rangka Kerja**
+- Bagi gambaran ringkas tentang ``PNA``
+- Cipta Circuit kuantum Trotterized dan observable. Transpile ke backend dan sertakan pengukuran post-selection.
+- Guna ``samplomatic`` untuk twirl lapisan Gate 2Q dan pengukuran. Cari lapisan 2Q unik untuk kurangkan kos pembelajaran hingar.
+- Guna ``NoiseLearnerV3`` untuk pelajari model ralat yang mempengaruhi Gate 2Q dan pengukuran.
+- Guna ``qiskit-addon-pna`` untuk hasilkan observable yang mengurangkan hingar
+- Guna primitif ``qiskit-ibm-runtime.Executor`` untuk hasilkan sampel QPU mentah yang mencerminkan setiap shot untuk setiap rawak twirling dan asas yang diukur
+- Guna ``qiskit-addon-utils`` untuk memproses data menjadi nilai jangkaan yang telah dikurangkan hiasannya.
+### Apa itu propagated noise absorption (PNA)? {#what-is-propagated-noise-absorption-pna}
+
+***Teknik untuk mengurangkan ralat Gate dengan mempropagasikan observable melalui saluran hingar songsang yang mempengaruhi Gate 2-Qubit, menghasilkan observable yang mengurangkan hingar.***
+Gate 2Q dalam eksperimen yang nak kita jalankan akan dipengaruhi oleh hingar yang ketara.
+![Noisy experiment](../images/noisy_expt.png)
+Kalau kita pelajari model hingar, kita boleh guna songsangnya dan batalkan hingar tu.
+![Noise-mitigated experiment](../images/noise_mitigated_expt.png)
+Daripada melaksanakan saluran hingar songsang dengan mengambil sampelnya pada QPU macam dalam PEC, kita boleh melaksanakannya secara klasikal dalam observable yang diukur menggunakan propagasi Pauli. Ini menghasilkan observable yang lebih kompleks yang, bila diukur, memberi kesan mengurangkan hingar Gate yang dipelajari.
+![PNA overview](../images/pna_overview.png)
+### Jana Circuit Trotter yang dicerminkan dan observable {#generate-the-mirrored-trotter-circuit-and-observable}
+
+Untuk eksperimen ni, kita akan kaji dinamik masa model Ising yang ditendang pada rantai spin 1D dengan 30 tapak. Hamiltonian yang dipertimbangkan adalah:
+
+$H = -J\sum\limits_{\langle i,j \rangle} Z_iZ_j + h\sum\limits_iX_i$,
+
+di mana $J>0$ menggambarkan gandingan spin jiran terdekat, $i<j$, dan medan melintang global, $h$, ditetapkan kepada $\frac{\pi}{8}$. Semakin jauh $h$ dari sudut Clifford (iaitu $\theta=n\frac{\pi}{2}, n \in \mathbb{Z}$), semakin sukar untuk mempropagasikan penjana anti-hingar melalui Circuit.
+
+Untuk pilihan observable, kita akan pertimbangkan magnetisasi purata satu tapak, $\frac{1}{N} \sum_{i=1}^{N} \langle z_i \rangle$, di mana $N$ adalah bilangan tapak.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-pna qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli, SparsePauliOp
+
+num_qubits = 30
+num_trotter_steps = 10
+rx_angle = np.pi / 8
+
+# Avg single-site magnetization
+id_pauli = Pauli("I" * num_qubits)
+observable = SparsePauliOp([id_pauli.dot(Pauli("Z"), [i]) for i in range(num_qubits)]) / num_qubits
+
+# Implement Trotterized kicked-Ising model
+circuit = QuantumCircuit(num_qubits)
+for _step in range(num_trotter_steps):
+    circuit.rx(rx_angle, range(num_qubits))
+    for first_qubit in (1, 2):
+        for idx in range(first_qubit, num_qubits, 2):
+            # equivalent to Rzz(-pi/2):
+            circuit.sdg([idx - 1, idx])
+            circuit.cz(idx - 1, idx)
+circuit.compose(circuit.inverse(), inplace=True)
+circuit.measure_active()
+circuit.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_1.png)
+
+Seterusnya, kita akan pilih rantai Qubit pada ``ibm_kingston`` yang melaporkan kadar ralat rendah dan transpile Circuit ke backend.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+backend_name = "ibm_kingston"
+service = QiskitRuntimeService()
+backend = service.backend(backend_name, use_fractional_gates=True)
+
+# Use a chain of low-noise qubits
+layout = [
+    44,
+    45,
+    46,
+    47,
+    57,
+    67,
+    68,
+    69,
+    78,
+    89,
+    88,
+    87,
+    97,
+    107,
+    106,
+    105,
+    117,
+    125,
+    126,
+    127,
+    128,
+    129,
+    118,
+    109,
+    110,
+    111,
+    98,
+    91,
+    92,
+    93,
+]
+
+pm = generate_preset_pass_manager(backend=backend, initial_layout=layout, optimization_level=0)
+isa_circuit = pm.run(circuit)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+isa_circuit.draw("mpl", fold=-1)
+```
+
+```text
+qiskit_runtime_service._discover_account:WARNING:2025-11-10 14:30:57,148: Loading account with the given token. A saved account will not be used.
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_2.png)
+
+### Twirl lapisan Gate 2-Qubit dan pengukuran serta cari lapisan unik {#twirl-the-2-qubit-gate-layers-and-measurements-and-find-unique-layers}
+
+Di sini kita pastikan pengurus pas menanda kotak dengan anotasi ``Twirl`` dan ``InjectNoise``, yang membolehkan kita mempelajari hingar yang akan mempengaruhi Circuit kita dan mengaitkan hingar tersebut dengan lapisan Circuit yang sepadan.
+
+- ``enable_gates/enable_measure: True``: Kotak semua lapisan Gate 2q dan pengukuran terminal. Gate Qubit tunggal akan diberi pakaian-kiri dalam kotak.
+- ``measure_annotations: all`` Sertakan anotasi `Twirl` dan `ChangeBasis` pada kotak pengukuran
+- ``twirling_strategy: active``: Twirl semua Qubit aktif dalam setiap kotak yang mengandungi Gate yang mengjalinkan
+- ``inject_noise_targets: gates``: Anotasi ``InjectNoise`` perlu ditambah kepada semua kotak beranotasi ``Twirl`` yang mengandungi Gate yang mengjalinkan
+- ``inject_noise_strategy: uniform_modification``: Semua lapisan hingar perlu diskalakan secara setara.
+
+```python
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Box up circuit with Twirl and InjectNoise annotations
+pm = generate_boxing_pass_manager(
+    enable_gates=True,
+    enable_measures=True,
+    measure_annotations="all",
+    twirling_strategy="active",
+    inject_noise_targets="gates",
+    inject_noise_strategy="uniform_modification",
+    remove_barriers=True,
+)
+boxed_circuit = pm.run(isa_circuit)
+```
+
+```python
+draw_circ = QuantumCircuit(boxed_circuit.num_qubits)
+draw_circ.append(boxed_circuit.data[0], qargs=boxed_circuit.data[0].qubits)
+draw_circ.append(boxed_circuit.data[1], qargs=boxed_circuit.data[1].qubits)
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_3.png)
+
+### Jana Circuit templat dan samplex, tentukan cara Circuit akan diambil sampel {#generate-the-template-circuit-and-samplex-define-how-the-circuit-will-be-sampled}
+
+Di sini kita juga tambah pengukuran spektator dan post-selection, yang diperlukan untuk melakukan post-selection pada sampel yang dikeluarkan daripada ``Executor``.
+
+```python
+import samplomatic
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+
+# Add post-selection instructions to the template circuit
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+template_circuit = post_selection_pm.run(template_circuit)
+```
+
+```python
+draw_circ = template_circuit.copy_empty_like()
+draw_circ.data = template_circuit.data[:324]
+draw_circ.draw("mpl", fold=-1, scale=0.3, idle_wires=False)
+```
+
+![Quantum circuit diagram](./_01_generate_noise_mitigating_observable_imgs/output_4.png)
+
+#### Pelajari hingar {#learn-the-noise}
+
+Sebelum kita jalankan eksperimen, kita pelajari model hingar yang mempengaruhi Gate yang mengjalinkan dan pengukuran dalam Circuit. Mempunyai model hingar yang tepat adalah perlu untuk mengurangkan ralat dengan berkesan. Mempelajari hingar sejurus sebelum melaksanakan eksperimen memberi peluang terbaik supaya model hingar dapat menggambarkan dengan tepat hingar sebenar yang mempengaruhi Gate semasa pelaksanaan.
+
+Sebelum kita pelajari hingar, kita perlu cari lapisan 2-Qubit unik dalam Circuit kita, supaya kita boleh minimumkan bilangan shot yang diperlukan untuk pelajari hingar bagi keseluruhan Circuit. Kita guna ``find_unique_box_instructions`` daripada ``samplomatic`` untuk mendapatkan lapisan unik dari Circuit yang dikotak, termasuk lapisan pengukuran. Ini adalah lapisan yang kita hantar ke pembelajaran hingar.
+
+Bila kita dah tahu lapisan-lapisannya, kita boleh pelajari hingar. Ada beberapa parameter yang perlu kita pertimbangkan:
+
+- `num_randomizations`: Bilangan Circuit rawak yang digunakan bagi setiap konfigurasi Circuit pembelajaran
+- `shots_per_randomization`: Jumlah keseluruhan shot yang digunakan bagi setiap Circuit pembelajaran rawak
+- `layer_pair_depths`: Kedalaman Circuit (diukur dalam bilangan pasangan) yang digunakan dalam eksperimen pembelajaran.
+- `post_selection`: Kita akan guna post-selection berasaskan tepi semasa pembelajaran menggunakan Gate `rx` untuk melaksanakan nadi selepas pengukuran
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3.noise_learner_v3 import NoiseLearnerV3
+from qiskit_ibm_runtime.options import NoiseLearnerV3Options
+from samplomatic.utils import find_unique_box_instructions
+
+# Load noise learner data from a shared job
+load_saved_nl_result = True
+
+# Noise learning parameters
+num_randomizations_nl = 64
+shots_per_randomization_nl = 128
+strategy = "edge"
+enable_postsel = True
+x_pulse_type = "rx"
+
+# Find the unique instructions (layers) from boxed-up circuit
+unique_2q_layers_and_meas = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+
+noise_learner_params = {
+    "num_randomizations": num_randomizations_nl,
+    "shots_per_randomization": shots_per_randomization_nl,
+    "layer_pair_depths": [1, 2, 4, 8, 12, 16, 24, 32, 40, 48],
+    "post_selection": {
+        "enable": enable_postsel,
+        "strategy": strategy,
+        "x_pulse_type": x_pulse_type,
+    },
+    "experimental": {},
+}
+# set the options
+noise_learner_options = NoiseLearnerV3Options(**noise_learner_params)
+
+# run the noise learner job
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+noise_learner_job = noise_learner.run(unique_2q_layers_and_meas)
+noise_learner_result = noise_learner_job.result()
+
+nl_metadata = noise_learner_params | {"layout": layout}
+```
+
+```python
+import matplotlib.pyplot as plt
+
+hw_rates_1q = []
+hw_rates_2q = []
+for nlr in noise_learner_result[:2]:
+    plm_list = nlr.to_pauli_lindblad_map().to_sparse_list()
+    hw_rates_1q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 1]
+    hw_rates_2q += [rate for (pstr, qubits, rate) in plm_list if len(pstr) == 2]
+hw_rates_1q = sorted(hw_rates_1q)
+hw_rates_2q = sorted(hw_rates_2q)
+median_1q = hw_rates_1q[len(hw_rates_1q) // 2]
+median_2q = hw_rates_2q[len(hw_rates_2q) // 2]
+fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+ax.scatter(
+    (hw_rates_1q),
+    [(i) / (len(hw_rates_1q) - 1) for i in range(len(hw_rates_1q))],
+    color="red",
+    label="1q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_1q, 0, 1, color="red")
+ax.text(median_1q * 1.1, 0.1, f"{median_1q:.2e}")
+ax.scatter(
+    (hw_rates_2q),
+    [(i) / (len(hw_rates_2q) - 1) for i in range(len(hw_rates_2q))],
+    color="blue",
+    label="2q rates",
+)
+ax.set_xscale("log")
+ax.set_ylim(0, 1.1)
+ax.vlines(median_2q, 0, 1, color="blue")
+ax.text(median_2q * 1.1, 0.2, f"{median_2q:.2e}")
+ax.set_title("Learned noise rates")
+ax.set_xlabel("Noise rate")
+ax.set_yticks([])
+plt.legend()
+```
+
+```text
+<matplotlib.legend.Legend at 0x321dd63f0>
+```
+
+![Plot output](./_01_generate_noise_mitigating_observable_imgs/output_5.png)
