@@ -1,0 +1,315 @@
+---
+title: "Verbesserung der Energieschätzung eines fermionischen Gittermodells mit SQD"
+sidebar_label: "Verbesserung der Energieschätzung eines fermionischen Gittermodells mit SQD"
+notebook_path: "qiskit-addons/sqd/02_fermionic_lattice_hamiltonian.ipynb"
+---
+{/* doqumentation-source-hash: 6be25b99 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/sqd/02_fermionic_lattice_hamiltonian.ipynb" />
+
+
+In diesem Tutorial implementieren wir ein [Qiskit-Muster](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns), das zeigt, wie verrauschte Quantensamples nachbearbeitet werden, um eine Näherung des Grundzustands eines fermionischen Gitter-Hamiltonians – bekannt als das Ein-Störstellen-Anderson-Modell – zu finden. Wir werden einen stichprobenbasierten Quantendiagonalisierungsansatz verfolgen, um Samples zu verarbeiten, die aus einer Menge von ``16``-Qubit-Krylow-Basiszuständen über zunehmende Zeitintervalle entnommen wurden. Diese Zustände werden auf dem Quantengerät mithilfe der Trotterisierung der Zeitentwicklung realisiert. Um den Effekt von Quantenrauschen zu berücksichtigen, wird die Konfigurationswiederherstellungstechnik eingesetzt. Unter der Annahme eines guten Anfangszustands und der Dünnbesetztheit des Grundzustands ist [dieser Ansatz nachweislich effizient konvergent](https://arxiv.org/abs/2501.09702).
+
+Das Muster lässt sich in vier Schritte beschreiben:
+
+1. **Schritt 1: Auf Quantenproblem abbilden**
+    - Eine Menge von Krylow-Basiszuständen (d. h. trotterisierte Zeitentwicklungsschaltkreise) über zunehmende Zeitintervalle erzeugen, um den Grundzustand zu schätzen
+2. **Schritt 2: Problem optimieren**
+    - Die Circuits für das Backend transpilieren
+3. **Schritt 3: Experimente ausführen**
+    - Samples aus den Circuits mit dem ``Sampler``-Primitiv ziehen
+4. **Schritt 4: Ergebnisse nachbearbeiten**
+   - Selbstkonsistente Konfigurationswiederherstellungsschleife
+       - Den vollständigen Satz von Bitstring-Samples nachbearbeiten, unter Verwendung von Vorwissen über die Teilchenzahl und die mittlere orbitale Besetzung, die in der letzten Iteration berechnet wurde
+       - Probabilistisch Batches von Teilsamples aus wiederhergestellten Bitstrings erstellen
+       - Den fermionischen Gitter-Hamiltonian über jeden gesampelten Teilraum projizieren und diagonalisieren
+       - Die minimale Grundzustandsenergie über alle Batches speichern und die mittlere orbitale Besetzung aktualisieren
+### Schritt 1: Problem auf einen Quantenschaltkreis abbilden {#step-1-map-problem-to-a-quantum-circuit}
+Zuerst erstellen wir die Ein- und Zwei-Körper-Hamiltonians, die das eindimensionale Ein-Störstellen-Anderson-Modell (SIAM) mit ``7`` Badstellen (``8`` Elektronen in ``8`` Orbitalen) beschreiben. Dieses Modell wird verwendet, um magnetische Störstellen in Metallen zu beschreiben.
+
+Dann erstellen wir die ``16``-Qubit-Trotter-Circuits, die zur Erzeugung des Quanten-Krylow-Teilraums verwendet werden.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q ffsim matplotlib numpy qiskit qiskit-addon-sqd qiskit-ibm-runtime scipy
+```
+
+```python
+import numpy as np
+
+n_bath = 7  # number of bath sites
+
+V = 1  # hybridization amplitude
+t = 1  # bath hopping amplitude
+U = 10  # Impurity onsite repulsion
+eps = -U / 2  # Chemical potential for the impurity
+
+# Place the impurity on the first qubit
+impurity_index = 0
+
+# One body matrix elements in the "position" basis
+h1e = -t * np.diag(np.ones(n_bath), k=1) - t * np.diag(np.ones(n_bath), k=-1)
+h1e[impurity_index, impurity_index + 1] = -V
+h1e[impurity_index + 1, impurity_index] = -V
+h1e[impurity_index, impurity_index] = eps
+
+# Two body matrix elements in the "position" basis
+h2e = np.zeros((n_bath + 1, n_bath + 1, n_bath + 1, n_bath + 1))
+h2e[impurity_index, impurity_index, impurity_index, impurity_index] = U
+```
+
+Als Nächstes erzeugen wir den Quanten-Krylow-Teilraum mit einer Menge trotterisierter Quantenschaltkreise. Hier erstellen wir Hilfsfunktionen zur Erzeugung des Anfangs-(Referenz-)zustands sowie der Zeitentwicklung für die Ein- und Zwei-Körper-Anteile des Hamiltonians. Eine detailliertere Beschreibung dieses Modells und der Gestaltung der Circuits findest du in [der zugehörigen Veröffentlichung](https://arxiv.org/abs/2501.09702).
+
+```python
+import ffsim
+import scipy
+from qiskit import QuantumCircuit, QuantumRegister
+from qiskit.circuit.library import CPhaseGate, XGate, XXPlusYYGate
+
+n_modes = n_bath + 1
+nelec = (n_modes // 2, n_modes // 2)
+
+dt = 0.2
+Utar = scipy.linalg.expm(-1j * dt * h1e)
+
+# The reference state
+def initial_state(q_circuit, norb, nocc):
+    """Prepare an initial state."""
+    for i in range(nocc):
+        q_circuit.append(XGate(), [i])
+        q_circuit.append(XGate(), [norb + i])
+    rot = XXPlusYYGate(np.pi / 2, -np.pi / 2)
+
+    for i in range(3):
+        for j in range(nocc - i - 1, nocc + i, 2):
+            q_circuit.append(rot, [j, j + 1])
+            q_circuit.append(rot, [norb + j, norb + j + 1])
+    q_circuit.append(rot, [j + 1, j + 2])
+    q_circuit.append(rot, [norb + j + 1, norb + j + 2])
+
+# The one-body time evolution
+free_fermion_evolution = ffsim.qiskit.OrbitalRotationJW(n_modes, Utar)
+
+# The two-body time evolution
+def append_diagonal_evolution(dt, U, impurity_qubit, num_orb, q_circuit):
+    """Append two-body time evolution to a quantum circuit."""
+    if U != 0:
+        q_circuit.append(
+            CPhaseGate(-dt / 2 * U),
+            [impurity_qubit, impurity_qubit + num_orb],
+        )
+```
+
+Erzeuge ``d`` zeitentwickelte Zustände, die den Quanten-Krylow-Teilraum festlegen. Hier haben wir ``d=8`` gewählt. Der Fehler aus der Stichprobennahme von Krylow-Basiszuständen konvergiert mit zunehmendem ``d``. Beachte, dass die Besonderheiten dieser Probleminstanz eine effiziente Kompilierung der Ein-Körper-Entwicklung mit `OrbitalRotationJW` ermöglichen; im Allgemeinen könnte man jedoch Qiskit's [PauliEvolutionGate](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.circuit.library.PauliEvolutionGate) verwenden, um die trotterisierte Zeitentwicklung des vollständigen Hamiltonians zu implementieren.
+
+```python
+# Generate the initial state
+qubits = QuantumRegister(2 * n_modes, name="q")
+init_state = QuantumCircuit(qubits)
+initial_state(init_state, n_modes, n_modes // 2)
+init_state.draw("mpl", scale=0.4, fold=-1)
+
+d = 8  # Number of Krylov basis states
+circuits = []
+for i in range(d):
+    circ = init_state.copy()
+    circuits.append(circ)
+    for _ in range(i):
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+        circ.append(free_fermion_evolution, qubits)
+        append_diagonal_evolution(dt, U, impurity_index, n_modes, circ)
+    circ.measure_all()
+```
+
+```python
+circuits[0].draw("mpl", scale=0.4, fold=-1)
+```
+
+![Quantum circuit diagram](./output_1.png)
+
+```python
+circuits[-1].draw("mpl", scale=0.4, fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+### Schritt 2: Problem optimieren {#step-2-optimize-the-problem}
+Nachdem wir die trotterisierten Circuits erstellt haben, optimieren wir sie für eine Zielhardware. Wir müssen das zu verwendende Hardwaregerät vor der Optimierung auswählen. Wir verwenden ein gefälschtes 127-Qubit-Backend aus ``qiskit_ibm_runtime``, um ein echtes Gerät zu emulieren. Um auf einem echten QPU zu laufen, ersetze einfach das gefälschte Backend durch ein echtes Backend. Weitere Informationen findest du in den [Qiskit IBM Runtime-Dokumenten](https://quantum.cloud.ibm.com/docs/guides/get-started-with-primitives#get-started-with-sampler).
+
+```python
+from qiskit_ibm_runtime.fake_provider.backends import FakeSherbrooke
+
+backend = FakeSherbrooke()
+```
+
+Als Nächstes transpilieren wir die Circuits mit Qiskit für das Ziel-Backend.
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+
+# The circuit needs to be transpiled to the AerSimulator target
+pass_manager = generate_preset_pass_manager(optimization_level=3, backend=backend)
+isa_circuits = pass_manager.run(circuits)
+```
+
+### Schritt 3: Experimente ausführen {#step-3-execute-experiments}
+Nachdem wir die Circuits für die Hardwareausführung optimiert haben, sind wir bereit, sie auf der Zielhardware auszuführen und Samples für die Grundzustandsenergieschätzung zu sammeln. Hier verwenden wir ``SamplerV2`` aus ``qiskit-ibm-runtime``, um verrauschte Samples aus dem ``ibm_sherbrooke``-Backend zu simulieren. Anschließend kombinieren wir die Counts aus jedem der Krylow-Basiszustände in einem einzigen Counts-Dictionary und stellen die 20 am häufigsten gesampelten Bitstrings dar.
+
+***Hinweis: [Qiskit Aer](https://qiskit.github.io/qiskit-aer/index.html) ist erforderlich, um Samples aus transpilierten Circuits zu simulieren.***
+
+```python
+from qiskit.primitives import BitArray
+from qiskit.visualization import plot_histogram
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+# Sample from the circuits
+noisy_sampler = Sampler(backend, options={"simulator": {"seed_simulator": 24}})
+job = noisy_sampler.run(isa_circuits, shots=500)
+
+# Combine the counts from the individual Trotter circuits
+bit_array = BitArray.concatenate_shots([result.data.meas for result in job.result()])
+
+plot_histogram(bit_array.get_counts(), number_to_keep=20)
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+### Schritt 4: Ergebnisse nachbearbeiten {#step-4-post-process-the-results}
+Jetzt führen wir den SQD-Algorithmus mit der Funktion `diagonalize_fermionic_hamiltonian` aus. Erklärungen zu den Argumenten dieser Funktion findest du in der [API-Dokumentation](../apidocs/qiskit_addon_sqd.fermion.rst#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian).
+
+```python
+from qiskit_addon_sqd.fermion import SCIResult, diagonalize_fermionic_hamiltonian
+
+# List to capture intermediate results
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}")
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=300,
+    norb=n_modes,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=10,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+```
+
+```text
+Iteration 1
+	Subsample 0
+		Energy: -13.257128325607997
+		Subspace dimension: 3969
+	Subsample 1
+		Energy: -13.257128325607997
+		Subspace dimension: 3969
+	Subsample 2
+		Energy: -13.257128325607997
+		Subspace dimension: 3969
+Iteration 2
+	Subsample 0
+		Energy: -13.319666127542039
+		Subspace dimension: 4096
+	Subsample 1
+		Energy: -13.420534292304595
+		Subspace dimension: 4624
+	Subsample 2
+		Energy: -9.136171594591085
+		Subspace dimension: 4624
+Iteration 3
+	Subsample 0
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 1
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 2
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+Iteration 4
+	Subsample 0
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 1
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+	Subsample 2
+		Energy: -13.422491814612833
+		Subspace dimension: 4900
+```
+
+Jetzt stellen wir die Ergebnisse dar. Der erste Plot zeigt, dass wir nach wenigen Iterationen die exakte Grundzustandsenergie erhalten.
+
+Dieses Beispiel ist klein genug, dass wir den gesamten Hilbert-Raum erkunden können, wie in den Print-Ausgaben oben zu sehen ist. Zur Erinnerung: Der vollständige Hilbert-Raum hat die Dimension ``(Anzahl_Orbitale wähle nelec_a) * (Anzahl_Orbitale wähle nelec_b)``. Für dieses Problem gilt daher: `(8 choose 4)**2 = 4900`. Die Teilraumdimensionen wachsen aufgrund der verbesserten Konfigurationswiederherstellung sowie der Tatsache, dass der SQD-Algorithmus wichtige Konfigurationen von einer Iteration zur nächsten überträgt. In der letzten Iteration diagonalisieren wir im gesamten Hilbert-Raum.
+
+Der zweite Plot zeigt die mittlere Besetzung jedes räumlichen Orbitals über alle Batches' Lösungen. Wir sehen, dass mit hoher Wahrscheinlichkeit jedes Orbital ein Elektron enthält.
+
+```python
+import matplotlib.pyplot as plt
+
+exact_energy = -13.422491814605827
+min_es = [min(result, key=lambda res: res.energy).energy for result in result_history]
+min_id, min_e = min(enumerate(min_es), key=lambda x: x[1])
+
+# Data for energies plot
+x1 = range(len(result_history))
+yt1 = list(np.arange(-13.5, -13.1, 0.1))
+ytl = [f"{i:.1f}" for i in yt1]
+
+# Data for avg spatial orbital occupancy
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+# Plot energies
+axs[0].plot(x1, min_es, label="SQD energy", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].set_yticks(yt1)
+axs[0].set_yticklabels(ytl)
+axs[0].axhline(y=exact_energy, color="#BF5700", linestyle="--", label="Exact energy")
+axs[0].set_title("Approximated Ground State Energy vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy", fontdict={"fontsize": 12})
+axs[0].legend()
+
+# Plot orbital occupancy
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+
+print(f"Exact energy: {exact_energy:.5f}")
+print(f"SQD energy: {min_e:.5f}")
+print(f"Absolute error: {abs(min_e - exact_energy):.5f}")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Exact energy: -13.42249
+SQD energy: -13.42249
+Absolute error: 0.00000
+```
+
+![Plot output](./output_4.png)
+
+<TutorialFeedback />

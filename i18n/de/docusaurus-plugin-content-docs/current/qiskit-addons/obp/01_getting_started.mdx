@@ -1,0 +1,298 @@
+---
+title: "Schaltkreistiefe reduzieren mit Operator-Rückpropagation"
+sidebar_label: "Schaltkreistiefe reduzieren mit Operator-Rückpropagation"
+notebook_path: "qiskit-addons/obp/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: 43a12650 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/obp/01_getting_started.ipynb" />
+
+
+Operator-Rückpropagation ist eine Technik, bei der Operationen vom Ende eines Quantenschaltkreises in einen Pauli-Operator absorbiert werden, wodurch in der Regel die Tiefe des Schaltkreises auf Kosten zusätzlicher Terme im Operator verringert wird. Das Ziel ist es, so viel wie möglich vom Schaltkreis rückzupropagieren, ohne den Operator zu groß werden zu lassen.
+
+Eine Möglichkeit, eine tiefere Rückpropagation in den Schaltkreis zu ermöglichen und gleichzeitig zu verhindern, dass der Operator zu groß wird, besteht darin, Terme mit kleinen Koeffizienten abzuschneiden, anstatt sie zum Operator hinzuzufügen. Das Abschneiden von Termen kann zu weniger auszuführenden Quantenschaltkreisen führen, führt jedoch zu einem gewissen Fehler bei der abschließenden Erwartungswertberechnung, der proportional zur Größe der Koeffizienten der abgeschnittenen Terme ist.
+In diesem Tutorial implementierst du ein [Qiskit-Muster](https://quantum.cloud.ibm.com/docs/guides/serverless#qiskit-patterns-with-quantum-serverless) zur Simulation der Quantendynamik einer Heisenberg-Spinkette mittels Operator-Rückpropagation:
+
+- **Schritt 1: Auf Quantenproblem abbilden**
+    - Den zeitentwickelten Hamiltonian auf einen Quantenschaltkreis abbilden
+- **Schritt 2: Problem optimieren**
+    - Den Schaltkreis in Scheiben teilen
+    - <font color="#0F62FE">Scheiben vom Schaltkreis auf ein Pauli-Observable rückpropagieren</font>
+    - Die verbleibenden Scheiben zu einem einzelnen Schaltkreis zusammenführen
+    - Den Schaltkreis für das Backend transpilieren
+- **Schritt 3: Experimente ausführen**
+    - Den Erwartungswert mit dem reduzierten Schaltkreis und dem erweiterten Observable mithilfe eines [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) berechnen – der Einfachheit halber in diesem Notebook
+- **Schritt 4: Ergebnisse rekonstruieren**
+    - Nicht zutreffend.
+
+**Hinweis:** Qiskit beschreibt [Schichten](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.dagcircuit.DAGCircuit) im weiteren Sinne als Tiefe-1-Partitionen des Schaltkreises über alle Qubits. Dieses Paket verwendet den Begriff **Scheiben**, um Schichten mit beliebiger Tiefe zu beschreiben. Die Funktion [qiskit_addon_obp.backpropagate](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.backpropagate.html) ist so gestaltet, dass sie jeweils ganze Scheiben rückpropagiert, sodass die Wahl, wie der Quantenschaltkreis aufgeteilt wird, einen großen Einfluss darauf haben kann, wie gut die Rückpropagation für ein bestimmtes Problem funktioniert. Mehr über **Scheiben** erfährst du weiter unten.
+## Schritt 1: Auf Quantenproblem abbilden {#step-1-map-to-quantum-problem}
+### Die Zeitentwicklung eines Quanten-Heisenberg-Modells auf ein Quantenexperiment abbilden. {#map-the-time-evolution-of-a-quantum-heisenberg-model-to-a-quantum-experiment}
+
+Das Paket [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) stellt wiederverwendbare Funktionalitäten für verschiedene Zwecke bereit.
+
+Sein Modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) enthält Funktionen zum Erzeugen von Heisenberg-ähnlichen Hamiltonians auf einem gegebenen Konnektivitätsgraphen.
+Dieser Graph kann entweder ein [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html) oder eine [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap) sein, was die Verwendung in Qiskit-zentrierten Workflows erleichtert.
+
+Im Folgenden erzeugen wir zunächst eine Heavy-Hex-`CouplingMap`, aus der wir eine lineare Kette von 10 Qubits herausschneiden. Beachte, dass die Indizes dieser neuen `reduced_coupling_map` wieder nullbasiert sind.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-obp qiskit-addon-utils qiskit-ibm-runtime rustworkx
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit linear chain on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 5, 12, 8, 18])
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(reduced_coupling_map.graph, method="circo")
+```
+
+![Code output](./output_1.png)
+
+Als Nächstes erzeugen wir einen Pauli-Operator, der einen Heisenberg-XYZ-Hamiltonian modelliert.
+
+$$\hat{H} = \sum_{(j,k)\in E} (J_{x} \sigma_j^{x} \sigma_{k}^{x} +
+    J_{y} \sigma_j^{y} \sigma_{k}^{y} + J_{z} \sigma_j^{z} \sigma_{k}^{z}) +
+    \sum_{j\in V} (h_{x} \sigma_j^{x} + h_{y} \sigma_j^{y} + h_{z} \sigma_j^{z})$$
+
+Dabei ist $G(V,E)$ der Graph der angegebenen CouplingMap.
+
+```python
+import numpy as np
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Heisenberg XYZ model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(np.pi / 8, np.pi / 4, np.pi / 2),
+    ext_magnetic_field=(np.pi / 3, np.pi / 6, np.pi / 9),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIXXI', 'IIIIIIIYYI', 'IIIIIIIZZI', 'IIIIIXXIII', 'IIIIIYYIII', 'IIIIIZZIII', 'IIIXXIIIII', 'IIIYYIIIII', 'IIIZZIIIII', 'IXXIIIIIII', 'IYYIIIIIII', 'IZZIIIIIII', 'IIIIIIIIXX', 'IIIIIIIIYY', 'IIIIIIIIZZ', 'IIIIIIXXII', 'IIIIIIYYII', 'IIIIIIZZII', 'IIIIXXIIII', 'IIIIYYIIII', 'IIIIZZIIII', 'IIXXIIIIII', 'IIYYIIIIII', 'IIZZIIIIII', 'XXIIIIIIII', 'YYIIIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIIY', 'IIIIIIIIIZ', 'IIIIIIIIXI', 'IIIIIIIIYI', 'IIIIIIIIZI', 'IIIIIIIXII', 'IIIIIIIYII', 'IIIIIIIZII', 'IIIIIIXIII', 'IIIIIIYIII', 'IIIIIIZIII', 'IIIIIXIIII', 'IIIIIYIIII', 'IIIIIZIIII', 'IIIIXIIIII', 'IIIIYIIIII', 'IIIIZIIIII', 'IIIXIIIIII', 'IIIYIIIIII', 'IIIZIIIIII', 'IIXIIIIIII', 'IIYIIIIIII', 'IIZIIIIIII', 'IXIIIIIIII', 'IYIIIIIIII', 'IZIIIIIIII', 'XIIIIIIIII', 'YIIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j,
+ 0.78539816+0.j, 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j,
+ 1.57079633+0.j, 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j,
+ 0.39269908+0.j, 0.78539816+0.j, 1.57079633+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j,
+ 1.04719755+0.j, 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j,
+ 0.52359878+0.j, 0.34906585+0.j, 1.04719755+0.j, 0.52359878+0.j,
+ 0.34906585+0.j])
+```
+
+Aus dem Qubit-Operator können wir einen Quantenschaltkreis erzeugen, der seine Zeitentwicklung modelliert.
+Auch hier hilft das Modul [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) mit einer praktischen Funktion genau dafür:
+
+```python
+from qiskit.synthesis import LieTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    time=0.2,
+    synthesis=LieTrotter(reps=2),
+)
+circuit.draw("mpl", style="iqp", scale=0.6)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+## Schritt 2: Problem optimieren {#step-2-optimize-the-problem}
+### Schaltkreisscheiben für die Rückpropagation erstellen {#create-circuit-slices-to-backpropagate}
+
+Denke daran, dass die Funktion ``backpropagate`` jeweils ganze Schaltkreisscheiben rückpropagiert, sodass die Wahl der Aufteilung einen Einfluss darauf haben kann, wie gut die Rückpropagation für ein bestimmtes Problem funktioniert. Hier gruppieren wir Gates desselben Typs mithilfe der Funktion [slice_by_gate_types](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.slicing.slice_by_gate_types.html) in Scheiben.
+
+Eine ausführlichere Diskussion über das Aufteilen von Schaltkreisen findest du in diesem [How-to-Leitfaden](https://qiskit.github.io/qiskit-addon-utils/how_tos/create_circuit_slices.html) des Pakets [qiskit-addon-utils](https://qiskit.github.io/qiskit-addon-utils/index.html).
+
+```python
+from qiskit_addon_utils.slicing import slice_by_gate_types
+
+slices = slice_by_gate_types(circuit)
+print(f"Separated the circuit into {len(slices)} slices.")
+```
+
+```text
+Separated the circuit into 18 slices.
+```
+
+### Einschränken, wie groß der Operator während der Rückpropagation werden darf {#constrain-how-large-the-operator-may-grow-during-backpropagation}
+
+Während der Rückpropagation nähert sich die Anzahl der Terme im Operator im Allgemeinen schnell $4^N$ an, wobei $N$ die Anzahl der Qubits ist. Die Größe des Operators kann begrenzt werden, indem das Schlüsselwortargument ``operator_budget`` der Funktion ``backpropagate`` angegeben wird, das eine [OperatorBudget](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.simplify.OperatorBudget.html)-Instanz akzeptiert.
+
+Hier legen wir fest, dass die Rückpropagation stoppen soll, wenn die Anzahl der qubit-weise kommutierenden Pauli-Gruppen im Operator 8 überschreitet.
+
+```python
+from qiskit_addon_obp.utils.simplify import OperatorBudget
+
+op_budget = OperatorBudget(max_qwc_groups=8)
+```
+
+### Scheiben vom Schaltkreis rückpropagieren {#backpropagate-slices-from-the-circuit}
+
+Zunächst legen wir das Pauli-Z-Observable auf Qubit 0 fest und propagieren Scheiben aus dem Zeitentwicklungsschaltkreis zurück, bis die Terme im Observable nicht mehr zu 8 oder weniger qubit-weise kommutierenden Pauli-Gruppen zusammengefasst werden können.
+
+Im Folgenden siehst du, dass wir 7 Scheiben rückpropagiert haben, aber nur 6 der 8 zugeteilten Pauli-Gruppen verwendet wurden. Das bedeutet, dass das Rückpropagieren einer weiteren Scheibe dazu führen würde, dass die Anzahl der Pauli-Gruppen 8 überschreitet. Wir können überprüfen, ob das der Fall ist, indem wir die zurückgegebenen Metadaten untersuchen.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_obp import backpropagate
+from qiskit_addon_utils.slicing import combine_slices
+
+# Specify a single-qubit observable
+observable = SparsePauliOp("IIIIIIIIIZ")
+
+# Backpropagate slices onto the observable
+bp_obs, remaining_slices, metadata = backpropagate(observable, slices, operator_budget=op_budget)
+# Recombine the slices remaining after backpropagation
+bp_circuit = combine_slices(remaining_slices, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs.paulis)} terms, which can be combined into {len(bp_obs.group_commuting(qubit_wise=True))} groups."
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 7 slices.
+New observable has 18 terms, which can be combined into 8 groups.
+Note that backpropagating one more slice would result in 27 terms across 12 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+Als Nächstes legen wir dasselbe Problem mit denselben Einschränkungen für die Größe des Ausgabe-Observables fest. Diesmal weisen wir jedoch jeder Scheibe ein Fehlerbudget mithilfe der Funktion [setup_budet](https://qiskit.github.io/qiskit-addon-obp/stubs/qiskit_addon_obp.utils.truncating.setup_budget.html) zu. Pauli-Terme mit kleinen Koeffizienten werden aus jeder Scheibe abgeschnitten, bis das Fehlerbudget aufgebraucht ist, und das verbleibende Budget wird dem Budget der folgenden Scheibe hinzugefügt.
+
+Um dieses Abschneiden zu aktivieren, müssen wir unser Fehlerbudget wie folgt einrichten:
+
+```python
+from qiskit_addon_obp.utils.truncating import setup_budget
+
+truncation_error_budget = setup_budget(max_error_per_slice=0.005)
+```
+
+Beachte, dass wir durch die Zuteilung von `5e-3` Fehler pro Scheibe für das Abschneiden 3 weitere Scheiben aus dem Schaltkreis entfernen können, während wir innerhalb des ursprünglichen Budgets von 8 kommutierenden Pauli-Gruppen im Observable bleiben. Standardmäßig verwendet `backpropagate` die L1-Norm der abgeschnittenen Koeffizienten, um den durch das Abschneiden entstandenen Gesamtfehler zu begrenzen. Weitere Optionen findest du im [How-to-Leitfaden zur Angabe der p_norm](https://qiskit.github.io/qiskit-addon-obp/how_tos/bound_error_using_p_norm.html).
+
+In diesem konkreten Beispiel, bei dem wir 10 Scheiben rückpropagiert haben, sollte der Gesamtabschneidefehler ``(5e-3 Fehler/Scheibe) * (10 Scheiben) = 5e-2`` nicht überschreiten.
+Eine weiterführende Diskussion zur Verteilung eines Fehlerbudgets über deine Scheiben findest du in [diesem How-to-Leitfaden](https://qiskit.github.io/qiskit-addon-obp/how_tos/truncate_operator_terms.html).
+
+```python
+# Run the same experiment but truncate observable terms with small coefficients
+bp_obs_trunc, remaining_slices_trunc, metadata = backpropagate(
+    observable, slices, operator_budget=op_budget, truncation_error_budget=truncation_error_budget
+)
+
+# Recombine the slices remaining after backpropagation
+bp_circuit_trunc = combine_slices(remaining_slices_trunc, include_barriers=True)
+
+print(f"Backpropagated {metadata.num_backpropagated_slices} slices.")
+print(
+    f"New observable has {len(bp_obs_trunc.paulis)} terms, which can be combined into {len(bp_obs_trunc.group_commuting(qubit_wise=True))} groups.\n"
+    f"After truncation, the error in our observable is bounded by {metadata.accumulated_error(0):.3e}"
+)
+print(
+    f"Note that backpropagating one more slice would result in {metadata.backpropagation_history[-1].num_paulis[0]} terms "
+    f"across {metadata.backpropagation_history[-1].num_qwc_groups} groups."
+)
+print("The remaining circuit after backpropagation looks as follows:")
+bp_circuit_trunc.draw("mpl", scale=0.6)
+```
+
+```text
+Backpropagated 10 slices.
+New observable has 19 terms, which can be combined into 8 groups.
+After truncation, the error in our observable is bounded by 4.933e-02
+Note that backpropagating one more slice would result in 27 terms across 13 groups.
+The remaining circuit after backpropagation looks as follows:
+```
+
+![Quantum circuit diagram](./output_4.png)
+
+### Jetzt, da wir unsere reduzierten Ansätze und erweiterten Observables haben, können wir unsere Experimente für das Backend transpilieren. {#now-that-we-have-our-reduced-ansatze-and-expanded-observables-we-can-transpile-our-experiments-to-the-backend}
+
+Hier verwenden wir das 14-Qubit-[FakeMelbourneV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/fake-provider-fake-melbourne-v2) aus [qiskit-ibm-runtime](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime), um zu zeigen, wie man für ein QPU-Backend transpiliert.
+
+```python
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+# Specify a backend and a pass manager for transpilation
+backend = FakeMelbourneV2()
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+# Transpile original experiment
+circuit_isa = pm.run(circuit)
+observable_isa = observable.apply_layout(circuit_isa.layout)
+
+# Transpile backpropagated experiment
+bp_circuit_isa = pm.run(bp_circuit)
+bp_obs_isa = bp_obs.apply_layout(bp_circuit_isa.layout)
+
+# Transpile the backpropagated experiment with truncated observable terms
+bp_circuit_trunc_isa = pm.run(bp_circuit_trunc)
+bp_obs_trunc_isa = bp_obs_trunc.apply_layout(bp_circuit_trunc_isa.layout)
+```
+
+## Schritt 3: Quantenexperimente ausführen {#step-3-execute-quantum-experiments}
+### Erwartungswert berechnen {#calculate-expectation-value}
+
+Schließlich können wir die rückpropagieren Experimente ausführen und sie mit dem vollständigen Experiment unter Verwendung des rauschfreien [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) vergleichen. Wir können sehen, dass der rückpropagierte Erwartungswert ohne Abschneiden innerhalb der Grenzen der numerischen Genauigkeit äquivalent zum exakten Wert ist.
+
+Der Erwartungswert des Operators mit abgeschnittenen Termen weist einen Fehler in der Größenordnung von ``1e-4`` auf, was innerhalb der erwarteten Toleranz liegt.
+
+**Hinweis:** Wir verwenden einen zustandsvektorbasierten ``Estimator``-Primitiven, um den Effekt des Abschneidens auf die Ausgabe zu veranschaulichen. Um auf dem Backend auszuführen, für das die Experimente in Schritt 2 transpiliert wurden, würde man den [EstimatorV2](https://quantum.cloud.ibm.com/docs/api/qiskit-ibm-runtime/estimator-v2) aus ``qiskit-ibm-runtime`` importieren und die Backend-Instanz an den Konstruktor übergeben.
+
+```python
+from qiskit.primitives import StatevectorEstimator as Estimator
+
+estimator = Estimator()
+
+# Run the experiments using Estimator primitive
+result_exact = estimator.run([(circuit_isa, observable_isa)]).result()[0].data.evs.item()
+result_bp = estimator.run([(bp_circuit_isa, bp_obs_isa)]).result()[0].data.evs.item()
+result_bp_trunc = (
+    estimator.run([(bp_circuit_trunc_isa, bp_obs_trunc_isa)]).result()[0].data.evs.item()
+)
+
+print(f"Exact expectation value: {result_exact}")
+print(f"Backpropagated expectation value: {result_bp}")
+print(f"Backpropagated expectation value with truncation: {result_bp_trunc}")
+print(f"    - Expected Error for truncated observable: {metadata.accumulated_error(0):.3e}")
+print(f"    - Observed Error for truncated observable: {abs(result_exact - result_bp_trunc):.3e}")
+```
+
+```text
+Exact expectation value: 0.8854160687717507
+Backpropagated expectation value: 0.8854160687717532
+Backpropagated expectation value with truncation: 0.8850236647156059
+    - Expected Error for truncated observable: 4.933e-02
+    - Observed Error for truncated observable: 3.924e-04
+```
+
+<TutorialFeedback />

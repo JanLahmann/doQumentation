@@ -1,0 +1,331 @@
+---
+title: "Зменшення глибини Circuit за допомогою аддону AQC-Tensor для Qiskit"
+sidebar_label: "Зменшення глибини Circuit за допомогою аддону AQC-Tensor для Qiskit"
+notebook_path: "qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb"
+---
+{/* doqumentation-source-hash: f202cfc1 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/aqc-tensor/01_initial_state_aqc.ipynb" />
+
+
+У цьому ноутбуці ми пройдемо кроки [патерну Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns), використовуючи **наближену квантову компіляцію з тензорними мережами (AQC-Tensor)**, щоб досягти меншої глибини Circuit, ніж зазвичай потрібно для виконання еволюції Троттера.
+
+Ось кроки, які ми виконаємо:
+
+- **Крок 1: Відображення на квантову задачу**
+    - Ініціалізація гамільтоніана задачі та спостережуваних
+    - <font color='#0F62FE'>Генерація цільового стану тензорної мережі для початкової частини Circuit</font>
+    - <font color='#0F62FE'>Генерація Circuit з малою глибиною, що апроксимує стиснуту частину</font>
+    - <font color='#0F62FE'>Генерація загального ансацу з цього Circuit</font>
+    - <font color='#0F62FE'>Оптимізація параметрів для максимального наближення ансацу до цільового стану</font>
+    - <font color='#0F62FE'>Додавання наступних кроків Троттера до оптимізованого ансацу</font>
+- **Крок 2: Оптимізація для цільового обладнання**
+    - Транспіляція Circuit для обладнання
+- **Крок 3: Виконання експериментів**
+    - Використання фіктивного Backend для простоти
+- **Крок 4: Реконструкція результатів**
+    - Н/Д; натомість ми просто виводимо виміряну спостережувану
+## Крок 1: Відображення на квантовий Circuit і оператор {#step-1-map-to-quantum-circuit-and-operator}
+
+### Налаштування модельного гамільтоніана та спостережуваної {#set-up-a-model-hamiltonian-and-observable}
+
+У цьому ноутбуці ми використовуємо модель Ізінга на кільці з 10 вузлів:
+$$
+\hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{10} J_{i,(i+1)} Z_i Z_{(i+1)} + h_i X_i \, ,
+$$
+де граничні умови по колу означають, що при $i=10$ отримуємо $i+1=11\rightarrow1$, $J$ — константа зв'язку між двома вузлами, а $h$ — зовнішнє магнітне поле.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-aqc-tensor qiskit-addon-utils qiskit-ibm-runtime quimb scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_heavy_hex(3, bidirectional=False)
+
+# Choose a 10-qubit circle on this coupling map
+reduced_coupling_map = coupling_map.reduce([0, 13, 1, 14, 10, 16, 4, 15, 3, 9])
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    reduced_coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+```
+
+Спостережувана, яку ми вимірюватимемо, — це повна намагніченість.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+L = reduced_coupling_map.size()
+observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
+```
+
+### Визначення обсягу часової еволюції для класичного моделювання {#determine-how-much-of-the-time-evolution-to-simulate-classically}
+
+Наша загальна мета — моделювати часову еволюцію наведеного вище модельного гамільтоніана. Ми робимо це за допомогою еволюції Троттера, яку поділяємо на дві частини:
+
+1. Початкова частина, яка піддається моделюванню за допомогою матрично-добуткових станів (MPS). Ми «скомпілюємо» цю частину за допомогою AQC, як описано у https://arxiv.org/abs/2301.08609.
+2. Наступна частина Circuit, яка виконуватиметься на обладнанні.
+Плануємо використати AQC-Tensor для стиснення нашого Circuit часової еволюції до моменту $t=4$, а потім еволюціонувати звичайними кроками Троттера до $t=5$.
+### Генерація Circuit до та після розбиття {#generate-circuits-before-and-after-split}
+
+Тепер, коли ми обрали розбиття при $t=4$, ми згенеруємо два Circuit:
+
+1. «Цільовий» Circuit для частини еволюції AQC, від $t_i=0$ до $t_f=4$. Оскільки він моделюється симулятором тензорних мереж, кількість шарів впливає на час виконання лише як константний множник, тому можна сміливо використовувати велику кількість шарів для мінімізації помилки Троттера.
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+aqc_evolution_time = 4.0
+aqc_target_num_trotter_steps = 45
+
+aqc_target_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_target_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+2. Наступний Circuit еволюції, який еволюціонує від $t_i=4$ до $t_f=5$. Оскільки він виконується на квантовому обладнанні, бажано використовувати якомога менше шарів Троттера.
+
+```python
+subsequent_evolution_time = 1.0
+subsequent_num_trotter_steps = 5
+
+subsequent_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=subsequent_num_trotter_steps),
+    time=subsequent_evolution_time,
+)
+```
+
+Для подальшого порівняння згенеруємо також третій Circuit: такий, що еволюціонує протягом `aqc_evolution_time`, але з тим самим часом еволюції на крок Троттера, що й наступний Circuit. Це той Circuit, з яким ми б працювали, якби не використовували велику кількість кроків Троттера для цільового Circuit. Будемо називати його _порівняльним Circuit_.
+
+```python
+aqc_comparison_num_trotter_steps = int(
+    subsequent_num_trotter_steps / subsequent_evolution_time * aqc_evolution_time
+)
+aqc_comparison_num_trotter_steps
+```
+
+```text
+20
+```
+
+```python
+comparison_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_comparison_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+```
+
+### Генерація ансацу та початкових параметрів із Circuit Троттера з меншою кількістю кроків {#generate-an-ansatz-and-initial-parameters-from-a-trotter-circuit-with-fewer-steps}
+
+Спочатку ми будуємо «хороший» Circuit, що має той самий час еволюції, що й цільовий Circuit, але з меншою кількістю кроків Троттера (і, відповідно, менше шарів).
+
+Потім ми передаємо цей «хороший» Circuit до функції `generate_ansatz_from_circuit` аддону AQC-Tensor. Ця функція аналізує зв'язність двох-Qubit у Circuit і повертає дві речі:
+1. загальний параметризований Circuit ансацу з тією ж двох-Qubit зв'язністю, що й вхідний Circuit; та
+2. параметри, які при підстановці в ансац відтворюють вхідний (хороший) Circuit.
+
+Незабаром ми візьмемо ці параметри й ітеративно коригуватимемо їх, щоб максимально наблизити Circuit ансацу до цільового MPS.
+
+```python
+from qiskit_addon_aqc_tensor import generate_ansatz_from_circuit
+
+aqc_ansatz_num_trotter_steps = 5
+
+aqc_good_circuit = generate_time_evolution_circuit(
+    hamiltonian,
+    synthesis=SuzukiTrotter(reps=aqc_ansatz_num_trotter_steps),
+    time=aqc_evolution_time,
+)
+
+aqc_ansatz, aqc_initial_parameters = generate_ansatz_from_circuit(
+    aqc_good_circuit, qubits_initially_zero=True
+)
+aqc_ansatz.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_1.png)
+
+```python
+print(f"Comparison circuit: depth {comparison_circuit.depth()}")
+print(f"Target circuit: depth {aqc_target_circuit.depth()}")
+print(f"Ansatz circuit: depth {aqc_ansatz.depth()}, with {len(aqc_initial_parameters)} parameters")
+```
+
+```text
+Comparison circuit: depth 120
+Target circuit: depth 270
+Ansatz circuit: depth 23, with 515 parameters
+```
+
+### Вибір налаштувань для моделювання тензорних мереж {#choose-settings-for-tensor-network-simulation}
+
+Тут ми використовуємо симулятор тензорних мереж на основі [quimb](http://quimb.readthedocs.io/). У цьому прикладі ми використовуємо симулятор матрично-добуткових станів (MPS) від quimb та [JAX](https://docs.jax.dev/en/latest/) для автоматичного диференціювання. Докладніше про використання симулятора quimb дивись у [документації API](../stubs/qiskit_addon_aqc_tensor.simulation.quimb.QuimbSimulator.rst).
+
+```python
+from functools import partial
+
+import quimb.tensor
+
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+
+simulator_settings = QuimbSimulator(
+    partial(quimb.tensor.CircuitMPS, max_bond=100, cutoff=1e-8),
+    autodiff_backend="jax",
+)
+```
+
+### Побудова представлення матрично-добуткового стану цільового стану AQC {#construct-matrix-product-state-representation-of-the-aqc-target-state}
+
+Далі ми будуємо матрично-добуткове представлення стану, що має бути апроксимований за допомогою AQC.
+
+```python
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+
+aqc_target_mps = tensornetwork_from_circuit(aqc_target_circuit, simulator_settings)
+```
+
+Зауваж, що оскільки ми обрали велику кількість кроків Троттера для цільового стану, він насправді має меншу похибку Троттера, ніж порівняльний Circuit. Ми можемо розрахувати вірність ($| \langle \psi_1 | \psi_2 \rangle |^2$) стану, підготовленого порівняльним Circuit, відносно цільового стану:
+
+```python
+from qiskit_addon_aqc_tensor.simulation import compute_overlap
+
+comparison_mps = tensornetwork_from_circuit(comparison_circuit, simulator_settings)
+comparison_fidelity = abs(compute_overlap(comparison_mps, aqc_target_mps)) ** 2
+comparison_fidelity
+```
+
+```text
+0.9996761790297157
+```
+
+### Оптимізація параметрів ансацу за допомогою обчислень MPS {#optimize-the-parameters-of-the-ansatz-using-mps-calculations}
+
+Тут ми мінімізуємо найпростішу можливу функцію витрат, `MaximizeStateFidelity`, використовуючи оптимізатор L-BFGS з scipy.
+
+Ми обираємо точку зупинки для вірності таку, щоб вона була вищою за ту, яку мав би порівняльний Circuit без використання AQC. Після її досягнення стиснений Circuit матиме меншу похибку Троттера _і_ меншу глибину, ніж оригінальний Circuit. За наявності більшого часу обробки можна виконати додаткові кроки оптимізації для подальшого підвищення вірності.
+
+```python
+from scipy.optimize import OptimizeResult, minimize
+
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+
+objective = MaximizeStateFidelity(aqc_target_mps, aqc_ansatz, simulator_settings)
+
+stopping_point = 1 - comparison_fidelity
+
+def callback(intermediate_result: OptimizeResult):
+    print(f"Intermediate result: Fidelity {1 - intermediate_result.fun:.8}")
+    if intermediate_result.fun < stopping_point:
+        # Good enough for now
+        raise StopIteration
+
+result = minimize(
+    objective.loss_function,
+    aqc_initial_parameters,
+    method="L-BFGS-B",
+    jac=True,
+    options={"maxiter": 100},
+    callback=callback,
+)
+if result.status not in (
+    0,
+    1,
+    99,
+):  # 0 => success; 1 => max iterations reached; 99 => early termination via StopIteration
+    raise RuntimeError(f"Optimization failed: {result.message} (status={result.status})")
+
+print(f"Done after {result.nit} iterations.")
+aqc_final_parameters = result.x
+```
+
+```text
+Intermediate result: Fidelity 0.95080335
+Intermediate result: Fidelity 0.98408927
+Intermediate result: Fidelity 0.99140876
+Intermediate result: Fidelity 0.9951876
+Intermediate result: Fidelity 0.99563147
+Intermediate result: Fidelity 0.99646297
+Intermediate result: Fidelity 0.99679298
+Intermediate result: Fidelity 0.99715793
+Intermediate result: Fidelity 0.99756604
+Intermediate result: Fidelity 0.99804283
+Intermediate result: Fidelity 0.99832283
+Intermediate result: Fidelity 0.99856583
+Intermediate result: Fidelity 0.99868698
+Intermediate result: Fidelity 0.998867
+Intermediate result: Fidelity 0.99902237
+Intermediate result: Fidelity 0.99912174
+Intermediate result: Fidelity 0.99919705
+Intermediate result: Fidelity 0.99926724
+Intermediate result: Fidelity 0.99938605
+Intermediate result: Fidelity 0.99951297
+Intermediate result: Fidelity 0.99956172
+Intermediate result: Fidelity 0.99962274
+Intermediate result: Fidelity 0.99963919
+Intermediate result: Fidelity 0.99967423
+Intermediate result: Fidelity 0.9997101
+Done after 25 iterations.
+```
+
+### Побудова фінального Circuit для передачі до Transpiler {#construct-the-final-circuit-to-pass-to-the-transpiler}
+
+```python
+final_circuit = aqc_ansatz.assign_parameters(aqc_final_parameters)
+final_circuit.compose(subsequent_circuit, inplace=True)
+final_circuit.draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+## Крок 2: Транспіляція для виконання на цільовому обладнанні {#step-2-transpile-for-execution-on-target-hardware}
+
+На кроці 2 [патерну Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns) ми транспілюємо цей Circuit і будь-які бажані спостережувані для виконання на цільовому пристрої. Тут ми використовуємо фіктивний Backend, наданий `qiskit-ibm-runtime`.
+
+```python
+from qiskit import transpile
+from qiskit_ibm_runtime.fake_provider import FakeMelbourneV2
+
+backend = FakeMelbourneV2()
+
+isa_circuit = transpile(final_circuit, backend)
+isa_observable = observable.apply_layout(isa_circuit.layout)
+```
+
+Отриманий ISA Circuit можна надіслати для виконання на Backend (крок 3 [патерну Qiskit](https://quantum.cloud.ibm.com/docs/guides/intro-to-patterns)).
+## Крок 3: Виконання на квантовому обладнанні {#step-3-execute-on-quantum-hardware}
+
+```python
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+
+estimator = Estimator(backend)
+job = estimator.run([(isa_circuit, isa_observable)])
+pub_result = job.result()[0]
+```
+
+## Крок 4: Реконструкція {#step-4-reconstruct}
+
+Реконструкція в нашому випадку не потрібна. Ми можемо просто подивитися на результат.
+
+```python
+pub_result.data.evs[()]
+```
+
+```text
+np.float64(0.047998046875000006)
+```
+
+<TutorialFeedback />
