@@ -1,0 +1,356 @@
+---
+title: "Зменшення помилки Троттера в динаміці гамільтоніана за допомогою мульти-продуктних формул"
+sidebar_label: "Зменшення помилки Троттера в динаміці гамільтоніана за допомогою мульти-продуктних формул"
+notebook_path: "qiskit-addons/mpf/01_getting_started.ipynb"
+---
+{/* doqumentation-source-hash: 90759f5f */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="qiskit-addons/mpf/01_getting_started.ipynb" />
+
+
+У цьому блокноті ти навчишся використовувати **Мульти-Продуктну Формулу (MPF)** для досягнення меншої помилки Троттера на нашому спостережуваному порівняно з тією, яку спричиняє найглибший Circuit Троттера, що ми фактично виконуватимемо.
+Ти зробиш це, пройшовши кроки **патерну Qiskit**:
+
+- **Крок 1: Відображення на квантову задачу**
+    - Ініціалізація гамільтоніана нашої задачі
+    - <font color="#0F62FE">Використання MPF для генерації Тротеризованих Circuit еволюції у часі</font>
+- **Крок 2: Оптимізація задачі**
+    - Тут ми транспілюємо наші Circuit для [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2)
+- **Крок 3: Виконання експериментів**
+    - Використовуємо [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator) для простоти в цьому блокноті
+- **Крок 4: Реконструкція результатів**
+    - <font color="#0F62FE">Обчислення математичного очікування MPF</font>
+## Крок 1: Відображення на квантову задачу {#step-1-map-to-quantum-problem}
+
+### 1a: Налаштування нашого гамільтоніана {#1a-setting-up-our-hamiltonian}
+
+Ми використовуємо модель Ізінга на лінії з 10 вузлів:
+
+$$
+\hat{\mathcal{H}}_{\text{Ising}} = \sum_{i=1}^{9} J_{i,(i+1)} Z_i Z_{(i+1)} + \sum_{i=1}^{10} h_i X_i \, ,
+$$
+
+де $J$ — сила зв'язку між двома вузлами, а $h$ — зовнішнє магнітне поле.
+Пакет [qiskit_addon_utils](https://qiskit.github.io/qiskit-addon-utils/) надає деякі багаторазово використовувані функціональності для різних цілей.
+
+Його модуль [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) надає функції для генерації гамільтоніанів гейзенберзького типу на заданому графі зв'язності.
+Цей граф може бути або [rustworkx.PyGraph](https://www.rustworkx.org/apiref/rustworkx.PyGraph.html), або [CouplingMap](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.transpiler.CouplingMap), що робить його зручним для використання у робочих процесах, орієнтованих на Qiskit.
+
+Далі ми створюємо просту лінію з 10 Qubit за допомогою методу `CouplingMap.from_line`.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-addon-mpf qiskit-addon-utils rustworkx scipy
+```
+
+```python
+from qiskit.transpiler import CouplingMap
+
+# Generate some coupling map to use for this example
+coupling_map = CouplingMap.from_line(10, bidirectional=False)
+```
+
+```python
+from rustworkx.visualization import graphviz_draw
+
+graphviz_draw(coupling_map.graph, method="circo")
+```
+
+![Code output](./output_1.png)
+
+Далі ми генеруємо [SparsePauliOp](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.quantum_info.SparsePauliOp) на заданій зв'язності з потрібними константами.
+
+```python
+from qiskit_addon_utils.problem_generators import generate_xyz_hamiltonian
+
+# Get a qubit operator describing the Ising field model
+hamiltonian = generate_xyz_hamiltonian(
+    coupling_map,
+    coupling_constants=(0.0, 0.0, 1.0),
+    ext_magnetic_field=(0.4, 0.0, 0.0),
+)
+print(hamiltonian)
+```
+
+```text
+SparsePauliOp(['IIIIIIIZZI', 'IIIIIZZIII', 'IIIZZIIIII', 'IZZIIIIIII', 'IIIIIIIIZZ', 'IIIIIIZZII', 'IIIIZZIIII', 'IIZZIIIIII', 'ZZIIIIIIII', 'IIIIIIIIIX', 'IIIIIIIIXI', 'IIIIIIIXII', 'IIIIIIXIII', 'IIIIIXIIII', 'IIIIXIIIII', 'IIIXIIIIII', 'IIXIIIIIII', 'IXIIIIIIII', 'XIIIIIIIII'],
+              coeffs=[1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j, 1. +0.j,
+ 1. +0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j, 0.4+0.j,
+ 0.4+0.j, 0.4+0.j, 0.4+0.j])
+```
+
+Спостережуване, яке ми вимірюватимемо, — це загальна намагніченість, яку ми можемо просто побудувати, як показано нижче:
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+L = coupling_map.size()
+observable = SparsePauliOp.from_sparse_list([("Z", [i], 1 / L / 2) for i in range(L)], num_qubits=L)
+print(observable)
+```
+
+```text
+SparsePauliOp(['IIIIIIIIIZ', 'IIIIIIIIZI', 'IIIIIIIZII', 'IIIIIIZIII', 'IIIIIZIIII', 'IIIIZIIIII', 'IIIZIIIIII', 'IIZIIIIIII', 'IZIIIIIIII', 'ZIIIIIIIII'],
+              coeffs=[0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j, 0.05+0.j,
+ 0.05+0.j, 0.05+0.j, 0.05+0.j])
+```
+
+### 1b: Мульти-Продуктні Формули {#1b-multi-product-formulas}
+
+MPF зменшують помилку Троттера в динаміці гамільтоніана через зважену комбінацію кількох виконань Circuit.
+
+Щоб зробити це більш конкретним, визначимо MPF як:
+
+$$
+\mu(t) = \sum_{j} x_j \rho^{k_j}_{j}\left(\frac{t}{k_j}\right) + \text{some remaining Trotter error} \, ,
+$$
+
+де $x_j$ — наші вагові коефіцієнти, $\rho^{k_j}_j$ — матриця густини, що відповідає чистому стану, отриманому еволюцією початкового стану з продуктною формулою, $S^{k_j}$, з $k_j$ кроками Троттера, а $j$ індексує кількість продуктних формул, що складають MPF.
+
+Ключовим тут є те, що залишкова помилка Троттера менша за помилку Троттера, яку можна отримати, просто використовуючи найбільше значення $k_j$!
+
+Ти можеш розглядати корисність MPF з двох перспектив:
+
+1. При фіксованому бюджеті кроків Троттера, які ти здатен виконати, можна отримати результати з меншою загальною помилкою Троттера.
+2. Для кількості кроків Троттера, що призводить до глибоких Circuit, можна використати MPF для знаходження кількох Circuit меншої глибини, виконання яких дає схожу помилку Троттера.
+#### Вступ до статичних MPF {#an-introduction-to-static-mpfs}
+
+_Статичні_ MPF — це ті, де значення $x_j$ **НЕ** залежать від часу еволюції, $t$.
+
+Визначення статичних коефіцієнтів MPF для заданого набору значень $k_j$ зводиться до розв'язання лінійної системи рівнянь:
+$Ax=b$, де $x$ — наші коефіцієнти інтересу, $A$ — матриця, що залежить від $k_j$ і типу PF, який ми використовуємо ($S$), а $b$ — вектор обмежень.
+Для стислості ми не будемо вдаватися в подробиці тут і натомість направляємо тебе до документації [LSE](https://qiskit.github.io/qiskit-addon-mpf/apidocs/qiskit_addon_mpf.costs.html#qiskit_addon_mpf.costs.LSE).
+
+Ми можемо знайти розв'язок для $x$ аналітично як $x = A^{-1}b$, див. наприклад [Carrera Vazquez et al., 2023] або [Zhuk et al., 2023].
+Однак цей точний розв'язок може бути _"погано обумовленим"_, що призводить до дуже великих L1-норм наших коефіцієнтів, $x$, і може спричинити погану роботу MPF.
+Натомість, можна також отримати наближений розв'язок, що мінімізує L1-норму $x$, щоб спробувати оптимізувати поведінку MPF.
+
+Далі ти навчишся, як це все робити.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+#### Вибір $k_j$ {#choosing-k-j}
+
+Вибір $k_j$ залежить від кінцевого користувача.
+В принципі, можна обирати будь-які значення, але деякі $k_j$ призведуть до більшого підсилення шуму на реальних пристроях, ніж інші вибори.
+Тому важливо намагатися знаходити _"хороші"_ значення $k_j$.
+
+Тут ми просто обираємо деякі фіксовані значення для $k_j$.
+Найменше значення мотивоване цільовим часом еволюції $t=8.0$, який зазвичай вказує нам задовольняти $t/k_{\text{min}} \lt 1$, але емпірично ми знаємо, що встановлення рівним $1$ зазвичай теж працює.
+Якщо хочеш дізнатися більше про це і як обирати інші значення $k_j$, зверніться до відповідного посібника: [How to choose the Trotter steps for an MPF](https://qiskit.github.io/qiskit-addon-mpf/how_tos/choose_trotter_steps.html).
+
+```python
+time = 8.0
+trotter_steps = (8, 12, 19)
+```
+
+#### Налаштування LSE {#setting-up-the-lse}
+
+Тепер, коли ми обрали наші $k_j$, ми повинні спочатку побудувати LSE, $Ax=b$, як пояснено вище.
+Матриця $A$ залежить не тільки від $k_j$, а й від нашого вибору продуктної формули (PF) — зокрема її _порядку_.
+Крім того, можна враховувати, чи є PF симетричною чи ні (див. [Carrera Vazquez et al., 2023]), встановивши `symmetric=True`.
+Однак це не обов'язково, як показано в [Zhuk et al., 2023].
+
+Тут ми будемо використовувати формулу Сузукі-Троттера другого порядку, що дає `order=2`, і встановимо `symmetric=True`.
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+[Zhuk et al., 2023]: https://journals.aps.org/prresearch/abstract/10.1103/PhysRevResearch.6.033309
+
+```python
+from qiskit_addon_mpf.static import setup_static_lse
+
+lse = setup_static_lse(trotter_steps, order=2, symmetric=True)
+print(lse)
+```
+
+```text
+LSE(A=array([[1.00000000e+00, 1.00000000e+00, 1.00000000e+00],
+       [1.56250000e-02, 6.94444444e-03, 2.77008310e-03],
+       [2.44140625e-04, 4.82253086e-05, 7.67336039e-06]]), b=array([1., 0., 0.]))
+```
+
+#### Аналітичний розв'язок для $x$ {#solving-for-x-analytically}
+
+Як зазначалося раніше, ми можемо знайти $x$ аналітично:
+
+```python
+import numpy as np
+
+coeffs_analytical = lse.solve()
+print(coeffs_analytical)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+#### Оптимізація для $x$ за допомогою точної моделі {#optimizing-for-x-using-an-exact-model}
+
+Як альтернативу обчисленню $x=A^{-1}b$, можна також використати [setup_exact_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_exact_problem.html) для побудови екземпляра [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem), який використовує LSE як обмеження і оптимальний розв'язок якого дасть $x$.
+
+У наступному розділі стане зрозуміло, навіщо існує цей інтерфейс.
+
+```python
+from qiskit_addon_mpf.costs import setup_exact_problem
+
+model_exact, coeffs_exact = setup_exact_problem(lse)
+model_exact.solve()
+print(coeffs_exact.value)
+```
+
+```text
+[ 0.17239057 -1.19447005  2.02207947]
+```
+
+Як індикатор того, чи MPF, побудована з цими коефіцієнтами, дасть хороші результати, ми можемо використати L1-норму (див. також [Carrera Vazquez et al., 2023]).
+
+[Carrera Vazquez et al., 2023]: https://quantum-journal.org/papers/q-2023-07-25-1067/
+
+```python
+print(np.linalg.norm(coeffs_exact.value, ord=1))
+```
+
+```text
+3.3889400921655914
+```
+
+#### Оптимізація для $x$ за допомогою наближеної моделі {#optimizing-for-x-using-an-approximate-model}
+
+Може трапитися так, що L1-норма для обраного набору значень $k_j$ виявиться занадто великою.
+Якщо це так і ти не можеш обрати інший набір значень $k_j$, можна використати наближений розв'язок LSE замість точного.
+
+Для цього просто використай [setup_sum_of_squares_problem](https://qiskit.github.io/qiskit-addon-mpf/stubs/qiskit_addon_mpf.costs.setup_sum_of_squares_problem.html) для побудови іншого екземпляра [cvxpy.Problem](https://www.cvxpy.org/api_reference/cvxpy.problems.html#cvxpy.Problem), який обмежує L1-норму до обраного порогу, мінімізуючи різницю між $Ax$ та $b$.
+
+```python
+from qiskit_addon_mpf.costs import setup_sum_of_squares_problem
+
+model_approx, coeffs_approx = setup_sum_of_squares_problem(lse, max_l1_norm=3.0)
+model_approx.solve()
+print(coeffs_approx.value)
+print(np.linalg.norm(coeffs_approx.value, ord=1))
+```
+
+```text
+[-0.40454257  0.57553173  0.8290123 ]
+1.8090865903790838
+```
+
+Зауваж, що у тебе є повна свобода у тому, як вирішувати цю задачу оптимізації, тобто ти можеш змінювати оптимізаційний солвер, його порогові значення збіжності тощо.
+Перегляньте відповідний посібник на [How to use the approximate model](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html).
+### 1c: Налаштування Circuit Троттера {#1c-setting-up-the-trotter-circuits}
+
+На цьому етапі ми знайшли наші коефіцієнти розкладу, $x$, і залишається лише згенерувати Тротеризовані квантові Circuit.
+Знову ж таки, модуль [qiskit_addon_utils.problem_generators](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.problem_generators.html) приходить на допомогу саме для цього:
+
+```python
+from qiskit.synthesis import SuzukiTrotter
+from qiskit_addon_utils.problem_generators import generate_time_evolution_circuit
+
+circuits = []
+for k in trotter_steps:
+    circ = generate_time_evolution_circuit(
+        hamiltonian,
+        synthesis=SuzukiTrotter(order=2, reps=k),
+        time=time,
+    )
+    circuits.append(circ)
+```
+
+```python
+circuits[0].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_2.png)
+
+```python
+circuits[1].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_3.png)
+
+```python
+circuits[2].draw("mpl", fold=-1)
+```
+
+![Quantum circuit diagram](./output_4.png)
+
+## Крок 2: Оптимізація задачі {#step-2-optimize-the-problem}
+
+Зазвичай, це крок у патерні, під час якого ти оптимізуєш свої Circuit для виконання на апаратному забезпеченні.
+Тут, оскільки ми використовуємо лише безшумовий симулятор, ми просто транспілюємо наш Circuit для [GenericBackendV2](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.providers.fake_provider.GenericBackendV2).
+
+```python
+from qiskit.providers.fake_provider import GenericBackendV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+backend = GenericBackendV2(num_qubits=10)
+transpiler = generate_preset_pass_manager(optimization_level=2, backend=backend)
+
+transpiled_circuits = [transpiler.run(circ) for circ in circuits]
+```
+
+## Крок 3: Виконання квантових експериментів {#step-3-execute-quantum-experiments}
+
+Як пояснено на самому початку, ми пропустимо крок оптимізації 2, тому що ми просто обчислимо математичні очікування нашого цільового спостережуваного за допомогою безшумового симулятора, а саме [StatevectorEstimator](https://quantum.cloud.ibm.com/docs/api/qiskit/qiskit.primitives.StatevectorEstimator).
+
+```python
+from qiskit.primitives import StatevectorEstimator
+
+estimator = StatevectorEstimator()
+job = estimator.run([(circ, observable) for circ in transpiled_circuits])
+result = job.result()
+```
+
+## Крок 4: Реконструкція результатів {#step-4-reconstruct-results}
+
+Спочатку ми витягуємо окремі математичні очікування, отримані для кожного Circuit Троттера:
+
+```python
+evs = [res.data.evs for res in result]
+print(evs)
+```
+
+```text
+[array(0.23799162), array(0.35754312), array(0.38649906)]
+```
+
+Далі ми просто рекомбінуємо їх з нашими коефіцієнтами MPF, щоб отримати загальні математичні очікування MPF. Нижче ми робимо це для кожного з різних способів, якими ми обчислили $x$.
+
+```python
+print("Analytical    solution:", evs @ coeffs_analytical)
+print("Exact model   solution:", evs @ coeffs_exact.value)
+print("Approx. model solution:", evs @ coeffs_approx.value)
+```
+
+```text
+Analytical    solution: 0.3954847855980006
+Exact model   solution: 0.39548478559800204
+Approx. model solution: 0.42991214253489807
+```
+
+Нарешті, для цієї невеликої задачі ми можемо обчислити точне еталонне значення за допомогою [scipy.linalg.expm](https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.expm.html) таким чином:
+
+```python
+from scipy.linalg import expm
+
+exp_H = expm(-1j * time * hamiltonian.to_matrix())
+
+initial_state = np.zeros(exp_H.shape[0])
+initial_state[0] = 1.0
+
+time_evolved_state = exp_H @ initial_state
+
+exact_obs = time_evolved_state.conj() @ observable.to_matrix() @ time_evolved_state
+print(exact_obs.real)
+```
+
+```text
+0.40060242487899755
+```
+
+Ми чітко бачимо, що MPF зменшила помилку Троттера порівняно з тією, що отримується з найглибшим окремим PF з $k_j=19$.
+Однак ми також бачимо, що наближена модель не є бездоганною, оскільки насправді вона дала математичне очікування, гірше за точний розв'язок. Це показує важливість використання жорстких критеріїв збіжності для наближеної моделі, як ти навчишся у посібнику [How to use the approximate model](https://qiskit.github.io/qiskit-addon-mpf/how_tos/using_approximate_model.html).
+
+<TutorialFeedback />
