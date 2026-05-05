@@ -493,10 +493,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 170 | 2 | 0 |
-| Courses | 154/154 | 0 | 153 | 1 | 0 |
+| Guides | 172/172 | 0 | 172 | — | 0 |
+| Courses | 154/154 | 0 | 154 | — | 0 |
 | Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **385/385** | **0** | **382** | **3** | **0** |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -513,7 +513,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/algorithmiq-tem.mdx` | promoted | PASS | 2026-05-05 |
 | `guides/allocation-limits.mdx` | promoted | PASS | 2026-05-05 |
 | `guides/bit-ordering.mdx` | promoted | PASS | 2026-05-05 |
-| `guides/build-noise-models.mdx` | promoted | FAIL | 2026-05-05 |
+| `guides/build-noise-models.mdx` | promoted | PASS | 2026-05-05 |
 | `guides/c-extension-for-python.mdx` | promoted | PASS | 2026-05-05 |
 | `guides/calibration-jobs.mdx` | promoted | PASS | 2026-05-05 |
 | `guides/choose-execution-mode.mdx` | promoted | PASS | 2026-05-05 |
@@ -638,7 +638,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/quickstart-steps-org.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/qunova-chemistry.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/repetition-rate-execution.mdx` | promoted | PASS | 2026-03-18 |
-| `guides/represent-quantum-computers.mdx` | promoted | FAIL | 2026-03-18 |
+| `guides/represent-quantum-computers.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/responsibilities.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/retired-qpus.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/run-jobs-batch.mdx` | promoted | PASS | 2026-03-18 |
@@ -803,7 +803,7 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/exam.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/introduction-to-this-course.mdx` | promoted | PASS | 2026-03-18 |
-| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx` | promoted | FAIL | 2026-03-18 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-18 |
@@ -1772,10 +1772,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 169 | 3 | 0 |
+| Guides | 172/172 | 0 | 172 | — | 0 |
 | Courses | 154/154 | 0 | 154 | — | 0 |
 | Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **385/385** | **0** | **382** | **3** | **0** |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -1847,7 +1847,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/install-qiskit-source.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/install-qiskit.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/instances.mdx` | promoted | PASS | 2026-03-18 |
-| `guides/interoperate-qiskit-qasm2.mdx` | promoted | FAIL | 2026-03-18 |
+| `guides/interoperate-qiskit-qasm2.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/interoperate-qiskit-qasm3.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/intro-to-patterns.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/introduction-to-qasm.mdx` | promoted | PASS | 2026-03-18 |
@@ -1917,7 +1917,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/quickstart-steps-org.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/qunova-chemistry.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/repetition-rate-execution.mdx` | promoted | PASS | 2026-03-18 |
-| `guides/represent-quantum-computers.mdx` | promoted | FAIL | 2026-03-18 |
+| `guides/represent-quantum-computers.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/responsibilities.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/retired-qpus.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/run-jobs-batch.mdx` | promoted | PASS | 2026-03-18 |
@@ -1935,7 +1935,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/set-optimization.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/simulate-stabilizer-circuits.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/simulate-with-qiskit-aer.mdx` | promoted | PASS | 2026-03-18 |
-| `guides/simulate-with-qiskit-sdk-primitives.mdx` | promoted | FAIL | 2026-03-18 |
+| `guides/simulate-with-qiskit-sdk-primitives.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/slurm-hpc-ux.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/slurm-plugin.mdx` | promoted | PASS | 2026-03-18 |
 | `guides/specify-observables-pauli.mdx` | promoted | PASS | 2026-03-18 |
@@ -3860,10 +3860,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 171 | 1 | 0 |
+| Guides | 172/172 | 0 | 172 | — | 0 |
 | Courses | 154/154 | 0 | 154 | — | 0 |
 | Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **385/385** | **0** | **384** | **1** | **0** |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -3940,7 +3940,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/introduction-to-qasm.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/invite-and-manage-users.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/job-limits.mdx` | promoted | PASS | 2026-03-26 |
-| `guides/kipu-optimization.mdx` | promoted | FAIL | 2026-03-26 |
+| `guides/kipu-optimization.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/latest-updates.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/local-simulators.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/local-testing-mode.mdx` | promoted | PASS | 2026-03-26 |
@@ -4691,10 +4691,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 171 | 1 | 0 |
+| Guides | 172/172 | 0 | 172 | — | 0 |
 | Courses | 154/154 | 0 | 154 | — | 0 |
 | Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **385/385** | **0** | **384** | **1** | **0** |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -4820,7 +4820,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/qiskit-addons-sqd-get-started.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/qiskit-addons-sqd.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/qiskit-addons-utils.mdx` | promoted | PASS | 2026-03-27 |
-| `guides/qiskit-backendv1-to-v2.mdx` | promoted | FAIL | 2026-03-27 |
+| `guides/qiskit-backendv1-to-v2.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/qiskit-code-assistant-jupyterlab.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/qiskit-code-assistant-local.mdx` | promoted | PASS | 2026-03-27 |
 | `guides/qiskit-code-assistant-openai-api.mdx` | promoted | PASS | 2026-03-27 |
@@ -5117,10 +5117,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 0 | 171 | 1 | 0 |
+| Guides | 172/172 | 0 | 172 | — | 0 |
 | Courses | 154/154 | 0 | 154 | — | 0 |
 | Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **385/385** | **0** | **384** | **1** | **0** |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (387 files in status.json)</summary>
@@ -5197,7 +5197,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/introduction-to-qasm.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/invite-and-manage-users.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/job-limits.mdx` | promoted | PASS | 2026-03-26 |
-| `guides/kipu-optimization.mdx` | promoted | FAIL | 2026-03-26 |
+| `guides/kipu-optimization.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/latest-updates.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/local-simulators.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/local-testing-mode.mdx` | promoted | PASS | 2026-03-26 |
