@@ -35,7 +35,7 @@ ALL_LOCALES = [
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 PIP_INSTALL_MARKER = "Added by doQumentation"
-SURVEY_URL_PATTERN = re.compile(r'https?://(?:your\.feedback\.ibm\.com|qisk\.it)/\S+')
+SURVEY_URL_PATTERN = re.compile(r'https?://your\.feedback\.ibm\.com/\S+')
 
 # ---------------------------------------------------------------------------
 # Parsers (shared with validate-translation.py)
