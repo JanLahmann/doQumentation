@@ -63,8 +63,12 @@ Source paths (courses and modules are nested — not top-level):
 - `docs/learning/courses/{course}/{section}/{file}.mdx`
 - `docs/learning/modules/{module}/{file}.mdx`
 - `docs/learning/index.mdx` and other top-level index pages (in "Other" section)
+- `docs/qiskit-addons/{addon}/{file}.mdx` and `docs/qiskit-addons/index.mdx`
 
 Output paths mirror source: `translation/drafts/{LOCALE}/{path}` (strip the `docs/` prefix).
+For nested paths, create intermediate directories as needed (e.g. `mkdir -p translation/drafts/{LOCALE}/learning/courses/{course}/{section}`).
+
+**Note on course/module files**: Most course files are 500–1800 lines (math-heavy, with large code blocks). Nearly all will need chunking (see "Chunking" section below). Plan for ~3–5 chunks per course file.
 
 ## Step 3 — Translate
 
