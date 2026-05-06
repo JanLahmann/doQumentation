@@ -173,7 +173,7 @@ doQumentation/
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
 │   └── theme/                  # Swizzled: Root (global BetaNotice), CodeBlock, DocItem/Footer, EditThisPage, DocSidebarItem/{Category,Link}, Navbar/MobileSidebar/Header, NavbarItem/LocaleDropdownNavbarItem, MDXComponents
-├── i18n/                       # Translations: de/es/fr/it/uk/ja (387 each — 100%), ar (385), pt (386), tl (383), cs (400 — 100%), ro (400 — 100%), pl (378/400 — 94%), ko (308/400 — 77%), he (47), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34), swg/bad/bar (31 each)
+├── i18n/                       # Translations: de/es/fr/it/uk/ja/ar/ms/id/cs/ro/ko/pl/pt/tl (408/408 — 100% each), he/th (387/408 — workshop+addons+about pending), ksh (46), nds (43), gsw (42), sax (39), bln (36), aut (34), swg/bad/bar (31 each)
 ├── scripts/                    # sync-content.py, sync-deps.py, docker-entrypoint.sh, setup-pi.sh
 ├── translation/                # Translation infrastructure
 │   ├── drafts/{locale}/{path}  # Staging area for new translations (git-tracked)
@@ -240,23 +240,23 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 
 | Locale | URL | Pages | Status |
 |--------|-----|-------|--------|
-| DE | [de.doqumentation.org](https://de.doqumentation.org) | **385 + UI (100%)** | Live |
-| ES | [es.doqumentation.org](https://es.doqumentation.org) | **385 + UI (100%)** | Live |
-| FR | [fr.doqumentation.org](https://fr.doqumentation.org) | **385 + UI (100%)** | Live |
-| UK | [uk.doqumentation.org](https://uk.doqumentation.org) | **387 + UI (100%)** | Live |
-| JA | [ja.doqumentation.org](https://ja.doqumentation.org) | **387 + UI (100%)** | Live |
-| IT | [it.doqumentation.org](https://it.doqumentation.org) | **387 + UI (100%)** | Live |
-| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | **387 + UI (100%)** | Live |
-| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | **387 + UI (100%)** | Live |
-| AR | [ar.doqumentation.org](https://ar.doqumentation.org) | **387 + UI (100%)** | Live (RTL) |
-| HE | [he.doqumentation.org](https://he.doqumentation.org) | **387 + UI (100%)** | Live (RTL) |
-| MS | [ms.doqumentation.org](https://ms.doqumentation.org) | **387 + UI (100%)** | Live |
-| ID | [id.doqumentation.org](https://id.doqumentation.org) | **387 + UI (100%)** | Live |
-| TH | [th.doqumentation.org](https://th.doqumentation.org) | **387 + UI (100%)** | Live |
-| KO | [ko.doqumentation.org](https://ko.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
-| PL | [pl.doqumentation.org](https://pl.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
-| RO | [ro.doqumentation.org](https://ro.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
-| CS | [cs.doqumentation.org](https://cs.doqumentation.org) | **45 (44 tutorials + index)** + fallbacks | Live |
+| DE | [de.doqumentation.org](https://de.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| ES | [es.doqumentation.org](https://es.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| FR | [fr.doqumentation.org](https://fr.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| UK | [uk.doqumentation.org](https://uk.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| JA | [ja.doqumentation.org](https://ja.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| IT | [it.doqumentation.org](https://it.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| PT | [pt.doqumentation.org](https://pt.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| TL | [tl.doqumentation.org](https://tl.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| AR | [ar.doqumentation.org](https://ar.doqumentation.org) | **408/408 + UI (100%)** | Live (RTL) |
+| HE | [he.doqumentation.org](https://he.doqumentation.org) | **387/408 + UI (95%)** | Live (RTL) |
+| MS | [ms.doqumentation.org](https://ms.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| ID | [id.doqumentation.org](https://id.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| TH | [th.doqumentation.org](https://th.doqumentation.org) | **387/408 + UI (95%)** | Live |
+| KO | [ko.doqumentation.org](https://ko.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| PL | [pl.doqumentation.org](https://pl.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| RO | [ro.doqumentation.org](https://ro.doqumentation.org) | **408/408 + UI (100%)** | Live |
+| CS | [cs.doqumentation.org](https://cs.doqumentation.org) | **408/408 + UI (100%)** | Live |
 | KSH | [ksh.doqumentation.org](https://ksh.doqumentation.org) | 46 + UI | Live |
 | NDS | [nds.doqumentation.org](https://nds.doqumentation.org) | 43 + UI | Live |
 | GSW | [gsw.doqumentation.org](https://gsw.doqumentation.org) | 42 + UI | Live |
