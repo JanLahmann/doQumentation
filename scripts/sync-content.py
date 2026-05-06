@@ -318,7 +318,7 @@ def extract_cell_outputs(cell: dict, output_dir: Path, img_counter: list, img_re
                 img_path = output_dir / img_name
                 img_path.parent.mkdir(parents=True, exist_ok=True)
                 img_path.write_bytes(img_bytes)
-                parts.append(f'\n![{alt}](./{img_ref_prefix}{img_name})\n')
+                parts.append(f'\n![{alt}]({img_ref_prefix}{img_name})\n')
             elif 'text/latex' in data:
                 latex = data['text/latex']
                 if isinstance(latex, list):
@@ -454,14 +454,14 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
             print(f"    Warning: Empty notebook {ipynb_path.name}")
             return False
 
-        # Directory for extracted output images.
-        # Use a per-notebook subdir (output_path.stem) to avoid filename
-        # collisions when multiple notebooks share the same parent dir
-        # (e.g. workshop/ where all notebooks live at the top level and
-        # all reference output_1.png, output_2.png, ...).
-        img_subdir_name = f'_{output_path.stem}_imgs'
-        img_dir = output_path.parent / img_subdir_name
-        img_ref_prefix = f'{img_subdir_name}/'
+        # Extracted output images go into static/img/<section>/<stem-slug>/
+        # (one canonical copy, served at /img/...). Absolute URLs in MDX let
+        # all locales reference the same files — no per-locale duplication.
+        # See PROJECT_HANDOFF.md "Image asset placement" for the convention.
+        section = output_path.parent.relative_to(DOCS_OUTPUT).as_posix()
+        stem_slug = re.sub(r'[^a-z0-9]+', '-', output_path.stem.lower()).strip('-')
+        img_dir = STATIC_DIR / 'img' / section / stem_slug
+        img_ref_prefix = f'/img/{section}/{stem_slug}/'
         img_counter = [0]  # mutable counter for image filenames
 
         title = None
@@ -1860,19 +1860,24 @@ def process_workshops():
     if workshop_dst.exists():
         import shutil
         workshop_src_files = {p.stem for p in WORKSHOP_DIR.rglob('*.ipynb')}
-        valid_img_dirs = {f'_{stem}_imgs' for stem in workshop_src_files}
         for existing in workshop_dst.iterdir():
             if existing.name == 'index.mdx':
                 continue
             if existing.suffix == '.mdx' and existing.stem not in workshop_src_files:
                 existing.unlink()
-            elif existing.is_dir():
-                # Remove unknown image dirs and any old extracted-output dirs
-                if existing.name not in valid_img_dirs:
-                    shutil.rmtree(existing)
+            elif existing.is_dir() and existing.name.startswith('_') and existing.name.endswith('_imgs'):
+                # Legacy per-notebook image dir from pre-migration layout — always remove.
+                shutil.rmtree(existing)
             elif existing.name.startswith('output_') and existing.suffix == '.png':
                 # Old flat-layout images from before per-notebook subdirs
                 existing.unlink()
+        # Prune stale slugs under static/img/workshop/ for renamed/removed notebooks.
+        valid_slugs = {re.sub(r'[^a-z0-9]+', '-', stem.lower()).strip('-') for stem in workshop_src_files}
+        static_workshop = STATIC_DIR / 'img' / 'workshop'
+        if static_workshop.exists():
+            for d in static_workshop.iterdir():
+                if d.is_dir() and d.name not in valid_slugs:
+                    shutil.rmtree(d)
     notebooks_dst.mkdir(parents=True, exist_ok=True)
 
     stats = {"ipynb": 0, "mdx": 0, "images": 0, "skipped": 0}
