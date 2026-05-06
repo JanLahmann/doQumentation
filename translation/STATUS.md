@@ -11,32 +11,32 @@ python translation/scripts/translation-status.py --write-status
 
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Spanish | `es` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Ukrainian | `uk` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Japanese | `ja` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| French | `fr` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Italian | `it` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Portuguese | `pt` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Tagalog | `tl` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Arabic | `ar` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Hebrew | `he` | 44/44 | 172/172 | 154/1 | 15/0 | 387/229 |
-| Malay | `ms` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Indonesian | `id` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Thai | `th` | 44/44 | 172/172 | 154/1 | 15/0 | 387/229 |
-| Korean | `ko` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Polish | `pl` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Romanian | `ro` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Czech | `cs` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Swabian | `swg` | 14/44 | 1/172 | 13/1 | 2/0 | 31/229 |
-| Badisch | `bad` | 14/44 | 1/172 | 13/1 | 2/0 | 31/229 |
-| Bavarian | `bar` | 14/44 | 1/172 | 13/1 | 2/0 | 31/229 |
-| Kölsch | `ksh` | 29/44 | 1/172 | 13/1 | 2/0 | 46/229 |
-| Low German | `nds` | 26/44 | 1/172 | 13/1 | 2/0 | 43/229 |
-| Swiss German | `gsw` | 25/44 | 1/172 | 13/1 | 2/0 | 42/229 |
-| Saxon | `sax` | 22/44 | 1/172 | 13/1 | 2/0 | 39/229 |
-| Berlinerisch | `bln` | 19/44 | 1/172 | 13/1 | 2/0 | 36/229 |
-| Austrian | `aut` | 17/44 | 1/172 | 13/1 | 2/0 | 34/229 |
+| German | `de` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Spanish | `es` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Ukrainian | `uk` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Japanese | `ja` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| French | `fr` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Italian | `it` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Portuguese | `pt` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Tagalog | `tl` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Arabic | `ar` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Hebrew | `he` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Malay | `ms` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Indonesian | `id` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Thai | `th` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Korean | `ko` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Polish | `pl` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Romanian | `ro` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Czech | `cs` | 44/44 | 172/172 | 154/154 | 15/15 | 408/408 |
+| Swabian | `swg` | 14/44 | 1/172 | 13/154 | 2/15 | 31/408 |
+| Badisch | `bad` | 14/44 | 1/172 | 13/154 | 2/15 | 31/408 |
+| Bavarian | `bar` | 14/44 | 1/172 | 13/154 | 2/15 | 31/408 |
+| Kölsch | `ksh` | 29/44 | 1/172 | 13/154 | 2/15 | 46/408 |
+| Low German | `nds` | 26/44 | 1/172 | 13/154 | 2/15 | 43/408 |
+| Swiss German | `gsw` | 25/44 | 1/172 | 13/154 | 2/15 | 42/408 |
+| Saxon | `sax` | 22/44 | 1/172 | 13/154 | 2/15 | 39/408 |
+| Berlinerisch | `bln` | 19/44 | 1/172 | 13/154 | 2/15 | 36/408 |
+| Austrian | `aut` | 17/44 | 1/172 | 13/154 | 2/15 | 34/408 |
 
 ## Per-Locale Detail
 
@@ -46,9 +46,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (430 files in status.json)</summary>
@@ -494,9 +494,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -920,9 +920,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -1346,9 +1346,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (409 files in status.json)</summary>
@@ -1773,9 +1773,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -2199,9 +2199,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -2625,9 +2625,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -3050,10 +3050,10 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 1 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **1** | **385** | **—** | **-168** |
+| Guides | 172/172 | 0 | 172 | — | 0 |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -3477,9 +3477,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -3903,15 +3903,16 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (387 files in status.json)</summary>
+<summary>Pipeline history (408 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
+| `about/code-modifications.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/DAG-representation.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/access-groups.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/access-instances-platform-apis.mdx` | promoted | PASS | 2026-03-26 |
@@ -4255,6 +4256,18 @@ python translation/scripts/translation-status.py --write-status
 | `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/modules/quantum-mechanics/stern-gerlach-measurements-with-qiskit.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/modules/quantum-mechanics/superposition-with-qiskit.mdx` | promoted | PASS | 2026-03-26 |
+| `qiskit-addons/aqc-tensor/01_initial_state_aqc.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/03_wire_cutting_via_move_instruction.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/04_automatic_cut_finding.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/index.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/mpf/01_getting_started.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/obp/01_getting_started.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/pna/01_generate_noise_mitigating_observable.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/slc/01_getting_started.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/sqd/01_chemistry_hamiltonian.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/sqd/02_fermionic_lattice_hamiltonian.mdx` | promoted | PASS | 2026-05-06 |
 | `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-05 |
 | `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-05-05 |
 | `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-05-05 |
@@ -4299,6 +4312,14 @@ python translation/scripts/translation-status.py --write-status
 | `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | PASS | 2026-05-05 |
 | `tutorials/transverse-field-ising-model.mdx` | promoted | PASS | 2026-05-05 |
 | `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-05-05 |
+| `workshop/01_build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/02_quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/03_Qiskit 101 Hands-on.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/03_Qiskit 101 Hands-on_solution.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/04_Hands-on Introduction to Qiskit.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/05_Hello_World_Qiskit_Malaysia_Workshop_Nov25.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/06_divincenzo_criteria_lab-2.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/06_divincenzo_criteria_lab-2_solution.mdx` | promoted | PASS | 2026-05-06 |
 
 </details>
 
@@ -4308,9 +4329,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -4734,9 +4755,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -5160,15 +5181,16 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (387 files in status.json)</summary>
+<summary>Pipeline history (408 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
+| `about/code-modifications.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/DAG-representation.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/access-groups.mdx` | promoted | PASS | 2026-03-26 |
 | `guides/access-instances-platform-apis.mdx` | promoted | PASS | 2026-03-26 |
@@ -5512,6 +5534,18 @@ python translation/scripts/translation-status.py --write-status
 | `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/modules/quantum-mechanics/stern-gerlach-measurements-with-qiskit.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/modules/quantum-mechanics/superposition-with-qiskit.mdx` | promoted | PASS | 2026-03-26 |
+| `qiskit-addons/aqc-tensor/01_initial_state_aqc.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/01_gate_cutting_to_reduce_circuit_width.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/02_gate_cutting_to_reduce_circuit_depth.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/03_wire_cutting_via_move_instruction.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/cutting/04_automatic_cut_finding.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/index.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/mpf/01_getting_started.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/obp/01_getting_started.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/pna/01_generate_noise_mitigating_observable.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/slc/01_getting_started.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/sqd/01_chemistry_hamiltonian.mdx` | promoted | PASS | 2026-05-06 |
+| `qiskit-addons/sqd/02_fermionic_lattice_hamiltonian.mdx` | promoted | PASS | 2026-05-06 |
 | `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/ai-transpiler-introduction.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/approximate-quantum-compilation-for-time-evolution.mdx` | promoted | PASS | 2026-03-26 |
@@ -5556,6 +5590,14 @@ python translation/scripts/translation-status.py --write-status
 | `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/transverse-field-ising-model.mdx` | promoted | PASS | 2026-03-26 |
 | `tutorials/wire-cutting.mdx` | promoted | PASS | 2026-03-26 |
+| `workshop/01_build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/02_quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/03_Qiskit 101 Hands-on.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/03_Qiskit 101 Hands-on_solution.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/04_Hands-on Introduction to Qiskit.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/05_Hello_World_Qiskit_Malaysia_Workshop_Nov25.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/06_divincenzo_criteria_lab-2.mdx` | promoted | PASS | 2026-05-06 |
+| `workshop/06_divincenzo_criteria_lab-2_solution.mdx` | promoted | PASS | 2026-05-06 |
 
 </details>
 
@@ -5565,9 +5607,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 0 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **0** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -5991,9 +6033,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 1 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **1** | **385** | **—** | **-168** |
+| Courses | 154/154 | 1 | 154 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **385/385** | **1** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -6417,9 +6459,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 32 | 154 | — | 0 |
+| Modules | 15/15 | 11 | 15 | — | 0 |
+| **Total** | **385/385** | **43** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -6476,8 +6518,8 @@ python translation/scripts/translation-status.py --write-status
 | `guides/fair-share-scheduler.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/faq.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/fractional-gates.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/function-template-chemistry-workflow.mdx` | needs-fix | PASS | 2026-05-05 |
-| `guides/function-template-hamiltonian-simulation.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/function-template-chemistry-workflow.mdx` | promoted | PASS | 2026-05-06 |
+| `guides/function-template-hamiltonian-simulation.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/functions.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/get-qpu-information.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/get-started-with-primitives.mdx` | promoted | PASS | 2026-04-11 |
@@ -6510,7 +6552,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/metapackage-migration.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/minimize-time.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/monitor-job.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/multiverse-computing-singularity.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/multiverse-computing-singularity.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/noise-learning.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/observability.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/online-lab-environments.mdx` | promoted | PASS | 2026-04-11 |
@@ -6519,8 +6561,8 @@ python translation/scripts/translation-status.py --write-status
 | `guides/operators-overview.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/plans-overview.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/plot-quantum-states.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/primitive-input-output.mdx` | needs-fix | PASS | 2026-05-05 |
-| `guides/primitives-examples.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/primitive-input-output.mdx` | promoted | PASS | 2026-05-06 |
+| `guides/primitives-examples.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/primitives-rest-api.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/primitives.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/processor-types.mdx` | promoted | PASS | 2026-04-11 |
@@ -6529,8 +6571,8 @@ python translation/scripts/translation-status.py --write-status
 | `guides/q-ctrl-performance-management.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qasm-feature-table.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qedma-qesem.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/qiskit-1.0-features.mdx` | needs-fix | PASS | 2026-05-05 |
-| `guides/qiskit-1.0-installation.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/qiskit-1.0-features.mdx` | promoted | PASS | 2026-05-06 |
+| `guides/qiskit-1.0-installation.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/qiskit-1.0.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-2.0.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-aqc-get-started.mdx` | promoted | PASS | 2026-04-11 |
@@ -6542,10 +6584,10 @@ python translation/scripts/translation-status.py --write-status
 | `guides/qiskit-addons-mpf.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-obp-get-started.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-obp.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/qiskit-addons-sqd-get-started.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/qiskit-addons-sqd-get-started.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/qiskit-addons-sqd.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-addons-utils.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/qiskit-backendv1-to-v2.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/qiskit-backendv1-to-v2.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/qiskit-code-assistant-jupyterlab.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-code-assistant-local.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/qiskit-code-assistant-openai-api.mdx` | promoted | PASS | 2026-04-11 |
@@ -6566,10 +6608,10 @@ python translation/scripts/translation-status.py --write-status
 | `guides/retired-qpus.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/run-jobs-batch.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/run-jobs-session.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/runtime-options-overview.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/runtime-options-overview.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/save-circuits.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/save-credentials.mdx` | promoted | PASS | 2026-04-11 |
-| `guides/save-jobs.mdx` | needs-fix | PASS | 2026-05-05 |
+| `guides/save-jobs.mdx` | promoted | PASS | 2026-05-06 |
 | `guides/secure-data.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/serverless-first-program.mdx` | promoted | PASS | 2026-04-11 |
 | `guides/serverless-manage-resources.mdx` | promoted | PASS | 2026-04-11 |
@@ -6624,7 +6666,7 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/repetition-codes.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/shor-code.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/exam.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/threshold-theorem.mdx` | promoted | PASS | 2026-04-14 |
@@ -6647,14 +6689,14 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-problem.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/factoring-and-gcd.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/simulating-classical-computations.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/query-model-of-computation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/simon-algorithm.mdx` | promoted | PASS | 2026-04-14 |
@@ -6691,10 +6733,10 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-business-foundations/quantum-computing-fundamentals.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-business-foundations/quantum-technology.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-business-foundations/start-your-quantum-journey.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-chem-with-vqe/ansatz.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/quantum-chem-with-vqe/ansatz.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-chem-with-vqe/exam.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-chem-with-vqe/geometry.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/quantum-chem-with-vqe/geometry.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/quantum-chem-with-vqe/ground-state.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-chem-with-vqe/hamiltonian-construction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-04-14 |
@@ -6709,60 +6751,60 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-diagonalization-algorithms/exam.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-diagonalization-algorithms/introduction.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-diagonalization-algorithms/krylov.mdx` | needs-fix | PASS | 2026-05-05 |
-| `learning/courses/quantum-diagonalization-algorithms/skqd.mdx` | needs-fix | PASS | 2026-05-05 |
-| `learning/courses/quantum-diagonalization-algorithms/sqd-implementation.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/quantum-diagonalization-algorithms/krylov.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-diagonalization-algorithms/skqd.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-diagonalization-algorithms/sqd-implementation.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/quantum-diagonalization-algorithms/sqd-overview.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-diagonalization-algorithms/vqe.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-machine-learning/classical-ml-review.mdx` | needs-fix | PASS | 2026-05-05 |
-| `learning/courses/quantum-machine-learning/data-encoding.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/quantum-machine-learning/classical-ml-review.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/quantum-machine-learning/exam.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-machine-learning/introduction.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` | needs-fix | PASS | 2026-05-05 |
-| `learning/courses/quantum-machine-learning/qvc-qnn.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-machine-learning/qvc-qnn.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/quantum-safe-cryptography/cryptographic-hash-functions.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/exam.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/introduction-to-this-course.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/utility-scale-quantum-computing/grovers-algorithm.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/hardware.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/introduction.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` | needs-fix | PASS | 2026-04-11 |
+| `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/utility-scale-quantum-computing/teleportation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/utility-i.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/utility-ii.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/utility-iii.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/ansaetze-and-variational-forms.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/cost-functions.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/exam.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/instances-and-extensions.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/variational-algorithm-design/optimization-loops.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/variational-algorithm-design/optimization-loops.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/reference-states.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/variational-algorithms.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/index.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/modules/computer-science/deutsch-jozsa.mdx` | needs-fix | PASS | 2026-05-05 |
-| `learning/modules/computer-science/grovers.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/modules/computer-science/deutsch-jozsa.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/modules/computer-science/grovers.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/computer-science/qft.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/computer-science/quantum-key-distribution.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/computer-science/quantum-teleportation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/computer-science/shors-algorithm.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/modules/computer-science/vqe.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/modules/computer-science/vqe.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/modules/index.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/quantum-mechanics/bells-inequality-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
@@ -6843,9 +6885,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 154/154 | 11 | 154 | — | 0 |
+| Modules | 15/15 | 20 | 15 | — | 0 |
+| **Total** | **385/385** | **31** | **385** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (408 files in status.json)</summary>
@@ -7169,29 +7211,29 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/utility-scale-quantum-computing/teleportation.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/utility-i.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/utility-ii.mdx` | promoted | PASS | 2026-04-13 |
-| `learning/courses/utility-scale-quantum-computing/utility-iii.mdx` | needs-fix | PASS | 2026-05-05 |
-| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/utility-scale-quantum-computing/utility-iii.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/ansaetze-and-variational-forms.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/cost-functions.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/exam.mdx` | promoted | PASS | 2026-04-13 |
-| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/instances-and-extensions.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/optimization-loops.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/reference-states.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/variational-algorithms.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/index.mdx` | promoted | PASS | 2026-04-13 |
-| `learning/modules/computer-science/deutsch-jozsa.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/modules/computer-science/deutsch-jozsa.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/modules/computer-science/grovers.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/modules/computer-science/qft.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/modules/computer-science/quantum-key-distribution.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/modules/computer-science/quantum-key-distribution.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/modules/computer-science/quantum-teleportation.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/computer-science/shors-algorithm.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/computer-science/vqe.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/modules/quantum-mechanics/bells-inequality-with-qiskit.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx` | needs-fix | PASS | 2026-05-05 |
+| `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx` | promoted | PASS | 2026-05-06 |
 | `learning/modules/quantum-mechanics/get-started-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/modules/quantum-mechanics/stern-gerlach-measurements-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
@@ -7269,9 +7311,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/385** | **0** | **30** | **—** | **355** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -7318,9 +7360,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/385** | **0** | **30** | **—** | **355** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -7367,9 +7409,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/385** | **0** | **30** | **—** | **355** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -7416,9 +7458,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 29/44 | 0 | 29 | — | 15 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **45/217** | **0** | **45** | **—** | **172** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **45/385** | **0** | **45** | **—** | **340** |
 
 <details>
 <summary>Pipeline history (46 files in status.json)</summary>
@@ -7480,9 +7522,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 26/44 | 0 | 26 | — | 18 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **42/217** | **0** | **42** | **—** | **175** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **42/385** | **0** | **42** | **—** | **343** |
 
 <details>
 <summary>Pipeline history (43 files in status.json)</summary>
@@ -7541,9 +7583,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 25/44 | 0 | 25 | — | 19 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **41/217** | **0** | **41** | **—** | **176** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **41/385** | **0** | **41** | **—** | **344** |
 
 <details>
 <summary>Pipeline history (42 files in status.json)</summary>
@@ -7601,9 +7643,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 22/44 | 0 | 22 | — | 22 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **38/217** | **0** | **38** | **—** | **179** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **38/385** | **0** | **38** | **—** | **347** |
 
 <details>
 <summary>Pipeline history (39 files in status.json)</summary>
@@ -7658,9 +7700,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 19/44 | 0 | 19 | — | 25 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **35/217** | **0** | **35** | **—** | **182** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **35/385** | **0** | **35** | **—** | **350** |
 
 <details>
 <summary>Pipeline history (36 files in status.json)</summary>
@@ -7712,9 +7754,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 17/44 | 0 | 17 | — | 27 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **33/217** | **0** | **33** | **—** | **184** |
+| Courses | 13/154 | 0 | 13 | — | 141 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **33/385** | **0** | **33** | **—** | **352** |
 
 <details>
 <summary>Pipeline history (34 files in status.json)</summary>
