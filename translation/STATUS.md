@@ -11,32 +11,32 @@ python translation/scripts/translation-status.py --write-status
 
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Spanish | `es` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Ukrainian | `uk` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Japanese | `ja` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| French | `fr` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Italian | `it` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Portuguese | `pt` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Tagalog | `tl` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Arabic | `ar` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Hebrew | `he` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Malay | `ms` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Indonesian | `id` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Thai | `th` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Korean | `ko` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Polish | `pl` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Romanian | `ro` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Czech | `cs` | 44/44 | 172/172 | 154/1 | 15/0 | 408/229 |
-| Swabian | `swg` | 14/44 | 1/172 | 13/1 | 2/0 | 31/229 |
-| Badisch | `bad` | 14/44 | 1/172 | 13/1 | 2/0 | 31/229 |
-| Bavarian | `bar` | 14/44 | 1/172 | 13/1 | 2/0 | 31/229 |
-| Kölsch | `ksh` | 29/44 | 1/172 | 13/1 | 2/0 | 46/229 |
-| Low German | `nds` | 26/44 | 1/172 | 13/1 | 2/0 | 43/229 |
-| Swiss German | `gsw` | 25/44 | 1/172 | 13/1 | 2/0 | 42/229 |
-| Saxon | `sax` | 22/44 | 1/172 | 13/1 | 2/0 | 39/229 |
-| Berlinerisch | `bln` | 19/44 | 1/172 | 13/1 | 2/0 | 36/229 |
-| Austrian | `aut` | 17/44 | 1/172 | 13/1 | 2/0 | 34/229 |
+| German | `de` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Spanish | `es` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Ukrainian | `uk` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Japanese | `ja` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| French | `fr` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Italian | `it` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Portuguese | `pt` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Tagalog | `tl` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Arabic | `ar` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Hebrew | `he` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Malay | `ms` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Indonesian | `id` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Thai | `th` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Korean | `ko` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Polish | `pl` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Romanian | `ro` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Czech | `cs` | 44/44 | 172/172 | 160/160 | 15/15 | 412/412 |
+| Swabian | `swg` | 14/44 | 1/172 | 13/160 | 2/15 | 31/412 |
+| Badisch | `bad` | 14/44 | 1/172 | 13/160 | 2/15 | 31/412 |
+| Bavarian | `bar` | 14/44 | 1/172 | 13/160 | 2/15 | 31/412 |
+| Kölsch | `ksh` | 29/44 | 1/172 | 13/160 | 2/15 | 46/412 |
+| Low German | `nds` | 26/44 | 1/172 | 13/160 | 2/15 | 43/412 |
+| Swiss German | `gsw` | 25/44 | 1/172 | 13/160 | 2/15 | 42/412 |
+| Saxon | `sax` | 22/44 | 1/172 | 13/160 | 2/15 | 39/412 |
+| Berlinerisch | `bln` | 19/44 | 1/172 | 13/160 | 2/15 | 36/412 |
+| Austrian | `aut` | 17/44 | 1/172 | 13/160 | 2/15 | 34/412 |
 
 ## Per-Locale Detail
 
@@ -46,12 +46,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (430 files in status.json)</summary>
+<summary>Pipeline history (436 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -381,6 +381,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-18 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-18 |
@@ -494,12 +500,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -807,6 +813,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-18 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-18 |
@@ -920,12 +932,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -1233,6 +1245,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-19 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-20 |
@@ -1346,12 +1364,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (409 files in status.json)</summary>
+<summary>Pipeline history (415 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -1660,6 +1678,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-19 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-19 |
@@ -1773,12 +1797,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -2086,6 +2110,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-18 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-18 |
@@ -2199,12 +2229,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -2512,6 +2542,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-18 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-18 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-18 |
@@ -2625,12 +2661,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -2938,6 +2974,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-19 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-19 |
@@ -3050,13 +3092,13 @@ python translation/scripts/translation-status.py --write-status
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
-| Guides | 172/172 | 1 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **1** | **385** | **—** | **-168** |
+| Guides | 172/172 | 0 | 172 | — | 0 |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -3176,7 +3218,7 @@ python translation/scripts/translation-status.py --write-status
 | `guides/qiskit-addons-mpf.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/qiskit-addons-obp-get-started.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/qiskit-addons-obp.mdx` | promoted | PASS | 2026-03-19 |
-| `guides/qiskit-addons-sqd-get-started.mdx` | promoted | PASS | 2026-05-06 |
+| `guides/qiskit-addons-sqd-get-started.mdx` | promoted | PASS | 2026-05-07 |
 | `guides/qiskit-addons-sqd.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/qiskit-addons-utils.mdx` | promoted | PASS | 2026-03-19 |
 | `guides/qiskit-backendv1-to-v2.mdx` | promoted | PASS | 2026-03-19 |
@@ -3364,6 +3406,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-20 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-19 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-19 |
@@ -3477,12 +3525,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -3790,6 +3838,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-19 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-19 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-19 |
@@ -3903,12 +3957,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -4216,6 +4270,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-26 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-26 |
@@ -4329,12 +4389,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -4642,6 +4702,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-27 |
@@ -4755,12 +4821,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -5068,6 +5134,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-27 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-27 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-03-27 |
@@ -5181,12 +5253,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -5494,6 +5566,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-03-26 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-03-26 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-05-06 |
@@ -5607,12 +5685,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 0 | 160 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **0** | **391** | **—** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -5920,6 +5998,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-04-15 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-05-05 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-04-15 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-04-15 |
@@ -6033,12 +6117,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 1 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **1** | **385** | **—** | **-168** |
+| Courses | 160/160 | 1 | 159 | 1 | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **391/391** | **1** | **390** | **1** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (414 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -6346,7 +6430,13 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-04-15 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-04-15 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-04-15 |
-| `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-04-15 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-04-15 |
 | `learning/courses/utility-scale-quantum-computing/grovers-algorithm.mdx` | promoted | PASS | 2026-04-15 |
@@ -6459,12 +6549,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 32 | 141 | 50 | 0 |
+| Modules | 15/15 | 11 | 12 | 15 | 0 |
+| **Total** | **391/391** | **43** | **369** | **65** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (459 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -6666,7 +6756,7 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/repetition-codes.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/correcting-quantum-errors/shor-code.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/exam.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/approach-to-fault-tolerance.mdx` | needs-fix | LINT-FAIL | 2026-05-06 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/controlling-error-propagation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/foundations-of-quantum-error-correction/fault-tolerant-quantum-computing/threshold-theorem.mdx` | promoted | PASS | 2026-04-14 |
@@ -6689,14 +6779,20 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-problem.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/phase-estimation-procedure.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring/shor-algorithm.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/factoring-and-gcd.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/introduction.mdx` | promoted | PASS | 2026-04-14 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part1c.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part1d.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part2.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/measuring-computational-cost.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-algorithmic-foundations/simulating-classical-computations.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-algorithm.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/deutsch-jozsa-algorithm.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/query-model-of-computation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/fundamentals-of-quantum-algorithms/quantum-query-algorithms/simon-algorithm.mdx` | promoted | PASS | 2026-04-14 |
@@ -6733,10 +6829,10 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-business-foundations/quantum-computing-fundamentals.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-business-foundations/quantum-technology.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-business-foundations/start-your-quantum-journey.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-chem-with-vqe/ansatz.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-chem-with-vqe/ansatz.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-chem-with-vqe/exam.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-chem-with-vqe/geometry.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-chem-with-vqe/geometry.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/quantum-chem-with-vqe/ground-state.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-chem-with-vqe/hamiltonian-construction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-04-14 |
@@ -6746,65 +6842,110 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-computing-in-practice/introduction.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-computing-in-practice/mapping.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-computing-in-practice/running-quantum-circuits.mdx` | promoted | PASS | 2026-04-14 |
+| `learning/courses/quantum-computing-in-practice/simulating-nature-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-computing-in-practice/simulating-nature-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-computing-in-practice/simulating-nature-part1c.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-computing-in-practice/simulating-nature-part2.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/courses/quantum-computing-in-practice/simulating-nature.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/quantum-computing-in-practice/utility-scale-qaoa.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/quantum-diagonalization-algorithms/exam.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-diagonalization-algorithms/introduction.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-diagonalization-algorithms/krylov.mdx` | promoted | PASS | 2026-05-06 |
-| `learning/courses/quantum-diagonalization-algorithms/skqd.mdx` | promoted | PASS | 2026-05-06 |
-| `learning/courses/quantum-diagonalization-algorithms/sqd-implementation.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-diagonalization-algorithms/krylov.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/courses/quantum-diagonalization-algorithms/skqd.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/courses/quantum-diagonalization-algorithms/sqd-implementation.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/quantum-diagonalization-algorithms/sqd-overview.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-diagonalization-algorithms/vqe.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/quantum-machine-learning/classical-ml-review.mdx` | promoted | PASS | 2026-05-06 |
-| `learning/courses/quantum-machine-learning/data-encoding.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-machine-learning/classical-ml-review.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/courses/quantum-machine-learning/data-encoding.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/quantum-machine-learning/exam.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-04-14 |
+| `learning/courses/quantum-machine-learning/introduction-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-machine-learning/introduction-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-machine-learning/introduction-part2.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-machine-learning/introduction-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/courses/quantum-machine-learning/introduction.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` | promoted | PASS | 2026-05-06 |
-| `learning/courses/quantum-machine-learning/qvc-qnn.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/courses/quantum-machine-learning/qvc-qnn.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part10.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part11.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part12.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part13.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part2.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part4.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part5.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part6.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part7.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part8.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part9.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/quantum-safe-cryptography/cryptographic-hash-functions.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/exam.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/introduction-to-this-course.mdx` | promoted | PASS | 2026-04-14 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography-part2.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography-part4.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/courses/quantum-safe-cryptography/quantum-safe-cryptography.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-04-14 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/utility-scale-quantum-computing/grovers-algorithm.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/hardware.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/introduction.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/utility-scale-quantum-computing/quantum-circuit-optimization.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/utility-scale-quantum-computing/quantum-phase-estimation.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/utility-scale-quantum-computing/quantum-simulation.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/utility-scale-quantum-computing/teleportation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/utility-i.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/utility-ii.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/utility-scale-quantum-computing/utility-iii.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/ansaetze-and-variational-forms.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/cost-functions.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/exam.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/instances-and-extensions.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/courses/variational-algorithm-design/optimization-loops.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/variational-algorithm-design/optimization-loops.mdx` | needs-fix | LINT-FAIL | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/reference-states.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/courses/variational-algorithm-design/variational-algorithms.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/index.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/modules/computer-science/deutsch-jozsa.mdx` | promoted | PASS | 2026-05-06 |
-| `learning/modules/computer-science/grovers.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/modules/computer-science/deutsch-jozsa.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/modules/computer-science/grovers.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/computer-science/qft.mdx` | promoted | PASS | 2026-04-14 |
+| `learning/modules/computer-science/quantum-key-distribution-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part1c.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part1d.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part2a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part2b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part2c.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part2d.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part4.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part5.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-key-distribution-part6.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/modules/computer-science/quantum-key-distribution.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/computer-science/quantum-teleportation.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/computer-science/shors-algorithm.mdx` | promoted | PASS | 2026-04-14 |
-| `learning/modules/computer-science/vqe.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/modules/computer-science/vqe.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/modules/index.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/quantum-mechanics/bells-inequality-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
@@ -6885,12 +7026,12 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 44/44 | 0 | 44 | — | 0 |
 | Guides | 172/172 | 0 | 172 | — | 0 |
-| Courses | 154/1 | 0 | 154 | — | -153 |
-| Modules | 15/0 | 0 | 15 | — | -15 |
-| **Total** | **385/217** | **0** | **385** | **—** | **-168** |
+| Courses | 160/160 | 11 | 157 | 17 | 0 |
+| Modules | 15/15 | 20 | 12 | 24 | 0 |
+| **Total** | **391/391** | **31** | **385** | **41** | **0** |
 
 <details>
-<summary>Pipeline history (408 files in status.json)</summary>
+<summary>Pipeline history (449 files in status.json)</summary>
 
 | File | Status | Validation | Date |
 |------|--------|------------|------|
@@ -7189,6 +7330,20 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-machine-learning/introduction.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-machine-learning/quantum-kernel-methods.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-machine-learning/qvc-qnn.mdx` | promoted | PASS | 2026-04-14 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part10.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part2.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part4.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part5.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part6a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part6b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part7.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part8a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part8b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part9a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography-part9b.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/courses/quantum-safe-cryptography/asymmetric-key-cryptography.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/courses/quantum-safe-cryptography/cryptographic-hash-functions.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-safe-cryptography/exam.mdx` | promoted | PASS | 2026-04-13 |
@@ -7198,6 +7353,12 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/quantum-safe-cryptography/symmetric-key-cryptography.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-safe-cryptography/whats-next.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/quantum-safe-cryptography/works-cited.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/continue-your-learning-journey.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/index.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-computing-context.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/quantum-mechanics-basics.mdx` | promoted | PASS | 2026-05-07 |
+| `learning/courses/use-a-qc-today/your-first-quantum-experiment.mdx` | promoted | PASS | 2026-05-07 |
 | `learning/courses/utility-scale-quantum-computing/bits-gates-and-circuits.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/classical-simulation.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/error-mitigation.mdx` | promoted | PASS | 2026-04-13 |
@@ -7211,29 +7372,50 @@ python translation/scripts/translation-status.py --write-status
 | `learning/courses/utility-scale-quantum-computing/teleportation.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/utility-i.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/utility-scale-quantum-computing/utility-ii.mdx` | promoted | PASS | 2026-04-13 |
-| `learning/courses/utility-scale-quantum-computing/utility-iii.mdx` | promoted | PASS | 2026-05-06 |
-| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/utility-scale-quantum-computing/utility-iii.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/courses/utility-scale-quantum-computing/variational-quantum-algorithms.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/ansaetze-and-variational-forms.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/cost-functions.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/exam.mdx` | promoted | PASS | 2026-04-13 |
-| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/courses/variational-algorithm-design/examples-and-applications.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/instances-and-extensions.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/optimization-loops.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/reference-states.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/courses/variational-algorithm-design/variational-algorithms.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/index.mdx` | promoted | PASS | 2026-04-13 |
-| `learning/modules/computer-science/deutsch-jozsa.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/modules/computer-science/deutsch-jozsa.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/modules/computer-science/grovers.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/modules/computer-science/qft-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/qft-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/qft-part2a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/qft-part2b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/qft-part2c.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/qft-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/modules/computer-science/qft.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/modules/computer-science/quantum-key-distribution.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/modules/computer-science/quantum-key-distribution.mdx` | needs-fix | FAIL | 2026-05-06 |
+| `learning/modules/computer-science/quantum-teleportation-part1a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-teleportation-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-teleportation-part2.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-teleportation-part3.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/computer-science/quantum-teleportation-part4.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/modules/computer-science/quantum-teleportation.mdx` | promoted | PASS | 2026-05-05 |
 | `learning/modules/computer-science/shors-algorithm.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/computer-science/vqe.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/index.mdx` | promoted | PASS | 2026-04-13 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part1a1.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part1a2.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part1a3.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part1a4.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part1b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part1c.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part2a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part2b.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part3a.mdx` | needs-fix | FAIL | 2026-05-07 |
+| `learning/modules/quantum-mechanics/bells-inequality-with-qiskit-part3b.mdx` | needs-fix | FAIL | 2026-05-07 |
 | `learning/modules/quantum-mechanics/bells-inequality-with-qiskit.mdx` | promoted | PASS | 2026-05-05 |
-| `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx` | promoted | PASS | 2026-05-06 |
+| `learning/modules/quantum-mechanics/exploring-uncertainty-with-qiskit.mdx` | needs-fix | FAIL | 2026-05-06 |
 | `learning/modules/quantum-mechanics/get-started-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
 | `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-04-13 |
 | `learning/modules/quantum-mechanics/stern-gerlach-measurements-with-qiskit.mdx` | promoted | PASS | 2026-04-14 |
@@ -7311,9 +7493,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/391** | **0** | **30** | **—** | **361** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -7360,9 +7542,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/391** | **0** | **30** | **—** | **361** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -7409,9 +7591,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 14/44 | 0 | 14 | — | 30 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **30/217** | **0** | **30** | **—** | **187** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **30/391** | **0** | **30** | **—** | **361** |
 
 <details>
 <summary>Pipeline history (31 files in status.json)</summary>
@@ -7458,9 +7640,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 29/44 | 0 | 29 | — | 15 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **45/217** | **0** | **45** | **—** | **172** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **45/391** | **0** | **45** | **—** | **346** |
 
 <details>
 <summary>Pipeline history (46 files in status.json)</summary>
@@ -7522,9 +7704,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 26/44 | 0 | 26 | — | 18 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **42/217** | **0** | **42** | **—** | **175** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **42/391** | **0** | **42** | **—** | **349** |
 
 <details>
 <summary>Pipeline history (43 files in status.json)</summary>
@@ -7583,9 +7765,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 25/44 | 0 | 25 | — | 19 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **41/217** | **0** | **41** | **—** | **176** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **41/391** | **0** | **41** | **—** | **350** |
 
 <details>
 <summary>Pipeline history (42 files in status.json)</summary>
@@ -7643,9 +7825,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 22/44 | 0 | 22 | — | 22 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **38/217** | **0** | **38** | **—** | **179** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **38/391** | **0** | **38** | **—** | **353** |
 
 <details>
 <summary>Pipeline history (39 files in status.json)</summary>
@@ -7700,9 +7882,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 19/44 | 0 | 19 | — | 25 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **35/217** | **0** | **35** | **—** | **182** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **35/391** | **0** | **35** | **—** | **356** |
 
 <details>
 <summary>Pipeline history (36 files in status.json)</summary>
@@ -7754,9 +7936,9 @@ python translation/scripts/translation-status.py --write-status
 |---------|-----------|--------|------|------|-----------|
 | Tutorials | 17/44 | 0 | 17 | — | 27 |
 | Guides | 1/172 | 0 | 1 | — | 171 |
-| Courses | 13/1 | 0 | 13 | — | -12 |
-| Modules | 2/0 | 0 | 2 | — | -2 |
-| **Total** | **33/217** | **0** | **33** | **—** | **184** |
+| Courses | 13/160 | 0 | 13 | — | 147 |
+| Modules | 2/15 | 0 | 2 | — | 13 |
+| **Total** | **33/391** | **0** | **33** | **—** | **358** |
 
 <details>
 <summary>Pipeline history (34 files in status.json)</summary>

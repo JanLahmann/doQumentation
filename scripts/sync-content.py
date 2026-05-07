@@ -35,6 +35,7 @@ NOTEBOOKS_OUTPUT = PROJECT_ROOT / "notebooks"
 STATIC_DIR = PROJECT_ROOT / "static"
 ADDONS_DIR = PROJECT_ROOT / "upstream-addons"
 WORKSHOP_DIR = PROJECT_ROOT / "workshop-notebooks"
+LOCAL_CONTENT_DIR = PROJECT_ROOT / "local-content"
 
 # Qiskit Addon sources — Phase 1: core addons with docs/tutorials/
 # Each entry: display name → {submodule dir name, notebook path within repo, pip package}
@@ -1473,6 +1474,12 @@ def sync_upstream_images():
             shutil.rmtree(dst_dir)
         shutil.copytree(src_dir, dst_dir)
 
+        # Overlay local-content images (e.g. courses added to this repo only)
+        overlay = LOCAL_CONTENT_DIR / src_rel
+        if overlay.exists():
+            shutil.copytree(overlay, dst_dir, dirs_exist_ok=True)
+            print(f"  ✓ {src_rel} (local-content overlay merged)")
+
         count = sum(1 for _ in dst_dir.rglob('*') if _.is_file())
         total += count
         print(f"  ✓ {src_rel} → static/{dst_rel} ({count} files)")
@@ -1563,15 +1570,20 @@ def generate_sidebar_flat():
 
 
 def process_courses():
-    """Process all course files from upstream."""
+    """Process all course files from upstream and local-content overlay."""
     print("\n📚 Processing courses...")
 
-    courses_src = UPSTREAM_DIR / "learning" / "courses"
     courses_dst = DOCS_OUTPUT / "learning" / "courses"
     notebooks_dst = NOTEBOOKS_OUTPUT / "learning" / "courses"
 
-    if not courses_src.exists():
-        print(f"  Warning: Courses directory not found at {courses_src}")
+    # Source roots: upstream submodule + optional in-repo overlay
+    course_roots = [
+        UPSTREAM_DIR / "learning" / "courses",
+        LOCAL_CONTENT_DIR / "learning" / "courses",
+    ]
+    course_roots = [r for r in course_roots if r.exists()]
+    if not course_roots:
+        print(f"  Warning: No course source directories found")
         return
 
     # Clean output directories
@@ -1586,10 +1598,13 @@ def process_courses():
     # Track statistics
     stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
 
-    for course_dir in sorted(courses_src.iterdir()):
-        if not course_dir.is_dir():
-            continue
+    course_dirs = []
+    for root in course_roots:
+        for d in sorted(root.iterdir()):
+            if d.is_dir():
+                course_dirs.append((d, root))
 
+    for course_dir, courses_src in course_dirs:
         course_name = course_dir.name
         print(f"\n  Course: {course_name}")
 
@@ -1683,16 +1698,23 @@ def generate_course_sidebar():
     """Generate sidebar configuration for courses from per-course _toc.json files."""
     print("\n📋 Generating course sidebar...")
 
-    courses_src = UPSTREAM_DIR / "learning" / "courses"
-    if not courses_src.exists():
-        print("  Warning: No courses directory found")
+    course_roots = [
+        UPSTREAM_DIR / "learning" / "courses",
+        LOCAL_CONTENT_DIR / "learning" / "courses",
+    ]
+    course_roots = [r for r in course_roots if r.exists()]
+    if not course_roots:
+        print("  Warning: No courses directories found")
         return
 
     course_items = []
-    for course_dir in sorted(courses_src.iterdir()):
-        if not course_dir.is_dir():
-            continue
+    course_dirs = []
+    for root in course_roots:
+        for d in sorted(root.iterdir()):
+            if d.is_dir():
+                course_dirs.append(d)
 
+    for course_dir in course_dirs:
         toc_path = course_dir / "_toc.json"
         if not toc_path.exists():
             print(f"  Warning: No _toc.json for {course_dir.name}")
