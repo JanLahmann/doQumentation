@@ -132,6 +132,21 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 | `<IBMVideo>` | YouTube-first (32 mapped IDs) + IBM fallback |
 | `<Card>`, `<CardGroup>`, `<Image>`, etc. | Component stubs |
 
+### Source-date footer (per-page upstream + EN + translation dates)
+Every doc page renders a small block above "Edit this page" with up to three lines:
+- **Source: IBM Quantum docs — updated `<date>`** (link to the upstream page on docs.quantum.ibm.com or learning.quantum.ibm.com)
+- **English version on doQumentation — updated `<date>`** (translated pages only — links to the EN version on doqumentation.org)
+- *This translation based on the English version of `<date>`* (translated pages only; "of approx. `<date>`" when `en_base_source: "promoted-fallback"`)
+
+Data flow:
+- `scripts/sync-content.py --meta-only` writes `src/config/upstreamFileMeta.json` with per-file `upstream_date` (from `git log` against `ibm/main`, the real `Qiskit/documentation` remote — the JanLahmann/Qiskit-documentation fork merges upstream as single sync commits that flatten per-file dates, so we always need to fetch `ibm` to get true history). Also captures `en_date` (`git log` of the local `docs/<path>`).
+- `translation/scripts/promote-drafts.py` records `en_base_commit_date` per locale × path in `translation/status.json` whenever a draft is promoted.
+- `translation/scripts/backfill-en-base-date.py` is the one-shot history-walk that backfilled 4,964 of 7,342 existing entries with exact hash-verified dates (matches stored `source_hash` against historical blob hashes); 2,170 fell back to the `promoted` date with `en_base_source: "promoted-fallback"`.
+- `plugins/page-dates/index.js` (Docusaurus plugin) reads both files at build time and exposes a per-locale page-date map via `globalData["page-dates"]`.
+- `src/theme/DocItem/Footer/index.tsx` reads `useDoc().metadata.source` (must strip both `@site/docs/` and `@site/i18n/<locale>/docusaurus-plugin-content-docs/current/` prefixes — translated pages carry the latter), looks the page up in globalData, and renders the three lines with locale-aware `Intl.DateTimeFormat`. The IBM-source URL mapping is shared with the EditThisPage swizzle via `src/lib/originalUrl.ts`.
+
+Refresh: `.github/workflows/refresh-page-dates.yml` runs daily at 07:00 UTC, calls `sync-content.py --meta-only` (touches *only* the manifest, never content), commits if changed, push triggers `deploy.yml`.
+
 ### Docker & Authentication
 - `binder/Dockerfile` (main branch) — `FROM quay.io/jupyter/base-notebook:python-3.12`, installs from `jupyter-requirements.txt` (full Qiskit ecosystem: `qiskit[all]`, all addons, scipy, pyscf, plotly, ffsim, sympy, pandas, etc. — 21 packages). Single source of truth for Binder + Docker deps. `Dockerfile.web` — Static site only (nginx, ~60 MB). `Dockerfile.jupyter` — Multi-stage build with shared `jupyter-base` stage and two targets: `jupyter-local` (full stack + site build, ~3 GB) and `jupyter-codeengine` (CE kernel + SSE server, ~3 GB). Both targets share the same base image (`quay.io/jupyter/base-notebook:python-3.12`) and pip install layer.
 - Multi-arch: `linux/amd64` gets full Qiskit; `linux/arm64` excludes some packages
@@ -143,6 +158,7 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 - `docker.yml` — Multi-arch Docker → ghcr.io (EN only via `--locale en`). Builds `Dockerfile.jupyter` with `--target jupyter-local`. **Push trigger disabled** — only `workflow_dispatch` (re-enable `push: branches: [main]` when needed).
 - `sync-deps.yml` — Weekly auto-PR for Jupyter dependencies. Runs `scripts/sync-deps.py` which fetches from [JanLahmann/Qiskit-documentation/scripts/nb-tester/requirements.txt](https://github.com/JanLahmann/Qiskit-documentation/blob/main/scripts/nb-tester/requirements.txt) and applies transformation rules: drops `sys.platform` markers (Linux-only containers), splits packages by architecture (amd64-only packages like `gem-suite`, `qiskit-ibm-transpiler[ai-local-mode]`, and `qiskit-addon-aqc-tensor[quimb-jax]` go to `jupyter-requirements-amd64.txt`), and adds `EXTRA_CROSS_PLATFORM` packages not in upstream (`pylatexenc` for LaTeX rendering, `pandas` for data analysis). Both `jupyter-requirements.txt` and `jupyter-requirements-amd64.txt` are auto-generated and marked with "DO NOT EDIT MANUALLY" warnings. `jupyter-requirements-security.txt` is manually maintained — it pins minimum versions for transitive dependencies with known CVEs (used only by `Dockerfile.codeengine`, where Trivy CI enforces no HIGH/CRITICAL vulns).
 - `check-translations.yml` — Daily translation freshness check + STATUS.md update. Requires `permissions: contents: write, issues: write`.
+- `refresh-page-dates.yml` — Daily 07:00 UTC. Runs `sync-content.py --meta-only` to refresh `src/config/upstreamFileMeta.json` (per-page upstream + EN dates for the source-date footer). Touches only metadata files; commits if changed; push triggers `deploy.yml`.
 - `binder.yml` — Daily cache warming for 3 Binder federation members (2i2c, BIDS, GESIS) + on every push to `notebooks` branch + manual `workflow_dispatch`.
 - `workshop-start.yml` — Workshop lifecycle: setup only (~2 min). Resizes pod(s), sets fresh Jupyter token, warms pod, posts instructor/student setup guide to job summary. Size options: 1/2 to 12/48 vCPU/GB. No monitoring — completes immediately.
 - `workshop-monitor.yml` — Standalone continuous monitor. Polls primary pod's `/stats` every 30s for the requested duration (30m–6h), then posts timeline report with sparklines, peak load, CE events, and cost estimate. Fully independent of workshop-start — can be started/stopped separately. Also usable via `workflow_call`.
