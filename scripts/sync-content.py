@@ -119,6 +119,7 @@ def clone_or_update_upstream():
         )
         if result.returncode != 0:
             print("  Warning: submodule update failed, using current state")
+        _ensure_ibm_history(UPSTREAM_DIR)
         print("  ✓ Upstream sync complete (submodule)")
         return
 
@@ -2568,6 +2569,10 @@ def main():
                         help="Generate translated notebooks for a locale")
     parser.add_argument("--locale", type=str, default=None,
                         help="Locale code for --generate-locale-notebooks (e.g. de, ja)")
+    parser.add_argument("--meta-only", action="store_true",
+                        help="Only refresh src/config/{contentMeta.ts,"
+                             "upstreamFileMeta.json}; do not sync content. "
+                             "Used by the daily refresh-page-dates workflow.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -2590,6 +2595,21 @@ def main():
         create_sample_tutorial()
         generate_sidebar_flat()
         print("\n✅ Sample content created!")
+        return
+
+    if args.meta_only:
+        # Refresh per-file dates only. Ensures the upstream clone exists (so
+        # ibm/main is fetchable for accurate per-file dates) but does NOT
+        # touch docs/, notebooks/, sidebars, or any content. Intended for
+        # daily CI to keep the source-date footer fresh without producing
+        # noisy content diffs.
+        if not args.no_clone:
+            clone_or_update_upstream()
+        if not UPSTREAM_DIR.exists():
+            print("⚠️  upstream-docs not present, cannot refresh metadata")
+            sys.exit(1)
+        write_content_meta()
+        write_page_dates_manifest()
         return
 
     if not args.no_clone:
