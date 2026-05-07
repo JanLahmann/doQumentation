@@ -188,6 +188,12 @@ const config: Config = {
     require.resolve('./src/clientModules/outboundTracker.ts'),
   ],
 
+  plugins: [
+    // Exposes per-page upstream/EN/translation-base dates via globalData.
+    // Read by src/theme/DocItem/Footer to render the source-date block.
+    './plugins/page-dates',
+  ],
+
   themes: [
     [
       '@easyops-cn/docusaurus-search-local',
