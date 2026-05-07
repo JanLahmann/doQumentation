@@ -24,7 +24,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 
 # Paths
 SCRIPT_DIR = Path(__file__).parent
@@ -147,7 +147,32 @@ def clone_or_update_upstream():
             cwd=UPSTREAM_DIR
         )
 
+    _ensure_ibm_history(UPSTREAM_DIR)
     print("  ✓ Upstream sync complete")
+
+
+def _ensure_ibm_history(upstream_repo: Path):
+    """Ensure ibm/main has full per-file history (for the page-dates manifest).
+
+    The fork at JanLahmann/Qiskit-documentation merges upstream as single
+    sync commits, so per-file `git log` against its HEAD returns identical
+    dates for every file. To get true per-file modification dates we need
+    the real IBM-side history. We add `ibm` as a remote (if missing) and
+    fetch it blob-less without --depth so commit history is complete but
+    file blobs are downloaded only on demand.
+    """
+    remotes = run_command(["git", "remote"], cwd=upstream_repo)
+    if remotes.returncode != 0:
+        return
+    if "ibm" not in remotes.stdout.split():
+        run_command(
+            ["git", "remote", "add", "ibm", "https://github.com/Qiskit/documentation.git"],
+            cwd=upstream_repo,
+        )
+    run_command(
+        ["git", "fetch", "--filter=blob:none", "--no-tags", "ibm", "main"],
+        cwd=upstream_repo,
+    )
 
 
 def transform_mdx(content: str, source_path: Path) -> str:
@@ -2613,6 +2638,7 @@ def main():
 
     # Generate content metadata for the website (upstream commit + date)
     write_content_meta()
+    write_page_dates_manifest()
 
     print("\n" + "=" * 60)
     print("✅ Content sync complete!")
@@ -2654,6 +2680,120 @@ export const UPSTREAM_COMMIT_DATE = {upstream_date!r};
 """
     )
     print(f"\n📅 Content version: upstream {upstream_commit or '(unknown)'} from {upstream_date or '(unknown date)'}")
+
+
+# Local-docs subtree → upstream subtree. Anything under docs/ not listed here
+# (about, qiskit-addons, workshop, index.mdx) has no upstream counterpart.
+PAGE_DATE_PATH_MAP = {
+    "guides": "docs/guides",
+    "tutorials": "docs/tutorials",
+    "learning/courses": "learning/courses",
+    "learning/modules": "learning/modules",
+}
+
+
+def _git_file_date(repo: Path, path: str, ref: str = "HEAD") -> str:
+    res = run_command(
+        ["git", "log", "-1", "--format=%cs", ref, "--", path], cwd=repo
+    )
+    if res.returncode == 0:
+        return res.stdout.strip()
+    return ""
+
+
+def _git_file_sha(repo: Path, path: str, ref: str = "HEAD") -> str:
+    res = run_command(
+        ["git", "log", "-1", "--format=%h", ref, "--", path], cwd=repo
+    )
+    if res.returncode == 0:
+        return res.stdout.strip()
+    return ""
+
+
+def _ibm_upstream_ref(upstream_repo: Path) -> Optional[str]:
+    """Return the ref to query for true IBM-side per-file history.
+
+    The fork at JanLahmann/Qiskit-documentation merges upstream as single
+    "sync" commits, so per-file dates from its HEAD are useless. The clone
+    has an `ibm` remote pointing at github.com/Qiskit/documentation; if it
+    has been fetched, ibm/main carries the real per-file history.
+    Returns None if not available, in which case we fall back to HEAD.
+    """
+    res = run_command(
+        ["git", "rev-parse", "--verify", "--quiet", "refs/remotes/ibm/main"],
+        cwd=upstream_repo,
+    )
+    if res.returncode == 0 and res.stdout.strip():
+        return "ibm/main"
+    return None
+
+
+def write_page_dates_manifest():
+    """Write src/config/upstreamFileMeta.json with per-file upstream + EN dates.
+
+    For each doc page that has an upstream counterpart, record:
+      - upstream_path: path within the upstream-docs repo
+      - upstream_date: last-commit date (YYYY-MM-DD) in upstream-docs
+      - upstream_sha: last-commit short SHA in upstream-docs
+      - en_date: last-commit date in this repo for the local docs/ file
+
+    Pages without an upstream counterpart (docs/about, docs/qiskit-addons,
+    docs/workshop, docs/index.mdx) are not included. The footer component
+    treats a missing entry as "no upstream link / no upstream date".
+    """
+    if not UPSTREAM_DIR.exists():
+        print("\n📅 Page dates manifest: upstream-docs not present, skipping")
+        return
+
+    upstream_ref = _ibm_upstream_ref(UPSTREAM_DIR) or "HEAD"
+    if upstream_ref == "HEAD":
+        print(
+            "📅 Page dates manifest: ibm/main not fetched in upstream-docs; "
+            "per-file upstream dates will be coarse. Run: "
+            "git -C upstream-docs fetch ibm main"
+        )
+
+    manifest: Dict[str, Dict[str, str]] = {}
+    suffixes = (".mdx", ".md", ".ipynb")
+
+    for local_sub, upstream_sub in PAGE_DATE_PATH_MAP.items():
+        local_root = DOCS_OUTPUT / local_sub
+        upstream_root = UPSTREAM_DIR / upstream_sub
+        if not local_root.exists() or not upstream_root.exists():
+            continue
+        for local_file in local_root.rglob("*"):
+            if not local_file.is_file() or local_file.suffix.lower() not in suffixes:
+                continue
+            rel = local_file.relative_to(DOCS_OUTPUT).as_posix()
+            upstream_rel = (Path(upstream_sub) / local_file.relative_to(local_root)).as_posix()
+            upstream_abs = UPSTREAM_DIR / upstream_rel
+            if not upstream_abs.exists():
+                # Locally generated (e.g., MDX rendered from upstream notebook
+                # under a different name) — try the .ipynb sibling as the
+                # upstream truth for date purposes.
+                ipynb_candidate = upstream_abs.with_suffix(".ipynb")
+                if ipynb_candidate.exists():
+                    upstream_rel = ipynb_candidate.relative_to(UPSTREAM_DIR).as_posix()
+                else:
+                    continue
+
+            entry = {
+                "upstream_path": upstream_rel,
+                "upstream_date": _git_file_date(UPSTREAM_DIR, upstream_rel, upstream_ref),
+                "upstream_sha": _git_file_sha(UPSTREAM_DIR, upstream_rel, upstream_ref),
+                "en_date": _git_file_date(PROJECT_ROOT, f"docs/{rel}"),
+            }
+            manifest[rel] = entry
+
+    out = PROJECT_ROOT / "src" / "config" / "upstreamFileMeta.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "_generated_by": "scripts/sync-content.py",
+        "_upstream_repo": "JanLahmann/Qiskit-documentation",
+        "files": dict(sorted(manifest.items())),
+    }
+    out.write_text(json.dumps(payload, indent=2) + "\n")
+    print(f"📅 Page dates manifest: {len(manifest)} files → {out.relative_to(PROJECT_ROOT)}")
 
 
 if __name__ == "__main__":
