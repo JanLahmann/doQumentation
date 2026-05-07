@@ -185,6 +185,7 @@ const config: Config = {
     require.resolve('./src/clientModules/pageTracker.ts'),
     require.resolve('./src/clientModules/displayPrefs.ts'),
     require.resolve('./src/clientModules/onboarding.ts'),
+    require.resolve('./src/clientModules/outboundTracker.ts'),
   ],
 
   themes: [
