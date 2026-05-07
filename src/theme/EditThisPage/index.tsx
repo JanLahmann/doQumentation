@@ -11,41 +11,9 @@ import {
   addBookmark,
   removeBookmark,
 } from '../../config/preferences';
+import {getOriginalPageUrl} from '../../lib/originalUrl';
 
 type Props = React.ComponentProps<typeof OriginalEditThisPage>;
-
-/**
- * Map a doQumentation page path to its original URL on IBM Quantum / upstream.
- * Returns null if no mapping exists (e.g. index pages, settings).
- */
-function getOriginalPageUrl(pathname: string): string | null {
-  // Strip locale prefix (e.g. /de/guides/... → /guides/...)
-  const path = pathname.replace(/^\/[a-z]{2}(-[a-z]+)?(?=\/)/, '').replace(/\/$/, '');
-
-  if (path.startsWith('/guides/')) {
-    const slug = path.replace('/guides/', '');
-    if (slug && slug !== 'index') return `https://docs.quantum.ibm.com/guides/${slug}`;
-  }
-  if (path.startsWith('/tutorials/')) {
-    const slug = path.replace('/tutorials/', '');
-    if (slug && slug !== 'index') return `https://learning.quantum.ibm.com/tutorial/${slug}`;
-  }
-  if (path.startsWith('/learning/courses/')) {
-    // /learning/courses/{course}/{lesson} → learning.quantum.ibm.com/course/{course}
-    const parts = path.replace('/learning/courses/', '').split('/');
-    if (parts[0]) return `https://learning.quantum.ibm.com/course/${parts[0]}`;
-  }
-  if (path.startsWith('/learning/modules/')) {
-    const parts = path.replace('/learning/modules/', '').split('/');
-    if (parts[0]) return `https://learning.quantum.ibm.com/course/${parts[0]}`;
-  }
-  if (path.startsWith('/qiskit-addons/')) {
-    // /qiskit-addons/{addon}/... → qiskit.github.io/qiskit-addon-{addon}
-    const parts = path.replace('/qiskit-addons/', '').split('/');
-    if (parts[0] && parts[0] !== 'index') return `https://qiskit.github.io/qiskit-addon-${parts[0]}`;
-  }
-  return null;
-}
 
 export default function EditThisPage(props: Props): JSX.Element {
   const [bookmarked, setBookmarked] = useState(false);
