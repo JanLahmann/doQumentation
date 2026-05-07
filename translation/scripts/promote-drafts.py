@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -171,6 +172,31 @@ def compute_source_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
 
 
+def en_file_commit_date(rel_path: str) -> str:
+    """Return YYYY-MM-DD of the last commit touching the EN file, or "".
+
+    Used to record which EN revision a translation was based on, so the
+    page footer can show "translation based on EN of <date>". Falls back
+    to empty string if the file is untracked or git is unavailable.
+    """
+    en_path = DOCS_DIR / rel_path
+    if not en_path.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cs", "HEAD", "--", f"docs/{rel_path}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def update_status(status: dict, locale: str, results: list[dict]) -> None:
     """Update status.json with promote results."""
     if locale not in status:
@@ -186,6 +212,11 @@ def update_status(status: dict, locale: str, results: list[dict]) -> None:
             entry["validation"] = r["validation"]
             entry["promoted"] = today
             entry.pop("failures", None)
+            # Record which EN revision this translation was based on, so
+            # the page footer can show "translation based on EN of <date>".
+            base_date = en_file_commit_date(r["rel_path"])
+            if base_date:
+                entry["en_base_commit_date"] = base_date
         elif r["action"] == "skipped":
             entry["status"] = "needs-fix"
             entry["validation"] = r["validation"] or "FAIL"
