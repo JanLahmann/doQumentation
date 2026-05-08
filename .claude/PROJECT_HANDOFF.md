@@ -135,15 +135,21 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 ### Source-date footer (per-page upstream + EN + translation dates)
 Every doc page renders a small block above "Edit this page" with up to three lines:
 - **Source: IBM Quantum docs — updated `<date>`** (link to the upstream page on docs.quantum.ibm.com or learning.quantum.ibm.com)
-- **English version on doQumentation — updated `<date>`** (translated pages only — links to the EN version on doqumentation.org)
+- **EN page**: *This page on doQumentation — updated `<date>`* | **Translated page**: *English version on doQumentation — updated `<date>`* (links to the EN version on doqumentation.org)
 - *This translation based on the English version of `<date>`* (translated pages only; "of approx. `<date>`" when `en_base_source: "promoted-fallback"`)
 
+**Date semantics — important.** All three dates refer to *upstream content dates*, not local-file mtimes, so the freshness invariant `upstream ≥ EN ≥ translation` always holds visually:
+- `upstream_date` = latest commit date for the file in `Qiskit/documentation` (the real IBM repo). Refreshed daily.
+- `en_date` = the upstream commit date matching the version of the upstream file *currently in our submodule*. NOT `git log` of the local MDX (which would move on every sync-content.py run for whitespace/transform reasons and break the ordering). Computed by hashing the on-disk upstream file and walking `ibm/main` history for a blob match (`_content_authored_date` in sync-content.py, uses raw `subprocess.run` with `text=False` for binary-safe `.ipynb` blobs).
+- `en_base_commit_date` = the EN-side commit date the translation was based on (recorded at promote time; backfilled via hash-match against historical blobs).
+
 Data flow:
-- `scripts/sync-content.py --meta-only` writes `src/config/upstreamFileMeta.json` with per-file `upstream_date` (from `git log` against `ibm/main`, the real `Qiskit/documentation` remote — the JanLahmann/Qiskit-documentation fork merges upstream as single sync commits that flatten per-file dates, so we always need to fetch `ibm` to get true history). Also captures `en_date` (`git log` of the local `docs/<path>`).
+- `scripts/sync-content.py --meta-only` writes `src/config/upstreamFileMeta.json` with `upstream_date`, `upstream_sha`, and `en_date` (using the hash-match logic above). Requires `ibm/main` fetched in `upstream-docs/` — the JanLahmann fork flattens per-file dates because it merges upstream as single sync commits, so we always need real IBM history. `_ensure_ibm_history()` adds and fetches the `ibm` remote on both submodule and bare-clone code paths in `clone_or_update_upstream()`.
 - `translation/scripts/promote-drafts.py` records `en_base_commit_date` per locale × path in `translation/status.json` whenever a draft is promoted.
 - `translation/scripts/backfill-en-base-date.py` is the one-shot history-walk that backfilled 4,964 of 7,342 existing entries with exact hash-verified dates (matches stored `source_hash` against historical blob hashes); 2,170 fell back to the `promoted` date with `en_base_source: "promoted-fallback"`.
 - `plugins/page-dates/index.js` (Docusaurus plugin) reads both files at build time and exposes a per-locale page-date map via `globalData["page-dates"]`.
 - `src/theme/DocItem/Footer/index.tsx` reads `useDoc().metadata.source` (must strip both `@site/docs/` and `@site/i18n/<locale>/docusaurus-plugin-content-docs/current/` prefixes — translated pages carry the latter), looks the page up in globalData, and renders the three lines with locale-aware `Intl.DateTimeFormat`. The IBM-source URL mapping is shared with the EditThisPage swizzle via `src/lib/originalUrl.ts`.
+- `src/theme/EditThisPage/index.tsx` also gates its "View original on IBM Quantum Platform" link on the same manifest — `editUrlToRelPath()` extracts the doc key from the GitHub edit URL Docusaurus passes in, and the link is hidden when the page isn't in the manifest (e.g., `tutorials/hello-world.mdx` is doQ-original, not IBM upstream).
 
 Refresh: `.github/workflows/refresh-page-dates.yml` runs daily at 07:00 UTC, calls `sync-content.py --meta-only` (touches *only* the manifest, never content), commits if changed, push triggers `deploy.yml`.
 
