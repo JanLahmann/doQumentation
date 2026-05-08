@@ -64,6 +64,43 @@ Line 194 in BOTH files: `parehong panganib na matematika` (panganib = danger/ris
 
 ## Medium-priority MINOR_ISSUES patterns
 
+## HE Phase 2 review (2026-05-08, added)
+
+99 HE files reviewed across two passes. **Dominant pattern: formal-register defaults from the original translator.** 1357 site-wide find-replace + 91 משרה→עבודה + 26 deutsch-jozsa transliteration + 12 surgical typo/accuracy fixes. Files re-recorded as FIXED in `status.json`.
+
+**Site-wide find-replace applied:**
+- `אנו` → `אנחנו` (1011 occurrences) — formal "we" pronoun
+- `עיין` → `ראה` / `עיינו` → `ראו` (219) — formal "consult"
+- `אנא ` → drop (77) — formal "please" particle
+- `בקר ב` → `כנס ל` / `בקרו ב` → `כנסו ל` (50) — formal "visit"
+- `משרה`/`משרות`/conjugations → `עבודה`/`עבודות` (91) — wrong meaning ("employment" used for compute "job")
+- `דויטש-יוזה` → `דויטש-ג'וזה` (26) — Jozsa transliteration unification
+
+**Surgical fixes (real accuracy errors that survived find-replace):**
+- `qrmi.mdx` line 78: `לפצוח` (crack) → `להפצה` (distribution)
+- `monitor-job.mdx` line 25: `בצווארי בקבוק` (bottleneck) → `במצב batch`
+- `vqe.mdx` lines 45/47: Latin chars in Hebrew words `ורiaציוני` → `וריאציוני`
+- `slc/01_getting_started.mdx` line 16: spurious space `תוחלת ל שגיאות` → `תוחלת לשגיאות`
+- `divincenzo_criteria_lab-2.mdx`: bold-marker placement fixed
+- `function-template-hamiltonian-simulation.mdx` line 54/407: typos `מיפחתת`/`לבחרית`
+- `function-template-chemistry-workflow.mdx` line 299: `החינמית` (free-of-charge) → `החופשית` (free energy)
+- `qedma-2d-ising-with-qesem.mdx` line 30: `שבריריים` (fragile) → `שערי שבר` (fractional)
+- `composer.mdx` line 525: gender agreement
+- `stretch.mdx` line 26: gender agreement
+- `qiskit-addons-sqd-get-started.mdx` line 1760: `לתכנן` (plan) → `לשרטט` (plot)
+- `ghz-spacetime-codes.mdx` line 972: verb agreement
+- `qiskit-addons-aqc-get-started.mdx`: typo `לאוולציה` → `לאבולוציה`
+- `exam.mdx` line 24: gender agreement on numerals
+
+**Lessons learned for HE:**
+- The translator had strong defaults toward biblical/literary register (אנו/עיין/אנא/בקר). Single find-replace cleared 1357 occurrences across 265 files.
+- "משרה" as a calque for "job" is a systemic terminology error — affected 78 occurrences across 15 files, all in compute-job contexts.
+- Strategic pivot mid-Phase-2: stopped at 99 files (out of 380) because the dominant pattern was clear. Find-replace cleared the noise, then sample-based re-review (17 files) found only non-register issues to fix surgically.
+
+**Validator suggestion for HE:** flag `אנו/עיין/אנא/בקר ב` and `משרה/משרות` (when EN has "job") as HE register/terminology errors in `lint-translation.py`.
+
+**Remaining for HE:** ~314 of 380 unreviewed files. Sample-based re-review showed 47% PASS (8/17), so the remaining files likely have a similar mix of clean translations + isolated typos/accuracy errors. Worth sampling further but not exhaustively reviewing.
+
 ### FR `veuillez consulter` (3 files)
 Same boilerplate `veuillez consulter [l'article]` slipping into tu-register text. Find-replace: `veuillez consulter` → `consulte`.
 
