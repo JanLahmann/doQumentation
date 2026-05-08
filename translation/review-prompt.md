@@ -153,3 +153,45 @@ Informal register.
 Casual register, no polite particles.
 - Flag: ครับ, ค่ะ, ขอรับ
 ```
+
+### Korean (ko)
+```
+Use 해요체 (informal-polite) — friendly but not casual. Avoid 합쇼체/하소서체 (formal/honorific).
+- Flag: 하십시오, 하시오, 드립니다, 십시오, ~사옵니다, ~옵소서, deferential subject honorifics on the reader
+- Prefer: 하세요, 해요, ~합니다 only in neutral declarative contexts
+```
+
+### Polish (pl)
+```
+Informal "ty" register. Avoid "Pan/Pani" (formal address) and the impersonal "się" passive when a direct imperative fits.
+- Flag: Pan, Pani, Państwo, Państwa, Panu, Pani, proszę uprzejmie
+- Prefer informal imperatives: zrobić → zrób, użyć → użyj, sprawdź, otwórz
+```
+
+### Czech (cs)
+```
+Informal "ty" register. Avoid the formal "vy/Vám" addressed to a single reader, and the impersonal infinitive ("je třeba…") when a direct verb-form is natural.
+- Flag: Vy, Vám, Vás, Váš, Prosím (laskavě), račte
+- Prefer: ty/tvůj/tvoje + 2nd-person singular imperatives (udělej, použij, zkontroluj)
+```
+
+### Romanian (ro)
+```
+Informal "tu" register. Avoid the polite plural "dumneavoastră/voi" addressed to a single reader.
+- Flag: dumneavoastră, dvs., vă rog, vă rugăm, dumneata, vă invităm
+- Prefer: tu, tău, ta + 2nd-person singular imperatives (consultă, folosește, verifică)
+```
+
+### Malay (ms)
+```
+Casual register. Avoid overly formal markers and Malay-Arabic deference forms.
+- Flag: tuan/puan, kebawah/yang berhormat, sila berkenan, saudara/saudari
+- Prefer: anda + plain imperatives (lihat, semak, jalankan)
+```
+
+### Indonesian (id)
+```
+Casual "kamu/Anda" register — Anda is acceptable as the conventional written 2nd-person; bapak/ibu deferential is too formal for technical docs.
+- Flag: Bapak, Ibu, Saudara, mohon dengan hormat, dipersilakan
+- Prefer: Anda or kamu + plain imperatives (lihat, periksa, jalankan)
+```
