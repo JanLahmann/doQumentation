@@ -99,7 +99,21 @@ Line 194 in BOTH files: `parehong panganib na matematika` (panganib = danger/ris
 
 **Validator suggestion for HE:** flag `אנו/עיין/אנא/בקר ב` and `משרה/משרות` (when EN has "job") as HE register/terminology errors in `lint-translation.py`.
 
-**Remaining for HE:** ~314 of 380 unreviewed files. Sample-based re-review showed 47% PASS (8/17), so the remaining files likely have a similar mix of clean translations + isolated typos/accuracy errors. Worth sampling further but not exhaustively reviewing.
+**Phase 2-FULL update (2026-05-08, second pass):** reviewed 136 more HE files, bringing total to 235/413 (57%). Verdict mix: 71 PASS / 56 MINOR / 9 FAIL on this batch. Additional Phase 4 fixes:
+- Critical accuracy fixes: `quantum-mechanics-basics.mdx` little-endian reversal (rightmost was called leftmost), `bits-gates-and-circuits.mdx` "encrypt" used for "observe", `qiskit-code-assistant-openai-api.mdx` negation inversion, `dynamical-decoupling-pass-manager.mdx` "Bloch sphere" → counting/sefirah
+- Cyrillic intrusion: `DAG-representation.mdx` line 173 had Russian "произвольный" — replaced with "שרירותי"
+- Residual משרה→עבודה: 3 plural forms missed in earlier pass — fixed
+- 11 more deutsch-jozsa transliteration fixes (`ג'וזסה` → `ג'וזה`)
+- 9 surgical fixes for FAILs + multiple MINOR_ISSUES
+- Multiple Latin/loanword malformed words fixed (סומלץ, מתמדגים, הבשתמשת, etc.)
+
+**Remaining for HE (~178 unreviewed):** ~25 chunks not yet exercised (c070–c094). Pattern is consistent: clean translations with isolated typos/accuracy errors. Future session can finish the long tail; quality is now well-known.
+
+**Recurring HE patterns surfaced in Phase 2-FULL** (worth a future targeted find-replace):
+- "tensor": טנסורי vs טנזורי (mixed)
+- "observable": multiple transliterations (אובזרבבל, אובזרוובל, אוברווביילים) — needs canonicalization
+- Singular/plural imperative drift in Next Steps blocks (especially `שים לב` vs `שימו לב`)
+- English admonition blocks left untranslated in 6+ files
 
 ### FR `veuillez consulter` (3 files)
 Same boilerplate `veuillez consulter [l'article]` slipping into tu-register text. Find-replace: `veuillez consulter` → `consulte`.
