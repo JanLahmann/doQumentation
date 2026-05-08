@@ -41,13 +41,19 @@ I18N_DIR = REPO_ROOT / "i18n"
 
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
+    "ms", "id", "th", "ko", "pl", "ro", "cs",
     "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
 
 # Priority order for linguistic review
 LOCALE_PRIORITY = [
-    "de", "es", "fr", "ja", "uk", "it", "pt", "he", "tl",
-    # AR skipped (needs re-translation)
+    # Phase 1: top up the mostly-done main locales
+    "de", "es", "fr", "ja", "uk", "it", "pt", "tl", "ar",
+    # Phase 2: finish HE (started but mostly unreviewed)
+    "he",
+    # Phase 3: 7 untouched main locales — non-Latin first, then Slavic, then MS/ID
+    "ko", "th", "pl", "cs", "ro", "ms", "id",
+    # Dialect locales last
     "ksh", "nds", "gsw", "sax", "bln", "aut", "swg", "bad", "bar",
 ]
 
