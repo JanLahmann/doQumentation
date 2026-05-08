@@ -66,7 +66,7 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 - **Clear Session**: "Clear Session" button (GitHub Pages + Code Engine, visible when kernel is ready) clears `sessionStorage` session and resets to static view. Next Run starts a fresh server.
 - **Binder startup cancel + slow detection**: Cancel button replaces "Connecting..." during Binder startup — cancels the EventSource immediately. Per-phase timeout thresholds (connecting 1m, waiting 3m, fetching/pushing/launching 5m, building 12m) trigger a red warning banner suggesting alternative backends. "Clear Binder Session" also available on Settings page.
 - **Interception transparency**: All kernel modifications print `[doQumentation]` messages (simulator intercepts, credential injection, warning suppression, pip install cells). Exported notebooks include a setup notice cell explaining injections. "What's modified?" link on `OpenInLabBanner`. Dedicated `/about/code-modifications` page listing every automatic transform.
-- **TutorialFeedback widget** (`src/components/TutorialFeedback/`): Thumbs up/down Umami-tracked widget appended to all tutorial + addon MDX pages via `sync-content.py`. Distinguishes doQumentation website feedback from IBM content survey. Label: "How was the doQumentation experience? (website, code execution, navigation — tutorial content is by IBM Quantum)".
+- **FeedbackWidget** (`src/components/FeedbackWidget/`): Thumbs up/down Umami-tracked widget. Label: **"Was doQumentation helpful here?"** Mounted by the unified DocItem footer on `tutorials/` and `learning/` source paths — no longer per-page MDX inclusion. The legacy `<TutorialFeedback />` wrapper at `src/components/TutorialFeedback/` now returns null; ~240 MDX files still import it as a no-op (rewriting them all would be a big diff with no benefit).
 - **TranslationFeedback banner** (`src/components/TranslationFeedback/`): Translation quality banner on non-EN pages (good/ok/poor rating → Umami). Session-dismissible.
 - **"View in English" link**: Top entry in locale dropdown on non-EN pages — links to `https://doqumentation.org/{path}` for the original English version.
 - **save_account() protection**: Dynamic blue "Skip this cell" banners (runtime-injected via `annotateSaveAccountCells()`, translated via `code.json`) when credentials/simulator active, prevents overwriting injected values. **Run All auto-skips** these cells — `handleRunAll` filters out any cell with `.thebelab-cell__skip-hint` before execution.
@@ -132,24 +132,38 @@ All storage access centralized in `src/config/preferences.ts` and `src/config/ju
 | `<IBMVideo>` | YouTube-first (32 mapped IDs) + IBM fallback |
 | `<Card>`, `<CardGroup>`, `<Image>`, etc. | Component stubs |
 
-### Source-date footer (per-page upstream + EN + translation dates)
-Every doc page renders a small block above "Edit this page" with up to three lines:
-- **Source: IBM Quantum docs — updated `<date>`** (link to the upstream page on docs.quantum.ibm.com or learning.quantum.ibm.com)
-- **EN page**: *This page on doQumentation — updated `<date>`* | **Translated page**: *English version on doQumentation — updated `<date>`* (links to the EN version on doqumentation.org)
-- *This translation based on the English version of `<date>`* (translated pages only; "of approx. `<date>`" when `en_base_source: "promoted-fallback"`)
+### Unified DocItem footer (dates + feedback panel)
+
+Every doc page renders one consolidated footer block built by the swizzled `src/theme/DocItem/Footer/index.tsx`. Two zones:
+
+**Zone 1 — page-dates** (top, separated from the content by a faint border):
+- `Source: IBM Quantum docs — updated <date>` (link to docs.quantum.ibm.com / learning.quantum.ibm.com when the path maps; absent on doQ-original pages)
+- EN pages: `This page on doQumentation — updated <date>`
+- Translated pages: `English version on doQumentation — updated <date>` (links to the EN version) + a third line `This translation based on the English version of <date>` (italic; "of approx. <date>" when `en_base_source: "promoted-fallback"` or `"clamped"`)
+
+**Zone 2 — feedback panel** (two-column grid below the dates):
+
+| Left column                              | Right column                          |
+|------------------------------------------|---------------------------------------|
+| `Was doQumentation helpful here?` 👍 👎  | `[Site or translation issue?]` (primary, bordered button) |
+| `[☆ Bookmark]`                            | *Content issue? Edit on IBM Quantum docs* (secondary, dotted-underline) |
+
+The 👍/👎 widget is gated to `tutorials/` + `learning/` source paths (mirroring the historical TutorialFeedback inclusion). The Bookmark always shows. On doQ-original pages (`hello-world.mdx`, `workshop/*`, `about/*`) the content-edit link points to our repo instead of IBM's. Stacks vertically below 640px.
 
 **Date semantics — important.** All three dates refer to *upstream content dates*, not local-file mtimes, so the freshness invariant `upstream ≥ EN ≥ translation` always holds visually:
 - `upstream_date` = latest commit date for the file in `Qiskit/documentation` (the real IBM repo). Refreshed daily.
 - `en_date` = the upstream commit date matching the version of the upstream file *currently in our submodule*. NOT `git log` of the local MDX (which would move on every sync-content.py run for whitespace/transform reasons and break the ordering). Computed by hashing the on-disk upstream file and walking `ibm/main` history for a blob match (`_content_authored_date` in sync-content.py, uses raw `subprocess.run` with `text=False` for binary-safe `.ipynb` blobs).
-- `en_base_commit_date` = the EN-side commit date the translation was based on (recorded at promote time; backfilled via hash-match against historical blobs).
+- `en_base_commit_date` = the EN-side commit date the translation was based on (recorded at promote time; backfilled via hash-match against historical blobs). Clamped at render time to ≤ `en_date` so a translation can never appear newer than the EN it was translated from (`page-dates` plugin tags clamped values with `en_base_source: "clamped"`).
 
 Data flow:
 - `scripts/sync-content.py --meta-only` writes `src/config/upstreamFileMeta.json` with `upstream_date`, `upstream_sha`, and `en_date` (using the hash-match logic above). Requires `ibm/main` fetched in `upstream-docs/` — the JanLahmann fork flattens per-file dates because it merges upstream as single sync commits, so we always need real IBM history. `_ensure_ibm_history()` adds and fetches the `ibm` remote on both submodule and bare-clone code paths in `clone_or_update_upstream()`.
-- `translation/scripts/promote-drafts.py` records `en_base_commit_date` per locale × path in `translation/status.json` whenever a draft is promoted.
+- `translation/scripts/promote-drafts.py` records `en_base_commit_date` per locale × path in `translation/status.json` whenever a draft is promoted. Reads from `upstreamFileMeta.json` so the recorded date is the upstream content date, not a local-MDX commit date.
 - `translation/scripts/backfill-en-base-date.py` is the one-shot history-walk that backfilled 4,964 of 7,342 existing entries with exact hash-verified dates (matches stored `source_hash` against historical blob hashes); 2,170 fell back to the `promoted` date with `en_base_source: "promoted-fallback"`.
-- `plugins/page-dates/index.js` (Docusaurus plugin) reads both files at build time and exposes a per-locale page-date map via `globalData["page-dates"]`.
-- `src/theme/DocItem/Footer/index.tsx` reads `useDoc().metadata.source` (must strip both `@site/docs/` and `@site/i18n/<locale>/docusaurus-plugin-content-docs/current/` prefixes — translated pages carry the latter), looks the page up in globalData, and renders the three lines with locale-aware `Intl.DateTimeFormat`. The IBM-source URL mapping is shared with the EditThisPage swizzle via `src/lib/originalUrl.ts`.
-- `src/theme/EditThisPage/index.tsx` also gates its "View original on IBM Quantum Platform" link on the same manifest — `editUrlToRelPath()` extracts the doc key from the GitHub edit URL Docusaurus passes in, and the link is hidden when the page isn't in the manifest (e.g., `tutorials/hello-world.mdx` is doQ-original, not IBM upstream).
+- `plugins/page-dates/index.js` (Docusaurus plugin) reads both files at build time and exposes a per-locale page-date map via `globalData["page-dates"]`. Clamps `translationBaseDate` to `enDate` to enforce the freshness ordering.
+- `src/theme/DocItem/Footer/index.tsx` reads `useDoc().metadata.source` (must strip both `@site/docs/` and `@site/i18n/<locale>/docusaurus-plugin-content-docs/current/` prefixes — translated pages carry the latter), looks the page up in globalData, and renders both zones. Uses `Intl.DateTimeFormat(locale)` for date formatting. The footer no longer renders `<OriginalFooter>` — it builds the whole panel directly from `<EditThisPage>` (swizzled) + `<FeedbackWidget>` + `<BookmarkButton>`.
+- `src/theme/EditThisPage/index.tsx` is fully replaced — produces only the two action links in zone 2's right column. `editUrlToRelPath()` extracts the doc key from the GitHub edit URL Docusaurus passes in, and the page-dates manifest is the oracle for whether the page is IBM-upstream (→ "Suggest a content edit on IBM Quantum docs" link to `Qiskit/documentation/edit/main/<upstream_path>`) or doQ-original (→ "Edit this page on doQumentation" link to our repo). The "Site or translation issue?" link always shows and points at `JanLahmann/doQumentation/issues/new` with a body template that prefills the page URL + an issue-type checklist (frontend bug, translation problem, code execution, UX, accessibility, feature request).
+- The 👍/👎 widget lives at `src/components/FeedbackWidget/`. The legacy `src/components/TutorialFeedback/` wrapper now returns null — ~240 MDX files still import it inline but those calls are harmless no-ops. The Bookmark button moved to `src/components/BookmarkButton/` (was inline in the EditThisPage swizzle).
+- The IBM-source URL mapping (used by the `Source: IBM Quantum docs` link) lives in `src/lib/originalUrl.ts`.
 
 Refresh: `.github/workflows/refresh-page-dates.yml` runs daily at 07:00 UTC, calls `sync-content.py --meta-only` (touches *only* the manifest, never content), commits if changed, push triggers `deploy.yml`.
 
@@ -202,7 +216,7 @@ doQumentation/
 ├── notebooks/                  # Original .ipynb for JupyterLab (generated)
 ├── src/
 │   ├── clientModules/          # pageTracker, displayPrefs, onboarding, outboundTracker
-│   ├── components/             # ExecutableCode, ResumeCard, RecentPages, BookmarksList, OpenInLabBanner, BetaNotice, TutorialFeedback, TranslationFeedback, CourseComponents, GuideComponents
+│   ├── components/             # ExecutableCode, ResumeCard, RecentPages, BookmarksList, OpenInLabBanner, BetaNotice, FeedbackWidget, BookmarkButton, TranslationFeedback, TutorialFeedback (no-op wrapper), CourseComponents, GuideComponents
 │   ├── config/                 # storage.ts (cookie+localStorage), jupyter.ts (env detection, credentials), preferences.ts (user prefs)
 │   ├── css/custom.css          # All styling
 │   ├── pages/                  # features.tsx, jupyter-settings.tsx
