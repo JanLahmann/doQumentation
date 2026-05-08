@@ -173,28 +173,33 @@ def compute_source_hash(content: str) -> str:
 
 
 def en_file_commit_date(rel_path: str) -> str:
-    """Return YYYY-MM-DD of the last commit touching the EN file, or "".
+    """Return YYYY-MM-DD of the upstream content date matching the EN file.
 
-    Used to record which EN revision a translation was based on, so the
-    page footer can show "translation based on EN of <date>". Falls back
-    to empty string if the file is untracked or git is unavailable.
+    The translation is based on whatever the EN page looked like at promote
+    time, which by definition mirrors the upstream `.ipynb`/`.mdx` content
+    we synced. We want to record the *upstream* commit date for that
+    content (NOT git log of our local docs/<path>.mdx, which moves on every
+    sync-content.py run for whitespace/transform reasons and would produce
+    en_base_commit_date values newer than en_date — breaking the freshness
+    ordering shown in the page-dates footer).
+
+    Looks up the upstream path from src/config/upstreamFileMeta.json and
+    returns its en_date — that field already encodes "the upstream commit
+    date matching the on-disk upstream file" via _content_authored_date in
+    sync-content.py. Falls back to "" when the file isn't in the manifest
+    (workshop, doQ-original, etc.).
     """
-    en_path = DOCS_DIR / rel_path
-    if not en_path.exists():
+    manifest_path = REPO_ROOT / "src" / "config" / "upstreamFileMeta.json"
+    if not manifest_path.exists():
         return ""
     try:
-        result = subprocess.run(
-            ["git", "log", "-1", "--format=%cs", "HEAD", "--", f"docs/{rel_path}"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
-        pass
-    return ""
+        return ""
+    entry = (manifest.get("files") or {}).get(rel_path)
+    if not entry:
+        return ""
+    return entry.get("en_date", "") or ""
 
 
 def update_status(status: dict, locale: str, results: list[dict]) -> None:

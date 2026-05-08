@@ -85,8 +85,28 @@ module.exports = function pageDatesPlugin(context, _options) {
               enDate: "",
             };
           }
-          pages[relPath].translationBaseDate = entry.en_base_commit_date;
-          if (entry.en_base_source) {
+          // Clamp translation base to enDate. The freshness invariant is
+          // upstream_date ≥ en_date ≥ translation_base_date — by definition,
+          // a translation cannot be based on an EN revision newer than the
+          // EN content currently on doQumentation. Older promote-drafts
+          // runs and the Phase 2 backfill recorded en_base_commit_date by
+          // walking the *local* docs/ git history, which moves on every
+          // sync-content.py run for whitespace/transform reasons and so
+          // could land at a date well after the actual upstream content
+          // the translator saw. Clamping fixes that without rewriting
+          // status.json. Going forward, promote-drafts.py records the
+          // upstream content date directly, so clamping is a no-op there.
+          let baseDate = entry.en_base_commit_date;
+          const enDate = pages[relPath].enDate;
+          let clamped = false;
+          if (enDate && baseDate > enDate) {
+            baseDate = enDate;
+            clamped = true;
+          }
+          pages[relPath].translationBaseDate = baseDate;
+          if (clamped) {
+            pages[relPath].translationBaseSource = "clamped";
+          } else if (entry.en_base_source) {
             pages[relPath].translationBaseSource = entry.en_base_source;
           }
         }
