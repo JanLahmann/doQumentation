@@ -1,11 +1,15 @@
 import React from 'react';
 import OriginalFooter from '@theme-original/DocItem/Footer';
+import EditThisPage from '@theme/EditThisPage';
+// OriginalFooter is kept only for its Props type (upgrade-safety).
+// We no longer render it — the feedback panel below replaces it.
 import {useDoc} from '@docusaurus/plugin-content-docs/client';
 import {usePluginData} from '@docusaurus/useGlobalData';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Translate from '@docusaurus/Translate';
-import Link from '@docusaurus/Link';
 import {getOriginalPageUrl} from '../../../lib/originalUrl';
+import FeedbackWidget from '../../../components/FeedbackWidget';
+import BookmarkButton from '../../../components/BookmarkButton';
 
 type Props = React.ComponentProps<typeof OriginalFooter>;
 
@@ -176,6 +180,17 @@ function PageDates({entry, locale, currentPath}: {
   );
 }
 
+function isFeedbackPage(relPath: string | null): boolean {
+  // The feedback widget (👍/👎 + question) was historically only on
+  // tutorial-style pages via inline <TutorialFeedback />. Keep the same
+  // gate now that it's mounted from the footer instead of MDX:
+  //   - tutorials/...
+  //   - learning/...  (courses + modules)
+  // Skip guides, qiskit-addons, workshop, about — they didn't have it before.
+  if (!relPath) return false;
+  return relPath.startsWith('tutorials/') || relPath.startsWith('learning/');
+}
+
 export default function DocItemFooter(props: Props): JSX.Element {
   const {metadata} = useDoc();
   const data = usePluginData('page-dates') as PageDatesData | undefined;
@@ -183,10 +198,11 @@ export default function DocItemFooter(props: Props): JSX.Element {
   const locale = i18n.currentLocale;
 
   const relPath = sourceToRelPath(metadata?.source);
-  const entry = relPath && data?.pages?.[relPath];
+  const entry = relPath ? data?.pages?.[relPath] : undefined;
+  const showFeedback = isFeedbackPage(relPath);
 
   return (
-    <>
+    <div className="dq-footer-block">
       {entry && (
         <PageDates
           entry={entry}
@@ -194,7 +210,17 @@ export default function DocItemFooter(props: Props): JSX.Element {
           currentPath={metadata?.permalink || ''}
         />
       )}
-      <OriginalFooter {...props} />
-    </>
+      <div className="dq-footer-actions">
+        <div className="dq-footer-actions__left">
+          {showFeedback && <FeedbackWidget />}
+          <BookmarkButton />
+        </div>
+        <div className="dq-footer-actions__right">
+          {/* EditThisPage is swizzled to render the two purpose-built
+              feedback links: site/translation issue + content edit. */}
+          {metadata?.editUrl && <EditThisPage editUrl={metadata.editUrl} />}
+        </div>
+      </div>
+    </div>
   );
 }
