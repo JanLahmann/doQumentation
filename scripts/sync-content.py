@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import base64
+import hashlib
 import json
 import re
 import shutil
@@ -2748,6 +2749,52 @@ def _ibm_upstream_ref(upstream_repo: Path) -> Optional[str]:
     return None
 
 
+def _content_authored_date(
+    upstream_repo: Path, upstream_path: str, ref: str,
+) -> str:
+    """Return YYYY-MM-DD of the upstream commit whose blob matches the file
+    *as it currently exists* on disk in `upstream_repo`. This is the IBM-side
+    date of the content our EN page actually reflects, regardless of when
+    our local sync moved it into docs/.
+
+    Walks `ref`'s history newest → oldest and returns the date of the first
+    commit whose blob is byte-identical to the on-disk file. Returns "" if
+    the file is missing or no historical version matches (the latter
+    indicates the local copy was edited independently of upstream sync).
+
+    Uses raw `subprocess.run` with `text=False` so binary blobs (e.g. .ipynb
+    files containing embedded image bytes) round-trip without UTF-8 mangling.
+    """
+    abs_path = upstream_repo / upstream_path
+    if not abs_path.exists():
+        return ""
+    try:
+        on_disk_hash = hashlib.sha256(abs_path.read_bytes()).digest()
+    except Exception:
+        return ""
+
+    log = subprocess.run(
+        ["git", "log", "--format=%H %cs", ref, "--", upstream_path],
+        cwd=upstream_repo, capture_output=True, text=True, check=False,
+    )
+    if log.returncode != 0:
+        return ""
+    for line in log.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        sha, _, cdate = line.partition(" ")
+        blob = subprocess.run(
+            ["git", "show", f"{sha}:{upstream_path}"],
+            cwd=upstream_repo, capture_output=True, text=False, check=False,
+        )
+        if blob.returncode != 0:
+            continue
+        if hashlib.sha256(blob.stdout).digest() == on_disk_hash:
+            return cdate
+    return ""
+
+
 def write_page_dates_manifest():
     """Write src/config/upstreamFileMeta.json with per-file upstream + EN dates.
 
@@ -2797,11 +2844,28 @@ def write_page_dates_manifest():
                 else:
                     continue
 
+            # `en_date` semantics: the upstream commit date that matches the
+            # content currently in our local upstream-docs/ — i.e. the IBM
+            # content date our EN page reflects. NOT the local-MDX mtime
+            # (which would move every time sync-content.py touches the file
+            # for whitespace/transform reasons even when content is unchanged).
+            #
+            # For files committed via the locally-tracked docs/ subtree (the
+            # rare case where someone edits a synced doc directly without
+            # going through upstream), _content_authored_date returns "" and
+            # we fall back to the upstream date — still better than the local
+            # mtime, which can be misleadingly recent.
+            content_date = _content_authored_date(
+                UPSTREAM_DIR, upstream_rel, upstream_ref,
+            )
+            upstream_date = _git_file_date(
+                UPSTREAM_DIR, upstream_rel, upstream_ref,
+            )
             entry = {
                 "upstream_path": upstream_rel,
-                "upstream_date": _git_file_date(UPSTREAM_DIR, upstream_rel, upstream_ref),
+                "upstream_date": upstream_date,
                 "upstream_sha": _git_file_sha(UPSTREAM_DIR, upstream_rel, upstream_ref),
-                "en_date": _git_file_date(PROJECT_ROOT, f"docs/{rel}"),
+                "en_date": content_date or upstream_date,
             }
             manifest[rel] = entry
 
