@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import OriginalEditThisPage from '@theme-original/EditThisPage';
 import {translate} from '@docusaurus/Translate';
+import {usePluginData} from '@docusaurus/useGlobalData';
 import {
   isBookmarked,
   addBookmark,
@@ -15,14 +16,42 @@ import {getOriginalPageUrl} from '../../lib/originalUrl';
 
 type Props = React.ComponentProps<typeof OriginalEditThisPage>;
 
+type PageDatesData = {
+  locale: string;
+  pages: Record<string, unknown>;
+};
+
+/**
+ * Extract the manifest key (e.g. "tutorials/hello-world.mdx") from the
+ * GitHub edit URL Docusaurus passes us. Returns null if the URL doesn't
+ * match the expected pattern.
+ */
+function editUrlToRelPath(editUrl: string | undefined): string | null {
+  if (!editUrl) return null;
+  const m = editUrl.match(/\/tree\/[^/]+\/docs\/(.+)$/);
+  return m ? m[1] : null;
+}
+
 export default function EditThisPage(props: Props): JSX.Element {
+  const data = usePluginData('page-dates') as PageDatesData | undefined;
+  const relPath = editUrlToRelPath(props.editUrl);
+  const isUpstreamPage = !!(relPath && data?.pages?.[relPath]);
+
   const [bookmarked, setBookmarked] = useState(false);
   const [originalUrl, setOriginalUrl] = useState<string | null>(null);
 
   useEffect(() => {
     setBookmarked(isBookmarked(window.location.pathname));
-    setOriginalUrl(getOriginalPageUrl(window.location.pathname));
-  }, []);
+    // Only show the "View original" link for pages that come from the
+    // IBM upstream — doQumentation-original tutorials (e.g. hello-world)
+    // have no upstream counterpart and would otherwise produce a broken
+    // link to learning.quantum.ibm.com.
+    if (isUpstreamPage) {
+      setOriginalUrl(getOriginalPageUrl(window.location.pathname));
+    } else {
+      setOriginalUrl(null);
+    }
+  }, [isUpstreamPage]);
 
   const handleToggle = () => {
     const path = window.location.pathname;
