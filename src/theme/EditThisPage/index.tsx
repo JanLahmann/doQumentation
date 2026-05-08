@@ -123,7 +123,41 @@ export default function EditThisPage(_props: Props): JSX.Element {
   };
 
   return (
-    <div className="dq-edit-bookmark-row">
+    <div className="dq-feedback-block">
+      <div className="dq-feedback-row">
+        <a
+          href={siteIssueUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="dq-site-issue-link"
+          title={translate({
+            id: 'feedback.siteIssue.tooltip',
+            message: 'Report a site, translation, or code-execution issue with doQumentation',
+          })}
+        >
+          {translate({
+            id: 'feedback.siteIssue.label',
+            message: 'Site or translation issue?',
+          })}
+        </a>
+        <button
+          className={`dq-bookmark-button${bookmarked ? ' dq-bookmark-button--active' : ''}`}
+          onClick={handleToggle}
+          title={bookmarked
+            ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
+            : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
+          aria-label={bookmarked
+            ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
+            : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
+        >
+          <span className="dq-bookmark-button__icon" aria-hidden="true">
+            {bookmarked ? '★' : '☆'}
+          </span>
+          {bookmarked
+            ? translate({id: 'bookmark.active', message: 'Bookmarked'})
+            : translate({id: 'bookmark.inactive', message: 'Bookmark'})}
+        </button>
+      </div>
       {contentEditUrl && (
         <a
           href={contentEditUrl}
@@ -133,7 +167,7 @@ export default function EditThisPage(_props: Props): JSX.Element {
           title={isUpstreamPage
             ? translate({
                 id: 'feedback.contentEdit.ibm.tooltip',
-                message: 'Open this page in the IBM Quantum docs GitHub repo for editing',
+                message: 'Content typo or technical error? IBM owns the source — click to open it in the IBM Quantum docs repo on GitHub.',
               })
             : translate({
                 id: 'feedback.contentEdit.doq.tooltip',
@@ -143,7 +177,7 @@ export default function EditThisPage(_props: Props): JSX.Element {
           {isUpstreamPage
             ? translate({
                 id: 'feedback.contentEdit.ibm.label',
-                message: 'Suggest a content edit on IBM Quantum docs',
+                message: 'Content issue? Edit on IBM Quantum docs',
               })
             : translate({
                 id: 'feedback.contentEdit.doq.label',
@@ -151,38 +185,6 @@ export default function EditThisPage(_props: Props): JSX.Element {
               })}
         </a>
       )}
-      <a
-        href={siteIssueUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="dq-site-issue-link"
-        title={translate({
-          id: 'feedback.siteIssue.tooltip',
-          message: 'Report a site, translation, or code-execution issue (not the content itself — that goes to the IBM Quantum repo)',
-        })}
-      >
-        {translate({
-          id: 'feedback.siteIssue.label',
-          message: 'Site or translation issue?',
-        })}
-      </a>
-      <button
-        className={`dq-bookmark-button${bookmarked ? ' dq-bookmark-button--active' : ''}`}
-        onClick={handleToggle}
-        title={bookmarked
-          ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
-          : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
-        aria-label={bookmarked
-          ? translate({id: 'bookmark.remove', message: 'Remove bookmark from homepage'})
-          : translate({id: 'bookmark.add', message: 'Save to your bookmarks list on the homepage'})}
-      >
-        <span className="dq-bookmark-button__icon" aria-hidden="true">
-          {bookmarked ? '★' : '☆'}
-        </span>
-        {bookmarked
-          ? translate({id: 'bookmark.active', message: 'Bookmarked'})
-          : translate({id: 'bookmark.inactive', message: 'Bookmark'})}
-      </button>
     </div>
   );
 }
