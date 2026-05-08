@@ -99,6 +99,11 @@ Line 194 in BOTH files: `parehong panganib na matematika` (panganib = danger/ris
 
 **Validator suggestion for HE:** flag `אנו/עיין/אנא/בקר ב` and `משרה/משרות` (when EN has "job") as HE register/terminology errors in `lint-translation.py`.
 
+**Phase 2-CONTINUED update (2026-05-08, third pass):** reviewed 25 more chunks (c070–c094), bringing HE coverage to 290/412 (70%). All 94 planned chunks have been exercised. Two more systemic find-replaces applied:
+- `מצבות` (tombstones) → `מצבים` (states): 16 fixes / 4 files. Translator confused "monuments/tombstones" plural with "states" plural (same root, different word).
+- `אובזרבבל*` (doubled-ב transliteration of "observable") → `אובזרבל*`: 107 fixes / 26 files. Major terminology cleanup.
+Plus 1 content gap fix: `learning/index.mdx` was missing the 14th course entry (use-a-qc-today). HE structural now 412 PASS / 0 FAIL (was 411/1 before fixes).
+
 **Phase 2-FULL update (2026-05-08, second pass):** reviewed 136 more HE files, bringing total to 235/413 (57%). Verdict mix: 71 PASS / 56 MINOR / 9 FAIL on this batch. Additional Phase 4 fixes:
 - Critical accuracy fixes: `quantum-mechanics-basics.mdx` little-endian reversal (rightmost was called leftmost), `bits-gates-and-circuits.mdx` "encrypt" used for "observe", `qiskit-code-assistant-openai-api.mdx` negation inversion, `dynamical-decoupling-pass-manager.mdx` "Bloch sphere" → counting/sefirah
 - Cyrillic intrusion: `DAG-representation.mdx` line 173 had Russian "произвольный" — replaced with "שרירותי"
