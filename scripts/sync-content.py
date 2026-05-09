@@ -177,6 +177,46 @@ def _ensure_ibm_history(upstream_repo: Path):
     )
 
 
+_ADDON_IMG_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp')
+_ADDON_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(\s+\"[^\"]*\")?\)")
+_ADDON_HTML_IMG_RE = re.compile(r"""<img\b([^>]*?)src=(['"])([^'"]+)\2([^>]*)>""")
+
+
+def rewrite_addon_relative_refs(content: str, output_path: Path) -> str:
+    """Rewrite `./foo.png` / `../images/foo.png` / `exp_data/foo.png` etc. in
+    addon MDX to absolute `/img/qiskit-addons/<rel>` URLs. Lets every locale
+    share one image copy (matches the pattern used by all other docs)."""
+    addon_root = (DOCS_OUTPUT / 'qiskit-addons').resolve()
+    out_dir = output_path.parent.resolve()
+
+    def _resolve(ref: str) -> Optional[str]:
+        head = ref.split('#', 1)[0].split('?', 1)[0]
+        if not head or head[0] in '/#' or head.startswith(('http://', 'https://', 'data:', 'mailto:', 'tel:')):
+            return None
+        if not head.lower().endswith(_ADDON_IMG_EXTS):
+            return None
+        target = (out_dir / head).resolve()
+        try:
+            rel = target.relative_to(addon_root)
+        except ValueError:
+            return None
+        return f"/img/qiskit-addons/{rel.as_posix()}"
+
+    def md_repl(m: re.Match) -> str:
+        alt, ref, title = m.group(1), m.group(2), m.group(3) or ''
+        new = _resolve(ref)
+        return f"![{alt}]({new}{title})" if new else m.group(0)
+
+    def html_repl(m: re.Match) -> str:
+        pre, quote, ref, post = m.group(1), m.group(2), m.group(3), m.group(4)
+        new = _resolve(ref)
+        return f"<img{pre}src={quote}{new}{quote}{post}>" if new else m.group(0)
+
+    content = _ADDON_MD_IMG_RE.sub(md_repl, content)
+    content = _ADDON_HTML_IMG_RE.sub(html_repl, content)
+    return content
+
+
 def transform_mdx(content: str, source_path: Path) -> str:
     """Transform upstream MDX to Docusaurus-compatible format."""
     for pattern, replacement in MDX_TRANSFORMS:
@@ -570,6 +610,14 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
 
         # Apply MDX transforms (Admonition → :::, link fixes, strip custom components)
         content = transform_mdx(content, ipynb_path)
+
+        # Addon notebooks reference siblings via relative URLs; rewrite them
+        # to absolute /img/qiskit-addons/... so locales share one image copy.
+        try:
+            if 'qiskit-addons' in output_path.relative_to(DOCS_OUTPUT).parts:
+                content = rewrite_addon_relative_refs(content, output_path)
+        except ValueError:
+            pass  # output_path is not under DOCS_OUTPUT (defensive)
 
         # Escape characters that break MDX: curly braces in text (not in code blocks)
         content = escape_mdx_outside_code(content)
@@ -2460,23 +2508,29 @@ For API documentation, visit the individual addon repos on [GitHub](https://gith
             nb_rel = Path('qiskit-addons') / slug_name / rel_name
             copy_notebook_with_rewrite(src_path, nb_dst, nb_rel)
 
-        # Copy any images from the tutorials directory
+        # Addon assets all land under static/img/qiskit-addons/<...>; addon
+        # MDX references them via absolute /img/... URLs (rewritten by
+        # rewrite_addon_relative_refs in convert_notebook). Same pattern as
+        # the rest of docs/ — one canonical copy, no per-locale duplication.
+        addon_static = STATIC_DIR / "img" / "qiskit-addons"
+
+        # Loose images alongside the .ipynb files (ref'd as `./<file>`)
         for img_path in tutorials_src.glob('*'):
             if img_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
-                dst = addon_dst / img_path.name
+                dst = addon_static / slug_name / img_path.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(img_path, dst)
                 total_stats["images"] += 1
 
-        # Copy images from sibling directories that notebooks may reference
-        # via relative paths like ../images/ or ../_static/images/
-        # These resolve to qiskit-addons/images/ or qiskit-addons/_static/images/
+        # Sibling images shared across an addon's tutorials (ref'd as
+        # `../images/...` or `../_static/images/...`). Mirror the upstream
+        # subdir layout under static/img/qiskit-addons/.
         docs_dir = repo_dir / config["path"].split("/")[0]  # e.g. "docs"
         for img_subdir in ("images", "_static/images", "_static"):
             img_src = docs_dir / img_subdir
             if not img_src.exists():
                 continue
-            # Place at parent level (qiskit-addons/<img_subdir>) since MDX uses ../
-            img_dst = addons_dst / img_subdir
+            img_dst = addon_static / img_subdir
             img_dst.mkdir(parents=True, exist_ok=True)
             for img_path in img_src.rglob('*'):
                 if img_path.is_file() and img_path.suffix in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
@@ -2487,10 +2541,11 @@ For API documentation, visit the individual addon repos on [GitHub](https://gith
                         shutil.copy(img_path, dst)
                         total_stats["images"] += 1
 
-        # Also check for exp_data/ inside the tutorials dir
+        # Per-addon exp_data (e.g. SLC) — ref'd as `exp_data/...` (no leading
+        # `./`), resolves under qiskit-addons/<slug>/exp_data/ in MDX terms.
         exp_data = tutorials_src / "exp_data"
         if exp_data.exists():
-            exp_dst = addon_dst / "exp_data"
+            exp_dst = addon_static / slug_name / "exp_data"
             exp_dst.mkdir(parents=True, exist_ok=True)
             for img_path in exp_data.rglob('*'):
                 if img_path.is_file():

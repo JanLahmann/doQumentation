@@ -241,27 +241,12 @@ def cmd_populate_locale(args):
         dest.write_text(fallback_content, encoding="utf-8")
         copied += 1
 
-    # Copy sibling image/data files under docs/qiskit-addons/ so relative
-    # image URLs in addon MDX (e.g. ./output_1.png, ../images/foo.png) resolve
-    # in locale builds. Docusaurus requires referenced local images to exist
-    # in the same filesystem subtree as the MDX; all other docs use absolute
-    # /docs/... paths served from static/ and don't need copying.
-    addons_src = DOCS_DIR / "qiskit-addons"
-    images_copied = 0
-    if addons_src.exists():
-        asset_exts = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
-        for asset in addons_src.rglob("*"):
-            if not asset.is_file() or asset.suffix.lower() not in asset_exts:
-                continue
-            rel = asset.relative_to(DOCS_DIR)
-            dest = locale_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(asset.read_bytes())
-            images_copied += 1
+    # Addon images are served from static/img/qiskit-addons/ via absolute
+    # /img/... URLs (rewritten by sync-content.py). Locales share that one
+    # canonical copy — no per-locale duplication needed.
 
     print(f"Locale '{locale}': {copied} fallback files written, "
-          f"{skipped} existing translations preserved, "
-          f"{images_copied} addon assets copied.")
+          f"{skipped} existing translations preserved.")
 
 
 def main():
