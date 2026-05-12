@@ -1,0 +1,168 @@
+name: Notebook CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'main (PoC, this branch) or notebooks (built artifact branch)'
+        type: choice
+        default: main
+        options:
+          - main
+          - notebooks
+      count:
+        description: 'How many notebooks to run (integer, or "all")'
+        default: '2'
+      offset:
+        description: 'Starting index into the sorted notebook list'
+        default: '0'
+      max_shots:
+        description: 'Per-primitive shot cap (CI_MAX_SHOTS)'
+        default: '1024'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebook-ci-${{ github.ref }}-${{ inputs.source }}-${{ inputs.offset }}-${{ inputs.count }}
+  cancel-in-progress: false
+
+jobs:
+  run-notebooks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout workflow branch (CI scaffolding)
+        uses: actions/checkout@v4
+        with:
+          path: workflow
+
+      - name: Checkout notebooks branch
+        if: ${{ inputs.source == 'notebooks' }}
+        uses: actions/checkout@v4
+        with:
+          ref: notebooks
+          path: nb
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: workflow/binder/jupyter-requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r workflow/binder/jupyter-requirements.txt nbmake pytest-xdist
+
+      - name: Build notebook slice
+        id: slice
+        env:
+          OFFSET: ${{ inputs.offset }}
+          COUNT: ${{ inputs.count }}
+          SOURCE: ${{ inputs.source }}
+        run: |
+          set -euo pipefail
+          if [[ "$SOURCE" == "main" ]]; then
+            cat > /tmp/all.txt <<'EOF'
+          local-content/learning/courses/use-a-qc-today/build-and-run-your-first-quantum-program.ipynb
+          local-content/learning/courses/use-a-qc-today/your-first-quantum-experiment.ipynb
+          EOF
+            WORKDIR="$GITHUB_WORKSPACE/workflow"
+          else
+            cd "$GITHUB_WORKSPACE/nb"
+            "$GITHUB_WORKSPACE/workflow/ci/list-notebooks.sh" \
+              "$GITHUB_WORKSPACE/workflow/ci/notebooks-skip.txt" > /tmp/all.txt
+            WORKDIR="$GITHUB_WORKSPACE/nb"
+          fi
+          awk -v o="$OFFSET" -v c="$COUNT" \
+            'NR > o && (c == "all" || NR <= o + c)' \
+            /tmp/all.txt > /tmp/slice.txt
+          total=$(wc -l < /tmp/all.txt)
+          n=$(wc -l < /tmp/slice.txt)
+          echo "Total testable: $total"
+          echo "Slice: $n notebooks (offset=$OFFSET count=$COUNT)"
+          cat /tmp/slice.txt
+          echo "workdir=$WORKDIR" >> "$GITHUB_OUTPUT"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+
+      - name: Run notebooks
+        if: ${{ steps.slice.outputs.count != '0' }}
+        env:
+          IPYTHONDIR: ${{ github.workspace }}/workflow/ci/ipython_startup_dir
+          CI_MAX_SHOTS: ${{ inputs.max_shots }}
+        working-directory: ${{ steps.slice.outputs.workdir }}
+        run: |
+          set -euo pipefail
+          mapfile -t NBS < /tmp/slice.txt
+          pytest --nbmake --nbmake-timeout=300 -n 2 \
+                 --overwrite \
+                 --junitxml="$GITHUB_WORKSPACE/ci-report.xml" \
+                 "${NBS[@]}"
+
+      - name: Collect executed notebooks
+        if: always()
+        env:
+          WORKDIR: ${{ steps.slice.outputs.workdir }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifact"
+          while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            dst="$GITHUB_WORKSPACE/artifact/$path"
+            mkdir -p "$(dirname "$dst")"
+            cp "$WORKDIR/$path" "$dst" 2>/dev/null || true
+          done < /tmp/slice.txt
+          cp "$GITHUB_WORKSPACE/ci-report.xml" "$GITHUB_WORKSPACE/artifact/" 2>/dev/null || true
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: executed-${{ inputs.source }}-${{ inputs.offset }}-${{ inputs.count }}
+          path: artifact/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        env:
+          SOURCE: ${{ inputs.source }}
+          OFFSET: ${{ inputs.offset }}
+          COUNT: ${{ inputs.count }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, sys, xml.etree.ElementTree as ET
+          source = os.environ.get("SOURCE", "")
+          offset = os.environ.get("OFFSET", "")
+          count = os.environ.get("COUNT", "")
+          print(f"### Notebook CI: source={source}, offset={offset}, count={count}")
+          print()
+          path = os.path.join(os.environ["GITHUB_WORKSPACE"], "ci-report.xml")
+          if not os.path.exists(path):
+              print("No JUnit report produced (slice empty or pytest never ran).")
+              sys.exit(0)
+          root = ET.parse(path).getroot()
+          ts = root if root.tag == "testsuite" else (root.find("testsuite") or root)
+          a = ts.attrib
+          total = int(a.get("tests", "0"))
+          failures = int(a.get("failures", "0"))
+          errors = int(a.get("errors", "0"))
+          skipped = int(a.get("skipped", "0"))
+          passed = total - failures - errors - skipped
+          print(f"- total: {total}")
+          print(f"- passed: {passed}")
+          print(f"- failed: {failures}")
+          print(f"- errored: {errors}")
+          print(f"- skipped: {skipped}")
+          if failures or errors:
+              print()
+              print("#### Failures")
+              for tc in ts.iter("testcase"):
+                  for tag in ("failure", "error"):
+                      el = tc.find(tag)
+                      if el is not None:
+                          name = tc.attrib.get("classname", "") + "::" + tc.attrib.get("name", "")
+                          msg = (el.attrib.get("message", "") or "").splitlines()[0:1]
+                          print(f"- `{name}` &mdash; {msg[0] if msg else tag}")
+          PY
