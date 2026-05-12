@@ -65,6 +65,44 @@ IPYTHONDIR=$PWD/ci/ipython_startup_dir \
          "local-content/learning/courses/use-a-qc-today/your-first-quantum-experiment.ipynb"
 ```
 
+## Claude Code review layer
+
+A second workflow, `.github/workflows/notebook-review.yml`, runs on every
+completion of Notebook CI and uses Claude Code (via your Max subscription) to
+surface issues nbmake cannot see: deprecation warnings, prose/output mismatch,
+swallowed `try/except` errors, and similar soft regressions. See
+`ci/review/rubric.md` for the exact rubric Claude follows.
+
+### One-time setup
+
+1. On any machine with Claude Code installed and signed into your Claude Max
+   account, run:
+   ```bash
+   claude setup-token
+   ```
+   Approve in the browser; it prints a long-lived OAuth token.
+2. Add the token to the repo as a secret named `CLAUDE_CODE_OAUTH_TOKEN`
+   (Settings → Secrets and variables → Actions → New repository secret).
+3. Rotate via Anthropic account settings when needed.
+
+### How it triggers
+
+- **`workflow_run`** (automatic): fires when Notebook CI completes, but only
+  once `notebook-review.yml` is on the repo's default branch. Until then, use
+  the manual path below.
+- **`workflow_dispatch`** (manual): in the Actions UI pick "Notebook Review",
+  paste the numeric Notebook CI run ID (last segment of its URL), and dispatch.
+
+### Output
+
+- Markdown summary in the workflow run's "Summary" tab.
+- `review-findings-<run_id>` artifact containing `findings.md` and `batch.json`.
+
+### Iterating the rubric
+
+`ci/review/rubric.md` is version-controlled. Edit it, push, and the next review
+run picks up the change.
+
 ## Skipping cells / notebooks
 
 - Skip a whole notebook: add its repo-relative path to `ci/notebooks-skip.txt`.
@@ -78,4 +116,6 @@ IPYTHONDIR=$PWD/ci/ipython_startup_dir \
   monkey-patch (qiskit-ibm-runtime → fake_provider).
 - `ci/notebooks-skip.txt` — vendor / lab-template exclusions.
 - `ci/list-notebooks.sh` — stratified, deterministic notebook list.
-- `.github/workflows/notebook-ci.yml` — the workflow.
+- `ci/review/rubric.md` — Claude Code review prompt.
+- `.github/workflows/notebook-ci.yml` — execution workflow.
+- `.github/workflows/notebook-review.yml` — Claude Code review workflow.
