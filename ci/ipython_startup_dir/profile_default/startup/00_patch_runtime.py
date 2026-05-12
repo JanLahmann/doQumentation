@@ -27,6 +27,44 @@ def _pick_fake(min_num_qubits=None, name=None, **_):
     return FakeBrisbane()
 
 
+class _FakeJob:
+    """Minimal stub returned by _FakeService.job() so notebooks that look up
+    a submitted job's metadata (tags, status, metrics) don't fail. Real
+    results are not reproducible without the cloud; notebooks that need them
+    should tag the cell with 'nbmake-skip-cell'."""
+
+    def __init__(self, job_id):
+        self._job_id = job_id
+
+    def job_id(self):
+        return self._job_id
+
+    @property
+    def tags(self):
+        return []
+
+    def status(self):
+        return "DONE"
+
+    def metrics(self):
+        return {}
+
+    def usage(self):
+        return {}
+
+    def creation_date(self):
+        return None
+
+    def backend(self):
+        return FakeBrisbane()
+
+    def result(self):
+        raise RuntimeError(
+            f"CI: job({self._job_id!r}).result() is unsupported under fake "
+            "backends. Tag this cell with 'nbmake-skip-cell' to skip it."
+        )
+
+
 class _FakeService:
     def __init__(self, *_, **__):
         pass
@@ -53,10 +91,7 @@ class _FakeService:
         return [FakeBrisbane(), FakeFez(), FakeMarrakesh()]
 
     def job(self, job_id, *_, **__):
-        raise RuntimeError(
-            f"CI: service.job({job_id!r}) is unsupported under fake backends. "
-            "Tag this cell with 'nbmake-skip-cell' to skip it."
-        )
+        return _FakeJob(job_id)
 
     def jobs(self, *_, **__):
         return []
