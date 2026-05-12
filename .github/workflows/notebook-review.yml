@@ -1,0 +1,133 @@
+name: Notebook Review
+
+# Second-pass Claude Code review of notebooks executed by "Notebook CI".
+# Catches soft issues (deprecations, prose/output mismatch, swallowed errors)
+# that nbmake cannot see.
+#
+# workflow_run fires only when this file is on the default branch. Until then,
+# use workflow_dispatch with the upstream run ID.
+
+on:
+  workflow_run:
+    workflows: ["Notebook CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Notebook CI run ID to review (numeric, from the URL of that run)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: notebook-review-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Determine upstream run
+        id: upstream
+        env:
+          DISPATCH_RUN_ID: ${{ inputs.run_id }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          EVENT_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${DISPATCH_RUN_ID:-}" ]]; then
+            RUN_ID="$DISPATCH_RUN_ID"
+            RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+          else
+            RUN_ID="$EVENT_RUN_ID"
+            RUN_URL="$EVENT_RUN_URL"
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "run_url=$RUN_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (for rubric)
+        uses: actions/checkout@v4
+
+      - name: Download executed-* artifact from upstream
+        uses: actions/download-artifact@v4
+        with:
+          pattern: executed-*
+          path: artifact
+          run-id: ${{ steps.upstream.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: true
+
+      - name: Verify artifact + write batch.json
+        id: verify
+        env:
+          RUN_ID: ${{ steps.upstream.outputs.run_id }}
+          RUN_URL: ${{ steps.upstream.outputs.run_url }}
+        run: |
+          set -euo pipefail
+          if ! find artifact -maxdepth 6 -name '*.ipynb' -print -quit | grep -q .; then
+            echo "No executed notebooks found in artifact -- nothing to review."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 <<'PY'
+          import json, os, pathlib
+          art = pathlib.Path('artifact/batch.json')
+          data = json.loads(art.read_text()) if art.is_file() else {"source": "unknown", "offset": "?", "count": "?"}
+          data["run_id"] = os.environ["RUN_ID"]
+          data["run_url"] = os.environ["RUN_URL"]
+          pathlib.Path('batch.json').write_text(json.dumps(data, indent=2))
+          print("batch.json:", data)
+          PY
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Review notebooks with Claude Code
+        if: steps.verify.outputs.found == 'true'
+        id: review
+        uses: anthropics/claude-code-base-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read `ci/review/rubric.md` and follow it exactly.
+
+            The executed notebooks are under `./artifact/`. Batch metadata
+            (source/offset/count, upstream run id and URL) is in `./batch.json`
+            in the repository root.
+
+            Write your output to `findings.md` in the repository root.
+          allowed_tools: "Read,Glob,Grep,Write,Bash(jq:*),Bash(grep:*),Bash(wc:*),Bash(ls:*),Bash(find:*)"
+          max_turns: 80
+        continue-on-error: true
+
+      - name: Post summary
+        if: always()
+        env:
+          RUN_URL: ${{ steps.upstream.outputs.run_url }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "**Upstream Notebook CI run**: ${RUN_URL}"
+            echo ""
+            if [[ -s findings.md ]]; then
+              cat findings.md
+            else
+              echo "> [!WARNING]"
+              echo "> Review did not produce \`findings.md\`."
+              echo "> Step outcome: \`${REVIEW_OUTCOME:-unknown}\`. Check the 'Review notebooks with Claude Code' step logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-findings-${{ steps.upstream.outputs.run_id }}
+          path: |
+            findings.md
+            batch.json
+          if-no-files-found: warn
+          retention-days: 30
