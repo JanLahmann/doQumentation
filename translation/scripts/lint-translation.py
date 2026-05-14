@@ -554,20 +554,8 @@ def check_english_prose_drift(
 #
 # Detects tokens from a foreign-language script leaking into a translation
 # (e.g. German "terverschränkt" in an Indonesian file, Russian "произвольный"
-# in a Hebrew file). Typically signals translator-tool cross-contamination.
-
-# Locales where lowercase German umlaut/eszett tokens are unexpected in prose.
-# Excludes DE itself, its dialects, and CS (which uses äöü in some words).
-# Excludes ES (uses ü in diaeresis: ambigüedad, antigüedad, multilingüe).
-# FR, IT, PT included — they occasionally use ü in borrowed words (angström),
-# but the allowlist handles those.
-GERMAN_FOREIGN_LOCALES = {
-    "id", "ms", "tl", "pl", "ro", "ar", "he", "th", "ja", "ko", "uk",
-    "fr", "it", "pt",
-}
-
-# All non-Cyrillic locales: any Cyrillic token is suspect.
-CYRILLIC_FOREIGN_LOCALES = set(ALL_LOCALES) - {"uk"}
+# in a Hebrew file, Polish "zobraził" in a Czech file). Each pattern signals
+# translator-tool cross-contamination.
 
 # Tokens to ignore even when they look like German contamination — these are
 # legitimate physics loanwords, proper nouns, or cspell:ignore-comment entries
@@ -587,20 +575,96 @@ FOREIGN_TOKEN_ALLOWLIST = {
 }
 
 
+# Each rule: (label, char-class regex, token-min-length, locales-where-foreign,
+#             require-lowercase-token, require-discriminator-char).
+#
+# - "label" appears in the error message.
+# - "char-class regex" picks out tokens; we then check whether any character
+#   in the token is in the discriminator set. (For pure-script rules like
+#   Cyrillic, the regex already restricts to that block so the discriminator
+#   check is satisfied by every match.)
+# - "locales-where-foreign" is the set of locales that should NEVER contain
+#   tokens from this script. Built relative to ALL_LOCALES so adding a new
+#   locale doesn't silently turn off checks.
+# - "require-lowercase" filters out capitalized tokens (proper nouns like
+#   "Schrödinger" or "Łukasiewicz").
+#
+# Tuples kept short; build via _build_foreign_script_rules() below.
+
+def _build_foreign_script_rules():
+    all_locales = set(ALL_LOCALES)
+
+    # German ä/ö/ü/ß tokens — leaks into non-German Latin-script locales.
+    # Excludes DE itself + dialects, CS (uses äöü in a few words), and ES
+    # (uses ü in diaeresis: ambigüedad, antigüedad, multilingüe).
+    german_native = {"de", "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut", "cs", "es"}
+    german_foreign = all_locales - german_native
+
+    # Cyrillic — leaks into all non-Cyrillic locales.
+    cyrillic_native = {"uk"}
+    cyrillic_foreign = all_locales - cyrillic_native
+
+    # Hebrew block — should never appear outside HE.
+    hebrew_native = {"he"}
+    hebrew_foreign = all_locales - hebrew_native
+
+    # Arabic block — should never appear outside AR.
+    arabic_native = {"ar"}
+    arabic_foreign = all_locales - arabic_native
+
+    # Greek block — should never appear in any of our locales. Math uses
+    # LaTeX-rendered Greek (\alpha, \pi, etc.) inside $...$, which we already
+    # exclude with the code-span strip + the "skip $...$" logic.
+    greek_native: set[str] = set()
+    greek_foreign = all_locales - greek_native
+
+    # Polish-unique diacritics — leaking into Czech is a translator-tool drift.
+    # Czech does not natively use any of: ł ą ę ć ś ź ż ń.
+    polish_chars = "łĄąĆćŁŃńŚśŹźŻż"
+    polish_native = {"pl"}
+    polish_foreign = {"cs"}  # only flag in CS; other Latin locales don't claim PL alphabet
+
+    # Czech-unique diacritics — leaking into Polish.
+    # Polish does not natively use any of: ř ů ě ť ď ň.
+    czech_chars = "ŘřŮůĚěŤťĎďŇň"
+    czech_native = {"cs"}
+    czech_foreign = {"pl"}
+
+    return [
+        # label,        token regex,                  discriminator chars,    foreign locales,   min len, allow_capitalized
+        ("German",      r"[A-Za-zÀ-ɏ-]+",             set("äöüßÄÖÜ"),         german_foreign,    4,       False),
+        ("Cyrillic",    r"[Ѐ-ӿ]+",                    None,                   cyrillic_foreign,  3,       True),
+        ("Hebrew",      r"[֐-׿]+",                    None,                   hebrew_foreign,    2,       True),
+        ("Arabic",      r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]+",        None,                   arabic_foreign,    2,       True),
+        ("Greek",       r"[Ͱ-Ͽἀ-῿]+",                 None,                   greek_foreign,     3,       True),
+        ("Polish",      rf"[A-Za-zÀ-ɏ{polish_chars}-]+", set(polish_chars),    polish_foreign,    4,       False),
+        ("Czech",       rf"[A-Za-zÀ-ɏ{czech_chars}-]+",  set(czech_chars),     czech_foreign,     4,       False),
+    ]
+
+
+_FOREIGN_SCRIPT_RULES = _build_foreign_script_rules()
+
+
 def check_foreign_script(
     tr_path: Path, lines: list[str], locale: str
 ) -> list[tuple[str, int, str]]:
-    """Flag tokens from foreign scripts (German, Cyrillic) in non-matching locales.
+    """Flag tokens from foreign scripts in non-matching locales.
 
     Surfaced at ERROR level — these intrusions are almost always translator-tool
-    contamination (e.g. a German completion leaking into an Indonesian file).
+    contamination (e.g. a German completion leaking into an Indonesian file,
+    or Cyrillic morphemes leaking into a Swiss German translation).
     """
     findings: list[tuple[str, int, str]] = []
-    in_code = False
-    german_chars = set("äöüßÄÖÜ")
-    check_german = locale in GERMAN_FOREIGN_LOCALES
-    check_cyrillic = locale in CYRILLIC_FOREIGN_LOCALES
+    # Only apply rules that target this locale
+    active_rules = [
+        (label, re.compile(pat), disc, min_len, allow_cap)
+        for (label, pat, disc, foreign, min_len, allow_cap) in _FOREIGN_SCRIPT_RULES
+        if locale in foreign
+    ]
+    if not active_rules:
+        return findings
 
+    in_code = False
     for i, raw in enumerate(lines, 1):
         s_left = raw.lstrip()
         if s_left.startswith("```"):
@@ -611,33 +675,25 @@ def check_foreign_script(
         clean = re.sub(r"`[^`]*`", "", raw)
         clean = re.sub(r"<[^>]+>", "", clean)
         clean = re.sub(r"https?://\S+", "", clean)
-        # Skip MDX cspell:ignore directive comments
         if "{/*" in clean and "cspell" in clean:
             continue
 
-        if check_german:
-            for tok in re.findall(r"[A-Za-zÀ-ɏ-]+", clean):
-                if not any(c in german_chars for c in tok):
+        for label, pat, disc, min_len, allow_cap in active_rules:
+            for tok in pat.findall(clean):
+                if len(tok) < min_len:
                     continue
-                if len(tok) < 4:
+                # If a discriminator set is given, the token must contain ≥1
+                # such char (so plain ASCII Latin words don't trigger the
+                # German/Polish/Czech rules).
+                if disc is not None and not any(c in disc for c in tok):
                     continue
-                # Skip proper nouns (capitalized)
-                if tok[0].isupper():
+                if not allow_cap and tok[0].isupper():
                     continue
                 if tok.lower() in FOREIGN_TOKEN_ALLOWLIST:
                     continue
                 findings.append((
                     ERROR, i,
-                    f"foreign-script intrusion (German): {tok!r}"
-                ))
-
-        if check_cyrillic:
-            for tok in re.findall(r"[Ѐ-ӿ]+", clean):
-                if len(tok) < 3:
-                    continue
-                findings.append((
-                    ERROR, i,
-                    f"foreign-script intrusion (Cyrillic): {tok!r}"
+                    f"foreign-script intrusion ({label}): {tok!r}"
                 ))
 
     return findings
