@@ -19,6 +19,9 @@ export interface JupyterConfig {
   token: string;
   thebeEnabled: boolean;
   labEnabled: boolean;
+  // Environment image — used for both thebelab and the "Open in JupyterLab"
+  // CTA. Notebook content is pulled in at launch via nbgitpuller from the
+  // locale's satellite repo (or this repo's notebooks branch for EN).
   binderUrl?: string;
   environment: 'github-pages' | 'code-engine' | 'rasqberry' | 'custom' | 'unknown';
 }
@@ -231,10 +234,10 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
         token: '',
         thebeEnabled: true,
         labEnabled: false,
-        // Pinned to last working image (Apr 13) — mybinder Docker 28 upgrade broke cold builds
-        // See: https://github.com/jupyterhub/mybinder.org-deploy/pull/3768
-        // TODO: revert to 'notebooks' once mybinder builds work again
-        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/0fc67252',
+        // QuBins 2.3-xl: pre-built ghcr.io/janlahmann/qiskit:2.3-xl
+        // (https://github.com/JanLahmann/QuBins). Matches binder/jupyter-requirements.txt
+        // (qiskit[all]~=2.3.0). Bump in lockstep when doQumentation's Qiskit pin moves.
+        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/qubins/2.3-xl',
         environment: 'github-pages',
       };
     }
@@ -772,14 +775,53 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
 }
 
 /**
+ * Owner/repo + branch holding a locale's notebooks for nbgitpuller to pull.
+ * EN uses this repo's notebooks branch (already maintained by deploy.yml).
+ * Translated locales each have a satellite repo (`doqumentation-{locale}`)
+ * with a dedicated notebooks branch maintained by deploy-locales.yml.
+ */
+function getNotebookContentRepo(locale?: string): { repoUrl: string; branch: string } {
+  const isEn = !locale || locale === 'en';
+  return {
+    repoUrl: isEn
+      ? 'https://github.com/JanLahmann/doQumentation'
+      : `https://github.com/JanLahmann/doqumentation-${locale}`,
+    branch: 'notebooks',
+  };
+}
+
+/**
+ * Build an nbgitpuller `git-pull` query that clones the right notebooks
+ * branch into the running session and lands the user at `lab/tree/{path}`.
+ * Returns just the query (no leading `?`); the caller chooses whether to
+ * URL-encode it for the outer mybinder URL or pass it raw to a JupyterHub
+ * session URL.
+ */
+function buildNbgitpullerQuery(notebookPath: string, locale?: string): string {
+  const { repoUrl, branch } = getNotebookContentRepo(locale);
+  // Each satellite holds one locale at the branch root; EN main repo holds
+  // EN notebooks at the root (locale subdirs aren't used by nbgitpuller).
+  const path = mapBinderNotebookPath(notebookPath);
+  const params = new URLSearchParams({
+    repo: repoUrl,
+    branch,
+    urlpath: `lab/tree/${path}`,
+  });
+  return `git-pull?${params.toString()}`;
+}
+
+/**
  * Get the Binder JupyterLab URL for a specific notebook.
- * Opens enhanced notebooks from the doQumentation notebooks branch.
- * Locale-aware: translated notebooks live under {locale}/ prefix.
+ * Opens a QuBins session (lightweight Qiskit kernel image), then nbgitpuller
+ * clones the locale's notebooks into the session at launch time.
  */
 export function getBinderLabUrl(config: JupyterConfig, notebookPath: string, locale?: string): string | null {
   if (!config.binderUrl) return null;
-  const fullPath = mapBinderNotebookPath(notebookPath, locale);
-  return `${config.binderUrl}?labpath=${encodeURIComponent(fullPath)}`;
+  const gitPullQuery = buildNbgitpullerQuery(notebookPath, locale);
+  // mybinder's `urlpath` query param is forwarded to the JupyterHub user
+  // session as the post-launch URL. The whole nbgitpuller query is
+  // URL-encoded once into that param.
+  return `${config.binderUrl}?urlpath=${encodeURIComponent(gitPullQuery)}`;
 }
 
 // ── Binder session reuse ──
@@ -1075,8 +1117,16 @@ export function openBinderLab(
     } catch { /* tab navigated away */ }
   }).then((session) => {
     if (timerInterval) clearInterval(timerInterval);
-    const encodedNbPath = nbPath.split('/').map(encodeURIComponent).join('/');
-    const labUrl = `${session.url}lab/tree/${encodedNbPath}?token=${encodeURIComponent(session.token)}`;
+    let labUrl: string;
+    if (isCE) {
+      // CE has notebooks baked into the image at /home/jovyan/{locale}/{path}.
+      const encodedNbPath = nbPath.split('/').map(encodeURIComponent).join('/');
+      labUrl = `${session.url}lab/tree/${encodedNbPath}?token=${encodeURIComponent(session.token)}`;
+    } else {
+      // QuBins image has no notebooks — nbgitpuller clones them in.
+      const gitPullQuery = buildNbgitpullerQuery(notebookPath, locale);
+      labUrl = `${session.url}${gitPullQuery}&token=${encodeURIComponent(session.token)}`;
+    }
     if (tab && !tab.closed) {
       tab.location.href = labUrl;
     } else {
