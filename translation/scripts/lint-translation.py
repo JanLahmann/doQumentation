@@ -493,6 +493,38 @@ def check_foreign_script(
                     f"foreign-script intrusion ({label}): {tok!r}"
                 ))
 
+        # Second pass: catch single-char Cyrillic homoglyphs embedded inside
+        # Latin tokens. The block-regex above requires contiguous runs of
+        # foreign script; this catches the case where one Cyrillic letter is
+        # substituted for a visually-identical Latin one (e.g. Cyrillic е in
+        # "Verifizierbarі" looks like Latin e).
+        #
+        # Greek is excluded from this homoglyph check because Greek letters
+        # are legitimately used in math (α, μ, π, φ, Δ, etc.) and the false-
+        # positive rate is too high. Cyrillic in non-Cyrillic locales is
+        # always suspect, math or not.
+        #
+        # Skip tokens that look like math: containing $ or \ as part of LaTeX.
+        cyrillic_homoglyph_locales = {
+            "de", "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
+            "es", "fr", "it", "pt", "tl", "ms", "id", "pl", "cs", "ro",
+        }
+        if locale in cyrillic_homoglyph_locales:
+            # Strip inline math entirely so Greek/Cyrillic letters in math don't trigger
+            no_math = re.sub(r"\$[^$\n]+\$", "", clean)
+            no_math = re.sub(r"\\[a-zA-Z]+", "", no_math)
+            for tok in re.findall(r"\S+", no_math):
+                has_latin = any(c.isascii() and c.isalpha() for c in tok)
+                if not has_latin:
+                    continue
+                for c in tok:
+                    if 0x0400 <= ord(c) <= 0x04FF:
+                        findings.append((
+                            ERROR, i,
+                            f"foreign-script intrusion (Cyrillic homoglyph in Latin token): {tok!r}"
+                        ))
+                        break
+
     return findings
 
 
