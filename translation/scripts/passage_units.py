@@ -103,10 +103,16 @@ def _is_strict_allowlisted(text: str) -> bool:
 
 
 def _is_pure_link(text: str) -> bool:
+    """A standalone markdown link `[Title](url)` is intentionally English.
+
+    Accepts both absolute (https://...) and site-relative (/guides/...) URLs.
+    Recommended-reading lists on doQumentation use relative links extensively,
+    so excluding them would generate spurious WARN noise on every locale.
+    """
     t = text.strip()
     if not t.startswith("["):
         return False
-    return bool(re.match(r"^\[(.+)\]\((https?://[^\s)]+)\)\s*\.?\s*$", t))
+    return bool(re.match(r"^\[(.+)\]\(([^)\s]+)\)\s*\.?\s*$", t))
 
 
 def _looks_like_citation(text: str) -> bool:
