@@ -575,18 +575,18 @@ ibmcloud ce app update --name ce-doqumentation-01 --max-scale 1`}</CodeBlock>
           <LinkList items={[
             { label: 'Main Repository', url: GITHUB_REPO },
             { label: 'Live Site', url: 'https://doqumentation.org' },
-            { label: 'Binder', url: 'https://mybinder.org/v2/gh/JanLahmann/doQumentation/0fc67252' },
+            { label: 'Binder (QuBins 2.3-xl)', url: 'https://mybinder.org/v2/gh/JanLahmann/qubins/2.3-xl' },
+            { label: 'QuBins (Binder kernel image source)', url: 'https://github.com/JanLahmann/QuBins' },
             { label: 'Docker Image', url: 'https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation' },
           ]} />
 
           <h3>Binder Federation (cache warming)</h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-emphasis-600)', marginBottom: '0.5rem' }}>
-            Click a link to check if the Binder image is cached on that federation member. A cached image starts in seconds; uncached triggers a rebuild (~2-5 min).
+            Click a link to check if the QuBins 2.3-xl image is cached on that federation member. A cached image starts in seconds; uncached triggers a rebuild (~30s — the QuBins stub branch is just a FROM-line on a pre-built ghcr.io image). QuBins owns the warm-up cron; these links are for diagnostics.
           </p>
           <LinkList items={[
-            { label: '2i2c (primary, ~70% traffic)', url: 'https://2i2c.mybinder.org/build/gh/JanLahmann/doQumentation/notebooks' },
-            { label: 'BIDS (UC Berkeley)', url: 'https://bids.mybinder.org/build/gh/JanLahmann/doQumentation/notebooks' },
-            { label: 'GESIS (Germany)', url: 'https://notebooks.gesis.org/binder/build/gh/JanLahmann/doQumentation/notebooks' },
+            { label: '2i2c (primary, ~70% traffic)', url: 'https://2i2c.mybinder.org/build/gh/JanLahmann/qubins/2.3-xl' },
+            { label: 'BIDS (UC Berkeley)', url: 'https://bids.mybinder.org/build/gh/JanLahmann/qubins/2.3-xl' },
           ]} />
 
           <h3>Satellite Repos (locale deploys)</h3>
