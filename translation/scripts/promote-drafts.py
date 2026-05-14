@@ -48,8 +48,12 @@ _lint_spec.loader.exec_module(_lint_mod)
 lint_file = _lint_mod.lint_file
 LINT_ERROR = _lint_mod.ERROR
 
+# Passage-hash baseline for EN-drift detection (validate-translation.py --check-drift)
+import passage_units
+
 DRAFTS_DIR = REPO_ROOT / "translation" / "drafts"
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
+BASELINE_FILE = REPO_ROOT / "translation" / "baseline-hashes.json"
 
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "th", "ar", "he",
@@ -71,6 +75,39 @@ def save_status(status: dict) -> None:
     STATUS_FILE.write_text(
         json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + '\n',
         encoding='utf-8')
+
+
+def load_baselines() -> dict:
+    """Load translation/baseline-hashes.json (sidecar for --check-drift)."""
+    if BASELINE_FILE.exists():
+        return json.loads(BASELINE_FILE.read_text(encoding='utf-8'))
+    return {}
+
+
+def save_baselines(baselines: dict) -> None:
+    """Write translation/baseline-hashes.json with sorted keys."""
+    BASELINE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BASELINE_FILE.write_text(
+        json.dumps(baselines, indent=2, ensure_ascii=False, sort_keys=True) + '\n',
+        encoding='utf-8')
+
+
+def update_baselines(
+    baselines: dict, locale: str, results: list[dict],
+) -> int:
+    """Stash refreshed baseline-hash lists from promote results.
+
+    Returns number of files whose baseline was refreshed.
+    """
+    refreshed = 0
+    for r in results:
+        hashes = r.pop("_baseline_hashes", None)
+        if not hashes:
+            continue
+        key = f"{locale}/{r['rel_path']}"
+        baselines[key] = {"commit": None, "hashes": hashes}
+        refreshed += 1
+    return refreshed
 
 
 def find_drafts(locale: str, section: str = None,
@@ -233,6 +270,15 @@ def update_status(status: dict, locale: str, results: list[dict]) -> None:
         if en_path.exists():
             en_content = en_path.read_text(encoding="utf-8")
             entry["source_hash"] = compute_source_hash(en_content)
+            # Refresh the EN-passage-hash baseline so --check-drift treats
+            # this newly-promoted translation as current. Only do this when
+            # the translation was actually promoted (not on skip).
+            # Written to translation/baseline-hashes.json (sidecar) at the
+            # end of this call.
+            if r["action"] == "promoted":
+                en_hashes = passage_units.hash_units(en_content, mode="lenient")
+                if en_hashes:
+                    r["_baseline_hashes"] = sorted(en_hashes.keys())
 
         # Preserve existing fields (contributor, drafted)
         status[locale][r["rel_path"]] = entry
@@ -299,6 +345,14 @@ def main():
     status = load_status()
     update_status(status, args.locale, results)
     save_status(status)
+
+    # Refresh EN-passage-hash baselines in the sidecar (for --check-drift)
+    baselines = load_baselines()
+    refreshed = update_baselines(baselines, args.locale, results)
+    if refreshed:
+        save_baselines(baselines)
+        if args.verbose:
+            print(f"  Refreshed {refreshed} baseline(s) in baseline-hashes.json")
 
     # Summary
     print(f"\n{'=' * 60}")

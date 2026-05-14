@@ -1075,10 +1075,164 @@ def resolve_locale_dir(locale: str, custom_dir: str = None) -> Path:
     return (I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current")
 
 
+# ---------------------------------------------------------------------------
+# EN-content drift detection (--check-drift)
+# ---------------------------------------------------------------------------
+#
+# Each promoted translation has a per-unit baseline of the EN hashes it was
+# made against (status.json::en_hashes_at_translation, populated by
+# bootstrap-passage-hashes.py and refreshed by promote-drafts.py).
+#
+# Drift = a unit whose stored hash differs from the current EN hash (or a
+# new EN unit absent from the baseline). Reported per-file with per-unit
+# previews so reviewers can find the changed paragraph quickly.
+
+import importlib.util as _il_util
+_pu_spec = _il_util.spec_from_file_location(
+    "passage_units", Path(__file__).resolve().parent / "passage_units.py")
+_passage_units = _il_util.module_from_spec(_pu_spec)
+_pu_spec.loader.exec_module(_passage_units)
+EN_HASHES_MANIFEST = REPO_ROOT / "translation" / "en-passage-hashes.json"
+STATUS_JSON = REPO_ROOT / "translation" / "status.json"
+BASELINE_FILE = REPO_ROOT / "translation" / "baseline-hashes.json"
+
+
+def check_drift(
+    locale_filter: str | None = None,
+    *,
+    use_live_en: bool = True,
+    verbose: bool = False,
+    summary_only: bool = False,
+) -> int:
+    """Compare each translation's baseline against current EN units.
+
+    Returns exit code: 0 if no drift, 1 if drift found.
+
+    If use_live_en is True, recompute current EN hashes from disk (covers
+    the case where en-passage-hashes.json is stale). Otherwise read the
+    manifest directly.
+    """
+    if not STATUS_JSON.exists():
+        print(f"Error: {STATUS_JSON} not found", file=sys.stderr)
+        return 2
+    if not BASELINE_FILE.exists():
+        print(f"Error: {BASELINE_FILE} not found. "
+              f"Run bootstrap-passage-hashes.py first.", file=sys.stderr)
+        return 2
+    status = json.loads(STATUS_JSON.read_text(encoding="utf-8"))
+    baselines = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+
+    if use_live_en:
+        # Build current EN snapshot in memory. Faster than reading the
+        # manifest for one-off runs but costs ~5s on cold-cache.
+        current_en: dict[str, dict] = {}
+        for path in DOCS_DIR.rglob("*.mdx"):
+            rel = str(path.relative_to(DOCS_DIR))
+            hashes = _passage_units.hash_units(
+                path.read_text(encoding="utf-8"), mode="lenient"
+            )
+            if hashes:
+                current_en[rel] = hashes
+    else:
+        if not EN_HASHES_MANIFEST.exists():
+            print(f"Error: {EN_HASHES_MANIFEST} not found. "
+                  f"Run update-en-passage-hashes.py first.", file=sys.stderr)
+            return 2
+        current_en = json.loads(EN_HASHES_MANIFEST.read_text(encoding="utf-8"))
+
+    total_drifted_files = 0
+    total_drift_events = 0
+    by_locale: dict[str, list] = {}
+
+    locales = ([locale_filter] if locale_filter else
+               sorted(k for k in status if isinstance(status[k], dict)))
+
+    for locale in locales:
+        if locale not in status:
+            continue
+        entries = status[locale]
+        if not isinstance(entries, dict):
+            continue
+        drifted = []
+        for rel_path, entry in sorted(entries.items()):
+            if not isinstance(entry, dict):
+                continue
+            sidecar = baselines.get(f"{locale}/{rel_path}")
+            if not sidecar:
+                continue  # no baseline → can't measure drift
+            baseline = sidecar.get("hashes", [])
+            if not baseline:
+                continue
+            current = current_en.get(rel_path)
+            if current is None:
+                # EN file no longer exists (rename/removal)
+                drifted.append((rel_path, "EN_REMOVED", [], []))
+                total_drift_events += 1
+                continue
+
+            # Content-addressed drift: set difference on hash sets.
+            # A modified paragraph shows up as 1 removed + 1 added.
+            baseline_set = set(baseline)
+            current_set = set(current.keys())
+            removed_hashes = baseline_set - current_set
+            added_hashes = current_set - baseline_set
+
+            added: list[tuple[str, str]] = [
+                (h, current[h]) for h in added_hashes
+            ]
+            removed: list[str] = list(removed_hashes)
+
+            if added or removed:
+                drifted.append((rel_path, "DRIFT", added, removed))
+                total_drift_events += len(added) + len(removed)
+
+        if drifted:
+            by_locale[locale] = drifted
+            total_drifted_files += len(drifted)
+
+    # Reporting
+    for locale, drifted in by_locale.items():
+        print(f"\n=== {locale} — {len(drifted)} file(s) drifted ===")
+        if summary_only:
+            for rel_path, kind, added, removed in drifted:
+                if kind == "EN_REMOVED":
+                    print(f"  {rel_path}: EN file removed")
+                    continue
+                events = len(added) + len(removed)
+                # Roughly: changed = min(added, removed); pure-added = added - changed; pure-removed = removed - changed
+                approx_changed = min(len(added), len(removed))
+                approx_added = len(added) - approx_changed
+                approx_removed = len(removed) - approx_changed
+                print(f"  {rel_path}: {events} event(s) "
+                      f"(~changed={approx_changed}, "
+                      f"+{approx_added} new, -{approx_removed} removed)")
+            continue
+        for rel_path, kind, added, removed in drifted:
+            if kind == "EN_REMOVED":
+                print(f"  {rel_path}: EN file no longer exists")
+                continue
+            print(f"\n  {rel_path}")
+            for h, preview in added:
+                print(f"    + {h[:12]}  {preview[:100]}")
+            for h in removed:
+                print(f"    - {h[:12]}")
+
+    print(f"\n--- Drift summary ---")
+    print(f"  Files with drift: {total_drifted_files}")
+    print(f"  Total events:     {total_drift_events}")
+    return 1 if total_drift_events else 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Validate translated MDX files against English source.")
-    parser.add_argument("--locale", required=True,
+    parser.add_argument("--check-drift", action="store_true",
+                        help="Compare each translation's stored EN baseline "
+                             "against current EN; report per-unit drift. "
+                             "Independent of normal structural validation.")
+    parser.add_argument("--drift-summary", action="store_true",
+                        help="With --check-drift: report file-level event counts only")
+    parser.add_argument("--locale", required=False,
                         help=f"Locale to validate ({', '.join(ALL_LOCALES)})")
     parser.add_argument("--file",
                         help="Single file (relative to docs/), e.g. guides/foo.mdx")
@@ -1096,6 +1250,15 @@ def main():
                         help="Show details for passing checks too")
     args = parser.parse_args()
 
+    if args.check_drift:
+        sys.exit(check_drift(
+            args.locale,
+            verbose=args.verbose,
+            summary_only=args.drift_summary,
+        ))
+
+    if not args.locale:
+        parser.error("--locale is required unless --check-drift is used")
     if args.locale not in ALL_LOCALES:
         print(f"Error: Unknown locale '{args.locale}'. "
               f"Available: {', '.join(ALL_LOCALES)}")
