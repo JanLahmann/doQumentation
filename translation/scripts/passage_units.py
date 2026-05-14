@@ -50,16 +50,26 @@ _STRICT_ALLOWLIST_SUBSTRINGS = (
     "Any modifications or derivative works of this must retain",
     "arxiv.org/",
     "IBM and the IBM logo are trademarks",
+    # MDX reference-style anchor definitions ([Foo]: #anchor "title")
+    # These are syntax, not prose.
+    "]: #definition-tooltip",
+    # Boilerplate Admonition text that's used identically across locales
+    "The following code block will return an error for users on the Open Plan",
 )
 
 # First-line prefixes that mark a unit as code masquerading as prose
-# (escaped fences inside JSX, etc.).
+# (escaped fences inside JSX, escaped triple-backticks inside string templates,
+# shell commands embedded in markdown that fail to be fenced, etc.).
 _STRICT_ALLOWLIST_PREFIXES = (
     "import ", "from qiskit", "service = QiskitRuntimeService",
     "backend = service.least_busy", "rng = ", "mat = ", "mats = ",
     "circuit = ", "circuits = ", "observable = ", "sampler.options",
     "print(", "!pip install", "# Added by doQumentation",
     "pm = generate_preset", "estimator = Estimator",
+    # Shell commands that look like prose to a naive parser
+    "llama-cli ", "llama-server ", "ollama ", "huggingface-cli ",
+    # ImportError / traceback content
+    "ImportError:", "Traceback (",
 )
 
 # Patterns that look like bibliography citations / recommended-reading links.
@@ -72,6 +82,12 @@ _CITATION_PATTERNS = [
     re.compile(r"^[A-Z][a-zA-Z\-]+,\s+[A-Z]\.\s*([A-Z]\.\s*)?(and\s+|&\s+)"),
     re.compile(r"^[A-Z][a-z]+\s+[A-Z][a-zA-Z\-]+\s+and\s+[A-Z][a-z]+"),
     re.compile(r"^IBM Quantum\s+\["),
+    # "Surname, FirstName M., et al. \"[Title]...\"" — common citation shape
+    re.compile(r"^[A-Z][a-zA-Z\-]+,\s+[A-Z][a-zA-Z]+(?:\s+[A-Z]K?\.?)?,\s+et\s+al\."),
+    # "Surname, F.N., Surname2, F.M. et al. Title.Year."
+    re.compile(r"^[A-Z][a-zA-Z\-]+,\s+[A-Z]\.([A-Z]\.)?,?\s*[A-Z][a-zA-Z\-]+,\s+[A-Z]"),
+    # arXiv-style line beginnings (often used in inline citation lists)
+    re.compile(r"^arXiv:\s*\d"),
 ]
 
 
