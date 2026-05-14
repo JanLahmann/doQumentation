@@ -177,6 +177,45 @@ This catches: register slips (tú vs usted), word salad / hallucination, verbosi
 | Paragraph inflation >1.8x | Word salad — LLM degraded on long file | Retranslate the flagged section |
 | Line count >5% delta | Content dropped or word salad expanded text | Compare section by section |
 | Heading anchors missing | Forgot `{#english-anchor}` on translated headings | Run `python translation/scripts/fix-heading-anchors.py --locale XX --dir translation/drafts --apply` |
+| Foreign-script intrusion | Translator tool fell back to wrong language mid-output (e.g. German tokens in Indonesian) | Run `python translation/scripts/lint-translation.py --file <path> --en-file <path>` to find the bad tokens |
+| Verbatim EN prose in TR | Translator skipped a paragraph or escaped a JSX block | Same lint check; surfaced as WARN |
+
+### Step 3: EN-drift checks (when EN changes)
+
+After EN is updated (e.g. by `sync-content.py`), translations may go stale
+even though the translator did everything right at translation time. Two
+checks surface this:
+
+- **File-level freshness** — `check-translation-freshness.py` compares
+  embedded source hashes (`doqumentation-source-hash`) against the current
+  EN file. Flags whole files that need re-translation.
+- **Paragraph-level drift** — `validate-translation.py --check-drift`
+  compares each translation's per-paragraph baseline (stored in
+  `translation/baseline-hashes.json`) against the current EN units. Shows
+  exactly which paragraphs changed.
+
+```bash
+# Refresh the EN passage-hash manifest after a docs/ sync
+python translation/scripts/update-en-passage-hashes.py
+
+# Show which paragraphs changed per locale (--drift-summary = file-level counts)
+python translation/scripts/validate-translation.py --check-drift --drift-summary
+
+# Full per-unit detail
+python translation/scripts/validate-translation.py --check-drift --locale he
+```
+
+Drift events: each unit-hash that appears in the current EN but not in
+the translation's baseline (or vice versa) is one event. A modified
+paragraph shows up as one removed + one added.
+
+When you re-translate a drifted paragraph and promote it,
+`promote-drafts.py` automatically refreshes that file's baseline so
+drift clears on the next run.
+
+The CI workflow (`check-translations.yml`) runs both checks daily and
+opens / updates a GitHub issue tagged `translation-freshness` when
+either finds drift.
 
 ---
 

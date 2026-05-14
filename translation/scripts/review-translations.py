@@ -175,21 +175,60 @@ def auto_check(locales: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _compute_drift_counts() -> dict[str, int]:
+    """Return {locale: drifted_file_count} or {} if drift data isn't available."""
+    baseline_file = REPO_ROOT / "translation" / "baseline-hashes.json"
+    en_manifest = REPO_ROOT / "translation" / "en-passage-hashes.json"
+    if not (baseline_file.exists() and en_manifest.exists()):
+        return {}
+    try:
+        baselines = json.loads(baseline_file.read_text(encoding="utf-8"))
+        current_en = json.loads(en_manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    counts: dict[str, int] = {}
+    for key, info in baselines.items():
+        # key is "{locale}/{rel_path}"
+        if "/" not in key:
+            continue
+        locale, rel_path = key.split("/", 1)
+        baseline_set = set(info.get("hashes", []))
+        current = current_en.get(rel_path, {})
+        if not current:
+            # EN file removed — count as drift
+            counts[locale] = counts.get(locale, 0) + 1
+            continue
+        current_set = set(current.keys())
+        if baseline_set != current_set:
+            counts[locale] = counts.get(locale, 0) + 1
+    return counts
+
+
 def show_progress(locale_filter: str | None = None) -> None:
     """Show review progress across all tiers."""
     status = load_status()
+    drift_counts = _compute_drift_counts()
+    has_drift_data = bool(drift_counts) or (
+        REPO_ROOT / "translation" / "baseline-hashes.json"
+    ).exists()
 
     locales = [locale_filter] if locale_filter else ALL_LOCALES
 
     # Header
-    print(f"{'Locale':<6} {'Files':>5}  {'Struct':>12}  {'Lint':>12}  {'Review':>16}")
-    print("-" * 60)
+    if has_drift_data:
+        print(f"{'Locale':<6} {'Files':>5}  {'Struct':>12}  {'Lint':>12}  {'Review':>16}  {'Drift':>6}")
+        print("-" * 68)
+    else:
+        print(f"{'Locale':<6} {'Files':>5}  {'Struct':>12}  {'Lint':>12}  {'Review':>16}")
+        print("-" * 60)
 
     grand_files = 0
     grand_val_pass = 0
     grand_lint_clean = 0
     grand_reviewed = 0
     grand_reviewable = 0
+    grand_drift = 0
 
     for locale in locales:
         entries = status.get(locale, {})
@@ -215,6 +254,9 @@ def show_progress(locale_filter: str | None = None) -> None:
             and e.get("review") is None
         )
 
+        # Drift
+        drift = drift_counts.get(locale, 0)
+
         skip = " (skip)" if locale in SKIP_LOCALES else ""
 
         if genuine == 0 and n_tracked == 0:
@@ -237,18 +279,32 @@ def show_progress(locale_filter: str | None = None) -> None:
         if reviewable:
             rev_str += f" ({reviewable} todo)"
 
-        print(f"{locale}{skip:<6} {file_count:>5}  {val_str:>12}  {lint_str:>12}  {rev_str:>16}")
+        if has_drift_data:
+            drift_str = str(drift) if drift else "—"
+            print(f"{locale}{skip:<6} {file_count:>5}  {val_str:>12}  {lint_str:>12}  {rev_str:>16}  {drift_str:>6}")
+        else:
+            print(f"{locale}{skip:<6} {file_count:>5}  {val_str:>12}  {lint_str:>12}  {rev_str:>16}")
 
         grand_files += file_count
         grand_val_pass += val_pass
         grand_lint_clean += lint_clean
         grand_reviewed += reviewed
         grand_reviewable += reviewable
+        grand_drift += drift
 
-    print("-" * 60)
-    print(f"{'Total':<6} {grand_files:>5}  {grand_val_pass:>5} PASS    {grand_lint_clean:>5} CLEAN   {grand_reviewed}/{grand_val_pass} reviewed")
+    if has_drift_data:
+        print("-" * 68)
+    else:
+        print("-" * 60)
+    if has_drift_data:
+        print(f"{'Total':<6} {grand_files:>5}  {grand_val_pass:>5} PASS    {grand_lint_clean:>5} CLEAN   {grand_reviewed}/{grand_val_pass} reviewed  {grand_drift:>6}")
+    else:
+        print(f"{'Total':<6} {grand_files:>5}  {grand_val_pass:>5} PASS    {grand_lint_clean:>5} CLEAN   {grand_reviewed}/{grand_val_pass} reviewed")
     if grand_reviewable:
         print(f"  → {grand_reviewable} files ready for linguistic review")
+    if grand_drift:
+        print(f"  → {grand_drift} files with paragraph-level EN drift "
+              f"(run validate-translation.py --check-drift for detail)")
 
     # Show per-review-verdict breakdown if any reviews exist
     if grand_reviewed > 0:
