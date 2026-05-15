@@ -780,14 +780,22 @@ export function getLabUrl(config: JupyterConfig, notebookPath: string): string |
  * Translated locales each have a satellite repo (`doqumentation-{locale}`)
  * with a dedicated notebooks branch maintained by deploy-locales.yml.
  */
-function getNotebookContentRepo(locale?: string): { repoUrl: string; branch: string } {
+function getNotebookContentRepo(locale?: string): { repoUrl: string; repoDir: string; branch: string } {
   const isEn = !locale || locale === 'en';
-  return {
-    repoUrl: isEn
-      ? 'https://github.com/JanLahmann/doQumentation'
-      : `https://github.com/JanLahmann/doqumentation-${locale}`,
-    branch: 'notebooks',
-  };
+  // nbgitpuller clones into /home/jovyan/{last-path-segment-of-repo-url}/,
+  // so the urlpath we send must include that segment as a prefix or Lab
+  // resolves the path against /home/jovyan/ and 404s.
+  return isEn
+    ? {
+        repoUrl: 'https://github.com/JanLahmann/doQumentation',
+        repoDir: 'doQumentation',
+        branch: 'notebooks',
+      }
+    : {
+        repoUrl: `https://github.com/JanLahmann/doqumentation-${locale}`,
+        repoDir: `doqumentation-${locale}`,
+        branch: 'notebooks',
+      };
 }
 
 /**
@@ -798,14 +806,14 @@ function getNotebookContentRepo(locale?: string): { repoUrl: string; branch: str
  * session URL.
  */
 function buildNbgitpullerQuery(notebookPath: string, locale?: string): string {
-  const { repoUrl, branch } = getNotebookContentRepo(locale);
+  const { repoUrl, repoDir, branch } = getNotebookContentRepo(locale);
   // Each satellite holds one locale at the branch root; EN main repo holds
   // EN notebooks at the root (locale subdirs aren't used by nbgitpuller).
   const path = mapBinderNotebookPath(notebookPath);
   const params = new URLSearchParams({
     repo: repoUrl,
     branch,
-    urlpath: `lab/tree/${path}`,
+    urlpath: `lab/tree/${repoDir}/${path}`,
   });
   return `git-pull?${params.toString()}`;
 }
