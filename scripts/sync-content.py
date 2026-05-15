@@ -821,8 +821,13 @@ def process_tutorials():
         else:
             stats["skipped"] += 1
 
-    # Import custom Hello World from fork root (doQumentation's own intro tutorial)
-    custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
+    # Import custom Hello World — doQumentation's own intro tutorial.
+    # Lives at local-content/hello-world.ipynb (source of truth, in this repo).
+    # Falls back to upstream-docs/hello-world.ipynb for environments still on
+    # the legacy fork submodule where the file lived at the fork's root.
+    custom_hw = LOCAL_CONTENT_DIR / "hello-world.ipynb"
+    if not custom_hw.exists():
+        custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
     if custom_hw.exists():
         hw_dst = tutorials_dst / "hello-world.mdx"
         if convert_notebook(custom_hw, hw_dst, notebook_path="hello-world.ipynb",
@@ -1560,8 +1565,11 @@ def generate_locale_notebooks(locale: str):
         # Find the upstream English notebook (upstream stores under docs/)
         english_nb = UPSTREAM_DIR / "docs" / notebook_path
         if not english_nb.exists():
-            # hello-world.ipynb is at the repo root
-            english_nb = UPSTREAM_DIR / Path(notebook_path).name
+            # doQumentation custom Hello World — local-content first, then
+            # upstream root (legacy fork submodule layout).
+            english_nb = LOCAL_CONTENT_DIR / Path(notebook_path).name
+            if not english_nb.exists():
+                english_nb = UPSTREAM_DIR / Path(notebook_path).name
             if not english_nb.exists():
                 skipped += 1
                 continue
@@ -1663,8 +1671,11 @@ def generate_sidebar_from_toc():
 
     sidebar_items = toc_children_to_sidebar(children)
 
-    # Prepend custom Hello World (doQumentation's own intro, from fork root)
-    custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
+    # Prepend custom Hello World (doQumentation's own intro). Same source
+    # precedence as process_tutorials: local-content/ first, upstream fallback.
+    custom_hw = LOCAL_CONTENT_DIR / "hello-world.ipynb"
+    if not custom_hw.exists():
+        custom_hw = UPSTREAM_DIR / "hello-world.ipynb"
     if custom_hw.exists():
         sidebar_items.insert(0, sidebar_doc_item("tutorials/hello-world"))
 
