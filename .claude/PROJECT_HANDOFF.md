@@ -422,4 +422,108 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 
 ---
 
-*Last updated: May 9, 2026 (restructure — old resolved moved to archive, status updates condensed)*
+## Operational Maturity Workstreams (May 2026 handoff)
+
+Handover from another developer. The platform's core differentiators (open, no-account, multilingual, mobile, CC BY-SA, no server-side proxy) are working well. Next round of work focuses on the **operational layer**: making the platform feel reliable and well-organized for instructors, course authors, and event organizers who want to point their audiences at it.
+
+**Reference target for first deliverables:** QGSS content on GitHub under `qiskit-community` (Apache-2.0) — `qgss-2025`, `qgss-2024`, `qgss-2023`, plus `qgss-2025-lecture-notes`. Structure: `lab-0/` … `lab-4/`, `solutions/`, `community-labs/`, `functions-labs/`, `lecture_supplementary/`. Drop-in compatible with doQumentation's existing notebook execution model.
+
+### Architectural constraints (do not violate)
+
+- No user accounts, no server-side state
+- No server-side proxy for IBM Quantum API calls — users authenticate with their own IBM Cloud tokens
+- Two backends remain: MyBinder (PoC/demo) and IBM Code Engine (production)
+
+### Workstreams
+
+#### 1. "Launch on doQumentation" badge + URL flow
+
+A GitHub README badge that opens any public notebook repo in doQumentation's execution environment.
+
+```
+[![Launch on doQumentation](badge.svg)](https://doqumentation.org/launch?repo=qiskit-community/qgss-2025&path=lab-0/lab0.ipynb&env=qgss-2025)
+```
+
+Scope:
+- URL pattern: `repo`, `path` (optional, defaults to repo root listing), `env` (optional, references a named environment — see workstream 2), `branch` (optional, defaults to `main`)
+- Pull notebook from `raw.githubusercontent.com`
+- Spawn CE (or Binder) session with the requested environment
+- Open in existing execution UI
+
+Highest distribution leverage of any item here — it lets other people's repos point at us.
+
+#### 2. Named, pinned environments with a public registry
+
+Today the CE image is general-purpose. Move to *named environments* that pin known-good dependency sets so courses don't break when Qiskit ships changes.
+
+Scope:
+- Each environment = a public GitHub repo with a Dockerfile and a manifest (name, description, package list, Qiskit version)
+- A registry (could be a single repo with one folder per environment, or a JSON index)
+- Launch URL references environments by name: `env=qgss-2025`, `env=qiskit-1.x-stable`, `env=qgss-2024`
+- Community contributions via PR — no auth needed
+- Start with: `qgss-2023`, `qgss-2024`, `qgss-2025`, `qiskit-default`
+
+First concrete addition: QGSS 2025 needs `qiskit`, `qiskit-ibm-runtime`, `qiskit-aer`, `qiskit-addon-sqd`, `pylatexenc`, `matplotlib`. The `qiskit-addon-sqd` is the main delta from current image.
+
+> **Update (May 15, 2026):** [JanLahmann/QuBins](https://github.com/JanLahmann/QuBins) now covers the spirit of this workstream — it publishes versioned Qiskit images (`ghcr.io/janlahmann/qiskit:{1.4..2.4,latest}-{small,xl}`) with mybinder stub branches, daily-rebuilt and Trivy-gated. doQumentation already consumes `qubins/2.3-xl` (PR #52). Workstream 2 reshapes to: use QuBins tags as `env=` values, plus a small JSON registry mapping friendly names (`qgss-2025`) to QuBins tags, and contribute any QGSS-specific dep deltas (e.g. `matplotlib`) back to QuBins.
+
+#### 3. Per-event onboarding pages
+
+Dedicated landing pages for specific cohorts or events, so each audience has a polished entry point rather than landing on generic docs.
+
+Scope:
+- Template at `doqumentation.org/events/<event-slug>`
+- Per-event: intro, prerequisites, "Launch on doQumentation" buttons for each lab, language toggle, link to original repo, link to lecture notes
+- Initial pages: `events/qgss-2025`, `events/qgss-2024`, `events/qgss-2023`, plus a template for upcoming Southeast Asia workshops
+- Should be just-MDX, no backend
+
+#### 4. Job status widget for real-hardware runs
+
+When users run cells against real IBM Quantum hardware via their own token, surface job status inline.
+
+Scope:
+- Lightweight widget that queries IBM Quantum Runtime API *with the user's own token* (no proxy)
+- Shows: job ID, status, queue position, estimated wait, link to IBM Quantum Platform for details
+- Renders in notebook or as a sidebar
+- Crucially: token stays in the browser, all calls go directly to IBM endpoints — preserves the no-proxy architecture
+
+#### 5. Course-as-structured-path metaphor
+
+Move from flat tutorial lists to explicit learning paths: a course = ordered notebooks with prerequisites and a defined progression.
+
+Scope:
+- Course manifest format (YAML or JSON): ordered notebooks, prerequisites, suggested time, optional/required tags
+- Course landing page: visual progression, "next/previous" navigation between notebooks
+- Progress hints via `localStorage` (no accounts, no server state) — checkmarks, "resume where you left off"
+- Convert existing courses to the new format as a migration step
+
+### Suggested sequencing
+
+1. **Workstream 2** (named environments) first — workstream 1 depends on it for the `env=` parameter to mean anything. Now mostly a thin layer over QuBins.
+2. **Workstream 1** (launch badge + URL flow) second — unlocks distribution.
+3. **Workstream 3** (per-event pages) third — gives 1 and 2 a showcase. Build `events/qgss-2025` as the reference page.
+4. **Workstream 5** (course paths) fourth — bigger refactor, less time-sensitive.
+5. **Workstream 4** (job status widget) fifth — nice-to-have polish, not blocking other deliverables.
+
+The first three together form a coherent demo: past years of QGSS, runnable in any browser, on any device, in multiple languages, with no signup.
+
+### Out of scope (explicitly do not build)
+
+- User accounts, login, identity
+- Persistent per-user notebook state across sessions
+- Autograder / submission tracking
+- QPU credit management
+- Any server-side proxy for IBM Quantum API calls
+- Cross-SDK conversion (Cirq, Braket, etc.) — Qiskit-only by design
+- AI features beyond the existing multi-tier AI strategy (Granite in-browser default, BYOK watsonx.ai, BYOK Anthropic)
+
+### Open questions
+
+- Environment registry: pure mapping to QuBins tags, or also accept arbitrary Dockerfile-repo entries for projects that need something QuBins doesn't ship?
+- Launch URL: should it accept arbitrary GitHub repos, or whitelist `qiskit-community` + a few trusted orgs initially? (Security/abuse consideration.)
+- Job status widget: pure-frontend (fetch from IBM Runtime API directly) or Jupyter notebook extension? (Pure-frontend preserves the architecture better.)
+- Course manifest: define our own or adopt an existing standard (e.g., Jupyter Book's `_toc.yml`)?
+
+---
+
+*Last updated: May 15, 2026 (added Operational Maturity Workstreams handoff — launch badge, named environments, event pages, job-status widget, course paths)*
