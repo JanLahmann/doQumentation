@@ -18,6 +18,17 @@ const config: Config = {
   trailingSlash: false,
 
   onBrokenLinks: 'warn',
+  // i18n MDX files reference image paths from when each translation was
+  // promoted. Upstream sometimes renames a page (image dir renames with it)
+  // or regenerates a notebook (image hashes change). The locale file isn't
+  // updated until the next translation pass, so its image references go
+  // stale. Warn rather than fail so locale builds keep shipping while the
+  // re-translation queue catches up.
+  markdown: {
+    hooks: {
+      onBrokenMarkdownImages: 'warn',
+    },
+  },
 
   headTags: [
     // Preconnect hints for external resources
