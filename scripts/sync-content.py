@@ -3,7 +3,7 @@
 sync-content.py - Sync and transform Qiskit content for Docusaurus
 
 This script:
-1. Clones/updates the JanLahmann/Qiskit-documentation repository
+1. Clones/updates the Qiskit/documentation repository
 2. Converts Jupyter notebooks to MDX (code blocks auto-wrapped by CodeBlock swizzle)
 3. Transforms upstream MDX files for Docusaurus compatibility
 4. Parses _toc.json to generate structured sidebar configuration
@@ -137,7 +137,7 @@ def clone_or_update_upstream():
             "--filter=blob:none",
             "--sparse",
             "--depth", "1",
-            "https://github.com/JanLahmann/Qiskit-documentation.git",
+            "https://github.com/Qiskit/documentation.git",
             str(UPSTREAM_DIR)
         ])
         if result.returncode != 0:
@@ -154,15 +154,24 @@ def clone_or_update_upstream():
 
 
 def _ensure_ibm_history(upstream_repo: Path):
-    """Ensure ibm/main has full per-file history (for the page-dates manifest).
+    """Ensure full per-file history is available (for the page-dates manifest).
 
-    The fork at JanLahmann/Qiskit-documentation merges upstream as single
-    sync commits, so per-file `git log` against its HEAD returns identical
-    dates for every file. To get true per-file modification dates we need
-    the real IBM-side history. We add `ibm` as a remote (if missing) and
-    fetch it blob-less without --depth so commit history is complete but
-    file blobs are downloaded only on demand.
+    Historically the upstream-docs submodule pointed at JanLahmann/Qiskit-
+    documentation, a fork that merged upstream as single sync commits — so
+    per-file `git log` against its HEAD returned identical dates for every
+    file, and we had to add a separate `ibm` remote pointing at
+    Qiskit/documentation to recover real per-file modification dates.
+
+    As of 2026-05 the submodule points at Qiskit/documentation directly, so
+    `origin` already carries the real history. This function is now a
+    no-op when origin is on Qiskit/documentation, and keeps the legacy
+    `ibm` remote dance for environments that still have the old fork
+    clone on disk (e.g. a long-lived developer checkout that hasn't
+    re-cloned since the migration).
     """
+    origin_url = run_command(["git", "remote", "get-url", "origin"], cwd=upstream_repo)
+    if origin_url.returncode == 0 and "Qiskit/documentation" in origin_url.stdout:
+        return  # origin is already upstream — no shim needed
     remotes = run_command(["git", "remote"], cwd=upstream_repo)
     if remotes.returncode != 0:
         return
@@ -2798,11 +2807,12 @@ def _git_file_sha(repo: Path, path: str, ref: str = "HEAD") -> str:
 def _ibm_upstream_ref(upstream_repo: Path) -> Optional[str]:
     """Return the ref to query for true IBM-side per-file history.
 
-    The fork at JanLahmann/Qiskit-documentation merges upstream as single
-    "sync" commits, so per-file dates from its HEAD are useless. The clone
-    has an `ibm` remote pointing at github.com/Qiskit/documentation; if it
-    has been fetched, ibm/main carries the real per-file history.
-    Returns None if not available, in which case we fall back to HEAD.
+    On the current upstream-Qiskit/documentation submodule, `HEAD` is
+    already the right ref — this function returns None and callers fall
+    back to HEAD. The legacy `ibm/main` ref is preserved for environments
+    that still have an old JanLahmann/Qiskit-documentation fork clone on
+    disk (whose HEAD is sync-flattened); _ensure_ibm_history sets that
+    up. Returns None if no `ibm/main` exists; the caller defaults to HEAD.
     """
     res = run_command(
         ["git", "rev-parse", "--verify", "--quiet", "refs/remotes/ibm/main"],
@@ -2937,7 +2947,7 @@ def write_page_dates_manifest():
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "_generated_by": "scripts/sync-content.py",
-        "_upstream_repo": "JanLahmann/Qiskit-documentation",
+        "_upstream_repo": "Qiskit/documentation",
         "files": dict(sorted(manifest.items())),
     }
     out.write_text(json.dumps(payload, indent=2) + "\n")
