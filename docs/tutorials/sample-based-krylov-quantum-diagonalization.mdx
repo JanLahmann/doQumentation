@@ -15,6 +15,17 @@ import TutorialFeedback from '@site/src/components/TutorialFeedback';
 {/* cspell:ignore fontdict fontsize nocc SQKD DMRG textrm varepsilon vecs pqrs ijkl */}
 
 *Usage estimate: Nine seconds on a Heron r2 processor (NOTE: This is an estimate only. Your runtime might vary.)*
+## Learning outcomes
+After going through this tutorial, users should understand:
+- How to use the [SQD Qiskit addon](https://github.com/Qiskit/qiskit-addon-sqd) to approximate the ground state energy of a lattice model using bitstrings sampled from a quantum processing unit (QPU).
+- How to use [ffsim](https://github.com/qiskit-community/ffsim) to construct time evolution circuits for fermionic simulation.
+- How to combine samples from multiple circuits for post-processing with the sample-based Krylov diagonalization (SKQD) algorithm.
+
+## Prerequisites
+We suggest that users are familiar with the following topics before going through this tutorial:
+- [Sample-based quantum diagonalization of a chemistry Hamiltonian](/tutorials/sample-based-quantum-diagonalization)
+- [Krylov quantum diagonalization of lattice Hamiltonians](/tutorials/krylov-quantum-diagonalization)
+- [Qiskit primitives](/guides/primitives)
 ## Background
 
 This tutorial shows how to use sample-based quantum diagonalization (SQD) to estimate the ground state energy of a fermionic lattice model. Specifically, we study the one-dimensional single-impurity Anderson model (SIAM), which is used to describe magnetic impurities embedded in metals.
@@ -89,17 +100,19 @@ Before starting this tutorial, ensure that you have the following installed:
 - Qiskit SDK v1.0 or later, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
 - Qiskit Runtime v0.22 or later (`pip install qiskit-ibm-runtime`)
 - SQD Qiskit addon v0.11 or later (`pip install qiskit-addon-sqd`)
-- ffsim (`pip install ffsim`)
-## Step 1: Map problem to a quantum circuit
+- ffsim v0.0.72 or later (`pip install ffsim`)
+## Small-scale simulator example
+### Step 1: Map problem to a quantum circuit
 First, we generate the SIAM Hamiltonian in the position basis. The Hamiltonian is represented by the matrix $h_{pq}$ and the tensor $h_{pqrs}$. Then, we rotate it to the momentum basis. In the position basis, we place the impurity at the first site. However, when we rotate to the momentum basis, we move the impurity to a central site to facilitate interactions with other orbitals.
 
 ```python
 # Added by doQumentation — required packages for this notebook
-!pip install -q ffsim matplotlib numpy qiskit qiskit-addon-sqd qiskit-ibm-runtime scipy
+!pip install -q ffsim matplotlib numpy pyscf qiskit qiskit-addon-sqd qiskit-ibm-runtime scipy
 ```
 
 ```python
 import numpy as np
+import pyscf.fci
 
 def siam_hamiltonian(
     norb: int,
@@ -173,7 +186,7 @@ def rotated(
 
 # Total number of spatial orbitals, including the bath sites and the impurity
 # This should be an even number
-norb = 20
+norb = 8
 
 # System is half-filled
 nelec = (norb // 2, norb // 2)
@@ -200,6 +213,9 @@ orbital_rotation = momentum_basis(norb)
 h1e_momentum, h2e_momentum = rotated(h1e, h2e, orbital_rotation.T.conj())
 # In the momentum basis, the impurity is placed in the center
 impurity_index = n_bath // 2
+
+# Use PySCF to compute the exact ground state energy
+reference_energy, _ = pyscf.fci.direct_spin1.kernel(h1e, h2e, norb, nelec)
 ```
 
 Next, we generate the circuits to produce the Krylov basis states.
@@ -219,6 +235,7 @@ from qiskit.circuit.library import CPhaseGate, XGate, XXPlusYYGate
 
 def prepare_initial_state(qubits: Sequence[Qubit], norb: int, nocc: int):
     """Prepare initial state."""
+    assert norb >= 8
     x_gate = XGate()
     rot = XXPlusYYGate(0.5 * np.pi, -0.5 * np.pi)
     for i in range(nocc):
@@ -313,21 +330,15 @@ circuits[-1].draw("mpl", scale=0.4, fold=-1)
 
 ![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/827976ec-4815-4707-80b1-e13fb2fef309-0.avif)
 
-## Step 2: Optimize problem for quantum execution
-Now that we have created the circuits, we can optimize them for a target hardware. We pick the least busy QPU with at least 127 qubits. Check out the [Qiskit IBM&reg; Runtime docs](/guides/get-started-with-primitives#get-started-with-sampler) for more information.
+### Step 2: Optimize problem for quantum execution
+Next, we optimize the circuit for a target hardware. For now, we'll create a generic backend with a specified number of qubits and a gate set that the time evolution circuits naturally decompose to.
 
 ```python
-from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.providers.fake_provider import GenericBackendV2
 
-service = QiskitRuntimeService()
-backend = service.least_busy(
-    operational=True, simulator=False, min_num_qubits=127
+backend = GenericBackendV2(
+    2 * norb, basis_gates=["cp", "xx_plus_yy", "p", "x"]
 )
-print(f"Using backend {backend.name}")
-```
-
-```text
-Using backend ibm_fez
 ```
 
 Now, we use Qiskit to transpile the circuits to the target backend.
@@ -341,22 +352,22 @@ pass_manager = generate_preset_pass_manager(
 isa_circuits = pass_manager.run(circuits)
 ```
 
-## Step 3: Execute by using Qiskit primitives
+### Step 3: Execute using Qiskit primitives
 After optimizing the circuits for hardware execution, we are ready to run them on the target hardware and collect samples for ground state energy estimation. After using the Sampler primitive to sample bitstrings from each circuit, we combine all of the results into a single counts dictionary and plot the top 20 most commonly sampled bitstrings.
 
 ```python
 from qiskit.visualization import plot_histogram
-from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit.primitives import StatevectorSampler
 
 # Sample from the circuits
-sampler = Sampler(backend)
+sampler = StatevectorSampler()
 job = sampler.run(isa_circuits, shots=500)
 ```
 
 ```python
 from qiskit.primitives import BitArray
 
-# Combine the counts from the individual Trotter circuits
+# Combine the shots from the individual Trotter circuits
 bit_array = BitArray.concatenate_shots(
     [result.data.meas for result in job.result()]
 )
@@ -366,7 +377,7 @@ plot_histogram(bit_array.get_counts(), number_to_keep=20)
 
 ![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/10af4663-7375-4b50-bae6-9f3d5106457b-0.avif)
 
-## Step 4: Post-process and return result to desired classical format
+### Step 4: Post-process and return result to desired classical format
 Now, we run the SQD algorithm using the `diagonalize_fermionic_hamiltonian` function. See the [API documentation](https://qiskit.github.io/qiskit-addon-sqd/apidocs/qiskit_addon_sqd.fermion.html#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian) for explanations of the arguments to this function.
 
 ```python
@@ -408,62 +419,50 @@ result = diagonalize_fermionic_hamiltonian(
 ```text
 Iteration 1
 	Subsample 0
-		Energy: -28.61321893815165
-		Subspace dimension: 10609
+		Energy: -13.4222953188441
+		Subspace dimension: 529
 	Subsample 1
-		Energy: -28.628985564542244
-		Subspace dimension: 13924
+		Energy: -13.42237556285828
+		Subspace dimension: 784
 	Subsample 2
-		Energy: -28.620151775558114
-		Subspace dimension: 10404
+		Energy: -13.422045397387413
+		Subspace dimension: 529
 Iteration 2
 	Subsample 0
-		Energy: -28.656893066053115
-		Subspace dimension: 34225
+		Energy: -13.422379583305478
+		Subspace dimension: 900
 	Subsample 1
-		Energy: -28.65277622004119
-		Subspace dimension: 38416
+		Energy: -13.422376197704326
+		Subspace dimension: 841
 	Subsample 2
-		Energy: -28.670856034959165
-		Subspace dimension: 39601
+		Energy: -13.422421162849295
+		Subspace dimension: 1089
 Iteration 3
 	Subsample 0
-		Energy: -28.684787675404362
-		Subspace dimension: 42436
+		Energy: -13.422421164670345
+		Subspace dimension: 1156
 	Subsample 1
-		Energy: -28.676984757118426
-		Subspace dimension: 50176
+		Energy: -13.422421492737689
+		Subspace dimension: 1156
 	Subsample 2
-		Energy: -28.671581704249885
-		Subspace dimension: 40804
+		Energy: -13.422421205869572
+		Subspace dimension: 1156
 Iteration 4
 	Subsample 0
-		Energy: -28.6859683054753
-		Subspace dimension: 47961
+		Energy: -13.422421494558726
+		Subspace dimension: 1225
 	Subsample 1
-		Energy: -28.69418206537316
-		Subspace dimension: 51529
+		Energy: -13.422421492737689
+		Subspace dimension: 1156
 	Subsample 2
-		Energy: -28.686083516445752
-		Subspace dimension: 51529
-Iteration 5
-	Subsample 0
-		Energy: -28.694665630711178
-		Subspace dimension: 50625
-	Subsample 1
-		Energy: -28.69505984237118
-		Subspace dimension: 47524
-	Subsample 2
-		Energy: -28.6942873883992
-		Subspace dimension: 48841
+		Energy: -13.422421492737689
+		Subspace dimension: 1156
 ```
 
-The following code cell plots the results. The first plot shows the computed energy as a function of the number of configuration recovery iterations, and the second plot shows the average occupancy of each spatial orbital after the final iteration. For the reference energy, we use the results of a [DMRG](https://en.wikipedia.org/wiki/Density_matrix_renormalization_group) calculation that was performed separately.
+The following code cell plots the results. The first plot shows the computed energy as a function of the number of configuration recovery iterations, and the second plot shows the average occupancy of each spatial orbital after the final iteration. Since this is such a small problem, the first iteration already brings us very close to the exact energy (note the scale of the y axis).
 
 ```python
 import matplotlib.pyplot as plt
-
-dmrg_energy = -28.70659686
 
 min_es = [
     min(result, key=lambda res: res.energy).energy
@@ -485,7 +484,10 @@ axs[0].plot(x1, min_es, label="energy", marker="o")
 axs[0].set_xticks(x1)
 axs[0].set_xticklabels(x1)
 axs[0].axhline(
-    y=dmrg_energy, color="#BF5700", linestyle="--", label="DMRG energy"
+    y=reference_energy,
+    color="#BF5700",
+    linestyle="--",
+    label="reference energy",
 )
 axs[0].set_title("Approximated Ground State Energy vs SQD Iterations")
 axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
@@ -500,24 +502,24 @@ axs[1].set_title("Avg Occupancy per Spatial Orbital")
 axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
 axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
 
-print(f"Reference (DMRG) energy: {dmrg_energy:.5f}")
+print(f"Reference energy: {reference_energy:.5f}")
 print(f"SQD energy: {min_e:.5f}")
-print(f"Absolute error: {abs(min_e - dmrg_energy):.5f}")
+print(f"Absolute error: {abs(min_e - reference_energy):.5f}")
 plt.tight_layout()
 plt.show()
 ```
 
 ```text
-Reference (DMRG) energy: -28.70660
-SQD energy: -28.69506
-Absolute error: 0.01154
+Reference energy: -13.42249
+SQD energy: -13.42242
+Absolute error: 0.00007
 ```
 
 ![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/b6879566-8bf5-4c28-bfb6-b2686692e3d3-1.avif)
 
-### Verifying the energy
+### Verify the energy
 
-The energy returned by SQD is guaranteed to be an upper bound to the true ground state energy. The value of the energy can be verified because SQD also returns the coefficients of the state vector approximating the ground state. You can compute the energy from the state vector using its 1- and 2-particle reduced density matrices, as demonstrated in the following code cell.
+The energy returned by SQD is guaranteed to be an upper bound to the true ground state energy. The value of the energy can be verified because SQD also returns the coefficients of the state vector approximating the ground state. You can compute the energy from the state vector using its one- and two-particle reduced density matrices, as demonstrated in the following code cell.
 
 ```python
 rdm1 = result.sci_state.rdm(rank=1, spin_summed=True)
@@ -529,13 +531,222 @@ print(f"Recomputed energy: {energy:.5f}")
 ```
 
 ```text
-Recomputed energy: -28.69506
+Recomputed energy: -13.42242
 ```
 
-## References
+## Large-scale hardware example
 
-- [Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization (SKQD paper)](https://arxiv.org/abs/2501.09702)
-- [Chemistry Beyond Exact Solutions on a Quantum-Centric Supercomputer (SQD paper)](https://arxiv.org/abs/2405.05068)
-- [Diagonalization of large many-body Hamiltonians on a quantum processor (KQD paper)](https://arxiv.org/abs/2407.14431)
+Now, we run a larger example on a real QPU.
+For the reference energy, we use the results of a [DMRG](https://en.wikipedia.org/wiki/Density_matrix_renormalization_group) calculation that was performed separately.
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+# Model parameters
+norb = 20
+nelec = (norb // 2, norb // 2)
+n_bath = norb - 1
+hybridization = 1.0
+hopping = 1.0
+onsite = 10.0
+chemical_potential = -0.5 * onsite
+
+# Generate Hamiltonian and orbital rotation
+h1e, h2e = siam_hamiltonian(
+    norb=norb,
+    hopping=hopping,
+    onsite=onsite,
+    hybridization=hybridization,
+    chemical_potential=chemical_potential,
+)
+orbital_rotation = momentum_basis(norb)
+h1e_momentum, h2e_momentum = rotated(h1e, h2e, orbital_rotation.T.conj())
+impurity_index = n_bath // 2
+
+# Set reference energy to DMRG value computed separately
+reference_energy = -28.70659686
+
+# Algorithm parameters
+time_step = 0.2
+krylov_dim = 8
+
+# Construct circuits
+qubits = QuantumRegister(2 * norb, name="q")
+circuit = QuantumCircuit(qubits)
+for instruction in prepare_initial_state(qubits, norb=norb, nocc=norb // 2):
+    circuit.append(instruction)
+circuit.measure_all()
+circuits = [circuit.copy()]
+one_body_evolution = scipy.linalg.expm(-1j * time_step * h1e_momentum)
+for i in range(krylov_dim - 1):
+    circuit.remove_final_measurements()
+    for instruction in trotter_step(
+        qubits,
+        time_step,
+        one_body_evolution,
+        h2e_momentum,
+        impurity_index,
+        norb,
+    ):
+        circuit.append(instruction)
+    circuit.measure_all()
+    circuits.append(circuit.copy())
+
+# Initialize hardware backend
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, min_num_qubits=127
+)
+print(f"Using backend {backend.name}")
+
+# Transpile to backend
+pass_manager = generate_preset_pass_manager(
+    optimization_level=3, backend=backend
+)
+isa_circuits = pass_manager.run(circuits)
+
+# Sample from the circuits
+sampler = Sampler(backend)
+sampler.options.environment.job_tags = ["TUT_SKQD"]
+job = sampler.run(isa_circuits, shots=500)
+
+# Combine the shots from the individual Trotter circuits
+bit_array = BitArray.concatenate_shots(
+    [result.data.meas for result in job.result()]
+)
+
+# Run configuration recovery and diagonalization
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy}")
+        print(
+            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+        )
+
+rng = np.random.default_rng(24)
+result = diagonalize_fermionic_hamiltonian(
+    h1e_momentum,
+    h2e_momentum,
+    bit_array,
+    samples_per_batch=100,
+    norb=norb,
+    nelec=nelec,
+    num_batches=3,
+    max_iterations=5,
+    symmetrize_spin=True,
+    callback=callback,
+    seed=rng,
+)
+
+# Plot results
+min_es = [
+    min(result, key=lambda res: res.energy).energy
+    for result in result_history
+]
+min_id, min_e = min(enumerate(min_es), key=lambda x: x[1])
+x1 = range(len(result_history))
+y2 = np.sum(result.orbital_occupancies, axis=0)
+x2 = range(len(y2))
+fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+axs[0].plot(x1, min_es, label="energy", marker="o")
+axs[0].set_xticks(x1)
+axs[0].set_xticklabels(x1)
+axs[0].axhline(
+    y=reference_energy,
+    color="#BF5700",
+    linestyle="--",
+    label="reference energy",
+)
+axs[0].set_title("Approximated Ground State Energy vs SQD Iterations")
+axs[0].set_xlabel("Iteration Index", fontdict={"fontsize": 12})
+axs[0].set_ylabel("Energy", fontdict={"fontsize": 12})
+axs[0].legend()
+axs[1].bar(x2, y2, width=0.8)
+axs[1].set_xticks(x2)
+axs[1].set_xticklabels(x2)
+axs[1].set_title("Avg Occupancy per Spatial Orbital")
+axs[1].set_xlabel("Orbital Index", fontdict={"fontsize": 12})
+axs[1].set_ylabel("Avg Occupancy", fontdict={"fontsize": 12})
+print(f"Reference energy: {reference_energy:.5f}")
+print(f"SQD energy: {min_e:.5f}")
+print(f"Absolute error: {abs(min_e - reference_energy):.5f}")
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Using backend ibm_boston
+Iteration 1
+	Subsample 0
+		Energy: -28.63965951544449
+		Subspace dimension: 9801
+	Subsample 1
+		Energy: -28.625588929202006
+		Subspace dimension: 9409
+	Subsample 2
+		Energy: -28.647371834135498
+		Subspace dimension: 8281
+Iteration 2
+	Subsample 0
+		Energy: -28.67213260849567
+		Subspace dimension: 29584
+	Subsample 1
+		Energy: -28.670340686158816
+		Subspace dimension: 27225
+	Subsample 2
+		Energy: -28.669976379525988
+		Subspace dimension: 31329
+Iteration 3
+	Subsample 0
+		Energy: -28.68622875601382
+		Subspace dimension: 36100
+	Subsample 1
+		Energy: -28.698569623143126
+		Subspace dimension: 34225
+	Subsample 2
+		Energy: -28.694848533971882
+		Subspace dimension: 33856
+Iteration 4
+	Subsample 0
+		Energy: -28.69883392844593
+		Subspace dimension: 42025
+	Subsample 1
+		Energy: -28.701289495200996
+		Subspace dimension: 38025
+	Subsample 2
+		Energy: -28.699319594978245
+		Subspace dimension: 45369
+Iteration 5
+	Subsample 0
+		Energy: -28.701936886834154
+		Subspace dimension: 51076
+	Subsample 1
+		Energy: -28.702468711812013
+		Subspace dimension: 53824
+	Subsample 2
+		Energy: -28.702298147575938
+		Subspace dimension: 52900
+Reference energy: -28.70660
+SQD energy: -28.70247
+Absolute error: 0.00413
+```
+
+![Output of the previous code cell](/docs/images/tutorials/sample-based-krylov-quantum-diagonalization/extracted-outputs/933037d8-847e-4986-80da-5ac8d677b2ff-1.avif)
+
+## Next steps
+<Admonition type="tip" title="Recommendations">
+If you found this work interesting, you might be interested in the following material:
+- [Sample-based quantum diagonalization of a chemistry Hamiltonian](/tutorials/sample-based-quantum-diagonalization) - a related tutorial using a heuristic variational ansatz instead of Trotter circuits
+- [Krylov quantum diagonalization of lattice Hamiltonians](/tutorials/krylov-quantum-diagonalization) - a tutorial on the KQD method
+- [SQD addon API documentation](https://qiskit.github.io/qiskit-addon-sqd/apidocs/qiskit_addon_sqd.fermion.html#qiskit_addon_sqd.fermion.diagonalize_fermionic_hamiltonian) - reference for the `diagonalize_fermionic_hamiltonian` function
+- [*Quantum-Centric Algorithm for Sample-Based Krylov Diagonalization*](https://arxiv.org/abs/2501.09702) - the paper this tutorial is based on
+</Admonition>
 
 <TutorialFeedback />
