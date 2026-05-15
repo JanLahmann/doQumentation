@@ -62,6 +62,32 @@ CONTENT_PATHS = [
     "public/learning/images",
 ]
 
+_ADMONITION_TYPE_MAP = {"attention": "warning", "Note": "note", "information": "info"}
+
+
+def _normalize_admonition(attrs: str, body: str) -> str:
+    """Normalize a top-level <Admonition>…</Admonition> match for Docusaurus
+    3.9.x's strict MDX parser. Used by the regex rule in MDX_TRANSFORMS.
+
+    - Dedent uniformly 4-space-indented body lines (upstream often indents
+      inner content; IBM's Next.js MDX tolerates it but ours parses it as
+      a code block and rejects the closing tag).
+    - If the body contains a fenced code block, return Docusaurus' `:::type[title]`
+      admonition syntax instead — JSX <Admonition> wrapping fenced ```python``` reliably
+      breaks MDX 3 ("Unexpected closing slash `/` in tag, expected an open tag first").
+    """
+    dedented = re.sub(r'^[ \t]{4}', '', body, flags=re.MULTILINE)
+    if '```' not in dedented:
+        return f'<Admonition{attrs}>\n{dedented}\n</Admonition>'
+    type_m = re.search(r'\btype="([^"]+)"', attrs)
+    title_m = re.search(r'\btitle="([^"]*)"', attrs)
+    a_type = type_m.group(1) if type_m else 'note'
+    a_type = _ADMONITION_TYPE_MAP.get(a_type, a_type).lower()
+    title = title_m.group(1).strip() if title_m else ''
+    title_part = f'[{title}]' if title else ''
+    return f':::{a_type}{title_part}\n\n{dedented}\n\n:::'
+
+
 # MDX Transformations for upstream .mdx files
 MDX_TRANSFORMS = [
     # Normalize Admonition types to Docusaurus-supported values
@@ -70,10 +96,20 @@ MDX_TRANSFORMS = [
     (r'<Admonition(\s+)type="information"', r'<Admonition\1type="info"'),
     # Bare <Admonition> without type → default to note
     (r'<Admonition\s*>', '<Admonition type="note">'),
+    # Normalize top-level <Admonition>…</Admonition> blocks (column-0 only —
+    # nested admonitions inside list items are left alone because their
+    # leading whitespace is structural). See _normalize_admonition for why.
+    (r'(?ms)^<Admonition([^>]*)>\n((?:(?!</Admonition>).)*?)\n</Admonition>',
+     lambda m: _normalize_admonition(m.group(1), m.group(2))),
     # Strip IBM-specific components that we don't implement
     (r'<CodeCellPlaceholder[^>]*/>', ''),
+    # Render <CodeTitle title="X" /> as a bold filename caption
+    (r'<CodeTitle\s+title="([^"]+)"\s*/>', r'**`\1`**'),
     # Convert IBM's custom Table components to standard HTML
     (r'<Table>', '<table>'), (r'</Table>', '</table>'),
+    (r'<THead>', '<thead>'), (r'</THead>', '</thead>'),
+    (r'<TBody>', '<tbody>'), (r'</TBody>', '</tbody>'),
+    (r'<TFoot>', '<tfoot>'), (r'</TFoot>', '</tfoot>'),
     (r'<Tr>', '<tr>'), (r'</Tr>', '</tr>'),
     (r'<Th\b', '<th'), (r'</Th>', '</th>'),
     (r'<Td\b', '<td'), (r'</Td>', '</td>'),
@@ -978,21 +1014,30 @@ def sidebar_doc_item(doc_id: str) -> object:
     return doc_id
 
 
-def toc_children_to_sidebar(children: list) -> list:
-    """Recursively convert _toc.json children to Docusaurus sidebar items."""
+def toc_children_to_sidebar(children: list, parent_key: str = "") -> list:
+    """Recursively convert _toc.json children to Docusaurus sidebar items.
+
+    `parent_key` accumulates the breadcrumb path through nested categories so
+    duplicate category labels (e.g. "Install" appearing under both "Qiskit"
+    and "IBM Quantum Compute" in upstream's guides _toc.json) get distinct
+    Docusaurus translation keys.
+    """
     items = []
     for child in children:
         if 'children' in child and child['children']:
             # "Lessons"/"Modules" are wrappers in upstream _toc.json — unwrap children directly
             if child.get('title') in ('Lessons', 'Modules'):
-                items.extend(toc_children_to_sidebar(child['children']))
+                items.extend(toc_children_to_sidebar(child['children'], parent_key))
                 continue
             # Category with sub-items
-            sub_items = toc_children_to_sidebar(child['children'])
+            label = child['title']
+            cat_key = f"{parent_key}/{label}" if parent_key else label
+            sub_items = toc_children_to_sidebar(child['children'], cat_key)
             if sub_items:
                 cat = {
                     'type': 'category',
-                    'label': child['title'],
+                    'label': label,
+                    'key': cat_key,
                     'collapsed': child.get('collapsed', True),
                     'items': sub_items,
                 }
@@ -1030,6 +1075,15 @@ def toc_children_to_sidebar(children: list) -> list:
             if doc_id.startswith('learning/courses/') and doc_id.count('/') == 2:
                 continue
             if doc_id.startswith('learning/modules/') and doc_id.count('/') == 2:
+                continue
+            # Skip toc entries pointing at files that don't exist locally —
+            # upstream's _toc.json occasionally references pages that have
+            # been renamed or unbuilt (e.g. guides/get-qpu-information after
+            # the May 2026 upstream restructure). Including them would fail
+            # Docusaurus' sidebar validation. Better to log and drop than
+            # to break the build.
+            if not (DOCS_OUTPUT / f"{doc_id}.mdx").exists():
+                print(f"  ⚠ Skipping sidebar entry for missing doc: {doc_id}")
                 continue
             items.append(sidebar_doc_item(doc_id))
     return items
@@ -1682,11 +1736,23 @@ def process_courses():
     # Track statistics
     stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
 
+    # When the same course name appears in both upstream and local-content
+    # (e.g. local-content overlay shipped before upstream caught up; see PR
+    # #37 / "use-a-qc-today"), prefer upstream — local-content is meant as a
+    # cherry-pick workaround, not a parallel source of truth. The ordering
+    # of course_roots above puts upstream first, so a name we've already
+    # seen wins.
     course_dirs = []
+    seen_names: Set[str] = set()
     for root in course_roots:
         for d in sorted(root.iterdir()):
-            if d.is_dir():
-                course_dirs.append((d, root))
+            if not d.is_dir():
+                continue
+            if d.name in seen_names:
+                print(f"  ⚠ Skipping local-content overlay for '{d.name}' — upstream version takes precedence")
+                continue
+            seen_names.add(d.name)
+            course_dirs.append((d, root))
 
     for course_dir, courses_src in course_dirs:
         course_name = course_dir.name
@@ -1791,12 +1857,20 @@ def generate_course_sidebar():
         print("  Warning: No courses directories found")
         return
 
+    # Same dedup policy as process_courses(): upstream wins over local-content
+    # for same-named courses. Keeps sidebar in sync with the docs that were
+    # actually written.
     course_items = []
     course_dirs = []
+    seen_names: Set[str] = set()
     for root in course_roots:
         for d in sorted(root.iterdir()):
-            if d.is_dir():
-                course_dirs.append(d)
+            if not d.is_dir():
+                continue
+            if d.name in seen_names:
+                continue
+            seen_names.add(d.name)
+            course_dirs.append(d)
 
     for course_dir in course_dirs:
         toc_path = course_dir / "_toc.json"

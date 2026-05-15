@@ -19,10 +19,15 @@ function collectCategoryLabels(items: SidebarItemConfig[], labels: Set<string> =
 function deduplicateLabels(items: SidebarItemConfig[], existing: Set<string>, suffix: string): SidebarItemConfig[] {
   return items.map((item) => {
     if (typeof item === 'object' && 'type' in item && item.type === 'category') {
-      const cat = item as {type: 'category'; label: string; items: SidebarItemConfig[]; [k: string]: unknown};
+      const cat = item as {type: 'category'; label: string; key?: string; items: SidebarItemConfig[]; [k: string]: unknown};
       const dedupedItems = cat.items ? deduplicateLabels(cat.items, existing, suffix) : [];
       if (existing.has(cat.label)) {
-        return {...cat, label: `${cat.label} (${suffix})`, items: dedupedItems};
+        const newLabel = `${cat.label} (${suffix})`;
+        // Rename `key` in lockstep with the label so the Docusaurus
+        // translation key actually changes — otherwise sister sidebars'
+        // categories share `sidebar.X.category.<key>` and the build fails.
+        const newKey = cat.key ? `${cat.key} (${suffix})` : undefined;
+        return {...cat, label: newLabel, ...(newKey !== undefined ? {key: newKey} : {}), items: dedupedItems};
       }
       return {...cat, items: dedupedItems};
     }
