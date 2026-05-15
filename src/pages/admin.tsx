@@ -575,8 +575,8 @@ ibmcloud ce app update --name ce-doqumentation-01 --max-scale 1`}</CodeBlock>
           <LinkList items={[
             { label: 'Main Repository', url: GITHUB_REPO },
             { label: 'Live Site', url: 'https://doqumentation.org' },
-            { label: 'Binder (QuBins 2.3-xl)', url: 'https://mybinder.org/v2/gh/JanLahmann/qubins/2.3-xl' },
-            { label: 'QuBins (Binder kernel image source)', url: 'https://github.com/JanLahmann/QuBins' },
+            { label: 'Binder (QuBins 2.3-xl)', url: 'https://mybinder.org/v2/gh/QuBins/qiskit-images/2.3-xl' },
+            { label: 'QuBins (Binder kernel image source)', url: 'https://github.com/QuBins/qiskit-images' },
             { label: 'Docker Image', url: 'https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation' },
           ]} />
 
@@ -585,8 +585,8 @@ ibmcloud ce app update --name ce-doqumentation-01 --max-scale 1`}</CodeBlock>
             Click a link to launch a session on a specific federation member. A cached image starts in seconds; uncached triggers a rebuild (~30s — the QuBins stub branch is just a FROM-line on a pre-built ghcr.io image). doQumentation's daily warm-up cron (<code>binder-warmup.yml</code>) pings these every 05:30 UTC; QuBins also runs its own warmer after each build.
           </p>
           <LinkList items={[
-            { label: '2i2c (primary, ~70% traffic)', url: 'https://2i2c.mybinder.org/v2/gh/JanLahmann/qubins/2.3-xl' },
-            { label: 'BIDS (UC Berkeley)', url: 'https://bids.mybinder.org/v2/gh/JanLahmann/qubins/2.3-xl' },
+            { label: '2i2c (primary, ~70% traffic)', url: 'https://2i2c.mybinder.org/v2/gh/QuBins/qiskit-images/2.3-xl' },
+            { label: 'BIDS (UC Berkeley)', url: 'https://bids.mybinder.org/v2/gh/QuBins/qiskit-images/2.3-xl' },
           ]} />
 
           <h3>Satellite Repos (locale deploys)</h3>

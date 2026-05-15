@@ -234,10 +234,10 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
         token: '',
         thebeEnabled: true,
         labEnabled: false,
-        // QuBins 2.3-xl: pre-built ghcr.io/janlahmann/qiskit:2.3-xl
-        // (https://github.com/JanLahmann/QuBins). Matches binder/jupyter-requirements.txt
+        // QuBins 2.3-xl: pre-built ghcr.io/qubins/qiskit:2.3-xl
+        // (https://github.com/QuBins/qiskit-images). Matches binder/jupyter-requirements.txt
         // (qiskit[all]~=2.3.0). Bump in lockstep when doQumentation's Qiskit pin moves.
-        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/qubins/2.3-xl',
+        binderUrl: 'https://mybinder.org/v2/gh/QuBins/qiskit-images/2.3-xl',
         environment: 'github-pages',
       };
     }
