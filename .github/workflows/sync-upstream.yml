@@ -1,0 +1,129 @@
+name: Sync Upstream Content
+
+# Fetches Qiskit/documentation, advances the upstream-docs submodule,
+# runs scripts/sync-content.py, gates on `npm run build`, and opens an
+# auto-PR with a freshness report appended.
+#
+# Currently workflow_dispatch only — uncomment the schedule block below
+# to enable weekly Monday 06:00 UTC runs once a few manual dispatches
+# have proven the auto-PR path is reliable.
+
+on:
+  # schedule:
+  #   - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run sync + build but skip PR creation'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          git -C upstream-docs fetch origin main
+          OLD_SHA=$(git -C upstream-docs rev-parse HEAD)
+          NEW_SHA=$(git -C upstream-docs rev-parse origin/main)
+          echo "old_sha=${OLD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "new_sha=${NEW_SHA}" >> "$GITHUB_OUTPUT"
+          echo "old_short=${OLD_SHA:0:9}" >> "$GITHUB_OUTPUT"
+          echo "new_short=${NEW_SHA:0:9}" >> "$GITHUB_OUTPUT"
+          if [ "$OLD_SHA" = "$NEW_SHA" ]; then
+            echo "no_change=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::upstream-docs already at origin/main ($OLD_SHA); nothing to sync"
+          else
+            echo "no_change=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::syncing upstream-docs $OLD_SHA → $NEW_SHA"
+          fi
+
+      - name: Advance submodule pointer
+        if: steps.fetch.outputs.no_change != 'true'
+        run: git -C upstream-docs checkout origin/main
+
+      - uses: actions/setup-python@v5
+        if: steps.fetch.outputs.no_change != 'true'
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        if: steps.fetch.outputs.no_change != 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.fetch.outputs.no_change != 'true'
+        run: npm ci
+
+      - name: Run content sync
+        if: steps.fetch.outputs.no_change != 'true'
+        run: python3 scripts/sync-content.py
+
+      - name: Generate freshness report
+        if: steps.fetch.outputs.no_change != 'true'
+        run: python3 scripts/sync-content.py --freshness-report /tmp/freshness.md
+
+      - name: Build site (gate)
+        if: steps.fetch.outputs.no_change != 'true'
+        run: npx docusaurus build --locale en
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
+
+      - name: Compose PR body
+        if: steps.fetch.outputs.no_change != 'true' && inputs.dry_run != true
+        run: |
+          {
+            echo "Automated sync from [Qiskit/documentation](https://github.com/Qiskit/documentation)."
+            echo ""
+            echo "**Submodule advance:** \`${{ steps.fetch.outputs.old_short }}\` → \`${{ steps.fetch.outputs.new_short }}\`"
+            echo "[Compare upstream commits](https://github.com/Qiskit/documentation/compare/${{ steps.fetch.outputs.old_sha }}...${{ steps.fetch.outputs.new_sha }})"
+            echo ""
+            cat /tmp/freshness.md 2>/dev/null || echo "_(freshness report not generated)_"
+            echo ""
+            echo "---"
+            echo ""
+            echo "🤖 Build gate (\`npx docusaurus build --locale en\`) passed before this PR was opened."
+            echo "If anything looks off, revert the merge commit on \`main\` — \`deploy.yml\` republishes prior content within ~5 minutes."
+          } > /tmp/pr-body.md
+
+      - name: Open auto-PR
+        if: steps.fetch.outputs.no_change != 'true' && inputs.dry_run != true
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "sync: upstream content ${{ steps.fetch.outputs.old_short }} → ${{ steps.fetch.outputs.new_short }}"
+          title: "sync: upstream content ${{ steps.fetch.outputs.new_short }}"
+          body-path: /tmp/pr-body.md
+          branch: sync/upstream-content
+          delete-branch: true
+          add-paths: |
+            upstream-docs
+            docs/**
+            notebooks/**
+            static/**
+            sidebar-*.json
+            src/config/upstreamFileMeta.json
+            src/config/contentMeta.ts
+
+      - name: Dry-run summary
+        if: steps.fetch.outputs.no_change != 'true' && inputs.dry_run == true
+        run: |
+          echo "::notice::Dry run complete — sync + build succeeded, no PR opened"
+          cat /tmp/freshness.md 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true

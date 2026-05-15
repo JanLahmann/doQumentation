@@ -114,7 +114,7 @@ python scripts/sync-content.py --freshness-report report.md # Markdown report of
 
 ```
 doQumentation/
-├── upstream-docs/                 # Git submodule → JanLahmann/Qiskit-documentation (CC BY-SA 4.0)
+├── upstream-docs/                 # Git submodule → Qiskit/documentation (CC BY-SA 4.0)
 ├── docs/                          # Tutorial content (MDX, mostly generated)
 │   └── index.mdx                  # Homepage (source of truth, preserved by sync)
 ├── notebooks/                     # Original .ipynb for JupyterLab (generated)
