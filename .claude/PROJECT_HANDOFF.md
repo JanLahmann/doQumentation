@@ -37,6 +37,8 @@ All content comes from IBM's open-source [Qiskit documentation](https://github.c
 
 ### Content Sync (`scripts/sync-content.py`)
 - Upstream tracked as git submodule (`upstream-docs/` → [JanLahmann/Qiskit-documentation](https://github.com/JanLahmann/Qiskit-documentation)). Sparse-clone fallback for forks without submodule. Transforms MDX, converts notebooks (custom converter, no nbconvert), generates sidebars from `_toc.json`.
+- **Freshness report**: `python scripts/sync-content.py --freshness-report PATH` writes a markdown report of EN-vs-upstream drift + per-locale staleness counts. Reads only `src/config/upstreamFileMeta.json` and `translation/status.json` — no submodule access required, fast and side-effect-free. Useful in PR bodies, ad-hoc inspection, or piped into `$GITHUB_STEP_SUMMARY` from a workflow.
+- **Rolling back a bad sync**: revert the merge commit on `main` (GitHub "Revert" button or `git revert -m 1 <merge-sha> && git push`). `deploy.yml` republishes the prior site within ~5 min; translated locales follow on the next `deploy-locales.yml`. The submodule pointer travels with the revert, so subsequent `sync-content.py` runs replay against the rolled-back upstream until the underlying issue is fixed.
 - Rewrites image paths (IBM URLs → local `static/`) and link paths (markdown + JSX `href`).
 - `docs/index.mdx` preserved; everything else under `docs/` is regenerated each sync.
 - **Dependency scan**: `analyze_notebook_imports()` injects `!pip install -q` cells into 46/260 notebooks missing packages (uses `!pip` not `%pip` to avoid "restart kernel" note). `--scan-deps` for report only.

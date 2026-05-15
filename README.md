@@ -101,10 +101,14 @@ On RasQberry, an **Open in Lab** button opens the full notebook in JupyterLab.
 ## Content Synchronization
 
 ```bash
-python scripts/sync-content.py                # Full sync (requires git, Python, jupyter)
-python scripts/sync-content.py --sample-only  # Sample only (for testing)
-python scripts/sync-content.py --no-clone     # Use existing upstream clone
+python scripts/sync-content.py                              # Full sync (requires git, Python, jupyter)
+python scripts/sync-content.py --sample-only                # Sample only (for testing)
+python scripts/sync-content.py --no-clone                   # Use existing upstream clone
+python scripts/sync-content.py --freshness-report report.md # Markdown report of EN-vs-upstream
+                                                            # drift + per-locale staleness
 ```
+
+**Rolling back a bad sync.** If a content sync introduces a regression, revert the merge commit on `main` and force-push (or use the GitHub "Revert" button). The `deploy.yml` workflow republishes the prior site within ~5 min. Translated locales follow on the next `deploy-locales.yml` run. The `upstream-docs/` submodule pointer is part of the revert, so subsequent `sync-content.py` runs replay against the rolled-back upstream until the underlying issue is fixed.
 
 ## Project Structure
 

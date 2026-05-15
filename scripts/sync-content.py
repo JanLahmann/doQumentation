@@ -2629,6 +2629,11 @@ def main():
                         help="Only refresh src/config/{contentMeta.ts,"
                              "upstreamFileMeta.json}; do not sync content. "
                              "Used by the daily refresh-page-dates workflow.")
+    parser.add_argument("--freshness-report", type=str, metavar="PATH",
+                        help="Write a markdown freshness report to PATH and "
+                             "exit. Reads only src/config/upstreamFileMeta.json "
+                             "and translation/status.json; does not touch "
+                             "content or the upstream-docs submodule.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -2637,6 +2642,10 @@ def main():
 
     if args.scan_deps:
         scan_notebook_deps()
+        return
+
+    if args.freshness_report:
+        write_freshness_report(Path(args.freshness_report))
         return
 
     if args.generate_locale_notebooks:
@@ -2933,6 +2942,115 @@ def write_page_dates_manifest():
     }
     out.write_text(json.dumps(payload, indent=2) + "\n")
     print(f"📅 Page dates manifest: {len(manifest)} files → {out.relative_to(PROJECT_ROOT)}")
+
+
+def write_freshness_report(out_path: Path) -> None:
+    """Write a markdown freshness report. Reads only
+    src/config/upstreamFileMeta.json and translation/status.json; does not
+    touch the upstream-docs submodule or generate any content. Intended for
+    auto-PR bodies and ad-hoc CLI inspection.
+    """
+    from datetime import datetime, timezone
+
+    meta_path = PROJECT_ROOT / "src" / "config" / "upstreamFileMeta.json"
+    status_path = PROJECT_ROOT / "translation" / "status.json"
+
+    if not meta_path.exists():
+        out_path.write_text("_No `upstreamFileMeta.json` found — skipping freshness report._\n")
+        return
+    meta = json.loads(meta_path.read_text())
+    files = meta.get("files", {})
+
+    en_behind: list[tuple[str, str, str]] = []  # (path, en_date, upstream_date)
+    for rel, entry in files.items():
+        en = entry.get("en_date", "")
+        up = entry.get("upstream_date", "")
+        if en and up and up > en:
+            en_behind.append((rel, en, up))
+    en_behind.sort(key=lambda t: (t[2], t[1]), reverse=True)
+
+    locale_stale: dict[str, int] = {}
+    locale_total: dict[str, int] = {}
+    if status_path.exists():
+        try:
+            status = json.loads(status_path.read_text())
+        except json.JSONDecodeError:
+            status = {}
+        for locale, entries in status.items():
+            if not isinstance(entries, dict):
+                continue
+            stale = 0
+            total = 0
+            for rel, info in entries.items():
+                if not isinstance(info, dict):
+                    continue
+                if info.get("status") != "promoted":
+                    continue
+                base = info.get("en_base_commit_date", "")
+                en_date = files.get(rel, {}).get("en_date", "")
+                if not base or not en_date:
+                    continue
+                total += 1
+                if base < en_date:
+                    stale += 1
+            locale_total[locale] = total
+            locale_stale[locale] = stale
+
+    upstream_repo = meta.get("_upstream_repo", "Qiskit/documentation")
+    submodule_sha = ""
+    # `git -C upstream-docs rev-parse HEAD` falls back to the parent repo
+    # when upstream-docs isn't initialized, returning doQumentation's HEAD —
+    # which would be silently wrong in the report. Require a .git
+    # entry (file or dir) inside upstream-docs to confirm initialization.
+    if UPSTREAM_DIR.exists() and (UPSTREAM_DIR / ".git").exists():
+        res = run_command(["git", "-C", str(UPSTREAM_DIR), "rev-parse", "HEAD"])
+        if res.returncode == 0:
+            submodule_sha = res.stdout.strip()
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    lines: list[str] = []
+    lines.append("## Freshness report")
+    lines.append("")
+    lines.append(f"### EN pages behind upstream — {len(en_behind)}")
+    if en_behind:
+        lines.append("")
+        lines.append("| Page | EN date | Upstream date |")
+        lines.append("|---|---|---|")
+        for rel, en, up in en_behind[:10]:
+            lines.append(f"| `{rel}` | {en} | {up} |")
+        if len(en_behind) > 10:
+            lines.append(f"| _…and {len(en_behind) - 10} more_ | | |")
+    else:
+        lines.append("")
+        lines.append("_All EN pages are caught up with upstream._")
+    lines.append("")
+
+    lines.append("### Per-locale staleness (promoted entries with `en_base_commit_date < en_date`)")
+    if locale_total:
+        lines.append("")
+        lines.append("| Locale | Stale | Promoted | % stale |")
+        lines.append("|---|---:|---:|---:|")
+        for locale in sorted(locale_total):
+            tot = locale_total[locale]
+            st = locale_stale[locale]
+            pct = f"{(100 * st / tot):.0f}%" if tot else "—"
+            lines.append(f"| `{locale}` | {st} | {tot} | {pct} |")
+    else:
+        lines.append("")
+        lines.append("_No translation status found._")
+    lines.append("")
+
+    lines.append("### Snapshot")
+    lines.append("")
+    lines.append(f"- Upstream repo: [`{upstream_repo}`](https://github.com/{upstream_repo})")
+    if submodule_sha:
+        lines.append(f"- Submodule HEAD: [`{submodule_sha[:9]}`](https://github.com/{upstream_repo}/commit/{submodule_sha})")
+    lines.append(f"- Generated at: {generated_at}")
+    lines.append("")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines))
+    print(f"📊 Freshness report → {out_path}")
 
 
 if __name__ == "__main__":
