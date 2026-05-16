@@ -171,10 +171,21 @@ def parse_blocks(content: str) -> list[Block]:
             i += 1
             continue
 
-        # Other comments {/* ... */}
-        if stripped.startswith('{/*') and stripped.endswith('*/}'):
-            blocks.append(Block(BlockType.COMMENT, stripped, i, i))
+        # Other comments {/* ... */} — single-line or multi-line
+        if stripped.startswith('{/*'):
+            start = i
+            # Single-line comment closes on the same line
+            if stripped.endswith('*/}'):
+                blocks.append(Block(BlockType.COMMENT, stripped, i, i))
+                i += 1
+                continue
+            # Multi-line comment: consume until the closing */}
             i += 1
+            while i < n and not lines[i].strip().endswith('*/}'):
+                i += 1
+            if i < n:  # include the closing line
+                i += 1
+            blocks.append(Block(BlockType.COMMENT, '\n'.join(lines[start:i]), start, i - 1))
             continue
 
         # Code fence
@@ -292,6 +303,11 @@ def parse_blocks(content: str) -> list[Block]:
                 break
             if l.startswith('|') and l.endswith('|'):
                 break
+            i += 1
+        # Defensive: never emit a zero-length prose block — that would leave i
+        # unchanged and spin the outer loop forever. If the first line already
+        # hit a break condition, consume it as a 1-line prose block.
+        if i == start:
             i += 1
         blocks.append(Block(BlockType.PROSE, '\n'.join(lines[start:i]), start, i - 1))
 
