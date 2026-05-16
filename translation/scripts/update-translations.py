@@ -646,21 +646,31 @@ def apply_auto_fixes(en_content: str, tr_content: str, report: ChangeReport) -> 
     tr_links = validator.extract_link_urls(fixed)
     # Link sync is complex — skip for now, handle in validate step
 
-    # 6. Update source hash
+    # NOTE: the source-hash bump is intentionally NOT done here. Bumping the
+    # hash marks the file fresh; doing that during auto-fix would mark a file
+    # done while its prose is still stale, so next week's freshness check
+    # skips it and the genuine prose changes are silently lost. The hash is
+    # advanced in process_file ONLY when the file is fully synced (no
+    # remaining changed passages, no full retranslation) — see bump_source_hash.
+    return fixed, fixes
+
+
+def bump_source_hash(content: str, en_content: str) -> str:
+    """Advance the embedded source-hash marker to the current EN hash.
+
+    Call this ONLY when the translation is fully in sync with EN — i.e.
+    after prose updates are applied (or when the only drift was structural
+    and already auto-fixed). Bumping prematurely hides stale prose from the
+    weekly freshness check.
+    """
     new_hash = compute_source_hash(en_content)
-    embedded = extract_embedded_hash(fixed)
-    if embedded:
-        fixed = re.sub(
+    if extract_embedded_hash(content):
+        return re.sub(
             r'\{/\*\s*doqumentation-source-hash:\s*[a-f0-9]+\s*\*/\}',
             f'{{/* doqumentation-source-hash: {new_hash} */}}',
-            fixed
+            content,
         )
-        fixes.append(f"updated source hash to {new_hash}")
-    elif fixes:  # Only add hash if we made other fixes
-        fixed = insert_hash_after_frontmatter(fixed, new_hash)
-        fixes.append(f"added source hash {new_hash}")
-
-    return fixed, fixes
+    return insert_hash_after_frontmatter(content, new_hash)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -855,6 +865,21 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
                 )
                 for idx, unit in enumerate(changed)
             ]
+
+    # Advance the source hash ONLY when the file is now fully in sync with
+    # EN: structural drift was auto-fixed and there is no remaining prose to
+    # translate. If prose updates remain (or whole-file retranslation is
+    # needed), leave the old hash so the weekly freshness check keeps
+    # flagging this file until a translator actually refreshes it. The hash
+    # is bumped post-prose in the workflow's finalize step instead.
+    if auto_fix and not updates and not full_retranslation:
+        synced = bump_source_hash(tr_content, en_content)
+        if synced != tr_content:
+            tr_path.write_text(synced, encoding='utf-8')
+            tr_content = synced
+            fixes.append(f"bumped source hash (file fully synced)")
+            if verbose:
+                print(f"    Source hash advanced (no prose drift remaining)")
 
     if verbose:
         tag = "MAJOR/full" if full_retranslation else report.severity.value
