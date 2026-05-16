@@ -1,0 +1,245 @@
+---
+title: "Gunakan pascapilihan dalam beban kerja"
+sidebar_label: "Gunakan pascapilihan dalam beban kerja"
+description: "Fahami cara mengintegrasikan pascapilihan sebagai sebahagian daripada strategi pengurangan ralat kamu"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Versi pakej">
+
+Kod di halaman ini dibangunkan menggunakan keperluan berikut.
+Kami syorkan menggunakan versi ini atau yang lebih baru.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+Semasa mengoptimumkan strategi pengurangan ralat beban kerja, sering berguna untuk menapis ukuran yang diketahui telah dicemari oleh proses hingar bukan-Markov (berkorelasi). Salah satu kaedah untuk melakukannya melibatkan menambahkan Circuit dengan langkah pasca-pemprosesan yang mengukur Qubit aktif dan "penonton" bersebelahan, menerapkan putaran perlahan kepada setiap Qubit, dan kemudian mengukurnya semula. Dalam kes di mana dua ukuran tidak mengesahkan Qubit yang dibalikkan seperti yang dijangkakan, tembakan dibuang dengan menerapkan topeng kepada keputusan.
+
+Pakej [utiliti tambahan Qiskit](https://qiskit.github.io/qiskit-addon-utils/) menyediakan set laluan transpiler dan fungsi pascapilihan untuk menerapkan topeng. Halaman ini memberikan panduan tentang cara menggabungkan pascapilihan ke dalam beban kerja kuantum kamu dengan menggunakan keadaan GHZ empat-Qubit sebagai contoh.
+## Cipta beban kerja {#create-workload}
+
+Mulakan dengan menyediakan Circuit untuk dilaksanakan dan ditransail terhadap Backend yang menyokong Gate pecahan.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## Tambah laluan transpiler pascapilihan {#add-postselection-transpiler-passes}
+
+Seterusnya, cipta pengurus laluan pratetap yang merangkumi laluan [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) dan [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) dari pakej [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). Ini akan menambahkan Circuit dengan urutan putaran `RX` sudut kecil (secara efektifnya menghasilkan Gate `X` yang panjang) bersama set ukuran kedua.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## Laksanakan program kuantum {#execute-quantum-program}
+
+Seterusnya, sediakan objek `QuantumProgram` yang mengandungi Circuit yang akan dilaksanakan.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+Sekarang kamu boleh mentafsir keputusan. Keputusan executor adalah kamus dengan beberapa kunci.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+Kunci-kunci ini sepadan dengan Qubit aktif dan penonton sebelum arahan `rx` (`meas` dan `spec`) dan selepas arahan `rx` (`meas_ps` dan `spec_ps`). Setiap satu ini adalah tatasusunan tatasusunan berdasarkan bilangan tembakan dan Qubit. Dalam kes ini, bentuknya adalah (1000, 4).
+
+## Cipta topeng pascapilihan {#create-postselection-mask}
+
+Dari ukuran-ukuran ini, kamu boleh membuat topeng menggunakan kelas [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) dari `qiskit-addon-utils`. Topeng ini adalah tatasusunan boolean di mana setiap tembakan ditanda sebagai `True` atau `False` berdasarkan salah satu daripada dua strategi pascapilihan. Strategi pertama, `node`, menggunakan maklumat Qubit untuk memutuskan sama ada tembakan ukuran harus dibuang &mdash; dan yang kedua, `edge`, menggunakan maklumat ketersambungan jiran terdekat untuk membuat keputusan ini.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+Kedua-dua strategi nod dan tepi sering membuang tembakan yang berbeza. Kamu boleh memilih mana-mana satu daripadanya. Buku nota ini mengambil AND bitwise, yang merupakan strategi konservatif yang mengekalkan tembakan hanya jika ia lulus oleh kedua-dua strategi nod dan tepi.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+Bandingkan taburan kebarangkalian dengan dan tanpa pascapilihan. Petikan berikut mengira taburan kebarangkalian sebelum dan selepas pascapilihan, serta jarak antara taburan yang diukur dan ideal.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+Untuk menunjukkan bagaimana pascapilihan mengubah keputusan kamu, kira jarak antara taburan kebarangkalian ideal dan yang diukur.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+Walaupun pascapilihan dapat meningkatkan kualiti keputusan dengan ketara dengan menapis ukuran hasil yang dipengaruhi oleh hingar bukan-Markov, ia bukan penyelesaian lengkap untuk pengurangan ralat dengan sendirinya. Pascapilihan mengurangkan impak ralat tertentu dengan membuang keputusan ukuran yang tidak sah, tetapi ini datang dengan kos overhed pensampelan yang meningkat dan tidak menangani semua mekanisme ralat yang wujud dalam perkakasan kuantum jangka pendek. Hasilnya, kemungkinan besar tidak mencukupi untuk bergantung semata-mata pada pascapilihan untuk Circuit yang lebih kompleks atau lebih dalam. Sebaliknya, pascapilihan paling berkesan apabila digunakan sebagai sebahagian daripada strategi pengurangan ralat yang lebih luas &mdash; melengkapi teknik seperti pengurangan ralat ukuran, kompilasi Circuit sedar-hingar, atau pembatalan ralat kebarangkalian &mdash; untuk meningkatkan kebolehpercayaan beban kerja kuantum sambil mengimbangi ketepatan dan kos sumber.
+
+## Langkah seterusnya {#next-steps}
+
+<Admonition type="tip" title="Cadangan">
+  - Fahami cara menggabungkan [pembelajaran hingar](/guides/noise-learning) ke dalam beban kerja kuantum.
+  - Baca teknik [pengurangan ralat dan penindasan ralat](/guides/error-mitigation-and-suppression-techniques) lain yang tersedia.
+  - Ketahui cara menggunakan [kod ruang-masa](/tutorials/ghz-spacetime-codes) untuk pendekatan overhed rendah bagi pengesanan ralat
+</Admonition>

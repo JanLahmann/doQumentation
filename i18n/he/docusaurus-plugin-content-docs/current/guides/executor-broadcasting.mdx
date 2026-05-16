@@ -1,0 +1,314 @@
+---
+title: שידור Executor
+description: כיצד Executor מטפל בקלטי ופלטי מערכים באמצעות סמנטיקת שידור
+
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# שידור Executor {#executor-broadcasting}
+
+הנתונים שמסופקים ל-primitive של Executor ניתנים לסידור במגוון צורות כדי לספק גמישות בעומס עבודה דרך שידור. מדריך זה מסביר כיצד Executor מטפל בקלטי ופלטי מערכים באמצעות סמנטיקת שידור. הבנת מושגים אלה תעזור לך לעבור ביעילות על ערכי פרמטרים, לשלב תצורות מרובות, ולפרש את צורת הנתונים המוחזרת.
+
+<Admonition type="note">
+הדוגמאות בנושא זה לא ניתנות להרצה בפני עצמן. הן מניחות שהגדרת מעגלים מתאימים, השתמשת ב-pass manager של Samplomatic להוספת boxes ו-annotations, ושהשתמשת במתודת `build` של Samplomatic כדי לקבל מעגל template ו-samplex לכל בלוק קוד, לפי הצורך.
+</Admonition>
+
+<span id="quickstart"></span>
+## דוגמת התחלה מהירה {#quickstart-example}
+
+דוגמה זו מדגימה את הרעיון המרכזי. היא יוצרת מעגל פרמטרי וחמש תצורות פרמטרים שונות. ה-executor מריץ את כל חמש התצורות ומחזיר נתונים מאורגנים לפי תצורה, עם תוצאה אחת לכל רגיסטר קלאסי בכל פריט תוכנית קוונטית.
+
+שאר המדריך מפנה לדוגמה זו כדי להסביר כיצד זה עובד וכיצד לבנות sweep מורכבים יותר, כולל אקראיות מבוססת Samplomatic וקלטים.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## צירים פנימיים וחיצוניים {#intrinsic-and-extrinsic-axes}
+
+שידור חל רק על הצירים ה_חיצוניים_. הצירים הפנימיים תמיד נשמרים כפי שצוינו.
+
+- **צירים פנימיים** (ימניים ביותר): נקבעים לפי סוג הנתונים. לדוגמה, אם למעגל שלך יש שלושה פרמטרים, אז ערכי פרמטרים דורשים שלושה מספרים, ונותנים צורה פנימית של `(3,)`.
+
+- **צירים חיצוניים** (שמאליים ביותר): מימדי ה-sweep שלך. אלה מגדירים כמה תצורות רוצים להריץ.
+
+| סוג קלט | צורה פנימית | דוגמת צורה מלאה |
+|------------------------------------------|---------------|---------------------------------------------------|
+| ערכי פרמטרים (n פרמטרים) | (n,) | (5, 3) עבור חמש תצורות ושלושה פרמטרים |
+| קלטים סקלריים (לדוגמה, גורם סקלת רעש) | () | (4,) עבור ארבע תצורות |
+| Observables (אם יש) | משתנה | תלוי בסוג ה-observable |
+
+### דוגמה {#example}
+
+שקול מעגל עם שני פרמטרים שרוצים לעבור עליו על גריד 4x3 של תצורות, בשינוי ערכי פרמטרים וגורם סקלת רעש:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+הצורות הן כדלקמן:
+
+| קלט | צורה מלאה | צורה חיצונית | צורה פנימית |
+|------------------|----------|---------------|---------------|
+| `parameter_values` | (4, 1, 2) | (4, 1) | (2,) |
+| `noise_scale` | (3,) | (3,) | () |
+| שידור | ללא | (4, 3) | ללא |
+
+## צורות מערך פלט {#output-array-shapes}
+
+מערכי פלט עוקבים אחר אותו דפוס חיצוני/פנימי:
+
+- **צורה חיצונית:** תואמת לצורת השידור של כל הקלטים
+- **צורה פנימית:** נקבעת לפי סוג הפלט
+
+הפלט הנפוץ ביותר הוא נתוני bitstring ממדידות, שמפורמטים כמערך ערכים בוליאניים:
+
+| סוג פלט | צורה פנימית | תיאור |
+|-----------------------|----------------------|--------------------------------|
+| נתוני רגיסטר קלאסי | (num_shots, creg_size) | נתוני Bitstring ממדידות |
+
+### דוגמה {#example}
+
+אם מספקים קלטים עם צורות חיצוניות `(4, 1)` ו-`(3,)`, הצורה החיצונית המשודרת היא `(4, 3)`. הקוד הבא משתמש במעגל עם 1024 shots ורגיסטר קלאסי בן 4 סיביות (כמוגדר בדוגמת [ההתחלה המהירה](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+כל תצורה מריצה את ספירת ה-shots המלאה שצוינה בתוכנית הקוונטית. Shots **אינם** מחולקים בין תצורות. לדוגמה, אם מבקשים 1024 shots ויש 10 תצורות, כל תצורה מריצה 1024 shots (סה"כ 10,240 shots שמורצים).
+</Admonition>
+
+## אקראיות ופרמטר ה-`shape` {#randomization-and-the-shape-parameter}
+
+בשימוש ב-[samplex](/guides/directed-execution-model), כל אלמנט בצורה החיצונית מתאים להרצת מעגל עצמאית. ה-samplex בדרך כלל מזריק אקראיות (לדוגמה, gate twirling) לכל הרצה, כך שגם ללא בקשת אקראיות מרובות מפורשות, כל אלמנט מקבל מימוש אקראי.
+
+ניתן להשתמש בפרמטר `shape` כדי להגדיל את הצורה החיצונית עבור הפריט, ולהוסיף ביעילות צירים שמתאימים ספציפית לאקראיות של אותה תצורה פעמים רבות. הוא חייב להיות ניתן לשידור מהצורה המשתמעת ב-`samplex_arguments` שלך. ציר שבו `shape` עולה על הצורה המשתמעת מנסח אקראיות עצמאיות נוספות.
+
+### ללא צירי אקראיות מפורשים {#no-explicit-randomization-axes}
+
+אם משמיטים את `shape` (או מגדירים אותו להתאמה לצורות הקלט), מקבלים הרצה אחת לכל תצורת קלט. כל הרצה עדיין מאוקראית על ידי ה-samplex, אך עם מימוש אקראי בודד אין יתרון מממוצע על אקראיות מרובות.
+
+<Admonition type="note">
+אם רגיל לאפשר twirling עם דגל פשוט כמו `twirling=True`, שים לב שה-Executor דורש ממך לבקש אקראיות מרובות במפורש עם ארגומנט ה-`shape` כדי לאפשר לשגרות עיבוד לאחר שלך לקבל את היתרונות של ממוצע על אקראיות מרובות. אקראיות בודדת (ברירת המחדל כאשר משמיטים `shape`) מחיל שערים אקראיים אך בדרך כלל אינה מציעה יתרון על הרצת המעגל הבסיסי ללא אקראיות.
+</Admonition>
+
+הדוגמה הבאה מדגימה את ההתנהגות ברירת מחדל:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### ציר אקראיות בודד {#single-randomization-axis}
+
+כדי להריץ אקראיות מרובות לכל תצורה, הרחב את הצורה עם צירים נוספים.
+לדוגמה, הקוד הבא מריץ 20 אקראיות לכל אחת מ-10 תצורות פרמטרים:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### צירי אקראיות מרובים {#multiple-randomization-axes}
+
+ניתן לארגן אקראיות לגריד רב-ממדי. זה שימושי לניתוח מובנה, לדוגמה, הפרדת אקראיות לפי סוג או קיבוצן לעיבוד סטטיסטי.
+
+כאן, הצורה החיצונית של הקלט `(10,)` משתדרת לצורה המבוקשת `(2, 14, 10)`, כאשר ציר 0 וציר 1 ממולאים על ידי אקראיות עצמאיות.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### כיצד `shape` וצורות קלט מתקשרים {#how-shape-and-input-shapes-interact}
+
+פרמטר ה-`shape` חייב להיות ניתן לשידור *מ*צורות החיצוניות של הקלט. משמעות הדבר:
+
+- צורות קלט עם מימדים בגודל 1 יכולות להתרחב להתאמה ל-`shape`.
+- צורות קלט חייבות להיות מיושרות מהימין עם `shape`.
+- ציר ב-`shape` שעולה על מימדי הקלט מנסח אקראיות.
+
+שים לב ש-`shape` יכול להכיל מימדי גודל 1 שמתרחבים להתאמה למימדי קלט, כפי שמדגים השורה האחרונה בטבלה הבאה.
+
+דוגמאות:
+
+| חיצוני קלט | צורה | תוצאה |
+|---------------|----------|-----------------------------------------------------------------|
+| (10,) | (10,) | 10 תצורות, 1 אקראיות כל אחת |
+| (10,) | (5, 10) | 10 תצורות, 5 אקראיות כל אחת |
+| (10,) | (2, 3, 10) | 10 תצורות, 2×3=6 אקראיות כל אחת |
+| (4, 1) | (4, 5) | 4 תצורות, 5 אקראיות כל אחת |
+| (4, 3) | (2, 4, 3) | 4×3=12 תצורות, 2 אקראיות כל אחת |
+| (4, 3) | (2, 1, 3) | 4×3=12 תצורות, 2 אקראיות כל אחת (ה-1 מתרחב ל-4) |
+
+### אינדוקס לתוצאות {#index-into-results}
+
+עם צירי אקראיות, ניתן לבצע אינדוקס לשילובי אקראיות/פרמטרים ספציפיים:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## דפוסים נפוצים {#common-patterns}
+
+### sweep על פרמטר בודד {#sweep-a-single-parameter}
+השתמש בקוד כמו הבא כדי לעבור על פרמטר אחד תוך שמירת האחרים קבועים:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### יצירת sweep גריד דו-ממדי {#creating-a-2d-grid-sweep}
+כדי ליצור גריד על שלושה פרמטרים:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### שילוב קלטים מרובים {#combining-multiple-inputs}
+
+בשילוב קלטים עם צורות פנימיות שונות, יישר מימדים חיצוניים באמצעות צירי גודל 1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## השלבים הבאים {#next-steps}
+
+<Admonition type="tip" title="המלצות">
+- עיין בסקירת [השידור](/guides/primitive-input-output#broadcasting).
+- הבן [קלטים ופלטים של Executor](/guides/executor-input-output).
+</Admonition>

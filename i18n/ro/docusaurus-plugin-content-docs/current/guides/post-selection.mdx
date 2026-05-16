@@ -1,0 +1,245 @@
+---
+title: "Utilizează post-selecția în volumele de lucru"
+sidebar_label: "Utilizează post-selecția în volumele de lucru"
+description: "Înțelege cum să integrezi post-selecția ca parte a strategiei tale de atenuare a erorilor"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Versiuni de pachete">
+
+Codul de pe această pagină a fost dezvoltat folosind următoarele cerințe.
+Recomandăm să folosești aceste versiuni sau mai noi.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+Când optimizezi strategia de atenuare a erorilor a unui volum de lucru, este adesea util să filtrezi măsurătorile despre care se știe că au fost contaminate de procese de zgomot non-Markoviene (corelate). O astfel de metodă implică adăugarea la circuit a unui pas de post-procesare care măsoară qubiții activi și qubiții adiacenți „spectatori", aplică o rotație lentă fiecărui qubit și îi măsoară din nou. În cazurile în care cele două măsurători nu confirmă un qubit răsturnat conform așteptărilor, shot-ul este eliminat prin aplicarea unei măști asupra rezultatelor.
+
+Pachetul [Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) oferă un set de pase de transpilare și o funcție de post-selecție pentru a aplica masca. Această pagină oferă îndrumare despre cum să incorporezi post-selecția în volumele tale de lucru cuantice, folosind o stare GHZ cu patru qubiți ca exemplu.
+## Creează volumul de lucru {#create-workload}
+
+Începe prin pregătirea circuitului de executat și transpilarea acestuia față de un backend care suportă porți fracționare.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## Adaugă pasele de transpilare pentru post-selecție {#add-postselection-transpiler-passes}
+
+Apoi, creează un manager de pase preset care include pasele [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) și [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) din pachetul [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). Aceasta va adăuga la circuit o secvență de rotații `RX` cu unghi mic (producând efectiv o poartă `X` lungă) împreună cu un al doilea set de măsurători.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## Execută programul cuantic {#execute-quantum-program}
+
+Apoi, pregătește un obiect `QuantumProgram` care conține circuitul de executat.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+Acum poți interpreta rezultatele. Rezultatul executor este un dicționar cu mai multe chei.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+Aceste chei corespund qubiților activi și spectatori înainte de instrucțiunile `rx` (`meas` și `spec`) și după instrucțiunile `rx` (`meas_ps` și `spec_ps`). Fiecare dintre acestea este o matrice de matrice bazată pe numărul de shot-uri și qubiți. În acest caz, forma este (1000, 4).
+
+## Creează masca de post-selecție {#create-postselection-mask}
+
+Din aceste măsurători, poți crea o mască folosind clasa [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) din `qiskit-addon-utils`. Această mască este o matrice booleană în care fiecare shot este marcat ca `True` sau `False` pe baza uneia dintre cele două strategii de post-selecție. Prima strategie, `node`, folosește informații despre qubiți pentru a decide dacă un shot de măsurare trebuie eliminat &mdash; iar a doua, `edge`, folosește informații despre conectivitatea dintre vecini cei mai apropiați pentru a lua această decizie.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+Atât strategia node, cât și cea edge elimină adesea shot-uri diferite. Poți alege oricare dintre ele. Acest notebook aplică un AND pe biți, care este o strategie conservatoare ce păstrează un shot doar dacă trece prin ambele strategii node și edge.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+Compară distribuția de probabilitate cu și fără post-selecție. Fragmentul următor calculează distribuția de probabilitate înainte și după post-selecție, precum și distanța dintre distribuțiile măsurate și cele ideale.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+Pentru a demonstra cum post-selecția ți-a modificat rezultatele, calculează distanța dintre distribuția de probabilitate ideală și cele măsurate.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+Deși post-selecția poate îmbunătăți semnificativ calitatea rezultatelor prin filtrarea măsurătorilor afectate de zgomotul non-Markovian, aceasta nu reprezintă o soluție completă pentru atenuarea erorilor în sine. Post-selecția reduce impactul anumitor erori prin eliminarea rezultatelor de măsurare invalide, dar aceasta vine cu costul unui overhead de eșantionare crescut și nu abordează toate mecanismele de eroare prezente în hardware-ul cuantic de generație actuală. Ca urmare, este probabil insuficient să te bazezi exclusiv pe post-selecție pentru circuite mai complexe sau mai adânci. În schimb, post-selecția este cel mai eficientă atunci când este utilizată ca parte a unei strategii mai largi de atenuare a erorilor &mdash; completând tehnici precum atenuarea erorilor de măsurare, compilarea circuitelor conștientă de zgomot sau anularea probabilistică a erorilor &mdash; pentru a îmbunătăți fiabilitatea volumelor de lucru cuantice, echilibrând în același timp acuratețea și costul resurselor.
+
+## Pașii următori {#next-steps}
+
+<Admonition type="tip" title="Recomandări">
+  - Înțelege cum să incorporezi [învățarea zgomotului](/guides/noise-learning) într-un volum de lucru cuantic.
+  - Parcurge alte [tehnici de atenuare și suprimare a erorilor](/guides/error-mitigation-and-suppression-techniques) disponibile.
+  - Află cum să folosești [codurile spacetime](/tutorials/ghz-spacetime-codes) pentru o abordare cu overhead redus pentru detectarea erorilor
+</Admonition>

@@ -1,0 +1,316 @@
+---
+title: Мовлення Executor
+description: Як Executor обробляє масивні вхідні та вихідні дані за допомогою семантики мовлення
+
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# Мовлення Executor {#executor-broadcasting}
+
+Дані, що передаються примітиву Executor, можуть мати різноманітну форму для забезпечення гнучкості робочого процесу через мовлення. Цей посібник пояснює, як Executor обробляє масивні вхідні та вихідні дані за допомогою семантики мовлення. Розуміння цих концепцій допоможе тобі ефективно перебирати значення параметрів, комбінувати кілька конфігурацій та інтерпретувати форму повернутих даних.
+
+<Admonition type="note">
+Приклади в цьому розділі не можна запустити самостійно. Вони припускають, що ти визначив відповідні схеми, використав менеджер проходів Samplomatic для додавання блоків та анотацій, а також використав метод Samplomatic `build` для отримання шаблонної схеми та samplex для кожного блоку коду за необхідності.
+</Admonition>
+
+<span id="quickstart"></span>
+## Швидкий старт {#quickstart}
+
+Цей приклад демонструє основну ідею. Він створює параметричну схему та п'ять різних конфігурацій параметрів. Executor запускає всі п'ять конфігурацій і повертає дані, організовані за конфігурацією, з одним результатом на класичний регістр у кожному елементі квантової програми.
+
+Решта цього посібника посилається на цей приклад, щоб пояснити, як це працює та як будувати складніші розгортки, включаючи рандомізацію та вхідні дані на основі Samplomatic.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## Внутрішні та зовнішні осі {#intrinsic-and-extrinsic-axes}
+
+Мовлення застосовується лише до _зовнішніх_ осей. Внутрішні осі завжди зберігаються так, як вказано.
+
+- **Внутрішні осі** (крайні праворуч): Визначаються типом даних. Наприклад, якщо схема має три параметри, то значення параметрів вимагають три числа, що дає внутрішню форму `(3,)`.
+
+- **Зовнішні осі** (крайні ліворуч): Вимірювання розгортки. Вони визначають кількість конфігурацій, які потрібно запустити.
+
+| Тип вхідних даних                          | Внутрішня форма | Приклад повної форми                                |
+|------------------------------------------|---------------|---------------------------------------------------|
+| Значення параметрів (n параметрів)         | (n,)            | (5, 3) для п'яти конфігурацій і трьох параметрів   |
+| Скалярні вхідні дані (наприклад, масштаб шуму) | ()         | (4,) для чотирьох конфігурацій                      |
+| Оператори (якщо застосовно)               | varies          | Залежить від типу оператора                         |
+
+### Приклад {#example}
+
+Розглянь схему з двома параметрами, по якій потрібно перебирати в сітці 4x3 конфігурацій, змінюючи значення параметрів і масштабний коефіцієнт шуму:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Форми виглядають так:
+
+| Вхідні дані        | Повна форма | Зовнішня форма | Внутрішня форма |
+|------------------|----------|---------------|---------------|
+| `parameter_values` | (4, 1, 2)  | (4, 1)          | (2,)            |
+| `noise_scale`      | (3,)       | (3,)            | ()              |
+| Мовлення           | None       | (4, 3)          | None            |
+
+## Форми вихідних масивів {#output-array-shapes}
+
+Вихідні масиви дотримуються тієї ж закономірності зовнішніх/внутрішніх осей:
+
+- **Зовнішня форма:** Відповідає формі мовлення всіх вхідних даних
+- **Внутрішня форма:** Визначається типом виходу
+
+Найпоширенішим виходом є дані бітових рядків з вимірювань, що форматуються як масив булевих значень:
+
+| Тип виходу               | Внутрішня форма        | Опис                                |
+|-----------------------|----------------------|--------------------------------|
+| Дані класичного регістра | (num_shots, creg_size) | Дані бітових рядків з вимірювань |
+
+### Приклад {#example-2}
+
+Якщо надати вхідні дані із зовнішніми формами `(4, 1)` та `(3,)`, то форма мовлення зовнішніх осей становить `(4, 3)`. Наступний код використовує схему з 1024 вимірюваннями та 4-бітовим класичним регістром (як визначено у прикладі [Швидкий старт](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+Кожна конфігурація виконує повну кількість вимірювань, вказану в квантовій програмі. Вимірювання **не** розподіляються між конфігураціями. Наприклад, якщо запитати 1024 вимірювання та мати 10 конфігурацій, кожна конфігурація виконує 1024 вимірювання (загалом виконується 10 240 вимірювань).
+</Admonition>
+
+## Рандомізація та параметр `shape` {#randomization-and-the-shape-parameter}
+
+При використанні [samplex](/guides/directed-execution-model) кожен елемент зовнішньої форми відповідає незалежному виконанню схеми. Samplex зазвичай вносить випадковість (наприклад, gate twirling) у кожне виконання, тому навіть без явного запиту кількох рандомізацій кожен елемент отримує випадкову реалізацію.
+
+Можна використовувати параметр `shape` для збільшення зовнішньої форми елемента, фактично додаючи осі, що відповідають конкретно рандомізації однієї і тієї ж конфігурації багато разів. Він повинен підлягати мовленню від форми, неявно присутньої у твоїх `samplex_arguments`. Осі, де `shape` перевищує неявну форму, перелічують додаткові незалежні рандомізації.
+
+### Без явних осей рандомізації {#no-explicit-randomization-axes}
+
+Якщо опустити `shape` (або встановити його відповідно до форм вхідних даних), отримаєш одне виконання на конфігурацію вхідних даних. Кожне виконання все одно рандомізується samplex, але з лише однією випадковою реалізацією не отримаєш переваг від усереднення за кількома рандомізаціями.
+
+<Admonition type="note">
+Якщо звик вмикати twirling за допомогою простого прапорця на кшталт `twirling=True`, зверни увагу, що Executor вимагає явно запросити кілька рандомізацій за допомогою аргументу `shape`, щоб твої процедури постобробки могли отримати переваги від усереднення за кількома рандомізаціями. Одна рандомізація (за замовчуванням, коли `shape` опущено) застосовує випадкові вентилі, але зазвичай не дає жодної переваги порівняно із запуском базової схеми без рандомізації.
+</Admonition>
+
+Наступний приклад демонструє поведінку за замовчуванням:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### Одна вісь рандомізації {#single-randomization-axis}
+
+Щоб запустити кілька рандомізацій на конфігурацію, розшир форму додатковими осями.
+Наприклад, наступний код виконує 20 рандомізацій для кожної з 10 конфігурацій параметрів:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### Кілька осей рандомізації {#multiple-randomization-axes}
+
+Можна організувати рандомізації в багатовимірну сітку. Це корисно для структурованого аналізу, наприклад, для розподілу рандомізацій за типом або їх групування для статистичної обробки.
+
+Тут вхідна зовнішня форма `(10,)` розповсюджується на запитувану форму `(2, 14, 10)`,
+де осі 0 і 1 заповнюються незалежними рандомізаціями.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### Взаємодія `shape` та форм вхідних даних {#how-shape-and-input-shapes-interact}
+
+Параметр `shape` повинен підлягати мовленню *від* твоїх зовнішніх форм вхідних даних. Це означає:
+
+- Вхідні форми з розмірами розміру 1 можуть розширюватися для відповідності `shape`.
+- Вхідні форми повинні вирівнюватися справа з `shape`.
+- Осі в `shape`, що перевищують виміри вхідних даних, перелічують рандомізації.
+
+Зверни увагу, що `shape` може містити розміри розміру 1,
+що розширюються для відповідності вимірам вхідних даних, як показано в останньому рядку наступної таблиці.
+
+Приклади:
+
+| Зовнішні вхідні дані | Shape      | Результат                                                            |
+|---------------|----------|-----------------------------------------------------------------|
+| (10,)           | (10,)      | 10 конфігурацій, 1 рандомізація кожна                           |
+| (10,)           | (5, 10)    | 10 конфігурацій, 5 рандомізацій кожна                          |
+| (10,)           | (2, 3, 10) | 10 конфігурацій, 2×3=6 рандомізацій кожна                      |
+| (4, 1)          | (4, 5)     | 4 конфігурації, 5 рандомізацій кожна                           |
+| (4, 3)          | (2, 4, 3)  | 4×3=12 конфігурацій, 2 рандомізації кожна                      |
+| (4, 3)          | (2, 1, 3)  | 4×3=12 конфігурацій, 2 рандомізації кожна (1 розширюється до 4) |
+
+### Індексування результатів {#index-into-results}
+
+При наявності осей рандомізації можна індексувати конкретні комбінації рандомізація/параметр:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Поширені шаблони {#common-patterns}
+
+### Розгортка одного параметра {#sweep-a-single-parameter}
+Використовуй такий код для розгортки одного параметра, фіксуючи інші:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### Створення двовимірної розгортки по сітці {#creating-a-2d-grid-sweep}
+Щоб створити сітку по трьох параметрах:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### Комбінування кількох вхідних даних {#combining-multiple-inputs}
+
+При комбінуванні вхідних даних з різними внутрішніми формами вирівнюй зовнішні виміри за допомогою осей розміру 1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## Наступні кроки {#next-steps}
+
+<Admonition type="tip" title="Рекомендації">
+- Переглянь огляд [мовлення](/guides/primitive-input-output#broadcasting).
+- Зрозумій [входи та виходи Executor](/guides/executor-input-output).
+</Admonition>

@@ -39,7 +39,7 @@ Antes de iniciar este tutorial, certifique-se de ter o seguinte instalado:
 
 ```python
 # Added by doQumentation — required packages for this notebook
-!pip install -q matplotlib numpy qiskit qiskit-ibm-runtime
+!pip install -q matplotlib numpy qiskit qiskit-aer qiskit-ibm-runtime
 ```
 
 ```python
@@ -53,12 +53,16 @@ import matplotlib.pyplot as plt
 
 def create_bell_stab(initial_layouts):
     """
-    Create a circuit for a 1D chain of qubits (number of qubits must be a multiple of 4),
-    where a middle Bell pair is consumed to create a Bell at the edge.
-    Takes as input a list of lists, where each element of the list is a
-    1D chain of physical qubits that is used as the initial_layout for the transpiled circuit.
-    Returns a list of length-2 tuples, each tuple contains a circuit to measure the ZZ stabilizer and
-    a circuit to measure the XX stabilizer of the edge Bell state.
+    Create a circuit for a 1D chain of qubits (number
+    of qubits must be a multiple of 4), where a middle
+    Bell pair is consumed to create a Bell at the edge.
+    Takes as input a list of lists, where each element
+    of the list is a 1D chain of physical qubits that is
+    used as the initial_layout for the transpiled circuit.
+    Returns a list of length-2 tuples, each tuple
+    contains a circuit to measure the ZZ stabilizer and
+    a circuit to measure the XX stabilizer of the edge
+    Bell state.
     """
     bell_circuits = []
     for (
@@ -153,7 +157,8 @@ def create_bell_stab(initial_layouts):
 
 def get_mse(result, initial_layouts):
     """
-    given a result object and the initial layouts, returns a dict of layouts and their mse
+    given a result object and the initial layouts,
+    returns a dict of layouts and their mse
     """
     layout_mse = {}
     for layout_idx, initial_layout in enumerate(initial_layouts):
@@ -218,7 +223,8 @@ def get_mse(result, initial_layouts):
 
 def plot_mse_ecdfs(layouts_mse, combine_layouts=False):
     """
-    Plot CDF of MSE data for multiple layouts. Optionally combine all data in a single CDF
+    Plot CDF of MSE data for multiple layouts.
+    Optionally combine all data in a single CDF
     """
 
     if not combine_layouts:
@@ -319,11 +325,57 @@ def plot_mse_ecdfs(layouts_mse, combine_layouts=False):
 O primeiro passo é criar um conjunto de circuitos quânticos para avaliar todos os links candidatos de pares de Bell adaptados à topologia do dispositivo. Pesquisamos programaticamente o mapa de acoplamento do dispositivo para todas as cadeias linearmente conectadas de quatro qubits. Cada uma dessas cadeias (rotuladas por índices de qubit $[q0-q1-q2-q3]$) serve como um caso de teste para o circuito de troca de emaranhamento. Ao identificar todos os possíveis caminhos de comprimento 4, garantimos cobertura máxima para possíveis agrupamentos de qubits que poderiam realizar o protocolo.
 
 ```python
-service = QiskitRuntimeService()
-backend = service.least_busy(operational=True)
+from qiskit_aer import AerSimulator
+
+# 4-qubit chain for simulation
+sim_layout = [[0, 1, 2, 3]]
+
+aer_backend = AerSimulator()
+sim_circuits = create_bell_stab(sim_layout)
+sim_circuits[1].draw("mpl", fold=-1, idle_wires=False)
 ```
 
 Geramos essas cadeias usando uma função auxiliar que realiza uma busca gulosa no grafo do dispositivo. Ela retorna "faixas" de quatro cadeias de quatro qubits agrupadas em grupos de 16 qubits (circuitos dinâmicos atualmente restringem o tamanho do registrador de medição a `16` qubits). O agrupamento nos permite executar múltiplos experimentos de quatro qubits em paralelo em partes distintas do chip, fazendo uso eficiente de todo o dispositivo. Cada faixa de 16 qubits contém quatro cadeias disjuntas, o que significa que nenhum qubit é reutilizado dentro desse grupo. Por exemplo, uma faixa pode consistir nas cadeias $[0-1-2-3]$, $[4-5-6-7]$, $[8-9-10-11]$ e $[12-13-14-15]$ todas empacotadas juntas. Qualquer qubit que não foi incluído em uma faixa é retornado na variável `leftover`.
+
+```python
+pm_sim = generate_preset_pass_manager(
+    optimization_level=0, backend=aer_backend, initial_layout=sim_layout[0]
+)
+isa_sim_circuits = pm_sim.run(sim_circuits)
+isa_sim_circuits[1].draw("mpl", fold=-1, idle_wires=False)
+```
+
+```python
+# Run on noiseless simulator
+sampler_sim = Sampler(mode=aer_backend)
+sim_job = sampler_sim.run(isa_sim_circuits)
+sim_mse = get_mse(sim_job.result(), sim_layout)
+```
+
+Em seguida, construímos o circuito para cada faixa de 16 qubits. A rotina faz o seguinte para cada cadeia:
+
+* Preparar um par de Bell intermediário: Aplicar uma porta Hadamard no qubit 1 e uma porta CNOT do qubit 1 para o qubit 2. Isso emaranha os qubits 1 e 2 (criando um estado de Bell $|\Phi^+\rangle = (|00\rangle + |11\rangle)/\sqrt{2}$).
+* Emaranhar os qubits das extremidades: Aplicar uma porta CNOT do qubit 0 para o qubit 1, e uma porta CNOT do qubit 2 para o qubit 3. Isso conecta os pares inicialmente separados para que os qubits 0 e 3 se tornem emaranhados após os próximos passos. Uma porta Hadamard no qubit 2 também é aplicada (isso, combinado com as CNOTs anteriores, forma parte de uma medição de Bell nos qubits 1 e 2). Neste ponto, os qubits 0 e 3 ainda não estão emaranhados, mas os qubits 1 e 2 estão emaranhados com eles em um estado maior de quatro qubits.
+* Medições em meio ao circuito e propagação: Os qubits 1 e 2 (os qubits intermediários) são medidos na base computacional, produzindo dois bits clássicos. Com base nesses resultados de medição, aplicamos operações condicionais: se a medição do qubit 1 (chamemos esse bit de $m_{12}$) for 1, aplicamos uma porta $X$ no qubit 3; se a medição do qubit 2 ($m_{21}$) for 1, aplicamos uma porta $Z$ no qubit 0. Essas portas condicionais (realizadas usando o construto `if_test`/`if_else` do Qiskit) implementam as correções padrão de teletransporte. Elas "desfazem" as inversões de Pauli aleatórias que ocorrem devido à projeção dos qubits 1 e 2, garantindo que os qubits 0 e 3 terminem em um estado de Bell conhecido, independentemente dos resultados da medição. Após este passo, os qubits 0 e 3 devem idealmente estar emaranhados no estado de Bell $|\Phi^+\rangle$.
+* Medir estabilizadores do par de Bell: Em seguida, dividimos em duas versões do circuito. Na primeira versão, medimos o estabilizador $ZZ$ nos qubits 0 e 3. Na segunda versão, medimos o estabilizador $XX$ nesses qubits.
+
+Para cada layout inicial de quatro qubits, a função acima retorna dois circuitos (um para $ZZ$, um para medição do estabilizador $XX$). Ao final deste passo, temos uma lista de circuitos cobrindo cada cadeia de quatro qubits no dispositivo. Esses circuitos incluem medições em meio ao circuito e operações condicionais (if/else), que são as instruções-chave do circuito dinâmico.
+
+```text
+layout [0, 1, 2, 3]
+qubits: [0, 1, 2, 3], mse:, 0.0
+```
+
+![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/bd04755f-0.avif)
+
+## Passo 2: Otimizar o problema para execução em hardware quântico {#step-2-optimize-the-problem-for-quantum-hardware-execution}
+
+Antes de executar nossos circuitos em hardware real, precisamos transpilá-los para corresponder às restrições físicas do dispositivo. A transpilação mapeará o circuito abstrato para os qubits físicos e o conjunto de portas do dispositivo escolhido. Como já escolhemos qubits físicos específicos para cada cadeia (fornecendo um `initial_layout` ao gerador de circuitos), usamos o transpilador com `optimization_level=0` com esse layout fixo. Isso instrui o Qiskit a não reatribuir qubits ou realizar otimizações pesadas que possam alterar a estrutura do circuito. Queremos manter a sequência de operações (especialmente as portas condicionais) exatamente como especificado.
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True)
+```
 
 ```python
 from itertools import chain
@@ -331,8 +383,9 @@ from collections import defaultdict
 
 def stripes16_from_backend(backend):
     """
-    Creates stripes of 16 qubits, four non-overlapping  four-qubit chains, that cover as much of
-    the coupling map as possible. Returns any unused qubits as leftovers.
+    Creates stripes of 16 qubits, four non-overlapping
+    four-qubit chains, that cover as much of the coupling
+    map as possible. Returns any unused qubits as leftovers.
     """
     # get the undirected adjacency list
     edges = backend.coupling_map.get_edges()
@@ -368,7 +421,8 @@ def stripes16_from_backend(backend):
             blocks.append(block)
             used.update(block)
 
-    # bundle four four-qubit blocks into one 16-qubit stripe (max number of measurement compatible with if-else)
+    # bundle four four-qubit blocks into one 16-qubit
+    # stripe (max number of measurement compatible with if-else)
     stripes = [
         list(chain.from_iterable(blocks[i : i + 4]))
         for i in range(0, len(blocks) // 4 * 4, 4)  # full groups of four
@@ -378,44 +432,6 @@ def stripes16_from_backend(backend):
     return stripes, leftovers
 ```
 
-```python
-initial_layouts, leftover = stripes16_from_backend(backend)
-```
-
-Em seguida, construímos o circuito para cada faixa de 16 qubits. A rotina faz o seguinte para cada cadeia:
-
-* Preparar um par de Bell intermediário: Aplicar uma porta Hadamard no qubit 1 e uma porta CNOT do qubit 1 para o qubit 2. Isso emaranha os qubits 1 e 2 (criando um estado de Bell $|\Phi^+\rangle = (|00\rangle + |11\rangle)/\sqrt{2}$).
-* Emaranhar os qubits das extremidades: Aplicar uma porta CNOT do qubit 0 para o qubit 1, e uma porta CNOT do qubit 2 para o qubit 3. Isso conecta os pares inicialmente separados para que os qubits 0 e 3 se tornem emaranhados após os próximos passos. Uma porta Hadamard no qubit 2 também é aplicada (isso, combinado com as CNOTs anteriores, forma parte de uma medição de Bell nos qubits 1 e 2). Neste ponto, os qubits 0 e 3 ainda não estão emaranhados, mas os qubits 1 e 2 estão emaranhados com eles em um estado maior de quatro qubits.
-* Medições em meio ao circuito e propagação: Os qubits 1 e 2 (os qubits intermediários) são medidos na base computacional, produzindo dois bits clássicos. Com base nesses resultados de medição, aplicamos operações condicionais: se a medição do qubit 1 (chamemos esse bit de $m_{12}$) for 1, aplicamos uma porta $X$ no qubit 3; se a medição do qubit 2 ($m_{21}$) for 1, aplicamos uma porta $Z$ no qubit 0. Essas portas condicionais (realizadas usando o construto `if_test`/`if_else` do Qiskit) implementam as correções padrão de teletransporte. Elas "desfazem" as inversões de Pauli aleatórias que ocorrem devido à projeção dos qubits 1 e 2, garantindo que os qubits 0 e 3 terminem em um estado de Bell conhecido, independentemente dos resultados da medição. Após este passo, os qubits 0 e 3 devem idealmente estar emaranhados no estado de Bell $|\Phi^+\rangle$.
-* Medir estabilizadores do par de Bell: Em seguida, dividimos em duas versões do circuito. Na primeira versão, medimos o estabilizador $ZZ$ nos qubits 0 e 3. Na segunda versão, medimos o estabilizador $XX$ nesses qubits.
-
-Para cada layout inicial de quatro qubits, a função acima retorna dois circuitos (um para $ZZ$, um para medição do estabilizador $XX$). Ao final deste passo, temos uma lista de circuitos cobrindo cada cadeia de quatro qubits no dispositivo. Esses circuitos incluem medições em meio ao circuito e operações condicionais (if/else), que são as instruções-chave do circuito dinâmico.
-
-```python
-circuits = create_bell_stab(initial_layouts)
-circuits[-1].draw("mpl", fold=-1)
-```
-
-![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/bd04755f-0.avif)
-
-## Passo 2: Otimizar o problema para execução em hardware quântico {#step-2-optimize-the-problem-for-quantum-hardware-execution}
-
-Antes de executar nossos circuitos em hardware real, precisamos transpilá-los para corresponder às restrições físicas do dispositivo. A transpilação mapeará o circuito abstrato para os qubits físicos e o conjunto de portas do dispositivo escolhido. Como já escolhemos qubits físicos específicos para cada cadeia (fornecendo um `initial_layout` ao gerador de circuitos), usamos o transpilador com `optimization_level=0` com esse layout fixo. Isso instrui o Qiskit a não reatribuir qubits ou realizar otimizações pesadas que possam alterar a estrutura do circuito. Queremos manter a sequência de operações (especialmente as portas condicionais) exatamente como especificado.
-
-```python
-isa_circuits = []
-for ind, init_layout in enumerate(initial_layouts):
-    pm = generate_preset_pass_manager(
-        optimization_level=0, backend=backend, initial_layout=init_layout
-    )
-    isa_circ = pm.run(circuits[ind * 2 : ind * 2 + 2])
-    isa_circuits.extend(isa_circ)
-```
-
-```python
-isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
-```
-
 ![Output of the previous code cell](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/3ad620f7-0.avif)
 
 ## Passo 3: Executar usando primitivos do Qiskit {#step-3-execute-using-qiskit-primitives}
@@ -423,9 +439,7 @@ isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
 Agora podemos executar o experimento no dispositivo quântico. Usamos o Qiskit Runtime e seu primitivo Sampler para executar o lote de circuitos de forma eficiente.
 
 ```python
-sampler = Sampler(mode=backend)
-sampler.options.environment.job_tags = ["cut-bell-pair-test"]
-job = sampler.run(isa_circuits)
+initial_layouts, leftover = stripes16_from_backend(backend)
 ```
 
 ## Passo 4: Pós-processar e retornar resultado no formato clássico desejado {#step-4-post-process-and-return-result-in-the-desired-classical-format}
@@ -439,57 +453,76 @@ Este valor é 0 para um par de Bell perfeito, e aumenta à medida que o estado e
 Os resultados revelam uma ampla faixa de qualidade de emaranhamento em todo o dispositivo. Isso confirma a descoberta do artigo de que pode haver uma variação de mais de uma ordem de grandeza na fidelidade do estado de Bell, dependendo de quais qubits físicos são usados. Em termos práticos, isso significa que certas regiões ou links no chip são muito melhores em fazer medições em meio ao circuito e operações de propagação do que outras. Fatores como erro de leitura do qubit, tempo de vida do qubit e crosstalk provavelmente contribuem para essas diferenças. Por exemplo, se uma cadeia incluir um qubit de leitura particularmente ruidoso, a medição em meio ao circuito pode ser não confiável, levando a uma fidelidade ruim para aquele par emaranhado (MSE alto).
 
 ```python
+# -------------------------Step 1-------------------------
+circuits = create_bell_stab(initial_layouts)
+
+# -------------------------Step 2-------------------------
+isa_circuits = []
+for ind, init_layout in enumerate(initial_layouts):
+    pm = generate_preset_pass_manager(
+        optimization_level=0, backend=backend, initial_layout=init_layout
+    )
+    isa_circ = pm.run(circuits[ind * 2 : ind * 2 + 2])
+    isa_circuits.extend(isa_circ)
+isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
+
+# -------------------------Step 3-------------------------
+sampler = Sampler(mode=backend)
+sampler.options.environment.job_tags = ["TUT_BDC"]
+job = sampler.run(isa_circuits)
+
+# -------------------------Step 4-------------------------
 layouts_mse = get_mse(job.result(), initial_layouts)
 ```
 
 ```text
 layout [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-qubits: [0, 1, 2, 3], mse:, 0.0312
-qubits: [4, 5, 6, 7], mse:, 0.0491
-qubits: [8, 9, 10, 11], mse:, 0.0711
-qubits: [12, 13, 14, 15], mse:, 0.0436
-
+qubits: [0, 1, 2, 3], mse:, 0.6302
+qubits: [4, 5, 6, 7], mse:, 0.0949
+qubits: [8, 9, 10, 11], mse:, 0.1729
+qubits: [12, 13, 14, 15], mse:, 0.0473
+ 
 layout [16, 23, 22, 21, 17, 27, 26, 25, 18, 31, 30, 29, 19, 35, 34, 33]
-qubits: [16, 23, 22, 21], mse:, 0.0197
-qubits: [17, 27, 26, 25], mse:, 0.113
-qubits: [18, 31, 30, 29], mse:, 0.0287
-qubits: [19, 35, 34, 33], mse:, 0.0433
-
+qubits: [16, 23, 22, 21], mse:, 0.0533
+qubits: [17, 27, 26, 25], mse:, 0.2966
+qubits: [18, 31, 30, 29], mse:, 0.0447
+qubits: [19, 35, 34, 33], mse:, 0.0392
+ 
 layout [36, 41, 42, 43, 37, 45, 46, 47, 38, 49, 50, 51, 39, 53, 54, 55]
-qubits: [36, 41, 42, 43], mse:, 0.1645
-qubits: [37, 45, 46, 47], mse:, 0.0409
-qubits: [38, 49, 50, 51], mse:, 0.0519
-qubits: [39, 53, 54, 55], mse:, 0.0829
-
+qubits: [36, 41, 42, 43], mse:, 0.1577
+qubits: [37, 45, 46, 47], mse:, 0.0705
+qubits: [38, 49, 50, 51], mse:, 0.2914
+qubits: [39, 53, 54, 55], mse:, 0.1711
+ 
 layout [56, 63, 62, 61, 57, 67, 66, 65, 58, 71, 70, 69, 59, 75, 74, 73]
-qubits: [56, 63, 62, 61], mse:, 0.8663
-qubits: [57, 67, 66, 65], mse:, 0.0375
-qubits: [58, 71, 70, 69], mse:, 0.0664
-qubits: [59, 75, 74, 73], mse:, 0.0291
-
+qubits: [56, 63, 62, 61], mse:, 0.1236
+qubits: [57, 67, 66, 65], mse:, 0.9969
+qubits: [58, 71, 70, 69], mse:, 0.0631
+qubits: [59, 75, 74, 73], mse:, 0.0301
+ 
 layout [76, 81, 82, 83, 77, 85, 86, 87, 78, 89, 90, 91, 79, 93, 94, 95]
-qubits: [76, 81, 82, 83], mse:, 0.0598
-qubits: [77, 85, 86, 87], mse:, 0.313
-qubits: [78, 89, 90, 91], mse:, 0.0679
-qubits: [79, 93, 94, 95], mse:, 0.0505
-
+qubits: [76, 81, 82, 83], mse:, 0.2787
+qubits: [77, 85, 86, 87], mse:, 0.0497
+qubits: [78, 89, 90, 91], mse:, 0.1271
+qubits: [79, 93, 94, 95], mse:, 0.0468
+ 
 layout [96, 103, 102, 101, 97, 107, 106, 105, 98, 111, 110, 109, 99, 115, 114, 113]
-qubits: [96, 103, 102, 101], mse:, 0.0302
-qubits: [97, 107, 106, 105], mse:, 0.0384
-qubits: [98, 111, 110, 109], mse:, 0.0375
-qubits: [99, 115, 114, 113], mse:, 0.1051
-
+qubits: [96, 103, 102, 101], mse:, 0.8657
+qubits: [97, 107, 106, 105], mse:, 0.0399
+qubits: [98, 111, 110, 109], mse:, 0.0667
+qubits: [99, 115, 114, 113], mse:, 0.2444
+ 
 layout [116, 121, 122, 123, 117, 125, 126, 127, 118, 129, 130, 131, 119, 133, 134, 135]
-qubits: [116, 121, 122, 123], mse:, 0.1624
-qubits: [117, 125, 126, 127], mse:, 0.7246
-qubits: [118, 129, 130, 131], mse:, 0.5919
-qubits: [119, 133, 134, 135], mse:, 0.5277
-
+qubits: [116, 121, 122, 123], mse:, 0.0429
+qubits: [117, 125, 126, 127], mse:, 0.0487
+qubits: [118, 129, 130, 131], mse:, 0.0823
+qubits: [119, 133, 134, 135], mse:, 0.0583
+ 
 layout [136, 143, 142, 141, 137, 147, 146, 145, 138, 151, 150, 149, 139, 155, 154, 153]
-qubits: [136, 143, 142, 141], mse:, 0.0383
-qubits: [137, 147, 146, 145], mse:, 1.0187
-qubits: [138, 151, 150, 149], mse:, 0.1531
-qubits: [139, 155, 154, 153], mse:, 0.0471
+qubits: [136, 143, 142, 141], mse:, 0.0209
+qubits: [137, 147, 146, 145], mse:, 0.0384
+qubits: [138, 151, 150, 149], mse:, 0.4941
+qubits: [139, 155, 154, 153], mse:, 0.1062
 ```
 
 Finalmente, visualizamos o desempenho geral plotando a função de distribuição cumulativa (CDF) dos valores de MSE para todas as cadeias. O gráfico CDF mostra o limiar de MSE no eixo x, e a fração de pares de qubits que têm no máximo aquele MSE no eixo y. Esta curva começa em zero e se aproxima de um à medida que o limiar cresce para abranger todos os pontos de dados. Uma subida íngreme perto de um MSE baixo indicaria que muitos pares são de alta fidelidade; uma subida lenta significa que muitos pares têm erros maiores. Anotamos a CDF com as identidades dos melhores pares. No gráfico, cada ponto na CDF corresponde ao MSE de uma cadeia de quatro qubits, e rotulamos o ponto com o par de índices de qubit $[q0, q3]$ que foram emaranhados naquele experimento. Isso torna fácil identificar quais pares de qubits físicos são os melhores desempenhos (os pontos mais à esquerda na CDF).

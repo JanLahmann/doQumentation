@@ -1,0 +1,246 @@
+---
+title: "שימוש ב-postselection בעומסי עבודה"
+sidebar_label: "שימוש ב-postselection בעומסי עבודה"
+description: "הבן כיצד לשלב postselection כחלק מאסטרטגיית הפחתת השגיאות שלך"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="גרסאות חבילות">
+
+הקוד בדף זה פותח תוך שימוש בדרישות הבאות.
+אנחנו ממליצים להשתמש בגרסאות אלה או חדשות יותר.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+
+בעת אופטימיזציה של אסטרטגיית הפחתת השגיאות של עומס עבודה, לעיתים קרובות שימושי לסנן מדידות שידוע שנזהמו על ידי תהליכי רעש לא-מרקובי (מתואמים). שיטה אחת לעשות זאת כוללת הוספת מעגל עם שלב עיבוד לאחר שמודד Qubits פעילים וסמוכים "ספקטטור", מיישם סיבוב איטי על כל Qubit, ולאחר מכן מודד אותם שוב. במקרים שבהם שתי המדידות לא מאשרות Qubit הפוך כצפוי, ה-shot נזרק על ידי יישום mask על התוצאות.
+
+חבילת [Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) מספקת סט של passes של Transpiler ופונקציית postselection ליישום ה-mask. דף זה מספק הדרכה כיצד לשלב postselection בעומסי העבודה הקוונטיים שלך באמצעות מצב GHZ בן ארבעה Qubits כדוגמה.
+
+## יצירת עומס עבודה {#create-workload}
+
+התחל בהכנת ה-Circuit להרצה ו-transpile אל Backend שתומך בשערים שברים.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![פלט של תא הקוד הקודם](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## הוספת passes של Transpiler לpostselection {#add-postselection-transpiler-passes}
+
+לאחר מכן, צור pass manager מוכן שכולל את ה-passes [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) ו-[`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) מחבילת [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). זה יוסיף למעגל רצף של סיבובי `RX` בזווית קטנה (בפועל מייצרים שער `X` ארוך) יחד עם סט שני של מדידות.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![פלט של תא הקוד הקודם](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## הרצת התוכנית הקוונטית {#execute-quantum-program}
+
+לאחר מכן, הכן אובייקט `QuantumProgram` שמכיל את ה-Circuit להרצה.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+כעת ניתן לפרש את התוצאות. תוצאת ה-executor היא מילון עם מספר מפתחות.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+מפתחות אלה מתאימים ל-Qubits הפעילים וה-spectator לפני הוראות ה-`rx` (`meas` ו-`spec`) ואחרי הוראות ה-`rx` (`meas_ps` ו-`spec_ps`). כל אחד מאלה הוא מערך של מערכים בהתבסס על מספר ה-shots ומספר ה-Qubits. במקרה זה, הצורה היא (1000, 4).
+
+## יצירת mask לpostselection {#create-postselection-mask}
+
+מהמדידות הללו, ניתן ליצור mask באמצעות מחלקת [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) מ-`qiskit-addon-utils`. mask זה הוא מערך בוליאני שבו כל shot מסומן כ-`True` או `False` בהתבסס על אחת משתי אסטרטגיות postselection. האסטרטגיה הראשונה, `node`, משתמשת במידע Qubit כדי להחליט האם shot מדידה צריך להיזרק &mdash; והשנייה, `edge`, משתמשת במידע קישוריות של שכן קרוב לקבל החלטה זו.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+גם אסטרטגיות ה-node וגם ה-edge לעיתים קרובות זורקות shots שונים. ניתן לבחור כל אחת מהן. ה-notebook הזה לוקח AND בוליאני, שהיא אסטרטגיה שמרנית שמשמרת shot רק אם הוא עובר גם אסטרטגיות ה-node וגם ה-edge.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+השווה את התפלגות ההסתברות עם ובלי postselection. הקטע הבא מחשב את התפלגות ההסתברות לפני ואחרי postselection, וכן את המרחק בין ההתפלגויות הנמדדות והאידיאליות.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+כדי להדגים כיצד ה-postselection שינה את התוצאות שלך, חשב את המרחק בין התפלגות ההסתברות האידיאלית לאלו הנמדדות.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![פלט של תא הקוד הקודם](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+בעוד ש-postselection יכול לשפר משמעותית את איכות התוצאות על ידי סינון מדידות תוצאה שהושפעו מרעש לא-מרקובי, הוא אינו פתרון מלא להפחתת שגיאות בפני עצמו. Postselection מפחית את השפעת שגיאות מסוימות על ידי זריקת תוצאות מדידה לא חוקיות, אך זה בא במחיר של עומס דגימה מוגבר ואינו מתמודד עם כל מנגנוני השגיאה הקיימים בחומרה קוונטית לטווח קרוב. כתוצאה מכך, כנראה שלא מספיק להסתמך אך ורק על postselection למעגלים מורכבים או עמוקים יותר. במקום זאת, postselection יעיל ביותר כאשר משתמשים בו כחלק מאסטרטגיית הפחתת שגיאות רחבה יותר &mdash; משלים טכניקות כמו הפחתת שגיאות מדידה, קומפילציה מוּדעת-רעש, או ביטול שגיאות הסתברותי &mdash; לשיפור האמינות של עומסי עבודה קוונטיים תוך איזון דיוק ועלות משאבים.
+
+## השלבים הבאים {#next-steps}
+
+<Admonition type="tip" title="המלצות">
+  - הבן כיצד לשלב [למידת רעש](/guides/noise-learning) בעומס עבודה קוונטי.
+  - עיין בטכניקות [הפחתת שגיאות ודיכוי שגיאות](/guides/error-mitigation-and-suppression-techniques) הזמינות האחרות.
+  - למד כיצד להשתמש ב-[קודים spacetime](/tutorials/ghz-spacetime-codes) לגישה קלת-משאבים לזיהוי שגיאות
+</Admonition>

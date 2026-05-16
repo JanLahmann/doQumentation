@@ -1,0 +1,242 @@
+---
+title: "回路タイミングの可視化"
+sidebar_label: "回路タイミングの可視化"
+description: "生成された回路のタイミングを可視化して、図を表示、ダウンロード、またはその両方を行います。"
+notebook_path: "guides/qiskit-runtime-circuit-timing.ipynb"
+---
+
+{/* doqumentation-source-hash: 40598c49 */}
+
+<OpenInLabBanner notebookPath="guides/qiskit-runtime-circuit-timing.ipynb" />
+
+
+
+{/* cspell:ignore mactex, backgroundcolor, lightgreen */}
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="パッケージ・バージョン">
+
+このページのコードは、以下の要件を使用して開発されました。
+これらのバージョン以降の使用をお勧めします。
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+```
+</AccordionItem>
+</Accordion>
+
+Qiskit に組み込まれた[タイムライン・ドロワー](/guides/visualize-circuit-timing)は静的な回路には便利ですが、ブロードキャストやブランチ決定などの暗黙的な操作があるため、[動的回路](/guides/classical-feedforward-and-control-flow)のタイミングを正確に反映できない場合があります。動的回路サポートの一部として、Qiskit Runtime は要求に応じてジョブ結果の中に正確な回路タイミング情報を返します。
+
+<Admonition type="note" title="注意">
+- これは実験的な機能です。プレビュー・リリースの状態であるため、変更される可能性があります。
+- この機能は Qiskit Runtime Sampler ジョブにのみ適用されます。
+- 「compilation」メタデータに合計回路時間が返されますが、これは課金に使用される時間（QPU 時間）ではありません。
+</Admonition>
+
+### タイミング・データ取得の有効化 {#enable-timing-data-retrieval}
+
+タイミング・データ取得を有効にするには、プリミティブ・ジョブを実行するときに実験的な `scheduler_timing` フラグを `True` に設定します。
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-ibm-runtime
+```
+
+```python
+from qiskit import QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+from qiskit.transpiler import generate_preset_pass_manager
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+qc = QuantumCircuit(2)
+qc.h(0)
+qc.cx(0, 1)
+qc.measure_all()
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+isa_circuit = pm.run(qc)
+
+sampler = SamplerV2(backend)
+sampler.options.experimental = {
+    "execution": {
+        "scheduler_timing": True,
+    },
+}
+
+sampler_job = sampler.run([isa_circuit])
+result = sampler_job.result()
+```
+
+### 回路タイミング・データへのアクセス {#access-the-circuit-timing-data}
+
+要求した場合、各 PUB の回路タイミング・データはジョブ結果のメタデータ、`["compilation"]["scheduler_timing"]["timing"]` の下に返されます。このフィールドには生のタイミング情報が含まれます。タイミング情報を表示するには、[タイミングの可視化](#visualize-timings)セクションで説明されている組み込みの可視化ツールを使用します。
+
+最初の PUB の回路タイミング・データにアクセスするには、次のコードを使用します。
+
+```python
+job_result = sampler_job.result()
+circuit_schedule = job_result[0].metadata["compilation"]["scheduler_timing"]
+circuit_schedule_timing = circuit_schedule["timing"]
+```
+
+#### 生のタイミング・データを理解する {#understand-the-raw-timing-data}
+
+`draw_circuit_schedule_timing` メソッドを使用して回路タイミング・データを可視化するのが最も一般的なユースケースですが、返される生のタイミング・データの構造を理解することが役立つ場合があります。これにより、例えば情報をプログラム的に抽出することができます。
+
+`["compilation"]["scheduler_timing"]["timing"]` で返されるタイミング・データは文字列のリストです。各文字列は、あるチャネル上の単一の命令を表し、以下のデータ型にカンマ区切りで分割されます。
+
+- `Branch` - 命令が制御フロー（then / else）にあるか、メイン・ブランチにあるかを決定します。
+- `Instruction` - 操作するゲートと Qubit。
+- `Channel` - 命令が割り当てられているチャネル。以下のいずれかです。
+      - `Qubit x` - Qubit _x_ のドライブ・チャネル。
+      - `AWGRx_y`（任意波形発生器読み出し）- Qubit を測定する際の読み出しチャネルとの通信に使用されます。_x_ および _y_ 引数はそれぞれ読み出し機器 ID と Qubit 番号に対応します。
+- `T0` - 完全なスケジュール内の命令の開始時刻。
+- `Duration` - 命令の継続時間（_dt_ 秒単位）。1 dt = 1 スケジューリング・サイクルです。バックエンドの `dt` 値は [`backend.dt`](https://docs.quantum.ibm.com/api/qiskit/qiskit.providers.BackendV2#dt) で確認できます。
+- `Pulse` - 使用されているパルス操作のタイプ。
+
+例：
+
+```python
+main,barrier,Qubit 0,7,0,barrier # A barrier on the main branch on qubit 0 at time 7 with 0 duration
+main,reset_0,Qubit 0,7,64,play # A reset instruction on the main branch on qubit 0 at time 7 with duration 64 and a play operation
+...
+```
+<span id="visualize-timings"></span>
+### タイミングの可視化 {#visualize-the-timings}
+
+`qiskit-ibm-runtime` v0.43.0 以降では、回路タイミングを可視化できます。タイミングを可視化するには、まず [`draw_circuit_schedule_timing` メソッド](https://github.com/Qiskit/qiskit-ibm-runtime/blob/3d1bf1e1d49e5123841639fce259859c90ce9314/qiskit_ibm_runtime/visualization/draw_circuit_schedule_timings.py#L26)を使用して結果のメタデータを `fig` に変換する必要があります。このメソッドは `plotly` の図を返し、直接表示したり、ファイルに保存したり、またはその両方を行うことができます。使用する `plotly` コマンドの詳細については、[`fig.show()`](https://plotly.com/python-api-reference/generated/plotly.io.show.html) および [`fig.write_image("<path.format>")`](https://plotly.com/python-api-reference/generated/plotly.io.write_image.html) を参照してください。
+
+```python
+from qiskit_ibm_runtime.visualization import draw_circuit_schedule_timing
+
+# Create a figure from the metadata
+fig = draw_circuit_schedule_timing(
+    circuit_schedule=circuit_schedule_timing,
+    included_channels=None,
+    filter_readout_channels=False,
+    filter_barriers=False,
+    width=1000,
+)
+
+# Uncomment the following line to display the figure
+# fig.show(renderer="notebook")
+
+# Save to a file
+# fig.write_html("scheduler_timing.html")
+```
+
+![Hovering over the output shows information such as the start, finish, and duration.](/docs/images/guides/visualize-circuit-timing/image_1.svg 'Example of a generated figure')
+
+#### 生成された図を理解する {#understand-the-generated-figure}
+
+`draw_circuit_schedule_timing` が出力する回路タイミング・データの画像には、以下の情報が含まれています。
+
+- X 軸は _dt_ 秒単位の時間です。1 dt = 1 スケジューリング・サイクルです。バックエンドの `dt` 値は [`backend.dt`](https://docs.quantum.ibm.com/api/qiskit/qiskit.providers.BackendV2#dt) で確認できます。
+- Y 軸はチャネルです（チャネルはパルスを発するインストゥルメントと考えてください）。
+    - `Receive channel` - それ自体がインストゥルメントではない唯一のチャネルです。その時点でハブとの通信手順に参加しているすべてのチャネルで再生される命令です。
+    - `Qubit x` - Qubit x のドライブ・チャネル。
+    - `AWGRx_y`（任意波形発生器読み出し）- Qubit を測定する際の読み出しチャネルとの通信に使用されます。_x_ および _y_ 引数はそれぞれ読み出し機器 ID と Qubit 番号に対応します。
+    - `Hub` - ブロードキャストを制御します。
+
+さらに、各命令は *X_Y* の形式で、*X* は命令の名前、*Y* はパルス・タイプです。`play` タイプは制御パルスを適用し、`capture` は Qubit の状態を記録します。各命令の上にカーソルを合わせると詳細が表示されます。例えば、上記の図は 1161 dt の時点で Qubit 10 に適用された X ゲートの制御パルスを示しています。
+
+### エンドツーエンドの例 {#end-to-end-example}
+
+この例では、オプションを有効にし、メタデータから回路タイミング情報を取得して、画像として表示する方法を示します。
+
+まず、環境を設定し、回路を定義して ISA 回路に変換し、ジョブを定義して実行します。
+
+```python
+from qiskit_ibm_runtime import SamplerV2, QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.transpiler import generate_preset_pass_manager
+
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Create a dynamic circuit
+
+qubits = QuantumRegister(1)
+clbits = ClassicalRegister(1)
+qc = QuantumCircuit(qubits, clbits)
+(q0,) = qubits
+(c0,) = clbits
+
+qc.h(q0)
+qc.measure(q0, c0)
+with qc.if_test((c0, 1)):
+    qc.x(q0)
+qc.measure(q0, c0)
+
+# Convert to an ISA circuit for the given backend
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+isa_circuit = pm.run(qc)
+
+# Generate samplers for backend targets
+sampler = SamplerV2(backend)
+sampler.options.experimental = {"execution": {"scheduler_timing": True}}
+
+# Submit jobs
+sampler_job = sampler.run([isa_circuit])
+result = sampler_job.result()
+
+print(
+    f">>> {' Job ID:':<10}  {sampler_job.job_id()} ({sampler_job.status()})"
+)
+```
+
+```text
+>>>  Job ID:    d8287kugbeec73alfbug (DONE)
+```
+
+次に、回路スケジュール・タイミングを取得します。
+
+```python
+# Get the circuit schedule timing
+result[0].metadata["compilation"]["scheduler_timing"]["timing"]
+```
+
+```text
+'main,rz_0,Qubit 0,1365,0,shift_phase\nmain,sx_0,Qubit 0,1365,9,play\nmain,sx_0,Qubit 0,1369,0,shift_phase\nmain,rz_0,Qubit 0,1374,0,shift_phase\nmain,barrier,Qubit 0,1374,0,barrier\nmain,measure_0,Qubit 0,1374,64,play\nmain,measure_0,Qubit 0,1438,108,play\nmain,measure_0,AWGR0_0,1485,360,capture\nmain,measure_0,Qubit 0,1546,64,play\nmain,measure_0,Qubit 0,1610,64,play\nmain,barrier,Qubit 0,2046,0,barrier\nmain,broadcast,Hub,1485,561,broadcast\nmain,receive,Receive,2046,7,receive\nthen,x_0,Qubit 0,2061,9,play\nmain,barrier,Qubit 0,2079,0,barrier\nmain,measure_0,Qubit 0,2079,64,play\nmain,measure_0,Qubit 0,2143,108,play\nmain,measure_0,AWGR0_0,2190,360,capture\nmain,measure_0,Qubit 0,2251,64,play\nmain,measure_0,Qubit 0,2315,64,play\nmain,barrier,Qubit 0,2725,0,barrier\nmain,barrier,Qubit 0,2725,0,barrier\n'
+```
+
+最後に、タイミングを可視化して保存します。
+
+```python
+from qiskit_ibm_runtime.visualization import draw_circuit_schedule_timing
+
+circuit_schedule = result[0].metadata["compilation"]["scheduler_timing"][
+    "timing"
+]
+fig = draw_circuit_schedule_timing(
+    circuit_schedule=circuit_schedule,
+    included_channels=None,
+    filter_readout_channels=False,
+    filter_barriers=False,
+    width=1000,
+)
+
+# Uncomment the following line to display the figure
+# fig.show(renderer="notebook")
+
+# Save to a file
+# fig.write_html("scheduler_timing.html")
+```
+
+## 次のステップ {#next-steps}
+
+<Admonition type="tip" title="おすすめ">
+  - [古典フィードフォワードと制御フロー](/guides/classical-feedforward-and-control-flow)（動的回路）
+  - [回路の可視化](/guides/visualize-circuits)
+</Admonition>

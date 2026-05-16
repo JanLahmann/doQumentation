@@ -1,0 +1,248 @@
+---
+title: "อินพุตและเอาต์พุตของ Executor"
+sidebar_label: "อินพุตและเอาต์พุตของ Executor"
+description: "ทำความเข้าใจ inputs และ outputs ของ Executor primitive"
+notebook_path: "guides/executor-input-output.ipynb"
+---
+
+{/* doqumentation-source-hash: b64e595b */}
+
+<OpenInLabBanner notebookPath="guides/executor-input-output.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="เวอร์ชันแพ็กเกจ">
+
+โค้ดในหน้านี้พัฒนาโดยใช้ requirements ต่อไปนี้
+แนะนำให้ใช้เวอร์ชันเหล่านี้หรือใหม่กว่า
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+samplomatic~=0.18.0
+```
+</AccordionItem>
+</Accordion>
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime samplomatic
+```
+
+Executor primitive เป็นส่วนหนึ่งของ [directed execution model](/guides/directed-execution-model) ซึ่งให้ความยืดหยุ่นมากขึ้นในการกำหนดค่า error mitigation workflow
+
+Inputs และ outputs ของ Executor primitive แตกต่างอย่างมากจาก [Sampler](/guides/sampler-input-output) และ [Estimator](/guides/estimator-input-output) primitives ตัวอย่างเช่น แทนที่จะรับ list ของ PUBs เป็น input Executor รับ `QuantumProgram` ซึ่งมี list ของ `QuantumProgramItem` objects container classes เหล่านี้ให้ความยืดหยุ่นมากกว่า PUB ซึ่งเป็นโครงสร้างข้อมูล tuple อย่างง่าย
+
+Output ของ Executor คือ `QuantumProgramResult` ซึ่งเป็น iterable และมีหนึ่ง element สำหรับแต่ละ `QuantumProgramItem` input
+
+<span id="programs"></span>
+## Inputs: Quantum programs
+
+ดังที่กล่าวไว้ก่อนหน้านี้ input ของ Executor primitive คือ [`QuantumProgram`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgram.html#QuantumProgram) ซึ่งเป็น iterable ของ
+objects [`QuantumProgramItem`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgramItem.html) objects เหล่านี้สามารถเป็นสองประเภท:
+- `CircuitItem` ซึ่งโดยทั่วไปเก็บ circuit และค่า parameter (ถ้ามี)
+- `SamplexItem` ซึ่งโดยทั่วไปเก็บสิ่งต่อไปนี้:
+    - Template circuit
+    - Samplex object ที่ใช้สร้าง parameter sets แบบสุ่มในขณะ runtime (เช่น เพื่อทำ twirling หรือ inject noise)
+    - Arguments สำหรับ samplex ซึ่งอาจรวมถึงค่า parameter สำหรับ circuit ดั้งเดิม
+
+แต่ละ item เหล่านี้แสดงงานที่แตกต่างกันสำหรับ Executor ที่จะดำเนินการ
+
+### ก่อนเริ่มต้น {#before-you-begin}
+
+ตัวอย่างโค้ดบางส่วนในหน้านี้ใช้ `samplex` ซึ่งเป็นส่วนหนึ่งของ Samplomatic package ดังนั้น ก่อนรัน code blocks เหล่านั้น คุณต้องติดตั้ง Samplomatic ตามที่แสดงใน code block ต่อไปนี้ สำหรับข้อมูลเพิ่มเติม ดู [เอกสาร Samplomatic](https://qiskit.github.io/samplomatic)
+
+```python
+pip install samplomatic
+
+# For visualization support, include the visualization dependencies.
+# pip install samplomatic[vis]
+```
+
+### ตัวอย่าง: สร้าง `QuantumProgram` ด้วยสองงานที่แตกต่างกัน {#example-create-a-quantumprogram-with-two-different-tasks}
+
+ก่อนอื่นเริ่มต้น quantum program จากนั้น append program items โดยใช้ `append_circuit_item` หรือ `append_samplex_item` (ถ้ามี samplex) ตามที่แสดงในตัวอย่างต่อไปนี้
+
+cell ต่อไปนี้เริ่มต้น `QuantumProgram` และระบุว่าควรรัน 1024 shots สำหรับทุก configuration ของแต่ละ item ในโปรแกรม
+
+<Admonition type="note">
+ต่างจาก Sampler `QuantumProgram` รับค่า shot เพียงค่าเดียว ถ้าต้องการค่า shot ที่แตกต่างกัน คุณต้องมี `QuantumProgram` แยก ซึ่งจะเป็น job แยก
+</Admonition>
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit_ibm_runtime import Executor, QiskitRuntimeService
+from qiskit.circuit import Parameter, QuantumCircuit
+import numpy as np
+from samplomatic import build
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Initialize an empty program
+program = QuantumProgram(shots=1024)
+
+# Initialize and transpile a 3-qubit quantum circuit with 2 parameters.
+circuit = QuantumCircuit(3)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.rz(Parameter("theta"), 0)
+circuit.rz(Parameter("phi"), 1)
+
+# `measure_all` adds a 3-bit classical register named "meas"
+circuit.measure_all()
+
+# Choose the least busy backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Generate a preset pass manager
+# This will be used to convert the abstract circuit to an
+# equivalent Instruction Set Architecture (ISA) circuit.
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=0
+)
+
+# Transpile the circuit
+isa_circuit = preset_pass_manager.run(circuit)
+```
+
+### Append `CircuitItem` {#append-a-circuititem}
+
+จากนั้น append target circuit ที่ถูก transpile ตาม instruction set architecture (ISA) ของ backend เข้าไปใน `QuantumProgram` เนื่องจาก circuit นี้มีสอง parameters เราต้องให้ค่า parameter ด้วย (10 ชุดในตัวอย่างนี้) การรัน `CircuitItem` นี้คืองานแรกที่โปรแกรมจะดำเนินการ
+
+```python
+# Append the transpiled circuit and an array
+# containing 10 sets of parameter values to the program
+program.append_circuit_item(
+    isa_circuit,
+    circuit_arguments=np.random.rand(
+        10, 2
+    ),  # 10 sets of parameter values and 2 parameters
+)
+```
+
+### Append `SamplexItem` {#append-a-samplexitem}
+
+Circuit items รันโดยไม่มีการ randomize ใดๆ ในทางกลับกัน samplex items ให้คุณระบุวิธีการ randomize เนื้อหา cell ถัดไปใช้ฟังก์ชัน `generate_boxing_pass_manager()` เพื่อจัดกลุ่ม gates และ measurements ของ circuit เป็น boxes และเพิ่ม twirling annotation ให้แต่ละ box จากนั้นสร้างคู่ template circuit และ samplex โดยใช้ฟังก์ชัน `build()`
+
+การรัน `SamplexItem` นี้คืองานที่สองที่โปรแกรมจะดำเนินการ
+
+ดูเอกสาร Samplomatic [API](https://github.com/Qiskit/samplomatic/) สำหรับรายละเอียดทั้งหมดเกี่ยวกับ `samplex` และ arguments ของมัน ดู Samplomatic [Transpiler guide](https://qiskit.github.io/samplomatic/guides/transpiler.html) สำหรับข้อมูลเกี่ยวกับการใช้ฟังก์ชัน `generate_boxing_pass_manager()`
+
+```python
+# Transpile the circuit, additionally grouping gates and measurements into annotated boxes
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=0
+)
+
+# Use the boxing pass manager to group gates
+# and measurements into boxes and add
+# a`Twirl` annotation.
+preset_pass_manager.post_scheduling = generate_boxing_pass_manager(
+    # Add gate twirling
+    enable_gates=True,
+    # Add measurement twirling
+    enable_measures=True,
+)
+boxed_circuit = preset_pass_manager.run(circuit)
+
+# Build the template circuit and the samplex.  The template circuit has parametric gates
+# without fixed values and the samplex randomly generates the parameter
+# values on the server side at runtime to perform twirling.
+template_circuit, samplex = build(boxed_circuit)
+
+# Determine what arguments are required by the samplex.
+# Input the arguments in samplex_arguments.
+print(samplex.inputs())
+```
+
+```text
+TensorInterface(<
+  - 'parameter_values' <float64[2]>: Input parameter values to use during sampling.
+>)
+```
+
+```python
+# Append the template circuit and samplex as a samplex item
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        # the arguments required by the samplex.sample method
+        "parameter_values": np.random.rand(10, 2),
+    },
+    shape=(28, 10),  # 28 randomizations and 10 sets of parameter values
+)
+```
+
+```python
+# Initialize an Executor with the default options
+executor = Executor(mode=backend)
+
+# Submit the job
+job = executor.run(program)
+
+# Retrieve the result
+result = job.result()
+```
+
+## Outputs
+
+Output ของ Executor คือ [`QuantumProgramResult`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgramResult.html#QuantumProgramResult) ซึ่งเป็น iterable มีหนึ่ง entry ต่อ `QuantumProgramItem` input ในลำดับเดียวกับ input items แต่ละ output item เหล่านี้เป็น dictionary ที่ keys เป็น strings สอดคล้องกับชื่อ classical registers ใน input circuits (รวมถึงอื่นๆ) ดังนั้นคุณไม่ต้องจำชื่อเหล่านี้อีกต่อไปเหมือนกับ Sampler output ค่า dictionary มีประเภทเป็น `np.ndarray`
+
+ผลลัพธ์สำหรับตัวอย่างก่อนหน้ามี items เหล่านี้:
+
+### ผลลัพธ์ `CircuitItem` {#circuititem-result}
+
+Item แรกมีผลลัพธ์ของการรันงานแรก (`CircuitItem`) ในโปรแกรม มี key เดียวคือ `meas` ซึ่งเป็นชื่อ classical register ใน input circuit ค่าของ key นี้ map ไปยัง `np.ndarray` ที่มี shape `(parameter sets, shots, register bits)` ซึ่งคือ (10, 1024, 3) สำหรับตัวอย่างด้านบน
+
+โค้ดต่อไปนี้แสดงวิธีเข้าถึงข้อมูลนี้:
+
+```python
+# Access the results of the classical register of task #0, a CircuitItem
+result_0 = result[0]["meas"]
+print(f"Result shape: {result_0.shape}")
+```
+
+```text
+Result shape: (10, 1024, 3)
+```
+
+### ผลลัพธ์ `SamplexItem` {#samplexitem-result}
+
+Item ที่สองมีผลลัพธ์ของการรันงานที่สอง (`SamplexItem`) ในโปรแกรม item นี้มีหลาย keys Key `meas` ซึ่งเป็นชื่อ classical register ของ input circuit map ไปยัง array ผลลัพธ์ของ register นั้น array นี้มี shape `(randomizations, parameter sets, shots, classical bits)` หรือ (28, 10, 1024, 3) ในตัวอย่างนี้ นอกจากนี้ output มี key `measurement_flips.meas` ซึ่งเป็น bit-flip corrections เพื่อยกเลิก measurement twirling สำหรับ register `meas` shape ของ output นี้จะเป็น (28, 10, 1, 3) สำหรับตัวอย่างนี้เนื่องจากต้องใช้เพียง shot เดียวเพื่อทำ bit-flip
+
+```python
+# Access the results of the classical register of task #1
+result_1 = result[1]["meas"]
+print(f"Result shape: {result_1.shape}")
+
+# Access the bit-flip corrections
+flips_1 = result[1]["measurement_flips.meas"]
+print(f"Bit-flip corrections shape: {flips_1.shape}")
+
+# Undo the bit flips via classical XOR
+unflipped_result_1 = result_1 ^ flips_1
+```
+
+```text
+Result shape: (28, 10, 1024, 3)
+Bit-flip corrections shape: (28, 10, 1, 3)
+```
+
+## ขั้นตอนถัดไป {#next-steps}
+
+<Admonition type="tip" title="คำแนะนำ">
+- สำรวจ [ตัวอย่าง](/guides/executor-examples) ที่ใช้ Executor
+- เรียนรู้เกี่ยวกับ [directed execution model](/guides/directed-execution-model)
+- ทำความเข้าใจ [Executor broadcasting](/guides/executor-broadcasting)
+</Admonition>

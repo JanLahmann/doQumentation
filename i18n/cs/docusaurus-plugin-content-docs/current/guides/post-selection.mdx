@@ -1,0 +1,245 @@
+---
+title: "Použití postselekce ve workloadech"
+sidebar_label: "Použití postselekce ve workloadech"
+description: "Pochop, jak integrovat postselekci jako součást strategie zmírňování chyb"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Verze balíčků">
+
+Kód na této stránce byl vyvinut s použitím následujících požadavků.
+Doporučujeme používat tyto nebo novější verze.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+Při optimalizaci strategie zmírňování chyb workloadu je často užitečné filtrovat měření, o nichž je známo, že byla znečištěna neMarkovskými (korelovanými) šumovými procesy. Jedna taková metoda spočívá v připojení obvodu s krokem post-processingu, který měří aktivní a sousední „spektátorové" Qubit, aplikuje na každý Qubit pomalou rotaci a poté je znovu měří. V případech, kdy obě měření nepotvrdí překlopení Qubitu, jak se očekávalo, je snímek zahozen aplikací masky na výsledky.
+
+Balíček [Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) poskytuje sadu průchodů Transpileru a funkci postselekce pro aplikaci masky. Tato stránka poskytuje pokyny, jak zahrnout postselekci do tvých kvantových workloadů, s použitím čtyřQubitového stavu GHZ jako příkladu.
+## Vytvoření workloadu {#create-workload}
+
+Začni přípravou Circuit k spuštění a transpilací vůči backendu, který podporuje frakcionální Gate.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## Přidání průchodů Transpileru pro postselekci {#add-postselection-transpiler-passes}
+
+Dále vytvoř správce průchodů, který zahrnuje průchody [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) a [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) z balíčku [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). Tím se k Circuit připojí sekvence malých úhlových rotací `RX` (efektivně vytváří dlouhou Gate `X`) spolu s druhou sadou měření.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## Spuštění kvantového programu {#execute-quantum-program}
+
+Dále připrav objekt `QuantumProgram` obsahující Circuit k spuštění.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+Nyní můžeš interpretovat výsledky. Výsledek executor je slovník s několika klíči.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+Tyto klíče odpovídají aktivním a spektátorovým Qubitům před instrukcemi `rx` (`meas` a `spec`) a po instrukcích `rx` (`meas_ps` a `spec_ps`). Každý z nich je pole polí na základě počtu snímků a Qubitů. V tomto případě je tvar (1000, 4).
+
+## Vytvoření masky postselekce {#create-postselection-mask}
+
+Z těchto měření můžeš vytvořit masku pomocí třídy [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) z `qiskit-addon-utils`. Tato maska je booleovské pole, kde každý snímek je označen jako `True` nebo `False` na základě jedné ze dvou strategií postselekce. První strategie, `node`, využívá informace o Qubitech k rozhodnutí, zda má být snímek měření zahozen &mdash; a druhá, `edge`, využívá informace o konektivitě nejbližších sousedů k tomuto rozhodnutí.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+Strategie node i edge často zahazují různé snímky. Můžeš si vybrat kteroukoli z nich. Tento notebook provede bitový AND, což je konzervativní strategie, která zachová snímek pouze tehdy, pokud projde oběma strategiemi node i edge.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+Porovnej rozdělení pravděpodobnosti s postselekci a bez ní. Následující úryvek vypočítá rozdělení pravděpodobnosti před a po postselekci, jakož i vzdálenost mezi naměřenými a ideálními rozděleními.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+Aby ses přesvědčil, jak postselekce změnila tvé výsledky, vypočítej vzdálenost mezi ideálním rozdělením pravděpodobnosti a naměřenými.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+Zatímco postselekce může výrazně zlepšit kvalitu výsledků filtrováním výsledků měření, které byly ovlivněny neMarkovskými šumy, sama o sobě není úplným řešením zmírňování chyb. Postselekce snižuje dopad určitých chyb zahazováním neplatných výsledků měření, ale za cenu zvýšené vzorkovací režie a neřeší všechny chybové mechanismy přítomné v krátkodobém kvantovém hardwaru. V důsledku toho je pravděpodobně nedostatečné spoléhat se výhradně na postselekci pro složitější nebo hlubší obvody. Postselekce je nejúčinnější jako součást širší strategie zmírňování chyb &mdash; doplňující techniky jako zmírňování chyb měření, kompilaci obvodů zohledňující šum nebo pravděpodobnostní rušení chyb &mdash; pro zlepšení spolehlivosti kvantových workloadů při vyvažování přesnosti a nákladů na zdroje.
+
+## Další kroky {#next-steps}
+
+<Admonition type="tip" title="Doporučení">
+  - Pochop, jak zahrnout [učení šumu](/guides/noise-learning) do kvantového workloadu.
+  - Přečti si o dalších dostupných [technikách zmírňování a potlačování chyb](/guides/error-mitigation-and-suppression-techniques).
+  - Nauč se, jak používat [prostorově-časové kódy](/tutorials/ghz-spacetime-codes) pro přístup k detekci chyb s nízkou režií
+</Admonition>

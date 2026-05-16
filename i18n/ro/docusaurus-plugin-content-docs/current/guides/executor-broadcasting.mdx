@@ -1,0 +1,314 @@
+---
+title: Broadcasting Executor
+description: Cum gestionează Executor intrările și ieșirile de tip tablou folosind semantica de broadcasting
+
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# Broadcasting Executor {#executor-broadcasting}
+
+Datele furnizate primitivei Executor pot fi aranjate în diverse forme pentru a oferi flexibilitate unui volum de lucru prin broadcasting. Acest ghid explică modul în care Executor gestionează intrările și ieșirile de tip tablou folosind semantica de broadcasting. Înțelegerea acestor concepte te va ajuta să baleiezi eficient valorile de parametri, să combini mai multe configurații și să interpretezi forma datelor returnate.
+
+<Admonition type="note">
+Exemplele din acest subiect nu pot fi rulate singure. Ele presupun că ai definit circuite adecvate, ai folosit managerul de pase Samplomatic pentru a adăuga cutii și adnotări, și ai folosit metoda Samplomatic `build` pentru a obține un circuit șablon și un samplex pentru fiecare bloc de cod, după caz.
+</Admonition>
+
+<span id="quickstart"></span>
+## Exemplu de pornire rapidă {#quickstart-example}
+
+Acest exemplu demonstrează ideea de bază. Creează un circuit parametric și cinci configurații de parametri diferite. Executor rulează toate cele cinci configurații și returnează datele organizate după configurație, cu un rezultat per registru clasic în fiecare element al programului cuantic.
+
+Restul acestui ghid face referire la acest exemplu pentru a explica cum funcționează aceasta și cum să construiești baleieri mai complexe, inclusiv randomizarea bazată pe Samplomatic și intrările.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## Axe intrinseci și extrinseci {#intrinsic-and-extrinsic-axes}
+
+Broadcasting se aplică doar axelor _extrinseci_. Axele intrinseci sunt întotdeauna păstrate conform specificației.
+
+- **Axe intrinseci** (cele mai din dreapta): Determinate de tipul de date. De exemplu, dacă circuitul tău are trei parametri, atunci valorile parametrilor necesită trei numere, dând o formă intrinsecă de `(3,)`.
+
+- **Axe extrinseci** (cele mai din stânga): Dimensiunile tale de baleiere. Acestea definesc câte configurații dorești să rulezi.
+
+| Tip de intrare                                | Formă intrinsecă | Exemplu de formă completă                                   |
+|-----------------------------------------------|-----------------|-------------------------------------------------------------|
+| Valori de parametri (n parametri)             | (n,)            | (5, 3) pentru cinci configurații și trei parametri          |
+| Intrări scalare (de exemplu, factor de zgomot) | ()              | (4,) pentru patru configurații                              |
+| Observabili (dacă este cazul)                 | variabil        | Depinde de tipul de observabil                              |
+
+### Exemplu {#example}
+
+Consideră un circuit cu doi parametri pe care dorești să îl baleiezi pe o grilă 4x3 de configurații, variind valorile de parametri și un factor de scală a zgomotului:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Formele sunt următoarele:
+
+| Intrare            | Formă completă | Formă extrinsecă | Formă intrinsecă |
+|---------------------|---------------|-----------------|-----------------|
+| `parameter_values`  | (4, 1, 2)     | (4, 1)          | (2,)            |
+| `noise_scale`       | (3,)          | (3,)            | ()              |
+| Broadcast           | Nimic         | (4, 3)          | Nimic           |
+
+## Formele tablourilor de ieșire {#output-array-shapes}
+
+Tablourile de ieșire urmează același pattern extrinsec/intrinsec:
+
+- **Formă extrinsecă:** Corespunde formei broadcast a tuturor intrărilor
+- **Formă intrinsecă:** Determinată de tipul de ieșire
+
+Cea mai comună ieșire este datele de tip șir de biți din măsurători, formatate ca un tablou de valori booleene:
+
+| Tip de ieșire            | Formă intrinsecă       | Descriere                            |
+|--------------------------|----------------------|--------------------------------------|
+| Date registru clasic     | (num_shots, creg_size) | Date de tip șir de biți din măsurători |
+
+### Exemplu {#example-2}
+
+Dacă furnizezi intrări cu forme extrinseci `(4, 1)` și `(3,)`, forma extrinsecă broadcast este `(4, 3)`. Codul următor folosește un circuit cu 1024 de shot-uri și un registru clasic pe 4 biți (conform definiției din exemplul [Pornire rapidă](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+Fiecare configurație rulează numărul complet de shot-uri specificat în programul cuantic. Shot-urile **nu** sunt împărțite între configurații. De exemplu, dacă soliciți 1024 de shot-uri și ai 10 configurații, fiecare configurație rulează 1024 de shot-uri (10.240 de shot-uri executate în total).
+</Admonition>
+
+## Randomizare și parametrul `shape` {#randomization-and-the-shape-parameter}
+
+Atunci când folosești un [samplex](/guides/directed-execution-model), fiecare element al formei extrinseci corespunde unei execuții independente a circuitului. Samplex-ul injectează de obicei aleatoritate (de exemplu, gate twirling) în fiecare execuție, astfel că, chiar și fără a solicita explicit mai multe randomizări, fiecare element primește o realizare aleatorie.
+
+Poți folosi parametrul `shape` pentru a augmenta forma extrinsecă a elementului, adăugând efectiv axe care corespund specific randomizării aceleiași configurații de mai multe ori. Trebuie să fie broadcastabil față de forma implicită în `samplex_arguments`. Axele unde `shape` depășește forma implicită enumeră randomizări independente suplimentare.
+
+### Fără axe explicite de randomizare {#no-explicit-randomization-axes}
+
+Dacă omiti `shape` (sau îl setezi să corespundă formelor de intrare), obții o singură execuție per configurație de intrare. Fiecare execuție este totuși randomizată de samplex, dar cu o singură realizare aleatorie nu beneficiezi de medierea pe mai multe randomizări.
+
+<Admonition type="note">
+Dacă ești obișnuit să activezi twirling-ul cu un simplu flag precum `twirling=True`, reține că Executor necesită să soliciți explicit mai multe randomizări cu argumentul `shape` pentru a permite rutinelor tale de post-procesare să beneficieze de medierea pe mai multe randomizări. O singură randomizare (valoarea implicită când `shape` este omis) aplică porți aleatorii, dar nu oferă de obicei niciun avantaj față de rularea circuitului de bază fără randomizare.
+</Admonition>
+
+Exemplul următor demonstrează comportamentul implicit:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### O singură axă de randomizare {#single-randomization-axis}
+
+Pentru a rula mai multe randomizări per configurație, extinde forma cu axe suplimentare.
+De exemplu, codul următor rulează 20 de randomizări pentru fiecare dintre cele 10 configurații de parametri:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### Mai multe axe de randomizare {#multiple-randomization-axes}
+
+Poți organiza randomizările într-o grilă multidimensională. Aceasta este utilă pentru analize structurate, de exemplu, separarea randomizărilor pe tipuri sau gruparea lor pentru procesare statistică.
+
+Aici, forma extrinsecă de intrare `(10,)` se broadcast-ează la forma solicitată `(2, 14, 10)`, axele 0 și 1 fiind completate de randomizări independente.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### Cum interacționează `shape` cu formele de intrare {#how-shape-and-input-shapes-interact}
+
+Parametrul `shape` trebuie să fie broadcastabil *față de* formele tale extrinseci de intrare. Aceasta înseamnă că:
+
+- Formele de intrare cu dimensiuni de mărime 1 pot fi extinse pentru a corespunde `shape`.
+- Formele de intrare trebuie să se alinieze de la dreapta cu `shape`.
+- Axele din `shape` care depășesc dimensiunile de intrare enumeră randomizări.
+
+Reține că `shape` poate conține dimensiuni de mărime 1 care se extind pentru a corespunde dimensiunilor de intrare, așa cum este ilustrat în ultimul rând al tabelului următor.
+
+Exemple:
+
+| Extrinsec de intrare | Shape      | Rezultat                                                          |
+|----------------------|------------|-------------------------------------------------------------------|
+| (10,)                | (10,)      | 10 configurații, 1 randomizare fiecare                            |
+| (10,)                | (5, 10)    | 10 configurații, 5 randomizări fiecare                            |
+| (10,)                | (2, 3, 10) | 10 configurații, 2×3=6 randomizări fiecare                        |
+| (4, 1)               | (4, 5)     | 4 configurații, 5 randomizări fiecare                             |
+| (4, 3)               | (2, 4, 3)  | 4×3=12 configurații, 2 randomizări fiecare                        |
+| (4, 3)               | (2, 1, 3)  | 4×3=12 configurații, 2 randomizări fiecare (1 se extinde la 4)    |
+
+### Indexare în rezultate {#index-into-results}
+
+Cu axe de randomizare, poți indexa în combinații specifice de randomizare/parametri:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Tipare comune {#common-patterns}
+
+### Baleiază un singur parametru {#sweep-a-single-parameter}
+Folosește cod similar cu cel de mai jos pentru a baleiza un parametru în timp ce îi ții pe ceilalți ficși:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### Crearea unui baleiu 2D pe grilă {#creating-a-2d-grid-sweep}
+Pentru a crea o grilă pe trei parametri:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### Combinarea mai multor intrări {#combining-multiple-inputs}
+
+La combinarea intrărilor cu forme intrinseci diferite, aliniază dimensiunile extrinseci folosind axe de mărime 1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## Pașii următori {#next-steps}
+
+<Admonition type="tip" title="Recomandări">
+- Consultă prezentarea generală a [broadcasting-ului](/guides/primitive-input-output#broadcasting).
+- Înțelege [intrările și ieșirile Executor](/guides/executor-input-output).
+</Admonition>

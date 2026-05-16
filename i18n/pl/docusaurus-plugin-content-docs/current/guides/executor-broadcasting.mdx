@@ -1,0 +1,337 @@
+---
+title: Rozgłaszanie Executor
+description: Jak Executor obsługuje tablicowe dane wejściowe i wyjściowe za pomocą semantyki rozgłaszania
+
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# Rozgłaszanie Executor {#executor-broadcasting}
+
+Dane dostarczane do prymitywu Executor mogą być ułożone w różnorodne kształty, co zapewnia elastyczność przepływu pracy poprzez rozgłaszanie. Ten przewodnik wyjaśnia, jak Executor obsługuje tablicowe dane wejściowe i wyjściowe za pomocą semantyki rozgłaszania. Zrozumienie tych koncepcji pomoże Ci efektywnie przeglądać wartości parametrów, łączyć
+wiele konfiguracji i interpretować kształt zwracanych danych.
+
+<Admonition type="note">
+Przykłady w tym temacie nie mogą być uruchamiane samodzielnie. Zakładają, że zdefiniowałeś odpowiednie obwody, użyłeś menedżera przejść Samplomatic do dodawania bloków i adnotacji oraz użyłeś metody `build` Samplomatic do uzyskania obwodu szablonowego i samplex dla każdego bloku kodu, jeśli to konieczne.
+</Admonition>
+
+<span id="quickstart"></span>
+## Przykład szybkiego startu {#quickstart-example}
+
+Ten przykład demonstruje podstawową ideę. Tworzy sparametryzowany obwód i pięć różnych konfiguracji parametrów. Executor uruchamia wszystkie pięć konfiguracji i zwraca dane zorganizowane według konfiguracji, z jednym wynikiem na klasyczny rejestr w każdym elemencie programu kwantowego.
+
+Reszta tego przewodnika odwołuje się do tego przykładu, aby wyjaśnić, jak to działa i jak budować bardziej złożone przeglądy, w tym randomizację opartą na Samplomatic i dane wejściowe.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## Osie wewnętrzne i zewnętrzne {#intrinsic-and-extrinsic-axes}
+
+Rozgłaszanie ma zastosowanie tylko do osi _zewnętrznych_. Osie wewnętrzne są zawsze zachowywane zgodnie ze specyfikacją.
+
+- **Osie wewnętrzne** (skrajnie prawostronnie): Determinowane przez typ danych. Na przykład, jeśli obwód
+  ma trzy parametry, wartości parametrów wymagają trzech liczb, dając wewnętrzny kształt
+  `(3,)`.
+
+- **Osie zewnętrzne** (skrajnie lewostronnie): Twoje wymiary przeglądu. Definiują liczbę konfiguracji, które
+  chcesz uruchomić.
+
+| Typ wejściowy                               | Kształt wewnętrzny | Przykładowy pełny kształt                                  |
+|----------------------------------------|---------------|---------------------------------------------------|
+| Wartości parametrów (n parametrów)          | (n,)            | (5, 3) dla pięciu konfiguracji i trzech parametrów |
+| Wejścia skalarne (np. współczynnik szumu)   | ()              | (4,) dla czterech konfiguracji                        |
+| Obserwable (jeśli dotyczy)              | zmiennie          | Zależy od typu obserwabli                          |
+
+### Przykład {#example}
+
+Rozważ obwód z dwoma parametrami, który chcesz przeglądać przez siatkę 4x3 konfiguracji, zmieniając wartości parametrów i współczynnik skali szumu:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Kształty są następujące:
+
+| Wejście              | Pełny kształt | Kształt zewnętrzny | Kształt wewnętrzny |
+|------------------|----------|---------------|---------------|
+| `parameter_values` | (4, 1, 2)  | (4, 1)          | (2,)            |
+| `noise_scale`      | (3,)       | (3,)            | ()              |
+| Rozgłoszony          | Brak       | (4, 3)          | Brak            |
+
+## Kształty tablic wyjściowych {#output-array-shapes}
+
+Tablice wyjściowe podążają za tym samym wzorcem zewnętrzny/wewnętrzny:
+
+- **Kształt zewnętrzny:** Odpowiada rozgłoszonemu kształtowi wszystkich wejść
+- **Kształt wewnętrzny:** Determinowany przez typ wyjściowy
+
+Najczęstszym wyjściem są dane z ciągów bitów z pomiarów, które są
+sformatowane jako tablica wartości boolowskich:
+
+| Typ wyjściowy             | Kształt wewnętrzny        | Opis                      |
+|-----------------------|----------------------|--------------------------------|
+| Dane rejestru klasycznego | (num_shots, creg_size) | Dane ciągów bitów z pomiarów |
+
+### Przykład {#example-2}
+
+Jeśli podasz wejścia o zewnętrznych kształtach `(4, 1)` i `(3,)`, rozgłoszony kształt zewnętrzny
+wynosi `(4, 3)`. Poniższy kod używa obwodu z 1024 pomiarami i 4-bitowym rejestrem klasycznym (jak zdefiniowano w przykładzie [Szybki start](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+Każda konfiguracja uruchamia pełną liczbę pomiarów określoną w programie kwantowym. Pomiary **nie są** dzielone między konfiguracje. Na przykład, jeśli zażądasz 1024 pomiarów i masz 10 konfiguracji, każda konfiguracja uruchamia 1024 pomiary (łącznie 10 240 wykonanych pomiarów).
+</Admonition>
+
+## Randomizacja i parametr `shape` {#randomization-and-the-shape-parameter}
+
+Przy używaniu [samplex](/guides/directed-execution-model) każdy element kształtu zewnętrznego odpowiada niezależnemu
+wykonaniu obwodu. Samplex zazwyczaj wstrzykuje losowość (na przykład twirlingowanie bramek) do każdego
+wykonania, więc nawet bez jawnego żądania wielu randomizacji każdy element
+otrzymuje losową realizację.
+
+Możesz używać parametru `shape`, aby rozszerzać kształt zewnętrzny dla elementu, efektywnie
+dodając osie odpowiadające konkretnie wielokrotnemu losowaniu tej samej konfiguracji. Musi on być
+rozgłaszalny z kształtu implicite w Twoich `samplex_arguments`. Osie, w których `shape` przekracza
+implicite kształt, enumerują dodatkowe niezależne randomizacje.
+
+### Brak jawnych osi randomizacji {#no-explicit-randomization-axes}
+
+Jeśli pominiesz `shape` (lub ustawisz go odpowiadającym kształtom wejściowym), otrzymujesz jedno wykonanie na
+konfigurację wejściową. Każde wykonanie jest nadal randomizowane przez samplex, ale przy tylko
+jednej losowej realizacji nie korzystasz z uśredniania wielu randomizacji.
+
+<Admonition type="note">
+Jeśli przyzwyczaiłeś się do włączania twirlingowania prostą flagą jak `twirling=True`, pamiętaj, że
+Executor wymaga jawnego żądania wielu randomizacji z argumentem `shape`, aby
+pozwolić Twoim procedurom przetwarzania końcowego czerpać korzyści z uśredniania wielu
+randomizacji. Pojedyncza randomizacja (domyślna, gdy `shape` jest pominięte) stosuje
+losowe bramki, ale zazwyczaj nie oferuje żadnej przewagi nad uruchomieniem podstawowego obwodu bez
+randomizacji.
+</Admonition>
+
+Poniższy przykład demonstruje domyślne zachowanie:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### Pojedyncza oś randomizacji {#single-randomization-axis}
+
+Aby uruchamiać wiele randomizacji na konfigurację, rozszerz kształt o dodatkowe osie.
+Na przykład poniższy kod uruchamia 20 randomizacji dla każdej z 10 konfiguracji parametrów:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### Wiele osi randomizacji {#multiple-randomization-axes}
+
+Możesz organizować randomizacje w wielowymiarową siatkę. Jest to przydatne do
+analizy strukturalnej, na przykład rozdzielania randomizacji według typu lub grupowania ich do przetwarzania statystycznego.
+
+Tutaj implicite zewnętrzny kształt wejściowy `(10,)` jest rozgłaszany do żądanego kształtu `(2, 14, 10)`,
+a osie 0 i 1 są wypełniane przez niezależne randomizacje.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### Jak `shape` i kształty wejściowe współdziałają {#how-shape-and-input-shapes-interact}
+
+Parametr `shape` musi być rozgłaszalny *z* zewnętrznych kształtów wejściowych. Oznacza to:
+
+- Kształty wejściowe z wymiarami o rozmiarze 1 mogą rozszerzać się, aby dopasować do `shape`.
+- Kształty wejściowe muszą wyrównywać się od prawej strony z `shape`.
+- Osie w `shape` przekraczające wymiary wejściowe enumerują randomizacje.
+
+Pamiętaj, że `shape` może zawierać wymiary o rozmiarze 1
+rozszerzające się, aby dopasować do wymiarów wejściowych, co ilustruje ostatni wiersz poniższej tabeli.
+
+Przykłady:
+
+| Zewnętrzne wejście | Kształt      | Wynik                                                            |
+|---------------|----------|-----------------------------------------------------------------|
+| (10,)           | (10,)      | 10 konfiguracji, 1 randomizacja każda                           |
+| (10,)           | (5, 10)    | 10 konfiguracji, 5 randomizacji każda                          |
+| (10,)           | (2, 3, 10) | 10 konfiguracji, 2×3=6 randomizacji każda                      |
+| (4, 1)          | (4, 5)     | 4 konfiguracje, 5 randomizacji każda                           |
+| (4, 3)          | (2, 4, 3)  | 4×3=12 konfiguracji, 2 randomizacje każda                      |
+| (4, 3)          | (2, 1, 3)  | 4×3=12 konfiguracji, 2 randomizacje każda (1 rozszerza się do 4) |
+
+### Indeksowanie wyników {#index-into-results}
+
+Przy osiach randomizacji możesz indeksować do konkretnych kombinacji randomizacja/parametr:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Typowe wzorce {#common-patterns}
+
+### Przeglądanie jednego parametru {#sweep-a-single-parameter}
+Używaj kodu podobnego do poniższego, aby przeglądać jeden parametr przy zachowaniu stałości pozostałych:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### Tworzenie przeglądu w siatce 2D {#creating-a-2d-grid-sweep}
+Aby stworzyć siatkę dla trzech parametrów:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### Łączenie wielu wejść {#combining-multiple-inputs}
+
+Łącząc wejścia o różnych kształtach wewnętrznych, wyrównaj wymiary zewnętrzne za pomocą
+osi o rozmiarze 1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## Następne kroki {#next-steps}
+
+<Admonition type="tip" title="Zalecenia">
+- Przejrzyj przegląd [rozgłaszania](/guides/primitive-input-output#broadcasting).
+- Zrozum [dane wejściowe i wyjściowe Executor](/guides/executor-input-output).
+</Admonition>

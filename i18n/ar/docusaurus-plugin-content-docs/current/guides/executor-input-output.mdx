@@ -1,0 +1,248 @@
+---
+title: "مدخلات ومخرجات Executor"
+sidebar_label: "مدخلات ومخرجات Executor"
+description: "افهم المدخلات والمخرجات لـ Executor primitive."
+notebook_path: "guides/executor-input-output.ipynb"
+---
+
+{/* doqumentation-source-hash: b64e595b */}
+
+
+<OpenInLabBanner notebookPath="guides/executor-input-output.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="إصدارات الحزم">
+
+تم تطوير الكود في هذه الصفحة باستخدام المتطلبات التالية.
+نوصي باستخدام هذه الإصدارات أو أحدث.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+samplomatic~=0.18.0
+```
+</AccordionItem>
+</Accordion>
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime samplomatic
+```
+
+Executor primitive هو جزء من [نموذج التنفيذ الموجَّه](/guides/directed-execution-model)، الذي يوفر مرونة أكبر عند تخصيص سير عمل تخفيف الأخطاء.
+
+تختلف مدخلات ومخرجات Executor primitive اختلافًا كبيرًا عن مدخلات ومخرجات [Sampler](/guides/sampler-input-output) و[Estimator](/guides/estimator-input-output) primitives. على سبيل المثال، بدلاً من أخذ قائمة من PUBs كمدخل، يأخذ Executor كائن `QuantumProgram`، الذي يحتوي على قائمة من كائنات `QuantumProgramItem`. تمنحك هذه الفئات الحاوية مرونة أكبر من PUB، الذي هو هيكل بيانات صف (tuple) بسيط.
+
+مخرج Executor هو `QuantumProgramResult`، وهو قابل للتكرار ويحتوي على عنصر واحد لكل `QuantumProgramItem` مدخل.
+
+<span id="programs"></span>
+## المدخلات: البرامج الكمية {#inputs-quantum-programs}
+
+كما ذُكِر سابقًا، المدخل لـ Executor primitive هو [`QuantumProgram`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgram.html#QuantumProgram)، وهو قابل للتكرار من كائنات [`QuantumProgramItem`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgramItem.html). يمكن أن تكون هذه الكائنات من نوعين:
+- `CircuitItem`، الذي يُخزِّن عادةً Circuit وقيم معاملاتها (إن وجدت).
+- `SamplexItem`، الذي يُخزِّن عادةً ما يلي:
+    - Circuit نموذجية
+    - كائن samplex، يُستخدَم لتوليد مجموعات عشوائية من المعاملات في وقت التشغيل (مثلاً لإجراء التدوير أو حقن الضوضاء)
+    - وسيطات للـ samplex، والتي قد تتضمن قيم معاملات للـ Circuit الأصلية
+
+كل من هذه العناصر يُمثِّل مهمة مختلفة يجب على Executor تنفيذها.
+
+### قبل البدء {#before-you-begin}
+
+بعض أمثلة الكود في هذه الصفحة تستخدم `samplex`، وهو جزء من حزمة Samplomatic. لذلك، قبل تشغيل تلك الكتل البرمجية، يجب تثبيت Samplomatic كما هو موضح في الكتلة البرمجية التالية. لمزيد من المعلومات، راجع [وثائق Samplomatic](https://qiskit.github.io/samplomatic).
+
+```python
+pip install samplomatic
+
+# For visualization support, include the visualization dependencies.
+# pip install samplomatic[vis]
+```
+
+### مثال: إنشاء `QuantumProgram` بمهمتين مختلفتين {#example-create-a-quantumprogram-with-two-different-tasks}
+
+أولاً هيِّئ برنامجك الكمي، ثم ألحِق عناصر البرنامج باستخدام `append_circuit_item` أو `append_samplex_item` (إذا كان samplex موجودًا)، كما هو موضح في الأمثلة التالية.
+
+تُهيِّئ الخلية التالية `QuantumProgram` وتُحدِّد أنه يجب تشغيل 1024 تشغيلاً لكل تهيئة لكل عنصر في البرنامج.
+
+<Admonition type="note">
+على خلاف Sampler، يأخذ `QuantumProgram` قيمة تشغيلات واحدة فقط. إذا كنت تريد قيمة تشغيلات مختلفة، فأنت بحاجة إلى `QuantumProgram` منفصل، وهو سيكون مهمة منفصلة.
+</Admonition>
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit_ibm_runtime import Executor, QiskitRuntimeService
+from qiskit.circuit import Parameter, QuantumCircuit
+import numpy as np
+from samplomatic import build
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Initialize an empty program
+program = QuantumProgram(shots=1024)
+
+# Initialize and transpile a 3-qubit quantum circuit with 2 parameters.
+circuit = QuantumCircuit(3)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.rz(Parameter("theta"), 0)
+circuit.rz(Parameter("phi"), 1)
+
+# `measure_all` adds a 3-bit classical register named "meas"
+circuit.measure_all()
+
+# Choose the least busy backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Generate a preset pass manager
+# This will be used to convert the abstract circuit to an
+# equivalent Instruction Set Architecture (ISA) circuit.
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=0
+)
+
+# Transpile the circuit
+isa_circuit = preset_pass_manager.run(circuit)
+```
+
+### إلحاق `CircuitItem` {#append-a-circuititem}
+
+بعد ذلك، ألحِق الـ Circuit المستهدفة التي جرى Transpile لها وفق مجموعة تعليمات معمارية الـ Backend (ISA) بـ `QuantumProgram`. بما أن هذه الـ Circuit تحتوي على معاملَين، يجب أيضًا توفير قيم المعاملات (10 مجموعات في هذا المثال). تنفيذ هذه `CircuitItem` هو المهمة الأولى التي سيؤديها البرنامج.
+
+```python
+# Append the transpiled circuit and an array
+# containing 10 sets of parameter values to the program
+program.append_circuit_item(
+    isa_circuit,
+    circuit_arguments=np.random.rand(
+        10, 2
+    ),  # 10 sets of parameter values and 2 parameters
+)
+```
+
+### إلحاق `SamplexItem` {#append-a-samplexitem}
+
+تُنفَّذ عناصر الـ Circuit دون أي عشوائية. على العكس من ذلك، تتيح لك عناصر الـ samplex تحديد كيفية عشوائية محتواها. تستخدم الخلية التالية دالة `generate_boxing_pass_manager()` لتجميع بوابات الـ Circuit وقياساتها في صناديق وإضافة تعليق تدوير لكل صندوق. ثم تولِّد Circuit نموذجية وزوجًا من samplex باستخدام دالة `build()`.
+
+تنفيذ هذه `SamplexItem` هو المهمة الثانية التي سيؤديها البرنامج.
+
+راجع وثائق [API](https://github.com/Qiskit/samplomatic/) في Samplomatic للاطلاع على التفاصيل الكاملة حول `samplex` وحججه. راجع [دليل Samplomatic Transpiler](https://qiskit.github.io/samplomatic/guides/transpiler.html) للحصول على معلومات حول استخدام دالة `generate_boxing_pass_manager()`.
+
+```python
+# Transpile the circuit, additionally grouping gates and measurements into annotated boxes
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=0
+)
+
+# Use the boxing pass manager to group gates
+# and measurements into boxes and add
+# a`Twirl` annotation.
+preset_pass_manager.post_scheduling = generate_boxing_pass_manager(
+    # Add gate twirling
+    enable_gates=True,
+    # Add measurement twirling
+    enable_measures=True,
+)
+boxed_circuit = preset_pass_manager.run(circuit)
+
+# Build the template circuit and the samplex.  The template circuit has parametric gates
+# without fixed values and the samplex randomly generates the parameter
+# values on the server side at runtime to perform twirling.
+template_circuit, samplex = build(boxed_circuit)
+
+# Determine what arguments are required by the samplex.
+# Input the arguments in samplex_arguments.
+print(samplex.inputs())
+```
+
+```text
+TensorInterface(<
+  - 'parameter_values' <float64[2]>: Input parameter values to use during sampling.
+>)
+```
+
+```python
+# Append the template circuit and samplex as a samplex item
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        # the arguments required by the samplex.sample method
+        "parameter_values": np.random.rand(10, 2),
+    },
+    shape=(28, 10),  # 28 randomizations and 10 sets of parameter values
+)
+```
+
+```python
+# Initialize an Executor with the default options
+executor = Executor(mode=backend)
+
+# Submit the job
+job = executor.run(program)
+
+# Retrieve the result
+result = job.result()
+```
+
+## المخرجات {#outputs}
+
+مخرج Executor هو [`QuantumProgramResult`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgramResult.html#QuantumProgramResult)، وهو قابل للتكرار. يحتوي على إدخال واحد لكل `QuantumProgramItem` مدخل بنفس ترتيب عناصر الإدخال. كل من هذه العناصر المخرجة هو قاموس حيث المفاتيح هي سلاسل نصية تتوافق مع أسماء السجلات الكلاسيكية في الـ Circuits المدخلة (من بين أمور أخرى)، بحيث لا تحتاج بعد الآن إلى حفظ هذه الأسماء كما كنت تفعل مع مخرج Sampler. قيم القاموس من النوع `np.ndarray`.
+
+تحتوي نتيجة المثال السابق على هذه العناصر:
+
+### نتيجة `CircuitItem` {#circuititem-result}
+
+يحتوي العنصر الأول على نتائج تشغيل المهمة الأولى (`CircuitItem`) في البرنامج. يحتوي على مفتاح واحد، `meas`، وهو اسم السجل الكلاسيكي في الـ Circuit المدخلة. قيمة هذا المفتاح تُعيَّن إلى `np.ndarray` بالشكل `(مجموعات المعاملات، التشغيلات، بتات السجل)`، وهو (10، 1024، 3) في المثال أعلاه.
+
+الكود التالي يُوضِّح كيفية الوصول إلى هذه المعلومات:
+
+```python
+# Access the results of the classical register of task #0, a CircuitItem
+result_0 = result[0]["meas"]
+print(f"Result shape: {result_0.shape}")
+```
+
+```text
+Result shape: (10, 1024, 3)
+```
+
+### نتيجة `SamplexItem` {#samplexitem-result}
+
+يحتوي العنصر الثاني على نتائج تشغيل المهمة الثانية (`SamplexItem`) في البرنامج. يحتوي هذا العنصر على عدة مفاتيح. مفتاح `meas`، وهو اسم السجل الكلاسيكي للـ Circuit المدخلة، يُعيَّن إلى مصفوفة نتائج ذلك السجل. تتخذ هذه المصفوفة الشكل `(عمليات العشوائية، مجموعات المعاملات، التشغيلات، البتات الكلاسيكية)`، أو (28، 10، 1024، 3) في هذا المثال. بالإضافة إلى ذلك، يحتوي المخرج على مفتاح `measurement_flips.meas`، وهو تصحيحات قلب البتة لإلغاء تدوير القياس لسجل `meas`. سيكون شكل هذا المخرج (28، 10، 1، 3) في مثالنا لأن تشغيلاً واحدًا فقط مطلوب لإجراء قلب البتة.
+
+```python
+# Access the results of the classical register of task #1
+result_1 = result[1]["meas"]
+print(f"Result shape: {result_1.shape}")
+
+# Access the bit-flip corrections
+flips_1 = result[1]["measurement_flips.meas"]
+print(f"Bit-flip corrections shape: {flips_1.shape}")
+
+# Undo the bit flips via classical XOR
+unflipped_result_1 = result_1 ^ flips_1
+```
+
+```text
+Result shape: (28, 10, 1024, 3)
+Bit-flip corrections shape: (28, 10, 1, 3)
+```
+
+## الخطوات التالية {#next-steps}
+
+<Admonition type="tip" title="توصيات">
+- استكشف [أمثلة](/guides/executor-examples) تستخدم Executor.
+- تعرَّف على [نموذج التنفيذ الموجَّه](/guides/directed-execution-model).
+- افهم [بث Executor](/guides/executor-broadcasting).
+</Admonition>

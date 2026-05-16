@@ -1,0 +1,246 @@
+---
+title: "استخدام الاختيار اللاحق في أحمال العمل"
+sidebar_label: "استخدام الاختيار اللاحق في أحمال العمل"
+description: "افهم كيفية دمج الاختيار اللاحق كجزء من استراتيجية تخفيف الأخطاء الخاصة بك"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="إصدارات الحزم">
+
+تم تطوير الكود في هذه الصفحة باستخدام المتطلبات التالية.
+نوصي باستخدام هذه الإصدارات أو أحدث.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+عند تحسين استراتيجية تخفيف الأخطاء لحمل عمل ما، كثيرًا ما يكون من المفيد تصفية القياسات المعروف بتلوثها بعمليات ضوضاء غير ماركوفية (مترابطة). تتضمن إحدى هذه الطرق إلحاق Circuit بخطوة معالجة لاحقة تقيس الـ Qubits النشطة والمتاخمة "الشاهدة"، وتُطبِّق دورانًا بطيئًا على كل Qubit، ثم تقيسها مرة أخرى. في الحالات التي لا تؤكد فيها القياسان Qubit مقلوبًا كما هو متوقع، يُتجاهَل التشغيل (shot) عبر تطبيق قناع على النتائج.
+
+توفر حزمة [أدوات إضافات Qiskit](https://qiskit.github.io/qiskit-addon-utils/) مجموعة من مسارات الـ Transpiler ودالة اختيار لاحق لتطبيق القناع. تقدم هذه الصفحة إرشادات حول كيفية دمج الاختيار اللاحق في أحمال عملك الكمية باستخدام حالة GHZ من أربع Qubits كمثال.
+## إنشاء حمل العمل {#create-workload}
+
+ابدأ بتحضير الـ Circuit للتنفيذ وعمل الـ Transpile مقابل Backend يدعم البوابات الكسرية.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## إضافة مسارات Transpiler للاختيار اللاحق {#add-postselection-transpiler-passes}
+
+بعد ذلك، أنشئ مدير مسار مُسبَق الإعداد يتضمن مسارات [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) و[`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) من حزمة [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). سيُلحِق هذا الـ Circuit بتسلسل من دورانات `RX` صغيرة الزاوية (تُنتِج فعليًا بوابة `X` طويلة) مع مجموعة ثانية من القياسات.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## تنفيذ البرنامج الكمي {#execute-quantum-program}
+
+بعد ذلك، حضِّر كائن `QuantumProgram` يحتوي على الـ Circuit المُراد تنفيذها.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+الآن يمكنك تفسير النتائج. نتيجة Executor هي قاموس بعدة مفاتيح.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+تتوافق هذه المفاتيح مع الـ Qubits النشطة والشاهدة قبل تعليمات `rx` (`meas` و`spec`) وبعدها (`meas_ps` و`spec_ps`). كل منها مصفوفة من المصفوفات بناءً على عدد التشغيلات والـ Qubits. في هذه الحالة، الشكل هو (1000، 4).
+
+## إنشاء قناع الاختيار اللاحق {#create-postselection-mask}
+
+من هذه القياسات، يمكنك إنشاء قناع باستخدام فئة [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) من `qiskit-addon-utils`. هذا القناع مصفوفة منطقية حيث يُعلَّم كل تشغيل (shot) إما بـ `True` أو `False` بناءً على إحدى استراتيجيتين للاختيار اللاحق. تستخدم الاستراتيجية الأولى `node` معلومات الـ Qubit لتحديد ما إذا كان ينبغي تجاهل تشغيل قياس &mdash; والثانية `edge` تستخدم معلومات الاتصال بالجيران الأقرب لاتخاذ هذا القرار.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+كلتا استراتيجيتَي node وedge كثيرًا ما تتجاهلان تشغيلات مختلفة. يمكنك اختيار أي منهما. يأخذ هذا الدفتر AND البتي، وهو استراتيجية محافظة تحتفظ بالتشغيل فقط إذا اجتاز كلتا استراتيجيتَي node وedge.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+قارِن توزيع الاحتمالية مع الاختيار اللاحق وبدونه. يحسب الكود التالي توزيع الاحتمالية قبل الاختيار اللاحق وبعده، فضلاً عن المسافة بين التوزيعات المقيسة والمثالية.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+لإظهار كيف غيَّر الاختيار اللاحق نتائجك، احسب المسافة بين توزيع الاحتمالية المثالي والمقيسَين.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+على الرغم من أن الاختيار اللاحق يمكن أن يُحسِّن جودة النتائج بشكل ملحوظ عبر تصفية قياسات النتائج المتأثرة بالضوضاء غير الماركوفية، فإنه ليس حلاً كاملاً لتخفيف الأخطاء بمفرده. يُقلِّل الاختيار اللاحق من تأثير أخطاء معينة عبر تجاهل نتائج القياس غير الصالحة، لكن هذا يأتي على حساب زيادة الحمل الزائد في أخذ العينات ولا يُعالِج جميع آليات الأخطاء الموجودة في الأجهزة الكمية قريبة المدى. نتيجةً لذلك، من المرجح أنه غير كافٍ الاعتماد فقط على الاختيار اللاحق للـ Circuits الأكثر تعقيدًا أو أعمق. بدلاً من ذلك، الاختيار اللاحق أكثر فعالية عند استخدامه كجزء من استراتيجية أوسع لتخفيف الأخطاء &mdash; مُكمِّلًا لتقنيات مثل تخفيف أخطاء القياس وتصريف الـ Circuit المدرك للضوضاء أو إلغاء الأخطاء الاحتمالي &mdash; لتحسين موثوقية أحمال العمل الكمية مع تحقيق التوازن بين الدقة وتكلفة الموارد.
+
+## الخطوات التالية {#next-steps}
+
+<Admonition type="tip" title="توصيات">
+  - افهم كيفية دمج [تعلم الضوضاء](/guides/noise-learning) في حمل عمل كمي.
+  - اقرأ تقنيات أخرى متاحة لـ [تخفيف الأخطاء وتثبيطها](/guides/error-mitigation-and-suppression-techniques).
+  - تعرَّف على كيفية استخدام [أكواد الزمكان](/tutorials/ghz-spacetime-codes) لنهج منخفض الحمل الزائد للكشف عن الأخطاء
+</Admonition>

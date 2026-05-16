@@ -1,0 +1,245 @@
+---
+title: "Używanie postelekcji w obciążeniach roboczych"
+sidebar_label: "Używanie postelekcji w obciążeniach roboczych"
+description: "Zrozumienie, jak zintegrować postelekcję jako część strategii łagodzenia błędów"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Wersje pakietów">
+
+Kod na tej stronie został opracowany przy użyciu następujących wymagań.
+Zalecamy używanie tych lub nowszych wersji.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+Podczas optymalizacji strategii łagodzenia błędów w obciążeniu roboczym często przydatne jest odfiltrowywanie pomiarów, o których wiadomo, że zostały zainfekowane przez niemarkowskie (skorelowane) procesy szumowe. Jedną z takich metod jest dołączanie do obwodu kroku przetwarzania końcowego, który mierzy aktywne i sąsiadujące kubity "obserwatora", stosuje powolną rotację do każdego kubitu, a następnie mierzy je ponownie. W przypadkach, gdy dwa pomiary nie potwierdzają odwróconego kubitu zgodnie z oczekiwaniami, pomiar jest odrzucany poprzez zastosowanie maski do wyników.
+
+Pakiet [Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) dostarcza zestaw przejść transpilatora i funkcję postelekcji do zastosowania maski. Ta strona zawiera wskazówki dotyczące włączania postelekcji do obciążeń roboczych kwantowych, używając czterokubotowego stanu GHZ jako przykładu.
+## Tworzenie obciążenia roboczego {#create-workload}
+
+Zacznij od przygotowania obwodu do wykonania i transpilacji względem backendu obsługującego bramki ułamkowe.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Wyjście poprzedniej komórki kodu](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## Dodawanie przejść transpilatora postelekcji {#add-postselection-transpiler-passes}
+
+Następnie utwórz menedżer przejść predefiniowanych zawierający przejścia [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) i [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) z pakietu [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). Spowoduje to dołączenie do obwodu sekwencji małokątowych rotacji `RX` (efektywnie tworząc długą bramkę `X`) wraz z drugim zestawem pomiarów.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Wyjście poprzedniej komórki kodu](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## Wykonanie programu kwantowego {#execute-quantum-program}
+
+Następnie przygotuj obiekt `QuantumProgram` zawierający obwód do wykonania.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+Teraz możesz zinterpretować wyniki. Wynik executora to słownik z kilkoma kluczami.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+Te klucze odpowiadają aktywnym kubitom i kubytom obserwatora przed instrukcjami `rx` (`meas` i `spec`) oraz po instrukcjach `rx` (`meas_ps` i `spec_ps`). Każdy z nich jest tablicą tablic opartą na liczbie pomiarów i kubitów. W tym przypadku kształt to (1000, 4).
+
+## Tworzenie maski postelekcji {#create-postselection-mask}
+
+Na podstawie tych pomiarów możesz utworzyć maskę, używając klasy [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) z `qiskit-addon-utils`. Maska ta jest tablicą logiczną, gdzie każdy pomiar jest oznaczony jako `True` lub `False` na podstawie jednej z dwóch strategii postelekcji. Pierwsza strategia, `node`, używa informacji o kubitach do decydowania, czy pomiar powinien zostać odrzucony &mdash; a druga, `edge`, używa informacji o łączności z najbliższymi sąsiadami do podjęcia tej decyzji.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+Zarówno strategia węzłowa, jak i krawędziowa często odrzucają różne pomiary. Możesz wybrać dowolną z nich. Ten notatnik stosuje iloczyn bitowy AND, który jest strategią zachowawczą, zachowującą pomiar tylko wtedy, gdy jest zaakceptowany przez obie strategie — węzłową i krawędziową.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+Porównaj rozkład prawdopodobieństwa z postelekcją i bez niej. Poniższy fragment kodu oblicza rozkład prawdopodobieństwa przed i po postelekcji, a także odległość między zmierzonymi a idealnymi rozkładami.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+Aby zademonstrować, jak postelekcja zmieniła wyniki, oblicz odległość między idealnym rozkładem prawdopodobieństwa a zmierzonymi.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Wyjście poprzedniej komórki kodu](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+Chociaż postelekcja może znacznie poprawić jakość wyników poprzez odfiltrowywanie pomiarów wyników, na które wpłynął szum niemarkowski, nie jest ona kompletnym rozwiązaniem łagodzenia błędów sama w sobie. Postelekcja zmniejsza wpływ pewnych błędów przez odrzucanie nieprawidłowych wyników pomiarów, ale wiąże się to z kosztem zwiększonego narzutu pobierania próbek i nie eliminuje wszystkich mechanizmów błędów obecnych w sprzęcie kwantowym bliskiego horyzontu. W rezultacie prawdopodobnie niewystarczające jest poleganie wyłącznie na postelekcji w przypadku bardziej złożonych lub głębszych obwodów. Zamiast tego postelekcja jest najbardziej skuteczna, gdy jest używana jako część szerszej strategii łagodzenia błędów &mdash; uzupełniając techniki takie jak łagodzenie błędów pomiarowych, kompilacja obwodów uwzględniająca szum lub probabilistyczna anulacja błędów &mdash; aby poprawić niezawodność obciążeń roboczych kwantowych przy zachowaniu równowagi między dokładnością a kosztem zasobów.
+
+## Następne kroki {#next-steps}
+
+<Admonition type="tip" title="Zalecenia">
+  - Zrozum, jak włączyć [uczenie szumu](/guides/noise-learning) do obciążenia roboczego kwantowego.
+  - Przejrzyj inne dostępne techniki [łagodzenia i tłumienia błędów](/guides/error-mitigation-and-suppression-techniques).
+  - Dowiedz się, jak używać [kodów czasoprzestrzeni](/tutorials/ghz-spacetime-codes) jako podejścia o niskim narzucie do wykrywania błędów
+</Admonition>

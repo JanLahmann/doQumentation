@@ -1,0 +1,312 @@
+---
+title: Executor 브로드캐스팅
+description: Executor가 브로드캐스팅 의미론을 사용하여 배열 입력과 출력을 처리하는 방법
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# Executor 브로드캐스팅 {#executor-broadcasting}
+
+Executor Primitive에 제공되는 데이터는 브로드캐스팅을 통해 워크로드의 유연성을 제공하기 위해 다양한 형태로 정렬될 수 있습니다. 이 가이드에서는 Executor가 브로드캐스팅 의미론을 사용하여 배열 입력과 출력을 처리하는 방법을 설명합니다. 이러한 개념을 이해하면 매개변수 값을 효율적으로 스윕하고, 여러 구성을 결합하고, 반환된 데이터의 형태를 해석하는 데 도움이 됩니다.
+
+<Admonition type="note">
+이 항목의 예제는 독립적으로 실행할 수 없습니다. 적절한 Circuit을 정의하고, Samplomatic 패스 관리자를 사용하여 박스와 주석을 추가하고, 필요에 따라 각 코드 블록에 대한 템플릿 Circuit과 samplex를 얻기 위해 Samplomatic `build` 메서드를 사용했다고 가정합니다.
+</Admonition>
+
+<span id="quickstart"></span>
+## 빠른 시작 예제 {#quickstart-example}
+
+이 예제에서는 핵심 개념을 보여줍니다. 매개변수화된 Circuit과 다섯 가지 다른 매개변수 구성을 생성합니다. Executor는 모든 다섯 가지 구성을 실행하고 구성별로 데이터를 정리하여, 각 양자 프로그램 항목의 각 고전 레지스터에 대해 하나의 결과를 반환합니다.
+
+이 가이드의 나머지 부분에서는 이 예제를 참조하여 작동 방식과 Samplomatic 기반 무작위화 및 입력을 포함한 더 복잡한 스윕을 구축하는 방법을 설명합니다.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## 내재적 축과 외재적 축 {#intrinsic-and-extrinsic-axes}
+
+브로드캐스팅은 _외재적_ 축에만 적용됩니다. 내재적 축은 지정된 대로 항상 보존됩니다.
+
+- **내재적 축** (가장 오른쪽): 데이터 유형에 의해 결정됩니다. 예를 들어, Circuit에 세 개의 매개변수가 있으면 매개변수 값에는 세 개의 숫자가 필요하며, 내재적 형태는 `(3,)`이 됩니다.
+
+- **외재적 축** (가장 왼쪽): 스윕 차원입니다. 실행하려는 구성의 수를 정의합니다.
+
+| 입력 유형                                 | 내재적 형태 | 전체 형태 예시                                    |
+|------------------------------------------|------------|--------------------------------------------------|
+| 매개변수 값 (n개 매개변수)                 | (n,)       | 다섯 구성과 세 매개변수에 대해 (5, 3)             |
+| 스칼라 입력 (예: 노이즈 스케일)            | ()         | 네 구성에 대해 (4,)                               |
+| Observable (해당하는 경우)                | 다양        | Observable 유형에 따라 다름                       |
+
+### 예제 {#example}
+
+두 개의 매개변수를 가진 Circuit에서 매개변수 값과 노이즈 스케일 팩터를 변경하면서 4x3 구성 그리드를 스윕하려는 경우를 고려해 보세요:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+형태는 다음과 같습니다:
+
+| 입력              | 전체 형태  | 외재적 형태 | 내재적 형태 |
+|------------------|----------|------------|------------|
+| `parameter_values` | (4, 1, 2)  | (4, 1)     | (2,)        |
+| `noise_scale`      | (3,)       | (3,)       | ()          |
+| 브로드캐스트        | 없음       | (4, 3)     | 없음         |
+
+## 출력 배열 형태 {#output-array-shapes}
+
+출력 배열은 동일한 외재적/내재적 패턴을 따릅니다:
+
+- **외재적 형태:** 모든 입력의 브로드캐스트 형태와 일치합니다.
+- **내재적 형태:** 출력 유형에 의해 결정됩니다.
+
+가장 일반적인 출력은 측정에서 얻은 비트 문자열 데이터로, 불리언 값의 배열로 포맷됩니다:
+
+| 출력 유형            | 내재적 형태              | 설명                         |
+|--------------------|------------------------|------------------------------|
+| 고전 레지스터 데이터   | (num_shots, creg_size) | 측정에서 얻은 비트 문자열 데이터 |
+
+### 예제 {#output-example}
+
+외재적 형태가 `(4, 1)`과 `(3,)`인 입력을 제공하면 브로드캐스트된 외재적 형태는 `(4, 3)`이 됩니다. 다음 코드는 1024 샷과 4비트 고전 레지스터를 가진 Circuit을 사용합니다([빠른 시작](#quickstart) 예제에서 정의된 것처럼):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+각 구성은 양자 프로그램에서 지정된 전체 샷 수를 실행합니다. 샷은 구성 간에 나누어지지 **않습니다**. 예를 들어, 1024 샷을 요청하고 10개의 구성이 있는 경우 각 구성은 1024 샷을 실행합니다(총 10,240 샷 실행).
+</Admonition>
+
+## 무작위화와 `shape` 매개변수 {#randomization-and-the-shape-parameter}
+
+[samplex](/guides/directed-execution-model)를 사용하는 경우, 외재적 형태의 각 요소는 독립적인 Circuit 실행에 해당합니다. samplex는 일반적으로 각 실행에 무작위성(예: Gate 트월링)을 주입하므로, 명시적으로 여러 무작위화를 요청하지 않더라도 각 요소는 무작위 실현을 받습니다.
+
+`shape` 매개변수를 사용하여 항목의 외재적 형태를 보강할 수 있으며, 이를 통해 동일한 구성을 여러 번 무작위화하는 데 특히 해당하는 축을 효과적으로 추가할 수 있습니다. 이는 `samplex_arguments`의 암묵적 형태에서 브로드캐스트 가능해야 합니다. `shape`가 암묵적 형태를 초과하는 축은 추가 독립적 무작위화를 열거합니다.
+
+### 명시적 무작위화 축 없음 {#no-explicit-randomization-axes}
+
+`shape`를 생략하거나 입력 형태와 일치하도록 설정하면 입력 구성당 하나의 실행을 얻습니다. 각 실행은 여전히 samplex에 의해 무작위화되지만, 단일 무작위 실현만으로는 여러 무작위화에 대한 평균의 이점을 얻지 못합니다.
+
+<Admonition type="note">
+`twirling=True`와 같은 단순 플래그로 트월링을 활성화하는 데 익숙하다면, Executor는 후처리 루틴이 여러 무작위화에 대한 평균의 이점을 얻을 수 있도록 `shape` 인수를 사용하여 여러 무작위화를 명시적으로 요청해야 한다는 점에 유의하세요. 단일 무작위화(`shape`를 생략할 때의 기본값)는 무작위 게이트를 적용하지만 일반적으로 무작위화 없이 기본 Circuit을 실행하는 것보다 이점이 없습니다.
+</Admonition>
+
+다음 예제에서는 기본 동작을 보여줍니다:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### 단일 무작위화 축 {#single-randomization-axis}
+
+구성당 여러 무작위화를 실행하려면 추가 축으로 형태를 확장합니다. 예를 들어, 다음 코드는 10개의 매개변수 구성 각각에 대해 20번의 무작위화를 실행합니다:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### 다중 무작위화 축 {#multiple-randomization-axes}
+
+무작위화를 다차원 그리드로 구성할 수 있습니다. 이는 구조화된 분석에 유용합니다. 예를 들어, 유형별로 무작위화를 분리하거나 통계 처리를 위해 그룹화할 수 있습니다.
+
+여기서 입력 외재적 형태 `(10,)`은 요청된 형태 `(2, 14, 10)`으로 브로드캐스트되며, 축 0과 1은 독립적인 무작위화로 채워집니다.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### `shape`와 입력 형태의 상호작용 {#how-shape-and-input-shapes-interact}
+
+`shape` 매개변수는 입력 외재적 형태에서 *부터* 브로드캐스트 가능해야 합니다. 이는 다음을 의미합니다:
+
+- 크기-1 차원이 있는 입력 형태는 `shape`와 일치하도록 확장할 수 있습니다.
+- 입력 형태는 `shape`와 오른쪽부터 정렬되어야 합니다.
+- 입력 차원을 초과하는 `shape`의 축은 무작위화를 열거합니다.
+
+`shape`는 다음 표의 마지막 행에서 보여주는 것처럼 입력 차원과 일치하도록 확장되는 크기-1 차원을 포함할 수 있습니다.
+
+예제:
+
+| 입력 외재적  | 형태       | 결과                                                           |
+|------------|----------|--------------------------------------------------------------|
+| (10,)      | (10,)    | 10개 구성, 각 1번 무작위화                                      |
+| (10,)      | (5, 10)  | 10개 구성, 각 5번 무작위화                                      |
+| (10,)      | (2, 3, 10) | 10개 구성, 각 2×3=6번 무작위화                                 |
+| (4, 1)     | (4, 5)   | 4개 구성, 각 5번 무작위화                                       |
+| (4, 3)     | (2, 4, 3) | 4×3=12개 구성, 각 2번 무작위화                                 |
+| (4, 3)     | (2, 1, 3) | 4×3=12개 구성, 각 2번 무작위화 (1이 4로 확장됨)                 |
+
+### 결과 인덱싱 {#index-into-results}
+
+무작위화 축을 사용하면 특정 무작위화/매개변수 조합에 인덱싱할 수 있습니다:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## 일반적인 패턴 {#common-patterns}
+
+### 단일 매개변수 스윕 {#sweep-a-single-parameter}
+단일 매개변수를 스윕하면서 다른 매개변수는 고정하려면 다음과 같은 코드를 사용하세요:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### 2D 그리드 스윕 만들기 {#creating-a-2d-grid-sweep}
+세 개의 매개변수에 걸친 그리드를 만들려면:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### 여러 입력 결합 {#combining-multiple-inputs}
+
+서로 다른 내재적 형태를 가진 입력을 결합할 때 크기-1 축을 사용하여 외재적 차원을 정렬합니다:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## 다음 단계 {#next-steps}
+
+<Admonition type="tip" title="권장 사항">
+- [브로드캐스팅](/guides/primitive-input-output#broadcasting) 개요를 검토하세요.
+- [Executor 입력 및 출력](/guides/executor-input-output)을 이해하세요.
+</Admonition>
