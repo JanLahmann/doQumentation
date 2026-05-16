@@ -50,6 +50,13 @@ freshness = _import_module("freshness", "check-translation-freshness.py")
 validator = _import_module("validator", "validate-translation.py")
 syncer = _import_module("syncer", "sync-translations.py")
 
+# passage_units has a valid (non-hyphenated) module name — import normally so
+# it's the *same* object the rest of the toolchain uses (validate-translation,
+# bootstrap-passage-hashes, review-translations). The baseline-hashes.json
+# sidecar is keyed by hashes this module produces; we MUST hash with it.
+sys.path.insert(0, str(SCRIPT_DIR))
+import passage_units  # noqa: E402
+
 # Re-export key functions
 compute_source_hash = freshness.compute_source_hash
 extract_embedded_hash = freshness.extract_embedded_hash
@@ -61,9 +68,53 @@ slugify = validator.slugify
 
 DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 I18N_DIR = Path(__file__).resolve().parents[2] / "i18n"
+BASELINE_FILE = Path(__file__).resolve().parents[1] / "baseline-hashes.json"
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 HASH_COMMENT_RE = re.compile(r'\{/\*\s*doqumentation-source-hash:\s*([a-f0-9]+)\s*\*/\}')
+
+
+# ── Baseline (passage-hash) drift detection ──
+#
+# baseline-hashes.json maps "{locale}/{rel_path}" -> {"commit", "hashes"}
+# where `hashes` is the set of EN passage hashes that existed *when the
+# translation was made*. A passage is genuinely stale iff its hash is in the
+# current EN but NOT in the baseline. This is the same content-addressed set
+# difference used by validate-translation.py::check_drift — we reuse it so
+# update-translations agrees with the rest of the toolchain instead of the
+# old (broken) "flag every prose block in a changed section" heuristic.
+
+_BASELINE_CACHE: dict | None = None
+
+
+def _load_baselines() -> dict:
+    global _BASELINE_CACHE
+    if _BASELINE_CACHE is None:
+        if BASELINE_FILE.exists():
+            _BASELINE_CACHE = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+        else:
+            _BASELINE_CACHE = {}
+    return _BASELINE_CACHE
+
+
+def changed_passages(locale: str, rel_path: str, en_content: str):
+    """Return (changed_units, has_baseline).
+
+    changed_units: list of EN prose units (paragraphs/headings/list items)
+    whose content-hash is present in the current EN but absent from the
+    translation's baseline — i.e. genuinely new or edited since translation.
+    has_baseline: False when we have no baseline for this file (can't tell
+    which passages changed → caller should treat the file as full-retranslate
+    rather than silently produce zero updates).
+    """
+    baselines = _load_baselines()
+    sidecar = baselines.get(f"{locale}/{rel_path}")
+    if not sidecar or not sidecar.get("hashes"):
+        return [], False
+    baseline_set = set(sidecar["hashes"])
+    current = passage_units.hash_units(en_content, mode="lenient")  # {hash: preview}
+    changed = [preview for h, preview in current.items() if h not in baseline_set]
+    return changed, True
 
 # ── Data structures ──
 
@@ -702,6 +753,12 @@ def get_tr_path(locale: str, rel_path: str) -> Path:
     return I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current" / rel_path
 
 
+def locale_of(tr_path: Path) -> str:
+    """Extract the locale from a translation path (.../i18n/{locale}/...)."""
+    parts = tr_path.resolve().parts
+    return parts[parts.index("i18n") + 1]
+
+
 def find_stale_translations(locale: str, section: str | None = None) -> list[tuple[str, Path, Path]]:
     """Find translations whose source hash doesn't match current EN."""
     pairs = find_genuine_translations(locale)
@@ -744,7 +801,8 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
             fix_tag = " [auto-fix]" if d.auto_fixable else ""
             print(f"    {d.kind}{fix_tag} in §{d.section_anchor}")
 
-    # Auto-fix
+    # Auto-fix (structural only: code blocks, imports, source hash). This part
+    # of classify_changes is correct — it compares structural blocks directly.
     fixes = []
     if auto_fix and report.deltas:
         fixed_content, fixes = apply_auto_fixes(en_content, tr_content, report)
@@ -752,17 +810,56 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
             tr_path.write_text(fixed_content, encoding='utf-8')
             if verbose:
                 print(f"    Auto-fixed: {', '.join(fixes)}")
-            # Re-classify after fixes
             tr_content = fixed_content
-            report = classify_changes(en_content, tr_content, rel_path)
 
-    # Generate update instructions for non-NOOP files
+    # ── Prose staleness via canonical passage-hash baseline diff ──
+    # classify_changes CANNOT detect prose changes (it has no old EN, and TR
+    # is a different language). Use the baseline passage-hash set difference
+    # — the same mechanism validate-translation.py uses — so only genuinely
+    # new/edited EN passages become work items.
+    changed, has_baseline = changed_passages(locale_of(tr_path), rel_path, en_content)
+
     updates = []
     full_retranslation = False
-    if report.severity == Severity.MAJOR:
+
+    if not has_baseline:
+        # No baseline → we cannot tell which passages changed. Don't silently
+        # emit zero updates (that would mark a stale file "done"). The source
+        # hash differs, so something changed: fall back to whole-file ret‑
+        # translation via translation-prompt.md.
         full_retranslation = True
-    elif report.severity in (Severity.MINOR, Severity.MODERATE):
-        updates = generate_update_instructions(en_content, tr_content, report)
+        report.severity = Severity.MAJOR
+    elif not changed:
+        # Hash differs but no prose passage changed → purely structural drift
+        # (code/imports/whitespace), already handled by auto-fix above.
+        report.severity = Severity.NOOP
+    else:
+        n = len(changed)
+        # Severity by count of genuinely-changed passages.
+        if n > 60:
+            full_retranslation = True
+            report.severity = Severity.MAJOR
+        else:
+            report.severity = (
+                Severity.MINOR if n <= 5
+                else Severity.MODERATE
+            )
+            updates = [
+                UpdateInstruction(
+                    section_anchor="",
+                    paragraph_index=idx,
+                    new_en_prose=unit,
+                    current_translation="",  # located by sub-agent via new_en
+                    context_before="",
+                    context_after="",
+                )
+                for idx, unit in enumerate(changed)
+            ]
+
+    if verbose:
+        tag = "MAJOR/full" if full_retranslation else report.severity.value
+        nupd = "n/a" if not has_baseline else len(changed)
+        print(f"    -> {tag}: {nupd} changed passage(s)")
 
     return FileWorkItem(
         rel_path=rel_path,
