@@ -1,0 +1,313 @@
+---
+title: Executor ブロードキャスト
+description: Executor がブロードキャスト・セマンティクスを使用して配列の入力と出力を処理する方法
+
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# Executor ブロードキャスト {#executor-broadcasting}
+
+Executor プリミティブに提供されるデータは、ブロードキャストによってワークロードの柔軟性を高めるため、さまざまな形状に配置できます。このガイドでは、Executor がブロードキャスト・セマンティクスを使用して配列の入力と出力を処理する方法を説明します。これらの概念を理解することで、パラメーター値のスイープ、複数の設定の組み合わせ、返されたデータの形状の解釈を効率的に行うことができます。
+
+<Admonition type="note">
+このトピックの例は単独では実行できません。適切な回路を定義し、Samplomatic のパス・マネージャーを使用してボックスとアノテーションを追加し、必要に応じて Samplomatic の `build` メソッドを使用して各コード・ブロックのテンプレート回路と samplex を取得していることを前提としています。
+</Admonition>
+
+<span id="quickstart"></span>
+## クイックスタートの例 {#quickstart-example}
+
+この例はコアとなるアイデアを示しています。パラメーター付き回路と 5 つの異なるパラメーター設定を作成します。Executor はすべての 5 つの設定を実行し、各量子プログラム・アイテムの古典レジスターごとに 1 つの結果で、設定ごとに整理されたデータを返します。
+
+このガイドの残りの部分では、この例を参照して、これがどのように機能するか、および Samplomatic ベースのランダム化と入力を含む、より複雑なスイープを構築する方法を説明します。
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## 固有軸と外在軸 {#intrinsic-and-extrinsic-axes}
+
+ブロードキャストは _外在_ 軸にのみ適用されます。固有軸は常に指定通りに保持されます。
+
+- **固有軸**（右端）：データ型によって決定されます。例えば、回路に 3 つのパラメーターがある場合、パラメーター値には 3 つの数値が必要で、固有形状は `(3,)` になります。
+
+- **外在軸**（左端）：スイープの次元。実行したい設定の数を定義します。
+
+| 入力タイプ                               | 固有形状 | 完全形状の例                                  |
+|----------------------------------------|---------------|---------------------------------------------------|
+| パラメーター値（n 個のパラメーター）          | (n,)            | 5 つの設定と 3 つのパラメーターの場合 (5, 3) |
+| スカラー入力（例：ノイズ・スケール） | ()              | 4 つの設定の場合 (4,)                        |
+| オブザーバブル（該当する場合）              | さまざま          | オブザーバブルの型によって異なります                          |
+
+### 例 {#example}
+
+2 つのパラメーターを持つ回路で、パラメーター値とノイズ・スケール係数を変化させながら、4x3 のグリッドの設定をスイープする場合：
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+形状は以下のとおりです。
+
+| 入力              | 完全形状 | 外在形状 | 固有形状 |
+|------------------|----------|---------------|---------------|
+| `parameter_values` | (4, 1, 2)  | (4, 1)          | (2,)            |
+| `noise_scale`      | (3,)       | (3,)            | ()              |
+| ブロードキャスト          | なし       | (4, 3)          | なし            |
+
+## 出力配列の形状 {#output-array-shapes}
+
+出力配列は同じ外在/固有パターンに従います。
+
+- **外在形状：** すべての入力のブロードキャスト形状と一致します
+- **固有形状：** 出力タイプによって決定されます
+
+最も一般的な出力は測定からのビット文字列データで、ブール値の配列として形式化されます。
+
+| 出力タイプ             | 固有形状        | 説明                      |
+|-----------------------|----------------------|--------------------------------|
+| 古典レジスター・データ | (ショット数, レジスター・ビット数) | 測定からのビット文字列データ |
+
+### 例 {#example}
+
+外在形状 `(4, 1)` と `(3,)` の入力を提供すると、ブロードキャストされた外在形状は `(4, 3)` になります。以下のコードは、1024 ショットと 4 ビットの古典レジスター（[クイックスタート](#quickstart)の例で定義）を使用した回路を使用しています。
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+各設定は量子プログラムで指定された完全なショット数を実行します。ショット数は設定間で分割されません。例えば、1024 ショットを要求して 10 の設定がある場合、各設定は 1024 ショットを実行します（合計 10,240 ショットが実行されます）。
+</Admonition>
+
+## ランダム化と `shape` パラメーター {#randomization-and-the-shape-parameter}
+
+[samplex](/guides/directed-execution-model) を使用する場合、外在形状の各要素は独立した回路実行に対応します。samplex は通常、各実行にランダム性（例：ゲート・ツワーリング）を注入するため、明示的に複数のランダム化を要求しなくても、各要素はランダムな実現を受け取ります。
+
+`shape` パラメーターを使用してアイテムの外在形状を拡張できます。これにより、同じ設定を何度もランダム化することに対応する軸を追加できます。`samplex_arguments` の暗黙的な形状からブロードキャスト可能でなければなりません。`shape` が暗黙的な形状を超える軸は、追加の独立したランダム化を列挙します。
+
+### 明示的なランダム化軸なし {#no-explicit-randomization-axes}
+
+`shape` を省略する（または入力形状に合わせて設定する）と、入力設定ごとに 1 つの実行が得られます。各実行は samplex によってランダム化されますが、単一のランダムな実現しかないため、複数のランダム化を平均することの恩恵はありません。
+
+<Admonition type="note">
+`twirling=True` のような単純なフラグでツワーリングを有効にすることに慣れている場合、Executor では後処理ルーティンが複数のランダム化を平均することの恩恵を得られるよう、`shape` 引数を使用して明示的に複数のランダム化を要求する必要があることに注意してください。単一のランダム化（`shape` を省略した場合のデフォルト）はランダムなゲートを適用しますが、通常はランダム化なしのベース回路を実行することと比べて優位性はありません。
+</Admonition>
+
+以下の例はデフォルトの動作を示しています。
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### 単一のランダム化軸 {#single-randomization-axis}
+
+設定ごとに複数のランダム化を実行するには、形状を追加の軸で拡張します。例えば、以下のコードは 10 のパラメーター設定それぞれに対して 20 のランダム化を実行します。
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### 複数のランダム化軸 {#multiple-randomization-axes}
+
+ランダム化を多次元グリッドに整理できます。これは構造化された分析、例えばタイプ別のランダム化の分離や統計処理のためのグループ化に役立ちます。
+
+ここでは、入力外在形状 `(10,)` が要求された形状 `(2, 14, 10)` にブロードキャストされ、軸 0 と 1 が独立したランダム化によって埋められます。
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### `shape` と入力形状の相互作用 {#how-shape-and-input-shapes-interact}
+
+`shape` パラメーターは入力の外在形状から*ブロードキャスト可能*でなければなりません。つまり：
+
+- サイズ 1 の次元を持つ入力形状は `shape` に合わせて拡張できます。
+- 入力形状は `shape` の右側から整合している必要があります。
+- 入力次元を超える `shape` の軸はランダム化を列挙します。
+
+`shape` はサイズ 1 の次元を含むことができ、それらは入力次元に合わせて拡張されることに注意してください。これは以下の表の最後の行に示されています。
+
+例：
+
+| 入力外在形状 | shape      | 結果                                                            |
+|---------------|----------|-----------------------------------------------------------------|
+| (10,)           | (10,)      | 10 の設定、それぞれ 1 つのランダム化                           |
+| (10,)           | (5, 10)    | 10 の設定、それぞれ 5 つのランダム化                          |
+| (10,)           | (2, 3, 10) | 10 の設定、それぞれ 2×3=6 のランダム化                      |
+| (4, 1)          | (4, 5)     | 4 の設定、それぞれ 5 つのランダム化                           |
+| (4, 3)          | (2, 4, 3)  | 4×3=12 の設定、それぞれ 2 つのランダム化                      |
+| (4, 3)          | (2, 1, 3)  | 4×3=12 の設定、それぞれ 2 つのランダム化（1 が 4 に拡張） |
+
+### 結果へのインデックス {#index-into-results}
+
+ランダム化軸を使用すると、特定のランダム化/パラメーターの組み合わせにインデックスを付けることができます。
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## 一般的なパターン {#common-patterns}
+
+### 単一パラメーターのスイープ {#sweep-a-single-parameter}
+以下のようなコードを使用して、他を固定しながら 1 つのパラメーターをスイープします。
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### 2D グリッド・スイープの作成 {#creating-a-2d-grid-sweep}
+3 つのパラメーターのグリッドを作成するには：
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### 複数の入力の組み合わせ {#combining-multiple-inputs}
+
+異なる固有形状を持つ入力を組み合わせる場合、サイズ 1 の軸を使用して外在次元を整合させます。
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## 次のステップ {#next-steps}
+
+<Admonition type="tip" title="おすすめ">
+- [ブロードキャスト](/guides/primitive-input-output#broadcasting)の概要を確認します。
+- [Executor の入力と出力](/guides/executor-input-output)を理解します。
+</Admonition>

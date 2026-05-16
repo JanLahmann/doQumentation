@@ -1,0 +1,312 @@
+---
+title: การ Broadcasting ของ Executor
+description: วิธีที่ Executor จัดการ input และ output แบบ array โดยใช้หลักการ broadcasting
+sidebar_label: การ Broadcasting ของ Executor
+
+---
+{/* doqumentation-source-hash: 272aa1f8 */}
+{/* cspell:ignore broadcastable */}
+
+# การ Broadcasting ของ Executor {#executor-broadcasting}
+
+ข้อมูลที่ส่งให้ Executor primitive สามารถจัดเรียงในรูปแบบต่าง ๆ เพื่อความยืดหยุ่นในการทำงานผ่าน broadcasting คู่มือนี้อธิบายวิธีที่ Executor จัดการ input และ output แบบ array โดยใช้หลักการ broadcasting ความเข้าใจในแนวคิดเหล่านี้จะช่วยให้สามารถ sweep ค่าพารามิเตอร์ได้อย่างมีประสิทธิภาพ รวม configuration หลายแบบ และตีความรูปร่างของข้อมูลที่ได้รับกลับมา
+
+<Admonition type="note">
+ตัวอย่างในหัวข้อนี้ไม่สามารถรันได้ด้วยตัวเอง ตัวอย่างเหล่านี้สมมติว่าได้กำหนด circuit ที่เหมาะสมไว้แล้ว ใช้ Samplomatic pass manager เพื่อเพิ่ม box และ annotation และใช้ Samplomatic `build` method เพื่อรับ template circuit และ samplex สำหรับแต่ละ code block ตามที่จำเป็น
+</Admonition>
+
+<span id="quickstart"></span>
+## ตัวอย่าง Quickstart {#quickstart-example}
+
+ตัวอย่างนี้แสดงแนวคิดหลัก โดยสร้าง parametric circuit และ configuration ของพารามิเตอร์ห้าแบบที่แตกต่างกัน Executor รัน configuration ทั้งห้าแบบและคืนข้อมูลที่จัดเรียงตาม configuration โดยมีผลลัพธ์หนึ่งชุดต่อ classical register ในแต่ละ quantum program item
+
+ส่วนที่เหลือของคู่มือนี้จะอ้างอิงกลับมาที่ตัวอย่างนี้เพื่ออธิบายว่ามันทำงานอย่างไรและวิธีสร้าง sweep ที่ซับซ้อนกว่า รวมถึง Samplomatic-based randomization และ input
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## แกน Intrinsic และ Extrinsic {#intrinsic-and-extrinsic-axes}
+
+Broadcasting ใช้ได้กับแกน _extrinsic_ เท่านั้น แกน intrinsic จะถูกเก็บไว้ตามที่กำหนดเสมอ
+
+- **แกน Intrinsic** (ขวาสุด): กำหนดโดยประเภทของข้อมูล ตัวอย่างเช่น ถ้า circuit มีพารามิเตอร์สามตัว ค่าพารามิเตอร์ต้องการตัวเลขสามตัว ทำให้ intrinsic shape เป็น `(3,)`
+
+- **แกน Extrinsic** (ซ้ายสุด): มิติของการ sweep ที่กำหนดจำนวน configuration ที่ต้องการรัน
+
+| ประเภท Input                                  | Intrinsic shape | ตัวอย่าง full shape                                              |
+|----------------------------------------------|-----------------|------------------------------------------------------------------|
+| ค่าพารามิเตอร์ (n พารามิเตอร์)               | (n,)            | (5, 3) สำหรับห้า configuration และสามพารามิเตอร์                 |
+| Scalar input (เช่น noise scale)               | ()              | (4,) สำหรับสี่ configuration                                     |
+| Observable (ถ้ามี)                            | แตกต่างกัน      | ขึ้นอยู่กับประเภทของ observable                                   |
+
+### ตัวอย่าง {#example}
+
+สมมติว่ามี circuit ที่มีสองพารามิเตอร์และต้องการ sweep บน grid ขนาด 4x3 ของ configuration โดยเปลี่ยนค่าพารามิเตอร์และ noise scale factor:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Shape ต่าง ๆ มีดังนี้:
+
+| Input              | Full shape | Extrinsic shape | Intrinsic shape |
+|--------------------|------------|-----------------|-----------------|
+| `parameter_values` | (4, 1, 2)  | (4, 1)          | (2,)            |
+| `noise_scale`      | (3,)       | (3,)            | ()              |
+| Broadcast          | None       | (4, 3)          | None            |
+
+## รูปร่างของ Output Array {#output-array-shapes}
+
+Output array ใช้รูปแบบ extrinsic/intrinsic เดียวกัน:
+
+- **Extrinsic shape:** ตรงกับ broadcast shape ของ input ทั้งหมด
+- **Intrinsic shape:** กำหนดโดยประเภทของ output
+
+output ที่พบบ่อยที่สุดคือข้อมูล bitstring จากการวัด ซึ่งถูกจัดรูปแบบเป็น array ของค่าบูลีน:
+
+| ประเภท Output            | Intrinsic shape        | คำอธิบาย                          |
+|--------------------------|------------------------|-----------------------------------|
+| ข้อมูล classical register | (num_shots, creg_size) | ข้อมูล bitstring จากการวัด        |
+
+### ตัวอย่าง {#example-1}
+
+ถ้า input มี extrinsic shape `(4, 1)` และ `(3,)` broadcast extrinsic shape จะเป็น `(4, 3)` โค้ดต่อไปนี้ใช้ circuit ที่มี 1024 shots และ classical register ขนาด 4 บิต (ตามที่กำหนดใน[ตัวอย่าง Quickstart](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+แต่ละ configuration รัน shot count ครบตามที่กำหนดใน quantum program Shots **ไม่ถูกแบ่ง** ให้กับแต่ละ configuration ตัวอย่างเช่น ถ้าขอ 1024 shots และมี 10 configuration แต่ละ configuration จะรัน 1024 shots (รวมทั้งหมด 10,240 shots)
+</Admonition>
+
+## Randomization และพารามิเตอร์ `shape` {#randomization-and-the-shape-parameter}
+
+เมื่อใช้ [samplex](/guides/directed-execution-model) แต่ละ element ของ extrinsic shape สอดคล้องกับการรัน circuit แบบอิสระ โดยทั่วไป samplex จะใส่ความสุ่ม (เช่น gate twirling) เข้าไปในแต่ละการรัน ดังนั้นแม้ไม่ได้ขอ randomization หลายครั้งอย่างชัดเจน แต่ละ element ก็จะได้รับ realization แบบสุ่มที่แตกต่างกัน
+
+สามารถใช้พารามิเตอร์ `shape` เพื่อขยาย extrinsic shape สำหรับ item ได้ ซึ่งจะเพิ่มแกนที่สอดคล้องกับการสุ่ม configuration เดิมหลายครั้ง โดย shape ต้องสามารถ broadcast ได้จาก shape ที่นัยในตัว `samplex_arguments` แกนที่ `shape` เกินกว่า implicit shape จะนับเป็น randomization อิสระเพิ่มเติม
+
+### ไม่มีแกน randomization อย่างชัดเจน {#no-explicit-randomization-axes}
+
+ถ้าละเว้น `shape` (หรือตั้งให้ตรงกับ input shape) จะได้การรันหนึ่งครั้งต่อ input configuration แต่ละครั้งก็ยังถูกสุ่มโดย samplex แต่ด้วย realization สุ่มเพียงครั้งเดียว จึงไม่ได้ประโยชน์จากการเฉลี่ยข้าม randomization หลายครั้ง
+
+<Admonition type="note">
+ถ้าคุ้นเคยกับการเปิด twirling ด้วย flag ง่าย ๆ เช่น `twirling=True` ควรทราบว่า Executor ต้องการให้ขอ randomization หลายครั้งอย่างชัดเจนด้วย argument `shape` เพื่อให้ routine การ post-process ได้รับประโยชน์จากการเฉลี่ยข้าม randomization หลายครั้ง Randomization ครั้งเดียว (ค่าเริ่มต้นเมื่อละเว้น `shape`) ใช้ Gate แบบสุ่มแต่โดยทั่วไปไม่ได้เปรียบเทียบกับการรัน base circuit โดยไม่มี randomization
+</Admonition>
+
+ตัวอย่างต่อไปนี้แสดงพฤติกรรมเริ่มต้น:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### แกน randomization เดียว {#single-randomization-axis}
+
+เพื่อรัน randomization หลายครั้งต่อ configuration ให้ขยาย shape ด้วยแกนเพิ่มเติม ตัวอย่างเช่น โค้ดต่อไปนี้รัน 20 randomization สำหรับแต่ละ configuration จาก 10 parameter configuration:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### แกน randomization หลายแกน {#multiple-randomization-axes}
+
+สามารถจัด randomization เป็น grid หลายมิติได้ ซึ่งมีประโยชน์สำหรับการวิเคราะห์แบบมีโครงสร้าง เช่น แยก randomization ตามประเภทหรือจัดกลุ่มสำหรับการประมวลผลทางสถิติ
+
+ที่นี่ extrinsic shape ของ input `(10,)` broadcast ไปยัง shape ที่ขอ `(2, 14, 10)` โดยแกน 0 และ 1 ถูกเติมด้วย randomization อิสระ
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### วิธีที่ `shape` และ input shape มีปฏิสัมพันธ์กัน {#how-shape-and-input-shapes-interact}
+
+พารามิเตอร์ `shape` ต้องสามารถ broadcast *จาก* extrinsic shape ของ input ได้ ซึ่งหมายความว่า:
+
+- Input shape ที่มี dimension ขนาด 1 สามารถขยายให้ตรงกับ `shape` ได้
+- Input shape ต้องจัดเรียงจากขวาให้ตรงกับ `shape`
+- แกนใน `shape` ที่เกินกว่า dimension ของ input จะนับเป็น randomization
+
+ควรทราบว่า `shape` สามารถมี dimension ขนาด 1 ที่ขยายให้ตรงกับ dimension ของ input ดังที่แสดงในแถวสุดท้ายของตารางต่อไปนี้
+
+ตัวอย่าง:
+
+| Input extrinsic | Shape      | ผลลัพธ์                                                               |
+|-----------------|------------|-----------------------------------------------------------------------|
+| (10,)           | (10,)      | 10 configuration, 1 randomization ต่อ configuration                   |
+| (10,)           | (5, 10)    | 10 configuration, 5 randomization ต่อ configuration                   |
+| (10,)           | (2, 3, 10) | 10 configuration, 2×3=6 randomization ต่อ configuration              |
+| (4, 1)          | (4, 5)     | 4 configuration, 5 randomization ต่อ configuration                    |
+| (4, 3)          | (2, 4, 3)  | 4×3=12 configuration, 2 randomization ต่อ configuration               |
+| (4, 3)          | (2, 1, 3)  | 4×3=12 configuration, 2 randomization ต่อ configuration (1 ขยายเป็น 4) |
+
+### การ index เข้าไปใน result {#index-into-results}
+
+ด้วยแกน randomization สามารถ index เข้าไปใน combination เฉพาะของ randomization/พารามิเตอร์ได้:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Pattern ที่ใช้บ่อย {#common-patterns}
+
+### Sweep พารามิเตอร์เดียว {#sweep-a-single-parameter}
+ใช้โค้ดแบบต่อไปนี้เพื่อ sweep พารามิเตอร์หนึ่งตัวขณะคงพารามิเตอร์อื่นไว้:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### สร้าง 2D grid sweep {#creating-a-2d-grid-sweep}
+เพื่อสร้าง grid สำหรับพารามิเตอร์สามตัว:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### รวม input หลายตัว {#combining-multiple-inputs}
+
+เมื่อรวม input ที่มี intrinsic shape ต่างกัน ให้จัดเรียง extrinsic dimension โดยใช้แกนขนาด 1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## ขั้นตอนถัดไป {#next-steps}
+
+<Admonition type="tip" title="คำแนะนำ">
+- ทบทวนภาพรวมของ [broadcasting](/guides/primitive-input-output#broadcasting)
+- ทำความเข้าใจ [Executor inputs และ outputs](/guides/executor-input-output)
+</Admonition>

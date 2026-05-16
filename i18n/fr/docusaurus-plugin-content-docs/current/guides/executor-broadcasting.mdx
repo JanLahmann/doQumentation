@@ -1,0 +1,312 @@
+---
+title: "Diffusion Executor"
+description: "Comment Executor gère les entrées et sorties de tableaux à l'aide de la sémantique de diffusion"
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# Diffusion Executor {#executor-broadcasting}
+
+Les données fournies à la primitive Executor peuvent être organisées dans une variété de formes pour offrir de la flexibilité dans un workload grâce à la diffusion. Ce guide explique comment Executor gère les entrées et sorties de tableaux à l'aide de la sémantique de diffusion. Comprendre ces concepts t'aidera à balayer efficacement les valeurs de paramètres, combiner plusieurs configurations et interpréter la forme des données retournées.
+
+<Admonition type="note">
+Les exemples de cette rubrique ne peuvent pas être exécutés seuls. Ils supposent que tu as défini des circuits appropriés, utilisé le pass manager de Samplomatic pour ajouter des boîtes et des annotations, et utilisé la méthode `build` de Samplomatic pour obtenir un circuit modèle et un samplex pour chaque bloc de code, selon les besoins.
+</Admonition>
+
+<span id="quickstart"></span>
+## Exemple de démarrage rapide {#quickstart}
+
+Cet exemple démontre l'idée de base. Il crée un circuit paramétrique et cinq configurations de paramètres différentes. L'Executor exécute les cinq configurations et renvoie les données organisées par configuration, avec un résultat par registre classique dans chaque élément du programme quantique.
+
+Le reste de ce guide se réfère à cet exemple pour expliquer comment cela fonctionne et comment construire des balayages plus complexes, y compris la randomisation et les entrées basées sur Samplomatic.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## Axes intrinsèques et extrinsèques {#intrinsic-and-extrinsic-axes}
+
+La diffusion s'applique uniquement aux axes _extrinsèques_. Les axes intrinsèques sont toujours préservés tels que spécifiés.
+
+- **Axes intrinsèques** (à droite) : Déterminés par le type de données. Par exemple, si ton circuit a trois paramètres, alors les valeurs de paramètres nécessitent trois nombres, donnant une forme intrinsèque de `(3,)`.
+
+- **Axes extrinsèques** (à gauche) : Tes dimensions de balayage. Ils définissent le nombre de configurations que tu veux exécuter.
+
+| Type d'entrée                                | Forme intrinsèque | Exemple de forme complète                                   |
+|----------------------------------------|---------------|---------------------------------------------------|
+| Valeurs de paramètres (n paramètres)         | (n,)            | (5, 3) pour cinq configurations et trois paramètres |
+| Entrées scalaires (par exemple, facteur d'échelle du bruit) | ()              | (4,) pour quatre configurations                        |
+| Observables (le cas échéant)              | varie          | Dépend du type d'observable                          |
+
+### Exemple {#example}
+
+Considère un circuit avec deux paramètres que tu veux balayer sur une grille 4x3 de configurations, en faisant varier les valeurs de paramètres et un facteur d'échelle du bruit :
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Les formes sont les suivantes :
+
+| Entrée              | Forme complète | Forme extrinsèque | Forme intrinsèque |
+|------------------|----------|---------------|---------------|
+| `parameter_values` | (4, 1, 2)  | (4, 1)          | (2,)            |
+| `noise_scale`      | (3,)       | (3,)            | ()              |
+| Diffusion          | None       | (4, 3)          | None            |
+
+## Formes des tableaux de sortie {#output-array-shapes}
+
+Les tableaux de sortie suivent le même modèle extrinsèque/intrinsèque :
+
+- **Forme extrinsèque :** Correspond à la forme diffusée de toutes les entrées
+- **Forme intrinsèque :** Déterminée par le type de sortie
+
+La sortie la plus courante est constituée de données de chaînes de bits provenant des mesures, formatées sous forme d'un tableau de valeurs booléennes :
+
+| Type de sortie             | Forme intrinsèque        | Description                      |
+|-----------------------|----------------------|--------------------------------|
+| Données de registre classique | (num_shots, creg_size) | Données de chaînes de bits provenant des mesures |
+
+### Exemple {#example-1}
+
+Si tu fournis des entrées avec des formes extrinsèques `(4, 1)` et `(3,)`, la forme extrinsèque diffusée est `(4, 3)`. Le code suivant utilise un circuit avec 1024 shots et un registre classique de 4 bits (tel que défini dans l'exemple du [Démarrage rapide](#quickstart)) :
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+Chaque configuration exécute le nombre complet de shots spécifié dans le programme quantique. Les shots ne sont **pas** répartis entre les configurations. Par exemple, si tu demandes 1024 shots et que tu as 10 configurations, chaque configuration exécute 1024 shots (10 240 shots exécutés au total).
+</Admonition>
+
+## Randomisation et paramètre `shape` {#randomization-and-the-shape-parameter}
+
+Lors de l'utilisation d'un [samplex](/guides/directed-execution-model), chaque élément de la forme extrinsèque correspond à une exécution de circuit indépendante. Le samplex injecte généralement de l'aléatoire (par exemple, la torsion de gate) dans chaque exécution, donc même sans demander explicitement plusieurs randomisations, chaque élément reçoit une réalisation aléatoire.
+
+Tu peux utiliser le paramètre `shape` pour augmenter la forme extrinsèque de l'élément, ajoutant effectivement des axes qui correspondent spécifiquement à la randomisation de la même configuration plusieurs fois. Il doit être diffusable à partir de la forme implicite dans tes `samplex_arguments`. Les axes où `shape` dépasse la forme implicite énumèrent des randomisations supplémentaires indépendantes.
+
+### Pas d'axes de randomisation explicites {#no-explicit-randomization-axes}
+
+Si tu omets `shape` (ou le définis pour correspondre à tes formes d'entrée), tu obtiens une exécution par configuration d'entrée. Chaque exécution est toujours randomisée par le samplex, mais avec une seule réalisation aléatoire, tu ne bénéficies pas de la moyenne sur plusieurs randomisations.
+
+<Admonition type="note">
+Si tu es habitué à activer la torsion avec un simple indicateur comme `twirling=True`, note que l'Executor te demande de demander explicitement plusieurs randomisations avec l'argument `shape` pour permettre à tes routines de post-traitement de bénéficier de la moyenne sur plusieurs randomisations. Une seule randomisation (le comportement par défaut lorsque `shape` est omis) applique des gates aléatoires mais n'offre généralement aucun avantage par rapport à l'exécution du circuit de base sans randomisation.
+</Admonition>
+
+L'exemple suivant démontre le comportement par défaut :
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### Axe de randomisation unique {#single-randomization-axis}
+
+Pour exécuter plusieurs randomisations par configuration, étends la forme avec des axes supplémentaires. Par exemple, le code suivant exécute 20 randomisations pour chacune des 10 configurations de paramètres :
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### Axes de randomisation multiples {#multiple-randomization-axes}
+
+Tu peux organiser les randomisations dans une grille multi-dimensionnelle. C'est utile pour une analyse structurée, par exemple, séparer les randomisations par type ou les regrouper pour un traitement statistique.
+
+Ici, la forme extrinsèque d'entrée `(10,)` se diffuse à la forme demandée `(2, 14, 10)`, avec les axes 0 et 1 remplis par des randomisations indépendantes.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### Comment `shape` et les formes d'entrée interagissent {#how-shape-and-input-shapes-interact}
+
+Le paramètre `shape` doit être diffusable *à partir de* tes formes extrinsèques d'entrée. Cela signifie :
+
+- Les formes d'entrée avec des dimensions de taille 1 peuvent s'étendre pour correspondre à `shape`.
+- Les formes d'entrée doivent s'aligner depuis la droite avec `shape`.
+- Les axes dans `shape` qui dépassent les dimensions d'entrée énumèrent des randomisations.
+
+Note que `shape` peut contenir des dimensions de taille 1 qui s'étendent pour correspondre aux dimensions d'entrée, comme illustré dans la dernière ligne du tableau suivant.
+
+Exemples :
+
+| Extrinsèque d'entrée | Shape      | Résultat                                                            |
+|---------------|----------|-----------------------------------------------------------------|
+| (10,)           | (10,)      | 10 configurations, 1 randomisation chacune                           |
+| (10,)           | (5, 10)    | 10 configurations, 5 randomisations chacune                          |
+| (10,)           | (2, 3, 10) | 10 configurations, 2×3=6 randomisations chacune                      |
+| (4, 1)          | (4, 5)     | 4 configurations, 5 randomisations chacune                           |
+| (4, 3)          | (2, 4, 3)  | 4×3=12 configurations, 2 randomisations chacune                      |
+| (4, 3)          | (2, 1, 3)  | 4×3=12 configurations, 2 randomisations chacune (le 1 s'étend à 4) |
+
+### Indexer dans les résultats {#index-into-results}
+
+Avec des axes de randomisation, tu peux indexer dans des combinaisons randomisation/paramètre spécifiques :
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Modèles courants {#common-patterns}
+
+### Balayer un seul paramètre {#sweep-a-single-parameter}
+Utilise du code comme le suivant pour balayer un paramètre tout en maintenant les autres fixes :
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### Créer un balayage en grille 2D {#creating-a-2d-grid-sweep}
+Pour créer une grille sur trois paramètres :
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### Combiner plusieurs entrées {#combining-multiple-inputs}
+
+Lors de la combinaison d'entrées avec différentes formes intrinsèques, aligne les dimensions extrinsèques en utilisant des axes de taille 1 :
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## Étapes suivantes {#next-steps}
+
+<Admonition type="tip" title="Recommandations">
+- Consulte la vue d'ensemble de la [diffusion](/guides/primitive-input-output#broadcasting).
+- Comprends les [entrées et sorties Executor](/guides/executor-input-output).
+</Admonition>

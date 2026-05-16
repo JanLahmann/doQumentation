@@ -1,0 +1,314 @@
+---
+title: "البث في Executor"
+description: "كيف يتعامل Executor مع مدخلات ومخرجات المصفوفات باستخدام دلالات البث"
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# البث في Executor {#executor-broadcasting}
+
+يمكن ترتيب البيانات المُقدَّمة لـ Executor primitive في أشكال متنوعة لتوفير مرونة في حمل العمل من خلال البث. يشرح هذا الدليل كيفية تعامل Executor مع مدخلات ومخرجات المصفوفات باستخدام دلالات البث. سيساعدك فهم هذه المفاهيم على المسح الفعّال عبر قيم المعاملات، ودمج تهيئات متعددة، وتفسير شكل البيانات المُعادة.
+
+<Admonition type="note">
+لا يمكن تشغيل الأمثلة في هذا الموضوع بشكل مستقل. فهي تفترض أنك عرَّفت الـ Circuits المناسبة، واستخدمت مدير مسار Samplomatic لإضافة الصناديق والتعليقات التوضيحية، واستخدمت طريقة `build` الخاصة بـ Samplomatic للحصول على Circuit نموذجية وـ samplex لكل كتلة كود عند الحاجة.
+</Admonition>
+
+<span id="quickstart"></span>
+## مثال البداية السريعة {#quickstart-example}
+
+يوضح هذا المثال الفكرة الأساسية. ينشئ Circuit ذات معاملات وخمس تهيئات مختلفة للمعاملات. يشغِّل Executor جميع التهيئات الخمس ويعيد البيانات منظَّمة حسب التهيئة، مع نتيجة واحدة لكل سجل كلاسيكي في كل عنصر برنامج كمي.
+
+يُشير بقية هذا الدليل إلى هذا المثال لشرح آلية عمله وكيفية بناء عمليات مسح أكثر تعقيدًا، بما فيها العشوائية والمدخلات المبنية على Samplomatic.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## المحاور الجوهرية والخارجية {#intrinsic-and-extrinsic-axes}
+
+يُطبَّق البث فقط على المحاور _الخارجية_. تُحفَظ المحاور الجوهرية دائمًا كما هي محددة.
+
+- **المحاور الجوهرية** (الأيمن): تحددها نوع البيانات. على سبيل المثال، إذا كانت Circuit تحتوي على ثلاثة معاملات، فإن قيم المعاملات تتطلب ثلاثة أرقام، مما يُعطي شكلًا جوهريًا `(3,)`.
+
+- **المحاور الخارجية** (الأيسر): أبعاد المسح الخاصة بك. تُحدد عدد التهيئات التي تريد تشغيلها.
+
+| نوع المدخل | الشكل الجوهري | مثال الشكل الكامل |
+|----------------------------------------|---------------|---------------------------------------------------|
+| قيم المعاملات (n معامل) | (n,) | (5, 3) لخمس تهيئات وثلاثة معاملات |
+| المدخلات القياسية (مثلًا، مقياس الضوضاء) | () | (4,) لأربع تهيئات |
+| المراقِبات (إن وُجدت) | يتفاوت | يعتمد على نوع المراقِب |
+
+### مثال {#example}
+
+لنأخذ Circuit ذات معاملَين تريد المسح عبرهما على شبكة 4×3 من التهيئات، مع تغيير قيم المعاملات ومعامل مقياس الضوضاء:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+الأشكال كالتالي:
+
+| المدخل | الشكل الكامل | الشكل الخارجي | الشكل الجوهري |
+|------------------|----------|---------------|---------------|
+| `parameter_values` | (4, 1, 2) | (4, 1) | (2,) |
+| `noise_scale` | (3,) | (3,) | () |
+| البث | None | (4, 3) | None |
+
+## أشكال مصفوفات المخرجات {#output-array-shapes}
+
+تتبع مصفوفات المخرجات نفس نمط الخارجي/الجوهري:
+
+- **الشكل الخارجي:** يتطابق مع شكل البث لجميع المدخلات
+- **الشكل الجوهري:** تحدده نوع المخرج
+
+أكثر مخرج شيوعًا هو بيانات السلاسل الثنائية من القياسات، والتي تُنسَّق كمصفوفة من القيم المنطقية:
+
+| نوع المخرج | الشكل الجوهري | الوصف |
+|-----------------------|----------------------|--------------------------------|
+| بيانات السجل الكلاسيكي | (num_shots, creg_size) | بيانات السلاسل الثنائية من القياسات |
+
+### مثال {#example-2}
+
+إذا قدَّمت مدخلات بأشكال خارجية `(4, 1)` و`(3,)`، يكون الشكل الخارجي المُبثّ `(4, 3)`. يستخدم الكود التالي Circuit بـ 1024 تشغيلًا وسجل كلاسيكي من 4 بتات (كما هو محدد في مثال [البداية السريعة](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+كل تهيئة تشغِّل عدد التشغيلات الكامل المحدد في البرنامج الكمي. التشغيلات **لا تُوزَّع** بين التهيئات. على سبيل المثال، إذا طلبت 1024 تشغيلًا وكان لديك 10 تهيئات، كل تهيئة تشغِّل 1024 تشغيلًا (ما مجموعه 10,240 تشغيلًا).
+</Admonition>
+
+## العشوائية وبارامتر `shape` {#randomization-and-the-shape-parameter}
+
+عند استخدام [samplex](/guides/directed-execution-model)، كل عنصر في الشكل الخارجي يتوافق مع تنفيذ مستقل للـ Circuit. عادةً ما يُدخل الـ samplex عشوائية (مثلًا، تدوير البوابات) في كل تنفيذ، لذا حتى بدون طلب عشوائيات متعددة صراحةً، يحصل كل عنصر على تحقق عشوائي مستقل.
+
+يمكنك استخدام بارامتر `shape` لتوسيع الشكل الخارجي للعنصر، مما يُضيف فعليًا محاور تتوافق تحديدًا مع تكرار عشوائية نفس التهيئة عدة مرات. يجب أن يكون قابلًا للبث من الشكل الضمني في `samplex_arguments`. المحاور التي يتجاوز فيها `shape` الشكل الضمني تُعدِّد عشوائيات مستقلة إضافية.
+
+### بدون محاور عشوائية صريحة {#no-explicit-randomization-axes}
+
+إذا حذفت `shape` (أو ضبطته ليتطابق مع أشكال مدخلاتك)، تحصل على تنفيذ واحد لكل تهيئة مدخل. لا يزال كل تنفيذ مُعشوشَبًا بواسطة الـ samplex، لكن مع تحقق عشوائي واحد فقط لن تستفيد من المتوسط عبر عشوائيات متعددة.
+
+<Admonition type="note">
+إذا اعتدت تفعيل التدوير بعلم بسيط مثل `twirling=True`، لاحظ أن Executor يتطلب منك طلب عشوائيات متعددة صراحةً باستخدام وسيطة `shape` لتتمكن روتينات معالجتك اللاحقة من الاستفادة من المتوسط عبر عشوائيات متعددة. التحقق العشوائي الواحد (الافتراضي عند حذف `shape`) يُطبِّق بوابات عشوائية لكنه لا يُقدِّم عادةً أي ميزة على تشغيل الـ Circuit الأساسية بدون عشوائية.
+</Admonition>
+
+يوضح المثال التالي السلوك الافتراضي:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### محور عشوائي واحد {#single-randomization-axis}
+
+لتشغيل عشوائيات متعددة لكل تهيئة، وسِّع الشكل بمحاور إضافية.
+على سبيل المثال، يشغِّل الكود التالي 20 عشوائية لكل من 10 تهيئات معاملات:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### محاور عشوائية متعددة {#multiple-randomization-axes}
+
+يمكنك تنظيم العشوائيات في شبكة متعددة الأبعاد. هذا مفيد للتحليل المنظَّم، على سبيل المثال، لفصل العشوائيات حسب النوع أو تجميعها للمعالجة الإحصائية.
+
+هنا، الشكل الخارجي للمدخل `(10,)` يُبثّ إلى الشكل المطلوب `(2, 14, 10)`، مع المحاور 0 و1 مملوءة بعشوائيات مستقلة.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### كيف يتفاعل `shape` مع أشكال المدخلات {#how-shape-and-input-shapes-interact}
+
+يجب أن يكون بارامتر `shape` قابلًا للبث *من* أشكالك الخارجية للمدخلات. هذا يعني:
+
+- الأشكال ذات أبعاد الحجم 1 يمكن أن تتوسع لتتطابق مع `shape`.
+- يجب أن تتوافق الأشكال من اليمين مع `shape`.
+- المحاور في `shape` التي تتجاوز أبعاد المدخل تُعدِّد العشوائيات.
+
+لاحظ أن `shape` يمكن أن يحتوي على أبعاد بحجم 1
+تتوسع لتتطابق مع أبعاد المدخل، كما هو موضح في الصف الأخير من الجدول التالي.
+
+أمثلة:
+
+| الخارجي للمدخل | الشكل | النتيجة |
+|---------------|----------|-----------------------------------------------------------------|
+| (10,) | (10,) | 10 تهيئات، عشوائية واحدة لكل منها |
+| (10,) | (5, 10) | 10 تهيئات، 5 عشوائيات لكل منها |
+| (10,) | (2, 3, 10) | 10 تهيئات، 2×3=6 عشوائيات لكل منها |
+| (4, 1) | (4, 5) | 4 تهيئات، 5 عشوائيات لكل منها |
+| (4, 3) | (2, 4, 3) | 4×3=12 تهيئة، عشوائيتان لكل منها |
+| (4, 3) | (2, 1, 3) | 4×3=12 تهيئة، عشوائيتان لكل منها (الـ 1 تتوسع إلى 4) |
+
+### الفهرسة في النتائج {#index-into-results}
+
+مع محاور العشوائية، يمكنك الفهرسة في مجموعات عشوائية/معاملات محددة:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## الأنماط الشائعة {#common-patterns}
+
+### مسح معامل واحد {#sweep-a-single-parameter}
+استخدم كودًا كالتالي لمسح معامل واحد مع تثبيت البقية:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### إنشاء مسح شبكي ثنائي الأبعاد {#creating-a-2d-grid-sweep}
+لإنشاء شبكة عبر ثلاثة معاملات:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### دمج مدخلات متعددة {#combining-multiple-inputs}
+
+عند دمج مدخلات بأشكال جوهرية مختلفة، قم بمحاذاة الأبعاد الخارجية باستخدام محاور الحجم 1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## الخطوات التالية {#next-steps}
+
+<Admonition type="tip" title="توصيات">
+- راجع نظرة عامة على [البث](/guides/primitive-input-output#broadcasting).
+- افهم [مدخلات ومخرجات Executor](/guides/executor-input-output).
+</Admonition>

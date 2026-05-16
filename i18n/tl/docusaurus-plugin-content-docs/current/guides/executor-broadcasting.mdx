@@ -1,0 +1,334 @@
+---
+title: Broadcasting ng Executor
+description: Paano hinahawakan ng Executor ang mga array input at output gamit ang broadcasting semantics
+sidebar_label: Broadcasting ng Executor
+---
+{/* doqumentation-source-hash: 272aa1f8 */}
+{/* cspell:ignore broadcastable */}
+
+# Executor broadcasting
+
+Ang datos na ibinibigay sa Executor primitive ay maaaring ayusin sa iba't ibang hugis para magbigay ng flexibility sa isang workload sa pamamagitan ng broadcasting. Ipinapaliwanag ng gabay na ito kung paano hinahawakan ng Executor ang mga array input at output gamit ang broadcasting semantics. Ang pag-unawa sa mga konseptong ito ay makakatulong sa iyo na mahusay na mag-sweep sa mga halaga ng parameter, pagsamahin ang maraming configuration, at bigyang-kahulugan ang hugis ng ibinalik na datos.
+
+<Admonition type="note">
+Ang mga halimbawa sa paksang ito ay hindi maaaring patakbuhin nang mag-isa. Ipinapalagay nito na nagtalaga ka ng mga angkop na circuit, ginamit ang Samplomatic pass manager para magdagdag ng mga box at annotation, at ginamit ang Samplomatic na `build` na paraan para makakuha ng template circuit at samplex para sa bawat code block, kung kinakailangan.
+</Admonition>
+
+<span id="quickstart"></span>
+## Halimbawa ng Quickstart {#quickstart-example}
+
+Ipinapakita ng halimbawang ito ang pangunahing ideya. Lumilikha ito ng parametric circuit at limang iba't ibang configuration ng parameter. Pinapatakbo ng executor ang lahat ng limang configuration at nagbabalik ng datos na nakaayos ayon sa configuration, na may isang resulta bawat classical register sa bawat quantum program item.
+
+Binabalikan ng natitirang bahagi ng gabay na ito ang halimbawang ito para ipaliwanag kung paano ito gumagana at kung paano bumuo ng mas kumplikadong mga sweep, kabilang ang Samplomatic-based na randomization at mga input.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## Mga intrinsic at extrinsic na axis {#intrinsic-and-extrinsic-axes}
+
+Ang broadcasting ay nalalapat lamang sa _extrinsic_ na mga axis. Ang mga intrinsic na axis ay palaging pinapanatili ayon sa tinukoy.
+
+- **Mga intrinsic na axis** (pinaka-kanan): Tinutukoy ng uri ng datos. Halimbawa, kung ang iyong circuit
+  ay may tatlong parameter, kung gayon ang mga halaga ng parameter ay nangangailangan ng tatlong numero, na nagbibigay ng intrinsic na hugis
+  na `(3,)`.
+
+- **Mga extrinsic na axis** (pinaka-kaliwa): Ang iyong mga dimensyon ng sweep. Tinutukoy nito kung ilang configuration ang
+  gusto mong patakbuhin.
+
+| Uri ng input                                      | Intrinsic na hugis | Halimbawa ng buong hugis                                          |
+|--------------------------------------------------|-------------------|-------------------------------------------------------------------|
+| Mga halaga ng parameter (n na parameter)          | (n,)              | (5, 3) para sa limang configuration at tatlong parameter          |
+| Mga scalar input (halimbawa, noise scale)         | ()                | (4,) para sa apat na configuration                                |
+| Mga observable (kung naaangkop)                  | nag-iiba          | Depende sa uri ng observable                                      |
+
+### Halimbawa {#example}
+
+Isaalang-alang ang isang circuit na may dalawang parameter na gusto mong i-sweep sa isang 4x3 na grid ng mga configuration, na nagbabago ng mga halaga ng parameter at ng noise scale factor:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Ang mga hugis ay ang mga sumusunod:
+
+| Input              | Buong hugis | Extrinsic na hugis | Intrinsic na hugis |
+|--------------------|-------------|--------------------|--------------------|
+| `parameter_values` | (4, 1, 2)   | (4, 1)             | (2,)               |
+| `noise_scale`      | (3,)        | (3,)               | ()                 |
+| Broadcast          | Wala        | (4, 3)             | Wala               |
+
+## Mga hugis ng output array {#output-array-shapes}
+
+Ang mga output array ay sumusunod sa parehong pattern ng extrinsic/intrinsic:
+
+- **Extrinsic na hugis:** Tumutugma sa broadcast na hugis ng lahat ng input
+- **Intrinsic na hugis:** Tinutukoy ng uri ng output
+
+Ang pinakakaraniwang output ay bitstring na datos mula sa mga sukat, na
+naformat bilang isang array ng mga boolean na halaga:
+
+| Uri ng output           | Intrinsic na hugis     | Paglalarawan                                 |
+|-------------------------|------------------------|----------------------------------------------|
+| Classical register data | (num_shots, creg_size) | Bitstring na datos mula sa mga sukat         |
+
+### Halimbawa {#example-1}
+
+Kung magbibigay ka ng mga input na may extrinsic na hugis na `(4, 1)` at `(3,)`, ang broadcast extrinsic
+na hugis ay `(4, 3)`. Gumagamit ang sumusunod na code ng circuit na may 1024 shots at 4-bit na classical register (ayon sa tinukoy sa halimbawa ng [Quickstart](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+Bawat configuration ay nagpapatakbo ng buong bilang ng shot na tinukoy sa quantum program. Ang mga shot ay **hindi** nahahati sa mga configuration. Halimbawa, kung hihilingin mo ang 1024 shots at mayroon kang 10 configuration, bawat configuration ay magpapatakbo ng 1024 shots (kabuuang 10,240 shots na naisagawa).
+</Admonition>
+
+## Randomization at ang `shape` na parameter {#randomization-and-the-shape-parameter}
+
+Kapag gumagamit ng [samplex](/guides/directed-execution-model), bawat elemento ng extrinsic na hugis ay tumutugma sa isang independyenteng pagpapatakbo ng circuit.
+Ang samplex ay karaniwang naglalagay ng randomness (halimbawa, gate twirling) sa bawat
+pagpapatakbo, kaya kahit hindi ka tahasang humiling ng maraming randomization, bawat elemento
+ay tumatanggap ng isang random na realisasyon.
+
+Maaari mong gamitin ang `shape` na parameter para palawakin ang extrinsic na hugis para sa item, na epektibong
+nagdadagdag ng mga axis na partikular na tumutugon sa pag-randomize ng parehong configuration nang maraming beses. Dapat itong
+ma-broadcast mula sa hugis na implicit sa iyong `samplex_arguments`. Ang mga axis kung saan nalampasan ng `shape` ang
+implicit na hugis ay nagtatala ng karagdagang mga independyenteng randomization.
+
+### Walang tahasang mga axis ng randomization {#no-explicit-randomization-axes}
+
+Kung aalisin ang `shape` (o itakda ito para tumugma sa iyong mga hugis ng input), makakakuha ka ng isang pagpapatakbo bawat
+configuration ng input. Bawat pagpapatakbo ay nira-randomize pa rin ng samplex, ngunit sa isang
+solong random na realisasyon lamang, hindi ka makikinabang mula sa pag-average sa maraming randomization.
+
+<Admonition type="note">
+Kung sanay ka sa pag-enable ng twirling gamit ang simpleng flag tulad ng `twirling=True`, tandaan na
+ang Executor ay nangangailangan na tahasang humiling ka ng maraming randomization gamit ang `shape` na argumento para
+mapahintulutan ang iyong mga post-processing routine na makuha ang mga benepisyo ng pag-average sa maraming
+randomization. Ang isang solong randomization (ang default kapag tinanggal ang `shape`) ay nag-aaplay ng
+mga random na gate ngunit karaniwang walang kalamangan kumpara sa pagpapatakbo ng base circuit nang walang
+randomization.
+</Admonition>
+
+Ipinapakita ng sumusunod na halimbawa ang default na gawi:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### Isang axis ng randomization {#single-randomization-axis}
+
+Para magpatakbo ng maraming randomization bawat configuration, palawakin ang hugis gamit ang karagdagang mga axis.
+Halimbawa, ang sumusunod na code ay nagpapatakbo ng 20 randomization para sa bawat isa sa 10 configuration ng parameter:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### Maraming axis ng randomization {#multiple-randomization-axes}
+
+Maaari mong ayusin ang mga randomization sa isang multi-dimensional na grid. Ito ay kapaki-pakinabang para sa structured
+na pagsusuri, halimbawa, paghihiwalay ng mga randomization ayon sa uri o pagpapangkat ng mga ito para sa statistical na pagpoproseso.
+
+Dito, ang input extrinsic na hugis na `(10,)` ay na-broadcast sa hiniling na hugis na `(2, 14, 10)`,
+na may mga axis 0 at 1 na napuno ng mga independyenteng randomization.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### Paano nakikipag-ugnayan ang `shape` at mga hugis ng input {#how-shape-and-input-shapes-interact}
+
+Ang `shape` na parameter ay dapat ma-broadcast *mula sa* iyong mga extrinsic na hugis ng input. Ibig sabihin:
+
+- Ang mga hugis ng input na may sukat-1 na dimensyon ay maaaring mapalawak para tumugma sa `shape`.
+- Ang mga hugis ng input ay dapat magkahanay mula sa kanan gamit ang `shape`.
+- Ang mga axis sa `shape` na nalampasan ang mga dimensyon ng input ay nagtatala ng mga randomization.
+
+Tandaan na ang `shape` ay maaaring maglaman ng mga sukat-1 na dimensyon
+na lumalawak para tumugma sa mga dimensyon ng input, tulad ng ipinapakita sa huling hanay ng sumusunod na talahanayan.
+
+Mga halimbawa:
+
+| Input extrinsic | Shape      | Resulta                                                                |
+|-----------------|------------|------------------------------------------------------------------------|
+| (10,)           | (10,)      | 10 configuration, 1 randomization bawat isa                            |
+| (10,)           | (5, 10)    | 10 configuration, 5 randomization bawat isa                            |
+| (10,)           | (2, 3, 10) | 10 configuration, 2×3=6 randomization bawat isa                        |
+| (4, 1)          | (4, 5)     | 4 configuration, 5 randomization bawat isa                             |
+| (4, 3)          | (2, 4, 3)  | 4×3=12 configuration, 2 randomization bawat isa                        |
+| (4, 3)          | (2, 1, 3)  | 4×3=12 configuration, 2 randomization bawat isa (ang 1 ay lumalawak sa 4) |
+
+### Mag-index sa mga resulta {#index-into-results}
+
+Gamit ang mga axis ng randomization, maaari kang mag-index sa mga partikular na kombinasyon ng randomization/parameter:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Mga karaniwang pattern {#common-patterns}
+
+### Mag-sweep ng isang parameter {#sweep-a-single-parameter}
+Gumamit ng code tulad ng sumusunod para mag-sweep ng isang parameter habang pinapanatiling nakatali ang iba:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### Paglikha ng 2D grid sweep {#creating-a-2d-grid-sweep}
+Para lumikha ng grid sa tatlong parameter:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### Pagsasama ng maraming input {#combining-multiple-inputs}
+
+Kapag pinagsasama ang mga input na may iba't ibang intrinsic na hugis, i-align ang mga extrinsic na dimensyon gamit ang
+mga sukat-1 na axis:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## Mga susunod na hakbang {#next-steps}
+
+<Admonition type="tip" title="Mga Rekomendasyon">
+- Suriin ang pangkalahatang-ideya ng [broadcasting](/guides/primitive-input-output#broadcasting).
+- Unawain ang [mga input at output ng Executor](/guides/executor-input-output).
+</Admonition>

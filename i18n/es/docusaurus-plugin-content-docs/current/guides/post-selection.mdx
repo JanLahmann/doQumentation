@@ -1,0 +1,246 @@
+---
+title: "Usar postselección en cargas de trabajo"
+sidebar_label: "Usar postselección en cargas de trabajo"
+description: "Comprende cómo integrar la postselección como parte de tu estrategia de mitigación de errores"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Versiones de paquetes">
+
+El código de esta página fue desarrollado con los siguientes requisitos.
+Recomendamos usar estas versiones o más recientes.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+Al optimizar la estrategia de mitigación de errores de una carga de trabajo, a menudo es útil filtrar las mediciones que se sabe que han sido contaminadas por procesos de ruido no Markovianos (correlacionados). Un método para hacerlo consiste en agregar al circuit un paso de postprocesamiento que mide qubits activos y "espectadores" adyacentes, aplica una rotación lenta a cada qubit y luego los mide de nuevo. En los casos en que las dos mediciones no confirman un qubit invertido como se esperaba, el shot se descarta aplicando una máscara a los resultados.
+
+El paquete [Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) proporciona un conjunto de pases de transpilador y una función de postselección para aplicar la máscara. Esta página proporciona orientación sobre cómo incorporar la postselección en tus cargas de trabajo cuánticas usando un estado GHZ de cuatro qubits como ejemplo.
+## Crear la carga de trabajo {#create-workload}
+
+Comienza preparando el circuit a ejecutar y transpilando contra un backend que admita gates fraccionales.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## Agregar pases de transpilador de postselección {#add-postselection-transpiler-passes}
+
+A continuación, crea un gestor de pases preset que incluya los pases [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) y [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) del paquete [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). Esto agregará al circuit una secuencia de rotaciones `RX` de ángulo pequeño (que efectivamente produce un gate `X` largo) junto con un segundo conjunto de mediciones.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## Ejecutar el programa cuántico {#execute-quantum-program}
+
+A continuación, prepara un objeto `QuantumProgram` que contenga el circuit a ejecutar.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+Ahora puedes interpretar los resultados. El resultado del executor es un diccionario con varias claves.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+Estas claves corresponden a los qubits activos y espectadores antes de las instrucciones `rx` (`meas` y `spec`) y después de las instrucciones `rx` (`meas_ps` y `spec_ps`). Cada uno de estos es un array de arrays basado en el número de shots y qubits. En este caso, la forma es (1000, 4).
+
+## Crear la máscara de postselección {#create-postselection-mask}
+
+A partir de estas mediciones, puedes crear una máscara usando la clase [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) de `qiskit-addon-utils`. Esta máscara es un array booleano donde cada shot se marca como `True` o `False` según una de dos estrategias de postselección. La primera estrategia, `node`, usa información del qubit para decidir si un shot de medición debe descartarse &mdash; y la segunda, `edge`, usa información de conectividad de vecinos más cercanos para tomar esta decisión.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+Tanto la estrategia de nodo como la de arista a menudo descartan shots diferentes. Puedes elegir cualquiera de ellas. Este notebook aplica un AND bit a bit, que es una estrategia conservadora que retiene un shot solo si es aprobado por ambas estrategias, de nodo y de arista.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+Compara la distribución de probabilidad con y sin postselección. El siguiente fragmento calcula la distribución de probabilidad antes y después de la postselección, así como la distancia entre las distribuciones medida e ideal.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+Para demostrar cómo la postselección cambió los resultados, calcula la distancia entre la distribución de probabilidad ideal y las medidas.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Salida de la celda de código anterior](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+Aunque la postselección puede mejorar significativamente la calidad de los resultados al filtrar las mediciones de resultados afectadas por ruido no Markoviano, no es una solución completa para la mitigación de errores por sí sola. La postselección reduce el impacto de ciertos errores descartando resultados de medición no válidos, pero esto conlleva un aumento de la sobrecarga de muestreo y no aborda todos los mecanismos de error presentes en el hardware cuántico a corto plazo. Por ello, probablemente sea insuficiente depender únicamente de la postselección para circuits más complejos o profundos. En cambio, la postselección es más efectiva cuando se usa como parte de una estrategia más amplia de mitigación de errores &mdash; complementando técnicas como la mitigación de errores de medición, la compilación de circuits con conciencia del ruido o la cancelación probabilística de errores &mdash; para mejorar la fiabilidad de las cargas de trabajo cuánticas equilibrando la precisión y el costo de los recursos.
+
+## Próximos pasos {#next-steps}
+
+<Admonition type="tip" title="Recomendaciones">
+  - Comprende cómo incorporar el [aprendizaje de ruido](/guides/noise-learning) en una carga de trabajo cuántica.
+  - Revisa otras [técnicas de mitigación y supresión de errores](/guides/error-mitigation-and-suppression-techniques) disponibles.
+  - Aprende a usar [códigos espacio-temporales](/tutorials/ghz-spacetime-codes) para un enfoque de bajo costo en la detección de errores
+</Admonition>

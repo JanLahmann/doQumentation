@@ -1,0 +1,278 @@
+---
+title: "Esegui Circuit dinamici"
+sidebar_label: "Esegui Circuit dinamici"
+description: "Usa Qiskit Runtime per il feedforward classico e il flusso di controllo, altrimenti detti Circuit dinamici"
+notebook_path: "guides/execute-dynamic-circuits.ipynb"
+---
+
+{/* doqumentation-source-hash: d76841b1 */}
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+<OpenInLabBanner notebookPath="guides/execute-dynamic-circuits.ipynb" />
+
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Versioni dei pacchetti">
+
+Il codice in questa pagina è stato sviluppato con i seguenti requisiti.
+Ti consigliamo di utilizzare queste versioni o versioni più recenti.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+```
+</AccordionItem>
+</Accordion>
+I Circuit dinamici sono strumenti potenti con cui puoi misurare i Qubit nel mezzo dell'esecuzione di un Circuit quantistico e poi eseguire operazioni di logica classica all'interno del Circuit, in base al risultato di quelle misurazioni mid-circuit. Questo processo è anche noto come _feedforward classico_. Sebbene questi siano i primi giorni per capire come sfruttare al meglio i Circuit dinamici, la comunità di ricerca quantistica ha già identificato una serie di casi d'uso, come i seguenti:
+
+* Preparazione efficiente dello stato quantistico, come lo [stato GHZ](https://journals.aps.org/prxquantum/abstract/10.1103/PRXQuantum.5.030339), lo [stato W](https://arxiv.org/abs/2403.07604) (per ulteriori informazioni sullo stato W, consulta anche ["State preparation by shallow circuits using feed forward"](https://arxiv.org/abs/2307.14840)), e un'ampia classe di [matrix product states](https://arxiv.org/abs/2404.16083)
+* [Entanglement a lungo raggio efficiente](https://journals.aps.org/prxquantum/abstract/10.1103/PRXQuantum.5.030339) tra Qubit sullo stesso chip usando Circuit superficiali
+* [Campionamento efficiente di Circuit simili a IQP](https://arxiv.org/pdf/2505.04705)
+
+Questi miglioramenti apportati dai Circuit dinamici, tuttavia, comportano dei compromessi. Le misurazioni mid-circuit e le operazioni classiche hanno tipicamente tempi di esecuzione più lunghi rispetto ai Gate a due Qubit, e questo aumento del tempo potrebbe annullare i benefici della riduzione della profondità del Circuit. Pertanto, la riduzione della lunghezza della misurazione mid-circuit è un'area di miglioramento su cui IBM Quantum&reg; si concentra con il rilascio della [nuova versione](/announcements/product-updates/2025-03-03-new-version-dynamic-circuits) dei Circuit dinamici. Per altre restrizioni quando si usano i Circuit dinamici, consulta la tabella di compatibilità delle funzionalità di [Estimator](/guides/estimator-options#options-compatibility-table) o [Sampler](/guides/sampler-options#options-compatibility-table).
+
+La [specifica OpenQASM 3](https://openqasm.com/language/classical.html#looping-and-branching) definisce una serie di strutture di flusso di controllo, ma Qiskit Runtime attualmente supporta solo l'istruzione condizionale `if`. In Qiskit SDK, questo corrisponde al metodo [if_test](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.QuantumCircuit#if_test) su [QuantumCircuit](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.QuantumCircuit). Questo metodo restituisce un [context manager](https://docs.python.org/3/reference/datamodel.html#with-statement-context-managers) e viene tipicamente usato in un'istruzione `with`. Questa guida descrive come usare questa istruzione condizionale.
+
+<Admonition type="note">
+Gli esempi di codice in questa guida usano l'istruzione di misurazione standard per le misurazioni mid-circuit. Tuttavia, si raccomanda di usare invece l'istruzione `MidCircuitMeasure`, se il backend la supporta. Consulta la [sezione Misurazioni mid-circuit](#midcircuit) per i dettagli.
+</Admonition>
+## Trova i backend che supportano i Circuit dinamici {#find-backends-that-support-dynamic-circuits}
+
+Per trovare tutti i backend a cui il tuo account può accedere e che supportano i Circuit dinamici, esegui codice come il seguente. Questo esempio presuppone che tu abbia [salvato le tue credenziali di accesso](/guides/save-credentials). Potresti anche [specificare esplicitamente le credenziali](/guides/initialize-account#explicit) quando inizializzi il tuo account del servizio Qiskit Runtime. Questo ti permetterebbe di visualizzare i backend disponibili su un'istanza o tipo di piano specifico, ad esempio.
+
+<Admonition type="note" title="Note">
+- I backend disponibili per l'account dipendono dall'istanza specificata nelle credenziali.
+- La nuova versione dei Circuit dinamici è ora disponibile per tutti gli utenti su tutti i backend. Consulta [l'annuncio](/announcements/product-updates/2025-09-25-new-dynamic-circuits) per ulteriori dettagli.
+
+</Admonition>
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-ibm-runtime
+```
+
+```python
+# This cell is hidden from users.  It hides all those "...instance was not set..." warnings.
+import warnings
+
+warnings.filterwarnings("ignore", message=".*Instance was not set*")
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+service = QiskitRuntimeService()
+dc_backends = service.backends(dynamic_circuits=True)
+print(dc_backends)
+```
+
+```text
+[<IBMBackend('ibm_boston')>, <IBMBackend('ibm_pittsburgh')>, <IBMBackend('ibm_fez')>, <IBMBackend('ibm_marrakesh')>, <IBMBackend('ibm_kingston')>]
+```
+
+<span id="midcircuit"></span>
+## Misurazioni mid-circuit {#mid-circuit-measurements}
+
+Prima di `qiskit-ibm-runtime` v0.43.0, `measure` era l'unica istruzione di misurazione in Qiskit. Le misurazioni mid-circuit, tuttavia, hanno requisiti di tuning diversi rispetto alle misurazioni _terminali_ (misurazioni che avvengono alla fine di un Circuit). Ad esempio, è necessario considerare la durata dell'istruzione durante il tuning di una misurazione mid-circuit perché le istruzioni più lunghe causano Circuit più rumorosi. Non è necessario considerare la durata dell'istruzione per le misurazioni terminali perché non ci sono istruzioni dopo le misurazioni terminali.
+
+<Admonition type="note">
+L'istruzione `MidCircuitMeasure` mappa all'istruzione `measure_2` riportata nelle `supported_instructions` del backend. Tuttavia, `measure_2` non è supportata su tutti i backend. Usa `service.backends(filters=lambda b: "measure_2" in b.supported_instructions)` per trovare i backend che la supportano. In futuro potrebbero essere aggiunte nuove misurazioni, ma ciò non è garantito.
+</Admonition>
+
+### Metodo `MidCircuitMeasure` {#midcircuitmeasure-method}
+
+In `qiskit-ibm-runtime` v0.43.0, è stata introdotta l'istruzione `MidCircuitMeasure`. Come suggerisce il nome, è una nuova istruzione di misurazione ottimizzata per le misurazioni mid-circuit su QPU IBM&reg;. Sebbene tu possa usare `QuantumCircuit.measure` per una misurazione mid-circuit, a causa del suo design, `MidCircuitMeasure` è tipicamente una scelta migliore. Ad esempio, aggiunge meno overhead al tuo Circuit rispetto all'uso di `QuantumCircuit.measure`.
+
+```python
+from qiskit import QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime.circuit import MidCircuitMeasure
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, dynamic_circuits=True
+)
+
+circ = QuantumCircuit(2, 2)
+circ.x(0)
+circ.append(MidCircuitMeasure(), [0], [0])
+# circ.measure([0], [0])
+# circ.measure_all()
+print(circ.draw(cregbundle=False))
+```
+
+```text
+┌───┐┌────────────┐
+q_0: ┤ X ├┤0           ├
+     └───┘│            │
+q_1: ─────┤  Measure_2 ├
+          │            │
+c_0: ═════╡0           ╞
+          └────────────┘
+c_1: ═══════════════════
+```
+
+<Admonition type="warning" title="Note importanti">
+
+* Deve esserci almeno un registro classico per poter usare le misurazioni.
+* La primitiva Sampler richiede le misurazioni del Circuit. Puoi aggiungere misurazioni del Circuit con la primitiva Estimator, ma vengono ignorate.
+
+</Admonition>
+## Esempio completo {#full-example}
+
+Il codice seguente crea ed esegue un Circuit dinamico sull'hardware IBM&reg;.
+
+```python
+from qiskit_ibm_runtime import SamplerV2, QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.transpiler import generate_preset_pass_manager
+
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    operational=True, simulator=False, dynamic_circuits=True
+)
+
+# Create a dynamic circuit
+
+qubits = QuantumRegister(1)
+clbits = ClassicalRegister(1)
+qc = QuantumCircuit(qubits, clbits)
+(q0,) = qubits
+(c0,) = clbits
+
+qc.h(q0)
+qc.measure(q0, c0)
+with qc.if_test((c0, 1)):
+    qc.x(q0)
+qc.measure(q0, c0)
+
+# Convert to an ISA circuit for the given backend
+
+pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+isa_circuit = pm.run(qc)
+
+# Generate samplers for backend targets
+sampler = SamplerV2(backend)
+
+# Submit jobs
+sampler_job = sampler.run([isa_circuit])
+result = sampler_job.result()
+
+print(
+    f">>> {' Job ID:':<10}  {sampler_job.job_id()} ({sampler_job.status()})"
+)
+```
+
+```text
+>>>  Job ID:    d82864vtjchs73bnokf0 (DONE)
+```
+
+## Limitazioni di Qiskit Runtime {#qiskit-runtime-limitations}
+
+Tieni presente i seguenti vincoli quando esegui Circuit dinamici in Qiskit Runtime.
+
+- A causa della memoria fisica limitata sull'elettronica di controllo, c'è anche un limite al numero di istruzioni `if` e alla dimensione dei loro operandi. Questo limite è una funzione del numero di broadcast e del numero di bit trasmessi in un job (non in un Circuit).
+
+   Quando si elabora una condizione `if`, i dati di misurazione devono essere trasferiti alla logica di controllo per effettuare quella valutazione. Un broadcast è un trasferimento di dati classici unici e i bit trasmessi sono il numero di bit classici trasferiti. Considera quanto segue:
+
+   ```python
+   c0 = ClassicalRegister(3)
+   c1 = ClassicalRegister(5)
+   ...
+   with circuit.if_test((c0, 1)) ...
+   with circuit.if_test((c0, 3)) ...
+   with circuit.if_test((c1[2], 1)) ...
+   ```
+   Nel precedente esempio di codice, i primi due oggetti `if_test` su `c0` sono considerati un broadcast perché il contenuto di `c0` non è cambiato e quindi non deve essere ritrasmesso. L'`if_test` su `c1` è un secondo broadcast. Il primo trasmette tutti e tre i bit in `c0` e il secondo trasmette solo un bit, per un totale di quattro bit trasmessi.
+
+   Attualmente, se si trasmettono 60 bit ogni volta, il job può avere circa 300 broadcast. Se si trasmette solo un bit ogni volta, tuttavia, il job può avere 2400 broadcast.
+
+- L'operando usato in un'istruzione `if_test` deve essere di 32 o meno bit. Quindi, se stai confrontando un intero `ClassicalRegister`, la dimensione di quel `ClassicalRegister` deve essere di 32 o meno bit. Se stai confrontando solo un singolo bit da un `ClassicalRegister`, tuttavia, quel `ClassicalRegister` può essere di qualsiasi dimensione (poiché l'operando è solo un bit).
+
+   Ad esempio, il blocco di codice "Non valido" non funziona perché `cr` è più di 32 bit. Puoi, tuttavia, usare un registro classico più largo di 32 bit se stai testando solo un bit, come mostrato nel blocco di codice "Valido".
+
+   <Tabs>
+   <TabItem value="Not valid" label="Non valido">
+      ```python
+         cr = ClassicalRegister(50)
+         qr = QuantumRegister(50)
+         circuit = QuantumCircuit(qr, cr)
+         ...
+         circ.measure(qr, cr)
+         with circ.if_test((cr, 15)):
+            ...
+      ```
+   </TabItem>
+   <TabItem value="Valid" label="Valido">
+      ```python
+         cr = ClassicalRegister(50)
+         qr = QuantumRegister(50)
+         circuit = QuantumCircuit(qr, cr)
+         ...
+         circ.measure(qr, cr)
+         with circ.if_test((cr[5], 1)):
+            ...
+      ```
+   </TabItem>
+   </Tabs>
+
+- I condizionali annidati non sono consentiti. Ad esempio, il seguente blocco di codice non funzionerà perché ha un `if_test` all'interno di un altro `if_test`:
+   <Tabs>
+    <TabItem value="Not valid" label="Non valido">
+        ```python
+           c1 = ClassicalRegister(1, "c1")
+           c2 = ClassicalRegister(2, "c2")
+           ...
+           with circ.if_test((c1, 1)):
+            with circ.if_test(c2, 1)):
+             ...
+        ```
+     </TabItem>
+     <TabItem value="Valid" label="Valido">
+        ```python
+        cr = ClassicalRegister(2)
+        ...
+        with circuit.if_test((cr, 0b11)):
+          ...
+        ```
+     </TabItem>
+    </Tabs>
+
+- Non è supportato avere `reset` o misurazioni all'interno dei condizionali.
+- Le operazioni aritmetiche non sono supportate.
+- Consulta la [tabella delle funzionalità OpenQASM 3](/guides/qasm-feature-table) per determinare quali funzionalità OpenQASM 3 sono supportate su Qiskit e Qiskit Runtime.
+- Quando OpenQASM 3 (invece di `QuantumCircuit`) è usato come formato di input per passare Circuit alle primitive Qiskit Runtime, sono supportate solo le istruzioni che possono essere caricate in Qiskit. Le operazioni classiche, ad esempio, non sono supportate perché non possono essere caricate in Qiskit. Consulta [Importa un programma OpenQASM 3 in Qiskit](/guides/interoperate-qiskit-qasm3#import-an-openqasm-3-program-into-qiskit) per ulteriori informazioni.
+- Le istruzioni `for`, `while` e `switch` non sono supportate.
+## Usa i Circuit dinamici con Estimator {#use-dynamic-circuits-with-estimator}
+
+Poiché Estimator non supporta i Circuit dinamici, puoi usare [Sampler](/guides/get-started-with-sampler) e costruire i tuoi Circuit di misurazione.
+
+Per replicare il comportamento di Estimator, segui questo processo:
+
+1. Raggruppa i termini di tutti gli osservabili in una partizione. Questo può essere fatto usando l'[API `PauliList`](https://docs.quantum.ibm.com/api/qiskit/qiskit.quantum_info.PauliList#group_qubit_wise_commuting), ad esempio.
+     <Admonition type="note">
+      Puoi usare l'attributo primitivo [`BitArray`](https://quantum.cloud.ibm.com/docs/en/api/qiskit/qiskit.primitives.BitArray#expectation_values) per calcolare i valori di aspettazione degli osservabili forniti.
+     </Admonition>
+2. Esegui un Circuit di cambio di base per partizione (qualunque cambio di base debba essere fatto per ogni partizione). Consulta il modulo [`measurement_bases`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.exp_vals.html#qiskit_addon_utils.exp_vals.get_measurement_bases) del componente aggiuntivo Measurement bases per ulteriori informazioni. Per ulteriori informazioni, consulta la [documentazione](https://qiskit.github.io/qiskit-addon-utils/) del pacchetto Qiskit addon utilities.
+3. Somma i risultati per ogni partizione.
+## Restrizioni {#restrictions}
+
+Consulta qualsiasi [tabella di compatibilità delle funzionalità](/guides/estimator-options#options-compatibility-table) per capire le restrizioni quando si usano i Circuit dinamici. Nota che la compatibilità delle funzionalità non dipende dalla primitiva.
+## Passi successivi {#next-steps}
+
+<Admonition type="tip" title="Raccomandazioni">
+- Scopri come implementare il decoupling dinamico accurato usando [stretch](/guides/stretch).
+- Consulta la guida [feedforward classico e flusso di controllo](/guides/classical-feedforward-and-control-flow).
+- Usa la [visualizzazione della pianificazione del Circuit](/guides/qiskit-runtime-circuit-timing) per eseguire il debug e ottimizzare i tuoi Circuit dinamici.
+</Admonition>

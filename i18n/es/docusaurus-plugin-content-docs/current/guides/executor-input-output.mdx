@@ -1,0 +1,248 @@
+---
+title: "Entradas y salidas de Executor"
+sidebar_label: "Entradas y salidas de Executor"
+description: "Comprende las entradas y salidas del primitivo Executor."
+notebook_path: "guides/executor-input-output.ipynb"
+---
+
+{/* doqumentation-source-hash: b64e595b */}
+
+
+<OpenInLabBanner notebookPath="guides/executor-input-output.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Versiones de paquetes">
+
+El código de esta página fue desarrollado con los siguientes requisitos.
+Recomendamos usar estas versiones o más recientes.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+samplomatic~=0.18.0
+```
+</AccordionItem>
+</Accordion>
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime samplomatic
+```
+
+El primitivo Executor forma parte del [modelo de ejecución dirigida](/guides/directed-execution-model), que proporciona mayor flexibilidad al personalizar un flujo de trabajo de mitigación de errores.
+
+Las entradas y salidas del primitivo Executor son muy diferentes a las de los primitivos [Sampler](/guides/sampler-input-output) y [Estimator](/guides/estimator-input-output). Por ejemplo, en lugar de tomar una lista de PUBs como entrada, Executor toma un `QuantumProgram`, que contiene una lista de objetos `QuantumProgramItem`. Estas clases contenedoras te ofrecen más flexibilidad que un PUB, que es una estructura de datos de tupla simple.
+
+La salida de Executor es un `QuantumProgramResult`, que es un iterable y contiene un elemento por cada `QuantumProgramItem` de entrada.
+
+<span id="programs"></span>
+## Entradas: Programas cuánticos {#inputs-quantum-programs}
+
+Como se mencionó anteriormente, la entrada a un primitivo Executor es un [`QuantumProgram`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgram.html#QuantumProgram), que es un iterable de objetos [`QuantumProgramItem`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgramItem.html). Estos objetos pueden ser de dos tipos:
+- `CircuitItem`, que generalmente almacena un circuit y sus valores de parámetros (si los hay).
+- `SamplexItem`, que generalmente almacena lo siguiente:
+    - Un circuit plantilla
+    - Un objeto samplex, que se usa para generar conjuntos aleatorios de parámetros en tiempo de ejecución (por ejemplo, para realizar twirling o inyectar ruido)
+    - Argumentos para el samplex, que pueden incluir valores de parámetros para el circuit original
+
+Cada uno de estos elementos representa una tarea diferente para que Executor realice.
+
+### Antes de comenzar {#before-you-begin}
+
+Algunos de los ejemplos de código en esta página usan `samplex`, que forma parte del paquete Samplomatic. Por lo tanto, antes de ejecutar esos bloques de código, debes instalar Samplomatic, como se muestra en el siguiente bloque de código. Para más información, consulta la [documentación de Samplomatic](https://qiskit.github.io/samplomatic).
+
+```python
+pip install samplomatic
+
+# For visualization support, include the visualization dependencies.
+# pip install samplomatic[vis]
+```
+
+### Ejemplo: Crear un `QuantumProgram` con dos tareas diferentes {#example-create-a-quantumprogram-with-two-different-tasks}
+
+Primero inicializa tu programa cuántico, luego agrega elementos de programa a él usando `append_circuit_item` o `append_samplex_item` (si hay un samplex presente), como se muestra en los siguientes ejemplos.
+
+La siguiente celda inicializa un `QuantumProgram` y especifica que debe ejecutar 1024 shots para cada configuración de cada elemento en el programa.
+
+<Admonition type="note">
+A diferencia de Sampler, un `QuantumProgram` toma solo un único valor de shot. Si quieres un valor de shot diferente, necesitas un `QuantumProgram` separado, que sería un trabajo separado.
+</Admonition>
+
+```python
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit_ibm_runtime import Executor, QiskitRuntimeService
+from qiskit.circuit import Parameter, QuantumCircuit
+import numpy as np
+from samplomatic import build
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Initialize an empty program
+program = QuantumProgram(shots=1024)
+
+# Initialize and transpile a 3-qubit quantum circuit with 2 parameters.
+circuit = QuantumCircuit(3)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.rz(Parameter("theta"), 0)
+circuit.rz(Parameter("phi"), 1)
+
+# `measure_all` adds a 3-bit classical register named "meas"
+circuit.measure_all()
+
+# Choose the least busy backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Generate a preset pass manager
+# This will be used to convert the abstract circuit to an
+# equivalent Instruction Set Architecture (ISA) circuit.
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=0
+)
+
+# Transpile the circuit
+isa_circuit = preset_pass_manager.run(circuit)
+```
+
+### Agregar un `CircuitItem` {#append-a-circuititem}
+
+A continuación, agrega el circuit objetivo, que fue transpilado según la arquitectura de conjunto de instrucciones (ISA) del backend, al `QuantumProgram`. Dado que este circuit tiene dos parámetros, también debemos proporcionar los valores de los parámetros (10 conjuntos en este ejemplo). Ejecutar este `CircuitItem` es la primera tarea que realizará el programa.
+
+```python
+# Append the transpiled circuit and an array
+# containing 10 sets of parameter values to the program
+program.append_circuit_item(
+    isa_circuit,
+    circuit_arguments=np.random.rand(
+        10, 2
+    ),  # 10 sets of parameter values and 2 parameters
+)
+```
+
+### Agregar un `SamplexItem` {#append-a-samplexitem}
+
+Los elementos de circuit se ejecutan sin ningún tipo de aleatorización. Por el contrario, los elementos de samplex te permiten especificar cómo aleatorizar su contenido. La siguiente celda usa la función `generate_boxing_pass_manager()` para agrupar los gates y las mediciones del circuit en cajas y agregar una anotación de twirling a cada caja. Luego genera un par de circuit plantilla y samplex usando la función `build()`.
+
+Ejecutar este `SamplexItem` es la segunda tarea que realizará el programa.
+
+Consulta la documentación de la [API](https://github.com/Qiskit/samplomatic/) de Samplomatic para obtener detalles completos sobre `samplex` y sus argumentos. Consulta la [guía del Transpilador](https://qiskit.github.io/samplomatic/guides/transpiler.html) de Samplomatic para obtener información sobre el uso de la función `generate_boxing_pass_manager()`.
+
+```python
+# Transpile the circuit, additionally grouping gates and measurements into annotated boxes
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=0
+)
+
+# Use the boxing pass manager to group gates
+# and measurements into boxes and add
+# a`Twirl` annotation.
+preset_pass_manager.post_scheduling = generate_boxing_pass_manager(
+    # Add gate twirling
+    enable_gates=True,
+    # Add measurement twirling
+    enable_measures=True,
+)
+boxed_circuit = preset_pass_manager.run(circuit)
+
+# Build the template circuit and the samplex.  The template circuit has parametric gates
+# without fixed values and the samplex randomly generates the parameter
+# values on the server side at runtime to perform twirling.
+template_circuit, samplex = build(boxed_circuit)
+
+# Determine what arguments are required by the samplex.
+# Input the arguments in samplex_arguments.
+print(samplex.inputs())
+```
+
+```text
+TensorInterface(<
+  - 'parameter_values' <float64[2]>: Input parameter values to use during sampling.
+>)
+```
+
+```python
+# Append the template circuit and samplex as a samplex item
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        # the arguments required by the samplex.sample method
+        "parameter_values": np.random.rand(10, 2),
+    },
+    shape=(28, 10),  # 28 randomizations and 10 sets of parameter values
+)
+```
+
+```python
+# Initialize an Executor with the default options
+executor = Executor(mode=backend)
+
+# Submit the job
+job = executor.run(program)
+
+# Retrieve the result
+result = job.result()
+```
+
+## Salidas {#outputs}
+
+La salida de Executor es un [`QuantumProgramResult`](https://qiskit.github.io/qiskit-ibm-runtime/stubs/QuantumProgramResult.html#QuantumProgramResult), que es un iterable. Contiene una entrada por cada `QuantumProgramItem` de entrada en el mismo orden que los elementos de entrada. Cada uno de estos elementos de salida es un diccionario donde las claves son cadenas que corresponden a los nombres de los registros clásicos en los circuits de entrada (entre otros), por lo que ya no necesitas memorizar estos nombres como lo hacías con la salida de Sampler. Los valores del diccionario son de tipo `np.ndarray`.
+
+El resultado del ejemplo anterior contiene estos elementos:
+
+### Resultado de `CircuitItem` {#circuititem-result}
+
+El primer elemento contiene los resultados de ejecutar la primera tarea (un `CircuitItem`) en el programa. Contiene una sola clave, `meas`, que es el nombre del registro clásico en el circuit de entrada. El valor de esta clave se mapea a un `np.ndarray` de forma `(conjuntos de parámetros, shots, bits de registro)`, que es (10, 1024, 3) para el ejemplo anterior.
+
+El siguiente código ilustra cómo acceder a esta información:
+
+```python
+# Access the results of the classical register of task #0, a CircuitItem
+result_0 = result[0]["meas"]
+print(f"Result shape: {result_0.shape}")
+```
+
+```text
+Result shape: (10, 1024, 3)
+```
+
+### Resultado de `SamplexItem` {#samplexitem-result}
+
+El segundo elemento contiene los resultados de ejecutar la segunda tarea (un `SamplexItem`) en el programa. Este elemento contiene múltiples claves. La clave `meas`, que es el nombre del registro clásico del circuit de entrada, se mapea a ese array de resultados del registro. Este array tiene la forma `(aleatorizaciones, conjuntos de parámetros, shots, bits clásicos)`, o (28, 10, 1024, 3) en este ejemplo. Además, la salida contiene una clave `measurement_flips.meas`, que son las correcciones de inversión de bits para deshacer el twirling de medición para el registro `meas`. Esta forma de salida será (28, 10, 1, 3) para nuestro ejemplo porque solo se requiere un shot para realizar la inversión de bits.
+
+```python
+# Access the results of the classical register of task #1
+result_1 = result[1]["meas"]
+print(f"Result shape: {result_1.shape}")
+
+# Access the bit-flip corrections
+flips_1 = result[1]["measurement_flips.meas"]
+print(f"Bit-flip corrections shape: {flips_1.shape}")
+
+# Undo the bit flips via classical XOR
+unflipped_result_1 = result_1 ^ flips_1
+```
+
+```text
+Result shape: (28, 10, 1024, 3)
+Bit-flip corrections shape: (28, 10, 1, 3)
+```
+
+## Próximos pasos {#next-steps}
+
+<Admonition type="tip" title="Recomendaciones">
+- Explora [ejemplos](/guides/executor-examples) que usan Executor.
+- Aprende sobre el [modelo de ejecución dirigida](/guides/directed-execution-model).
+- Comprende la [difusión de Executor](/guides/executor-broadcasting).
+</Admonition>

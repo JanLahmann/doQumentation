@@ -1,0 +1,247 @@
+---
+title: "ワークロードでのポスト選択の使用"
+sidebar_label: "ワークロードでのポスト選択の使用"
+description: "エラー緩和戦略の一部としてポスト選択を統合する方法を理解します"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="パッケージ・バージョン">
+
+このページのコードは、以下の要件を使用して開発されました。
+これらのバージョン以降の使用をお勧めします。
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+
+ワークロードのエラー緩和戦略を最適化する際、非マルコフ（相関）ノイズ・プロセスによって汚染されたことが分かっている測定結果をフィルタリングすることが有用な場合があります。そのような方法の 1 つとして、アクティブな Qubit および隣接する「スペクテーター」Qubit を測定し、各 Qubit に緩やかな回転を適用し、再度測定するポスト処理ステップを回路に追加する方法があります。2 つの測定が期待通りのビット反転を確認できない場合、結果にマスクを適用してそのショットを破棄します。
+
+[Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) パッケージは、マスクを適用するためのトランスパイラー・パスとポスト選択関数のセットを提供します。このページでは、4-Qubit GHZ 状態を例として使用し、量子ワークロードにポスト選択を組み込む方法について説明します。
+
+## ワークロードの作成 {#create-workload}
+
+まず、実行する回路を準備し、分数ゲートをサポートするバックエンドに対してトランスパイルします。
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## ポスト選択トランスパイラー・パスの追加 {#add-postselection-transpiler-passes}
+
+次に、[`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html) パッケージの [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) と [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) パスを含むプリセット・パス・マネージャーを作成します。これにより、回路に一連の小角度 `RX` 回転（実質的に長い `X` ゲートを生成）と 2 番目の測定セットが追加されます。
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## 量子プログラムの実行 {#execute-quantum-program}
+
+次に、実行する回路を含む `QuantumProgram` オブジェクトを準備します。
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+結果を解釈できるようになりました。Executor の結果は複数のキーを持つ辞書です。
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+これらのキーは、`rx` 命令の前のアクティブな Qubit とスペクテーター Qubit（`meas` と `spec`）、および `rx` 命令の後（`meas_ps` と `spec_ps`）に対応しています。これらはそれぞれ、ショット数と Qubit 数に基づいた配列の配列です。この場合、形状は (1000, 4) です。
+
+## ポスト選択マスクの作成 {#create-postselection-mask}
+
+これらの測定から、`qiskit-addon-utils` の [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) クラスを使用してマスクを作成できます。このマスクは、2 つのポスト選択戦略のいずれかに基づいて各ショットを `True` または `False` としてマークするブール配列です。最初の戦略 `node` は Qubit 情報を使用して測定ショットを破棄するかどうかを決定し、2 番目の戦略 `edge` は最近傍接続情報を使用してこの決定を行います。
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+node と edge の両方の戦略は、異なるショットを破棄することが多くあります。いずれかを選択することができます。このノートブックでは、ビット単位の AND を取ります。これは保守的な戦略で、node と edge の両方の戦略でパスしたショットのみを保持します。
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+ポスト選択あり・なしの確率分布を比較します。次のスニペットは、ポスト選択前後の確率分布と、測定された分布と理想分布の間の距離を計算します。
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+ポスト選択によって結果がどのように変化したかを示すために、理想的な確率分布と測定された分布の間の距離を計算します。
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+ポスト選択は、非マルコフ・ノイズの影響を受けた測定結果をフィルタリングすることで結果の品質を大幅に向上させることができますが、それ自体は完全なエラー緩和ソリューションではありません。ポスト選択は、無効な測定結果を破棄することで特定のエラーの影響を低減しますが、これはサンプリング・オーバーヘッドの増加を代償とするものであり、近期の量子ハードウェアに存在するすべてのエラー・メカニズムに対処するものではありません。そのため、より複雑または深い回路に対してポスト選択だけに頼ることは不十分である可能性が高いです。代わりに、ポスト選択は、測定エラー緩和、ノイズを考慮した回路コンパイル、確率的エラー消去などの技術を補完する、より広範なエラー緩和戦略の一部として最も効果的です。これにより、精度とリソース・コストのバランスを取りながら、量子ワークロードの信頼性を向上させることができます。
+
+## 次のステップ {#next-steps}
+
+<Admonition type="tip" title="おすすめ">
+  - [ノイズ学習](/guides/noise-learning)を量子ワークロードに組み込む方法を理解します。
+  - 他の利用可能な[エラー緩和と抑制](/guides/error-mitigation-and-suppression-techniques)技術を確認します。
+  - エラー検出への低オーバーヘッドなアプローチとして[時空間コード](/tutorials/ghz-spacetime-codes)の使用方法を学びます。
+</Admonition>

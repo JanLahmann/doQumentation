@@ -1,0 +1,246 @@
+---
+title: "Gunakan postselection dalam workload"
+sidebar_label: "Gunakan postselection dalam workload"
+description: "Pahami cara mengintegrasikan postselection sebagai bagian dari strategi mitigasi error-mu"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Versi paket">
+
+Kode di halaman ini dikembangkan menggunakan persyaratan berikut.
+Kami menyarankan menggunakan versi ini atau yang lebih baru.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+Saat mengoptimalkan strategi mitigasi error sebuah workload, seringkali berguna untuk memfilter pengukuran yang diketahui telah terkontaminasi oleh proses noise non-Markovian (berkorelasi). Salah satu metode untuk melakukan ini melibatkan penambahan circuit dengan langkah pasca-pemrosesan yang mengukur qubit aktif dan qubit "spectator" yang berdekatan, menerapkan rotasi lambat ke setiap qubit, lalu mengukurnya kembali. Dalam kasus di mana kedua pengukuran tidak mengkonfirmasi qubit yang terbalik seperti yang diharapkan, shot tersebut dibuang dengan menerapkan mask ke hasilnya.
+
+Paket [Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) menyediakan sekumpulan transpiler pass dan fungsi postselection untuk menerapkan mask. Halaman ini memberikan panduan tentang cara memasukkan postselection ke dalam quantum workload-mu menggunakan state GHZ empat-qubit sebagai contoh.
+
+## Buat workload {#create-workload}
+
+Mulai dengan menyiapkan circuit yang akan dieksekusi dan melakukan transpile terhadap backend yang mendukung fractional gates.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## Tambahkan transpiler pass postselection {#add-postselection-transpiler-passes}
+
+Selanjutnya, buat preset pass manager yang menyertakan pass [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) dan [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) dari paket [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). Ini akan menambahkan circuit dengan urutan rotasi `RX` sudut kecil (efektif menghasilkan gate `X` yang panjang) beserta set pengukuran kedua.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## Eksekusi program quantum {#execute-quantum-program}
+
+Selanjutnya, siapkan objek `QuantumProgram` yang berisi circuit yang akan dieksekusi.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+Sekarang kamu bisa menginterpretasikan hasilnya. Hasil executor adalah dictionary dengan beberapa kunci.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+Kunci-kunci ini sesuai dengan qubit aktif dan spectator sebelum instruksi `rx` (`meas` dan `spec`) dan setelah instruksi `rx` (`meas_ps` dan `spec_ps`). Masing-masing adalah array dari array berdasarkan jumlah shot dan qubit. Dalam kasus ini, bentuknya adalah (1000, 4).
+
+## Buat mask postselection {#create-postselection-mask}
+
+Dari pengukuran-pengukuran ini, kamu bisa membuat mask menggunakan kelas [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) dari `qiskit-addon-utils`. Mask ini adalah array boolean di mana setiap shot ditandai sebagai `True` atau `False` berdasarkan salah satu dari dua strategi postselection. Strategi pertama, `node`, menggunakan informasi qubit untuk memutuskan apakah shot pengukuran harus dibuang &mdash; dan strategi kedua, `edge`, menggunakan informasi konektivitas nearest-neighbor untuk membuat keputusan ini.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+Baik strategi node maupun edge sering membuang shot yang berbeda. Kamu bisa memilih salah satunya. Notebook ini menggunakan AND bitwise, yang merupakan strategi konservatif yang mempertahankan shot hanya jika lolos dari kedua strategi node maupun edge.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+Bandingkan distribusi probabilitas dengan dan tanpa postselection. Cuplikan berikut menghitung distribusi probabilitas sebelum dan setelah postselection, serta jarak antara distribusi yang diukur dan distribusi ideal.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+Untuk menunjukkan bagaimana postselection mengubah hasilmu, hitung jarak antara distribusi probabilitas ideal dan yang diukur.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Output of the previous code cell](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+Meskipun postselection dapat secara signifikan meningkatkan kualitas hasil dengan memfilter pengukuran hasil yang dipengaruhi noise non-Markovian, ini bukan solusi lengkap untuk mitigasi error secara sendiri. Postselection mengurangi dampak error tertentu dengan membuang hasil pengukuran yang tidak valid, tapi ini mengorbankan peningkatan overhead sampling dan tidak menangani semua mekanisme error yang ada di hardware quantum saat ini. Akibatnya, mengandalkan postselection saja kemungkinan tidak cukup untuk circuit yang lebih kompleks atau lebih dalam. Sebaliknya, postselection paling efektif digunakan sebagai bagian dari strategi mitigasi error yang lebih luas &mdash; melengkapi teknik seperti mitigasi error pengukuran, kompilasi circuit yang sadar noise, atau probabilistic error cancellation &mdash; untuk meningkatkan keandalan quantum workload sambil menyeimbangkan akurasi dan biaya sumber daya.
+
+## Langkah selanjutnya {#next-steps}
+
+<Admonition type="tip" title="Rekomendasi">
+  - Pahami cara memasukkan [pembelajaran noise](/guides/noise-learning) ke dalam quantum workload.
+  - Baca teknik [mitigasi dan suppression error](/guides/error-mitigation-and-suppression-techniques) lain yang tersedia.
+  - Pelajari cara menggunakan [spacetime codes](/tutorials/ghz-spacetime-codes) untuk pendekatan deteksi error dengan overhead rendah.
+</Admonition>

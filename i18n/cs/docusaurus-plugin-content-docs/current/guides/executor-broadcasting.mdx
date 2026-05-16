@@ -1,0 +1,312 @@
+---
+title: Vysílání Executor
+description: Jak Executor zpracovává pole vstupů a výstupů pomocí sémantiky vysílání
+
+---
+{/* doqumentation-source-hash: 272aa1f8 */}
+{/* cspell:ignore broadcastable */}
+
+# Vysílání Executor {#executor-broadcasting}
+
+Data poskytovaná primitivu Executor mohou být uspořádána v různých tvarech, aby poskytovaly flexibilitu v workloadu prostřednictvím vysílání. Tento průvodce vysvětluje, jak Executor zpracovává pole vstupů a výstupů pomocí sémantiky vysílání. Pochopení těchto konceptů ti pomůže efektivně procházet hodnotami parametrů, kombinovat více konfigurací a interpretovat tvar vrácených dat.
+
+<Admonition type="note">
+Příklady v tomto tématu nelze spustit samostatně. Předpokládají, že jsi definoval příslušné obvody, použil správce průchodů Samplomatic pro přidání boxů a anotací a použil metodu Samplomatic `build` k získání šablonového Circuit a samplex pro každý blok kódu, jak je to potřeba.
+</Admonition>
+
+<span id="quickstart"></span>
+## Příklad rychlého startu {#quickstart-example}
+
+Tento příklad demonstruje základní myšlenku. Vytváří parametrický Circuit a pět různých konfigurací parametrů. Executor spouští všech pět konfigurací a vrací data uspořádaná podle konfigurace, s jedním výsledkem na klasický registr v každé položce kvantového programu.
+
+Zbytek tohoto průvodce se odkazuje na tento příklad, aby vysvětlil, jak to funguje a jak sestavit složitější procházení, včetně randomizace na základě Samplomatic a vstupů.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## Vnitřní a vnější osy {#intrinsic-and-extrinsic-axes}
+
+Vysílání se vztahuje pouze na _vnější_ osy. Vnitřní osy jsou vždy zachovány podle specifikace.
+
+- **Vnitřní osy** (zcela vpravo): Určeny typem dat. Pokud má tvůj Circuit například tři parametry, pak hodnoty parametrů vyžadují tři čísla, což dává vnitřní tvar `(3,)`.
+
+- **Vnější osy** (zcela vlevo): Tvoje dimenze procházení. Tyto definují, kolik konfigurací chceš spustit.
+
+| Typ vstupu                               | Vnitřní tvar | Příklad celého tvaru                                  |
+|----------------------------------------|---------------|---------------------------------------------------|
+| Hodnoty parametrů (n parametrů)          | (n,)            | (5, 3) pro pět konfigurací a tři parametry |
+| Skalární vstupy (například měřítko šumu) | ()              | (4,) pro čtyři konfigurace                        |
+| Observables (pokud je to relevantní)              | různé          | Závisí na typu observable                          |
+
+### Příklad {#example}
+
+Uvažuj Circuit se dvěma parametry, které chceš procházet přes mřížku 4x3 konfigurací, měnit hodnoty parametrů a koeficient měřítka šumu:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Tvary jsou následující:
+
+| Vstup              | Celý tvar | Vnější tvar | Vnitřní tvar |
+|------------------|----------|---------------|---------------|
+| `parameter_values` | (4, 1, 2)  | (4, 1)          | (2,)            |
+| `noise_scale`      | (3,)       | (3,)            | ()              |
+| Vysílání          | None       | (4, 3)          | None            |
+
+## Tvary výstupních polí {#output-array-shapes}
+
+Výstupní pole sledují stejný vzor vnější/vnitřní:
+
+- **Vnější tvar:** Odpovídá vysílanému tvaru všech vstupů
+- **Vnitřní tvar:** Určen typem výstupu
+
+Nejčastějším výstupem jsou data bitových řetězců z měření, která jsou formátována jako pole booleovských hodnot:
+
+| Typ výstupu             | Vnitřní tvar        | Popis                      |
+|-----------------------|----------------------|--------------------------------|
+| Data klasického registru | (num_shots, creg_size) | Data bitových řetězců z měření |
+
+### Příklad {#example}
+
+Pokud poskytneš vstupy s vnějšími tvary `(4, 1)` a `(3,)`, vysílaný vnější tvar je `(4, 3)`. Následující kód používá Circuit s 1024 snímky a 4bitovým klasickým registrem (jak je definováno v příkladu [Rychlý start](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+Každá konfigurace spouští celý počet snímků zadaný v kvantovém programu. Snímky **nejsou** rozděleny mezi konfigurace. Pokud například požádáš o 1024 snímků a máš 10 konfigurací, každá konfigurace spustí 1024 snímků (celkem 10 240 spuštěných snímků).
+</Admonition>
+
+## Randomizace a parametr `shape` {#randomization-and-the-shape-parameter}
+
+Při použití [samplex](/guides/directed-execution-model) každý prvek vnějšího tvaru odpovídá nezávislému spuštění Circuit. Samplex obvykle vkládá náhodnost (například gate twirling) do každého spuštění, takže i bez explicitního požadavku na více randomizací každý prvek dostane náhodnou realizaci.
+
+Parametr `shape` můžeš použít k rozšíření vnějšího tvaru pro položku, čímž efektivně přidáš osy, které odpovídají konkrétně randomizaci stejné konfigurace mnohokrát. Musí být broadcastovatelný z tvaru implicitního ve tvých `samplex_arguments`. Osy, kde `shape` překračuje implicitní tvar, vypočítávají další nezávislé randomizace.
+
+### Žádné explicitní osy randomizace {#no-explicit-randomization-axes}
+
+Pokud vynecháš `shape` (nebo ho nastavíš tak, aby odpovídal tvarům vstupů), získáš jedno spuštění na vstupní konfiguraci. Každé spuštění je stále randomizováno samplexem, ale s pouze jednou náhodnou realizací nemáš prospěch z průměrování přes více randomizací.
+
+<Admonition type="note">
+Pokud jsi zvyklý povolovat twirling jednoduchým příznakem jako `twirling=True`, poznamenej, že Executor vyžaduje, abys explicitně požadoval více randomizací argumentem `shape`, aby tvé rutiny post-processingu mohly využít výhod průměrování přes více randomizací. Jedna randomizace (výchozí, když je `shape` vynechán) aplikuje náhodné Gate, ale obvykle nenabízí žádnou výhodu oproti spuštění základního Circuit bez randomizace.
+</Admonition>
+
+Následující příklad demonstruje výchozí chování:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### Jedna osa randomizace {#single-randomization-axis}
+
+Chceš-li spustit více randomizací na konfiguraci, rozšiř tvar o další osy.
+Například následující kód spouští 20 randomizací pro každou z 10 konfigurací parametrů:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### Více os randomizace {#multiple-randomization-axes}
+
+Randomizace můžeš uspořádat do vícerozměrné mřížky. To je užitečné pro strukturovanou analýzu, například oddělení randomizací podle typu nebo jejich seskupení pro statistické zpracování.
+
+Zde se vnější tvar vstupu `(10,)` broadcastuje na požadovaný tvar `(2, 14, 10)`, přičemž osy 0 a 1 jsou naplněny nezávislými randomizacemi.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### Jak `shape` a tvary vstupů interagují {#how-shape-and-input-shapes-interact}
+
+Parametr `shape` musí být broadcastovatelný *z* tvarů vnějších vstupů. To znamená:
+
+- Vstupní tvary s dimenzemi velikosti 1 se mohou rozšířit tak, aby odpovídaly `shape`.
+- Vstupní tvary musí být zarovnány zprava s `shape`.
+- Osy v `shape`, které přesahují dimenze vstupu, vypočítávají randomizace.
+
+Poznamenej, že `shape` může obsahovat dimenze velikosti 1, které se rozšiřují tak, aby odpovídaly vstupním dimenzím, jak je ilustrováno v posledním řádku následující tabulky.
+
+Příklady:
+
+| Vnější vstup | Shape      | Výsledek                                                            |
+|---------------|----------|-----------------------------------------------------------------|
+| (10,)           | (10,)      | 10 konfigurací, 1 randomizace každá                           |
+| (10,)           | (5, 10)    | 10 konfigurací, 5 randomizací každá                          |
+| (10,)           | (2, 3, 10) | 10 konfigurací, 2×3=6 randomizací každá                      |
+| (4, 1)          | (4, 5)     | 4 konfigurace, 5 randomizací každá                           |
+| (4, 3)          | (2, 4, 3)  | 4×3=12 konfigurací, 2 randomizace každá                      |
+| (4, 3)          | (2, 1, 3)  | 4×3=12 konfigurací, 2 randomizace každá (1 se rozšiřuje na 4) |
+
+### Indexování do výsledků {#index-into-results}
+
+S osami randomizace můžeš indexovat do konkrétních kombinací randomizace/parametrů:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Běžné vzory {#common-patterns}
+
+### Procházení jednoho parametru {#sweep-a-single-parameter}
+Následující kód procházíš jeden parametr a ostatní ponecháváš pevné:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### Vytvoření 2D mřížkového procházení {#creating-a-2d-grid-sweep}
+Pro vytvoření mřížky přes tři parametry:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### Kombinování více vstupů {#combining-multiple-inputs}
+
+Při kombinování vstupů s různými vnitřními tvary zarovnej vnější dimenze pomocí os velikosti 1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## Další kroky {#next-steps}
+
+<Admonition type="tip" title="Doporučení">
+- Projdi si přehled [vysílání](/guides/primitive-input-output#broadcasting).
+- Pochop [vstupy a výstupy Executor](/guides/executor-input-output).
+</Admonition>

@@ -1,0 +1,314 @@
+---
+title: Broadcasting Executor
+description: Cara Executor menangani input dan output array menggunakan semantik broadcasting
+
+---
+
+{/* doqumentation-source-hash: 272aa1f8 */}
+
+{/* cspell:ignore broadcastable */}
+
+# Broadcasting Executor {#executor-broadcasting}
+
+Data yang diberikan ke primitif Executor bisa disusun dalam berbagai bentuk untuk memberikan fleksibilitas dalam beban kerja melalui broadcasting. Panduan ini menjelaskan cara Executor menangani input dan output array menggunakan semantik broadcasting. Memahami konsep-konsep ini akan membantumu menyapu nilai parameter secara efisien, menggabungkan beberapa konfigurasi, dan menginterpretasikan bentuk data yang dikembalikan.
+
+<Admonition type="note">
+Contoh-contoh dalam topik ini tidak bisa dijalankan sendiri. Mereka mengasumsikan kamu telah mendefinisikan circuit yang sesuai, menggunakan pass manager Samplomatic untuk menambahkan kotak dan anotasi, dan menggunakan metode `build` Samplomatic untuk mendapatkan template circuit dan samplex untuk setiap blok kode, sesuai kebutuhan.
+</Admonition>
+
+<span id="quickstart"></span>
+## Contoh quickstart {#quickstart-example}
+
+Contoh ini mendemonstrasikan ide inti. Ini membuat circuit parametrik dan lima konfigurasi parameter yang berbeda. Executor menjalankan semua lima konfigurasi dan mengembalikan data yang diorganisir berdasarkan konfigurasi, dengan satu hasil per classical register dalam setiap item program kuantum.
+
+Sisa panduan ini merujuk kembali ke contoh ini untuk menjelaskan cara kerjanya dan cara membangun sweep yang lebih kompleks, termasuk randomisasi berbasis Samplomatic dan input.
+
+```python
+import numpy as np
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+
+# A circuit with 2 parameters
+# This circuit is used throughout the rest of this guide.
+circuit = QuantumCircuit(4)
+circuit.rx(Parameter("a"), 0)
+circuit.rx(Parameter("b"), 1)
+circuit.h(2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+# 5 different parameter configurations (shape: 5 configurations × 2 parameters)
+parameter_values = np.linspace(0, np.pi, 10).reshape(5, 2)
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile to ISA circuit
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+isa_circuit = preset_pass_manager.run(circuit)
+
+# This program is used throughout the rest of this guide.
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(isa_circuit, circuit_arguments=parameter_values)
+
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Run and get results
+result = executor.run(program).result()
+
+# result is a list with one entry per program item
+# result[0] is a dict mapping classical register names to data arrays
+# Output bool arrays have shape (5, 1024, 4)
+#   5 = number of parameter configurations
+#   1024 = number of shots
+#   4 = bits in the classical register
+result[0]["meas"]
+```
+
+## Sumbu intrinsik dan ekstrinsik {#intrinsic-and-extrinsic-axes}
+
+Broadcasting hanya berlaku untuk sumbu _ekstrinsik_. Sumbu intrinsik selalu dipertahankan seperti yang ditentukan.
+
+- **Sumbu intrinsik** (paling kanan): Ditentukan oleh tipe data. Misalnya, jika circuit-mu memiliki tiga parameter, maka nilai parameter membutuhkan tiga angka, memberikan bentuk intrinsik `(3,)`.
+
+- **Sumbu ekstrinsik** (paling kiri): Dimensi sweep-mu. Ini menentukan berapa banyak konfigurasi yang ingin kamu jalankan.
+
+| Tipe input                                    | Bentuk intrinsik | Contoh bentuk penuh                                    |
+|-----------------------------------------------|-----------------|-------------------------------------------------------|
+| Nilai parameter (n parameter)                 | (n,)            | (5, 3) untuk lima konfigurasi dan tiga parameter      |
+| Input skalar (misalnya, faktor skala noise)   | ()              | (4,) untuk empat konfigurasi                          |
+| Observable (jika berlaku)                     | bervariasi      | Bergantung pada tipe observable                       |
+
+### Contoh {#example}
+
+Pertimbangkan circuit dengan dua parameter yang ingin kamu sweep pada grid 4x3 konfigurasi, memvariasikan nilai parameter dan faktor skala noise:
+
+```python
+import numpy as np
+
+# Parameter values: 4 configurations along axis 0, intrinsic shape (2,)
+# Full shape: (4, 1, 2) - the "1" allows broadcasting with noise_scale
+parameter_values = np.array([
+    [[0.1, 0.2]],
+    [[0.3, 0.4]],
+    [[0.5, 0.6]],
+    [[0.7, 0.8]],
+])  # shape (4, 1, 2)
+
+# Noise scale: 3 configurations, intrinsic shape () (scalar)
+# Full shape: (3,)
+noise_scale = np.array([0.8, 1.0, 1.2])  # shape (3,)
+
+# Extrinsic shapes: (4, 1) and (3,) → broadcast to (4, 3)
+# Result: 12 total configurations in a 4×3 grid
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "noise_scales.mod_ref1": noise_scale,
+    },
+)
+```
+
+Bentuk-bentuknya adalah sebagai berikut:
+
+| Input              | Bentuk penuh | Bentuk ekstrinsik | Bentuk intrinsik |
+|--------------------|--------------|-------------------|-----------------|
+| `parameter_values` | (4, 1, 2)    | (4, 1)            | (2,)            |
+| `noise_scale`      | (3,)         | (3,)              | ()              |
+| Broadcast          | None         | (4, 3)            | None            |
+
+## Bentuk array output {#output-array-shapes}
+
+Array output mengikuti pola ekstrinsik/intrinsik yang sama:
+
+- **Bentuk ekstrinsik:** Cocok dengan bentuk broadcast dari semua input
+- **Bentuk intrinsik:** Ditentukan oleh tipe output
+
+Output yang paling umum adalah data bitstring dari pengukuran, yang diformat sebagai array nilai boolean:
+
+| Tipe output              | Bentuk intrinsik       | Deskripsi                                 |
+|--------------------------|------------------------|-------------------------------------------|
+| Data classical register  | (num_shots, creg_size) | Data bitstring dari pengukuran            |
+
+### Contoh {#example-1}
+
+Jika kamu menyediakan input dengan bentuk ekstrinsik `(4, 1)` dan `(3,)`, bentuk ekstrinsik broadcast adalah `(4, 3)`. Kode berikut menggunakan circuit dengan 1024 shot dan classical register 4-bit (seperti yang didefinisikan dalam contoh [Quickstart](#quickstart)):
+
+```python
+# Input extrinsic shapes: (4, 1) and (3,) → (4, 3)
+# Output for classical register "meas":
+#   extrinsic: (4, 3)
+#   intrinsic: (1024, 4)  - shots × bits
+#   full shape: (4, 3, 1024, 4)
+
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # result[0] for first program item
+print(meas_data.shape)  # (4, 3, 1024, 4)
+
+# Access a specific configuration
+config_2_1 = meas_data[2, 1, :, :]  # shape (1024, 4)
+```
+<Admonition type="note">
+Setiap konfigurasi menjalankan jumlah shot penuh yang ditentukan dalam program kuantum. Shot **tidak** dibagi di antara konfigurasi. Misalnya, jika kamu meminta 1024 shot dan memiliki 10 konfigurasi, setiap konfigurasi menjalankan 1024 shot (total 10.240 shot yang dieksekusi).
+</Admonition>
+
+## Randomisasi dan parameter `shape` {#randomization-and-the-shape-parameter}
+
+Saat menggunakan [samplex](/guides/directed-execution-model), setiap elemen bentuk ekstrinsik sesuai dengan eksekusi circuit yang independen. Samplex biasanya menyuntikkan keacakan (misalnya, gate twirling) ke dalam setiap eksekusi, sehingga bahkan tanpa secara eksplisit meminta beberapa randomisasi, setiap elemen menerima realisasi acak.
+
+Kamu bisa menggunakan parameter `shape` untuk menambah bentuk ekstrinsik item, secara efektif menambahkan sumbu yang secara khusus sesuai dengan merandominasi konfigurasi yang sama berkali-kali. Parameter ini harus dapat di-broadcast dari bentuk yang tersirat dalam `samplex_arguments`-mu. Sumbu di mana `shape` melebihi bentuk yang tersirat menghitung randomisasi independen tambahan.
+
+### Tanpa sumbu randomisasi eksplisit {#no-explicit-randomization-axes}
+
+Jika kamu menghilangkan `shape` (atau menetapkannya agar cocok dengan bentuk input-mu), kamu mendapatkan satu eksekusi per konfigurasi input. Setiap eksekusi masih dirandomisasi oleh samplex, tetapi dengan hanya satu realisasi acak kamu tidak mendapat manfaat dari averaging atas beberapa randomisasi.
+
+<Admonition type="note">
+Jika kamu terbiasa mengaktifkan twirling dengan flag sederhana seperti `twirling=True`, perhatikan bahwa Executor mengharuskanmu secara eksplisit meminta beberapa randomisasi dengan argumen `shape` agar rutinitas pasca-pemrosesanmu mendapat manfaat dari averaging atas beberapa randomisasi. Satu randomisasi (default saat `shape` dihilangkan) menerapkan gate acak tetapi biasanya tidak memberikan keuntungan dibandingkan menjalankan circuit dasar tanpa randomisasi.
+</Admonition>
+
+Contoh berikut mendemonstrasikan perilaku default:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # shape defaults to (10,) - one randomized execution per config
+)
+# Output shape for "meas": (10, num_shots, creg_size)
+```
+
+### Sumbu randomisasi tunggal {#single-randomization-axis}
+
+Untuk menjalankan beberapa randomisasi per konfigurasi, perluas shape dengan sumbu tambahan.
+Misalnya, kode berikut menjalankan 20 randomisasi untuk masing-masing dari 10 konfigurasi parameter:
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    shape=(20, 10),  # 20 randomizations × 10 configurations
+)
+# Output shape for "meas": (20, 10, num_shots, creg_size)
+```
+
+### Beberapa sumbu randomisasi {#multiple-randomization-axes}
+
+Kamu bisa mengorganisir randomisasi ke dalam grid multi-dimensi. Ini berguna untuk analisis terstruktur, misalnya, memisahkan randomisasi berdasarkan tipe atau mengelompokkannya untuk pemrosesan statistik.
+
+Di sini, bentuk ekstrinsik input `(10,)` di-broadcast ke bentuk yang diminta `(2, 14, 10)`, dengan sumbu 0 dan 1 diisi oleh randomisasi independen.
+
+```python
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # extrinsic (10,)
+    },
+    # 2×14=28 randomizations per configuration, 10 configurations
+    # Or you could set shape=(28, 10) for the same effect
+    shape=(2, 14, 10),  
+)
+# Output shape for "meas": (2, 14, 10, num_shots, creg_size)
+```
+
+### Cara `shape` dan bentuk input berinteraksi {#how-shape-and-input-shapes-interact}
+
+Parameter `shape` harus dapat di-broadcast *dari* bentuk ekstrinsik input-mu. Artinya:
+
+- Bentuk input dengan dimensi ukuran-1 dapat diperluas agar cocok dengan `shape`.
+- Bentuk input harus sejajar dari kanan dengan `shape`.
+- Sumbu dalam `shape` yang melebihi dimensi input menghitung randomisasi.
+
+Perhatikan bahwa `shape` dapat mengandung dimensi ukuran-1 yang diperluas agar cocok dengan dimensi input, seperti yang diilustrasikan di baris terakhir tabel berikut.
+
+Contoh:
+
+| Ekstrinsik input | Shape      | Hasil                                                                 |
+|------------------|------------|-----------------------------------------------------------------------|
+| (10,)            | (10,)      | 10 konfigurasi, 1 randomisasi masing-masing                          |
+| (10,)            | (5, 10)    | 10 konfigurasi, 5 randomisasi masing-masing                          |
+| (10,)            | (2, 3, 10) | 10 konfigurasi, 2×3=6 randomisasi masing-masing                     |
+| (4, 1)           | (4, 5)     | 4 konfigurasi, 5 randomisasi masing-masing                           |
+| (4, 3)           | (2, 4, 3)  | 4×3=12 konfigurasi, 2 randomisasi masing-masing                     |
+| (4, 3)           | (2, 1, 3)  | 4×3=12 konfigurasi, 2 randomisasi masing-masing (1 meluas ke 4)     |
+
+### Indeks ke dalam hasil {#index-into-results}
+
+Dengan sumbu randomisasi, kamu bisa mengindeks ke dalam kombinasi randomisasi/parameter tertentu:
+
+```python
+# Using shape=(2, 14, 10) with input extrinsic shape (10,), and 
+# 1024 shots and 4 classical registers.
+result = executor.run(program).result()
+meas_data = result[0]["meas"]  # shape (2, 14, 10, 1024, 4)
+
+# Get all shots for randomization (0, 7) and parameter config 3
+specific = meas_data[0, 7, 3, :, :]  # shape (1024, 4)
+
+# Average over all randomizations for parameter config 5 on bit 2
+averaged = meas_data[:, :, 5, :, 2].mean(axis=(0, 1))
+```
+
+## Pola umum {#common-patterns}
+
+### Sweep satu parameter {#sweep-a-single-parameter}
+Gunakan kode seperti berikut untuk menyapu satu parameter sambil mempertahankan yang lain tetap:
+
+```python
+# Circuit has 2 parameters, sweep first one over 20 values
+sweep_values = np.linspace(0, 2*np.pi, 20)
+
+parameter_values = np.column_stack([
+    sweep_values,
+    np.full(20, 0.5),
+])  # shape (20, 2)
+```
+
+### Membuat sweep grid 2D {#creating-a-2d-grid-sweep}
+Untuk membuat grid pada tiga parameter:
+
+```python
+# Sweep param 0 over 10 values, param 1 over 8 values, param 2 fixed
+p0 = np.linspace(0, np.pi, 10)[:, np.newaxis, np.newaxis]  # (10, 1, 1)
+p1 = np.linspace(0, np.pi, 8)[np.newaxis, :, np.newaxis]   # (1, 8, 1)
+p2 = np.array([[[0.5]]])                                   # (1, 1, 1)
+
+parameter_values = np.broadcast_arrays(p0, p1, p2)
+parameter_values = np.stack(parameter_values, axis=-1).squeeze()  # (10, 8, 3)
+
+# Extrinsic shape: (10, 8), intrinsic shape: (3,)
+```
+
+### Menggabungkan beberapa input {#combining-multiple-inputs}
+
+Saat menggabungkan input dengan bentuk intrinsik yang berbeda, sejajarkan dimensi ekstrinsik menggunakan sumbu ukuran-1:
+
+```python
+# 4 parameter configurations, 3 noise scales → 4×3 = 12 total configurations
+parameter_values = np.random.rand(4, 1, 2)  # extrinsic (4, 1), intrinsic (2,)
+noise_scale = np.array([0.8, 1.0, 1.2])     # extrinsic (3,), intrinsic ()
+
+# Broadcasted extrinsic shape: (4, 3)
+```    
+
+## Langkah selanjutnya {#next-steps}
+
+<Admonition type="tip" title="Rekomendasi">
+- Tinjau gambaran umum [broadcasting](/guides/primitive-input-output#broadcasting).
+- Pahami [input dan output Executor](/guides/executor-input-output).
+</Admonition>

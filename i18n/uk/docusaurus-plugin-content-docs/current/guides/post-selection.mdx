@@ -1,0 +1,245 @@
+---
+title: "Використання постселекції в навантаженнях"
+sidebar_label: "Використання постселекції в навантаженнях"
+description: "Зрозумій, як інтегрувати постселекцію як частину стратегії пом'якшення помилок"
+notebook_path: "guides/post-selection.ipynb"
+---
+
+{/* doqumentation-source-hash: 0595e09c */}
+
+<OpenInLabBanner notebookPath="guides/post-selection.ipynb" />
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Версії пакетів">
+
+Код на цій сторінці було розроблено з використанням таких вимог.
+Рекомендуємо використовувати ці або новіші версії.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+qiskit-addon-utils~=0.3.1
+```
+</AccordionItem>
+</Accordion>
+При оптимізації стратегії пом'якшення помилок навантаження часто корисно відфільтровувати вимірювання, відомі як такі, що були забруднені неМарковськими (корельованими) процесами шуму. Один із таких методів передбачає доповнення схеми кроком постобробки, який вимірює активні та суміжні кубіти-«глядачі», застосовує повільне обертання до кожного кубіта, а потім вимірює їх знову. У випадках, коли два вимірювання не підтверджують перевернутий кубіт, як очікувалося, вимірювання відкидається шляхом застосування маски до результатів.
+
+Пакет [Qiskit addon utilities](https://qiskit.github.io/qiskit-addon-utils/) надає набір проходів транспілятора та функцію постселекції для застосування маски. Ця сторінка надає керівництво щодо того, як включити постселекцію у квантові навантаження, використовуючи чотирикубітний стан GHZ як приклад.
+## Створення навантаження {#create-workload}
+
+Почни з підготовки схеми для виконання та транспіляції проти backend, що підтримує дробові вентилі.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q qiskit qiskit-addon-utils qiskit-ibm-runtime
+```
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure_all()
+
+service = QiskitRuntimeService()
+backend = service.least_busy(use_fractional_gates=True)
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+
+transpiled_circuit = pm.run(circuit)
+transpiled_circuit.draw("mpl")
+```
+
+![Вихід попередньої клітинки коду](/docs/images/guides/post-selection/extracted-outputs/68fa9100-0.svg)
+
+## Додавання проходів транспілятора постселекції {#add-postselection-transpiler-passes}
+
+Далі створи менеджер проходів, що включає проходи [`AddPostSelectionMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html) та [`AddSpectatorMeasures`](https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddPostSelectionMeasures.html) з пакету [`qiskit-addon-utils`](https://qiskit.github.io/qiskit-addon-utils/index.html). Це доповнить схему послідовністю малокутових обертань `RX` (фактично виробляючи довгий вентиль `X`) разом із другим набором вимірювань.
+
+```python
+from qiskit.transpiler import PassManager
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+post_selection_pm = PassManager(
+    [
+        AddSpectatorMeasures(backend.coupling_map, add_barrier=True),
+        AddPostSelectionMeasures(x_pulse_type="rx"),
+    ]
+)
+
+template_circuit_ps = post_selection_pm.run(transpiled_circuit)
+template_circuit_ps.draw("mpl", fold=-1, idle_wires=False)
+```
+
+![Вихід попередньої клітинки коду](/docs/images/guides/post-selection/extracted-outputs/faf50950-0.svg)
+
+## Виконання квантової програми {#execute-quantum-program}
+
+Далі підготуй об'єкт `QuantumProgram`, що містить схему для виконання.
+
+```python
+from qiskit_ibm_runtime import QuantumProgram, Executor
+
+shots = 4000
+
+program = QuantumProgram(shots=shots)
+program.append_circuit_item(template_circuit_ps)
+
+# Initialize the Executor job and run
+executor = Executor(backend)
+executor_job = executor.run(program)
+print(f"Job ID: {executor_job.job_id()}")
+```
+
+```text
+Job ID: d82dumugbeec73alm5g0
+```
+
+Тепер можна інтерпретувати результати. Результат executor є словником з кількома ключами.
+
+```python
+executor_result = executor_job.result()[0]
+executor_result.keys()
+```
+
+```text
+dict_keys(['meas', 'spec', 'meas_ps', 'spec_ps'])
+```
+
+Ці ключі відповідають активним та кубітам-глядачам до інструкцій `rx` (`meas` та `spec`) та після інструкцій `rx` (`meas_ps` та `spec_ps`). Кожен із них є масивом масивів, заснованим на кількості вимірювань та кубітів. У цьому випадку форма — (1000, 4).
+
+## Створення маски постселекції {#create-postselection-mask}
+
+З цих вимірювань можна створити маску, використовуючи клас [`PostSelector`](https://qiskit.github.io/qiskit-addon-utils/apidocs/qiskit_addon_utils.noise_management.html#qiskit_addon_utils.noise_management.PostSelector) з `qiskit-addon-utils`. Ця маска є булевим масивом, де кожне вимірювання позначається як `True` або `False` на основі однієї з двох стратегій постселекції. Перша стратегія, `node`, використовує інформацію про кубіт для вирішення того, чи слід відкидати вимірювальний знімок &mdash; а друга, `edge`, використовує інформацію про з'єднання найближчих сусідів для прийняття цього рішення.
+
+```python
+post_selector = PostSelector.from_circuit(
+    circuit=template_circuit_ps, coupling_map=backend.coupling_map
+)
+
+mask_node = post_selector.compute_mask(executor_result, strategy="node")
+mask_edge = post_selector.compute_mask(executor_result, strategy="edge")
+```
+
+Обидві стратегії — вузлова та крайова — часто відкидають різні знімки. Можна обрати будь-яку з них. У цьому блокноті застосовується побітне AND — консервативна стратегія, що зберігає знімок лише тоді, коли він проходить обидві стратегії.
+
+```python
+mask = mask_node & mask_edge
+print(f"The combined mask: {mask}")
+count_retained = 0
+
+for m in mask:
+    count_retained += m
+
+print(
+    f"Percentage of the shots retained is after post selection {100 * count_retained / shots}"
+)
+```
+
+```text
+The combined mask: [ True  True  True ...  True  True  True]
+Percentage of the shots retained is after post selection 75.225
+```
+
+Порівняй розподіл ймовірностей з постселекцією та без неї. Наступний фрагмент обчислює розподіл ймовірностей до та після постселекції, а також відстань між виміряним та ідеальним розподілами.
+
+```python
+counts = {}
+counts_ps = {}
+
+for idx, measurement in enumerate(executor_result["meas"]):
+    bitstring = ""
+    for bit in measurement:
+        bitstring += str(int(bit))
+
+    if bitstring in counts:
+        counts[bitstring] += 1
+    else:
+        counts[bitstring] = 1
+
+    # Compute count data for postselected shots based on the mask
+    if mask[idx]:
+        bitstring = ""
+        for bit in measurement:
+            bitstring += str(int(bit))
+
+        if bitstring in counts_ps:
+            counts_ps[bitstring] += 1
+        else:
+            counts_ps[bitstring] = 1
+
+for key, val in counts.items():
+    counts[key] = val / shots
+
+for key, val in counts_ps.items():
+    counts_ps[key] = float(val / count_retained)
+```
+
+Щоб продемонструвати, як постселекція змінила результати, обчисли відстань між ідеальним розподілом ймовірностей та виміряними.
+
+```python
+import itertools
+from qiskit.visualization import plot_histogram
+
+bitstrings = ["".join(i) for i in itertools.product("01", repeat=4)]
+counts_ideal = {}
+for bitstring in bitstrings:
+    counts_ideal[bitstring] = 0.0
+counts_ideal["1111"] = 0.5
+counts_ideal["0000"] = 0.5
+
+prob_distance = 0.0
+prob_distance_ps = 0.0
+
+for bitstring in counts_ideal.keys():
+    dist = 0.0
+    dist_ps = 0.0
+    if bitstring in counts:
+        dist = abs(counts[bitstring] - counts_ideal[bitstring])
+    if bitstring in counts_ps:
+        dist_ps = abs(counts_ps[bitstring] - counts_ideal[bitstring])
+    prob_distance += dist
+    prob_distance_ps += dist_ps
+
+print(
+    f"Distance from ideal distribution before postselection: {1-prob_distance*0.5}"
+)
+print(
+    f"Distance from ideal distribution before after-selection: {1-prob_distance_ps*0.5}"
+)
+
+plot_histogram([counts, counts_ps], legend=["Normal", "Post selected"])
+```
+
+```text
+Distance from ideal distribution before postselection: 0.9015
+Distance from ideal distribution before after-selection: 0.9416749750747756
+```
+
+![Вихід попередньої клітинки коду](/docs/images/guides/post-selection/extracted-outputs/b1ba31b9-1.svg)
+
+Хоча постселекція може значно покращити якість результатів шляхом відфільтровування результатів вимірювань, на які вплинув неМарківський шум, вона не є повним рішенням для пом'якшення помилок самостійно. Постселекція зменшує вплив певних помилок, відкидаючи недійсні результати вимірювань, але це відбувається ціною збільшення накладних витрат на вибірку і не усуває всіх механізмів помилок, присутніх у квантовому апаратному забезпеченні найближчого часу. Як результат, покладатися виключно на постселекцію для більш складних або глибших схем, ймовірно, недостатньо. Натомість постселекція є найефективнішою, коли використовується як частина більш широкої стратегії пом'якшення помилок &mdash; доповнюючи такі техніки, як пом'якшення помилок вимірювань, компіляція схем з урахуванням шуму або ймовірнісне скасування помилок &mdash; для покращення надійності квантових навантажень при балансуванні точності та вартості ресурсів.
+
+## Наступні кроки {#next-steps}
+
+<Admonition type="tip" title="Рекомендації">
+  - Зрозумій, як включити [вивчення шуму](/guides/noise-learning) у квантове навантаження.
+  - Прочитай про інші доступні техніки [пом'якшення та придушення помилок](/guides/error-mitigation-and-suppression-techniques).
+  - Дізнайся, як використовувати [просторово-часові коди](/tutorials/ghz-spacetime-codes) для низьковартісного підходу до виявлення помилок
+</Admonition>

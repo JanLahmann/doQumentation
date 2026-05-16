@@ -39,7 +39,7 @@ LOCCの有望な用途の一つは、[長距離エンタングルメントのチ
 
 ```python
 # Added by doQumentation — required packages for this notebook
-!pip install -q matplotlib numpy qiskit qiskit-ibm-runtime
+!pip install -q matplotlib numpy qiskit qiskit-aer qiskit-ibm-runtime
 ```
 
 ```python
@@ -53,12 +53,16 @@ import matplotlib.pyplot as plt
 
 def create_bell_stab(initial_layouts):
     """
-    Create a circuit for a 1D chain of qubits (number of qubits must be a multiple of 4),
-    where a middle Bell pair is consumed to create a Bell at the edge.
-    Takes as input a list of lists, where each element of the list is a
-    1D chain of physical qubits that is used as the initial_layout for the transpiled circuit.
-    Returns a list of length-2 tuples, each tuple contains a circuit to measure the ZZ stabilizer and
-    a circuit to measure the XX stabilizer of the edge Bell state.
+    Create a circuit for a 1D chain of qubits (number
+    of qubits must be a multiple of 4), where a middle
+    Bell pair is consumed to create a Bell at the edge.
+    Takes as input a list of lists, where each element
+    of the list is a 1D chain of physical qubits that is
+    used as the initial_layout for the transpiled circuit.
+    Returns a list of length-2 tuples, each tuple
+    contains a circuit to measure the ZZ stabilizer and
+    a circuit to measure the XX stabilizer of the edge
+    Bell state.
     """
     bell_circuits = []
     for (
@@ -153,7 +157,8 @@ def create_bell_stab(initial_layouts):
 
 def get_mse(result, initial_layouts):
     """
-    given a result object and the initial layouts, returns a dict of layouts and their mse
+    given a result object and the initial layouts,
+    returns a dict of layouts and their mse
     """
     layout_mse = {}
     for layout_idx, initial_layout in enumerate(initial_layouts):
@@ -218,7 +223,8 @@ def get_mse(result, initial_layouts):
 
 def plot_mse_ecdfs(layouts_mse, combine_layouts=False):
     """
-    Plot CDF of MSE data for multiple layouts. Optionally combine all data in a single CDF
+    Plot CDF of MSE data for multiple layouts.
+    Optionally combine all data in a single CDF
     """
 
     if not combine_layouts:
@@ -318,11 +324,57 @@ def plot_mse_ecdfs(layouts_mse, combine_layouts=False):
 最初のステップは、デバイスのトポロジーに合わせて、全てのベルペアリンク候補をベンチマークするための量子回路のセットを作成することです。デバイスの結合マップをプログラム的に探索し、線形に接続された4量子ビットの全てのチェーンを見つけます。そのようなチェーン（量子ビットインデックス $[q0-q1-q2-q3]$ でラベル付け）は、エンタングルメントスワッピング回路のテストケースとして機能します。全ての長さ4のパスを特定することで、プロトコルを実現できる量子ビットの可能なグループ分けの最大カバレッジを確保します。
 
 ```python
-service = QiskitRuntimeService()
-backend = service.least_busy(operational=True)
+from qiskit_aer import AerSimulator
+
+# 4-qubit chain for simulation
+sim_layout = [[0, 1, 2, 3]]
+
+aer_backend = AerSimulator()
+sim_circuits = create_bell_stab(sim_layout)
+sim_circuits[1].draw("mpl", fold=-1, idle_wires=False)
 ```
 
 これらのチェーンを生成するために、デバイスグラフ上で貪欲探索を実行するヘルパー関数を使用します。この関数は、4つの4量子ビットチェーンを16量子ビットグループにまとめた「ストライプ」を返します（動的回路では現在、測定レジスタのサイズが `16` 量子ビットに制限されています）。バンドリングにより、チップの異なる部分で複数の4量子ビット実験を並列に実行でき、デバイス全体を効率的に使用できます。各16量子ビットストライプには4つの互いに素なチェーンが含まれており、そのグループ内で量子ビットが再利用されることはありません。例えば、1つのストライプはチェーン $[0-1-2-3]$、$[4-5-6-7]$、$[8-9-10-11]$、$[12-13-14-15]$ をまとめたものになります。ストライプに含まれなかった量子ビットは `leftover` 変数に返されます。
+
+```python
+pm_sim = generate_preset_pass_manager(
+    optimization_level=0, backend=aer_backend, initial_layout=sim_layout[0]
+)
+isa_sim_circuits = pm_sim.run(sim_circuits)
+isa_sim_circuits[1].draw("mpl", fold=-1, idle_wires=False)
+```
+
+```python
+# Run on noiseless simulator
+sampler_sim = Sampler(mode=aer_backend)
+sim_job = sampler_sim.run(isa_sim_circuits)
+sim_mse = get_mse(sim_job.result(), sim_layout)
+```
+
+次に、各16量子ビットストライプに対して回路を構築します。このルーチンは各チェーンに対して以下を行います。
+
+* 中間ベルペアの準備: 量子ビット1にアダマールゲート、量子ビット1から量子ビット2へCNOTを適用します。これにより量子ビット1と2がエンタングルされます（$|\Phi^+\rangle = (|00\rangle + |11\rangle)/\sqrt{2}$ ベル状態の生成）。
+* 端の量子ビットのエンタングル: 量子ビット0から量子ビット1へCNOT、量子ビット2から量子ビット3へCNOTを適用します。これにより、最初は分離していたペアが結合され、次のステップの後に量子ビット0と3がエンタングルされるようになります。量子ビット2にはアダマールゲートも適用されます（これは前のCNOTと組み合わせて、量子ビット1と2に対するベル測定の一部を構成します）。この時点では量子ビット0と3はまだエンタングルされていませんが、量子ビット1と2はより大きな4量子ビット状態の中でエンタングルされています。
+* ミッドサーキット測定とフィードフォワード: 量子ビット1と2（中間の量子ビット）が計算基底で測定され、2つの古典ビットが得られます。これらの測定結果に基づいて条件付き操作を適用します。量子ビット1の測定（このビットを $m_{12}$ と呼びます）が1の場合、量子ビット3に $X$ ゲートを適用します。量子ビット2の測定（$m_{21}$）が1の場合、量子ビット0に $Z$ ゲートを適用します。これらの条件付きゲート（Qiskitの `if_test`/`if_else` コンストラクトを使用して実現）は、標準的なテレポーテーション補正を実装します。量子ビット1と2を射影することで発生するランダムなパウリフリップを「打ち消し」、測定結果にかかわらず量子ビット0と3が既知のベル状態になるようにします。このステップの後、量子ビット0と3は理想的にはベル状態 $|\Phi^+\rangle$ にエンタングルされているはずです。
+* ベルペアスタビライザーの測定: 次に、回路を2つのバージョンに分割します。最初のバージョンでは量子ビット0と3の $ZZ$ スタビライザーを測定します。2番目のバージョンでは、これらの量子ビットの $XX$ スタビライザーを測定します。
+
+各4量子ビットの初期レイアウトに対して、上記の関数は2つの回路（$ZZ$ 用と $XX$ スタビライザー測定用）を返します。このステップの終了時には、デバイス上の全ての4量子ビットチェーンをカバーする回路のリストが得られます。これらの回路にはミッドサーキット測定と条件付き（if/else）操作が含まれており、これらが動的回路の主要な命令です。
+
+```text
+layout [0, 1, 2, 3]
+qubits: [0, 1, 2, 3], mse:, 0.0
+```
+
+![前のコードセルの出力](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/bd04755f-0.avif)
+
+## ステップ2: 量子ハードウェア実行のための問題の最適化 {#step-2-optimize-the-problem-for-quantum-hardware-execution}
+
+実際のハードウェアで回路を実行する前に、デバイスの物理的な制約に合わせてトランスパイルする必要があります。トランスパイルにより、抽象的な回路が選択されたデバイスの物理量子ビットとゲートセットにマッピングされます。各チェーンに特定の物理量子ビットを既に選択しているため（回路生成器に `initial_layout` を提供することで）、その固定レイアウトでトランスパイラの `optimization_level=0` を使用します。これにより、Qiskitは量子ビットの再割り当てや回路構造を変更する可能性のある重い最適化を行わないようになります。操作のシーケンス（特に条件付きゲート）を指定通りに維持したいためです。
+
+```python
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True)
+```
 
 ```python
 from itertools import chain
@@ -330,8 +382,9 @@ from collections import defaultdict
 
 def stripes16_from_backend(backend):
     """
-    Creates stripes of 16 qubits, four non-overlapping  four-qubit chains, that cover as much of
-    the coupling map as possible. Returns any unused qubits as leftovers.
+    Creates stripes of 16 qubits, four non-overlapping
+    four-qubit chains, that cover as much of the coupling
+    map as possible. Returns any unused qubits as leftovers.
     """
     # get the undirected adjacency list
     edges = backend.coupling_map.get_edges()
@@ -367,7 +420,8 @@ def stripes16_from_backend(backend):
             blocks.append(block)
             used.update(block)
 
-    # bundle four four-qubit blocks into one 16-qubit stripe (max number of measurement compatible with if-else)
+    # bundle four four-qubit blocks into one 16-qubit
+    # stripe (max number of measurement compatible with if-else)
     stripes = [
         list(chain.from_iterable(blocks[i : i + 4]))
         for i in range(0, len(blocks) // 4 * 4, 4)  # full groups of four
@@ -377,44 +431,6 @@ def stripes16_from_backend(backend):
     return stripes, leftovers
 ```
 
-```python
-initial_layouts, leftover = stripes16_from_backend(backend)
-```
-
-次に、各16量子ビットストライプに対して回路を構築します。このルーチンは各チェーンに対して以下を行います。
-
-* 中間ベルペアの準備: 量子ビット1にアダマールゲート、量子ビット1から量子ビット2へCNOTを適用します。これにより量子ビット1と2がエンタングルされます（$|\Phi^+\rangle = (|00\rangle + |11\rangle)/\sqrt{2}$ ベル状態の生成）。
-* 端の量子ビットのエンタングル: 量子ビット0から量子ビット1へCNOT、量子ビット2から量子ビット3へCNOTを適用します。これにより、最初は分離していたペアが結合され、次のステップの後に量子ビット0と3がエンタングルされるようになります。量子ビット2にはアダマールゲートも適用されます（これは前のCNOTと組み合わせて、量子ビット1と2に対するベル測定の一部を構成します）。この時点では量子ビット0と3はまだエンタングルされていませんが、量子ビット1と2はより大きな4量子ビット状態の中でエンタングルされています。
-* ミッドサーキット測定とフィードフォワード: 量子ビット1と2（中間の量子ビット）が計算基底で測定され、2つの古典ビットが得られます。これらの測定結果に基づいて条件付き操作を適用します。量子ビット1の測定（このビットを $m_{12}$ と呼びます）が1の場合、量子ビット3に $X$ ゲートを適用します。量子ビット2の測定（$m_{21}$）が1の場合、量子ビット0に $Z$ ゲートを適用します。これらの条件付きゲート（Qiskitの `if_test`/`if_else` コンストラクトを使用して実現）は、標準的なテレポーテーション補正を実装します。量子ビット1と2を射影することで発生するランダムなパウリフリップを「打ち消し」、測定結果にかかわらず量子ビット0と3が既知のベル状態になるようにします。このステップの後、量子ビット0と3は理想的にはベル状態 $|\Phi^+\rangle$ にエンタングルされているはずです。
-* ベルペアスタビライザーの測定: 次に、回路を2つのバージョンに分割します。最初のバージョンでは量子ビット0と3の $ZZ$ スタビライザーを測定します。2番目のバージョンでは、これらの量子ビットの $XX$ スタビライザーを測定します。
-
-各4量子ビットの初期レイアウトに対して、上記の関数は2つの回路（$ZZ$ 用と $XX$ スタビライザー測定用）を返します。このステップの終了時には、デバイス上の全ての4量子ビットチェーンをカバーする回路のリストが得られます。これらの回路にはミッドサーキット測定と条件付き（if/else）操作が含まれており、これらが動的回路の主要な命令です。
-
-```python
-circuits = create_bell_stab(initial_layouts)
-circuits[-1].draw("mpl", fold=-1)
-```
-
-![前のコードセルの出力](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/bd04755f-0.avif)
-
-## ステップ2: 量子ハードウェア実行のための問題の最適化 {#step-2-optimize-the-problem-for-quantum-hardware-execution}
-
-実際のハードウェアで回路を実行する前に、デバイスの物理的な制約に合わせてトランスパイルする必要があります。トランスパイルにより、抽象的な回路が選択されたデバイスの物理量子ビットとゲートセットにマッピングされます。各チェーンに特定の物理量子ビットを既に選択しているため（回路生成器に `initial_layout` を提供することで）、その固定レイアウトでトランスパイラの `optimization_level=0` を使用します。これにより、Qiskitは量子ビットの再割り当てや回路構造を変更する可能性のある重い最適化を行わないようになります。操作のシーケンス（特に条件付きゲート）を指定通りに維持したいためです。
-
-```python
-isa_circuits = []
-for ind, init_layout in enumerate(initial_layouts):
-    pm = generate_preset_pass_manager(
-        optimization_level=0, backend=backend, initial_layout=init_layout
-    )
-    isa_circ = pm.run(circuits[ind * 2 : ind * 2 + 2])
-    isa_circuits.extend(isa_circ)
-```
-
-```python
-isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
-```
-
 ![前のコードセルの出力](/docs/images/tutorials/edc-cut-bell-pair-benchmarking/extracted-outputs/3ad620f7-0.avif)
 
 ## ステップ3: Qiskitプリミティブを使用した実行 {#step-3-execute-using-qiskit-primitives}
@@ -422,9 +438,7 @@ isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
 これで量子デバイス上で実験を実行できます。Qiskit RuntimeとそのSamplerプリミティブを使用して、回路のバッチを効率的に実行します。
 
 ```python
-sampler = Sampler(mode=backend)
-sampler.options.environment.job_tags = ["cut-bell-pair-test"]
-job = sampler.run(isa_circuits)
+initial_layouts, leftover = stripes16_from_backend(backend)
 ```
 
 ## ステップ4: 後処理と所望の古典形式での結果の返却 {#step-4-post-process-and-return-result-in-the-desired-classical-format}
@@ -438,57 +452,76 @@ $$\text{MSE} = \frac{( \langle Z_0Z_3\rangle - 1)^2 + (\langle X_0X_3\rangle - 1
 結果は、デバイス全体でエンタングルメント品質に幅広い範囲があることを明らかにします。これは、使用する物理量子ビットによってベル状態の忠実度に1桁以上の差が生じる可能性があるという論文の知見を裏付けるものです。実用的には、チップの特定の領域やリンクが、ミッドサーキット測定やフィードフォワード操作において他よりもはるかに優れていることを意味します。量子ビットの読み出しエラー、量子ビットの寿命、クロストークなどの要因がこれらの差異に寄与していると考えられます。例えば、あるチェーンに特にノイジーな読み出し量子ビットが含まれている場合、ミッドサーキット測定が信頼性を欠き、そのエンタングルペアの忠実度が低下します（MSEが高くなります）。
 
 ```python
+# -------------------------Step 1-------------------------
+circuits = create_bell_stab(initial_layouts)
+
+# -------------------------Step 2-------------------------
+isa_circuits = []
+for ind, init_layout in enumerate(initial_layouts):
+    pm = generate_preset_pass_manager(
+        optimization_level=0, backend=backend, initial_layout=init_layout
+    )
+    isa_circ = pm.run(circuits[ind * 2 : ind * 2 + 2])
+    isa_circuits.extend(isa_circ)
+isa_circuits[1].draw("mpl", fold=-1, idle_wires=False)
+
+# -------------------------Step 3-------------------------
+sampler = Sampler(mode=backend)
+sampler.options.environment.job_tags = ["TUT_BDC"]
+job = sampler.run(isa_circuits)
+
+# -------------------------Step 4-------------------------
 layouts_mse = get_mse(job.result(), initial_layouts)
 ```
 
 ```text
 layout [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-qubits: [0, 1, 2, 3], mse:, 0.0312
-qubits: [4, 5, 6, 7], mse:, 0.0491
-qubits: [8, 9, 10, 11], mse:, 0.0711
-qubits: [12, 13, 14, 15], mse:, 0.0436
-
+qubits: [0, 1, 2, 3], mse:, 0.6302
+qubits: [4, 5, 6, 7], mse:, 0.0949
+qubits: [8, 9, 10, 11], mse:, 0.1729
+qubits: [12, 13, 14, 15], mse:, 0.0473
+ 
 layout [16, 23, 22, 21, 17, 27, 26, 25, 18, 31, 30, 29, 19, 35, 34, 33]
-qubits: [16, 23, 22, 21], mse:, 0.0197
-qubits: [17, 27, 26, 25], mse:, 0.113
-qubits: [18, 31, 30, 29], mse:, 0.0287
-qubits: [19, 35, 34, 33], mse:, 0.0433
-
+qubits: [16, 23, 22, 21], mse:, 0.0533
+qubits: [17, 27, 26, 25], mse:, 0.2966
+qubits: [18, 31, 30, 29], mse:, 0.0447
+qubits: [19, 35, 34, 33], mse:, 0.0392
+ 
 layout [36, 41, 42, 43, 37, 45, 46, 47, 38, 49, 50, 51, 39, 53, 54, 55]
-qubits: [36, 41, 42, 43], mse:, 0.1645
-qubits: [37, 45, 46, 47], mse:, 0.0409
-qubits: [38, 49, 50, 51], mse:, 0.0519
-qubits: [39, 53, 54, 55], mse:, 0.0829
-
+qubits: [36, 41, 42, 43], mse:, 0.1577
+qubits: [37, 45, 46, 47], mse:, 0.0705
+qubits: [38, 49, 50, 51], mse:, 0.2914
+qubits: [39, 53, 54, 55], mse:, 0.1711
+ 
 layout [56, 63, 62, 61, 57, 67, 66, 65, 58, 71, 70, 69, 59, 75, 74, 73]
-qubits: [56, 63, 62, 61], mse:, 0.8663
-qubits: [57, 67, 66, 65], mse:, 0.0375
-qubits: [58, 71, 70, 69], mse:, 0.0664
-qubits: [59, 75, 74, 73], mse:, 0.0291
-
+qubits: [56, 63, 62, 61], mse:, 0.1236
+qubits: [57, 67, 66, 65], mse:, 0.9969
+qubits: [58, 71, 70, 69], mse:, 0.0631
+qubits: [59, 75, 74, 73], mse:, 0.0301
+ 
 layout [76, 81, 82, 83, 77, 85, 86, 87, 78, 89, 90, 91, 79, 93, 94, 95]
-qubits: [76, 81, 82, 83], mse:, 0.0598
-qubits: [77, 85, 86, 87], mse:, 0.313
-qubits: [78, 89, 90, 91], mse:, 0.0679
-qubits: [79, 93, 94, 95], mse:, 0.0505
-
+qubits: [76, 81, 82, 83], mse:, 0.2787
+qubits: [77, 85, 86, 87], mse:, 0.0497
+qubits: [78, 89, 90, 91], mse:, 0.1271
+qubits: [79, 93, 94, 95], mse:, 0.0468
+ 
 layout [96, 103, 102, 101, 97, 107, 106, 105, 98, 111, 110, 109, 99, 115, 114, 113]
-qubits: [96, 103, 102, 101], mse:, 0.0302
-qubits: [97, 107, 106, 105], mse:, 0.0384
-qubits: [98, 111, 110, 109], mse:, 0.0375
-qubits: [99, 115, 114, 113], mse:, 0.1051
-
+qubits: [96, 103, 102, 101], mse:, 0.8657
+qubits: [97, 107, 106, 105], mse:, 0.0399
+qubits: [98, 111, 110, 109], mse:, 0.0667
+qubits: [99, 115, 114, 113], mse:, 0.2444
+ 
 layout [116, 121, 122, 123, 117, 125, 126, 127, 118, 129, 130, 131, 119, 133, 134, 135]
-qubits: [116, 121, 122, 123], mse:, 0.1624
-qubits: [117, 125, 126, 127], mse:, 0.7246
-qubits: [118, 129, 130, 131], mse:, 0.5919
-qubits: [119, 133, 134, 135], mse:, 0.5277
-
+qubits: [116, 121, 122, 123], mse:, 0.0429
+qubits: [117, 125, 126, 127], mse:, 0.0487
+qubits: [118, 129, 130, 131], mse:, 0.0823
+qubits: [119, 133, 134, 135], mse:, 0.0583
+ 
 layout [136, 143, 142, 141, 137, 147, 146, 145, 138, 151, 150, 149, 139, 155, 154, 153]
-qubits: [136, 143, 142, 141], mse:, 0.0383
-qubits: [137, 147, 146, 145], mse:, 1.0187
-qubits: [138, 151, 150, 149], mse:, 0.1531
-qubits: [139, 155, 154, 153], mse:, 0.0471
+qubits: [136, 143, 142, 141], mse:, 0.0209
+qubits: [137, 147, 146, 145], mse:, 0.0384
+qubits: [138, 151, 150, 149], mse:, 0.4941
+qubits: [139, 155, 154, 153], mse:, 0.1062
 ```
 
 最後に、全チェーンのMSE値の累積分布関数（CDF）をプロットして、全体的なパフォーマンスを可視化します。CDFプロットでは、x軸にMSEの閾値、y軸にその閾値以下のMSEを持つ量子ビットペアの割合を示します。この曲線はゼロから始まり、閾値が全てのデータポイントを包含するにつれて1に近づきます。低いMSE付近での急激な上昇は多くのペアが高忠実度であることを示し、緩やかな上昇は多くのペアに大きなエラーがあることを意味します。CDFには最良のペアの識別情報を注釈として付けます。プロットでは、CDFの各点が1つの4量子ビットチェーンのMSEに対応し、その実験でエンタングルされた量子ビットインデックスのペア $[q0, q3]$ でラベル付けされます。これにより、どの物理量子ビットペアが最も優れたパフォーマンスを示すか（CDFの最も左側の点）を容易に特定できます。

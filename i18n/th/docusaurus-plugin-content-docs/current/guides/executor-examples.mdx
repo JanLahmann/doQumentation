@@ -1,0 +1,496 @@
+---
+title: "Executor examples"
+sidebar_label: "Executor examples"
+description: "Practical examples of using the Executor primitive in Qiskit Runtime."
+notebook_path: "guides/executor-examples.ipynb"
+---
+{/* doqumentation-untranslated-fallback */}
+
+:::note[ยังไม่ได้แปล]
+หน้านี้ยังไม่ได้รับการแปล คุณกำลังดูเวอร์ชันต้นฉบับภาษาอังกฤษ
+:::
+
+
+
+
+<OpenInLabBanner notebookPath="guides/executor-examples.ipynb" />
+
+
+
+{/*
+  DO NOT EDIT THIS CELL!!!
+  This cell's content is generated automatically by a script. Anything you add
+  here will be removed next time the notebook is run. To add new content, create
+  a new cell before or after this one.
+*/}
+
+<Accordion>
+<AccordionItem title="Package versions">
+
+The code on this page was developed using the following requirements.
+We recommend using these versions or newer.
+
+```
+qiskit[all]~=2.4.0
+qiskit-ibm-runtime~=0.46.1
+samplomatic~=0.18.0
+```
+</AccordionItem>
+</Accordion>
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-runtime samplomatic
+```
+
+The examples in this section illustrate some common ways to use the Executor primitive. Before running these examples, follow the instructions in [Install Qiskit](/guides/install-qiskit) and [Executor quickstart](/guides/directed-execution-model).
+
+## Before you begin
+
+Some of the code examples on this page use `samplex`, which is part of the Samplomatic package.  Therefore, before running those code block, you must install Samplomatic, as shown in the following code block.  For more information, see the [Samplomatic documentation](https://qiskit.github.io/samplomatic).
+
+```python
+pip install samplomatic
+
+# For visualization support, include the visualization dependencies.
+# pip install samplomatic[vis]
+```
+## Example: Parameterized circuit
+
+This example illustrates how to add circuit items with parameters, as well as how to add samplex items. It consists of these steps:
+1. Set up the circuit: Generate and transpile the target circuit.
+2. Prepare a samplex: Group gates and measurements into annotated boxes and generate the circuit template and samplex pair.
+3. Execute: Add a circuit item and a samplex item to a `QuantumProgram` and execute both in a single job.
+
+### Set up the circuit
+
+Prepare a three-qubit GHZ state, rotate the qubits around the Pauli-Z axis, and measures the qubits in the computational basis.
+
+```python
+from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.transpiler import generate_preset_pass_manager
+import numpy as np
+from samplomatic import build
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# Generate the circuit
+circuit = QuantumCircuit(3)
+circuit.h(0)
+circuit.h(1)
+circuit.cz(0, 1)
+circuit.h(1)
+circuit.h(2)
+circuit.cz(1, 2)
+circuit.h(2)
+circuit.rz(Parameter("theta"), 0)
+circuit.rz(Parameter("phi"), 1)
+circuit.rz(Parameter("lam"), 2)
+circuit.measure_all()
+```
+
+Specify the backend and transpile the circuit to only use instructions supported by the QPU (referred to as an instruction set architecture (ISA) circuit).
+
+```python
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Transpile the circuit to ISA
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend, optimization_level=3
+)
+isa_circuit = preset_pass_manager.run(circuit)
+```
+
+### Prepare the samplex
+
+Use the `generate_boxing_pass_manager` convenience function and its twirling parameters to group two-qubit gates and measurements into boxes and apply twirling annotations.
+
+```python
+boxing_pm = generate_boxing_pass_manager(
+    # Add gate twirling
+    enable_gates=True,
+    # Add measurement twirling
+    enable_measures=True,
+)
+
+boxed_circuit = boxing_pm.run(isa_circuit)
+```
+
+Use the `build` method to generate the template circuit and the samplex.
+
+```python
+# Build the template circuit and the samplex
+template_circuit, samplex = build(boxed_circuit)
+```
+
+### Execute the circuits
+
+Executor runs `QuantumProgram` objects. Each `QuantumProgram` can contain several items. This example adds a circuit item and a samplex item for execution. For full details, see [Executor input and output](/guides/executor-input-output).
+
+The first step is to initialize an empty program, requesting `1024` shots for each configuration of each item.
+
+```python
+# Generate a quantum program
+program = QuantumProgram(shots=1024)
+```
+
+Append the circuit item to the `QuantumProgram`. This circuit item consists of two parts - the ISA circuit and 10 sets of its parameter values.
+
+```python
+# Append the circuit and the parameter values to the program
+program.append_circuit_item(
+    isa_circuit,
+    circuit_arguments=np.random.rand(10, 3),  # 10 sets of parameter values
+)
+```
+
+Append the samplex item to the `QuantumProgram` with these arguments:
+- The template circuit and the samplex generated by the `build` function
+- Ten sets of parameter values for the original circuit
+- The number of randomizations to perform
+
+```python
+# Append the template circuit and samplex as a samplex item
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(
+            10, 3
+        ),  # 10 sets of parameter values
+    },
+    shape=(2, 14, 10),
+)
+```
+
+### Run the Executor job
+
+```python
+# initialize an Executor with default options
+executor = Executor(mode=backend)
+
+# Submit the job
+job = executor.run(program)
+
+# Retrieve the result
+result = job.result()
+```
+
+Retrieve the result for each task.
+
+```python
+# Access the results of the classical register of task #0, the CircuitItem
+result_0 = result[0]["meas"]
+
+# Access the results of the classical register of task #1, the SamplexItem
+result_1 = result[1]["meas"]
+```
+
+## Example: Perform PEC
+
+This example shows how to use a samplex item to perform probabilistic error cancellation ([PEC](/guides/error-mitigation-and-suppression-techniques#pec)) for error mitigation.
+
+Consider a mirrored-version of a circuit with ten qubits and two unique layers of CX gates. These are the main tasks:
+- Execute the circuit with twirling.
+- Execute the circuit with PEC mitigation, as in the paper ["Probabilistic error cancellation with sparse Pauli-Lindblad models on noisy quantum processors"](https://arxiv.org/abs/2201.09866).
+
+The pipeline consists of these steps:
+1. Set up: Generate the target circuit and group its operations into boxes.
+2. Learn: Learn the noise of the instructions that we want to mitigate with PEC.
+3. Execute: Run the circuit on a backend.
+4. Analyze: Post-process and analyze the results.
+
+For comparison, we will run this mirrored circuit twice. Once with only Pauli-twirling applied, and once withe PEC mitigation applied.
+
+<Admonition type="note">
+The usage for this example is approximately 10 minutes on a Heron r2 processor.
+</Admonition>
+
+### Set up the circuit
+
+Choose a backend and prepare a 10-qubit circuit.
+
+```python
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+from qiskit.circuit import QuantumCircuit, Parameter
+from qiskit.transpiler import generate_preset_pass_manager
+from samplomatic.transpiler import generate_boxing_pass_manager
+from samplomatic import build
+
+# Initialize the service and choose a backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# Prepare a circuit
+
+num_qubits = 10
+num_layers = 10
+
+qubits = list(range(num_qubits))
+circuit = QuantumCircuit(num_qubits)
+
+for layer_idx in range(num_layers):
+    circuit.rx(Parameter(f"theta_{layer_idx}"), qubits)
+    for i in range(num_qubits // 2):
+        circuit.cz(qubits[2 * i], qubits[2 * i + 1])
+
+    circuit.rx(Parameter(f"phi_{layer_idx}"), qubits)
+    for i in range(num_qubits // 2 - 1):
+        circuit.cz(qubits[2 * i] + 1, qubits[2 * i + 1] + 1)
+
+circuit.draw("mpl", scale=0.35, fold=100)
+```
+
+![Output of the previous code cell](/docs/images/guides/executor-examples/extracted-outputs/f9e93b2c-154a-4d09-872d-f770bcc669c4-0.svg)
+
+Combine the circuit with its inverse to create a mirror circuit.
+
+```python
+mirror_circuit = circuit.compose(circuit.inverse())
+mirror_circuit.measure_all()
+
+mirror_circuit.draw("mpl", scale=0.35, fold=100)
+```
+
+![Output of the previous code cell](/docs/images/guides/executor-examples/extracted-outputs/f8ac3f75-88ca-40f9-8382-6a427303bb8e-0.svg)
+
+Set some parameter values:
+
+```python
+import numpy as np
+
+parameter_values = np.random.rand(mirror_circuit.num_parameters)
+```
+
+Use the pass manager to transpile the circuit to become an ISA circuit.
+
+```python
+preset_pass_manager = generate_preset_pass_manager(
+    backend=backend,
+    optimization_level=3,
+)
+
+isa_circuit = preset_pass_manager.run(mirror_circuit)
+```
+
+Next, group gates and measurements into annotated boxes. You can do this manually or use the `generate_boxing_pass_manager` function from Samplomatic for convenience. The first circuit will only have twirling applied and therefore only needs the `Twirl` annotation. The second circuit will be run with full PEC mitigation and needs both `Twirl` and `InjectNoise` annotations.
+
+```python
+# Pass manager used to create twirled-annotated boxes.
+boxing_pm = generate_boxing_pass_manager(
+    enable_gates=True,
+    enable_measures=True,
+)
+
+mirror_circuit_twirl = boxing_pm.run(isa_circuit)
+
+# Pass manager used to create a new boxed circuit with
+# both Twirl and InjectNoise annotations.
+boxing_pm = generate_boxing_pass_manager(
+    enable_gates=True,
+    enable_measures=True,
+    inject_noise_targets="gates",  # no measurement mitigation
+    inject_noise_strategy="uniform_modification",
+)
+
+mirror_circuit_pec = boxing_pm.run(isa_circuit)
+```
+
+### Learn the noise
+
+To minimize the number of noise learning experiments, identify the unique instructions in the second circuit (the one with boxes annotated with `InjectNoise`). In defining uniqueness, two box instructions are equal if both of the following are true:
+- Their content is equal, up to single-qubit gates.
+- Their `Twirl` annotation is equal (every other annotation is disregarded).
+
+This leads to three unique instructions, namely the odd and even gate boxes, and the final measurement box.
+
+```python
+from samplomatic.utils import find_unique_box_instructions
+
+unique_box_instructions = find_unique_box_instructions(
+    mirror_circuit_pec.data
+)
+assert len(unique_box_instructions) == 3
+```
+
+Initialize a `NoiseLearnerV3`, choose the learning parameters by setting its options, and run a noise learning job.
+
+```python
+from qiskit_ibm_runtime.noise_learner_v3 import NoiseLearnerV3
+
+learner = NoiseLearnerV3(backend)
+
+learner.options.shots_per_randomization = 128
+learner.options.num_randomizations = 32
+learner.options.layer_pair_depths = [0, 1, 2, 4, 16, 32]
+
+learner_job = learner.run(unique_box_instructions)
+
+learner_job.job_id()
+learner_result = learner_job.result()
+```
+
+Convert `result` to the object required by the samplex by using the `result.to_dict` method.
+
+```python
+noise_maps = learner_result.to_dict(
+    instructions=unique_box_instructions, require_refs=False
+)
+```
+
+### Execute the circuits
+
+`Executor` runs `QuantumProgram` objects. Each `QuantumProgram` can contain several *items*, which are appended to the program. Each item is a task for the program to perform.
+
+Initialize an empty program, requesting `1000` shots for each configuration of each item.
+
+```python
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+
+# Initialize an empty QuantumProgram
+program = QuantumProgram(shots=1000)
+```
+
+Next, build the template circuit and samplex for `mirror_circuit_twirl` and append them to the program. Also request `900` randomizations from the samplex. This means that the samplex will generate `900` sets of parameters, and each set will be executed `1000` times (the number of shots) in the QPU.
+
+This is the program's first task (result 0).
+
+```python
+template_twirl, samplex_twirl = build(mirror_circuit_twirl)
+
+program.append_samplex_item(
+    template_twirl,
+    samplex=samplex_twirl,
+    samplex_arguments={"parameter_values": parameter_values},
+    shape=(900,),
+)
+```
+
+Similarly, append the template circuit and samplex built for `mirror_circuit_pec`, requesting `900` randomizations.  This is the program's second task (result 1).
+
+```python
+template_pec, samplex_pec = build(mirror_circuit_pec)
+
+program.append_samplex_item(
+    template_pec,
+    samplex=samplex_pec,
+    samplex_arguments={
+        "parameter_values": parameter_values,
+        "pauli_lindblad_maps": noise_maps,
+        "noise_scales": {
+            ref: -1.0 for ref in noise_maps
+        },  # Set the scales to -1 for PEC
+    },
+    shape=(900,),
+)
+```
+
+Import `Executor` and submit a job.
+
+```python
+from qiskit_ibm_runtime.executor import Executor
+
+executor = Executor(backend)
+executor_job = executor.run(program)
+
+executor_job.job_id()
+
+executor_results = executor_job.result()
+executor_results
+
+twirl_result = executor_results[0]
+
+print(f"Twirl result keys:\n {list(twirl_result.keys())}\n")
+print(f"Shape of results: {twirl_result['meas'].shape}")
+
+pec_result = executor_results[1]
+
+print(f"PEC result keys:\n {list(pec_result.keys())}\n")
+print(f"Shape of results: {pec_result['meas'].shape}")
+```
+
+```text
+Twirl result keys:
+ ['meas', 'measurement_flips.meas']
+
+Shape of results: (900, 1000, 10)
+PEC result keys:
+ ['meas', 'measurement_flips.meas', 'pauli_signs']
+
+Shape of results: (900, 1000, 10)
+```
+
+### Analyze results
+
+Finally, post-process the results to estimate the expectation values of single-qubit Pauli-Z operators acting on each of the ten active qubits (expected value: `1.0`).
+
+```python
+# Undo measurement twirling
+twirl_result_unflipped = (
+    twirl_result["meas"] ^ twirl_result["measurement_flips.meas"]
+)
+
+# Calculate the expectation values of single-qubit Z operators
+exp_vals = 1 - 2 * twirl_result_unflipped.mean(axis=1).mean(axis=0)
+
+for qubit, val in enumerate(exp_vals):
+    print(f"Qubit {qubit} -> {np.round(val, 2)}")
+```
+
+```text
+Qubit 0 -> 0.77
+Qubit 1 -> 0.76
+Qubit 2 -> 0.66
+Qubit 3 -> 0.71
+Qubit 4 -> 0.69
+Qubit 5 -> 0.67
+Qubit 6 -> 0.62
+Qubit 7 -> 0.59
+Qubit 8 -> 0.62
+Qubit 9 -> 0.68
+```
+
+```python
+# Undo measurement twirling
+pec_result_unflipped = (
+    pec_result["meas"] ^ pec_result["measurement_flips.meas"]
+)
+
+# Calculate the signs for PEC mitigation
+signs = np.prod((-1) ** pec_result["pauli_signs"], axis=-1)
+signs = signs.reshape((signs.shape[0], 1))
+
+# Calculate the expectation values of single-qubit Z operators as required by
+# PEC mitigation
+exp_vals = 1 - (2 * pec_result_unflipped.mean(axis=1) * signs).mean(axis=0)
+
+for qubit, val in enumerate(exp_vals):
+    print(f"Qubit {qubit} -> {np.round(val, 2)}")
+```
+
+```text
+Qubit 0 -> 0.98
+Qubit 1 -> 0.99
+Qubit 2 -> 0.96
+Qubit 3 -> 0.98
+Qubit 4 -> 0.98
+Qubit 5 -> 0.98
+Qubit 6 -> 0.98
+Qubit 7 -> 0.95
+Qubit 8 -> 0.95
+Qubit 9 -> 0.94
+```
+
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+- Review the [broadcasting](/guides/primitive-input-output#broadcasting) overview.
+- Learn how to use [Executor options](/guides/executor-options).
+- Understand the [directed execution model](/guides/directed-execution-model).
+- Review the [Samplomatic documentation](https://qiskit.github.io/samplomatic/).
+- Learn about how to combine different error mitigation techniques when using directed execution model in the [Probabilistic error cancellation with shaded lightcones](https://qiskit.github.io/qiskit-addon-slc/tutorials/01_getting_started.html) tutorial.
+</Admonition>
