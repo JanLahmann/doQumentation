@@ -98,19 +98,24 @@ def _load_baselines() -> dict:
 
 
 def changed_passages(locale: str, rel_path: str, en_content: str):
-    """Return (changed_units, has_baseline).
+    """Return (changed_units, removed_count, baseline_count, has_baseline).
 
-    changed_units: list of EN prose units (paragraphs/headings/list items)
-    whose content-hash is present in the current EN but absent from the
-    translation's baseline — i.e. genuinely new or edited since translation.
-    has_baseline: False when we have no baseline for this file (can't tell
-    which passages changed → caller should treat the file as full-retranslate
-    rather than silently produce zero updates).
+    changed_units:  EN prose units (full text) present in current EN but
+                    absent from the baseline — genuinely new/edited.
+    removed_count:  baseline passages no longer present in current EN. A
+                    high removed/baseline ratio means the EN was
+                    restructured/rewritten (not just prose-edited), so a
+                    paragraph-splice would leave the translation
+                    structurally wrong — caller should escalate to a full
+                    retranslation in that case.
+    baseline_count: size of the baseline passage set (for the ratio).
+    has_baseline:   False when there's no baseline (can't tell what
+                    changed → caller treats as full-retranslate).
     """
     baselines = _load_baselines()
     sidecar = baselines.get(f"{locale}/{rel_path}")
     if not sidecar or not sidecar.get("hashes"):
-        return [], False
+        return [], 0, 0, False
     baseline_set = set(sidecar["hashes"])
     # NOTE: passage_units.hash_units() returns {hash: 120-char preview}. The
     # preview is fine for drift *reporting* but NOT for driving translation —
@@ -123,8 +128,10 @@ def changed_passages(locale: str, rel_path: str, en_content: str):
         h = passage_units.hash_unit(u)
         if h not in current:        # match hash_units' first-wins on dupes
             current[h] = u
+    current_set = set(current)
     changed = [text for h, text in current.items() if h not in baseline_set]
-    return changed, True
+    removed_count = len(baseline_set - current_set)
+    return changed, removed_count, len(baseline_set), True
 
 # ── Data structures ──
 
@@ -837,10 +844,28 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
     # is a different language). Use the baseline passage-hash set difference
     # — the same mechanism validate-translation.py uses — so only genuinely
     # new/edited EN passages become work items.
-    changed, has_baseline = changed_passages(locale_of(tr_path), rel_path, en_content)
+    changed, removed_count, baseline_count, has_baseline = changed_passages(
+        locale_of(tr_path), rel_path, en_content)
 
     updates = []
     full_retranslation = False
+
+    # Fraction of the original baseline passages that no longer exist in the
+    # current EN. High = the page was restructured/rewritten, not just prose-
+    # edited. A paragraph-splice into the old translation then leaves it
+    # structurally wrong (wrong heading set, missing/extra components) — that
+    # is exactly how guides/addons.mdx failed validation (CardGroup EN=5
+    # TR=0, heading EN=6 TR=15). Such files must be fully retranslated.
+    #
+    # BUT a pure ratio over-fires on small files: editing 2 paragraphs in a
+    # 4-passage page is 50% removed yet plainly a minor edit, not a rewrite
+    # (guides/index.mdx: 107 EN lines unchanged, base=4 rem=2). Require BOTH
+    # a high ratio AND an absolute floor of removed passages so only genuine
+    # rewrites escalate. addons (rem=37), c-extension (rem=18),
+    # classical-feedforward (rem=33) clear the floor; index (rem=2),
+    # minimize-time (rem=3) do not.
+    removed_ratio = (removed_count / baseline_count) if baseline_count else 0.0
+    is_rewrite = removed_ratio >= 0.5 and removed_count >= 10
 
     if not has_baseline:
         # No baseline → we cannot tell which passages changed. Don't silently
@@ -853,6 +878,13 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
         # Hash differs but no prose passage changed → purely structural drift
         # (code/imports/whitespace), already handled by auto-fix above.
         report.severity = Severity.NOOP
+    elif is_rewrite:
+        # Most of the original content is gone AND enough passages removed in
+        # absolute terms → structural rewrite, not a prose edit. Splicing
+        # can't reconstruct it; retranslate the whole file via
+        # translation-prompt.md.
+        full_retranslation = True
+        report.severity = Severity.MAJOR
     else:
         n = len(changed)
         # Severity by count of genuinely-changed passages.
