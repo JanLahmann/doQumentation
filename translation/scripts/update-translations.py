@@ -112,8 +112,18 @@ def changed_passages(locale: str, rel_path: str, en_content: str):
     if not sidecar or not sidecar.get("hashes"):
         return [], False
     baseline_set = set(sidecar["hashes"])
-    current = passage_units.hash_units(en_content, mode="lenient")  # {hash: preview}
-    changed = [preview for h, preview in current.items() if h not in baseline_set]
+    # NOTE: passage_units.hash_units() returns {hash: 120-char preview}. The
+    # preview is fine for drift *reporting* but NOT for driving translation —
+    # a sub-agent given a truncated paragraph produces a truncated result.
+    # Re-derive full units here (same extractor + same hash fn the baseline
+    # was built with) and key by hash so we can return the FULL text.
+    units = passage_units.extract_units(en_content, mode="lenient")
+    current = {}
+    for u in units:
+        h = passage_units.hash_unit(u)
+        if h not in current:        # match hash_units' first-wins on dupes
+            current[h] = u
+    changed = [text for h, text in current.items() if h not in baseline_set]
     return changed, True
 
 # ── Data structures ──
