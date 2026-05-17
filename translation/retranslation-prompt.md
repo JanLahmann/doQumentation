@@ -101,6 +101,15 @@ this file. Your job: mirror that same change into the {LANGUAGE} file.
       translation of the `+` lines at the matching position.
    d. If the hunk only removes lines, delete the corresponding
       {LANGUAGE} text.
+   e. IMAGE / COMPONENT REMOVAL: if a `-` line is an image
+      (`![...](...)`) or an `<Image .../>`, `<Figure .../>`, etc., that
+      removal is REAL — DELETE the corresponding image line in the
+      {LANGUAGE} file. Do NOT keep it just because images are otherwise
+      "byte-identical": byte-identical applies to images that STAY, not
+      to ones the diff removes. Likewise an added `-`→`+` image swap
+      (e.g. `foo.avif` → `foo.svg`) must be applied. Mismatched image
+      counts vs EN fail validation, so the EN image count must end up
+      exactly mirrored.
 5. Use the Edit tool (not Write) per hunk so untouched regions stay byte-
    identical. Do NOT touch the {/* doqumentation-source-hash: ... */}
    marker — it is bumped by the finalize step.
@@ -118,10 +127,14 @@ Translation rules:
   and description= and title= props, AND frontmatter `title:` and
   `sidebar_label:` (these ARE translatable — if a hunk changes them,
   translate the new value into {LANGUAGE}; do not leave them in English).
-- Keep byte-identical: code fences and content, math ($...$, $$...$$),
-  URLs, image paths, imports, inline code backticks, JSX href=/value=/id=
-  /analyticsName=/type=/className=, and other frontmatter keys
-  (notebook_path, slug, platform).
+- Keep byte-identical (for elements that REMAIN — this does not block
+  applying a hunk that removes/changes one): code fences and content,
+  math ($...$, $$...$$), URLs, image paths, imports, inline code
+  backticks, JSX href=/value=/id=/analyticsName=/type=/className=, and
+  other frontmatter keys (notebook_path, slug, platform). "Byte-identical"
+  means: don't translate or reword them — NOT "never delete one the diff
+  deletes." A removed/swapped image, URL, or import in the diff must be
+  removed/swapped in the translation too.
 - Keep terms: Qubit, Gate, Circuit, Backend, Transpiler, Session, Sampler,
   Estimator, PUB.
 - Heading anchors: derive {#anchor} from the ENGLISH heading (lowercase,
@@ -140,6 +153,11 @@ NEVER do these (each caused a real validation failure):
   hunk changed them.
 - Do NOT translate or alter any code, math, URL, import, or JSX
   non-text attribute.
+- Do NOT skip an image (or `<Image/>`/`<Figure/>`) that a `-` hunk
+  removes, or a `foo.avif`→`foo.svg`-style image swap. The translation's
+  image count and paths must end up exactly matching current EN —
+  un-applied image-removal hunks are a recurring "Image paths count
+  mismatch" validation failure.
 
 Conservative no-op: if a hunk's English change is purely cosmetic
 (capitalization, punctuation moved, whitespace, a link's trailing
