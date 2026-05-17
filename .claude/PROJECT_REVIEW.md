@@ -4,6 +4,16 @@
 >
 > Findings are grouped by area, then sorted by severity.
 > Each item has a checkbox for tracking fixes.
+>
+> **2026-05-17:** The 4 still-open **security** items (SSE-1, ENT-1,
+> CFG-3, CFG-4) were migrated to the consolidated, code-verified tracker
+> `.claude/SECURITY_REVIEW_2026-05.md` (as S3, S4, S8, S1) — struck
+> below, do not re-track here. Remaining open item **SET-2** (Settings
+> sub-component refactor) is non-security: tracked in
+> `AI_FEATURES_BRAINSTORMING.md` (UX-3) + `plans/simplify-settings.md`.
+> ⚠️ CI-1/CI-2 are marked "FIXED" below but were **verified still OPEN**
+> on 2026-05-17 (0/47 actions SHA-pinned, trivy still `@master`) — see
+> SECURITY_REVIEW_2026-05.md S6.
 
 ---
 
@@ -23,7 +33,7 @@
 
 ### 1.1  SSE Build Server (`binder/sse-build-server.py`)
 
-- [ ] **HIGH** SSE-1: Token sent in plaintext over SSE `ready` event (line 82). If the CORS origin site is XSS'd, the token is exfiltrated immediately. *Consider short-lived scoped tokens instead of the main Jupyter token.*
+- [→] **HIGH** ~~SSE-1~~ **MIGRATED → SECURITY_REVIEW_2026-05.md S3**: Token sent in plaintext over SSE `ready` event. If the CORS origin site is XSS'd, the token is exfiltrated immediately. *Consider short-lived scoped tokens instead of the main Jupyter token.*
 - [x] **MEDIUM** SSE-2: `HTTPServer` is single-threaded (line 105). One slow/malicious client blocks all other SSE requests for up to 30s (the health-poll timeout). *Switch to `ThreadingHTTPServer`.* **FIXED**
 - [x] **LOW** SSE-3: `BrokenPipeError` not caught in `_send_event` / `do_GET`. Client disconnect mid-stream produces unhandled traceback. *Wrap writes in try/except for `BrokenPipeError`, `ConnectionResetError`.* **FIXED**
 - [x] **LOW** SSE-4: `do_OPTIONS` responds with CORS headers for any path (line 90), unlike `do_GET` which checks `/build`. *Add the same path check.* **FIXED**
@@ -32,7 +42,7 @@
 
 ### 1.2  Entrypoint (`binder/codeengine-entrypoint.sh`)
 
-- [ ] **HIGH** ENT-1: XSRF protection globally disabled (generated config line 59: `disable_check_xsrf = True`). Comment says thebelab 0.4.0 requires it. *Investigate thebe >=0.5 XSRF support, or scope exemption to specific API paths.*
+- [→] **HIGH** ~~ENT-1~~ **MIGRATED → SECURITY_REVIEW_2026-05.md S4**: XSRF protection globally disabled (`disable_check_xsrf = True`). Comment says thebelab 0.4.0 requires it. *Investigate thebe >=0.5 XSRF support, or scope exemption to specific API paths.*
 - [x] **MEDIUM** ENT-2: `allow_remote_access = True` + empty password (lines 49-51). Security relies entirely on the token. Minimum token length is only 8 chars. *Consider raising minimum to 32 chars for user-supplied tokens.* **FIXED**
 
 ### 1.3  nginx (`binder/nginx-codeengine.conf`)
@@ -59,8 +69,8 @@
 
 - [x] **HIGH** CFG-1: XSS in `makeTabHtml` (jupyter.ts:563). `title` and `initialPhase` are interpolated into raw HTML via template literals. Currently only called with hardcoded strings, but one future caller with user input = XSS. *HTML-escape inputs, or use `textContent` assignment.* **FIXED**
 - [x] **MEDIUM** CFG-2: Token exposed in URL query string (`?token=...`) in `getLabUrl` (line 421) and `openBinderLab` (line 635). Tokens in URLs leak via browser history, Referer headers, and proxy logs. *Document as accepted risk or pass token via header.* **ACCEPTED — documented in code with mitigation notes**
-- [ ] **MEDIUM** CFG-3: Hardcoded default token `'rasqberry'` (line 136). Anyone on the same LAN can access the Jupyter server. *Prompt user to set a custom token on first use.*
-- [ ] **MEDIUM** CFG-4: Tokens stored in localStorage in plaintext (lines 243-246, 272-273). Any XSS or browser extension can exfiltrate. *Consider `SubtleCrypto` encryption at rest, or `HttpOnly` cookies.*
+- [→] **MEDIUM** ~~CFG-3~~ **MIGRATED → SECURITY_REVIEW_2026-05.md S8**: Hardcoded default token `'rasqberry'`. Anyone on the same LAN can access the Jupyter server. *Prompt user to set a custom token on first use.*
+- [→] **MEDIUM** ~~CFG-4~~ **MIGRATED → SECURITY_REVIEW_2026-05.md S1**: Tokens stored in localStorage in plaintext. Any XSS or browser extension can exfiltrate. *Consider `SubtleCrypto` encryption at rest, or `HttpOnly` cookies.*
 - [x] **MEDIUM** CFG-5: No URL validation on URLs loaded from storage for `customUrl`/`ceUrl` (lines 69, 83). A stored XSS could inject `javascript:` URLs. *Validate protocol is `http://` or `https://`.* **FIXED**
 
 ### 2.2  Logic Bugs
