@@ -992,8 +992,20 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
         if old_found and hunks:
             stale_evidence = []
             for h in hunks:
+                # Track code-fence state WITHIN the hunk. A `-` line inside a
+                # code block is byte-identical English in the translation by
+                # design (code is never translated) — its presence in TR is
+                # correct, not an unapplied hunk. Only PROSE removals count.
+                in_code = False
                 for ln in h.splitlines():
+                    body = ln[1:] if ln[:1] in "+- " else ln
+                    if body.lstrip().startswith("```"):
+                        # fence toggles on context/added/removed alike
+                        in_code = not in_code
+                        continue
                     if ln[:1] != "-" or ln[:2] == "- ":
+                        continue
+                    if in_code:
                         continue
                     removed = ln[1:].strip()
                     # ignore trivial/cosmetic lines (blank, pure markup,
@@ -1001,6 +1013,16 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
                     if len(removed) < 12:
                         continue
                     if removed.startswith(("```", "$$", "import ", "<", "|", "{/*")):
+                        continue
+                    # CRITICAL: only flag a line that is GENUINELY removed —
+                    # absent from the current EN. unified_diff also emits a
+                    # line as `-` when it's merely relocated/reformatted
+                    # context; if it still exists in current EN it was never
+                    # really removed, so its presence in TR (as kept English
+                    # or as the basis of an unchanged translation) is not
+                    # evidence of a skipped hunk. This was a real false
+                    # positive on code lines like `from qiskit import ...`.
+                    if removed in en_content:
                         continue
                     if removed in tr_content:
                         stale_evidence.append(removed[:60])
