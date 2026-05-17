@@ -72,7 +72,21 @@ For nested paths, create intermediate directories as needed (e.g. `mkdir -p tran
 
 ## Step 3 — Translate
 
-For each file, check line count. If ≤350 lines, launch agent. If >350 lines, see Chunking below.
+For each file, check line count. If ≤800 lines, launch ONE agent for the
+whole file. If >800 lines, see Chunking below.
+
+> **Why 800, not 350** (measured 2026-05-17): a Sonnet agent translates
+> 850-line math-heavy course files whole, in one shot, with exact
+> line/heading/code-fence/LaTeX parity. The old 350 limit was never an
+> agent-capacity limit — it was a **`Write`-tool failure on large files
+> in Claude Code _web_** (the agent finishes translating, tokens are
+> spent, then the large `Write` fails and the work is lost). In the CLI
+> the `Write` tool is reliable. **In a web session use
+> [`translation-prompt-web.md`](translation-prompt-web.md)** — it keeps
+> a conservative split to dodge that write failure. Chunking here (full
+> translation) is a different mechanism from the unified-diff *hunks*
+> [`retranslation-prompt.md`](retranslation-prompt.md) uses for stale
+> updates — do not conflate the two.
 
 Each agent gets this prompt (fill in {path}, {LANGUAGE}, {LOCALE}, {HASH}, {INFORMAL_FORM}, and for chunks the start/stop heading text):
 
@@ -88,13 +102,18 @@ Rules:
 - After frontmatter closing ---, add: {/* doqumentation-source-hash: {HASH} */}
 - Translate: title, description, sidebar_label in frontmatter; all prose paragraphs;
   headings; list items; blockquotes; table cells; admonition text and title= props;
-  <summary> and <details> text; JSX label= props (but keep value=, id=, type=, className= unchanged).
+  <summary> and <details> text; JSX label= and description= and title= props
+  (but keep value=, id=, type=, className=, href=, analyticsName= byte-identical).
 - Keep byte-identical: code fences and their content, math ($...$, $$...$$), URLs,
   image paths, imports, inline code backticks (e.g. `Statevector`, `QuantumCircuit`).
 - Never add leading spaces inside code fences. Every line within a code block must be byte-identical to the source — including the very first line after the opening fence.
-- Pin headings: if the source has {#anchor}, use it exactly.
-  If no anchor in source, derive one: lowercase the English heading, replace spaces with hyphens.
-  Example: ## Change ordering in Qiskit → ## Translated {#change-ordering-in-qiskit}
+- Heading anchors: EVERY heading must carry an English-derived {#anchor}.
+  If the source heading already has {#anchor}, reuse it exactly. Otherwise
+  derive it from the ENGLISH heading text: lowercase, spaces→hyphens,
+  ASCII only (no accents/non-Latin), strip punctuation.
+  Example: ## Change ordering in Qiskit → ## <translated> {#change-ordering-in-qiskit}
+- NEVER add a heading — especially an `# H1` — that is not in the English
+  source. Mirror the EN heading structure exactly: same count, same levels.
 - Keep terms: Qubit, Gate, Circuit, Backend, Transpiler, Session, Sampler, Estimator, PUB
 - Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
 - After writing, respond with ONLY "Done" or a brief error if something failed.
@@ -123,11 +142,20 @@ git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
 git commit -m "feat(i18n): promote {LANGUAGE} translations"
 ```
 
+`promote-drafts.py` already validates and only promotes PASS files; the
+draft pipeline is the validation gate for from-scratch translations.
+(`update-translations.py --finalize` is the gate for the *stale-refresh*
+path in [`retranslation-prompt.md`](retranslation-prompt.md) — a
+different workflow; don't run it here.) After promote, spot-check that
+`git status` shows only `.mdx` under the locale and **no gitignored
+binaries** were force-added.
+
 Print summary: files translated, skipped, failed, remaining.
 
-## Chunking (files >350 lines)
+## Chunking (files >800 lines)
 
-You (the orchestrator) MUST split large files. Do NOT give >350 lines to one agent.
+You (the orchestrator) MUST split very large files. Do NOT give >800
+lines to one agent (CLI). One agent reliably handles ≤800 lines whole.
 
 **Large code blocks (>200 lines)**: Code blocks are preserved byte-identical — they need no translation. When a file contains a code block longer than 200 lines:
 1. Split the file around it: prose-before, code-block, prose-after.
@@ -136,7 +164,7 @@ You (the orchestrator) MUST split large files. Do NOT give >350 lines to one age
 This avoids agents hitting output limits on files that are mostly code.
 
 1. Find `## ` and `### ` headings and their line numbers.
-2. Group into chunks of at most 350 lines. For each candidate boundary line N (a heading line):
+2. Group into chunks of at most 800 lines. For each candidate boundary line N (a heading line):
    - Count the number of ` ``` ` fence lines above line N. If the count is **odd**, line N is inside an open code block — move the boundary to the next heading below until the count is even.
 3. Describe each chunk to its agent using **explicit start heading and stop heading**, not line numbers:
    - First chunk: "Translate from the start of the file up to but NOT including the line `## Stop Heading`."
