@@ -437,6 +437,19 @@ Returns synthesized answer with citations + code snippets + "Learn more" links
 | **R5** Self-hosted Granite on Code Engine | Search | Run model directly, no token limits |
 | **RAG-1** Multi-turn conversational RAG | Search/Chat | Chat sidebar with session context |
 
+### Cost ramp & scaling (salvaged from BOB_AI_INNOVATION_RECOMMENDATIONS, 2026-05-08, then deleted as redundant)
+
+Phased monthly cost if features ship incrementally (most are client-side/build-time = $0):
+
+| Stage | Features added | Monthly |
+|---|---|---|
+| Phase 1 | Code assistant, recommendations, error explanations | $0–5 |
+| Phase 2 | + semantic search, learning paths | $0–10 |
+| Phase 3 | + circuit debugger, translation accel | $0–15 |
+| All | + quality checks, adaptive difficulty | $10–30 |
+
+Scaling: ~1K MAU → $10–20/mo; ~10K MAU → $80–100/mo (serverless $30–50 + possible Granite tier upgrade). Client-side features stay $0 at any scale. (The rest of that doc duplicated ideas already covered above.)
+
 ---
 
 ## Open Questions
@@ -565,3 +578,7 @@ NotebookLM generates editable presentation slides from sources.
 ## Generic engineering backlog (non-AI; from same audit, still largely true)
 
 No tests (Jest/Vitest/Playwright), no ESLint/Prettier, no `ARCHITECTURE.md`/`DEVELOPMENT.md`, no error monitoring (Sentry), no code-splitting/image-optimization/bundle-analysis. Remaining hardcoded English: `onboarding.ts` (~2 strings), `OpenInLabBanner` PHASE_LABELS/hints (~15 strings).
+
+**Salvaged from BOB_FOUNDATION_REVIEW (2026-05-08, then deleted as redundant scorecard):**
+- **Architecture**: `src/config/jupyter.ts` is a "god object" — flagged for splitting into focused modules (credentials / environment-detect / lab-url / session). Pairs with PROJECT_REVIEW SET-2 + UX-3 (the Settings/jupyter complexity cluster).
+- **Documentation gaps** (not tracked elsewhere): no `CONTRIBUTING.md`, no Architecture Decision Records, no Storybook/component docs, no troubleshooting guide. (Foundation review scored Docs 8/10, Architecture 7/10, Perf 7.5/10, A11y 7.5/10, Testing 2/10 — Testing = the "no tests" item above; the rest of that scorecard duplicated items already in this backlog / the UX list / the security tracker.)
