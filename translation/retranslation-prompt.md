@@ -26,10 +26,13 @@ If that shows `N stale files`, proceed below.
 ## Constraints
 
 - Use `model: "sonnet"` for all agents.
-- Launch at most 3 agents in parallel. Wait for all 3 before the next batch.
+- Launch agents in waves of 3 (one file each); wait for each wave. See
+  the **Orchestration recipe** below for the full batch→PR loop when
+  scaling a backlog — follow it exactly.
 - Skip files where severity is `NOOP` — `--auto-fix` will handle them.
-- For `MAJOR` severity (>100 lines changed or structural), translate the
-  whole file fresh using `translation-prompt.md` instead.
+- For `MAJOR` severity / `full_retranslation` (no historical EN, or a
+  large/structural rewrite), translate the whole file fresh using
+  `translation-prompt.md` instead — do not hunk-splice it.
 - Do NOT translate the German dialects (aut, bad, bar, bln, gsw, ksh, nds,
   sax, swg) unless explicitly asked.
 
@@ -179,25 +182,68 @@ git add -f $(git status --short \
 git commit -m "i18n({LOCALE}): refresh N stale translations via git-diff pipeline"
 ```
 
+`--finalize` gates on **two** things, not just structure:
+- **Structural** validation (validate-translation): heading/JSX/code/link
+  parity with EN.
+- **Content** (the zero-edit guard): for every non-cosmetic removed-EN
+  line in the diff, that exact old English must NOT still be present in
+  the translation. An agent can answer "Done" yet silently skip a hunk
+  (fail to locate the region); the file then passes structurally but is
+  still STALE — bumping its hash would lock the staleness in forever.
+  Such files are rejected as `CONTENT: old EN still present (hunk not
+  applied)` and NOT hash-bumped.
+
 Re-run the agent on any `_finalize_failures.txt` entries (common slips:
 missing `{#anchor}`, an added H1 not in EN, untranslated frontmatter
-`title:`), then `--finalize` again until the failures file is empty.
+`title:`, or a `CONTENT:` row = a hunk the agent claimed done but never
+applied), then `--finalize` again until the failures file is empty. A
+file is only committed once it passes BOTH gates.
 
-## Workflow shape — weekly recipe
+## Orchestration recipe (scaling a backlog)
 
-| Step | Time | Tool |
-|---|---|---|
-| `check-translation-freshness` | ~5 s | script |
-| `update-translations --auto-fix` (structural) | ~30 s per locale | script |
-| Generate workfiles for all 16 main locales | ~5 min | script |
-| Sub-agent refresh (sonnet, 3 parallel) | depends on stale count | LLM |
-| Re-validate per locale | ~10 s | script |
-| Commit + open per-locale PR (or one mega-PR) | ~2 min | gh |
+Battle-tested on a ~300-file backlog. Follow this exactly — every rule
+below maps to a real failure that happened without it.
 
-For a typical weekly sync (~30 stale files per locale): ~15 min CPU-time
-per locale × 16 locales / 3-parallel batches = ~80 min wall-clock if run
-fully sequential, or ~20 min if 4 locale orchestrators run in parallel
-(matches the pattern from `translation-prompt.md`).
+**Per batch (one branch → one PR):**
+
+1. **Branch from fresh `main`.** `git checkout main && git pull && git
+   checkout -b i18n/{LOCALE}-refresh-N`. Each batch is its own branch/PR.
+2. **Pick ~25–30 files.** Bigger batches make review and conflict
+   recovery harder.
+3. **Build the workfiles** with `--auto-fix` then `--generate-workfile`
+   per file, **with `--exclude-open-prs --skip-manifest-done`**. This is
+   not optional: an unmerged PR's files still read STALE (freshness
+   checks `i18n/` on disk), so without the exclusion you re-translate
+   files already in another open PR and get rebase conflicts (this
+   happened — batch had to be rebased with `git checkout --theirs` on
+   the dup files). The manifest skip makes multi-session scaling
+   resumable.
+4. **Skip MAJOR / `full_retranslation`.** Those are whole-file jobs for
+   `translation-prompt.md`, not hunk-splice. Note them; don't mix.
+5. **Dispatch sub-agents in waves of 3** (Sonnet, one file each). Wait
+   for each wave before the next. Larger fan-out works but 3 keeps
+   failures isolated and reviewable.
+6. **`--finalize`** the batch (Step 3). It anchors + dual-gates +
+   hash-bumps + writes the manifest and `_finalize_failures.txt`.
+7. **Commit ONLY passing `.mdx`** (the Step-3 `git add` one-liner —
+   never `git add -f` a whole directory; that force-adds gitignored
+   binaries, which happened and had to be reverted).
+8. **One PR per batch.** Don't wait for merge to start the next batch —
+   `--exclude-open-prs` makes parallel batches safe.
+9. **Rework the failures file**, re-`--finalize`, until empty, before
+   the PR is considered done (or split failures into a follow-up PR and
+   note it).
+
+**Timing:** ~30 stale files/locale typical weekly sync. One batch ≈
+10–15 min wall-clock (3-wide waves). 16 locales is mechanical and
+resumable via the manifest — it does not need to be one sitting.
+
+**Merge-order gotcha:** batches branched from different `main` states
+that force-add overlapping `i18n/` paths can rebase-conflict on shared
+files. Resolve with `git checkout --theirs <dup>` (take the
+already-merged version — they're equivalent translations of the same EN
+diff) then `git rebase --continue`. `--exclude-open-prs` prevents this
+when used from the start.
 
 ## What to do for severity = MAJOR
 
