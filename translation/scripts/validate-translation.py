@@ -463,6 +463,15 @@ def check_line_count(en_content: str, tr_content: str,
 # Files where ``` appears inside a code block value, making fence detection unreliable
 CODE_BLOCK_SKIP = {
     "guides/qiskit-code-assistant-local.mdx",
+    # Same Modelfile pathology as its -local sibling: an indented ```
+    # block embeds a TEMPLATE """...""" whose body literally contains
+    # ```python{{ .Response }} and PARAMETER stop "```". Any fence-pairing
+    # heuristic that handles this file regresses others (verified: a
+    # bare-close rule breaks custom-backend; an indent rule breaks
+    # stretch). The structural fence-content check can't disambiguate a
+    # ``` that is a delimiter from one that is string data — that is
+    # exactly what this skip set is for. Linguistic/other checks still run.
+    "guides/qiskit-code-assistant.mdx",
     "learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx",
 }
 
