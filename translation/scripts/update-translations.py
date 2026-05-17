@@ -50,13 +50,6 @@ freshness = _import_module("freshness", "check-translation-freshness.py")
 validator = _import_module("validator", "validate-translation.py")
 syncer = _import_module("syncer", "sync-translations.py")
 
-# passage_units has a valid (non-hyphenated) module name — import normally so
-# it's the *same* object the rest of the toolchain uses (validate-translation,
-# bootstrap-passage-hashes, review-translations). The baseline-hashes.json
-# sidecar is keyed by hashes this module produces; we MUST hash with it.
-sys.path.insert(0, str(SCRIPT_DIR))
-import passage_units  # noqa: E402
-
 # Re-export key functions
 compute_source_hash = freshness.compute_source_hash
 extract_embedded_hash = freshness.extract_embedded_hash
@@ -68,7 +61,6 @@ slugify = validator.slugify
 
 DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 I18N_DIR = Path(__file__).resolve().parents[2] / "i18n"
-BASELINE_FILE = Path(__file__).resolve().parents[1] / "baseline-hashes.json"
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 HASH_COMMENT_RE = re.compile(r'\{/\*\s*doqumentation-source-hash:\s*([a-f0-9]+)\s*\*/\}')
@@ -95,25 +87,18 @@ HASH_COMMENT_RE = re.compile(r'\{/\*\s*doqumentation-source-hash:\s*([a-f0-9]+)\
 # This inherently captures structural changes (Admonition→:::, heading
 # renames, added/removed sections) because they are literally in the diff.
 
-_BASELINE_CACHE: dict | None = None
-
 # Parent of the upstream-sync commit (#62, 6f006d7a7 → 833ab77dc). EN was
 # byte-static from first-tracked (5893de729, 2026-03-11) through this commit,
-# so it is the exact old-EN for any baseline that predates docs/ tracking.
+# so it is the exact old-EN for any file the pipeline has not yet finalized.
 SYNC_COMMIT = "9f29483105b21a91d0b3abf0ba9cfd735a084b9b"
 PRE_SYNC_REF = f"{SYNC_COMMIT}^"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-
-def _load_baselines() -> dict:
-    global _BASELINE_CACHE
-    if _BASELINE_CACHE is None:
-        if BASELINE_FILE.exists():
-            _BASELINE_CACHE = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
-        else:
-            _BASELINE_CACHE = {}
-    return _BASELINE_CACHE
+# Old-EN tracking lives in OUR manifest (translation/manifests/<locale>.json),
+# NOT in the shared translation/baseline-hashes.json. baseline-hashes.json is
+# now single-consumer: only drift detection reads it (`.hashes`); bootstrap
+# writes `commit: None`. This is what eliminates the dual-consumer conflict.
 
 
 def _git_show(ref: str, repo_rel: str) -> str | None:
@@ -126,20 +111,51 @@ def _git_show(ref: str, repo_rel: str) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
-def old_en_content(locale: str, rel_path: str) -> tuple[str | None, str]:
-    """Recover the exact EN the translation was made against.
+_MANIFEST_OLDEN_CACHE: dict[str, dict] = {}
 
-    Returns (content, source) where source describes provenance for logs.
-    content is None only if neither the baseline commit nor the pre-sync
-    snapshot has the blob (genuinely new file → caller full-retranslates).
+
+def _manifest_old_en_commit(locale: str, rel_path: str) -> str | None:
+    """Old-EN commit for a file, from OUR manifest (the file we own).
+
+    Set by --finalize to the HEAD at finalize time = the EN the file is
+    now synced to. None/absent ⇒ we have never finalized this file ⇒ its
+    old-EN is correctly the pre-sync snapshot. This replaces reading the
+    shared baseline-hashes.json `.commit`, eliminating the dual-consumer
+    conflict (bootstrap no longer participates in old-EN tracking).
+    """
+    if locale not in _MANIFEST_OLDEN_CACHE:
+        mpath = MANIFEST_DIR / f"{locale}.json"
+        try:
+            _MANIFEST_OLDEN_CACHE[locale] = json.loads(
+                mpath.read_text(encoding="utf-8")).get("files", {})
+        except Exception:
+            _MANIFEST_OLDEN_CACHE[locale] = {}
+    entry = _MANIFEST_OLDEN_CACHE[locale].get(rel_path)
+    # Only a *finalized* file has a trustworthy old-EN commit; a failed/
+    # pending entry must still fall back to the pre-sync snapshot.
+    if entry and entry.get("status") == "finalized":
+        return entry.get("old_en_commit")
+    return None
+
+
+def old_en_content(locale: str, rel_path: str) -> tuple[str | None, str]:
+    """Recover the exact EN the translation was last synced to.
+
+    Source of truth (in order):
+      1. Our manifest's old_en_commit (set by --finalize). A file we
+         already brought current diffs against where it was finalized.
+      2. PRE_SYNC_REF — the pre-sync snapshot. Exact for any file we have
+         NOT finalized, because EN was byte-static from 2026-03-11 until
+         the single sync commit (see project_en_static_until_sync).
+    content is None only if no historical EN blob exists (genuinely new
+    file → caller full-retranslates).
     """
     docs_rel = f"docs/{rel_path}"
-    sidecar = _load_baselines().get(f"{locale}/{rel_path}")
-    commit = sidecar.get("commit") if sidecar else None
+    commit = _manifest_old_en_commit(locale, rel_path)
     if commit:
         c = _git_show(commit, docs_rel)
         if c is not None:
-            return c, f"baseline {commit[:8]}"
+            return c, f"manifest {commit[:8]}"
     # Fallback: pre-sync snapshot (exact — EN was static pre-sync).
     c = _git_show(PRE_SYNC_REF, docs_rel)
     if c is not None:
@@ -1065,6 +1081,15 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
 MANIFEST_DIR = Path(__file__).resolve().parents[1] / "manifests"
 
 
+def _head_commit() -> str | None:
+    """Current HEAD sha — the EN snapshot a just-finalized file is now
+    in sync with, hence its old-EN reference for the NEXT refresh cycle."""
+    import subprocess
+    r = subprocess.run(["git", "rev-parse", "HEAD"],
+                        capture_output=True, text=True, cwd=str(REPO_ROOT))
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def _write_manifest(locale: str, finalized: list[str],
                     failed: dict[str, str]) -> None:
     from datetime import datetime, timezone
@@ -1078,12 +1103,21 @@ def _write_manifest(locale: str, finalized: list[str],
             data = {}
     files = data.setdefault("files", {})
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    head = _head_commit()
     for rel in finalized:
+        # old_en_commit: the EN this file is now synced to. The NEXT
+        # refresh cycle diffs current-EN vs this commit's docs/<rel>.
+        # Owning this here (not in the shared baseline-hashes.json) is
+        # what eliminates the dual-consumer conflict — bootstrap no
+        # longer touches old-EN tracking at all.
         files[rel] = {"status": "finalized", "ts": now,
+                      "old_en_commit": head,
                       "pr": files.get(rel, {}).get("pr")}
     for rel, why in failed.items():
+        prev = files.get(rel, {})
         files[rel] = {"status": "failed", "reason": why, "ts": now,
-                      "pr": files.get(rel, {}).get("pr")}
+                      "old_en_commit": prev.get("old_en_commit"),
+                      "pr": prev.get("pr")}
     data["locale"] = locale
     data["updated"] = now
     mpath.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
