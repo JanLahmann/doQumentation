@@ -6,8 +6,14 @@ Use this prompt AFTER running `translation/scripts/validate-translation.py` (whi
 
 1. Run structural validation first: `python translation/scripts/validate-translation.py --locale {LOCALE} --file {FILE}`
 2. Run MDX lint: `python translation/scripts/lint-translation.py --file {FILE} --en-file {EN_FILE}`
-3. If both pass, paste the prompt below into Haiku / Gemini Flash with both files
-3. Replace `{LANGUAGE}` and the register section for your target language
+3. If both pass, paste the prompt below into the review model with both files
+4. Replace `{LANGUAGE}` and the register section for your target language
+
+**Review model:** Haiku is the validated production review model
+(re-validated 2026-05-17: scored 8/8 vs ground truth across de/ja/ar
+incl. a subtle accuracy+register discriminator, matching Sonnet/Opus,
+zero false-FAILs on clean files). Gemini Flash also works. Do NOT use
+Opus — no accuracy gain over Haiku, just cost.
 
 ---
 
@@ -28,11 +34,20 @@ Do NOT check code blocks, headings, image paths, or structural elements — thos
 Scan for any formal register violations. Flag each with line number and the offending word.
 
 ### 2. WORD SALAD / HALLUCINATION (Critical)
-For each prose paragraph (skip code, math, frontmatter):
-- Any sentence with the same word or 2-word phrase repeated 3+ times → FLAG
-- Any sentence where grammar breaks down (fragments trailing off, subject-verb disagreement) → FLAG
-- Any passage that is unintelligible or does not convey the meaning of the source → FLAG
-Focus especially on the LAST 40% of the file — translation models degrade toward the end.
+For each prose paragraph (skip code, math, frontmatter), match it to the
+corresponding English source paragraph, then flag:
+- **Word salad** — same word or 2-word phrase repeated 3+ times; grammar
+  breaking down (fragments trailing off, subject-verb disagreement);
+  passage unintelligible. → FLAG (issue_type: Word Salad)
+- **Hallucination / substitution** — the paragraph is *fluent and
+  grammatical* but conveys content that is NOT in the corresponding
+  source paragraph: a fabricated sentence, a substituted topic, or
+  invented detail. This is the most dangerous case precisely because it
+  reads well — do not let fluency mask it. Verify each translated
+  paragraph actually corresponds to its source paragraph's meaning.
+  → FLAG (issue_type: Word Salad; note "hallucination" in description)
+Focus especially on the LAST 40% of the file — translation models
+degrade toward the end — but check every paragraph for substitution.
 
 ### 3. VERBOSITY
 For each prose paragraph, compare approximate length to the source:
@@ -64,10 +79,15 @@ Return JSON:
   "summary": "1-2 sentence quality summary."
 }
 
-Verdict rules:
-- PASS: Zero issues
-- MINOR_ISSUES: Only 1-2 register slips or minor verbosity (easily fixable)
-- FAIL: Any word salad, any accuracy error, >2 register violations, or >3 verbosity flags
+Verdict rules (apply in order; first match wins):
+- **FAIL**: any word salad, any hallucination/substitution, any accuracy
+  error, >2 register violations, or >3 verbosity flags.
+- **MINOR_ISSUES**: 1–2 register slips and/or minor verbosity only — no
+  word salad, no hallucination, no accuracy error. `issues[]` lists them.
+- **PASS**: none of the above. A confidently-clean translation. If you
+  note a purely cosmetic preference you are NOT sure is a defect, still
+  return PASS and put it in `summary` (not `issues[]`) — do not inflate
+  it to MINOR_ISSUES. "Zero defects" — not "zero opinions".
 
 ## English source:
 
