@@ -3,7 +3,8 @@
 > **Status**: Ideation / brainstorming — exploring possibilities, not committing to implementation yet.
 > **Budget constraint**: Very limited monthly cost. Use existing Claude Code Max subscription for build-time AI work. For any runtime AI, use IBM public cloud, IBM Code Engine, or IBM serverless (Granite models on watsonx.ai Lite/Essentials plan).
 > **Priority features**: Smart Search & Navigation, Adaptive Learning Paths
-> **Deferred for now**: Interactive Quantum Circuit Debugger (captured in `.claude/AI_INTEGRATION_IDEAS.md`)
+> **Deferred for now**: Interactive Quantum Circuit Debugger
+> **Note**: Single canonical AI-ideation doc. The older `AI_INTEGRATION_IDEAS.md` (2026-03-08) was merged into the section at the bottom of this file on 2026-05-17 and deleted (original in git history).
 
 ---
 
@@ -304,7 +305,7 @@ Returns synthesized answer with citations + code snippets + "Learn more" links
 - Granite models support multilingual generation — could draft translations at build time
 - Human reviewers (native speakers) review and approve
 - Could dramatically accelerate translation velocity for the ~300 untranslated pages per locale
-- *Already captured as idea #6 in AI_INTEGRATION_IDEAS.md but Granite makes it more cost-effective*
+- *Also listed under "Additional AI ideas" in the merged section below; Granite makes it more cost-effective*
 
 **T2. Content Gap Analysis**
 - Use Granite to analyze all 381 pages and identify: missing explanations, assumed knowledge not covered elsewhere, orphan pages with no inbound references, outdated Qiskit API references
@@ -436,6 +437,19 @@ Returns synthesized answer with citations + code snippets + "Learn more" links
 | **R5** Self-hosted Granite on Code Engine | Search | Run model directly, no token limits |
 | **RAG-1** Multi-turn conversational RAG | Search/Chat | Chat sidebar with session context |
 
+### Cost ramp & scaling (salvaged from BOB_AI_INNOVATION_RECOMMENDATIONS, 2026-05-08, then deleted as redundant)
+
+Phased monthly cost if features ship incrementally (most are client-side/build-time = $0):
+
+| Stage | Features added | Monthly |
+|---|---|---|
+| Phase 1 | Code assistant, recommendations, error explanations | $0–5 |
+| Phase 2 | + semantic search, learning paths | $0–10 |
+| Phase 3 | + circuit debugger, translation accel | $0–15 |
+| All | + quality checks, adaptive difficulty | $10–30 |
+
+Scaling: ~1K MAU → $10–20/mo; ~10K MAU → $80–100/mo (serverless $30–50 + possible Granite tier upgrade). Client-side features stay $0 at any scale. (The rest of that doc duplicated ideas already covered above.)
+
 ---
 
 ## Open Questions
@@ -443,5 +457,128 @@ Returns synthesized answer with citations + code snippets + "Learn more" links
 1. **Which $0/month ideas are most exciting?** The build-time metadata (2A) is foundational — it enables badges, breadcrumbs, recommendations, related pages, and search facets all at once.
 2. **Is the $0-5/month tier acceptable** for features like "Ask AI" and error explanation? Or strictly $0?
 3. **Content update cadence**: How often does content change? Determines if AI enrichment should be a CI step or manual one-off.
-4. **NotebookLM synergy**: Could NLM-7 (Deep Research) help generate the content graph more accurately than Claude/Granite alone?
+4. **NotebookLM synergy**: Could NLM-7 (Deep Research) help generate the content graph more accurately than Claude/Granite alone? (full NotebookLM idea set merged below)
 5. **What should we explore next?** More ideas? Narrow down to favorites? Start thinking about implementation?
+
+---
+
+# Merged from AI_INTEGRATION_IDEAS.md (captured 2026-03-08, consolidated 2026-05-17)
+
+> The earlier `AI_INTEGRATION_IDEAS.md` doc was folded in here so there is
+> one canonical AI-ideation file. Its **UX audit already did its job** —
+> ~40 fixes were cherry-picked from it into the shipped Phase 1 work
+> (see `PROJECT_HANDOFF_ARCHIVE.md` "Branch integration Phase 1"). Only
+> the still-relevant / non-duplicated parts are kept below. Its
+> "Remaining PROJECT_REVIEW (6)" table was dropped — it duplicated
+> `.claude/PROJECT_REVIEW.md`, which is the live tracker for those.
+> Full original recoverable from git history if ever needed.
+
+## Additional AI ideas (not already covered by Smart Search / Adaptive Paths above)
+
+- **Code Cell Error Explanation** — on cell failure, send error + code to Claude API, show contextual fix inline. Extends existing `showErrorHint` in `ExecutableCode/index.tsx`. (Pairs with UX-36 below.)
+- **"Explain This Code" button** — per-cell button → plain-language explanation for learners. Plugs into ExecutableCode.
+- **Exercise / quiz generation** — auto-generate practice problems from lesson content; build-time or on-demand. (Pairs with UX-33.)
+- **Circuit from natural language** — "3-qubit GHZ circuit" → generated Qiskit → execute in existing kernel.
+
+## NotebookLM integration ideas (unique — kept verbatim)
+
+> Based on [NotebookLM's March 2026 features](https://blog.google/innovation-and-ai/products/notebooklm/generate-your-own-cinematic-video-overviews-in-notebooklm/): Cinematic Video Overviews, Interactive Audio, Custom Personas, Data Tables, Deep Research, Slide Generation.
+
+### NLM-1. Audio Overviews for Quantum Tutorials (highest impact)
+NotebookLM generates podcast-style audio from sources; Audio Overviews support [80+ languages](https://workspaceupdates.googleblog.com/2025/04/language-expansion-audio-overviews-notebooklm.html), aligning with 20 locales.
+- **Difficulty tiers**: beginner/intermediate/advanced audio for the same tutorial (addresses UX-45)
+- **Multi-language**: audio in DE/ES/JA/AR etc. — serves all 20 locale subdomains
+- **Format variety**: [customizable tones](https://techcrunch.com/2025/09/03/googles-notebooklm-now-lets-you-customize-the-tone-of-its-ai-podcasts/) — "Deep Dive" courses, "Brief" guides, "Debate" concepts, "Critique" Qiskit pitfalls
+- **Implementation**: pre-generate at build time via [NotebookLM Enterprise API](https://docs.google.com/gemini/enterprise/notebooklm-enterprise/docs/api-notebooks), embed as `<audio>` alongside code blocks
+
+### NLM-2. Cinematic Video Overviews for Complex Concepts
+[Cinematic Video Overviews](https://blog.google/innovation-and-ai/products/notebooklm/generate-your-own-cinematic-video-overviews-in-notebooklm/) (Mar 2026, Gemini 3 + Veo 3) generate documentary-style explainer videos.
+- Visualize gates, circuit diagrams, Bloch sphere rotations as animations
+- Synthesize related tutorials into one video narrative (addresses UX-39)
+- Supplement IBM Video embeds (`IBMVideo.tsx`) with curriculum-specific content
+- Currently English-only, Google AI Ultra subscribers
+
+### NLM-3. Interactive "Join" Mode as a Tutor
+[Interactive Audio](https://blog.google/innovation-and-ai/models-and-research/google-labs/notebooklm-custom-personas-engine-upgrade/) lets users interrupt AI hosts to ask questions.
+- "Raise hand" during an audio overview (addresses UX-43)
+- Hosts suggest what to study next (addresses UX-41)
+- Lightweight alternative to a full chatbot (vs. AI Tutor sidebar)
+
+### NLM-4. Custom Persona as Quantum Tutor
+[Custom chat personas](https://blog.google/innovation-and-ai/models-and-research/google-labs/notebooklm-custom-personas-engine-upgrade/) with 1M-token context via Gemini 3.
+- "Qiskit Expert" persona loaded with all ~381 pages — grounded answers
+- "Quantum Beginner" persona that simplifies / avoids jargon
+- NL Q&A as search alternative (addresses UX-40)
+- Notebook goals like "Help users understand quantum error correction"
+
+### NLM-5. Data Tables for Backend & Feature Comparisons
+[Data Tables](https://www.lbsocial.net/post/notebooklm-2026-update-knowledge-database) convert qualitative text into comparison grids.
+- Simulators vs. real hardware (relevant to Settings' 30+ FakeBackend options)
+- Sampler vs. Estimator across tutorials
+- Transpiler optimization-level comparisons
+- Pre-generate as MDX tables at build time, commit to docs
+
+### NLM-6. Slide Generation for Course Content
+NotebookLM generates editable presentation slides from sources.
+- Auto-generate lecture slides from the 154 course pages
+- Complements `CourseComponents` (IBMVideo, Figure, DefinitionTooltip)
+- Lets educators build teaching materials from doQumentation content
+
+### NLM-7. Deep Research for Content Graph & Prerequisites
+[Deep Research](https://medium.com/@jimmisound/the-cognitive-engine-a-comprehensive-analysis-of-notebooklms-evolution-2023-2026-90b7a7c2df36) (Gemini 3) searches sources + web to synthesize findings.
+- Auto-identify prerequisites between pages (addresses UX-41)
+- Generate "Related Topics" sections (addresses UX-39)
+- Build a content graph across tutorials/guides/courses/modules
+- Output as frontmatter (`related`, `prerequisites`, `leads_to`) for build-time rendering
+
+| Approach | Effort | Best for |
+|---|---|---|
+| Pre-generated audio via NotebookLM API at build time | Medium | NLM-1 |
+| Link to shared NotebookLM notebooks | Low | NLM-4 |
+| Pre-generated video embeds | Medium | NLM-2 |
+| Build-time data tables committed as MDX | Low | NLM-5 |
+| One-time Deep Research → frontmatter | Low | NLM-7 |
+| [Open Notebook](https://github.com/lfnovo/open-notebook) self-hosted | High | Full API control |
+
+## UX backlog (open items from the 2026-03-08 audit; shipped ones omitted)
+
+> Spot-checked 2026-05-17: many of the original 46 shipped via Phase 1
+> (e.g. UX-6 confirm dialogs). These are the ones still open / worth
+> revisiting; several are AI/NotebookLM-addressable (cross-refs above).
+
+- **UX-1** Onboarding too minimal — no guided tour / Get Started path
+- **UX-2 / UX-25** Binder launch wait opaque; no upfront "first run = 10–25 min" interstitial + Colab offer
+- **UX-3** Settings page overload (~1333-line `jupyter-settings.tsx`) — needs tabs/accordion (= PROJECT_REVIEW SET-2 + `plans/simplify-settings.md`)
+- **UX-5** Credential expiry unnoticed — no content-page warning banner
+- **UX-7** Kernel-death recovery unclear — no persistent Reconnect banner
+- **UX-8** Error hints low-contrast in dark mode (fails WCAG AA)
+- **UX-10** Simulator picker (50+ flat options) — searchable combobox
+- **UX-11** No pip-install progress indicator
+- **UX-13** No keyboard-shortcut documentation
+- **UX-14** Learning progress lacks % completion
+- **UX-15** No user data export/import (JSON)
+- **UX-16 / UX-17 / UX-18 / UX-19** A11y: skip links, fieldset grouping, CodeMirror SR testing, onboarding `aria-live`
+- **UX-20 / UX-39** No "Related Pages"/cross-references (NLM-7 / Deep Research candidate)
+- **UX-21 / UX-40** Search keyword-only, no facets (= Smart Search above)
+- **UX-22** No offline/PWA support
+- **UX-23** No reading-time estimates
+- **UX-24 / UX-29** Weak "Continue where you left off" CTA
+- **UX-30 / UX-33** No goal-setting / comprehension feedback (quiz-gen candidate)
+- **UX-31** Kernel state lost on navigation — no warning
+- **UX-32** `save_account()` skip-hint wording scares users
+- **UX-36** Error guidance limited to 3 patterns — add Qiskit-specific (TranspilerError, IBMNotAuthorizedError…) (AI error-explanation candidate)
+- **UX-37** Cross-tab sync gaps (cookie writes; use `BroadcastChannel`)
+- **UX-38** No personal "My Learning" analytics dashboard
+- **UX-42** BetaNotice still `sessionStorage` (re-shows every session) — should be versioned localStorage
+- **UX-43** No in-app "Was this helpful?" feedback widget
+- **UX-44** Sidebar auto-suffix "(Guides)" — use intentional distinct names
+- **UX-45** No difficulty/complexity badges
+- **UX-46** Locale switch loses scroll/kernel — warn on active kernel
+
+## Generic engineering backlog (non-AI; from same audit, still largely true)
+
+No tests (Jest/Vitest/Playwright), no ESLint/Prettier, no `ARCHITECTURE.md`/`DEVELOPMENT.md`, no error monitoring (Sentry), no code-splitting/image-optimization/bundle-analysis. Remaining hardcoded English: `onboarding.ts` (~2 strings), `OpenInLabBanner` PHASE_LABELS/hints (~15 strings).
+
+**Salvaged from BOB_FOUNDATION_REVIEW (2026-05-08, then deleted as redundant scorecard):**
+- **Architecture**: `src/config/jupyter.ts` is a "god object" — flagged for splitting into focused modules (credentials / environment-detect / lab-url / session). Pairs with PROJECT_REVIEW SET-2 + UX-3 (the Settings/jupyter complexity cluster).
+- **Documentation gaps** (not tracked elsewhere): no `CONTRIBUTING.md`, no Architecture Decision Records, no Storybook/component docs, no troubleshooting guide. (Foundation review scored Docs 8/10, Architecture 7/10, Perf 7.5/10, A11y 7.5/10, Testing 2/10 — Testing = the "no tests" item above; the rest of that scorecard duplicated items already in this backlog / the UX list / the security tracker.)
