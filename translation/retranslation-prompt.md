@@ -45,9 +45,13 @@ python translation/scripts/update-translations.py --locale {LOCALE} --auto-fix
 python translation/scripts/update-translations.py --locale {LOCALE} --generate-workfile --output /tmp/{LOCALE}-workfile.json
 ```
 
-The auto-fix pass handles structural drift (code, imports, links) without
-touching prose. After it runs, the workfile contains only paragraphs that
-need real translator attention.
+The auto-fix pass handles structural drift (code, imports). The workfile
+then describes the exact EN change per file: each `update.new_en` is a
+unified-diff hunk (old EN → current EN). Files where the EN did not change
+(only whitespace/code drift) are NOOP and absent from the workfile —
+their source hash is bumped automatically. Files with no historical EN
+(new/renamed) or a very large change are listed under `full_retranslation`
+— do those with `translation-prompt.md`, not this prompt.
 
 Read the workfile summary:
 
@@ -55,14 +59,15 @@ Read the workfile summary:
 python3 -c "
 import json
 wf = json.load(open('/tmp/{LOCALE}-workfile.json'))
-print(f'Total stale files: {len(wf[\"files\"])}')
+print(f'Files needing hunk-splice: {len(wf[\"files\"])}')
+print(f'Full retranslation (use translation-prompt.md): {len(wf.get(\"full_retranslation\", []))}')
 for f in wf['files']:
-    print(f'  {f[\"severity\"]:<10} {len(f[\"updates\"]):>3} updates  {f[\"path\"]}')
+    print(f'  {f[\"severity\"]:<10} {len(f[\"updates\"]):>3} hunk(s)  {f[\"path\"]}')
 "
 ```
 
 If there are more than 50 files, slice to the top N by severity or
-update-count and do them first.
+hunk-count and do them first.
 
 ## Step 2 — Per-file refresh
 
@@ -71,29 +76,52 @@ For each file in the workfile, launch a sub-agent with this prompt:
 ```
 You are a {LANGUAGE} translator for doQumentation. Update a STALE translation.
 
-1. Read /path/to/{LOCALE}-workfile.json (above)
+The workfile gives you the EXACT English diff — old EN vs current EN — for
+this file. Your job: mirror that same change into the {LANGUAGE} file.
+
+1. Read /path/to/{LOCALE}-workfile.json
 2. Find the entry for file path `{PATH}`
 3. Read i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{PATH}
-4. For each `update` in the workfile entry:
-   - Locate the matching `current_translation` in the locale file
-   - Replace it with a fresh translation of `new_en`
-   - Preserve the surrounding context byte-identically
-5. Use the Edit tool (not Write) for each replacement so other paragraphs stay untouched.
-6. After all updates, the file's source-hash marker will be auto-bumped by
-   the `--auto-fix` pass — don't change it yourself.
+4. Each `update.new_en` is a unified-diff HUNK of the English source:
+   - `@@ -a,b +c,d @@` header — ignore, just positional
+   - lines starting `-` were REMOVED from the old English
+   - lines starting `+` were ADDED in the current English
+   - unchanged context lines start with a space
+   For each hunk:
+   a. The `-` lines are the OLD English. Find the {LANGUAGE} text in the
+      locale file that is the translation of those old English lines
+      (use the surrounding context lines to locate the region precisely).
+   b. Rewrite that {LANGUAGE} region so it is a faithful translation of
+      the `+` lines (the new English), keeping every unchanged context
+      line's translation as-is.
+   c. If the hunk only adds lines (no `-`), insert the {LANGUAGE}
+      translation of the `+` lines at the matching position.
+   d. If the hunk only removes lines, delete the corresponding
+      {LANGUAGE} text.
+5. Use the Edit tool (not Write) per hunk so untouched regions stay byte-
+   identical. Do NOT touch the {/* doqumentation-source-hash: ... */}
+   marker — it is bumped by the finalize step.
 
 Translation rules:
-- Match the voice and terminology of `current_translation` where possible
-  (the existing translator's style is established; minimise change).
-- Translate ONLY: prose paragraphs, headings, list items, blockquotes,
-  table cells, admonition text and title= props, <summary>/<details>
-  text, JSX label= props.
+- Preserve the existing translator's voice/terminology in unchanged text;
+  only the diffed region changes.
+- Structural changes in the hunk are REAL: if `+` lines add a <CardGroup>,
+  a heading, an <Admonition>, or a `:::note` block (or remove one),
+  reproduce that structure in {LANGUAGE} exactly — same components, same
+  nesting, same count. This is why we diff: the change may be structural,
+  not just prose.
+- Translate: prose, headings, list items, blockquotes, table cells,
+  admonition text and title= props, <summary>/<details> text, JSX label=
+  and description= and title= props.
 - Keep byte-identical: code fences and content, math ($...$, $$...$$),
-  URLs, image paths, imports, inline code backticks.
+  URLs, image paths, imports, inline code backticks, JSX href=/value=/id=
+  /analyticsName=/type=/className=.
 - Keep terms: Qubit, Gate, Circuit, Backend, Transpiler, Session, Sampler,
   Estimator, PUB.
-- Pin heading anchors: derive from the ENGLISH heading. ASCII slug only —
-  no accented characters, no non-Latin characters.
+- Heading anchors: derive {#anchor} from the ENGLISH heading (lowercase,
+  spaces→hyphens, ASCII only — no accents/non-Latin). If the existing
+  {LANGUAGE} heading already has {#...}, and the English heading text did
+  NOT change in the hunk, keep that exact anchor.
 - Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
 
 After all edits, respond with ONLY "Done" or a brief error.
