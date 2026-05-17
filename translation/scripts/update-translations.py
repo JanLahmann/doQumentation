@@ -164,9 +164,12 @@ def en_change(locale: str, rel_path: str, en_content: str):
     if old_en == en_content:
         return [], True, 0
     import difflib
+    # n=5: more context than the default 3 so a sub-agent can uniquely
+    # locate the target-language region even when a changed sentence is
+    # near-duplicated (lists, tables, repeated boilerplate).
     diff = list(difflib.unified_diff(
         old_en.splitlines(), en_content.splitlines(),
-        lineterm="", n=3,
+        lineterm="", n=5,
     ))
     # Group into hunks (each starts at an @@ line).
     hunks: list[str] = []
@@ -632,19 +635,13 @@ def classify_changes(en_content: str, tr_content: str, rel_path: str) -> ChangeR
                     prose_lines += len(en_b.content.split('\n'))
                     deltas.append(Delta("prose_changed", en_b, tr_b, section, auto_fixable=False))
 
-    # Compute severity
-    if not deltas:
-        severity = Severity.NOOP
-    elif all(d.auto_fixable for d in deltas):
-        severity = Severity.NOOP
-    elif headings_added or headings_removed:
-        severity = Severity.MAJOR if prose_lines > 100 else Severity.MODERATE
-    elif prose_lines <= 5:
-        severity = Severity.MINOR
-    elif prose_lines <= 100:
-        severity = Severity.MODERATE
-    else:
-        severity = Severity.MAJOR
+    # NOTE: severity is NOT decided here. classify_changes can only see
+    # structural deltas (code/imports), not prose change — the old prose-
+    # line heuristic that lived here produced 7 bug classes (see git log
+    # for the #71-#75 fixes) and was superseded by the exact git-diff in
+    # en_change(). process_file OVERWRITES report.severity from the git
+    # diff. This placeholder keeps the dataclass valid; nothing reads it.
+    severity = Severity.NOOP
 
     return ChangeReport(
         rel_path=rel_path,
@@ -841,14 +838,78 @@ def locale_of(tr_path: Path) -> str:
     return parts[parts.index("i18n") + 1]
 
 
-def find_stale_translations(locale: str, section: str | None = None) -> list[tuple[str, Path, Path]]:
-    """Find translations whose source hash doesn't match current EN."""
+def _paths_in_open_pr_branches(locale: str) -> set[str]:
+    """Rel paths already touched by an unmerged refresh branch for this locale.
+
+    Parallel batches branch from different main states and force-add i18n/
+    paths. A file already refreshed in an open PR branch still reads as STALE
+    on the current branch (freshness checks i18n/ on disk), so re-translating
+    it duplicates work and causes rebase conflicts (this bit batch #80). Skip
+    those paths.
+    """
+    import subprocess
+    try:
+        br = subprocess.run(
+            ["git", "branch", "-r", "--list", "origin/i18n/*refresh*"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        ).stdout.split()
+    except Exception:
+        return set()
+    prefix = f"i18n/{locale}/docusaurus-plugin-content-docs/current/"
+    touched: set[str] = set()
+    for b in br:
+        b = b.strip()
+        if not b:
+            continue
+        try:
+            files = subprocess.run(
+                ["git", "diff", "--name-only", f"origin/main...{b}"],
+                capture_output=True, text=True, cwd=str(REPO_ROOT),
+            ).stdout.splitlines()
+        except Exception:
+            continue
+        for f in files:
+            if f.startswith(prefix):
+                touched.add(f[len(prefix):])
+    return touched
+
+
+def _manifest_finalized(locale: str) -> set[str]:
+    """Rel paths already marked 'finalized' in the durable batch manifest
+    (item G) — skip them so multi-session scaling is resumable."""
+    mpath = MANIFEST_DIR / f"{locale}.json"
+    if not mpath.exists():
+        return set()
+    try:
+        data = json.loads(mpath.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    return {r for r, v in data.get("files", {}).items()
+            if v.get("status") == "finalized"}
+
+
+def find_stale_translations(locale: str, section: str | None = None,
+                            exclude_open_prs: bool = False,
+                            skip_manifest_done: bool = False) -> list[tuple[str, Path, Path]]:
+    """Find translations whose source hash doesn't match current EN.
+
+    exclude_open_prs: skip files already refreshed in an open PR branch for
+    this locale (prevents duplicate work / rebase conflicts in parallel
+    batches).
+    skip_manifest_done: also skip files already 'finalized' in the durable
+    manifest (resumable multi-session scaling).
+    """
     pairs = find_genuine_translations(locale)
+    skip = _paths_in_open_pr_branches(locale) if exclude_open_prs else set()
+    if skip_manifest_done:
+        skip |= _manifest_finalized(locale)
     stale = []
     for en_path, tr_path in pairs:
         # Filter by section if specified
         rel = str(tr_path.relative_to(I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"))
         if section and not rel.startswith(section):
+            continue
+        if rel in skip:
             continue
 
         en_content = en_path.read_text(encoding='utf-8')
@@ -861,6 +922,153 @@ def find_stale_translations(locale: str, section: str | None = None) -> list[tup
             stale.append((rel, en_path, tr_path))
 
     return stale
+
+
+_anchor_fixer = None
+_file_validator = None
+
+
+def _lazy_finalize_helpers():
+    """Import fix-heading-anchors + validate-translation once (hyphenated)."""
+    global _anchor_fixer, _file_validator
+    if _anchor_fixer is None:
+        _anchor_fixer = _import_module("anchor_fixer", "fix-heading-anchors.py")
+    if _file_validator is None:
+        _file_validator = validator  # already imported at top (validate-translation.py)
+    return _anchor_fixer, _file_validator
+
+
+def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
+                   verbose: bool = False) -> tuple[list[str], list[str]]:
+    """Per file: pin English-derived heading anchors, validate, and bump the
+    source hash ONLY if validation passes.
+
+    Returns (finalized, failed). Failures are written to
+    <output_dir>/_finalize_failures.txt so they can be reworked by an agent
+    instead of silently shipping broken. This is what makes the weekly cron
+    self-policing — the manual validate loop is no longer required.
+    """
+    anchor_fixer, fv = _lazy_finalize_helpers()
+    finalized: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for rel in rel_paths:
+        en_path = get_en_path(rel)
+        tr_path = get_tr_path(locale, rel)
+        if not en_path.exists() or not tr_path.exists():
+            failed.append((rel, "missing en/tr file"))
+            continue
+        # 1. Deterministically pin English-derived {#anchor} on every heading.
+        try:
+            anchor_fixer.fix_file(en_path, tr_path, apply=True)
+        except Exception as e:
+            failed.append((rel, f"anchor-fix error: {e}"))
+            continue
+        # 2. Validate.
+        try:
+            report = fv.validate_file(en_path, tr_path, locale)
+        except Exception as e:
+            failed.append((rel, f"validate error: {e}"))
+            continue
+        if not report.passed:
+            reasons = "; ".join(
+                f"{c.name}" for c in report.checks if not c.passed
+            )
+            failed.append((rel, f"FAIL: {reasons}"))
+            if verbose:
+                print(f"  ✗ {rel}: {reasons}")
+            continue
+        # 2b. CONTENT GATE (item F): structural PASS is not enough. A
+        # sub-agent can claim "Done" yet silently miss a prose hunk — the
+        # file then validates structurally but stays STALE, and bumping the
+        # hash would lock that staleness in forever (the #73 silent-data-
+        # loss class, re-entering through the agent layer). Defend against
+        # it: for every non-cosmetic removed EN line in the diff, that exact
+        # OLD English text must NOT still be present verbatim in the
+        # translation (its presence means the hunk was never applied — the
+        # translator left the old English in place or didn't touch it).
+        tr_content = tr_path.read_text(encoding="utf-8")
+        en_content = en_path.read_text(encoding="utf-8")
+        hunks, old_found, _ = en_change(locale, rel, en_content)
+        if old_found and hunks:
+            stale_evidence = []
+            for h in hunks:
+                for ln in h.splitlines():
+                    if ln[:1] != "-" or ln[:2] == "- ":
+                        continue
+                    removed = ln[1:].strip()
+                    # ignore trivial/cosmetic lines (blank, pure markup,
+                    # very short) — those legitimately need no TR change
+                    if len(removed) < 12:
+                        continue
+                    if removed.startswith(("```", "$$", "import ", "<", "|", "{/*")):
+                        continue
+                    if removed in tr_content:
+                        stale_evidence.append(removed[:60])
+                        break
+                if stale_evidence:
+                    break
+            if stale_evidence:
+                failed.append((
+                    rel,
+                    f"CONTENT: old EN still present (hunk not applied): "
+                    f"{stale_evidence[0]!r}",
+                ))
+                if verbose:
+                    print(f"  ✗ {rel}: stale — old EN still in file")
+                continue
+        # 3. PASS (structure + content) → bump source hash → reads FRESH.
+        bumped = bump_source_hash(tr_content, en_content)
+        if bumped != tr_content:
+            tr_path.write_text(bumped, encoding="utf-8")
+        finalized.append(rel)
+        if verbose:
+            print(f"  ✓ {rel}")
+    if failed:
+        fpath = output_dir / "_finalize_failures.txt"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(
+            "\n".join(f"{r}\t{why}" for r, why in failed) + "\n",
+            encoding="utf-8",
+        )
+        print(f"\n⚠ {len(failed)} file(s) failed finalize → {fpath}")
+
+    # Item G: durable batch manifest. Merge into translation/manifests/
+    # {locale}.json so multi-session / weekly-cron scaling is resumable
+    # and doesn't rely on /tmp scratch files. Records per-file status +
+    # the timestamp; PR number can be patched in by the caller.
+    _write_manifest(locale, finalized, dict(failed))
+    return finalized, [r for r, _ in failed]
+
+
+MANIFEST_DIR = Path(__file__).resolve().parents[1] / "manifests"
+
+
+def _write_manifest(locale: str, finalized: list[str],
+                    failed: dict[str, str]) -> None:
+    from datetime import datetime, timezone
+    MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+    mpath = MANIFEST_DIR / f"{locale}.json"
+    data: dict = {}
+    if mpath.exists():
+        try:
+            data = json.loads(mpath.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    files = data.setdefault("files", {})
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for rel in finalized:
+        files[rel] = {"status": "finalized", "ts": now,
+                      "pr": files.get(rel, {}).get("pr")}
+    for rel, why in failed.items():
+        files[rel] = {"status": "failed", "reason": why, "ts": now,
+                      "pr": files.get(rel, {}).get("pr")}
+    data["locale"] = locale
+    data["updated"] = now
+    mpath.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                     encoding="utf-8")
+    print(f"  manifest → {mpath} "
+          f"({sum(1 for v in files.values() if v['status']=='finalized')} finalized, "
+          f"{sum(1 for v in files.values() if v['status']=='failed')} failed total)")
 
 
 def process_file(en_path: Path, tr_path: Path, rel_path: str,
@@ -981,6 +1189,17 @@ def main():
 
     parser.add_argument("--output", help="Output path for workfile JSON")
     parser.add_argument("--dry-run", action="store_true", help="Don't write any files")
+    parser.add_argument("--exclude-open-prs", action="store_true",
+                        help="Skip files already refreshed in an open i18n/*refresh* PR branch")
+    parser.add_argument("--finalize", action="store_true",
+                        help="Per file: pin English-derived heading anchors, validate "
+                             "(structure + content), and bump the source hash ONLY if "
+                             "both pass. Writes failures to "
+                             "<output-dir>/_finalize_failures.txt and a durable "
+                             "translation/manifests/<locale>.json.")
+    parser.add_argument("--skip-manifest-done", action="store_true",
+                        help="Skip files already 'finalized' in "
+                             "translation/manifests/<locale>.json (resumable scaling)")
     parser.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -1001,11 +1220,25 @@ def main():
         stale = [(args.file, en_path, tr_path)]
     else:
         print(f"Scanning {args.locale} for stale translations...")
-        stale = find_stale_translations(args.locale, args.section)
+        stale = find_stale_translations(args.locale, args.section,
+                                        exclude_open_prs=args.exclude_open_prs,
+                                        skip_manifest_done=args.skip_manifest_done)
         print(f"Found {len(stale)} stale file(s)")
 
     if not stale:
         print("No stale translations found.")
+        return
+
+    # Finalize mode: pin anchors → validate → bump hash only if PASS.
+    if args.finalize:
+        out_dir = Path(args.output).parent if args.output else Path("translation/workfiles")
+        rels = [rel for rel, _, _ in stale]
+        finalized, failed = finalize_files(args.locale, rels, out_dir,
+                                           verbose=args.verbose)
+        print(f"\n{'═' * 60}")
+        print(f"Finalize: {len(finalized)} passed & hash-bumped, "
+              f"{len(failed)} failed (see _finalize_failures.txt)")
+        print(f"{'═' * 60}")
         return
 
     # Process each file
