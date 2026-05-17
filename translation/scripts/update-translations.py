@@ -1177,9 +1177,18 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
         # EN identical to the old snapshot → only structural/whitespace
         # drift, already handled by auto-fix. Nothing for a translator.
         report.severity = Severity.NOOP
-    elif n_changed > 120:
-        # Very large EN change → splicing dozens of hunks is error-prone and
-        # the page likely restructured. Whole-file retranslate.
+    elif len(hunks) > 25 or (n_changed > 400 and len(hunks) > 12):
+        # Whole-file retranslate ONLY when the change is genuinely
+        # fragmented across many hunks (page restructured) — that is when
+        # splicing is error-prone. Gate on HUNK COUNT, not raw changed
+        # lines: a file can have a huge n_changed across just a few large
+        # hunks (e.g. qiskit-code-assistant: 280 changed lines, 3 hunks),
+        # which splices cleanly. Full-translation is the RISKIER path
+        # (it rewrites the whole file → can mangle dense fence structure;
+        # observed failing twice on qiskit-code-assistant), so only take
+        # it when hunk-splice truly can't cope. (Earlier `n_changed > 120`
+        # conflated "big change" with "must rewrite" and forced fragile
+        # whole-file rewrites onto few-hunk files — root-caused 2026-05-17.)
         full_retranslation = True
         report.severity = Severity.MAJOR
     else:
