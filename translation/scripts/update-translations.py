@@ -74,17 +74,36 @@ FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 HASH_COMMENT_RE = re.compile(r'\{/\*\s*doqumentation-source-hash:\s*([a-f0-9]+)\s*\*/\}')
 
 
-# ── Baseline (passage-hash) drift detection ──
+# ── Exact EN change detection via git diff ──
 #
-# baseline-hashes.json maps "{locale}/{rel_path}" -> {"commit", "hashes"}
-# where `hashes` is the set of EN passage hashes that existed *when the
-# translation was made*. A passage is genuinely stale iff its hash is in the
-# current EN but NOT in the baseline. This is the same content-addressed set
-# difference used by validate-translation.py::check_drift — we reuse it so
-# update-translations agrees with the rest of the toolchain instead of the
-# old (broken) "flag every prose block in a changed section" heuristic.
+# The earlier implementation inferred prose changes from a passage-hash set
+# difference vs baseline-hashes.json. That is indirect reconstruction of a
+# diff git already computes exactly, and it produced 7 distinct bug classes
+# (false positives, truncation, premature hash bump, restructure blindness,
+# structural-drift blindness). Instead, recover the EXACT old EN and let git
+# diff it against the current EN.
+#
+# Old-EN recovery (see memory project_en_static_until_sync):
+#   1. baseline-hashes.json records the commit the translation was made at.
+#      `git show <commit>:docs/<path>` gives that exact old EN.
+#   2. ~38% of baseline commits predate docs/ being git-tracked (2026-03-11,
+#      commit 5893de729). For those the blob is missing — but EN content was
+#      byte-identical from 2026-03-11 until the single sync commit
+#      9f2948310 (verified: git diff 5893de729 9f2948310^ -- docs/... is
+#      empty). So the exact old EN is `git show <PRE_SYNC>:docs/<path>`.
+#
+# This inherently captures structural changes (Admonition→:::, heading
+# renames, added/removed sections) because they are literally in the diff.
 
 _BASELINE_CACHE: dict | None = None
+
+# Parent of the upstream-sync commit (#62, 6f006d7a7 → 833ab77dc). EN was
+# byte-static from first-tracked (5893de729, 2026-03-11) through this commit,
+# so it is the exact old-EN for any baseline that predates docs/ tracking.
+SYNC_COMMIT = "9f29483105b21a91d0b3abf0ba9cfd735a084b9b"
+PRE_SYNC_REF = f"{SYNC_COMMIT}^"
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_baselines() -> dict:
@@ -97,41 +116,77 @@ def _load_baselines() -> dict:
     return _BASELINE_CACHE
 
 
-def changed_passages(locale: str, rel_path: str, en_content: str):
-    """Return (changed_units, removed_count, baseline_count, has_baseline).
+def _git_show(ref: str, repo_rel: str) -> str | None:
+    """Return file content at a git ref, or None if the blob doesn't exist."""
+    import subprocess
+    r = subprocess.run(
+        ["git", "show", f"{ref}:{repo_rel}"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    return r.stdout if r.returncode == 0 else None
 
-    changed_units:  EN prose units (full text) present in current EN but
-                    absent from the baseline — genuinely new/edited.
-    removed_count:  baseline passages no longer present in current EN. A
-                    high removed/baseline ratio means the EN was
-                    restructured/rewritten (not just prose-edited), so a
-                    paragraph-splice would leave the translation
-                    structurally wrong — caller should escalate to a full
-                    retranslation in that case.
-    baseline_count: size of the baseline passage set (for the ratio).
-    has_baseline:   False when there's no baseline (can't tell what
-                    changed → caller treats as full-retranslate).
+
+def old_en_content(locale: str, rel_path: str) -> tuple[str | None, str]:
+    """Recover the exact EN the translation was made against.
+
+    Returns (content, source) where source describes provenance for logs.
+    content is None only if neither the baseline commit nor the pre-sync
+    snapshot has the blob (genuinely new file → caller full-retranslates).
     """
-    baselines = _load_baselines()
-    sidecar = baselines.get(f"{locale}/{rel_path}")
-    if not sidecar or not sidecar.get("hashes"):
-        return [], 0, 0, False
-    baseline_set = set(sidecar["hashes"])
-    # NOTE: passage_units.hash_units() returns {hash: 120-char preview}. The
-    # preview is fine for drift *reporting* but NOT for driving translation —
-    # a sub-agent given a truncated paragraph produces a truncated result.
-    # Re-derive full units here (same extractor + same hash fn the baseline
-    # was built with) and key by hash so we can return the FULL text.
-    units = passage_units.extract_units(en_content, mode="lenient")
-    current = {}
-    for u in units:
-        h = passage_units.hash_unit(u)
-        if h not in current:        # match hash_units' first-wins on dupes
-            current[h] = u
-    current_set = set(current)
-    changed = [text for h, text in current.items() if h not in baseline_set]
-    removed_count = len(baseline_set - current_set)
-    return changed, removed_count, len(baseline_set), True
+    docs_rel = f"docs/{rel_path}"
+    sidecar = _load_baselines().get(f"{locale}/{rel_path}")
+    commit = sidecar.get("commit") if sidecar else None
+    if commit:
+        c = _git_show(commit, docs_rel)
+        if c is not None:
+            return c, f"baseline {commit[:8]}"
+    # Fallback: pre-sync snapshot (exact — EN was static pre-sync).
+    c = _git_show(PRE_SYNC_REF, docs_rel)
+    if c is not None:
+        return c, f"pre-sync {PRE_SYNC_REF[:8]}"
+    return None, "no historical EN (new file)"
+
+
+def en_change(locale: str, rel_path: str, en_content: str):
+    """Return (hunks, old_found, n_changed_lines).
+
+    hunks: list of unified-diff hunk strings (old EN → current EN). Empty
+           list with old_found=True means EN is unchanged (NOOP — only
+           structural/whitespace drift handled by auto-fix).
+    old_found: False when no historical EN exists (new file / rename) —
+           caller treats as full retranslation.
+    n_changed_lines: count of +/- content lines across all hunks (drives
+           severity).
+    """
+    old_en, _src = old_en_content(locale, rel_path)
+    if old_en is None:
+        return [], False, 0
+    if old_en == en_content:
+        return [], True, 0
+    import difflib
+    diff = list(difflib.unified_diff(
+        old_en.splitlines(), en_content.splitlines(),
+        lineterm="", n=3,
+    ))
+    # Group into hunks (each starts at an @@ line).
+    hunks: list[str] = []
+    cur: list[str] = []
+    n_changed = 0
+    for line in diff:
+        if line.startswith("@@"):
+            if cur:
+                hunks.append("\n".join(cur))
+            cur = [line]
+        elif line.startswith(("---", "+++")):
+            continue
+        else:
+            if cur:
+                cur.append(line)
+            if line[:1] in "+-" and line[:2] not in ("+ ", "- "):
+                n_changed += 1
+    if cur:
+        hunks.append("\n".join(cur))
+    return hunks, True, n_changed
 
 # ── Data structures ──
 
@@ -839,74 +894,49 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
                 print(f"    Auto-fixed: {', '.join(fixes)}")
             tr_content = fixed_content
 
-    # ── Prose staleness via canonical passage-hash baseline diff ──
-    # classify_changes CANNOT detect prose changes (it has no old EN, and TR
-    # is a different language). Use the baseline passage-hash set difference
-    # — the same mechanism validate-translation.py uses — so only genuinely
-    # new/edited EN passages become work items.
-    changed, removed_count, baseline_count, has_baseline = changed_passages(
-        locale_of(tr_path), rel_path, en_content)
+    # ── Exact EN change via git diff (old EN → current EN) ──
+    # No inference: recover the precise EN the translation was made against
+    # and diff it. Hunks include structural changes (Admonition→:::, heading
+    # renames, added/removed sections) verbatim, so the sub-agent mirrors
+    # exactly what changed.
+    hunks, old_found, n_changed = en_change(locale_of(tr_path), rel_path, en_content)
 
     updates = []
     full_retranslation = False
 
-    # Fraction of the original baseline passages that no longer exist in the
-    # current EN. High = the page was restructured/rewritten, not just prose-
-    # edited. A paragraph-splice into the old translation then leaves it
-    # structurally wrong (wrong heading set, missing/extra components) — that
-    # is exactly how guides/addons.mdx failed validation (CardGroup EN=5
-    # TR=0, heading EN=6 TR=15). Such files must be fully retranslated.
-    #
-    # BUT a pure ratio over-fires on small files: editing 2 paragraphs in a
-    # 4-passage page is 50% removed yet plainly a minor edit, not a rewrite
-    # (guides/index.mdx: 107 EN lines unchanged, base=4 rem=2). Require BOTH
-    # a high ratio AND an absolute floor of removed passages so only genuine
-    # rewrites escalate. addons (rem=37), c-extension (rem=18),
-    # classical-feedforward (rem=33) clear the floor; index (rem=2),
-    # minimize-time (rem=3) do not.
-    removed_ratio = (removed_count / baseline_count) if baseline_count else 0.0
-    is_rewrite = removed_ratio >= 0.5 and removed_count >= 10
-
-    if not has_baseline:
-        # No baseline → we cannot tell which passages changed. Don't silently
-        # emit zero updates (that would mark a stale file "done"). The source
-        # hash differs, so something changed: fall back to whole-file ret‑
-        # translation via translation-prompt.md.
+    if not old_found:
+        # No historical EN (new file / rename) → can't diff. Whole-file
+        # translate via translation-prompt.md.
         full_retranslation = True
         report.severity = Severity.MAJOR
-    elif not changed:
-        # Hash differs but no prose passage changed → purely structural drift
-        # (code/imports/whitespace), already handled by auto-fix above.
+    elif not hunks:
+        # EN identical to the old snapshot → only structural/whitespace
+        # drift, already handled by auto-fix. Nothing for a translator.
         report.severity = Severity.NOOP
-    elif is_rewrite:
-        # Most of the original content is gone AND enough passages removed in
-        # absolute terms → structural rewrite, not a prose edit. Splicing
-        # can't reconstruct it; retranslate the whole file via
-        # translation-prompt.md.
+    elif n_changed > 120:
+        # Very large EN change → splicing dozens of hunks is error-prone and
+        # the page likely restructured. Whole-file retranslate.
         full_retranslation = True
         report.severity = Severity.MAJOR
     else:
-        n = len(changed)
-        # Severity by count of genuinely-changed passages.
-        if n > 60:
-            full_retranslation = True
-            report.severity = Severity.MAJOR
-        else:
-            report.severity = (
-                Severity.MINOR if n <= 5
-                else Severity.MODERATE
+        # Each hunk is one work item: the exact old→new EN region. The
+        # sub-agent finds the corresponding translated region (by the
+        # context lines + removed EN lines) and rewrites it to match the
+        # added EN lines, in the target language.
+        report.severity = (
+            Severity.MINOR if n_changed <= 12 else Severity.MODERATE
+        )
+        updates = [
+            UpdateInstruction(
+                section_anchor="",
+                paragraph_index=idx,
+                new_en_prose=hunk,        # the unified-diff hunk itself
+                current_translation="",   # sub-agent locates via hunk context
+                context_before="",
+                context_after="",
             )
-            updates = [
-                UpdateInstruction(
-                    section_anchor="",
-                    paragraph_index=idx,
-                    new_en_prose=unit,
-                    current_translation="",  # located by sub-agent via new_en
-                    context_before="",
-                    context_after="",
-                )
-                for idx, unit in enumerate(changed)
-            ]
+            for idx, hunk in enumerate(hunks)
+        ]
 
     # Advance the source hash ONLY when the file is now fully in sync with
     # EN: structural drift was auto-fixed and there is no remaining prose to
@@ -925,8 +955,8 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
 
     if verbose:
         tag = "MAJOR/full" if full_retranslation else report.severity.value
-        nupd = "n/a" if not has_baseline else len(changed)
-        print(f"    -> {tag}: {nupd} changed passage(s)")
+        nupd = "n/a" if not old_found else f"{len(hunks)} hunk(s), {n_changed} lines"
+        print(f"    -> {tag}: {nupd}")
 
     return FileWorkItem(
         rel_path=rel_path,
