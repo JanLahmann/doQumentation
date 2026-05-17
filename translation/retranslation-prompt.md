@@ -112,10 +112,13 @@ Translation rules:
   not just prose.
 - Translate: prose, headings, list items, blockquotes, table cells,
   admonition text and title= props, <summary>/<details> text, JSX label=
-  and description= and title= props.
+  and description= and title= props, AND frontmatter `title:` and
+  `sidebar_label:` (these ARE translatable — if a hunk changes them,
+  translate the new value into {LANGUAGE}; do not leave them in English).
 - Keep byte-identical: code fences and content, math ($...$, $$...$$),
   URLs, image paths, imports, inline code backticks, JSX href=/value=/id=
-  /analyticsName=/type=/className=.
+  /analyticsName=/type=/className=, and other frontmatter keys
+  (notebook_path, slug, platform).
 - Keep terms: Qubit, Gate, Circuit, Backend, Transpiler, Session, Sampler,
   Estimator, PUB.
 - Heading anchors: derive {#anchor} from the ENGLISH heading (lowercase,
@@ -124,32 +127,61 @@ Translation rules:
   NOT change in the hunk, keep that exact anchor.
 - Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
 
-After all edits, respond with ONLY "Done" or a brief error.
+NEVER do these (each caused a real validation failure):
+- Do NOT add an `# H1` (or any heading) that is not present in the
+  English source. Mirror the EN heading structure exactly — no more, no
+  fewer.
+- Do NOT leave a heading without its English-derived `{#anchor}`. Every
+  heading in the file must carry one, even headings you did not change.
+- Do NOT leave frontmatter `title:`/`sidebar_label:` in English when a
+  hunk changed them.
+- Do NOT translate or alter any code, math, URL, import, or JSX
+  non-text attribute.
+
+Conservative no-op: if a hunk's English change is purely cosmetic
+(capitalization, punctuation moved, whitespace, a link's trailing
+period repositioned) and the existing {LANGUAGE} text is already a
+correct translation, make NO edit for that hunk and note it briefly.
+Minimise change is the goal — never rewrite a correct paragraph for a
+cosmetic English-only delta.
+
+After all edits, respond with ONLY "Done", or "Done — no-op: <reason>"
+when every hunk was cosmetic, or a brief error.
 ```
 
 Fill in `{PATH}`, `{LANGUAGE}`, `{LOCALE}`, `{INFORMAL_FORM}` per the
 language table in `translation-prompt.md`.
 
-## Step 3 — Validate + commit
+## Step 3 — Finalize + commit
+
+One command does the whole gate per file: pin English-derived heading
+anchors → validate → bump the source hash **only if validation passes**.
+Files that fail are written to `_finalize_failures.txt` (next to the
+workfile) for rework — they are NOT hash-bumped, so they stay flagged
+STALE until fixed instead of silently shipping broken.
 
 ```bash
-# Re-validate (drift severity should drop to NOOP for all touched files):
-python translation/scripts/check-translation-freshness.py --locale {LOCALE}
-
-# Run the standard validation gate too:
-python translation/scripts/validate-translation.py --locale {LOCALE}
-
-# If failures appear, look at translation/scripts/fix-heading-anchors.py
-# and translation/scripts/sync-translations.py — both are idempotent.
+python translation/scripts/update-translations.py --locale {LOCALE} --finalize \
+  --output /tmp/{LOCALE}-workfile.json -v
 ```
 
-Stage and commit per locale:
+Then commit ONLY the files that passed (never force-add gitignored
+binaries — stage the `.mdx` paths explicitly):
 
 ```bash
-git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
-git add translation/status.json translation/baseline-hashes.json
-git commit -m "i18n({LOCALE}): refresh N stale translations after upstream sync"
+# inspect failures, if any:
+cat /tmp/_finalize_failures.txt 2>/dev/null   # <rel-path>\t<reason>
+
+# stage exactly the passed .mdx files (example: all changed mdx under the locale)
+git add -f $(git status --short \
+  i18n/{LOCALE}/docusaurus-plugin-content-docs/current/ \
+  | awk '/^ M / && /\.mdx$/ {print $2}')
+git commit -m "i18n({LOCALE}): refresh N stale translations via git-diff pipeline"
 ```
+
+Re-run the agent on any `_finalize_failures.txt` entries (common slips:
+missing `{#anchor}`, an added H1 not in EN, untranslated frontmatter
+`title:`), then `--finalize` again until the failures file is empty.
 
 ## Workflow shape — weekly recipe
 
