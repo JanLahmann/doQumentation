@@ -213,6 +213,50 @@ def check_unescaped_jsx_quotes(lines: list[str]) -> list[tuple[str, int, str]]:
     return findings
 
 
+_IMPORT_EXPORT_RE = re.compile(r'^\s*(import|export)\b')
+
+
+def check_esm_import_isolation(lines: list[str]) -> list[tuple[str, int, str]]:
+    """Flag a top-level import/export NOT separated by a blank line from a
+    following JSX expression — a hard MDX build break.
+
+    MDX's ESM parser treats lines following an `import`/`export` with no
+    blank separator as part of the same ESM block. A `{/* … */}` JSX
+    comment (or a `<Component .../>`) jammed directly under the import is
+    parsed as a `BlockStatement`, which is illegal in ESM context:
+
+        Unexpected `BlockStatement` in code: only import/exports are
+        supported
+
+    This broke the de production build (tutorials/index.mdx,
+    tutorials/repetition-codes.mdx) after the TutorialFeedback-import
+    relocator placed `import …;` immediately above
+    `{/* doqumentation-source-hash: … */}`. Neither the structural
+    validator nor any prior lint check caught it — this check closes
+    that gap so it can never recur.
+    """
+    findings = []
+    for i, line in enumerate(lines):
+        if is_inside_code_block(lines, i):
+            continue
+        if not _IMPORT_EXPORT_RE.match(line):
+            continue
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        s = nxt.strip()
+        if s == "" or _IMPORT_EXPORT_RE.match(nxt):
+            continue  # blank line OR another import/export — both fine
+        # A non-blank, non-ESM line directly under an import. If it opens
+        # a JSX expression ({…} or <…), MDX parses it as a BlockStatement.
+        if s.startswith("{") or s.startswith("<"):
+            findings.append((
+                ERROR, i + 1,
+                "import/export not blank-separated from following JSX "
+                f"({s[:40]!r}) — MDX 'Unexpected BlockStatement' build break; "
+                "insert a blank line after the import"
+            ))
+    return findings
+
+
 def check_code_fence_balance(
     lines: list[str], en_lines: list[str] | None = None
 ) -> list[tuple[str, int, str]]:
@@ -538,6 +582,7 @@ ALL_CHECKS = [
     check_heading_mid_line,
     check_invalid_anchor_chars,
     check_unescaped_jsx_quotes,
+    check_esm_import_isolation,
 ]
 
 
