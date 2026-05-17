@@ -361,6 +361,13 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 
 ### Active TODO
 
+#### ⭐ Priority 1 (assigned to another dev)
+
+- **Move repo from GH user-repo to a GH org** — currently `JanLahmann/doQumentation` (user repo). Migration plan drafted in `.claude/ORG_MIGRATION_PLAN.md`. Wide blast radius: repo URL in README, `docs/index.mdx`, this file, footer, `package.json`, `sync-content.py` clone URL, all CI workflows, Binder repo refs (`doQumentation/notebooks`), Colab `/github/` URLs, satellite-repo deploy keys, wildcard DNS CNAME, custom domain (doqumentation.org / IONOS), GitHub Pages config. Includes out-of-band GitHub ops (org creation, repo transfer, deploy-key re-issuance). Do this first — task below depends on the final org/repo URL.
+- **Update our own hello-world** — refresh instructions, links, and IBM Quantum Platform signin flow in `local-content/hello-world.ipynb` (custom notebook served via the local-content overlay). Links depend on the org migration above; sequence accordingly.
+
+#### General
+
 - **Translation expansion** — 17 standard locales at 100% (412/412). HE/TH 95% (21 fallback files in about + qiskit-addons). German dialects: KSH 46, NDS 43, GSW 42, SAX 39, BLN 36, AUT 34, SWG/BAD/BAR 31. TH/MS/ID/CS still have 13–213 ✗ files needing fixes despite full structural coverage. Run `python translation/scripts/translation-status.py --all` for current counts.
 - **Linguistic review remaining** — Phase 3 stratified samples done for KO (414/414, full), TH (44, mostly clean), PL (45), CS (45). RO + MS + ID samples still pending (~10/412 each). Optional: deeper TH/PL/CS coverage. Translator passes still owed: TL `workshop/03*` (~75% English), AR `quantum-diagonalization-algorithms/` (`تقطير`→`قطرنة` systematic), KO `tutorials/transpilation-optimizations-with-sabre.mdx` (8 untranslated EN passages, lines 579–823). Full per-locale status + Phase 4 cheap-fixes in `.claude/PHASE_4_LINGUISTIC_TRIAGE_2026-05-07.md`.
 - **Bump QuBins pin in lockstep with Qiskit** — `src/config/jupyter.ts` pins Binder to `mybinder.org/v2/gh/QuBins/qiskit-images/2.3-xl`. When `binder/jupyter-requirements.txt` moves to Qiskit 2.4 (or later), bump this string to the matching QuBins tag. Same applies to `admin.tsx` Federation links and `.github/workflows/binder-warmup.yml`.
