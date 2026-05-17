@@ -874,16 +874,35 @@ def _paths_in_open_pr_branches(locale: str) -> set[str]:
     return touched
 
 
+def _manifest_finalized(locale: str) -> set[str]:
+    """Rel paths already marked 'finalized' in the durable batch manifest
+    (item G) — skip them so multi-session scaling is resumable."""
+    mpath = MANIFEST_DIR / f"{locale}.json"
+    if not mpath.exists():
+        return set()
+    try:
+        data = json.loads(mpath.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    return {r for r, v in data.get("files", {}).items()
+            if v.get("status") == "finalized"}
+
+
 def find_stale_translations(locale: str, section: str | None = None,
-                            exclude_open_prs: bool = False) -> list[tuple[str, Path, Path]]:
+                            exclude_open_prs: bool = False,
+                            skip_manifest_done: bool = False) -> list[tuple[str, Path, Path]]:
     """Find translations whose source hash doesn't match current EN.
 
     exclude_open_prs: skip files already refreshed in an open PR branch for
     this locale (prevents duplicate work / rebase conflicts in parallel
     batches).
+    skip_manifest_done: also skip files already 'finalized' in the durable
+    manifest (resumable multi-session scaling).
     """
     pairs = find_genuine_translations(locale)
     skip = _paths_in_open_pr_branches(locale) if exclude_open_prs else set()
+    if skip_manifest_done:
+        skip |= _manifest_finalized(locale)
     stale = []
     for en_path, tr_path in pairs:
         # Filter by section if specified
@@ -958,9 +977,46 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
             if verbose:
                 print(f"  ✗ {rel}: {reasons}")
             continue
-        # 3. PASS → bump source hash so the file reads FRESH next cycle.
+        # 2b. CONTENT GATE (item F): structural PASS is not enough. A
+        # sub-agent can claim "Done" yet silently miss a prose hunk — the
+        # file then validates structurally but stays STALE, and bumping the
+        # hash would lock that staleness in forever (the #73 silent-data-
+        # loss class, re-entering through the agent layer). Defend against
+        # it: for every non-cosmetic removed EN line in the diff, that exact
+        # OLD English text must NOT still be present verbatim in the
+        # translation (its presence means the hunk was never applied — the
+        # translator left the old English in place or didn't touch it).
         tr_content = tr_path.read_text(encoding="utf-8")
         en_content = en_path.read_text(encoding="utf-8")
+        hunks, old_found, _ = en_change(locale, rel, en_content)
+        if old_found and hunks:
+            stale_evidence = []
+            for h in hunks:
+                for ln in h.splitlines():
+                    if ln[:1] != "-" or ln[:2] == "- ":
+                        continue
+                    removed = ln[1:].strip()
+                    # ignore trivial/cosmetic lines (blank, pure markup,
+                    # very short) — those legitimately need no TR change
+                    if len(removed) < 12:
+                        continue
+                    if removed.startswith(("```", "$$", "import ", "<", "|", "{/*")):
+                        continue
+                    if removed in tr_content:
+                        stale_evidence.append(removed[:60])
+                        break
+                if stale_evidence:
+                    break
+            if stale_evidence:
+                failed.append((
+                    rel,
+                    f"CONTENT: old EN still present (hunk not applied): "
+                    f"{stale_evidence[0]!r}",
+                ))
+                if verbose:
+                    print(f"  ✗ {rel}: stale — old EN still in file")
+                continue
+        # 3. PASS (structure + content) → bump source hash → reads FRESH.
         bumped = bump_source_hash(tr_content, en_content)
         if bumped != tr_content:
             tr_path.write_text(bumped, encoding="utf-8")
@@ -975,7 +1031,44 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
             encoding="utf-8",
         )
         print(f"\n⚠ {len(failed)} file(s) failed finalize → {fpath}")
+
+    # Item G: durable batch manifest. Merge into translation/manifests/
+    # {locale}.json so multi-session / weekly-cron scaling is resumable
+    # and doesn't rely on /tmp scratch files. Records per-file status +
+    # the timestamp; PR number can be patched in by the caller.
+    _write_manifest(locale, finalized, dict(failed))
     return finalized, [r for r, _ in failed]
+
+
+MANIFEST_DIR = Path(__file__).resolve().parents[1] / "manifests"
+
+
+def _write_manifest(locale: str, finalized: list[str],
+                    failed: dict[str, str]) -> None:
+    from datetime import datetime, timezone
+    MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+    mpath = MANIFEST_DIR / f"{locale}.json"
+    data: dict = {}
+    if mpath.exists():
+        try:
+            data = json.loads(mpath.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    files = data.setdefault("files", {})
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for rel in finalized:
+        files[rel] = {"status": "finalized", "ts": now,
+                      "pr": files.get(rel, {}).get("pr")}
+    for rel, why in failed.items():
+        files[rel] = {"status": "failed", "reason": why, "ts": now,
+                      "pr": files.get(rel, {}).get("pr")}
+    data["locale"] = locale
+    data["updated"] = now
+    mpath.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                     encoding="utf-8")
+    print(f"  manifest → {mpath} "
+          f"({sum(1 for v in files.values() if v['status']=='finalized')} finalized, "
+          f"{sum(1 for v in files.values() if v['status']=='failed')} failed total)")
 
 
 def process_file(en_path: Path, tr_path: Path, rel_path: str,
@@ -1099,9 +1192,14 @@ def main():
     parser.add_argument("--exclude-open-prs", action="store_true",
                         help="Skip files already refreshed in an open i18n/*refresh* PR branch")
     parser.add_argument("--finalize", action="store_true",
-                        help="Per file: pin English-derived heading anchors, validate, "
-                             "and bump the source hash ONLY if validation passes. Writes "
-                             "failures to <output-dir>/_finalize_failures.txt for rework.")
+                        help="Per file: pin English-derived heading anchors, validate "
+                             "(structure + content), and bump the source hash ONLY if "
+                             "both pass. Writes failures to "
+                             "<output-dir>/_finalize_failures.txt and a durable "
+                             "translation/manifests/<locale>.json.")
+    parser.add_argument("--skip-manifest-done", action="store_true",
+                        help="Skip files already 'finalized' in "
+                             "translation/manifests/<locale>.json (resumable scaling)")
     parser.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -1123,7 +1221,8 @@ def main():
     else:
         print(f"Scanning {args.locale} for stale translations...")
         stale = find_stale_translations(args.locale, args.section,
-                                        exclude_open_prs=args.exclude_open_prs)
+                                        exclude_open_prs=args.exclude_open_prs,
+                                        skip_manifest_done=args.skip_manifest_done)
         print(f"Found {len(stale)} stale file(s)")
 
     if not stale:
