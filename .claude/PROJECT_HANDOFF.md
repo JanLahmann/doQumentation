@@ -567,10 +567,13 @@ into the promote/sync/status machinery — please check these 4 touchpoints:
    fires on every retranslated file.
 
 **Unrelated follow-ups (not blockers):**
-- EN-source bug: `docs/tutorials/chsh-inequality.mdx` figure caption describes
-  dash-dot/dashed lines inversely to the code comments. Translations were fixed
-  to be physically correct; the EN is still wrong and will re-introduce the
-  error on next upstream sync. Worth an upstream Qiskit/documentation issue.
+- ~~EN-source bug: `docs/tutorials/chsh-inequality.mdx` figure caption~~
+  **STRUCK / NOT A BUG (verified 2026-05-17):** the EN at
+  `chsh-inequality.mdx:233` is self-consistent — dash-dotted lines = quantum
+  bounds ($\pm 2\sqrt{2}$), dashed = classical ($\pm 2$), matching the
+  plotting code. The original label swap was translator-tool-side only and is
+  already fixed in the affected locales. Do **not** file an upstream issue or
+  act on this bullet.
 - BLN/AUT dialects: spot-check found several files that are Standard German with
   only sparse dialect tokens. Stylistic, low priority.
 - Defer promoting prose-drift WARN→ERROR in CI until the pipeline settles.
