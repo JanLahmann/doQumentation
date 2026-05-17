@@ -539,4 +539,42 @@ The first three together form a coherent demo: past years of QGSS, runnable in a
 
 ---
 
-*Last updated: May 15, 2026 (added Operational Maturity Workstreams handoff — launch badge, named environments, event pages, job-status widget, course paths)*
+## Translation drift-detection — coordination note (May 2026)
+
+**Context:** This session focused entirely on translation review quality. Built a
+three-class drift-detection toolchain (untranslated EN paragraphs, EN-content
+drift since promote, foreign-script contamination), fixed ~150 translator-omission
+paragraphs across all 17 locales + 9 dialects, and cleaned 80 invisible Cyrillic
+homoglyph contaminations. The prose-drift lint is now at 4 irreducible WARNs.
+
+**The pipeline restructure may silently break the drift detection.** It hooks
+into the promote/sync/status machinery — please check these 4 touchpoints:
+
+1. **`promote-drafts.py` baseline refresh.** Added a hook that writes
+   `translation/baseline-hashes.json` on every successful promote (functions
+   `load_baselines`/`save_baselines`/`update_baselines`, called at end of
+   `main()`). If promote-drafts was replaced/restructured, this hook is orphaned
+   → freshly-promoted files will show false drift forever.
+2. **`check-translations.yml`** gained two steps after `sync-content.py`:
+   `update-en-passage-hashes.py` then `validate-translation.py --check-drift`.
+   Verify they still run at the right point relative to the new sync flow.
+3. **`status.json` schema dependency.** `bootstrap-passage-hashes.py` and
+   `--check-drift` filter on `status[locale][path].status == "promoted"`. If
+   the new pipeline changed that field's name/values, drift silently reports 0.
+4. **Baseline staleness.** `baseline-hashes.json` + `en-passage-hashes.json`
+   were bootstrapped against current `docs/`. After any bulk retranslate,
+   re-run `python translation/scripts/bootstrap-passage-hashes.py` or drift
+   fires on every retranslated file.
+
+**Unrelated follow-ups (not blockers):**
+- EN-source bug: `docs/tutorials/chsh-inequality.mdx` figure caption describes
+  dash-dot/dashed lines inversely to the code comments. Translations were fixed
+  to be physically correct; the EN is still wrong and will re-introduce the
+  error on next upstream sync. Worth an upstream Qiskit/documentation issue.
+- BLN/AUT dialects: spot-check found several files that are Standard German with
+  only sparse dialect tokens. Stylistic, low priority.
+- Defer promoting prose-drift WARN→ERROR in CI until the pipeline settles.
+
+---
+
+*Last updated: May 15, 2026 (added Operational Maturity Workstreams handoff — launch badge, named environments, event pages, job-status widget, course paths; + translation drift-detection coordination note)*
