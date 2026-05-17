@@ -979,6 +979,27 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
         except Exception as e:
             failed.append((rel, f"anchor-fix error: {e}"))
             continue
+        # 1b. Deterministic post-agent code-block repair. Sub-agents
+        # recurrently translate comments INSIDE ```fences``` (e.g.
+        # `# Setting options` → `# Impostazione…`), which fails the
+        # byte-identical code-block gate. Fenced code is byte-identical
+        # to EN *by design* (code is never translated), so restoring the
+        # EN code blocks is ALWAYS correct and can never destroy prose
+        # translation — prose is not inside fences. This is the same
+        # safe, deterministic post-agent repair pattern as the
+        # TutorialFeedback-import fixer; doing it here (not only at the
+        # pre-agent --auto-fix) closes the gap where the agent
+        # re-introduces the defect AFTER auto-fix ran. Root-caused
+        # 2026-05-18 after the same slip recurred across es/fr/it/uk.
+        try:
+            _tr = tr_path.read_text(encoding="utf-8")
+            _en = en_path.read_text(encoding="utf-8")
+            _resynced = syncer.fix_differing_code_blocks(_en, _tr)
+            if _resynced and _resynced != _tr:
+                tr_path.write_text(_resynced, encoding="utf-8")
+        except Exception:
+            pass  # never block finalize on the optional repair
+
         # 2. Validate.
         try:
             report = fv.validate_file(en_path, tr_path, locale)
