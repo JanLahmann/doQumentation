@@ -146,8 +146,20 @@ def bootstrap_entry(
     if not en_hashes:
         return False, "no extractable units in EN"
 
+    # NOTE: bootstrap intentionally NO LONGER writes the per-file `commit`.
+    # That field is consumed ONLY by the git-diff retranslation pipeline
+    # (update-translations.py) for old-EN recovery — drift detection here
+    # reads only `hashes`. Bootstrap advancing `commit` on a blanket --force
+    # was the dual-consumer trap: it set old-EN = current-EN for files the
+    # pipeline had NOT yet retranslated, silently dropping them from stale
+    # detection. The pipeline now owns old-EN tracking entirely in its own
+    # manifest (translation/manifests/<locale>.json), so bootstrap can be
+    # re-run any time / any scope with zero coordination. `commit: None`
+    # keeps the schema stable for any legacy reader; the pipeline treats
+    # null/absent commit as "use the pre-sync snapshot" (correct: a file
+    # the pipeline hasn't finalized still has pre-sync EN as its old-EN).
     baselines[sidecar_key] = {
-        "commit": sha,
+        "commit": None,
         "hashes": sorted(en_hashes.keys()),
     }
     if verbose:
