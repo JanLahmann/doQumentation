@@ -62,19 +62,36 @@ def fix_text(en_text: str, tr_text: str) -> tuple[str | None, str]:
     fm = [i for i, l in enumerate(stripped) if l.strip() == "---"][:2]
     if len(fm) < 2:
         return None, "no frontmatter — skip (manual)"
+    # Insert DIRECTLY after the frontmatter close, blank-separated on
+    # BOTH sides, BEFORE any {/* source-hash */} comment. This exactly
+    # mirrors EN's layout (`---` / blank / import / blank / …) and is
+    # MDX-safe by construction.
+    #
+    # Why blank lines are mandatory, not cosmetic (root-caused
+    # 2026-05-17, broke the de build): MDX's ESM parser treats lines
+    # following an `import` with no blank separator as part of the same
+    # ESM block. A `{/* … */}` JSX comment jammed against the import
+    # (`import …;\n{/* hash */}`) is then parsed as a `BlockStatement`,
+    # which is illegal in ESM context → hard MDX compilation failure
+    # ("Unexpected `BlockStatement` in code: only import/exports are
+    # supported"). The old skip-comment-then-insert logic could land the
+    # import adjacent to the source-hash comment with no blank between.
     ins = fm[1] + 1
-    # skip a source-hash comment and blank lines right after frontmatter
-    while ins < len(stripped) and (
-        stripped[ins].strip().startswith("{/*") or stripped[ins].strip() == ""
-    ):
-        ins += 1
-    stripped[ins:ins] = [IMPORT_LINE, ""]
-    # 3. verify
+    # drop blank lines immediately after frontmatter so we control spacing
+    while ins < len(stripped) and stripped[ins].strip() == "":
+        del stripped[ins]
+    stripped[ins:ins] = ["", IMPORT_LINE, ""]
+    # 3. verify: exactly one import, outside code, AND blank-isolated
     new = stripped
     pos = [i for i, l in enumerate(new) if l.strip() == IMPORT_LINE]
     if len(pos) != 1 or _fence_open_before(new, pos[0]) != 0:
         return None, f"verify failed (pos={pos}) — NOT writing"
-    return "\n".join(new), f"relocated import to line {pos[0] + 1}"
+    p = pos[0]
+    before_ok = p > 0 and new[p - 1].strip() == ""
+    after_ok = p + 1 < len(new) and new[p + 1].strip() == ""
+    if not (before_ok and after_ok):
+        return None, f"verify failed (import not blank-isolated @ {p+1}) — NOT writing"
+    return "\n".join(new), f"relocated import to line {p + 1}"
 
 
 def iter_targets(locale: str | None, all_locales: bool, single: str | None):
