@@ -144,6 +144,18 @@ Translation rules:
 - Use {INFORMAL_FORM} register. Write fluent {LANGUAGE}.
 
 NEVER do these (each caused a real validation failure):
+- HARD SCOPE: edit ONLY the exact files in your assigned list. Do NOT
+  read-then-edit, auto-fix, "while I'm here" touch, or batch-process ANY
+  file outside that list — not even other stale files in the same
+  locale. Your list is exhaustive; the orchestrator owns everything else.
+- NO GIT, NO TOOLS BEYOND Read/Edit: never run `git` (no add, commit,
+  branch, checkout, reset, stash), never run the pipeline scripts
+  (`update-translations.py`, `fix-tutorialfeedback-import.py`,
+  `--auto-fix`, `--finalize`), never run shell. You ONLY Read and Edit
+  the assigned `.mdx` files. Committing and finalizing are exclusively
+  the orchestrator's job, AFTER the dual-gate. An agent that commits or
+  runs scripts corrupts the batch (this happened: an agent re-translated
+  309 files and `git commit`-ed onto main — full manual recovery).
 - Do NOT add an `# H1` (or any heading) that is not present in the
   English source. Mirror the EN heading structure exactly — no more, no
   fewer.
