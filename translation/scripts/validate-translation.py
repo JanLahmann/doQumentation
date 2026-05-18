@@ -57,7 +57,7 @@ FRONTMATTER_TRANSLATE_KEYS = ["title", "description", "sidebar_label"]
 # (brand names, universal phrases, proper nouns)
 FRONTMATTER_SAME_ALLOWED = {
     "doqumentation", "hello world", "guides", "tutorials", "courses", "modules",
-    "overview",
+    "overview", "changelog",
     # Brand names and proper nouns
     "ibm quantum composer", "qiskit code assistant", "open source", "support",
     "ibm circuit function",
