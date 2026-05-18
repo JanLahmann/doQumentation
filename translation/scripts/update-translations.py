@@ -48,6 +48,7 @@ def _import_module(name: str, filename: str):
 
 freshness = _import_module("freshness", "check-translation-freshness.py")
 validator = _import_module("validator", "validate-translation.py")
+mdxlint = _import_module("mdxlint", "lint-translation.py")
 syncer = _import_module("syncer", "sync-translations.py")
 
 # Re-export key functions
@@ -1013,6 +1014,36 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
             failed.append((rel, f"FAIL: {reasons}"))
             if verbose:
                 print(f"  ✗ {rel}: {reasons}")
+            continue
+        # 2a. MDX-FATAL LINT GATE. validate-translation.py is structural
+        # parity vs EN; it does NOT catch MDX-compilation-fatal syntax
+        # (e.g. an `import` not blank-separated from a following JSX
+        # expression → "Unexpected BlockStatement"). That class broke
+        # the de build (#108) and recurred on legacy es/it
+        # tutorials/index.mdx (#141) — files damaged BEFORE the #108
+        # fixer existed and never re-finalized, so nothing ever
+        # re-checked them. Run the MDX-fatal lint here so a file can
+        # NEVER be hash-bumped/committed while it would abort
+        # `docusaurus build`. ERROR-level findings only (warnings are
+        # non-fatal and intentionally not gated).
+        try:
+            tr_lines = tr_path.read_text(encoding="utf-8").splitlines()
+            mdx_errs = [
+                f
+                for chk in (mdxlint.check_esm_import_isolation,
+                            mdxlint.check_garbled_xml_tags)
+                for f in chk(tr_lines)
+                if f[0] == mdxlint.ERROR
+            ]
+        except Exception as e:
+            mdx_errs = []
+            if verbose:
+                print(f"  ! {rel}: mdx-lint skipped ({e})")
+        if mdx_errs:
+            why = "; ".join(f"L{ln} {msg}" for _, ln, msg in mdx_errs[:3])
+            failed.append((rel, f"MDX-FATAL: {why}"))
+            if verbose:
+                print(f"  ✗ {rel}: MDX-FATAL: {why}")
             continue
         # 2b. CONTENT GATE (item F): structural PASS is not enough. A
         # sub-agent can claim "Done" yet silently miss a prose hunk — the
