@@ -257,6 +257,58 @@ def check_esm_import_isolation(lines: list[str]) -> list[tuple[str, int, str]]:
     return findings
 
 
+# A valid top-level MDX ESM import is JS module syntax:
+#   import X from '...'      import { a } from "..."     import '...'
+#   import * as X from '...'
+# A Python statement like `import numpy` (no `from`, no quoted module) is
+# NOT valid JS — acorn fails: "Could not parse import/exports with acorn"
+# and the whole locale build aborts. This happens when a `import numpy`
+# line escapes a ```python fence to MDX top level (broke fr+uk
+# guides/noise-learning.mdx). The isolation check above does not catch
+# it (it's about the *following* line); this catches the import itself.
+_VALID_JS_IMPORT_RE = re.compile(
+    r'''^\s*import\s+(?:
+        ['"][^'"]+['"]                       # import 'mod'
+        | (?:[\w$]+|\*\s+as\s+[\w$]+|\{[^}]*\}|[\w$]+\s*,\s*\{[^}]*\})
+          \s+from\s+['"][^'"]+['"]           # import X / {a} / * as X from 'mod'
+    )\s*;?\s*$''',
+    re.VERBOSE,
+)
+_EXPORT_OK_RE = re.compile(r'^\s*export\s+(default\s+|\{|const |let |var |function |class |\*)')
+
+
+def check_invalid_esm_statement(lines: list[str]) -> list[tuple[str, int, str]]:
+    """Flag a top-level import/export line that acorn cannot parse as JS.
+
+    Root-cause class for "Cause: Could not parse import/exports with
+    acorn" — a hard MDX build abort. Typically a Python `import numpy`
+    (or similar) that escaped a ```python fence to MDX document level.
+    Only ESM-looking lines OUTSIDE code fences are checked; valid JS
+    import/export forms pass.
+    """
+    findings = []
+    for i, line in enumerate(lines):
+        if is_inside_code_block(lines, i):
+            continue
+        st = line.strip()
+        if st.startswith("import ") or st == "import":
+            if not _VALID_JS_IMPORT_RE.match(line):
+                findings.append((
+                    ERROR, i + 1,
+                    f"invalid top-level ESM import {st[:50]!r} — not valid "
+                    "JS module syntax (acorn parse failure aborts the "
+                    "locale build); likely a Python import that escaped a "
+                    "code fence. Move it back inside its ```python block."
+                ))
+        elif st.startswith("export ") and not _EXPORT_OK_RE.match(line):
+            findings.append((
+                ERROR, i + 1,
+                f"invalid top-level ESM export {st[:50]!r} — not valid JS "
+                "(acorn parse failure aborts the locale build)."
+            ))
+    return findings
+
+
 def check_code_fence_balance(
     lines: list[str], en_lines: list[str] | None = None
 ) -> list[tuple[str, int, str]]:
@@ -583,6 +635,7 @@ ALL_CHECKS = [
     check_invalid_anchor_chars,
     check_unescaped_jsx_quotes,
     check_esm_import_isolation,
+    check_invalid_esm_statement,
 ]
 
 
