@@ -1031,6 +1031,7 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
             mdx_errs = [
                 f
                 for chk in (mdxlint.check_esm_import_isolation,
+                            mdxlint.check_invalid_esm_statement,
                             mdxlint.check_garbled_xml_tags)
                 for f in chk(tr_lines)
                 if f[0] == mdxlint.ERROR
