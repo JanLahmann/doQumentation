@@ -84,7 +84,18 @@ this file. Your job: mirror that same change into the {LANGUAGE} file.
 
 1. Read /path/to/{LOCALE}-workfile.json
 2. Find the entry for file path `{PATH}`
-3. Read i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{PATH}
+3. TOKEN-EFFICIENT READING (do this, it matters):
+   - If every `update` for this file has a non-empty
+     `current_translation`, that field already contains the exact
+     translated region (±~18 lines) around where the hunk applies. Use
+     it to make a **targeted `Read` with offset/limit of just that
+     region** and Edit there. Do NOT read the whole locale file.
+   - Only if an `update.current_translation` is empty (region not
+     pre-located) do you read more of
+     `i18n/{LOCALE}/docusaurus-plugin-content-docs/current/{PATH}` —
+     and even then read just enough to find that hunk's region (use
+     offset/limit around its context anchors), not the entire file.
+   - Whole-file reads are the single biggest token cost; avoid them.
 4. Each `update.new_en` is a unified-diff HUNK of the English source:
    - `@@ -a,b +c,d @@` header — ignore, just positional
    - lines starting `-` were REMOVED from the old English
