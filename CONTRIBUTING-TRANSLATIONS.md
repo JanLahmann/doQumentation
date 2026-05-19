@@ -25,6 +25,39 @@ translation.
 > directly via git-diff hunk-splice (below). Old flow is recoverable
 > from git history if ever needed.
 
+## Onboarding a new contributor (for maintainers)
+
+Assign each person one or more **locales** (the unit of ownership).
+Send them this message verbatim, filling in `<LOCALE>`:
+
+> You're translating the **`<LOCALE>`** locale of doQumentation. It's
+> yours exclusively — no one else will touch it, so you cannot cause
+> merge conflicts.
+>
+> 1. In your worktree of the repo, read **`CONTRIBUTING-TRANSLATIONS.md`**
+>    (repo root) — it is the whole contract: setup, the batch→PR loop,
+>    and the hard rules.
+> 2. Follow the **Orchestration recipe** in
+>    `translation/retranslation-prompt.md` exactly. Use
+>    `--locale <LOCALE>` everywhere.
+> 3. Add yourself to the ownership table at the bottom of
+>    `CONTRIBUTING-TRANSLATIONS.md` in your first PR.
+>
+> Do not translate any locale other than `<LOCALE>`. Do not run git or
+> the pipeline scripts from inside a translation sub-agent. One branch →
+> one PR per ~20-file batch.
+
+Suggested split of the unclaimed locales (~240–360 stale files each;
+hand out 1–3 per person by fluency/interest):
+
+| Highest backlog | Mid | Lower |
+|---|---|---|
+| tl, th, he, id | ms, ja, ro, ar | cs, pt, pl, ko |
+
+For AI-assisted contributors, emphasize verbally that the sub-agent
+**scope + no-git** rule is the one that caused the worst incident here
+(a 309-file manual recovery) — it is non-negotiable.
+
 ## The one rule that prevents all collisions: own whole locales
 
 **Each contributor owns one or more locales, exclusively. Never touch a
