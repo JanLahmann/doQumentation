@@ -208,6 +208,62 @@ def en_change(locale: str, rel_path: str, en_content: str):
         hunks.append("\n".join(cur))
     return hunks, True, n_changed
 
+
+def _normalize_cosmetic(s: str) -> str:
+    """Collapse a line to its translation-relevant essence.
+
+    Two EN lines that differ ONLY in things a translator does not need
+    to re-touch (whitespace, the first-letter case, a moved trailing
+    period/comma, or a `./foo` -> `/guides/foo` style relative-link
+    normalization that --auto-fix already mirrors on the TR side)
+    normalize to the SAME string. Used purely to DROP no-op hunks
+    before dispatch — never to alter content. Conservative: anything
+    it cannot prove cosmetic stays a real hunk.
+    """
+    import re as _re
+    t = s.strip()
+    # auto-fix already rewrites ./x and ../x links to absolute /guides
+    # etc. on BOTH EN and TR sides, so an EN-only link-prefix reshuffle
+    # is nothing for the translator to do.
+    t = _re.sub(r'\]\(\.{1,2}/', '](/', t)
+    t = t.replace('](/guides/', '](/').replace('](/learning/', '](/')
+    # trailing sentence punctuation and a link's trailing-period dance
+    t = _re.sub(r'[.,;:]\s*$', '', t)
+    t = _re.sub(r'\.\)$', ')', t)            # "foo.)"  ~ "foo)"
+    t = _re.sub(r'\s+', ' ', t)              # whitespace runs
+    t = t.lower()                            # first-letter / casing
+    return t
+
+
+def _hunk_is_cosmetic(hunk: str) -> bool:
+    """True iff every changed line in the hunk is cosmetic-only.
+
+    A unified-diff hunk is a no-op for the translator when its set of
+    removed `-` lines and added `+` lines are equal AS MULTISETS after
+    _normalize_cosmetic(). Then the EN meaning is unchanged (only
+    punctuation/case/whitespace/link-prefix moved) and the existing
+    translation already conveys it — no agent round-trip needed.
+    Empty-vs-content changes are NOT cosmetic (real add/remove).
+    """
+    removed, added = [], []
+    for ln in hunk.split("\n"):
+        if ln.startswith("@@") or not ln:
+            continue
+        tag, body = ln[:1], ln[1:]
+        if tag == "-":
+            removed.append(body)
+        elif tag == "+":
+            added.append(body)
+    if not removed and not added:
+        return True
+    # a pure addition or pure deletion is real work, never cosmetic
+    if not removed or not added:
+        return False
+    rn = sorted(_normalize_cosmetic(x) for x in removed if x.strip())
+    an = sorted(_normalize_cosmetic(x) for x in added if x.strip())
+    # blank-only lines on one side don't make it non-cosmetic
+    return rn == an and rn != []
+
 # ── Data structures ──
 
 class Severity(Enum):
@@ -1245,24 +1301,42 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
         full_retranslation = True
         report.severity = Severity.MAJOR
     else:
-        # Each hunk is one work item: the exact old→new EN region. The
-        # sub-agent finds the corresponding translated region (by the
-        # context lines + removed EN lines) and rewrites it to match the
-        # added EN lines, in the target language.
-        report.severity = (
-            Severity.MINOR if n_changed <= 12 else Severity.MODERATE
-        )
-        updates = [
-            UpdateInstruction(
-                section_anchor="",
-                paragraph_index=idx,
-                new_en_prose=hunk,        # the unified-diff hunk itself
-                current_translation="",   # sub-agent locates via hunk context
-                context_before="",
-                context_after="",
+        # Token-opt #3: deterministic no-op pre-filter. Drop hunks whose
+        # EN change is cosmetic-only (whitespace / case / moved
+        # punctuation / relative-link-prefix that --auto-fix already
+        # mirrors). Such a hunk needs NO agent round-trip — the existing
+        # translation already conveys it. Zero LLM tokens spent here;
+        # the dual-gate still validates the final file. If EVERY hunk is
+        # cosmetic the file has no real prose work → treat as NOOP and
+        # let the finalize step bump its hash with no agent dispatch.
+        real_hunks = [h for h in hunks if not _hunk_is_cosmetic(h)]
+        cosmetic_dropped = len(hunks) - len(real_hunks)
+        if cosmetic_dropped and verbose:
+            print(f"  ~ {rel_path}: skipped {cosmetic_dropped}/{len(hunks)} "
+                  f"cosmetic-only hunk(s) (no agent needed)")
+        if not real_hunks:
+            report.severity = Severity.NOOP
+            updates = []
+        else:
+            # n_changed recount on the real hunks keeps severity honest
+            rn_changed = sum(
+                1 for h in real_hunks for ln in h.split("\n")
+                if ln[:1] in "+-" and not ln.startswith(("@@", "+++", "---"))
             )
-            for idx, hunk in enumerate(hunks)
-        ]
+            report.severity = (
+                Severity.MINOR if rn_changed <= 12 else Severity.MODERATE
+            )
+            updates = [
+                UpdateInstruction(
+                    section_anchor="",
+                    paragraph_index=idx,
+                    new_en_prose=hunk,        # the unified-diff hunk itself
+                    current_translation="",   # sub-agent locates via hunk context
+                    context_before="",
+                    context_after="",
+                )
+                for idx, hunk in enumerate(real_hunks)
+            ]
 
     # Advance the source hash ONLY when the file is now fully in sync with
     # EN: structural drift was auto-fixed and there is no remaining prose to
