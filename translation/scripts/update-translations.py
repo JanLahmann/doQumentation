@@ -235,6 +235,49 @@ def _normalize_cosmetic(s: str) -> str:
     return t
 
 
+def _locate_tr_region(hunk: str, tr_content: str, ctx: int = 18) -> str:
+    """Best-effort: return the slice of the TRANSLATED file around where
+    this hunk applies, so the agent edits a small region instead of
+    reading the whole file (token-opt #1).
+
+    EN prose context lines are translated in the TR file (no verbatim
+    match), so we anchor on the BYTE-IDENTICAL elements that survive
+    translation: a fenced-code line, a math line ($$/\\(), a URL, an
+    inline-`code` token, an image path, or an English-derived
+    {#anchor}. We take the longest such stable token appearing in the
+    hunk's context/changed lines, find it (uniquely) in tr_content,
+    and return +/-ctx lines around it. Returns "" if no unique anchor
+    — the agent then locates the region itself (unchanged old path),
+    so this is purely additive and never wrong, only sometimes empty.
+    """
+    import re as _re
+    tr_lines = tr_content.split("\n")
+    cands: list[str] = []
+    for ln in hunk.split("\n"):
+        if ln.startswith("@@"):
+            continue
+        body = ln[1:] if ln[:1] in " +-" else ln
+        b = body.strip()
+        if not b:
+            continue
+        # stable, translation-invariant anchors
+        if (b.startswith("```") or b.startswith("$$") or b.startswith("|")
+                or b.startswith("![") or "http://" in b or "https://" in b
+                or _re.search(r'\{#[\w-]+\}', b) or b.startswith("import ")
+                or b.startswith("<") or _re.search(r'`[^`]{4,}`', b)):
+            cands.append(b)
+    # longest anchor first → most likely unique
+    for anchor in sorted(set(cands), key=len, reverse=True):
+        if len(anchor) < 6:
+            continue
+        hits = [i for i, t in enumerate(tr_lines) if anchor in t]
+        if len(hits) == 1:
+            i = hits[0]
+            lo, hi = max(0, i - ctx), min(len(tr_lines), i + ctx + 1)
+            return "\n".join(tr_lines[lo:hi])
+    return ""
+
+
 def _hunk_is_cosmetic(hunk: str) -> bool:
     """True iff every changed line in the hunk is cosmetic-only.
 
@@ -1331,7 +1374,13 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
                     section_anchor="",
                     paragraph_index=idx,
                     new_en_prose=hunk,        # the unified-diff hunk itself
-                    current_translation="",   # sub-agent locates via hunk context
+                    # Token-opt #1: embed the located TR region so the
+                    # agent edits with a targeted ~40-line slice instead
+                    # of reading the whole (often 400-1900 line) locale
+                    # file. Empty string ⇒ region not confidently found;
+                    # agent falls back to its own context-locate (old
+                    # behavior) for that hunk only.
+                    current_translation=_locate_tr_region(hunk, tr_content),
                     context_before="",
                     context_after="",
                 )
