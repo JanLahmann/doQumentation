@@ -1091,12 +1091,42 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
         # pre-agent --auto-fix) closes the gap where the agent
         # re-introduces the defect AFTER auto-fix ran. Root-caused
         # 2026-05-18 after the same slip recurred across es/fr/it/uk.
+        # Token-opt #4: run the FULL deterministic repair chain, not
+        # just code-blocks. Each fixer is safe-by-construction (it only
+        # restores EN ground-truth for elements that are byte-identical
+        # by design: code, dropped EN lines, duplicate trailing
+        # sections, reference URLs, pip cells, survey notices). A file
+        # that fails finalize ONLY on a mechanically-fixable class is
+        # repaired here and re-validated, instead of being marked
+        # failed → which previously cost a full agent re-translation
+        # retry (~100 such retries across es/fr/uk this session, each a
+        # whole-file token round-trip). Fixers return None when N/A;
+        # apply iteratively until stable.
         try:
             _tr = tr_path.read_text(encoding="utf-8")
             _en = en_path.read_text(encoding="utf-8")
-            _resynced = syncer.fix_differing_code_blocks(_en, _tr)
-            if _resynced and _resynced != _tr:
-                tr_path.write_text(_resynced, encoding="utf-8")
+            _chain = (
+                lambda en, tr: syncer.fix_differing_code_blocks(en, tr),
+                lambda en, tr: syncer.fix_duplicate_trailing_section(en, tr),
+                lambda en, tr: syncer.fix_missing_en_lines(en, tr),
+                lambda en, tr: syncer.fix_missing_reference_urls(en, tr),
+                lambda en, tr: syncer.fix_missing_pip_install(en, tr),
+                lambda en, tr: syncer.fix_missing_survey_url(en, tr),
+                lambda en, tr: syncer.fix_missing_survey_notice(tr),
+            )
+            for _ in range(3):  # iterate to a fixed point
+                _before = _tr
+                for _fx in _chain:
+                    try:
+                        _r = _fx(_en, _tr)
+                    except Exception:
+                        _r = None
+                    if _r and _r != _tr:
+                        _tr = _r
+                if _tr == _before:
+                    break
+            if _tr != tr_path.read_text(encoding="utf-8"):
+                tr_path.write_text(_tr, encoding="utf-8")
         except Exception:
             pass  # never block finalize on the optional repair
 
