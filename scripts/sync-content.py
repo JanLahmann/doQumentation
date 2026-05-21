@@ -1146,9 +1146,11 @@ def _make_prereq_cell(all_pkgs: list) -> dict:
             "# To run on real quantum hardware, uncomment and fill in your credentials:\n",
             "# from qiskit_ibm_runtime import QiskitRuntimeService\n",
             "# QiskitRuntimeService.save_account(\n",
+            '#     channel="ibm_quantum_platform",\n',
             '#     token="<your-api-key>",\n',
-            '#     instance="<your-crn>",\n',
-            "#     overwrite=True\n",
+            '#     # instance="<IBM Cloud CRN or instance name>",  # optional\n',
+            "#     set_as_default=True,\n",
+            "#     overwrite=True,\n",
             "# )"
         ]
     }
