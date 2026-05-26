@@ -1235,6 +1235,7 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
         # non-fatal and intentionally not gated).
         try:
             tr_lines = tr_path.read_text(encoding="utf-8").splitlines()
+            en_lines = en_path.read_text(encoding="utf-8").splitlines()
             mdx_errs = [
                 f
                 for chk in (mdxlint.check_esm_import_isolation,
@@ -1243,6 +1244,9 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
                 for f in chk(tr_lines)
                 if f[0] == mdxlint.ERROR
             ]
+            # EN-relative: only flags tag imbalance the translation added.
+            mdx_errs += [f for f in mdxlint.check_jsx_tag_balance(tr_lines, en_lines)
+                         if f[0] == mdxlint.ERROR]
         except Exception as e:
             mdx_errs = []
             if verbose:
