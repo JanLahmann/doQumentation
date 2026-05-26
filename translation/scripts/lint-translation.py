@@ -309,6 +309,87 @@ def check_invalid_esm_statement(lines: list[str]) -> list[tuple[str, int, str]]:
     return findings
 
 
+# Block-level JSX/HTML components that MUST have an explicit closing tag
+# (never self-closing in this content). An imbalance — or a closer with no
+# opener — aborts `docusaurus build` with "Unexpected closing tag …" or
+# "Unexpected closing slash". Self-closing components (Card, Image, Figure,
+# IBMVideo, OpenInLabBanner, TutorialFeedback, LaunchExamButton …) are NOT
+# listed: they legitimately appear as `<Card .../>` with no separate close.
+_PAIRED_JSX_TAGS = (
+    "details", "Accordion", "AccordionItem", "Admonition",
+    "Tabs", "TabItem", "content", "summary",
+)
+
+
+def _jsx_tag_balance(lines: list[str]) -> dict[str, int]:
+    """Return {tag: opens - closes} for paired block-JSX tags, OUTSIDE
+    code fences. Fence state toggles ONLY on a bare fence line (``` or
+    ```lang, no leading indent, nothing trailing) — indented/info-string
+    backticks and literal ``` inside strings (a Modelfile's
+    PARAMETER stop "```") are not delimiters. Self-closing `<Tag .../>`
+    are not counted as opens.
+    """
+    in_fence = False
+    text = []
+    _bare_fence = re.compile(r'^```[\w-]*$')
+    for ln in lines:
+        if _bare_fence.match(ln):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            text.append(ln)
+    body = "\n".join(text)
+    bal = {}
+    for tag in _PAIRED_JSX_TAGS:
+        opens = len(re.findall(r'<%s(?:\s[^>]*?)?>' % tag, body)) \
+            - len(re.findall(r'<%s(?:\s[^>]*?)?/>' % tag, body))
+        closes = body.count("</%s>" % tag)
+        bal[tag] = opens - closes
+    return bal
+
+
+def check_jsx_tag_balance(
+    lines: list[str], en_lines: list[str] | None = None
+) -> list[tuple[str, int, str]]:
+    """Flag paired block-JSX tag imbalance the TRANSLATION introduced —
+    build-fatal.
+
+    Root-cause class for "Unexpected closing tag `</details>`, expected
+    corresponding closing tag for `<AccordionItem>`" / "Unexpected
+    closing slash `/` in tag" — both abort the locale build (a stale
+    `</details>` from a `<details>`→`<Accordion>` migration, or an orphan
+    `</content>`). EN-RELATIVE: a tag is flagged only when the TR
+    open−close delta differs from EN's, so any imbalance the EN source
+    itself carries (legitimate patterns our crude scanner can't fully
+    parse) never false-positives. With no EN provided, falls back to
+    flagging only an absolute orphan-closer (delta < 0), the
+    unambiguous build-breaker.
+    """
+    findings = []
+    tr_bal = _jsx_tag_balance(lines)
+    en_bal = _jsx_tag_balance(en_lines) if en_lines is not None else None
+    for tag, tr_delta in tr_bal.items():
+        if en_bal is not None:
+            if tr_delta == en_bal.get(tag, 0):
+                continue  # matches EN → not a translation-introduced defect
+        else:
+            if tr_delta >= 0:
+                continue  # no EN ref: only an orphan closer is unambiguous
+        ln_no = next((i + 1 for i, l in enumerate(lines)
+                      if ("</%s>" % tag) in l or re.search(r'<%s[\s>]' % tag, l)), 0)
+        kind = ("orphan closing tag (no opener)"
+                if tr_delta < 0 and tr_bal[tag] + lines.count("</%s>" % tag) else
+                "open/close imbalance vs EN")
+        findings.append((
+            ERROR, ln_no,
+            f"<{tag}> {kind} (TR delta {tr_delta}"
+            + (f" vs EN {en_bal.get(tag, 0)}" if en_bal is not None else "")
+            + ") — MDX 'Unexpected closing tag' build break (stale "
+            "</details> from an Accordion migration, or an orphan closer)."
+        ))
+    return findings
+
+
 def check_code_fence_balance(
     lines: list[str], en_lines: list[str] | None = None
 ) -> list[tuple[str, int, str]]:
@@ -636,6 +717,8 @@ ALL_CHECKS = [
     check_unescaped_jsx_quotes,
     check_esm_import_isolation,
     check_invalid_esm_statement,
+    # check_jsx_tag_balance is EN-relative → called explicitly with en_lines
+    # in lint_file (not here, where checks get only the TR lines).
 ]
 
 
@@ -657,6 +740,7 @@ def lint_file(
     for check in ALL_CHECKS:
         findings.extend(check(lines))
     findings.extend(check_code_fence_balance(lines, en_lines))
+    findings.extend(check_jsx_tag_balance(lines, en_lines))
     findings.extend(check_missing_imports(lines, en_lines))
     findings.extend(check_english_prose_drift(lines, en_lines))
     if locale:
