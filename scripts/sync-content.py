@@ -2973,6 +2973,36 @@ def write_page_dates_manifest():
         print("\n📅 Page dates manifest: upstream-docs not present, skipping")
         return
 
+    # SHALLOW-CLONE GUARD (root-cause fix 2026-05-26): per-file dates require
+    # full upstream history. `_content_authored_date`/`_git_file_date` walk
+    # `git log -- <file>` to find the commit whose blob matches the on-disk
+    # content; with a shallow clone (the content sync does `git clone
+    # --depth 1`) only the TIP commit is visible, so EVERY file collapses to
+    # the tip's date — typically a tree-wide dependency/CI commit, NOT the
+    # real authoring date. That made the source-date footer show identical,
+    # too-new dates for all pages (e.g. ansatz showing the sync date instead
+    # of its real 2026-02-09). Regenerating from a shallow clone would
+    # OVERWRITE the correct committed manifest (produced by the
+    # refresh-page-dates.yml job, which checks out with fetch-depth: 0) with
+    # garbage. So: if the clone is shallow, DO NOT rewrite — keep the
+    # committed manifest. The full-history meta-refresh owns this file.
+    shallow_marker = UPSTREAM_DIR / ".git" / "shallow"
+    is_shallow = shallow_marker.exists()
+    if not is_shallow:
+        rc = run_command(["git", "rev-list", "--count", "HEAD"], cwd=UPSTREAM_DIR)
+        if rc.returncode == 0 and rc.stdout.strip().isdigit() and int(rc.stdout.strip()) <= 1:
+            is_shallow = True
+    if is_shallow:
+        out = PROJECT_ROOT / "src" / "config" / "upstreamFileMeta.json"
+        print(
+            "\n📅 Page dates manifest: upstream-docs is a SHALLOW clone — "
+            "per-file dates would be inaccurate (all collapse to the tip "
+            "commit date). PRESERVING the committed manifest"
+            + (" (exists)." if out.exists() else " — but none exists yet!")
+            + " The full-history refresh-page-dates.yml job owns this file."
+        )
+        return
+
     upstream_ref = _ibm_upstream_ref(UPSTREAM_DIR) or "HEAD"
     if upstream_ref == "HEAD":
         print(
