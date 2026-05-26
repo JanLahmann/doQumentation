@@ -38,10 +38,27 @@ If that shows `N stale files`, proceed below.
 
 ## Step 1 — Discover and auto-fix
 
+### Prerequisite — fetch the EN baseline (shallow clones / web & CI sessions)
+
+The pipeline diffs each file against `PRE_SYNC_REF` = `9f2948310^`. A shallow
+clone (Claude Code on the web, CI) does NOT contain that commit, so
+`old_en_content()` returns `None` for every file and **everything misclassifies
+as `MAJOR`/`full_retranslation`** (the giveaway: `--analyze` shows 0 NOOP / 0
+MINOR / 0 MODERATE and 100% MAJOR). Fetch it once (fetch-by-SHA is allowed and
+persists in `.git`):
+
+```bash
+git fetch --depth=2 origin 9f29483105b21a91d0b3abf0ba9cfd735a084b9b
+git cat-file -t 9f29483105b21a91d0b3abf0ba9cfd735a084b9b^   # must print: commit
+```
+
 From the repo root:
 
 ```bash
-# Apply auto-fixes (code blocks, imports, links, images, JSX, source-hash):
+# Apply auto-fixes (code blocks, imports, relative→absolute links, images, JSX,
+# source-hash). NOTE: link sync is no longer skipped — auto-fix now rewrites a
+# TR relative link to EN's absolute form when (and only when) the resolved
+# absolute is exactly an EN link and the relative form is not:
 python translation/scripts/update-translations.py --locale {LOCALE} --auto-fix
 
 # Generate the workfile that lists per-paragraph updates needed:
@@ -189,6 +206,14 @@ correct translation, make NO edit for that hunk and note it briefly.
 Minimise change is the goal — never rewrite a correct paragraph for a
 cosmetic English-only delta.
 
+SELF-CHECK before you finish (the #1 cause of rejected files): for every
+hunk, re-read the region you edited and confirm that each STRUCTURAL element
+on a `+` line — `<Admonition>`, `<CardGroup>`/`<Card>`, `<AccordionItem>`, a
+heading (`#…`), a `:::note` — is actually present in your output, and that
+each element on a `-` line is gone. Silently dropping an ADDED `<Admonition>`
+or heading (so the JSX-tag / heading count no longer matches EN) is the most
+common rejection — the count must match EN exactly. Fix any you missed.
+
 After all edits, respond with ONLY "Done", or "Done — no-op: <reason>"
 when every hunk was cosmetic, or a brief error.
 ```
@@ -197,6 +222,13 @@ Fill in `{PATH}`, `{LANGUAGE}`, `{LOCALE}`, `{INFORMAL_FORM}` per the
 language table in `translation-prompt.md`.
 
 ## Step 3 — Finalize + commit
+
+> **`--finalize` is LOCALE-WIDE, not workfile-scoped.** It re-validates every
+> currently-stale file in the locale (the `--output` workfile only supplies
+> anchor-pinning + the old-EN commit for the manifest). Slicing the workfile
+> into batches does NOT limit what finalize touches — so **batch by what you
+> commit, not by what finalize sees**. Run finalize, then commit only the files
+> it hash-bumped this round; un-touched stale files simply fail and wait.
 
 One command does the whole gate per file: pin English-derived heading
 anchors → validate → bump the source hash **only if validation passes**.
@@ -244,6 +276,22 @@ file is only committed once it passes BOTH gates.
 
 Battle-tested on a ~300-file backlog. Follow this exactly — every rule
 below maps to a real failure that happened without it.
+
+**Token-efficient sub-agent dispatch (do this — it scales).** Do NOT paste the
+full Step-2 prompt into every sub-agent; at ~200 files/locale that is enormous
+duplication. Instead, write the filled-in instructions to ONE file per locale
+(e.g. `/tmp/agent-instructions-{LOCALE}.md` — the Step-2 prompt with
+`{LANGUAGE}`/`{LOCALE}`/`{INFORMAL_FORM}` already substituted), then give each
+sub-agent a one-line prompt:
+
+```
+Read /tmp/agent-instructions-{LOCALE}.md and follow it exactly.
+WORKFILE = /tmp/{LOCALE}-batch-NN.json. Your target PATH = <one path>.
+```
+
+Dispatch in waves (≈8–12 concurrent is fine; finalize is the safety net). The
+harness may run some agents in the background — wait for their completion
+notifications before you finalize the batch.
 
 **Per batch (one branch → one PR):**
 
@@ -297,6 +345,67 @@ component changes), `update-translations.py` flags it MAJOR. For those:
 
 A small batch of MAJOR-severity files per sync is normal. Don't let it
 accumulate — they're the highest-impact pages.
+
+**NEVER hash-bump a deferred MAJOR file.** A MAJOR file you postpone must stay
+flagged STALE until it is actually re-translated. The failure mode (observed in
+production): a deferred file's `{/* doqumentation-source-hash: ... */}` marker
+gets bumped to the current EN hash without a real translation — perhaps by a
+locale-wide `--finalize`/`--auto-fix` pass, or a stray manual bump. From then on
+`check-translation-freshness` reports it FRESH (hash matches EN) even though its
+content is a stale, much-longer old version that fails validation. It silently
+drops off every stale report and is forgotten. Two rules prevent this:
+
+1. Record every MAJOR / `full_retranslation` file in a persistent
+   `deferred`/manifest entry, and treat "fresh hash" as NOT sufficient for those
+   — they are done only once they PASS validation.
+2. `--finalize` must bump a hash ONLY after `validate-translation` passes for
+   that file (it already does this for the hunk-splice path; make sure no other
+   code path — `--auto-fix`, populate, manual sed — ever writes the EN hash into
+   a file that has not passed validation).
+
+### Falsely-fresh audit (run this every sync)
+
+Because of the bug above, a hash match does not prove a file is correct. Add an
+audit that validates every file whose embedded hash already equals the current
+EN hash, and reports any that still FAIL:
+
+```bash
+# pseudo: for each locale, for each .mdx whose source-hash == sha256(EN)[:8],
+# run validate-translation; print the FAILs. These are "falsely-fresh" files
+# (usually deferred MAJORs that were bumped without translating).
+python translation/scripts/update-translations.py --locale {LOCALE} --audit
+```
+
+A non-empty audit list means re-translate those files (whole-file via
+`translation-prompt.md` for the big ones) — do not rely on the stale report
+alone to find the backlog. In one sync this surfaced `estimator-rest-api.mdx`
+and `quantum-approximate-optimization-algorithm.mdx` as broken across ~12
+locales while every stale report showed them clean.
+
+### Orchestrator-side mechanical auto-fixes (don't burn agents on these)
+
+These deltas recur identically in every locale and need NO translation
+judgement — handle them in `--auto-fix` (orchestrator side), not by dispatching
+a Sonnet agent per file. Each must be guarded so it only fires when safe:
+
+- **Positional link-URL sync** — when EN and TR have the SAME number of markdown
+  `](url)` targets, rewrite TR's i-th URL to EN's i-th URL. Makes TR's URL
+  multiset identical to EN. Skip when counts differ (that's an add/remove =
+  real content change for an agent).
+- **Image swaps** — apply `foo.avif`→`foo.svg` and changed extracted-output
+  UUID swaps literally from the EN diff.
+- **Stray duplicate image gallery removal** — when TR has MORE images than EN, a
+  prior agent often appended a duplicate `.svg` gallery while leaving the
+  in-position `.avif` originals; delete the stray block and swap the originals.
+- **Stray body-H1 removal** — if EN has no body `# H1` (title comes from
+  frontmatter) but TR does, delete the TR H1. Guard on "EN has no body H1".
+- **Date/heading `{#anchor}` derivation** — append the English-derived anchor to
+  any heading missing one (the validator already prints the exact expected
+  `{#anchor}` per heading; apply those).
+- **Code-comment drift** — e.g. EN `# Instantiate the new Estimator object` vs a
+  TR-lowercased `estimator`; copy the EN code/comment byte-for-byte.
+
+Validate after each auto-fix and only hash-bump files that PASS.
 
 ## Skipping the German dialects
 

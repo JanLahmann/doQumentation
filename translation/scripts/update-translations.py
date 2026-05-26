@@ -791,29 +791,74 @@ def apply_auto_fixes(en_content: str, tr_content: str, report: ChangeReport) -> 
         fixed = result
         fixes.append("synced pip install block")
 
-    # 3. Sync imports
-    en_imports = set(re.findall(r'^import\s+.+$', en_content, re.MULTILINE))
-    tr_imports = set(re.findall(r'^import\s+.+$', fixed, re.MULTILINE))
+    # 3. Sync ESM/component imports ONLY (e.g. `import X from '...';`).
+    #    Python imports inside ```fences``` also begin with `import` but are
+    #    code, not MDX imports. The old `^import\s+.+$` match conflated them:
+    #    it inserted the missing MDX import after the last python import
+    #    (i.e. INSIDE a code fence — the TutorialFeedback-misplacement
+    #    defect) and set-diff-deleted in-fence python imports, corrupting
+    #    code blocks. Restrict to the ESM form (a quoted `from '...'`, or a
+    #    bare `import '...';`) and skip any line inside a code fence so
+    #    neither can happen.
+    _esm_re = re.compile(
+        r"""^import\b[^\n]*\bfrom\s+['"][^'"]+['"]\s*;?\s*$"""
+        r"""|^import\s+['"][^'"]+['"]\s*;?\s*$"""
+    )
+
+    def _esm_imports(text):
+        out, in_fence = [], False
+        for ln in text.split('\n'):
+            if ln.lstrip().startswith('```'):
+                in_fence = not in_fence
+                continue
+            if not in_fence and _esm_re.match(ln.strip()):
+                out.append(ln.strip())
+        return out
+
+    en_imports = set(_esm_imports(en_content))
+    tr_imports = set(_esm_imports(fixed))
     missing = en_imports - tr_imports
     extra = tr_imports - en_imports
     if missing or extra:
-        # Add missing imports after frontmatter
-        for imp in missing:
-            # Insert after the last import or after frontmatter
-            last_import = -1
-            for m in re.finditer(r'^import\s+.+$', fixed, re.MULTILINE):
-                last_import = m.end()
-            if last_import >= 0:
-                fixed = fixed[:last_import] + '\n' + imp + fixed[last_import:]
+        lines = fixed.split('\n')
+        # Remove extra ESM imports (only outside code fences).
+        if extra:
+            kept, in_fence = [], False
+            for ln in lines:
+                if ln.lstrip().startswith('```'):
+                    in_fence = not in_fence
+                    kept.append(ln)
+                    continue
+                if not in_fence and ln.strip() in extra:
+                    continue
+                kept.append(ln)
+            lines = kept
+        # Add each missing ESM import. Prefer right after the last existing
+        # head ESM import (keeps the import block contiguous); otherwise
+        # blank-isolated immediately after the frontmatter close, mirroring
+        # EN's layout. The blank isolation is mandatory: a `{/* … */}`
+        # comment jammed against an import is parsed as an illegal ESM
+        # BlockStatement and breaks the MDX build (see
+        # fix-tutorialfeedback-import.py).
+        for imp in sorted(missing):
+            last_esm, in_fence = -1, False
+            for i, ln in enumerate(lines):
+                if ln.lstrip().startswith('```'):
+                    in_fence = not in_fence
+                    continue
+                if not in_fence and _esm_re.match(ln.strip()):
+                    last_esm = i
+            if last_esm >= 0:
+                lines[last_esm + 1:last_esm + 1] = [imp]
             else:
-                # After frontmatter
-                fm_end = fixed.find('---', fixed.find('---') + 1)
-                if fm_end >= 0:
-                    fm_end = fixed.index('\n', fm_end) + 1
-                    fixed = fixed[:fm_end] + imp + '\n' + fixed[fm_end:]
-        # Remove extra imports
-        for imp in extra:
-            fixed = fixed.replace(imp + '\n', '')
+                fm = [i for i, ln in enumerate(lines) if ln.strip() == '---'][:2]
+                if len(fm) < 2:
+                    continue  # no frontmatter — leave for validate to flag
+                ins = fm[1] + 1
+                while ins < len(lines) and lines[ins].strip() == '':
+                    del lines[ins]
+                lines[ins:ins] = ['', imp, '']
+        fixed = '\n'.join(lines)
         if missing:
             fixes.append(f"added {len(missing)} import(s)")
         if extra:
@@ -826,10 +871,43 @@ def apply_auto_fixes(en_content: str, tr_content: str, report: ChangeReport) -> 
         # Find corresponding EN image by position
         pass  # TODO: positional image sync
 
-    # 5. Update link URLs (keep translated text, replace URL)
-    en_links = validator.extract_link_urls(en_content)
-    tr_links = validator.extract_link_urls(fixed)
-    # Link sync is complex — skip for now, handle in validate step
+    # 5. Normalize relative internal links to EN's absolute scheme.
+    #    EN migrated site-internal links to absolute `/section/page`; many
+    #    translations still carry the old relative `./page` / `../sec/page`
+    #    form, which fails validate-translation's Link-URLs parity. This is
+    #    pure structural drift (link text stays translated; only the target
+    #    is rewritten). SAFE BY CONSTRUCTION: a TR relative target is
+    #    rewritten ONLY when its resolved absolute form is exactly a link EN
+    #    uses AND the relative form is not — so it can never create a new
+    #    mismatch, and it never touches images (their absolute resolution is
+    #    not in EN's link set) or external/absolute URLs.
+    import posixpath as _pp
+    _en_urls = {u for _, u in validator.extract_link_urls(en_content)}
+    _base_dir = _pp.dirname(report.rel_path)
+
+    def _resolve_rel(target: str) -> str:
+        m = re.match(r'^([^#?]*)(.*)$', target)
+        path_part, suffix = m.group(1), m.group(2)
+        return _pp.normpath(_pp.join('/' + _base_dir, path_part)) + suffix
+
+    def _maybe_abs(target: str) -> str:
+        a = _resolve_rel(target)
+        if a in _en_urls and target not in _en_urls:
+            return a
+        return target
+
+    def _md_sub(m):
+        return '](' + _maybe_abs(m.group(1)) + m.group(2) + ')'
+
+    def _href_sub(m):
+        a = _maybe_abs(m.group(1))
+        return 'href="' + a + '"' if a != m.group(1) else m.group(0)
+
+    before_links = fixed
+    fixed = re.sub(r'\]\((\.\.?/[^)\s]+)([^)]*)\)', _md_sub, fixed)
+    fixed = re.sub(r'href="(\.\.?/[^"]+)"', _href_sub, fixed)
+    if fixed != before_links:
+        fixes.append("normalized relative link(s)")
 
     # NOTE: the source-hash bump is intentionally NOT done here. Bumping the
     # hash marks the file fresh; doing that during auto-fix would mark a file
