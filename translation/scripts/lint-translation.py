@@ -321,72 +321,48 @@ _PAIRED_JSX_TAGS = (
 )
 
 
-def _jsx_tag_balance(lines: list[str]) -> dict[str, int]:
-    """Return {tag: opens - closes} for paired block-JSX tags, OUTSIDE
-    code fences. Fence state toggles ONLY on a bare fence line (``` or
-    ```lang, no leading indent, nothing trailing) — indented/info-string
-    backticks and literal ``` inside strings (a Modelfile's
-    PARAMETER stop "```") are not delimiters. Self-closing `<Tag .../>`
-    are not counted as opens.
+def check_jsx_tag_balance(
+    lines: list[str], en_lines: list[str] | None = None
+) -> list[tuple[str, int, str]]:
+    """Flag a paired block-JSX tag with MORE closers than openers —
+    build-fatal, false-positive-free.
+
+    Root-cause class for "Unexpected closing tag `</details>`" /
+    "Unexpected closing slash `/` in tag" — both abort the locale build
+    (an orphan `</content>`, or a stale `</details>` left by a
+    `<details>`→`<Accordion>` migration). The defining, *unambiguous*
+    symptom is **closes > opens**: a closing tag that has no opener to
+    match is always a parse error.
+
+    Counts RAW across the whole file — deliberately NO fence-stripping
+    and NO EN comparison. Earlier versions tried to subtract code-fence
+    regions and compare deltas vs EN; both were unreliable on
+    code-heavy files (e.g. the SQD orbital dumps with many ``` blocks
+    confused fence tracking, dropping a real `</details>` from the count
+    and FALSE-flagging files that actually build — ko/pl/ro/th
+    qiskit-addons-sqd-get-started). closes > opens needs none of that:
+    even if some openers/closers sit inside code, an EXCESS of closers
+    over openers across the raw text still means at least one closer
+    cannot be matched → build break. (A `<details>` example shown inside
+    a fence would inflate BOTH counts equally, so it can't cause a false
+    positive.) Self-closing `<Tag .../>` are excluded from opens.
     """
-    in_fence = False
-    text = []
-    _bare_fence = re.compile(r'^```[\w-]*$')
-    for ln in lines:
-        if _bare_fence.match(ln):
-            in_fence = not in_fence
-            continue
-        if not in_fence:
-            text.append(ln)
-    body = "\n".join(text)
-    bal = {}
+    findings = []
+    body = "\n".join(lines)
     for tag in _PAIRED_JSX_TAGS:
         opens = len(re.findall(r'<%s(?:\s[^>]*?)?>' % tag, body)) \
             - len(re.findall(r'<%s(?:\s[^>]*?)?/>' % tag, body))
         closes = body.count("</%s>" % tag)
-        bal[tag] = opens - closes
-    return bal
-
-
-def check_jsx_tag_balance(
-    lines: list[str], en_lines: list[str] | None = None
-) -> list[tuple[str, int, str]]:
-    """Flag paired block-JSX tag imbalance the TRANSLATION introduced —
-    build-fatal.
-
-    Root-cause class for "Unexpected closing tag `</details>`, expected
-    corresponding closing tag for `<AccordionItem>`" / "Unexpected
-    closing slash `/` in tag" — both abort the locale build (a stale
-    `</details>` from a `<details>`→`<Accordion>` migration, or an orphan
-    `</content>`). EN-RELATIVE: a tag is flagged only when the TR
-    open−close delta differs from EN's, so any imbalance the EN source
-    itself carries (legitimate patterns our crude scanner can't fully
-    parse) never false-positives. With no EN provided, falls back to
-    flagging only an absolute orphan-closer (delta < 0), the
-    unambiguous build-breaker.
-    """
-    findings = []
-    tr_bal = _jsx_tag_balance(lines)
-    en_bal = _jsx_tag_balance(en_lines) if en_lines is not None else None
-    for tag, tr_delta in tr_bal.items():
-        if en_bal is not None:
-            if tr_delta == en_bal.get(tag, 0):
-                continue  # matches EN → not a translation-introduced defect
-        else:
-            if tr_delta >= 0:
-                continue  # no EN ref: only an orphan closer is unambiguous
-        ln_no = next((i + 1 for i, l in enumerate(lines)
-                      if ("</%s>" % tag) in l or re.search(r'<%s[\s>]' % tag, l)), 0)
-        kind = ("orphan closing tag (no opener)"
-                if tr_delta < 0 and tr_bal[tag] + lines.count("</%s>" % tag) else
-                "open/close imbalance vs EN")
-        findings.append((
-            ERROR, ln_no,
-            f"<{tag}> {kind} (TR delta {tr_delta}"
-            + (f" vs EN {en_bal.get(tag, 0)}" if en_bal is not None else "")
-            + ") — MDX 'Unexpected closing tag' build break (stale "
-            "</details> from an Accordion migration, or an orphan closer)."
-        ))
+        if closes > opens:
+            ln_no = next((i + 1 for i, l in enumerate(lines)
+                          if ("</%s>" % tag) in l), 0)
+            findings.append((
+                ERROR, ln_no,
+                f"<{tag}>: {closes} closing tag(s) but only {opens} "
+                "opener(s) — an unmatched closer aborts the locale build "
+                "('Unexpected closing tag'). Likely an orphan </content> "
+                "or a stale </details> from an Accordion migration."
+            ))
     return findings
 
 
