@@ -1524,6 +1524,60 @@ def process_file(en_path: Path, tr_path: Path, rel_path: str,
     )
 
 
+def audit_locale(locale: str, section: str | None = None,
+                 verbose: bool = False) -> list[tuple[str, str]]:
+    """Falsely-fresh audit. Returns [(rel, reasons)] for files whose embedded
+    source-hash already equals current EN (so freshness reads them as fresh)
+    yet FAIL structural validation — typically deferred-MAJOR files that were
+    hash-bumped (by a stray --auto-fix/manual bump) without being translated.
+
+    Independent of the stale scan on purpose: these files are NOT flagged
+    stale, which is exactly why they slip through. Read-only; never writes.
+    """
+    _, fv = _lazy_finalize_helpers()
+    base = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+    flagged: list[tuple[str, str]] = []
+    checked = fresh = 0
+    for en_path, tr_path in find_genuine_translations(locale):
+        rel = str(tr_path.relative_to(base))
+        if section and not rel.startswith(section):
+            continue
+        try:
+            en_content = en_path.read_text(encoding="utf-8")
+            tr_content = tr_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        embedded = extract_embedded_hash(tr_content)
+        # only audit files that READ AS FRESH (hash == current EN)
+        if not embedded or embedded != compute_source_hash(en_content):
+            continue
+        fresh += 1
+        try:
+            report = fv.validate_file(en_path, tr_path, locale)
+        except Exception as e:
+            flagged.append((rel, f"validate error: {e}")); continue
+        if not report.passed:
+            reasons = "; ".join(c.name for c in report.checks if not c.passed)
+            flagged.append((rel, reasons))
+            if verbose:
+                print(f"  ✗ {rel}: {reasons}")
+        checked += 1
+    print(f"\n{'═' * 60}")
+    print(f"Falsely-fresh audit ({locale}): {fresh} fresh file(s) checked, "
+          f"{len(flagged)} FAIL validation despite a current hash")
+    print(f"{'═' * 60}")
+    if flagged and not verbose:
+        for rel, why in flagged[:40]:
+            print(f"  ✗ {rel}: {why}")
+        if len(flagged) > 40:
+            print(f"  … and {len(flagged) - 40} more")
+    if flagged:
+        print("\nThese files read FRESH but are not — re-translate them "
+              "(whole-file via translation-prompt.md) so their hash reflects "
+              "real translated content.")
+    return flagged
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detect and process stale translations with minimal retranslation"
@@ -1546,12 +1600,24 @@ def main():
                              "both pass. Writes failures to "
                              "<output-dir>/_finalize_failures.txt and a durable "
                              "translation/manifests/<locale>.json.")
+    parser.add_argument("--audit", action="store_true",
+                        help="Falsely-fresh audit: validate every file whose "
+                             "embedded source-hash already equals current EN "
+                             "(i.e. reads 'fresh') and report those that FAIL "
+                             "validation — usually deferred-MAJOR files that "
+                             "were hash-bumped without being translated.")
     parser.add_argument("--skip-manifest-done", action="store_true",
                         help="Skip files already 'finalized' in "
                              "translation/manifests/<locale>.json (resumable scaling)")
     parser.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args()
+
+    # Falsely-fresh audit runs independently of the stale scan (it targets
+    # files that read FRESH, which the stale scan by definition skips).
+    if args.audit:
+        flagged = audit_locale(args.locale, args.section, verbose=args.verbose)
+        sys.exit(1 if flagged else 0)
 
     if not any([args.analyze, args.auto_fix, args.generate_workfile]):
         args.analyze = True
