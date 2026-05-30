@@ -353,15 +353,17 @@ def check_jsx_tag_balance(
         opens = len(re.findall(r'<%s(?:\s[^>]*?)?>' % tag, body)) \
             - len(re.findall(r'<%s(?:\s[^>]*?)?/>' % tag, body))
         closes = body.count("</%s>" % tag)
-        if closes > opens:
+        if opens != closes:
             ln_no = next((i + 1 for i, l in enumerate(lines)
-                          if ("</%s>" % tag) in l), 0)
+                          if ("</%s>" % tag) in l
+                          or re.search(r'<%s(?:\s|>)' % tag, l)), 0)
             findings.append((
                 ERROR, ln_no,
-                f"<{tag}>: {closes} closing tag(s) but only {opens} "
-                "opener(s) — an unmatched closer aborts the locale build "
-                "('Unexpected closing tag'). Likely an orphan </content> "
-                "or a stale </details> from an Accordion migration."
+                f"<{tag}>: {opens} opener(s) vs {closes} closing tag(s) "
+                "— a mismatch aborts the locale build ('Unexpected closing "
+                "tag'). Either an unclosed <AccordionItem>/<details> (open > "
+                "close) or an orphan </content>/stale </details> (close > "
+                "open). Match every paired block-JSX tag."
             ))
     return findings
 
