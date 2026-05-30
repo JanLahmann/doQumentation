@@ -3,179 +3,536 @@ title: Rozszerzanie Qiskit w Pythonie za pomocą C
 description: Jak zbudować rozszerzenie C do swojego przepływu pracy z Qiskit w Pythonie
 ---
 
-{/* doqumentation-source-hash: afebf203 */}
+{/* doqumentation-source-hash: f2a151b9 */}
+
+{/* cspell:ignore strcmp */}
 
 # Rozszerzanie Qiskit w Pythonie za pomocą C {#extend-qiskit-in-python-with-c}
 
-Aby przyspieszyć swoje programy Qiskit w Pythonie za pomocą C, możesz użyć rozszerzenia C Qiskit dla Pythona.
-Wymaga to dodatkowych kroków w porównaniu do samodzielnego użycia C; więcej szczegółów znajdziesz w [przewodniku instalacji Qiskit C API](/guides/install-c-api).
+Qiskit C API może być używane wewnątrz modułów rozszerzeń Pythona.
+Możesz pisać krytyczne wydajnościowo fragmenty swoich rozszerzeń Qiskit w C, aby je przyspieszyć,
+a następnie bezpiecznie dystrybuować je do swoich użytkowników.
 
-<Admonition type="warning">
-  Qiskit C API jest nadal eksperymentalne i nie zobowiązało się jeszcze do w pełni stabilnego interfejsu programistycznego ani binarnego. Moduły rozszerzeń zbudowane na podstawie Qiskit są gwarantowane do działania wyłącznie z wersją Qiskit użytą podczas kompilacji.
+Ten przewodnik przeprowadzi cię przez proces definiowania kompletnego modułu rozszerzenia, konfigurowania
+jego procesu kompilacji i udostępniania go użytkownikom Pythona. Pakiet zawiera prostą wersję
+[`AddSpectatorMeasures` z dodatków Qiskit][AddSpectatorMeasures-code] napisaną w C. Jest to prawdziwy niestandardowy
+pass z realnym zastosowaniem w dodatkach Qiskit.
+
+[AddSpectatorMeasures-code]: https://github.com/Qiskit/qiskit-addon-utils/blob/e0582e4aa856dc7b152bacbe0c20d1fa306d9640/qiskit_addon_utils/noise_management/post_selection/transpiler/passes/add_spectator_measures.py#L32-L157
+
+<Admonition type="tip">
+  Poniższe zewnętrzne zasoby mogą okazać się pomocne:
+
+  - [Dokumentacja CPython dotycząca pisania modułów rozszerzeń](https://docs.python.org/3/extending/index.html).
+  - [Dokumentacja NumPy dotycząca używania jego C API](https://numpy.org/doc/stable/user/c-info.how-to-extend.html).
+
+  Qiskit C API jest udostępniane dla modułów rozszerzeń Pythona w sposób bardzo podobny do NumPy C
+  API. Jeśli wcześniej programowałeś rozszerzenie NumPy, proces Qiskit będzie ci znajomy.
 </Admonition>
 
-<Admonition type="note">
-  Te instrukcje były testowane wyłącznie na systemach uniksopodobnych. Instrukcje dla systemu Windows są w trakcie przygotowania.
+<Admonition type="warning">
+  Qiskit C API jest nadal eksperymentalne. Oznacza to, że nie ma jeszcze w pełni stabilnego interfejsu programistycznego ani binarnego, i między wersjami minor mogą wystąpić zmiany niekompatybilne wstecz.
+
+  Na przykład moduł rozszerzenia używający Qiskit v2.4.0 podczas kompilacji jest gwarantowany do działania z
+  Qiskit v2.4.1 podczas uruchamiania, ale może przestać działać przy użyciu Qiskit v2.5.0 podczas uruchamiania.
 </Admonition>
 
 ## Wymagania {#requirements}
 
-Zacznij od upewnienia się, że masz zainstalowane [Qiskit C API](/guides/install-c-api). Następnie zainstaluj interfejs Python Qiskit w następujący sposób:
+Zacznij od czystego katalogu.
+
+Musisz mieć dostępny standardowy zestaw narzędzi kompilatora C dla swojej platformy. Musisz też mieć
+wersję Pythona zawierającą nagłówki jego C API (jest to standardowe).
+
+Powinieneś być zaznajomiony lub być gotów wyszukać poszczególne funkcje i obiekty dostępne
+w [Qiskit C API][c-api]. Powinieneś mieć pewną znajomość programowania w C.
+
+[c-api]: /docs/api/qiskit-c
+
+## Tworzenie struktury katalogów {#create-the-directory-structure}
+
+Użyjemy struktury katalogów opartej na `src` i prostego systemu budowania opartego na `setuptools`. Te
+instrukcje powinny być łatwe do adaptacji do dowolnego systemu budowania, który może budować
+moduły rozszerzeń.
+
+Ostateczna struktura będzie wyglądać następująco:
+
+```text
+extension-module
+├── pyproject.toml
+├── setup.py
+└── src
+    └── spectator_measures
+        ├── __init__.py
+        └── _coremodule.c
+```
+
+W skrócie:
+
+* `pyproject.toml` definiuje standardowe statyczne metadane o tworzonym pakiecie Python,
+  w tym jego nazwę, autora oraz zależności czasu kompilacji i uruchomienia.
+* `setup.py` zawiera minimalną dynamiczną konfigurację potrzebną do zbudowania naszego modułu rozszerzenia.
+* `src/spectator_measures/__init__.py` definiuje interfejs użytkownika i dostarcza kod do
+  interakcji z komponentami Qiskit po stronie Pythona.
+* `src/spectator_measures/_coremodule.c` definiuje moduł rozszerzenia C, który będzie zawierał cały
+  krytyczny wydajnościowo kod naszego pakietu.
+
+Przeanalizujemy każdy plik szczegółowo, budując pakiet razem z jego modułem rozszerzenia.
+
+## Definiowanie metadanych pakietu {#define-the-package-metadata}
+
+Zacznij od zdefiniowania pliku `pyproject.toml`. Jest to standardowe podejście dla projektów opartych na `setuptools`,
+choć `qiskit` jest dodatkowym wymaganiem w tablicy `build-system.requires`,
+oprócz `setuptools`.
+
+**`pyproject.toml`**
+```toml
+[build-system]
+requires = [
+    "setuptools",
+    "qiskit~=2.4.0",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spectator_measures"
+authors = [
+    { name = "Qiskit Developer" },
+]
+version = "0.0.1"
+dependencies = [
+    "qiskit~=2.4.0",
+]
+# If you intend to release your package, you should
+# also set the `license` information, and so on.
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+```
+
+Od wersji Qiskit v2.4 C API nie jest jeszcze stabilne poza wersjami minor (na przykład C API dla v2.4.0 będzie
+kompatybilne z v2.4.1, ale nie z v2.5.0). W przyszłości planujemy rozszerzyć tę stabilność na wersje major. Na razie ustaw wersję Qiskit w czasie uruchomienia w
+`project.dependencies` tak, aby odpowiadała wersji minor użytej podczas kompilacji.
+
+W wielu czystych projektach Python opartych na `setuptools` wystarczyłby plik
+`pyproject.toml`. Jednak nasz moduł potrzebuje dostępu do plików nagłówkowych Qiskit C API podczas
+procesu kompilacji. Począwszy od v2.4, są one dołączone do dystrybucji Python Qiskit SDK.
+Aby znaleźć katalog je zawierający, uruchom `qiskit.capi.get_include()`.
+Skutkuje to plikiem `setup.py` wyglądającym następująco:
+
+**`setup.py`**
+```python
+import qiskit
+from setuptools import setup, Extension
+
+core_ext = Extension(
+    # The fully qualified module name of the extension.
+    name="spectator_measures._core",
+    # The C source files needed for the extension.  The file
+    # name is conventionally `<mod>module.c`, where `<mod>`
+    # is the module name (`_core`, in this case).
+    sources=["src/spectator_measures/_coremodule.c"],
+    # Directories containing additional header files used in
+    # the build process.
+    include_dirs=[qiskit.capi.get_include()],
+)
+setup(ext_modules=[core_ext])
+```
+
+Większość informacji o pakiecie jest zdefiniowana w `pyproject.toml`, a `setuptools.setup()` również
+odczyta ten plik.
+
+<Admonition type="tip">
+Zapoznaj się z [Przewodnikiem użytkownika `setuptools`](https://setuptools.pypa.io/en/latest/userguide/), aby uzyskać więcej
+informacji na temat konfigurowania projektów opartych na `setuptools`.
+</Admonition>
+
+## Pisanie wrappera po stronie Pythona {#write-the-python-space-wrapper}
+
+Technicznie możliwe jest zdefiniowanie wszystkiego w rozszerzeniu Python z poziomu C. W praktyce
+łatwiej jest wchodzić w interakcję z innym kodem po stronie Pythona bezpośrednio z Pythona.
+
+Ten pakiet definiuje niestandardowy pass transpilera, który wywodzi się z klasy
+`qiskit.transpiler.TransformationPass` po stronie Pythona, ale używa funkcji z modułu rozszerzenia C do
+całej swojej logiki biznesowej. Wygląda to następująco:
+
+**`src/spectator_measures/__init__.py`**
+```python
+from qiskit.transpiler import TransformationPass, Target
+from . import _core
+
+__version__ = "0.0.1"
+__all__ = ["AddSpectatorMeasures"]
+
+class AddSpectatorMeasures(TransformationPass):
+    def __init__(
+        self,
+        target: Target,
+        *,
+        include_unmeasured: bool = False,
+        creg_name: str | None = None,
+        add_barrier: bool = True
+    ):
+        super().__init__()
+        self.target = target
+        self.include_unmeasured = include_unmeasured
+        self.creg_name = creg_name
+        self.add_barrier = add_barrier
+
+    def run(self, dag):
+        # Delegate to our C extension module.
+        _core.add_spectator_measures(
+            dag,
+            self.target,
+            include_unmeasured=self.include_unmeasured,
+            creg_name=self.creg_name,
+            add_barrier=self.add_barrier,
+        )
+        return dag
+```
+
+Dokładne szczegóły tego passa są nieistotne dla tego przewodnika. Jeśli jesteś zainteresowany, możesz
+zapoznać się z [dokumentacją API `AddSpectatorMeasures` w
+`qiskit-addon-utils`][AddSpectatorMeasures-api]. Ten przewodnik tworzy prostą wersję tego passa,
+bez obsługi operacji przepływu sterowania.
+
+[AddSpectatorMeasures-api]: https://qiskit.github.io/qiskit-addon-utils/stubs/qiskit_addon_utils.noise_management.post_selection.transpiler.passes.AddSpectatorMeasures.html
+
+## Pisanie modułu rozszerzenia C {#write-the-c-extension-module}
+
+<Admonition type="tip">
+  Poniższe zasoby mogą okazać się pomocne:
+
+  - [Dokumentacja CPython dotycząca pisania modułów rozszerzeń](https://docs.python.org/3/extending/index.html).
+  - [Dokumentacja NumPy dotycząca używania jego C API](https://numpy.org/doc/stable/user/c-info.how-to-extend.html).
+  - [Dokumentacja Qiskit C API][c-api].
+</Admonition>
+
+Ta sekcja dotyczy właściwego rozszerzenia C. Jest to najbardziej złożony plik w
+projekcie, więc podzielimy go na etapy.
+
+### Konfigurowanie plików nagłówkowych {#configure-the-header-files}
+
+Podczas budowania modułu rozszerzenia Python musisz dołączyć `Python.h` przed wszystkimi innymi plikami.
+Aby używać Qiskit C API w module rozszerzenia, musisz zdefiniować makro
+`QISKIT_PYTHON_EXTENSION` przed dołączeniem `qiskit.h`.
+
+Nasze dyrektywy include wyglądają wtedy następująco:
+
+**`src/spectator_measures/_coremodule.c`**
+```c
+#define QISKIT_PYTHON_EXTENSION
+#include <Python.h>
+#include <qiskit.h>
+
+#include <limits.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+```
+
+### Pisanie czystego kodu C API {#write-the-pure-c-api-code}
+
+Następnie napisz całą logikę biznesową jako czysty kod Qiskit C API. Udostępnimy
+tę logikę przestrzeni Pythona w następnej sekcji.
+
+Ta sekcja zawiera wyłącznie czysty kod Qiskit C API. Używa typów C API:
+
+* `QkDag *`, odpowiadający `DAGCircuit` po stronie Pythona.
+* `QkTarget *`, odpowiadający `Target` po stronie Pythona.
+* `QkNeighbors`, natywny typ C API reprezentujący ograniczenia sprzężeń dwu-Qubitowych.
+* `QkCircuitInstruction`, natywny typ C API do odpytywania poszczególnych instrukcji.
+
+Pierwsze dwa stanowią część naszej interakcji z przestrzenią Pythona, ale podczas pracy z nimi
+musimy rozważać wyłącznie czyste C API. W tym kodzie nie ma żadnej interakcji z interpreterem Pythona.
+
+Zauważ, że wszystkie funkcje i symbole zdefiniowane w tej sekcji są zadeklarowane z powiązaniem `static`.
+Wynika to z faktu, że interpreter Pythona nie będzie linkował do tego modułu rozszerzenia; dostarczymy
+interpreterowi szczegółów dotyczących dostępnych funkcji w następnej sekcji.
+
+Nie będziemy zagłębiać się w szczegóły algorytmiczne tego kodu; użycie sensownego
+passa transpilera do demonstracji jest pouczające, ale precyzyjna implementacja algorytmu nie jest
+ważna dla tego przewodnika.
+
+**`src/spectator_measures/_coremodule.c (appended)`**
+```c
+/**
+ * The default name to use for `creg_name` if none is supplied.
+ */
+static char DEFAULT_CREG_NAME[] = "spec";
+
+/**
+ * Is there a 2q link from the given qubit to any active qubit?
+ */
+static bool adjacent_to_active(QkNeighbors *adj, uint32_t qubit,
+                               bool *active) {
+    for (uint32_t offset = adj->partition[qubit];
+         offset < adj->partition[qubit + 1]; offset++) {
+        if (active[adj->neighbors[offset]]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * A transpiler pass that adds terminal measurements to all "spectator"
+ * qubits.
+ */
+static uint32_t add_spectator_measures(QkDag *dag,
+                                       const QkTarget *target,
+                                       bool include_unmeasured,
+                                       const char *creg_name,
+                                       bool add_barrier) {
+    uint32_t num_spectators = 0;
+    uint32_t num_qubits = qk_dag_num_qubits(dag);
+    uint32_t num_instructions = qk_dag_num_op_nodes(dag);
+    bool *active = calloc(num_qubits, sizeof(*active));
+    bool *is_additional_spectator =
+        calloc(num_qubits, sizeof(*is_additional_spectator));
+    uint32_t *spectators = malloc(num_qubits * sizeof(*spectators));
+    uint32_t *topological =
+        malloc(num_instructions * sizeof(*topological));
+    QkNeighbors neighbors;
+    QkCircuitInstruction instruction;
+
+    qk_neighbors_from_target(target, &neighbors);
+    qk_dag_topological_op_nodes(dag, topological);
+
+    for (uint32_t i = 0; i < num_instructions; i++) {
+        qk_dag_get_instruction(dag, topological[i], &instruction);
+        if (!strcmp(instruction.name, "barrier")) {
+            // Barriers don't count for the purposes of determining
+            // final measurements, either.
+            qk_circuit_instruction_clear(&instruction);
+            continue;
+        }
+        // If we're not adding measurements to "unmeasured" active
+        // qubits, then nothing counts as an additional "maybe
+        // spectator".  If we are, then it's a maybe spectator if its
+        // last visited instruction was not a measure.
+        bool additional_spectator =
+            include_unmeasured && strcmp(instruction.name, "measure");
+        for (uint32_t *qarg = instruction.qubits;
+             qarg != instruction.qubits + instruction.num_qubits;
+             qarg++) {
+            active[*qarg] = true;
+            is_additional_spectator[*qarg] = additional_spectator;
+        }
+        qk_circuit_instruction_clear(&instruction);
+    }
+
+    for (uint32_t qubit = 0; qubit < num_qubits; qubit++) {
+        bool is_spectator =
+            !active[qubit] &&
+            adjacent_to_active(&neighbors, qubit, active);
+        is_spectator = is_spectator || is_additional_spectator[qubit];
+        if (is_spectator) {
+            spectators[num_spectators] = qubit;
+            num_spectators += 1;
+        }
+    }
+
+    if (num_spectators) {
+        uint32_t clbit = qk_dag_num_clbits(dag);
+        creg_name = creg_name ? creg_name : DEFAULT_CREG_NAME;
+        QkClassicalRegister *creg =
+            qk_classical_register_new(num_spectators, creg_name);
+        qk_dag_add_classical_register(dag, creg);
+        qk_classical_register_free(creg);
+        if (add_barrier) {
+            qk_dag_apply_barrier(dag, NULL, num_qubits, false);
+        }
+        for (uint32_t i = 0; i < num_spectators; i++) {
+            qk_dag_apply_measure(dag, spectators[i], clbit + i, false);
+        }
+    }
+
+    qk_neighbors_clear(&neighbors);
+    free(topological);
+    free(spectators);
+    free(is_additional_spectator);
+    free(active);
+    return num_spectators;
+}
+```
+
+### Pisanie kodu interakcji z Pythonem {#write-the-python-interaction-code}
+
+Cała logika biznesowa jest teraz zdefiniowana w czystym C. Następnie należy ją bezpiecznie udostępnić Pythonowi.
+
+Na początku zdefiniuj jedyną funkcję, która zostanie udostępniona Pythonowi. Musi ona
+podążać za zdefiniowaną sygnaturą, która jest wyrażona wyłącznie w terminach typów Pythona wyglądających jak
+metoda `fn(self, *args, **kwargs)`. Musimy zwrócić `PyObject *`, czyli ogólną formę
+dowolnego obiektu Pythona.
+
+Kompletna funkcja wygląda następująco:
+
+**`src/spectator_measures/_coremodule.c (appended)`**
+```c
+static PyObject *py_add_spectator_measures(PyObject *self,
+                                           PyObject *args,
+                                           PyObject *kwargs) {
+    // Define space to hold the C-native handles we will parse out of the
+    // Python-space inputs.
+    QkDag *dag;
+    QkTarget *target;
+    const char *creg_name;
+    int include_unmeasured, add_barrier;
+
+    // This `kwlist` and `PyArg_Parse*` setup is standard Python C API
+    // programming for extension modules.  We will examine the use of
+    // Qiskit C API functions within it afterwards.
+    static char *const kwlist[] = {
+        "dag",       "target",      "include_unmeasured",
+        "creg_name", "add_barrier", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O&O&|pzp", kwlist,
+                                     qk_dag_convert_from_python, &dag,
+                                     qk_target_convert_from_python,
+                                     &target, &include_unmeasured,
+                                     &creg_name, &add_barrier)) {
+        // An error has occurred. The Python exception state will already
+        // be set, so we need to return the error indicator.
+        return NULL;
+    }
+
+    // Now we have C-native types, we can delegate to our C logic.
+    add_spectator_measures(dag, target, include_unmeasured, creg_name,
+                           add_barrier);
+    Py_RETURN_NONE;
+}
+```
+
+W skrócie, funkcja:
+
+1. Podąża za zdefiniowaną sygnaturą, aby akceptować dowolne argumenty Pythona.
+1. Definiuje miejsce do przechowywania natywnych obiektów C sparsowanych z argumentów Pythona.
+1. Wywołuje funkcję parsującą, aby wyodrębnić natywne obiekty C, skonfigurowaną z listą oczekiwanych
+   argumentów, argumentów kluczowych i funkcji do ich konwersji. Jeśli operacja się nie powiedzie, funkcja
+   propaguje błąd.
+1. Deleguje do natywnej logiki C z poprzedniej sekcji, która mutuje DAG w miejscu.
+1. Zwraca obiekt `None` przestrzeni Pythona.
+
+Najbardziej złożona logika zawarta jest w `PyArg_ParseTupleAndKeywords`. Jest to dobrze udokumentowane w [dokumentacji
+CPython dotyczącej parsowania argumentów](https://docs.python.org/3/c-api/arg.html), którą
+powinieneś przejrzeć w celu uzyskania dalszych informacji.
+
+Qiskit C API dostarcza kilka funkcji o nazwach takich jak `qk_*_convert_from_python`, które są
+zaprojektowane jako funkcje „konwertera" do użytku z funkcjami `PyArg_Parse*`. Odpowiadają one
+kluczom `O&` w ciągu formatującym; tutaj użyliśmy `qk_dag_convert_from_python` i
+`qk_target_convert_from_python`. Funkcje te _pożyczają_ natywny obiekt C z argumentu Pythona,
+z którego pochodzi. Oznacza to, że mutacje będą propagowane do przestrzeni Pythona, ale także że
+należy uważać, aby nie zwolnić swojego odwołania do obiektu Pythona, który je podpiera, podczas używania
+wyniku. Jest to standardowe podejście w programowaniu Python C API.
+
+Następnie definiujemy informacje o tym module i zawartej w nim funkcji, aby móc je przekazać do
+przestrzeni Pythona:
+
+**`src/spectator_measures/_coremodule.c (appended)`**
+```c
+static PyMethodDef core_methods[] = {
+    // This entry is our function, cast to the correct type.
+    {"add_spectator_measures",
+     (PyCFunction)(void (*)(void))py_add_spectator_measures,
+     METH_VARARGS | METH_KEYWORDS, ""},
+    // A sentinel marking the end of the list.
+    {NULL, NULL, 0, NULL},
+};
+static struct PyModuleDef core_module = {
+    .m_base = PyModuleDef_HEAD_INIT,
+    .m_name = "_core",
+    .m_methods = core_methods,
+};
+```
+
+Ta tablica metod i struktura definicji modułu są opisane bardziej szczegółowo w [dokumentacji CPython dotyczącej
+inicjalizacji modułu](https://docs.python.org/3/extending/extending.html#the-module-s-method-table-and-initialization-function).
+
+Na koniec powiedz Pythonowi, jak zainicjalizować moduł. Jest to jedyna funkcja w pliku C,
+która jest eksportowana. Jej nazwa _musi_ dokładnie odpowiadać wzorcowi
+`PyInit_<mod>`, gdzie `<mod>` to (niekwalifikowana) nazwa modułu. W tym przypadku w pełni
+kwalifikowana nazwa modułu to `spectator_measures._core`, a niekwalifikowana to `_core`, więc nasza
+funkcja musi się nazywać `PyInit__core`, z podwójnym podkreślnikiem.
+
+**`src/spectator_measures/_coremodule.c (appended)`**
+```c
+PyMODINIT_FUNC PyInit__core(void) {
+    // This line is critical to use the Qiskit C API. Your code will
+    // likely be immediately terminated by the operating system if you
+    // forget to do this.
+    if (qk_import() < 0) {
+        return NULL;
+    };
+    // The standard Python call to initialize a module.
+    return PyModuleDef_Init(&core_module);
+}
+```
+
+Symbole `PyMODINIT_FUNC` i `PyModuleDef_Init` są standardowymi elementami programowania Python C API. Komponentem
+specyficznym dla Qiskit jest `qk_import()`. Niezwykle ważne jest, aby wywołać tę funkcję podczas
+funkcji inicjalizacji swojego modułu; nie będziesz mógł wywołać żadnych funkcji Qiskit C API,
+dopóki ta funkcja nie zostanie pomyślnie wykonana.
+
+## Używanie pakietu z Pythona {#use-the-package-from-python}
+
+To jest teraz kompletny pakiet, zawierający moduł rozszerzenia C. Ponieważ użyto tylko standardowych
+narzędzi i żadne niestandardowe biblioteki systemowe nie są linkowane podczas kompilacji,
+proces budowania jest prosty.
+
+Możesz użyć dowolnego narzędzia do budowania zgodnego z PEP-517. Jako minimalny przykład możesz uruchomić następujące polecenie w katalogu głównym repozytorium, aby zainstalować pakiet.
+
 ```bash
-pip install -r requirements.txt -c constraints.txt
 pip install .
 ```
 
-## Definiowanie rozszerzenia C {#define-the-c-extension}
+Kompiluje to moduł rozszerzenia C i
+instaluje kompletny pakiet Python w twoim środowisku.
 
-Istnieje wiele sposobów na napisanie rozszerzenia C dla Pythona. Dla uproszczenia, ten przewodnik zaczyna od podejścia korzystającego z wbudowanego modułu Pythona [`ctypes`](https://docs.python.org/3/library/ctypes.html). W następnej sekcji, [sekcja Ręczne rozszerzenie C](#manual-c-extension), zawiera przykład budowania rozszerzenia C przy użyciu C API Pythona w celu zmniejszenia narzutu czasu działania.
+Przykładowe użycie tego niestandardowego passa transpilera to:
 
-Jako przykład załóżmy, że piszesz funkcję C do budowania obserwabli i chcesz ją zwrócić do Pythona. Możesz przekonwertować `QkObs*` po stronie C na obiekt `SparseObservable` po stronie Pythona, używając dostarczonego konwertera `qk_obs_to_python`:
-```c
-// file: extension.c
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>  // include Python header for access to PyObject
-#define QISKIT_C_PYTHON_INTERFACE  // enable C->Python conversion functions
-#include <qiskit.h>
-
-PyObject *build_observable(void) {
-    QkObs *obs = qk_obs_zero(100);
-    // build the observable ...
-    PyObject *pyobj = qk_obs_to_python(obs); // convert to Qiskit's Python ``SparseObservable``
-    qk_obs_free(obs);
-    return pyobj;
-}
-```
-
-Poniżej przedstawiono, jak skompilować to do biblioteki współdzielonej — na przykład `qiskit_cextension.so`.
-Po wykonaniu tej operacji możesz wywołać program C z Pythona:
 ```python
-# file: main.py
-import qiskit
-import ctypes
+from qiskit import QuantumCircuit
+from qiskit.transpiler import CouplingMap, Target
+from spectator_measures import AddSpectatorMeasures
 
-# Load the extension, ensuring the global interpreter lock (GIL) is acquired for function calls,
-# which you need for the C->Python object conversion.
-lib = ctypes.PyDLL("/path/to/qiskit_cextension.so")
-lib.build_observable.argtypes = None  # set argument types to the function
-lib.build_observable.restype = ctypes.py_object  # set return type
+num_qubits = 10
+qc = QuantumCircuit(num_qubits)
+qc.x(0)
+qc.x(5)
 
-# now you can directly call the function
-obs = lib.build_observable()
-print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
-print(obs)
+target = Target.from_configuration(
+    basis_gates=["x", "sx", "rz", "cx"],
+    num_qubits=num_qubits,
+    coupling_map=CouplingMap.from_line(num_qubits),
+)
+pass_ = AddSpectatorMeasures(target)
+pass_(qc).draw()
 ```
 
-## Kompilacja {#build}
+Wynik tego jest następujący:
 
-Najpierw musisz zbudować rozszerzenie Pythona Qiskit. Zawiera ono symbole C, dzięki czemu możesz uzyskać dostęp do obu interfejsów za pośrednictwem tej samej biblioteki współdzielonej. Jest to ważne, aby zapewnić prawidłowe przekazywanie danych między C i Pythonem.
-```bash
-python setup.py build_rust --inplace --release
-```
-Biblioteka współdzielona nosi nazwę ``_accelerate.<część-specyficzna-dla-platformy>``. Znajdź jej lokalizację i nazwę w następujący sposób:
-```bash
-QKLIB=$(python -c "import os; import qiskit; print(os.path.dirname(qiskit._accelerate.__file__))")
-QKNAME=$(python -c "import os; import qiskit; print(os.path.basename(qiskit._accelerate.__file__))")
-```
-
-Będziesz potrzebować informacji o lokalizacji plików nagłówkowych Pythona środowiska (``Python.h``) i bibliotek (``libpython.<suffix>``).
-Można je na przykład zidentyfikować za pomocą:
-```bash
-PYINCLUDE=$(python -c "import sysconfig; print(sysconfig.get_path('include'))")
-PYLIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
-PYNAME=$(find $PYLIB -maxdepth 1 -name "libpython*" | grep -oE "[^/]+$" | grep -oE "python[0-9]+\.[0-9]+" || echo "python")
-```
-(Jeśli znasz już te lokalizacje i nazwy, możesz je ustawić bezpośrednio.)
-
-### Linkowanie {#link}
-
-Linkowanie może się różnić w zależności od platformy i linkera. Poniżej opisano rozwiązanie dla linkerów obsługujących biblioteki o dowolnych nazwach, używających flagi `-l:` (np. linker `ld` GNU). Zapoznaj się z poniższymi informacjami, jeśli twój linker wymaga, aby biblioteka była nazwana `lib<coś>` (np. linker `ldd` powszechnie stosowany w systemie MacOS).
-
-Możesz zbudować rozszerzenie, podając pełną nazwę biblioteki `_accelerate`:
-```bash
-gcc extension.c -fpic -shared -o cextension.so \
-  -I/path/to/dist/c/include -L$QKLIB -l:$QKNAME \
-  -I$PYINCLUDE -L$PYLIB -l$PYNAME
-```
-Następnie wystarczy wpisać ``python main.py``, aby uruchomić program Python.
-
-Alternatywą dla użycia dokładnej nazwy biblioteki z `-l:` jest utworzenie dowiązania symbolicznego biblioteki `_accelerate` do żądanej nazwy.
-Aby uwzględnić bibliotekę współdzieloną `_accelerate`, utwórz dowiązanie symboliczne do oczekiwanego przez linker formatu `lib<nazwa biblioteki>.<suffix>`:
-```bash
-ln -s $QKLIB/$QKNAME $QKLIB/libqiskit.<suffix>
-```
-gdzie `<suffix>` to np. `so` na Linuksie lub `dylib` na MacOS. Pozwala to używać `qiskit` jako nazwy biblioteki:
-```bash
-gcc extension.c -fpic -shared -o qiskit_cextension.so \
-  -I/path/to/dist/c/include -L$QKLIB -lqiskit \
-  -I$PYINCLUDE -L$PYLIB -l$PYNAME
-```
-Następnie wystarczy wpisać ``python main.py``, aby uruchomić program Python.
-
-## Ręczne rozszerzenie C {#manual-c-extension}
-
-Zamiast używać `ctypes`, można ręcznie zbudować rozszerzenie dla Pythona bezpośrednio przy użyciu [C API Pythona](https://docs.python.org/3/c-api/intro.html). Może to być szybsze niż użycie `ctypes`, choć wymaga więcej wysiłku w implementacji.
-Poniższy kod jest krótkim przykładem, jak to osiągnąć.
-
-```c
-// file: extension.c
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
-
-#include <stdio.h>
-#define QISKIT_C_PYTHON_INTERFACE
-#include <qiskit.h>
-
-QkObs *build_observable() {
-    // build a 100-qubit empty observable
-    u_int32_t num_qubits = 100;
-    QkObs *obs = qk_obs_zero(num_qubits);
-
-    // add the term 2 * (X0 Y1 Z2) to the observable
-    complex double coeff = 2;  // the coefficient
-    QkBitTerm bit_terms[3] = {QkBitTerm_X, QkBitTerm_Y, QkBitTerm_Z};  // bit terms: X Y Z
-    uint32_t indices[3] = {0, 1, 2};  // indices: 0 1 2
-    QkObsTerm term = {coeff, 3, bit_terms, indices, num_qubits};
-    qk_obs_add_term(obs, &term);  // append the term
-
-    return obs;
-}
-
-/// Define the Python function, which will internally build the QkObs using the
-/// C function defined above, and then convert the C object to the Python equivalent:
-/// a SparseObservable, handled as PyObject.
-static PyObject *cextension_build_observable(PyObject *self, PyObject *args) {
-    // At this point, ``args`` could be parsed for arguments. See PyArg_ParseTuple for details.
-    QkObs *obs = build_observable();  // call the C function to build the observable
-    PyObject *py_obs = qk_obs_to_python(obs);  // convert QkObs to the Python-equivalent
-    return py_obs;
-}
-
-/// Define the module methods.
-static PyMethodDef CExtMethods[] = {
-    {"build_observable", cextension_build_observable, METH_VARARGS, "Build an observable."},
-    {NULL, NULL, 0, NULL}, // sentinel
-};
-
-/// Define the module, which here is called ``cextension``.
-static struct PyModuleDef cextension = {
-    PyModuleDef_HEAD_INIT,
-    "cextension", // module name
-    NULL,         // docs
-    -1,           // keep the module state in global variables
-    CExtMethods,
-};
-
-PyMODINIT_FUNC PyInit_cextension(void) { return PyModule_Create(&cextension); }
-```
-Aby skompilować bibliotekę współdzieloną, zlinkuj zarówno biblioteki Python, jak i Qiskit, zgodnie z opisem w sekcji [Kompilacja](#build) powyżej. Skrypt Python nie potrzebuje wtedy `ctypes`, ale może bezpośrednio importować moduł `cextension` (upewnij się, że znajduje się on na twojej ścieżce Python):
-```python
-# file: main.py
-import qiskit
-import cextension
-
-# directly call the function
-obs = cextension.build_observable()
-print("SparseObservable instance?", isinstance(obs, qiskit.quantum_info.SparseObservable))
-print(obs)
+```text
+        ┌───┐ ░
+   q_0: ┤ X ├─░──────────
+        └───┘ ░ ┌─┐
+   q_1: ──────░─┤M├──────
+              ░ └╥┘
+   q_2: ──────░──╫───────
+              ░  ║
+   q_3: ──────░──╫───────
+              ░  ║ ┌─┐
+   q_4: ──────░──╫─┤M├───
+        ┌───┐ ░  ║ └╥┘
+   q_5: ┤ X ├─░──╫──╫────
+        └───┘ ░  ║  ║ ┌─┐
+   q_6: ──────░──╫──╫─┤M├
+              ░  ║  ║ └╥┘
+   q_7: ──────░──╫──╫──╫─
+              ░  ║  ║  ║
+   q_8: ──────░──╫──╫──╫─
+              ░  ║  ║  ║
+   q_9: ──────░──╫──╫──╫─
+              ░  ║  ║  ║
+spec: 3/═════════╩══╩══╩═
+                 0  1  2
 ```
