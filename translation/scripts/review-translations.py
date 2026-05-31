@@ -22,6 +22,10 @@ Usage:
     # Record linguistic review results
     python translation/scripts/review-translations.py --record-review --locale de --file guides/foo.mdx --verdict PASS
     python translation/scripts/review-translations.py --record-review --from-json results.json
+
+    # Prune status.json entries for files no longer on disk (dashboard hygiene)
+    python translation/scripts/review-translations.py --prune-orphans --dry-run
+    python translation/scripts/review-translations.py --prune-orphans
 """
 
 import argparse
@@ -521,6 +525,55 @@ def record_review_from_json(json_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# --prune-orphans: Drop status.json entries for files no longer on disk
+# ---------------------------------------------------------------------------
+
+
+def prune_orphans(dry_run: bool = False) -> None:
+    """Remove status.json entries whose translation file no longer exists.
+
+    When EN docs are restructured/removed upstream, the matching translation
+    files are deleted but their status.json records linger — inflating FAIL
+    counts and skewing the review dashboard. Only locale entries are touched;
+    non-locale top-level keys (e.g. "reviews") are left alone.
+    """
+    status = load_status()
+    per_locale: dict[str, int] = {}
+    fail_pruned = 0
+    total = 0
+
+    for locale in ALL_LOCALES:
+        entries = status.get(locale)
+        if not entries:
+            continue
+        base = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+        orphans = [rel for rel in entries if not (base / rel).exists()]
+        if not orphans:
+            continue
+        per_locale[locale] = len(orphans)
+        total += len(orphans)
+        fail_pruned += sum(1 for rel in orphans
+                           if entries[rel].get("validation") == "FAIL")
+        if not dry_run:
+            for rel in orphans:
+                del entries[rel]
+
+    verb = "Would prune" if dry_run else "Pruned"
+    print(f"{verb} {total} orphaned entr{'y' if total == 1 else 'ies'} "
+          f"({fail_pruned} recorded as validation=FAIL):")
+    for loc, n in sorted(per_locale.items(), key=lambda x: -x[1]):
+        print(f"  {loc:5} {n}")
+    if not per_locale:
+        print("  (none — status.json is clean)")
+
+    if total and not dry_run:
+        save_status(status)
+        print("\nSaved translation/status.json. Run --progress to verify.")
+    elif dry_run:
+        print("\nDry run — no changes written.")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -547,6 +600,10 @@ def main():
         "--record-review", action="store_true",
         help="Record linguistic review result"
     )
+    group.add_argument(
+        "--prune-orphans", action="store_true",
+        help="Drop status.json entries whose translation file no longer exists"
+    )
 
     parser.add_argument("--locale", help="Filter to a single locale")
     parser.add_argument(
@@ -568,6 +625,10 @@ def main():
     parser.add_argument(
         "--from-json", metavar="PATH",
         help="Record reviews from JSON file (or - for stdin)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="For --prune-orphans: preview without writing"
     )
 
     args = parser.parse_args()
@@ -593,6 +654,9 @@ def main():
             parser.error(
                 "--record-review requires (--locale + --file + --verdict) or --from-json"
             )
+
+    elif args.prune_orphans:
+        prune_orphans(dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
