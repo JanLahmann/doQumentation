@@ -97,6 +97,7 @@ def extract_headings_with_positions(content: str) -> list[tuple[int, int, str, s
     lines = content.split('\n')
     headings = []
     in_code_block = False
+    in_math_block = False
 
     for i, line in enumerate(lines):
         # Track code blocks
@@ -106,6 +107,18 @@ def extract_headings_with_positions(content: str) -> list[tuple[int, int, str, s
             continue
 
         if in_code_block:
+            continue
+
+        # Track standalone `$$` display-math fences. A `#`-prefixed line
+        # inside a display-math block is LaTeX (e.g. a comment or `\#`),
+        # NOT a markdown heading — counting it as one desynchronizes the
+        # EN/TR heading lists and (via the position zip below) lands an
+        # appended {#anchor} INSIDE the math, corrupting it. Skip them.
+        if stripped == '$$':
+            in_math_block = not in_math_block
+            continue
+
+        if in_math_block:
             continue
 
         # Match heading lines
@@ -161,12 +174,16 @@ def fix_file(en_path: Path, translated_path: Path, apply: bool = False) -> dict:
     tr_headings = extract_headings_with_positions(tr_content)
 
     if len(en_headings) != len(tr_headings):
+        # ABORT — do NOT fall through. A length mismatch means the position
+        # zip below would pair EN heading N with the WRONG TR heading,
+        # appending {#en_slug} onto an unrelated line (historically landing
+        # inside $...$ math and corrupting it). Refuse to touch the file and
+        # surface the mismatch for manual/agent resolution instead.
         stats["errors"].append(
             f"Heading count mismatch: EN has {len(en_headings)}, "
-            f"translated has {len(tr_headings)}"
+            f"translated has {len(tr_headings)} — skipped (no anchors written)"
         )
-        # Try to fix what we can by matching heading levels
-        # Fall through — we'll match by position where possible
+        return stats
 
     # Process in reverse order so line numbers don't shift
     tr_lines = tr_content.split('\n')
