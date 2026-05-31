@@ -754,6 +754,41 @@ def check_jsx_tags(en_content: str, tr_content: str) -> CheckResult:
     return CheckResult("JSX tags", True, summary or "No JSX tags")
 
 
+# Paired block-JSX tags whose open/close counts must balance or the
+# docusaurus build aborts ("Unexpected closing tag"). Kept in sync with
+# lint-translation.py's _PAIRED_JSX_TAGS — this is the build-fatal class.
+_PAIRED_JSX_TAGS = (
+    "details", "Accordion", "AccordionItem", "Admonition",
+    "Tabs", "TabItem", "content", "summary",
+)
+
+
+def check_jsx_tag_balance(tr_content: str) -> CheckResult:
+    """Catch a paired block-JSX tag whose openers != closers in the TR file.
+
+    check_jsx_tags() only counts OPENING tags vs EN, so it cannot see a
+    duplicated/orphan CLOSING tag (e.g. a stray extra `</Accordion>` from a
+    chunked re-translation). That imbalance passes the structural validator
+    but aborts the locale build. Mirrors lint-translation.py exactly: raw
+    count across the whole file, no fence-stripping, no EN comparison —
+    an unequal open/close count is always a parse error.
+    """
+    body = tr_content
+    details = []
+    for tag in _PAIRED_JSX_TAGS:
+        opens = len(re.findall(r'<%s(?:\s[^>]*?)?>' % tag, body)) \
+            - len(re.findall(r'<%s(?:\s[^>]*?)?/>' % tag, body))
+        closes = body.count("</%s>" % tag)
+        if opens != closes:
+            details.append(f"<{tag}>: {opens} opener(s) vs {closes} closer(s)")
+    if details:
+        return CheckResult(
+            "JSX tag balance", False,
+            f"{len(details)} unbalanced paired tag(s) — aborts locale build",
+            details)
+    return CheckResult("JSX tag balance", True, "Paired tags balanced")
+
+
 def check_link_urls(en_content: str, tr_content: str) -> CheckResult:
     en_urls = {url for _, url in extract_link_urls(en_content)}
     tr_urls = {url for _, url in extract_link_urls(tr_content)}
@@ -895,6 +930,7 @@ def validate_file(en_path: Path, tr_path: Path, locale: str,
     report.checks.append(check_image_paths(en_content, tr_content))
     report.checks.append(check_frontmatter(en_content, tr_content))
     report.checks.append(check_jsx_tags(en_content, tr_content))
+    report.checks.append(check_jsx_tag_balance(tr_content))
     report.checks.append(check_link_urls(en_content, tr_content))
     report.checks.append(check_paragraph_inflation(en_content, tr_content,
                                                     locale))

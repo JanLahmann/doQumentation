@@ -1582,11 +1582,71 @@ def audit_locale(locale: str, section: str | None = None,
     return flagged
 
 
+def audit_cross_locale(section: str | None = None) -> dict[str, list[str]]:
+    """Cross-locale FAIL report. Validates every genuine translation in every
+    locale and groups the FAILing EN files by how many locales fail them.
+
+    A FAIL appearing in many locales almost always means the SAME upstream
+    drift hit them all (e.g. computer-science/vqe's 26→2 $$ corruption in ar
+    AND pt, an outdated 'exam coming soon' placeholder in ko/pl/it, or a link
+    rename like configure-error-mitigation → error-mitigation-and-suppression-
+    techniques). Fix those once as a known pattern and apply across locales,
+    instead of rediscovering the same defect per-locale. Read-only.
+    """
+    fv = validator
+    # EN-relative-path -> list of "locale(reasons)"
+    by_file: dict[str, list[str]] = {}
+    locale_fail_count: dict[str, int] = {}
+    for locale in fv.ALL_LOCALES:
+        if locale == "en":
+            continue
+        base = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+        if not base.exists():
+            continue
+        n_fail = 0
+        for en_path, tr_path in find_genuine_translations(locale):
+            rel = str(tr_path.relative_to(base))
+            if section and not rel.startswith(section):
+                continue
+            try:
+                report = fv.validate_file(en_path, tr_path, locale)
+            except Exception as e:
+                by_file.setdefault(rel, []).append(f"{locale}(validate-error:{e})")
+                n_fail += 1
+                continue
+            if not report.passed:
+                reasons = ",".join(c.name for c in report.checks if not c.passed)
+                by_file.setdefault(rel, []).append(f"{locale}({reasons})")
+                n_fail += 1
+        locale_fail_count[locale] = n_fail
+    # report, most-shared drift first
+    ranked = sorted(by_file.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    print(f"\n{'═' * 70}")
+    print("Cross-locale FAIL audit — EN files grouped by # of locales failing")
+    print(f"{'═' * 70}")
+    shared = [(f, locs) for f, locs in ranked if len(locs) >= 2]
+    single = [(f, locs) for f, locs in ranked if len(locs) == 1]
+    print(f"\n▶ SHARED DRIFT ({len(shared)} EN file(s) failing in ≥2 locales — "
+          f"fix once, apply across locales):")
+    for f, locs in shared:
+        print(f"  [{len(locs):2}×] {f}")
+        for entry in sorted(locs):
+            print(f"         {entry}")
+    print(f"\n▶ LOCALE-SPECIFIC ({len(single)} EN file(s) failing in exactly 1 locale):")
+    for f, locs in single:
+        print(f"  {f} — {locs[0]}")
+    print(f"\nPer-locale FAIL totals: " +
+          ", ".join(f"{l}={n}" for l, n in sorted(locale_fail_count.items())
+                    if n))
+    return by_file
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detect and process stale translations with minimal retranslation"
     )
-    parser.add_argument("--locale", required=True, help="Locale code (e.g. de, es)")
+    parser.add_argument("--locale", help="Locale code (e.g. de, es). Required "
+                        "except with --audit-cross-locale.")
     parser.add_argument("--file", help="Process a single file (relative path)")
     parser.add_argument("--section", help="Filter by section (guides, tutorials, learning)")
 
@@ -1610,12 +1670,25 @@ def main():
                              "(i.e. reads 'fresh') and report those that FAIL "
                              "validation — usually deferred-MAJOR files that "
                              "were hash-bumped without being translated.")
+    parser.add_argument("--audit-cross-locale", action="store_true",
+                        help="Cross-locale FAIL report: validate every locale "
+                             "and group FAILing EN files by how many locales "
+                             "fail them, surfacing SHARED upstream drift to fix "
+                             "once. Does not require --locale. Read-only.")
     parser.add_argument("--skip-manifest-done", action="store_true",
                         help="Skip files already 'finalized' in "
                              "translation/manifests/<locale>.json (resumable scaling)")
     parser.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args()
+
+    # Cross-locale FAIL audit sweeps all locales — no --locale needed.
+    if args.audit_cross_locale:
+        by_file = audit_cross_locale(args.section)
+        sys.exit(1 if by_file else 0)
+
+    if not args.locale:
+        parser.error("--locale is required (except with --audit-cross-locale)")
 
     # Falsely-fresh audit runs independently of the stale scan (it targets
     # files that read FRESH, which the stale scan by definition skips).
