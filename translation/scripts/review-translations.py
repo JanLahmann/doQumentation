@@ -15,6 +15,8 @@ Usage:
     python translation/scripts/review-translations.py --progress
 
     # Get next chunk of files needing linguistic review
+    # (STALE/UNKNOWN files are held back by default — refresh them first;
+    #  use --include-stale to override)
     python translation/scripts/review-translations.py --next-chunk [--size 20]
 
     # Record linguistic review results
@@ -23,6 +25,7 @@ Usage:
 """
 
 import argparse
+import importlib.util
 import json
 import subprocess
 import sys
@@ -38,6 +41,18 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 DOCS_DIR = REPO_ROOT / "docs"
 I18N_DIR = REPO_ROOT / "i18n"
+
+
+def _import_module(name: str, filename: str):
+    """Import a sibling script by path (handles hyphenated filenames)."""
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Reuse the freshness checker so we never queue a STALE file for review.
+_freshness = _import_module("freshness", "check-translation-freshness.py")
 
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
@@ -109,6 +124,23 @@ def get_file_line_count(locale: str, rel_path: str) -> int:
     if p.exists():
         return len(p.read_text(encoding="utf-8").splitlines())
     return 0
+
+
+def is_fresh(locale: str, rel_path: str) -> bool:
+    """True if the translation's embedded source-hash matches current EN.
+
+    Files without an embedded hash (UNKNOWN) or whose EN source has drifted
+    (STALE) return False — reviewing them wastes effort, since the prose may
+    not match the current English. Refresh/re-stamp them first.
+    """
+    en_path = DOCS_DIR / rel_path
+    tr_path = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current" / rel_path
+    if not (en_path.exists() and tr_path.exists()):
+        return False
+    embedded = _freshness.extract_embedded_hash(tr_path.read_text(encoding="utf-8"))
+    if embedded is None:
+        return False
+    return embedded == _freshness.compute_source_hash(en_path.read_text(encoding="utf-8"))
 
 
 def get_section(rel_path: str) -> str:
@@ -324,11 +356,13 @@ def show_progress(locale_filter: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def next_chunk(size: int = 20, locale_filter: str | None = None) -> None:
+def next_chunk(size: int = 20, locale_filter: str | None = None,
+               include_stale: bool = False) -> None:
     """Print the next chunk of files needing linguistic review."""
     status = load_status()
 
     candidates: list[tuple[str, str, int]] = []  # (locale, rel_path, line_count)
+    skipped_stale = 0
 
     locales = [locale_filter] if locale_filter else LOCALE_PRIORITY
 
@@ -347,12 +381,20 @@ def next_chunk(size: int = 20, locale_filter: str | None = None) -> None:
             # Not already reviewed
             if entry.get("review") is not None:
                 continue
+            # Don't queue STALE/UNKNOWN files — refresh + re-stamp them first
+            # (reviewing prose that doesn't match current EN wastes effort).
+            if not include_stale and not is_fresh(locale, rel):
+                skipped_stale += 1
+                continue
 
             lines = get_file_line_count(locale, rel)
             candidates.append((locale, rel, lines))
 
     if not candidates:
         print("No files pending linguistic review.")
+        if skipped_stale:
+            print(f"  ({skipped_stale} reviewable file(s) skipped as STALE/UNKNOWN — "
+                  f"refresh + re-stamp first, or pass --include-stale)")
         if not locale_filter:
             # Check if there are unvalidated files
             total_genuine = sum(count_genuine(loc) for loc in ALL_LOCALES)
@@ -390,6 +432,9 @@ def next_chunk(size: int = 20, locale_filter: str | None = None) -> None:
     remaining = len(candidates) - len(chunk)
     if remaining > 0:
         print(f"\n  ... {remaining} more files pending after this chunk")
+    if skipped_stale:
+        print(f"  ({skipped_stale} fresh-but-stale/unknown file(s) held back — "
+              f"refresh + re-stamp first, or pass --include-stale)")
 
     # Print summary of what to do
     print(f"\n  Review each file for: register, word salad, verbosity, accuracy")
@@ -508,6 +553,11 @@ def main():
         "--size", type=int, default=20,
         help="Chunk size for --next-chunk (default: 20)"
     )
+    parser.add_argument(
+        "--include-stale", action="store_true",
+        help="For --next-chunk: also queue STALE/UNKNOWN files "
+             "(default: skip them — refresh before reviewing)"
+    )
     parser.add_argument("--file", help="File path for --record-review")
     parser.add_argument(
         "--verdict",
@@ -530,7 +580,8 @@ def main():
         show_progress(args.locale)
 
     elif args.next_chunk:
-        next_chunk(size=args.size, locale_filter=args.locale)
+        next_chunk(size=args.size, locale_filter=args.locale,
+                   include_stale=args.include_stale)
 
     elif args.record_review:
         if args.from_json:
