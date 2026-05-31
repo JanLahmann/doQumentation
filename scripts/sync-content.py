@@ -1749,12 +1749,12 @@ def process_courses():
     # Track statistics
     stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
 
-    # When the same course name appears in both upstream and local-content
-    # (e.g. local-content overlay shipped before upstream caught up; see PR
-    # #37 / "use-a-qc-today"), prefer upstream — local-content is meant as a
-    # cherry-pick workaround, not a parallel source of truth. The ordering
-    # of course_roots above puts upstream first, so a name we've already
-    # seen wins.
+    # When the same course name appears in both upstream and local-content,
+    # prefer upstream — local-content is meant as a cherry-pick workaround for
+    # courses upstream hasn't shipped yet, not a parallel source of truth. The
+    # ordering of course_roots above puts upstream first, so a name we've
+    # already seen wins. (The original example, "use-a-qc-today" from PR #37,
+    # was retired once upstream caught up — see commit removing its overlay.)
     course_dirs = []
     seen_names: Set[str] = set()
     for root in course_roots:
