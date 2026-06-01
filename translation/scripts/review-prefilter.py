@@ -102,6 +102,12 @@ FOREIGN_LEAKS = {
 }
 
 LINK_RE = re.compile(r"\[[^\]]*\]\((https?://[^)\s]+|/[^)\s]+)\)")
+# Links injected by the doQumentation framework into translations (the standard
+# "this survey relates to the original English content — open a GitHub issue"
+# Note block that replaces the English-only IBM feedback survey). These appear
+# in the translation but not the EN source by DESIGN — exclude them so they
+# don't pollute the FABRICATED_LINK signal (they caused false-positive FAILs).
+BOILERPLATE_LINK = re.compile(r"JanLahmann/doQumentation/issues|feedback\.ibm\.com")
 HEADING_RE = re.compile(r"^#{1,6}\s+\S", re.MULTILINE)
 TABLE_ROW_RE = re.compile(r"^\s*\|.+\|\s*$", re.MULTILINE)
 FENCE_RE = re.compile(r"^```", re.MULTILINE)
@@ -144,7 +150,8 @@ def analyse(locale: str, rel: str, en_text: str, tr_text: str) -> dict:
         flags.append(f"CODE_BLOCK_DELTA(en={en_m['fences']},tr={tr_m['fences']})")
 
     # --- link-set diff (URLs should match; translated link *text* may differ) ---
-    en_links, tr_links = set(en_m["links"]), set(tr_m["links"])
+    en_links = {l for l in en_m["links"] if not BOILERPLATE_LINK.search(l)}
+    tr_links = {l for l in tr_m["links"] if not BOILERPLATE_LINK.search(l)}
     fabricated = tr_links - en_links
     dropped = en_links - tr_links
     if fabricated:

@@ -38,6 +38,14 @@ CHECKS (prose only — ignore code/math/JSX/URLs/anchors):
 2. WORD SALAD / HALLUCINATION — match each prose paragraph to its EN paragraph.
    Flag gibberish/repetition, and fluent-but-fabricated/substituted content not
    in the source. Scrutinize the last 40% of long files.
+   NOT a defect (never FAIL/flag): the standard injected survey block — a
+   "Post-course survey" / "Was this page helpful" heading followed by
+   `> **Note:** This survey is provided by IBM Quantum and relates to the
+   original English content … open a GitHub issue` (link to
+   github.com/JanLahmann/doQumentation/issues). The doQumentation framework
+   injects this in translations to replace the English-only IBM feedback form.
+   A FABRICATED_LINK hint pointing at that GitHub-issues / feedback.ibm.com link
+   is a known false positive — dismiss it.
 3. VERBOSITY — sentences materially longer/redundant vs source.
 4. ACCURACY — meaning drift, dropped detail, added info, negation inversions,
    wrong-term (e.g. single-qubit→single-bit, gates→circuits, observables→X),
