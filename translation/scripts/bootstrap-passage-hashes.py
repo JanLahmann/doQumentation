@@ -97,6 +97,49 @@ def save_baselines(baselines: dict) -> None:
     )
 
 
+def prune_orphan_baselines(dry_run: bool = False) -> int:
+    """Drop baseline-hashes.json entries whose files no longer exist.
+
+    A key is "<locale>/<rel>". An entry is an orphan ONLY when BOTH the EN
+    source (docs/<rel>) AND the translation
+    (i18n/<locale>/.../current/<rel>) are gone — e.g. an upstream rename like
+    get-qpu-information → qpu-information leaves a dead baseline. We require
+    *both* gone so we never drop a baseline for a translation that still
+    exists (which would be a live, possibly-stale file that drift detection
+    should keep watching). baseline-hashes.json is single-consumer (drift
+    detection reads `.hashes`); pruning is tidiness, not behavior-changing.
+    Returns the number pruned.
+    """
+    baselines = load_baselines()
+    i18n = REPO_ROOT / "i18n"
+    docs = REPO_ROOT / "docs"
+    orphans = []
+    for key in baselines:
+        if "/" not in key:
+            continue
+        locale, rel = key.split("/", 1)
+        en = docs / rel
+        tr = i18n / locale / "docusaurus-plugin-content-docs" / "current" / rel
+        if not en.exists() and not tr.exists():
+            orphans.append(key)
+
+    print(f"{'Would prune' if dry_run else 'Pruning'} {len(orphans)} orphan "
+          f"baseline(s) (EN + translation both gone) of {len(baselines)} total:")
+    for k in orphans[:20]:
+        print(f"  {k}")
+    if len(orphans) > 20:
+        print(f"  … and {len(orphans) - 20} more")
+
+    if orphans and not dry_run:
+        for k in orphans:
+            del baselines[k]
+        save_baselines(baselines)
+        print(f"\nWrote baseline-hashes.json ({len(baselines)} entries remain).")
+    elif dry_run:
+        print("\n(dry-run: baseline-hashes.json not written)")
+    return len(orphans)
+
+
 def bootstrap_entry(
     locale: str, rel_path: str, entry: dict, baselines: dict,
     *, force: bool = False, verbose: bool = False
@@ -184,7 +227,17 @@ def main() -> int:
         "-v", "--verbose", action="store_true",
         help="Print per-file progress"
     )
+    parser.add_argument(
+        "--prune-baselines", action="store_true",
+        help="Remove baseline-hashes.json entries whose EN source AND "
+             "translation are both gone (e.g. upstream renames). Tidy-up only; "
+             "respects --dry-run.",
+    )
     args = parser.parse_args()
+
+    if args.prune_baselines:
+        pruned = prune_orphan_baselines(dry_run=args.dry_run)
+        return 0
 
     status = load_status()
     baselines = load_baselines()
