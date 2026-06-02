@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -88,11 +89,22 @@ HASH_COMMENT_RE = re.compile(r'\{/\*\s*doqumentation-source-hash:\s*([a-f0-9]+)\
 # This inherently captures structural changes (Admonition→:::, heading
 # renames, added/removed sections) because they are literally in the diff.
 
-# Parent of the upstream-sync commit (#62, 6f006d7a7 → 833ab77dc). EN was
-# byte-static from first-tracked (5893de729, 2026-03-11) through this commit,
-# so it is the exact old-EN for any file the pipeline has not yet finalized.
+# Parent of the FIRST upstream-sync commit (#62, 6f006d7a7 → 833ab77dc). EN was
+# byte-static from first-tracked (5893de729, 2026-03-11) through this commit, so
+# it is the exact old-EN for any file the pipeline has not yet finalized AND that
+# has not changed in a LATER sync.
+#
+# Since then EN gets re-synced via periodic `sync: upstream content` PRs, so for a
+# refresh triggered by a *specific* sync, the honest pre-sync snapshot is that
+# sync commit's parent, not this historical one. Set DQ_PRE_SYNC_REF to override
+# (e.g. `DQ_PRE_SYNC_REF=5d595d828^`) so un-finalized files diff against the EN
+# they were actually last current with — otherwise a small recent change diffs
+# against months-old EN and over-escalates to MAJOR/full_retranslation. Default
+# preserves the original constant. Always verify the file's embedded source-hash
+# matches the chosen ref's EN hash before trusting it (it does iff the file was
+# fresh as of that ref).
 SYNC_COMMIT = "9f29483105b21a91d0b3abf0ba9cfd735a084b9b"
-PRE_SYNC_REF = f"{SYNC_COMMIT}^"
+PRE_SYNC_REF = os.environ.get("DQ_PRE_SYNC_REF", f"{SYNC_COMMIT}^")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
