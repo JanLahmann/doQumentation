@@ -217,6 +217,29 @@ def run_check(locales: list[str], verbose: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
+# Line-count thresholds — MUST mirror validate-translation.py
+# (MAX_LINE_DELTA_PCT / LOCALE_LINE_DELTA_PCT) so stamping never produces a
+# file the validator would then reject.
+_MAX_LINE_DELTA_PCT = 15
+_LOCALE_LINE_DELTA_PCT = {"fr": 20, "es": 20, "it": 20, "pt": 20, "de": 20}
+
+
+def _would_break_line_count(en_content: str, tr_content: str, locale: str) -> bool:
+    """True if tr_content would FAIL validate-translation's line-count check.
+
+    Mirrors check_line_count() exactly: per-locale percentage threshold, with a
+    short-file (<50 EN lines) absolute tolerance of 8 lines.
+    """
+    en_lines = en_content.count("\n") + 1
+    tr_lines = tr_content.count("\n") + 1
+    if en_lines == 0:
+        return False
+    if en_lines < 50 and abs(en_lines - tr_lines) <= 8:
+        return False
+    max_delta = _LOCALE_LINE_DELTA_PCT.get(locale, _MAX_LINE_DELTA_PCT)
+    return abs(en_lines - tr_lines) / en_lines * 100 > max_delta
+
+
 def _load_status() -> dict:
     """Load translation/status.json, or {} if absent."""
     if not STATUS_FILE.exists():
@@ -284,8 +307,22 @@ def run_stamp(locales: list[str], dry_run: bool = False) -> int:
                 continue
             # --------------------------------------------------------------
 
+            new_content = insert_hash_after_frontmatter(tr_content, current_hash)
+
+            # Don't let stamping ITSELF introduce a validation FAIL: the marker
+            # adds one line, which can tip a file already at the line-count edge
+            # over the threshold (e.g. it/qunova-chemistry 19.9% → 20.3%).
+            # Such a file is genuinely current (provenance gate passed) but its
+            # prose is borderline-inflated — withhold and flag for a prose trim
+            # rather than ship a FAIL.
+            if _would_break_line_count(en_content, new_content, locale):
+                total_withheld += 1
+                withheld_detail.append((
+                    locale, rel,
+                    "stamping would tip line-count over threshold (trim prose first)"))
+                continue
+
             if not dry_run:
-                new_content = insert_hash_after_frontmatter(tr_content, current_hash)
                 tr_path.write_text(new_content, encoding="utf-8")
             stamped += 1
 
