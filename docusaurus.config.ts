@@ -203,6 +203,10 @@ const config: Config = {
     // Exposes per-page upstream/EN/translation-base dates via globalData.
     // Read by src/theme/DocItem/Footer to render the source-date block.
     './plugins/page-dates',
+    // Injects per-page hreflang alternate links into static HTML at build
+    // time (international SEO). Subdomain-per-locale means paths are identical
+    // across locales, so each page links to the same path on every subdomain.
+    './plugins/hreflang',
   ],
 
   themes: [
@@ -232,6 +236,16 @@ const config: Config = {
         blog: false, // Disable blog
         theme: {
           customCss: './src/css/custom.css',
+        },
+        sitemap: {
+          // Daily changefreq fits the weekly retranslation + upstream sync cadence.
+          changefreq: 'daily',
+          priority: 0.5,
+          // Keep noindex/utility pages out of the sitemap. The admin page is
+          // password-gated and Disallow-ed in robots.txt; the search page and
+          // Docusaurus' tag pages add no SEO value.
+          ignorePatterns: ['/admin', '/admin/**', '/search', '/tags/**', '/404*'],
+          filename: 'sitemap.xml',
         },
       } satisfies Preset.Options,
     ],
