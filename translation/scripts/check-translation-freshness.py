@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -36,9 +37,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
 I18N_DIR = REPO_ROOT / "i18n"
+STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
+    "ko", "pl", "cs", "ms", "id", "ro", "th",
     "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
 
@@ -214,16 +217,46 @@ def run_check(locales: list[str], verbose: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
-def run_stamp(locales: list[str]) -> None:
-    """Add or update source hashes in genuine translations."""
+def _load_status() -> dict:
+    """Load translation/status.json, or {} if absent."""
+    if not STATUS_FILE.exists():
+        return {}
+    try:
+        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def run_stamp(locales: list[str], dry_run: bool = False) -> int:
+    """Stamp the embedded source-hash into genuine translations — but ONLY
+    where the translation is PROVABLY current against the EN it was last
+    validated against.
+
+    Safeguard (do NOT mark fresh accidentally): a file is stamped only when
+    its recorded provenance hash in status.json (`source_hash`) equals the
+    hash of the *current* EN file. That means the EN has been byte-identical
+    since this translation was last reviewed/validated, so stamping it FRESH
+    is truthful. Any file whose recorded hash differs from (or is missing
+    against) the current EN is WITHHELD — left UNKNOWN/drifted for genuine
+    reconcile/re-review, never auto-stamped. A blanket stamp (which the old
+    implementation did) could silently mark a drifted file as fresh; this
+    gate prevents that.
+
+    Returns a nonzero exit code if any file was withheld (so CI/automation
+    can notice files that need real attention).
+    """
+    status = _load_status()
     total_stamped = 0
     total_unchanged = 0
+    total_withheld = 0
+    withheld_detail: list[tuple[str, str, str]] = []
 
     for locale in locales:
         pairs = find_genuine_translations(locale)
         if not pairs:
             continue
 
+        loc_status = status.get(locale, {})
         stamped = 0
         for en_path, tr_path in pairs:
             en_content = en_path.read_text(encoding="utf-8")
@@ -236,15 +269,44 @@ def run_stamp(locales: list[str]) -> None:
                 total_unchanged += 1
                 continue
 
-            new_content = insert_hash_after_frontmatter(tr_content, current_hash)
-            tr_path.write_text(new_content, encoding="utf-8")
+            # --- SAFEGUARD GATE -------------------------------------------
+            # Only stamp if the recorded provenance proves currency:
+            # status.json source_hash == hash(current EN).
+            rel = str(tr_path.relative_to(
+                I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+            ))
+            recorded = loc_status.get(rel, {}).get("source_hash")
+            if recorded != current_hash:
+                total_withheld += 1
+                why = ("no status provenance" if recorded is None
+                       else f"status source_hash {recorded} != current EN {current_hash}")
+                withheld_detail.append((locale, rel, why))
+                continue
+            # --------------------------------------------------------------
+
+            if not dry_run:
+                new_content = insert_hash_after_frontmatter(tr_content, current_hash)
+                tr_path.write_text(new_content, encoding="utf-8")
             stamped += 1
 
         total_stamped += stamped
         if stamped:
-            print(f"{locale}: {stamped} file(s) stamped")
+            verb = "would stamp" if dry_run else "stamped"
+            print(f"{locale}: {stamped} file(s) {verb}")
 
-    print(f"\nTotal: {total_stamped} stamped, {total_unchanged} already up-to-date")
+    if withheld_detail:
+        print(f"\nWITHHELD ({total_withheld}) — not provably current, left UNKNOWN "
+              f"for genuine reconcile (NOT auto-stamped):")
+        for loc, rel, why in withheld_detail[:50]:
+            print(f"  {loc}/{rel} — {why}")
+        if total_withheld > 50:
+            print(f"  … and {total_withheld - 50} more")
+
+    prefix = "DRY RUN — " if dry_run else ""
+    print(f"\n{prefix}Total: {total_stamped} "
+          f"{'would be stamped' if dry_run else 'stamped'}, "
+          f"{total_unchanged} already up-to-date, {total_withheld} withheld")
+    return 1 if total_withheld else 0
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +325,14 @@ def main():
     parser.add_argument(
         "--stamp",
         action="store_true",
-        help="Add/update source hashes in genuine translations",
+        help="Stamp source hashes — ONLY where status.json proves currency "
+             "(source_hash == current EN hash). Drifted/unproven files are "
+             "withheld, never auto-stamped.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --stamp: report what would be stamped/withheld, write nothing.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Show all files")
 
@@ -271,11 +340,13 @@ def main():
 
     if not args.locale and not args.all_locales:
         parser.error("Specify --locale XX or --all-locales")
+    if args.dry_run and not args.stamp:
+        parser.error("--dry-run only applies with --stamp")
 
     locales = ALL_LOCALES if args.all_locales else [args.locale]
 
     if args.stamp:
-        run_stamp(locales)
+        sys.exit(run_stamp(locales, dry_run=args.dry_run))
     else:
         sys.exit(run_check(locales, verbose=args.verbose))
 
