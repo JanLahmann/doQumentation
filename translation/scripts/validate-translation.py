@@ -523,6 +523,44 @@ def check_code_blocks(en_content: str, tr_content: str) -> CheckResult:
                        f"{len(en_blocks)} blocks, all identical")
 
 
+def count_tables(content: str) -> int:
+    """Count markdown tables via their header-separator rows (|---|---|).
+
+    The separator row is language-independent (only |, :, -, spaces), so this
+    is a clean structural signal. Fence-aware. Catches the 'stale section'
+    class: a translation carrying a whole tables block that current EN no
+    longer has (e.g. an old Input/Options/Output parameter section) — that
+    file's source-hash can still match current EN (so freshness reads it
+    FRESH) and it can stay under the line-count threshold, yet it has tables
+    EN dropped. Heading/code/line checks all miss it; table count does not.
+    """
+    count = 0
+    in_code = False
+    for line in content.split('\n'):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        s = line.strip()
+        # A separator row: contains a run of 3+ dashes and is composed only
+        # of table-border characters (pipes, colons, dashes, spaces).
+        if '|' in s and re.search(r'-{3,}', s) and set(s) <= set('|:- '):
+            count += 1
+    return count
+
+
+def check_table_count(en_content: str, tr_content: str) -> CheckResult:
+    en_n = count_tables(en_content)
+    tr_n = count_tables(tr_content)
+    if en_n != tr_n:
+        return CheckResult(
+            "Table count", False,
+            f"EN={en_n}, TR={tr_n} — translation has a different number of "
+            f"markdown tables than current EN (possible stale/added section)")
+    return CheckResult("Table count", True, f"{en_n} tables match")
+
+
 MAX_LATEX_DISPLAY_DELTA = 4  # Small tolerance for $$ block count differences
 
 def check_latex_display(en_content: str, tr_content: str) -> CheckResult:
@@ -920,6 +958,7 @@ def validate_file(en_path: Path, tr_path: Path, locale: str,
         report.checks.append(check_line_count(en_content, tr_content, locale))
     if str(rel) not in CODE_BLOCK_SKIP:
         report.checks.append(check_code_blocks(en_content, tr_content))
+    report.checks.append(check_table_count(en_content, tr_content))
     report.checks.append(check_latex_display(en_content, tr_content))
     report.checks.append(check_latex_inline(en_content, tr_content))
     report.checks.append(check_indented_headings(tr_content, en_content))
