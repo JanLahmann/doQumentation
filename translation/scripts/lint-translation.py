@@ -213,6 +213,36 @@ def check_unescaped_jsx_quotes(lines: list[str]) -> list[tuple[str, int, str]]:
     return findings
 
 
+_SMART_QUOTE_JSX_RE = re.compile(r'<[A-Za-z][A-Za-z0-9.]*[^>]*?=[“”‘’]')
+
+
+def check_smart_quote_jsx_attrs(lines: list[str]) -> list[tuple[str, int, str]]:
+    """Flag a JSX attribute delimited by a SMART/curly quote — build-fatal.
+
+    A translator (or smart-quote auto-correct) turning `type="note"` into
+    `type=”note”` makes MDX's JSX parser abort the whole locale build:
+    "Unexpected character `”` (U+201D) before attribute value". This passes
+    both the structural validator and the other lint checks (tag counts /
+    balance are unaffected, and the line's straight-quote count can be even),
+    so it needs its own gate. Caught pl/guides/qiskit-code-assistant.mdx
+    failing every pl deploy. Only flags curly quotes used as an attribute
+    DELIMITER (immediately after `=` inside an opening tag) — curly quotes in
+    prose are legitimate and untouched.
+    """
+    findings = []
+    for i, line in enumerate(lines):
+        if is_inside_code_block(lines, i):
+            continue
+        if _SMART_QUOTE_JSX_RE.search(line):
+            findings.append((
+                ERROR, i + 1,
+                "smart/curly quote used as a JSX attribute delimiter "
+                "(e.g. type=”note”) — aborts the locale build "
+                "('Unexpected character before attribute value'); use straight \" "
+            ))
+    return findings
+
+
 _IMPORT_EXPORT_RE = re.compile(r'^\s*(import|export)\b')
 
 
@@ -693,6 +723,7 @@ ALL_CHECKS = [
     check_heading_mid_line,
     check_invalid_anchor_chars,
     check_unescaped_jsx_quotes,
+    check_smart_quote_jsx_attrs,
     check_esm_import_isolation,
     check_invalid_esm_statement,
     # check_jsx_tag_balance is EN-relative → called explicitly with en_lines
