@@ -5,8 +5,8 @@ image (`ghcr.io/qubins/images:2.3-xl`) on simulator/fake backends only —
 no IBM hardware, no jobs queued. Surfaces import/runtime breakage that
 users hit on doqumentation.org.
 
-**Findings:** `../../notebook-sweep-report.md`
-**Methodology / triage history:** `../../.claude/NOTEBOOK_SWEEP_PLAN.md`
+**Findings + methodology:** `../../notebook-sweep-report.md` (the punch-list
+from the 2026-05-17 run, with the systemic F1/F2/F4 causes and action order).
 
 ## Run it
 

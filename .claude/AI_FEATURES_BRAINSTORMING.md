@@ -469,9 +469,11 @@ Scaling: ~1K MAU → $10–20/mo; ~10K MAU → $80–100/mo (serverless $30–50
 > ~40 fixes were cherry-picked from it into the shipped Phase 1 work
 > (see `PROJECT_HANDOFF_ARCHIVE.md` "Branch integration Phase 1"). Only
 > the still-relevant / non-duplicated parts are kept below. Its
-> "Remaining PROJECT_REVIEW (6)" table was dropped — it duplicated
-> `.claude/PROJECT_REVIEW.md`, which is the live tracker for those.
-> Full original recoverable from git history if ever needed.
+> "Remaining PROJECT_REVIEW (6)" table was dropped — its 4 security
+> items now live in `.claude/SECURITY_REVIEW_2026-05.md` (S1/S3/S4/S8)
+> and its non-security SET-2 is UX-3 below + `plans/simplify-settings.md`.
+> (`.claude/PROJECT_REVIEW.md` itself was deleted 2026-06-04 — the March
+> code-review snapshot; recoverable from git history.)
 
 ## Additional AI ideas (not already covered by Smart Search / Adaptive Paths above)
 

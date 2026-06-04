@@ -45,11 +45,11 @@ IBM's [Qiskit documentation](https://github.com/Qiskit/documentation) is open so
 # Full stack: site + Jupyter + Qiskit (~3 GB)
 podman run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
 
-# Lite: static site only (~60 MB) — code execution still works via Binder
+# Site-only: serve just the static site (code execution still works via Binder)
 podman run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
 ```
 
-Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` with `docker` — the commands are identical. Or build locally with `podman compose --profile jupyter up` (full) or `podman compose --profile web up` (lite). Images are multi-arch (`linux/amd64` + `linux/arm64`).
+Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` with `docker` — the commands are identical. Or build locally with `podman compose --profile jupyter up`. Images are multi-arch (`linux/amd64` + `linux/arm64`).
 
 **Jupyter token:** The full-stack container generates a random authentication token at startup (printed in the container logs). Code execution through the website on port 8080 is transparent — no token needed. Direct JupyterLab access on port 8888 requires the token. To set a fixed token: `JUPYTER_TOKEN=mytoken podman run ...`
 
@@ -144,9 +144,8 @@ doQumentation/
 │   ├── deploy.yml                 # Sync → build → deploy to GitHub Pages
 │   ├── docker.yml                 # Multi-arch Docker → ghcr.io
 │   └── sync-deps.yml              # Weekly Jupyter dependency sync auto-PR
-├── Dockerfile.web                 # Static site only (nginx, ~60 MB)
-├── Dockerfile.jupyter             # Full stack: site + Jupyter + Qiskit (~3 GB)
-├── docker-compose.yml             # web + jupyter services
+├── Dockerfile.jupyter             # Full stack: site + Jupyter + Qiskit (~3 GB; also serves static site)
+├── docker-compose.yml             # jupyter service (jupyter-local target)
 ├── nginx.conf                     # SPA routing + Jupyter proxy
 ├── docusaurus.config.ts           # Site configuration
 └── sidebars.ts                    # Navigation (imports generated sidebar JSONs)
