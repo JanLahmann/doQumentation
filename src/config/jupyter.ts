@@ -43,6 +43,11 @@ const STORAGE_KEY_IBM_TTL_DAYS = 'doqumentation_ibm_ttl_days';
 const STORAGE_KEY_SUPPRESS_WARNINGS = 'doqumentation_suppress_warnings';
 const DEFAULT_TTL_DAYS = 1;
 
+// Max random delay (ms) before a workshop client opens its build SSE. Spreads a
+// synchronized "everyone clicks Run at once" connect-storm over a window so it
+// doesn't trip the /build/ nginx rate limit (all clients share one NAT IP).
+const STAGGER_MAX_MS = 3000;
+
 // Code Engine credential storage
 const STORAGE_KEY_CE_URL = 'doqumentation_ce_url';
 const STORAGE_KEY_CE_TOKEN = 'doqumentation_ce_token';
@@ -888,9 +893,21 @@ export function mapBinderNotebookPath(notebookPath: string, locale?: string): st
 
 /** Active Binder EventSource — stored so it can be cancelled externally. */
 let activeBinderES: EventSource | null = null;
+/**
+ * Teardown for the in-progress build: clears the build's timeout and marks it
+ * settled so closing the ES does NOT trigger onerror → workshop failover. Set
+ * by ensureBinderSession, called by cancelBinderBuild.
+ */
+let activeBinderBuildCancel: (() => void) | null = null;
 
 /** Cancel an in-progress Binder build. Safe to call when no build is active. */
 export function cancelBinderBuild(): void {
+  // Run the build's own teardown first (clears its timeout + marks it settled
+  // so the ES close below is treated as an intentional cancel, not an error).
+  if (activeBinderBuildCancel) {
+    activeBinderBuildCancel();
+    activeBinderBuildCancel = null;
+  }
   if (activeBinderES) {
     activeBinderES.close();
     activeBinderES = null;
@@ -904,18 +921,34 @@ export function cancelBinderBuild(): void {
 export function ensureBinderSession(
   config: JupyterConfig,
   onProgress?: (phase: string) => void,
+  // Internal: remaining workshop-pool failover hops. Bounds the onerror
+  // failover so a fully-down pool doesn't walk the instance ring forever
+  // (thundering herd). Defaults to pool-size-1 on the first call.
+  failoverBudget?: number,
 ): Promise<BinderSession> {
   const existing = getBinderSession();
   if (existing) {
-    // Discard sessions from a different environment (e.g. a mybinder.org session
-    // cached while on github-pages, now reused after configuring CE). Probing a
-    // foreign host wastes 5s and always fails. CE sessions have the CE host in
-    // their URL; Binder sessions have mybinder.org federation hosts.
+    // Discard a cached session whose host doesn't match where this config now
+    // points. Covers both the github-pages↔CE swap AND the CE↔CE / CE↔custom
+    // swaps (e.g. a workshop pool reassigned to a different instance): the old
+    // guard only checked mybinder-vs-not, so a session on CE instance A could be
+    // reused while the config targets instance B. Binder federation rotates
+    // hosts per build, so for Binder we only assert it's still a mybinder host;
+    // for everything else we require an exact host match.
     try {
       const sessionHost = new URL(existing.url).host;
-      const isBinder = sessionHost.includes('mybinder.org');
       const configIsBinder = config.environment === 'github-pages';
-      if (isBinder !== configIsBinder) {
+      const sessionIsBinder = sessionHost.includes('mybinder.org');
+      let mismatch = sessionIsBinder !== configIsBinder;
+      if (!mismatch && !configIsBinder) {
+        // Non-Binder: require the session host to match the config's target host.
+        const targetUrl = config.binderUrl || config.baseUrl;
+        try {
+          const targetHost = new URL(targetUrl).host;
+          if (targetHost && sessionHost !== targetHost) mismatch = true;
+        } catch { /* unparseable target — fall through to probe */ }
+      }
+      if (mismatch) {
         clearBinderSession();
         return ensureBinderSession(config, onProgress);
       }
@@ -945,79 +978,117 @@ export function ensureBinderSession(
 
   return new Promise((resolve, reject) => {
     const buildUrl = config.binderUrl!.replace('/v2/', '/build/');
-    onProgress?.('connecting');
-    const es = new EventSource(buildUrl);
-    activeBinderES = es;
     let settled = false;
+    let es: EventSource | null = null;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
 
     const cleanup = () => {
       activeBinderES = null;
+      activeBinderBuildCancel = null;
     };
 
-    // 20-minute timeout — Binder builds can be slow but shouldn't hang forever
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      onProgress?.('failed');
-      es.close();
-      reject(new Error('Binder build timed out after 20 minutes'));
-    }, 20 * 60 * 1000);
+    // Connect stagger: at a workshop start, every client would otherwise open its
+    // SSE in the same instant — a connect-storm that trips the /build/ nginx rate
+    // limit (all clients share one NAT IP) and stampedes the pod. Spread workshop
+    // clients over a random 0–3s window. Solo public-Binder users get no delay.
+    const isWorkshop = getWorkshopPool() != null || config.environment === 'code-engine';
+    const staggerMs = isWorkshop ? Math.floor(Math.random() * STAGGER_MAX_MS) : 0;
 
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.phase) onProgress?.(data.phase);
-        if (data.phase === 'ready' && data.url && data.token) {
-          settled = true;
-          clearTimeout(timeout);
-          cleanup();
-          saveBinderSession(data.url, data.token);
-          es.close();
-          resolve({ url: data.url, token: data.token, lastUsed: Date.now() });
-        }
-        if (data.phase === 'failed') {
-          settled = true;
-          clearTimeout(timeout);
-          cleanup();
-          es.close();
-          reject(new Error('Binder build failed'));
-        }
-      } catch { /* ignore parse errors from heartbeat comments */ }
+    const startBuild = () => {
+      if (settled) return; // cancelled during the stagger delay
+      onProgress?.('connecting');
+      es = new EventSource(buildUrl);
+      activeBinderES = es;
+
+      // 20-minute timeout — Binder builds can be slow but shouldn't hang forever
+      timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        onProgress?.('failed');
+        es?.close();
+        reject(new Error('Binder build timed out after 20 minutes'));
+      }, 20 * 60 * 1000);
+
+      wireEventSource();
     };
-    es.onerror = () => {
+
+    const staggerTimer = setTimeout(startBuild, staggerMs);
+
+    // Let cancelBinderBuild() tear this build down cleanly: stop the stagger/timeout
+    // and mark settled so the subsequent es.close() doesn't fire onerror → failover.
+    activeBinderBuildCancel = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      clearTimeout(staggerTimer);
+      if (timeout) clearTimeout(timeout);
       cleanup();
-      es.close();
+      reject(new Error('Binder build cancelled'));
+    };
 
-      // Workshop failover: try next instance in the pool
-      const wsPool = getWorkshopPool();
-      if (wsPool && wsPool.pool.length > 1) {
-        const current = getWorkshopAssignment();
-        const currentIdx = current ? wsPool.pool.indexOf(current) : -1;
-        const nextIdx = (currentIdx + 1) % wsPool.pool.length;
-        const next = wsPool.pool[nextIdx];
+    function wireEventSource() {
+      const src = es;
+      if (!src) return;
+
+      src.onmessage = (event) => {
         try {
-          sessionStorage.setItem(SESSION_KEY_WORKSHOP_ASSIGNED, next);
-        } catch { /* ignore */ }
-        // Rebuild config with new instance and retry once
-        const retryConfig: JupyterConfig = {
-          ...config,
-          baseUrl: next,
-          wsUrl: next.replace(/^http(s?):\/\//, 'ws$1://'),
-          token: wsPool.token,
-          binderUrl: next + '/build/gh/placeholder',
-        };
-        onProgress?.('connecting');
-        ensureBinderSession(retryConfig, onProgress).then(resolve).catch(reject);
-        return;
-      }
+          const data = JSON.parse(event.data);
+          if (data.phase) onProgress?.(data.phase);
+          if (data.phase === 'ready' && data.url && data.token) {
+            settled = true;
+            if (timeout) clearTimeout(timeout);
+            cleanup();
+            saveBinderSession(data.url, data.token);
+            src.close();
+            resolve({ url: data.url, token: data.token, lastUsed: Date.now() });
+          }
+          if (data.phase === 'failed') {
+            settled = true;
+            if (timeout) clearTimeout(timeout);
+            cleanup();
+            src.close();
+            reject(new Error('Binder build failed'));
+          }
+        } catch { /* ignore parse errors from heartbeat comments */ }
+      };
+      src.onerror = () => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        cleanup();
+        src.close();
 
-      onProgress?.('failed');
-      reject(new Error('Binder connection error'));
-    };
+        // Workshop failover: try the next instance in the pool, but only while
+        // we have failover budget left. The budget starts at pool-size-1 and
+        // decrements per hop, so a fully-down pool is tried at most once around
+        // the ring and then gives up — instead of recursing forever.
+        const wsPool = getWorkshopPool();
+        const budget = failoverBudget ?? (wsPool ? wsPool.pool.length - 1 : 0);
+        if (wsPool && wsPool.pool.length > 1 && budget > 0) {
+          const current = getWorkshopAssignment();
+          const currentIdx = current ? wsPool.pool.indexOf(current) : -1;
+          const nextIdx = (currentIdx + 1) % wsPool.pool.length;
+          const next = wsPool.pool[nextIdx];
+          try {
+            sessionStorage.setItem(SESSION_KEY_WORKSHOP_ASSIGNED, next);
+          } catch { /* ignore */ }
+          // Rebuild config with new instance and retry with one less hop.
+          const retryConfig: JupyterConfig = {
+            ...config,
+            baseUrl: next,
+            wsUrl: next.replace(/^http(s?):\/\//, 'ws$1://'),
+            token: wsPool.token,
+            binderUrl: next + '/build/gh/placeholder',
+          };
+          onProgress?.('connecting');
+          ensureBinderSession(retryConfig, onProgress, budget - 1).then(resolve).catch(reject);
+          return;
+        }
+
+        onProgress?.('failed');
+        reject(new Error('Binder connection error'));
+      };
+    }
   });
 }
 

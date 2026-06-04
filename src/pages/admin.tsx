@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import Layout from '@theme/Layout';
+import Head from '@docusaurus/Head';
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
@@ -177,6 +178,7 @@ function AdminGate({ children }: { children: React.ReactNode }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Password"
+            aria-label="Admin password"
             autoFocus
             style={{
               padding: '0.5rem 0.75rem',
@@ -263,7 +265,12 @@ function EncryptedUmamiLink() {
 
 export default function AdminPage(): JSX.Element {
   return (
-    <Layout title="Admin" description="Admin reference page" noIndex>
+    <Layout title="Admin" description="Admin reference page">
+      {/* Docusaurus 3.x Layout dropped the `noIndex` prop — set robots noindex
+          via Head instead (the page is also Disallow-ed in robots.txt). */}
+      <Head>
+        <meta name="robots" content="noindex, nofollow" />
+      </Head>
       <main className="container margin-vert--lg" style={{ maxWidth: '800px' }} data-umami-ignore>
         <AdminGate>
         <h1>Admin Panel</h1>

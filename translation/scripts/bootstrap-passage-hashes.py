@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 
 import passage_units
+import _common
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
@@ -73,15 +74,12 @@ def git_show_blob(sha: str, rel_path: str) -> str | None:
         return None
 
 
-def load_status() -> dict:
-    return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-
-
-def save_status(status: dict) -> None:
-    STATUS_FILE.write_text(
-        json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+# load/save status.json via the shared _common helpers (single source of truth).
+# This also fixes a latent bug in the previous local load_status here: it called
+# read_text() with no exists() guard, so it crashed if status.json was absent —
+# _common.load_status returns {} in that case.
+load_status = _common.load_status
+save_status = _common.save_status
 
 
 def load_baselines() -> dict:

@@ -655,10 +655,10 @@ export default function JupyterSettings(): JSX.Element {
               ) : (
                 <>
                   <div className="margin-bottom--sm">
-                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                    <label htmlFor="ce-url" style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
                       <Translate id="settings.ce.urlLabel">Server URL</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceUrl', message: 'Your Code Engine app URL, OR comma-separated URLs / base64 pool config from a workshop instructor.'})} />
                     </label>
-                    <input type="text" value={ceUrl}
+                    <input id="ce-url" type="text" value={ceUrl}
                       onChange={e => { setCeUrl(e.target.value); setCeSaveResult(null); }}
                       placeholder="https://your-app.region.codeengine.appdomain.cloud"
                       style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
@@ -667,10 +667,10 @@ export default function JupyterSettings(): JSX.Element {
                     </small>
                   </div>
                   <div className="margin-bottom--md">
-                    <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
+                    <label htmlFor="ce-token" style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 600 }}>
                       <Translate id="settings.ce.tokenLabel">Token</Translate><InfoIcon tooltip={translate({id: 'settings.info.ceToken', message: 'The JUPYTER_TOKEN value you set when creating the IBM Cloud Code Engine app.'})} />
                     </label>
-                    <input type="password" value={ceToken}
+                    <input id="ce-token" type="password" value={ceToken}
                       onChange={e => { setCeToken(e.target.value); setCeSaveResult(null); }}
                       placeholder={translate({id: 'settings.ce.tokenPlaceholder', message: 'Your JUPYTER_TOKEN value'})}
                       style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--ifm-color-emphasis-300)' }} />
@@ -1082,6 +1082,8 @@ QiskitRuntimeService.save_account(
                   const next = !hideOutputs;
                   setHideOutputs(next);
                   setHideStaticOutputs(next);
+                  // Apply live everywhere (displayPrefs listens) — no reload needed.
+                  window.dispatchEvent(new CustomEvent(DISPLAY_PREFS_EVENT));
                 }}
               />
               <span className="jupyter-settings__toggle-track">

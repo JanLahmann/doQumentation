@@ -136,6 +136,14 @@ export function clearAllExecuted(): void {
   removeItem(KEY_EXECUTED_PAGES);
 }
 
+/** Un-mark a single page as executed (exact path, not prefix). */
+export function unmarkPageExecuted(path: string): void {
+  if (!isBrowser()) return;
+  const executed = getJsonSet(KEY_EXECUTED_PAGES);
+  executed.delete(normalizePath(path));
+  saveJsonSet(KEY_EXECUTED_PAGES, executed);
+}
+
 /** Clear executed pages matching a path prefix. */
 export function clearExecutedByPrefix(prefix: string): void {
   if (!isBrowser()) return;

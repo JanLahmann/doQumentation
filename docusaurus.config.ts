@@ -216,6 +216,15 @@ const config: Config = {
         hashed: true,
         indexBlog: false,
         docsRouteBasePath: '/',
+        // Search index languages. This is a SUBSET of i18n.locales, gated by
+        // lunr-languages module availability — a locale not listed here still
+        // builds and deploys, but its search falls back to the default English
+        // analyzer (tokenization/stemming is wrong, so results degrade).
+        //   • Listed: every locale with a real lunr-languages stemmer.
+        //   • Omitted on purpose (NO lunr module): uk, tl.
+        //   • Omitted, lower-value (degraded search accepted for now): ms, id,
+        //     th, pl, ro, cs, and the 9 German dialects (which fall back to de-ish
+        //     English tokenization). Add here if/when a stemmer is available.
         language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he', 'ko'],
       },
     ],

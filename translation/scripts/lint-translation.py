@@ -342,59 +342,41 @@ def check_invalid_esm_statement(lines: list[str]) -> list[tuple[str, int, str]]:
 # Block-level JSX/HTML components that MUST have an explicit closing tag
 # (never self-closing in this content). An imbalance — or a closer with no
 # opener — aborts `docusaurus build` with "Unexpected closing tag …" or
-# "Unexpected closing slash". Self-closing components (Card, Image, Figure,
-# IBMVideo, OpenInLabBanner, TutorialFeedback, LaunchExamButton …) are NOT
-# listed: they legitimately appear as `<Card .../>` with no separate close.
-_PAIRED_JSX_TAGS = (
-    "details", "Accordion", "AccordionItem", "Admonition",
-    "Tabs", "TabItem", "content", "summary",
-)
+# "Unexpected closing slash". The paired-tag list + balance primitive live in
+# _common (shared with validate-translation.py so the two gates can't drift).
+import importlib.util as _common_il
+_common_spec = _common_il.spec_from_file_location(
+    "_common", Path(__file__).resolve().parent / "_common.py")
+_common = _common_il.module_from_spec(_common_spec)
+_common_spec.loader.exec_module(_common)
 
 
 def check_jsx_tag_balance(
     lines: list[str], en_lines: list[str] | None = None
 ) -> list[tuple[str, int, str]]:
-    """Flag a paired block-JSX tag with MORE closers than openers —
-    build-fatal, false-positive-free.
+    """Flag a paired block-JSX tag whose openers != closers — build-fatal.
 
     Root-cause class for "Unexpected closing tag `</details>`" /
-    "Unexpected closing slash `/` in tag" — both abort the locale build
-    (an orphan `</content>`, or a stale `</details>` left by a
-    `<details>`→`<Accordion>` migration). The defining, *unambiguous*
-    symptom is **closes > opens**: a closing tag that has no opener to
-    match is always a parse error.
-
-    Counts RAW across the whole file — deliberately NO fence-stripping
-    and NO EN comparison. Earlier versions tried to subtract code-fence
-    regions and compare deltas vs EN; both were unreliable on
-    code-heavy files (e.g. the SQD orbital dumps with many ``` blocks
-    confused fence tracking, dropping a real `</details>` from the count
-    and FALSE-flagging files that actually build — ko/pl/ro/th
-    qiskit-addons-sqd-get-started). closes > opens needs none of that:
-    even if some openers/closers sit inside code, an EXCESS of closers
-    over openers across the raw text still means at least one closer
-    cannot be matched → build break. (A `<details>` example shown inside
-    a fence would inflate BOTH counts equally, so it can't cause a false
-    positive.) Self-closing `<Tag .../>` are excluded from opens.
+    "Unexpected closing slash `/` in tag" — both abort the locale build (an
+    unclosed <AccordionItem>/<details>, or an orphan </content>/stale
+    </details>). The counting primitive lives in _common.jsx_tag_imbalances so
+    this linter and validate-translation.py's check_jsx_tag_balance agree by
+    construction (they had drifted when each kept its own copy).
     """
     findings = []
     body = "\n".join(lines)
-    for tag in _PAIRED_JSX_TAGS:
-        opens = len(re.findall(r'<%s(?:\s[^>]*?)?>' % tag, body)) \
-            - len(re.findall(r'<%s(?:\s[^>]*?)?/>' % tag, body))
-        closes = body.count("</%s>" % tag)
-        if opens != closes:
-            ln_no = next((i + 1 for i, l in enumerate(lines)
-                          if ("</%s>" % tag) in l
-                          or re.search(r'<%s(?:\s|>)' % tag, l)), 0)
-            findings.append((
-                ERROR, ln_no,
-                f"<{tag}>: {opens} opener(s) vs {closes} closing tag(s) "
-                "— a mismatch aborts the locale build ('Unexpected closing "
-                "tag'). Either an unclosed <AccordionItem>/<details> (open > "
-                "close) or an orphan </content>/stale </details> (close > "
-                "open). Match every paired block-JSX tag."
-            ))
+    for tag, opens, closes in _common.jsx_tag_imbalances(body):
+        ln_no = next((i + 1 for i, l in enumerate(lines)
+                      if ("</%s>" % tag) in l
+                      or re.search(r'<%s(?:\s|>)' % tag, l)), 0)
+        findings.append((
+            ERROR, ln_no,
+            f"<{tag}>: {opens} opener(s) vs {closes} closing tag(s) "
+            "— a mismatch aborts the locale build ('Unexpected closing "
+            "tag'). Either an unclosed <AccordionItem>/<details> (open > "
+            "close) or an orphan </content>/stale </details> (close > "
+            "open). Match every paired block-JSX tag."
+        ))
     return findings
 
 

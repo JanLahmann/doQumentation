@@ -59,19 +59,26 @@ c.ServerApp.root_dir = "/home/jovyan"
 c.ServerApp.disable_check_xsrf = True
 
 # Kernel management — cull idle kernels to save resources.
-# Tuned for workshop scenarios: 300s idle is short enough to reclaim slots
-# from inactive students mid-session, long enough that someone reading a
-# notebook between cells doesn't lose their state.
 # cull_busy=False (default, made explicit): never kill a kernel that's
 # actively executing — this would orphan a student mid-cell.
-# cull_connected=False: keep kernels alive while their websocket is open,
-# even if idle. A student with the tab open but not running cells doesn't
-# lose state. Trade-off: students who close laptops without disconnecting
-# leave kernels around until idle timeout fires.
-c.MappingKernelManager.cull_idle_timeout = 300
+#
+# cull_connected=True (was False): ALSO reclaim idle kernels whose websocket
+# is still "connected". This is the mitigation for the Jupyter Server
+# connections_dict underflow bug: that bug corrupts a kernel's connection
+# count so it never reaches 0, and with cull_connected=False such a kernel is
+# skipped by the culler forever → monotonic memory creep across a workshop day
+# (previously only curable by restarting the pod between sessions). With
+# cull_connected=True the culler reclaims it once it's been idle long enough,
+# regardless of the (possibly-corrupted) connection count.
+#
+# To keep the UX cost of cull_connected=True low, the idle timeout is raised
+# 300s → 600s: a student reading a notebook between cells for up to 10 minutes
+# keeps their kernel + state; only genuinely-idle (or leaked) kernels are
+# reclaimed. cull_busy=False still protects anyone mid-execution.
+c.MappingKernelManager.cull_idle_timeout = 600
 c.MappingKernelManager.cull_interval = 60
 c.MappingKernelManager.cull_busy = False
-c.MappingKernelManager.cull_connected = False
+c.MappingKernelManager.cull_connected = True
 PYEOF
 
 # ── Print startup info ──

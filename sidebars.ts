@@ -1,5 +1,13 @@
 import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
-import type {SidebarItemConfig} from '@docusaurus/plugin-content-docs/lib/sidebars/types';
+
+// Sidebar item type derived from the PUBLIC SidebarsConfig, avoiding the deep
+// import of '@docusaurus/.../lib/sidebars/types' (unresolvable under the package's
+// exports map → TS2307). A sidebar value is either an item array or a categories
+// shorthand object; we want the array's element type.
+type SidebarValue = SidebarsConfig[string];
+type SidebarItemConfig = SidebarValue extends readonly (infer T)[]
+  ? T
+  : Extract<SidebarValue, readonly unknown[]>[number];
 
 // Docusaurus i18n generates translation keys from category labels. When multiple
 // sidebar sections (tutorials, guides) share category names like "Get started" or

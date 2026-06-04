@@ -39,6 +39,15 @@ SSE_DEFAULT_PORT = '9091'  # Avoid 9090 — Jupyter extensions may bind it
 JUPYTER_READY_TIMEOUT = 30  # seconds to wait for Jupyter to become ready
 JUPYTER_POLL_INTERVAL = 0.5  # seconds between readiness checks
 
+# Kernel-leak watchdog threshold. The Jupyter connections_dict underflow bug
+# can leave zombie kernels that the culler skips (mitigated by cull_connected
+# in the entrypoint, but a residual leak is still possible). When the live
+# kernel count exceeds this ceiling it's a strong signal of a leak — we log a
+# `high_kernels` event so workshop monitoring can alert / trigger a pod restart
+# between sessions. Sized from stress-test peaks (~6 kernels/vCPU; an 8-vCPU
+# pod tops out ~59 real kernels) with headroom; override per pod size via env.
+KERNEL_LEAK_THRESHOLD = int(os.environ.get('KERNEL_LEAK_THRESHOLD', '120'))
+
 # Tornado's AsyncHTTPClient defaults to max_clients=10 — that means at most
 # 10 simultaneous outgoing fetches per process. With 100+ concurrent SSE
 # requests each polling Jupyter via _jupyter_is_ready_async(), the default
@@ -385,6 +394,16 @@ class StatsHandler(tornado.web.RequestHandler):
             if load_1m > result['cpu_count']:
                 _log_event("high_cpu", load_1m=load_1m,
                            cpu_count=result['cpu_count'])
+
+        # Kernel-leak watchdog: a count this high signals the connections_dict
+        # underflow zombie-kernel leak. Surface it so monitoring can restart the
+        # pod between sessions (the residual workaround after cull_connected).
+        if result['kernels'] > KERNEL_LEAK_THRESHOLD:
+            _log_event("high_kernels", kernels=result['kernels'],
+                       threshold=KERNEL_LEAK_THRESHOLD)
+        # Expose the threshold + a boolean so the monitor workflow can act on it.
+        result['kernel_leak_threshold'] = KERNEL_LEAK_THRESHOLD
+        result['kernel_leak_suspected'] = result['kernels'] > KERNEL_LEAK_THRESHOLD
 
         self.set_header('Content-Type', 'application/json')
         self.set_header('Cache-Control', 'no-cache')
