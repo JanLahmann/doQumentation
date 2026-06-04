@@ -103,14 +103,24 @@ OUTPUT — return EXACTLY this JSON object (one object, this file only):
   "file": "{REL}",
   "verdict": "PASS | MINOR_ISSUES | FAIL",
   "issues": <int count of distinct problems>,
-  "editor_note": "<1-3 sentences: your overall editorial read of fluency and
-     terminology — fill this in EVEN ON PASS; this is the signal a fast pass
-     never produces>",
+  "editor_note": "<2-4 real sentences — see requirements below>",
   "examples": [
     {"line_approx":"Line NN","type":"Naturalness|Terminology|Drift|Pedagogy",
      "source":"<EN>","translation":"<TR>","why":"<brief>","suggested":"<fix>"}
   ]
 }
+
+editor_note REQUIREMENTS (it is the deliverable a fast pass never produces — it
+must stand alone, readable without the examples):
+- 2-4 real sentences of YOUR editorial read of fluency + terminology. FILL IN
+  EVEN ON PASS.
+- Name specifics: the actual terms, the actual locale words, the actual
+  passages. On FAIL/MINOR, state WHAT is wrong (e.g. "'Hamiltonian' is rendered
+  three ways: X, Y, Z"), not merely that something is.
+- FORBIDDEN: placeholder/filler — never "x", "placeholder", "duplicate", "n/a",
+  "see examples", "ok", or an empty/one-word note. (The workflow enforces a
+  min length and re-runs any agent that returns such a note — run-2 had 9.)
+
 The JSON object is the deliverable. Do NOT edit the file. Do NOT touch git or
 status.json. After the JSON, reply with ONE line: "<LOCALE>/<REL>: <VERDICT>
 (<n> issues)".
