@@ -388,6 +388,10 @@ export default function AdminPage(): JSX.Element {
               <span style={{ color: 'var(--ifm-color-emphasis-600)', marginLeft: '0.5rem' }}>— Full dashboard — requires login</span>
             </li>
             <EncryptedUmamiLink />
+            <li style={{ marginBottom: '0.5rem' }}>
+              <a href="https://search.google.com/search-console?resource_id=sc-domain%3Adoqumentation.org" target="_blank" rel="noopener noreferrer">Google Search Console</a>
+              <span style={{ color: 'var(--ifm-color-emphasis-600)', marginLeft: '0.5rem' }}>— Search performance, indexing &amp; coverage (sc-domain:doqumentation.org) — requires Google login</span>
+            </li>
           </ul>
           <p>Tracked events: <code>Run Code</code>, <code>Run All</code>, <code>Binder Launch</code>, <code>Colab Open</code>, <code>Pageview</code> (with locale)</p>
           <p>Analytics auto-disabled on localhost/Docker. Cookie-free, GDPR-compliant. Filter by hostname in dashboard to see per-locale traffic.</p>
