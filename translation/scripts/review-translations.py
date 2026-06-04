@@ -346,6 +346,31 @@ def show_progress(locale_filter: str | None = None) -> None:
         print(f"  → {grand_drift} files with paragraph-level EN drift "
               f"(run validate-translation.py --check-drift for detail)")
 
+    # Tier-4 Opus deep-review coverage (spot-check; annotates, never overwrites)
+    opus_total = 0
+    opus_verdicts: dict[str, int] = {}
+    opus_disagree: list[str] = []
+    rank = {"PASS": 0, "MINOR_ISSUES": 1, "FIXED": 1, "FAIL": 2}
+    for loc in locales:
+        for rel, entry in status.get(loc, {}).items():
+            ov = entry.get("review_opus")
+            if not ov:
+                continue
+            opus_total += 1
+            opus_verdicts[ov] = opus_verdicts.get(ov, 0) + 1
+            t3 = entry.get("review")
+            if t3 in rank and ov in rank and rank[ov] > rank[t3]:
+                opus_disagree.append(f"{loc}/{rel} (tier3={t3}→opus={ov})")
+    if opus_total:
+        print(f"\n  Tier-4 Opus deep-review: {opus_total} file(s) spot-checked — "
+              + ", ".join(f"{v}={c}" for v, c in sorted(opus_verdicts.items())))
+        if opus_disagree:
+            print(f"  ⚠ {len(opus_disagree)} Opus-harsher-than-Tier-3 disagreement(s):")
+            for d in opus_disagree[:15]:
+                print(f"      {d}")
+            if len(opus_disagree) > 15:
+                print(f"      … and {len(opus_disagree) - 15} more")
+
     # Show per-review-verdict breakdown if any reviews exist
     if grand_reviewed > 0:
         verdicts: dict[str, int] = {}
@@ -485,6 +510,69 @@ def record_review(locale: str, file_path: str, verdict: str,
     print(f"Recorded: {locale}/{file_path} → {verdict}")
 
 
+def record_opus_from_json(json_path: str) -> None:
+    """Record Tier-4 (Opus deep-review) verdicts from a JSON file or stdin.
+
+    Opus deep-review ANNOTATES — it never overwrites the Tier-3 `review`
+    verdict. Results land in separate keys (`review_opus`, `review_opus_issues`,
+    `review_opus_note`, `reviewed_opus`) so a Haiku-PASS / Opus-FAIL
+    disagreement stays visible instead of being silently overwritten. Accepts
+    the workflow's output objects: {locale, file, verdict, issues?, editor_note?}.
+    """
+    if json_path == "-":
+        data = json.loads(sys.stdin.read())
+    else:
+        data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+
+    if not isinstance(data, list):
+        print("Error: JSON must be an array of {locale, file, verdict, ...}")
+        sys.exit(2)
+
+    status = load_status()
+    today = date.today().isoformat()
+    disagreements: list[tuple[str, str, str, str]] = []  # loc, file, tier3, opus
+
+    for item in data:
+        locale = item["locale"]
+        file_path = item["file"]
+        verdict = item["verdict"]
+
+        if verdict not in VALID_VERDICTS:
+            print(f"  Error: Invalid verdict '{verdict}' for {locale}/{file_path}")
+            continue
+
+        if locale not in status:
+            status[locale] = {}
+        entry = status[locale].get(file_path, {})
+
+        tier3 = entry.get("review")
+        entry["review_opus"] = verdict
+        entry["review_opus_issues"] = item.get("issues", 0)
+        if item.get("editor_note") or item.get("notes"):
+            entry["review_opus_note"] = item.get("editor_note") or item.get("notes")
+        entry["reviewed_opus"] = today
+        if "status" not in entry:
+            entry["status"] = "promoted"
+
+        status[locale][file_path] = entry
+
+        # A disagreement is worth surfacing: Opus is harsher than the prior
+        # automated verdict (the spot-check's reason to exist).
+        rank = {"PASS": 0, "MINOR_ISSUES": 1, "FIXED": 1, "FAIL": 2}
+        if tier3 in rank and verdict in rank and rank[verdict] > rank[tier3]:
+            disagreements.append((locale, file_path, tier3, verdict))
+
+        print(f"  {locale}/{file_path} → opus={verdict} (tier3={tier3})")
+
+    save_status(status)
+    print(f"\nRecorded {len(data)} Opus deep-review result(s).")
+    if disagreements:
+        print(f"\n  ⚠ {len(disagreements)} disagreement(s) — Opus harsher than Tier-3:")
+        for loc, fp, t3, op in disagreements:
+            print(f"    {loc}/{fp}: tier3={t3} → opus={op}")
+        print("  → Consider re-queueing these for fix/retranslation.")
+
+
 def record_review_from_json(json_path: str) -> None:
     """Record multiple review results from a JSON file or stdin."""
     if json_path == "-":
@@ -607,6 +695,11 @@ def main():
         help="Record linguistic review result"
     )
     group.add_argument(
+        "--record-opus", action="store_true",
+        help="Record Tier-4 Opus deep-review verdicts (--from-json); annotates "
+             "review_opus* keys, never overwrites the Tier-3 review verdict"
+    )
+    group.add_argument(
         "--prune-orphans", action="store_true",
         help="Drop status.json entries whose translation file no longer exists"
     )
@@ -649,6 +742,11 @@ def main():
     elif args.next_chunk:
         next_chunk(size=args.size, locale_filter=args.locale,
                    include_stale=args.include_stale)
+
+    elif args.record_opus:
+        if not args.from_json:
+            parser.error("--record-opus requires --from-json PATH (or -)")
+        record_opus_from_json(args.from_json)
 
     elif args.record_review:
         if args.from_json:
