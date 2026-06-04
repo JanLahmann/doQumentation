@@ -96,3 +96,42 @@ value is.
   review queue. Not STALE, not a re-stamp. Run:
   `python translation/scripts/lint-translation.py --locale de` (then es),
   re-run the prefilter, and they move from `SKIP_LINT` → `REVIEW`.
+
+## Tier-4 — Opus deep-review spot-check (manual, optional)
+
+Tier-3 (Haiku) is the exhaustive pass. **Tier-4 is a small, seeded-random,
+manually-triggered Opus audit on top of it** — for the quality a fast checklist
+rubber-stamps: naturalness/fluency, cross-file terminology correctness, subtle
+fluent-but-wrong drift, pedagogical register. Rubric:
+[`review-tier4-opus-prompt.md`](review-tier4-opus-prompt.md). Run it only when a
+window has spare tokens (5h / weekly).
+
+It **annotates, never overwrites**: verdicts land in separate `review_opus*`
+keys in `status.json`; the Tier-3 `review` field is untouched. A Tier-3-PASS /
+Opus-FAIL disagreement is the *signal*, surfaced explicitly by both the workflow
+and `review-translations.py --progress`.
+
+Run it in three steps:
+
+```bash
+# 1. Draw a reproducible stratified sample (uniform over fresh, non-stub files;
+#    round-robin across the 17 main locales × sections). Rotate --seed each run.
+python3 translation/scripts/sample-deep-review.py \
+    --per-locale 5 --seed 20260604 --out /tmp/opus-sample.json
+
+# 2. Run the workflow, passing the sample JSON as args (Opus agents, one/file):
+#    Workflow({ name: "opus-deep-review", args: <parsed contents of /tmp/opus-sample.json> })
+#    It returns a verdict tally + the actionable Opus-harsher-than-Tier-3 list,
+#    and a `records` array to persist.
+
+# 3. Save records to translation/reviews/opus-<seed>.json, then record them:
+python3 translation/scripts/review-translations.py \
+    --record-opus --from-json translation/reviews/opus-20260604.json
+```
+
+`--per-locale` controls cost: 2 ≈ 34 files (quick, ~one 5h window), 5 ≈ 85
+(standard), 10 ≈ 170 (deep). A fresh `--seed` walks a new random sample, so
+repeated runs accumulate deep coverage without ever needing an exhaustive Opus
+pass. **Note**: Opus here is justified ONLY by the deeper task — for the Tier-3
+4-check rubric, Haiku scored 8/8 vs ground truth and Opus adds cost, not
+accuracy. Don't use Tier-4 to re-run Tier-3.
