@@ -1743,6 +1743,26 @@ def main():
         print(f"Finalize: {len(finalized)} passed & hash-bumped, "
               f"{len(failed)} failed (see _finalize_failures.txt)")
         print(f"{'═' * 60}")
+        # RECONCILE GUARD (#1): a workflow can report "done" yet leave files
+        # silently unedited (structured-output miss / throttle / stuck run —
+        # observed on id/pl/uk this sync). Such files are NEITHER finalized nor
+        # in `failed` (they were never re-scanned as changed), so the summary
+        # above reads clean while real work is missing. Re-run the freshness
+        # scan and assert nothing the caller intended to refresh is still STALE.
+        # Exit nonzero so an orchestrator/CI loop cannot proceed past a partial
+        # run. See feedback_refresh_must_cover_full_stale_set.
+        still_stale = find_stale_translations(args.locale, args.section)
+        leftover = [rel for rel, _, _ in still_stale]
+        if leftover:
+            print(f"\n⚠ RECONCILE: {len(leftover)} file(s) still STALE after "
+                  f"finalize — likely reported done but never edited "
+                  f"(re-run them):")
+            for rel in leftover:
+                print(f"    {rel}")
+            print("  (NOOP files only need `--auto-fix`; genuinely-stale files "
+                  "need the agent re-run.)")
+            sys.exit(1)
+        print(f"✓ RECONCILE: {args.locale} is 0 stale — refresh complete.")
         return
 
     # Process each file
