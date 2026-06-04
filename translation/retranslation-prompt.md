@@ -29,6 +29,19 @@ If that shows `N stale files`, proceed below.
 - Launch agents in waves of 3 (one file each); wait for each wave. See
   the **Orchestration recipe** below for the full batch→PR loop when
   scaling a backlog — follow it exactly.
+- **Cap concurrency at ~12 agents.** Larger fan-outs late in a long session
+  hit a structured-output throttle: agents return WITHOUT calling
+  StructuredOutput ("completed without calling StructuredOutput") and leave
+  their file unedited. This sync, a 34-wide `uk` fan-out lost 13 agents in one
+  contiguous block; `id`/`pl` lost some too. Smaller waves + the reconcile
+  guard (below) catch and bound this. Re-run only the missed files.
+- **Verify edits actually landed — never trust "done".** A reported-done agent
+  can silently no-op. After the workflow, BEFORE finalizing, assert the count
+  of files that differ from the pre-sync EN baseline ≈ the workfile count:
+  `git diff main --name-only -- i18n/{LOCALE}/.../current/ | wc -l`. A large
+  shortfall = silent misses → re-run those files. (`update-translations.py
+  --finalize` now also runs a RECONCILE guard and exits nonzero if any intended
+  file is still STALE — see [[feedback_refresh_must_cover_full_stale_set]].)
 - Skip files where severity is `NOOP` — `--auto-fix` will handle them.
 - For `MAJOR` severity / `full_retranslation` (no historical EN, or a
   large/structural rewrite), translate the whole file fresh using
@@ -52,6 +65,35 @@ git fetch --depth=2 origin 9f29483105b21a91d0b3abf0ba9cfd735a084b9b
 git cat-file -t 9f29483105b21a91d0b3abf0ba9cfd735a084b9b^   # must print: commit
 ```
 
+#### ⚠ Set the baseline to THIS sync, not the first one (`DQ_PRE_SYNC_REF`)
+
+`PRE_SYNC_REF` defaults to the parent of the *first-ever* sync (`9f2948310^`).
+EN is no longer byte-static — it is re-synced via periodic `sync: upstream
+content` PRs. For a refresh triggered by a *specific* sync, a file that changed
+by a few lines in THAT sync gets diffed against months-old EN, balloons past 100
+lines, and **over-escalates to `MAJOR`/`full_retranslation`** — wastefully
+whole-file retranslating to apply a 4-line change (cost ~10 files/locale before
+this was found, #192).
+
+Always export the parent of the sync you are refreshing for:
+
+```bash
+SYNC=$(git log --oneline -40 main | grep -i 'sync: upstream content' | head -1 | awk '{print $1}')
+export DQ_PRE_SYNC_REF="${SYNC}^"
+# VERIFY it is the true last-fresh baseline: a locale file's embedded
+# source-hash must equal sha256 of that ref's EN (proves no older drift is
+# skipped). Spot-check a couple of files before trusting the workfile.
+```
+
+With the right baseline, `--analyze` shows a healthy NOOP/MINOR/MODERATE spread
+and ~0 MAJOR; with the wrong one it shows ~all-MAJOR (same giveaway as a missing
+baseline). Run every command below with `DQ_PRE_SYNC_REF` exported.
+
+> macOS gotcha: if `git` errors with "You have not agreed to the Xcode license",
+> Apple's `/usr/bin/git` is broken — prepend Homebrew git:
+> `export PATH="/opt/homebrew/bin:$PATH"`. The pipeline shells out to `git`, so
+> it must be on PATH in every process.
+
 From the repo root:
 
 ```bash
@@ -62,7 +104,7 @@ From the repo root:
 python translation/scripts/update-translations.py --locale {LOCALE} --auto-fix
 
 # Generate the workfile that lists per-paragraph updates needed:
-python translation/scripts/update-translations.py --locale {LOCALE} --generate-workfile --output /tmp/{LOCALE}-workfile.json
+python translation/scripts/update-translations.py --locale {LOCALE} --generate-workfile --output translation/workfiles/{LOCALE}-workfile.json
 ```
 
 The auto-fix pass handles structural drift (code, imports). The workfile
@@ -78,7 +120,7 @@ Read the workfile summary:
 ```bash
 python3 -c "
 import json
-wf = json.load(open('/tmp/{LOCALE}-workfile.json'))
+wf = json.load(open('translation/workfiles/{LOCALE}-workfile.json'))
 print(f'Files needing hunk-splice: {len(wf[\"files\"])}')
 print(f'Full retranslation (use translation-prompt.md): {len(wf.get(\"full_retranslation\", []))}')
 for f in wf['files']:
@@ -141,6 +183,16 @@ this file. Your job: mirror that same change into the {LANGUAGE} file.
 5. Use the Edit tool (not Write) per hunk so untouched regions stay byte-
    identical. Do NOT touch the {/* doqumentation-source-hash: ... */}
    marker — it is bumped by the finalize step.
+6. ADDED FENCED CODE BLOCK (the #1 recurring finalize failure — it broke
+   `classical-feedforward-and-control-flow.mdx` in 12/17 locales this sync):
+   when a `+` hunk introduces a NEW ```fenced``` code block (often a new
+   subsection like "Store"), you MUST insert BOTH fence lines (opening
+   ```` ```python ```` and the closing ```` ``` ````) with the code BETWEEN them
+   copied BYTE-IDENTICAL from the `+` lines — translate only the surrounding
+   prose/heading, never the code, and never collapse or drop a fence. After
+   editing, the file's total count of ``` lines MUST equal the English file's.
+   The validator rejects any mismatch ("FAIL: Code blocks"), so count fences
+   before you finish.
 
 Translation rules:
 - Preserve the existing translator's voice/terminology in unchanged text;
@@ -238,7 +290,7 @@ STALE until fixed instead of silently shipping broken.
 
 ```bash
 python translation/scripts/update-translations.py --locale {LOCALE} --finalize \
-  --output /tmp/{LOCALE}-workfile.json -v
+  --output translation/workfiles/{LOCALE}-workfile.json -v
 ```
 
 Then commit ONLY the files that passed (never force-add gitignored
@@ -246,7 +298,7 @@ binaries — stage the `.mdx` paths explicitly):
 
 ```bash
 # inspect failures, if any:
-cat /tmp/_finalize_failures.txt 2>/dev/null   # <rel-path>\t<reason>
+cat translation/workfiles/_finalize_failures.txt 2>/dev/null   # <rel-path>\t<reason>
 
 # stage exactly the passed .mdx files (example: all changed mdx under the locale)
 git add -f $(git status --short \
@@ -286,7 +338,7 @@ sub-agent a one-line prompt:
 
 ```
 Read /tmp/agent-instructions-{LOCALE}.md and follow it exactly.
-WORKFILE = /tmp/{LOCALE}-batch-NN.json. Your target PATH = <one path>.
+WORKFILE = translation/workfiles/{LOCALE}-batch-NN.json. Your target PATH = <one path>.
 ```
 
 Dispatch in waves (≈8–12 concurrent is fine; finalize is the safety net). The
