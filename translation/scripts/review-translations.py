@@ -281,8 +281,12 @@ def show_progress(locale_filter: str | None = None) -> None:
         lint_warn = sum(1 for e in entries.values() if e.get("lint") == "WARNINGS")
         lint_err = sum(1 for e in entries.values() if e.get("lint") == "ERRORS")
 
-        # Review
-        reviewed = sum(1 for e in entries.values() if e.get("review") is not None)
+        # Review. STALE_REFRESH = a prior verdict invalidated by re-translation;
+        # it is NOT current review coverage, so don't count it as reviewed.
+        reviewed = sum(
+            1 for e in entries.values()
+            if e.get("review") not in (None, "STALE_REFRESH")
+        )
         reviewable = sum(
             1 for e in entries.values()
             if e.get("validation") == "PASS"
@@ -382,8 +386,10 @@ def next_chunk(size: int = 20, locale_filter: str | None = None,
                 continue
             if entry.get("lint") not in ("CLEAN", "WARNINGS"):
                 continue
-            # Not already reviewed
-            if entry.get("review") is not None:
+            # Not already reviewed. STALE_REFRESH means a prior verdict was
+            # invalidated when the file was re-translated (update-translations.py
+            # --finalize) — treat it as needing review, same as never-reviewed.
+            if entry.get("review") not in (None, "STALE_REFRESH"):
                 continue
             # Don't queue STALE/UNKNOWN files — refresh + re-stamp them first
             # (reviewing prose that doesn't match current EN wastes effort).
