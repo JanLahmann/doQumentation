@@ -23,3 +23,7 @@ export function onRouteDidUpdate(): void {
 if (typeof window !== 'undefined') {
   window.addEventListener(DISPLAY_PREFS_EVENT, applyCodeFontSize);
 }
+
+// Note: the "hide static outputs" body class is NOT applied here — it is tied to
+// run/static *mode* (added on Run, removed on Back), not a page-global toggle, so
+// ExecutableCode owns it. The Settings toggle re-reads the pref live there.

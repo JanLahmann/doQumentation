@@ -8,8 +8,8 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from
 import OriginalCategory from '@theme-original/DocSidebarItem/Category';
 import {
   isPageVisited,
-  clearVisitedByPrefix,
-  clearExecutedByPrefix,
+  unmarkPageVisited,
+  unmarkPageExecuted,
   getSidebarCollapseState,
   setSidebarCollapseState,
 } from '../../../config/preferences';
@@ -29,22 +29,6 @@ function collectHrefs(items: SidebarItem[]): string[] {
     if (item.items) hrefs.push(...collectHrefs(item.items));
   }
   return hrefs;
-}
-
-/** Find the longest common prefix path for a set of hrefs. */
-function commonPrefix(hrefs: string[]): string {
-  if (hrefs.length === 0) return '/';
-  const parts = hrefs[0].split('/');
-  let prefix = '';
-  for (let i = 0; i < parts.length; i++) {
-    const candidate = parts.slice(0, i + 1).join('/');
-    if (hrefs.every(h => h.startsWith(candidate + '/') || h === candidate)) {
-      prefix = candidate;
-    } else {
-      break;
-    }
-  }
-  return prefix || '/';
 }
 
 type Props = React.ComponentProps<typeof OriginalCategory>;
@@ -90,9 +74,14 @@ export default function DocSidebarItemCategory(props: Props): JSX.Element {
     const handleClear = (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      const prefix = commonPrefix(allHrefs);
-      clearVisitedByPrefix(prefix);
-      clearExecutedByPrefix(prefix);
+      // Clear exactly this category's pages — NOT by common prefix. A prefix can
+      // be shorter than intended when the children don't share a tight path (or
+      // when a sibling category shares the prefix), which would wipe other
+      // categories' progress too.
+      for (const href of allHrefs) {
+        unmarkPageVisited(href);
+        unmarkPageExecuted(href);
+      }
       setVisitedCount(0);
       window.dispatchEvent(new CustomEvent(PAGE_VISITED_EVENT));
     };

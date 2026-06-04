@@ -56,6 +56,12 @@ declare global {
 // ── Global (module-level) state shared across all instances ──
 
 let thebelabBootstrapped = false;
+// True only once a kernel has ACTUALLY connected (and setup injected). Distinct
+// from thebelabBootstrapped (which is set the moment bootstrap *starts*): during
+// the kernel-race retry window the bootstrap flag is true but no kernel is live,
+// so a concurrent bootstrapOnce must NOT announce 'ready' off the bootstrap flag
+// alone — it gates on this instead.
+let kernelReady = false;
 let thebelabEventsHooked = false;
 
 // Custom event names used to coordinate all cells on the page
@@ -87,6 +93,10 @@ let executingCell: Element | null = null;
 let lastKernelBusy = false;
 let feedbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let feedbackIdleDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+// Pending kernel-race retry timer. Tracked so resetModuleState() can cancel it
+// on navigation/unmount — otherwise a retry scheduled on page A would fire
+// doBootstrap() against page B's DOM with page A's options.
+let kernelRaceRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let kernelDead = false;
 let feedbackCleanupFns: (() => void)[] = [];
 let activeKernel: unknown = null;
@@ -106,6 +116,7 @@ let lastJupyterConfig: JupyterConfig | null = null;
 /** Reset all module-level mutable state so next Run triggers a fresh bootstrap. */
 function resetModuleState(): void {
   thebelabBootstrapped = false;
+  kernelReady = false;
   kernelDead = false;
   activeKernel = null;
   executingCell = null;
@@ -123,6 +134,14 @@ function resetModuleState(): void {
     clearTimeout(feedbackIdleDebounceTimer);
     feedbackIdleDebounceTimer = null;
   }
+  if (kernelRaceRetryTimer) {
+    clearTimeout(kernelRaceRetryTimer);
+    kernelRaceRetryTimer = null;
+  }
+  // Abort any in-flight Binder/CE build EventSource. Without this, a build
+  // started on a page the user navigated away from keeps its SSE connection
+  // (and server-side build slot / CE coroutine) alive until its 20-min timeout.
+  cancelBinderBuild();
   feedbackCleanupFns.forEach(fn => fn());
   feedbackCleanupFns = [];
 }
@@ -425,6 +444,7 @@ function handleKernelStatusForFeedback(status: string): void {
   // Detect kernel death — mark current cell as error and flag for future checks
   if (status === 'dead' || status === 'failed') {
     kernelDead = true;
+    kernelReady = false; // kernel gone — no longer ready
     thebelabBootstrapped = false; // Allow re-bootstrap on next Run
     if (feedbackIdleDebounceTimer) {
       clearTimeout(feedbackIdleDebounceTimer);
@@ -1311,6 +1331,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
             /* eslint-enable @typescript-eslint/no-explicit-any */
 
             injectKernelSetup(kernel).then(() => {
+              kernelReady = true;
               broadcastStatus('ready');
               setupCellFeedback();
               annotateSaveAccountCells();
@@ -1324,6 +1345,7 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
             // transiently with `NoneType.kernel_ws_protocol` (race in Jupyter
             // Server 2.16.0 between kernel creation and WebSocket attachment).
             // The race clears in ~1 second. Retry once before giving up.
+            kernelReady = false; // kernel handshake failed — not ready during retry
             if (kernelRaceRetriesUsed < KERNEL_RACE_MAX_RETRIES) {
               kernelRaceRetriesUsed++;
               console.warn(
@@ -1331,7 +1353,8 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
                 `retrying in ${KERNEL_RACE_BACKOFF_MS}ms:`,
                 err
               );
-              setTimeout(() => {
+              kernelRaceRetryTimer = setTimeout(() => {
+                kernelRaceRetryTimer = null;
                 if (DEBUG) console.log('[ExecutableCode] retrying bootstrap after kernel race');
                 doBootstrap(thebelabOptions);
               }, KERNEL_RACE_BACKOFF_MS);
@@ -1366,7 +1389,11 @@ function doBootstrap(thebelabOptions: Record<string, unknown>): void {
 function bootstrapOnce(config: JupyterConfig): void {
   lastJupyterConfig = config;
   if (thebelabBootstrapped) {
-    broadcastStatus('ready');
+    // A bootstrap is already in flight or done. Only announce 'ready' if a kernel
+    // has actually connected — otherwise we're mid-connect (incl. the race-retry
+    // window) and must not flip cells to ready against a non-existent kernel
+    // (H3). The in-flight bootstrap broadcasts 'ready' itself once the kernel is up.
+    broadcastStatus(kernelReady ? 'ready' : 'connecting');
     return;
   }
 
@@ -1452,7 +1479,7 @@ export default function ExecutableCode({
   notebookPath,
   title,
   showLineNumbers = true,
-}: ExecutableCodeProps): JSX.Element {
+}: ExecutableCodeProps): JSX.Element | null {
   const { i18n: { currentLocale } } = useDocusaurusContext();
   const location = useLocation();
 
@@ -1473,7 +1500,6 @@ export default function ExecutableCode({
   const [injectionInfo, setInjectionInfo] = useState<InjectionInfo | null>(null);
   const [injectionToast, setInjectionToast] = useState<string | null>(null);
   const [binderHintDismissed, setBinderHintDismissed] = useState(false);
-  const [hideStaticOutputs, setHideStaticOutputs] = useState(false);
   const [binderPhase, setBinderPhase] = useState<string | null>(null);
   const [binderElapsed, setBinderElapsed] = useState(0);
   const [binderCacheMiss, setBinderCacheMiss] = useState(false);
@@ -1487,7 +1513,6 @@ export default function ExecutableCode({
   useEffect(() => {
     setJupyterConfig(detectJupyterConfig());
     setBinderHintDismissed(isBinderHintDismissed());
-    setHideStaticOutputs(getHideStaticOutputs());
   }, []);
 
   // Determine if this is the first executable cell on the page (toolbar owner).
@@ -1634,8 +1659,10 @@ export default function ExecutableCode({
     markPageExecuted(window.location.pathname);
     trackEvent('Run Code', { page: window.location.pathname });
 
-    // Hide static outputs if user preference is set
-    if (hideStaticOutputs) {
+    // Hide static outputs if user preference is set. Read the pref live (not the
+    // mount-time state) so a Settings toggle takes effect on the next Run without
+    // a reload.
+    if (getHideStaticOutputs()) {
       document.body.classList.add('dq-hide-static-outputs');
     }
 
@@ -1653,7 +1680,7 @@ export default function ExecutableCode({
       }
     };
     requestAnimationFrame(() => waitForCellsThenBootstrap());
-  }, [jupyterConfig, hideStaticOutputs]);
+  }, [jupyterConfig]);
 
   const handleReset = useCallback(() => {
     // If still connecting, cancel the Binder build without confirmation

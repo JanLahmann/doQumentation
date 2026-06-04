@@ -13,6 +13,7 @@ import Card from '@site/src/components/GuideComponents/Card';
 import CardGroup from '@site/src/components/GuideComponents/CardGroup';
 import OperatingSystemTabs from '@site/src/components/GuideComponents/OperatingSystemTabs';
 import CodeAssistantAdmonition from '@site/src/components/GuideComponents/CodeAssistantAdmonition';
+import { renderInlineMarkup } from '@site/src/lib/inlineMarkup';
 
 // Fallback for any <Image> JSX not converted to markdown during sync
 function Image(props: React.ImgHTMLAttributes<HTMLImageElement>) {
@@ -25,24 +26,12 @@ function Accordion({ children }: { children?: React.ReactNode }) {
   return <div className="dq-accordion">{children}</div>;
 }
 // Upstream IBM's AccordionItem parses its `title` prop as markdown/HTML — our stub
-// receives a plain string. Render the inline patterns IBM actually uses: **bold**,
-// `code`, <em>…</em> (and <en>…</en>, which is an upstream typo for <em>).
-function renderAccordionTitle(title: string): React.ReactNode {
-  // <en>…</en> → <em>…</em> (upstream typo) before splitting.
-  const normalized = title.replace(/<\/?en>/g, (m) => (m === '<en>' ? '<em>' : '</em>'));
-  const parts = normalized.split(/(\*\*[^*]+\*\*|`[^`]+`|<em>[^<]+<\/em>)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) return <strong key={i}>{part.slice(2, -2)}</strong>;
-    if (part.startsWith('`') && part.endsWith('`')) return <code key={i}>{part.slice(1, -1)}</code>;
-    if (part.startsWith('<em>') && part.endsWith('</em>')) return <em key={i}>{part.slice(4, -5)}</em>;
-    return part;
-  });
-}
-
+// receives a plain string. renderInlineMarkup handles the inline patterns IBM
+// actually uses (**bold**, `code`, <em>…</em>, and the <en>…</en> upstream typo).
 function AccordionItem({ title, children }: { title?: string; children?: React.ReactNode }) {
   return (
     <details className="dq-accordion-item" style={{ margin: '0.5rem 0', padding: '0.5rem 1rem', border: '1px solid var(--ifm-color-emphasis-300)', borderRadius: '4px' }}>
-      <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{renderAccordionTitle(title ?? 'Details')}</summary>
+      <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{renderInlineMarkup(title ?? 'Details')}</summary>
       <div style={{ marginTop: '0.5rem' }}>{children}</div>
     </details>
   );

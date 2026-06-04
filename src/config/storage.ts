@@ -14,6 +14,15 @@ const MAX_AGE = 31536000; // 1 year in seconds
 const CHUNK_SIZE = 3800; // bytes per cookie (under 4KB limit with metadata)
 const MAX_CHUNKS_CLEANUP = 10; // how many stale chunks to clean up beyond current count
 
+// NOTE on credentials across subdomains (SECURITY_REVIEW S1):
+// ALL keys — including the IBM API token/CRN and the Jupyter/Code-Engine server
+// tokens — are intentionally shared across `*.doqumentation.org` subdomains via
+// the cookie below, so a user who enters credentials once doesn't have to
+// re-enter them on each language subdomain (a product requirement). The residual
+// risk (any *.doqumentation.org JS can read these tokens, and they ride same-site
+// requests) is an accepted tradeoff for that UX. The open hardening for S1 is
+// encryption-at-rest, not scoping the cookie down.
+
 // ── In-memory cache ──
 
 let cache: Map<string, string> | null = null;
@@ -58,22 +67,51 @@ function deleteCookie(key: string): void {
 
 // ── Chunking ──
 
+/** Encoded byte length of a string once it's URL-encoded into a cookie value. */
+function encodedLen(s: string): number {
+  return encodeURIComponent(s).length;
+}
+
+/**
+ * Split a string into pieces whose URL-ENCODED size each stays under CHUNK_SIZE.
+ *
+ * Chunking must be measured on the *encoded* length, not the raw JS string length:
+ * a CJK/Arabic/Cyrillic character is one UTF-16 unit but 3–9 bytes once
+ * encodeURIComponent-ed, so a 3800-char slice of localized text can blow past the
+ * 4 KB per-cookie browser limit and be silently dropped. We grow each chunk char
+ * by char and cut before it would exceed the budget — never splitting a character.
+ */
+function chunkByEncodedSize(value: string): string[] {
+  const chunks: string[] = [];
+  let current = '';
+  for (const ch of value) {           // iterate by code point (won't split surrogates)
+    if (encodedLen(current + ch) > CHUNK_SIZE && current) {
+      chunks.push(current);
+      current = ch;
+    } else {
+      current += ch;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 function writeChunkedCookie(key: string, value: string): void {
-  if (value.length <= CHUNK_SIZE) {
+  if (encodedLen(value) <= CHUNK_SIZE) {
     // Fits in a single cookie — clean up any old chunks
     setCookie(key, value);
     deleteChunks(key, 0);
   } else {
-    // Split into chunks
-    const numChunks = Math.ceil(value.length / CHUNK_SIZE);
-    for (let i = 0; i < numChunks; i++) {
-      setCookie(`${key}__${i}`, value.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
+    // Split into chunks sized by their ENCODED length (see chunkByEncodedSize)
+    const parts = chunkByEncodedSize(value);
+    for (let i = 0; i < parts.length; i++) {
+      setCookie(`${key}__${i}`, parts[i]);
     }
-    setCookie(`${key}__n`, String(numChunks));
+    setCookie(`${key}__n`, String(parts.length));
     // Delete the base key cookie (data is in chunks now)
     deleteCookie(key);
     // Clean up any extra old chunks beyond current count
-    deleteChunks(key, numChunks);
+    deleteChunks(key, parts.length);
   }
 }
 
