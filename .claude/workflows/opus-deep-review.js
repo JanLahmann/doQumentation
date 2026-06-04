@@ -8,22 +8,31 @@ export const meta = {
 }
 
 // ---------------------------------------------------------------------------
-// args: the JSON payload from sample-deep-review.py, i.e.
+// Sample input: the JSON payload from sample-deep-review.py, i.e.
 //   { seed, per_locale, eligible_total, sample_size, files: [
 //       { locale, rel, section, lines, locale_name, register, tier3_verdict }, ... ] }
-// Produce it first:
-//   python3 translation/scripts/sample-deep-review.py --per-locale 5 --seed <S> --out /tmp/opus-sample.json
-//   then pass the file's parsed contents as args.
+//
+// Two ways to supply it:
+//  (A) via args — Workflow({ name:"opus-deep-review", args: <parsed JSON> }).
+//  (B) via an embedded SAMPLE constant — set SAMPLE below to the parsed JSON.
+//      Use this when invoking by scriptPath, where large args may not pass
+//      through. The make-opus-run.py helper bakes the sample in for you:
+//        python3 translation/scripts/make-opus-run.py --sample /tmp/opus-sample.json \
+//            --out /tmp/opus-run.js   # then run that file via scriptPath
 // ---------------------------------------------------------------------------
 
-if (!args || !Array.isArray(args.files) || args.files.length === 0) {
-  log('ERROR: args.files is empty. Run sample-deep-review.py and pass its JSON as args.')
+const SAMPLE = null  // ← replaced by make-opus-run.py, or leave null and use args
+
+const input = (args && Array.isArray(args.files) && args.files.length) ? args : SAMPLE
+
+if (!input || !Array.isArray(input.files) || input.files.length === 0) {
+  log('ERROR: no sample. Pass it via args, or bake it into SAMPLE (see make-opus-run.py).')
   return { error: 'no sample provided', expected: 'args = output of sample-deep-review.py' }
 }
 
-const files = args.files
-const seed = args.seed ?? 'unseeded'
-log(`Tier-4 Opus deep-review — ${files.length} file(s), seed=${seed}, pool=${args.eligible_total ?? '?'}`)
+const files = input.files
+const seed = input.seed ?? 'unseeded'
+log(`Tier-4 Opus deep-review — ${files.length} file(s), seed=${seed}, pool=${input.eligible_total ?? '?'}`)
 
 const SCHEMA = {
   type: 'object',
