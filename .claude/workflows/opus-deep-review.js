@@ -43,7 +43,9 @@ const SCHEMA = {
     file: { type: 'string' },
     verdict: { enum: ['PASS', 'MINOR_ISSUES', 'FAIL'] },
     issues: { type: 'integer' },
-    editor_note: { type: 'string' },
+    // minLength forces a real summary — the structured-output layer retries the
+    // model if it returns a placeholder/one-word note (a recurring run-2 defect).
+    editor_note: { type: 'string', minLength: 80 },
     examples: {
       type: 'array',
       items: {
@@ -85,7 +87,22 @@ VERDICT (independent of the prior automated verdict; first match wins):
 - MINOR_ISSUES = isolated naturalness/terminology/register slips that do not mislead.
 - PASS = native, well-edited technical prose; correct consistent terminology; faithful meaning; teaches as well as the English.
 
-Return the structured object: locale="${f.locale}", file="${f.rel}", your verdict, an integer issue count, an editor_note of 1-3 sentences on fluency+terminology (FILL THIS IN EVEN ON PASS — it is the signal a fast pass never produces), and up to a few concrete examples. Do NOT edit any file. Do NOT touch git or status.json.`
+Return the structured object: locale="${f.locale}", file="${f.rel}", your verdict, an integer issue count, an editor_note, and up to a few concrete examples. Do NOT edit any file. Do NOT touch git or status.json.
+
+editor_note REQUIREMENTS (this is the deliverable a fast pass never produces — it must stand alone):
+- Write 2-4 real sentences of YOUR editorial read of fluency + terminology. FILL THIS IN EVEN ON PASS.
+- Name specifics: the actual terms, the actual locale words, the actual passages. A reader who sees only this note (not the examples) must understand your verdict.
+- On FAIL/MINOR, the note MUST state WHAT is wrong (e.g. "‘Hamiltonian’ is rendered three ways: X, Y, Z"), not just that something is.
+- FORBIDDEN: placeholder or filler text. Never return "x", "placeholder", "duplicate", "n/a", "see examples", "ok", or an empty/one-word note. Such a note is a failed deliverable — write the real summary instead.`
+}
+
+// A note is a "placeholder" if it's filler rather than a real editorial read.
+// The schema minLength catches short ones; this catches longer filler the
+// model might still emit.
+const PLACEHOLDER_RE = /^(x+|placeholder|duplicate|n\/?a|ok|tbd|see examples?|none|todo)\.?$/i
+function isPlaceholderNote(note) {
+  const n = (note || '').trim()
+  return n.length < 80 || PLACEHOLDER_RE.test(n)
 }
 
 // One Opus agent per file, all concurrent (capped by the runtime). Each returns
@@ -100,7 +117,40 @@ const verdicts = await parallel(files.map((f) => () =>
   }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict } : null))
 ))
 
-const results = verdicts.filter(Boolean)
+let results = verdicts.filter(Boolean)
+
+// Backstop: re-run any agent whose editor_note is a placeholder that slipped
+// past the schema. The verdict/examples were real; only the summary failed —
+// so re-ask for THIS file with an explicit correction, once.
+const byKey = (r) => `${r.locale}/${r.file}`
+const needNote = results.filter((r) => isPlaceholderNote(r.editor_note))
+if (needNote.length) {
+  log(`⟳ ${needNote.length} file(s) returned a placeholder editor_note — re-running for a real summary.`)
+  const fileByKey = new Map(files.map((f) => [`${f.locale}/${f.rel}`, f]))
+  const redone = await parallel(needNote.map((r) => () => {
+    const f = fileByKey.get(byKey(r))
+    if (!f) return Promise.resolve(null)
+    const prompt = promptFor(f) +
+      `\n\nIMPORTANT: a prior attempt returned a placeholder editor_note ("${r.editor_note}"). That is a failed deliverable. Re-read the file and return your real verdict with a full 2-4 sentence editor_note that names the specific terms and passages.`
+    return agent(prompt, {
+      label: `opus-redo:${f.locale}/${f.rel.split('/').pop()}`,
+      phase: 'Deep review',
+      model: 'opus',
+      schema: SCHEMA,
+    }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict } : null))
+  }))
+  // Replace originals with any successful redo that now has a real note.
+  const fixedByKey = new Map()
+  for (const r of redone.filter(Boolean)) {
+    if (!isPlaceholderNote(r.editor_note)) fixedByKey.set(byKey(r), r)
+  }
+  if (fixedByKey.size) {
+    results = results.map((r) => fixedByKey.get(byKey(r)) || r)
+    log(`  ✓ ${fixedByKey.size} placeholder note(s) replaced with a real summary.`)
+  }
+  const stillBad = results.filter((r) => isPlaceholderNote(r.editor_note)).length
+  if (stillBad) log(`  ⚠ ${stillBad} note(s) still thin after retry — examples[] still carry the findings.`)
+}
 
 // Summarize: verdict tally + the actionable disagreements (Opus harsher than Tier-3).
 const rank = { PASS: 0, MINOR_ISSUES: 1, FIXED: 1, FAIL: 2 }
