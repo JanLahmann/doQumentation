@@ -61,11 +61,67 @@ slugify = validator.slugify
 
 # ── Constants ──
 
-DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
-I18N_DIR = Path(__file__).resolve().parents[2] / "i18n"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DOCS_DIR = REPO_ROOT / "docs"
+I18N_DIR = REPO_ROOT / "i18n"
+STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 HASH_COMMENT_RE = re.compile(r'\{/\*\s*doqumentation-source-hash:\s*([a-f0-9]+)\s*\*/\}')
+
+
+def invalidate_reviews(locale: str, rel_paths: list[str]) -> int:
+    """Clear the linguistic-review verdict for refreshed files.
+
+    A file's review verdict in translation/status.json (review: PASS/MINOR/…)
+    describes the prose AT REVIEW TIME. When --finalize hash-bumps a file we
+    just spliced new EN changes into, that verdict now refers to superseded
+    text — but review-translations.py's `is_fresh()` gate sees the bumped hash,
+    treats the file as fresh-and-reviewed, and NEVER re-queues it. The stale
+    "PASS" then silently overstates review coverage (same class as
+    feedback_stale_content_despite_fresh_hash).
+
+    So whenever finalize re-stamps a file, downgrade its recorded review to
+    STALE_REFRESH and stamp `review_invalidated` with the date, so
+    `review-translations.py --next-chunk` picks it up again. We only touch
+    files that HAD a non-empty, non-SKIPPED review (nothing to invalidate
+    otherwise). Returns the count invalidated. Never blocks finalize.
+    """
+    if not STATUS_FILE.exists():
+        return 0
+    try:
+        status = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    loc = status.get(locale)
+    if not isinstance(loc, dict):
+        return 0
+    today = _today_iso()
+    n = 0
+    for rel in rel_paths:
+        entry = loc.get(rel)
+        if not isinstance(entry, dict):
+            continue
+        prior = entry.get("review")
+        # Only invalidate a real prior verdict; leave unreviewed/SKIPPED alone.
+        if prior in (None, "", "STALE_REFRESH", "SKIPPED"):
+            continue
+        entry["review_prior"] = prior
+        entry["review"] = "STALE_REFRESH"
+        entry["review_invalidated"] = today
+        entry.pop("reviewed", None)
+        n += 1
+    if n:
+        STATUS_FILE.write_text(
+            json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    return n
+
+
+def _today_iso() -> str:
+    from datetime import date
+    return date.today().isoformat()
 
 
 # ── Exact EN change detection via git diff ──
@@ -1739,9 +1795,18 @@ def main():
         rels = [rel for rel, _, _ in stale]
         finalized, failed = finalize_files(args.locale, rels, out_dir,
                                            verbose=args.verbose)
+        # A refreshed file's prior linguistic-review verdict no longer applies
+        # to its (now-spliced) prose. Downgrade those verdicts to STALE_REFRESH
+        # so review-translations.py re-queues them — otherwise the bumped hash
+        # masks them as still-reviewed. See invalidate_reviews().
+        invalidated = invalidate_reviews(args.locale, finalized)
         print(f"\n{'═' * 60}")
         print(f"Finalize: {len(finalized)} passed & hash-bumped, "
               f"{len(failed)} failed (see _finalize_failures.txt)")
+        if invalidated:
+            print(f"Reviews invalidated: {invalidated} refreshed file(s) "
+                  f"→ STALE_REFRESH (re-queue via review-translations.py "
+                  f"--next-chunk)")
         print(f"{'═' * 60}")
         # RECONCILE GUARD (#1): a workflow can report "done" yet leave files
         # silently unedited (structured-output miss / throttle / stuck run —
