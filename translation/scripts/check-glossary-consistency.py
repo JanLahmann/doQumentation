@@ -77,19 +77,29 @@ _LINK_TARGET = re.compile(r"\]\([^)]*\)")
 _PATH_TOKEN = re.compile(r"/?(?:docs|guides|tutorials|learning|api|images)/\S*")
 
 
+def _blank_keep_newlines(m) -> str:
+    """Replace a matched span with a space, but PRESERVE its newlines so line
+    numbers stay aligned (critical: fix-glossary-leaks.py zips raw vs prose
+    lines, so any span that collapses newlines would shift every line below it
+    and skip valid prose — the multi-line-HTML-tag misalignment bug)."""
+    return " " + "\n" * m.group(0).count("\n")
+
+
 def to_prose(text: str) -> str:
-    """Strip everything that isn't natural-language prose, preserving line
-    numbers (replace stripped spans with same-length blanks where feasible)."""
+    """Strip everything that isn't natural-language prose, PRESERVING line
+    numbers — every substitution keeps the same newline count so a downstream
+    per-line raw↔prose zip stays aligned."""
     text = _FRONTMATTER.sub(lambda m: "\n" * m.group(0).count("\n"), text)
     text = _FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
     text = _MATH_BLOCK.sub(lambda m: "\n" * m.group(0).count("\n"), text)
-    text = _IMPORT.sub("", text)
-    text = _ANCHOR.sub(" ", text)
+    # _IMPORT is line-anchored (MULTILINE, no newline in match) → blank in place.
+    text = _IMPORT.sub(lambda m: " " * len(m.group(0)), text)
+    text = _ANCHOR.sub(_blank_keep_newlines, text)
     text = _LINK_TARGET.sub("]", text)   # keep the ] so link text stays a word
     text = _PATH_TOKEN.sub(" ", text)
-    text = _INLINE_CODE.sub(" ", text)
-    text = _MATH_INLINE.sub(" ", text)
-    text = _HTML_TAG.sub(" ", text)
+    text = _INLINE_CODE.sub(_blank_keep_newlines, text)
+    text = _MATH_INLINE.sub(_blank_keep_newlines, text)
+    text = _HTML_TAG.sub(_blank_keep_newlines, text)  # tags can span lines
     text = _URL.sub(" ", text)
     return text
 
@@ -203,28 +213,39 @@ def file_summary(rel: str, result: dict) -> dict:
 # --init: scaffold a glossary from the corpus's own majority usage
 # ---------------------------------------------------------------------------
 
-# Seed concepts: (concept, [candidate target renderings], [leaked EN forms]).
-# The script picks 'preferred' = most frequent candidate across the locale,
-# the rest become 'variants'. Hand-edit the result before trusting it.
+# Seed concepts: (concept, [candidate TARGET-LANGUAGE renderings], [leaked EN]).
+# IMPORTANT: candidates must be genuine target-language renderings — do NOT list
+# the English word itself (e.g. "circuit"/"gate"): lowercase English in prose is
+# code-identifier noise / leak, not a rendering, and "get" is the English verb.
+# The scaffold picks 'preferred' = most frequent candidate; hand-review after.
 SEED_CONCEPTS = {
-    "gate":    (["puerta", "compuerta", "porta", "Gatter", "Gatter", "вентиль", "гейт",
-                 "ворота", "brama", "bramka", "hradlo", "brána", "poartă", "get",
-                 "게이트", "ゲート", "بوابة", "שער"], ["Gate", "Gates"]),
-    "circuit": (["circuito", "circuit", "Schaltkreis", "schemat", "obwód", "obvod",
-                 "circuit", "ланцюг", "коло", "litar", "sirkuit", "回路", "회로",
+    "gate":    (["puerta", "compuerta", "porta", "gatter", "вентиль", "гейт",
+                 "ворота", "brama", "bramka", "hradlo", "brána", "poartă",
+                 "게이트", "ゲート", "بوابة", "שער", "วงจรลอจิก"], ["Gate", "Gates"]),
+    "circuit": (["circuito", "schaltkreis", "schemat", "obwód", "obvod",
+                 "ланцюг", "коло", "litar", "sirkuit", "回路", "회로",
                  "วงจร", "دائرة", "מעגל"], ["Circuit", "Circuits"]),
 }
+
+# Tokens that are NEVER valid target renderings (English verbs / code noise that
+# survive prose-stripping). Excluded from scaffold candidate selection.
+_SCAFFOLD_NOISE = {"get", "circuit", "circuits", "gate", "gates", "porta"}
+# (porta is ambiguous: real Italian "gate" but also Latin/PT "door"/code — keep
+#  it as an it candidate only; the noise set is applied per non-it locale below.)
 
 
 def init_glossary(locale: str) -> None:
     """Scaffold translation/glossary/<locale>.json from majority usage. The
     output is a STARTING POINT — review/edit before relying on it."""
     counts = {c: Counter() for c in SEED_CONCEPTS}
+    noise = _SCAFFOLD_NOISE - ({"porta"} if locale == "it" else set())
     for rel, p in iter_files(locale):
         prose = to_prose(p.read_text(encoding="utf-8"))
         low = prose.lower()
         for concept, (cands, _leaked) in SEED_CONCEPTS.items():
             for cand in cands:
+                if cand.lower() in noise:
+                    continue
                 n = len(re.findall(rf"\b{re.escape(cand.lower())}\b", low))
                 if n:
                     counts[concept][cand.lower()] += n

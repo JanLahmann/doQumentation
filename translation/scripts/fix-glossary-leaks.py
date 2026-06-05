@@ -54,11 +54,40 @@ _chk = _imp("glossary_check", "check-glossary-consistency.py")
 # already carries the gender — so a bare noun swap is safe. (gender-agnostic set
 # kept simple: we only swap the noun, not the determiner.)
 SAFE_DETERMINERS = {
+    # Spanish
     "un", "una", "unos", "unas", "el", "la", "los", "las", "del", "al",
     "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas",
     "nuestro", "nuestra", "nuestros", "nuestras", "cada", "esta", "dicha",
     "su", "sus", "mismo", "misma", "otro", "otra", "otros", "otras",
     "varios", "varias", "algún", "alguna", "ningún", "ninguna",
+    # French
+    "le", "les", "des", "une", "du", "au", "aux",
+    "ce", "cet", "cette", "ces", "mon", "ton", "son", "notre", "votre", "leur",
+    "mes", "tes", "ses", "nos", "vos", "leurs",
+    "chaque", "aucun", "aucune", "plusieurs", "certains", "certaines",
+    "de",
+    # Italian
+    "il", "lo", "gli", "i", "uno", "della", "dello", "delle", "degli",
+    "questa", "questo", "queste", "questi", "quella", "quello", "ogni",
+    "nostra", "nostro", "vostra", "vostro", "sua", "suo",
+    # Portuguese
+    "o", "os", "as", "um", "uns", "umas", "uma", "do", "da", "dos", "das",
+    "no", "na", "nas", "este", "esta", "estes", "estas", "esse", "essa",
+    "nosso", "nossa", "seu", "qualquer",
+    # Ukrainian (articleless; demonstratives/quantifiers precede)
+    "цей", "ця", "це", "ці", "той", "та", "те", "ті", "кожен", "кожна",
+    "наш", "наша", "ваш", "ваша", "його", "її", "один", "одна", "одне",
+    # Polish
+    "ten", "ta", "to", "te", "ci", "tej", "tego", "tych", "każdy", "każda",
+    "nasz", "nasza", "wasz", "jego", "jej", "jeden", "jedna", "jedno", "danej",
+    # Czech
+    "této", "tohoto", "těchto", "každý", "každá",
+    "náš", "naše", "váš", "jeho", "její", "jeden", "jedna", "jedno", "dané",
+    # Romanian (enclitic articles, but determiners precede)
+    "niște", "acest", "această", "aceste", "acești", "acel",
+    "fiecare", "nostru", "noastră", "vostru", "său",
+    # Indonesian / Malay (no articles; demonstratives/quantifiers)
+    "sebuah", "suatu", "setiap", "ini", "itu", "satu", "beberapa",
 }
 
 
