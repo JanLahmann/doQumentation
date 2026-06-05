@@ -29,6 +29,7 @@ Usage:
 import argparse
 import json
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -111,8 +112,40 @@ def section_of(rel: str) -> str:
     return "other/"
 
 
-def build_pool(status: dict, locales: list[str], min_lines: int) -> dict:
-    """{locale: [(rel, section, lines), ...]} of eligible files."""
+# Locale-agnostic leak proxy: capitalized-English domain nouns in prose. These
+# tokens are identical across Latin-script locales, so this flags leakage without
+# a per-locale glossary. (Non-Latin scripts won't render these — for ja/ko/ar/
+# he/th the count is ~0, so --leak-clean simply doesn't exclude them, which is
+# the safe default.)
+_LEAK_PROXY = re.compile(r"\b(Gate|Gates|Circuit|Circuits|Qubit|Qubits)\b")
+
+
+def _leak_count(text: str) -> int:
+    """Capitalized-English-leak count in prose (uses the detector's prose strip)."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "chk", SCRIPTS_DIR / "check-glossary-consistency.py")
+        chk = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(chk)
+        prose = chk.to_prose(text)
+    except Exception:
+        prose = text
+    return len(_LEAK_PROXY.findall(prose))
+
+
+def build_pool(status: dict, locales: list[str], min_lines: int,
+               sections: tuple[str, ...] | None = None,
+               leak_clean: bool = False,
+               exclude_reviewed: bool = False) -> dict:
+    """{locale: [(rel, section, lines), ...]} of eligible files.
+
+    Optional focused filters (for the 'clean-file drift' run):
+      sections          — only these section prefixes (e.g. course+module)
+      leak_clean        — only files with 0 capitalized-English leaks (isolates
+                          Opus on semantic drift, not leakage)
+      exclude_reviewed  — skip files already carrying a review_opus verdict
+    """
     pool: dict[str, list] = {}
     for loc in locales:
         entries = status.get(loc, {})
@@ -121,6 +154,10 @@ def build_pool(status: dict, locales: list[str], min_lines: int) -> dict:
             if e.get("validation") != "PASS":
                 continue
             if e.get("lint") not in ("CLEAN", "WARNINGS"):
+                continue
+            if sections and not rel.startswith(sections):
+                continue
+            if exclude_reviewed and e.get("review_opus"):
                 continue
             tr = _tr_path(loc, rel)
             if not tr.exists():
@@ -133,13 +170,15 @@ def build_pool(status: dict, locales: list[str], min_lines: int) -> dict:
                 continue
             if not is_fresh(loc, rel):
                 continue
+            if leak_clean and _leak_count(text) > 0:
+                continue
             eligible.append((rel, section_of(rel), lines))
         if eligible:
             pool[loc] = eligible
     return pool
 
 
-def draw(pool: dict, per_locale: int, seed: int) -> list[dict]:
+def draw(pool: dict, per_locale: int, seed: int, focus: str | None = None) -> list[dict]:
     """Stratified within locale: round-robin across sections, seeded-random
     within each section bucket. Reproducible for a given (pool, seed)."""
     rng = random.Random(seed)
@@ -162,7 +201,7 @@ def draw(pool: dict, per_locale: int, seed: int) -> list[dict]:
                 picked.append(buckets[sec].pop())
             i += 1
         for rel, sec, lines in picked:
-            sample.append({
+            rec = {
                 "locale": loc,
                 "rel": rel,
                 "section": sec,
@@ -170,7 +209,10 @@ def draw(pool: dict, per_locale: int, seed: int) -> list[dict]:
                 "locale_name": LOCALE_NAME.get(loc, loc),
                 "register": REGISTER.get(loc, "informal register"),
                 "tier3_verdict": _STATUS_CACHE.get(loc, {}).get(rel, {}).get("review", "?"),
-            })
+            }
+            if focus:
+                rec["focus"] = focus
+            sample.append(rec)
     return sample
 
 
@@ -189,6 +231,14 @@ def main():
                     help="skip stubs shorter than this (default 40)")
     ap.add_argument("--include-dialects", action="store_true",
                     help="also sample the 9 German dialects (default: main 17 only)")
+    ap.add_argument("--sections", default=None,
+                    help="comma-separated section prefixes to restrict to "
+                         "(e.g. 'learning/courses/,learning/modules/')")
+    ap.add_argument("--leak-clean", action="store_true",
+                    help="only files with 0 capitalized-English leaks — isolates "
+                         "Opus on semantic drift, not leakage (the 'clean-file' run)")
+    ap.add_argument("--exclude-reviewed", action="store_true",
+                    help="skip files already carrying a review_opus verdict")
     ap.add_argument("--out", help="write sample JSON here")
     ap.add_argument("--print", action="store_true", dest="do_print",
                     help="print the sample to stdout")
@@ -201,14 +251,21 @@ def main():
     _STATUS_CACHE.update(status)
 
     locales = MAIN_LOCALES + (DIALECTS if args.include_dialects else [])
-    pool = build_pool(status, locales, args.min_lines)
+    sections = tuple(s for s in (args.sections or "").split(",") if s) or None
+    pool = build_pool(status, locales, args.min_lines, sections=sections,
+                      leak_clean=args.leak_clean,
+                      exclude_reviewed=args.exclude_reviewed)
     eligible_total = sum(len(v) for v in pool.values())
 
-    sample = draw(pool, args.per_locale, args.seed)
+    # In leak-clean mode, leakage/terminology is pre-filtered, so tell the agent
+    # to spend its read on the irreducible class: semantic drift + hallucination.
+    focus = "drift" if args.leak_clean else None
+    sample = draw(pool, args.per_locale, args.seed, focus=focus)
 
     payload = {
         "seed": args.seed,
         "per_locale": args.per_locale,
+        "mode": "leak-clean-drift" if args.leak_clean else "general",
         "eligible_total": eligible_total,
         "sample_size": len(sample),
         "files": sample,

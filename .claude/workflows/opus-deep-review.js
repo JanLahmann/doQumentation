@@ -65,7 +65,23 @@ const SCHEMA = {
 }
 
 function promptFor(f) {
-  return `You are a senior native-speaker technical editor for ${f.locale_name} (${f.locale}), reviewing Qiskit / quantum-computing documentation in the doQumentation repo (root: the current working directory).
+  // In leak-clean "drift" mode the sample is pre-filtered to be terminology/
+  // leakage-clean, so the irreducible question is: does it MISLEAD? Sharpen the
+  // agent onto semantic drift + hallucination and tell it not to spend the read
+  // re-confirming cosmetic polish.
+  const driftFocus = f.focus === 'drift' ? `
+
+FOCUS FOR THIS RUN: this file was PRE-SELECTED as terminology- and leakage-clean
+(a detector already confirmed no capitalized-English leaks). So do NOT spend your
+read hunting polish/consistency — those are handled elsewhere. Your ONE job here
+is to determine whether the translation would MISLEAD a learner: semantic drift
+(inverted condition/negation, swapped quantity, softened/strengthened claim,
+example that no longer matches its setup, dropped caveat) or hallucination
+(a fluent sentence asserting something NOT in the source). A file that is merely
+a bit stiff or has an isolated awkward phrase but is MEANING-FAITHFUL is a PASS
+here — reserve MINOR/FAIL for genuine meaning problems. Read slowly for MEANING,
+paragraph against paragraph, especially the last 40%.` : ''
+  return `You are a senior native-speaker technical editor for ${f.locale_name} (${f.locale}), reviewing Qiskit / quantum-computing documentation in the doQumentation repo (root: the current working directory).${driftFocus}
 
 Read BOTH files in full:
   English source:  docs/${f.rel}
