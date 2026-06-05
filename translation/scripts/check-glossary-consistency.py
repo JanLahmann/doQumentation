@@ -77,19 +77,29 @@ _LINK_TARGET = re.compile(r"\]\([^)]*\)")
 _PATH_TOKEN = re.compile(r"/?(?:docs|guides|tutorials|learning|api|images)/\S*")
 
 
+def _blank_keep_newlines(m) -> str:
+    """Replace a matched span with a space, but PRESERVE its newlines so line
+    numbers stay aligned (critical: fix-glossary-leaks.py zips raw vs prose
+    lines, so any span that collapses newlines would shift every line below it
+    and skip valid prose — the multi-line-HTML-tag misalignment bug)."""
+    return " " + "\n" * m.group(0).count("\n")
+
+
 def to_prose(text: str) -> str:
-    """Strip everything that isn't natural-language prose, preserving line
-    numbers (replace stripped spans with same-length blanks where feasible)."""
+    """Strip everything that isn't natural-language prose, PRESERVING line
+    numbers — every substitution keeps the same newline count so a downstream
+    per-line raw↔prose zip stays aligned."""
     text = _FRONTMATTER.sub(lambda m: "\n" * m.group(0).count("\n"), text)
     text = _FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
     text = _MATH_BLOCK.sub(lambda m: "\n" * m.group(0).count("\n"), text)
-    text = _IMPORT.sub("", text)
-    text = _ANCHOR.sub(" ", text)
+    # _IMPORT is line-anchored (MULTILINE, no newline in match) → blank in place.
+    text = _IMPORT.sub(lambda m: " " * len(m.group(0)), text)
+    text = _ANCHOR.sub(_blank_keep_newlines, text)
     text = _LINK_TARGET.sub("]", text)   # keep the ] so link text stays a word
     text = _PATH_TOKEN.sub(" ", text)
-    text = _INLINE_CODE.sub(" ", text)
-    text = _MATH_INLINE.sub(" ", text)
-    text = _HTML_TAG.sub(" ", text)
+    text = _INLINE_CODE.sub(_blank_keep_newlines, text)
+    text = _MATH_INLINE.sub(_blank_keep_newlines, text)
+    text = _HTML_TAG.sub(_blank_keep_newlines, text)  # tags can span lines
     text = _URL.sub(" ", text)
     return text
 
