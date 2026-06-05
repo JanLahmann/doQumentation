@@ -203,28 +203,39 @@ def file_summary(rel: str, result: dict) -> dict:
 # --init: scaffold a glossary from the corpus's own majority usage
 # ---------------------------------------------------------------------------
 
-# Seed concepts: (concept, [candidate target renderings], [leaked EN forms]).
-# The script picks 'preferred' = most frequent candidate across the locale,
-# the rest become 'variants'. Hand-edit the result before trusting it.
+# Seed concepts: (concept, [candidate TARGET-LANGUAGE renderings], [leaked EN]).
+# IMPORTANT: candidates must be genuine target-language renderings — do NOT list
+# the English word itself (e.g. "circuit"/"gate"): lowercase English in prose is
+# code-identifier noise / leak, not a rendering, and "get" is the English verb.
+# The scaffold picks 'preferred' = most frequent candidate; hand-review after.
 SEED_CONCEPTS = {
-    "gate":    (["puerta", "compuerta", "porta", "Gatter", "Gatter", "вентиль", "гейт",
-                 "ворота", "brama", "bramka", "hradlo", "brána", "poartă", "get",
-                 "게이트", "ゲート", "بوابة", "שער"], ["Gate", "Gates"]),
-    "circuit": (["circuito", "circuit", "Schaltkreis", "schemat", "obwód", "obvod",
-                 "circuit", "ланцюг", "коло", "litar", "sirkuit", "回路", "회로",
+    "gate":    (["puerta", "compuerta", "porta", "gatter", "вентиль", "гейт",
+                 "ворота", "brama", "bramka", "hradlo", "brána", "poartă",
+                 "게이트", "ゲート", "بوابة", "שער", "วงจรลอจิก"], ["Gate", "Gates"]),
+    "circuit": (["circuito", "schaltkreis", "schemat", "obwód", "obvod",
+                 "ланцюг", "коло", "litar", "sirkuit", "回路", "회로",
                  "วงจร", "دائرة", "מעגל"], ["Circuit", "Circuits"]),
 }
+
+# Tokens that are NEVER valid target renderings (English verbs / code noise that
+# survive prose-stripping). Excluded from scaffold candidate selection.
+_SCAFFOLD_NOISE = {"get", "circuit", "circuits", "gate", "gates", "porta"}
+# (porta is ambiguous: real Italian "gate" but also Latin/PT "door"/code — keep
+#  it as an it candidate only; the noise set is applied per non-it locale below.)
 
 
 def init_glossary(locale: str) -> None:
     """Scaffold translation/glossary/<locale>.json from majority usage. The
     output is a STARTING POINT — review/edit before relying on it."""
     counts = {c: Counter() for c in SEED_CONCEPTS}
+    noise = _SCAFFOLD_NOISE - ({"porta"} if locale == "it" else set())
     for rel, p in iter_files(locale):
         prose = to_prose(p.read_text(encoding="utf-8"))
         low = prose.lower()
         for concept, (cands, _leaked) in SEED_CONCEPTS.items():
             for cand in cands:
+                if cand.lower() in noise:
+                    continue
                 n = len(re.findall(rf"\b{re.escape(cand.lower())}\b", low))
                 if n:
                     counts[concept][cand.lower()] += n
