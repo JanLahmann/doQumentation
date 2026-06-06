@@ -64,19 +64,39 @@ _chk = _imp("glossary_check", "check-glossary-consistency.py")
 # renderings (lower-cased, stem-matched). We DON'T need the full set — we detect
 # divergence among whatever renderings actually appear. The seed gives the
 # script anchors; a per-locale glossary's `translate` concepts are merged in.
+# Concept → candidate renderings (lower-cased, stem-matched). The detector flags
+# a file when one rendering dominates the BODY and a DIFFERENT one dominates the
+# TAIL. The list is grounded in the terms the Opus reviews actually flagged as
+# body-vs-summary inconsistent (gate, backend, observable, operator, expectation
+# value, entanglement, Hamiltonian, ground state, variational, ansatz). Add a
+# rendering here when a review names a new divergent form.
 SEED_RENDERINGS = {
-    # English concept : known candidate renderings across locales (partial)
     "variational": ["variational", "variazional", "variacion", "variacij",
-                    "التباديلي", "التبايني", "التباينية", "التبايينية",
+                    "التباديلي", "التبايني", "التباينية", "التبايينية", "تغايري",
                     "変分", "변분", "וריאציוני", "wariacyjn", "variațional"],
     "observable": ["observable", "osservabil", "observ", "rascati", "rascáti",
                    "boleh cerap", "pemboleh ukur", "مرصود", "رصدي", "مشاهد",
-                   "オブザーバブル", "観測量", "관측가능량", "可観測量", "מצפה"],
+                   "مؤثر قابل للرصد", "オブザーバブル", "観測量", "관측가능량",
+                   "可観測量", "מצפה", "פעיל נצפה"],
     "operator": ["operator", "operador", "operatore", "operatör", "מפעיל",
-                 "مؤثر", "مشغل", "pengendali", "演算子", "연산자", "оператор"],
+                 "مؤثر", "مشغل", "معامل", "pengendali", "演算子", "연산자", "оператор"],
     "ground state": ["ground state", "estado fundamental", "stato fondamentale",
-                     "grundzustand", "bardzo", "stan podstawowy",
-                     "الحالة الأساسية", "기저", "바닥", "基底状態"],
+                     "grundzustand", "stan podstawowy", "keadaan tanah",
+                     "الحالة الأساسية", "الحالة الأرضية", "기저", "바닥", "基底状態"],
+    # added from this window's FAIL notes (the dominant flagged terms):
+    "hamiltonian": ["hamiltonian", "hamiltoniano", "hamiltonien", "hamiltonijan",
+                    "هاملتون", "هاميلتوني", "هاملتوني", "המילטוניאן", "ハミルトニアン",
+                    "해밀토니안", "гамільтоніан"],
+    "backend": ["backend", "الخلفية", "серверна частина", "zaplecze"],
+    "expectation value": ["expectation value", "valor esperado", "valore atteso",
+                          "wartość oczekiwana", "قيمة التوقع", "القيمة المتوقعة",
+                          "ערך תוחלת", "기댓값"],
+    "entanglement": ["entanglement", "entrelazamiento", "intreccio", "splątanie",
+                     "provázání", "התпреплитання", "التشابك", "تشابك", "כיפול",
+                     "もつれ", "얽힘", "заплутаність"],
+    "ansatz": ["ansatz", "ansaz", "الأنساتز", "أنساتز", "안사츠", "앤사츠"],
+    "optimizer": ["optimizer", "optimizador", "ottimizzatore", "optymalizator",
+                  "최적화기", "최적화", "옵티마이저"],
 }
 
 
