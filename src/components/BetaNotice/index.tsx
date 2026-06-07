@@ -4,7 +4,7 @@ import Translate, {translate} from '@docusaurus/Translate';
 
 const STORAGE_KEY = 'dq-beta-notice-dismissed';
 
-function BetaNoticeBanner(): JSX.Element | null {
+function BetaNoticeBanner(): React.JSX.Element | null {
   const [dismissed, setDismissed] = useState(
     () => sessionStorage.getItem(STORAGE_KEY) === '1',
   );
@@ -45,7 +45,7 @@ function BetaNoticeBanner(): JSX.Element | null {
   );
 }
 
-export default function BetaNotice(): JSX.Element {
+export default function BetaNotice(): React.JSX.Element {
   return (
     <BrowserOnly>{() => <BetaNoticeBanner />}</BrowserOnly>
   );

@@ -65,7 +65,7 @@ function extractTitle(metastring?: string): string | undefined {
   return match ? match[1] : undefined;
 }
 
-export default function CodeBlockWrapper(props: Props): JSX.Element {
+export default function CodeBlockWrapper(props: Props): React.JSX.Element {
   const { children, metastring } = props;
   const language = getLanguage(props);
 

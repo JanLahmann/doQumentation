@@ -14,7 +14,7 @@ import {
   removeBookmark,
 } from '../../config/preferences';
 
-export default function BookmarkButton(): JSX.Element {
+export default function BookmarkButton(): React.JSX.Element {
   const [bookmarked, setBookmarked] = useState(false);
 
   useEffect(() => {

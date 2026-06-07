@@ -68,7 +68,7 @@ function PageDates({entry, locale, currentPath}: {
   entry: PageEntry;
   locale: string;
   currentPath: string;
-}): JSX.Element | null {
+}): React.JSX.Element | null {
   const originalUrl = getOriginalPageUrl(currentPath);
   const enUrl =
     locale !== 'en'
@@ -191,7 +191,7 @@ function isFeedbackPage(relPath: string | null): boolean {
   return relPath.startsWith('tutorials/') || relPath.startsWith('learning/');
 }
 
-export default function DocItemFooter(props: Props): JSX.Element {
+export default function DocItemFooter(props: Props): React.JSX.Element {
   const {metadata} = useDoc();
   const data = usePluginData('page-dates') as PageDatesData | undefined;
   const {i18n} = useDocusaurusContext();

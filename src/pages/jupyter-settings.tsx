@@ -147,7 +147,7 @@ const FALLBACK_BACKENDS = [
   { name: 'FakeMarrakesh', qubits: 156 },
 ];
 
-export default function JupyterSettings(): JSX.Element {
+export default function JupyterSettings(): React.JSX.Element {
   const [config, setConfig] = useState<JupyterConfig | null>(null);
   const [customUrl, setCustomUrl] = useState('');
   const [customToken, setCustomToken] = useState('');

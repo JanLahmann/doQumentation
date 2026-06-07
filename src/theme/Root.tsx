@@ -2,7 +2,7 @@ import React from 'react';
 import BetaNotice from '@site/src/components/BetaNotice';
 import TranslationFeedback from '@site/src/components/TranslationFeedback';
 
-export default function Root({children}: {children: React.ReactNode}): JSX.Element {
+export default function Root({children}: {children: React.ReactNode}): React.JSX.Element {
   return (
     <>
       <BetaNotice />

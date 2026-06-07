@@ -20,7 +20,7 @@ import { PAGE_VISITED_EVENT } from '../../../clientModules/pageTracker';
 
 type Props = React.ComponentProps<typeof OriginalLink>;
 
-export default function DocSidebarItemLink(props: Props): JSX.Element {
+export default function DocSidebarItemLink(props: Props): React.JSX.Element {
   const [visited, setVisited] = useState(false);
   const [executed, setExecuted] = useState(false);
 
@@ -56,7 +56,7 @@ export default function DocSidebarItemLink(props: Props): JSX.Element {
   const isActive = props.activePath?.endsWith(href || '__none__');
 
   // Determine indicator state
-  let indicator: JSX.Element | null = null;
+  let indicator: React.JSX.Element | null = null;
 
   if (isNotebook) {
     if (executed) {

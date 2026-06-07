@@ -263,7 +263,7 @@ function EncryptedUmamiLink() {
   );
 }
 
-export default function AdminPage(): JSX.Element {
+export default function AdminPage(): React.JSX.Element {
   return (
     <Layout title="Admin" description="Admin reference page">
       {/* Docusaurus 3.x Layout dropped the `noIndex` prop — set robots noindex

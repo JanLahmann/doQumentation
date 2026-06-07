@@ -70,7 +70,7 @@ function buildSiteIssueUrl(pagePath: string): string {
   return `${DOQ_REPO}/issues/new?body=${encodeURIComponent(body)}`;
 }
 
-export default function EditThisPage(props: Props): JSX.Element {
+export default function EditThisPage(props: Props): React.JSX.Element {
   const data = usePluginData('page-dates') as PageDatesData | undefined;
   const relPath = editUrlToRelPath(props.editUrl);
   const entry = relPath ? data?.pages?.[relPath] : undefined;

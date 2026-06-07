@@ -31,7 +31,7 @@ function FeatureCard({ title, description, link, linkLabel }: FeatureCardProps) 
   );
 }
 
-export default function Features(): JSX.Element {
+export default function Features(): React.JSX.Element {
   return (
     <Layout
       title={translate({id: 'features.title', message: 'Features'})}
