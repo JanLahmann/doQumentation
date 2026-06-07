@@ -33,7 +33,7 @@ function collectHrefs(items: SidebarItem[]): string[] {
 
 type Props = React.ComponentProps<typeof OriginalCategory>;
 
-export default function DocSidebarItemCategory(props: Props): JSX.Element {
+export default function DocSidebarItemCategory(props: Props): React.JSX.Element {
   const [visitedCount, setVisitedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);

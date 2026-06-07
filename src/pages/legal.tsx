@@ -6,7 +6,7 @@
 import React from 'react';
 import Layout from '@theme/Layout';
 
-export default function LegalPage(): JSX.Element {
+export default function LegalPage(): React.JSX.Element {
   return (
     <Layout title="Legal / Impressum" description="Legal notice and privacy policy">
       <main className="container margin-vert--lg" style={{ maxWidth: '800px' }}>

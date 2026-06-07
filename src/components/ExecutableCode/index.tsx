@@ -1479,7 +1479,7 @@ export default function ExecutableCode({
   notebookPath,
   title,
   showLineNumbers = true,
-}: ExecutableCodeProps): JSX.Element | null {
+}: ExecutableCodeProps): React.JSX.Element | null {
   const { i18n: { currentLocale } } = useDocusaurusContext();
   const location = useLocation();
 

@@ -18,7 +18,7 @@ function timeAgo(timestamp: number): string {
   return `${days}d ago`;
 }
 
-export default function ResumeCard(): JSX.Element | null {
+export default function ResumeCard(): React.JSX.Element | null {
   const [lastPage, setLastPage] = useState<LastPage | null>(null);
 
   useEffect(() => {

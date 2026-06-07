@@ -17,7 +17,7 @@ function timeAgo(timestamp: number): string {
   return `${days}d ago`;
 }
 
-export default function RecentPages(): JSX.Element | null {
+export default function RecentPages(): React.JSX.Element | null {
   const [pages, setPages] = useState<RecentPage[]>([]);
 
   useEffect(() => {

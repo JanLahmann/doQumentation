@@ -12,7 +12,7 @@ import BrowserOnly from '@docusaurus/BrowserOnly';
 import {translate} from '@docusaurus/Translate';
 import {trackEvent} from '../../config/analytics';
 
-function FeedbackWidgetClient(): JSX.Element {
+function FeedbackWidgetClient(): React.JSX.Element {
   const [submitted, setSubmitted] = useState(false);
 
   const handleFeedback = (rating: 'helpful' | 'not_helpful') => {
@@ -63,6 +63,6 @@ function FeedbackWidgetClient(): JSX.Element {
   );
 }
 
-export default function FeedbackWidget(): JSX.Element {
+export default function FeedbackWidget(): React.JSX.Element {
   return <BrowserOnly>{() => <FeedbackWidgetClient />}</BrowserOnly>;
 }

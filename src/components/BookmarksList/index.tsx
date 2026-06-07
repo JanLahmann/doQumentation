@@ -11,7 +11,7 @@ import {
   type Bookmark,
 } from '../../config/preferences';
 
-export default function BookmarksList(): JSX.Element | null {
+export default function BookmarksList(): React.JSX.Element | null {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
 
   useEffect(() => {

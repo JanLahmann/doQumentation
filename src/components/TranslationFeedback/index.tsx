@@ -6,7 +6,7 @@ import {trackEvent} from '../../config/analytics';
 
 const STORAGE_KEY = 'dq-translation-feedback';
 
-function TranslationBanner(): JSX.Element | null {
+function TranslationBanner(): React.JSX.Element | null {
   const {i18n: {currentLocale}} = useDocusaurusContext();
 
   const [state, setState] = useState<'open' | 'thanks' | 'dismissed'>(() => {
@@ -86,6 +86,6 @@ function TranslationBanner(): JSX.Element | null {
   );
 }
 
-export default function TranslationFeedback(): JSX.Element {
+export default function TranslationFeedback(): React.JSX.Element {
   return <BrowserOnly>{() => <TranslationBanner />}</BrowserOnly>;
 }
