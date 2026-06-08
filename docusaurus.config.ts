@@ -127,7 +127,11 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'cs'],
+    // Order matters: the language-selector dropdown renders in THIS order
+    // (it filters i18n.locales, it does not re-sort by visibleLocales). The 17
+    // maintained locales come first in the desired display order; the 9 German
+    // dialects follow (built/deployed but hidden from the selector).
+    locales: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'uk', 'cs', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
@@ -167,8 +171,8 @@ const config: Config = {
   // deployed but intentionally hidden from the selector (not actively maintained).
   customFields: {
     visibleLocales: [
-      'en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl',
-      'ar', 'he', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'cs',
+      'en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'tl', 'ar',
+      'he', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'uk', 'cs',
     ],
     // SHA-256 hash of ADMIN_PASSWORD env var, injected at build time.
     // If not set, admin page is unprotected (local dev convenience).
