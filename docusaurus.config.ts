@@ -162,8 +162,14 @@ const config: Config = {
   // Locales shown in the language selector dropdown.
   // All locales in i18n.locales are still built and deployed — this only controls UI visibility.
   // Remove or set to undefined to show all locales.
+  // This is the set of 17 maintained locales (EN + 16 others). The 9 German
+  // dialects (swg, bad, bar, ksh, nds, gsw, sax, bln, aut) are still built and
+  // deployed but intentionally hidden from the selector (not actively maintained).
   customFields: {
-    visibleLocales: ['en', 'de', 'es'],
+    visibleLocales: [
+      'en', 'de', 'es', 'uk', 'fr', 'it', 'pt', 'ja', 'tl',
+      'ar', 'he', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'cs',
+    ],
     // SHA-256 hash of ADMIN_PASSWORD env var, injected at build time.
     // If not set, admin page is unprotected (local dev convenience).
     adminPasswordHash: process.env.ADMIN_PASSWORD
