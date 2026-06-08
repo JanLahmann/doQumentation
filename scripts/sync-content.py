@@ -2904,12 +2904,11 @@ def _git_file_sha(repo: Path, path: str, ref: str = "HEAD") -> str:
 def _ibm_upstream_ref(upstream_repo: Path) -> Optional[str]:
     """Return the ref to query for true IBM-side per-file history.
 
-    On the current upstream-Qiskit/documentation submodule, `HEAD` is
-    already the right ref — this function returns None and callers fall
-    back to HEAD. The legacy `ibm/main` ref is preserved for environments
-    that still have an old JanLahmann/Qiskit-documentation fork clone on
-    disk (whose HEAD is sync-flattened); _ensure_ibm_history sets that
-    up. Returns None if no `ibm/main` exists; the caller defaults to HEAD.
+    On the canonical Qiskit/documentation submodule, `HEAD` is already the
+    right ref — this function returns None and callers fall back to HEAD.
+    The optional `ibm/main` ref is only consulted for legacy on-disk clones
+    whose HEAD is sync-flattened (set up by _ensure_ibm_history); returns
+    None if no `ibm/main` exists, and the caller defaults to HEAD.
     """
     res = run_command(
         ["git", "rev-parse", "--verify", "--quiet", "refs/remotes/ibm/main"],

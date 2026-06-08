@@ -2,7 +2,7 @@
 """Sync binder/jupyter-requirements*.txt from upstream.
 
 Reads the canonical requirements from
-JanLahmann/Qiskit-documentation/scripts/nb-tester/requirements.txt
+Qiskit/documentation/scripts/nb-tester/requirements.txt
 and applies exception rules for our multi-arch Docker images:
   - Drop sys.platform markers (Linux-only containers)
   - Add pylatexenc (needed for LaTeX in Qiskit visualizations)
@@ -22,7 +22,7 @@ import urllib.request
 from pathlib import Path
 
 UPSTREAM_URL = (
-    "https://raw.githubusercontent.com/JanLahmann/Qiskit-documentation"
+    "https://raw.githubusercontent.com/Qiskit/documentation"
     "/main/scripts/nb-tester/requirements.txt"
 )
 
@@ -41,7 +41,7 @@ CROSS_PLATFORM_HEADER = """\
 # DO NOT EDIT MANUALLY - changes will be overwritten!
 #
 # Full Qiskit dependencies for Docker / local Jupyter (both amd64 and arm64).
-# Synced with JanLahmann/Qiskit-documentation/scripts/nb-tester/requirements.txt.
+# Synced with Qiskit/documentation/scripts/nb-tester/requirements.txt.
 # amd64-only extras are in jupyter-requirements-amd64.txt.
 # Exceptions vs upstream:
 #   - pylatexenc added (needed for LaTeX in Qiskit visualizations)

@@ -413,7 +413,6 @@ Moved to [`PROJECT_HANDOFF_ARCHIVE.md`](./PROJECT_HANDOFF_ARCHIVE.md) to keep th
 
 - **RasQberry:** https://github.com/JanLahmann/RasQberry-Two
 - **Content source (upstream):** https://github.com/Qiskit/documentation
-- **Content source (legacy fork):** https://github.com/JanLahmann/Qiskit-documentation
 - **IBM Quantum:** https://ibm.com/quantum
 - **IBM Quantum Platform:** https://quantum.cloud.ibm.com
 - **Docusaurus:** https://docusaurus.io

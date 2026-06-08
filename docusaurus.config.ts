@@ -424,8 +424,11 @@ const config: Config = {
         // Default Jupyter server URL (overridden at runtime)
         defaultUrl: 'http://localhost:8888',
         defaultToken: 'rasqberry',
-        // Binder URL for GitHub Pages fallback
-        binderUrl: 'https://mybinder.org/v2/gh/JanLahmann/Qiskit-documentation/main',
+        // Binder URL for GitHub Pages fallback. Points at the canonical IBM
+        // upstream (the same repo the upstream-docs submodule tracks). The live
+        // execution paths use the QuBins image / CE backend (see
+        // src/config/jupyter.ts); this is only the static-site fallback.
+        binderUrl: 'https://mybinder.org/v2/gh/Qiskit/documentation/main',
       },
     },
   } satisfies Preset.ThemeConfig,
