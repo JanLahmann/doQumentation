@@ -98,6 +98,22 @@ The Binder image and our CE image are **independently pinned** and match at
   minor-tagged images (`2.4-xl`, not `2.4.1-xl`), so the CI guard can't (and
   shouldn't) require patch-exact parity. Minor-level is the achievable contract.
 
+## QuBins image security posture (verified 2026-06-09)
+
+Relying on QuBins for the Binder backend is sound — it's scanned + signed to the
+same bar as our CE image, not an unscanned black box. From their
+`build-matrix.yml` + README + `.trivyignore`:
+- **Trivy-scanned** — HIGH/CRITICAL (with fixes) build gate, same severity as ours.
+- **cosign-signed** — every multi-arch manifest, keyless OIDC; `cosign verify
+  ghcr.io/qubins/images:2.4-xl` works.
+- Base image force-pulled on rebuild; SBOM + smoke gate before sign.
+- They waive the **same transitive CVEs we do**, same reasoning: CVE-2026-25087
+  (pyarrow, serverless caps <22) and CVE-2026-27601 (vendored underscore.js).
+- Caveat: mybinder.org rebuilds from the `FROM ghcr.io/qubins/images` stub and
+  does NOT re-verify the cosign signature at launch (no federation does). The
+  guarantee is "QuBins publishes a scanned+signed image," not launch-time
+  attestation — inherent to mybinder, not QuBins-specific.
+
 ## Recommended next step
 
 Two separable pieces:
