@@ -41,6 +41,11 @@ import {
   getAvailableBackends,
   getBackendOverride,
   setBackendOverride,
+  getQiskitTag,
+  setQiskitTag,
+  SUPPORTED_QISKIT_TAGS,
+  DEFAULT_QISKIT_TAG,
+  type QiskitTag,
   getWorkshopPool,
   saveWorkshopPool,
   clearWorkshopPool,
@@ -198,6 +203,7 @@ export default function JupyterSettings(): React.JSX.Element {
   // Backend selection state
   const [availableBackends, setAvailableBackends] = useState<AvailableBackend[]>([]);
   const [backendOverride, setBackendOverrideState] = useState<JupyterConfig['environment'] | null>(null);
+  const [qiskitTag, setQiskitTagState] = useState<QiskitTag>(DEFAULT_QISKIT_TAG);
 
   // Load current config on mount
   useEffect(() => {
@@ -250,6 +256,7 @@ export default function JupyterSettings(): React.JSX.Element {
     // Load backend selection state
     setAvailableBackends(getAvailableBackends());
     setBackendOverrideState(getBackendOverride());
+    setQiskitTagState(getQiskitTag());
 
     // Load learning progress
     setProgressStats(getProgressStats());
@@ -317,6 +324,16 @@ export default function JupyterSettings(): React.JSX.Element {
     clearBinderSession();
     setConfig(detectJupyterConfig());
     setAvailableBackends(getAvailableBackends());
+  };
+
+  const handleQiskitTagChange = (tag: QiskitTag) => {
+    setQiskitTagState(tag);
+    setQiskitTag(tag);
+    // The Binder image changed — drop any running session so the next Run
+    // builds against the newly-selected Qiskit version.
+    cancelBinderBuild();
+    clearBinderSession();
+    setConfig(detectJupyterConfig());
   };
 
   const handleSave = () => {
@@ -596,6 +613,38 @@ export default function JupyterSettings(): React.JSX.Element {
                   </label>
                 ))}
               </div>
+
+              {/* Qiskit version selector — only for the Binder (github-pages)
+                  backend, which runs a pre-built QuBins image whose tag encodes
+                  the Qiskit level. CE/local bake in / control their own version. */}
+              {(backendOverride === 'github-pages' ||
+                (backendOverride === null && config?.environment === 'github-pages')) && (
+                <div className="jupyter-settings__field" style={{ marginTop: '1rem' }}>
+                  <label className="jupyter-settings__label" htmlFor="qiskit-version">
+                    <Translate id="settings.qiskit.label">Qiskit version (Binder)</Translate>
+                  </label>
+                  <select
+                    id="qiskit-version"
+                    className="jupyter-settings__input"
+                    value={qiskitTag}
+                    onChange={(e) => handleQiskitTagChange(e.target.value as QiskitTag)}
+                  >
+                    {SUPPORTED_QISKIT_TAGS.map((tag) => {
+                      const ver = tag.replace('-xl', '');
+                      return (
+                        <option key={tag} value={tag}>
+                          {`Qiskit ${ver}`}{tag === DEFAULT_QISKIT_TAG ? ' ✓' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--ifm-color-content-secondary)', marginTop: '0.35rem' }}>
+                    <Translate id="settings.qiskit.help">
+                      Choose which Qiskit version the Binder backend runs. The default (✓) matches doQumentation's current pin. Pick an older version if a notebook needs it.
+                    </Translate>
+                  </p>
+                </div>
+              )}
 
             </>
             );

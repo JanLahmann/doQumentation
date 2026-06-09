@@ -56,6 +56,22 @@ const STORAGE_KEY_CE_SAVED_AT = 'doqumentation_ce_saved_at';
 // Backend override (user-selected execution backend)
 const STORAGE_KEY_BACKEND_OVERRIDE = 'doqumentation_backend_override';
 
+// Qiskit version for the Binder (github-pages) backend. Selects which
+// pre-built QuBins image tag (https://github.com/QuBins/qiskit-images) the
+// mybinder URL points at. Only affects the Binder tier; CE/local are baked
+// in / user-controlled. null = use the default (current) tag.
+const STORAGE_KEY_QISKIT_VERSION = 'doqumentation_qiskit_version';
+// Allow-list of exposed QuBins image tags (current + 2 prior, -xl size).
+// Pre-2.0 Qiskit APIs differ enough that the tutorials won't run, so we don't
+// expose older.
+export const SUPPORTED_QISKIT_TAGS = ['2.4-xl', '2.3-xl', '2.2-xl'] as const;
+export type QiskitTag = typeof SUPPORTED_QISKIT_TAGS[number];
+// Default Binder image tag = current Qiskit level. MUST stay in lockstep with
+// binder/jupyter-requirements.txt's qiskit[all] pin (e.g. ~=2.4.x ⇒ '2.4-xl').
+// A CI guard (ci.yml "qiskit-lockstep") fails the build if they diverge, so the
+// next dep-sync bump can't silently leave Binder on an older Qiskit.
+export const DEFAULT_QISKIT_TAG: QiskitTag = '2.4-xl';
+
 // Workshop pool (multiple CE instances for classroom use)
 const STORAGE_KEY_WORKSHOP_POOL = 'doqumentation_workshop_pool';
 const SESSION_KEY_WORKSHOP_ASSIGNED = 'dq-workshop-assigned';
@@ -75,7 +91,7 @@ export const ALL_JUPYTER_KEYS = [
   STORAGE_KEY_ACTIVE_MODE, STORAGE_KEY_EXECUTION_MODE, STORAGE_KEY_SUPPRESS_WARNINGS,
   STORAGE_KEY_CE_URL, STORAGE_KEY_CE_TOKEN, STORAGE_KEY_CE_SAVED_AT,
   STORAGE_KEY_BACKEND_OVERRIDE, STORAGE_KEY_IBM_PLAN,
-  STORAGE_KEY_WORKSHOP_POOL,
+  STORAGE_KEY_WORKSHOP_POOL, STORAGE_KEY_QISKIT_VERSION,
 ];
 
 /** Metadata for an available backend shown in the backend selector UI. */
@@ -108,6 +124,30 @@ export function setBackendOverride(env: JupyterConfig['environment'] | null): vo
     removeItem(STORAGE_KEY_BACKEND_OVERRIDE);
   } else {
     setItem(STORAGE_KEY_BACKEND_OVERRIDE, env);
+  }
+}
+
+/**
+ * Get/set the user's chosen Qiskit version (QuBins image tag) for the Binder
+ * backend. null = use DEFAULT_QISKIT_TAG (the current version, kept in lockstep
+ * with binder/jupyter-requirements.txt). Validated against SUPPORTED_QISKIT_TAGS
+ * so a stale/invalid stored value can never produce a broken Binder URL.
+ */
+export function getQiskitTag(): QiskitTag {
+  if (typeof window === 'undefined') return DEFAULT_QISKIT_TAG;
+  const val = getItem(STORAGE_KEY_QISKIT_VERSION);
+  if (val && (SUPPORTED_QISKIT_TAGS as readonly string[]).includes(val)) {
+    return val as QiskitTag;
+  }
+  return DEFAULT_QISKIT_TAG;
+}
+
+export function setQiskitTag(tag: QiskitTag | null): void {
+  if (typeof window === 'undefined') return;
+  if (tag === null || tag === DEFAULT_QISKIT_TAG) {
+    removeItem(STORAGE_KEY_QISKIT_VERSION);
+  } else {
+    setItem(STORAGE_KEY_QISKIT_VERSION, tag);
   }
 }
 
@@ -239,10 +279,12 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
         token: '',
         thebeEnabled: true,
         labEnabled: false,
-        // QuBins 2.3-xl: pre-built ghcr.io/qubins/images:2.3-xl
-        // (https://github.com/QuBins/qiskit-images). Matches binder/jupyter-requirements.txt
-        // (qiskit[all]~=2.3.0). Bump in lockstep when doQumentation's Qiskit pin moves.
-        binderUrl: 'https://mybinder.org/v2/gh/QuBins/qiskit-images/2.3-xl',
+        // QuBins pre-built image (https://github.com/QuBins/qiskit-images).
+        // Tag = the user's chosen Qiskit version (Settings) or DEFAULT_QISKIT_TAG,
+        // which is kept in lockstep with binder/jupyter-requirements.txt's
+        // qiskit[all] pin (CI-enforced). getQiskitTag() validates against the
+        // allow-list, so this URL is always well-formed.
+        binderUrl: `https://mybinder.org/v2/gh/QuBins/qiskit-images/${getQiskitTag()}`,
         environment: 'github-pages',
       };
     }
