@@ -1,5 +1,6 @@
 # doQumentation — Open-source website for IBM Quantum's tutorials and learning content
 
+[![Qiskit Ecosystem](https://qisk.it/e-dd84980a)](https://qisk.it/e)
 [![Build and Deploy](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml/badge.svg)](https://github.com/JanLahmann/doQumentation/actions/workflows/deploy.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/Code-Apache%202.0-blue.svg)](LICENSE)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/Content-CC%20BY--SA%204.0-lightgrey.svg)](LICENSE-DOCS)
