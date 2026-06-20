@@ -147,6 +147,28 @@ def heading_needs_anchor(en_text: str, translated_text: str) -> bool:
     return en_slug != tr_slug
 
 
+def _jsx_container_line_indices(content: str) -> set:
+    """0-based line indices INSIDE a JSX container block
+    (<Accordion>/<AccordionItem>/<Tabs>/<TabItem>), ignoring code fences."""
+    opens = re.compile(r'<(Accordion|AccordionItem|Tabs|TabItem)\b')
+    closes = re.compile(r'</(Accordion|AccordionItem|Tabs|TabItem)>')
+    inside = set()
+    depth = 0
+    in_code = False
+    for i, line in enumerate(content.split('\n')):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if depth > 0:
+            inside.add(i)
+        depth += len(opens.findall(line)) - len(closes.findall(line))
+        if depth < 0:
+            depth = 0
+    return inside
+
+
 def fix_file(en_path: Path, translated_path: Path, apply: bool = False) -> dict:
     """Fix heading anchors in a single translated file.
 
@@ -189,12 +211,22 @@ def fix_file(en_path: Path, translated_path: Path, apply: bool = False) -> dict:
     tr_lines = tr_content.split('\n')
     changes_made = False
 
+    # Headings inside a JSX container (<Accordion>/<AccordionItem>/<Tabs>/
+    # <TabItem>) must NOT get an anchor: `{#foo}` there is parsed as a JS
+    # expression and breaks the MDX build, and EN never anchors them.
+    tr_jsx_lines = _jsx_container_line_indices(tr_content)
+
     # Match headings by position (1:1 correspondence)
     pairs = list(zip(en_headings, tr_headings))
 
     for en_h, tr_h in reversed(pairs):
         en_line_idx, _, en_prefix, en_text, _ = en_h
         tr_line_idx, _, tr_prefix, tr_text, tr_full_line = tr_h
+
+        # Exempt JSX-nested headings (see tr_jsx_lines above).
+        if tr_line_idx in tr_jsx_lines:
+            stats["skipped"] += 1
+            continue
 
         # Check level match
         if en_prefix != tr_prefix:
