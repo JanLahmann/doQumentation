@@ -1254,6 +1254,8 @@ def finalize_files(locale: str, rel_paths: list[str], output_dir: Path,
             _chain = (
                 lambda en, tr: syncer.fix_differing_code_blocks(en, tr),
                 lambda en, tr: syncer.fix_duplicate_trailing_section(en, tr),
+                lambda en, tr: syncer.fix_duplicate_adjacent_code_block(en, tr),
+                lambda en, tr: syncer.strip_jsx_heading_anchors(en, tr),
                 lambda en, tr: syncer.fix_missing_en_lines(en, tr),
                 lambda en, tr: syncer.fix_missing_reference_urls(en, tr),
                 lambda en, tr: syncer.fix_missing_pip_install(en, tr),

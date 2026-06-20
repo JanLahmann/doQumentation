@@ -697,13 +697,46 @@ def check_heading_count(en_content: str, tr_content: str) -> CheckResult:
                        f"{len(en_headings)} headings match")
 
 
+def jsx_container_line_set(content: str) -> set[int]:
+    """1-based line numbers that sit INSIDE a JSX container block
+    (<Accordion>/<AccordionItem>/<Tabs>/<TabItem>), ignoring code fences.
+
+    Headings inside these are exempt from the {#anchor} requirement: MDX parses
+    `{#foo}` as a JS expression there and the build fails ("Could not parse
+    expression with acorn"), and EN itself never anchors them. See
+    sync-translations.strip_jsx_heading_anchors / project_sync_c6874ac run."""
+    opens = re.compile(r'<(Accordion|AccordionItem|Tabs|TabItem)\b')
+    closes = re.compile(r'</(Accordion|AccordionItem|Tabs|TabItem)>')
+    inside = set()
+    depth = 0
+    in_code = False
+    for i, line in enumerate(content.split('\n')):
+        if line.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if depth > 0:
+            inside.add(i + 1)
+        depth += len(opens.findall(line)) - len(closes.findall(line))
+        if depth < 0:
+            depth = 0
+    return inside
+
+
 def check_heading_anchors(en_content: str, tr_content: str) -> CheckResult:
     en_headings = extract_headings(en_content)
     tr_headings = extract_headings(tr_content)
     details = []
+    en_jsx = jsx_container_line_set(en_content)
+    tr_jsx = jsx_container_line_set(tr_content)
 
     for idx, (en_h, tr_h) in enumerate(
             zip(en_headings, tr_headings)):
+        # Headings inside a JSX container must NOT carry an anchor (breaks MDX
+        # build) and EN never anchors them — exempt from the requirement.
+        if en_h[0] in en_jsx or tr_h[0] in tr_jsx:
+            continue
         en_slug = slugify(en_h[2])
         tr_text = tr_h[2]
         tr_slug = slugify(tr_text)

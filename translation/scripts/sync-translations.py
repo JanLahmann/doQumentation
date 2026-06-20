@@ -437,6 +437,96 @@ def fix_duplicate_trailing_section(en_content: str, tr_content: str) -> str | No
     return result
 
 # ---------------------------------------------------------------------------
+# Fix: Remove a code block that exactly duplicates the one right before it
+# ---------------------------------------------------------------------------
+
+def fix_duplicate_adjacent_code_block(en_content: str, tr_content: str) -> str | None:
+    """Delete a fenced code block in TR that is byte-identical to the code
+    block immediately preceding it (only blank lines between them).
+
+    Root cause this guards (sync c6874ac, de execute-dynamic-circuits.mdx): a
+    sub-agent inserts a code block (e.g. the doQumentation pip-install cell)
+    that ``fix_missing_pip_install`` also inserts, leaving two identical
+    consecutive blocks → the file has more ``` fences than EN → validation
+    "FAIL: Code blocks". Two identical back-to-back code blocks are never
+    intentional in this corpus, and we only fire when TR has MORE fence lines
+    than EN, so this can only ever bring TR's fence count back toward EN — it
+    can never delete a block EN legitimately has. Removes ONE duplicate per
+    call; the finalize chain iterates to a fixed point.
+    """
+    def fence_count(s: str) -> int:
+        return sum(1 for ln in s.split('\n') if ln.lstrip().startswith('```'))
+
+    if fence_count(tr_content) <= fence_count(en_content):
+        return None  # not over-fenced — nothing safe to remove
+
+    lines = tr_content.split('\n')
+    # Parse code blocks as (open_idx, close_idx) inclusive of fence lines.
+    blocks = []
+    i = 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith('```'):
+            start = i
+            i += 1
+            while i < len(lines) and not lines[i].lstrip().startswith('```'):
+                i += 1
+            blocks.append((start, i))  # i = closing fence (or EOF)
+            i += 1
+        else:
+            i += 1
+
+    for a in range(len(blocks) - 1):
+        s1, e1 = blocks[a]
+        s2, e2 = blocks[a + 1]
+        between = lines[e1 + 1:s2]
+        if between and not all(x.strip() == '' for x in between):
+            continue  # something real between the two blocks → not adjacent
+        if lines[s1:e1 + 1] == lines[s2:e2 + 1]:
+            # Drop the second block plus the blank lines separating them.
+            del lines[e1 + 1:e2 + 1]
+            return '\n'.join(lines)
+    return None
+
+# ---------------------------------------------------------------------------
+# Fix: Strip {#anchor} from headings inside JSX containers (break MDX/acorn)
+# ---------------------------------------------------------------------------
+
+def strip_jsx_heading_anchors(en_content: str, tr_content: str) -> str | None:
+    """Remove ``{#anchor}`` from any Markdown heading that sits INSIDE a JSX
+    container block (``<Accordion>``/``<AccordionItem>``/``<Tabs>``/
+    ``<TabItem>``). Inside JSX, ``{#foo}`` is parsed as a JS expression and
+    fails MDX compilation ("Could not parse expression with acorn") — the
+    build breaks even though validate/lint pass.
+
+    Root cause this guards (sync c6874ac, de latest-updates.mdx): a full
+    whole-file retranslation agent dutifully added an English-derived anchor to
+    every heading, including the ~50 headings nested in the "Earlier updates"
+    Accordion. EN never anchors headings inside JSX, so stripping there is
+    always correct; ``en_content`` is accepted only to match the fixer-chain
+    signature.
+    """
+    import re as _re
+    JSX_OPEN = _re.compile(r'<(Accordion|AccordionItem|Tabs|TabItem)\b')
+    JSX_CLOSE = _re.compile(r'</(Accordion|AccordionItem|Tabs|TabItem)>')
+    HDR_ANCHOR = _re.compile(r'^(\s*#{1,6}\s+.*?)\s*\{#[^}]+\}\s*$')
+
+    lines = tr_content.split('\n')
+    depth = 0
+    changed = False
+    for idx, ln in enumerate(lines):
+        opens = len(JSX_OPEN.findall(ln))
+        closes = len(JSX_CLOSE.findall(ln))
+        if depth > 0:
+            m = HDR_ANCHOR.match(ln)
+            if m:
+                lines[idx] = m.group(1)
+                changed = True
+        depth += opens - closes
+        if depth < 0:
+            depth = 0
+    return '\n'.join(lines) if changed else None
+
+# ---------------------------------------------------------------------------
 # Fix: Insert missing content lines from EN (e.g., new backends in index.mdx)
 # ---------------------------------------------------------------------------
 
