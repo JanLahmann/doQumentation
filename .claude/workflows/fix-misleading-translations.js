@@ -68,14 +68,24 @@ Return the structured object: locale="${f.locale}", file="${f.rel}", status (FIX
 // fixes target the same path), so concurrent edits don't race on the working
 // copy, and all fixes accumulate in the main tree for one review+commit.
 phase('Fix')
-const results = await parallel(input.map((f) => () =>
-  agent(promptFor(f), {
-    label: `fix:${f.locale}/${f.rel.split('/').pop()}`,
-    phase: 'Fix',
-    model: 'sonnet',
-    schema: SCHEMA,
-  })
-))
+// Throttle to <=7 concurrent agents. The 5h session limit can hit mid-run; with
+// a small in-flight batch only those <=7 are lost on a hit, and every completed
+// batch is preserved in `results` (vs. submitting all at once and losing the lot).
+const BATCH = 7
+const results = []
+for (let i = 0; i < input.length; i += BATCH) {
+  const slice = input.slice(i, i + BATCH)
+  log(`Fix batch ${Math.floor(i / BATCH) + 1}: files ${i + 1}-${i + slice.length} of ${input.length}`)
+  const r = await parallel(slice.map((f) => () =>
+    agent(promptFor(f), {
+      label: `fix:${f.locale}/${f.rel.split('/').pop()}`,
+      phase: 'Fix',
+      model: 'sonnet',
+      schema: SCHEMA,
+    })
+  ))
+  results.push(...r)
+}
 
 const ok = results.filter(Boolean)
 const fixed = ok.filter((r) => r.status === 'FIXED')
