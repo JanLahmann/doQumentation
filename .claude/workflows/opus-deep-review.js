@@ -124,14 +124,25 @@ function isPlaceholderNote(note) {
 // One Opus agent per file, all concurrent (capped by the runtime). Each returns
 // a validated verdict object; a skipped/errored agent yields null.
 phase('Deep review')
-const verdicts = await parallel(files.map((f) => () =>
-  agent(promptFor(f), {
-    label: `opus:${f.locale}/${f.rel.split('/').pop()}`,
-    phase: 'Deep review',
-    model: 'opus',
-    schema: SCHEMA,
-  }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict } : null))
-))
+// Throttle to <=7 concurrent agents. The 5h session limit can hit mid-run; with
+// a small in-flight batch only those <=7 are lost on a hit, and every completed
+// batch is preserved (resume re-runs only the failures). Opus reads are large,
+// so a big fan-out exhausts the window fast — keep the live set small.
+const BATCH = 7
+const verdicts = []
+for (let i = 0; i < files.length; i += BATCH) {
+  const slice = files.slice(i, i + BATCH)
+  log(`Deep-review batch ${Math.floor(i / BATCH) + 1}: files ${i + 1}-${i + slice.length} of ${files.length}`)
+  const v = await parallel(slice.map((f) => () =>
+    agent(promptFor(f), {
+      label: `opus:${f.locale}/${f.rel.split('/').pop()}`,
+      phase: 'Deep review',
+      model: 'opus',
+      schema: SCHEMA,
+    }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict } : null))
+  ))
+  verdicts.push(...v)
+}
 
 let results = verdicts.filter(Boolean)
 
