@@ -43,9 +43,10 @@ const SCHEMA = {
     file: { type: 'string' },
     verdict: { enum: ['PASS', 'MINOR_ISSUES', 'FAIL'] },
     issues: { type: 'integer' },
-    // minLength forces a real summary — the structured-output layer retries the
-    // model if it returns a placeholder/one-word note (a recurring run-2 defect).
-    editor_note: { type: 'string', minLength: 80 },
+    // minLength catches one-word placeholders; a concise PASS proof-of-read
+    // sentence clears 40 while keeping the 80%-PASS output (and status.json /
+    // notification) small. FAIL/MINOR carry the detail in the note + examples.
+    editor_note: { type: 'string', minLength: 40 },
     examples: {
       type: 'array',
       items: {
@@ -105,10 +106,9 @@ VERDICT (independent of the prior automated verdict; first match wins):
 
 Return the structured object: locale="${f.locale}", file="${f.rel}", your verdict, an integer issue count, an editor_note, and up to a few concrete examples. Do NOT edit any file. Do NOT touch git or status.json.
 
-editor_note REQUIREMENTS (this is the deliverable a fast pass never produces — it must stand alone):
-- Write 2-4 real sentences of YOUR editorial read of fluency + terminology. FILL THIS IN EVEN ON PASS.
-- Name specifics: the actual terms, the actual locale words, the actual passages. A reader who sees only this note (not the examples) must understand your verdict.
-- On FAIL/MINOR, the note MUST state WHAT is wrong (e.g. "‘Hamiltonian’ is rendered three ways: X, Y, Z"), not just that something is.
+editor_note REQUIREMENTS (it must stand alone; length scales with the verdict):
+- On PASS: ONE concise sentence that NAMES a concrete specific from the file — an actual rendered term or passage — to prove you read it (e.g. "Faithful and native; core terms correct/consistent (qubit→كيوبت, transpile→...)."). Keep it short — do NOT write a paragraph of praise; we don't act on PASS notes.
+- On FAIL/MINOR: 2-4 sentences stating exactly WHAT is wrong (e.g. "‘Hamiltonian’ is rendered three ways: X, Y, Z"), naming the actual terms/passages, alongside the concrete examples below. This is the deliverable we act on — make it specific and self-contained.
 - FORBIDDEN: placeholder or filler text. Never return "x", "placeholder", "duplicate", "n/a", "see examples", "ok", or an empty/one-word note. Such a note is a failed deliverable — write the real summary instead.`
 }
 
