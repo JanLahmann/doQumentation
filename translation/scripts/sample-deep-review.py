@@ -136,14 +136,17 @@ def _leak_count(text: str) -> int:
 
 def build_pool(status: dict, locales: list[str], min_lines: int,
                sections: tuple[str, ...] | None = None,
-               leak_clean: bool = False,
+               max_leaks: int | None = None,
                exclude_reviewed: bool = False) -> dict:
     """{locale: [(rel, section, lines), ...]} of eligible files.
 
     Optional focused filters (for the 'clean-file drift' run):
       sections          — only these section prefixes (e.g. course+module)
-      leak_clean        — only files with 0 capitalized-English leaks (isolates
-                          Opus on semantic drift, not leakage)
+      max_leaks         — include only files with <= this many capitalized-English
+                          leaks (0 == the strict 'leak-clean' run; None == no cap).
+                          Relaxing to a small N (e.g. 2) reaches the lightly-leaky
+                          files that strict leak-clean starves once the 0-leak pool
+                          drains — pair with a deterministic leak sweep.
       exclude_reviewed  — skip files already carrying a review_opus verdict
     """
     pool: dict[str, list] = {}
@@ -170,7 +173,7 @@ def build_pool(status: dict, locales: list[str], min_lines: int,
                 continue
             if not is_fresh(loc, rel):
                 continue
-            if leak_clean and _leak_count(text) > 0:
+            if max_leaks is not None and _leak_count(text) > max_leaks:
                 continue
             eligible.append((rel, section_of(rel), lines))
         if eligible:
@@ -236,7 +239,16 @@ def main():
                          "(e.g. 'learning/courses/,learning/modules/')")
     ap.add_argument("--leak-clean", action="store_true",
                     help="only files with 0 capitalized-English leaks — isolates "
-                         "Opus on semantic drift, not leakage (the 'clean-file' run)")
+                         "Opus on semantic drift, not leakage (== --max-leaks 0)")
+    ap.add_argument("--max-leaks", type=int, default=None,
+                    help="include files with <= N capitalized-English leaks "
+                         "(reaches lightly-leaky files once the 0-leak pool drains; "
+                         "pair with a deterministic leak sweep). Overridden to 0 by "
+                         "--leak-clean.")
+    ap.add_argument("--drift-focus", action="store_true",
+                    help="force the drift-focused Opus prompt even without "
+                         "--leak-clean (tells the agent to ignore kept-English "
+                         "leaks and hunt semantic drift). Implied by --leak-clean.")
     ap.add_argument("--exclude-reviewed", action="store_true",
                     help="skip files already carrying a review_opus verdict")
     ap.add_argument("--out", help="write sample JSON here")
@@ -252,20 +264,31 @@ def main():
 
     locales = MAIN_LOCALES + (DIALECTS if args.include_dialects else [])
     sections = tuple(s for s in (args.sections or "").split(",") if s) or None
+    # --leak-clean is exactly --max-leaks 0; an explicit --max-leaks relaxes it.
+    max_leaks = 0 if args.leak_clean else args.max_leaks
     pool = build_pool(status, locales, args.min_lines, sections=sections,
-                      leak_clean=args.leak_clean,
+                      max_leaks=max_leaks,
                       exclude_reviewed=args.exclude_reviewed)
     eligible_total = sum(len(v) for v in pool.values())
 
-    # In leak-clean mode, leakage/terminology is pre-filtered, so tell the agent
-    # to spend its read on the irreducible class: semantic drift + hallucination.
-    focus = "drift" if args.leak_clean else None
+    # Drift focus tells the agent to spend its read on the irreducible class
+    # (semantic drift + hallucination) and ignore kept-English leaks. It's the
+    # default under leak-clean; with --max-leaks the few leaks are swept
+    # deterministically, so keep the drift prompt when --drift-focus is set.
+    focus = "drift" if (args.leak_clean or args.drift_focus) else None
     sample = draw(pool, args.per_locale, args.seed, focus=focus)
+
+    if args.leak_clean:
+        mode = "leak-clean-drift"
+    elif max_leaks is not None:
+        mode = f"maxleaks{max_leaks}" + ("-drift" if focus == "drift" else "")
+    else:
+        mode = "general"
 
     payload = {
         "seed": args.seed,
         "per_locale": args.per_locale,
-        "mode": "leak-clean-drift" if args.leak_clean else "general",
+        "mode": mode,
         "eligible_total": eligible_total,
         "sample_size": len(sample),
         "files": sample,
