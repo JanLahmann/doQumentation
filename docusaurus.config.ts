@@ -407,6 +407,35 @@ const config: Config = {
             },
           ],
         },
+        {
+          title: 'Fun with Quantum family',
+          items: [
+            {
+              label: 'Fun with Quantum',
+              href: 'https://fun-with-quantum.org',
+            },
+            {
+              label: 'RasQberry Two',
+              href: 'https://rasqberry.org',
+            },
+            {
+              label: 'RasQberry One',
+              href: 'https://rasqberry.one',
+            },
+            {
+              label: 'Quantego',
+              href: 'https://quantego.org',
+            },
+            {
+              label: 'Qutie',
+              href: 'https://qutie.org',
+            },
+            {
+              label: 'Qoffee-Maker',
+              href: 'https://qoffee-maker.org',
+            },
+          ],
+        },
       ],
       copyright: `<a href="https://github.com/Qiskit/documentation">Qiskit documentation</a> content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0.<br/>IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation.<br/>doQumentation is part of the <a href="https://rasqberry.org/">RasQberry</a> project and is not affiliated with, endorsed by, or sponsored by IBM Corporation.`,
     },
