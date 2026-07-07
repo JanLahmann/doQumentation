@@ -190,6 +190,13 @@ const config: Config = {
       src: 'https://unpkg.com/thebelab@0.4.0/lib/index.js',
       async: true,
     },
+    // Umami analytics — shared Fun with Quantum family property
+    {
+      src: 'https://cloud.umami.is/script.js',
+      defer: true,
+      'data-website-id': '97f347ac-e7ba-4be3-b26f-ab4b328bdbf2',
+      'data-domains': 'doqumentation.org',
+    },
   ],
 
   // KaTeX CSS for math rendering
