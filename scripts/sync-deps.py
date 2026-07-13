@@ -9,6 +9,11 @@ and applies exception rules for our multi-arch Docker images:
   - Move to amd64-only: gem-suite, qiskit-ibm-transpiler[ai-local-mode],
     qiskit-addon-aqc-tensor[quimb-jax] (no arm64 wheels)
   - Split qiskit-addon-aqc-tensor extras: [aer] cross-platform, [quimb-jax] amd64-only
+  - Never downgrade: if our current pin is HIGHER than upstream's (e.g. a
+    Dependabot security/version bump upstream hasn't picked up yet), the local
+    pin is kept. This stops the weekly sync from silently reverting Dependabot
+    (the sqd/scipy oscillation). A genuine upstream bump (upstream > local) is
+    still adopted.
 
 Usage:
     python scripts/sync-deps.py [upstream-requirements.txt]
@@ -88,13 +93,75 @@ def parse_upstream(text: str) -> list[dict]:
     return entries
 
 
-def apply_rules(entries: list[dict]) -> tuple[list[str], list[str]]:
+# Extract a comparable version from a specifier string ("~=1.18.0" -> 1.18.0).
+# Prefer packaging.version (handles pre/dev releases); fall back to an int-tuple.
+try:
+    from packaging.version import Version as _V
+
+    def _ver(spec: str):
+        m = re.search(r"[0-9][^,;\s]*", spec or "")
+        try:
+            return _V(m.group(0)) if m else None
+        except Exception:
+            return None
+except ImportError:  # pragma: no cover - packaging is normally present
+    def _ver(spec: str):
+        m = re.search(r"\d+(?:\.\d+)*", spec or "")
+        return tuple(int(x) for x in m.group(0).split(".")) if m else None
+
+
+def load_local_versions(*paths: Path) -> dict[str, str]:
+    """Map package name -> current local version specifier from existing files."""
+    local: dict[str, str] = {}
+    for path in paths:
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = LINE_RE.match(line)
+            if not m:
+                continue
+            version = (m.group("version") or "").strip()
+            if version:
+                # A package may appear in both files (aqc-tensor split); the
+                # version is the same, so first-wins is fine.
+                local.setdefault(m.group("name"), version)
+    return local
+
+
+def choose_version(name: str, upstream_version: str, local_map: dict[str, str]) -> str:
+    """Return upstream_version, unless our local pin is higher (never downgrade)."""
+    local_version = local_map.get(name)
+    if not local_version or not upstream_version:
+        return upstream_version
+    lv, uv = _ver(local_version), _ver(upstream_version)
+    if lv is None or uv is None:
+        return upstream_version
+    if lv > uv:
+        print(
+            f"  Keeping local pin {name}{local_version} "
+            f"(upstream {upstream_version}) — no downgrade"
+        )
+        return local_version
+    return upstream_version
+
+
+def apply_rules(
+    entries: list[dict], local_map: dict[str, str] | None = None
+) -> tuple[list[str], list[str]]:
     """Apply exception rules, return (cross_platform_lines, amd64_lines)."""
+    local_map = local_map or {}
     cross = []
     amd64 = []
 
     for e in entries:
-        name, extras, version = e["name"], e["extras"], e["version"]
+        name, extras = e["name"], e["extras"]
+        # Never downgrade below our current local pin (see module docstring).
+        version = choose_version(name, e["version"], local_map)
 
         # Special case: qiskit-addon-aqc-tensor — split extras
         if name == AQC_TENSOR:
@@ -157,11 +224,13 @@ def main():
     entries = parse_upstream(upstream_text)
     print(f"  Parsed {len(entries)} packages from upstream")
 
-    cross_lines, amd64_lines = apply_rules(entries)
-
     binder_dir = Path(__file__).resolve().parent.parent / "binder"
     cross_path = binder_dir / "jupyter-requirements.txt"
     amd64_path = binder_dir / "jupyter-requirements-amd64.txt"
+
+    # Load current pins first so we never downgrade below them.
+    local_map = load_local_versions(cross_path, amd64_path)
+    cross_lines, amd64_lines = apply_rules(entries, local_map)
 
     cross_changed = write_file(cross_path, CROSS_PLATFORM_HEADER, cross_lines)
     amd64_changed = write_file(amd64_path, AMD64_HEADER, amd64_lines)
