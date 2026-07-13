@@ -6,9 +6,8 @@ on:
     branches: [main]
     # Rebuild the :jupyter image only when its build inputs change — NOT on
     # docs/i18n content merges. Those land constantly (weekly translation PRs)
-    # and would rebuild the ~3 GB multi-arch image needlessly; the live site
-    # ships via gh-pages separately. To refresh the image's baked content,
-    # dispatch this workflow manually.
+    # and would rebuild the image needlessly; the live site ships via gh-pages
+    # separately. To refresh the image's baked content, dispatch manually.
     paths:
       - 'Dockerfile.jupyter'
       - 'scripts/docker-entrypoint.sh'
@@ -32,12 +31,26 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Full image: nginx + Jupyter + Qiskit (~3 GB), :jupyter tag.
+  # Build each arch on its OWN native runner, in parallel — no QEMU emulation.
+  # arm64 runs on GitHub's native ubuntu-24.04-arm runner instead of being
+  # emulated on amd64 (which took ~20 min for the Qiskit/pip stack). Each job
+  # pushes its single-arch image BY DIGEST (no tag); the merge job below stitches
+  # the digests into the multi-arch :jupyter tag.
   # (The former build-lite job / :latest static-site image was removed — it
   # served the same site jupyter-local already ships and had been broken since
   # its Dockerfile was renamed; see #220.)
-  build-jupyter:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -57,7 +70,87 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Extract metadata
+      # github.repository is mixed-case (JanLahmann/doQumentation); Docker refs
+      # must be lowercase. metadata-action lowercases its tag output, but the raw
+      # ref used in `outputs`/`imagetools` below does not, so lowercase it here.
+      - name: Compute lowercase image ref
+        id: img
+        run: echo "ref=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
+      # Labels only — the multi-arch tags are applied in the merge job.
+      - name: Extract metadata (labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.jupyter
+          target: jupyter-local
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.img.outputs.ref }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=jupyter-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=jupyter-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Combine the per-arch digests into one multi-arch manifest and apply the tags.
+  # Fast (no build) — just `docker buildx imagetools create`.
+  merge:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Lowercase ref for the raw digest references below (metadata-action's own
+      # tag output is already lowercased).
+      - name: Compute lowercase image ref
+        id: img
+        run: echo "ref=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+
+      - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -66,15 +159,14 @@ jobs:
             type=raw,value=jupyter,enable={{is_default_branch}}
             type=sha,prefix=,suffix=-jupyter
 
-      - name: Build and push (jupyter)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.jupyter
-          target: jupyter-local
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=jupyter
-          cache-to: type=gha,mode=max,scope=jupyter
+      - name: Create multi-arch manifest and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ steps.img.outputs.ref }}@sha256:%s ' *)
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect \
+            ${{ steps.img.outputs.ref }}:${{ steps.meta.outputs.version }}
