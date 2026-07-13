@@ -1,0 +1,98 @@
+name: Docker Smoke Test
+
+# The "Build and Push Docker Images" workflow only BUILDS the jupyter-local
+# image — it can't catch runtime failures like the entrypoint's nginx `sed`
+# needing a jovyan-writable /etc/nginx/sites-enabled (which exited the container
+# with code 4 on first real run). This job actually RUNS the amd64 image and
+# asserts it serves, so a startup regression is caught in CI on the PR — not on
+# a user's machine. Path-filtered to the image's runtime-relevant inputs.
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile.jupyter'
+      - 'scripts/docker-entrypoint.sh'
+      - 'nginx.conf'
+      - 'binder/jupyter-requirements*.txt'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docker-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile.jupyter'
+      - 'scripts/docker-entrypoint.sh'
+      - 'nginx.conf'
+      - 'binder/jupyter-requirements*.txt'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docker-smoke.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # amd64 only (the runner is amd64 so we can `docker run` it). Reuses the
+      # main build's gha cache for the expensive layers; only the tail (nginx
+      # config, entrypoint) rebuilds when those change.
+      - name: Build jupyter-local (amd64, load to daemon)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.jupyter
+          target: jupyter-local
+          platforms: linux/amd64
+          load: true
+          tags: doqumentation-jupyter:smoke
+          cache-from: |
+            type=gha,scope=jupyter
+            type=gha,scope=jupyter-amd64
+
+      - name: Run container and verify it serves
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 8080:80 \
+            -e JUPYTER_TOKEN=smoketoken1234 doqumentation-jupyter:smoke
+
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS -o /dev/null http://localhost:8080/; then ok=1; break; fi
+            # Bail early if the container already exited (e.g. entrypoint crash).
+            if [ -z "$(docker ps -q --filter name=smoke)" ]; then
+              echo "::error::container exited during startup"; break
+            fi
+            sleep 2
+          done
+
+          echo "----- container logs -----"
+          docker logs smoke || true
+          echo "--------------------------"
+
+          if [ "$ok" != "1" ]; then
+            echo "::error::jupyter-local did not serve the site on :8080"
+            docker rm -f smoke >/dev/null 2>&1 || true
+            exit 1
+          fi
+
+          # The entrypoint's nginx sed must have succeeded (this is the exact
+          # bug guarded against): the token is injected into the proxy config.
+          docker exec smoke grep -q \
+            'proxy_set_header Authorization "token smoketoken1234"' \
+            /etc/nginx/sites-enabled/default
+          echo "PASS: container serves and the entrypoint completed (nginx sed ok)"
+
+          docker rm -f smoke >/dev/null 2>&1 || true
