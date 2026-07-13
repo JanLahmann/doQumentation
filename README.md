@@ -45,9 +45,6 @@ IBM's [Qiskit documentation](https://github.com/Qiskit/documentation) is open so
 ```bash
 # Full stack: site + Jupyter + Qiskit (~3 GB)
 podman run -p 8080:80 -p 8888:8888 ghcr.io/janlahmann/doqumentation:jupyter
-
-# Site-only: serve just the static site (code execution still works via Binder)
-podman run -p 8080:80 ghcr.io/janlahmann/doqumentation:latest
 ```
 
 Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` with `docker` — the commands are identical. Or build locally with `podman compose --profile jupyter up`. Images are multi-arch (`linux/amd64` + `linux/arm64`).
