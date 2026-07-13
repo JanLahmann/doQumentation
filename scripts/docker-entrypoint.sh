@@ -24,6 +24,69 @@ if [ ${#JUPYTER_TOKEN} -lt 8 ]; then
   exit 1
 fi
 
+# ── CORS origin allowlist ──
+# CORS_ORIGIN is a comma-separated list of allowed browser origins, so this
+# self-contained image can be reached at several addresses — e.g. an offline
+# Pi published (host 8080 -> container :80) as both rasqberry.local:8080 and
+# <dhcp-ip>:8080. Default: http://localhost:8080 (single-user local access,
+# unchanged behavior).
+#
+# Scheme policy (enforced below): https:// for any host (managed / TLS tier);
+# http:// only for LAN/loopback/.local/single-label/private-IP hosts (isolated
+# offline tier) — a CORS-policy allowance on a trusted internet-less venue LAN,
+# not a transport hole (a public CA can't issue for a .local name or a private
+# IP, and ACME/self-signed aren't practical there).
+CORS_ORIGIN="${CORS_ORIGIN:-http://localhost:8080}"
+
+# Validate every entry. Fails fast (non-zero exit) with a clear message.
+CORS_ORIGIN="$CORS_ORIGIN" python3 - <<'VALIDATE' || exit 1
+import ipaddress, os, re, sys
+
+origins = [o.strip() for o in os.environ.get("CORS_ORIGIN", "").split(",") if o.strip()]
+if not origins:
+    sys.exit("ERROR: CORS_ORIGIN is empty.")
+
+def host_is_lan(host):
+    h = host.lower()
+    # A .local name or a single-label hostname cannot be a public FQDN.
+    if h.endswith(".local") or "." not in h:
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+for o in origins:
+    m = re.match(r"^(https?)://([A-Za-z0-9.\-]+)(?::(\d+))?$", o)
+    if not m:
+        sys.exit(f"ERROR: CORS_ORIGIN entry '{o}' must be http(s)://host[:port] with no path.")
+    scheme, host, _ = m.groups()
+    if scheme == "http" and not host_is_lan(host):
+        sys.exit(
+            f"ERROR: CORS_ORIGIN entry '{o}' uses http:// with a non-LAN host. "
+            "http:// is permitted only for LAN/loopback/.local hosts (offline tier); "
+            "use https:// for internet-facing origins."
+        )
+VALIDATE
+
+# Compute the Jupyter allow_origin config line. One origin -> exact-match
+# allow_origin (unchanged default). Multiple -> allow_origin_pat, an anchored
+# ^(?:...)$ regex OR of the re.escape'd entries. jupyter_server matches
+# allow_origin_pat with re.match(), so the trailing $ is required to block
+# prefix attacks (…:8080.evil.com). Built here (not in the unquoted heredoc
+# below) so bash doesn't mangle the regex; injected as a pre-expanded value.
+CORS_CONFIG=$(CORS_ORIGIN="$CORS_ORIGIN" python3 - <<'GEN'
+import os, re
+origins = [o.strip() for o in os.environ.get("CORS_ORIGIN", "http://localhost:8080").split(",") if o.strip()]
+if len(origins) == 1:
+    print(f"c.ServerApp.allow_origin = {origins[0]!r}")
+else:
+    pat = "^(?:" + "|".join(re.escape(o) for o in origins) + ")$"
+    print(f"c.ServerApp.allow_origin_pat = {pat!r}")
+GEN
+)
+
 # ── Write Jupyter config with real token ──
 # Note: /home/jovyan/.jupyter is pre-created in the Dockerfile
 JUPYTER_DIR="/home/jovyan/.jupyter"
@@ -33,7 +96,7 @@ cat > "$JUPYTER_DIR/jupyter_server_config.py" << PYEOF
 
 c.ServerApp.token = "${JUPYTER_TOKEN}"
 c.ServerApp.password = ""
-c.ServerApp.allow_origin = "http://localhost:8080"
+${CORS_CONFIG}
 c.ServerApp.allow_remote_access = True
 c.ServerApp.ip = "0.0.0.0"
 c.ServerApp.port = 8888

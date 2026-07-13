@@ -33,7 +33,32 @@ import tornado.httpclient
 import tornado.iostream
 
 
-CORS_ORIGIN = os.environ.get('CORS_ORIGIN', 'https://doqumentation.org')
+# CORS origin allowlist — comma-separated CORS_ORIGIN, matching the Jupyter
+# server config written by codeengine-entrypoint.sh. CORS forbids returning a
+# list or "*" alongside credentials/token auth, so for a request whose Origin
+# is in the allowlist we echo that exact Origin back. A single configured
+# origin is always echoed (back-compat with the previous single-value default).
+_RAW_CORS = os.environ.get('CORS_ORIGIN', 'https://doqumentation.org')
+ALLOWED_ORIGINS = [o.strip() for o in _RAW_CORS.split(',') if o.strip()]
+_ALLOWED_ORIGINS_SET = set(ALLOWED_ORIGINS)
+
+
+def _cors_origin_for(request):
+    """Return the Access-Control-Allow-Origin value to echo, or None."""
+    origin = request.headers.get('Origin')
+    if origin and origin in _ALLOWED_ORIGINS_SET:
+        return origin
+    if len(ALLOWED_ORIGINS) == 1:
+        return ALLOWED_ORIGINS[0]
+    return None
+
+
+def _apply_cors(handler):
+    """Set CORS headers on a handler based on the request Origin allowlist."""
+    acao = _cors_origin_for(handler.request)
+    if acao:
+        handler.set_header('Access-Control-Allow-Origin', acao)
+        handler.set_header('Vary', 'Origin')
 JUPYTER_PORT = int(os.environ.get('JUPYTER_PORT', '8888'))
 SSE_DEFAULT_PORT = '9091'  # Avoid 9090 — Jupyter extensions may bind it
 JUPYTER_READY_TIMEOUT = 30  # seconds to wait for Jupyter to become ready
@@ -238,8 +263,8 @@ class BuildHandler(tornado.web.RequestHandler):
     """Handle GET /build/* with SSE events. Async, single coroutine per request."""
 
     def set_default_headers(self):
-        # CORS — set on every response from this handler
-        self.set_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+        # CORS — echo an allowlisted request Origin on every response
+        _apply_cors(self)
 
     async def get(self, _tail=''):
         # Set SSE headers
@@ -301,7 +326,7 @@ class HealthHandler(tornado.web.RequestHandler):
     """Lightweight health check — no auth required."""
 
     def set_default_headers(self):
-        self.set_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+        _apply_cors(self)
 
     async def get(self):
         if await _jupyter_is_ready_async():
@@ -316,7 +341,7 @@ class StatsHandler(tornado.web.RequestHandler):
     """Return enriched stats for workshop monitoring dashboard."""
 
     def set_default_headers(self):
-        self.set_header('Access-Control-Allow-Origin', CORS_ORIGIN)
+        _apply_cors(self)
 
     async def get(self):
         global _peak_kernels, _peak_connections
