@@ -64,13 +64,13 @@ const STORAGE_KEY_QISKIT_VERSION = 'doqumentation_qiskit_version';
 // Allow-list of exposed QuBins image tags (current + 2 prior, -xl size).
 // Pre-2.0 Qiskit APIs differ enough that the tutorials won't run, so we don't
 // expose older.
-export const SUPPORTED_QISKIT_TAGS = ['2.4-xl', '2.3-xl', '2.2-xl'] as const;
+export const SUPPORTED_QISKIT_TAGS = ['2.5-xl', '2.4-xl', '2.3-xl'] as const;
 export type QiskitTag = typeof SUPPORTED_QISKIT_TAGS[number];
 // Default Binder image tag = current Qiskit level. MUST stay in lockstep with
 // binder/jupyter-requirements.txt's qiskit[all] pin (e.g. ~=2.4.x ⇒ '2.4-xl').
 // A CI guard (ci.yml "qiskit-lockstep") fails the build if they diverge, so the
 // next dep-sync bump can't silently leave Binder on an older Qiskit.
-export const DEFAULT_QISKIT_TAG: QiskitTag = '2.4-xl';
+export const DEFAULT_QISKIT_TAG: QiskitTag = '2.5-xl';
 
 // Workshop pool (multiple CE instances for classroom use)
 const STORAGE_KEY_WORKSHOP_POOL = 'doqumentation_workshop_pool';
