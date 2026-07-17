@@ -75,15 +75,15 @@ function promptFor(f) {
 
 FOCUS FOR THIS RUN: this file was PRE-FILTERED to be low-leakage — any
 capitalized-English kept terms (e.g. Gate/Circuit/Qubit) are handled by a
-separate deterministic sweep and are NOT your concern. So do NOT spend your
-read hunting leaks/polish/consistency — those are handled elsewhere. Your ONE job
-is to determine whether the translation would MISLEAD a learner: semantic drift
+separate deterministic sweep, so do NOT hunt for leaks. Spend your read on
+MEANING: whether the translation would MISLEAD a learner — semantic drift
 (inverted condition/negation, swapped quantity, softened/strengthened claim,
 example that no longer matches its setup, dropped caveat) or hallucination
-(a fluent sentence asserting something NOT in the source). A file that is merely
-a bit stiff or has an isolated awkward phrase but is MEANING-FAITHFUL is a PASS
-here — reserve MINOR/FAIL for genuine meaning problems. Read slowly for MEANING,
-paragraph against paragraph, especially the last 40%.` : ''
+(a fluent sentence asserting something NOT in the source). Read slowly,
+paragraph against paragraph, especially the last 40%. Naturalness and
+terminology-consistency slips are still worth reporting, but in this mode they
+are MINOR_ISSUES at most — they must never drive a FAIL on their own. Apply the
+VERDICT rubric below exactly as written; this focus note does not override it.` : ''
   return `You are a senior native-speaker technical editor for ${f.locale_name} (${f.locale}), reviewing Qiskit / quantum-computing documentation in the doQumentation repo (root: the current working directory).${driftFocus}
 
 Read BOTH files in full:
@@ -101,10 +101,30 @@ Also confirm the informal register convention holds: ${f.register}. A few formal
 
 NOT a defect (never flag): the injected "Post-course survey / Was this page helpful" note block ("> **Note:** This survey is provided by IBM Quantum … open a GitHub issue") — doQumentation injects this in place of IBM's English-only feedback form.
 
-VERDICT (independent of the prior automated verdict; first match wins):
-- FAIL = any semantic drift/mistranslation, wrong domain terminology, ≥3 within-file term inconsistencies, or prose that reads as raw MT throughout.
-- MINOR_ISSUES = isolated naturalness/terminology/register slips that do not mislead.
-- PASS = native, well-edited technical prose; correct consistent terminology; faithful meaning; teaches as well as the English.
+VERDICT — apply ONE discriminator, in this order; first match wins. The single
+question is: WOULD THIS MISLEAD A LEARNER?
+- FAIL = yes, it would mislead. Semantic drift (inverted condition/negation,
+  swapped quantity, softened/strengthened claim, example that no longer matches
+  its setup, dropped caveat), a hallucinated claim, a domain term rendered so
+  wrongly it teaches a FALSE concept (e.g. "variational" rendered as
+  "permutational"), or prose that reads as raw MT throughout. Judge the DEFECT,
+  not the count: one misleading sentence IS a FAIL.
+- MINOR_ISSUES = no, it does not mislead, but a native technical editor would
+  still change something: a calque or stiff/robotic phrasing, an imperfect but
+  recognizable term, the same term rendered inconsistently within the file, a
+  dropped qualifier, a formal-register slip.
+- PASS = no, it does not mislead, AND there is nothing a native technical editor
+  would change: faithful meaning, correct and consistent terminology, teaches as
+  well as the English.
+
+CALIBRATION (these bind — do not silently re-scale them):
+- A single imperfect-but-recognizable term is MINOR, never FAIL. A term rendered
+  so wrongly the learner would form a false belief is FAIL.
+- Within-file term inconsistency is MINOR, however many times it occurs — UNLESS
+  the split makes the concept unidentifiable, which is FAIL.
+- Stiffness, calques and translationese are MINOR, never FAIL on their own.
+- Style/word-choice preferences where the existing rendering is defensible are
+  NOT a defect at all: PASS. Do not nitpick a defensible choice.
 
 Return the structured object: locale="${f.locale}", file="${f.rel}", your verdict, an integer issue count, an editor_note, and up to a few concrete examples. Do NOT edit any file. Do NOT touch git or status.json.
 
