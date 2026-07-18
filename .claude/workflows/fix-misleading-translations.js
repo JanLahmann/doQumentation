@@ -68,8 +68,9 @@ Return the structured object: locale="${f.locale}", file="${f.rel}", status (FIX
 // fixes target the same path), so concurrent edits don't race on the working
 // copy, and all fixes accumulate in the main tree for one review+commit.
 phase('Fix')
-// Throttle to <=7 concurrent agents. The 5h session limit can hit mid-run; with
-// a small in-flight batch only those <=7 are lost on a hit, and every completed
+// Throttle to <=7 concurrent agents (user-tuned 2026-07-17: 7->10->5->7). The 5h
+// session limit can hit mid-run; with a small in-flight batch only those <=7
+// are lost on a hit, and every completed
 // batch is preserved in `results` (vs. submitting all at once and losing the lot).
 const BATCH = 7
 const results = []

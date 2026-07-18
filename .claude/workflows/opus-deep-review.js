@@ -146,8 +146,9 @@ function isPlaceholderNote(note) {
 // One Opus agent per file, all concurrent (capped by the runtime). Each returns
 // a validated verdict object; a skipped/errored agent yields null.
 phase('Deep review')
-// Throttle to <=7 concurrent agents. The 5h session limit can hit mid-run; with
-// a small in-flight batch only those <=7 are lost on a hit, and every completed
+// Throttle to <=7 concurrent agents (user-tuned 2026-07-17: 7->10->5->7). The 5h
+// session limit can hit mid-run; with a small in-flight batch only those <=7
+// are lost on a hit, and every completed
 // batch is preserved (resume re-runs only the failures). Opus reads are large,
 // so a big fan-out exhausts the window fast — keep the live set small.
 const BATCH = 7
