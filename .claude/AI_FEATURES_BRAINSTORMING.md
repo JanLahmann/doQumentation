@@ -4,7 +4,8 @@
 > **Budget constraint**: Very limited monthly cost. Use existing Claude Code Max subscription for build-time AI work. For any runtime AI, use IBM public cloud, IBM Code Engine, or IBM serverless (Granite models on watsonx.ai Lite/Essentials plan).
 > **Priority features**: Smart Search & Navigation, Adaptive Learning Paths
 > **Deferred for now**: Interactive Quantum Circuit Debugger
-> **Note**: Single canonical AI-ideation doc. The older `AI_INTEGRATION_IDEAS.md` (2026-03-08) was merged into the section at the bottom of this file on 2026-05-17 and deleted (original in git history).
+> **Note**: Single canonical AI-ideation doc for the *capability/infrastructure layer* (search, RAG, metadata, runtime tiers, NotebookLM). The older `AI_INTEGRATION_IDEAS.md` (2026-03-08) was merged into the section at the bottom of this file on 2026-05-17 and deleted (original in git history).
+> **2026-07-18**: A second ideation round lives in [`BUILD_TIME_AI_IDEAS.md`](./BUILD_TIME_AI_IDEAS.md) — learner-facing *products* built on the build-time-AI factory pattern (Certification Studio, Advocate Launchpad, Family Quest Layer, Compiled Tutor, telemetry flywheel). It assumes 2A (metadata) from this file as foundation and absorbs/upgrades 2E (quizzes) and L1 (exercises).
 
 ---
 
