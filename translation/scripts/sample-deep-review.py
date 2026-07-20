@@ -251,6 +251,11 @@ def main():
                          "leaks and hunt semantic drift). Implied by --leak-clean.")
     ap.add_argument("--exclude-reviewed", action="store_true",
                     help="skip files already carrying a review_opus verdict")
+    ap.add_argument("--locale", action="append", metavar="LOCALE",
+                    help="restrict the sample to this locale (repeatable). "
+                         "Lets an external contributor own one locale outright, "
+                         "so their fixes touch a disjoint i18n/ subtree and can "
+                         "never conflict with another round.")
     ap.add_argument("--out", help="write sample JSON here")
     ap.add_argument("--print", action="store_true", dest="do_print",
                     help="print the sample to stdout")
@@ -263,6 +268,13 @@ def main():
     _STATUS_CACHE.update(status)
 
     locales = MAIN_LOCALES + (DIALECTS if args.include_dialects else [])
+    if args.locale:
+        unknown = [l for l in args.locale if l not in locales]
+        if unknown:
+            print(f"unknown locale(s): {', '.join(unknown)}\n"
+                  f"known: {', '.join(locales)}", file=sys.stderr)
+            sys.exit(1)
+        locales = [l for l in locales if l in set(args.locale)]
     sections = tuple(s for s in (args.sections or "").split(",") if s) or None
     # --leak-clean is exactly --max-leaks 0; an explicit --max-leaks relaxes it.
     max_leaks = 0 if args.leak_clean else args.max_leaks

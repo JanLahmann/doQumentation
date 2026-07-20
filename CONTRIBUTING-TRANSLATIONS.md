@@ -6,6 +6,11 @@ when its EN source changes after it was last translated. The work is
 keeping stale files in sync — a continuous refresh, not one-time
 translation.
 
+> 👀 **Want to *review* rather than translate?** See
+> [`CONTRIBUTING-REVIEWS.md`](CONTRIBUTING-REVIEWS.md) — a self-contained,
+> budget-shaped recipe for running a deep review round of one locale with
+> Claude Code. Good for spare tokens at the end of a weekly budget.
+
 > **You can use any tool or LLM** (Claude Code, Gemini, manual…). This
 > file is the **coordination contract** — read it once. Detailed
 > mechanics live in:
