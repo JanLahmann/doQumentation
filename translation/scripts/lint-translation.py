@@ -93,13 +93,48 @@ def find_genuine_translations(locale: str) -> list[tuple[Path, Path]]:
     return pairs
 
 
+def _fence_markers(lines: list[str]):
+    """Yield (line_idx, opening) for every line that opens or closes a fence.
+
+    A state machine, not a naive count: once a fence is open, only a line that
+    is *only* backticks (>= the opener's run length) closes it. Otherwise a
+    nested-looking line inside a code block — e.g. ```` ```python{{ .Response }} ````
+    inside an Ollama Modelfile — is miscounted as a fence and makes the total odd
+    (real case: guides/qiskit-code-assistant.mdx, EN and every locale).
+    """
+    open_len = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("```"):
+            continue
+        run = len(stripped) - len(stripped.lstrip("`"))
+        if open_len:
+            if stripped == "`" * run and run >= open_len:
+                open_len = 0
+                yield i, False
+        else:
+            open_len = run
+            yield i, True
+
+
+def count_code_fences(lines: list[str]) -> tuple[int, int]:
+    """Return (number of fence lines, 1-based line number of the last one)."""
+    count = 0
+    last = 0
+    for i, _ in _fence_markers(lines):
+        count += 1
+        last = i + 1
+    return count, last
+
+
 def is_inside_code_block(lines: list[str], line_idx: int) -> bool:
     """Check if a line is inside a fenced code block."""
-    fence_count = 0
-    for i in range(line_idx):
-        if lines[i].strip().startswith("```"):
-            fence_count += 1
-    return fence_count % 2 == 1
+    inside = False
+    for i, opening in _fence_markers(lines):
+        if i >= line_idx:
+            break
+        inside = opening
+    return inside
 
 
 # ---------------------------------------------------------------------------
@@ -390,17 +425,10 @@ def check_code_fence_balance(
     template literals).
     """
     findings = []
-    tr_fence_count = 0
-    last_fence_line = 0
-    for i, line in enumerate(lines):
-        if line.strip().startswith("```"):
-            tr_fence_count += 1
-            last_fence_line = i + 1
+    tr_fence_count, last_fence_line = count_code_fences(lines)
 
     if en_lines is not None:
-        en_fence_count = sum(
-            1 for line in en_lines if line.strip().startswith("```")
-        )
+        en_fence_count, _ = count_code_fences(en_lines)
         if tr_fence_count != en_fence_count:
             findings.append((
                 ERROR, last_fence_line,
