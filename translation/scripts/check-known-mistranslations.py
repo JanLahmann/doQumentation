@@ -48,6 +48,62 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
         ("transpirons", "transpilons", "transpile (1pl)"),
         ("transpirez", "transpilez", "transpile (2pl)"),
         ("transpire", "transpile", "transpile (3sg)"),
+        # --- from the Opus deep-review round 2026081475 (49 files). Every rule
+        # below was checked against ALL of its corpus occurrences, and against
+        # the aligned English line, before being added. Longest form first
+        # wherever rules nest.
+        # 1. misspelling
+        ("tu acquérras", "tu acquerras", "future of 'acquérir' is 'acquerras'"),
+        # 2. T1 relaxation. NOT a bare-verb rule: "se désintègre en/parfois" is
+        # CORRECT elsewhere, where a meson really does decay into two particles.
+        # Only the "vers |0>" direction is the mistranslated T1 decay.
+        ("se désintègre vers", "se désexcite vers",
+         "T1 decay of |1> to |0>; 'se désintégrer' is radioactive disintegration"),
+        # 3. entanglement. 'enchevêtrement' (a tangle) is never the field term;
+        # 'intrication' is. It is FEMININE where 'enchevêtrement' is masculine,
+        # so the determiner form has to be fixed first.
+        ("un enchevêtrement", "une intrication", "entanglement — gender changes with the term"),
+        # Pre-existing defect the sweep surfaced rather than caused: the term
+        # was already right here, the article was not. 'intrication' is always
+        # feminine, so this is safe regardless of how it got there.
+        ("un intrication", "une intrication", "'intrication' is feminine"),
+        ("enchevêtrements", "intrications", "entanglement (plural)"),
+        ("enchevêtrement", "intrication", "entanglement — 'enchevêtrement' is a tangle/jumble"),
+        ("enchevêtrantes", "intriquantes", "entangling (fem. pl.)"),
+        ("enchevêtrant", "intriquant", "entangling"),
+        # 4. non-word calques and false friends
+        ("valeurs d'expectation", "valeurs moyennes", "expectation values"),
+        ("Retraites à venir", "Retraits à venir",
+         "hardware retirements; 'retraite' is a person's retirement"),
+        ("benchmarking aléatoire", "benchmarking randomisé",
+         "randomized benchmarking is a named method"),
+        ("journaliseur", "logger", "'journaliseur' is not used in French HPC writing"),
+        # 5. French initialisms take no plural -s. Safe only because link
+        # targets and URLs are now protected (see _PROTECT) — 'apis' occurs
+        # inside /guides/access-instances-platform-apis#parameters.
+        ("QPUs", "QPU", "French initialisms take no plural -s"),
+        ("APIs", "API", "French initialisms take no plural -s"),
+        ("GPUs", "GPU", "French initialisms take no plural -s"),
+        # 6. twirling. 'torsion' is mechanical twisting. Only the forms whose
+        # article/agreement can be carried along are listed; the bare plural
+        # 'torsions' and the link-text form '[torsion]' are left for a
+        # judgement pass rather than guessed at here.
+        ("une torsion commune", "un twirling commun", "twirling — gender + agreement"),
+        ("la torsion de gate", "le twirling de portes", "gate twirling"),
+        ("la torsion de mesure", "le twirling de mesure", "measurement twirling"),
+        ("la torsion de Pauli", "le twirling de Pauli", "Pauli twirling"),
+        ("torsion de gate", "twirling de portes", "gate twirling"),
+        ("torsion de mesure", "twirling de mesure", "measurement twirling"),
+        ("torsion de Pauli", "twirling de Pauli", "Pauli twirling"),
+        ("la torsion", "le twirling", "twirling — gender changes with the term"),
+        # 7. feed-forward rendered as its opposite. NOT a bare-word rule:
+        # "boucle de rétroaction" is CORRECT in three files where the English
+        # really does say feedback. Only these fixed strings are unambiguous.
+        ("Rétroaction classique et flux de contrôle",
+         "Anticipation classique et flux de contrôle",
+         "feed-forward, not feedback — page title / sidebar / link text"),
+        ("contrôle de flux classique par rétroaction",
+         "contrôle de flux classique par anticipation", "feed-forward, not feedback"),
     ],
     "es": [
         ("transpiración", "transpilación", "transpile"),
@@ -148,7 +204,12 @@ def rules_for(locale: str):
 
 
 # Spans we must never touch: inline `code` and heading anchors {#...}.
-_PROTECT = re.compile(r"`[^`]*`|\{#[^}]*\}")
+_PROTECT = re.compile(
+    r"`[^`]*`"          # inline code
+    r"|\{#[^}]*\}"      # heading anchors
+    r"|\]\([^)]*\)"     # markdown link TARGETS — never rewrite a URL path
+    r"|https?://\S+"    # bare URLs
+)
 
 
 def _protected(line: str):
