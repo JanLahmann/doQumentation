@@ -26,9 +26,15 @@ I18N = REPO / "i18n"
 DOC_SUB = "docusaurus-plugin-content-docs/current"
 
 # locale -> list of (bad, good, note). "*" applies to every locale.
-# bad/good are plain words; matched whole-word, case-insensitive, capital-preserving.
+# bad/good are a plain word OR a fixed phrase; matched whole-word (\b at each
+# end), case-insensitive, capital-preserving.
 # Add a term here ONLY if the bad form is NEVER correct in this locale's Qiskit
-# docs (a false friend or fixed-term misspelling), so a blanket replace is safe.
+# docs (a false friend, a fixed-term misspelling, or a boilerplate passage whose
+# correct rendering is settled), so a blanket replace is safe.
+# Phrase rules exist because some defects cannot be fixed a word at a time: the
+# repair changes a neighbouring particle ("nagsasatisfy ng X" needs "tumutugon
+# sa X"), or reorders a clause. Rules apply in list order, so a longer phrase
+# MUST precede any shorter rule it contains.
 KNOWN: dict[str, list[tuple[str, str, str]]] = {
     "*": [
         ("Credely", "Credly", "brand misspelling (Credly)"),
@@ -50,6 +56,67 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
     "pt": [
         ("transpiração", "transpilação", "transpile"),
         ("transpirar", "transpilar", "transpile (verb)"),
+    ],
+    # tl entries come from the Opus deep-review rounds 2026081471-73 (121 files).
+    # Two classes, both verified against every corpus occurrence before adding:
+    #   1. malformed/non-words — never a Tagalog word, so always a defect
+    #   2. fixed boilerplate — IBM/Credly notices and course furniture that
+    #      repeat verbatim across dozens of files, where the review settled the
+    #      correct rendering once and it applies to every copy
+    "tl": [
+        # --- 1. malformed / non-words (regression guards; the rounds fixed the
+        # occurrences that existed, these keep them from coming back) ---
+        ("teorama", "teorema", "theorem — misspelling of 'teorema'"),
+        ("kumikillos", "kumikilos", "typo for 'kumikilos'"),
+        ("mapinalaki", "mapalaki", "malformed causative of 'palaki'"),
+        ("nagpapanatatangi", "nagpapatangi", "malformed; 'makes distinctive'"),
+        ("sinisimoni", "minomonitor", "invented verb for 'monitor' (object focus)"),
+        ("sumusimoni", "nagmomonitor", "invented verb for 'monitor' (actor focus)"),
+        ("magsulsi", "maglutas", "'solve' — 'magsulsi' is to darn/mend cloth"),
+        # --- 2. 'satisfies' — the repair moves ng -> sa, so it cannot be a
+        # word-level rule. Longest first. ---
+        ("nagsasatisfy lamang ng", "tumutugon lamang sa", "satisfies (only)"),
+        ("nagsasatisfy ng", "tumutugon sa", "satisfies — English stem + wrong particle"),
+        ("nagsasatisfy sa", "tumutugon sa", "satisfies — English stem"),
+        # --- 3. fixed boilerplate: the IBM/Credly badge + privacy notice, which
+        # repeats across the exam and course-index pages. Each rule recasts an
+        # English-order "ay"-passive into the verb-initial Tagalog a native
+        # writer uses, or fixes a literal-sense verb. ---
+        ("Ito ay hahawakan", "Pangangasiwaan ito",
+         "data 'handled' — 'hahawakan' is the physical grip sense"),
+        ("Ito ay pangangasiwaan", "Pangangasiwaan ito", "verb-initial, not ay-passive"),
+        ("Ang iyong feedback ay gagamitin", "Gagamitin ang iyong feedback",
+         "ay-passive mirroring English word order"),
+        ("Ang iyong personal na impormasyon ay ginagamit",
+         "Ginagamit ang iyong personal na impormasyon", "ay-passive"),
+        ("ang iyong badge ay awtomatikong ipapadala",
+         "awtomatikong ipapadala ang iyong badge", "ay-passive"),
+        ("Ang mga empleyado ng IBM ay maaaring tingnan ang",
+         "Matitingnan ng mga empleyado ng IBM ang",
+         "ang-marked actor with an object-focus verb; recast to ng-actor"),
+        ("para tulungan sa pamamahala", "para tumulong sa pamamahala",
+         "transitive 'tulungan' with no object; needs actor-focus 'tumulong'"),
+        ("upang tulungan sa pamamahala", "upang tumulong sa pamamahala",
+         "same defect as above, with 'upang' instead of 'para'"),
+        # The badge/privacy boilerplate is not byte-identical across courses —
+        # the same sentence appears with a different verb or a formal pronoun.
+        # Each variant needs its own rule; the ay-passive is fixed but the
+        # existing register ('inyong') is left alone, so one sentence is never
+        # recast against the register of the paragraph around it.
+        ("Ang inyong personal na impormasyon ay ginagamit",
+         "Ginagamit ang inyong personal na impormasyon", "ay-passive ('inyong' variant)"),
+        ("ang iyong badge ay awtomatikong maipapadala",
+         "awtomatikong maipapadala ang iyong badge", "ay-passive ('maipapadala' variant)"),
+        ("ang iyong badge ay awtomatikong ie-email",
+         "awtomatikong ie-email ang iyong badge", "ay-passive ('ie-email' variant)"),
+        ("Ang mga empleyado ng IBM ay maaaring makita ang",
+         "Makikita ng mga empleyado ng IBM ang",
+         "ang-marked actor with an object-focus verb ('makita' variant)"),
+        # --- 4. course furniture ---
+        ("Ginagabayan kayo", "Ginagabayan ka",
+         "register: plural/formal 'kayo' where the locale convention is casual 'ka'"),
+        ("20-tanong na pagsusulit", "pagsusulit na may 20 tanong",
+         "English hyphenated pre-nominal compound; Tagalog marks it postnominally"),
     ],
 }
 
