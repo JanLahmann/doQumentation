@@ -119,6 +119,14 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
     #   2. fixed boilerplate — IBM/Credly notices and course furniture that
     #      repeat verbatim across dozens of files, where the review settled the
     #      correct rendering once and it applies to every copy
+    # ar: a find-and-replace artifact that doubled the definite article
+    # (ال + المؤثرات). Not a word; the correct form is المؤثرات. NOTE the
+    # near-miss: الالتفاف ("convolution") is a perfectly good Arabic word that
+    # also begins الال — which is why this is a literal rule for the one
+    # observed form and NOT a general "الال" pattern.
+    "ar": [
+        ("الالمؤثرات", "المؤثرات", "doubled definite article (find-and-replace artifact)"),
+    ],
     "tl": [
         # --- 1. malformed / non-words (regression guards; the rounds fixed the
         # occurrences that existed, these keep them from coming back) ---

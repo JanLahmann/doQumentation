@@ -113,6 +113,14 @@ def _fence_markers(lines: list[str]):
                 open_len = 0
                 yield i, False
         else:
+            # A line that opens AND closes on itself — ```from x import y``` —
+            # is an inline code span written with triple backticks, not a
+            # fence. Counting it as an opener leaves the file permanently
+            # "unbalanced" (the round-25 false positive; the round-35 state
+            # machine fixed the inside-a-block case but not this one).
+            body = stripped[run:]
+            if body.endswith("`" * run) and len(body) > run:
+                continue
             open_len = run
             yield i, True
 
@@ -444,6 +452,53 @@ def check_code_fence_balance(
     return findings
 
 
+def count_table_rows(lines: list[str]) -> tuple[int, int]:
+    """Count markdown table body rows outside code fences.
+
+    Returns (count, last_row_line). Separator rows (|---|:--:|) are skipped so
+    a table contributes only its header and data rows.
+    """
+    count, last, in_fence = 0, 0, False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not stripped.startswith("|"):
+            continue
+        if re.match(r"^\|[\s:|-]+\|?$", stripped):
+            continue  # alignment/separator row
+        count += 1
+        last = i + 1
+    return count, last
+
+
+def check_table_row_count(
+    lines: list[str], en_lines: list[str] | None = None
+) -> list[tuple[str, int, str]]:
+    """Check that TR has the same number of table rows as EN.
+
+    A reference table is exactly where a dropped or left-behind row is
+    invisible to every other gate: the source-hash can be fresh, the prose can
+    be perfect, and the table still lists a retired QPU as available or omits
+    three that were retired. Found by the 20260829 deep-review
+    (ko/guides/retired-qpus.mdx had 55 rows against EN's 58) and by the corpus
+    sweep that followed it, which turned up three more locales still carrying
+    two REST endpoints upstream had deleted.
+    """
+    if en_lines is None:
+        return []
+    tr_rows, last_row_line = count_table_rows(lines)
+    en_rows, _ = count_table_rows(en_lines)
+    if tr_rows == en_rows:
+        return []
+    return [(
+        ERROR, last_row_line,
+        f"table row count mismatch: TR={tr_rows}, EN={en_rows} "
+        f"({'dropped' if tr_rows < en_rows else 'left-behind'} rows)"
+    )]
+
+
 def check_missing_imports(
     lines: list[str], en_lines: list[str] | None
 ) -> list[tuple[str, int, str]]:
@@ -760,6 +815,7 @@ def lint_file(
         findings.extend(check(lines))
     findings.extend(check_code_fence_balance(lines, en_lines))
     findings.extend(check_jsx_tag_balance(lines, en_lines))
+    findings.extend(check_table_row_count(lines, en_lines))
     findings.extend(check_missing_imports(lines, en_lines))
     findings.extend(check_english_prose_drift(lines, en_lines))
     if locale:
