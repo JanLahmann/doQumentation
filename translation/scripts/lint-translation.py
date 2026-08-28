@@ -40,6 +40,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
 I18N_DIR = REPO_ROOT / "i18n"
+# Locale docs live at i18n/<locale>/<DOC_SUB>/<rel>, mirroring docs/<rel>.
+DOC_SUB = "docusaurus-plugin-content-docs/current"
 
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
@@ -77,7 +79,7 @@ def find_genuine_translations(locale: str) -> list[tuple[Path, Path]]:
     """Find all genuine (non-fallback) translations for a locale.
     Returns [(en_path, tr_path)] pairs.
     """
-    locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+    locale_dir = I18N_DIR / locale / DOC_SUB
     if not locale_dir.exists():
         return []
 
@@ -869,7 +871,7 @@ def run_lint(locales: list[str], verbose: bool = False,
         if not pairs:
             continue
 
-        locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
+        locale_dir = I18N_DIR / locale / DOC_SUB
         locale_results: dict[str, tuple[int, int]] = {}
 
         for en_path, tr_path in pairs:
@@ -914,6 +916,28 @@ def run_lint(locales: list[str], verbose: bool = False,
     return 1 if error_files else 0
 
 
+def en_path_for(tr_path: Path) -> Path | None:
+    """Map i18n/<locale>/<DOC_SUB>/<rel> back to docs/<rel>.
+
+    Without this, --file mode ran with en_lines=None and silently skipped every
+    EN-relative check (fence count, table rows, missing imports, JSX balance) —
+    the weaker subset. That is the invocation the fix agents are told to run, so
+    they were being gated more loosely than a full-locale lint. A real fence
+    mismatch survived on main that way.
+    """
+    try:
+        parts = tr_path.resolve().relative_to(REPO_ROOT).parts
+    except (ValueError, OSError):
+        return None
+    sub = tuple(DOC_SUB.split("/"))
+    head = (len(parts) > 2 + len(sub) and parts[0] == "i18n"
+            and parts[2:2 + len(sub)] == sub)
+    if not head:
+        return None
+    candidate = DOCS_DIR / Path(*parts[2 + len(sub):])
+    return candidate if candidate.is_file() else None
+
+
 def run_single_file(tr_path: Path, en_path: Path | None) -> int:
     """Lint a single file. Returns exit code."""
     # Infer locale from path if the file lives under i18n/<locale>/...
@@ -924,6 +948,8 @@ def run_single_file(tr_path: Path, en_path: Path | None) -> int:
             locale = parts[1]
     except (ValueError, OSError):
         pass
+    if en_path is None:
+        en_path = en_path_for(tr_path)
     findings = lint_file(tr_path, en_path, locale=locale)
 
     for severity, line_no, message in findings:
