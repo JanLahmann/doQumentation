@@ -187,6 +187,27 @@ STEMS: dict[str, list[tuple[str, str, str]]] = {
 }
 
 
+# Regex rules: for defect CLASSES that no list of literals can close off. The
+# replacement may use \1 backreferences. Same protected-span handling as the
+# others. Use ONLY where the pattern itself is definitionally an error.
+REGEX: dict[str, list[tuple[str, str, str]]] = {
+    # A glossary-substitution artifact: the keep-English prefix form (الـ / للـ /
+    # بـ …) is pasted in front of a word that was then translated to Arabic,
+    # leaving the connector tatweel stranded before a space — "الـ دائرة" for
+    # "الدائرة", "للـ دائرة" for "للدائرة", "بـ دوال" for "بدوال". A tatweel is a
+    # justification kashida that joins to the NEXT letter, so tatweel-then-space
+    # is never well-formed Arabic and the join is unconditional.
+    # Found by the 20260828 deep-review (flagged independently in five ar files);
+    # a corpus sweep then found 107 occurrences across 19 files. Written as a
+    # class rather than literals because the first fix pass closed only the
+    # bare-article form and three prefixed variants immediately survived it.
+    "ar": [
+        (r"([\u0600-\u063F\u0641-\u06FF]{1,3})\u0640[ \t]+(?=[\u0600-\u06FF])",
+         r"\1", "glossary prefix left detached by a tatweel (الـ دائرة -> الدائرة)"),
+    ],
+}
+
+
 def preserve_case(match: str, repl: str) -> str:
     if match[:1].isupper():
         return repl[:1].upper() + repl[1:]
@@ -194,12 +215,19 @@ def preserve_case(match: str, repl: str) -> str:
 
 
 def rules_for(locale: str):
-    """Return compiled (pattern, good, note). Whole-word for KNOWN, prefix for STEMS."""
+    """Return compiled (pattern, good, note, expand) rules.
+
+    Whole-word for KNOWN, word-initial prefix for STEMS, verbatim for REGEX.
+    `expand` is True only for REGEX rules, whose replacement may use \\1
+    backreferences and so must go through m.expand() instead of a literal.
+    """
     out = []
     for bad, good, note in KNOWN.get("*", []) + KNOWN.get(locale, []):
-        out.append((re.compile(rf"\b{re.escape(bad)}\b", re.IGNORECASE), good, note))
+        out.append((re.compile(rf"\b{re.escape(bad)}\b", re.IGNORECASE), good, note, False))
     for stem, good, note in STEMS.get(locale, []):
-        out.append((re.compile(rf"\b{re.escape(stem)}", re.IGNORECASE), good, note))
+        out.append((re.compile(rf"\b{re.escape(stem)}", re.IGNORECASE), good, note, False))
+    for pat, good, note in REGEX.get(locale, []):
+        out.append((re.compile(pat), good, note, True))
     return out
 
 
@@ -241,10 +269,11 @@ def scan_file(path: Path, rules) -> list[tuple[int, str, str, str]]:
         if in_fence:
             continue
         spans = _protected(line)
-        for pat, good, note in rules:
+        for pat, good, note, expand in rules:
             for m in pat.finditer(line):
                 if not _in(spans, m.start()):
-                    hits.append((i, m.group(0), good, note))
+                    shown = m.expand(good) if expand else good
+                    hits.append((i, m.group(0), shown, note))
     return hits
 
 
@@ -258,13 +287,15 @@ def fix_file(path: Path, rules) -> int:
         if in_fence:
             out_lines.append(line); continue
         spans = _protected(body)
-        for pat, good, _ in rules:
-            def _r(m):
+        for pat, good, _, expand in rules:
+            def _r(m, good=good, expand=expand):
                 nonlocal n
                 if _in(spans, m.start()):
                     return m.group(0)
                 n += 1
-                return preserve_case(m.group(0), good)
+                # A REGEX rule's replacement is a template, not a word, so it
+                # goes through expand() and case-preservation does not apply.
+                return m.expand(good) if expand else preserve_case(m.group(0), good)
             body = pat.sub(_r, body)
             spans = _protected(body)  # spans may shift after a replace
         out_lines.append(body + ("\n" if line.endswith("\n") else ""))
