@@ -43,11 +43,20 @@ I18N_DIR = REPO_ROOT / "i18n"
 # Locale docs live at i18n/<locale>/<DOC_SUB>/<rel>, mirroring docs/<rel>.
 DOC_SUB = "docusaurus-plugin-content-docs/current"
 
-ALL_LOCALES = [
+# The 17 maintained locales.
+MAIN_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
     "ko", "th", "pl", "cs", "ro", "ms", "id",
-    "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
+
+# German dialects: kept for the novelty of having them, but deliberately not
+# maintained or reviewed. They currently hold 287 lint errors between them,
+# against 0 across all 17 maintained locales — so any recurring report that
+# includes them is ~100% noise and will be ignored within a week. Lint them
+# only when explicitly asked for (--all-locales).
+DIALECT_LOCALES = ["swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut"]
+
+ALL_LOCALES = MAIN_LOCALES + DIALECT_LOCALES
 
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
@@ -978,6 +987,11 @@ def main():
     parser.add_argument(
         "--all-locales", action="store_true", help="Lint all locales"
     )
+    parser.add_argument(
+        "--main-locales",
+        action="store_true",
+        help="Lint the 17 maintained locales (excludes the 9 German dialects)",
+    )
     parser.add_argument("--file", type=Path, help="Lint a single file")
     parser.add_argument(
         "--en-file", type=Path, help="EN source file (for --file mode)"
@@ -996,10 +1010,17 @@ def main():
             sys.exit(2)
         sys.exit(run_single_file(args.file, args.en_file))
 
-    if not args.locale and not args.all_locales:
-        parser.error("Specify --locale XX, --all-locales, or --file PATH")
+    if not args.locale and not args.all_locales and not args.main_locales:
+        parser.error(
+            "Specify --locale XX, --main-locales, --all-locales, or --file PATH"
+        )
 
-    locales = ALL_LOCALES if args.all_locales else [args.locale]
+    if args.all_locales:
+        locales = ALL_LOCALES
+    elif args.main_locales:
+        locales = MAIN_LOCALES
+    else:
+        locales = [args.locale]
     sys.exit(run_lint(locales, verbose=args.verbose, record=args.record))
 
 
