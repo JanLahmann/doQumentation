@@ -29,10 +29,10 @@ pool** (at least 25 files). Use it as the starting point.
 | Locale | Unreviewed pool | Use | Reviewed so far |
 |---|---|---|---|
 | `he` | **42** | `--max-leaks 12` | 216/428 (50%) |
-| `de` | **40** | `--max-leaks 12` | 155/428 (36%) |
-| `ro` | **40** | `--max-leaks 12` | 273/428 (63%) |
+| `de` | **39** | `--max-leaks 12` | 155/428 (36%) |
 | `id` | **39** | `--max-leaks 12` | 217/428 (50%) |
-| `th` | **37** | `--max-leaks 12` | 203/428 (47%) |
+| `ro` | **39** | `--max-leaks 12` | 273/428 (63%) |
+| `th` | **36** | `--max-leaks 12` | 203/428 (47%) |
 | `ko` | **34** | `--max-leaks 6` | 229/428 (53%) |
 | `cs` | **30** | `--max-leaks 12` | 254/428 (59%) |
 | `ms` | **28** | `--max-leaks 12` | 270/428 (63%) |
@@ -61,14 +61,14 @@ hold hundreds of known lint errors and are excluded from every gate.
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
+| `wave4-20260605444` | 22 | 3 | 13.6% |
+| `fresh-20260605222` | 51 | 11 | 21.6% |
+| `wave3-drift-20260605333` | 51 | 3 | 5.9% |
+| `consistency-rereview` | 41 | 8 | 19.5% |
+| `Brereview` | 17 | 3 | 17.6% |
 | `20260901` | 136 | 14 | 10.3% |
-| `20260831` | 126 | 11 | 8.7% |
-| `20260830` | 133 | 13 | 9.8% |
-| `20260829` | 131 | 12 | 9.2% |
-| `20260828` | 134 | 9 | 6.7% |
-| `20260827` | 49 | 1 | 2.0% |
 
-Typical FAIL rate is around **8%**. If your round comes
+Typical FAIL rate is around **13%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 
