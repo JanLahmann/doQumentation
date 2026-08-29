@@ -46,9 +46,11 @@ documentation corpus. Work only in the repo root.
 
 Confirm with the user, or take from their prompt:
 
-- **`LOCALE`** — one of `es uk ja fr it pt tl ar he ms id th ko pl ro cs`.
-  (`de` is complete. The 9 German dialects — `aut bad bar bln gsw ksh nds
-  sax swg` — are never reviewed; skip them without asking.)
+- **`LOCALE`** — see **[`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md)** for
+  which locales still have unreviewed pages and how much is left in each.
+  All 17 main locales are in scope (`de es uk ja fr it pt tl ar he ms id
+  th ko pl ro cs`); none is finished. The 9 German dialects — `aut bad bar
+  bln gsw ksh nds sax swg` — are never reviewed; skip them without asking.
 - **`N`** — how many files to review this round. Budget ≈ **40k tokens per
   file**, so 25 files ≈ 1M, 60 files ≈ 2.4M. When in doubt pick 25; a small
   round that completes beats a large one that dies.
@@ -75,20 +77,21 @@ say so. There is nothing else to install.
 ```bash
 python3 translation/scripts/sample-deep-review.py \
   --locale <LOCALE> --per-locale <N> --seed <SEED> \
-  --max-leaks 2 --drift-focus --exclude-reviewed \
+  --max-leaks <THRESHOLD> --drift-focus --exclude-reviewed \
   --out /tmp/round-<SEED>.json
 ```
 
 It prints the eligible pool size. `--exclude-reviewed` skips files that
 already carry a verdict, so rounds never re-tread ground.
 
-If the pool is smaller than `N`, that locale has drained at `--max-leaks 2`.
-Raise it (`--max-leaks 5`, then `10`) to reopen the pool rather than
-shrinking the round. Current pool sizes at `--max-leaks 2`:
+If the pool is smaller than `N`, that locale has drained at the threshold
+you picked. Raise it (`--max-leaks 4`, then `6`, `8`, `12`) to reopen the
+pool rather than shrinking the round.
 
-| Ample (85+) | Thin (20–25) | Drained (<15) |
-|---|---|---|
-| `tl` 139, `fr` 123, `es` 120, `it` 109, `pt` 105, `ar` 101, `uk` 95, `ja` 87 | `ro` 25, `ko` 23, `pl` 20 | `ms` 10, `id` 9, `he` 4, `th` 3, `cs` 2 |
+**[`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md) lists the current pool size
+per locale and the threshold to start from.** It is regenerated daily, so
+trust it over any number written into this file — pool sizes move every
+time a round lands.
 
 ### 3. Run the review wave
 

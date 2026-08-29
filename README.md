@@ -153,6 +153,23 @@ doQumentation/
 
 Pushing to `main` automatically deploys to GitHub Pages and builds two multi-arch Docker images (`linux/amd64` + `linux/arm64`) to [GitHub Container Registry](https://github.com/JanLahmann/doQumentation/pkgs/container/doqumentation).
 
+## Contributing
+
+The translations into 17 languages are machine-produced and then reviewed
+against the English source, page by page. That review is where help is most
+useful, and it is designed to be run **by Claude Code** rather than by hand.
+
+- **[CONTRIBUTING-NOW.md](CONTRIBUTING-NOW.md)** — what we need right now:
+  which locales still have unreviewed pages, how much is left in each, and
+  what recent rounds have been finding. Regenerated daily; start here.
+- **[CONTRIBUTING-REVIEWS.md](CONTRIBUTING-REVIEWS.md)** — the complete
+  recipe for running one review round.
+- **[CONTRIBUTING-TRANSLATIONS.md](CONTRIBUTING-TRANSLATIONS.md)** — for
+  translating newly-synced English content.
+
+You need a Claude Max subscription, `git`, `python3` and the `gh` CLI. Claim
+a locale with the maintainer first so two people don't review the same one.
+
 ## License
 
 This repository is dual-licensed:
