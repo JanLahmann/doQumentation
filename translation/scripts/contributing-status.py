@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -65,10 +66,17 @@ def pools_by_threshold(sdr, status) -> dict[int, dict[str, int]]:
 def recent_rounds(limit: int = 6) -> list[tuple[str, int, int]]:
     """[(seed, reviewed, fails)] for the most recent review files."""
     rows = []
-    # By mtime, not filename: the early rounds used names like
-    # "wave3-drift-..." and "Brereview" that sort above every dated seed.
-    files = sorted(REVIEWS.glob("opus-*.json"),
-                   key=lambda f: f.stat().st_mtime, reverse=True)
+    # Order by the YYYYMMDD embedded in the seed, NOT by filename and NOT by
+    # mtime. Plain filename sort puts the early rounds ("wave3-drift-...",
+    # "Brereview") above every dated seed; mtime looks right locally but is
+    # useless in CI, where a fresh checkout stamps every file with the same
+    # time — which is exactly how the legacy names reappeared in the first
+    # generated copy of this table. Undated legacy seeds sort last.
+    def seed_key(f: Path):
+        m = re.search(r"(20\d{6})", f.stem)
+        return (1, m.group(1)) if m else (0, f.stem)
+
+    files = sorted(REVIEWS.glob("opus-*.json"), key=seed_key, reverse=True)
     for p in files[:limit]:
         try:
             recs = json.load(open(p, encoding="utf-8"))
