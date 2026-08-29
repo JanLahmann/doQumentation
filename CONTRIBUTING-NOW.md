@@ -1,0 +1,95 @@
+# What we need right now
+
+*Auto-generated on 2026-08-29 by `translation/scripts/contributing-status.py`.*
+*Do not edit by hand — it will be overwritten. Regenerate with:*
+
+```bash
+python3 translation/scripts/contributing-status.py --write
+```
+
+**New here?** Read `CONTRIBUTING-REVIEWS.md` (reviewing existing
+translations) or `CONTRIBUTING-TRANSLATIONS.md` (translating new
+content) for the actual recipe. This file only tells you *which* work
+is worth picking up today, so the recipes never have to carry numbers
+that go stale.
+
+---
+
+## Pick a locale
+
+Every locale below still has unreviewed pages. Claim one with the
+maintainer so two people don't review the same one, then follow
+`CONTRIBUTING-REVIEWS.md`.
+
+`--max-leaks` controls how many capitalized-English leaks a file may
+contain and still be eligible. Tighter is better quality-per-round; the
+value shown is the **tightest threshold that still leaves a workable
+pool** (at least 25 files). Use it as the starting point.
+
+| Locale | Unreviewed pool | Use | Reviewed so far |
+|---|---|---|---|
+| `he` | **42** | `--max-leaks 12` | 216/428 (50%) |
+| `de` | **40** | `--max-leaks 12` | 155/428 (36%) |
+| `ro` | **40** | `--max-leaks 12` | 273/428 (63%) |
+| `id` | **39** | `--max-leaks 12` | 217/428 (50%) |
+| `th` | **37** | `--max-leaks 12` | 203/428 (47%) |
+| `ko` | **34** | `--max-leaks 6` | 229/428 (53%) |
+| `cs` | **30** | `--max-leaks 12` | 254/428 (59%) |
+| `ms` | **28** | `--max-leaks 12` | 270/428 (63%) |
+| `pl` | **28** | `--max-leaks 12` | 281/428 (65%) |
+
+**Nearly exhausted** (fewer than 25 eligible even at
+`--max-leaks 12`) — still worth a short round, but expect
+to widen further or re-sweep files that already carry a verdict:
+
+- `tl` — 16 left at `--max-leaks 12` (346/428 reviewed)
+- `pt` — 10 left at `--max-leaks 12` (349/428 reviewed)
+- `it` — 6 left at `--max-leaks 12` (351/428 reviewed)
+- `fr` — 3 left at `--max-leaks 12` (357/428 reviewed)
+- `ja` — 3 left at `--max-leaks 12` (338/428 reviewed)
+- `ar` — 2 left at `--max-leaks 12` (352/428 reviewed)
+- `es` — 1 left at `--max-leaks 12` (357/428 reviewed)
+- `uk` — 0 left at `--max-leaks 12` (337/428 reviewed)
+
+The 9 German dialects (`aut bad bar bln gsw ksh nds sax swg`) are kept
+but deliberately unmaintained. **Never review or translate them** — they
+hold hundreds of known lint errors and are excluded from every gate.
+
+---
+
+## What recent rounds found
+
+| Round (seed) | Files | FAIL | Rate |
+|---|---|---|---|
+| `20260901` | 136 | 14 | 10.3% |
+| `20260831` | 126 | 11 | 8.7% |
+| `20260830` | 133 | 13 | 9.8% |
+| `20260829` | 131 | 12 | 9.2% |
+| `20260828` | 134 | 9 | 6.7% |
+| `20260827` | 49 | 1 | 2.0% |
+
+Typical FAIL rate is around **8%**. If your round comes
+in far above that, stop and tell the maintainer before fixing — it
+usually means the rubric drifted, not that the locale collapsed.
+
+---
+
+## The highest-value thing you can do
+
+**When two or more locales are flagged for the same sentence, check the
+other fifteen before fixing.**
+
+Sampling finds instances; comparing one span across all locales finds
+the class. A recent round flagged three locales for rendering *"a
+software development kit (SDK)"* as *"a programming language"* — checking
+that single sentence everywhere turned up **eight** affected locales, so
+sampling had located fewer than half. The same move found a paragraph
+dropped from three locales' `wire-cutting.mdx`.
+
+It cuts both ways, and a negative result is worth just as much: an LHC
+"27 km circumference" that became "diameter" turned out to be a single
+locale, with the other sixteen correct. Check before you generalize —
+and check before you write a rule, too. A tempting corpus-wide pattern
+for one Czech defect matched 500+ occurrences that were nearly all
+legitimate words in other languages.
+
