@@ -170,6 +170,15 @@ useful, and it is designed to be run **by Claude Code** rather than by hand.
 You need a Claude Max subscription, `git`, `python3` and the `gh` CLI. Claim
 a locale with the maintainer first so two people don't review the same one.
 
+**Sync your fork with upstream `main` before every session** — not just on
+the first clone. Which pages still need work is read from a status file that
+every merged round rewrites, so a fork that is a few days old will send you
+to re-do pages someone has already finished:
+
+```bash
+gh repo sync <YOUR-USER>/doQumentation --source JanLahmann/doQumentation --branch main
+```
+
 ## License
 
 This repository is dual-licensed:

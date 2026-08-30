@@ -82,6 +82,8 @@ beyond claiming.
 ## Setup (once)
 
 ```bash
+# point at upstream once, so `git pull` can never mean "my own stale fork"
+git remote add upstream https://github.com/JanLahmann/doQumentation.git
 git worktree add ../doq-<locale> -b i18n/<locale>-wip && cd ../doq-<locale>
 python3 scripts/sync-content.py        # populates docs/ (EN, gitignored) if empty
 ```
@@ -96,7 +98,12 @@ exactly. Per ~15–30-file batch:
 
 ```bash
 LOC=<your-locale>
-git checkout main && git pull && git checkout -b i18n/$LOC-batchN
+# Sync from UPSTREAM, not origin: on a fork `git pull` fetches your own copy,
+# which is stale the moment anyone else's batch merges. Branch from that and
+# you will re-translate files already done and hit conflicts at PR time.
+git checkout main && git fetch upstream main && git merge --ff-only upstream/main
+git push origin main                     # keep the fork's main current too
+git checkout -b i18n/$LOC-batchN
 python translation/scripts/update-translations.py --locale $LOC --auto-fix
 python translation/scripts/update-translations.py --locale $LOC \
   --generate-workfile --output /tmp/$LOC-wf.json \

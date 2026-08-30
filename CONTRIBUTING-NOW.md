@@ -1,11 +1,25 @@
 # What we need right now
 
-*Auto-generated on 2026-08-29 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-08-30 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
 python3 translation/scripts/contributing-status.py --write
 ```
+
+> **Sync your fork before you trust any of this.** These counts
+> describe upstream `main` on the date above. A fork is stale the
+> moment anyone else's round merges, and eligibility is read from
+> `translation/status.json` — which every merged round rewrites. Work
+> from a behind-fork and `--exclude-reviewed` filters against an old
+> verdict set, so you re-review pages that are already done and your
+> PR conflicts with what has landed.
+>
+> ```bash
+> gh repo sync <YOUR-USER>/doQumentation \
+>   --source JanLahmann/doQumentation --branch main
+> git checkout main && git pull
+> ```
 
 **New here?** Read `CONTRIBUTING-REVIEWS.md` (reviewing existing
 translations) or `CONTRIBUTING-TRANSLATIONS.md` (translating new
