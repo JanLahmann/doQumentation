@@ -43,10 +43,10 @@ pool** (at least 25 files). Use it as the starting point.
 | Locale | Unreviewed pool | Use | Reviewed so far |
 |---|---|---|---|
 | `he` | **42** | `--max-leaks 12` | 216/428 (50%) |
-| `de` | **40** | `--max-leaks 12` | 155/428 (36%) |
-| `ro` | **40** | `--max-leaks 12` | 273/428 (63%) |
+| `de` | **39** | `--max-leaks 12` | 155/428 (36%) |
 | `id` | **39** | `--max-leaks 12` | 217/428 (50%) |
-| `th` | **37** | `--max-leaks 12` | 203/428 (47%) |
+| `ro` | **39** | `--max-leaks 12` | 273/428 (63%) |
+| `th` | **36** | `--max-leaks 12` | 203/428 (47%) |
 | `ko` | **34** | `--max-leaks 6` | 229/428 (53%) |
 | `cs` | **30** | `--max-leaks 12` | 254/428 (59%) |
 | `ms` | **28** | `--max-leaks 12` | 270/428 (63%) |
