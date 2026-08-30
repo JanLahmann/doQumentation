@@ -21,9 +21,23 @@ You need a **Claude Max subscription** (the review model is Opus) and
 
 1. Fork <https://github.com/JanLahmann/doQumentation> on GitHub.
 2. Clone your fork and `cd` into it.
-3. Ask the maintainer which **locale** to take (see the table below), so
-   two people don't review the same one.
-4. Open Claude Code in the repo and paste:
+3. **Sync your fork with upstream `main` — every time, not just the first.**
+
+   ```bash
+   gh repo sync <YOUR-USER>/doQumentation --source JanLahmann/doQumentation --branch main
+   git checkout main && git pull
+   ```
+
+   This is not housekeeping. Which files are eligible for review is read
+   from `translation/status.json`, and every merged round updates it. On a
+   fork that is even a few days old, Claude will re-review pages someone
+   already did, and your PR will conflict with what has landed since.
+   See [`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md) after syncing — it is
+   regenerated daily and tells you what is actually left.
+
+4. Ask the maintainer which **locale** to take, so two people don't review
+   the same one.
+5. Open Claude Code in the repo and paste:
 
    > Read `CONTRIBUTING-REVIEWS.md` and run one review round for locale
    > `<LOCALE>`, about `<N>` files. **Use a workflow** for the review and
@@ -71,6 +85,26 @@ python3 translation/scripts/translation-status.py --locale <LOCALE>
 
 If `translation/status.json` is missing, the clone is incomplete — stop and
 say so. There is nothing else to install.
+
+**Then check the fork is current, before drawing any sample:**
+
+```bash
+git remote add upstream https://github.com/JanLahmann/doQumentation.git 2>/dev/null
+git fetch -q upstream main
+git rev-list --count HEAD..upstream/main    # 0 == up to date
+```
+
+If that count is not `0`, **stop and sync before continuing**:
+
+```bash
+git checkout main && git merge --ff-only upstream/main
+```
+
+Do not "work around" a behind-fork by drawing the sample anyway. Eligibility
+comes from `status.json`, which every merged round rewrites; on a stale copy
+`--exclude-reviewed` silently filters against an old verdict set, so you will
+re-review pages that already have verdicts and open a PR that conflicts with
+what has landed. Say plainly that the fork was behind and that you synced.
 
 ### 2. Draw the sample
 
