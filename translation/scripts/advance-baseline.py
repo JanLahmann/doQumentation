@@ -99,6 +99,24 @@ STRICT_TOKEN_RE = re.compile(
 )
 
 
+def _bare(tok: str) -> str:
+    """Token without its backticks, so the two sides compare like with like."""
+    return tok.strip("`").strip()
+
+
+def absent_from(tok: str, text: str) -> bool:
+    """True if `tok` appears nowhere in `text`.
+
+    Substring, not set membership. Mixing the two was a real bug: EN token sets
+    hold the backticked form (`QuantumProgramResult`) because the inline-code
+    branch of the regex consumes it first, while an old passage can yield the
+    bare form. Set lookup then called it "absent from EN" although EN mentions
+    it four times, and the worklist filled up with passages English never
+    deleted. Comparing bare-to-text on both sides removes the asymmetry.
+    """
+    return _bare(tok) not in text
+
+
 def tokens(text: str) -> set[str]:
     """Loose model — used only to decide a passage still LIVES in a translation.
 
@@ -107,6 +125,30 @@ def tokens(text: str) -> set[str]:
     """
     return {t.strip() for t in TOKEN_RE.findall(text)
             if t.strip() not in STOPWORDS and len(t.strip()) >= 3}
+
+
+# Evidence strong enough to put a passage on the WORKLIST. Bare numbers are
+# excluded: "32" or "60" match inside code output ({'01': 334, ...}) and
+# unrelated prose, which made the first worklist badly wrong — it listed
+# de/classical-feedforward-and-control-flow.mdx as still carrying a 32-bit
+# operand limit whose only "32" in that file is the "322" inside a sample
+# output comment. Only inline code and CamelCase identifiers are specific
+# enough to assert a passage survived.
+WORKLIST_TOKEN_RE = re.compile(
+    r"`[^`\n]{2,60}`"
+    r"|\b[A-Z][a-z]+[A-Z][A-Za-z]*\b"
+)
+
+
+def worklist_tokens(text: str) -> set[str]:
+    return {t.strip() for t in WORKLIST_TOKEN_RE.findall(text)
+            if t.strip() not in STOPWORDS and len(t.strip()) >= 3}
+
+
+def prose_of(text: str) -> str:
+    """Translation prose with code fences removed — evidence must not come
+    from a code block, where numbers and identifiers appear incidentally."""
+    return "\n".join(_pu.extract_units(text, mode="lenient"))
 
 
 def strict_tokens(text: str) -> set[str]:
@@ -186,6 +228,7 @@ def main() -> int:
         if not tp.exists():
             continue
         tr_text = tp.read_text(encoding="utf-8")
+        tr_prose = prose_of(tr_text)
         hist = en_history(rel)
         en_tokens_now = tokens(cur_text)
         en_strict_now = strict_tokens(cur_text)
@@ -198,15 +241,18 @@ def main() -> int:
                 continue
             # Keep first, on the loose model: any hint the passage still lives
             # in the translation means real drift, and it stays reported.
-            live = {t for t in tokens(old) if t not in en_tokens_now}
+            live = {_bare(t) for t in tokens(old) if absent_from(t, cur_text)}
             if live and any(t in tr_text for t in live):
                 stats["kept: translation still carries it (real drift)"] += 1
-                stale.append({"locale": loc, "file": rel,
-                              "evidence": sorted(t for t in live if t in tr_text)[:6],
-                              "deleted_en_passage": old[:400]})
+                strong = sorted(_bare(t) for t in worklist_tokens(old)
+                                if absent_from(t, cur_text) and _bare(t) in tr_prose)
+                if strong:
+                    stale.append({"locale": loc, "file": rel,
+                                  "evidence": strong[:6],
+                                  "deleted_en_passage": old[:400]})
                 continue
             # Retire only on the strict model: proof, not absence of evidence.
-            gone = {t for t in strict_tokens(old) if t not in en_strict_now}
+            gone = {_bare(t) for t in strict_tokens(old) if absent_from(t, cur_text)}
             if not gone:
                 stats["kept: no translation-invariant token (cannot prove)"] += 1
                 continue
@@ -215,9 +261,12 @@ def main() -> int:
                 # record both branches or it silently under-reports (it dropped
                 # 471 of 1190 when only the first branch appended).
                 stats["kept: translation still carries it (real drift)"] += 1
-                stale.append({"locale": loc, "file": rel,
-                              "evidence": sorted(t for t in gone if t in tr_text)[:6],
-                              "deleted_en_passage": old[:400]})
+                strong = sorted(_bare(t) for t in worklist_tokens(old)
+                                if absent_from(t, cur_text) and _bare(t) in tr_prose)
+                if strong:
+                    stale.append({"locale": loc, "file": rel,
+                                  "evidence": strong[:6],
+                                  "deleted_en_passage": old[:400]})
                 continue
             retire.append(h)
             stats["RETIRED: EN deleted it and the translation dropped it too"] += 1
