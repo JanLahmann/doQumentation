@@ -270,7 +270,19 @@ def scan_file(path: Path, rules) -> list[tuple[int, str, str, str]]:
     """Return (lineno, match, good, note) hits. Skips fenced code, inline code, anchors."""
     hits = []
     in_fence = False
+    # YAML frontmatter is machine-readable, not prose: notebook_path, slug and
+    # friends must match EN byte-for-byte or code execution breaks. A rule like
+    # "French initialisms take no plural -s" firing on
+    # notebook_path: "guides/retired-qpus.ipynb" is always a false positive,
+    # and --fix acting on it would silently point the page at a notebook that
+    # does not exist.
+    in_front = False
     for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.rstrip() == "---" and (i == 1 or in_front):
+            in_front = not in_front
+            continue
+        if in_front:
+            continue
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
             continue
@@ -287,8 +299,16 @@ def scan_file(path: Path, rules) -> list[tuple[int, str, str, str]]:
 
 def fix_file(path: Path, rules) -> int:
     out_lines, n, in_fence = [], 0, False
+    in_front, lineno = False, 0
     for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
         body = line.rstrip("\n")
+        lineno += 1
+        # Never rewrite frontmatter — see the note in scan_file.
+        if body.rstrip() == "---" and (lineno == 1 or in_front):
+            in_front = not in_front
+            out_lines.append(line); continue
+        if in_front:
+            out_lines.append(line); continue
         if body.lstrip().startswith("```"):
             in_fence = not in_fence
             out_lines.append(line); continue
