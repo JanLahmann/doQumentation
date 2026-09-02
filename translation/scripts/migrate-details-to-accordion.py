@@ -131,16 +131,32 @@ def migrate_block(inner: str, en_title: str, answer_label: str) -> tuple[str, st
             f"</AccordionItem>\n</Accordion>", "titled")
 
 
-def migrate_text(text: str, en_titles: list[str], answer_label: str) -> tuple[str, dict]:
+def migrate_text(text: str, en_titles: list[str], answer_label: str,
+                 en_has_instruction: bool = False) -> tuple[str, dict]:
     """Rewrite every <details> block, pairing each with EN's title by position."""
     stats = {"qa": 0, "titled": 0, "skipped": 0, "instruction": 0}
     blocks = list(re.finditer(r"[ \t]*<details>\n?(.*?)</details>[ \t]*", text, re.S))
-    if len(blocks) != len(en_titles):
+
+    # A file can be PARTLY migrated already — some blocks are <AccordionItem>,
+    # the rest still <details>. Counting only <details> against EN's item total
+    # then reports a false mismatch and skips a file that is perfectly mappable:
+    # id/asymmetric-key-cryptography has 8 details + 5 AccordionItems = EN's 13.
+    # Pair by DOCUMENT ORDER over both kinds, and migrate only the <details>.
+    existing = [(m.start(), "item") for m in re.finditer(r"<AccordionItem\b", text)]
+    ordered = sorted([(m.start(), "details") for m in blocks] + existing)
+    if len(ordered) != len(en_titles):
         stats["skipped"] = len(blocks)
         return text, stats                      # parity broken — never guess
+    title_for = {}
+    bi = 0
+    for (pos, kind), en_title in zip(ordered, en_titles):
+        if kind == "details":
+            title_for[blocks[bi].start()] = en_title
+            bi += 1
 
     out, pos = [], 0
-    for m, en_title in zip(blocks, en_titles):
+    for m in blocks:
+        en_title = title_for[m.start()]
         rep = migrate_block(m.group(1), en_title, answer_label)
         if rep is None:
             stats["skipped"] += 1
@@ -149,7 +165,15 @@ def migrate_text(text: str, en_titles: list[str], answer_label: str) -> tuple[st
         stats[shape] += 1
         head = text[pos:m.start()]
         hl = head.rstrip("\n").split("\n")
-        if hl and TRIANGLE.search(hl[-1]) and not hl[-1].lstrip().startswith("#"):
+        # Only drop the instruction if ENGLISH dropped it. Removing it
+        # unconditionally deleted a line English still has from 49 translations
+        # across three files (skqd.mdx, introduction-to-quantum-computing.mdx,
+        # how-to-become-quantum-ready.mdx) — and shifting the paragraph
+        # alignment that way also produced a false "paragraph inflation"
+        # validation failure in tl. Same per-file test the survey-paragraph
+        # removal uses: compare against this file's own English counterpart.
+        if (not en_has_instruction and hl
+                and TRIANGLE.search(hl[-1]) and not hl[-1].lstrip().startswith("#")):
             hl = hl[:-1]
             stats["instruction"] += 1
             head = "\n".join(hl) + "\n\n"
@@ -242,7 +266,9 @@ def main() -> int:
             if "<details>" not in text:
                 continue
             titles = en_accordion_titles(rel)
-            new_text, st = migrate_text(text, titles, fallback)
+            en_text = (DOCS / rel).read_text(encoding="utf-8")
+            new_text, st = migrate_text(text, titles, fallback,
+                                        en_has_instruction=bool(TRIANGLE.search(en_text)))
             if new_text == text:
                 if st["skipped"]:
                     parity_skipped.append(
