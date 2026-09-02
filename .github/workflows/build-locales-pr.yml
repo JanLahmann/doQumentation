@@ -1,0 +1,127 @@
+name: Build locales (PR)
+
+# CI builds EN only, and the all-locale build lives in deploy-locales.yml, which
+# runs on push to main and *deploys* as it goes. So a change that breaks MDX in a
+# translation is not caught until after it is merged and published — the EN build
+# cannot see locale content at all.
+#
+# This closes that gap: the same build steps as deploy-locales.yml, minus the
+# encrypt and deploy steps, run on the PR. Nothing is published.
+#
+# Scoped to the locales the PR actually touches, so a normal review round builds
+# 3-5 locales rather than 26. A corpus-wide change builds all 17 main locales in
+# parallel — minutes of wall clock instead of hours, and no local disk cost
+# (a full local sweep needs ~6 GB of webpack cache per locale).
+
+on:
+  pull_request:
+    paths:
+      - 'i18n/**'
+      - 'docs/**'
+      - 'src/**'
+      - 'docusaurus.config.ts'
+      - 'sidebars.ts'
+      - '.github/workflows/build-locales-pr.yml'
+  workflow_dispatch:
+    inputs:
+      locales:
+        description: 'JSON array of locales, e.g. ["it","ar"]. Empty = all main locales.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: build-locales-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pick-locales:
+    runs-on: ubuntu-latest
+    outputs:
+      locales: ${{ steps.pick.outputs.locales }}
+      count: ${{ steps.pick.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Decide which locales to build
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The 9 German dialects are deliberately unmaintained and excluded from
+          # every gate, so they are never built here either.
+          MAIN='["ar","cs","de","es","fr","he","id","it","ja","ko","ms","pl","pt","ro","th","tl","uk"]'
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            IN='${{ github.event.inputs.locales }}'
+            LOCALES="${IN:-$MAIN}"
+          else
+            # Files come from the PR API, not `git diff`: checkout is shallow and
+            # a base..HEAD diff would need fetch-depth: 0.
+            gh pr view "${{ github.event.pull_request.number }}" \
+               --repo "$GITHUB_REPOSITORY" --json files -q '.files[].path' > files.txt
+
+            # A change outside i18n/ (docs/, src/, config) can break every locale,
+            # so build them all in that case.
+            if grep -qvE '^i18n/' files.txt; then
+              LOCALES="$MAIN"
+            else
+              LOCALES=$(sed -n 's|^i18n/\([a-z][a-z]*\)/.*|\1|p' files.txt \
+                        | sort -u \
+                        | jq -R . | jq -sc "map(select(. as $l | $MAIN | index($l)))")
+              [ "$LOCALES" = "[]" ] && LOCALES="$MAIN"
+            fi
+          fi
+          echo "locales=$LOCALES" >> "$GITHUB_OUTPUT"
+          echo "count=$(echo "$LOCALES" | jq 'length')" >> "$GITHUB_OUTPUT"
+          echo "Building: $LOCALES"
+
+  build:
+    needs: pick-locales
+    if: needs.pick-locales.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      # One broken locale must not cancel the others — the whole point is to
+      # learn which locales break, not just that one did.
+      fail-fast: false
+      matrix:
+        locale: ${{ fromJson(needs.pick-locales.outputs.locales) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      # Same preparation as deploy-locales.yml — a locale build needs docs/
+      # synced, fallbacks populated and notebooks generated, or it fails for
+      # reasons unrelated to the change under review.
+      - name: Sync upstream content
+        run: python3 scripts/sync-content.py
+
+      - name: Populate locale fallbacks
+        run: python3 translation/scripts/translate-content.py populate-locale --locale ${{ matrix.locale }}
+
+      - name: Generate translated notebooks
+        run: python3 scripts/sync-content.py --generate-locale-notebooks --locale ${{ matrix.locale }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No encrypt step and no deploy step: this verifies, it never publishes.
+      - name: Build locale site
+        run: npx docusaurus build --locale ${{ matrix.locale }}
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
+          DQ_LOCALE_URL: 'https://${{ matrix.locale }}.doqumentation.org'
