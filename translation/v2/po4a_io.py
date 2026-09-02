@@ -337,6 +337,10 @@ def set_header(po: polib.POFile, rel: str, locale: str | None, **extra: str) -> 
         po.metadata["Language"] = locale
     for k, v in extra.items():
         po.metadata[f"X-Doq-{k}"] = str(v)
+    # Timestamps would make every extraction a diff; the EN hash says what
+    # the file was made from, git says when.
+    for k in ("POT-Creation-Date", "PO-Revision-Date"):
+        po.metadata.pop(k, None)
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +367,7 @@ def extract(rel: str, write: bool = True) -> polib.POFile:
         out.unlink(missing_ok=True)
     for e in pot:
         e.occurrences = []            # temp-file names are noise
-    set_header(pot, rel, None, Extracted=date.today().isoformat())
+    set_header(pot, rel, None)
     if write:
         p = pot_path(rel)
         p.parent.mkdir(parents=True, exist_ok=True)

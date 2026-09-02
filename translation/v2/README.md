@@ -81,7 +81,7 @@ comments are removed before alignment.
 
 | | |
 |---|---|
-| English pages | 424, all extract, all round-trip, 25,291 translatable entries |
+| English pages | 424, all extract, all round-trip, 25,451 translatable entries |
 | German bootstrap | 305 pages exact, 117 positional, 0 failed; 26,394 of 26,495 entries paired (99.6%) |
 | German render vs the old file | 304 of 422 identical; the rest differ by design (below) |
 | German rendered pages passing the v1 MDX lint | 422 of 422 |
