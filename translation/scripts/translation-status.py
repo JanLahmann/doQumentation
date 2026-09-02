@@ -248,9 +248,19 @@ def run_validation_for_locale(locale: str, status: dict) -> tuple[int, int]:
         if "status" not in entry:
             entry["status"] = "promoted"
 
-        # Compute source hash
+        # Record which EN this file was VALIDATED against — NOT its provenance.
+        # These are different facts and conflating them created a real defect:
+        # validation is structural (line counts, LaTeX, JSX) and says nothing
+        # about whether the content tracks EN's meaning, so writing
+        # `source_hash` here silently promoted "we ran the validator" into
+        # "this was translated from that EN". `run_stamp` then trusted it and
+        # stamped the file fresh. That is how guides/job-limits.mdx kept a
+        # pre-sync paragraph in six locales under a current hash: commit
+        # aedf014a1 ("refresh 2 stale translations (ko, ro)") advanced es's
+        # source_hash without touching the es file at all.
+        # Provenance is written only by the translate/refresh/promote path.
         en_content = en_path.read_text(encoding="utf-8")
-        entry["source_hash"] = compute_source_hash(en_content)
+        entry["validated_against"] = compute_source_hash(en_content)
 
         status[locale][rel] = entry
 

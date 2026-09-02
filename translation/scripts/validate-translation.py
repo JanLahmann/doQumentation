@@ -1169,11 +1169,15 @@ def record_results(reports: list["FileReport"], locale: str,
         if "status" not in entry:
             entry["status"] = "draft" if is_drafts else "promoted"
 
-        # Compute source hash from EN file
+        # Which EN this file was VALIDATED against — NOT its provenance.
+        # See the matching note in translation-status.py: validation is
+        # structural and cannot attest that the content tracks EN's meaning,
+        # so it must not write `source_hash`, which run_stamp treats as proof
+        # a translation was made from that EN.
         en_path = DOCS_DIR / rel
         if en_path.exists():
             en_content = en_path.read_text(encoding="utf-8")
-            entry["source_hash"] = compute_source_hash(en_content)
+            entry["validated_against"] = compute_source_hash(en_content)
 
         status[locale][rel] = entry
 

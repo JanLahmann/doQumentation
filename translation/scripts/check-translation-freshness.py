@@ -37,6 +37,42 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
 I18N_DIR = REPO_ROOT / "i18n"
+BASELINE_FILE = REPO_ROOT / "translation" / "baseline-hashes.json"
+
+# Shared prose-unit extractor, for the stamp gate's drift check below.
+import importlib.util as _ilu
+_pu_spec = _ilu.spec_from_file_location(
+    "passage_units", Path(__file__).resolve().parent / "passage_units.py")
+_passage_units = _ilu.module_from_spec(_pu_spec)
+_pu_spec.loader.exec_module(_passage_units)
+
+_baselines_cache: dict | None = None
+
+
+def _load_baselines() -> dict:
+    global _baselines_cache
+    if _baselines_cache is None:
+        _baselines_cache = (json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+                            if BASELINE_FILE.exists() else {})
+    return _baselines_cache
+
+
+def has_passage_drift(locale: str, rel: str, en_content: str) -> bool:
+    """True if EN paragraphs have changed since this translation was made.
+
+    Reads `baseline-hashes.json`, which — unlike status.json's `source_hash` —
+    has never been rewritten by a bulk pass and is therefore the only
+    uncorrupted provenance record in the repo. Absent a baseline we cannot
+    prove currency, so we report drift and let the caller withhold.
+    """
+    sidecar = _load_baselines().get(f"{locale}/{rel}")
+    if not sidecar:
+        return True
+    baseline = set(sidecar.get("hashes", []))
+    if not baseline:
+        return True
+    current = set(_passage_units.hash_units(en_content, mode="lenient"))
+    return bool(baseline - current)
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
 ALL_LOCALES = [
@@ -255,15 +291,26 @@ def run_stamp(locales: list[str], dry_run: bool = False) -> int:
     where the translation is PROVABLY current against the EN it was last
     validated against.
 
-    Safeguard (do NOT mark fresh accidentally): a file is stamped only when
-    its recorded provenance hash in status.json (`source_hash`) equals the
-    hash of the *current* EN file. That means the EN has been byte-identical
-    since this translation was last reviewed/validated, so stamping it FRESH
-    is truthful. Any file whose recorded hash differs from (or is missing
-    against) the current EN is WITHHELD — left UNKNOWN/drifted for genuine
-    reconcile/re-review, never auto-stamped. A blanket stamp (which the old
-    implementation did) could silently mark a drifted file as fresh; this
-    gate prevents that.
+    TWO safeguards, because the first one alone proved insufficient.
+
+    1. `status.json` `source_hash` must equal the hash of the current EN.
+    2. No passage drift: every EN paragraph this translation was built from
+       must still be present in current EN (`baseline-hashes.json`).
+
+    Gate 1 was the original safeguard and it is only as trustworthy as
+    `source_hash` — which, until 2026-09-02, structural validation rewrote
+    unconditionally for every file it touched. That made the gate circular:
+    running the validator was enough to authorize a stamp. Six locales of
+    guides/job-limits.mdx passed it while still carrying a paragraph upstream
+    had replaced months earlier, because commit aedf014a1 advanced their
+    source_hash without editing them.
+
+    Gate 2 closes that, including for the entries corrupted before the split,
+    by consulting the one record no bulk pass has ever rewritten. A file
+    without a baseline cannot prove currency and is withheld too.
+
+    Anything withheld is left UNKNOWN/drifted for a genuine reconcile or
+    re-review, never auto-stamped.
 
     Returns a nonzero exit code if any file was withheld (so CI/automation
     can notice files that need real attention).
@@ -304,6 +351,23 @@ def run_stamp(locales: list[str], dry_run: bool = False) -> int:
                 why = ("no status provenance" if recorded is None
                        else f"status source_hash {recorded} != current EN {current_hash}")
                 withheld_detail.append((locale, rel, why))
+                continue
+
+            # SECOND GATE, against the uncorrupted record.
+            # The check above is only as trustworthy as `source_hash`, and
+            # `source_hash` was written unconditionally by structural
+            # validation until 2026-09-02 — so for every file validated before
+            # then it proves nothing. guides/job-limits.mdx passed that gate in
+            # six locales while carrying a paragraph EN had replaced months
+            # earlier. baseline-hashes.json has never been bulk-rewritten, so
+            # ask it instead: if any EN paragraph this translation was built
+            # from is gone from current EN, the file is not provably current
+            # and must not be stamped fresh.
+            if has_passage_drift(locale, rel, en_content):
+                total_withheld += 1
+                withheld_detail.append(
+                    (locale, rel, "EN passages changed since this translation "
+                                  "was made (baseline drift) — needs a real refresh"))
                 continue
             # --------------------------------------------------------------
 
@@ -362,9 +426,11 @@ def main():
     parser.add_argument(
         "--stamp",
         action="store_true",
-        help="Stamp source hashes — ONLY where status.json proves currency "
-             "(source_hash == current EN hash). Drifted/unproven files are "
-             "withheld, never auto-stamped.",
+        help="Stamp source hashes — ONLY where currency is provable on BOTH "
+             "records: status.json source_hash == current EN, AND no EN "
+             "passage the translation was built from has changed "
+             "(baseline-hashes.json). Drifted/unproven files are withheld, "
+             "never auto-stamped.",
     )
     parser.add_argument(
         "--dry-run",
