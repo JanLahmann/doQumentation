@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-01 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-02 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -42,28 +42,28 @@ pool** (at least 25 files). Use it as the starting point.
 
 | Locale | Unreviewed pool | Use | Reviewed so far |
 |---|---|---|---|
-| `he` | **42** | `--max-leaks 12` | 216/428 (50%) |
-| `de` | **39** | `--max-leaks 12` | 155/428 (36%) |
-| `id` | **39** | `--max-leaks 12` | 217/428 (50%) |
-| `ro` | **39** | `--max-leaks 12` | 273/428 (63%) |
-| `th` | **36** | `--max-leaks 12` | 203/428 (47%) |
-| `ko` | **34** | `--max-leaks 6` | 229/428 (53%) |
-| `cs` | **30** | `--max-leaks 12` | 254/428 (59%) |
-| `ms` | **28** | `--max-leaks 12` | 270/428 (63%) |
-| `pl` | **28** | `--max-leaks 12` | 281/428 (65%) |
+| `he` | **40** | `--max-leaks 12` | 224/428 (52%) |
+| `de` | **38** | `--max-leaks 12` | 163/428 (38%) |
+| `id` | **36** | `--max-leaks 12` | 225/428 (52%) |
+| `ro` | **34** | `--max-leaks 12` | 281/428 (65%) |
+| `th` | **34** | `--max-leaks 12` | 211/428 (49%) |
+| `ko` | **32** | `--max-leaks 6` | 237/428 (55%) |
+| `pl` | **26** | `--max-leaks 12` | 289/428 (67%) |
+| `cs` | **25** | `--max-leaks 12` | 262/428 (61%) |
+| `ms` | **25** | `--max-leaks 12` | 278/428 (64%) |
 
 **Nearly exhausted** (fewer than 25 eligible even at
 `--max-leaks 12`) — still worth a short round, but expect
 to widen further or re-sweep files that already carry a verdict:
 
-- `tl` — 16 left at `--max-leaks 12` (346/428 reviewed)
-- `pt` — 10 left at `--max-leaks 12` (349/428 reviewed)
-- `it` — 6 left at `--max-leaks 12` (351/428 reviewed)
-- `fr` — 3 left at `--max-leaks 12` (357/428 reviewed)
-- `ja` — 3 left at `--max-leaks 12` (338/428 reviewed)
-- `ar` — 2 left at `--max-leaks 12` (352/428 reviewed)
-- `es` — 1 left at `--max-leaks 12` (357/428 reviewed)
-- `uk` — 0 left at `--max-leaks 12` (337/428 reviewed)
+- `tl` — 8 left at `--max-leaks 12` (354/428 reviewed)
+- `pt` — 2 left at `--max-leaks 12` (357/428 reviewed)
+- `ja` — 1 left at `--max-leaks 12` (346/428 reviewed)
+- `ar` — 0 left at `--max-leaks 12` (356/428 reviewed)
+- `es` — 0 left at `--max-leaks 12` (360/428 reviewed)
+- `fr` — 0 left at `--max-leaks 12` (361/428 reviewed)
+- `it` — 0 left at `--max-leaks 12` (359/428 reviewed)
+- `uk` — 0 left at `--max-leaks 12` (345/428 reviewed)
 
 The 9 German dialects (`aut bad bar bln gsw ksh nds sax swg`) are kept
 but deliberately unmaintained. **Never review or translate them** — they
