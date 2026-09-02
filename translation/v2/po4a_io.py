@@ -313,9 +313,11 @@ def adopt(po: polib.POFile) -> polib.POFile:
                 e.msgstr = ANCHOR_IN_TEXT_RE.sub("", e.msgstr).rstrip() + " " + m.group(0)
         # An inherited translation that lost or altered a tag would break the
         # page; render English for it and let the worklist pick it up.
-        if e.msgstr and any("tag mismatch" in p for p in _check(e.msgid, e.msgstr)):
-            e.tcomment = "doq-bootstrap: dropped, JSX/HTML tags differ from English: " + e.msgstr[:60].replace("\n", " ")
-            e.msgstr = ""
+        if e.msgstr:
+            structural = [p for p in _check(e.msgid, e.msgstr) if "tag mismatch" in p or "count mismatch" in p]
+            if structural:
+                e.tcomment = "doq-bootstrap: dropped (" + structural[0] + "): " + e.msgstr[:60].replace("\n", " ")
+                e.msgstr = ""
     return po
 
 
