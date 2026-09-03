@@ -44,8 +44,16 @@ def _math(text: str) -> Counter:
 
 
 def _math_problem(msgid: str, msgstr: str) -> str | None:
-    """Strict multiset first; otherwise tolerate a merge or split of one
-    span ($X$ ... $0$ -> $X = 0$), but never a lost formula."""
+    """Display math ($$...$$) must match exactly: a dropped block leaves the
+    page's $$ delimiters unbalanced and MDX then reads the rest as an
+    expression (it broke the German phase-estimation page). Inline spans
+    are compared as a multiset, tolerating a merge or split of one span
+    ($X$ ... $0$ -> $X = 0$), but never a lost formula."""
+    # Count delimiters, not block text: whitespace inside a block is free to
+    # change, but one $$ more or less than the source unbalances the page.
+    if msgid.count("$$") != msgstr.count("$$"):
+        return (f"display math mismatch: {msgid.count('$$')} $$ delimiter(s) in source, "
+                f"{msgstr.count('$$')} in translation")
     a, b = _math(msgid), _math(msgstr)
     if a == b:
         return None
@@ -58,12 +66,35 @@ def _math_problem(msgid: str, msgstr: str) -> str | None:
     return "math mismatch: " + (f"missing {', '.join(repr(m[:40]) for m in missing[:3])}" if missing else f"{na} spans in source, {nb} in translation")
 
 
+PROSE_SPAN_RE = re.compile(r"^`[\s.,;:!?)]|[\s.,;:(]`$")
+
+
 def _code_spans(text: str) -> Counter:
     """Inline code spans, ignoring the artefact an odd backtick produces: with
     "`a` and `b`" tokenised one backtick off, the prose between two spans
-    ("` and `") is caught as a span. Real code never starts and ends with a
-    space, so those are dropped from both sides."""
-    return Counter(m for m in INLINE_CODE_RE.findall(text) if not (m.startswith("` ") and m.endswith(" `")))
+    ("` and `", "`. So for this problem: `") is caught as a span. Real code
+    does not start or end with whitespace or sentence punctuation, so those
+    are dropped from both sides."""
+    return Counter(m for m in INLINE_CODE_RE.findall(text) if not PROSE_SPAN_RE.search(m))
+
+
+def _code_problem(msgid: str, msgstr: str) -> str | None:
+    if msgid.count("`") % 2 == 1:
+        # Unbalanced source: span contents cannot be paired reliably; the
+        # translation must at least keep the same number of backticks.
+        if msgid.count("`") != msgstr.count("`"):
+            return f"inline code mismatch: {msgid.count('`')} backticks in source, {msgstr.count('`')} in translation"
+        return None
+    a, b = _code_spans(msgid), _code_spans(msgstr)
+    if a == b:
+        return None
+    missing, extra = list((a - b).elements()), list((b - a).elements())
+    detail = []
+    if missing:
+        detail.append("missing " + ", ".join(repr(m[:40]) for m in missing[:3]))
+    if extra:
+        detail.append("added " + ", ".join(repr(e[:40]) for e in extra[:3]))
+    return "inline code mismatch: " + "; ".join(detail)
 
 
 def _urls(text: str) -> Counter:
@@ -82,7 +113,6 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
     # entry would render the same English anyway. apply() annotates them.
 
     pairs = [
-        ("inline code", _code_spans(msgid), _code_spans(msgstr)),
         ("URL", _urls(msgid), _urls(msgstr)),
         ("image path", Counter(IMAGE_RE.findall(msgid)), Counter(IMAGE_RE.findall(msgstr))),
         ("JSX tag", Counter(JSX_TAG_RE.findall(msgid)), Counter(JSX_TAG_RE.findall(msgstr))),
@@ -110,6 +140,9 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
     mp = _math_problem(msgid, msgstr)
     if mp:
         problems.append(mp)
+    cp = _code_problem(msgid, msgstr)
+    if cp:
+        problems.append(cp)
 
     m = DOQ_PREFIX_RE.match(msgid)
     if m and not msgstr.startswith(m.group(1)):
@@ -129,4 +162,5 @@ if __name__ == "__main__":  # tiny self-test
     assert "prefix" in check_entry("DOQ-ADMONITION-TITLE: Note", "Hinweis")[0]
     assert check_entry("Let $\\text{heads}$ be $X$ and $0$.", "Sei $\\text{Kopf}$ gleich $X = 0$.") == []
     assert any("math" in p for p in check_entry("Then $E = mc^2$ holds.", "Dann gilt E = mc2."))
+    assert any("display math" in p for p in check_entry("We get\n$$\nx = 1\n$$\nso", "Wir erhalten also"))
     print("check.py self-test ok")
