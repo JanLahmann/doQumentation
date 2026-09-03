@@ -28,6 +28,14 @@ def main() -> int:
     args = ap.parse_args()
 
     pages = [args.page] if args.page else io.all_pages()
+    if not args.page:
+        # A page upstream deleted leaves a template behind; drop it so
+        # update.py can drop the matching memories.
+        live = {str(io.pot_path(rel)) for rel in pages}
+        for stale in io.POT_DIR.rglob("*.pot"):
+            if str(stale) not in live:
+                stale.unlink()
+                print(f"removed template for deleted page: {stale.relative_to(io.POT_DIR)}")
     ok = failed = mismatch = 0
     entries = 0
     for rel in pages:

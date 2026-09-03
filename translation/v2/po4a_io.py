@@ -274,6 +274,8 @@ def translatable(e: polib.POEntry) -> bool:
         return False
     if s.startswith("<") and not re.search(r'\b(title|label|description|summary)="', s):
         return False              # bare JSX/HTML with no text prop
+    if s.startswith("```"):
+        return False              # a fence chunk inside a list item, handed over as prose
     return True
 
 

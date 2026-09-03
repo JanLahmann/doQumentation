@@ -31,14 +31,45 @@ TABLE_ROW_RE = re.compile(r"^\s*\|", re.M)
 FENCE_LINE_RE = re.compile(r"^\s*```", re.M)
 
 
+TEXT_IN_MATH_RE = re.compile(r"\\(?:text|mathrm|textrm|mbox)\{[^}]*\}")
+
+
 def _math(text: str) -> Counter:
+    """Math spans with \\text{...} contents masked: words inside math are
+    translated (heads -> Kopf) and that is correct."""
     display = DISPLAY_MATH_RE.findall(text)
     rest = DISPLAY_MATH_RE.sub("", text)
-    return Counter(display) + Counter(INLINE_MATH_RE.findall(rest))
+    spans = display + INLINE_MATH_RE.findall(rest)
+    return Counter(TEXT_IN_MATH_RE.sub(r"\\text{}", m) for m in spans)
+
+
+def _math_problem(msgid: str, msgstr: str) -> str | None:
+    """Strict multiset first; otherwise tolerate a merge or split of one
+    span ($X$ ... $0$ -> $X = 0$), but never a lost formula."""
+    a, b = _math(msgid), _math(msgstr)
+    if a == b:
+        return None
+    na, nb = sum(a.values()), sum(b.values())
+    if na and nb == 0:
+        return "math mismatch: all math dropped"
+    if abs(na - nb) <= 1 and nb >= na - 1:
+        return None
+    missing = list((a - b).elements())
+    return "math mismatch: " + (f"missing {', '.join(repr(m[:40]) for m in missing[:3])}" if missing else f"{na} spans in source, {nb} in translation")
+
+
+def _code_spans(text: str) -> Counter:
+    """Inline code spans, ignoring the artefact an odd backtick produces: with
+    "`a` and `b`" tokenised one backtick off, the prose between two spans
+    ("` and `") is caught as a span. Real code never starts and ends with a
+    space, so those are dropped from both sides."""
+    return Counter(m for m in INLINE_CODE_RE.findall(text) if not (m.startswith("` ") and m.endswith(" `")))
 
 
 def _urls(text: str) -> Counter:
-    return Counter(a or b for a, b in URL_RE.findall(text))
+    # A bare URL followed by punctuation is captured with it; the comma or
+    # full stop belongs to the sentence and may move in translation.
+    return Counter((a or b).rstrip(".,;:") for a, b in URL_RE.findall(text))
 
 
 def check_entry(msgid: str, msgstr: str) -> list[str]:
@@ -46,14 +77,14 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
     problems: list[str] = []
     if not msgstr.strip():
         return ["empty translation"]
-    if msgstr.strip() == msgid.strip() and len(msgid.split()) >= 4:
-        problems.append("translation identical to source")
+    # An identical msgstr is not rejected: proper names and code chunks that
+    # po4a hands over as prose are legitimately left in English, and an empty
+    # entry would render the same English anyway. apply() annotates them.
 
     pairs = [
-        ("inline code", Counter(INLINE_CODE_RE.findall(msgid)), Counter(INLINE_CODE_RE.findall(msgstr))),
+        ("inline code", _code_spans(msgid), _code_spans(msgstr)),
         ("URL", _urls(msgid), _urls(msgstr)),
         ("image path", Counter(IMAGE_RE.findall(msgid)), Counter(IMAGE_RE.findall(msgstr))),
-        ("math", _math(msgid), _math(msgstr)),
         ("JSX tag", Counter(JSX_TAG_RE.findall(msgid)), Counter(JSX_TAG_RE.findall(msgstr))),
         ("HTML tag", Counter(HTML_TAG_RE.findall(msgid)), Counter(HTML_TAG_RE.findall(msgstr))),
         ("heading anchor", Counter(ANCHOR_RE.findall(msgid)), Counter(ANCHOR_RE.findall(msgstr))),
@@ -76,6 +107,10 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
                 detail.append("added " + ", ".join(repr(e[:40]) for e in extra[:3]))
             problems.append(f"{name} mismatch: " + "; ".join(detail))
 
+    mp = _math_problem(msgid, msgstr)
+    if mp:
+        problems.append(mp)
+
     m = DOQ_PREFIX_RE.match(msgid)
     if m and not msgstr.startswith(m.group(1)):
         problems.append(f"must keep the {m.group(1)} prefix")
@@ -90,5 +125,8 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
 if __name__ == "__main__":  # tiny self-test
     assert check_entry("Run `foo` at [x](https://a.b).", "Führe `foo` unter [x](https://a.b) aus.") == []
     assert check_entry("Run `foo`.", "Führe foo aus.") == ["inline code mismatch: missing '`foo`'"]
+    assert check_entry("IBM Quantum Compute Service (Manager, Administrator)", "IBM Quantum Compute Service (Manager, Administrator)") == []
     assert "prefix" in check_entry("DOQ-ADMONITION-TITLE: Note", "Hinweis")[0]
+    assert check_entry("Let $\\text{heads}$ be $X$ and $0$.", "Sei $\\text{Kopf}$ gleich $X = 0$.") == []
+    assert any("math" in p for p in check_entry("Then $E = mc^2$ holds.", "Dann gilt E = mc2."))
     print("check.py self-test ok")

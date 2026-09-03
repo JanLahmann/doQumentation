@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po4a_io as io  # noqa: E402
 from check import check_entry  # noqa: E402
 
-BATCH_WORDS = 1500          # about a page of prose per model call
+BATCH_WORDS = 4000          # a few pages of prose per model call; agent overhead dominates below that
 LANGUAGE_TABLE = io.REPO / "translation" / "translation-prompt.md"
 
 
@@ -170,6 +170,8 @@ def apply(locale: str) -> int:
             e.msgstr = msgstr
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
+            if msgstr.strip() == e.msgid.strip():
+                e.tcomment = "doq: kept in English by the translator (name or code)"
             accepted += 1
         po.save(str(po_file))
     print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}")
