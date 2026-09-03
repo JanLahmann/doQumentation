@@ -52,7 +52,8 @@ to notebook output can never make a translation stale.
 | `translate.py --locale X --prepare` | after update | Writes `work/X/batch-NNN.json` and `instructions.md`. Anything that can fill `msgstr` in JSON can translate: a Claude Code agent, the Anthropic API (`--backend anthropic`, untested here), a human. |
 | `translate.py --locale X --apply` | after the batches are filled | Runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
 | `render.py --locale X [--out-dir D]` | at build time, or to preview | POT + PO → locale MDX, with the v1 freshness marker so v1 tools keep working during the migration. |
-| `check.py` | inside apply and bootstrap | Multiset comparison of everything that must survive translation: inline code, URLs, image paths, math, JSX/HTML tags, `{#anchors}`, MDX comments. |
+| `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
+| `mdxcheck.mjs` | after render, before commit | Compiles every rendered page with MDX 3 + math + GFM + directives the way Docusaurus does (front matter stripped, heading anchors escaped) and lists the pages acorn rejects. The only check that asks the real parser; the German run needed it twice. |
 | `po4a_io.py` | library | Everything above calls into it. Pre-rules, po4a wrappers, PO hygiene. |
 
 ### The pre-rules (read `po4a_io.py`'s docstring, they matter)
@@ -118,8 +119,9 @@ python3 translation/v2/translate.py --locale fr --prepare
 #    fill work/fr/batch-*.json (agent, API, or human), following work/fr/instructions.md
 python3 translation/v2/translate.py --locale fr --apply       # rejects go back on the worklist
 
-# 3. Render, lint, build, commit the PO files (never the rendered MDX by hand).
+# 3. Render, gate, commit the PO files (never the rendered MDX by hand).
 python3 translation/v2/render.py --locale fr
+find i18n/fr/docusaurus-plugin-content-docs/current -name '*.mdx' -print0 | xargs -0 node translation/v2/mdxcheck.mjs
 python3 translation/scripts/lint-translation.py --locale fr
 git add i18n/fr/po translation/v2/pot && git commit
 ```
@@ -165,7 +167,7 @@ German with new English and fail on every changed page.
 ## Dependencies
 
 `po4a` ≥ 0.74 and GNU gettext (`msgmerge`, `msgattrib`) on PATH; Python
-`polib`. macOS: `brew install po4a gettext`; Debian/Ubuntu: `apt-get install
+`polib`; for `mdxcheck.mjs` the repository's `node_modules` (`npm ci`). macOS: `brew install po4a gettext`; Debian/Ubuntu: `apt-get install
 po4a gettext`. Tests: `python3 -m pytest translation/v2/tests -q` (po4a tests
 skip when it is missing).
 

@@ -274,6 +274,8 @@ def translatable(e: polib.POEntry) -> bool:
         return False
     if s.startswith("<") and not re.search(r'\b(title|label|description|summary)="', s):
         return False              # bare JSX/HTML with no text prop
+    if s.startswith("```"):
+        return False              # a fence chunk inside a list item, handed over as prose
     return True
 
 
@@ -311,12 +313,16 @@ def adopt(po: polib.POFile) -> polib.POFile:
             m = re.search(r"\{#[^}]+\}", e.msgid)
             if m:
                 e.msgstr = ANCHOR_IN_TEXT_RE.sub("", e.msgstr).rstrip() + " " + m.group(0)
-        # An inherited translation that lost or altered a tag would break the
-        # page; render English for it and let the worklist pick it up.
-        if e.msgstr:
-            structural = [p for p in _check(e.msgid, e.msgstr) if "tag mismatch" in p or "count mismatch" in p]
-            if structural:
-                e.tcomment = "doq-bootstrap: dropped (" + structural[0] + "): " + e.msgstr[:60].replace("\n", " ")
+        # An inherited translation that fails any structural check (tags,
+        # table rows, fences, $$ delimiters, code spans, URLs, math, anchors)
+        # is emptied: it renders as English and lands on the worklist. The
+        # German run showed why the full checker is needed here, not just
+        # tags: 83 entries had a display block attached to the neighbouring
+        # paragraph and one of them broke the locale build.
+        if e.msgstr and translatable(e):
+            problems = _check(e.msgid, e.msgstr)
+            if problems:
+                e.tcomment = "doq-bootstrap: dropped (" + problems[0][:80] + "): " + e.msgstr[:60].replace("\n", " ")
                 e.msgstr = ""
     return po
 

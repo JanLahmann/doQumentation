@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po4a_io as io  # noqa: E402
 
 
-def worklist(locale: str, pages: list[str]) -> tuple[list[dict], Counter, list[str]]:
+def worklist(locale: str, pages: list[str], init_missing: bool = False) -> tuple[list[dict], Counter, list[str]]:
     items: list[dict] = []
     counts: Counter = Counter()
     no_po: list[str] = []
@@ -41,9 +41,17 @@ def worklist(locale: str, pages: list[str]) -> tuple[list[dict], Counter, list[s
         if not pot.exists():
             continue
         if not po.exists():
-            no_po.append(rel)
-            counts["pages without PO"] += 1
-            continue
+            if not init_missing:
+                no_po.append(rel)
+                counts["pages without PO"] += 1
+                continue
+            # New upstream page: seed an empty memory from the POT so its
+            # entries appear on the worklist like any other untranslated ones.
+            seed = polib.pofile(str(pot), wrapwidth=0)
+            io.set_header(seed, rel, locale, Bootstrap="new-page")
+            po.parent.mkdir(parents=True, exist_ok=True)
+            seed.save(str(po))
+            counts["pages seeded"] += 1
         io.msgmerge(po, pot)
         p = polib.pofile(str(po), wrapwidth=0)
         for idx, e in enumerate(p):
@@ -75,13 +83,21 @@ def main() -> int:
     ap.add_argument("--locale", required=True)
     ap.add_argument("--page")
     ap.add_argument("--json", help="write the worklist here")
+    ap.add_argument("--init-missing", action="store_true",
+                    help="seed an empty PO for pages that have none (new upstream pages)")
     args = ap.parse_args()
 
     pages = [args.page] if args.page else io.all_pages()
-    items, counts, no_po = worklist(args.locale, pages)
+    if not args.page:
+        live = {str(io.po_path(args.locale, rel)) for rel in pages}
+        for stale in (io.I18N / args.locale / "po").rglob("*.po"):
+            if str(stale) not in live:
+                stale.unlink()
+                print(f"removed memory for deleted page: {stale.relative_to(io.I18N / args.locale / 'po')}")
+    items, counts, no_po = worklist(args.locale, pages, args.init_missing)
     print(f"{args.locale}: {counts['translated']} translated, {counts['fuzzy']} fuzzy, "
           f"{counts['untranslated']} untranslated of {counts['entries']} entries; "
-          f"{counts['pages without PO']} page(s) without a PO")
+          f"{counts['pages without PO']} page(s) without a PO, {counts['pages seeded']} seeded")
     pages_touched = len({i['page'] for i in items})
     words = sum(len(i["msgid"].split()) for i in items)
     print(f"worklist: {len(items)} entries on {pages_touched} page(s), {words} English words")
