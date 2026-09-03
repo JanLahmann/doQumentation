@@ -77,6 +77,8 @@ def main() -> int:
     ap.add_argument("--page")
     ap.add_argument("--verify", action="store_true", help="render from the PO and compare with the current file")
     ap.add_argument("--no-positional", action="store_true", help="exact strategy only")
+    ap.add_argument("--no-extract", action="store_true",
+                    help="POTs are already current (extract.py ran); lets locales bootstrap in parallel")
     args = ap.parse_args()
 
     status = json.loads(STATUS.read_text(encoding="utf-8")) if STATUS.exists() else {}
@@ -91,12 +93,13 @@ def main() -> int:
         if not io.is_genuine(tr):
             counts["skipped"] += 1
             continue
-        try:
-            io.extract(rel)                     # keep the POT current for msgmerge later
-        except io.Po4aError as e:
-            report[rel] = {"strategy": "failed", "reason": "extract: " + str(e).splitlines()[0][:200]}
-            counts["failed"] += 1
-            continue
+        if not args.no_extract:
+            try:
+                io.extract(rel)                 # keep the POT current for msgmerge later
+            except io.Po4aError as e:
+                report[rel] = {"strategy": "failed", "reason": "extract: " + str(e).splitlines()[0][:200]}
+                counts["failed"] += 1
+                continue
         strategy = "exact"
         try:
             po = io.gettextize(rel, tr)
@@ -112,7 +115,7 @@ def main() -> int:
                 report[rel] = {"strategy": "failed", "reason": io.diagnose(rel, tr)}
                 counts["failed"] += 1
                 continue
-        io.set_header(po, rel, args.locale, Bootstrap=strategy, BootstrapDate=date.today().isoformat(),
+        io.set_header(po, rel, args.locale, Bootstrap=strategy,
                       **review_meta(args.locale, rel, status))
         out = io.po_path(args.locale, rel)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -133,10 +136,18 @@ def main() -> int:
 
     io.WORK_DIR.mkdir(parents=True, exist_ok=True)
     rpath = io.WORK_DIR / f"bootstrap-{args.locale}.json"
-    rpath.write_text(json.dumps({"locale": args.locale, "date": date.today().isoformat(),
-                                 "counts": counts, "entries_total": entries_total,
-                                 "entries_paired": entries_done, "pages": report},
-                                indent=1, ensure_ascii=False), encoding="utf-8")
+    if args.page and rpath.exists():
+        # A single-page run updates that page's row; it must not replace the
+        # locale-wide report (it did once, silently).
+        prev = json.loads(rpath.read_text(encoding="utf-8"))
+        prev["pages"].update(report)
+        prev["date"] = date.today().isoformat()
+        rpath.write_text(json.dumps(prev, indent=1, ensure_ascii=False), encoding="utf-8")
+    else:
+        rpath.write_text(json.dumps({"locale": args.locale, "date": date.today().isoformat(),
+                                     "counts": counts, "entries_total": entries_total,
+                                     "entries_paired": entries_done, "pages": report},
+                                    indent=1, ensure_ascii=False), encoding="utf-8")
     print(f"{args.locale}: exact {counts['exact']}, positional {counts['positional']}, "
           f"failed {counts['failed']}, skipped(not genuine) {counts['skipped']}; "
           f"entries paired {entries_done}/{entries_total} "

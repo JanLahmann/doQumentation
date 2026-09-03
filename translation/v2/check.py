@@ -27,6 +27,8 @@ ANCHOR_RE = re.compile(r"\{#[^}]+\}")
 MDX_EXPR_RE = re.compile(r"\{/\*.*?\*/\}")
 IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 DOQ_PREFIX_RE = re.compile(r"^(DOQ-[A-Z-]+:)")
+TABLE_ROW_RE = re.compile(r"^\s*\|", re.M)
+FENCE_LINE_RE = re.compile(r"^\s*```", re.M)
 
 
 def _math(text: str) -> Counter:
@@ -57,6 +59,12 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
         ("heading anchor", Counter(ANCHOR_RE.findall(msgid)), Counter(ANCHOR_RE.findall(msgstr))),
         ("MDX comment", Counter(MDX_EXPR_RE.findall(msgid)), Counter(MDX_EXPR_RE.findall(msgstr))),
     ]
+    # Structure inside one entry: a table or a bullet with a fence must keep
+    # its row / fence-line count, or the page fails the build-time lint.
+    for name, rx in (("table row", TABLE_ROW_RE), ("code fence line", FENCE_LINE_RE)):
+        a, b = len(rx.findall(msgid)), len(rx.findall(msgstr))
+        if a != b:
+            problems.append(f"{name} count mismatch: source {a}, translation {b}")
     for name, a, b in pairs:
         if a != b:
             missing = list((a - b).elements())
