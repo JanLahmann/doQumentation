@@ -49,7 +49,8 @@ to notebook output can never make a translation stale.
 | `extract.py [--check]` | after every sync, and by bootstrap | `docs/` → `pot/`. `--check` renders each POT untranslated and requires the result to equal the source (modulo blank lines and front-matter quoting). All 424 pages pass. |
 | `bootstrap.py --locale X [--verify]` | once per locale, **before** the next English sync | Builds `i18n/X/po/` from the existing translations. `exact` strategy is `po4a-gettextize`; `positional` is our fallback for pages po4a refuses (pairs the type sequences with difflib, adopts matching runs only). Writes `work/bootstrap-X.json`. |
 | `update.py --locale X --json …` | after every sync | `msgmerge --previous` every PO against the new POT, then prints the worklist: fuzzy (near-identical English, old msgid kept as `#\| msgid`) and untranslated entries. |
-| `translate.py --locale X --prepare` | after update | Writes `work/X/batch-NNN.json` and `instructions.md`. Anything that can fill `msgstr` in JSON can translate: a Claude Code agent, the Anthropic API (`--backend anthropic`, untested here), a human. |
+| `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 6,000 words, slim items) plus `manifest.json`, which also carries the instructions text for inlining into prompts. |
+| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch, five concurrent, each allowed exactly one Read, one Write (a list of `{id, msgstr}` only) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
 | `translate.py --locale X --apply` | after the batches are filled | Runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
 | `render.py --locale X [--out-dir D]` | at build time, or to preview | POT + PO → locale MDX, with the v1 freshness marker so v1 tools keep working during the migration. |
 | `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
@@ -115,8 +116,9 @@ python3 translation/v2/extract.py --check
 
 # 2. Per locale: merge, worklist, batches.
 python3 translation/v2/update.py --locale fr --json translation/v2/work/worklist-fr.json
-python3 translation/v2/translate.py --locale fr --prepare
-#    fill work/fr/batch-*.json (agent, API, or human), following work/fr/instructions.md
+python3 translation/v2/translate.py --locale fr --prepare      # tiers; prints how many need a model
+#    fill work/fr/batch-*.json: Workflow translate-locale.js with work/fr/manifest.json as args
+#    (or any agent/API/human that fills "msgstr" in the JSON)
 python3 translation/v2/translate.py --locale fr --apply       # rejects go back on the worklist
 
 # 3. Render, gate, commit the PO files (never the rendered MDX by hand).
@@ -129,6 +131,38 @@ git add i18n/fr/po translation/v2/pot && git commit
 Order matters in step 0: `po4a-gettextize` aligns a translation with the
 English it was made from. Bootstrapping after the sync would pair the old
 German with new English and fail on every changed page.
+
+## Token cost, and why the batches look the way they do
+
+The German run cost about 6.2 M tokens for 4,471 entries: roughly 150k per
+4,000-word batch, ten times what one turn of translation needs, because
+agents read, verified, re-read and wrote in 5 to 34 tool calls, each turn
+re-sending the whole context. The orchestrator's own turns (about sixty
+launch-and-notify cycles on a large context) cost at least as much again.
+What changed after that run, in order of effect:
+
+1. the workflow script runs a locale in one call and allows each agent
+   exactly one read and one write;
+2. batches carry only id, type, msgid and, for real fuzzy matches, the
+   previous pair; no page context;
+3. entries that need no model (pure math, code, images; punctuation-only or
+   emphasis-only English changes) never reach one;
+4. near-identical fuzzy entries go to Haiku, the rest to Sonnet;
+5. batches stop at 120 items or 6,000 words, five run concurrently, and
+   agents write back only `{id, msgstr}`, so the 64k output cap stays far
+   away even for the largest batch.
+
+Measured on a throwaway locale (21 items, 588 words, two batches): about
+50k tokens per agent whether it took four tool calls or two, and whether
+the rules were read from a file or inlined. The fixed cost is the
+general-purpose agent's own context (every tool schema), not the turns.
+That is why batches are large, and why `.claude/agents/translator.md` exists:
+an agent type with only Read and Write. It could not be measured in the
+session that created it (custom agents register at startup); measure it in
+the next one before running a full locale. Expected cost for a locale of
+the German run's size: roughly 60 batches at 60 to 80k each, 4 to 5 M
+tokens with the general-purpose agent, and well under 1 M of the
+orchestrator's own turns instead of sixty launch cycles.
 
 ## Hard rules
 
