@@ -1,0 +1,524 @@
+---
+description: 'Migracja z prymitywu Sampler V2 do prymitywu Executor w IBM Quantum Compute Service'
+title: 'Migracja z Sampler do Executor'
+---
+
+{/* doqumentation-source-hash: 6596c325 */}
+
+{/* cspell:ignore expvals */}
+
+# Migracja z Sampler do Executor {#migrate-from-sampler-to-executor}
+
+Ten przewodnik opisuje, jak przenieść obciążenia próbkowania kwantowego z prymitywu IBM Quantum&reg; Sampler
+do prymitywu Executor.
+
+<Admonition type="note" title="Wydanie beta">
+Prymityw Executor jest częścią
+[modelu wykonania kierowanego](/guides/directed-execution-model). Wszystkie komponenty modelu wykonania kierowanego są obecnie w wersji beta i mogą nie być stabilne. Zapraszamy do ich testowania i przekazywania opinii poprzez otwarcie zgłoszenia w repozytorium GitHub [Samplomatic](https://github.com/Qiskit/samplomatic/issues) lub [qiskit-ibm-runtime](https://github.com/Qiskit/qiskit-ibm-runtime/issues).
+</Admonition>
+
+## Czy powinieneś migrować? {#should-you-migrate}
+
+Nie każdy powinien migrować z Sampler do Executor. Istnieje wiele różnic między tymi prymitywami, ale poniższe wskazówki mogą pomóc ci zdecydować, czy migrować:
+
+**Migruj do Executor**, jeśli jesteś naukowcem zajmującym się informacją kwantową, który przeprowadza
+eksperymenty na skalę utility i potrzebuje szczegółowej, powtarzalnej kontroli nad
+technikami takimi jak twirling Pauliego, uczenie i wstrzykiwanie modelu szumu oraz zmiany
+bazy — lub który potrzebuje jednej z dodatkowych możliwości oferowanych przez Executor.
+
+**Kontynuuj używanie Sampler**, jeśli chcesz prostego interfejsu wysokiego poziomu i chcesz, aby prymityw zarządzał za ciebie tłumieniem i łagodzeniem błędów.
+
+### Ograniczenia i zastrzeżenia {#limitations-and-caveats}
+
+Ponieważ Executor i model wykonania kierowanego są w wersji beta, zwróć uwagę na poniższe kwestie przed podjęciem decyzji o migracji:
+
+- **Brak wsparcia dla symulatora na razie**: W przeciwieństwie do Sampler, który ma implementację `AerSampler`
+  w [`qiskit-aer`](https://github.com/Qiskit/qiskit-aer) do symulacji lokalnej,
+  obecnie nie ma backendu symulatora dla Executor. Oczekuje się, że wsparcie dla symulatora
+  pojawi się wkrótce. W międzyczasie nadal możesz sprawdzić i [zbadać próbkę
+  szablonu Circuit lokalnie](#sample-local), aby
+  zweryfikować swój przepływ pracy przed przesłaniem go na sprzęt.
+
+- **Ten przewodnik obejmuje tylko Sampler, nie Estimator.** Migracja z Estimator do
+  Executor jest znacznie bardziej złożona niż migracja z Sampler, ponieważ Estimator
+  oblicza wartości oczekiwane zamiast zwracać surowe próbki. Odtworzenie zachowania Estimator za pomocą
+  Executor wymaga dodatkowego przetwarzania końcowego. Funkcje narzędziowe pomagające w migracji z
+  Estimator do Executor są nadal w fazie rozwoju, więc ten przewodnik
+  celowo opisuje tylko przepływ pracy Sampler.
+
+
+## Kluczowe różnice między Executor a Sampler {#key-differences-between-executor-and-sampler}
+
+Zarówno Sampler, jak i Executor próbkują rejestry wyjściowe obwodów kwantowych, ale są
+skierowane do różnych użytkowników:
+
+- **Sampler** to abstrakcja wysokiego poziomu. Ma następujące cechy:
+
+  - Ma wbudowane tłumienie błędów (dynamiczne odsprzęganie i twirling).
+
+  - Podejmuje za ciebie niejawne decyzje.
+
+  - Jest zaprojektowany tak, aby deweloperzy algorytmów mogli skupić się na innowacjach, a nie na konwersji
+  danych.
+- **Executor** jest częścią [modelu wykonania kierowanego](/guides/directed-execution-model). Różni się od Sampler pod wieloma względami i ma następujące cechy:
+  - Nie ma wbudowanego tłumienia ani łagodzenia błędów. Zamiast tego, przekazujesz swoją intencję projektową po stronie
+  klienta (za pomocą adnotacji Circuit i *samplexu*), a kosztowne generowanie wariantów Circuit
+  jest przenoszone na stronę serwera.
+  - Nie podejmuje żadnych niejawnych decyzji. Wykonuje twoje dyrektywy dokładnie, dając pełną kontrolę i przejrzystość.
+  - Executor i Samplomatic razem udostępniają dodatkowe możliwości, których nie oferuje Sampler, w tym (ale nie tylko) następujące:
+    - Więcej grup twirlingu: Samplomatic pozwala wybrać, którą grupę twirlingu zastosować
+      dla każdego boksu, zamiast być ograniczonym do pojedynczej strategii, którą Sampler stosuje za ciebie. Obsługuje również grupy twirlingu inne niż Pauli, takie jak grupa twirlingu
+      `"local_c1"`.
+    - Pomiary kernelowane i klasyfikowane razem: Ustawienie
+      `QuantumProgram.meas_level = "both"` (dodane w `qiskit-ibm-runtime` v0.48.0) żąda,
+      aby zarówno pomiary klasyfikowane, jak i kernelowane były obecne w wynikach, zamiast
+      wybierania pojedynczego typu pomiaru na zadanie.
+    - Twirling dla Circuit z bramkami ułamkowymi: Executor może zastosować twirling do
+      Circuit zawierających bramki ułamkowe.
+    - Szczegółowe, składalne łagodzenie błędów: Na przykład wybieranie, które
+      warstwy Circuit złagodzić, i dostosowywanie poziomów szumu wstrzykiwanych do Circuit.
+
+    <Admonition type="note" title="Uwagi">
+    - Oczekuje się, że przyszłe nowe możliwości będą udostępniane najpierw dla Executor
+    i mogą nie zostać przeniesione do Sampler. Jeśli zależy ci na dostępie do
+    najnowszych funkcji, Executor jest wyborem bardziej przyszłościowym.
+    - Podstawowy pakiet Qiskit nie udostępnia jeszcze
+klasy bazowej dla prymitywu Executor (udostępnia ją dla `SamplerV2`).
+    </Admonition>
+
+## Mapowanie koncepcyjne {#conceptual-mapping}
+
+Poniższa tabela pokazuje, jak koncepcje Sampler odwzorowują się na Executor.
+
+| Koncepcja                | Sampler                                   | Executor                                                        |
+| ---------------------- | ----------------------------------------- | --------------------------------------------------------------- |
+| Import                 | `from qiskit_ibm_runtime import SamplerV2`| `from qiskit_ibm_runtime import Executor`                       |
+| Wejście                  | Lista [PUB](/guides/primitive-input-output#overview-of-pubs) (krotki)                 | `QuantumProgram` obiektów `QuantumProgramItem`          |
+| Circuit i parametry    | krotka `(circuit, params, shots)`          | `program.append_circuit_item(circuit, circuit_arguments=...)`   |
+| Twirling | `TwirlingOptions`                      | Jawnie poprzez adnotowane boksy i samplex (`append_samplex_item`) |
+| Wywołanie uruchomienia               | `sampler.run([pub, ...])`                 | `executor.run(program)`                                         |
+| Typ wyniku            | `PrimitiveResult` z `SamplerPubResult`   | `QuantumProgramResult` (iterowalny)                               |
+| Dostęp do danych         | `result[0].data.<register>` (`BitArray`)  | `result[0]["<register>"]` (`np.ndarray`)                        |
+| Zarządzanie szumem      | Wbudowane opcje                          | Musi być ręcznie skomponowane (adnotacje, samplex, `NoiseLearnerV3`)         |
+
+## Przegląd kroków migracji {#overview-of-migration-steps}
+
+1. [Zainstaluj Samplomatic](#install-packages).
+
+2. [Zmień importy](#imports).
+
+3. [Zastąp krotki PUB](#circuit-samplex).
+
+4. [Zmień sposób wyrażania strzałów](#shots).
+
+5. [Zaktualizuj inne opcje w razie potrzeby](#options).
+
+6. [Zaktualizuj polecenie `run`](#run-job).
+
+7. [Zaktualizuj parsowanie wyników](#results).
+
+8. [Cofnij twirling](#twirled-results).
+
+
+<span id="install-packages"></span>
+
+### Krok 1. Zainstaluj wymagane pakiety {#step-1-install-the-required-packages}
+
+Executor i model wykonania kierowanego wymagają pakietu `samplomatic`:
+
+```bash
+pip install qiskit qiskit-ibm-runtime samplomatic
+
+# For visualization support:
+# pip install samplomatic[vis]
+```
+
+<Admonition type="note" title="Uwagi dotyczące wersji">
+- Zalecana jest wersja `qiskit-ibm-runtime` v0.48.0, ponieważ dodaje ona opcję `meas_level = "both"` oraz grupę twirlingu `local_c1`.
+- Wymagana jest wersja `qiskit >= 2.3.0`.
+- Wymagana jest wersja `samplomatic >= 0.18.0`.
+</Admonition>
+
+<span id="imports"></span>
+
+### Krok 2. Zmień importy {#step-2-change-the-imports}
+
+**Sampler:**
+
+```python
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+```
+
+**Executor:**
+
+```python
+from qiskit_ibm_runtime import Executor, QuantumProgram
+```
+
+<span id="circuit-samplex"></span>
+
+### Krok 3. Zastąp krotki PUB obiektem `QuantumProgram` {#step-3-replace-pub-tuples-with-a-quantumprogram}
+
+Zamiast przekazywać listę krotek (PUB), podczas korzystania z Executor budujesz `QuantumProgram` i dołączasz do niego _elementy_.
+
+`QuantumProgram` akceptuje elementy typu _circuit_ i _samplex_:
+
+- `append_circuit_item`: Dołącza `CircuitItem`, czyli Circuit i (opcjonalnie) jego
+  wartości parametrów. Jest wykonywany bez zmian, bez żadnej randomizacji.
+
+  
+  Użyj tego, gdy chcesz po prostu zbadać próbkę Circuit, dokładnie tak, jak zrobiłby to Sampler za pomocą PUB bez
+  twirlingu; na przykład podczas przesyłania zwykłego zadania próbkowania lub gdy już ręcznie uwzględniłeś dowolne
+  warianty, które chcesz.
+- `append_samplex_item`: Dołącza `samplexItem`, czyli *szablon Circuit* plus
+  *samplex*, który generuje losowe zestawy parametrów po stronie serwera.
+  
+  Użyj tego
+  gdy chcesz, aby zawartość Circuit była losowana. Głównym przypadkiem jest
+  twirling (bramkowy lub pomiarowy) lub wstrzykiwanie szumu. Ta możliwość zastępuje
+  wbudowany twirling Sampler.
+
+Pojedynczy `QuantumProgram` może akceptować oba typy elementów; każdy dołączony element jest wykonywany jako
+niezależne zadanie i tworzy własny wpis w wynikach. Ogólnie rzecz biorąc, użyj `append_circuit_item`, gdy twój Circuit nie musi być losowany. W przeciwnym razie użyj `append_samplex_item`.
+
+Kolejne sekcje pokazują każdy z nich po kolei: sparametryzowane Circuit, które używają
+`append_circuit_item`, oraz migrację twirlingu za pomocą `append_samplex_item`.
+
+W poniższych przykładach kodu `isa_circuit` odnosi się do Circuit, który został poddany transpilacji, aby był zgodny z [Architekturą Zestawu Instrukcji](/guides/transpile#instruction-set-architecture) (ISA) docelowego Backend. Ten `isa_circuit` zawiera dwa parametry.
+
+<span id="param-circuits"></span>
+
+#### Krok 3a. Migracja sparametryzowanych Circuit {#step-3a-migrate-parameterized-circuits}
+
+W Sampler wartości parametrów są drugim elementem krotki PUB. W Executor
+przekaż je jako `circuit_arguments` do `append_circuit_item`.
+
+**Sampler:**
+
+```python
+params = np.random.rand(10, circuit.num_parameters)  # 10 parameter sets
+pubs = (isa_circuit, params)
+```
+
+**Executor**
+
+```python
+program = QuantumProgram(shots=1024)
+program.append_circuit_item(
+    isa_circuit,
+    circuit_arguments=np.random.rand(10, circuit.num_parameters),  # 10 sets
+)
+
+# CircuitItem result shape: (parameter_sets, shots, register_bits) -> (10, 1024, 2)
+result_0 = result[0]["meas"]
+```
+<span id="twirling"></span>
+
+#### Krok 3b. Migracja wbudowanego twirlingu do jawnych adnotacji {#step-3b-migrate-built-in-twirling-to-explicit-annotations}
+
+To najbardziej znacząca zmiana. Sampler stosuje twirling za ciebie za pomocą opcji. W
+Executor deklarujesz tę intencję jawnie za pomocą adnotowanych boksów i
+samplexu (z [Samplomatic](/guides/directed-execution-model#samplomatic)).
+
+**Sampler (twirling za pomocą opcji):**
+
+```python
+sampler = Sampler(mode=backend)
+sampler.options.twirling.enable_gates = True
+sampler.options.twirling.enable_measure = True
+```
+
+**Executor (twirling za pomocą boksów i samplexu):**
+
+```python
+from samplomatic import build
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+# 1. Group gates and measurements into annotated boxes with twirling annotations
+boxes_pm = generate_boxing_pass_manager(
+    enable_gates=True,     # gate twirling
+    enable_measures=True,  # measurement twirling
+)
+boxed_circuit = boxes_pm.run(isa_circuit)
+
+# 2. Build the (template circuit, samplex) pair.
+#    The template circuit's single-qubit gates are replaced by parameterized gates;
+#    the samplex encodes how to generate the randomized parameters at runtime.
+template_circuit, samplex = build(boxed_circuit)
+
+# 3. Append as a samplex item, specifying the number of randomizations
+program = QuantumProgram(shots=1024)
+program.append_samplex_item(
+    template_circuit,
+    samplex=samplex,
+    samplex_arguments={
+        "parameter_values": np.random.rand(10, 2),  # original circuit params
+    },
+    shape=(28, 10),  # 28 randomizations x 10 parameter sets
+)
+```
+
+Ponieważ szablon Circuit i samplex są budowane po stronie klienta, możesz
+sprawdzić je i zbadać ich próbkę lokalnie, aby zweryfikować wynik przed wysłaniem czegokolwiek na
+sprzęt.
+
+<span id="sample-local"></span>
+
+##### Weryfikacja: Zbadaj próbkę szablonu Circuit lokalnie {#verification-sample-the-template-circuit-locally}
+
+Możesz pobrać losowania z samplexu i powiązać je z szablonem
+Circuit, aby potwierdzić, że samplex generuje oczekiwane przez ciebie wartości parametrów.
+Wartości parametrów zwracane przez `samplex.sample` są bezpośrednio zgodne z
+parametrami szablonu Circuit.
+
+```python
+# Check which inputs the samplex requires (for the twirling example above,
+# this is just the original circuit's parameter values).
+print(samplex.inputs())
+
+# Bind the required inputs, then draw a few randomizations locally.
+inputs = samplex.inputs().bind(
+    parameter_values=np.random.rand(2),  # one set of the original circuit's params
+)
+outputs = samplex.sample(inputs, num_randomizations=3)
+
+# Assign one randomization's parameter values to the template circuit and inspect it.
+bound_template = template_circuit.assign_parameters(outputs["parameter_values"][0])
+bound_template.draw("mpl", idle_wires=False)
+```
+
+Aby pójść dalej, możesz zweryfikować, że każde losowanie jest logicznie równoważne
+oryginalnemu Circuit, na przykład konwertując oba do obiektów `Operator` i porównując ich implementacje unitarne (po
+uwzględnieniu poprawek `outputs["measurement_flips.<register>"]`, które cofają
+twirling pomiarowy), lub porównując wartości oczekiwane z lokalnego uruchomienia
+`StatevectorSampler` lub `StatevectorEstimator`. Zobacz przewodnik Samplomatic
+[Wejścia i wyjścia samplexu](https://qiskit.github.io/samplomatic/guides/samplex_io.html)
+po pełny opis krok po kroku.
+
+<span id="shots"></span>
+
+### Krok 4. Zmień sposób żądania strzałów {#step-4-change-how-shots-are-requested}
+
+Przenieś strzały z PUB do `QuantumProgram(shots=...)`. W Executor `shots` odnosi się do całego zadania. Prześlij wiele zadań, jeśli potrzebujesz różnych liczb strzałów.
+
+**Sampler:**
+
+```python
+# Run — shots are passed to run()
+sampler = Sampler(mode=backend)
+job = sampler.run([(isa_circuit, None, 25)])
+```
+
+**Executor:**
+
+```python
+# Build a QuantumProgram — shots are on the program
+program = QuantumProgram(shots=25)
+program.append_circuit_item(isa_circuit)
+```
+
+<span id="options"></span>
+
+### Krok 5. Zaktualizuj opcje w razie potrzeby {#step-5-update-options-as-necessary}
+
+Executor ma mniej dostępnych opcji niż Sampler, ponieważ
+wybory dotyczące łagodzenia błędów żyją teraz w twoich adnotacjach i samplexie zamiast w opcjach.
+
+Istnieje również różnica strukturalna w tym, gdzie znajdują się ustawienia.
+
+- W Sampler
+wszystko, w tym wybory wpływające na przetwarzanie końcowe wyników, jest konfigurowane w
+opcjach prymitywu lub w PUB.
+
+- W Executor wybory, które wpływają na to, jak
+kształtowane i przetwarzane są wyniki zadania, są ustawiane na [`QuantumProgram`](/guides/executor-input-output#inputs-quantum-programs), a nie w
+`ExecutorOptions`.
+
+Examples:
+
+| Sampler      | Executor                    |
+|--------------|-----------------------------|
+| `shots`      | `QuantumProgram(shots=...)` |
+| `meas_type` | `QuantumProgram(meas_level=...)` |
+
+[`ExecutorOptions`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-models-executor-options) zawiera tylko ustawienia wykonania i środowiska niższego poziomu, które nie zmieniają struktury zwracanych danych. Ma trzy grupy najwyższego poziomu:
+
+- `environment` ([`EnvironmentOptions`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-models-environment-options))
+
+- `execution` ([`ExecutionOptions`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-models-execution-options)): Zawiera mniej opcji niż w przypadku Sampler. Na przykład nie ma opcji `meas_type` w Executor.
+
+- [`experimental`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-models-executor-options#experimental)
+
+
+Warto zauważyć, że opcje `twirling` i `dynamical_decoupling` istnieją w Sampler, ale nie w Executor. Zamiast tego wartości tych opcji są wyrażane poprzez model wykonania kierowanego.
+
+**Example:**
+
+```python
+from qiskit_ibm_runtime import Executor, ExecutorOptions
+
+options = ExecutorOptions(
+    environment={"log_level": "INFO"},
+    execution={"init_qubits": True},
+)
+# or mutate after construction:
+options = ExecutorOptions()
+options.environment.log_level = "INFO"
+options.execution.init_qubits = True
+
+executor = Executor(mode=backend, options=options)
+```
+
+<span id="run-job"></span>
+
+### Krok 6. Zaktualizuj polecenie `run` {#step-6-update-the-run-command}
+
+Wejściem do zadania Executor jest program, a nie PUB.
+
+**Sampler:**
+
+```python
+# Submit a job
+sampler.run([(isa_circuit, parameter_values)])
+```
+
+**Executor:**
+
+```python
+# Submit a job
+executor.run(program)
+```
+
+<span id="results"></span>
+
+### Krok 7. Zmień sposób dostępu do wyników {#step-7-change-how-you-access-results}
+
+W Executor wyniki to tablice NumPy, a nie obiekty `BitArray`. Użyj ciągu nazwy jako indeksu (`result[0]["meas"]`), aby otrzymać `np.ndarray`. Nie ma potrzeby pamiętania ścieżki atrybutu `.data.<register>`.
+
+Aby zaktualizować kod z Sampler do Executor, zmień `result[i].data.<reg> (BitArray)` na `result[i]["<reg>"] (np.ndarray)`, a następnie przepisz przetwarzanie oparte na `get_counts` jako operacje NumPy.
+
+| Task                          | Sampler                                          | Executor                                    |
+| ----------------------------- | ------------------------------------------------ | ------------------------------------------- |
+| Get register data             | `result[0].data.meas`                            | `result[0]["meas"]`                         |
+| Data type                     | `BitArray`                                        | `np.ndarray`                                |
+| Counts dictionary             | `result[0].data.meas.get_counts()`              | Post-process the array manually             |
+| Multiple registers            | `result[0].data.<name>` per register             | `result[0]["<name>"]` per register          |
+| CircuitItem array shape       | -                                               | `(parameter_sets, shots, register_bits)`    |
+| SamplexItem array shape       | -                                               | `(randomizations, parameter_sets, shots, register_bits)` |
+| Undo measurement twirling     | Automatic                                        | `result[i]["measurement_flips.<name>"]` + XOR |
+
+<Admonition type="note">
+Sampler's `BitArray` offers helpers (`get_counts`, `slice_bits`, `slice_shots`, `expectation_values`, and post-selection masks). Executor returns raw NumPy arrays so you can perform this post-processing with standard NumPy operations.
+</Admonition>
+
+<span id="twirled-results"></span>
+
+### Krok 8. Obsłuż wyniki poddane twirlingowi (korekty odwrócenia bitów) {#step-8-handle-twirled-results-bit-flip-corrections}
+
+Gdy zastosujesz twirling pomiaru za pomocą `SamplexItem`, Executor zwraca surowe
+(poddane twirlingowi) pomiary wraz z korektami odwrócenia bitów potrzebnymi do cofnięcia twirlingu.
+Musisz zastosować je ręcznie; nic nie jest korygowane niejawnie.
+
+Korzystając z Executor, cofnij twirling jawnie, używając korekt `measurement_flips.<reg>` i operacji XOR, jak pokazano w poniższym przykładzie:
+
+```python
+# SamplexItem result shape: (randomizations, parameter_sets, shots, register_bits)
+result_1 = result[1]["meas"]                       # example: (28, 10, 1024, 2)
+
+# Bit-flip corrections to undo measurement twirling
+flips_1 = result[1]["measurement_flips.meas"]      # example: (28, 10, 1, 2)
+
+# Undo the twirling through classical XOR (broadcasts over the shots axis)
+unflipped_result_1 = result_1 ^ flips_1
+```
+
+W Sampler nie ma odpowiadającego kroku, ponieważ cofa on twirling automatycznie.
+
+<span id="full-example"></span>
+
+## Pełny przykład: Migracja podstawowego zadania próbkowania {#full-example-migrate-a-basic-sampling-job}
+
+### Sampler {#sampler}
+
+```python
+import numpy as np
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
+
+# 1. Account + backend
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# 2. Circuit
+circuit = QuantumCircuit(2)
+circuit.h(0)
+circuit.h(1)
+circuit.cz(0, 1)
+circuit.h(1)
+circuit.measure_all()
+
+# 3. Transpile to ISA
+pm = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_circuit = pm.run(circuit)
+
+# 4. Run — shots are passed to run()
+sampler = Sampler(mode=backend)
+job = sampler.run([(isa_circuit,)], shots=25)
+result = job.result()
+
+# 5. Access results: a BitArray keyed by register name
+counts = result[0].data.meas.get_counts()
+```
+
+### Executor {#executor}
+
+```python
+import numpy as np
+from qiskit.circuit import QuantumCircuit
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_ibm_runtime import QiskitRuntimeService, Executor
+from qiskit_ibm_runtime.quantum_program import QuantumProgram
+
+# 1. Account + backend (unchanged)
+service = QiskitRuntimeService()
+backend = service.least_busy(operational=True, simulator=False)
+
+# 2. Circuit (unchanged)
+circuit = QuantumCircuit(2)
+circuit.h(0)
+circuit.h(1)
+circuit.cz(0, 1)
+circuit.h(1)
+circuit.measure_all()
+
+# 3. Transpile to ISA (unchanged)
+pm = generate_preset_pass_manager(optimization_level=1, backend=backend)
+isa_circuit = pm.run(circuit)
+
+# 4. Build a QuantumProgram — shots are on the program
+program = QuantumProgram(shots=25)
+program.append_circuit_item(isa_circuit)
+
+# 5. Run
+executor = Executor(mode=backend)
+job = executor.run(program)
+result = job.result()
+
+# 6. Access results: a plain np.ndarray keyed by register name
+#    shape = (shots, register_bits)
+meas = result[0]["meas"]
+```
+
+## Kolejne kroki {#next-steps}
+
+<Admonition type="tip" title="Zalecenia">
+- [Szybki start Executor](/guides/get-started-with-executor)
+- [Wejścia i wyjścia Executor](/guides/executor-input-output)
+- [Opcje Executor](/guides/executor-options)
+- [Model wykonania kierowanego](/guides/directed-execution-model)
+- [Szybki start Sampler](/guides/get-started-with-sampler)
+- [Wejścia i wyjścia Sampler](/guides/sampler-input-output)
+- [Dokumentacja Samplomatic](https://qiskit.github.io/samplomatic)
+- [Przewodnik po pomocniku uczenia się szumu](/guides/noise-learning#NoiseLearnerV3)
+</Admonition>
