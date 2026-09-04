@@ -41,6 +41,17 @@ def test_check_entry_rejects_lost_invariants():
     assert check_entry("Anything", "") == ["empty translation"]
 
 
+def test_check_entry_length_rules_understand_space_less_scripts():
+    en = "The IBM Quantum primitives workflow requires circuits and observables to be transformed to only use instructions supported by the QPU."
+    th = "ขั้นตอนการทำงานของ IBM Quantum primitives ต้องการให้ Circuit และ observable ถูกแปลงให้ใช้เฉพาะคำสั่งที่รองรับโดย QPU"
+    ja = "IBM Quantum プリミティブのワークフローでは、回路とオブザーバブルを QPU がサポートする命令のみを使う形に変換する必要があります。"
+    assert check_entry(en, th) == []
+    assert check_entry(en, ja) == []
+    # a real fragment is still caught
+    assert any("shorter" in p for p in check_entry(en, "ต้องการ"))
+    assert any("shorter" in p for p in check_entry(en, "auf."))
+
+
 def test_pre_rules_are_idempotent_and_reversible():
     src = "---\ntitle: T\n---\n\n## Example\n\ntext\n## Example\n:::note[Hi there]\n\nbody\n```python\nx\n```json\n\n:::\n"
     once = io.pre_source(src)

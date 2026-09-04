@@ -49,18 +49,30 @@ Do exactly this, in this order, with no other tool calls:
 Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the translation is the work.`
 }
 
+// A custom agent type registers only at session start and is dropped again
+// by a re-login mid-session (2026-09-04: 30 th batches failed in 10 s with
+// "agent type 'translator' not found"). Do NOT fall back to general-purpose:
+// a 5-agent wave of it cost 3.4M tokens for 3 finished batches. Fail fast so
+// the run can be restarted in a fresh session with the cheap agent.
+function run(b) {
+  return agent(prompt(b), {
+    label: `${b.model} ${b.file.split('/').pop()} (${b.items} items)`,
+    phase: 'Translate',
+    model: b.model,
+    effort: b.model === 'haiku' ? 'low' : 'medium',
+    agentType: AGENT_TYPE,
+  }).catch(e => {
+    if (/agent type .* not found/i.test(String(e && e.message || e)))
+      throw new Error(`agent type '${AGENT_TYPE}' is not registered in this session (custom agents register at startup and a /login drops them). Start a new session and rerun; nothing was translated.`)
+    throw e
+  })
+}
+
 phase('Translate')
 const done = []
 for (let i = 0; i < batches.length; i += CONCURRENCY) {
   const chunk = batches.slice(i, i + CONCURRENCY)
-  const out = await parallel(chunk.map(b => () =>
-    agent(prompt(b), {
-      label: `${b.model} ${b.file.split('/').pop()} (${b.items} items)`,
-      phase: 'Translate',
-      model: b.model,
-      effort: b.model === 'haiku' ? 'low' : 'medium',
-      agentType: AGENT_TYPE,
-    }).then(text => parseDone(text, b))))
+  const out = await parallel(chunk.map(b => () => run(b).then(text => parseDone(text, b))))
   chunk.forEach((b, k) => done.push(out[k] ? { ...out[k], model: b.model } : { file: b.file, filled: 0, total: b.items, model: b.model, failed: true }))
   const filled = done.reduce((s, r) => s + (r.filled || 0), 0)
   const total = done.reduce((s, r) => s + r.total, 0)

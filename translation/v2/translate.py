@@ -60,8 +60,9 @@ def language_info(locale: str) -> tuple[str, str]:
     if LANGUAGE_TABLE.exists():
         for line in LANGUAGE_TABLE.read_text(encoding="utf-8").splitlines():
             cells = [c.strip() for c in line.strip("|").split("|")]
-            if len(cells) >= 3 and cells[0] == locale:
-                return cells[1], " ".join(cells[2:])
+            # table columns: | Language | LOCALE | Informal form |
+            if len(cells) >= 3 and cells[1] == locale:
+                return cells[0], " ".join(cells[2:])
     return locale, ""
 
 
