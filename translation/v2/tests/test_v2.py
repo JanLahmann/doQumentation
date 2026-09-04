@@ -41,6 +41,17 @@ def test_check_entry_rejects_lost_invariants():
     assert check_entry("Anything", "") == ["empty translation"]
 
 
+def test_check_entry_length_rules_understand_space_less_scripts():
+    en = "The IBM Quantum primitives workflow requires circuits and observables to be transformed to only use instructions supported by the QPU."
+    th = "ขั้นตอนการทำงานของ IBM Quantum primitives ต้องการให้ Circuit และ observable ถูกแปลงให้ใช้เฉพาะคำสั่งที่รองรับโดย QPU"
+    ja = "IBM Quantum プリミティブのワークフローでは、回路とオブザーバブルを QPU がサポートする命令のみを使う形に変換する必要があります。"
+    assert check_entry(en, th) == []
+    assert check_entry(en, ja) == []
+    # a real fragment is still caught
+    assert any("shorter" in p for p in check_entry(en, "ต้องการ"))
+    assert any("shorter" in p for p in check_entry(en, "auf."))
+
+
 def test_pre_rules_are_idempotent_and_reversible():
     src = "---\ntitle: T\n---\n\n## Example\n\ntext\n## Example\n:::note[Hi there]\n\nbody\n```python\nx\n```json\n\n:::\n"
     once = io.pre_source(src)
@@ -110,3 +121,118 @@ def test_msgmerge_marks_changed_english_fuzzy_and_keeps_previous():
     assert e.fuzzy and e.previous_msgid == old_msgid
     assert sum(1 for x in merged if x.obsolete) == 0
     shutil.rmtree(d)
+
+
+# ---------------------------------------------------------------------------
+# translate.py: batch shape and sizing
+# ---------------------------------------------------------------------------
+
+def test_word_changes_shows_only_the_edit_with_context():
+    from translate import word_changes
+    old = "Run the job on the IBM Quantum Platform with three shots and check the result."
+    new = "Run the job on IBM Quantum with four shots and check the result."
+    d = word_changes(old, new)
+    assert "[-the-]" in d and "[-three-]{+four+}" in d
+    assert "check the result" not in d          # unchanged tail is not repeated
+    assert word_changes("same text", "same text") == ""
+
+
+def test_estimate_tokens_counts_structure_and_scripts():
+    from translate import estimate_tokens
+    prose = "the quick brown fox jumps over the lazy dog " * 50
+    assert 1.5 * 450 < estimate_tokens(prose) < 2.2 * 450
+    assert estimate_tokens('{"msgid": "' + prose + '"}') > estimate_tokens(prose)
+    thai = "ควอนตัม" * 100
+    assert estimate_tokens(thai) == pytest.approx(0.5 * 700 + 7.1)   # script chars + the one line number
+    assert estimate_tokens(prose + "\n" + prose) > 2 * estimate_tokens(prose) - 1  # a second line adds its number
+
+
+def test_split_batches_respects_token_and_item_caps():
+    from translate import split_batches, estimate_tokens, dump_batch
+    items = [{"msgid": f"Sentence number {i} with some words in it. " * 8} for i in range(400)]
+    batches = split_batches(items, max_items=120, max_tokens=4000)
+    assert [it for b in batches for it in b] == items
+    assert all(len(b) <= 120 for b in batches)
+    assert all(estimate_tokens(dump_batch(b)) <= 4000 * 1.05 for b in batches)
+    assert all(estimate_tokens(dump_batch(b + [items[0]])) > 4000 for b in batches[:-1])   # greedy: no room left
+    heavy = [{"msgid": "x", "prev_msgstr": "ควอนตัม" * 4000, "changes": "[-a-]{+b+}"} for _ in range(5)]
+    assert all(len(b) == 1 for b in split_batches(heavy, max_tokens=3000))
+
+
+def test_read_results_positional_and_legacy_shapes():
+    import json
+    from translate import read_results
+    d = Path(tempfile.mkdtemp())
+    b = d / "batch-000-sonnet.json"
+    b.write_text(json.dumps([{"msgid": "One"}, {"msgid": "Two"}]), encoding="utf-8")
+    (d / "batch-000-sonnet.ids.json").write_text(json.dumps(["p.mdx#1", "p.mdx#2"]), encoding="utf-8")
+    assert read_results(b) == ([], None)                                   # not filled yet
+    out = d / "batch-000-sonnet.out.json"
+    out.write_text(json.dumps(["Eins", "Zwei"], ensure_ascii=False), encoding="utf-8")
+    assert read_results(b) == ([("p.mdx#1", "Eins"), ("p.mdx#2", "Zwei")], None)
+    out.write_text(json.dumps(["Eins"]), encoding="utf-8")                # a dropped item rejects the batch
+    pairs, reason = read_results(b)
+    assert pairs == [] and "1 translations for 2 items" in reason
+    out.write_text(json.dumps([{"id": "p.mdx#2", "msgstr": "Zwei"}]), encoding="utf-8")   # {id, msgstr} still read
+    assert read_results(b) == ([("p.mdx#2", "Zwei")], None)
+    out.unlink()
+    b.write_text(json.dumps([{"id": "p.mdx#1", "msgstr": "Eins"}]), encoding="utf-8")     # filled in place (old runs)
+    assert read_results(b) == ([("p.mdx#1", "Eins")], None)
+    shutil.rmtree(d)
+
+
+def test_parse_string_lines_repairs_unescaped_quotes():
+    from translate import parse_string_lines
+    good = '[\n"Eins",\n"Zwei \\"zitiert\\""\n]\n'
+    assert parse_string_lines(good) == (["Eins", 'Zwei "zitiert"'], 0)
+    broken = '[\n"Eins",\n"ซึ่งถูก "box" box เหล่านี้",\n"Drei"\n]\n'      # what one agent actually wrote
+    assert parse_string_lines(broken) == (["Eins", 'ซึ่งถูก "box" box เหล่านี้', "Drei"], 1)
+    assert parse_string_lines('[{"id": "x", "msgstr": "y"}]') == (None, 0)   # not a list of strings
+    assert parse_string_lines('[\n"Eins",\n{"a": 1}\n]') == (None, 0)
+
+
+def test_prepare_writes_idless_one_line_batches(monkeypatch):
+    import json
+    import translate
+    d = io.WORK_DIR / "_pytest"                 # manifest paths are repo-relative, so stay inside work/
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    monkeypatch.setattr(io, "WORK_DIR", d)
+    monkeypatch.setattr(translate, "_write_direct", lambda locale, direct: 0)
+    items = [{"id": f"guides/x.mdx#{i}", "type": "Plain text" if i % 3 else "Title ##",
+              "msgid": f"Paragraph {i} explains how the transpiler maps a circuit onto the backend."} for i in range(7)]
+    items[1].update({"previous_msgid": "Paragraph 1 explains how the transpiler maps a circuit onto hardware.",
+                     "previous_msgstr": "ย่อหน้า 1 อธิบาย"})
+    wl = d / "worklist-zz.json"
+    wl.write_text(json.dumps({"items": items}), encoding="utf-8")
+    translate.prepare("zz", wl)
+    manifest = json.loads((d / "zz" / "manifest.json").read_text(encoding="utf-8"))
+    assert [b["model"] for b in manifest["batches"]] == ["haiku", "sonnet"]
+    for b in manifest["batches"]:
+        text = (io.REPO / b["file"]).read_text(encoding="utf-8")
+        rows = json.loads(text)
+        assert text.count("\n") == len(rows) + 2 and b["items"] == len(rows)
+        assert b["out"].endswith(".out.json") and b["tokens"] > 0
+        ids = json.loads((io.REPO / b["file"]).with_name(Path(b["file"]).name[:-5] + ".ids.json").read_text())
+        assert len(ids) == len(rows) and all("id" not in r and "msgstr" not in r for r in rows)
+    haiku = json.loads((io.REPO / manifest["batches"][0]["file"]).read_text(encoding="utf-8"))
+    assert haiku[0]["prev_msgstr"] == "ย่อหน้า 1 อธิบาย" and "[-hardware.-]{+the backend.+}" in haiku[0]["changes"]
+    assert "prev_msgid" not in haiku[0]
+    sonnet = json.loads((io.REPO / manifest["batches"][1]["file"]).read_text(encoding="utf-8"))
+    assert [r.get("type") for r in sonnet] == ["Title ##", None, "Title ##", None, None, "Title ##"]
+    shutil.rmtree(d)
+
+
+def test_sweep_po_empties_only_failing_entries():
+    import polib
+    from translate import sweep_po
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid="Run `qc.draw()` now.\n", msgstr="Führe `qc.draw()` jetzt aus.\n"))
+    po.append(polib.POEntry(msgid="Run `qc.draw()` now.\n", msgstr="Führe `qc.plot()` jetzt aus.\n"))       # code changed
+    po.append(polib.POEntry(msgid="See $$x$$ here.\n", msgstr="Siehe hier.\n"))                               # math lost
+    po.append(polib.POEntry(msgid="Fuzzy one.\n", msgstr="Wrong `x`.\n", flags=["fuzzy"]))                 # fuzzy: left alone
+    po.append(polib.POEntry(msgid="Untranslated.\n", msgstr=""))
+    emptied = sweep_po(po, "note")
+    assert [i for i, _ in emptied] == [1, 2]
+    assert po[0].msgstr and not po[1].msgstr and not po[2].msgstr and po[3].msgstr == "Wrong `x`.\n"
+    assert po[1].tcomment == "note" and "inline code mismatch" in emptied[0][1][0]

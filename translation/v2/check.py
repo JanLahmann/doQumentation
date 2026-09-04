@@ -32,6 +32,22 @@ FENCE_LINE_RE = re.compile(r"^\s*```", re.M)
 
 
 TEXT_IN_MATH_RE = re.compile(r"\\(?:text|mathrm|textrm|mbox)\{[^}]*\}")
+# Scripts written without spaces between words (Thai, Japanese kana/kanji,
+# Chinese, Korean): a whitespace word count sees one "word" per sentence and
+# the length rules below would reject every real translation (th sync
+# 2026-09-04: 115 of 219 accepted-quality entries rejected as fragments).
+NO_SPACE_SCRIPT_RE = re.compile(r"[\u0e00-\u0e7f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+CHARS_PER_WORD_EQUIV = 4
+
+
+def _length_units(text: str) -> float:
+    """Word count, with runs of space-less script counted as one word per
+    CHARS_PER_WORD_EQUIV characters (Thai runs ~6 chars per English word,
+    Japanese ~2.5; 4 keeps both inside the 0.3x-2.5x window)."""
+    cont = len(NO_SPACE_SCRIPT_RE.findall(text))
+    spaced = len(NO_SPACE_SCRIPT_RE.sub(" ", text).split())
+    return spaced + cont / CHARS_PER_WORD_EQUIV
+
 
 
 def _math(text: str) -> Counter:
@@ -174,10 +190,11 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
     # A translation that balloons is usually an explanation, not a translation;
     # one that collapses is a fragment (positional bootstrap once paired a
     # sentence with the tail "auf." of its neighbour).
-    en_words = len(msgid.split())
-    if en_words >= 30 and len(msgstr.split()) > 2.5 * en_words:
+    en_words = _length_units(msgid)
+    tr_words = _length_units(msgstr)
+    if en_words >= 30 and tr_words > 2.5 * en_words:
         problems.append("translation more than 2.5x the source length")
-    if en_words >= 12 and len(msgstr.split()) < 0.3 * en_words and msgstr.strip() != msgid.strip():
+    if en_words >= 12 and tr_words < 0.3 * en_words and msgstr.strip() != msgid.strip():
         problems.append("translation shorter than 30% of the source")
     return problems
 
