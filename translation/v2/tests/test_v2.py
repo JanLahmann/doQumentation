@@ -157,6 +157,8 @@ def test_split_batches_respects_token_and_item_caps():
     assert all(estimate_tokens(dump_batch(b + [items[0]])) > 4000 for b in batches[:-1])   # greedy: no room left
     heavy = [{"msgid": "x", "prev_msgstr": "ควอนตัม" * 4000, "changes": "[-a-]{+b+}"} for _ in range(5)]
     assert all(len(b) == 1 for b in split_batches(heavy, max_tokens=3000))
+    wordy = [{"msgid": "word " * 1500} for _ in range(6)]                      # 1,500 words each, few tokens per word
+    assert [len(b) for b in split_batches(wordy, max_tokens=10**6, max_words=4000)] == [2, 2, 2]
 
 
 def test_read_results_positional_and_legacy_shapes():

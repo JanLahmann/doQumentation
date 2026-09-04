@@ -30,8 +30,10 @@ tightening of check.py.
   sonnet      everything else.
 
 The model tiers are written as batches under work/<locale>/: at most 120
-items (the 64k output cap) and at most BATCH_TOKENS as the agent's Read
-tool will present the file (line-numbered; the tool refuses files above
+items (the 64k output cap), at most BATCH_WORDS of English (the Write of
+the translations must finish inside the prompt cache's lifetime; a 30k-token
+Write did not, and its final turn re-sent 60k tokens fresh) and at most
+BATCH_TOKENS as the agent's Read tool will present the file (line-numbered; the tool refuses files above
 25k tokens, and an agent that then reads in slices costs ten times a clean
 one: the first Thai run spent 0.6 to 0.8 M tokens on each of three such
 batches). A batch costs ~40k tokens of fixed agent overhead whatever its
@@ -74,6 +76,7 @@ import po4a_io as io  # noqa: E402
 from check import check_entry  # noqa: E402
 
 BATCH_ITEMS = 120
+BATCH_WORDS = 4000        # ~20k output tokens: a 30k-token Write outlived the prompt cache (residual th batch: final turn re-sent 60k fresh)
 BATCH_TOKENS = 18000      # the Read tool refuses 25k; the estimate was within 6% on 21 old-format batches but up to 20% under on the compact format (2 measured)
 PREV_MIN = 0.6            # fuzzy similarity from which the previous translation is worth showing
 HAIKU_MIN = 0.9           # near-identical English: the cheap model applies the change
@@ -180,20 +183,27 @@ def dump_batch(items: list[dict]) -> str:
     return "[\n" + ",\n".join(json.dumps(it, ensure_ascii=False) for it in items) + "\n]\n"
 
 
-def split_batches(items: list[dict], max_items: int = BATCH_ITEMS, max_tokens: float = BATCH_TOKENS) -> list[list[dict]]:
-    """Greedy, order-preserving; the token cap is on the batch file as
+def split_batches(items: list[dict], max_items: int = BATCH_ITEMS, max_tokens: float = BATCH_TOKENS,
+                  max_words: int = BATCH_WORDS) -> list[list[dict]]:
+    """Greedy, order-preserving. The token cap is on the batch file as
     written by dump_batch, one numbered line per item, so it holds whatever
-    the items carry. The estimate is linear, so it is summed per line."""
+    the items carry (the estimate is linear, so it is summed per line). The
+    word cap bounds the output side: the Write of a batch's translations
+    must finish inside the prompt cache's lifetime, or the final turn
+    re-sends the whole context fresh."""
     batches: list[list[dict]] = []
     batch: list[dict] = []
     total = 0.0
+    words = 0
     for it in items:
         cost = estimate_tokens(json.dumps(it, ensure_ascii=False) + ",")
-        if batch and (len(batch) >= max_items or total + cost > max_tokens):
+        n_words = len(it["msgid"].split())
+        if batch and (len(batch) >= max_items or total + cost > max_tokens or words + n_words > max_words):
             batches.append(batch)
-            batch, total = [], 0.0
+            batch, total, words = [], 0.0, 0
         batch.append(it)
         total += cost
+        words += n_words
     if batch:
         batches.append(batch)
     return batches
