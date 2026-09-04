@@ -41,6 +41,12 @@ def test_check_entry_rejects_lost_invariants():
     assert check_entry("Anything", "") == ["empty translation"]
 
 
+def test_check_entry_rejects_stray_empty_anchor():
+    msgid = "$\\sqrt{\\text{NOT}}$ {#sqrttextnot}"
+    assert check_entry(msgid, "$\\sqrt{\\text{NOT}}$ {#sqrttextnot}") == []
+    assert any("heading anchor" in p for p in check_entry(msgid, "$\\sqrt{\\text{NOT}}$ {#} {#sqrttextnot}"))
+
+
 def test_check_entry_length_rules_understand_space_less_scripts():
     en = "The IBM Quantum primitives workflow requires circuits and observables to be transformed to only use instructions supported by the QPU."
     th = "ขั้นตอนการทำงานของ IBM Quantum primitives ต้องการให้ Circuit และ observable ถูกแปลงให้ใช้เฉพาะคำสั่งที่รองรับโดย QPU"
@@ -188,7 +194,9 @@ def test_parse_string_lines_repairs_unescaped_quotes():
     good = '[\n"Eins",\n"Zwei \\"zitiert\\""\n]\n'
     assert parse_string_lines(good) == (["Eins", 'Zwei "zitiert"'], 0)
     broken = '[\n"Eins",\n"ซึ่งถูก "box" box เหล่านี้",\n"Drei"\n]\n'      # what one agent actually wrote
-    assert parse_string_lines(broken) == (["Eins", 'ซึ่งถูก "box" box เหล่านี้', "Drei"], 1)
+    assert parse_string_lines(broken) == (["Eins", 'ซึ่งถูก "box" box เหล่านี้', "Drei"], 2)   # 2 quotes escaped
+    one_line = '["Eins", "mówi się o „warstwie" bramek, które", "Drei \\"ok\\"", "x "y" z"]'   # Haiku: whole list on one line
+    assert parse_string_lines(one_line) == (["Eins", 'mówi się o „warstwie" bramek, które', 'Drei "ok"', 'x "y" z'], 3)
     assert parse_string_lines('[{"id": "x", "msgstr": "y"}]') == (None, 0)   # not a list of strings
     assert parse_string_lines('[\n"Eins",\n{"a": 1}\n]') == (None, 0)
 

@@ -351,17 +351,48 @@ def prepare(locale: str, worklist: Path) -> dict:
 BATCH_NAME = re.compile(r"^batch-\d+-[a-z]+\.json$")
 
 
+def repair_inner_quotes(text: str, limit: int = 50) -> tuple[str, int]:
+    """Escape unescaped double quotes inside JSON strings, one at a time,
+    guided by where the parser stops: at "Expecting ',' delimiter" the
+    quote that closed the string too early is the last one before the
+    error position. Seen from Haiku: Polish „warstwie" quotes, whole list
+    on one line. Returns (text, quotes escaped)."""
+    fixed = 0
+    while fixed < limit:
+        try:
+            json.loads(text)
+            return text, fixed
+        except json.JSONDecodeError as exc:
+            if not exc.msg.startswith("Expecting ',' delimiter"):
+                return text, fixed
+            q = text.rfind('"', 0, exc.pos)
+            if q <= 0:
+                return text, fixed
+            text = text[:q] + '\\"' + text[q + 1:]
+            fixed += 1
+    return text, fixed
+
+
 def parse_string_lines(text: str) -> tuple[list[str] | None, int]:
     """A JSON list of strings, one per line, as the agent is told to write
-    it. Falls back to line-by-line decoding when the file as a whole does
-    not parse: the one failure seen in practice is an unescaped quote
-    inside a string, which is repairable when a line is one string.
-    Returns (strings, lines repaired) or (None, 0)."""
+    it. When the file as a whole does not parse, first escape the inner
+    quotes the parser trips on (repair_inner_quotes), then fall back to
+    line-by-line decoding (each line one string). Both failures seen in
+    practice are unescaped quotes inside a string.
+    Returns (strings, repairs made) or (None, 0)."""
     try:
         res = json.loads(text)
         return (res, 0) if isinstance(res, list) and all(isinstance(r, str) for r in res) else (None, 0)
     except json.JSONDecodeError:
         pass
+    repaired_text, n = repair_inner_quotes(text)
+    if n:
+        try:
+            res = json.loads(repaired_text)
+            if isinstance(res, list) and all(isinstance(r, str) for r in res):
+                return res, n
+        except json.JSONDecodeError:
+            pass
     out, repaired = [], 0
     for line in text.splitlines():
         line = line.strip().rstrip(",").strip()
