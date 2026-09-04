@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """Fill the untranslated and fuzzy entries of a locale's PO files.
 
+    python3 translation/v2/translate.py --locale de --sweep
     python3 translation/v2/translate.py --locale de --prepare
     python3 translation/v2/translate.py --locale de --apply
+
+--sweep runs check.py over every translated, non-fuzzy entry of the locale
+and empties the ones that fail (msgstr cleared, a translator comment says
+why), so the next update.py lists them for retranslation. Needed once per
+locale bootstrapped before adopt() applied the full checker (#477: all but
+de): the Thai sweep found 193 of 26,509 entries, 150 of them positional
+bootstrap pairs whose $$ block sat in the neighbouring entry, which the
+render passed and the MDX compile then failed on. Run it again after any
+tightening of check.py.
 
 --prepare sorts the worklist (update.py --json) into tiers, cheapest first:
 
@@ -19,16 +29,28 @@
               translation with the change applied.
   sonnet      everything else.
 
-The model tiers are written as batches under work/<locale>/, at most 120
-items or 6,000 English words each (a batch costs ~50k tokens of fixed
-agent overhead whatever its size, so bigger is cheaper per word), with manifest.json listing file, model
-and size. Items carry only what a translator needs: id, type, msgid, and the
-previous English/translation pair when the fuzzy match is real (similarity
->= 0.6). No page context: it doubled the input and was never used.
+The model tiers are written as batches under work/<locale>/: at most 120
+items (the 64k output cap) and at most BATCH_TOKENS as the agent's Read
+tool will present the file (line-numbered; the tool refuses files above
+25k tokens, and an agent that then reads in slices costs ten times a clean
+one: the first Thai run spent 0.6 to 0.8 M tokens on each of three such
+batches). A batch costs ~40k tokens of fixed agent overhead whatever its
+size, so batches are as large as the cap allows. manifest.json lists file,
+output file, model and size.
 
---apply reads every batch, runs check.py on each filled item, writes accepted
-ones into the PO, and lists rejections. A batch item needs only "id" and
-"msgstr"; the other fields are for the translator.
+Batch items carry only what a translator needs and nothing it does not:
+msgid; type when it is not plain text; for a real fuzzy match (similarity
+>= 0.6) the previous translation and a word diff of the English change
+instead of the whole previous English. No id (a sidecar .ids.json keeps
+the order), no empty msgstr placeholder, no page context, one item per
+line: JSON structure and line numbers cost more tokens than the English
+itself, so a batch of 120 items reads at about 60% of the earlier format.
+
+The agent writes its translations as a JSON list of strings, in order, to
+the batch's .out.json. --apply pairs them positionally with the ids (a
+count mismatch rejects the whole batch), runs check.py on each, writes
+accepted ones into the PO, and lists rejections. Older shapes, a list of
+{id, msgstr} in the .out.json or in the batch file itself, are still read.
 
 Cost, measured on the German run: an agent that reads the batch, checks
 things and re-reads before writing spent about 150k tokens per 4,000 words;
@@ -51,8 +73,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po4a_io as io  # noqa: E402
 from check import check_entry  # noqa: E402
 
-BATCH_WORDS = 6000
 BATCH_ITEMS = 120
+BATCH_TOKENS = 18000      # the Read tool refuses 25k; the estimate was within 6% on 21 old-format batches but up to 20% under on the compact format (2 measured)
+PREV_MIN = 0.6            # fuzzy similarity from which the previous translation is worth showing
+HAIKU_MIN = 0.9           # near-identical English: the cheap model applies the change
 LANGUAGE_TABLE = io.REPO / "translation" / "translation-prompt.md"
 
 
@@ -78,21 +102,25 @@ Register: {register or 'informal, as the existing translations use'}.
 
 Rules, each enforced by an automatic checker:
 - Keep byte-for-byte: inline code in backticks (including placeholders like
-  `<per sub-job overhead>`), URLs, image paths, JSX/HTML tags and every
-  attribute other than title=, heading anchors like {{#some-anchor}}, MDX
-  comments {{/* ... */}}.
+  `<per sub-job overhead>`, and even when the code looks wrong, such as
+  `PassManagers` or `batch.details() method`), URLs, image paths, JSX/HTML
+  tags and every attribute other than title=, heading anchors like
+  {{#some-anchor}}, MDX comments {{/* ... */}}.
 - Math: keep every $...$ span and every $$...$$ block exactly, including the
   number of $$ delimiters (an entry may start or end inside a block; copy
   that part unchanged). Only words inside \\text{{...}} may be translated.
 - Keep these terms in English: Qiskit, Qubit, Gate, Circuit, Backend,
   Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU.
-- A `type` of "Title ##" is a heading: translate the text, keep the anchor.
-- A `type` starting with "Yaml Front Matter" is page metadata: plain text.
+- An item without `type` is plain text. A `type` of "Title ##" is a
+  heading: translate the text, keep the anchor. A `type` starting with
+  "Yaml Front Matter" is page metadata: plain text.
 - A JSX tag item with title="...": translate only the title value.
-- `prev_msgid`/`prev_msgstr`, when present, are the previous English and
-  its {lang}: reuse the previous wording and apply exactly the change the
-  new msgid made (renamed products, changed numbers, added or removed
-  clauses). If the previous sentence is a different one, translate afresh.
+- `prev_msgstr`, when present, is the {lang} of an earlier version of this
+  msgid and `changes` shows how the English changed since, as
+  [-removed-]{{+added+}} with a few words of context: reuse the previous
+  wording and apply exactly those changes (renamed products, changed
+  numbers, added or removed clauses). If the changes show a different
+  sentence altogether, translate afresh.
 - Every msgstr is a complete translation of its whole msgid, never a
   fragment. If an item is a proper name or code that must stay in English,
   copy msgid into msgstr unchanged.
@@ -111,6 +139,64 @@ def _norm(s: str) -> str:
 
 def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, _norm(a), _norm(b), autojunk=False).ratio()
+
+
+def word_changes(old: str, new: str, context: int = 2) -> str:
+    """The English change as [-removed-]{+added+} hunks with a few words of
+    context, joined by ' … '. Shorter than the whole previous English and
+    exactly what the translator is asked to apply."""
+    a, b = old.split(), new.split()
+    hunks = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        before = " ".join(a[max(0, i1 - context):i1])
+        after = " ".join(a[i2:i2 + context])
+        mid = ""
+        if i2 > i1:
+            mid += "[-" + " ".join(a[i1:i2]) + "-]"
+        if j2 > j1:
+            mid += "{+" + " ".join(b[j1:j2]) + "+}"
+        hunks.append(" ".join(x for x in (before, mid, after) if x))
+    return " … ".join(hunks)
+
+
+def estimate_tokens(text: str) -> float:
+    """Tokens the model sees for a file the Read tool presents line-numbered.
+    Fitted (non-negative least squares) on 21 batches of the first Thai run
+    whose Read cost was recorded: within 6% on every one. Non-ASCII script
+    weight is a guess on the safe side; the fit had too few points to pin it."""
+    numbered = "\n".join(f"{i + 1}\t{line}" for i, line in enumerate(text.split("\n")))
+    words = len(re.findall(r"[A-Za-z]+", numbered))
+    digit_runs = len(re.findall(r"\d+", numbered))
+    symbols = sum(1 for c in numbered if ord(c) < 128 and not c.isalnum() and not c.isspace())
+    non_ascii = sum(1 for c in numbered if ord(c) >= 128)
+    return 1.62 * words + 7.1 * digit_runs + 0.99 * symbols + 0.5 * non_ascii
+
+
+def dump_batch(items: list[dict]) -> str:
+    """One item per line: the Read tool numbers every line, and each number
+    costs more than the whitespace pretty-printing would save."""
+    return "[\n" + ",\n".join(json.dumps(it, ensure_ascii=False) for it in items) + "\n]\n"
+
+
+def split_batches(items: list[dict], max_items: int = BATCH_ITEMS, max_tokens: float = BATCH_TOKENS) -> list[list[dict]]:
+    """Greedy, order-preserving; the token cap is on the batch file as
+    written by dump_batch, one numbered line per item, so it holds whatever
+    the items carry. The estimate is linear, so it is summed per line."""
+    batches: list[list[dict]] = []
+    batch: list[dict] = []
+    total = 0.0
+    for it in items:
+        cost = estimate_tokens(json.dumps(it, ensure_ascii=False) + ",")
+        if batch and (len(batch) >= max_items or total + cost > max_tokens):
+            batches.append(batch)
+            batch, total = [], 0.0
+        batch.append(it)
+        total += cost
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def is_copy_only(msgid: str) -> bool:
@@ -198,37 +284,40 @@ def prepare(locale: str, worklist: Path) -> dict:
             direct.setdefault(page, []).append((int(idx), it["msgid"], "doq: copied, nothing translatable"))
             continue
         sim = similarity(it["previous_msgid"], it["msgid"]) if it.get("previous_msgid") else 0.0
-        if sim >= 0.9:
+        if sim >= HAIKU_MIN:
             cand = mechanical_transfer(it["previous_msgid"], it["msgid"], it.get("previous_msgstr", ""))
             if cand is not None:
                 tiers["mechanical"].append(it)
                 direct.setdefault(page, []).append((int(idx), cand, "doq: mechanical transfer from the previous translation"))
                 continue
-        slim = {"id": it["id"], "type": it["type"], "msgid": it["msgid"], "msgstr": ""}
-        if sim >= 0.6:
-            slim["prev_msgid"] = it["previous_msgid"]
-            slim["prev_msgstr"] = it.get("previous_msgstr", "")
-        tiers["haiku" if sim >= 0.9 else "sonnet"].append(slim)
+        slim = {"msgid": it["msgid"]}
+        if it["type"] != "Plain text":
+            slim["type"] = it["type"]
+        if sim >= PREV_MIN and it.get("previous_msgstr", "").strip():
+            slim["changes"] = word_changes(it["previous_msgid"], it["msgid"])
+            slim["prev_msgstr"] = it["previous_msgstr"]
+        slim["_id"] = it["id"]          # stripped before writing; kept in the .ids.json sidecar
+        tiers["haiku" if sim >= HAIKU_MIN else "sonnet"].append(slim)
 
     n_direct = _write_direct(locale, direct)
 
     manifest: list[dict] = []
     n = 0
     for model in ("haiku", "sonnet"):
-        batch: list[dict] = []
-        words = 0
-        for it in tiers[model] + [None]:
-            if it is None or (batch and (len(batch) >= BATCH_ITEMS or words + len(it["msgid"].split()) > BATCH_WORDS)):
-                if batch:
-                    name = f"batch-{n:03d}-{model}.json"
-                    (outdir / name).write_text(json.dumps(batch, indent=1, ensure_ascii=False), encoding="utf-8")
-                    manifest.append({"file": str((outdir / name).relative_to(io.REPO)), "model": model,
-                                     "items": len(batch), "words": words})
-                    n += 1
-                batch, words = [], 0
-            if it is not None:
-                batch.append(it)
-                words += len(it["msgid"].split())
+        pos = 0
+        for batch in split_batches([{k: v for k, v in it.items() if k != "_id"} for it in tiers[model]]):
+            ids = [it["_id"] for it in tiers[model][pos:pos + len(batch)]]
+            pos += len(batch)
+            name = f"batch-{n:03d}-{model}.json"
+            text = dump_batch(batch)
+            (outdir / name).write_text(text, encoding="utf-8")
+            (outdir / f"batch-{n:03d}-{model}.ids.json").write_text(json.dumps(ids, indent=0), encoding="utf-8")
+            words = sum(len(it["msgid"].split()) for it in batch)
+            manifest.append({"file": str((outdir / name).relative_to(io.REPO)),
+                             "out": str((outdir / f"batch-{n:03d}-{model}.out.json").relative_to(io.REPO)),
+                             "model": model, "items": len(batch), "words": words,
+                             "tokens": round(estimate_tokens(text))})
+            n += 1
     (outdir / "manifest.json").write_text(json.dumps({
         "locale": locale,
         "instructions": str((outdir / "instructions.md").relative_to(io.REPO)),
@@ -249,16 +338,137 @@ def prepare(locale: str, worklist: Path) -> dict:
 # Apply
 # ---------------------------------------------------------------------------
 
+BATCH_NAME = re.compile(r"^batch-\d+-[a-z]+\.json$")
+
+
+def parse_string_lines(text: str) -> tuple[list[str] | None, int]:
+    """A JSON list of strings, one per line, as the agent is told to write
+    it. Falls back to line-by-line decoding when the file as a whole does
+    not parse: the one failure seen in practice is an unescaped quote
+    inside a string, which is repairable when a line is one string.
+    Returns (strings, lines repaired) or (None, 0)."""
+    try:
+        res = json.loads(text)
+        return (res, 0) if isinstance(res, list) and all(isinstance(r, str) for r in res) else (None, 0)
+    except json.JSONDecodeError:
+        pass
+    out, repaired = [], 0
+    for line in text.splitlines():
+        line = line.strip().rstrip(",").strip()
+        if line in ("", "[", "]"):
+            continue
+        try:
+            val = json.loads(line)
+        except json.JSONDecodeError:
+            if not (line.startswith('"') and line.endswith('"') and len(line) >= 2):
+                return None, 0
+            inner = re.sub(r'(?<!\\)"', r'\\"', line[1:-1])
+            try:
+                val = json.loads('"' + inner + '"')
+            except json.JSONDecodeError:
+                return None, 0
+            repaired += 1
+        if not isinstance(val, str):
+            return None, 0
+        out.append(val)
+    return out, repaired
+
+
+def read_results(bpath: Path) -> tuple[list[tuple[str, str]], str | None]:
+    """(id, msgstr) pairs of one batch, or ([], reason) when the batch as a
+    whole cannot be used. Accepts, in this order: <batch>.out.json as a list
+    of strings paired positionally with <batch>.ids.json (a count mismatch
+    rejects the batch: a dropped item would shift every later one);
+    <batch>.out.json as a list of {id, msgstr}; the batch file itself
+    filled in place with {id, msgstr} (the shape before .out.json)."""
+    stem = bpath.name[:-len(".json")]
+    out_path = bpath.with_name(stem + ".out.json")
+    ids_path = bpath.with_name(stem + ".ids.json")
+    try:
+        items = json.loads(bpath.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:                # a truncated or mis-escaped in-place Write
+        return [], f"invalid JSON: {exc}"
+    if out_path.exists():
+        text = out_path.read_text(encoding="utf-8")
+        strings, repaired = parse_string_lines(text)
+        if strings is not None:
+            if repaired:
+                print(f"NOTE {out_path.name}: {repaired} line(s) with unescaped quotes repaired")
+            ids = json.loads(ids_path.read_text(encoding="utf-8")) if ids_path.exists() else [it.get("id") for it in items]
+            if len(strings) != len(ids) or any(i is None for i in ids):
+                return [], f"{len(strings)} translations for {len(ids)} items"
+            return list(zip(ids, strings)), None
+        try:
+            res = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return [], f"invalid JSON in {out_path.name}: {exc}"
+        if isinstance(res, list) and all(isinstance(r, dict) and "id" in r for r in res):
+            return [(r["id"], r.get("msgstr", "")) for r in res], None
+        return [], f"unrecognised content in {out_path.name}"
+    if items and all(isinstance(it, dict) and "id" in it and "msgstr" in it for it in items):
+        return [(it["id"], it["msgstr"]) for it in items], None
+    return [], None                      # not filled yet
+
+
+def sweep_po(po: polib.POFile, note: str) -> list[tuple[int, list[str]]]:
+    """Empty every translated, non-fuzzy entry that fails check_entry.
+    Returns (index, problems) of the entries emptied."""
+    emptied = []
+    for i, e in enumerate(po):
+        if e.obsolete or e.fuzzy or not e.msgstr:
+            continue
+        problems = check_entry(e.msgid, e.msgstr)
+        if problems:
+            e.msgstr = ""
+            e.previous_msgid = None
+            e.tcomment = note
+            emptied.append((i, problems))
+    return emptied
+
+
+def sweep(locale: str) -> int:
+    from datetime import date
+    note = f"doq: emptied {date.today().isoformat()}, previous translation failed check.py"
+    n_checked = n_emptied = 0
+    classes: dict[str, int] = {}
+    root = io.po_path(locale, "index.mdx").parent
+    for po_file in sorted(root.rglob("*.po")):
+        po = polib.pofile(str(po_file), wrapwidth=0)
+        n_checked += sum(1 for e in po if e.msgstr and not e.fuzzy and not e.obsolete)
+        emptied = sweep_po(po, note)
+        if emptied:
+            po.save(str(po_file))
+            n_emptied += len(emptied)
+            for _, problems in emptied:
+                for pr in problems:
+                    classes[pr.split(":")[0]] = classes.get(pr.split(":")[0], 0) + 1
+    print(f"{locale}: checked {n_checked} entries, emptied {n_emptied}")
+    for k, v in sorted(classes.items(), key=lambda kv: -kv[1]):
+        print(f"  {v:5d}  {k}")
+    if n_emptied:
+        print(f"next: update.py --locale {locale} --json translation/v2/work/worklist-{locale}.json, then --prepare")
+    return 0
+
+
 def apply(locale: str) -> int:
     outdir = io.WORK_DIR / locale
     accepted = rejected = skipped = 0
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
-    for bpath in sorted(outdir.glob("batch-*.json")):
-        for it in json.loads(bpath.read_text(encoding="utf-8")):
-            if not it.get("msgstr", "").strip():
+    for bpath in sorted(p for p in outdir.glob("batch-*.json") if BATCH_NAME.match(p.name)):
+        pairs, reason = read_results(bpath)
+        if reason:
+            rejected += 1
+            print(f"REJECT {bpath.name} (whole batch): {reason}")
+            continue
+        if not pairs:
+            skipped += len(json.loads(bpath.read_text(encoding="utf-8")))
+            continue
+        for ident, msgstr in pairs:
+            if not (msgstr or "").strip():
                 skipped += 1
                 continue
+            it = {"id": ident, "msgstr": msgstr}
             page, idx = it["id"].rsplit("#", 1)
             if page not in cache:
                 cache[page] = polib.pofile(str(io.po_path(locale, page)), wrapwidth=0)
@@ -287,13 +497,16 @@ def apply(locale: str) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--locale", required=True)
+    ap.add_argument("--sweep", action="store_true", help="empty translated entries that fail check.py")
     ap.add_argument("--prepare", action="store_true")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--worklist", help="default translation/v2/work/worklist-<locale>.json")
     args = ap.parse_args()
-    if not (args.prepare or args.apply):
-        ap.error("--prepare and/or --apply")
+    if not (args.prepare or args.apply or args.sweep):
+        ap.error("--sweep, --prepare and/or --apply")
     rc = 0
+    if args.sweep:
+        sweep(args.locale)
     if args.prepare:
         wl = Path(args.worklist) if args.worklist else io.WORK_DIR / f"worklist-{args.locale}.json"
         if not wl.exists():

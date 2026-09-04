@@ -35,16 +35,26 @@ function parseDone(text, b) {
   return m ? { file: b.file, filled: +m[1], total: +m[2] } : { file: b.file, filled: 0, total: b.items, failed: true, raw: String(text || '').slice(0, 200) }
 }
 
+// The batch carries no ids and the agent returns a plain list of strings in
+// item order: ids, keys and pretty-printing cost more tokens than the
+// English itself (a 120-item batch read at ~60% after the change), and
+// the id echoed per item was ~9% of the Thai output. translate.py --apply
+// pairs the strings with the batch's .ids.json and rejects the whole
+// batch on a count mismatch, so a dropped item cannot shift the rest.
+function outFile(b) {
+  return b.out || b.file.replace(/\.json$/, '.out.json')
+}
+
 function prompt(b) {
   return `You are a technical translator for doQumentation (locale "${locale}").
 
 ${RULES}
 
 Do exactly this, in this order, with no other tool calls:
-1. Read ${b.file} (once). It is a JSON list of ${b.items} items.
-2. For EVERY item write the translation of "msgid" into "msgstr", following the rules above. Leave every other field untouched; do not add, remove or reorder items. If an item is code or a proper name that must stay in English, copy msgid into msgstr unchanged.
-3. Write the result to ${b.file} with ONE Write call: a JSON list of objects with exactly two keys, "id" (copied from the item) and "msgstr" (your translation), one per item, in order. Nothing else in the file.
-4. Reply with exactly one line and nothing else: done <filled>/${b.items}
+1. Read ${b.file} (once). It is a JSON list of ${b.items} items, one per line.
+2. Translate EVERY item's "msgid" following the rules above. If an item is code or a proper name that must stay in English, its translation is the msgid unchanged.
+3. Write ${outFile(b)} with ONE Write call: a JSON list of exactly ${b.items} strings, the translation of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.
+4. Reply with exactly one line and nothing else: done <count>/${b.items}
 
 Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the translation is the work.`
 }

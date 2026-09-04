@@ -49,9 +49,9 @@ to notebook output can never make a translation stale.
 | `extract.py [--check]` | after every sync, and by bootstrap | `docs/` → `pot/`. `--check` renders each POT untranslated and requires the result to equal the source (modulo blank lines and front-matter quoting). All 424 pages pass. |
 | `bootstrap.py --locale X [--verify]` | once per locale, **before** the next English sync | Builds `i18n/X/po/` from the existing translations. `exact` strategy is `po4a-gettextize`; `positional` is our fallback for pages po4a refuses (pairs the type sequences with difflib, adopts matching runs only). Writes `work/bootstrap-X.json`. |
 | `update.py --locale X --json …` | after every sync | `msgmerge --previous` every PO against the new POT, then prints the worklist: fuzzy (near-identical English, old msgid kept as `#\| msgid`) and untranslated entries. |
-| `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 6,000 words, slim items) plus `manifest.json`, which also carries the instructions text for inlining into prompts. |
-| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch, five concurrent, each allowed exactly one Read, one Write (a list of `{id, msgstr}` only) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
-| `translate.py --locale X --apply` | after the batches are filled | Runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
+| `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items and ≤ 20k estimated tokens as the Read tool presents it; one id-less item per line, with a word diff and the previous translation for real fuzzy matches) plus a `.ids.json` sidecar per batch and `manifest.json`, which also carries the instructions text for inlining into prompts. |
+| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch, five concurrent, each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
+| `translate.py --locale X --apply` | after the batches are filled | Pairs each `.out.json` with its `.ids.json` by position (a count mismatch rejects that batch), runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
 | `render.py --locale X [--out-dir D]` | at build time, or to preview | POT + PO → locale MDX, with the v1 freshness marker so v1 tools keep working during the migration. |
 | `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
 | `mdxcheck.mjs` | after render, before commit | Compiles every rendered page with MDX 3 + math + GFM + directives the way Docusaurus does (front matter stripped, heading anchors escaped) and lists the pages acorn rejects. The only check that asks the real parser; the German run needed it twice. |
@@ -151,6 +151,35 @@ What changed after that run, in order of effect:
 5. batches stop at 120 items or 6,000 words, five run concurrently, and
    agents write back only `{id, msgstr}`, so the 64k output cap stays far
    away even for the largest batch.
+
+The first Thai run (26 batches, `translator` agent) showed where the rest
+went, per batch measured from the agents' transcripts: a clean batch was
+3 turns, ~50k fresh + ~47k cached input, ~16k output; but the three Haiku
+batches, sized by English words while carrying the previous English and
+Thai as well, were 59k tokens as the Read tool presents them (it refuses
+above 25k), so each agent read in 5 to 7 slices over 13 to 20 turns and
+spent 0.6 to 0.8 M tokens, more than the other 23 batches together. And of
+a clean batch's read, the English was about a third: ids, keys, JSON
+escapes, indentation and the line number the Read tool adds to every line
+were the rest. Hence, after that run:
+
+6. batches are sized by an estimate of the tokens the Read tool will
+   present (fitted on the 21 recorded reads, within 6% there and up to 20%
+   under on the compact format; `estimate_tokens` in translate.py), capped
+   at 18k;
+7. a batch item is one line: msgid, `type` only when not plain text, and
+   for a fuzzy match the previous translation plus a word diff of the
+   English change rather than the whole previous English; no id (the
+   order is kept in a `.ids.json` sidecar), no empty placeholder;
+8. the agent writes a list of strings in item order to `.out.json`; the
+   id echoed per item had been ~9% of the output, the most expensive
+   tokens. `--apply` rejects a batch whose count differs.
+
+One more measured effect: a Write of 30k output tokens takes longer than
+the prompt cache lives, so the final turn re-sends the whole context fresh
+(59k tokens on the 120-item residual batch versus 25k on a 34-item one).
+The item and token caps keep most batches under that; a smaller batch
+would pay a fixed ~40k instead, so the caps stay where they are.
 
 Measured on a throwaway locale (21 items, 588 words, two batches): about
 50k tokens per agent whether it took four tool calls or two, and whether
