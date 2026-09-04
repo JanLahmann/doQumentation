@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-03 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-04 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -40,6 +40,10 @@ contain and still be eligible. Tighter is better quality-per-round; the
 value shown is the **tightest threshold that still leaves a workable
 pool** (at least 25 files). Use it as the starting point.
 
+| Locale | Unreviewed pool | Use | Reviewed so far |
+|---|---|---|---|
+| `de` | **35** | `--max-leaks 12` | 171/428 (39%) |
+
 **Nearly exhausted** (fewer than 25 eligible even at
 `--max-leaks 12`) — still worth a short round, but expect
 to widen further or re-sweep files that already carry a verdict:
@@ -49,7 +53,6 @@ to widen further or re-sweep files that already carry a verdict:
 - `he` — 4 left at `--max-leaks 12` (232/428 reviewed)
 - `id` — 4 left at `--max-leaks 12` (233/428 reviewed)
 - `pl` — 3 left at `--max-leaks 12` (297/428 reviewed)
-- `de` — 2 left at `--max-leaks 12` (171/428 reviewed)
 - `ms` — 2 left at `--max-leaks 12` (286/428 reviewed)
 - `ro` — 2 left at `--max-leaks 12` (289/428 reviewed)
 - `cs` — 1 left at `--max-leaks 12` (270/428 reviewed)

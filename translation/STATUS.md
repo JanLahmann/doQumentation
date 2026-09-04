@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-09-03 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-09-04 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -11,7 +11,7 @@ python translation/scripts/translation-status.py --write-status
 
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
+| German | `de` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
 | Spanish | `es` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
 | Ukrainian | `uk` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
 | Japanese | `ja` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
@@ -44,11 +44,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
 | Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
