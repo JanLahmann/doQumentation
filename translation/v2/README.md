@@ -191,6 +191,12 @@ repaired at the position the parser reports, however the file is laid
 out) and one agent returning 119 strings for 120 items (the batch is
 rejected as a whole and redone, which is the point of the count check).
 
+Spanish (34 batches, 3,133 items) came in at 772 fresh + 717 cached per
+item and surfaced one more rule: a previous translation that fails the
+checker against its own English (a translated code span, typically from
+v1) is not offered as a hint, because the agent reuses its wording and
+the same rejection then repeats on every retry (three entries, twice).
+
 Measured on a throwaway locale (21 items, 588 words, two batches): about
 50k tokens per agent whether it took four tool calls or two, and whether
 the rules were read from a file or inlined. The fixed cost is the

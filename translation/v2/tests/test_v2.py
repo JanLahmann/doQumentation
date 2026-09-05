@@ -213,11 +213,14 @@ def test_prepare_writes_idless_one_line_batches(monkeypatch):
               "msgid": f"Paragraph {i} explains how the transpiler maps a circuit onto the backend."} for i in range(7)]
     items[1].update({"previous_msgid": "Paragraph 1 explains how the transpiler maps a circuit onto hardware.",
                      "previous_msgstr": "ย่อหน้า 1 อธิบาย"})
+    items[2].update({"msgid": "Call `run()` on the backend.", "previous_msgid": "Call `run()` on the device.",
+                     "previous_msgstr": "Llama a `ejecutar()` en el dispositivo."})      # bad hint: code span translated
     wl = d / "worklist-zz.json"
     wl.write_text(json.dumps({"items": items}), encoding="utf-8")
     translate.prepare("zz", wl)
     manifest = json.loads((d / "zz" / "manifest.json").read_text(encoding="utf-8"))
     assert [b["model"] for b in manifest["batches"]] == ["haiku", "sonnet"]
+    assert manifest["batches"][0]["items"] == 1 and manifest["batches"][1]["items"] == 6   # the bad-hint item went to sonnet
     for b in manifest["batches"]:
         text = (io.REPO / b["file"]).read_text(encoding="utf-8")
         rows = json.loads(text)
@@ -230,6 +233,7 @@ def test_prepare_writes_idless_one_line_batches(monkeypatch):
     assert "prev_msgid" not in haiku[0]
     sonnet = json.loads((io.REPO / manifest["batches"][1]["file"]).read_text(encoding="utf-8"))
     assert [r.get("type") for r in sonnet] == ["Title ##", None, "Title ##", None, None, "Title ##"]
+    assert not any("prev_msgstr" in r for r in sonnet)                                     # no hint from a failing pair
     shutil.rmtree(d)
 
 
