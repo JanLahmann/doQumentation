@@ -1,0 +1,426 @@
+---
+description: 'Exécute des expériences de caractérisation rapides pour mesurer les propriétés du QPU en temps réel et actualiser un backend avec des T1, T2, erreurs de lecture et erreurs de porte à jour.'
+notebook_path: tutorials/refresh-backend-properties-with-real-time-benchmarking.ipynb
+sidebar_label: 'Actualiser les propriétés du backend avec un benchmarking en temps réel'
+title: 'Actualiser les propriétés du backend avec un benchmarking en temps réel'
+---
+
+{/* doqumentation-source-hash: d2f15cc7 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/refresh-backend-properties-with-real-time-benchmarking.ipynb" />
+
+
+
+{/* cspell:ignore CPMG dephase ylim */}
+
+*Estimation d'utilisation : 3 minutes sur ibm_kingston (REMARQUE : Ceci est une estimation seulement. Ton temps d'exécution peut varier.)*
+
+## Résultats d'apprentissage {#learning-outcomes}
+
+Après avoir terminé ce tutoriel, tu peux t'attendre à comprendre les éléments suivants :
+
+- Pourquoi les propriétés rapportées par un QPU peuvent être en retard par rapport au comportement actuel de l'appareil, et quand il vaut la peine de les remesurer toi-même
+
+- Ce que mesure chacune des cinq expériences de caractérisation standard (lecture, benchmarking aléatoire à un qubit, benchmarking aléatoire à deux qubits en couches, $T_1$, et $T_2$)
+
+- Comment exécuter la suite de caractérisation complète en un seul appel ou étape par étape, et récupérer un objet backend avec des propriétés actualisées
+
+- Comment comparer les propriétés mesurées avec celles rapportées, et pourquoi certaines différences reflètent la méthodologie de mesure plutôt qu'une dérive de l'appareil
+
+
+## Prérequis {#prerequisites}
+
+Il est recommandé de te familiariser avec les sujets suivants :
+
+- Le flux de travail [Qiskit patterns](/guides/intro-to-patterns)
+
+- [Modes d'exécution Qiskit Runtime](/guides/execution-modes), en particulier le mode batch
+
+- Comment explorer les [informations QPU](/guides/qpu-information), telles que les propriétés du backend et les données de calibration
+
+
+## Contexte {#background}
+
+Chaque QPU IBM Quantum&reg; rapporte un ensemble de propriétés qui décrivent le fonctionnement actuel de chacun de ses qubits : temps de relaxation ($T_1$), temps de cohérence ($T_2$), erreurs de lecture, et erreurs de porte à un et deux qubits. Ces chiffres comptent en pratique. Le transpileur les utilise pour décider sur quels qubits physiques ton circuit doit s'exécuter, les techniques d'atténuation des erreurs s'appuient sur eux, et tu pourrais les utiliser pour juger si un appareil fonctionne suffisamment bien pour une expérience.
+
+Les propriétés rapportées proviennent de procédures de calibration qui s'exécutent généralement environ une fois par jour. Les qubits supraconducteurs, cependant, peuvent dériver sur des échelles de temps plus courtes, et des défauts transitoires (appelés systèmes à deux niveaux) peuvent temporairement dégrader un qubit qui semblait excellent au moment de la calibration. De plus, un job est souvent transpilé bien avant son exécution réelle, donc les décisions basées sur les propriétés rapportées peuvent reposer sur des informations obsolètes. Le tutoriel [Benchmarking en temps réel pour la sélection de qubits](/tutorials/real-time-benchmarking-for-qubit-selection) montre à quel point ces propriétés peuvent fluctuer d'un jour à l'autre, et construit manuellement un flux de travail de caractérisation complet à partir d'[expériences Qiskit](https://qiskit-community.github.io/qiskit-experiments/) individuelles.
+
+Ce tutoriel montre la version simplifiée de ce flux de travail, en utilisant l'utilitaire `BackendCharacterization` de [Qiskit Device Benchmarking](https://github.com/qiskit-community/qiskit-device-benchmarking), qui regroupe la construction des expériences, la soumission des jobs et l'ajustement de courbe en quelques appels. Tu dépenses environ 70 secondes de temps QPU et récupères un objet backend dont les propriétés reflètent l'appareil *en ce moment même*, prêt à être comparé aux valeurs rapportées ou transmis à des outils en aval.
+
+### Les expériences de caractérisation {#the-characterization-experiments}
+
+La suite mesure cinq propriétés, chacune avec une expérience standard :
+
+- **Erreur de lecture** (`readout`) : Chaque qubit est préparé dans $|0\rangle$ ou $|1\rangle$ et immédiatement mesuré. La probabilité de lire le mauvais état donne l'erreur de préparation et de mesure d'état (SPAM).
+
+- **Erreur de porte à un qubit** (`rb_1q`) : Le benchmarking aléatoire (RB) exécute des séquences de portes de Clifford à un qubit aléatoires qui se composent idéalement en l'identité. La façon dont la probabilité de survie décroît avec la longueur de séquence donne l'erreur moyenne par porte, indépendamment des erreurs SPAM.
+
+- **Erreur de porte à deux qubits** (`rb_2q`) : La même idée de RB appliquée à des couches complètes de portes à deux qubits sans chevauchement exécutées simultanément, comme dans une expérience de [fidélité de couche](https://arxiv.org/abs/2311.05933). Comme de nombreuses portes s'exécutent à la fois, les taux d'erreur résultants incluent des effets de diaphonie et sont plus proches de ce qu'un circuit profond subit réellement.
+
+- **$T_1$** (`t1`) : Chaque qubit est excité et mesuré après des délais croissants. La décroissance de la population de l'état excité donne le temps de relaxation.
+
+- **$T_2$** (`t2`) : Une expérience d'écho de Hahn place chaque qubit en superposition, applique une impulsion d'écho à mi-chemin d'un délai, et mesure la vitesse à laquelle la cohérence de phase est perdue. Par défaut, un seul écho est utilisé ; une variante multi-écho (de type CPMG) est démontrée à la fin de ce tutoriel.
+
+
+### Ce que l'actualisation fait et ne fait pas {#what-refreshing-does-and-does-not-do}
+
+Garde trois points à l'esprit lors de l'utilisation de ce flux de travail :
+
+- Les propriétés actualisées ne vivent que dans l'objet backend qui t'est retourné. Rien ne change sur l'appareil lui-même ni dans les données de calibration qu'IBM Quantum rapporte aux autres utilisateurs.
+
+- Les valeurs mesurées sont un instantané pris avec une méthodologie particulière. Certaines d'entre elles, notamment les erreurs à deux qubits en couches et les valeurs $T_2$ à écho unique en parallèle, sont mesurées différemment des données de calibration rapportées, donc une partie de tout écart que tu observes est méthodologique plutôt que dérive. Ce tutoriel signale où cela se produit.
+
+- La caractérisation elle-même coûte du temps QPU (environ 70 secondes pour la suite complète sur un processeur Heron r2), ce qui est le prix d'une information à jour.
+
+
+Le flux de travail suit les quatre étapes d'un motif Qiskit :
+
+- **Étape 1 : Associer les entrées classiques à un problème quantique.** Choisis l'appareil et l'ensemble de propriétés à mesurer.
+
+- **Étape 2 : Optimiser le problème pour l'exécution sur matériel quantique.** L'utilitaire construit les circuits d'expérience directement dans les portes natives de l'appareil et les parallélise sur la puce.
+
+- **Étape 3 : Exécuter à l'aide des primitives Qiskit.** Les expériences s'exécutent en tant que jobs Sampler dans un batch.
+
+- **Étape 4 : Post-traiter et retourner le résultat au format classique souhaité.** Ajuste les données de mesure en cartes d'erreur par qubit, actualise le backend, et compare les propriétés mesurées avec celles rapportées.
+
+
+## Prérequis techniques {#requirements}
+
+Avant de commencer ce tutoriel, assure-toi d'avoir installé les éléments suivants :
+
+- Qiskit SDK v2.0 ou ultérieur, avec la prise en charge de [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization)
+
+- Qiskit Runtime v0.40 ou ultérieur (`pip install qiskit-ibm-runtime`)
+
+- Qiskit Device Benchmarking, qui installe également [Qiskit Experiments](https://qiskit-community.github.io/qiskit-experiments/) (`pip install git+https://github.com/qiskit-community/qiskit-device-benchmarking.git`)
+
+
+## Configuration {#setup}
+
+Importe les bibliothèques requises.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit-device-benchmarking qiskit-ibm-runtime
+```
+
+```python
+import logging
+import sys
+
+import numpy as np
+from qiskit_ibm_runtime import Batch, QiskitRuntimeService
+
+from qiskit_device_benchmarking.utilities.characterization_utils import (
+    BackendCharacterization,
+    plot_characterization_comparison,
+)
+```
+
+La suite de caractérisation construit plusieurs expériences, soumet plusieurs jobs, et ajuste les résultats, ce qui peut prendre au total quelques minutes. Active la journalisation de niveau INFO afin que chaque étape affiche sa progression au fur et à mesure.
+
+```python
+logger = logging.getLogger("qiskit_device_benchmarking")
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler(stream=sys.stdout))
+```
+
+## Exemple à petite échelle avec simulateur {#small-scale-simulator-example}
+
+Ce tutoriel n'inclut pas d'exemple de simulateur. Le flux de travail mesure les imperfections physiques d'un appareil spécifique : la vitesse à laquelle ses qubits se relâchent et se déphasent, et la fréquence à laquelle ses portes et sa lecture échouent. Un simulateur idéal n'a aucune de ces imperfections, donc il n'y a rien à caractériser. Tu pourrais attacher un modèle de bruit synthétique à un faux backend, mais les expériences ne récupéreraient alors que les chiffres que tu as toi-même introduits. Pour cette raison, nous passons directement au matériel, découpé en quatre étapes d'un motif Qiskit.
+
+## Exemple à grande échelle sur matériel {#large-scale-hardware-example}
+
+### Étape 1 : Associer les entrées classiques à un problème quantique {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Dans ce flux de travail, le « problème » est l'appareil lui-même : les entrées classiques sont le QPU que tu veux caractériser et la liste des propriétés à mesurer, et les expériences quantiques sont les circuits de caractérisation générés à partir de celles-ci.
+
+Tout d'abord, sélectionne un backend. Ce tutoriel utilise `ibm_kingston`, un processeur Heron r2 à 156 qubits ; tu peux substituer n'importe quel appareil IBM Quantum auquel tu as accès (ou en choisir un avec `service.least_busy()`).
+
+```python
+service = QiskitRuntimeService()
+device = "ibm_kingston"
+backend = service.backend(device)
+```
+
+Ensuite, choisis quelles propriétés mesurer. Tu peux passer n'importe quel sous-ensemble des expériences suivantes :
+
+- `readout` : expérience SPAM (préparation et mesure d'état)
+
+- `rb_1q` : benchmarking aléatoire à un qubit isolé
+
+- `rb_2q` : benchmarking aléatoire à deux qubits simultané issu d'une expérience de fidélité de couche
+
+- `t2` : expérience d'écho de Hahn $T_2$ (un seul écho par défaut)
+
+- `t1` : expérience de relaxation $T_1$
+
+
+Exécute la suite complète pour obtenir une image complète de l'appareil ; supprime des entrées de la liste si tu ne t'intéresses qu'à certaines propriétés et souhaites économiser du temps QPU.
+
+```python
+experiments = ["readout", "rb_1q", "rb_2q", "t1", "t2"]
+```
+
+### Étape 2 : Optimiser le problème pour l'exécution sur matériel quantique {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+Dans la plupart des tutoriels, c'est ici que tu transpilerais tes circuits. Ici, `BackendCharacterization` s'en charge en interne. Il construit les circuits d'expérience directement dans les portes natives de l'appareil, exécute les expériences à un qubit sur tous les qubits en parallèle, et planifie le benchmarking à deux qubits sur des couches disjointes de la carte de couplage afin que l'appareil entier soit couvert avec une poignée de jobs. Grâce à cette parallélisation, la suite entière ne consomme qu'environ 70 secondes de temps QPU.
+
+Initialise la classe qui gère le flux de travail :
+
+```python
+# Initialize the class used to run the experiments
+characterizer = BackendCharacterization(backend)
+```
+
+### Étape 3 : Exécuter à l'aide des primitives Qiskit {#step-3-execute-using-qiskit-primitives}
+
+La méthode `run_experiments` construit les circuits et les soumet en tant que jobs [Sampler](/guides/get-started-with-sampler). Exécute-la dans un contexte [`Batch`](/guides/run-jobs-batch) afin que les jobs soient planifiés ensemble sur le QPU, et la méthode retourne une fois que tous les jobs ont été soumis. (Tu peux aussi l'exécuter en dehors d'un batch, ou dans une `Session`.)
+
+<Admonition type="note">
+You might see a warning about a backend being passed while a session context manager is open. This is expected and can be safely ignored.
+</Admonition>
+
+```python
+# Run the characterization experiments inside a Batch
+with Batch(backend=backend):
+    jobs = characterizer.run_experiments(experiments=experiments)
+```
+
+```text
+base_primitive.get_mode_service_backend:WARNING:2026-07-14 14:23:02,051: A backend was passed in as the mode but a session context manager is open so this job will run inside this session/batch instead of in job mode.
+```
+
+```text
+Building readout experiments
+Building 1Q RB experiments
+Building 2Q RB experiments
+Building T1 experiments
+Building T2 experiments
+Layered two-qubit RB submitted: ['d9b7tfu6hjac73ffba2g', 'd9b7tjug26ic73dfju3g', 'd9b7u3u6hjac73ffban0', 'd9b7u7rv6alc73csmicg']
+Readout job submitted: d9b7u8bv6alc73csmidg
+T1 experiment submitted: ['d9b7u8ug26ic73dfjuqg']
+T2 (Hahn) experiment submitted: ['d9b7u9fu62qs738othg0']
+Single-qubit RB submitted: ['d9b7v8m6hjac73ffbc40', 'd9b7veeg26ic73dfk040']
+```
+
+La méthode renvoie les jobs soumis sous forme de dictionnaire indexé par expérience, ce qui est utile pour les suivre sur le [tableau de bord IBM Quantum Platform](/guides/monitor-job) ou pour le débogage.
+
+```python
+# Print all the job IDs for debugging purposes
+jobs
+```
+
+```text
+{'rb_2q': [<RuntimeJobV2('d9b7tfu6hjac73ffba2g', 'sampler')>,
+  <RuntimeJobV2('d9b7tjug26ic73dfju3g', 'sampler')>,
+  <RuntimeJobV2('d9b7u3u6hjac73ffban0', 'sampler')>,
+  <RuntimeJobV2('d9b7u7rv6alc73csmicg', 'sampler')>],
+ 'readout': [<RuntimeJobV2('d9b7u8bv6alc73csmidg', 'sampler')>],
+ 't1': [<RuntimeJobV2('d9b7u8ug26ic73dfjuqg', 'sampler')>],
+ 't2': [<RuntimeJobV2('d9b7u9fu62qs738othg0', 'sampler')>],
+ 'rb_1q': [<RuntimeJobV2('d9b7v8m6hjac73ffbc40', 'sampler')>,
+  <RuntimeJobV2('d9b7veeg26ic73dfk040', 'sampler')>]}
+```
+
+### Étape 4 : post-traitement et renvoi du résultat au format classique souhaité {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+#### Analyser les résultats {#analyze-the-results}
+
+La méthode `analyze_results` attend la fin des jobs et ajuste les données de mesure : décroissances exponentielles pour $T_1$ et $T_2$, décroissances de probabilité de survie pour les expériences RB, et matrices d'affectation pour la lecture. Elle renvoie un dictionnaire de *cartes d'erreur*, une entrée par propriété mesurée, chacune associant un qubit (ou une paire de qubits) à sa valeur mesurée.
+
+```python
+error_maps = characterizer.analyze_results()
+```
+
+```python
+print(f"The following error maps are available: {list(error_maps.keys())}")
+readout_q0 = error_maps["readout_error"][0]
+print(f"For example, readout error for qubit 0 is {readout_q0}")
+```
+
+```text
+The following error maps are available: ['readout_error', 'oneq_error_x', 'oneq_error_sx', 'lf_error_map', 't1_map', 't2_map']
+For example, readout error for qubit 0 is 0.007600000000000051
+```
+
+Les cartes couvrent l'erreur de lecture, les erreurs des portes `x` et `sx` à un qubit, les erreurs à deux qubits en couches (`lf_error_map`, issues de l'expérience de fidélité de couche), ainsi que les temps $T_1$ et $T_2$ en secondes.
+
+#### Mettre à jour les propriétés du backend {#update-the-backend-properties}
+
+La méthode `update_backend` écrit les valeurs mesurées dans les propriétés d'une copie du backend et la renvoie. L'objet `backend` d'origine conserve les données de calibration rapportées, afin que l'on puisse comparer les deux, comme montré ci-dessous. Rappelle-toi que cette mise à jour est purement locale à ta session Python ; elle ne change rien sur l'appareil ni pour les autres utilisateurs.
+
+```python
+backend_updated = characterizer.update_backend()
+```
+
+```text
+Updating readout error
+Updating single-qubit X error
+Updating single-qubit SX error
+Updating two-qubit error
+Updating T1
+Updating T2
+```
+
+#### Comparer les propriétés mesurées aux propriétés rapportées {#compare-the-measured-properties-against-the-reported-ones}
+
+Enfin, trace les propriétés mesurées en temps réel par rapport aux valeurs rapportées par le backend. Dans chaque panneau, les qubits (ou paires de qubits) sont triés par valeur mesurée, de sorte que la courbe mesurée est lisse par construction et que la dispersion des valeurs rapportées autour d'elle montre où les deux divergent. Un seul graphique est affiché pour le RB à un qubit, car la même erreur mesurée par porte est attribuée aux portes `x` et `sx`. Les limites des axes sont choisies à partir du gros de la distribution afin que quelques valeurs aberrantes extrêmes ne compriment pas les graphiques ; tout point situé hors de la plage est comptabilisé dans une annotation sur le graphique (ou passe `ylim` pour remplacer les limites).
+
+```python
+plot_characterization_comparison(
+    old_props=backend.properties().to_dict(),
+    new_props=backend_updated.properties().to_dict(),
+    plots=["readout", "rb_1q", "rb_2q", "t1", "t2"],
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/refresh-backend-properties-with-real-time-benchmarking/extracted-outputs/cell-25-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/refresh-backend-properties-with-real-time-benchmarking/extracted-outputs/cell-25-1.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/refresh-backend-properties-with-real-time-benchmarking/extracted-outputs/cell-25-2.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/refresh-backend-properties-with-real-time-benchmarking/extracted-outputs/cell-25-3.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/refresh-backend-properties-with-real-time-benchmarking/extracted-outputs/cell-25-4.avif)
+
+Ces graphiques nécessitent une lecture attentive, car tout écart entre les deux courbes ne signifie pas nécessairement que l'appareil a dérivé :
+
+- **Lecture et erreurs à un qubit** : les valeurs mesurées suivent les valeurs rapportées pour la plupart des qubits, tandis que la valeur rapportée pour une poignée de qubits est très éloignée de la courbe mesurée. Ces désaccords localisés constituent la dérive que ce workflow est conçu pour détecter.
+
+- **$T_1$** : les deux jeux de données se dispersent l'un autour de l'autre sans décalage systématique, ce qui est cohérent avec une fluctuation naturelle de $T_1$ dans le temps.
+
+- **Erreurs à deux qubits** : les valeurs mesurées se situent systématiquement *au-dessus* des valeurs rapportées. C'est attendu, car les valeurs rapportées sont mesurées sur des portes isolées, tandis que l'expérience de fidélité de couche exécute de nombreuses portes simultanément et inclut donc la diaphonie. Les chiffres en couches sont plus pertinents pour les circuits profonds, mais ne sont pas directement comparables aux données de calibration rapportées.
+
+- **$T_2$** : les valeurs mesurées se situent nettement *en dessous* des valeurs rapportées pour la plupart des qubits. Là encore, la méthodologie joue un rôle important, comme examiné dans la section suivante.
+
+
+#### Inspecter les résultats d'expériences individuelles {#inspect-individual-experiment-results}
+
+Tu peux aussi inspecter les résultats bruts des expériences de caractérisation individuelles via la propriété `experiment_data`, qui renvoie les objets `ExperimentData` sous-jacents de [Qiskit Experiments](https://qiskit-community.github.io/qiskit-experiments/). Par exemple, ce qui suit affiche la courbe de décroissance $T_1$ mesurée d'un seul qubit, ce qui est utile pour vérifier la qualité d'un ajustement avant de faire confiance au nombre qu'il a produit.
+
+```python
+t1_data = characterizer.experiment_data["t1"]
+
+# Each qubit has its own fit figure
+n_figs = len(t1_data.figure_names)
+print(f"{n_figs} figures available, e.g. {t1_data.figure_names[0]}")
+
+# Show the T1 decay curve of the first qubit
+t1_data.figure(0)
+```
+
+```text
+156 figures available, e.g. T1_Q0_c78ef792.svg
+```
+
+![Output of the previous code cell](/docs/images/tutorials/refresh-backend-properties-with-real-time-benchmarking/extracted-outputs/cell-28-1.avif)
+
+#### Mesurer T2 avec un train de découplage dynamique {#measure-t2-with-a-dynamical-decoupling-train}
+
+Par défaut, l'expérience $T_2$ applique un seul écho de Hahn et mesure tous les qubits en parallèle, ce qui, comme l'a montré le graphique de comparaison ci-dessus, peut donner des valeurs de $T_2$ nettement plus basses que celles rapportées par le backend. Une hypothèse est le nombre d'échos : les valeurs rapportées peuvent être calibrées avec un découplage dynamique, qui supprime le bruit basse fréquence. Pour tester cela, exécute une caractérisation $T_2$ seule avec `t2_num_echoes` fixé à une valeur plus élevée, ce qui applique un train d'impulsions d'écho de type CPMG. Les délais représentent le temps total d'évolution libre dans les deux cas, de sorte que les valeurs de $T_2$ ajustées sont directement comparables aux résultats à écho unique.
+
+```python
+# Run a T2-only characterization using a CPMG-style train of 8 echoes
+characterizer_dd = BackendCharacterization(backend)
+backend_updated_dd = characterizer_dd.run_and_update(
+    experiments=["t2"], t2_num_echoes=8
+)
+```
+
+```text
+Building T2 experiments
+T2 (Hahn) experiment submitted: ['d9b96s6g26ic73dflcn0']
+Updating T2
+```
+
+```python
+# Compare the multi-echo T2 against the backend-reported values
+plot_characterization_comparison(
+    old_props=backend.properties().to_dict(),
+    new_props=backend_updated_dd.properties().to_dict(),
+    plots=["t2"],
+    title_prefix="8-echo CPMG",
+)
+
+# Compare medians across the reported values, the single-echo run,
+# and the 8-echo run
+reported_t2s = [
+    prop["value"]
+    for qubit in backend.properties().to_dict()["qubits"]
+    for prop in qubit
+    if prop["name"] == "T2"
+]
+t2_reported = np.median(reported_t2s)
+t2_single = np.median(list(error_maps["t2_map"].values())) * 1e6
+t2_dd = (
+    np.median(list(characterizer_dd.analyze_results()["t2_map"].values()))
+    * 1e6
+)
+print(
+    f"Median T2 — reported: {t2_reported:.0f} us | "
+    f"single echo: {t2_single:.0f} us | 8-echo CPMG: {t2_dd:.0f} us"
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/refresh-backend-properties-with-real-time-benchmarking/extracted-outputs/cell-31-0.avif)
+
+```text
+Median T2 — reported: 142 us | single echo: 53 us | 8-echo CPMG: 56 us
+```
+
+Dans cette exécution, les échos supplémentaires ont à peine changé le résultat : la médiane à 8 échos (56 &micro;s) est proche de celle à écho unique (53 &micro;s), et les deux restent bien en dessous de la médiane rapportée (142 &micro;s). Le nombre d'échos seul n'explique pas cet écart ; d'autres différences méthodologiques entrent en jeu, comme les détails de la procédure de calibration, la mesure de tous les qubits en parallèle plutôt qu'isolément, et ainsi de suite.
+
+La leçon pratique est de traiter les comparaisons de $T_2$ (et d'erreur à deux qubits en couches) entre méthodologies avec prudence. Les valeurs rafraîchies sont un instantané autocohérent pris dans des conditions proches d'une charge de travail réelle, ce qui les rend bien adaptées pour comparer les qubits entre eux ou suivre un appareil dans le temps. Un écart par rapport aux données de calibration rapportées, cependant, n'est pas automatiquement la preuve d'une dérive.
+
+### Étapes 1 à 4 condensées en un seul appel {#steps-14-compressed-into-a-single-call}
+
+Pour un usage quotidien, tu as rarement besoin des résultats intermédiaires. La méthode `run_and_update` enchaîne tout ce que tu as fait ci-dessus (construction, soumission, ajustement et mise à jour) en un seul appel qui renvoie le backend rafraîchi. Elle accepte la même liste `experiments` (et transmet des options comme `t2_num_echoes`), et peut de même être encapsulée dans un contexte `Batch` ou `Session`.
+
+<Admonition type="note">
+The following cell does not return until all jobs and post-processing are done.
+</Admonition>
+
+```python
+# Initialize a fresh characterizer
+characterizer = BackendCharacterization(backend)
+
+# Run all of the experiments and update the backend in a single call
+backend_updated = characterizer.run_and_update(experiments=experiments)
+```
+
+```text
+Building readout experiments
+Building 1Q RB experiments
+Building 2Q RB experiments
+Building T1 experiments
+Building T2 experiments
+Layered two-qubit RB submitted: ['d9b7oqnu62qs738otat0', 'd9b7p76g26ic73dfjolg', 'd9b7pnm6hjac73ffb57g', 'd9b7q4fu62qs738otce0']
+Readout job submitted: d9b7q4mg26ic73dfjprg
+T1 experiment submitted: ['d9b7q57u62qs738otcfg']
+T2 (Hahn) experiment submitted: ['d9b7q5m6hjac73ffb5pg']
+Single-qubit RB submitted: ['d9b7r4e6hjac73ffb71g', 'd9b7reu6hjac73ffb7d0']
+Updating readout error
+Updating single-qubit X error
+Updating single-qubit SX error
+Updating two-qubit error
+Updating T1
+Updating T2
+```
+
+L'objet `backend_updated` rafraîchi est maintenant prêt à être utilisé partout où les propriétés du backend alimentent ton workflow. Essaie ce processus en combinaison avec le tutoriel [Real-time benchmarking for qubit selection](/tutorials/real-time-benchmarking-for-qubit-selection) pour choisir les qubits les plus performants lors de la transpilation d'un circuit. Comme l'appareil continue de dériver, rafraîchis les propriétés proche du moment où tu exécutes réellement ta charge de travail.
+
+## Prochaines étapes {#next-steps}
+
+Si tu as trouvé ce travail intéressant, voici quelques ressources supplémentaires qui pourraient t'intéresser :
+<Admonition type="tip" title="Recommandations">
+- Utilise les propriétés rafraîchies pour choisir de meilleurs qubits dans le tutoriel [Real-time benchmarking for qubit selection](/tutorials/real-time-benchmarking-for-qubit-selection)
+- Découvre comment les données de calibration rapportées sont exposées dans le guide [QPU information](/guides/qpu-information)
+- Explore les expériences de caractérisation individuelles dans la [documentation Qiskit Experiments](https://qiskit-community.github.io/qiskit-experiments/)
+- Parcours d'autres benchmarks au niveau de l'appareil dans le [dépôt Qiskit Device Benchmarking](https://github.com/qiskit-community/qiskit-device-benchmarking)
+</Admonition>
+
+<TutorialFeedback />
