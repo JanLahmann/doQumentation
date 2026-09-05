@@ -29,6 +29,7 @@ IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 DOQ_PREFIX_RE = re.compile(r"^(DOQ-[A-Z-]+:)")
 TABLE_ROW_RE = re.compile(r"^\s*\|", re.M)
 FENCE_LINE_RE = re.compile(r"^\s*```", re.M)
+FENCE_LINE_RE_LINES = re.compile(r"^\s*```[^\n]*", re.M)
 
 
 TEXT_IN_MATH_RE = re.compile(r"\\(?:text|mathrm|textrm|mbox)\{[^}]*\}")
@@ -161,10 +162,19 @@ def check_entry(msgid: str, msgstr: str) -> list[str]:
     ]
     # Structure inside one entry: a table or a bullet with a fence must keep
     # its row / fence-line count, or the page fails the build-time lint.
-    for name, rx in (("table row", TABLE_ROW_RE), ("code fence line", FENCE_LINE_RE)):
-        a, b = len(rx.findall(msgid)), len(rx.findall(msgstr))
-        if a != b:
-            problems.append(f"{name} count mismatch: source {a}, translation {b}")
+    a, b = len(TABLE_ROW_RE.findall(msgid)), len(TABLE_ROW_RE.findall(msgstr))
+    if a != b:
+        problems.append(f"table row count mismatch: source {a}, translation {b}")
+    # Fence lines are compared by content, not count: a chunk whose msgid
+    # opens with ```python but whose msgstr carries a bare ``` (a fill
+    # landing in the neighbouring entry) renders as a broken fence that
+    # only mdxcheck would catch, a page too late.
+    fa = Counter(l.strip() for l in FENCE_LINE_RE_LINES.findall(msgid))
+    fb = Counter(l.strip() for l in FENCE_LINE_RE_LINES.findall(msgstr))
+    if fa != fb:
+        problems.append(
+            f"code fence line mismatch: source {sorted(fa.elements())}, "
+            f"translation {sorted(fb.elements())}")
     for name, a, b in pairs:
         if a != b:
             missing = list((a - b).elements())

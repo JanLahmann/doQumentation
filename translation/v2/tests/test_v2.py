@@ -33,6 +33,14 @@ def test_check_entry_accepts_faithful_translation():
     assert check_entry("Run `foo` at [x](https://a.b) with $E$.", "Führe `foo` unter [x](https://a.b) mit $E$ aus.") == []
 
 
+def test_check_entry_compares_fence_lines_by_content():
+    opener = "    ```python\n    from x import y\n"
+    assert check_entry(opener, opener) == []
+    # A msgstr carrying the neighbouring entry's bare closing fence has the
+    # same fence-line count but breaks the rendered fence structure.
+    assert any("code fence line" in p for p in check_entry(opener, "    code = 1\n    ```\n"))
+
+
 def test_check_entry_rejects_lost_invariants():
     assert any("inline code" in p for p in check_entry("Run `foo`.", "Führe foo aus."))
     assert any("URL" in p for p in check_entry("See [x](https://a.b).", "Siehe [x](https://a.c)."))
