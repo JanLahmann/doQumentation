@@ -1,0 +1,1127 @@
+---
+description: 'Usa la cancelación probabilística de errores (PEC) con conos de luz sombreados para reducir la sobrecarga de muestreo de PEC y mitigar errores en la estimación de valores esperados en hardware'
+notebook_path: tutorials/pec-with-shaded-lightcones.ipynb
+sidebar_label: 'Cancelación probabilística de errores con conos de luz sombreados'
+title: 'Cancelación probabilística de errores con conos de luz sombreados'
+---
+
+{/* doqumentation-source-hash: 42ed1dea */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/pec-with-shaded-lightcones.ipynb" />
+
+
+
+{/* cspell:ignore samplomatic samplex Trotterized Trotter Lindblad lightcone lightcones Eddins reverser broadcastable postselection postselect antinoise eigval atol starmap unmitigated NoiseLearner PauliLindblad QubitSparsePauli Kingston kicked qubit canonical isa plm qspl Rzz pauli TREX levelname xticks expvals markerfacecolor ncols */}
+
+*Estimación de uso: 10 minutos en un procesador Heron (NOTA: esto es solo una estimación. Tu tiempo de ejecución real puede variar.)*
+
+## Resultados de aprendizaje {#learning-outcomes}
+Después de completar este tutorial, los usuarios deberían comprender:
+- Qué es la cancelación probabilística de errores (PEC), y por qué su sobrecarga de muestreo $\gamma^2$ crece exponencialmente con el ruido total que actúa sobre el circuito
+- Cómo los conos de luz sombreados (SLC) acotan la contribución de cada término de ruido al observable objetivo, de modo que puedas invertir el presupuesto de mitigación donde importa — y cómo, más allá de la reducción de sobrecarga de sesgo cero ya proporcionada por un cono de luz puramente geométrico, el sombreado te permite cambiar un sesgo residual acotado por una sobrecarga de muestreo aún menor
+- Cómo aprender el ruido de capa con `NoiseLearnerV3` e inyectar anti-ruido a través de `samplomatic` y la primitiva `Executor`
+- Cómo combinar PEC y PEC+SLC con TREX y postselección para estimar un valor esperado en hardware
+
+## Requisitos previos {#prerequisites}
+Sugerimos que los usuarios estén familiarizados con los siguientes temas antes de realizar este tutorial:
+- El flujo de trabajo de [patrones de Qiskit](/guides/intro-to-patterns)
+- El uso de la primitiva [Estimator](/guides/get-started-with-estimator) para calcular valores esperados de un observable
+- Técnicas de mitigación de errores como el twirling de Pauli y TREX, cubiertas en [Combinar opciones de mitigación de errores con la primitiva Estimator](/tutorials/combine-error-mitigation-techniques)
+
+## Contexto {#background}
+
+Este tutorial demuestra cómo mitigar errores usando el addon de conos de luz sombreados (SLC). Este addon es una evolución de la [técnica de cancelación probabilística de errores (PEC)](/guides/error-mitigation-and-suppression-techniques#probabilistic-error-cancellation-pec), en la que un usuario aprende el ruido de capas únicas en un circuito y luego cancela el ruido aplicando compuertas de un solo qubit y técnicas de posprocesamiento. En comparación con otros métodos, PEC ofrece límites más sólidos sobre el sesgo del resultado mitigado, pero tiende a sufrir una mayor sobrecarga en términos de tiempo de QPU. Durante PEC, para compensar la atenuación del valor esperado por el ruido, el resultado promedio se reescala por un factor $\gamma = \exp(\sum_{l,\sigma} 2\lambda_{l,\sigma})$, donde $\lambda_{l,\sigma}$ es la tasa de ruido aprendida del Pauli de error $\sigma$ en la capa $l$ del circuito. Este reescalado aumenta la varianza por un factor de $\gamma^2$, y por lo tanto también multiplica el número de ejecuciones de circuito necesarias en la QPU por $\gamma^2$, lo que llamamos costo de muestreo o sobrecarga de muestreo. Debido a que $\gamma$ crece exponencialmente, PEC a menudo se limita a circuitos superficiales o con pocos qubits. Aprende más sobre PEC en [Cancelación probabilística de errores con modelos de Pauli-Lindblad dispersos en procesadores cuánticos con ruido](https://arxiv.org/abs/2201.09866).
+
+Si podemos identificar errores que no necesitan mitigarse, podemos disminuir exponencialmente este costo de muestreo. Un primer paso en esta dirección es implementar mitigación de errores localmente consciente, que usa un "cono de luz" convencional y rápidamente computable para reducir la sobrecarga de PEC acotando la sensibilidad de un observable a los errores a lo largo del circuito, extendiendo la viabilidad de PEC a escalas mayores para algunos problemas. Los errores fuera de este cono de luz no pueden afectar el resultado medido y, por lo tanto, pueden excluirse del procedimiento de cancelación de errores. Esta exclusión disminuye la sobrecarga de muestreo, en algunos casos sustancialmente, sin introducir sesgo adicional. En particular, para medir un observable local $O$ de un circuito de profundidad fija, la sobrecarga de muestreo requerida eventualmente se estabiliza al escalar el número de qubits en el circuito (ver Fig. 2b en [Locality and error mitigation of quantum circuits](https://arxiv.org/abs/2303.06496)).
+
+Los conos de luz sombreados (SLC) van más allá, usando simulaciones clásicas para acotar de forma más estricta la sensibilidad a los errores a lo largo del circuito. Esto intercambia algo de tiempo de QPU por tiempo de CPU y reduce la sobrecarga de muestreo necesaria para renormalizar el sesgo. En lugar de un corte duro, a cada error potencial en el circuito se le asigna una "sombra" graduada que acota superiormente la susceptibilidad del valor esperado del observable a ese error. (Para los límites propagados hacia atrás introducidos más adelante, esta susceptibilidad también depende del estado inicial del circuito, el estado todo-cero en los flujos de trabajo típicos, y en este tutorial.) Esta caracterización refinada permite aplicaciones más eficientes y específicas de PEC con menor varianza, a la vez que le da al usuario la capacidad de ajustar de forma controlable el sesgo en la estimación del observable. Consulta [Lightcone shading for classically accelerated quantum error mitigation](https://arxiv.org/abs/2409.04401) para más detalles.
+
+Nuestro flujo de trabajo para el addon de SLC aprovecha la biblioteca [`samplomatic`](https://qiskit.github.io/samplomatic/guides/index.html) junto con las clases `QuantumProgram` y `Executor` añadidas a Qiskit Runtime en `qiskit-ibm-runtime` v0.47.0, permitiendo a los usuarios tener un control más modular de las configuraciones de ejecución para la supresión y mitigación de errores, manteniendo al mismo tiempo la facilidad de uso. Lee más en la guía [directed execution model](/guides/directed-execution-model).
+
+### Flujo de trabajo de mitigación de errores SLC de un vistazo {#slc-error-mitigation-workflow-at-a-glance}
+Para modelar el ruido de la QPU, usamos un modelo de ruido de Pauli-Lindblad disperso con tasas de error de Pauli de uno y dos qubits, generadas localmente en cada qubit y arista del dispositivo. Con esta elección, el flujo de trabajo de mitigación de errores SLC presentado en este tutorial es el siguiente:
+
+a. CPU — Acotar el impacto por error de errores de Pauli de uno y dos qubits
+
+  1. Propagación hacia adelante (acotar efecto sobre el observable). Propaga cada error hasta el final del circuito y calcula su conmutador con el observable.
+
+      - Truncar los términos del operador durante la evolución para mantener el cálculo manejable.
+
+      - Ajustar aún más estos límites mediante una propagación hacia atrás laxa del observable basada en límites de velocidad cuántica.
+
+  2. Propagación hacia atrás (acotar efecto sobre el estado inicial). Propaga cada error hasta el inicio del circuito y calcula su conmutador con el estado inicial.
+
+
+b. QPU — Aprender tasas de ruido. Usa `NoiseLearnerV3` para estimar las tasas del modelo de ruido de Pauli-Lindblad.
+
+c. CPU — Priorizar la mitigación
+
+  1. Actualizar los límites combinados con las tasas de ruido aprendidas. Combina los límites hacia adelante y hacia atrás calculados previamente y actualízalos con las tasas de ruido aprendidas.
+
+  2. Clasificar los componentes de ruido a mitigar usando los límites calculados y las tasas aprendidas. Prioriza cada posible error de ruido según su impacto estimado en el sesgo y el costo asociado de corregirlo.
+
+
+d. QPU — Insertar antirruido y ejecutar. Ejecuta el circuito de interés con antirruido (ruido inverso) especificado mediante anotaciones `Box`.
+
+e. CPU — Estimar el observable. Calcula el valor esperado, aplicando post-selección basada en mediciones para reducir el impacto del ruido no markoviano.
+
+### Descripción general del aprendizaje de ruido {#noise-learning-overview}
+El aprendizaje de ruido es un paso común en varios métodos de mitigación de errores, realizado por el [noise learner](/guides/noise-learning); también aparece en el [tutorial de amplificación probabilística de errores](/tutorials/probabilistic-error-amplification). En `NoiseLearnerV3`, puedes identificar específicamente las capas de ruido a aprender como objetos [`CircuitInstruction`](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.CircuitInstruction), de modo que puedas calcular los límites de ruido SLC deseados para cada capa de la forma descrita anteriormente. El modelo de Pauli-Lindblad aprendido proporciona coeficientes que se usarán en la priorización de PEC+SLC. La forma en que las puertas se agrupan en capas puede determinarse usando las funciones de conveniencia `generate_boxing_pass_manager` y `find_unique_box_instructions`, y luego pasarse a la función de utilidad de SLC `generate_noise_model_paulis`, como se describe en el Paso 2 a continuación.
+
+| **Parte 1** | **Parte 2** | **Parte 3** |
+|-----------|-----------|-----------|
+| Aplicar Pauli-twirl a capas de puertas de dos qubits | Repetir pares de capas de identidad y aprender el ruido | Derivar una fidelidad (error para cada canal de ruido) |
+| ![Pauli twirling](/docs/images/tutorials/pec-with-shaded-lightcones/paulitwirl.avif) | ![Learn layer](/docs/images/tutorials/pec-with-shaded-lightcones/learnlayer.avif) | ![Curve fit](/docs/images/tutorials/pec-with-shaded-lightcones/curvefit.avif) |
+
+### Descripción general del posprocesamiento {#post-processing-overview}
+Después de ejecutar en hardware cuántico usando el marco de trabajo `samplomatic` y `Executor`, convertimos nuestras mediciones de cadenas de bits en el valor del observable deseado. En este tutorial, demostramos el flujo de trabajo en un circuito de Ising espejado (construido en el Paso 1 a continuación), para el cual el valor esperado ideal del observable medido es 1 porque la segunda mitad del circuito deshace la primera. Al calcular el valor del observable con la función `executor_expectation_values`, aplicamos algunas técnicas de posprocesamiento que reducen el impacto del ruido. Estas incluyen eliminar disparos afectados por ruido no markoviano, mitigación de errores de lectura, y tener en cuenta detalles de nuestra implementación de PEC. Los detalles se analizan en el Paso 4 a continuación.
+
+## Requisitos {#requirements}
+Antes de comenzar este tutorial, asegúrate de tener instalado lo siguiente:
+
+- Qiskit SDK v2.2 o posterior, con soporte de [visualización](https://docs.quantum.ibm.com/api/qiskit/visualization)
+
+- Qiskit Runtime v0.47 o posterior (`pip install qiskit-ibm-runtime`)
+
+- Addon Qiskit de conos de luz sombreados v0.1 o posterior (`pip install qiskit-addon-slc`)
+
+- Utilidades de addons de Qiskit v0.3 o posterior (`pip install qiskit-addon-utils`)
+
+- Samplomatic v0.13 o posterior (`pip install samplomatic`)
+
+
+## Configuración {#setup}
+Primero, importa los paquetes y funciones necesarios para ejecutar este notebook.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-slc qiskit-addon-utils qiskit-ibm-runtime samplomatic
+```
+
+```python
+from multiprocessing import set_start_method
+
+# Setting this value prevents itertools.starmap deadlock on UNIX systems
+set_start_method("spawn")
+
+# Needed to prevent PySCF from parallelizing internally (SLC only)
+%set_env OMP_NUM_THREADS=1
+```
+
+```text
+env: OMP_NUM_THREADS=1
+```
+
+```python
+import numpy as np
+from matplotlib import pyplot as plt
+
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager, PassManager
+
+from qiskit_ibm_runtime import (
+    QiskitRuntimeService,
+    QuantumProgram,
+    Executor,
+    NoiseLearnerV3,
+)
+
+import samplomatic
+from samplomatic.utils import find_unique_box_instructions
+from samplomatic.transpiler import generate_boxing_pass_manager
+
+from qiskit_addon_utils.exp_vals.measurement_bases import (
+    get_measurement_bases,
+)
+from qiskit_addon_utils.exp_vals.expectation_values import (
+    executor_expectation_values,
+)
+from qiskit_addon_utils.noise_management import (
+    gamma_from_noisy_boxes,
+    trex_factors,
+)
+from qiskit_addon_utils.noise_management.post_selection import PostSelector
+from qiskit_addon_utils.noise_management.post_selection.transpiler.passes import (
+    AddPostSelectionMeasures,
+    AddSpectatorMeasures,
+)
+
+from qiskit_addon_slc.bounds import (
+    compute_backward_bounds,
+    compute_forward_bounds,
+    compute_local_scales,
+    merge_bounds,
+    tighten_with_speed_limit,
+)
+from qiskit_addon_slc.utils import (
+    generate_noise_model_paulis,
+    map_modifier_ref_to_ref,
+)
+from qiskit_addon_slc.visualization import draw_shaded_lightcone
+```
+
+## Ejemplo de simulador a pequeña escala {#small-scale-simulator-example}
+
+Como otros métodos de mitigación de errores basados en aprendizaje, PEC con conos de luz sombreados mitiga el ruido *físico* de un procesador cuántico específico, por lo que depende de servicios de hardware sin un análogo significativo en un simulador ideal:
+
+- `NoiseLearnerV3` caracteriza experimentalmente el canal de ruido de Pauli-Lindblad disperso en cada capa única de dos qubits. En un simulador sin ruido no hay ruido que cancelar.
+
+- La primitiva `Executor` muestrea los circuitos con twirl e inyección de antirruido generados por `samplomatic` en un backend.
+
+
+El cálculo de límites de cono de luz sombreado es clásico, pero solo es significativo en relación con las tasas de ruido de hardware aprendidas, que fijan el presupuesto de mitigación y la sobrecarga de muestreo. Por estas razones omitimos el ejemplo de simulador a pequeña escala y demostramos el flujo de trabajo completo de PEC+SLC directamente en hardware, con cada paso del patrón de Qiskit detallado a continuación.
+
+## Ejemplo de hardware a gran escala {#large-scale-hardware-example}
+
+Ejecutamos el flujo de trabajo completo de PEC+SLC en un circuito de Ising espejado de 20 qubits ejecutado en hardware de IBM Quantum&reg;, siguiendo los cuatro pasos de un patrón de Qiskit.
+
+### Paso 1: Mapear el problema {#step-1-map-the-problem}
+Nuestra demostración se configura de la siguiente manera:
+
+1. Elegimos realizar la evolución temporal bajo un Hamiltoniano de cadena de Ising 1D. La cadena de Ising 1D produce una estructura de circuito agradablemente densa, lo cual es conveniente para mostrar implementaciones de PEC.
+
+2. Elegimos medir el observable $\langle X_6 Z_{13}\rangle$, que contiene una componente $X$ y una $Z$. Esto es conveniente para resaltar cómo los límites de SLC tratan de forma diferente distintos tipos de errores.
+
+3. Queremos que el valor esperado ideal de este observable sea exactamente 1, de modo que la calidad de las estimaciones mitigadas sea fácil de juzgar. Espejar el circuito nos acerca en gran medida a esto: por cada puerta en la segunda mitad del circuito hay una puerta inversa en la primera mitad, de modo que el circuito ideal actúa como la identidad.
+
+4. Finalmente, obtener el valor esperado ideal de 1 requiere que el circuito comience &mdash; y por lo tanto, gracias al espejado, idealmente también termine &mdash; en un autoestado +1 del observable. Debido a que el observable contiene una componente no $Z$, y la primitiva `Executor` tiene en cuenta la base de medición deseada al final del circuito, anteponemos las puertas de preparación de base correspondientes al inicio del circuito espejado con una función `prepare_basis`. Usamos la función `get_measurement_bases` para identificar qué puertas se necesitan y dónde colocarlas, a la vez que llevamos un registro de las sutilezas del índice de qubit que surgen de las convenciones de anotación `box`, como se analiza en la sección sobre preparación de mediciones de base canónica.
+
+
+```python
+# Width of the Ising chain (a free parameter of this demonstration)
+num_qubits = 20
+
+# The observable to measure: one X component (on qubit 6) and one Z component
+# (on qubit 13), as motivated in "Step 1: Map the problem" above
+target_obs_sparse = [("XZ", [6, 13], 1.0)]
+```
+
+```python
+observable = SparsePauliOp.from_sparse_list(
+    target_obs_sparse, num_qubits=num_qubits
+)
+```
+
+```python
+# Determine the measurement basis each qubit requires for this observable.
+# The reverser is used during post-processing in Step 4.
+bases_virt, reverser_virt = get_measurement_bases(observable)
+```
+
+```python
+# Free parameters of the demonstration circuit: the number of Trotter steps
+# sets the circuit depth, and rx_angle is the transverse-field rotation angle
+# applied in each step (pi/4 makes the dynamics non-Clifford)
+num_trotter_steps = 10
+rx_angle = np.pi / 4
+```
+
+```python
+def construct_ising_circuit(
+    num_qubits: int,
+    num_trotter_steps: int,
+    rx_angle: float,
+) -> QuantumCircuit:
+    circuit = QuantumCircuit(num_qubits)
+
+    for _ in range(num_trotter_steps):
+        circuit.rx(rx_angle, range(num_qubits))
+        for first_qubit in (1, 2):
+            for idx in range(first_qubit, num_qubits, 2):
+                # equivalent to Rzz(-pi/2):
+                circuit.sdg([idx - 1, idx])
+                circuit.cz(idx - 1, idx)
+
+    return circuit
+
+def prepare_basis(
+    circuit: QuantumCircuit, basis: list[int]
+) -> QuantumCircuit:
+    # basis is a list of integer values from 0 to 3. These map to the basis measurement as:
+    # 0 = I; 1 = Z; 2 = X; 3 = Y
+    assert len(basis) == circuit.num_qubits
+
+    out_circ = circuit.copy_empty_like()
+    for qb, bas in enumerate(basis):
+        if bas == 2:
+            out_circ.h(qb)
+        elif bas == 3:
+            out_circ.rx(-np.pi / 2, qb)
+
+    out_circ.barrier()
+    out_circ.compose(circuit, inplace=True)
+    return out_circ
+
+def mirror_circuit(circuit: QuantumCircuit) -> QuantumCircuit:
+    mirror_circ = circuit.copy_empty_like()
+    mirror_circ.compose(circuit.inverse(), inplace=True)
+    mirror_circ.barrier()
+    mirror_circ.compose(circuit, inplace=True)
+    mirror_circ.measure_active()
+    return mirror_circ
+```
+
+```python
+# Instantiate the mirrored circuit and prepend the basis-preparation gates
+circuit = construct_ising_circuit(num_qubits, num_trotter_steps, rx_angle)
+mirrored_circuit = mirror_circuit(circuit)
+mirrored_circuit = prepare_basis(mirrored_circuit, bases_virt[0])
+```
+
+```python
+mirrored_circuit.draw(
+    "mpl", fold=-1, scale=0.3, idle_wires=False, measure_arrows=False
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/0dab284e-dbed-4d2f-92aa-c6c9c0e909a6-0.avif)
+
+### Paso 2: Optimizar {#step-2-optimize}
+Optimizamos detalles asociados con el circuito a ejecutar, el observable a medir y los parámetros de aprendizaje de ruido. Como punto de partida, seleccionamos el procesador Heron menos ocupado y lo instanciamos con las puertas fraccionarias activadas. Estas puertas fraccionarias permiten una mayor sensibilidad en algunos de nuestros filtrados de post-selección.
+
+```python
+# Initialize IBM Quantum Compute Service using your saved credentials
+service = QiskitRuntimeService()
+
+# Select the least busy Heron device. This tutorial targets Heron processors:
+# the usage estimate and the non-Markovian-noise post-selection discussed in
+# Step 4 are specific to this processor family.
+backend = service.least_busy(
+    operational=True,
+    simulator=False,
+    filters=lambda b: b.processor_type["family"] == "Heron",
+)
+# Re-fetch with fractional gates enabled (least_busy does not forward this)
+# Fractional gates are enabled so the non-Clifford Rx rotations are supported natively.
+backend = service.backend(backend.name, use_fractional_gates=True)
+print(f"Selected backend: {backend.name}")
+```
+
+```text
+Selected backend: ibm_kingston
+```
+
+Primero, transpilaremos nuestro circuito a instrucciones ISA, [como se requiere para la ejecución en nuestras QPU](/guides/transpile#instruction-set-architecture). La elección de los qubits físicos en los que ejecutar tiene un gran impacto en la calidad de los resultados, porque los tiempos de coherencia y las fidelidades de las puertas varían a lo largo de un dispositivo y derivan con el tiempo. Para un experimento cuidadoso, puede valer la pena seleccionar manualmente una cadena de qubits basándose en experimentos rápidos de benchmarking (ver, por ejemplo, el tutorial [Real-time benchmarking for qubit selection](/tutorials/real-time-benchmarking-for-qubit-selection)). Para los fines de este tutorial, confiamos en el transpiler de Qiskit para seleccionar un layout basado en el mapa de acoplamiento del backend y sus datos de calibración más recientes.
+
+```python
+isa_pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
+
+isa_circuit = isa_pm.run(mirrored_circuit)
+
+# The chain of physical qubits selected by the transpiler
+layout = isa_circuit.layout.final_index_layout()
+print(f"Selected layout: {layout}")
+
+isa_observable = observable.apply_layout(
+    layout, num_qubits=isa_circuit.num_qubits
+)
+```
+
+```text
+Selected layout: [71, 58, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 36, 21, 22, 23, 16, 3, 2]
+```
+
+```python
+wire_order = layout + [
+    q for q in range(isa_circuit.num_qubits) if q not in layout
+]
+isa_circuit.draw(
+    "mpl",
+    fold=-1,
+    scale=0.3,
+    idle_wires=False,
+    wire_order=wire_order,
+    measure_arrows=False,
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/87f19e08-0cae-4959-9215-354ab099ab02-0.avif)
+
+### Encajonar el circuito {#box-the-circuit}
+Para facilitar la implementación, utilizamos el paso de transpilación `generate_boxing_pass_manager`, que coloca las instrucciones del circuito en cajas anotadas. Estas cajas indican claramente dónde, en el caso de PEC, debe inyectarse el antirruido en el circuito. Para más detalles sobre las configuraciones, consulta la [documentación de Samplomatic](https://qiskit.github.io/samplomatic/).
+
+Ten en cuenta que el flujo de trabajo de SLC requiere el uso de `inject_noise_strategy="individual_modification"` más adelante en el proceso, porque esto nos permite identificar de forma única las anotaciones `InjectNoise` de las instrucciones `BoxOp` en el circuito. (Las cajas sin una anotación `InjectNoise` no pueden identificarse de esta manera.)
+
+<Admonition type="caution">
+The SLC bound computations currently assume that the `InjectNoise` annotations are placed with `site="after"` (see [qiskit-addon-slc#33](https://github.com/Qiskit/qiskit-addon-slc/issues/33)). Because the default value of this setting changed in recent versions of `samplomatic` (see [samplomatic#372](https://github.com/Qiskit/samplomatic/pull/372)), we set `inject_noise_site="after"` explicitly below.
+</Admonition>
+
+La función `find_unique_box_instructions` recorre el circuito encajonado proporcionado e identifica aquellas que tienen capas o mediciones únicas de dos qubits (2Q), con el fin de realizar el aprendizaje de ruido y la inyección de ruido.
+
+```python
+# Box circuit with Twirl and InjectNoise annotations
+boxes_pm = generate_boxing_pass_manager(
+    twirling_strategy="active",
+    inject_noise_strategy="individual_modification",
+    inject_noise_site="after",
+    inject_noise_targets="gates",
+    measure_annotations="all",
+)
+
+boxed_circuit = boxes_pm.run(isa_circuit)
+
+# Find the unique instructions (layers) from boxed circuit
+unique_2q_instructions = find_unique_box_instructions(
+    boxed_circuit, normalize_annotations=None, undress_boxes=True
+)
+```
+
+```python
+boxed_circuit.draw(
+    "mpl",
+    fold=-1,
+    scale=0.3,
+    idle_wires=False,
+    wire_order=wire_order,
+    measure_arrows=False,
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/d662b076-005e-46c7-826d-4c29a4937404-0.avif)
+
+### Preparar mediciones de bases canónicas {#prepare-canonical-bases-measurements}
+Ten en cuenta que debemos tener especial cuidado en llevar el registro del orden de los qubits. A continuación, introducimos la noción de `canonical_qubits` como medio para actualizar adecuadamente el orden de los qubits al proporcionarlo a Executor, como resultado de cómo se captura el orden de los qubits al encajonar circuitos y encontrar instrucciones únicas. Consulta la documentación de [Qubit ordering convention](https://qiskit.github.io/samplomatic/guides/samplex_io.html#qubit-ordering-convention) para más detalles.
+
+```python
+# Determine the canonical qubits order
+meas_box = boxed_circuit.data[-1]
+canonical_qubits = [
+    idx
+    for idx, qubit in enumerate(boxed_circuit.qubits)
+    if qubit in meas_box.qubits
+]
+
+# map canonical qubit to physical (isa) qubit
+c_2_p = {c: p for c, p in enumerate(canonical_qubits)}
+# map physical (isa) qubit to virtual qubit (index in original circuit)
+p_2_v = {p: v for v, p in enumerate(layout)}
+# compute map between virtual and canonical qubit indices.
+c_2_v = {c: p_2_v[p] for c, p in c_2_p.items()}
+
+assert len(c_2_v) == num_qubits
+
+bases_canon = [
+    np.array([base_i[c_2_v[c]] for c in range(num_qubits)], dtype=np.uint8)
+    for base_i in bases_virt
+]
+```
+
+### Flujo de trabajo para el sombreado de conos de luz, el aprendizaje de ruido y la inyección de antirruido {#workflow-for-lightcone-shading-noise-learning-and-anti-noise-injection}
+
+<Admonition type="note">
+In this tutorial, we run the SLC bound computations before the noise learning completes, so the to-be-mitigated circuit is run as close in time as possible to the learned noise model. In principle this workflow can be parallelized further: a noise-learning job can run while, in parallel, the noise bounds are estimated. For an arbitrary quantum circuit the noise-bound computation can scale with a weakly exponential dependence, so parallelizing the bound computation (for example, across many CPU cores) yields tighter bounds for a given compute-time budget, and the QPU executions and bound computations can themselves be parallelized for the most efficient workflow.
+</Admonition>
+
+#### Predecir los Paulis del modelo de ruido a aprender {#predict-to-be-learned-noise-model-paulis}
+
+Antes de ejecutar cualquier aprendizaje de ruido en hardware, primero enumeramos qué términos de error de Pauli contendrá nuestro modelo de ruido. Recuerda que modelamos el ruido de cada capa única como un modelo de Pauli-Lindblad disperso con una tasa de error para cada Pauli de peso uno ($X$, $Y$ o $Z$) en cada qubit activo, y una para cada Pauli de peso dos en cada par conectado de qubits activos. La función `generate_noise_model_paulis` recorre cada capa encajonada única del circuito proporcionado y genera exactamente esta lista de términos de Pauli, teniendo en cuenta la conectividad de qubits del circuito.
+
+En otras palabras, este paso predice la *estructura* del modelo de ruido que `NoiseLearnerV3` completará más adelante con las tasas aprendidas. Conocer esta estructura de antemano es lo que nos permite calcular un límite hacia adelante y otro hacia atrás para cada error potencial antes incluso de que el aprendizaje de ruido se haya ejecutado.
+
+```python
+noise_model_paulis = generate_noise_model_paulis(
+    unique_2q_instructions, backend.coupling_map, boxed_circuit
+)
+```
+
+```python
+noise_model_rates = {ref: None for ref in noise_model_paulis}
+```
+
+##### a. Calcular límites hacia adelante {#a-compute-forward-bounds}
+
+La función `compute_forward_bounds` evalúa las relaciones de conmutación entre las puertas de cada capa y los términos de Pauli generados anteriormente, en cuanto a cómo los errores de propagación hacia adelante afectan al observable deseado $A$. Para las puertas que conmutan con los términos de Pauli, no se hace nada. Para las puertas de Clifford, se empujan hacia el inicio del circuito. Para las puertas no Clifford, aproximamos su influencia sobre los observables objetivo para priorizarlas más tarde en la cancelación de ruido (después de que se hayan combinado todos los límites). Este límite se logra aplicando primero la norma L2 (es decir, la raíz cuadrada de la suma de cuadrados de los coeficientes de los términos de Pauli relevantes). Cuando hay demasiados términos de qubits involucrados, recurrimos a un límite más laxo que usa la desigualdad triangular.
+
+#### Establecer los parámetros de cálculo de límites {#set-the-bound-computation-parameters}
+
+Las siguientes configuraciones controlan los cálculos clásicos de límites:
+
+- `slc_atol`: la tolerancia absoluta de los cálculos. Los términos del operador con coeficientes por debajo de este umbral se consideran insignificantes y se descartan.
+
+- `slc_eigval_max_qubits`: el número máximo de qubits para el cual se evalúa el límite más estricto basado en valores propios (norma L2). Los operadores soportados en más qubits que este valor recurren al límite más laxo de desigualdad triangular descrito anteriormente.
+
+- `slc_evolution_max_terms`: el número máximo de términos de Pauli retenidos mientras se propagan los operadores a través del circuito. Truncar los términos más pequeños mantiene el cálculo manejable a costa de límites ligeramente más laxos.
+
+- `slc_num_processes`: el número de procesos de CPU entre los que se paraleliza el cálculo de límites.
+
+- `slc_timeout`: el presupuesto de tiempo (en segundos) para el cálculo de límites. A cualquier capa no alcanzada dentro de este presupuesto se le asigna el límite trivial de 2.
+
+
+<Admonition type="note">
+In this tutorial, the timeout is reached *by design*: we keep `slc_timeout` deliberately small so that the notebook runs quickly, and to demonstrate that reaching the timeout is safe. The computed shades are upper bounds at every stage, so hitting the timeout only makes the bounds looser (trivial) for the layers that were not reached; it never underestimates the effect of an error. This appears in the visualizations below as the leftmost layers being filled entirely with the trivial bound. Increasing the timeout (or the number of processes) tightens the bounds and further reduces the sampling overhead.
+</Admonition>
+
+```python
+slc_atol = 1e-8
+slc_eigval_max_qubits = 18
+slc_evolution_max_terms = 1000
+slc_num_processes = 8
+slc_timeout = 60
+```
+
+```python
+forward_bounds = compute_forward_bounds(
+    boxed_circuit,
+    noise_model_paulis,
+    isa_observable,
+    evolution_max_terms=slc_evolution_max_terms,
+    eigval_max_qubits=slc_eigval_max_qubits,
+    atol=slc_atol,
+    num_processes=slc_num_processes,
+    timeout=slc_timeout,
+)
+```
+
+```text
+Bounds computation timed out.
+```
+
+#### Visualizar el SLC para inspección manual {#visualize-the-slc-for-manual-inspection}
+
+Puedes interpretar el comportamiento de los límites sombreados examinando cómo las mediciones y los términos de Pauli interactúan con los errores locales. Estos patrones son característicos de este problema de evolución temporal del Hamiltoniano de Ising "kicked" y también aparecen en el artículo [Lightcone Shading for Classically Accelerated Quantum Error Mitigation](https://arxiv.org/abs/2409.04401), con varias características reveladoras:
+
+- Podemos distinguir claramente los dos conos que surgen de los dos Paulis no identidad en el observable.
+
+- Podemos ver que la medición X en el qubit 6 conmuta con el error X en la capa más a la derecha.
+
+- Podemos ver que el Pauli Z en el qubit 13 conmuta con el error Z en la capa más a la derecha.
+
+- Cuando llegamos al tiempo límite especificado anteriormente, las capas restantes a la izquierda se llenan completamente con límites triviales de dos.
+
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            forward_bounds,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/285edaef-8e79-41eb-a563-4675ea75d5b1-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/285edaef-8e79-41eb-a563-4675ea75d5b1-1.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/285edaef-8e79-41eb-a563-4675ea75d5b1-2.avif)
+
+#### b. Ajustar los límites hacia adelante con límites de velocidad cuántica {#b-tighten-forward-bounds-with-quantum-speed-limits}
+A continuación, ajustamos los límites usando la función `tighten_with_speed_limit`. La propagación geométrica del cono de luz del observable ya se ha tenido en cuenta completamente en los límites hacia adelante calculados anteriormente. Lo que añade esta función es un paso de autoconsistencia que aprovecha la velocidad limitada a la que la información puede fluir a través del circuito &mdash; el cono de luz crece a lo sumo un qubit por capa de puertas de dos qubits &mdash; para ajustar entre sí los límites calculados previamente. La información fluye en ambas direcciones:
+
+1. De los límites del conmutador a los límites sobre el observable retropropagado: si el observable conmuta con un error $Z$ en un qubit, entonces no puede tener mucha componente $X$ o $Y$ allí.
+
+2. De los límites sobre el observable retropropagado a los límites del conmutador: si el observable tiene poca componente $X$ y $Y$ en un qubit, entonces debe conmutar casi por completo con $Z$ allí.
+
+
+```python
+forward_bounds_tighter = tighten_with_speed_limit(
+    forward_bounds, boxed_circuit, noise_model_paulis, isa_observable
+)
+```
+
+#### Visualizar el SLC para inspección manual {#visualize-the-slc-for-manual-inspection-1}
+
+En principio, este ajuste proporciona una transición más suave entre los límites calculados y los límites triviales asignados a las capas más allá del tiempo límite. En este ejemplo el efecto apenas es visible, porque los conos de luz ya se han extendido hasta los bordes del circuito para cuando se alcanza el tiempo límite.
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            forward_bounds_tighter,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/6ba4b397-e903-4b85-9482-31a96c689dc0-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/6ba4b397-e903-4b85-9482-31a96c689dc0-1.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/6ba4b397-e903-4b85-9482-31a96c689dc0-2.avif)
+
+#### c. Calcular límites hacia atrás {#c-compute-backward-bounds}
+
+Esta parte de la predicción de ruido evalúa cómo un error en una capa particular puede afectar el estado de entrada $\rho$. La función `compute_backward_bounds` primero invierte el circuito y elimina las puertas de medición, y luego procede con un análisis similar al realizado para los cálculos de límites hacia adelante.
+
+```python
+backward_bounds = compute_backward_bounds(
+    boxed_circuit,
+    noise_model_paulis,
+    evolution_max_terms=slc_evolution_max_terms,
+    num_processes=slc_num_processes,
+    timeout=slc_timeout,
+)
+```
+
+#### Visualizar el SLC para inspección manual {#visualize-the-slc-for-manual-inspection-2}
+
+Al calcular los límites hacia atrás, podemos ver cómo la estructura del estado inicial rige el comportamiento temprano de la propagación de errores:
+
+- Podemos ver claramente cómo los errores Z conmutan inicialmente con el estado inicial |0⟩.
+
+- Solo en el qubit 6, donde inicializamos el autoestado +1 de la base X, un error Z no logra conmutar, mientras que un error X sí conmuta.
+
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            backward_bounds,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/40d0eba9-5e0b-4b1d-8fb2-c239e262062f-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/40d0eba9-5e0b-4b1d-8fb2-c239e262062f-1.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/40d0eba9-5e0b-4b1d-8fb2-c239e262062f-2.avif)
+
+#### Vista previa de los límites combinados sin tasas de ruido aprendidas {#preview-merged-bounds-without-learned-noise-rates}
+
+La función `merged_bounds` determina el punto en el circuito donde cambiar de límites hacia atrás a límites hacia adelante minimiza el sesgo total estimado sobre el observable deseado. Este sesgo se calcula como la suma de las contribuciones de los límites hacia atrás para todas las ubicaciones de ruido antes de ese punto, más las contribuciones de los límites hacia adelante para todas las ubicaciones de ruido después de él. Actualmente, esto se hace de manera uniforme para todos los qubits.
+
+<Admonition type="note" title="Nota importante">
+El punto óptimo en el que cambiar de límites hacia atrás a hacia adelante depende de las tasas de ruido aprendidas. En esta etapa aún no hemos aprendido ninguna tasa: `noise_model_rates` se inicializó como `None` para cada capa, lo que `merge_bounds` trata como tasas de ruido uniformes. Los límites combinados que se muestran aquí son, por lo tanto, solo una vista previa; los recalculamos con las tasas realmente aprendidas en el Paso 3.
+</Admonition>
+
+```python
+merged_bounds = merge_bounds(
+    boxed_circuit,
+    forward_bounds_tighter,
+    backward_bounds,
+    noise_model_rates,
+)
+```
+
+```text
+Missing noise rates. Partitioning backward/forward commutator bounds by assuming uniform error rates.
+Optimal spacetime partitioning not implemented!Just partitioning list of noisy boxes.
+```
+
+### Visualizar el SLC para inspección manual {#visualize-the-slc-for-manual-inspection-3}
+
+Después de combinar los límites hacia atrás y los límites hacia adelante ajustados, el comportamiento de los SLC combinados queda claro:
+
+- La función anterior nos indica que se elige una partición en la que tiene lugar el cambio de límites hacia atrás a límites hacia adelante ajustados.
+
+- Podemos ver a continuación que los SLC ahora contienen límites parcialmente hacia atrás y parcialmente hacia adelante ajustados.
+
+
+```python
+for p in "XYZ":
+    display(
+        draw_shaded_lightcone(
+            boxed_circuit,
+            merged_bounds,
+            noise_model_paulis,
+            pauli_filter=p,
+            scale=0.15,
+            fold=-1,
+            idle_wires=False,
+            wire_order=wire_order,
+            measure_arrows=False,
+        )
+    )
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/eb2948bc-fa27-4108-b03c-0291d3b2f7c8-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/eb2948bc-fa27-4108-b03c-0291d3b2f7c8-1.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/eb2948bc-fa27-4108-b03c-0291d3b2f7c8-2.avif)
+
+### Paso 3: Ejecutar {#step-3-execute}
+En esta sección comenzamos la parte del flujo de trabajo que usa un dispositivo cuántico real. Para este método de mitigación de errores basado en aprendizaje, hay dos pasos:
+
+1. Aprender el ruido usando `NoiseLearnerV3`.
+
+2. Ejecutar un circuito de mitigación de errores con el marco de trabajo `samplomatic` y `Executor`.
+
+
+Con los errores acotados de nuestro circuito cuántico, aprendemos las tasas de ruido asociadas para priorizar nuestro presupuesto de error, determinar la sobrecarga de muestreo y ejecutar en una QPU.
+
+### a. Aprender las tasas de ruido {#a-learn-the-noise-rates}
+
+El noise learner caracteriza los procesos de ruido que afectan a las puertas en uno o más circuitos de interés, basándose en el [modelo de ruido de Pauli-Lindblad](https://arxiv.org/abs/2201.09866) disperso. El método `run()` lanza un trabajo de aprendizaje de ruido para las capas únicas de dos qubits proporcionadas, usando las opciones especificadas en la configuración del noise learner. Estas opciones controlan la estrategia de Pauli-twirling, el número de aleatorizaciones y disparos, las profundidades de aprendizaje y la post-selección.
+
+También elegimos deliberadamente las profundidades de aprendizaje. Un hallazgo práctico para la mitigación basada en aprendizaje con `samplomatic` es que resulta muy beneficioso que la profundidad de aprendizaje más profunda coincida con la profundidad del circuito que se desea mitigar. Debido a que las `layer_pair_depths` de NLv3 se miden en *pares* de capas (una capa más su inversa), fijamos el valor más profundo en la mitad de la profundidad de capas de dos qubits del circuito.
+
+```python
+post_selection_enabled = True
+```
+
+```python
+# Match the deepest noise-learning depth to the depth of the circuit being
+# mitigated. NLv3 ``layer_pair_depths`` are measured in layer pairs (a layer
+# plus its inverse), so the deepest value is half the circuit's two-qubit-layer
+# depth. Learning to this depth markedly improves the quality of the mitigation.
+#
+# We measure the two-qubit-layer depth on the pre-boxed ISA circuit: after
+# boxing, every two-qubit gate is hidden inside a full-width ``BoxOp``, so a
+# ``num_qubits == 2`` filter on ``boxed_circuit`` matches nothing (and
+# ``QuantumCircuit.depth`` does not recurse into boxes).
+depth_2q = isa_circuit.depth(lambda instr: instr.operation.num_qubits == 2)
+max_layer_pair_depth = depth_2q // 2  # dividing by 2 since we want pairs
+
+# Use a fixed schedule of learning depths, but drop any that exceed the circuit's
+# depth and always cap the deepest value at ``max_layer_pair_depth`` so we never
+# learn deeper than the circuit being mitigated.
+candidate_depths = [1, 2, 4, 8, 12, 16, 24, 32, 40, 48]
+layer_pair_depths = sorted(
+    {d for d in candidate_depths if d < max_layer_pair_depth}
+    | {max_layer_pair_depth}
+)
+
+noise_learner_options = {
+    "num_randomizations": 64,
+    "shots_per_randomization": 128,
+    "layer_pair_depths": layer_pair_depths,
+    "post_selection": {
+        "enable": post_selection_enabled,
+        "strategy": "edge",
+        "x_pulse_type": "rx",
+    },
+    "environment": {"job_tags": ["TUT_SLC"]},
+}
+
+noise_learner = NoiseLearnerV3(backend, noise_learner_options)
+```
+
+```python
+noise_learner_job = noise_learner.run(unique_2q_instructions)
+```
+
+```python
+noise_learner_result = noise_learner_job.result()
+```
+
+```python
+if post_selection_enabled:
+    print(
+        "Minimum fraction of shots kept for noise learning experiments: ",
+        end="",
+    )
+    print(
+        f"{min([min(d.values()) for d in [nlr.metadata['post_selection']['fraction_kept'] for nlr in noise_learner_result[:2]]]):.2f}"
+    )
+```
+
+```text
+Minimum fraction of shots kept for noise learning experiments: 0.71
+```
+
+```python
+# Get a dict mapping each InjectNoise.ref to its learned PauliLindbladMap
+refs_2_plm = noise_learner_result.to_dict(
+    unique_2q_instructions, require_refs=False
+)
+```
+
+### b.i. Actualizar los límites combinados con las tasas de ruido realmente aprendidas {#bi-update-merged-bounds-with-actual-learned-noise-rates}
+
+Ahora que se ha aprendido el modelo de ruido específico, podemos aplicar las tasas de ruido aprendidas a los límites de ruido predichos y obtener una determinación final de qué límites tienen el mayor impacto en la minimización del sesgo.
+
+```python
+merged_bounds = merge_bounds(
+    boxed_circuit,
+    forward_bounds_tighter,
+    backward_bounds,
+    refs_2_plm,
+)
+```
+
+```text
+Optimal spacetime partitioning not implemented!Just partitioning list of noisy boxes.
+```
+
+#### b.ii. Calcular las `local_scales` para la ejecución en hardware {#bii-compute-the-local-scales-for-the-hardware-execution}
+
+`compute_local_scales` examina cada posible error de ruido en el circuito y estima cuánto podría sesgar ese error la medición final, así como cuán costoso sería corregirlo. Luego clasifica los errores según cuán rentable es mitigarlos y selecciona el subconjunto que reduce el sesgo tanto como sea posible, permaneciendo dentro del presupuesto de costo de muestreo permitido (o alcanzando una precisión deseada). El resultado es un conjunto de factores de escala que indican qué errores se mitigarán activamente y cuáles se dejarán sin mitigar (`local_scales`), junto con la sobrecarga total de muestreo predicha (`sampling_costs`) y el sesgo restante (`residual_bias_bound`).
+
+La capacidad de controlar el sesgo restante deseado es una característica crítica de la implementación de SLC de PEC. Mientras que en la [implementación original](https://arxiv.org/abs/2201.09866), la sobrecarga de muestreo siempre apuntaba a un sesgo cero, podemos ajustar la sobrecarga de muestreo requerida con una compensación en el sesgo restante esperado. Esto ayuda a que el usuario se mantenga dentro de un presupuesto de muestreo fijo, lo cual puede ser particularmente útil al prototipar inicialmente un flujo de trabajo.
+
+```python
+id_map = map_modifier_ref_to_ref(boxed_circuit)
+```
+
+```python
+summed_rates = 0.0
+for box_id, noise_id in id_map.items():
+    learned_plm = refs_2_plm[noise_id]
+    summed_rates += np.sum(learned_plm.rates)
+    # print(f"{box_id}:\tgamma = {np.exp(2 * summed_rates):1.6e}\tsampling cost = {np.exp(4 * summed_rates):1.6e}")
+total_gamma = np.exp(2 * summed_rates)
+print(
+    f"Full PEC gamma={total_gamma}, sampling cost (gamma^2) = {total_gamma**2}"
+)
+```
+
+```text
+Full PEC gamma=12.750876317157042, sampling cost (gamma^2) = 162.58484685543633
+```
+
+```python
+biases = []
+costs = []
+for bias in [0.0] + np.arange(0.001, 0.102, 0.01).tolist():
+    _, cost_, bias_ = compute_local_scales(
+        boxed_circuit,
+        merged_bounds,
+        refs_2_plm,
+        sampling_cost_budget=np.inf,
+        bias_tolerance=bias,
+    )
+    biases.append(bias_)
+    costs.append(cost_)
+```
+
+#### Compensar la sobrecarga de muestreo frente al sesgo residual {#trade-off-sampling-overhead-against-residual-bias}
+
+```python
+xticks = np.arange(0, 11)
+
+fig, ax = plt.subplots()
+ax.scatter(
+    [0], [total_gamma**2], marker="D", c="tab:orange", label="full PEC"
+)
+ax.plot(
+    100 * np.array(biases),
+    np.array(costs),
+    "o-",
+    c="tab:blue",
+    label="PEC+SLC",
+)
+ax.set_yscale("log")
+ax.set_xticks(xticks, [f"{x:.1f}" for x in xticks])
+
+ax.set_xlabel("Remaining bias [%]")
+ax.set_ylabel(r"Sampling overhead, $\gamma^2$")
+ax.grid()
+ax.legend()
+fig.suptitle("PEC sampling overhead reduction due to SLC")
+```
+
+```text
+Text(0.5, 0.98, 'PEC sampling overhead reduction due to SLC')
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/slc-ovplot-0-4000-8000-000000000066-1.avif)
+
+```python
+chosen_bias_thres = 0.1
+```
+
+```python
+local_scales, sampling_cost, residual_bias_bound = compute_local_scales(
+    boxed_circuit,
+    merged_bounds,
+    refs_2_plm,
+    sampling_cost_budget=np.inf,
+    bias_tolerance=chosen_bias_thres,
+)
+print(
+    f"PEC+SLC sampling cost (gamma^2) = {sampling_cost} "
+    f"w/ remaining bias = {100 * residual_bias_bound:.1f}%"
+)
+```
+
+```text
+PEC+SLC sampling cost (gamma^2) = 48.13646509622307 w/ remaining bias = 10.0%
+```
+
+### c. Ejecutar el circuito de interés con antirruido {#c-execute-the-circuit-of-interest-with-antinoise}
+
+#### c.i. Preparar el circuito plantilla usando `samplex` {#ci-prepare-template-circuit-by-using-samplex}
+El `samplex` es una salida del método `build` de Samplomatic, que codifica toda la información necesaria para generar parámetros aleatorizados para `template_circuit`. Estos se usan luego para configurar los objetos `QuantumProgram`, que a su vez se ejecutan en una QPU con la primitiva `Executor`. Cada `QuantumProgram` puede contener varios elementos, que puedes imaginar como un par de `template` y `samplex`.
+
+Consulta el tutorial [Hello samplomatic](https://github.com/qiskit-community/qdc-challenges-2025/blob/main/day3_tutorials/Track_A/hello_samplomatic/Samplomatic%20-%20Hello%20World.ipynb) para más detalles.
+
+```python
+# Build template circuit and samplex for later use with the "Executor"
+template_circuit, samplex = samplomatic.build(boxed_circuit)
+```
+
+```python
+# Set up postselection if it's been enabled
+if post_selection_enabled:
+    # Set up post selection PM (to add PS instructions)
+    post_selection_pm = PassManager(
+        [
+            AddSpectatorMeasures(backend.coupling_map),
+            AddPostSelectionMeasures(x_pulse_type="rx"),
+        ]
+    )
+    final_template_circuit = post_selection_pm.run(template_circuit)
+else:
+    final_template_circuit = template_circuit
+```
+
+#### c.ii. Configurar el `QuantumProgram` {#cii-set-up-the-quantumprogram}
+
+```python
+num_randomizations = 4096
+shots_per_randomization = 64
+chunk_size = 256
+```
+
+```python
+# Set up QuantumProgram
+program = QuantumProgram(shots=shots_per_randomization, noise_maps=refs_2_plm)
+
+# no EM
+
+# Collect up a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {
+    f"noise_scales.{ref}": float(0) for ref in local_scales.keys()
+}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = (
+    samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+)
+
+program.append_samplex_item(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# plain PEC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {
+    f"noise_scales.{ref}": float(-1) for ref in local_scales.keys()
+}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = (
+    samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+)
+
+program.append_samplex_item(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+
+# PEC+SLC
+
+# Collect a dict of the other arguments that need to be bound to samplex_inputs
+samplex_inputs = {
+    f"noise_scales.{ref}": float(-1) for ref in local_scales.keys()
+}
+samplex_inputs |= {"basis_changes": {"basis0": bases_canon[0]}}
+samplex_inputs |= {"local_scales": local_scales}
+
+# Convert samplex_inputs into a dict to pass to QuantumProgram
+samplex_arguments = (
+    samplex.inputs().bind(**samplex_inputs).make_broadcastable()
+)
+
+program.append_samplex_item(
+    circuit=final_template_circuit,
+    samplex=samplex,
+    samplex_arguments=samplex_arguments,
+    shape=(num_randomizations,),
+    chunk_size=chunk_size,
+)
+```
+
+#### c.iii. Ejecutar el programa con la primitiva `Executor` {#ciii-execute-program-with-the-executor-primitive}
+
+```python
+executor = Executor(backend)
+```
+
+```python
+job_exec = executor.run(program)
+```
+
+```python
+results_exec = job_exec.result()
+```
+
+### Paso 4: Posprocesar {#step-4-post-process}
+Al calcular el valor esperado final de interés usando `executor_expectation_values`, implementamos algunas técnicas de posprocesamiento para ayudar a garantizar que obtengamos los resultados de mejor calidad posible. Primero, aplicamos nuestra [extinción de error de lectura con twirl (TREX)](/guides/error-mitigation-and-suppression-techniques#twirled-readout-error-extinction-trex), que tiene en cuenta cualquier error que ocurra durante el proceso de lectura. Luego, corregimos los errores debidos al ruido no markoviano en nuestros backends Heron usando un método de post-selección. Este método mide los qubits activos y espectadores, luego aplica una rotación lenta a cada qubit, y luego mide de nuevo. En los casos en que las dos mediciones no confirman un qubit invertido como se esperaba, estos disparos se descartan aplicando una `mask` del `PostSelector`. Dentro del cálculo de la máscara, se puede establecer una estrategia específica para filtrar en función de nodos de un solo qubit o aristas de espectadores vecinos, lo que puede influir tanto en el número de disparos filtrados como en la calidad de los resultados.
+
+```python
+measurement_noise_map = noise_learner_result[2].to_pauli_lindblad_map()
+trex_scale_factors = trex_factors(measurement_noise_map, reverser_virt)
+```
+
+```python
+post_selection_strategy = "node"
+```
+
+```python
+def post_process_conv(datum, steps=16, gamma=None, ps=False, trex=False):
+    meas = datum["meas"]
+    flips = datum["measurement_flips.meas"]
+    signs = datum.get("pauli_signs", None)
+
+    meas_basis_axis = None
+    avg_axis = 0
+
+    mask = None
+    if ps and post_selection_enabled:
+        # Post-select the results
+        post_selector = PostSelector.from_circuit(
+            circuit=final_template_circuit, coupling_map=backend.coupling_map
+        )
+
+        # Compute the ps mask for filtering results
+        mask = post_selector.compute_mask(
+            datum, strategy=post_selection_strategy
+        )
+
+        # Compute fraction of shots kept from post selection
+        total_num_shots = num_randomizations * shots_per_randomization
+        ps_ratio = np.sum(mask) * 100 / total_num_shots / len(bases_canon)
+        print(
+            f"With {post_selection_strategy}-based post selection ({ps_ratio:.1f}% of shots kept):"
+        )
+
+    results = []
+    for i in range(steps, num_randomizations + 1, steps):
+        # Compute mitigated expvals w/out post-selection
+        res = executor_expectation_values(
+            meas[:i],
+            reverser_virt,
+            meas_basis_axis,
+            avg_axis=avg_axis,
+            measurement_flips=flips[:i],
+            pauli_signs=signs[:i] if signs is not None else None,
+            postselect_mask=mask[:i] if mask is not None else None,
+            rescale_factors=trex_scale_factors if trex else None,
+            gamma_factor=gamma,
+        )
+        results.append(res[0])
+    return results
+```
+
+```python
+gamma_pec = gamma_from_noisy_boxes(refs_2_plm, id_map)
+gamma_slc = gamma_from_noisy_boxes(refs_2_plm, id_map, local_scales)
+```
+
+```python
+steps = 16
+```
+
+```python
+results = {}
+
+for label, result_idx, gamma, use_ps, use_trex in [
+    ("PEC", 1, gamma_pec, True, True),
+    ("PEC+SLC", 2, gamma_slc, True, True),
+    ("Unmitigated", 0, None, False, False),
+]:
+    res = post_process_conv(
+        results_exec[result_idx],
+        steps=steps,
+        gamma=gamma,
+        ps=use_ps,
+        trex=use_trex,
+    )
+    results[label] = res
+```
+
+```text
+With node-based post selection (24.1% of shots kept):
+With node-based post selection (24.2% of shots kept):
+```
+
+Del examen de los resultados experimentales, podemos comparar directamente el comportamiento de los diferentes enfoques: PEC, PEC combinado con SLC, y la línea base sin mitigar. Algunos detalles específicos a destacar:
+
+- El resultado sin mitigar se sitúa muy fuera de la banda de sesgo del 10% (cerca de 0.35) y no se ve afectado por el número de aleatorizaciones.
+
+- En este dispositivo, el PEC completo conlleva una sobrecarga de muestreo de $\gamma^2 \approx 1.6\times10^2$. Después de grandes oscilaciones iniciales, la estimación de PEC puro recupera la señal y se estabiliza alrededor de 1.1, sobrepasando ligeramente el valor exacto. Ten en cuenta que la banda de sesgo del 10% se aplica solo al estimador PEC+SLC: el PEC puro es en principio insesgado, por lo que esta desviación residual no está cubierta por una garantía de sesgo, sino que refleja fluctuaciones estadísticas e imperfecciones en el modelo de ruido aprendido, lo cual es razonable a este tamaño de problema.
+
+- SLC reduce la sobrecarga aún más, en aproximadamente 3.4 veces (a $\gamma^2 \approx 48$, para un límite de sesgo residual de aproximadamente el 10%). PEC+SLC también fluctúa fuertemente con pocas aleatorizaciones, alcanzando inicialmente incluso la región no física, pero su estimación converge de manera constante hacia el valor exacto, estabilizándose cerca de 1.0 bien dentro de la banda. Iguala o supera la precisión del PEC puro con aproximadamente un tercio del costo de muestreo, demostrando el beneficio del sombreado de conos de luz.
+
+- Las barras de error de ambas estimaciones mitigadas se contraen a medida que se acumulan las aleatorizaciones; a un número fijo de aleatorizaciones, el estimador PEC+SLC tiene la menor varianza estadística, en consistencia con su menor $\gamma^2$.
+
+
+Ten en cuenta que las tasas de ruido aprendidas (y por lo tanto las sobrecargas y las estimaciones mitigadas) dependen del backend y su calibración en el momento de la ejecución, por lo que volver a ejecutar este notebook puede producir valores cuantitativamente diferentes.
+
+```python
+fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+
+ax.axhline(1.0, color="black", label="Exact")
+ax.fill_between(
+    [-50, 4100], -10, 0, color="grey", alpha=0.25, label="Unphysical"
+)
+ax.fill_between([-50, 4100], 1, 10, color="grey", alpha=0.25)
+ax.fill_between(
+    [-50, 4100], 0.9, 1.1, color="red", alpha=0.25, label="10% bias"
+)
+
+for label, res in results.items():
+    ax.errorbar(
+        list(range(steps, num_randomizations + 1, steps)),
+        [r[0] for r in res],
+        yerr=[r[1] for r in res],
+        alpha=0.75,
+        marker="o",
+        linestyle="",
+        markerfacecolor="none",
+        label=label,
+    )
+
+ax.set_ylabel(r"$\langle X_{6}Z_{13}\rangle$")
+ax.set_xlabel("# randomizations")
+ax.grid()
+
+ax.legend(ncols=2)
+ax.set_ylim([-0.1, 2.0])
+ax.set_xlim([-50, 4100])
+```
+
+```text
+(-50.0, 4100.0)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/pec-with-shaded-lightcones/extracted-outputs/8df6612b-d611-4201-b1f4-6d8de4a192ad-1.avif)
+
+## Próximos pasos {#next-steps}
+Si te pareció interesante este trabajo, quizás te interese el siguiente material:
+<Admonition type="tip" title="Recomendaciones">
+- [Combinar opciones de mitigación de errores con la primitiva Estimator](/tutorials/combine-error-mitigation-techniques)
+- [Mitigación de errores a escala de utilidad con amplificación probabilística de errores](/tutorials/probabilistic-error-amplification)
+- La documentación de [`qiskit-addon-slc`](https://github.com/Qiskit/qiskit-addon-slc) y [`samplomatic`](https://github.com/Qiskit/samplomatic)
+- [Lightcone shading for classically accelerated quantum error mitigation](https://arxiv.org/abs/2409.04401)
+</Admonition>
+
+<TutorialFeedback />
