@@ -209,6 +209,30 @@ the German run's size: roughly 60 batches at 60 to 80k each, 4 to 5 M
 tokens with the general-purpose agent, and well under 1 M of the
 orchestrator's own turns instead of sixty launch cycles.
 
+## Agent failure modes and what the tooling does about them
+
+Measured over the seven locale runs of 2026-09-05 (pt, ja, ko, uk, cs, ro,
+id; 33 to 39 batches each). Every item below cost a manual intervention on
+every locale until it was folded in; the residue that still needs a hand is
+listed last.
+
+| What happens | How often | What handles it now |
+|---|---|---|
+| An agent replies as if no prompt reached it ("I don't see a task…") and writes nothing | 1–3 batches per locale | `translate-locale.js` retries the batch up to `attempts` (default 3) times with a slightly different prompt, so the retry is a fresh call rather than a cache replay. |
+| An agent returns 118 strings for 120 items | once in 7 locales | `--apply` rejects the whole batch (a shift would misplace every later item); the script retries a short batch like a failed one. |
+| An agent replies `done 120/120` without writing the file | once in 7 locales | Only `--apply` can see it (the script has no filesystem): the batch shows as *unfilled*; rerun it with the workflow or a direct agent. |
+| Unescaped quotes inside a one-line JSON list (Polish „…", Romanian „…", before a comma) | 2 batches per Slavic/Romance locale | `parse_string_lines` escapes the quote the parser trips on, for both parser messages, then falls back to line-by-line. |
+| A code span tidied by the agent: `RuntimeJobV2 ` losing its trailing space, the upstream typo `[NoiseLearnerV3` corrected, or a bare product name backticked (`qiskit-ibm-runtime`, `Executor`) | 3–5 entries per locale | `repair_code_spans` restores the source span or drops the added backticks, deterministically, and the entry is accepted only if it then passes the checker. A *translated* span matches neither rule and stays rejected. |
+| A sentence with a ``double-backtick`` span could not be translated at all: the checker paired its second backtick with the next single-backtick span and reported the prose between as code | 2 entries per locale | `check.py` parses code spans by backtick runs (CommonMark), so ``x`` and `y` are two spans and the sentence may be reordered. |
+| A bare URL inside a code span captured its closing backtick, so any particle attached after the span failed the URL check | 1–2 entries per locale | The bare-URL regex stops at a backtick. |
+| A bullet carrying a 60–130 KB base64 `<img>` became a one-item batch the Read tool refused | 2 entries, once per locale | `--prepare` replaces `data:…;base64,…` with `data:DOQ-BASE64-n` in the batch; `--apply` expands it back from the msgid. |
+| The English changed only a tag attribute (a Card `href`), or lost a leading `</AccordionItem></Accordion>` when a blank line was inserted upstream; agents kept the old value from the hint | 3–4 entries per locale | Two more mechanical transfers: attribute values (never `title=`) substituted in the previous translation; the same closing tags dropped from its front. No model. |
+
+Still by hand, in order of frequency: a code span the agent translated
+(`第二量子化` for `second quantization`), a math span dropped in a long
+paragraph, and an upstream `{/* */}` comment moved. Expect two to six
+entries per locale after the redo round; the batch files show exactly which.
+
 ## Hard rules
 
 - **Only `translate.py --apply` writes a `msgstr`.** No script, hook or agent

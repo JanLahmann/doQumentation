@@ -18,7 +18,7 @@ import re
 from collections import Counter
 
 INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
-URL_RE = re.compile(r"\]\(([^)\s]+)\)|(?<![`\w])(https?://[^\s)>\]]+)")
+URL_RE = re.compile(r"\]\(([^)\s]+)\)|(?<![`\w])(https?://[^\s)>\]`]+)")   # a bare URL never contains a backtick: `git+https://…@main` must not capture its closing one
 DISPLAY_MATH_RE = re.compile(r"\$\$[^$]+\$\$")
 INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$)[^$\n]+\$(?!\$)")
 JSX_TAG_RE = re.compile(r"</?[A-Z][A-Za-z0-9]*\b")
@@ -109,13 +109,52 @@ def _math_problem(msgid: str, msgstr: str) -> str | None:
 PROSE_SPAN_RE = re.compile(r"^`[\s.,;:!?)]|[\s.,;:(]`$")
 
 
-def _code_spans(text: str) -> Counter:
-    """Inline code spans, ignoring the artefact an odd backtick produces: with
-    "`a` and `b`" tokenised one backtick off, the prose between two spans
-    ("` and `", "`. So for this problem: `") is caught as a span. Real code
-    does not start or end with whitespace or sentence punctuation, so those
-    are dropped from both sides."""
-    return Counter(m for m in INLINE_CODE_RE.findall(text) if not PROSE_SPAN_RE.search(m))
+def _code_spans(text: str, prose_filter: bool = True, raw: bool = False) -> Counter:
+    """Inline code spans by CommonMark's rule: a run of N backticks opens a
+    span that the next run of exactly N backticks on the same line closes.
+    The earlier `[^`]+` regex paired the second backtick of ``x`` with the
+    first backtick of the next single-backtick span and reported the prose
+    between them as code, so no translation of a sentence containing a
+    double-backtick span could pass unless it kept that sentence in English
+    (2 entries per locale, every locale). Keys are the span's content in
+    single backticks whatever the delimiter run was: ``x``, ```x``` and `x`
+    render the same, and 42 accepted entries across 13 locales carried the
+    single form for a double or triple source (raw=True keeps the literal
+    span, for a caller that edits the text). Spans that start or end with
+    whitespace or sentence punctuation are still dropped: with an odd stray
+    backtick the pairing is one off and the prose between two real spans
+    would be reported as code."""
+    spans: Counter = Counter()
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "`":
+            i += 1
+            continue
+        j = i
+        while j < n and text[j] == "`":
+            j += 1
+        run = j - i
+        k, close = j, None
+        while k < n and text[k] != "\n":
+            if text[k] != "`":
+                k += 1
+                continue
+            m = k
+            while m < n and text[m] == "`":
+                m += 1
+            if m - k == run:
+                close = m
+                break
+            k = m
+        if close is None:                      # unmatched opener: skip it
+            i = j
+            continue
+        span = text[i:close]
+        key = span if raw else "`" + text[j:close - run] + "`"
+        if not prose_filter or not PROSE_SPAN_RE.search(key):
+            spans[key] += 1
+        i = close
+    return spans
 
 
 def _code_problem(msgid: str, msgstr: str) -> str | None:

@@ -18,6 +18,12 @@ export const meta = {
 
 const { locale, instructions, instructions_text, batches } = args
 const CONCURRENCY = (args && args.concurrency) || 5
+// On every locale run (pt, ja, ko, uk, cs, ro, id: 7 runs of 33-39 batches)
+// one to three agents replied as if no prompt had reached them ("I don't
+// see a task in your message…") and did nothing; once an agent returned
+// 118 strings for 120 items. A retry with a slightly different prompt is
+// a fresh agent call (the same prompt would replay from cache on resume).
+const MAX_ATTEMPTS = (args && args.attempts) || 3
 // .claude/agents/translator.md (Read + Write only) is the cheaper agent type,
 // but custom agents register at session start; pass agentType in args once
 // a session that knows it is running. general-purpose always works.
@@ -45,7 +51,10 @@ function outFile(b) {
   return b.out || b.file.replace(/\.json$/, '.out.json')
 }
 
-function prompt(b) {
+function prompt(b, attempt) {
+  const retry = attempt > 1
+    ? `\n\nThis is attempt ${attempt} for this batch: the previous run returned without doing the work, or with the wrong number of strings. Do the task above now. The list must contain exactly ${b.items} strings, one per item, in the batch's order; never merge or skip an item.`
+    : ''
   return `You are a technical translator for doQumentation (locale "${locale}").
 
 ${RULES}
@@ -56,7 +65,7 @@ Do exactly this, in this order, with no other tool calls:
 3. Write ${outFile(b)} with ONE Write call: a JSON list of exactly ${b.items} strings, the translation of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.
 4. Reply with exactly one line and nothing else: done <count>/${b.items}
 
-Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the translation is the work.`
+Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the translation is the work.${retry}`
 }
 
 // A custom agent type registers only at session start and is dropped again
@@ -64,8 +73,8 @@ Do not read any other file, do not run scripts or shell, do not verify by re-rea
 // "agent type 'translator' not found"). Do NOT fall back to general-purpose:
 // a 5-agent wave of it cost 3.4M tokens for 3 finished batches. Fail fast so
 // the run can be restarted in a fresh session with the cheap agent.
-function run(b) {
-  return agent(prompt(b), {
+function run(b, attempt) {
+  return agent(prompt(b, attempt), {
     label: `${b.model} ${b.file.split('/').pop()} (${b.items} items)`,
     phase: 'Translate',
     model: b.model,
@@ -88,12 +97,20 @@ async function worker() {
   while (next < batches.length) {
     const i = next++
     const b = batches[i]
-    try {
-      done[i] = { ...parseDone(await run(b), b), model: b.model }
-    } catch (e) {
-      if (/is not registered in this session/.test(String(e && e.message || e))) throw e
-      done[i] = { file: b.file, filled: 0, total: b.items, model: b.model, failed: true, raw: String(e && e.message || e).slice(0, 200) }
+    const name = b.file.split('/').pop()
+    let res
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        res = { ...parseDone(await run(b, attempt), b), model: b.model, attempts: attempt }
+      } catch (e) {
+        if (/is not registered in this session/.test(String(e && e.message || e))) throw e
+        res = { file: b.file, filled: 0, total: b.items, model: b.model, failed: true, attempts: attempt, raw: String(e && e.message || e).slice(0, 200) }
+      }
+      if (!res.failed && res.filled >= res.total) break
+      if (attempt < MAX_ATTEMPTS)
+        log(`${name}: attempt ${attempt} ${res.failed ? 'did nothing' : `short (${res.filled}/${res.total})`} — retrying`)
     }
+    done[i] = res
     const finished = done.filter(Boolean)
     const filled = finished.reduce((s, r) => s + (r.filled || 0), 0)
     const total = finished.reduce((s, r) => s + r.total, 0)
