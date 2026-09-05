@@ -1,0 +1,487 @@
+---
+description: 'Déploie le modèle de fonction de dynamique hamiltonienne AQC + Trotter sur Qiskit Serverless, puis exécute-le sur un simulateur et sur un QPU.'
+notebook_path: guides/function-template-aqc-trotter.ipynb
+sidebar_label: 'Déployer et exécuter un modèle de Qiskit Function pour la dynamique hamiltonienne AQC + Trotter'
+title: 'Déployer et exécuter un modèle de Qiskit Function pour la dynamique hamiltonienne AQC + Trotter'
+---
+
+{/* doqumentation-source-hash: 80fe66ba */}
+
+
+<OpenInLabBanner notebookPath="guides/function-template-aqc-trotter.ipynb" />
+
+
+{/* cspell:ignore Trotter Trotterization quimb cotengra cotengrust Suzuki fidelities isa */}
+
+## Aperçu {#overview}
+
+Il s'agit d'un modèle de Qiskit Function agnostique à l'expérience pour la dynamique hamiltonienne. Étant donné un hamiltonien de Pauli 1D à plus proches voisins, un état initial préparé (optionnel), et un ensemble d'observables, il exécute une évolution temporelle de Trotter, une compression de circuit par compilation quantique approchée (AQC), et une exécution atténuée, puis renvoie la série temporelle de chaque observable. Échange la configuration (PRE) et l'analyse (POST), et le même cœur pilote une expérience différente :
+
+| PRE (ta configuration) | FUNCTION (déployée ici) | POST (ton analyse) |
+| --- | --- | --- |
+| Préparer un état, sous forme de circuit ou d'état produit, avec un kick local optionnel | Synthèse de Trotter &rarr; compression AQC &rarr; exécution sur `statevector`, `fake`, ou `runtime`, renvoyant $\langle O \rangle(t)$ | $S(q, \omega)$ pour la diffusion de neutrons, ou magnétisation, transport, dynamique de trempe, etc. |
+
+Le modèle est publié dans le [dépôt de modèles Qiskit Function](https://github.com/qiskit-community/qiskit-function-templates/tree/main/physics/aqc_trotter), aux côtés des autres modèles d'application. Ce notebook le déploie sur ton propre compte Qiskit Serverless. Exécute-le une fois, et n'importe quel notebook pourra ensuite appeler la fonction avec `serverless.load("aqc-dynamics-function")`.
+
+Pour un exemple scientifique détaillé, consulte [Simuler la diffusion de neutrons avec un workflow Serverless de dynamique AQC + Trotter](/tutorials/simulate-neutron-scattering-with-a-serverless-workflow), qui appelle cette fonction pour calculer le facteur de structure dynamique de KCuF$_3$. Ce notebook traite plutôt du déploiement et du contrat d'entrée.
+
+## Prérequis {#requirements}
+
+Avant de commencer, assure-toi d'avoir les éléments suivants dans l'environnement du kernel de ce notebook :
+
+- Qiskit SDK v2.0 ou ultérieure (`pip install qiskit`).
+
+- Le client Qiskit IBM Catalog (`pip install qiskit-ibm-catalog`), qui déploie et exécute des charges de travail sur Qiskit Serverless.
+
+
+Les dépendances scientifiques propres à la fonction (`qiskit-addon-aqc-tensor`, `cotengrust`, `qiskit-aer`) n'ont pas besoin d'être installées localement.
+
+## Obtenir les fichiers source du modèle {#get-the-template-source-files}
+
+La fonction est un petit package Python que Qiskit Serverless exécute dans le cloud, donc son code source doit exister sous forme de fichiers locaux qui sont téléversés au moment du déploiement. Le package est publié dans le dépôt de modèles Qiskit Function.
+
+Télécharger **[`source_files`](https://download-directory.github.io/?url=https%3A%2F%2Fgithub.com%2Fqiskit-community%2Fqiskit-function-templates%2Ftree%2Fmain%2Fphysics%2Faqc_trotter%2Fsource_files)**
+
+Le téléchargement est un seul fichier zip, nommé d'après le chemin complet du répertoire dans le dépôt :
+
+`qiskit-community qiskit-function-templates main physics aqc_trotter source_files.zip`
+
+1. Décompresse-le dans le répertoire qui contient ce notebook.
+
+2. Renomme le dossier extrait, de ce long nom, en `source_files`.
+
+
+Ton répertoire de travail ressemble alors à ceci :
+
+```
+your-working-directory/
+├── function-template-aqc-trotter.ipynb    <- this notebook
+└── source_files/                         <- the renamed folder
+    ├── __init__.py
+    ├── program.py
+    └── source/
+        ├── __init__.py
+        ├── _serverless.py
+        ├── app_function.py
+        ├── aqc.py
+        ├── build.py
+        ├── execute.py
+        └── hamiltonian.py
+```
+
+Le nom doit être exactement `source_files`, car c'est le `working_dir` que l'étape 3 téléverse.
+
+`program.py` est le point d'entrée que la passerelle invoque. Tout ce qui se trouve sous `source/` constitue l'implémentation, répartie par étape : synthèse hamiltonienne et de Trotter, compression AQC, et exécution. Rien de tout cela n'a besoin d'être modifié pour exécuter les exemples suivants. L'étape 3 téléverse tout le répertoire, donc répète cette étape chaque fois que tu modifies un fichier.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit qiskit-ibm-catalog
+```
+
+## 1. Authentification {#1-authentication}
+
+Utilise `qiskit-ibm-catalog` pour t'authentifier auprès de `QiskitServerless` avec ta clé API (token) et ton CRN (instance), que tu peux trouver sur le tableau de bord [IBM Quantum&reg; Platform](https://quantum.cloud.ibm.com). Avec ces identifiants, tu peux instancier le client serverless localement pour téléverser ou exécuter la fonction sélectionnée :
+
+```python
+from qiskit_ibm_catalog import QiskitServerless
+serverless = QiskitServerless(channel="ibm_quantum_platform", token="MY_TOKEN", instance="MY_CRN")
+```
+
+Tu peux éventuellement utiliser `save_account()` pour enregistrer tes identifiants dans ton environnement local (consulte le guide [Configurer ton compte IBM Cloud&reg;](/guides/cloud-setup#cloud-save)). Note que cela écrit tes identifiants dans le même fichier que [`QiskitRuntimeService.save_account()`](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/qiskit-runtime-service#save_account) :
+
+```python
+QiskitServerless.save_account(channel="ibm_quantum_platform", token="MY_TOKEN", instance="MY_CRN")
+```
+
+Si le compte est enregistré, il n'est pas nécessaire de fournir le token pour t'authentifier :
+
+```python
+from qiskit_ibm_catalog import QiskitServerless
+
+# Authenticate to the remote cluster
+# In this case, loading a saved account
+serverless = QiskitServerless()
+
+# REPLACE WITH YOUR OWN CREDENTIALS or SAVED ACCOUNT
+# serverless = QiskitServerless(channel="ibm_quantum_platform", token="MY_TOKEN", instance="MY_CRN")
+```
+
+## 2. Déclarer les dépendances {#2-declare-dependencies}
+
+Packages dont la fonction a besoin en plus de l'image serverless de base gérée.
+
+<Admonition type="note">
+
+La passerelle n'installe que les noms figurant sur sa liste d'autorisation ([`requirements-dynamic-dependencies.txt`](https://github.com/Qiskit/qiskit-serverless/blob/main/docker-images/requirements-dynamic-dependencies.txt)), mis en correspondance par nom de package et épinglés à la version autorisée avec `==`. Tout le reste doit arriver de manière transitive (en tant que dépendance d'un package autorisé). La syntaxe `[extras]` est respectée : `qiskit-addon-aqc-tensor[quimb-jax]` est ce qui installe `quimb` et `jax`. `cotengrust` est nécessaire pour l'efficacité mémoire pendant la simulation de réseaux de tenseurs. `qiskit-aer` est listé séparément pour le backend `fake` (simulation locale bruitée).
+
+</Admonition>
+
+```python
+DEPENDENCIES = [
+    "qiskit-addon-aqc-tensor[quimb-jax]==0.3.1",
+    "qiskit-aer==0.17.2",
+    "cotengrust==0.2.0",
+]
+```
+
+## 3. Définir et téléverser la fonction {#3-define-and-upload-the-function}
+
+```python
+from qiskit_ibm_catalog import QiskitFunction
+
+fn = QiskitFunction(
+    title="aqc-dynamics-function",
+    entrypoint="program.py",
+    working_dir="source_files/",
+    dependencies=DEPENDENCIES,
+)
+serverless.upload(fn)
+```
+
+```text
+QiskitFunction(aqc-dynamics-function)
+```
+
+## 4. Vérifier qu'elle est enregistrée {#4-verify-it-registered}
+
+```python
+next(p for p in serverless.list() if p.title == "aqc-dynamics-function")
+```
+
+```text
+QiskitFunction(aqc-dynamics-function)
+```
+
+## Référence de la fonction {#function-reference}
+
+Ceci est une brève introduction. Chaque champ est documenté en détail dans le [README du modèle AQC Dynamics](https://github.com/qiskit-community/qiskit-function-templates/blob/main/physics/aqc_trotter/README.md) : le tableau complet des entrées avec ses règles de validation, les champs de sortie, les backends d'exécution, et d'autres exemples détaillés. Ce qui suit est la version courte, suffisante pour lire les exemples qui suivent.
+
+### Entrées {#inputs}
+
+Chaque exécution est un unique appel `fn.run(...)`. Seules les trois premières entrées du tableau sont requises : `hamiltonian`, `t_steps`, et `aqc_segments`. Tout ce qui suit est optionnel et retombe sur la valeur par défaut indiquée, donc un appel minimal comporte trois arguments et le reste du tableau représente les fonctionnalités auxquelles tu peux souscrire. Le `num_qubits` du hamiltonien définit la longueur de la chaîne, il n'y a donc pas d'entrée de taille séparée.
+
+| Entrée | Défaut | Description |
+|---|---|---|
+| `hamiltonian` | requis | Hamiltonien de Pauli 1D à plus proches voisins sous forme de `SparsePauliOp`. Les chaînes sont des opérateurs de Pauli, il n'y a donc pas de facteur implicite d'un demi. |
+| `t_steps` | requis | Nombre total de pas de Trotter. Évolue jusqu'à `T = t_steps * dt` et rapporte chaque observable à chaque `t_k = k * dt`. |
+| `aqc_segments` | requis | Plan de compression : une liste de `{"n_steps": k, "ansatz_steps": m}`. `sum(n_steps)` pas sont compressés ; le reste s'exécute en Trotter classique. |
+| `dt` | `0.2` | Temps physique avancé par un pas de Trotter. |
+| `initial_state` | `\|0...0>` | Un `QuantumCircuit` préparé à faire évoluer. Intègre tout kick local dans ce circuit. |
+| `observables` | `Z` par site | Tout ce que `EstimatorV2` accepte comme argument `observables`. Une observable par colonne de sortie. |
+| `trotter_options` | Suzuki du 2e ordre | `{"method": ..., "synthesis_settings": {...}}`. `reps` et `time` sont gérés par la fonction. |
+| `aqc_options` | voir la description | `max_bond` (`32`), `cutoff` (`1e-8`), `autodiff_backend` (`"jax"`), `fidelity_target` (`None`), `optimizer_settings` (L-BFGS-B, `jac=True`, `maxiter=300`). |
+| `estimator_options` | DD, twirling, TREX | `EstimatorV2.options`, transmis tel quel. Un dictionnaire fourni remplace entièrement les valeurs par défaut plutôt que de les fusionner. |
+| `transpiler_options` | `{"optimization_level": 3}` | Arguments de mot-clé de `generate_preset_pass_manager`. `backend` et `target` sont rejetés, car le chemin d'exécution les gère. |
+| `backend` | `"runtime"` | `"statevector"`, `"fake"`, ou `"runtime"`. |
+| `backend_name` | le moins occupé | Nom du backend IBM&reg; pour `runtime`, ou un backend fake nommé. |
+| `batches` | `1` | Répartit les circuits sur N jobs runtime. Un seul batch soumet un job unique et ne crée pas de session. |
+| `parallel_sim` | `False` | Répartit les chemins du simulateur local sur tous les cœurs disponibles avec Ray. Aucun effet sur `runtime`. |
+| `return_circuits` | `False` | Renvoie les circuits logiques AQC + Trotter dans le résultat, en plus des séries d'observables. |
+
+### Backends d'exécution {#execution-backends}
+
+Les trois chemins partagent le même code et les mêmes paramètres d'atténuation. Ils diffèrent uniquement par l'endroit où les circuits s'exécutent.
+
+| `backend` | Ce que c'est | Identifiants | Notes |
+|---|---|---|---|
+| `"statevector"` | `StatevectorEstimator` exact | Compte Serverless uniquement | Le chemin de référence exact. Aucun temps QPU. |
+| `"fake"` | Simulation locale bruitée sur un backend fake Qiskit | Compte Serverless uniquement | Une répétition fidèle du chemin `runtime` atténué. Nécessite `qiskit-aer`. Utilise par défaut le `fake_sherbrooke` à 127 qubits. |
+| `"runtime"` (par défaut) | L'`EstimatorV2` atténué face à un QPU réel | Compte Serverless et une instance avec accès QPU | `backend_name` optionnel ; l'omettre sélectionne le dispositif le moins occupé. |
+
+Les deux chemins de simulateur appellent quand même la fonction déployée, ils ont donc besoin d'un compte Serverless enregistré même s'ils n'utilisent aucun temps QPU. Les deux exemples suivants exécutent la même charge de travail d'abord sur `statevector`, puis sur `runtime`.
+
+### Sortie {#output}
+
+`job.result()` renvoie un simple dictionnaire :
+
+```python
+{
+    "times": [...],                  # length t_steps + 1, t_k = k * dt (t=0 is the prepared state)
+    "expectation_values": [[...]],   # shape (n_times, n_observables)
+    "observable_labels": [...],      # for example: ["Z_0", "ZZ_0_1"]
+    "metadata": {
+        "n", "t_steps", "dt", "tier",
+        "aqc_compressed_steps": 5,   # total compressed steps (= sum of segment n_steps)
+        "aqc_segments": [            # per segment: the plan plus its own results
+            {"n_steps": 3, "ansatz_steps": 1, "steps": [1, 2, 3], "n_params": 133,
+             "fidelities": {"1": ..., "2": ..., "3": ...}},
+            {"n_steps": 2, "ansatz_steps": 2, "steps": [4, 5], "n_params": 245,
+             "fidelities": {"4": ..., "5": ...}},
+        ],
+        "execution_backend",
+        "aqc_fidelities": {"1": ..., "2": ...},  # flat per-step fidelity, all compressed steps
+        "circuit_stats": {           # per-step 2q depth and gate count, full Trotter vs AQC
+            "1": {"full_trotter": {"depth_2q": ..., "num_2q_gates": ...},
+                "aqc_trotter":  {"depth_2q": ..., "num_2q_gates": ...}},
+            "2": {...},
+        },
+        "warnings": [...],           # non-fatal notices; for example, a cotengrust fallback
+        "resource_usage": {          # per stage; QPU_TIME is the charged QPU time
+            "RUNNING: OPTIMIZING_FOR_HARDWARE": {"CPU_TIME": ...},
+            "RUNNING: WAITING_FOR_QPU": {"CPU_TIME": ...},
+            "RUNNING: EXECUTING_QPU": {"QPU_TIME": ...},
+        },
+    },
+    # present only when return_circuits=True
+    "circuits": [QuantumCircuit, ...],  # one per evolved step; circuits[i] is at times[i + 1]
+}
+```
+
+`aqc_fidelities` et `circuit_stats` sont les deux à lire en premier : ensemble, ils t'indiquent si la compression est restée fidèle et si elle a réellement réduit la profondeur. Sur `runtime`, `resource_usage` rapporte séparément le temps d'attente en file et le temps QPU qui t'est facturé. Une entrée rejetée échoue rapidement sous forme de `ServerlessError` structurée (code `4615`).
+
+## Exemple avec simulateur {#simulator-example}
+
+Exécute d'abord la fonction sur le backend exact `statevector`. Elle ne consomme aucun temps QPU et valide le déploiement de bout en bout. Le modèle ici est une chaîne d'Ising à champ transverse de huit qubits, et `observables` est omis afin que la fonction mesure le $Z$ par site par défaut.
+
+Le plan de compression est l'entrée qui mérite d'être bien comprise. Chaque segment `{"n_steps": k, "ansatz_steps": m}` compresse `k` pas de Trotter consécutifs en un ansatz construit à partir d'une cible de Trotter à `m` pas, et tout pas au-delà de `sum(n_steps)` s'exécute en Trotter classique. Les premiers pas, peu intriqués, se compressent bien en un ansatz peu profond à une seule couche ; les pas ultérieurs, plus intriqués, nécessitent un ansatz plus profond.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+fn = serverless.load("aqc-dynamics-function")
+
+n = 8
+H = SparsePauliOp.from_sparse_list(
+    [("ZZ", [i, i + 1], 1.0) for i in range(n - 1)]
+    + [("X", [i], 0.8) for i in range(n)],
+    num_qubits=n,
+)
+
+job = fn.run(
+    t_steps=8,
+    aqc_segments=[
+        {
+            "n_steps": 4,
+            "ansatz_steps": 1,
+        },  # early steps -> shallow 1-layer ansatz
+        {
+            "n_steps": 2,
+            "ansatz_steps": 2,
+        },  # later steps -> deeper 2-layer ansatz
+    ],
+    hamiltonian=H,
+    aqc_options={"max_bond": 32},
+    backend="statevector",
+)
+print("job ID:", job.job_id)
+```
+
+```text
+job ID: ee1f3793-e995-427d-81d1-5924549beb38
+```
+
+### Suivre l'exécution et lire le résultat {#follow-the-run-and-read-the-result}
+
+`status()` rapporte à la fois le cycle de vie global du job et le sous-statut par étape que la fonction publie au fur et à mesure de son exécution. Les mêmes étapes s'appliquent à l'exécution matérielle présentée plus loin dans ce guide :
+
+`QUEUED -> INITIALIZING -> RUNNING: OPTIMIZING_FOR_HARDWARE -> RUNNING: WAITING_FOR_QPU -> RUNNING: EXECUTING_QPU -> RUNNING: POST_PROCESSING -> DONE`
+
+| Valeur de `status()` | Étape |
+|---|---|
+| `RUNNING: OPTIMIZING_FOR_HARDWARE` | préparation de l'état, construction de Trotter, compression AQC |
+| `RUNNING: WAITING_FOR_QPU` | en file d'attente sur le QPU (backend `runtime` uniquement) |
+| `RUNNING: EXECUTING_QPU` | exécution des circuits (les simulateurs locaux passent directement par cette étape) |
+| `RUNNING: POST_PROCESSING` | assemblage du dictionnaire de résultat |
+
+Les états terminaux sont `DONE`, `ERROR`, et `CANCELED`. Cette exécution `statevector` n'a pas de file d'attente QPU, elle saute donc `RUNNING: WAITING_FOR_QPU`. Utilise `job.logs()` à tout moment pour voir les journaux par étape, y compris la fidélité AQC atteinte à chaque pas.
+
+```python
+print(job.status())  # re-run until this reports DONE
+```
+
+```text
+DONE
+```
+
+```python
+import numpy as np
+
+result = job.result()
+ev = np.array(result["expectation_values"])
+
+print("observables:", result["observable_labels"])
+print("shape:", ev.shape, "-> (n_times, n_observables)")
+print("first row (t = 0, the prepared state):", np.round(ev[0], 4))
+print("last row (t = t_steps * dt):", np.round(ev[-1], 4))
+print(
+    "AQC fidelities:",
+    {k: round(v, 4) for k, v in result["metadata"]["aqc_fidelities"].items()},
+)
+
+# What the compression bought: 2-qubit depth at the final time step.
+stats = result["metadata"]["circuit_stats"][
+    str(result["metadata"]["t_steps"])
+]
+print(
+    "2q depth at the final step:",
+    stats["full_trotter"]["depth_2q"],
+    "(full Trotter) ->",
+    stats["aqc_trotter"]["depth_2q"],
+    "(AQC + Trotter)",
+)
+```
+
+```text
+observables: ['Z_0', 'Z_1', 'Z_2', 'Z_3', 'Z_4', 'Z_5', 'Z_6', 'Z_7']
+shape: (9, 8) -> (n_times, n_observables)
+first row (t = 0, the prepared state): [1. 1. 1. 1. 1. 1. 1. 1.]
+last row (t = t_steps * dt): [0.1442 0.2956 0.4686 0.4877 0.4869 0.4686 0.2963 0.1441]
+AQC fidelities: {'1': 1.0, '2': 1.0, '3': 1.0, '4': 1.0, '5': 1.0, '6': 0.9999}
+2q depth at the final step: 210 (full Trotter) -> 79 (AQC + Trotter)
+```
+
+## Exemple matériel {#hardware-example}
+
+Un appel de fonction avec `backend="runtime"` transpile et exécute sur un processeur IBM Quantum réel, avec l'atténuation d'erreurs intégrée de la fonction : découplage dynamique (XY4), twirling de porte, et extinction d'erreur de lecture par twirling (TREX). `backend_name` sélectionne le dispositif ; omets-le et la fonction prend le moins occupé.
+
+Rien ne change dans le code scientifique. Ce qui diffère de l'exemple avec simulateur, c'est la longueur de la chaîne, le nombre de pas de Trotter, le plan de compression, le backend, et les paramètres d'atténuation explicites abordés dans la section suivante.
+
+### Dimensionner le job pour le matériel de contrôle {#sizing-the-job-for-the-control-hardware}
+
+`estimator_options` est l'entrée qu'il vaut la peine de définir délibérément. Le twirling de porte construit `num_randomizations` circuits randomisés distincts pour chaque PUB, et l'ensemble du job, chaque PUB avec toutes ses randomisations, doit tenir dans la mémoire d'instructions du système de contrôle classique du QPU. La fonction utilise par défaut 1000 randomisations, donc une évolution à 10 pas soumet 11 PUB de 1000 circuits chacun : environ 11 000 instances de circuit dans un seul job.
+
+Dépasse ce que le système de contrôle peut contenir et le job échoue avec l'[erreur 6073](https://ibm.biz/error_codes#6073). [Job limits](/guides/job-limits) donne les seuils et la manière de les décompter, le principal étant 26,8 millions d'instructions de système de contrôle par qubit, appliqué par job plutôt que par PUB. Le découplage dynamique ajoute des portes qui comptent dans ce total.
+
+Deux entrées contrôlent la taille :
+
+- `estimator_options` définit le budget de shots. Le nombre total de shots est `num_randomizations * shots_per_randomization`, donc tu peux échanger des randomisations contre des shots par randomisation, conserver la statistique, et quand même réduire le programme. La cellule suivante utilise 100 randomisations à 200 shots chacune, soit 20 000 shots par observable et environ un dixième des instances de circuit que les valeurs par défaut soumettraient. Consulte [TwirlingOptions](https://docs.quantum.ibm.com/api/qiskit-ibm-runtime/options-twirling-options) et [Options de l'Estimator](/guides/estimator-options) pour l'ensemble complet des champs.
+
+- `batches` répartit les PUB sur autant de jobs runtime distincts, ce qui est le remède que l'erreur 6073 elle-même suggère, et c'est pourquoi le cadrage par job compte. Définir `batches=4` envoie environ trois PUB par job au lieu de onze d'un coup, et les jobs partent ensemble en un seul batch, de sorte que le groupe se met en file une seule fois plutôt que chaque job se mettant en file séparément.
+
+
+N'oublie pas qu'un `estimator_options` fourni remplace entièrement les valeurs par défaut de la fonction plutôt que de les fusionner, donc le découplage dynamique et TREX sont réaffirmés dans la cellule suivante pour les garder activés.
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+fn = serverless.load("aqc-dynamics-function")
+
+n = 10
+H = SparsePauliOp.from_sparse_list(
+    [("ZZ", [i, i + 1], 1.0) for i in range(n - 1)]
+    + [("X", [i], 0.8) for i in range(n)],
+    num_qubits=n,
+)
+
+job = fn.run(
+    t_steps=10,
+    aqc_segments=[
+        {
+            "n_steps": 3,
+            "ansatz_steps": 1,
+        },  # early steps -> shallow 1-layer ansatz
+        {
+            "n_steps": 3,
+            "ansatz_steps": 2,
+        },  # later steps -> deeper 2-layer ansatz
+    ],
+    hamiltonian=H,
+    aqc_options={"max_bond": 32},
+    backend="runtime",
+    backend_name="ibm_marrakesh",
+    # The function defaults to 1000 twirling randomizations, which was too large
+    # for this device. Total shots is num_randomizations *
+    # shots_per_randomization, so this is 20,000 shots per observable.
+    estimator_options={
+        "dynamical_decoupling": {"enable": True, "sequence_type": "XY4"},
+        "twirling": {
+            "enable_gates": True,
+            "num_randomizations": 100,
+            "shots_per_randomization": 200,
+        },
+        "resilience": {"measure_mitigation": True},
+    },
+)
+print("job ID (save this to reconnect later):", job.job_id)
+```
+
+```text
+job ID (save this to reconnect later): 7229a8bf-9f83-4785-8dd4-489844abc2d9
+```
+
+<Admonition type="note" title="Se reconnecter à un job de longue durée">
+
+Une exécution matérielle n'est pas rapide, et la majeure partie du temps est classique plutôt que sur le QPU. La compression AQC s'exécute à l'intérieur de la fonction avant que quoi que ce soit n'atteigne le QPU, et la file d'attente du QPU s'ajoute à cela. Tu n'as pas besoin de garder ce notebook ou ce kernel ouvert pendant l'exécution.
+
+Copie l'ID du job affiché par la cellule précédente et sauvegarde-le. Les trois cellules suivantes te permettent de reprendre l'exécution plus tard :
+
+1. Se reconnecter, nécessaire uniquement dans une nouvelle session de kernel : réexécute la cellule [Authentification](#1-authentication) pour recréer `serverless`, puis reconstruis le handle `job` à partir de l'ID que tu as sauvegardé. Ignore cette cellule si tu es encore dans la session où tu as soumis le job, car le handle est déjà actif.
+
+2. Vérifier le statut : réexécute jusqu'à ce qu'il indique `DONE`.
+
+3. Récupérer le résultat : exécute uniquement une fois que le statut est `DONE`.
+
+
+Colle ton ID sauvegardé à la place du placeholder dans la cellule de reconnexion suivante.
+
+</Admonition>
+
+```python
+# Reconnect to a previously submitted job by its ID. Only needed in a NEW kernel
+# session; if you are still in the session where you submitted, the `job` handle
+# from the preceding cell is already live, so skip this cell. Replace the ID that follows with your own.
+job = serverless.get_job_by_id("<your job ID>")
+```
+
+```python
+# Re-run this until it reports DONE, then fetch the result in the following cell.
+print(job.status())
+```
+
+```text
+DONE
+```
+
+```python
+import numpy as np
+
+# Run this only once the preceding status cell reports DONE. result() blocks until
+# the job finishes, so calling it earlier just waits.
+result = job.result()
+ev = np.array(result["expectation_values"])
+
+print("backend:", result["metadata"]["execution_backend"])
+print("shape:", ev.shape, "-> (n_times, n_observables)")
+print("last row (t = t_steps * dt):", np.round(ev[-1], 4))
+print(
+    "AQC fidelities:",
+    {k: round(v, 4) for k, v in result["metadata"]["aqc_fidelities"].items()},
+)
+
+# What the compression bought: 2-qubit depth at the final time step.
+stats = result["metadata"]["circuit_stats"][
+    str(result["metadata"]["t_steps"])
+]
+print(
+    "2q depth at the final step:",
+    stats["full_trotter"]["depth_2q"],
+    "(full Trotter) ->",
+    stats["aqc_trotter"]["depth_2q"],
+    "(AQC + Trotter)",
+)
+```
+
+```text
+backend: runtime
+shape: (11, 10) -> (n_times, n_observables)
+last row (t = t_steps * dt): [0.1504 0.1361 0.218  0.2144 0.2275 0.1783 0.1749 0.1599 0.0915 0.0922]
+AQC fidelities: {'1': 1.0, '2': 1.0, '3': 1.0, '4': 1.0, '5': 0.9999, '6': 0.9999}
+2q depth at the final step: 342 (full Trotter) -> 171 (AQC + Trotter)
+```
+
+## Étapes suivantes {#next-steps}
+
+<Admonition type="tip" title="Recommandations">
+
+- Parcours [Simuler la diffusion de neutrons avec un workflow Serverless de dynamique AQC + Trotter](/tutorials/simulate-neutron-scattering-with-a-serverless-workflow), l'exemple compagnon qui appelle cette fonction déployée pour calculer le facteur de structure dynamique de KCuF$_3$.
+
+- Consulte le [modèle AQC Dynamics sur GitHub](https://github.com/qiskit-community/qiskit-function-templates/blob/main/physics/aqc_trotter/) pour le contrat complet des entrées et sorties, d'autres exemples, et les détails de citation.
+
+- Parcours le [dépôt de modèles Qiskit Function](https://github.com/qiskit-community/qiskit-function-templates/tree/main/physics/aqc_trotter) pour d'autres modèles d'application construits de la même façon.
+
+- Consulte le [guide Qiskit Serverless](/guides/serverless) pour gérer les fonctions déployées.
+
+- Approfondis l'étape de compression AQC avec la documentation [Qiskit addon: AQC-Tensor](https://qiskit.github.io/qiskit-addon-aqc-tensor/).
+
+
+</Admonition>

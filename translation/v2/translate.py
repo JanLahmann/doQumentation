@@ -258,6 +258,17 @@ def mechanical_transfer(prev_msgid: str, msgid: str, prev_msgstr: str) -> str | 
     return cand if not check_entry(msgid, cand) else None
 
 
+def match_trailing_newline(msgid: str, msgstr: str) -> str:
+    """gettext requires msgid and msgstr to agree on a trailing newline;
+    po4a refuses the whole file otherwise (one French page, 2026-09-05:
+    the agent ended a translation with a newline the source did not have)."""
+    if msgid.endswith("\n") and not msgstr.endswith("\n"):
+        return msgstr + "\n"
+    if not msgid.endswith("\n"):
+        return msgstr.rstrip("\n")
+    return msgstr
+
+
 def _write_direct(locale: str, direct: dict[str, list[tuple[int, str, str]]]) -> int:
     n = 0
     for page, fills in direct.items():
@@ -265,9 +276,7 @@ def _write_direct(locale: str, direct: dict[str, list[tuple[int, str, str]]]) ->
         po = polib.pofile(str(po_file), wrapwidth=0)
         for idx, msgstr, note in fills:
             e = po[idx]
-            if e.msgid.endswith("\n") and not msgstr.endswith("\n"):
-                msgstr += "\n"
-            e.msgstr = msgstr
+            e.msgstr = match_trailing_newline(e.msgid, msgstr)
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
             e.tcomment = note
@@ -457,11 +466,17 @@ def read_results(bpath: Path) -> tuple[list[tuple[str, str]], str | None]:
 
 
 def sweep_po(po: polib.POFile, note: str) -> list[tuple[int, list[str]]]:
-    """Empty every translated, non-fuzzy entry that fails check_entry.
-    Returns (index, problems) of the entries emptied."""
+    """Empty every translated, non-fuzzy entry that fails check_entry; first
+    repair a trailing-newline mismatch in place (gettext rejects the file
+    otherwise). Returns (index, problems) of the entries changed."""
     emptied = []
     for i, e in enumerate(po):
         if e.obsolete or e.fuzzy or not e.msgstr:
+            continue
+        fixed = match_trailing_newline(e.msgid, e.msgstr)
+        if fixed != e.msgstr:                      # deterministic repair, not a retranslation
+            e.msgstr = fixed
+            emptied.append((i, ["trailing newline repaired"]))
             continue
         problems = check_entry(e.msgid, e.msgstr)
         if problems:
@@ -488,7 +503,7 @@ def sweep(locale: str) -> int:
             for _, problems in emptied:
                 for pr in problems:
                     classes[pr.split(":")[0]] = classes.get(pr.split(":")[0], 0) + 1
-    print(f"{locale}: checked {n_checked} entries, emptied {n_emptied}")
+    print(f"{locale}: checked {n_checked} entries, emptied or repaired {n_emptied}")
     for k, v in sorted(classes.items(), key=lambda kv: -kv[1]):
         print(f"  {v:5d}  {k}")
     if n_emptied:
@@ -528,9 +543,7 @@ def apply(locale: str) -> int:
         po = cache[page]
         for idx, msgstr in fills:
             e = po[idx]
-            if e.msgid.endswith("\n") and not msgstr.endswith("\n"):
-                msgstr += "\n"
-            e.msgstr = msgstr
+            e.msgstr = match_trailing_newline(e.msgid, msgstr)
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
             e.tcomment = "doq: kept in English by the translator (name or code)" if msgstr.strip() == e.msgid.strip() else ""

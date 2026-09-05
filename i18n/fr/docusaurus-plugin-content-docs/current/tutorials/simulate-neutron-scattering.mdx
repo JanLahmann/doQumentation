@@ -1,0 +1,1151 @@
+---
+description: "Calcule le facteur de structure dynamique d'un aimant quantique à l'aide de circuits de Trotter et d'une simulation MPS."
+notebook_path: tutorials/simulate-neutron-scattering.ipynb
+sidebar_label: 'Simuler la diffusion de neutrons dans des matériaux quantiques avec des circuits quantiques'
+title: 'Simuler la diffusion de neutrons dans des matériaux quantiques avec des circuits quantiques'
+---
+
+{/* doqumentation-source-hash: f3611f55 */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/simulate-neutron-scattering.ipynb" />
+
+
+
+{/* cspell:ignore DSFs spinon DMRG viridis fontsize vmax vmin cadetblue antiferromagnet COBYQA */}
+
+*Estimation d'utilisation : 13 minutes sur un processeur Heron r2 (REMARQUE : il s'agit uniquement d'une estimation. Ton temps d'exécution peut varier.)*
+
+## Résultats d'apprentissage {#learning-outcomes}
+
+Après avoir terminé ce tutoriel, tu devrais comprendre les informations suivantes :
+- Comment les spectres de diffusion inélastique de neutrons (INS) se rattachent aux facteurs de structure dynamiques (DSF) des modèles de spin quantiques.
+- Comment préparer un état fondamental, appliquer une perturbation locale et effectuer une évolution temporelle de Trotter sur un circuit quantique.
+- Comment utiliser la compilation quantique approchée (AQC) avec `qiskit-addon-aqc-tensor` pour compresser des circuits de Trotter profonds en vue d'une exécution matérielle.
+- Comment extraire la fonction de Green retardée (RGF) à partir des valeurs d'espérance des qubits et la transformer par Fourier en DSF.
+
+## Prérequis {#prerequisites}
+Il est recommandé de te familiariser avec les sujets suivants :
+- [Bases de l'information quantique](/learning/courses/basics-of-quantum-information)
+- [Conception d'algorithmes variationnels](/learning/courses/variational-algorithm-design)
+- [Introduction aux primitives Qiskit (Estimator et Sampler)](/guides/qiskit-runtime-primitives)
+
+## Contexte {#background}
+
+Dans ce tutoriel, nous reproduisons les résultats de [Lee et al., arXiv:2603.15608](https://arxiv.org/abs/2603.15608).
+
+### Diffusion inélastique de neutrons et facteur de structure dynamique {#inelastic-neutron-scattering-and-the-dynamical-structure-factor}
+
+La diffusion inélastique de neutrons (INS) est l'une des sondes expérimentales les plus puissantes des excitations magnétiques dans les matériaux quantiques. Lorsqu'un faisceau de neutrons thermiques ou froids frappe un cristal, chaque neutron échange à la fois une quantité de mouvement $\mathbf{q}$ et une énergie $\omega$ avec le sous-système magnétique. L'intensité de diffusion mesurée est proportionnelle au facteur de structure dynamique (DSF),
+
+$$S^{\alpha\beta}(q,\omega) = \sum_{j} e^{-iq\,j}\int_{-\infty}^{\infty} dt\; e^{i\omega t}\, \langle S_0^{\alpha}(0)\, S_j^{\beta}(t)\rangle,$$
+
+qui encode l'ensemble des corrélations spatio-temporelles des degrés de liberté de spin.
+
+### KCuF$_3$ : un aimant liquide de Luttinger canonique {#kcuf-3-a-canonical-luttinger-liquid-magnet}
+
+Le fluorure de cuivre et de potassium (KCuF$_3$) est un antiferromagnétique quasi unidimensionnel dans lequel des chaînes d'ions Cu$^{2+}$ de spin-$\frac{1}{2}$ interagissent via un échange de Heisenberg entre plus proches voisins $J$, tandis que le couplage entre chaînes ne représente que $\sim 2.7\%$ de $J$. À $T = 6\;\mathrm{K}$, où des données INS sont disponibles, le spectre est dominé par des excitations spinoniques fractionnalisées caractéristiques d'un liquide de Tomonaga-Luttinger. Comme la dynamique intrachaîne est bien décrite par le hamiltonien XXZ unidimensionnel de spin-$\frac{1}{2}$ au point isotrope ($\epsilon = 1$),
+
+$$H = J\sum_{i}\left[S_i^Z S_{i+1}^Z + \epsilon\left(S_i^X S_{i+1}^X + S_i^Y S_{i+1}^Y\right)\right],$$
+
+KCuF$_3$ constitue un benchmark idéal pour la simulation quantique : le hamiltonien est assez simple pour être implémenté sur un processeur quantique, tout en présentant un état fondamental fortement intriqué et un spectre d'excitation comportant un large continuum à deux spinons.
+
+Remarque : ce tutoriel fixe $J = 1$ comme unité d'énergie et adopte la normalisation $H = J\sum_i[\ldots]$, ce qui correspond au hamiltonien local $H_\mathrm{loc} = J(S^X S^X + S^Y S^Y + S^Z S^Z)$ utilisé dans l'implémentation du circuit de l'article (Fig. S3 du supplément). Le hamiltonien complet de l'article (Éq. 3) porte un facteur global supplémentaire de 2, donc le $J$ de l'article est le double du $J$ utilisé ici.
+
+### Ce que nous simulons et mesurons {#what-we-simulate-and-measure}
+
+La quantité physique que nous calculons est la **fonction de Green retardée** (RGF), définie comme la fonction de corrélation spin-spin dépendante du temps
+
+$$G^R_{\alpha,\beta}(j, j_c, t) = -\frac{i}{2}\,\langle\psi_{\mathrm{GS}}|\,S_j^\alpha(t)\,S_{j_c}^\beta(0) - S_{j_c}^\beta(0)\,S_j^\alpha(t)\,|\psi_{\mathrm{GS}}\rangle,$$
+
+où $j_c$ est un site de référence (le centre de la chaîne) et $S_j^\alpha(t) = e^{iHt}S_j^\alpha e^{-iHt}$ est l'opérateur de spin en représentation de Heisenberg. Dans ce tutoriel, nous nous concentrons sur la composante $zz$ ($\alpha = \beta = z$). Sur un ordinateur quantique, la RGF est accessible en préparant l'état fondamental, en appliquant une perturbation locale en $j_c$, en faisant évoluer temporellement l'état perturbé, et en mesurant la valeur d'espérance à un seul qubit $\langle\sigma_j^z\rangle$ à chaque site $j$ pour chaque pas de temps. L'idée clé est que chaque $\langle\sigma_j^z\rangle$ donne la différence par rapport à l'aimantation de l'état fondamental ; comme l'antiferromagnétique de Heisenberg isotrope a une aimantation nette par site nulle ($\langle\sigma_j^z\rangle_\mathrm{GS} = 0$), la valeur brute mesurée donne directement $G^R(j, j_c, t)$ sans aucune soustraction explicite.
+
+En collectant $G^R(j, j_c, t)$ sur tous les sites et pas de temps, nous assemblons un ensemble de données bidimensionnel qui est ensuite transformé par Fourier à la fois en espace et en temps pour produire le **facteur de structure dynamique** $S(q,\omega)$. Le DSF est la quantité directement mesurée dans une expérience INS : il indique quelles excitations magnétiques existent à chaque quantité de mouvement $q$ et énergie $\omega$. Pour la chaîne de Heisenberg isotrope, le spectre d'excitation exact est un **continuum à deux spinons**, une large bande d'intensité de diffusion dont la forme sert de benchmark rigoureux de bout en bout pour la simulation quantique : elle valide simultanément la préparation de l'état fondamental, la perturbation, l'évolution temporelle de Trotter et le protocole de mesure.
+
+### Flux de travail de simulation quantique {#quantum-simulation-workflow}
+
+Le flux de travail reflète la physique d'un événement INS. Nous (1) préparons l'état fondamental à plusieurs corps $|\psi_{\mathrm{GS}}\rangle$ sur $n$ qubits, (2) appliquons une perturbation locale de retournement de spin $U_{j_c} = \frac{1}{\sqrt{2}}(I - i\sigma^z_{j_c})$ au centre de la chaîne pour imiter le transfert de spin du neutron, (3) faisons évoluer sous $H$ pour des pas de temps discrets en utilisant une trotterisation du second ordre, et (4) mesurons $\langle\sigma_i^z\rangle$ sur chaque qubit à chaque étape pour obtenir la RGF. Une transformée de Fourier discrète bidimensionnelle donne alors le DSF $S(q,\omega)$.
+
+L'observable que nous mesurons à chaque pas de temps est $\sigma_i^z$ sur chaque qubit $i$. Dans Qiskit, celle-ci est représentée sous forme d'une liste d'opérateurs `SparsePauliOp` : un seul $Z$ à un qubit intégré dans la chaîne d'identité à $n$ qubits pour chaque site. Ces observables sont construites une seule fois par instance de problème lors de l'étape de mise en correspondance du problème (Étape 1) et réutilisées pour chaque circuit à cette échelle.
+
+### Compilation quantique approchée (AQC) {#approximate-quantum-compiling-aqc}
+
+Les circuits de Trotter profonds peuvent être compressés grâce à la **compilation quantique approchée (AQC)**, qui remplace les premières couches de Trotter par un ansatz paramétré plus court dont les paramètres sont optimisés classiquement pour maximiser la fidélité au niveau MPS avec le circuit profond d'origine. Les pas de Trotter restants sont ajoutés exactement, produisant un circuit « mixte » AQC + Trotter avec nettement moins de portes à deux qubits.
+
+### Simulation MPS {#mps-simulation}
+
+Pour un système unidimensionnel, les méthodes d'état de produit matriciel (MPS) peuvent simuler efficacement à la fois la préparation de l'état fondamental (avec le groupe de renormalisation de la matrice de densité, ou DMRG) et l'évolution temporelle au niveau du circuit. En contrôlant la dimension de liaison $\chi$, nous ajustons le compromis entre précision et coût de calcul. Dans ce tutoriel, nous utilisons la simulation MPS au sein de `qiskit-addon-aqc-tensor` pour calculer des ansätze AQC à haute fidélité qui compressent les circuits de Trotter profonds en vue de l'exécution matérielle.
+
+## Prérequis {#requirements}
+Avant de commencer ce tutoriel, assure-toi d'avoir installé les éléments suivants :
+
+- SDK Qiskit avec le support de [visualisation](https://docs.quantum.ibm.com/api/qiskit/visualization)
+
+- Qiskit Runtime (`pip install qiskit-ibm-runtime`)
+
+- `qiskit-addon-aqc-tensor` avec les extras `quimb` et JAX (`pip install 'qiskit-addon-aqc-tensor[quimb-jax]'`)
+
+
+## Configuration {#setup}
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-aqc-tensor qiskit-ibm-runtime qiskit-quimb quimb scipy
+```
+
+```python
+import timeit
+import warnings
+from collections.abc import Iterator, Sequence
+from functools import partial
+
+import matplotlib.pyplot as plt
+import numpy as np
+import quimb.tensor as qtn
+import scipy.optimize
+from numpy.typing import NDArray
+from qiskit import QuantumCircuit
+from qiskit.circuit import CircuitInstruction, ParameterVector, Qubit
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.primitives import StatevectorEstimator
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+from qiskit_addon_aqc_tensor import generate_ansatz_from_circuit
+from qiskit_addon_aqc_tensor.objective import MaximizeStateFidelity
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_quimb import quimb_circuit
+from scipy.sparse import SparseEfficiencyWarning
+
+# scipy.sparse.linalg.expm (reached via PauliEvolutionGate.to_matrix) prefers
+# CSC and warns when handed the CSR matrix from SparsePauliOp.to_matrix; the
+# result is unaffected, so silence the cosmetic warning.
+warnings.filterwarnings("ignore", category=SparseEfficiencyWarning)
+
+def xxz_hamiltonian_mpo(
+    n_qubits: int, interaction: float = 1.0, anisotropy: float = 1.0
+) -> qtn.MatrixProductOperator:
+    """1D XXZ Hamiltonian as a quimb MPO.
+
+    Builds the Hamiltonian using ``qtn.SpinHam1D``.
+
+    Args:
+        n_qubits: Number of sites.
+        interaction: Overall interaction strength (J in the paper).
+        anisotropy: XY/Z anisotropy (ε in the paper). ``ε = 1`` is the
+            isotropic Heisenberg point; ``ε = 0`` is the Ising limit.
+
+    Returns:
+        The Hamiltonian as a matrix product operator.
+    """
+    builder = qtn.SpinHam1D(S=1 / 2)
+    builder += interaction * anisotropy * 0.5, "+", "-"
+    builder += interaction * anisotropy * 0.5, "-", "+"
+    builder += interaction, "Z", "Z"
+    return builder.build_mpo(L=n_qubits)
+
+def build_ground_state_ansatz(n_qubits: int, n_layers: int) -> QuantumCircuit:
+    """Hamiltonian variational ansatz (HVA) circuit for ground-state preparation.
+
+    Starts from a product of singlet pairs and applies alternating
+    odd/even layers of parameterized XXZ pair-evolution gates.
+
+    The returned circuit is parameterized: it carries a ``ParameterVector``
+    named ``"theta"`` of length ``2 * n_layers`` whose values must be
+    assigned (e.g. via ``circuit.assign_parameters``) before simulation.
+    Element ``2 * r`` is the odd-layer angle and element ``2 * r + 1`` is the
+    even-layer angle of layer ``r``.
+
+    Args:
+        n_qubits: Number of qubits (must be even).
+        n_layers: Number of HVA layers.
+
+    Returns:
+        The parameterized HVA preparation circuit.
+    """
+    theta = ParameterVector("theta", 2 * n_layers)
+    circuit = QuantumCircuit(n_qubits)
+    # Initial singlet product state
+    for i in range(n_qubits // 2):
+        circuit.x(2 * i)
+        circuit.x(2 * i + 1)
+        circuit.h(2 * i + 1)
+        circuit.cx(2 * i + 1, 2 * i)
+    # Variational layers: each pair gate is exp(-i theta (XX+YY+ZZ)/2)
+    pair_ham = SparsePauliOp(
+        ["XX", "YY", "ZZ"], coeffs=[0.5, 0.5, 0.5]
+    )  # H_pair (HVA form)
+    for r in range(n_layers):
+        for i in range(1, (n_qubits + 1) // 2):  # odd layer
+            circuit.append(
+                PauliEvolutionGate(pair_ham, time=theta[2 * r]),
+                [2 * i - 1, 2 * i],
+            )
+        for i in range(n_qubits // 2):  # even layer
+            circuit.append(
+                PauliEvolutionGate(pair_ham, time=theta[2 * r + 1]),
+                [2 * i, 2 * i + 1],
+            )
+    return circuit
+
+def optimize_ground_state_ansatz(
+    ansatz: QuantumCircuit,
+    x0: NDArray[np.floating],
+    target_mps: qtn.MatrixProductState,
+    *,
+    max_bond: int | None = None,
+    cutoff: float = 1e-10,
+    method: str = "COBYQA",
+    options: dict | None = None,
+) -> scipy.optimize.OptimizeResult:
+    """Optimize HVA parameters by maximizing fidelity with a target MPS.
+
+    The HVA circuit is simulated as a matrix product state with the given
+    bond-dimension truncation, and the parameters are optimized to maximize
+    the state fidelity ``|<psi_HVA | target_mps>|**2`` with the DMRG ground
+    state. Both states are normalized, so the minimized objective is the
+    infidelity ``1 - |<psi_HVA | target_mps>|**2``.
+
+    Args:
+        ansatz: Parameterized HVA circuit from ``build_ground_state_ansatz``.
+            The length of ``x0`` must equal ``ansatz.num_parameters``.
+        x0: Initial parameters.
+        target_mps: Target MPS (DMRG ground state) to maximize fidelity with.
+        max_bond: Maximum MPS bond dimension during gate application.
+        cutoff: Singular-value cutoff during gate application.
+        method: ``scipy.optimize.minimize`` method.
+        options: Options dict forwarded to ``scipy.optimize.minimize``.
+
+    Returns:
+        The Scipy OptimizeResult.
+    """
+
+    def infidelity(params: NDArray[np.floating]) -> float:
+        circuit = ansatz.assign_parameters(params)
+        circuit_mps = quimb_circuit(
+            circuit.decompose(["PauliEvolution"]),
+            quimb_circuit_class=qtn.CircuitMPS,
+            max_bond=max_bond,
+            cutoff=cutoff,
+        )
+        return 1 - abs(circuit_mps.psi.H @ target_mps) ** 2
+
+    return scipy.optimize.minimize(
+        infidelity, np.asarray(x0), method=method, options=options
+    )
+
+def trotter_evolution(
+    qubits: Sequence[Qubit],
+    interaction: float,
+    anisotropy: float,
+    time_step: float,
+    n_steps: int,
+) -> Iterator[CircuitInstruction]:
+    """Second-order Trotter steps of the XXZ pair Hamiltonian.
+
+    While the paper used a hand-optimized circuit for the Trotter steps, we use
+    PauliEvolutionGate here for simplicity and generality. The final two-qubit gate
+    count and gate depth are equivalent when transpiled with ``optimization_level=3``.
+
+    Args:
+        qubits: Qubits to act on (length ``n_qubits``).
+        interaction: Overall interaction strength (J in the paper).
+        anisotropy: XY/Z anisotropy (ε in the paper). ``ε = 1`` is the
+            isotropic Heisenberg point; ``ε = 0`` is the Ising limit.
+        time_step: Per-step Trotter time.
+        n_steps: Number of Trotter steps.
+
+    Yields:
+        ``CircuitInstruction``s implementing the Trotter steps.
+    """
+    if n_steps == 0:
+        return
+    n_qubits = len(qubits)
+    pair_ham = SparsePauliOp(
+        ["XX", "YY", "ZZ"],
+        coeffs=[
+            0.25 * interaction * anisotropy,
+            0.25 * interaction * anisotropy,
+            0.25 * interaction,
+        ],
+    )
+    half_evo = PauliEvolutionGate(pair_ham, time=time_step / 2)
+    full_evo = PauliEvolutionGate(pair_ham, time=time_step)
+    for i in range(n_qubits // 2):  # half even layer
+        yield CircuitInstruction(half_evo, (qubits[2 * i], qubits[2 * i + 1]))
+    for i in range(n_qubits // 2 - 1):  # full odd layer
+        yield CircuitInstruction(
+            full_evo, (qubits[2 * i + 1], qubits[2 * i + 2])
+        )
+    for _ in range(n_steps - 1):  # interior steps
+        for i in range(n_qubits // 2):
+            yield CircuitInstruction(
+                full_evo, (qubits[2 * i], qubits[2 * i + 1])
+            )
+        for i in range(n_qubits // 2 - 1):
+            yield CircuitInstruction(
+                full_evo, (qubits[2 * i + 1], qubits[2 * i + 2])
+            )
+    for i in range(n_qubits // 2):  # half even layer
+        yield CircuitInstruction(half_evo, (qubits[2 * i], qubits[2 * i + 1]))
+
+def get_dsf(
+    n_qubits: int,
+    rgf_mat: NDArray[np.floating],
+    time_step: float,
+    n_steps: int,
+    n_points_momentum: int,
+    n_points_frequency: int,
+) -> NDArray[np.floating]:
+    """Compute the dynamical structure factor from the retarded Green's function.
+
+    Uses the center-site approximation and a discrete Fourier transform.
+    The result is symmetrized about the momentum axis and clipped to
+    non-negative values, ready for plotting.
+
+    Args:
+        n_qubits: Number of qubits (sites).
+        rgf_mat: RGF matrix of shape ``(n_steps, n_qubits)``.
+        time_step: Trotter time-step size.
+        n_steps: Number of time steps.
+        n_points_momentum: Number of momentum points.
+        n_points_frequency: Number of frequency points.
+
+    Returns:
+        DSF array of shape ``(n_points_frequency, n_points_momentum)``,
+        symmetrized about the momentum axis and clipped to non-negative values.
+    """
+    max_frequency = np.pi / time_step
+    momentum_range = np.linspace(0, 2 * np.pi, n_points_momentum)
+    frequency_range = np.linspace(0, max_frequency, n_points_frequency)
+    result = np.zeros((frequency_range.shape[0], momentum_range.shape[0]))
+    center = n_qubits // 2 - 1
+    for iw, w in enumerate(frequency_range):
+        exponent = np.exp(1j * w * time_step * np.arange(1, n_steps + 1))
+        # S = sigma/2, so two spin operators contribute a factor of (1/2)(1/2) = 1/4.
+        rgf_omega = (
+            np.dot(rgf_mat.T, exponent) * time_step / 4
+        )  # S(omega): time Fourier slice of the Green's function
+        for iq, q in enumerate(momentum_range):
+            momentum_phases = np.exp(
+                -1j * q * np.arange(-center, center + 2, 1)
+            )
+            result[iw, iq] = np.imag(np.dot(rgf_omega, momentum_phases))
+    result = -(result + result[:, ::-1]) / 2
+    result = np.clip(result, a_min=0, a_max=None)
+    return result
+
+def plot_dsf(
+    dsf: NDArray[np.floating],
+    time_step: float,
+    n_points_momentum: int,
+    n_points_frequency: int,
+    title: str | None = None,
+) -> None:
+    """Heat-map of the dynamical structure factor.
+
+    Args:
+        dsf: DSF array of shape ``(n_points_frequency, n_points_momentum)``.
+        time_step: Trotter time-step size.
+        n_points_momentum: Number of momentum points.
+        n_points_frequency: Number of frequency points.
+        title: Optional plot title.
+    """
+    max_frequency = np.pi / time_step
+    momentum_range = np.linspace(0, 2 * np.pi, n_points_momentum)
+    frequency_range = np.linspace(0, max_frequency, n_points_frequency)
+    x, y = np.meshgrid(momentum_range, frequency_range)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    c = ax.pcolormesh(x, y, dsf / np.max(dsf), cmap="viridis", shading="auto")
+    fig.colorbar(c, ax=ax, label="Normalized intensity")
+    ax.set_ylim(0, 3.6)
+    ax.set_xlim(0, 2 * np.pi)
+    ax.set_xlabel(r"$q$", fontsize=16)
+    ax.set_ylabel(r"$\tilde{\omega} = \omega / J$", fontsize=16)
+    ax.set_xticks([0, np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
+    ax.set_xticklabels(["0", r"$\pi/2$", r"$\pi$", r"$3\pi/2$", r"$2\pi$"])
+    if title:
+        ax.set_title(title, fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+def plot_rgf(
+    n_qubits: int,
+    rgf_mat: NDArray[np.floating],
+    time_step: float,
+    n_steps: int,
+    title: str | None = None,
+) -> None:
+    """Heat-map of the retarded Green's function in real space and time.
+
+    Args:
+        n_qubits: Number of qubits (sites).
+        rgf_mat: RGF matrix of shape ``(n_steps, n_qubits)``.
+        time_step: Trotter time-step size.
+        n_steps: Number of time steps.
+        title: Optional plot title.
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    qubit_axis = np.arange(n_qubits)
+    t_axis = np.arange(1, n_steps + 1) * time_step
+    x, y = np.meshgrid(qubit_axis, t_axis)
+    c = ax.pcolormesh(
+        x,
+        y,
+        np.real(rgf_mat),
+        cmap="RdBu",
+        vmax=0.5,
+        vmin=-0.5,
+        shading="auto",
+    )
+    fig.colorbar(c, ax=ax, label=r"Re $G^R(j, j_c, t)$")
+    ax.set_xlabel("Qubit", fontsize=16)
+    ax.xaxis.set_major_locator(
+        plt.matplotlib.ticker.MaxNLocator(integer=True)
+    )
+    ax.set_ylabel(r"Time", fontsize=16)
+    if title:
+        ax.set_title(title, fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+def uniform_2q_depth(circuit: QuantumCircuit) -> int:
+    """Two-qubit gate depth in a standardized basis."""
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=0, basis_gates=["cz", "id", "rz", "sx", "x"]
+    )
+    return pass_manager.run(circuit).depth(
+        lambda inst: inst.operation.num_qubits == 2
+    )
+```
+
+## Exemple de simulateur à petite échelle {#small-scale-simulator-example}
+
+Nous démontrons d'abord le flux de travail complet sur **10 qubits**, en optimisant l'ansatz d'état fondamental HVA en utilisant la simulation MPS et en utilisant le simulateur de vecteur d'état de Qiskit pour l'évolution temporelle. Le DMRG donne une énergie d'état fondamental de référence et un MPS de référence. Cet exemple à petite échelle nous permet de valider chaque étape avant de passer à plus grande échelle.
+
+### Étape 1 : Mettre en correspondance les entrées classiques avec un problème quantique {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Nous commençons par définir le modèle physique et construire les circuits quantiques.
+
+**Hamiltonien.** KCuF$_3$ est modélisé par le hamiltonien XXZ 1D au point isotrope ($J = 1$, $\epsilon = 1$, en fixant $J = 1$ comme unité d'énergie).
+
+**État fondamental.** Nous utilisons un circuit ansatz variationnel hamiltonien (HVA), `build_ground_state_ansatz`, comme circuit de préparation de l'état fondamental. Les paramètres du HVA sont optimisés classiquement en maximisant la fidélité d'état $|\langle\psi_{\mathrm{HVA}}(\theta)|\psi_{\mathrm{DMRG}}\rangle|^2$ avec le MPS de l'état fondamental DMRG, l'état HVA étant évalué en simulant le circuit comme un état de produit matriciel avec le `CircuitMPS` de quimb. Nous utilisons `scipy.optimize.minimize` pour l'optimisation. L'énergie $\langle H \rangle$ de l'ansatz optimisé est également calculée à titre de référence.
+
+**Portes de Trotter.** Chaque terme d'interaction entre plus proches voisins $e^{-i\Delta t\, H_{\mathrm{pair}}}$ avec $H_{\mathrm{pair}} = (J/4)(XX + YY + ZZ)$ est construit avec `PauliEvolutionGate(H_pair, time=time_step)`. Qiskit le synthétise en la décomposition optimale à trois CNOT lors de la transpilation.
+
+**Perturbation.** Une porte $R_z(\pi/2)$ sur le qubit central implémente $U_{j_c} = \frac{1}{\sqrt{2}}(I - i\sigma^z_{j_c})$, imitant le retournement de spin local produit par un neutron diffusé.
+
+**Observables.** Nous construisons une observable $\sigma^z$ pour chaque site de qubit. Ces objets `SparsePauliOp` sont transmis à la primitive Estimator à l'Étape 3 pour extraire $\langle\sigma_i^z\rangle$ à chaque pas de temps.
+
+```python
+# -- Physical parameters --
+n_qubits = 10
+interaction = 1.0  # J
+anisotropy = 1.0  # ε (isotropic point)
+time_step = 0.6
+n_steps = 10
+mps_max_bond = 32
+mps_cutoff = 1e-8
+center = n_qubits // 2 - 1
+
+# -- Hamiltonian MPO --
+ham_mpo = xxz_hamiltonian_mpo(n_qubits, interaction, anisotropy)
+
+# -- Reference ground-state energy via DMRG --
+dmrg = qtn.DMRG2(ham_mpo)
+dmrg.solve(tol=1e-8)
+print(f"Ground-state energy (DMRG): {dmrg.energy:.6f}")
+
+# -- Build ground state ansatz circuit --
+gs_n_layers = 3
+gs_ansatz = build_ground_state_ansatz(n_qubits, gs_n_layers)
+
+# -- Optimize ground state ansatz parameters to maximize fidelity with the DMRG MPS --
+# Initialize odd-layer angles near 0 (where the inter-pair gate is the
+# identity) and even-layer angles near pi/2 (where the intra-pair gate
+# is a SWAP, since 0.5*(XX + YY + ZZ) = SWAP - I/2).
+rng = np.random.default_rng(12345)
+x0 = np.tile([0, np.pi / 2], gs_n_layers) + rng.normal(
+    scale=0.1, size=2 * gs_n_layers
+)
+print("Optimizing ground state ansatz...")
+t0 = timeit.default_timer()
+result = optimize_ground_state_ansatz(
+    gs_ansatz,
+    x0,
+    dmrg.state,
+    max_bond=mps_max_bond,
+    cutoff=mps_cutoff,
+    options=dict(maxiter=100),
+)
+t1 = timeit.default_timer()
+print(f"Finished optimizing ground state ansatz in {t1 - t0} seconds.")
+print(f"Ground state ansatz fidelity: {1 - result.fun:.6f}")
+
+gs_circuit = gs_ansatz.assign_parameters(result.x)
+gs_circuit_mps = quimb_circuit(
+    gs_circuit.decompose(["PauliEvolution"]),
+    quimb_circuit_class=qtn.CircuitMPS,
+    max_bond=mps_max_bond,
+    cutoff=mps_cutoff,
+)
+gs_ansatz_energy = qtn.expec_TN_1D(
+    gs_circuit_mps.psi.H, ham_mpo, gs_circuit_mps.psi
+)
+print(f"Ground state ansatz energy: {gs_ansatz_energy:.6f}")
+
+# -- Build circuits for each time step --
+perturbed = gs_circuit.copy()
+perturbed.rz(np.pi / 2, center)
+
+circuits = []
+for t in range(1, n_steps + 1):
+    circuit = perturbed.copy()
+    for instr in trotter_evolution(
+        circuit.qubits, interaction, anisotropy, time_step, t
+    ):
+        circuit.append(instr)
+    circuits.append(circuit)
+print(
+    f"Built {len(circuits)} circuits, deepest 2q depth (uniform basis) = "
+    f"{uniform_2q_depth(circuits[-1])}"
+)
+
+# -- Observables: Z on each qubit site --
+observables = [
+    SparsePauliOp.from_sparse_list([("Z", [i], 1)], num_qubits=n_qubits)
+    for i in range(n_qubits)
+]
+print(f"Defined {len(observables)} Z observables.")
+```
+
+```text
+Ground-state energy (DMRG): -4.258035
+Optimizing ground state ansatz...
+Finished optimizing ground state ansatz in 8.850687621976249 seconds.
+Ground state ansatz fidelity: 0.984277
+Ground state ansatz energy: -4.232565
+Built 10 circuits, deepest 2q depth (uniform basis) = 163
+Defined 10 Z observables.
+```
+
+### Étape 2 : Optimiser le problème pour l'exécution sur du matériel quantique {#step-2-optimize-problem-for-quantum-hardware-execution}
+
+Pour du matériel réel, les circuits de Trotter ci-dessus seraient trop profonds. La **compilation quantique approchée (AQC)** résout ce problème en remplaçant les $k$ premières couches de Trotter (y compris le circuit d'état fondamental) par un ansatz paramétré plus court, optimisé pour maximiser la fidélité au niveau MPS avec le circuit profond d'origine. Les pas de Trotter restants sont ajoutés exactement, produisant un circuit « AQC + Trotter » moins profond.
+
+Pour équilibrer l'expressivité et la profondeur du circuit, deux ansätze sont utilisés : un **ansatz à une couche** (généré à partir d'un seul pas de Trotter) compresse les premiers pas de temps, et un **ansatz à deux couches** plus profond (généré à partir de deux pas de Trotter) compresse les quelques pas suivants où une fidélité plus élevée est nécessaire.
+
+Le flux de travail AQC comporte quatre sous-étapes :
+
+1. **Construire les circuits cibles** &mdash; les premiers $k_1 + k_2$ circuits de l'Étape 1 servent directement de cibles AQC.
+
+2. **Calculer le MPS cible** &mdash; simuler chaque circuit cible comme un état de produit matriciel en utilisant `quimb.tensor.CircuitMPS`.
+
+3. **Générer et optimiser les ansätze** &mdash; `generate_ansatz_from_circuit` crée un ansatz paramétré à une couche et un à deux couches ; les paramètres sont optimisés en utilisant L-BFGS-B avec des gradients accélérés par JAX pour minimiser $1 - |\langle\psi_{\mathrm{ansatz}}|\psi_{\mathrm{target}}\rangle|^2$. Les $k_1$ premières étapes utilisent l'ansatz à une couche et les $k_2$ étapes suivantes utilisent l'ansatz à deux couches ; au sein de chaque étape, chaque pas démarre à chaud à partir des paramètres optimisés du pas précédent, et les paramètres sont réinitialisés aux valeurs par défaut de l'étape à la limite de celle-ci.
+
+4. **Assembler les circuits mixtes** &mdash; pour les pas de temps au-delà du point de contrôle AQC, ajouter des couches de Trotter exactes au circuit AQC à deux couches optimisé en utilisant `trotter_evolution`.
+
+
+```python
+# Number of time steps to compress into an AQC ansatz with one layer
+aqc_n_steps_1 = 3
+# Number of time steps to compress into an AQC ansatz with two layers
+aqc_n_steps_2 = 2
+aqc_n_steps_total = aqc_n_steps_1 + aqc_n_steps_2
+
+# ── Step 2a: Target circuits (first aqc_n_steps_total circuits from Step 1) ──
+target_circuits = {
+    k: circuits[k - 1] for k in range(1, aqc_n_steps_total + 1)
+}
+# ── Step 2b: Compute target MPS ──
+# Decompose PauliEvolutionGate to RXX/RYY/RZZ before passing to the AQC MPS
+# backend, which does not understand PauliEvolutionGate natively.
+aqc_sim = QuimbSimulator(
+    quimb_circuit_factory=partial(
+        qtn.CircuitMPS,
+        gate_opts=dict(max_bond=mps_max_bond, cutoff=mps_cutoff),
+    ),
+    autodiff_backend="jax",
+)
+print("\nStep 2b — target MPS:")
+target_mps = {}
+for k in range(1, aqc_n_steps_total + 1):
+    target_mps[k] = tensornetwork_from_circuit(
+        target_circuits[k].decompose(["PauliEvolution"]), aqc_sim
+    )
+    print(f"  k={k}: max bond = {target_mps[k].psi.max_bond()}")
+
+# ── Step 2c: Generate ansätze (one-layer and two-layer) and optimize parameters ──
+ansatz_1, initial_params_1 = generate_ansatz_from_circuit(
+    target_circuits[1].decompose(["PauliEvolution"]),
+    qubits_initially_zero=True,
+)
+initial_params_1 = np.array(initial_params_1)
+ansatz_2, initial_params_2 = generate_ansatz_from_circuit(
+    target_circuits[2].decompose(["PauliEvolution"]),
+    qubits_initially_zero=True,
+)
+initial_params_2 = np.array(initial_params_2)
+print(
+    f"\nStep 2c — one-layer ansatz: {ansatz_1.num_parameters} parameters, "
+    f"2q depth (uniform basis) = {uniform_2q_depth(ansatz_1)}"
+)
+print(
+    f"Step 2c — two-layer ansatz: {ansatz_2.num_parameters} parameters, "
+    f"2q depth (uniform basis) = {uniform_2q_depth(ansatz_2)}"
+)
+
+aqc_circuits = {}
+aqc_params = {}
+for k in range(1, aqc_n_steps_total + 1):
+    if k <= aqc_n_steps_1:
+        ansatz, base_params = ansatz_1, initial_params_1
+    else:
+        ansatz, base_params = ansatz_2, initial_params_2
+    # Warm-start from the previous step only within the same stage
+    same_stage = (k - 1 >= 1) and (
+        (k - 1 <= aqc_n_steps_1) == (k <= aqc_n_steps_1)
+    )
+    x0 = aqc_params[k - 1] if same_stage else base_params
+    obj = MaximizeStateFidelity(target_mps[k], ansatz, aqc_sim)
+    t0 = timeit.default_timer()
+    result = scipy.optimize.minimize(
+        obj.loss_function,
+        x0,
+        method="L-BFGS-B",
+        jac=True,
+        options=dict(maxiter=100),
+    )
+    elapsed = timeit.default_timer() - t0
+    aqc_params[k] = result.x
+    aqc_circuits[k] = ansatz.assign_parameters(result.x)
+    print(
+        f"  k={k}: fidelity = {1 - result.fun:.4f}, "
+        f"2q depth (uniform basis) = "
+        f"{uniform_2q_depth(aqc_circuits[k])}, "
+        f"{elapsed:.1f}s"
+    )
+
+# ── Step 2d: Assemble full circuit set (AQC + Trotter) ──
+all_circuits = []
+for k in range(1, aqc_n_steps_total + 1):
+    all_circuits.append(aqc_circuits[k])
+base = aqc_circuits[aqc_n_steps_total]
+for k in range(1, n_steps - aqc_n_steps_total + 1):
+    circuit = base.copy()
+    for instr in trotter_evolution(
+        circuit.qubits, interaction, anisotropy, time_step, k
+    ):
+        circuit.append(instr)
+    all_circuits.append(circuit)
+
+full_depths = [
+    uniform_2q_depth(circuits[k - 1]) for k in range(1, n_steps + 1)
+]
+aqc_depths = [uniform_2q_depth(circuit) for circuit in all_circuits]
+full_2q = [
+    circuits[k - 1].decompose(["PauliEvolution"]).num_nonlocal_gates()
+    for k in range(1, n_steps + 1)
+]
+aqc_2q = [
+    circuit.decompose(["PauliEvolution"]).num_nonlocal_gates()
+    for circuit in all_circuits
+]
+print(f"\nStep 2d — assembled {len(all_circuits)} circuits")
+print(
+    f"  At step {n_steps} (uniform basis): "
+    f"Trotter 2q depth = {full_depths[-1]}, AQC+Trotter 2q depth = {aqc_depths[-1]}; "
+    f"2q gates: Trotter = {full_2q[-1]}, AQC+Trotter = {aqc_2q[-1]}"
+)
+
+steps_axis = np.arange(1, n_steps + 1)
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.plot(steps_axis, full_depths, "-o", color="black", label="Full Trotter")
+ax.plot(
+    steps_axis, aqc_depths, "-o", color="cadetblue", label="AQC + Trotter"
+)
+ax.set_xlabel("Trotter steps", fontsize=13)
+ax.xaxis.set_major_locator(plt.matplotlib.ticker.MaxNLocator(integer=True))
+ax.set_ylabel("2q gate depth (uniform basis)", fontsize=13)
+ax.set_title(f"AQC circuit-depth reduction ({n_qubits} qubits)", fontsize=13)
+ax.legend(fontsize=11)
+plt.tight_layout()
+plt.show()
+```
+
+```text
+Step 2b — target MPS:
+  k=1: max bond = 22
+  k=2: max bond = 22
+  k=3: max bond = 26
+  k=4: max bond = 27
+  k=5: max bond = 30
+
+Step 2c — one-layer ansatz: 389 parameters, 2q depth (uniform basis) = 27
+Step 2c — two-layer ansatz: 470 parameters, 2q depth (uniform basis) = 33
+  k=1: fidelity = 1.0000, 2q depth (uniform basis) = 27, 11.8s
+  k=2: fidelity = 0.9980, 2q depth (uniform basis) = 27, 13.2s
+  k=3: fidelity = 0.9890, 2q depth (uniform basis) = 27, 13.7s
+  k=4: fidelity = 0.9983, 2q depth (uniform basis) = 33, 16.4s
+  k=5: fidelity = 0.9957, 2q depth (uniform basis) = 33, 16.4s
+
+Step 2d — assembled 10 circuits
+  At step 10 (uniform basis): Trotter 2q depth = 163, AQC+Trotter 2q depth = 99; 2q gates: Trotter = 371, AQC+Trotter = 200
+```
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering/extracted-outputs/e78f8d9a-1.avif)
+
+### Étape 3 : Exécuter à l'aide des primitives Qiskit {#step-3-execute-using-qiskit-primitives}
+
+Nous simulons chaque circuit compilé par AQC en utilisant la primitive `StatevectorEstimator`.
+
+```python
+estimator = StatevectorEstimator()
+pubs = [(circuit, observables) for circuit in all_circuits]
+job = estimator.run(pubs)
+result = job.result()
+```
+
+### Étape 4 : Post-traiter et retourner le résultat au format classique souhaité {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+Nous extrayons maintenant la valeur d'espérance $\langle\sigma_i^z\rangle$ pour chaque qubit $i$ à chaque pas de temps $t$. Ces valeurs forment la matrice de la fonction de Green retardée $G^R(j, j_c, t)$. Ensuite, nous transformons par Fourier la RGF en facteur de structure dynamique $S(q, \omega)$ et traçons à la fois la RGF et le DSF. `get_dsf` applique la symétrie miroir et tronque les valeurs négatives en interne.
+
+```python
+rgf_mat = np.stack([pub_result.data.evs for pub_result in result])
+
+# -- Compute DSF --
+n_points_momentum, n_points_frequency = 100, 100
+spectrum = get_dsf(
+    n_qubits,
+    rgf_mat,
+    time_step,
+    n_steps,
+    n_points_momentum,
+    n_points_frequency,
+)
+
+# -- Plot retarded Green's function --
+plot_rgf(
+    n_qubits,
+    rgf_mat,
+    time_step,
+    n_steps,
+    title=f"Retarded Green's function — {n_qubits} qubits (simulation)",
+)
+
+# -- Plot DSF --
+plot_dsf(
+    spectrum,
+    time_step,
+    n_points_momentum,
+    n_points_frequency,
+    title=f"Dynamical structure factor — {n_qubits} qubits (simulation)",
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering/extracted-outputs/4585d139-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering/extracted-outputs/4585d139-1.avif)
+
+## Exécution matérielle à grande échelle {#large-scale-hardware-execution}
+
+Nous passons maintenant à **50 qubits**. À cette échelle, les optimisations atteignent des fidélités plus faibles que dans l'exemple à petite échelle : la fidélité de l'ansatz d'état fondamental descend à environ 0,65, et les fidélités AQC diminuent jusqu'à environ 0,7 aux points de contrôle les plus tardifs. Ceci est attendu, et tu peux améliorer ces fidélités en augmentant le nombre de couches de l'ansatz d'état fondamental (`gs_n_layers`) ou le nombre d'itérations d'optimisation (`maxiter`), au prix d'un coût classique supplémentaire. Note également que les fidélités AQC à deux couches sont plus faibles que celles à une couche. Ce n'est pas une régression : les pas de temps ultérieurs génèrent davantage d'intrication et sont simplement plus difficiles à compresser, c'est pourquoi l'ansatz à deux couches, plus expressif, est utilisé pour eux.
+
+L'optimisation AQC peut également prendre plusieurs heures de temps de calcul classique (environ six heures dans l'exécution présentée ici, la majeure partie étant consacrée aux points de contrôle à deux couches à l'Étape 2c). Pour réduire le temps d'horloge murale, envisage d'exécuter ce notebook sur du matériel classique plus puissant, comme un système de calcul haute performance (HPC). Alternativement, tu peux réduire l'échelle à une instance de problème plus petite (par exemple, moins de qubits ou moins de pas de temps) ; tes résultats différeront alors de ceux présentés ici.
+
+Le code ci-dessous suit la même structure en quatre étapes que l'exemple à petite échelle. Les paramètres d'état fondamental HVA sont à nouveau optimisés en utilisant la simulation MPS. Sur le QPU, nous activons le découplage dynamique (DD), le brouillage de Pauli et l'extinction d'erreur de lecture par brouillage (TREX) pour la suppression et l'atténuation des erreurs. Le tableau suivant résume les différences entre l'expérience à grande échelle et celle à petite échelle :
+
+| &nbsp; | Petite échelle | Grande échelle |
+|---|---|---|
+| Qubits | 10 | 50 |
+| Pas de temps | 10 | 20 |
+| Points de contrôle AQC (1 couche + 2 couches) | 3 + 2 = 5 | 6 + 4 = 10 |
+| Couches de l'ansatz d'état fondamental | 3 | 5 |
+| Dimension de liaison MPS maximale | 32 | 128 |
+| Estimator | `StatevectorEstimator` | QPU avec DD, brouillage de Pauli et TREX |
+
+:::note[Messages de compilation lente XLA]
+
+
+Pendant l'optimisation AQC (Étape 2c ci-dessous), tu pourrais voir des messages `stderr` tels que :
+
+```
+[Compiling module jit_MakeArrayFn for CPU] Very slow compile? ...
+The operation took 2m14s
+```
+
+Ce sont des diagnostics inoffensifs de XLA, le compilateur qui sous-tend l'autodiff JAX de `qiskit-addon-aqc-tensor`. À 50 qubits avec une dimension de liaison MPS de 128, XLA passe quelques minutes à compiler la fonction de gradient la première fois qu'elle est tracée. La compilation réussit et les résultats de l'optimisation ne sont pas affectés.
+
+:::
+
+
+```python
+# ── Parameters ──────────────────────────────────────────────────────────────
+n_qubits = 50  # 10 → 50
+interaction = 1.0  # J
+anisotropy = 1.0  # ε (isotropic point)
+time_step = 0.6
+n_steps = 20  # 10 → 20
+aqc_n_steps_1 = 6  # 3 → 6
+aqc_n_steps_2 = 4  # 2 → 4
+aqc_n_steps_total = aqc_n_steps_1 + aqc_n_steps_2
+gs_n_layers = 5  # 3 → 5
+mps_max_bond = 128  # 32 -> 128
+mps_cutoff = 1e-8
+center = n_qubits // 2 - 1
+
+# ── Step 1: Map ──────────────────────────────────────────────────────────────
+ham_mpo = xxz_hamiltonian_mpo(n_qubits, interaction, anisotropy)
+
+dmrg = qtn.DMRG2(ham_mpo)
+dmrg.solve(tol=1e-8)
+print(f"Ground-state energy (DMRG): {dmrg.energy:.6f}")
+
+gs_ansatz = build_ground_state_ansatz(n_qubits, gs_n_layers)
+
+rng = np.random.default_rng(12345)
+x0 = np.tile([0.0, np.pi / 2], gs_n_layers) + rng.normal(
+    scale=0.1, size=2 * gs_n_layers
+)
+print("Optimizing ground state ansatz...")
+t0 = timeit.default_timer()
+result = optimize_ground_state_ansatz(
+    gs_ansatz,
+    x0,
+    dmrg.state,
+    max_bond=mps_max_bond,
+    cutoff=mps_cutoff,
+    options=dict(maxiter=100),
+)
+t1 = timeit.default_timer()
+print(f"Finished optimizing ground state ansatz in {t1 - t0} seconds.")
+print(f"Ground state ansatz fidelity: {1 - result.fun:.6f}")
+
+gs_circuit = gs_ansatz.assign_parameters(result.x)
+gs_circuit_mps = quimb_circuit(
+    gs_circuit.decompose(["PauliEvolution"]),
+    quimb_circuit_class=qtn.CircuitMPS,
+    max_bond=mps_max_bond,
+    cutoff=mps_cutoff,
+)
+gs_ansatz_energy = qtn.expec_TN_1D(
+    gs_circuit_mps.psi.H, ham_mpo, gs_circuit_mps.psi
+)
+print(f"Ground state ansatz energy: {gs_ansatz_energy:.6f}")
+
+perturbed = gs_circuit.copy()
+perturbed.rz(np.pi / 2, center)
+
+circuits = []
+for t in range(1, n_steps + 1):
+    circuit = perturbed.copy()
+    for instr in trotter_evolution(
+        circuit.qubits, interaction, anisotropy, time_step, t
+    ):
+        circuit.append(instr)
+    circuits.append(circuit)
+print(
+    f"Built {len(circuits)} circuits, deepest 2q depth (uniform basis) = "
+    f"{uniform_2q_depth(circuits[-1])}"
+)
+
+observables = [
+    SparsePauliOp.from_sparse_list([("Z", [i], 1)], num_qubits=n_qubits)
+    for i in range(n_qubits)
+]
+print(f"Defined {len(observables)} Z observables.")
+
+# ── Step 2: AQC ──────────────────────────────────────────────────────────────
+target_circuits = {
+    k: circuits[k - 1] for k in range(1, aqc_n_steps_total + 1)
+}
+
+aqc_sim = QuimbSimulator(
+    quimb_circuit_factory=partial(
+        qtn.CircuitMPS,
+        gate_opts=dict(max_bond=mps_max_bond, cutoff=mps_cutoff),
+    ),
+    autodiff_backend="jax",
+)
+print("\nStep 2b — target MPS:")
+target_mps = {}
+for k in range(1, aqc_n_steps_total + 1):
+    target_mps[k] = tensornetwork_from_circuit(
+        target_circuits[k].decompose(["PauliEvolution"]), aqc_sim
+    )
+    print(f"  k={k}: max bond = {target_mps[k].psi.max_bond()}")
+
+ansatz_1, initial_params_1 = generate_ansatz_from_circuit(
+    target_circuits[1].decompose(["PauliEvolution"]),
+    qubits_initially_zero=True,
+)
+initial_params_1 = np.array(initial_params_1)
+ansatz_2, initial_params_2 = generate_ansatz_from_circuit(
+    target_circuits[2].decompose(["PauliEvolution"]),
+    qubits_initially_zero=True,
+)
+initial_params_2 = np.array(initial_params_2)
+print(
+    f"\nStep 2c — one-layer ansatz: {ansatz_1.num_parameters} parameters, "
+    f"2q depth (uniform basis) = {uniform_2q_depth(ansatz_1)}"
+)
+print(
+    f"Step 2c — two-layer ansatz: {ansatz_2.num_parameters} parameters, "
+    f"2q depth (uniform basis) = {uniform_2q_depth(ansatz_2)}"
+)
+
+aqc_circuits = {}
+aqc_params = {}
+for k in range(1, aqc_n_steps_total + 1):
+    if k <= aqc_n_steps_1:
+        ansatz, base_params = ansatz_1, initial_params_1
+    else:
+        ansatz, base_params = ansatz_2, initial_params_2
+    # Warm-start from the previous step only within the same stage
+    same_stage = (k - 1 >= 1) and (
+        (k - 1 <= aqc_n_steps_1) == (k <= aqc_n_steps_1)
+    )
+    x0 = aqc_params[k - 1] if same_stage else base_params
+    obj = MaximizeStateFidelity(target_mps[k], ansatz, aqc_sim)
+    t0 = timeit.default_timer()
+    result = scipy.optimize.minimize(
+        obj.loss_function,
+        x0,
+        method="L-BFGS-B",
+        jac=True,
+        options=dict(maxiter=100),
+    )
+    elapsed = timeit.default_timer() - t0
+    aqc_params[k] = result.x
+    aqc_circuits[k] = ansatz.assign_parameters(result.x)
+    print(
+        f"  k={k}: fidelity = {1 - result.fun:.4f}, "
+        f"2q depth (uniform basis) = "
+        f"{uniform_2q_depth(aqc_circuits[k])}, "
+        f"{elapsed:.1f}s"
+    )
+
+all_circuits = []
+for k in range(1, aqc_n_steps_total + 1):
+    all_circuits.append(aqc_circuits[k])
+base = aqc_circuits[aqc_n_steps_total]
+for k in range(1, n_steps - aqc_n_steps_total + 1):
+    circuit = base.copy()
+    for instr in trotter_evolution(
+        circuit.qubits, interaction, anisotropy, time_step, k
+    ):
+        circuit.append(instr)
+    all_circuits.append(circuit)
+
+full_depths = [
+    uniform_2q_depth(circuits[k - 1]) for k in range(1, n_steps + 1)
+]
+aqc_depths = [uniform_2q_depth(circuit) for circuit in all_circuits]
+full_2q = [
+    circuits[k - 1].decompose(["PauliEvolution"]).num_nonlocal_gates()
+    for k in range(1, n_steps + 1)
+]
+aqc_2q = [
+    circuit.decompose(["PauliEvolution"]).num_nonlocal_gates()
+    for circuit in all_circuits
+]
+print(f"\nStep 2d — assembled {len(all_circuits)} circuits")
+print(
+    f"  At step {n_steps} (uniform basis): "
+    f"Trotter 2q depth = {full_depths[-1]}, AQC+Trotter 2q depth = {aqc_depths[-1]}; "
+    f"2q gates: Trotter = {full_2q[-1]}, AQC+Trotter = {aqc_2q[-1]}"
+)
+
+steps_axis = np.arange(1, n_steps + 1)
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.plot(steps_axis, full_depths, "-o", color="black", label="Full Trotter")
+ax.plot(
+    steps_axis, aqc_depths, "-o", color="cadetblue", label="AQC + Trotter"
+)
+ax.set_xlabel("Trotter steps", fontsize=13)
+ax.xaxis.set_major_locator(plt.matplotlib.ticker.MaxNLocator(integer=True))
+ax.set_ylabel("2q gate depth (uniform basis)", fontsize=13)
+ax.set_title(f"AQC circuit-depth reduction ({n_qubits} qubits)", fontsize=13)
+ax.legend(fontsize=11)
+plt.tight_layout()
+plt.show()
+
+# ── Step 3: Execute on IBM Quantum hardware ───────────────────────────────────
+# (replaces StatevectorEstimator)
+service = QiskitRuntimeService()
+backend = service.least_busy(
+    min_num_qubits=n_qubits,
+    operational=True,
+    simulator=False,
+    filters=lambda x: x.configuration().processor_type["family"] == "Heron",
+)
+print(f"Backend: {backend.name}")
+
+pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+isa_circuits = pm.run(all_circuits, num_processes=1)
+isa_2q_depths = [
+    isa_circuit.depth(lambda inst: inst.operation.num_qubits == 2)
+    for isa_circuit in isa_circuits
+]
+print(
+    f"Transpiled 2q depth (deepest, ISA on {backend.name}): "
+    f"{max(isa_2q_depths)} "
+    f"(2q gates: {max(isa_circuit.num_nonlocal_gates() for isa_circuit in isa_circuits)})"
+)
+
+estimator = Estimator(backend)
+estimator.options.environment.job_tags = ["TUT_SNS"]
+estimator.options.dynamical_decoupling.enable = True
+estimator.options.dynamical_decoupling.sequence_type = "XY4"
+estimator.options.twirling.enable_gates = True
+estimator.options.twirling.num_randomizations = 1000
+estimator.options.twirling.shots_per_randomization = 128
+estimator.options.resilience.measure_mitigation = True
+estimator.options.resilience.measure_noise_learning.num_randomizations = 32
+estimator.options.resilience.measure_noise_learning.shots_per_randomization = 100
+
+pubs = [
+    (
+        isa_circuit,
+        [obs.apply_layout(isa_circuit.layout) for obs in observables],
+    )
+    for isa_circuit in isa_circuits
+]
+job = estimator.run(pubs)
+print(f"Job ID: {job.job_id()}")
+
+result = job.result()
+
+# ── Step 4: Post-process ──────────────────────────────────────────────────────
+rgf_mat = np.stack([pub_result.data.evs for pub_result in result])
+
+n_points_momentum, n_points_frequency = 100, 100
+spectrum = get_dsf(
+    n_qubits,
+    rgf_mat,
+    time_step,
+    n_steps,
+    n_points_momentum,
+    n_points_frequency,
+)
+
+plot_rgf(
+    n_qubits,
+    rgf_mat,
+    time_step,
+    n_steps,
+    title=f"Retarded Green's function — {n_qubits} qubits (QPU)",
+)
+plot_dsf(
+    spectrum,
+    time_step,
+    n_points_momentum,
+    n_points_frequency,
+    title=rf"KCuF$_3$ DSF — {n_qubits} qubits (QPU)"
+    "\n(AQC + DD + Pauli twirling + TREX)",
+)
+```
+
+```text
+Ground-state energy (DMRG): -21.972109
+Optimizing ground state ansatz...
+Finished optimizing ground state ansatz in 132.2076231740648 seconds.
+Ground state ansatz fidelity: 0.645956
+Ground state ansatz energy: -21.616744
+Built 20 circuits, deepest 2q depth (uniform basis) = 307
+Defined 50 Z observables.
+
+Step 2b — target MPS:
+  k=1: max bond = 44
+  k=2: max bond = 46
+  k=3: max bond = 53
+  k=4: max bond = 62
+  k=5: max bond = 75
+  k=6: max bond = 96
+  k=7: max bond = 118
+  k=8: max bond = 128
+  k=9: max bond = 128
+  k=10: max bond = 128
+
+Step 2c — one-layer ansatz: 2971 parameters, 2q depth (uniform basis) = 39
+Step 2c — two-layer ansatz: 3412 parameters, 2q depth (uniform basis) = 45
+  k=1: fidelity = 1.0000, 2q depth (uniform basis) = 39, 215.6s
+  k=2: fidelity = 0.9676, 2q depth (uniform basis) = 39, 269.8s
+  k=3: fidelity = 0.9014, 2q depth (uniform basis) = 39, 293.5s
+  k=4: fidelity = 0.8755, 2q depth (uniform basis) = 39, 279.6s
+  k=5: fidelity = 0.8450, 2q depth (uniform basis) = 39, 266.4s
+  k=6: fidelity = 0.8146, 2q depth (uniform basis) = 39, 371.0s
+```
+
+```text
+E0626 02:59:07.229070 1508496 slow_operation_alarm.cc:73] 
+********************************
+[Compiling module jit_MakeArrayFn for CPU] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
+E0626 02:59:21.713796 1508477 slow_operation_alarm.cc:140] The operation took 2m14.484932074s
+
+********************************
+[Compiling module jit_MakeArrayFn for CPU] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
+```
+
+```text
+k=7: fidelity = 0.7312, 2q depth (uniform basis) = 45, 10865.3s
+  k=8: fidelity = 0.7720, 2q depth (uniform basis) = 45, 1450.3s
+  k=9: fidelity = 0.7316, 2q depth (uniform basis) = 45, 3388.6s
+```
+
+```text
+E0626 07:21:05.148724 1508496 slow_operation_alarm.cc:73] 
+********************************
+[Compiling module jit_MakeArrayFn for CPU] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
+E0626 07:21:24.286095 1508477 slow_operation_alarm.cc:140] The operation took 2m19.137566498s
+
+********************************
+[Compiling module jit_MakeArrayFn for CPU] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
+```
+
+```text
+k=10: fidelity = 0.6726, 2q depth (uniform basis) = 45, 3396.1s
+
+Step 2d — assembled 20 circuits
+  At step 20 (uniform basis): Trotter 2q depth = 307, AQC+Trotter 2q depth = 171; 2q gates: Trotter = 3775, AQC+Trotter = 1913
+```
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering/extracted-outputs/fbe57e1a-5.avif)
+
+```text
+Backend: ibm_fez
+Transpiled 2q depth (deepest, ISA on ibm_fez): 105 (2q gates: 2574)
+Job ID: d8v39vhropqc738biotg
+```
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering/extracted-outputs/fbe57e1a-7.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering/extracted-outputs/fbe57e1a-8.avif)
+
+Les résultats matériels reproduisent les caractéristiques clés du continuum à deux spinons : l'intensité de diffusion est concentrée près du vecteur d'onde antiferromagnétique $q = \pi$ à basse énergie et est bornée inférieurement par la dispersion sinusoïdale des spinons, avec un large continuum de poids spectral au-dessus plutôt qu'un mode unique et net. Il s'agit de la même structure mesurée par diffusion inélastique de neutrons sur KCuF$_3$, et cela valide l'ensemble du flux de travail de préparation de l'état fondamental, de perturbation, d'évolution de Trotter compressée par AQC et de mesure atténuée d'erreurs à l'échelle de 50 qubits.
+
+## Étapes suivantes {#next-steps}
+Si tu as trouvé ce travail intéressant, les ressources suivantes pourraient t'intéresser :
+<Admonition type="tip" title="Recommandations">
+
+- [Simuler la diffusion de neutrons avec un flux de travail Serverless AQC + dynamique de Trotter](/tutorials/simulate-neutron-scattering-with-a-serverless-workflow) &mdash; un tutoriel complémentaire qui exécute cette même expérience via un modèle de fonction Qiskit Serverless déployé
+
+- [Lee et al., « Benchmarking quantum simulation with neutron-scattering experiments » (arXiv:2603.15608)](https://arxiv.org/abs/2603.15608) &mdash; l'article de référence sur lequel se base ce tutoriel
+
+- [Techniques d'atténuation et de suppression des erreurs](/guides/error-mitigation-and-suppression-techniques) &mdash; DD, brouillage de Pauli et TREX utilisés dans les expériences matérielles
+
+- [Compilation quantique approchée pour les circuits d'évolution temporelle](/tutorials/approximate-quantum-compilation-for-time-evolution) &mdash; tutoriel sur AQC-Tensor
+
+- [Documentation AQC-Tensor](https://qiskit.github.io/qiskit-addon-aqc-tensor/)
+
+
+</Admonition>
+
+<TutorialFeedback />
