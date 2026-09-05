@@ -303,11 +303,16 @@ def prepare(locale: str, worklist: Path) -> dict:
         slim = {"msgid": it["msgid"]}
         if it["type"] != "Plain text":
             slim["type"] = it["type"]
-        if sim >= PREV_MIN and it.get("previous_msgstr", "").strip():
+        prev_ok = (sim >= PREV_MIN and it.get("previous_msgstr", "").strip()
+                   # a previous translation that fails the checker against its own
+                   # English (a translated code span, a lost URL) is not a hint: the
+                   # agent reuses its wording and the same rejection repeats forever
+                   and not check_entry(it["previous_msgid"], it["previous_msgstr"]))
+        if prev_ok:
             slim["changes"] = word_changes(it["previous_msgid"], it["msgid"])
             slim["prev_msgstr"] = it["previous_msgstr"]
         slim["_id"] = it["id"]          # stripped before writing; kept in the .ids.json sidecar
-        tiers["haiku" if sim >= HAIKU_MIN else "sonnet"].append(slim)
+        tiers["haiku" if prev_ok and sim >= HAIKU_MIN else "sonnet"].append(slim)
 
     n_direct = _write_direct(locale, direct)
 
