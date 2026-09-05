@@ -50,7 +50,7 @@ to notebook output can never make a translation stale.
 | `bootstrap.py --locale X [--verify]` | once per locale, **before** the next English sync | Builds `i18n/X/po/` from the existing translations. `exact` strategy is `po4a-gettextize`; `positional` is our fallback for pages po4a refuses (pairs the type sequences with difflib, adopts matching runs only). Writes `work/bootstrap-X.json`. |
 | `update.py --locale X --json …` | after every sync | `msgmerge --previous` every PO against the new POT, then prints the worklist: fuzzy (near-identical English, old msgid kept as `#\| msgid`) and untranslated entries. |
 | `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 4,000 English words and ≤ 18k estimated tokens as the Read tool presents it; one id-less item per line, with a word diff and the previous translation for real fuzzy matches) plus a `.ids.json` sidecar per batch and `manifest.json`, which also carries the instructions text for inlining into prompts. |
-| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch, five concurrent, each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
+| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch from a sliding pool (`concurrency` in the args, default 5; the Polish run used 15), each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
 | `translate.py --locale X --apply` | after the batches are filled | Pairs each `.out.json` with its `.ids.json` by position (a count mismatch rejects that batch), runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
 | `render.py --locale X [--out-dir D]` | at build time, or to preview | POT + PO → locale MDX, with the v1 freshness marker so v1 tools keep working during the migration. |
 | `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
@@ -180,6 +180,16 @@ the prompt cache lives, so the final turn re-sends the whole context fresh
 (59k tokens on the 120-item, 5,874-word residual batch versus 25k on a
 34-item one). Hence a fourth cap, 4,000 English words per batch, which
 keeps the output near 20k tokens.
+
+The Polish run (35 batches, 3,336 items, 99.5k words, 15 agents in a
+sliding pool, under 15 minutes of translation) then measured, on the same
+transcript basis as the Thai run: 791 fresh + 795 cached input tokens per
+item against 1,096 + 1,117 for Thai, 28% less, with no batch read in
+slices. Two shapes of agent output that `--apply` now tolerates showed
+up there: an unescaped quote inside a string (Polish „warstwie" quotes;
+repaired at the position the parser reports, however the file is laid
+out) and one agent returning 119 strings for 120 items (the batch is
+rejected as a whole and redone, which is the point of the count check).
 
 Measured on a throwaway locale (21 items, 588 words, two batches): about
 50k tokens per agent whether it took four tool calls or two, and whether

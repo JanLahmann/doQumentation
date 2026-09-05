@@ -6,7 +6,7 @@ export const meta = {
 }
 
 // args = contents of translation/v2/work/<locale>/manifest.json:
-//   { locale, instructions, batches: [{ file, model, items, words }], concurrency? }
+//   { locale, instructions, batches: [{ file, out, model, items, words }], concurrency? }
 //
 // Why this shape: the German run cost ~150k tokens per 4,000-word batch when
 // agents read, verified, re-read and wrote in 5-34 tool calls. Each turn
@@ -79,15 +79,28 @@ function run(b) {
 }
 
 phase('Translate')
-const done = []
-for (let i = 0; i < batches.length; i += CONCURRENCY) {
-  const chunk = batches.slice(i, i + CONCURRENCY)
-  const out = await parallel(chunk.map(b => () => run(b).then(text => parseDone(text, b))))
-  chunk.forEach((b, k) => done.push(out[k] ? { ...out[k], model: b.model } : { file: b.file, filled: 0, total: b.items, model: b.model, failed: true }))
-  const filled = done.reduce((s, r) => s + (r.filled || 0), 0)
-  const total = done.reduce((s, r) => s + r.total, 0)
-  log(`${done.length}/${batches.length} batches, ${filled}/${total} items filled`)
+// A sliding pool, not waves: as soon as one agent finishes the next batch
+// starts, so CONCURRENCY agents are running at any time (a wave of 15 would
+// idle down to 1 while its slowest batch finished).
+const done = new Array(batches.length)
+let next = 0
+async function worker() {
+  while (next < batches.length) {
+    const i = next++
+    const b = batches[i]
+    try {
+      done[i] = { ...parseDone(await run(b), b), model: b.model }
+    } catch (e) {
+      if (/is not registered in this session/.test(String(e && e.message || e))) throw e
+      done[i] = { file: b.file, filled: 0, total: b.items, model: b.model, failed: true, raw: String(e && e.message || e).slice(0, 200) }
+    }
+    const finished = done.filter(Boolean)
+    const filled = finished.reduce((s, r) => s + (r.filled || 0), 0)
+    const total = finished.reduce((s, r) => s + r.total, 0)
+    log(`${finished.length}/${batches.length} batches, ${filled}/${total} items filled`)
+  }
 }
+await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker))
 const failed = done.filter(r => r.failed || r.filled < r.total)
 if (failed.length) log(`${failed.length} batch(es) incomplete: ${failed.map(f => f.file.split('/').pop()).join(', ')} — rerun with resumeFromRunId after fixing`)
 return { locale, batches: done, incomplete: failed.map(f => f.file) }
