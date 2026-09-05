@@ -1,0 +1,677 @@
+---
+description: 'Calcola il fattore di struttura dinamica S(q, w) del magnete quantistico KCuF3 eseguendo un workflow Trotter con compressione AQC come template di funzione distribuita.'
+notebook_path: tutorials/simulate-neutron-scattering-with-a-serverless-workflow.ipynb
+sidebar_label: 'Simula lo scattering di neutroni con un workflow Serverless di dinamica AQC + Trotter'
+title: 'Simula lo scattering di neutroni con un workflow Serverless di dinamica AQC + Trotter'
+---
+
+{/* doqumentation-source-hash: e1c61adb */}
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/simulate-neutron-scattering-with-a-serverless-workflow.ipynb" />
+
+
+
+{/* cspell:ignore Trotter Trotterization spinon spinons KCuF quimb DMRG magnon antiferromagnetic Suzuki fidelities isa COBYQA Gjjc qpoints viridis fontsize vmax vmin */}
+
+*Stima di utilizzo: 18 minuti su un processore Heron r3 (NOTA: questa è solo una stima. Il tuo tempo di esecuzione potrebbe variare.)*
+
+## Risultati di apprendimento {#learning-outcomes}
+
+Al termine di questo tutorial, potrai comprendere quanto segue:
+
+- Come uno spettro di scattering anelastico dei neutroni si associa al fattore di struttura dinamica $S(q, \omega)$ di un magnete quantistico 1D.
+
+- Come preparare lo stato fondamentale di KCuF$_3$ (Heisenberg isotropo) con il density matrix renormalization group (DMRG) e la massimizzazione della fedeltà dello stato a matrice di prodotto (MPS).
+
+- Come eseguire l'evoluzione temporale di Trotter, la compressione del circuito con la compilazione quantistica approssimata (AQC) e l'esecuzione mitigata come un'unica chiamata di funzione.
+
+- Come post-elaborare la serie temporale $\langle \sigma_z \rangle(t)$ per sito in $S(q, \omega)$ e identificare il continuo a due spinoni.
+
+
+## Prerequisiti {#prerequisites}
+
+- Familiarità con i [Qiskit patterns](/guides/intro-to-patterns), [`SparsePauliOp`](https://docs.quantum.ibm.com/api/qiskit/qiskit.quantum_info.SparsePauliOp), e l'[evoluzione temporale di Trotter](/learning/courses/utility-scale-quantum-computing/quantum-simulation).
+
+- Un'esposizione di base ai metodi delle reti tensoriali (DMRG e MPS) è utile ma non richiesta, così come la familiarità con la libreria [`qiskit-addon-aqc-tensor`](https://github.com/Qiskit/qiskit-addon-aqc-tensor) che la funzione usa per comprimere i circuiti Trotter.
+
+
+## Contesto {#background}
+
+Lo scattering anelastico dei neutroni misura il fattore di struttura dinamica $S(q, \omega)$, la trasformata di Fourier spazio-temporale della funzione di correlazione spin-spin, quindi riprodurre $S(q, \omega)$ da un modello di spin microscopico è un test diretto e falsificabile di una simulazione quantistica. Questo tutorial studia KCuF$_3$, una catena antiferromagnetica di Heisenberg con spin-$\frac{1}{2}$ le cui eccitazioni non sono singoli capovolgimenti di spin ma coppie di spinoni frazionari: invece di una dispersione di magnone netta, $S(q, \omega)$ mostra un ampio *continuo a due spinoni*, delimitato inferiormente da $\tfrac{\pi}{2}|\sin q|$ e superiormente da $\pi|\sin(q/2)|$. Queste sono le curve tratteggiate nei grafici che seguono. La fisica completa, e il confronto con i dati neutronici misurati, sono trattati nel [tutorial originale](/tutorials/simulate-neutron-scattering) e in Lee et al., [arXiv:2603.15608](https://arxiv.org/abs/2603.15608).
+
+Il workflow quantistico rispecchia l'esperimento di scattering:
+
+1. Prepara lo stato fondamentale della catena $|\psi_0\rangle$.
+
+2. Perturbalo con una perturbazione locale al sito centrale, una rotazione $Z$ di $\pi/2$, imitando il trasferimento di momento ed energia dal neutrone.
+
+3. Evolvi nel tempo sotto l'Hamiltoniana di Heisenberg, $e^{-iHt}$, con una formula di prodotto di Trotter.
+
+4. Misura la magnetizzazione per sito $\langle \sigma_z^j \rangle(t)$. In funzione del sito $j$ e del tempo $t$, questa è esattamente la funzione di Green ritardata $G^R(j, j_c, t)$, quindi non è necessaria alcuna conversione prima della trasformata di Fourier nel passo 5.
+
+5. Trasforma con Fourier $G^R$ in $S(q, \omega)$.
+
+
+Possono sorgere problemi nel passo 3, quando i circuiti Trotter esatti per evoluzioni lunghe diventano troppo profondi per l'hardware. AQC con le reti tensoriali affronta questo problema comprimendo un blocco di passi di Trotter in un ansatz parametrizzato fisso e poco profondo la cui fedeltà di stato rispetto all'evoluzione esatta è massimizzata classicamente con un simulatore MPS ([arXiv:2301.08609](https://arxiv.org/abs/2301.08609)). L'[AQC Dynamics Template](/guides/function-template-aqc-trotter) racchiude l'intero nucleo quantistico (sintesi di Trotter, compressione AQC ed esecuzione mitigata) dietro un'unica chiamata:
+
+| PRE (questo notebook) | FUNZIONE (`aqc-dynamics-function`) | POST (questo notebook) |
+| --- | --- | --- |
+| Stato fondamentale da DMRG più massimizzazione della fedeltà MPS, con la perturbazione del neutrone incorporata nello stesso circuito | Sintesi di Trotter &rarr; compressione AQC &rarr; esecuzione su `statevector`, `fake`, o `runtime`, restituendo $\langle \sigma_z^j \rangle(t)$ per sito | $S(q, \omega)$, il fattore di struttura dinamica |
+
+Il lavoro specifico dell'esperimento rimane qui nel notebook: preparazione dello stato fondamentale (PRE) e post-elaborazione di $S(q, \omega)$ (POST). I due passaggi ad alto contenuto quantistico, compressione ed esecuzione, vengono eseguiti all'interno della funzione.
+
+Questo tutorial è un complemento a [Simula lo scattering di neutroni in materiali quantistici con circuiti quantistici](/tutorials/simulate-neutron-scattering), che costruisce lo stesso esperimento inline: lo stesso modello KCuF$_3$, la preparazione dello stato fondamentale, il calcio del neutrone e il post-processing, con la sintesi di Trotter, la compressione AQC e l'esecuzione mitigata scritte passo per passo. Leggi quel tutorial per scoprire come funziona la compressione AQC. Leggi questo per eseguire lo stesso esperimento tramite un modello di funzione distribuito: il nucleo quantistico diventa una singola chiamata di funzione, e la compressione AQC di ore viene eseguita all'interno del worker Serverless invece che sul tuo computer, quindi non hai bisogno di un sistema HPC o di un kernel aperto mentre è in esecuzione. La stessa chiamata guida anche altri esperimenti di dinamica 1D.
+
+## Requisiti {#requirements}
+
+Prima di iniziare questo tutorial, assicurati di avere quanto segue:
+
+- La funzione distribuita nel tuo account Qiskit Serverless. Esegui prima il modello di funzione complementare: [Distribuisci ed esegui il modello di funzione di dinamica AQC + Trotter](/guides/function-template-aqc-trotter). Quella guida illustra come ottenere i file sorgente e caricare la funzione nel tuo account. Questo tutorial si limita a chiamare la funzione distribuita.
+
+
+- Credenziali IBM Quantum&reg; salvate per `QiskitServerless` (vedi il modello di funzione). Entrambi gli esempi in questo tutorial chiamano la funzione distribuita, quindi entrambi ne hanno bisogno.
+
+
+- Qiskit SDK v2.0 o successiva (`pip install qiskit`).
+
+
+- Il client Qiskit IBM Catalog (`pip install qiskit-ibm-catalog`).
+
+
+- NumPy, SciPy e Matplotlib (`pip install numpy scipy matplotlib`). SciPy 1.14 o successiva è necessaria per l'ottimizzatore COBYQA usato nella preparazione dello stato fondamentale.
+
+
+- Lo stack tensor-network AQC, perché la preparazione dello stato fondamentale nel Passo 1 viene eseguita localmente in questo notebook: `pip install 'qiskit-addon-aqc-tensor[quimb-jax]==0.3.1'`.
+
+
+La prima chiamata a una funzione appena distribuita attende mentre il worker Serverless installa le sue dipendenze, quindi aspettati una latenza extra in quella esecuzione.
+
+## Configurazione {#setup}
+
+Importa le librerie e definisci gli helper specifici dell'esperimento usati in seguito: `build_gs_ansatz` (l'ansatz variazionale hamiltoniano, o HVA, per la preparazione dello stato fondamentale), `prepare_ground_state` (DMRG più massimizzazione della fedeltà MPS), e `get_spectrum`, `plot_green`, e `plot_spectrum` (il post-processing $S(q, \omega)$). Questi sono adattati dal [tutorial originale sullo scattering di neutroni](/tutorials/simulate-neutron-scattering).
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q matplotlib numpy qiskit qiskit-addon-aqc-tensor qiskit-ibm-catalog quimb scipy
+```
+
+```python
+from functools import partial
+
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.optimize
+
+import quimb.tensor as qtn
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_addon_aqc_tensor.simulation import tensornetwork_from_circuit
+from qiskit_addon_aqc_tensor.simulation.quimb import QuimbSimulator
+from qiskit_ibm_catalog import QiskitServerless
+```
+
+```python
+#  Dynamical structure factor via discrete Fourier transform
+
+def get_spectrum(n, Gjjc, dt, time_steps, q_steps, w_steps):
+    """Compute the dynamical structure factor from the retarded Green's function.
+
+    Uses the center-site approximation and a discrete Fourier transform.
+    """
+    green = Gjjc / 4  # sigma -> S=1/2
+    omega_max = np.pi / dt
+    qpoints = np.arange(0, 2 * np.pi, 2 * np.pi / q_steps)
+    omegas = np.arange(0, omega_max, omega_max / w_steps)
+    green_map = np.zeros((omegas.shape[0], qpoints.shape[0]))
+    center = n // 2 - 1
+    for iw, w in enumerate(omegas):
+        exponent = np.exp(1j * w * dt * np.arange(1, time_steps + 1))
+        S_w = np.dot(green.T, exponent) * dt
+        for iq, q in enumerate(qpoints):
+            q_matrix = np.exp(-1j * q * np.arange(-center, center + 2, 1))
+            green_map[iw, iq] = np.imag(np.dot(S_w, q_matrix))
+    return green_map
+
+#  Plotting helpers
+
+def plot_spectrum(
+    dsf,
+    dt,
+    q_steps,
+    w_steps,
+    lower_bound=False,
+    upper_bound=False,
+    title=None,
+):
+    """Heat-map of the dynamical structure factor."""
+    omega_max = np.pi / dt
+    qpoints = np.arange(0, 2 * np.pi, 2 * np.pi / q_steps)
+    omegas = np.arange(0, omega_max, omega_max / w_steps)
+    x, y = np.meshgrid(qpoints, omegas)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    c = ax.pcolormesh(x, y, dsf / np.max(dsf), cmap="viridis", shading="auto")
+    fig.colorbar(c, ax=ax, label="Normalized intensity")
+    if lower_bound:
+        ax.plot(
+            qpoints,
+            np.pi * np.abs(np.sin(qpoints)) / 2,
+            "--",
+            color="white",
+            lw=1.5,
+            label="Lower bound",
+        )
+    if upper_bound:
+        ax.plot(
+            qpoints,
+            np.pi * np.abs(np.sin(qpoints / 2)),
+            "--",
+            color="red",
+            lw=1.5,
+            label="Upper bound",
+        )
+    ax.set_ylim(0, 3.6)
+    ax.set_xlim(0, 2 * np.pi - 2 * np.pi / q_steps)
+    ax.set_xlabel(r"$q$", fontsize=16)
+    ax.set_ylabel(r"$\tilde{\omega} = \omega / J$", fontsize=16)
+    ax.set_xticks([0, np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
+    ax.set_xticklabels(["0", r"$\pi/2$", r"$\pi$", r"$3\pi/2$", r"$2\pi$"])
+    if lower_bound or upper_bound:
+        ax.legend(loc="upper right", fontsize=11)
+    if title:
+        ax.set_title(title, fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+def plot_green(n, Gjjc, time_steps, dt, title=None):
+    """Heat-map of the retarded Green's function in real space and time."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    t_axis = np.arange(1, time_steps + 1) * dt
+    site_axis = np.arange(n)
+    x, y = np.meshgrid(t_axis, site_axis)
+    c = ax.pcolormesh(
+        x,
+        y,
+        np.real(Gjjc).T,
+        cmap="RdBu",
+        vmax=0.5,
+        vmin=-0.5,
+        shading="auto",
+    )
+    fig.colorbar(c, ax=ax, label=r"Re $G^R(j, j_c, t)$")
+    ax.set_xlabel(r"Time  ($t / J^{-1}$)", fontsize=16)
+    ax.set_ylabel("Site index $j$", fontsize=16)
+    if title:
+        ax.set_title(title, fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+#  Variational ground-state ansatz (HVA)
+
+def _apply_xxz_pair_gate(qc, q0, q1, theta):
+    """Apply the parameterized XXZ-type two-qubit gate used in the HVA."""
+    qc.cx(q0, q1)
+    qc.rz(theta, q1)
+    qc.h(q0)
+    qc.rz(theta + np.pi / 2, q0)
+    qc.cx(q0, q1)
+    qc.rz(-theta, q1)
+    qc.h(q1)
+    qc.cx(q1, q0)
+    qc.rz(np.pi / 2, q1)
+    qc.rz(-np.pi / 2, q0)
+    qc.h(q1)
+    qc.h(q0)
+
+def build_gs_ansatz(n, params, layers):
+    """Build the Hamiltonian variational ansatz (HVA) circuit for
+    ground-state preparation of the 1D Heisenberg model.
+
+    Starts from a product of singlet pairs and applies alternating
+    odd/even layers of parameterized XXZ gates. For layer r,
+    params[2 * r] is the odd-layer (inter-pair) angle and
+    params[2 * r + 1] is the even-layer (intra-pair) angle.
+    """
+    qc = QuantumCircuit(n)
+    # Initial singlet product state
+    for i in range(n // 2):
+        qc.x(2 * i)
+        qc.x(2 * i + 1)
+        qc.h(2 * i + 1)
+        qc.cx(2 * i + 1, 2 * i)
+    # Variational layers
+    for r in range(layers):
+        for i in range(1, (n + 1) // 2):  # odd layer
+            _apply_xxz_pair_gate(qc, 2 * i - 1, 2 * i, params[2 * r])
+        for i in range(n // 2):  # even layer
+            _apply_xxz_pair_gate(qc, 2 * i, 2 * i + 1, params[2 * r + 1])
+    return qc
+
+def prepare_ground_state(n, gs_layers=5, max_bond=128, cutoff=1e-8):
+    """Prepare the KCuF3 (isotropic Heisenberg) ground state as a QuantumCircuit.
+
+    Runs DMRG (quimb MPO + DMRG2) to get the chain's ground state, then optimizes
+    the HVA angles to maximize the MPS overlap |<psi_ansatz|psi_DMRG>|^2. No exact
+    diagonalization, so it scales to larger n.
+    """
+    J = Jz = 1.0
+    builder = qtn.SpinHam1D(S=1 / 2)
+    builder += J * 0.5, "+", "-"
+    builder += J * 0.5, "-", "+"
+    builder += Jz, "Z", "Z"
+    H_mpo = builder.build_mpo(L=n)
+    dmrg = qtn.DMRG2(H_mpo)
+    dmrg.solve(tol=1e-8, verbosity=0)
+
+    gs_sim = QuimbSimulator(
+        quimb_circuit_factory=partial(
+            qtn.CircuitMPS, gate_opts=dict(cutoff=cutoff, max_bond=max_bond)
+        ),
+        autodiff_backend="jax",
+    )
+
+    def gs_infidelity(params):
+        psi = tensornetwork_from_circuit(
+            build_gs_ansatz(n, params, gs_layers), gs_sim
+        ).psi
+        return 1 - abs(psi.H @ dmrg.state) ** 2
+
+    # Seed and optimizer match the original tutorial. Each layer starts at
+    # [0, pi/2]: an odd-layer angle of 0 makes the inter-pair gate the identity,
+    # and an even-layer angle of pi/2 makes the intra-pair gate a SWAP (since
+    # 0.5 * (XX + YY + ZZ) = SWAP - I/2). That puts the seed at the singlet-pair
+    # product limit, which is already a decent approximation to the Heisenberg
+    # ground state, so the optimizer only has to refine it. The small jitter
+    # (fixed RNG seed, so runs are reproducible) breaks the exact symmetry
+    # between layers; COBYQA then runs for up to 100 iterations.
+    rng = np.random.default_rng(12345)
+    x0 = np.tile([0.0, np.pi / 2], gs_layers) + rng.normal(
+        scale=0.1, size=2 * gs_layers
+    )
+    result_gs = scipy.optimize.minimize(
+        gs_infidelity, x0, method="COBYQA", options={"maxiter": 100}
+    )
+    print(f"DMRG ground-state energy: {dmrg.energy:.6f}")
+    print(f"GS fidelity: {1 - result_gs.fun:.4f}")
+    return build_gs_ansatz(n, result_gs.x, gs_layers)
+
+print("Setup complete - helpers defined.")
+```
+
+```text
+Setup complete - helpers defined.
+```
+
+### Carica il modello di funzione {#load-the-function-template}
+
+Connettiti a Qiskit Serverless e carica la `aqc-dynamics-function` distribuita. Entrambi gli esempi in questo tutorial chiamano lo stesso handle `fn`, quindi la funzione viene caricata una sola volta, qui.
+
+```python
+# Credentials are read from the account saved once via QiskitServerless.save_account(...)
+serverless = QiskitServerless()
+fn = serverless.load("aqc-dynamics-function")
+```
+
+## Esempio simulatore su piccola scala {#small-scale-simulator-example}
+
+Prima eseguiamo l'intero workflow su una piccola catena di 10 siti usando il backend esatto `statevector`. Questo convalida la pipeline PRE &rarr; FUNCTION &rarr; POST prima di spendere tempo QPU.
+
+### Passo 1: Mappare gli input classici in un problema quantistico {#step-1-map-classical-inputs-to-a-quantum-problem}
+
+Costruisci l'Hamiltoniana KCuF$_3$ come `SparsePauliOp` (Heisenberg isotropo: $XX + YY + ZZ$ con accoppiamento $\tfrac14$ su ogni legame tra primi vicini; le stringhe sono operatori di Pauli, quindi $\tfrac14$ dà l'accoppiamento di spin-$\frac{1}{2}$). Prepara lo stato fondamentale con DMRG più massimizzazione della fedeltà MPS, quindi integra il calcio del neutrone: una rotazione $Z$ di $\pi/2$ al sito centrale. Il circuito preparato è ciò che passiamo alla funzione come `initial_state`. Lasciamo `observables` al suo valore predefinito ($Z$ per sito), che è esattamente la lettura $\langle \sigma_z^j \rangle(t)$ di cui il workflow di neutroni ha bisogno.
+
+```python
+n = 10
+dt = 0.6  # physical time per Trotter step (also the omega-axis unit in POST)
+time_steps = 10
+center = n // 2 - 1
+
+# MPS-simulator settings, shared by the ground-state prep here and the AQC
+# compression inside the function (matches the original tutorial).
+mps_max_bond = 32
+mps_cutoff = 1e-8
+
+# 1D isotropic Heisenberg (KCuF3) Hamiltonian on n qubits
+H = SparsePauliOp.from_sparse_list(
+    [(p, [i, i + 1], 0.25) for i in range(n - 1) for p in ("XX", "YY", "ZZ")],
+    num_qubits=n,
+)
+
+# Ground state (DMRG + fidelity max) + neutron kick baked into the same circuit
+gs_circuit = prepare_ground_state(
+    n, gs_layers=3, max_bond=mps_max_bond, cutoff=mps_cutoff
+)
+gs_circuit.rz(
+    np.pi / 2, center
+)  # exp(-i (pi/2)/2 Z_center): the neutron perturbation
+print(
+    f"Prepared {n}-qubit ground state with the neutron kick at site {center}."
+)
+```
+
+```text
+DMRG ground-state energy: -4.258035
+GS fidelity: 0.9841
+Prepared 10-qubit ground state with the neutron kick at site 4.
+```
+
+### Passi 2 e 3: Comprimere ed eseguire con il modello di funzione {#steps-2-and-3-compress-and-execute-with-the-function-template}
+
+In un workflow scritto a mano queste sono due fasi separate: ottimizzare i circuiti per l'hardware (Passo 2) ed eseguirli (Passo 3). Il modello di funzione riunisce entrambe in un'unica chiamata. Esegue la sintesi di Trotter, la compressione AQC e la transpilazione hardware, quindi esegue i circuiti (qui sul simulatore esatto, più avanti con mitigazione degli errori integrata su hardware). I due parametri di tuning sono `aqc_segments` (il piano di compressione) e `aqc_options` (le impostazioni MPS e dell'ottimizzatore). Ogni segmento `{"n_steps": k, "ansatz_steps": m}` comprime `k` passi Trotter consecutivi in un ansatz costruito da un target Trotter a `m` passi, e gli eventuali passi oltre `sum(n_steps)` vengono eseguiti come Trotter semplice. I primi passi, a bassa entanglement, si comprimono bene in un ansatz poco profondo (`ansatz_steps=1`), quindi qui comprimiamo i primi tre passi in un ansatz a un livello e i due successivi in un ansatz più profondo a due livelli; i restanti cinque dei 10 passi Trotter vengono eseguiti come Trotter semplice. Per `aqc_options` rispecchiamo il tutorial originale: dimensione di legame MPS `max_bond=32`, `cutoff=1e-8`, e un ottimizzatore L-BFGS-B limitato a 100 iterazioni.
+
+Chiama la funzione caricata nella Configurazione. `backend="statevector"` esegue il percorso di riferimento esatto: nessun tempo QPU, con i circuiti eseguiti su un simulatore statevector esatto all'interno del worker serverless (è comunque necessario un account Qiskit Serverless salvato per chiamarlo). `initial_state` porta lo stato fondamentale preparato (incluso il calcio); `observables` viene omesso quindi la funzione misura il valore predefinito $Z$ per sito.
+
+```python
+job = fn.run(
+    t_steps=time_steps,
+    aqc_segments=[
+        {
+            "n_steps": 3,
+            "ansatz_steps": 1,
+        },  # early steps -> shallow 1-layer ansatz
+        {
+            "n_steps": 2,
+            "ansatz_steps": 2,
+        },  # later steps -> deeper 2-layer ansatz
+    ],
+    aqc_options={
+        "max_bond": mps_max_bond,  # MPS bond dimension for AQC compression
+        "cutoff": mps_cutoff,
+        "optimizer_settings": {
+            "method": "L-BFGS-B",
+            "jac": True,
+            "options": {"maxiter": 100},
+        },
+    },
+    dt=dt,
+    hamiltonian=H,
+    initial_state=gs_circuit,  # prepared ground state including the neutron kick
+    # observables omitted -> default per-site Z (the neutron sigma_z readout)
+    backend="statevector",
+)
+```
+
+```python
+print(job.status())  # rerun this cell until status says DONE
+```
+
+```text
+DONE
+```
+
+```python
+# The per-site <sigma_z>(t) the function returns is the retarded Green's function
+# G(j, j_c, t). The workflow samples t = 1..time_steps, so drop the t = 0 row (the
+# prepared+kicked state before any evolution) before post-processing.
+result = job.result()
+print(
+    "AQC fidelities:",
+    {k: round(v, 4) for k, v in result["metadata"]["aqc_fidelities"].items()},
+)
+
+ev = np.array(result["expectation_values"])
+Gjjc = ev[1:]  # shape (time_steps, n)
+print("Green's function shape:", Gjjc.shape)
+```
+
+```text
+AQC fidelities: {'1': 1.0, '2': 0.9999, '3': 0.9992, '4': 0.9998, '5': 0.9995}
+Green's function shape: (10, 10)
+```
+
+### Passo 4: Post-processare e restituire il risultato nel formato classico desiderato {#step-4-post-process-and-return-result-in-desired-classical-format}
+
+Trasforma con Fourier la funzione di Green in $S(q, \omega)$, simmetrizza a specchio e taglia i valori negativi: il post-processing standard dei neutroni. La simmetrizzazione è esatta perché $S(q, \omega) = S(-q, \omega)$ per questo modello, e i valori negativi che sopravvivono sono artefatti della trasformata di Fourier di una serie temporale finita e campionata discretamente, quindi vengono tagliati a zero. In questa piccola esecuzione esatta il continuo a due spinoni è risolto solo grossolanamente, ma il meccanismo è identico all'esecuzione hardware che segue.
+
+```python
+q_res, w_res = 100, 100
+spectrum = get_spectrum(n, Gjjc, dt, time_steps, q_res, w_res)
+spectrum = -(spectrum + spectrum[:, ::-1]) / 2  # mirror symmetry
+spectrum = np.clip(spectrum, a_min=0, a_max=None)  # clip negatives
+
+plot_green(
+    n,
+    Gjjc,
+    time_steps,
+    dt,
+    title=f"Retarded Green's function - {n} qubits (AQC, statevector)",
+)
+plot_spectrum(
+    spectrum,
+    dt,
+    q_res,
+    w_res,
+    lower_bound=True,
+    upper_bound=True,
+    title=f"Dynamical structure factor - {n} qubits (AQC, statevector)",
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering-with-a-serverless-workflow/extracted-outputs/small-s4-code-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering-with-a-serverless-workflow/extracted-outputs/small-s4-code-1.avif)
+
+## Esempio hardware su larga scala {#large-scale-hardware-example}
+
+Lo stesso workflow scala senza modificare il codice scientifico: una catena di 30 siti, il doppio della profondità di Trotter (20 passi), un piano di compressione che varia la profondità dell'ansatz (un ansatz più profondo per i passi successivi, più entangled), ed esecuzione su un processore IBM Quantum con la mitigazione degli errori integrata della funzione (dynamical decoupling, Pauli twirling e twirled readout error extinction (TREX)). Percorriamo gli stessi quattro passi dell'esempio con simulatore, riutilizzando l'handle `fn` dalla Configurazione.
+
+|                                  | Piccola scala   | Grande scala                           |
+| -------------------------------- | ------------- | ------------------------------------- |
+| Qubit                           | 10            | 30                                    |
+| Passi Trotter                    | 10            | 20                                    |
+| Passi compressi AQC (1 livello + 2 livelli) | 3 + 2 = 5     | 6 + 4 = 10                            |
+| Livelli ansatz dello stato fondamentale       | 3             | 5                                     |
+| Dimensione massima di legame MPS           | 32            | 128                                   |
+| Backend                          | `statevector` | QPU con DD, Pauli twirling e TREX |
+
+### Passo 1: Mappare gli input classici in un problema quantistico {#step-1-map-classical-inputs-to-a-quantum-problem-1}
+
+Costruisci lo stesso `SparsePauliOp` di Heisenberg KCuF$_3$ e prepara lo stato fondamentale, ora con un ansatz più profondo `gs_layers=5` per la catena più lunga, quindi integra il calcio di neutrone $Z$ di $\pi/2$ al sito centrale. Questo è identico alla mappatura su piccola scala, ma con $n = 30$.
+
+Aspettati una fedeltà dello stato fondamentale inferiore rispetto all'esecuzione a 10 siti: circa 0,82 qui contro 0,98 per la catena più piccola, perché cinque livelli HVA non riescono a catturare completamente uno stato fondamentale a 30 siti. Ciò è previsto e non un fallimento, e il tutorial originale accetta circa 0,65 a 50 siti per lo stesso motivo. Aumentare `gs_layers` o il limite di iterazioni COBYQA lo migliora, a costo classico aggiuntivo.
+
+```python
+n = 30
+dt = 0.6
+time_steps = 20
+center = n // 2 - 1
+
+# Same MPS settings as the original large-scale run: a larger bond for the
+# longer, more-entangled chain (shared by GS prep and AQC compression).
+mps_max_bond = 128
+mps_cutoff = 1e-8
+
+# Same KCuF3 Hamiltonian and ground-state prep, on a larger chain
+H = SparsePauliOp.from_sparse_list(
+    [(p, [i, i + 1], 0.25) for i in range(n - 1) for p in ("XX", "YY", "ZZ")],
+    num_qubits=n,
+)
+gs_circuit = prepare_ground_state(
+    n, gs_layers=5, max_bond=mps_max_bond, cutoff=mps_cutoff
+)
+gs_circuit.rz(np.pi / 2, center)  # neutron kick at the center site
+print(
+    f"Prepared {n}-qubit ground state with the neutron kick at site {center}."
+)
+```
+
+```text
+DMRG ground-state energy: -13.111355
+GS fidelity: 0.8201
+Prepared 30-qubit ground state with the neutron kick at site 14.
+```
+
+### Passi 2 e 3: Comprimere ed eseguire con il modello di funzione {#steps-2-and-3-compress-and-execute-with-the-function-template-1}
+
+La stessa chiamata singola dell'esempio con simulatore, ora con `backend_name` che punta a un processore IBM Quantum, quindi la funzione transpila ed esegue lì. Il piano di compressione varia la profondità dell'ansatz: i primi sei passi Trotter (a bassa entanglement) si comprimono in un ansatz poco profondo a un livello, i quattro successivi in un ansatz più profondo a due livelli, e i restanti 10 dei 20 passi vengono eseguiti come Trotter semplice. `aqc_options` aumenta la dimensione di legame MPS a `max_bond=128` per la catena più lunga e più entangled (in linea con l'originale), mantenendo lo stesso ottimizzatore L-BFGS-B limitato a 100 iterazioni. `estimator_options` attiva la mitigazione degli errori integrata: dynamical decoupling (XY4), gate twirling e mitigazione della misura TREX. I valori predefiniti della funzione corrispondono già al tutorial originale per tutti questi tranne il budget di apprendimento TREX (`measure_noise_learning`). L'intero blocco viene comunque scritto perché un `estimator_options` fornito dal chiamante sostituisce interamente i valori predefiniti della funzione invece di unirsi ad essi, quindi omettere una chiave farebbe ricadere sul valore predefinito di IBM Quantum Compute invece che su quello della funzione.
+
+```python
+# Steps 2 + 3: the function compresses (varied ansatz) and executes on hardware.
+job = fn.run(
+    t_steps=time_steps,
+    aqc_segments=[
+        {
+            "n_steps": 6,
+            "ansatz_steps": 1,
+        },  # early steps -> shallow 1-layer ansatz
+        {
+            "n_steps": 4,
+            "ansatz_steps": 2,
+        },  # later steps -> deeper 2-layer ansatz
+    ],
+    aqc_options={
+        "max_bond": mps_max_bond,  # 128 for the longer chain
+        "cutoff": mps_cutoff,
+        "optimizer_settings": {
+            "method": "L-BFGS-B",
+            "jac": True,
+            "options": {"maxiter": 100},
+        },
+    },
+    dt=dt,
+    hamiltonian=H,
+    initial_state=gs_circuit,
+    backend_name="ibm_pittsburgh",
+    # Mitigation settings from the original tutorial. Only the two
+    # measure_noise_learning values differ from the function's defaults; the rest
+    # restates them, because a caller-supplied estimator_options dict replaces the
+    # function's defaults wholesale rather than merging into them.
+    estimator_options={
+        "environment": {"job_tags": ["TUT-SNS"]},
+        "dynamical_decoupling": {"enable": True, "sequence_type": "XY4"},
+        "twirling": {
+            "enable_gates": True,
+            "num_randomizations": 1000,
+            "shots_per_randomization": 128,
+        },
+        "resilience": {
+            "measure_mitigation": True,
+            "measure_noise_learning": {
+                "num_randomizations": 32,
+                "shots_per_randomization": 100,
+            },
+        },
+    },
+)
+print("job ID (save this to reconnect later):", job.job_id)
+```
+
+```text
+job ID (save this to reconnect later): 43ed8d07-6d7d-4f33-b70a-7f31b765b310
+```
+
+<Admonition type="note" title="Riconnettersi a un job di lunga durata">
+
+L'esecuzione su larga scala non è rapida, e la maggior parte del tempo è classico piuttosto che sulla QPU. La compressione AQC viene eseguita all'interno della funzione prima che qualcosa raggiunga la QPU: a 30 siti con `max_bond=128` ciò ha richiesto quasi quattro ore nella nostra esecuzione, contro i circa 18 minuti di tempo QPU indicati nella *Stima di utilizzo* all'inizio di questo tutorial. L'attesa in coda si aggiunge a entrambi. Non è necessario mantenere aperto questo notebook o il kernel mentre è in esecuzione.
+
+Copia l'ID del job stampato dalla cella precedente e salvalo. Le tre celle successive ti permettono di riprendere l'esecuzione in seguito:
+
+1. Riconnettiti, necessario solo in una nuova sessione kernel: riesegui le celle di [Configurazione](#setup) per ricreare `serverless`, quindi ricostruisci l'handle `job` a partire dall'ID salvato. Salta questa cella se sei ancora nella sessione in cui hai inviato il job, perché l'handle è già attivo.
+
+2. Controlla lo stato: riesegui finché non riporta `DONE`.
+
+3. Recupera il risultato: esegui solo quando lo stato è `DONE`.
+
+
+La cella di riconnessione seguente contiene un segnaposto. Sostituiscilo con il tuo `job_id`:
+
+</Admonition>
+
+```python
+# Reconnect to a previously submitted job by its ID. Only needed in a NEW kernel
+# session; if you are still in the session where you submitted, the `job` handle
+# from the preceding cell is already live, so skip this cell. Replace the ID that follows with your own.
+job = serverless.get_job_by_id("<your job ID>")
+```
+
+```python
+# Check where the job is. Re-run this until it reports DONE before fetching the
+# result in the following cell: QUEUED -> INITIALIZING -> RUNNING: OPTIMIZING_FOR_HARDWARE ->
+# RUNNING: WAITING_FOR_QPU -> RUNNING: EXECUTING_QPU -> RUNNING: POST_PROCESSING
+# -> DONE.
+print(job.status())
+```
+
+```text
+DONE
+```
+
+```python
+# Run this only once the preceding status cell reports DONE. result() blocks until
+# the job finishes, so calling it earlier just waits (possibly for hours).
+result = job.result()
+print(
+    "AQC fidelities:",
+    {k: round(v, 4) for k, v in result["metadata"]["aqc_fidelities"].items()},
+)
+
+ev = np.array(result["expectation_values"])
+Gjjc = ev[1:]  # drop the t = 0 row -> shape (time_steps, n)
+```
+
+```text
+AQC fidelities: {'1': 1.0, '2': 0.9994, '3': 0.9944, '4': 0.9853, '5': 0.9747, '6': 0.959, '7': 0.9495, '8': 0.9542, '9': 0.9533, '10': 0.9451}
+```
+
+### Passo 4: Post-processare e restituire il risultato nel formato classico desiderato {#step-4-post-process-and-return-result-in-desired-classical-format-1}
+
+Post-processing identico all'esecuzione con simulatore: trasforma con Fourier la funzione di Green in $S(q, \omega)$, simmetrizza a specchio e taglia i valori negativi. Con la catena e l'evoluzione più lunghe, il continuo a due spinoni è risolto molto meglio. Dovrebbe riempire la banda tra i limiti tratteggiati, più luminosa vicino a $q = \pi$.
+
+```python
+n = result["metadata"]["n"]
+q_res, w_res = 100, 100
+spectrum = get_spectrum(n, Gjjc, dt, time_steps, q_res, w_res)
+spectrum = -(spectrum + spectrum[:, ::-1]) / 2  # mirror symmetry
+spectrum = np.clip(spectrum, a_min=0, a_max=None)  # clip negatives
+
+plot_green(
+    n,
+    Gjjc,
+    time_steps,
+    dt,
+    title=f"Retarded Green's function - {n} qubits (AQC, hardware)",
+)
+plot_spectrum(
+    spectrum,
+    dt,
+    q_res,
+    w_res,
+    lower_bound=True,
+    upper_bound=True,
+    title=f"Dynamical structure factor - {n} qubits (AQC, hardware)",
+)
+```
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering-with-a-serverless-workflow/extracted-outputs/large-result-0.avif)
+
+![Output of the previous code cell](/docs/images/tutorials/simulate-neutron-scattering-with-a-serverless-workflow/extracted-outputs/large-result-1.avif)
+
+## Appendice {#appendix}
+
+L'esempio hardware precedente esegue un'unica lunghezza di catena. I tre spettri che seguono provengono da esecuzioni hardware precedenti di questo stesso workflow su `ibm_pittsburgh` a 10, 20 e 30 siti, con ogni altro input mantenuto fisso: 20 passi Trotter a `dt = 0.6`, il piano di compressione di sei passi compressi AQC a un livello più quattro a due livelli, e `max_bond = 128`. Questi sono risultati registrati, non output delle celle precedenti.
+
+Le stesse impostazioni vengono usate per tutte e tre le dimensioni, quindi gli spettri sono direttamente confrontabili. Ottimizzarle per ogni lunghezza di catena, con più livelli di ansatz dello stato fondamentale o un `max_bond` maggiore, ad esempio, può dare risultati migliori di quelli mostrati qui.
+
+![Dynamical structure factor at 10 sites, a single sharp bright peak at q = pi near the lower bound](/docs/images/tutorials/simulate-neutron-scattering-with-a-serverless-workflow/appendix-dsf-10.avif "10 qubits")
+
+![Dynamical structure factor at 20 sites, spectral weight filling the band between the two dashed two-spinon bounds](/docs/images/tutorials/simulate-neutron-scattering-with-a-serverless-workflow/appendix-dsf-20.avif "20 qubits")
+
+![Dynamical structure factor at 30 sites, the continuum resolved more finely with fainter contrast and some weight outside the bounds](/docs/images/tutorials/simulate-neutron-scattering-with-a-serverless-workflow/appendix-dsf-30.avif "30 qubits")
+
+## Passi successivi {#next-steps}
+
+<Admonition type="tip" title="Raccomandazioni">
+
+- Adatta questo workflow al tuo sistema: la funzione accetta qualsiasi `SparsePauliOp` 1D con interazione tra primi vicini, quindi un'Hamiltoniana di catena diversa, uno stato iniziale o un insieme di osservabili diversi eseguono la stessa pipeline PRE &rarr; FUNCTION &rarr; POST. Vedi il contratto completo di input/output nel [modello AQC Dynamics su GitHub](https://github.com/qiskit-community/qiskit-function-templates/tree/main/physics/aqc_trotter).
+
+- Leggi l'articolo da cui proviene questo benchmark: Lee et al., [*Benchmarking quantum simulation with neutron-scattering experiments*](https://arxiv.org/abs/2603.15608) (arXiv:2603.15608).
+
+- Confronta con il [tutorial originale "Simula lo scattering di neutroni"](/tutorials/simulate-neutron-scattering), il workflow inline che questo tutorial porta su un modello di funzione distribuito.
+
+- Approfondisci le [tecniche di mitigazione e soppressione degli errori](/guides/error-mitigation-and-suppression-techniques) applicate nell'esecuzione hardware: dynamical decoupling, Pauli twirling e TREX.
+
+
+</Admonition>
+
+<TutorialFeedback />
