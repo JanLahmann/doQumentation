@@ -559,9 +559,9 @@ def check_missing_imports(
 #   2. EN content that was added after the translation was produced and
 #      never retranslated (drift).
 #
-# Uses passage_units.extract_units(mode="strict") so the same definition
-# of "prose unit" is shared with the drift-detection (--check-drift) and
-# baseline-snapshot tooling.
+# Uses passage_units.extract_units(mode="strict"). The v1 drift-detection
+# (--check-drift) and baseline-snapshot tooling that shared this definition
+# of "prose unit" was deleted 2026-09-06; this is its last user.
 
 import importlib.util as _il_util
 _passage_units_spec = _il_util.spec_from_file_location(

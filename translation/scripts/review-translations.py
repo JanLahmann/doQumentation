@@ -356,8 +356,10 @@ def next_chunk(size: int = 20, locale_filter: str | None = None,
             if entry.get("lint") not in ("CLEAN", "WARNINGS"):
                 continue
             # Not already reviewed. STALE_REFRESH means a prior verdict was
-            # invalidated when the file was re-translated (update-translations.py
-            # --finalize) — treat it as needing review, same as never-reviewed.
+            # invalidated when the file was re-translated by the v1
+            # update-translations.py --finalize (deleted 2026-09-06; the v2
+            # pipeline does not set it yet — see PROJECT_HANDOFF.md, Active
+            # TODO) — treat it as needing review, same as never-reviewed.
             if entry.get("review") not in (None, "STALE_REFRESH"):
                 continue
             # Don't queue STALE/UNKNOWN files — refresh + re-stamp them first

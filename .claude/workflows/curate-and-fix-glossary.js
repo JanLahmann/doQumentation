@@ -1,6 +1,6 @@
 export const meta = {
   name: 'curate-and-fix-glossary',
-  description: 'Strategy A at scale: per-locale Sonnet agent finalizes the glossary (keep-English vs translate), runs the deterministic leak fixer, and lint+freshness-gates. One agent per locale; each edits only its own i18n subtree.',
+  description: 'Strategy A at scale: per-locale Sonnet agent finalizes the glossary (keep-English vs translate), runs the deterministic leak fixer, and lint-gates. One agent per locale; each edits only its own i18n subtree. NOTE (since v2, 2026-09-06): edits the rendered pages, which are regenerated from the PO files at the next render — record findings only until this is ported to PO entries; see translation/v2/README.md.',
   phases: [
     { title: 'Curate+Fix', detail: 'one Sonnet agent per locale', model: 'sonnet' },
   ],

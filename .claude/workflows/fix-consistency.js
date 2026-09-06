@@ -1,6 +1,6 @@
 export const meta = {
   name: 'fix-consistency',
-  description: 'Unify within-file terminology inconsistency (the two-pass-merge FAIL class) flagged by the Opus deep-review. One Sonnet agent per file: pick the dominant/correct rendering of each split term and make it consistent. Lint+freshness-gated.',
+  description: 'Unify within-file terminology inconsistency (the two-pass-merge FAIL class) flagged by the Opus deep-review. One Sonnet agent per file: pick the dominant/correct rendering of each split term and make it consistent. Lint-gated. NOTE (since v2, 2026-09-06): edits the rendered pages, which are regenerated from the PO files at the next render — record findings only until this is ported to PO entries; see translation/v2/README.md.',
   phases: [
     { title: 'Fix', detail: 'one Sonnet agent per inconsistent file', model: 'sonnet' },
   ],
@@ -16,7 +16,7 @@ if (!input || !Array.isArray(input) || input.length === 0) {
   return { error: 'no fixes provided' }
 }
 
-log(`Consistency-fix — ${input.length} files with within-file terminology inconsistency (Sonnet, lint+freshness-gated)`)
+log(`Consistency-fix — ${input.length} files with within-file terminology inconsistency (Sonnet, lint-gated; edits rendered pages — see meta.description)`)
 
 const SCHEMA = {
   type: 'object',
