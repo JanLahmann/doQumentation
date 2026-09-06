@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import itertools
 import json
 import re
 import sys
@@ -73,7 +74,7 @@ import polib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po4a_io as io  # noqa: E402
-from check import check_entry  # noqa: E402
+from check import _code_spans, check_entry  # noqa: E402
 
 BATCH_ITEMS = 120
 BATCH_WORDS = 4000        # ~20k output tokens: a 30k-token Write outlived the prompt cache (residual th batch: final turn re-sent 60k fresh)
@@ -109,6 +110,10 @@ Rules, each enforced by an automatic checker:
   `PassManagers` or `batch.details() method`), URLs, image paths, JSX/HTML
   tags and every attribute other than title=, heading anchors like
   {{#some-anchor}}, MDX comments {{/* ... */}}.
+- Backticked code spans must be copied EXACTLY as in the English, never
+  translated, never merged with surrounding text, and none may be added:
+  the checker rejects the whole entry if the set of backtick spans differs
+  at all from the source.
 - Math: keep every $...$ span and every $$...$$ block exactly, including the
   number of $$ delimiters (an entry may start or end inside a block; copy
   that part unchanged). Only words inside \\text{{...}} may be translated.
@@ -226,12 +231,59 @@ def is_copy_only(msgid: str) -> bool:
     return len(words) <= 1
 
 
+ATTR_RE = re.compile(r'\b([A-Za-z][\w:-]*)="([^"\n]*)"')
+CLOSE_TAGS_RE = re.compile(r"^(?:\s*</[A-Za-z][\w.]*>)+\s*")
+
+
+def _attr_transfer(prev_msgid: str, msgid: str, prev_msgstr: str) -> str | None:
+    """The English changed only attribute values of JSX/HTML tags (the Card
+    hrefs of guides/addons moving to docs.quantum.ibm.com: 3 entries in
+    every locale, and the agents kept reusing the old href from the hint).
+    The same substitutions on the previous translation. title= is
+    translated text and disqualifies the entry."""
+    if ATTR_RE.sub(r'\1=""', prev_msgid) != ATTR_RE.sub(r'\1=""', msgid):
+        return None
+    old, new = ATTR_RE.findall(prev_msgid), ATTR_RE.findall(msgid)
+    cand, changed = prev_msgstr, False
+    for (on, ov), (nn, nv) in zip(old, new):
+        if on != nn:
+            return None
+        if ov == nv:
+            continue
+        if on == "title" or f'{on}="{ov}"' not in cand:
+            return None
+        cand = cand.replace(f'{on}="{ov}"', f'{on}="{nv}"', 1)
+        changed = True
+    return cand if changed else None
+
+
+def _leading_close_tags_transfer(prev_msgid: str, msgid: str, prev_msgstr: str) -> str | None:
+    """po4a merges a JSX closing tag with the paragraph after it when no
+    blank line separates them; when the English gains that blank line the
+    tags leave the entry (guides/execute-dynamic-circuits, one entry per
+    locale). Drop the same tags from the front of the previous translation."""
+    m = CLOSE_TAGS_RE.match(prev_msgid)
+    if not m or _norm(prev_msgid[m.end():]) != _norm(msgid):
+        return None
+    m2 = CLOSE_TAGS_RE.match(prev_msgstr)
+    if not m2 or re.findall(r"</[\w.]+>", m.group(0)) != re.findall(r"</[\w.]+>", m2.group(0)):
+        return None
+    return prev_msgstr[m2.end():]
+
+
 def mechanical_transfer(prev_msgid: str, msgid: str, prev_msgstr: str) -> str | None:
-    """When the English changed only in punctuation placement or in the
-    emphasis markers around a leading phrase, apply the same edit to the
+    """When the English changed only in punctuation placement, in the
+    emphasis markers around a leading phrase, in tag attribute values, or by
+    losing a leading run of closing tags, apply the same edit to the
     previous translation. Returns None for any other change, or when the
     result fails the checker."""
-    if _norm(prev_msgid) != _norm(msgid) or not prev_msgstr.strip():
+    if not prev_msgstr.strip():
+        return None
+    for rule in (_attr_transfer, _leading_close_tags_transfer):
+        cand = rule(prev_msgid, msgid, prev_msgstr)
+        if cand is not None and not check_entry(msgid, cand):
+            return cand
+    if _norm(prev_msgid) != _norm(msgid):
         return None
     cand = prev_msgstr
     inside_old = re.search(r"[,.;:!?]\s*\$(?!\$)", prev_msgid)
@@ -267,6 +319,84 @@ def match_trailing_newline(msgid: str, msgstr: str) -> str:
     if not msgid.endswith("\n"):
         return msgstr.rstrip("\n")
     return msgstr
+
+
+CODE_SPAN_RE = re.compile(r"^(`+)(.*)\1$", re.S)
+CODE_SPAN_STRIP_RE = re.compile(r"`+[^`\n]*`+")
+
+
+def _span_inner(span: str) -> str:
+    m = CODE_SPAN_RE.match(span)
+    return m.group(2) if m else span
+
+
+def repair_code_spans(msgid: str, msgstr: str) -> tuple[str, list[str]]:
+    """Two agent habits the checker rejects, undone deterministically before
+    the check (seen on the same entries in every locale). An agent tidies a
+    code span the English left odd — `RuntimeJobV2 ` with its trailing
+    space, the upstream typo `[NoiseLearnerV3` — so a span in the
+    translation that equals a missing source span up to whitespace and
+    brackets is replaced by the source span. And an agent backticks a bare
+    product name — qiskit-ibm-runtime, Executor, SabreLayout — so a span
+    the source lacks, whose text appears bare in the source, loses its
+    backticks. A translated span (`第二量子化`) matches neither rule and
+    stays rejected. Returns (msgstr, notes); the caller keeps the result
+    only when it then passes the checker."""
+    src, dst = _code_spans(msgid), _code_spans(msgstr)
+    extra = dst - src
+    if not extra:
+        return msgstr, []
+    # unfiltered: `RuntimeJobV2 ` ends in a space, so the checker's prose
+    # filter drops it from the source side, yet it is exactly what has to
+    # be restored when the agent wrote `RuntimeJobV2`. Keys are normalised
+    # to single backticks; the literal spans are what gets edited.
+    missing = _code_spans(msgid, prose_filter=False) - dst
+    literal_src = list(_code_spans(msgid, prose_filter=False, raw=True))
+    bare = CODE_SPAN_STRIP_RE.sub(" ", msgid)
+    notes = []
+
+    def norm(raw: str) -> str:
+        return "`" + _span_inner(raw) + "`"
+
+    for raw, count in _code_spans(msgstr, raw=True).items():
+        if norm(raw) not in extra:
+            continue
+        inner = _span_inner(raw)
+        key = inner.strip().strip("[]")
+        targets = {m for m in missing if _span_inner(m).strip().strip("[]") == key}
+        if len(targets) == 1:
+            target = targets.pop()
+            target_raw = next((s for s in literal_src if norm(s) == target), target)
+            for _ in range(min(count, missing[target])):
+                msgstr = msgstr.replace(raw, target_raw, 1)
+                missing[target] -= 1
+            notes.append(f"{raw!r} restored to {target_raw!r}")
+        elif inner.strip() and inner.strip() in bare:
+            for _ in range(count):
+                msgstr = msgstr.replace(raw, inner, 1)
+            notes.append(f"backticks dropped around {inner!r}")
+    return msgstr, notes
+
+
+DATA_URI_RE = re.compile(r"data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+DATA_URI_PLACEHOLDER = "data:DOQ-BASE64-{}"
+DATA_URI_PLACEHOLDER_RE = re.compile(r"data:DOQ-BASE64-(\d+)")
+
+
+def shrink_data_uris(text: str) -> str:
+    """A base64 inline image (two bullets of guides/primitives carry a 60 and
+    a 130 KB one) is replaced by a numbered placeholder in what the model
+    reads; expand_data_uris puts the original back from the msgid on apply.
+    Before this, each was a one-item batch the Read tool refused (est.
+    143k tokens) and had to be filled by hand."""
+    n = itertools.count()
+    return DATA_URI_RE.sub(lambda m: DATA_URI_PLACEHOLDER.format(next(n)), text)
+
+
+def expand_data_uris(msgid: str, msgstr: str) -> str:
+    blobs = DATA_URI_RE.findall(msgid)
+    return DATA_URI_PLACEHOLDER_RE.sub(
+        lambda m: blobs[int(m.group(1))] if int(m.group(1)) < len(blobs) else m.group(0), msgstr)
 
 
 def _write_direct(locale: str, direct: dict[str, list[tuple[int, str, str]]]) -> int:
@@ -309,7 +439,7 @@ def prepare(locale: str, worklist: Path) -> dict:
                 tiers["mechanical"].append(it)
                 direct.setdefault(page, []).append((int(idx), cand, "doq: mechanical transfer from the previous translation"))
                 continue
-        slim = {"msgid": it["msgid"]}
+        slim = {"msgid": shrink_data_uris(it["msgid"])}
         if it["type"] != "Plain text":
             slim["type"] = it["type"]
         prev_ok = (sim >= PREV_MIN and it.get("previous_msgstr", "").strip()
@@ -318,8 +448,8 @@ def prepare(locale: str, worklist: Path) -> dict:
                    # agent reuses its wording and the same rejection repeats forever
                    and not check_entry(it["previous_msgid"], it["previous_msgstr"]))
         if prev_ok:
-            slim["changes"] = word_changes(it["previous_msgid"], it["msgid"])
-            slim["prev_msgstr"] = it["previous_msgstr"]
+            slim["changes"] = word_changes(shrink_data_uris(it["previous_msgid"]), slim["msgid"])
+            slim["prev_msgstr"] = shrink_data_uris(it["previous_msgstr"])
         slim["_id"] = it["id"]          # stripped before writing; kept in the .ids.json sidecar
         tiers["haiku" if prev_ok and sim >= HAIKU_MIN else "sonnet"].append(slim)
 
@@ -377,9 +507,17 @@ def repair_inner_quotes(text: str, limit: int = 50) -> tuple[str, int]:
             json.loads(text)
             return text, fixed
         except json.JSONDecodeError as exc:
-            if not exc.msg.startswith("Expecting ',' delimiter"):
-                return text, fixed
             q = text.rfind('"', 0, exc.pos)
+            if exc.msg.startswith("Expecting ',' delimiter"):
+                pass
+            elif exc.msg.startswith("Expecting value") and text[q + 1:exc.pos].strip() == ",":
+                # the quote closed the string early right before a comma, so
+                # the parser took the comma as a separator and then found
+                # prose where a value should start: Romanian „…", ceea ce
+                # (ro batches 001 and 003, whole list on one line)
+                pass
+            else:
+                return text, fixed
             if q <= 0:
                 return text, fixed
             text = text[:q] + '\\"' + text[q + 1:]
@@ -529,16 +667,22 @@ def apply(locale: str) -> int:
             if not (msgstr or "").strip():
                 skipped += 1
                 continue
-            it = {"id": ident, "msgstr": msgstr}
-            page, idx = it["id"].rsplit("#", 1)
+            page, idx = ident.rsplit("#", 1)
             if page not in cache:
                 cache[page] = polib.pofile(str(io.po_path(locale, page)), wrapwidth=0)
-            problems = check_entry(cache[page][int(idx)].msgid, it["msgstr"])
+            msgid = cache[page][int(idx)].msgid
+            msgstr = expand_data_uris(msgid, msgstr)
+            problems = check_entry(msgid, msgstr)
+            if problems:
+                repaired_str, notes = repair_code_spans(msgid, msgstr)
+                if notes and not check_entry(msgid, repaired_str):
+                    print(f"NOTE {ident}: {'; '.join(notes)}")
+                    msgstr, problems = repaired_str, []
             if problems:
                 rejected += 1
-                print(f"REJECT {it['id']}: {'; '.join(problems)}")
+                print(f"REJECT {ident}: {'; '.join(problems)}")
                 continue
-            by_page.setdefault(page, []).append((int(idx), it["msgstr"]))
+            by_page.setdefault(page, []).append((int(idx), msgstr))
     for page, fills in by_page.items():
         po = cache[page]
         for idx, msgstr in fills:

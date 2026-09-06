@@ -33,6 +33,35 @@ def test_check_entry_accepts_faithful_translation():
     assert check_entry("Run `foo` at [x](https://a.b) with $E$.", "Führe `foo` unter [x](https://a.b) mit $E$ aus.") == []
 
 
+def test_check_entry_compares_fence_lines_by_content():
+    opener = "    ```python\n    from x import y\n"
+    assert check_entry(opener, opener) == []
+    # A msgstr carrying the neighbouring entry's bare closing fence has the
+    # same fence-line count but breaks the rendered fence structure.
+    assert any("code fence line" in p for p in check_entry(opener, "    code = 1\n    ```\n"))
+
+
+def test_code_spans_follow_backtick_runs():
+    # A double-backtick span no longer pairs its second backtick with the
+    # next single-backtick span: the sentence can be reordered in translation.
+    en = "**Note:** The ``observables`` kwarg to `partition_problem` is of type `PauliList`. Phases are ignored.\n"
+    ja = "**注:** `partition_problem` の ``observables`` kwarg は `PauliList` 型です。位相は無視されます。\n"
+    assert check_entry(en, ja) == []
+    assert any("inline code" in p for p in check_entry(en, ja.replace("`PauliList`", "PauliList")))
+    # inline triple-backtick spans, and a bare URL inside a code span whose
+    # closing backtick must not be captured as part of the URL
+    assert check_entry("Use ```qc.h()```, then ```qc.measure()```\n", "Utilise ```qc.h()```, puis ```qc.measure()```\n") == []
+    en_url = "Specify `qiskit==git+https://github.com/Qiskit/qiskit.git@main` as appropriate.\n"
+    assert check_entry(en_url, "필요에 따라 `qiskit==git+https://github.com/Qiskit/qiskit.git@main`을 지정합니다.\n") == []
+
+
+def test_bare_url_sheds_trailing_punctuation_of_any_script():
+    en = "See https://quantum.ibm.com, then continue.\n"
+    assert check_entry(en, "راجع https://quantum.ibm.com، ثم تابع.\n") == []          # Arabic comma
+    assert check_entry(en, "参照 https://quantum.ibm.com。その後続行。\n") == []          # CJK full stop
+    assert any("URL" in p for p in check_entry(en, "See https://quantum.ibm.com/x, then.\n"))
+
+
 def test_check_entry_rejects_lost_invariants():
     assert any("inline code" in p for p in check_entry("Run `foo`.", "Führe foo aus."))
     assert any("URL" in p for p in check_entry("See [x](https://a.b).", "Siehe [x](https://a.c)."))
@@ -235,6 +264,52 @@ def test_prepare_writes_idless_one_line_batches(monkeypatch):
     assert [r.get("type") for r in sonnet] == ["Title ##", None, "Title ##", None, None, "Title ##"]
     assert not any("prev_msgstr" in r for r in sonnet)                                     # no hint from a failing pair
     shutil.rmtree(d)
+
+
+def test_parse_string_lines_repairs_early_close_before_comma():
+    from translate import parse_string_lines
+    # Romanian „…" closed with a plain quote right before a comma: the parser
+    # reports "Expecting value", not a delimiter error (ro batches 001, 003)
+    one_line = '["Eins", "IBM implementează „pliere digitală", ceea ce înseamnă că", "Drei"]'
+    assert parse_string_lines(one_line) == (["Eins", 'IBM implementează „pliere digitală", ceea ce înseamnă că', "Drei"], 1)
+
+
+def test_repair_code_spans_restores_odd_source_spans_and_drops_added_backticks():
+    from translate import repair_code_spans
+    en = "Executes them as a single `RuntimeJobV2 ` object with `[NoiseLearnerV3`](/x) in qiskit-ibm-runtime.\n"
+    tr = "Le ejecuta como un único objeto `RuntimeJobV2` con `NoiseLearnerV3`](/x) en `qiskit-ibm-runtime`.\n"
+    fixed, notes = repair_code_spans(en, tr)
+    assert fixed == "Le ejecuta como un único objeto `RuntimeJobV2 ` con `[NoiseLearnerV3`](/x) en qiskit-ibm-runtime.\n"
+    assert len(notes) == 3 and check_entry(en, fixed) == []
+    # a translated span matches neither rule and is left for the checker to reject
+    en2 = "Called `second quantization` here.\n"
+    fixed2, notes2 = repair_code_spans(en2, "Genannt `zweite Quantisierung` hier.\n")
+    assert notes2 == [] and check_entry(en2, fixed2)
+    assert repair_code_spans(en, "unchanged `RuntimeJobV2 ` and `[NoiseLearnerV3`](/x)\n") == ("unchanged `RuntimeJobV2 ` and `[NoiseLearnerV3`](/x)\n", [])
+
+
+def test_data_uri_placeholders_round_trip():
+    from translate import expand_data_uris, shrink_data_uris
+    blob = "data:image/jpeg;base64," + "iVBORw0KGgo" * 40
+    en = f'- `Sampler` primitive - returns a distribution. E.g.:\n<img width="500" src="{blob}"/>\n'
+    slim = shrink_data_uris(en)
+    assert blob not in slim and 'src="data:DOQ-BASE64-0"' in slim
+    tr = slim.replace("returns a distribution. E.g.:", "mengembalikan distribusi. Contoh:")
+    out = expand_data_uris(en, tr)
+    assert blob in out and check_entry(en, out) == []
+
+
+def test_mechanical_transfer_attribute_values_and_leading_close_tags():
+    from translate import mechanical_transfer
+    old = 'Depth tools.\n<Card\n  title="Operator backpropagation"\n  href="https://qiskit.github.io/qiskit-addon-obp/"\n  linkText="Browse"\n/>\n'
+    new = old.replace("https://qiskit.github.io/qiskit-addon-obp/", "https://docs.quantum.ibm.com/addons/qiskit-addon-obp")
+    prev = old.replace("Depth tools.", "Nástroje hloubky.").replace('title="Operator backpropagation"', 'title="Zpětná propagace"').replace("Browse", "Procházet")
+    assert mechanical_transfer(old, new, prev) == prev.replace("https://qiskit.github.io/qiskit-addon-obp/", "https://docs.quantum.ibm.com/addons/qiskit-addon-obp")
+    assert mechanical_transfer(old, old.replace('title="Operator backpropagation"', 'title="OBP"'), prev) is None   # title is translated text
+    old2 = "</AccordionItem>\n</Accordion>\nDynamic circuits are powerful tools.\n"
+    new2 = "Dynamic circuits are powerful tools.\n"
+    prev2 = "</AccordionItem>\n</Accordion>\nCircuitele dinamice sunt instrumente puternice.\n"
+    assert mechanical_transfer(old2, new2, prev2) == "Circuitele dinamice sunt instrumente puternice.\n"
 
 
 def test_match_trailing_newline():
