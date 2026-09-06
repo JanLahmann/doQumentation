@@ -191,10 +191,6 @@ def render(sdr, status) -> str:
             d, tot = done[loc]
             A(f"- `{loc}` — {n} left at `--max-leaks {leaks}` ({d}/{tot} reviewed)")
         A("")
-    A("The 9 German dialects (`aut bad bar bln gsw ksh nds sax swg`) are kept")
-    A("but deliberately unmaintained. **Never review or translate them** — they")
-    A("hold hundreds of known lint errors and are excluded from every gate.")
-    A("")
     A("---")
     A("")
     A("## What recent rounds found")

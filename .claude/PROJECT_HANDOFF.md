@@ -193,7 +193,7 @@ Data flow:
 - **Features page** — `/features`, 31 cards / 6 sections.
 - **Search** — `@easyops-cn/docusaurus-search-local` (client-side, hashed index).
 - **Settings** (`/jupyter-settings`) — credentials, simulator, display prefs, progress, bookmarks, custom server. Full-width card.
-- **Navbar** — always dark `#161616`. Right-side icons: locale (globe), settings (gear), dark mode, GitHub. Locale dropdown filtered by `customFields.visibleLocales` (`['en','de','es']`); all 23 locales remain built. "Deutsche Dialekte" separator before dialect locales.
+- **Navbar** — always dark `#161616`. Right-side icons: locale (globe), settings (gear), dark mode, GitHub. Locale dropdown filtered by `customFields.visibleLocales` (`['en','de','es']`); all 17 locales remain built.
 - **Footer** — three columns: doQumentation / RasQberry / IBM Quantum & Qiskit. IBM disclaimer.
 - **Legal** (`/legal`) — Impressum + Privacy Policy. DDG §5 + GDPR.
 - **Admin** (`/admin`) — hidden, password-gated (SHA-256 of `ADMIN_PASSWORD`). Sensitive URLs AES-256-GCM encrypted at build time (`scripts/encrypt-for-admin.mjs`); plaintext never in source. Secrets `ADMIN_PASSWORD`, `UMAMI_SHARE_URL`. Excluded from `robots.txt`.
@@ -285,17 +285,16 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | Locale | URL | Pages | Status |
 |---|---|---|---|
 | All 17 main: DE / ES / FR / UK / JA / IT / PT / TL / AR / HE / MS / ID / TH / KO / PL / RO / CS | `XX.doqumentation.org` | **428/428 (100%), 0 stale** | Live (AR/HE = RTL). Synced to upstream 47abf7714 (Jun 2026). |
-| KSH / NDS / GSW / SAX / BLN / AUT / SWG / BAD / BAR | `XX.doqumentation.org` | 31–46 | Live (German dialects, intentionally partial) |
 
 *(Volatile counts live in `translation/STATUS.md` / `translation-status.py --all`; the table is the durable shape, not the live number.)*
 
 **Potential future:** Turkish (TR).
 
-- **Config**: `docusaurus.config.ts` — `locales: ['en','de','es','uk','fr','it','pt','ja','tl','ar','he','swg','bad','bar','ksh','nds','gsw','sax','bln','aut','ms','id','th']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. hreflang tags auto-generated.
+- **Config**: `docusaurus.config.ts` — `locales: ['en','de','es','fr','it','pt','ja','tl','ar','he','ms','id','th','ko','pl','ro','uk','cs']` (the 9 German dialect locales were removed 2026-09-06), per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. hreflang tags auto-generated.
 - **RTL**: AR, HE have `direction: 'rtl'`. CSS uses logical properties (`border-inline-start`, `margin-inline-start`, `inset-inline-end`). Noto Sans Arabic/Hebrew via Google Fonts. KaTeX forced LTR (`direction: ltr` on `.katex`, `.katex-display`).
-- **CI**: `deploy.yml` builds EN. `deploy-locales.yml` matrix builds 22 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{XX_UPPER}`).
+- **CI**: `deploy.yml` builds EN. `deploy-locales.yml` matrix builds the 17 non-English locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{XX_UPPER}`).
 - **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,…}` — each has `main` (README/LICENSE/LICENSE-DOCS/NOTICE) and `gh-pages` (build output). Setup: `.claude/scripts/setup-satellite-repo.sh`.
-- **German dialects**: 9 locales with "Deutsche Dialekte" separator. To add: `dialectLocales` Set + `locales`/`localeConfigs` + CI matrix + `BANNER_TEMPLATES` + `locale_label` in `translate-content.py`.
+- **German dialects**: the 9 dialect locales were removed on 2026-09-06 (i18n trees, config, CI matrix, hreflang map, UI separator, script lists). Their satellite repos and subdomains are the owner's to retire.
 - **UI i18n** (`code.json`): all React strings via `<Translate>`/`translate()`. ~308 keys per locale (~92 theme + ~216 custom). New language: `npm run write-translations -- --locale {XX}` auto-generates with EN defaults; technical terms (Qiskit, Binder, AerSimulator) and code stay in English. Preserve placeholders `{binder}`, `{saveAccount}`, `{url}`, `{pipCode}`, `{issueLink}`, `{mode}`.
 - **Fallback**: the build workflows render the 17 main locales from their PO files (`translation/v2/render.py`, po4a via `.github/actions/setup-po4a`), then `populate-locale` fills every page without a PO — and every page of the 9 dialects — with EN + "not yet translated" banner. Rendered pages are not in git.
 - **Translation freshness**: a property of PO entries since v2 — `translation/v2/update.py --locale XX` reports fuzzy (English changed) and untranslated segments; the daily `check-translations.yml` runs it for all 17 locales and opens an issue. Rendered pages still embed `{/* doqumentation-source-hash: XXXX */}` so `translation-status.py` and the review scripts can tell a translation from a fallback.
@@ -374,7 +373,7 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
   - **Review verdicts are not invalidated on retranslation.** v1's `--finalize` set `review: STALE_REFRESH` on a re-stamped file. In v2 a fuzzy entry retranslated by `translate.py --apply` leaves the page's verdict in `status.json` and the PO header (`X-Doq-Review-Tier3` / `X-Doq-Review-Opus`) untouched. Needed: `translate.py --apply` marks the page stale (status.json + PO header) when at least one prose entry changed, and `review-translations.py --next-chunk` queues it.
   - **Port the in-place fix workflows to PO entries.** `.claude/workflows/curate-and-fix-glossary.js`, `fix-consistency.js`, `fix-misleading-translations.js` and `translation/scripts/fix-glossary-leaks.py` edit rendered pages; such an edit is lost at the next render. Until ported (agent proposes new msgstr values → `translate.py --apply`), record findings, do not fix pages.
   - **Opus deep-review → per-entry verdicts** stored as translator comments in the PO, replacing the per-file `review_opus*` fields; the Tier-3 verdicts were copied into the PO headers at bootstrap and are otherwise unchanged.
-  - **The 9 German dialects stay v1**: pages tracked as MDX, populated with the EN fallback + banner, unmaintained by decision (2026-05-31). Nothing to do unless that decision changes; `translation/v2/po4a_io.py` `MAIN_LOCALES` is the list that would grow.
+  - **The 9 German dialects were removed on 2026-09-06** (they had stayed on v1 as tracked MDX until then); `translation/v2/po4a_io.py` `MAIN_LOCALES` is the list of locales.
   - **Untested path**: `translate.py --backend anthropic` has never run (no API key in the environment it was written in); the batch-file path via the `translate-locale` workflow is the one in use.
   - **Housekeeping**: close issue #36 (an older "Stale translations detected" issue; the daily workflow updates the newest open `translation-freshness` issue, #167, and now writes the per-locale `msgmerge` worklist instead of the passage-hash report). Watch the first few `deploy-locales.yml` runs on `main` after #488 — the first production renders from PO (run 863 was the first).
 - **~~Rework PR #159 — 275 defective weak-5 files~~ — SUPERSEDED (May 31) by the per-locale polish PRs #171–#177.** Rather than rework #159's `landing/dev-weak5` branch wholesale, the equivalent defects were cleared *by locale* off `main`: every main locale (incl. ko/pl/cs/ro/th) is now at **0 structural FAILs** via #171–#177 (see Recently Resolved). **#159 (`landing/dev-weak5`) can be closed without merging** — its content is obsolete (its files would conflict with / regress the now-clean `main` versions; it was always marked DO-NOT-MERGE). The general rework path it described (per-locale `--auto-fix` → `--finalize` → agent hunk-splice → commit only `--finalize`-passing) is the method used in #171–#177 and remains the canonical recipe (`feedback_polish_backlog_workflow`).

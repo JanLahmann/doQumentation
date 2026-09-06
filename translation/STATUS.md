@@ -11,32 +11,23 @@ python translation/scripts/translation-status.py --write-status
 
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
-| Spanish | `es` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
-| Ukrainian | `uk` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Japanese | `ja` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| French | `fr` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
-| Italian | `it` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
-| Portuguese | `pt` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Tagalog | `tl` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Arabic | `ar` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Hebrew | `he` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Malay | `ms` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Indonesian | `id` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Thai | `th` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
-| Korean | `ko` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Polish | `pl` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
-| Romanian | `ro` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Czech | `cs` | 45/53 | 182/186 | 165/158 | 15/15 | 428/433 |
-| Swabian | `swg` | 14/53 | 1/186 | 13/158 | 2/15 | 31/433 |
-| Badisch | `bad` | 14/53 | 1/186 | 13/158 | 2/15 | 31/433 |
-| Bavarian | `bar` | 14/53 | 1/186 | 13/158 | 2/15 | 31/433 |
-| Kölsch | `ksh` | 29/53 | 1/186 | 13/158 | 2/15 | 46/433 |
-| Low German | `nds` | 26/53 | 1/186 | 13/158 | 2/15 | 43/433 |
-| Swiss German | `gsw` | 25/53 | 1/186 | 13/158 | 2/15 | 42/433 |
-| Saxon | `sax` | 22/53 | 1/186 | 13/158 | 2/15 | 39/433 |
-| Berlinerisch | `bln` | 19/53 | 1/186 | 13/158 | 2/15 | 36/433 |
-| Austrian | `aut` | 17/53 | 1/186 | 13/158 | 2/15 | 34/433 |
+| German | `de` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Spanish | `es` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Ukrainian | `uk` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Japanese | `ja` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| French | `fr` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Italian | `it` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Portuguese | `pt` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Tagalog | `tl` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Arabic | `ar` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Hebrew | `he` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Malay | `ms` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Indonesian | `id` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Thai | `th` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Korean | `ko` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Polish | `pl` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Romanian | `ro` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| Czech | `cs` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
 
 ## Per-Locale Detail
 
@@ -44,11 +35,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 53/53 | 0 | 45 | — | 0 |
-| Guides | 186/186 | 0 | 182 | — | 0 |
-| Courses | 158/158 | 0 | 165 | — | 0 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **412/412** | **0** | **407** | **—** | **0** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -490,11 +481,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 53/53 | 0 | 45 | — | 0 |
-| Guides | 186/186 | 0 | 182 | — | 0 |
-| Courses | 158/158 | 0 | 165 | — | 0 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **412/412** | **0** | **407** | **—** | **0** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -936,11 +927,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -1382,11 +1373,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -1828,11 +1819,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 53/53 | 0 | 45 | — | 0 |
-| Guides | 186/186 | 0 | 182 | — | 0 |
-| Courses | 158/158 | 0 | 165 | — | 0 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **412/412** | **0** | **407** | **—** | **0** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -2274,11 +2265,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 53/53 | 0 | 45 | — | 0 |
-| Guides | 186/186 | 0 | 182 | — | 0 |
-| Courses | 158/158 | 0 | 165 | — | 0 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **412/412** | **0** | **407** | **—** | **0** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -2720,11 +2711,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -3166,11 +3157,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -3612,11 +3603,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -4058,11 +4049,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -4504,11 +4495,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -4950,11 +4941,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -5396,11 +5387,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 53/53 | 0 | 45 | — | 0 |
-| Guides | 186/186 | 0 | 182 | — | 0 |
-| Courses | 158/158 | 0 | 165 | — | 0 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **412/412** | **0** | **407** | **—** | **0** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -5842,11 +5833,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -6288,11 +6279,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 53/53 | 0 | 45 | — | 0 |
-| Guides | 186/186 | 0 | 182 | — | 0 |
-| Courses | 158/158 | 0 | 165 | — | 0 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **412/412** | **0** | **407** | **—** | **0** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -6734,11 +6725,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -7180,11 +7171,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 45/53 | 0 | 45 | — | 8 |
-| Guides | 182/186 | 0 | 182 | — | 4 |
-| Courses | 165/158 | 0 | 165 | — | -7 |
-| Modules | 15/15 | 0 | 15 | — | 0 |
-| **Total** | **407/412** | **0** | **407** | **—** | **5** |
+| Tutorials | 0/53 | 0 | 45 | — | 53 |
+| Guides | 0/186 | 0 | 182 | — | 186 |
+| Courses | 0/158 | 0 | 165 | — | 158 |
+| Modules | 0/15 | 0 | 15 | — | 15 |
+| **Total** | **0/412** | **0** | **407** | **—** | **412** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -7619,501 +7610,6 @@ python translation/scripts/translation-status.py --write-status
 | `workshop/05_Hello_World_Qiskit_Malaysia_Workshop_Nov25.mdx` | promoted | PASS | 2026-06-02 |
 | `workshop/06_divincenzo_criteria_lab-2.mdx` | promoted | PASS | 2026-06-02 |
 | `workshop/06_divincenzo_criteria_lab-2_solution.mdx` | promoted | PASS | 2026-06-02 |
-
-</details>
-
-### Swabian (`swg`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 14/53 | 0 | 5 | 9 | 39 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **30/412** | **0** | **21** | **9** | **382** |
-
-<details>
-<summary>Pipeline history (31 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Badisch (`bad`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 14/53 | 0 | 4 | 10 | 39 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **30/412** | **0** | **20** | **10** | **382** |
-
-<details>
-<summary>Pipeline history (31 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Bavarian (`bar`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 14/53 | 0 | 5 | 9 | 39 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **30/412** | **0** | **21** | **9** | **382** |
-
-<details>
-<summary>Pipeline history (31 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Kölsch (`ksh`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 29/53 | 0 | 14 | 15 | 24 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **45/412** | **0** | **30** | **15** | **367** |
-
-<details>
-<summary>Pipeline history (46 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/dc-hex-ising.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/fractional-gates.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/krylov-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/long-range-entanglement.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/nishimori-phase-transition.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/projected-quantum-kernels.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-kernel-training.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/qunova-hivqe.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/shors-algorithm.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/spin-chain-vqe.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/transpilation-optimizations-with-sabre.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Low German (`nds`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 26/53 | 0 | 12 | 14 | 27 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **42/412** | **0** | **28** | **14** | **370** |
-
-<details>
-<summary>Pipeline history (43 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/fractional-gates.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/krylov-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/long-range-entanglement.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/nishimori-phase-transition.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-kernel-training.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/qunova-hivqe.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/shors-algorithm.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/spin-chain-vqe.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Swiss German (`gsw`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 25/53 | 0 | 12 | 13 | 28 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **41/412** | **0** | **28** | **13** | **371** |
-
-<details>
-<summary>Pipeline history (42 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/fractional-gates.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/long-range-entanglement.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/nishimori-phase-transition.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-kernel-training.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/qunova-hivqe.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/shors-algorithm.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/spin-chain-vqe.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Saxon (`sax`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 22/53 | 0 | 10 | 12 | 31 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **38/412** | **0** | **26** | **12** | **374** |
-
-<details>
-<summary>Pipeline history (39 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/edc-cut-bell-pair-benchmarking.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/fractional-gates.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/nishimori-phase-transition.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-kernel-training.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/spin-chain-vqe.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Berlinerisch (`bln`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 19/53 | 0 | 9 | 10 | 34 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **35/412** | **0** | **25** | **10** | **377** |
-
-<details>
-<summary>Pipeline history (36 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/global-data-quantum-optimizer.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-kernel-training.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/solve-higher-order-binary-optimization-problems-with-q-ctrls-optimization-solver.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/spin-chain-vqe.mdx` | promoted | FAIL | 2026-05-08 |
-
-</details>
-
-### Austrian (`aut`)
-
-| Section | Translated | Drafts | PASS | FAIL | Remaining |
-|---------|-----------|--------|------|------|-----------|
-| Tutorials | 17/53 | 0 | 7 | 10 | 36 |
-| Guides | 1/186 | 0 | 1 | — | 185 |
-| Courses | 13/158 | 0 | 13 | — | 145 |
-| Modules | 2/15 | 0 | 2 | — | 13 |
-| **Total** | **33/412** | **0** | **23** | **10** | **379** |
-
-<details>
-<summary>Pipeline history (34 files in status.json)</summary>
-
-| File | Status | Validation | Date |
-|------|--------|------------|------|
-| `guides/index.mdx` | promoted | PASS | 2026-05-08 |
-| `index.mdx` | promoted | FAIL | 2026-05-08 |
-| `learning/courses/basics-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/foundations-of-quantum-error-correction/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/fundamentals-of-quantum-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/general-formulation-of-quantum-information/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/integrating-quantum-and-high-performance-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-business-foundations/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-chem-with-vqe/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-computing-in-practice/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-diagonalization-algorithms/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-machine-learning/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/quantum-safe-cryptography/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/utility-scale-quantum-computing/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/courses/variational-algorithm-design/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/computer-science/index.mdx` | promoted | PASS | 2026-05-08 |
-| `learning/modules/quantum-mechanics/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/advanced-techniques-for-qaoa.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/ai-transpiler-introduction.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/chsh-inequality.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/colibritd-pde.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/combine-error-mitigation-techniques.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/compilation-methods-for-hamiltonian-simulation-circuits.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/error-mitigation-with-qiskit-functions.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/grovers-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/hello-world.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/index.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/pauli-correlation-encoding-for-qaoa.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-approximate-optimization-algorithm.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/quantum-kernel-training.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/repetition-codes.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/sample-based-krylov-quantum-diagonalization.mdx` | promoted | PASS | 2026-05-08 |
-| `tutorials/sample-based-quantum-diagonalization.mdx` | promoted | FAIL | 2026-05-08 |
-| `tutorials/spin-chain-vqe.mdx` | promoted | FAIL | 2026-05-08 |
 
 </details>
 

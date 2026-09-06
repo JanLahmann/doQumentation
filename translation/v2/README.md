@@ -242,8 +242,8 @@ entries per locale after the redo round; the batch files show exactly which.
 - **Do not add a check to a tool to work around a page.** If a page needs a
   rule, it goes into `pre_source()` with a test in `tests/`, or into
   sync-content where the English is produced.
-- **The 9 German dialects** (swg bad bar ksh nds gsw sax bln aut) are not
-  bootstrapped or translated. `MAIN_LOCALES` is the list.
+- `MAIN_LOCALES` is the list of locales; the 9 German dialect locales were
+  removed from the repository on 2026-09-06.
 
 ## Migration state
 
@@ -255,9 +255,7 @@ Every one of the 17 main locales has been through one v2 sync (English
   build workflows (`deploy-locales.yml`, `build-locales-pr.yml`) and the
   daily `check-translations.yml` run `render.py` right after the content
   sync, then `populate-locale` for the pages that have no PO; the composite
-  action `.github/actions/setup-po4a` installs po4a 0.74 and gettext. The 9
-  German dialects are not on v2: their pages stay tracked as MDX and are
-  built as before.
+  action `.github/actions/setup-po4a` installs po4a 0.74 and gettext.
 - **To preview a locale locally**: `python3 translation/v2/render.py --locale de`
   then `npx docusaurus start --locale de`. Never edit a rendered page: the
   next render overwrites it. Fix the PO (through `translate.py --apply`) and

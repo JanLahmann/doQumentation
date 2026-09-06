@@ -6,7 +6,7 @@
 #   ./.claude/scripts/setup-satellite-repo.sh <locale-code> <label>
 #
 # Example:
-#   ./.claude/scripts/setup-satellite-repo.sh ksh "Kölsch"
+#   ./.claude/scripts/setup-satellite-repo.sh pl "Polski"
 #
 # Creates:
 #   - main branch with LICENSE, LICENSE-DOCS, NOTICE, README.md
@@ -24,7 +24,7 @@ LABEL="$2"
 
 if [ -z "$LOCALE" ] || [ -z "$LABEL" ]; then
   echo "Usage: $0 <locale-code> <label>"
-  echo "Example: $0 ksh \"Kölsch\""
+  echo "Example: $0 pl \"Polski\""
   exit 1
 fi
 
