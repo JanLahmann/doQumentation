@@ -17,7 +17,7 @@ Two classes of checks:
 
 Usage:
     # Lint all genuine translations for one locale
-    python translation/scripts/lint-translation.py --locale ksh
+    python translation/scripts/lint-translation.py --locale pl
 
     # Lint all locales
     python translation/scripts/lint-translation.py --all-locales
@@ -49,12 +49,9 @@ MAIN_LOCALES = [
     "ko", "th", "pl", "cs", "ro", "ms", "id",
 ]
 
-# German dialects: kept for the novelty of having them, but deliberately not
-# maintained or reviewed. They currently hold 287 lint errors between them,
-# against 0 across all 17 maintained locales — so any recurring report that
-# includes them is ~100% noise and will be ignored within a week. Lint them
-# only when explicitly asked for (--all-locales).
-DIALECT_LOCALES = ["swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut"]
+# The 9 German dialect locales were removed on 2026-09-05; the list stays so
+# the --all-locales / --main-locales split keeps working for any future extra tier.
+DIALECT_LOCALES: list[str] = []
 
 ALL_LOCALES = MAIN_LOCALES + DIALECT_LOCALES
 
@@ -653,9 +650,9 @@ def _build_foreign_script_rules():
     all_locales = set(ALL_LOCALES)
 
     # German ä/ö/ü/ß tokens — leaks into non-German Latin-script locales.
-    # Excludes DE itself + dialects, CS (uses äöü in a few words), and ES
+    # Excludes DE itself, CS (uses äöü in a few words), and ES
     # (uses ü in diaeresis: ambigüedad, antigüedad, multilingüe).
-    german_native = {"de", "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut", "cs", "es"}
+    german_native = {"de", "cs", "es"}
     german_foreign = all_locales - german_native
 
     # Cyrillic — leaks into all non-Cyrillic locales.
@@ -767,8 +764,7 @@ def check_foreign_script(
         #
         # Skip tokens that look like math: containing $ or \ as part of LaTeX.
         cyrillic_homoglyph_locales = {
-            "de", "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
-            "es", "fr", "it", "pt", "tl", "ms", "id", "pl", "cs", "ro",
+            "de", "es", "fr", "it", "pt", "tl", "ms", "id", "pl", "cs", "ro",
         }
         if locale in cyrillic_homoglyph_locales:
             # Strip inline math entirely so Greek/Cyrillic letters in math don't trigger
@@ -990,7 +986,7 @@ def main():
     parser.add_argument(
         "--main-locales",
         action="store_true",
-        help="Lint the 17 maintained locales (excludes the 9 German dialects)",
+        help="Lint the 17 maintained locales",
     )
     parser.add_argument("--file", type=Path, help="Lint a single file")
     parser.add_argument(

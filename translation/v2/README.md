@@ -218,8 +218,8 @@ orchestrator's own turns instead of sixty launch cycles.
 - **Do not add a check to a tool to work around a page.** If a page needs a
   rule, it goes into `pre_source()` with a test in `tests/`, or into
   sync-content where the English is produced.
-- **The 9 German dialects** (swg bad bar ksh nds gsw sax bln aut) are not
-  bootstrapped or translated. `MAIN_LOCALES` is the list.
+- `MAIN_LOCALES` is the list of locales; the 9 German dialect locales were
+  removed from the repository on 2026-09-06.
 
 ## Migration state and what is still v1
 

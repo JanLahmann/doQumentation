@@ -76,8 +76,6 @@ beyond claiming.
 - **Owned / in progress:** `de` (complete), `es`, `fr`, `it`, `uk`.
   **Free to claim** (~240–360 stale files each): `ja, pt, ko, pl, cs,
   ro, tl, he, th, id, ms, ar`.
-- The 9 German dialects (aut, bad, bar, bln, gsw, ksh, nds, sax, swg)
-  are auto-handled — do **not** translate them unless asked.
 
 ## Setup (once)
 

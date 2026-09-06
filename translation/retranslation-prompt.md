@@ -46,8 +46,6 @@ If that shows `N stale files`, proceed below.
 - For `MAJOR` severity / `full_retranslation` (no historical EN, or a
   large/structural rewrite), translate the whole file fresh using
   `translation-prompt.md` instead — do not hunk-splice it.
-- Do NOT translate the German dialects (aut, bad, bar, bln, gsw, ksh, nds,
-  sax, swg) unless explicitly asked.
 
 ## Step 1 — Discover and auto-fix
 
@@ -459,11 +457,3 @@ a Sonnet agent per file. Each must be guarded so it only fires when safe:
 
 Validate after each auto-fix and only hash-bump files that PASS.
 
-## Skipping the German dialects
-
-The 9 German dialects (aut, bad, bar, bln, gsw, ksh, nds, sax, swg) are
-intentionally not refreshed weekly. Their fallback EN content is updated
-automatically on every locale build via `populate-locale`.
-
-If you do want to refresh a dialect (e.g. for a release milestone), use
-this same prompt with the dialect's locale code.

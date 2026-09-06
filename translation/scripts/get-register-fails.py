@@ -20,13 +20,11 @@ I18N_DIR = REPO_ROOT / "i18n"
 # Priority order matching review-translations.py
 LOCALE_PRIORITY = [
     "de", "fr", "es", "uk", "it",
-    "swg", "bad", "sax", "aut",
-    # NDS and TL have 1 FAIL each but not register issues
+    # TL has 1 FAIL but not register issues
 ]
 
 # Files that failed for non-register reasons — skip these
 SKIP_FILES = {
-    ("nds", "tutorials/pauli-correlation-experiment-on-a-quantum-computer.mdx"),
     ("tl", "tutorials/grovers-algorithm.mdx"),
 }
 

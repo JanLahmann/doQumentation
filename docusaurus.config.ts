@@ -128,10 +128,8 @@ const config: Config = {
   i18n: {
     defaultLocale: 'en',
     // Order matters: the language-selector dropdown renders in THIS order
-    // (it filters i18n.locales, it does not re-sort by visibleLocales). The 17
-    // maintained locales come first in the desired display order; the 9 German
-    // dialects follow (built/deployed but hidden from the selector).
-    locales: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'uk', 'cs', 'swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut'],
+    // (it filters i18n.locales, it does not re-sort by visibleLocales).
+    locales: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'tl', 'ar', 'he', 'ms', 'id', 'th', 'ko', 'pl', 'ro', 'uk', 'cs'],
     localeConfigs: {
       en: { label: 'English', url: 'https://doqumentation.org' },
       de: { label: 'Deutsch', url: 'https://de.doqumentation.org' },
@@ -144,15 +142,6 @@ const config: Config = {
       tl: { label: 'Filipino', url: 'https://tl.doqumentation.org' },
       ar: { label: 'العربية (Arabic)', direction: 'rtl', url: 'https://ar.doqumentation.org' },
       he: { label: 'עברית (Hebrew)', direction: 'rtl', url: 'https://he.doqumentation.org' },
-      swg: { label: 'Schwäbisch', url: 'https://swg.doqumentation.org' },
-      bad: { label: 'Badisch', url: 'https://bad.doqumentation.org' },
-      bar: { label: 'Boarisch', url: 'https://bar.doqumentation.org' },
-      ksh: { label: 'Kölsch', url: 'https://ksh.doqumentation.org' },
-      nds: { label: 'Plattdüütsch', url: 'https://nds.doqumentation.org' },
-      gsw: { label: 'Schwiizerdütsch', url: 'https://gsw.doqumentation.org' },
-      sax: { label: 'Säggssch', url: 'https://sax.doqumentation.org' },
-      bln: { label: 'Berlinerisch', url: 'https://bln.doqumentation.org' },
-      aut: { label: 'Österreichisch', url: 'https://aut.doqumentation.org' },
       ms: { label: 'Bahasa Melayu', url: 'https://ms.doqumentation.org' },
       id: { label: 'Bahasa Indonesia', url: 'https://id.doqumentation.org' },
       th: { label: 'ไทย (Thai)', url: 'https://th.doqumentation.org' },
@@ -166,9 +155,7 @@ const config: Config = {
   // Locales shown in the language selector dropdown.
   // All locales in i18n.locales are still built and deployed — this only controls UI visibility.
   // Remove or set to undefined to show all locales.
-  // This is the set of 17 maintained locales (EN + 16 others). The 9 German
-  // dialects (swg, bad, bar, ksh, nds, gsw, sax, bln, aut) are still built and
-  // deployed but intentionally hidden from the selector (not actively maintained).
+  // This is the set of 17 maintained locales (EN + 16 others).
   customFields: {
     visibleLocales: [
       'en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'tl', 'ar',
@@ -240,8 +227,7 @@ const config: Config = {
         //   • Listed: every locale with a real lunr-languages stemmer.
         //   • Omitted on purpose (NO lunr module): uk, tl.
         //   • Omitted, lower-value (degraded search accepted for now): ms, id,
-        //     th, pl, ro, cs, and the 9 German dialects (which fall back to de-ish
-        //     English tokenization). Add here if/when a stemmer is available.
+        //     th, pl, ro, cs. Add here if/when a stemmer is available.
         language: ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ar', 'he', 'ko'],
       },
     ],

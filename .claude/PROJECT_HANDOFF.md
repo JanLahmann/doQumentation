@@ -200,7 +200,7 @@ Data flow:
 - **Features page** — `/features`, 31 cards / 6 sections.
 - **Search** — `@easyops-cn/docusaurus-search-local` (client-side, hashed index).
 - **Settings** (`/jupyter-settings`) — credentials, simulator, display prefs, progress, bookmarks, custom server. Full-width card.
-- **Navbar** — always dark `#161616`. Right-side icons: locale (globe), settings (gear), dark mode, GitHub. Locale dropdown filtered by `customFields.visibleLocales` (`['en','de','es']`); all 23 locales remain built. "Deutsche Dialekte" separator before dialect locales.
+- **Navbar** — always dark `#161616`. Right-side icons: locale (globe), settings (gear), dark mode, GitHub. Locale dropdown filtered by `customFields.visibleLocales` (`['en','de','es']`); all 17 locales remain built.
 - **Footer** — three columns: doQumentation / RasQberry / IBM Quantum & Qiskit. IBM disclaimer.
 - **Legal** (`/legal`) — Impressum + Privacy Policy. DDG §5 + GDPR.
 - **Admin** (`/admin`) — hidden, password-gated (SHA-256 of `ADMIN_PASSWORD`). Sensitive URLs AES-256-GCM encrypted at build time (`scripts/encrypt-for-admin.mjs`); plaintext never in source. Secrets `ADMIN_PASSWORD`, `UMAMI_SHARE_URL`. Excluded from `robots.txt`.
@@ -292,17 +292,16 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 | Locale | URL | Pages | Status |
 |---|---|---|---|
 | All 17 main: DE / ES / FR / UK / JA / IT / PT / TL / AR / HE / MS / ID / TH / KO / PL / RO / CS | `XX.doqumentation.org` | **428/428 (100%), 0 stale** | Live (AR/HE = RTL). Synced to upstream 47abf7714 (Jun 2026). |
-| KSH / NDS / GSW / SAX / BLN / AUT / SWG / BAD / BAR | `XX.doqumentation.org` | 31–46 | Live (German dialects, intentionally partial) |
 
 *(Volatile counts live in `translation/STATUS.md` / `translation-status.py --all`; the table is the durable shape, not the live number.)*
 
 **Potential future:** Turkish (TR).
 
-- **Config**: `docusaurus.config.ts` — `locales: ['en','de','es','uk','fr','it','pt','ja','tl','ar','he','swg','bad','bar','ksh','nds','gsw','sax','bln','aut','ms','id','th']`, per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. hreflang tags auto-generated.
+- **Config**: `docusaurus.config.ts` — `locales: ['en','de','es','fr','it','pt','ja','tl','ar','he','ms','id','th','ko','pl','ro','uk','cs']` (the 9 German dialect locales were removed 2026-09-06), per-locale `url` in `localeConfigs`, `DQ_LOCALE_URL` env var. hreflang tags auto-generated.
 - **RTL**: AR, HE have `direction: 'rtl'`. CSS uses logical properties (`border-inline-start`, `margin-inline-start`, `inset-inline-end`). Noto Sans Arabic/Hebrew via Google Fonts. KaTeX forced LTR (`direction: ltr` on `.katex`, `.katex-display`).
-- **CI**: `deploy.yml` builds EN. `deploy-locales.yml` matrix builds 22 locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{XX_UPPER}`).
+- **CI**: `deploy.yml` builds EN. `deploy-locales.yml` matrix builds the 17 non-English locales separately, pushes to satellite repos via SSH deploy keys (`DEPLOY_KEY_{XX_UPPER}`).
 - **Satellite repos**: `JanLahmann/doQumentation-{de,es,uk,…}` — each has `main` (README/LICENSE/LICENSE-DOCS/NOTICE) and `gh-pages` (build output). Setup: `.claude/scripts/setup-satellite-repo.sh`.
-- **German dialects**: 9 locales with "Deutsche Dialekte" separator. To add: `dialectLocales` Set + `locales`/`localeConfigs` + CI matrix + `BANNER_TEMPLATES` + `locale_label` in `translate-content.py`.
+- **German dialects**: the 9 dialect locales were removed on 2026-09-06 (i18n trees, config, CI matrix, hreflang map, UI separator, script lists). Their satellite repos and subdomains are the owner's to retire.
 - **UI i18n** (`code.json`): all React strings via `<Translate>`/`translate()`. ~308 keys per locale (~92 theme + ~216 custom). New language: `npm run write-translations -- --locale {XX}` auto-generates with EN defaults; technical terms (Qiskit, Binder, AerSimulator) and code stay in English. Preserve placeholders `{binder}`, `{saveAccount}`, `{url}`, `{pipCode}`, `{issueLink}`, `{mode}`.
 - **Fallback**: `populate-locale` fills untranslated with EN + "not yet translated" banner. ~387 fallbacks/locale.
 - **Translation freshness**: genuine translations embed `{/* doqumentation-source-hash: XXXX */}` (SHA-256 first 8). Daily CI compares vs current EN. CRITICAL = missing imports/components; STALE = content changed. After EN changes propagate, run `check-translation-freshness.py --stamp`. **Rule**: any EN-source change (imports, components, content) must be manually propagated to genuine translations — `populate-locale` only refreshes fallbacks.

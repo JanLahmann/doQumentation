@@ -37,7 +37,7 @@ DOCS = REPO / "docs"
 I18N = REPO / "i18n"
 DOC_SUB = "docusaurus-plugin-content-docs/current"
 
-# The 17 maintained locales; the 9 German dialects are deliberately unmaintained.
+# The 17 maintained locales.
 MAIN_LOCALES = ["ar", "cs", "de", "es", "fr", "he", "id", "it", "ja",
                 "ko", "ms", "pl", "pt", "ro", "th", "tl", "uk"]
 

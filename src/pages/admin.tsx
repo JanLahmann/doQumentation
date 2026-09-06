@@ -29,15 +29,6 @@ const LOCALE_REPOS: { code: string; english: string; local: string }[] = [
   { code: 'pl', english: 'Polish', local: 'Polski' },
   { code: 'ro', english: 'Romanian', local: 'Română' },
   { code: 'cs', english: 'Czech', local: 'Čeština' },
-  { code: 'swg', english: 'Swabian', local: 'Schwäbisch' },
-  { code: 'bad', english: 'Baden', local: 'Badisch' },
-  { code: 'bar', english: 'Bavarian', local: 'Bairisch' },
-  { code: 'ksh', english: 'Colognian', local: 'Kölsch' },
-  { code: 'nds', english: 'Low German', local: 'Plattdeutsch' },
-  { code: 'gsw', english: 'Swiss German', local: 'Schweizerdeutsch' },
-  { code: 'sax', english: 'Saxon', local: 'Sächsisch' },
-  { code: 'bln', english: 'Berlin', local: 'Berlinerisch' },
-  { code: 'aut', english: 'Austrian', local: 'Österreichisch' },
 ];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

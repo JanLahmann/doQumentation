@@ -78,7 +78,6 @@ STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
     "ko", "pl", "cs", "ms", "id", "ro", "th",
-    "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
 
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"

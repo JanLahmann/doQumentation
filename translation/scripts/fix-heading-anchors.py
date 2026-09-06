@@ -26,7 +26,6 @@ I18N_DIR = REPO_ROOT / "i18n"
 # Locales to process
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "th", "ar", "he",
-    "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
 
 # Regex to match markdown headings (not inside code blocks)

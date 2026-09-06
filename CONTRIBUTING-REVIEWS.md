@@ -63,8 +63,7 @@ Confirm with the user, or take from their prompt:
 - **`LOCALE`** — see **[`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md)** for
   which locales still have unreviewed pages and how much is left in each.
   All 17 main locales are in scope (`de es uk ja fr it pt tl ar he ms id
-  th ko pl ro cs`); none is finished. The 9 German dialects — `aut bad bar
-  bln gsw ksh nds sax swg` — are never reviewed; skip them without asking.
+  th ko pl ro cs`); none is finished.
 - **`N`** — how many files to review this round. Budget ≈ **40k tokens per
   file**, so 25 files ≈ 1M, 60 files ≈ 2.4M. When in doubt pick 25; a small
   round that completes beats a large one that dies.
@@ -251,7 +250,6 @@ the gauge result, and which files you changed.
 - **Never** edit `docs/` — that's the English source of truth.
 - **Never** edit a locale other than the one assigned.
 - **Never** touch a `{/* doqumentation-source-hash: … */}` marker.
-- **Never** touch the 9 German dialects.
 - Fix only the identified defect. Do not restyle passages that are already
   correct, and do not touch code blocks, math, JSX, image paths, or heading
   anchors.
