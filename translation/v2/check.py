@@ -18,7 +18,10 @@ import re
 from collections import Counter
 
 INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
-URL_RE = re.compile(r"\]\(([^)\s]+)\)|(?<![`\w])(https?://[^\s)>\]`]+)")   # a bare URL never contains a backtick: `git+https://…@main` must not capture its closing one
+# A bare URL is ASCII and never contains a backtick: `git+https://…@main` must
+# not capture its closing backtick, and CJK or Arabic text written directly
+# after a URL (no space, as those scripts do) is not part of it.
+URL_RE = re.compile(r"\]\(([^)\s]+)\)|(?<![`\w])(https?://(?:(?![)>\]`])[!-~])+)")   # [!-~] = printable ASCII
 DISPLAY_MATH_RE = re.compile(r"\$\$[^$]+\$\$")
 INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$)[^$\n]+\$(?!\$)")
 JSX_TAG_RE = re.compile(r"</?[A-Z][A-Za-z0-9]*\b")
@@ -179,6 +182,7 @@ def _code_problem(msgid: str, msgstr: str) -> str | None:
 def _urls(text: str) -> Counter:
     # A bare URL followed by punctuation is captured with it; the comma or
     # full stop belongs to the sentence and may move in translation.
+    # (Non-ASCII punctuation never reaches here: URL_RE stops at it.)
     return Counter((a or b).rstrip(".,;:") for a, b in URL_RE.findall(text))
 
 

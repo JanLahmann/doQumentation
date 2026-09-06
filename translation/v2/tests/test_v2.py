@@ -55,6 +55,13 @@ def test_code_spans_follow_backtick_runs():
     assert check_entry(en_url, "필요에 따라 `qiskit==git+https://github.com/Qiskit/qiskit.git@main`을 지정합니다.\n") == []
 
 
+def test_bare_url_sheds_trailing_punctuation_of_any_script():
+    en = "See https://quantum.ibm.com, then continue.\n"
+    assert check_entry(en, "راجع https://quantum.ibm.com، ثم تابع.\n") == []          # Arabic comma
+    assert check_entry(en, "参照 https://quantum.ibm.com。その後続行。\n") == []          # CJK full stop
+    assert any("URL" in p for p in check_entry(en, "See https://quantum.ibm.com/x, then.\n"))
+
+
 def test_check_entry_rejects_lost_invariants():
     assert any("inline code" in p for p in check_entry("Run `foo`.", "Führe foo aus."))
     assert any("URL" in p for p in check_entry("See [x](https://a.b).", "Siehe [x](https://a.c)."))
