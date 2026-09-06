@@ -245,25 +245,48 @@ entries per locale after the redo round; the batch files show exactly which.
 - **The 9 German dialects** (swg bad bar ksh nds gsw sax bln aut) are not
   bootstrapped or translated. `MAIN_LOCALES` is the list.
 
-## Migration state and what is still v1
+## Migration state
 
-- Rendered MDX under `i18n/<loc>/…/current/` is still tracked and still what
-  CI builds; `render.py` writes the v1 marker so `check-translation-freshness`
-  reports rendered pages as fresh. Once every locale is bootstrapped and one
-  sync has gone through v2, the rendered files leave git and `render.py` runs
-  in the build workflows where `populate-locale` runs today.
-- v1 scripts to delete at that point: `update-translations.py`,
-  `sync-translations.py`, `check-translation-freshness.py`,
-  `bootstrap-passage-hashes.py`, `update-en-passage-hashes.py`,
-  `advance-baseline.py`, `promote-drafts.py`, `check-stale-passages.py`,
-  `remove-stale-paragraph.py`, `fix-heading-anchors.py`,
-  `migrate-details-to-accordion.py`; records `baseline-hashes.json`,
-  `en-passage-hashes.json`, `translation/manifests/`, the `source_hash` and
-  `validated_against` fields in `status.json`.
-- Keep: `lint-translation.py` (on rendered output), `check-known-mistranslations.py`
-  and `check-wrong-language.py` (to be folded into `check.py`), the glossaries,
-  the Opus review rubric (to be applied per entry; verdicts then live in the
-  PO as translator comments), `build-locales-pr.yml`.
+Every one of the 17 main locales has been through one v2 sync (English
+`723fc910`, 2026-09-05/06), and since then:
+
+- **The rendered MDX is derived and not in git.** `i18n/<loc>/…/current/`
+  is gitignored; a locale's translation is its `i18n/<loc>/po/` tree. The
+  build workflows (`deploy-locales.yml`, `build-locales-pr.yml`) and the
+  daily `check-translations.yml` run `render.py` right after the content
+  sync, then `populate-locale` for the pages that have no PO; the composite
+  action `.github/actions/setup-po4a` installs po4a 0.74 and gettext. The 9
+  German dialects are not on v2: their pages stay tracked as MDX and are
+  built as before.
+- **To preview a locale locally**: `python3 translation/v2/render.py --locale de`
+  then `npx docusaurus start --locale de`. Never edit a rendered page: the
+  next render overwrites it. Fix the PO (through `translate.py --apply`) and
+  render again.
+- **A PR that changes a PO** is linted in `ci.yml` by rendering that page
+  from the PR's PO; `build-locales-pr.yml` builds the locale.
+- **Staleness** is reported daily by `check-translations.yml`: `msgmerge`
+  against the current English, one line per locale (fuzzy, untranslated,
+  pages without a PO), an issue when any is non-zero. The merged POs are
+  discarded there; the sync procedure above is what commits them.
+- **Deleted with this**: `update-translations.py`, `sync-translations.py`,
+  `check-translation-freshness.py`, `bootstrap-passage-hashes.py`,
+  `update-en-passage-hashes.py`, `advance-baseline.py`, `promote-drafts.py`,
+  `check-stale-passages.py`, `remove-stale-paragraph.py`,
+  `fix-heading-anchors.py`, `migrate-details-to-accordion.py`, the
+  `--check-drift` mode of `validate-translation.py`, `retranslation-prompt.md`,
+  and the records `baseline-hashes.json` and `en-passage-hashes.json`. The
+  hash helpers the review scripts used from the freshness checker live in
+  `translation/scripts/_common.py`.
+- **Still v1, deliberately**: `lint-translation.py`, `validate-translation.py`
+  and the review scripts (`review-translations.py`, `review-prefilter.py`,
+  `sample-deep-review.py`) work on the rendered pages and on `status.json`,
+  whose `source_hash` / `validated_against` / review fields are unchanged.
+  They keep working because the workflows render before they run. What does
+  not work any more is *fixing* a rendered page in place (the glossary,
+  consistency and misleading-translation fix workflows in `.claude/`): such
+  an edit is lost at the next render. Porting the fix path to PO entries —
+  and the Opus rubric to per-entry verdicts stored as translator comments —
+  is the remaining migration work.
 - Review verdicts from `status.json` were copied into each PO header
   (`X-Doq-Review-Tier3`, `X-Doq-Review-Opus`) at bootstrap so they are not lost.
 

@@ -3,8 +3,14 @@
 doQumentation ships **17 main locales** of IBM Quantum's Qiskit docs.
 English content is synced from upstream; a translation goes **stale**
 when its EN source changes after it was last translated. The work is
-keeping stale files in sync — a continuous refresh, not one-time
+keeping stale segments in sync — a continuous refresh, not one-time
 translation.
+
+Since September 2026 a locale's translation is its PO files under
+`i18n/<LOCALE>/po/` (one per page, one entry per paragraph); the pages
+Docusaurus builds are rendered from them and are **not in git**. The
+pipeline, its tools and the sync procedure are documented in
+[`translation/v2/README.md`](translation/v2/README.md) — read it once.
 
 > 👀 **Want to *review* rather than translate?** See
 > [`CONTRIBUTING-REVIEWS.md`](CONTRIBUTING-REVIEWS.md) — a self-contained,
@@ -14,21 +20,21 @@ translation.
 > **You can use any tool or LLM** (Claude Code, Gemini, manual…). This
 > file is the **coordination contract** — read it once. Detailed
 > mechanics live in:
-> - [`translation/retranslation-prompt.md`](translation/retranslation-prompt.md)
->   — the stale-refresh path you'll use 95% of the time, incl. the
->   **Orchestration recipe** (the exact batch→PR loop) and the
->   sub-agent prompt.
+> - [`translation/v2/README.md`](translation/v2/README.md) — the pipeline:
+>   how a page becomes PO entries, the sync procedure (the exact
+>   update → prepare → translate → apply → render loop), the checker's
+>   rules and the known agent failure modes.
 > - [`translation/translation-prompt.md`](translation/translation-prompt.md)
->   — whole-file / from-scratch path, incl. the **Language Table**
->   (each locale's informal-register rule — the source of truth for
->   register; do not duplicate it).
+>   — the **Language Table** (each locale's informal-register rule — the
+>   source of truth for register; do not duplicate it). `translate.py
+>   --prepare` inlines it into every batch's instructions.
 > - [`translation/review-prompt.md`](translation/review-prompt.md) —
 >   linguistic review (Haiku is the validated review model).
 
-> ⚠️ **Deprecated:** the old `translation/drafts/` → `promote-drafts.py`
-> workflow is no longer used. The current pipeline edits `i18n/`
-> directly via git-diff hunk-splice (below). Old flow is recoverable
-> from git history if ever needed.
+> ⚠️ **Deprecated:** the older file-based pipelines (`translation/drafts/`
+> → `promote-drafts.py`, and the git-diff hunk-splice
+> `update-translations.py`) were removed when v2 landed. They are
+> recoverable from git history if ever needed.
 
 ## Onboarding a new contributor (for maintainers)
 
@@ -42,9 +48,8 @@ Send them this message verbatim, filling in `<LOCALE>`:
 > 1. In your worktree of the repo, read **`CONTRIBUTING-TRANSLATIONS.md`**
 >    (repo root) — it is the whole contract: setup, the batch→PR loop,
 >    and the hard rules.
-> 2. Follow the **Orchestration recipe** in
->    `translation/retranslation-prompt.md` exactly. Use
->    `--locale <LOCALE>` everywhere.
+> 2. Follow **Running a sync** in `translation/v2/README.md` exactly.
+>    Use `--locale <LOCALE>` everywhere.
 > 3. Add yourself to the ownership table at the bottom of
 >    `CONTRIBUTING-TRANSLATIONS.md` in your first PR.
 >
@@ -87,40 +92,46 @@ git remote add upstream https://github.com/JanLahmann/doQumentation.git
 git worktree add ../doq-<locale> -b i18n/<locale>-wip && cd ../doq-<locale>
 python3 scripts/sync-content.py        # populates docs/ (EN, gitignored) if empty
 ```
-Node 20+, Python 3.11+. No extra deps for the translation scripts.
-`i18n/` and `docs/` are gitignored — stage with `git add -f`.
+Node 20+, Python 3.11+, and for the v2 pipeline po4a ≥ 0.74, GNU gettext
+and the `polib` package (`brew install po4a gettext` / `apt-get install
+po4a gettext`, `pip install polib`; see `translation/v2/README.md`,
+*Dependencies*). The rendered pages under `i18n/<LOCALE>/…/current/` are
+gitignored and derived: commit `i18n/<LOCALE>/po/`, never the rendered MDX.
 
 ## The loop (per batch — one branch → one PR)
 
-Follow the **Orchestration recipe** in
-[`translation/retranslation-prompt.md`](translation/retranslation-prompt.md)
-exactly. Per ~15–30-file batch:
+Follow **Running a sync** in
+[`translation/v2/README.md`](translation/v2/README.md) exactly. A locale is
+one branch → one PR:
 
 ```bash
 LOC=<your-locale>
 # Sync from UPSTREAM, not origin: on a fork `git pull` fetches your own copy,
 # which is stale the moment anyone else's batch merges. Branch from that and
-# you will re-translate files already done and hit conflicts at PR time.
+# you will re-translate segments already done and hit conflicts at PR time.
 git checkout main && git fetch upstream main && git merge --ff-only upstream/main
 git push origin main                     # keep the fork's main current too
-git checkout -b i18n/$LOC-batchN
-python translation/scripts/update-translations.py --locale $LOC --auto-fix
-python translation/scripts/update-translations.py --locale $LOC \
-  --generate-workfile --output /tmp/$LOC-wf.json \
-  --exclude-open-prs --skip-manifest-done          # parallel-safe + resumable
-# → translate the workfile hunks: see retranslation-prompt.md §Step 2.
-#   (each update.new_en is a unified diff; mirror it into the TR region.
-#   update.current_translation, when non-empty, is the pre-located TR
-#   region — edit THAT, don't read the whole file.)
-python translation/scripts/update-translations.py --locale $LOC \
-  --finalize --output /tmp/$LOC-wf.json            # the gate
-# commit ONLY files that passed --finalize → open one PR
+git checkout -b i18n/$LOC-sync
+python3 translation/v2/update.py --locale $LOC --init-missing \
+  --json translation/v2/work/worklist-$LOC.json   # msgmerge; seed new pages
+python3 translation/v2/translate.py --locale $LOC --sweep        # once per locale
+python3 translation/v2/update.py --locale $LOC --json translation/v2/work/worklist-$LOC.json
+python3 translation/v2/translate.py --locale $LOC --prepare      # tiers + batches
+# → fill work/$LOC/batch-*.out.json: the translate-locale workflow
+#   (.claude/workflows/translate-locale.js, args = work/$LOC/manifest.json),
+#   or any agent/API/human that writes a JSON list of strings per batch
+python3 translation/v2/translate.py --locale $LOC --apply        # the gate
+python3 translation/v2/render.py --locale $LOC
+find i18n/$LOC/docusaurus-plugin-content-docs/current -name '*.mdx' -print0 \
+  | xargs -0 node translation/v2/mdxcheck.mjs
+python3 translation/scripts/lint-translation.py --locale $LOC
+git add i18n/$LOC/po && git commit                               # PO files only
 ```
 
-`--finalize` is the gate: a file is hash-bumped & committable only when
-it passes **structural + content + MDX-fatal** checks. Failures stay
-stale and are safely retried next batch — the manifest makes the whole
-backlog resumable across people and sessions.
+`--apply` is the gate: an entry is written only when it passes every
+check in `translation/v2/check.py` (code spans, URLs, math, tags, anchors,
+length); rejected entries go back on the worklist and are redone in a
+second round or by hand. Nothing partial is ever written.
 
 ## Hard rules — each maps to a real incident; do not relitigate
 

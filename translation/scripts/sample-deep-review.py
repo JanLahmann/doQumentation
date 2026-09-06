@@ -78,16 +78,15 @@ LOCALE_NAME = {
 }
 
 
-def _import_freshness():
+def _import_common():
     import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "freshness", SCRIPTS_DIR / "check-translation-freshness.py")
+    spec = importlib.util.spec_from_file_location("_common", SCRIPTS_DIR / "_common.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-_freshness = _import_freshness()
+_common = _import_common()
 
 
 def _tr_path(locale: str, rel: str) -> Path:
@@ -99,10 +98,10 @@ def is_fresh(locale: str, rel: str) -> bool:
     tr = _tr_path(locale, rel)
     if not (en.exists() and tr.exists()):
         return False
-    embedded = _freshness.extract_embedded_hash(tr.read_text(encoding="utf-8"))
+    embedded = _common.extract_embedded_hash(tr.read_text(encoding="utf-8"))
     if embedded is None:
         return False
-    return embedded == _freshness.compute_source_hash(en.read_text(encoding="utf-8"))
+    return embedded == _common.compute_source_hash(en.read_text(encoding="utf-8"))
 
 
 def section_of(rel: str) -> str:

@@ -203,13 +203,16 @@ All three must pass before you commit:
 
 ```bash
 python3 translation/scripts/lint-translation.py --locale <LOCALE>
-python3 translation/scripts/check-translation-freshness.py --locale <LOCALE>
 python3 translation/scripts/check-known-mistranslations.py --locale <LOCALE>
 python3 translation/scripts/check-wrong-language.py --locale <LOCALE>
 ```
 
-Freshness must show **no new stale files**. If a file went stale, a fix
-agent edited the `{/* doqumentation-source-hash: … */}` marker — revert
+> ⚠️ The rendered pages under `i18n/<LOCALE>/…/current/` are derived
+> from the PO files and are not in git (`translation/v2/README.md`). An
+> in-place fix to a rendered page is lost at the next render; until the
+> fix path is ported to PO entries, record findings (FAIL/MINOR with a
+> precise note) rather than editing pages. If a fix agent edited a
+> `{/* doqumentation-source-hash: … */}` marker — revert
 that file and redo it.
 
 `lint-translation.py` has one known false positive: "unmatched code fence"

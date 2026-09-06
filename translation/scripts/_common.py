@@ -13,6 +13,7 @@ import these; existing scripts can migrate incrementally.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -21,6 +22,24 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
+
+# A rendered translation carries the hash of the English it was rendered
+# from (translation/v2/render.py writes it; populate-locale marks English
+# fallbacks instead). The review scripts use the pair to skip a page whose
+# English moved since the render. Formerly in check-translation-freshness.py.
+FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
+HASH_PATTERN = re.compile(r"\{/\* doqumentation-source-hash: ([a-f0-9]{8}) \*/\}")
+
+
+def compute_source_hash(content: str) -> str:
+    """First 8 hex chars of the SHA-256 of an English page's content."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
+
+
+def extract_embedded_hash(content: str) -> str | None:
+    """The source hash a rendered translation carries, or None."""
+    m = HASH_PATTERN.search(content)
+    return m.group(1) if m else None
 
 
 # ── status.json IO ──

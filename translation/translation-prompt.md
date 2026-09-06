@@ -84,9 +84,9 @@ whole file. If >800 lines, see Chunking below.
 > the `Write` tool is reliable. **In a web session use
 > [`translation-prompt-web.md`](translation-prompt-web.md)** — it keeps
 > a conservative split to dodge that write failure. Chunking here (full
-> translation) is a different mechanism from the unified-diff *hunks*
-> [`retranslation-prompt.md`](retranslation-prompt.md) uses for stale
-> updates — do not conflate the two.
+> translation) is a different mechanism from the per-segment batches
+> `translation/v2/translate.py --prepare` writes for a sync — do not
+> conflate the two.
 
 Each agent gets this prompt (fill in {path}, {LANGUAGE}, {LOCALE}, {HASH}, {INFORMAL_FORM}, and for chunks the start/stop heading text):
 
@@ -132,21 +132,22 @@ git add translation/drafts/{LOCALE}/ && git commit -m "feat(i18n): add {LANGUAGE
 ## Step 4 — Validate and finalize
 
 After ALL translation is done, run validation and post-processing in one block:
-```bash
-python translation/scripts/validate-translation.py --locale {LOCALE} --dir translation/drafts
-python translation/scripts/fix-heading-anchors.py --locale {LOCALE} --dir translation/drafts --apply
-python translation/scripts/promote-drafts.py --locale {LOCALE}
-python translation/scripts/sync-translations.py --locale {LOCALE}
-python translation/scripts/translate-content.py populate-locale --locale {LOCALE}
-git add -f i18n/{LOCALE}/docusaurus-plugin-content-docs/current/
-git commit -m "feat(i18n): promote {LANGUAGE} translations"
-```
+> ⚠️ **Superseded.** Whole-file translation into `translation/drafts/`
+> and the promote step were removed with the v2 pipeline: a locale's
+> translation is its PO files, filled per segment by
+> `translation/v2/translate.py` (`--prepare` / `--apply`) and rendered by
+> `render.py`; the rendered pages are not in git. Bootstrapping a *new*
+> locale: `translation/v2/bootstrap.py --locale {LOCALE}` on an empty
+> locale seeds every page from the POT, and the sync procedure in
+> `translation/v2/README.md` then translates everything as "untranslated".
+> This file's Language Table stays the source of truth for register.
 
-`promote-drafts.py` already validates and only promotes PASS files; the
-draft pipeline is the validation gate for from-scratch translations.
-(`update-translations.py --finalize` is the gate for the *stale-refresh*
-path in [`retranslation-prompt.md`](retranslation-prompt.md) — a
-different workflow; don't run it here.) After promote, spot-check that
+```bash
+python3 translation/v2/render.py --locale {LOCALE}
+python3 translation/scripts/validate-translation.py --locale {LOCALE}
+python3 translation/scripts/lint-translation.py --locale {LOCALE}
+git add i18n/{LOCALE}/po && git commit -m "i18n({LOCALE}): …"
+``` After promote, spot-check that
 `git status` shows only `.mdx` under the locale and **no gitignored
 binaries** were force-added.
 

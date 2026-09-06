@@ -63,7 +63,7 @@ def _import_module(name: str, filename: str):
     return mod
 
 
-_freshness = _import_module("freshness", "check-translation-freshness.py")
+_common = _import_module("_common", "_common.py")
 
 # Short/stub pages below this prose-line count, when structure matches EN, are
 # treated as LIKELY_CLEAN (sample, don't review exhaustively).
@@ -223,10 +223,10 @@ def triage(fresh: str, info: dict, entry: dict) -> str:
 
 
 def freshness_of(en_path: Path, tr_path: Path) -> str:
-    embedded = _freshness.extract_embedded_hash(tr_path.read_text(encoding="utf-8"))
+    embedded = _common.extract_embedded_hash(tr_path.read_text(encoding="utf-8"))
     if embedded is None:
         return "UNKNOWN"
-    cur = _freshness.compute_source_hash(en_path.read_text(encoding="utf-8"))
+    cur = _common.compute_source_hash(en_path.read_text(encoding="utf-8"))
     return "FRESH" if embedded == cur else "STALE"
 
 

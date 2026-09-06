@@ -2,9 +2,9 @@
 
 Used by:
   - lint-translation.py::check_english_prose_drift  (strict mode)
-  - validate-translation.py::check_drift            (lenient mode)
-  - bootstrap-passage-hashes.py                     (lenient mode)
-  - update-en-passage-hashes.py                     (lenient mode)
+
+(The lenient-mode callers — the v1 passage-hash freshness pipeline — were
+removed when translation/v2 replaced it; the PO files carry provenance now.)
 
 A "unit" is a paragraph, list item, or heading — i.e. a single semantic
 chunk of prose. Code blocks, frontmatter, math, JSX/HTML blocks, image

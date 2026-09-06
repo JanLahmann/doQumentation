@@ -6,10 +6,12 @@
     python3 translation/v2/render.py --locale de --page guides/hello-world.mdx
 
 Writes i18n/<locale>/docusaurus-plugin-content-docs/current/<page>.mdx, which
-is where Docusaurus and every v1 tool expect a translation. The v1 freshness
-marker is written too, with the hash of the English the page was rendered
-from, so v1's freshness check, status and populate-locale keep working while
-both pipelines coexist.
+is where Docusaurus expects a translation. Those files are derived and not
+tracked in git (the build workflows run this before `docusaurus build`);
+populate-locale then fills any page without a PO with an English fallback.
+Each rendered page carries the hash of the English it was rendered from, so
+translation-status.py, the review scripts and populate-locale can tell a
+rendered translation from a fallback.
 
 A page whose PO has untranslated or fuzzy entries still renders: those
 segments come out in English. Pages without a PO are left alone.

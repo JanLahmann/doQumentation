@@ -7,11 +7,13 @@
 
 ## How a full linguistic review works
 
-1. **Freshness gate** — only review files in sync with current EN. Refresh and
-   re-stamp any STALE/UNKNOWN file first:
+1. **Render first** — the pages under `i18n/<LOCALE>/…/current/` are derived
+   from the PO files and not in git:
    ```bash
-   python translation/scripts/check-translation-freshness.py --locale <LOCALE>
+   python3 translation/v2/render.py --locale <LOCALE>
    ```
+   Only review a locale whose `translation/v2/update.py --locale <LOCALE>`
+   reports 0 fuzzy and 0 untranslated (see `translation/v2/README.md`).
 2. **Tier 1 — structural validation** (heading count, code blocks, image paths):
    ```bash
    python translation/scripts/validate-translation.py --locale <LOCALE> --record
