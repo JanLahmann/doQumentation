@@ -5,7 +5,9 @@
  * Inputs (read from disk at build time):
  *   - src/config/upstreamFileMeta.json   (written by scripts/sync-content.py)
  *       per EN doc: upstream_path, upstream_date, upstream_sha, en_date
- *   - translation/status.json            (written by promote-drafts.py)
+ *   - translation/status.json            (last written by the v1 promote-drafts.py,
+ *       deleted 2026-09-06; the v2 PO pipeline does not update it yet — see
+ *       .claude/PROJECT_HANDOFF.md, Active TODO)
  *       per locale × path (when promoted): en_base_commit_date, en_base_source
  *
  * Output (per build, scoped to the current locale):
@@ -94,8 +96,10 @@ module.exports = function pageDatesPlugin(context, _options) {
           // sync-content.py run for whitespace/transform reasons and so
           // could land at a date well after the actual upstream content
           // the translator saw. Clamping fixes that without rewriting
-          // status.json. Going forward, promote-drafts.py records the
-          // upstream content date directly, so clamping is a no-op there.
+          // status.json. promote-drafts.py later recorded the upstream
+          // content date directly; since the v2 PO pipeline (2026-09-06)
+          // nothing writes the field at all, so values are frozen at the
+          // last promotion and this clamp is what keeps them sane.
           let baseDate = entry.en_base_commit_date;
           const enDate = pages[relPath].enDate;
           let clamped = false;

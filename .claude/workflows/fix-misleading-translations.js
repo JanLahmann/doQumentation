@@ -1,6 +1,6 @@
 export const meta = {
   name: 'fix-misleading-translations',
-  description: 'Strategy B: targeted per-file fixes for the genuinely-misleading translation errors found by the Opus deep-review (semantic inversions, wrong terms, injected content). One Sonnet agent per file, lint+freshness-gated.',
+  description: 'Strategy B: targeted per-file fixes for the genuinely-misleading translation errors found by the Opus deep-review (semantic inversions, wrong terms, injected content). One Sonnet agent per file, lint-gated. NOTE (since v2, 2026-09-06): edits the rendered pages, which are regenerated from the PO files at the next render — record findings only until this is ported to PO entries; see translation/v2/README.md.',
   phases: [
     { title: 'Fix', detail: 'one Sonnet agent per misleading file', model: 'sonnet' },
   ],
@@ -17,7 +17,7 @@ if (!input || !Array.isArray(input) || input.length === 0) {
   return { error: 'no fixes provided' }
 }
 
-log(`Strategy B — ${input.length} targeted misleading-error fixes (Sonnet, lint+freshness-gated)`)
+log(`Strategy B — ${input.length} targeted misleading-error fixes (Sonnet, lint-gated; edits rendered pages — see meta.description)`)
 
 const SCHEMA = {
   type: 'object',
