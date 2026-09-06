@@ -16,7 +16,7 @@ if (!input || !Array.isArray(input) || input.length === 0) {
   return { error: 'no locales provided' }
 }
 
-log(`Strategy A — curate+fix glossary leaks for ${input.length} locale(s) (Sonnet, lint+freshness-gated)`)
+log(`Strategy A — curate+fix glossary leaks for ${input.length} locale(s) (Sonnet, lint-gated)`)
 
 const SCHEMA = {
   type: 'object',
@@ -54,7 +54,6 @@ STEP 3 — run the deterministic fixer (it only does SAFE edits — decapitalize
   python3 translation/scripts/fix-glossary-leaks.py --locale ${f.locale} --all
 Then VERIFY:
   python3 translation/scripts/check-glossary-consistency.py --locale ${f.locale} --report   (leaks should drop)
-  python3 translation/scripts/check-translation-freshness.py --locale ${f.locale}   (STALE must NOT increase — the fixer never touches the source-hash marker; if STALE rose, something is wrong — investigate/revert)
 
 CONSTRAINTS: edit only translation/glossary/${f.locale}.json and i18n/${f.locale}/** files. NO git. Do NOT touch status.json or other locales. If on inspection ${f.locale_name} keeps BOTH gate and circuit in English (no leakage to fix), set status=KEEP_ENGLISH_LOCALE and explain.
 

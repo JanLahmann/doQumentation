@@ -76,8 +76,7 @@ def test_tag_in_code_fence_does_not_false_flag(common):
 # ── status.json helpers (shared load/save) ──
 
 def test_load_status_missing_returns_empty(common, tmp_path, monkeypatch):
-    # Point STATUS_FILE at a non-existent path → {} (not a crash). This is the
-    # behavior the bootstrap-passage-hashes migration relies on.
+    # Point STATUS_FILE at a non-existent path → {} (not a crash).
     monkeypatch.setattr(common, "STATUS_FILE", tmp_path / "nope.json")
     assert common.load_status() == {}
 

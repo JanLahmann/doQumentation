@@ -4,13 +4,13 @@ Use this prompt AFTER running `translation/scripts/validate-translation.py` (whi
 
 ## Usage
 
-0. **Check freshness first** — only review files that are in sync with the
-   current EN source. Reviewing a STALE/UNKNOWN file wastes effort because
-   its prose may not match the English you're comparing against:
-   `python translation/scripts/check-translation-freshness.py --locale {LOCALE}`
-   Refresh + re-stamp any STALE/UNKNOWN file before reviewing it. (The
-   `review-translations.py --next-chunk` orchestrator already holds these
-   back automatically unless you pass `--include-stale`.)
+0. **Render first** — the pages under `i18n/{LOCALE}/…/current/` are derived
+   from the PO files and not in git: `python3 translation/v2/render.py
+   --locale {LOCALE}`. Only review a locale whose
+   `python3 translation/v2/update.py --locale {LOCALE}` reports 0 fuzzy and
+   0 untranslated; a segment still in English is stale, not mistranslated.
+   (The `review-translations.py --next-chunk` orchestrator holds back pages
+   whose English moved since the render unless you pass `--include-stale`.)
 1. Run structural validation: `python translation/scripts/validate-translation.py --locale {LOCALE} --file {FILE}`
 2. Run MDX lint: `python translation/scripts/lint-translation.py --file {FILE} --en-file {EN_FILE}`
 3. If all pass, paste the prompt below into the review model with both files

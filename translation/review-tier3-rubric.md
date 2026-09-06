@@ -61,11 +61,10 @@ INCONSISTENT-GLOSSARY RULE (apply uniformly — this removes reviewer guesswork)
 
 FIX POLICY — fix only safe MINOR issues in place (register→informal/standard,
 clear typos, isolated leaked words, foreign-language leaks, leaked survey-note
-blocks). After any edit the file MUST pass
-  python3 translation/scripts/lint-translation.py --locale {LOCALE} --file <ABS>
-and  python3 translation/scripts/check-translation-freshness.py --locale {LOCALE}
-must NOT increase STALE (never touch the {/* doqumentation-source-hash */}
-marker). Do NOT fix word-salad / hallucination / accuracy / dropped-content /
+blocks). The page you read is RENDERED from
+i18n/{LOCALE}/po/ and is not in git: an in-place edit is lost at the next
+render, so record the finding with a precise note instead of fixing it
+(never touch the {/* doqumentation-source-hash */} marker). Do NOT fix word-salad / hallucination / accuracy / dropped-content /
 pervasive-leak — record FAIL with a precise note instead.
 
 VERDICT (first match wins): FAIL = any word salad, hallucination, accuracy/

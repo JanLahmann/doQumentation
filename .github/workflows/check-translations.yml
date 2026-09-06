@@ -27,8 +27,17 @@ jobs:
       - name: Sync upstream content
         run: python3 scripts/sync-content.py --no-clone
 
-      - name: Refresh EN passage-hash manifest
-        run: python3 translation/scripts/update-en-passage-hashes.py
+      - name: Set up po4a
+        uses: ./.github/actions/setup-po4a
+
+      # The rendered pages are not in git: everything below that reads
+      # i18n/<locale>/…/current/ (lint, status, the contributor overview)
+      # needs them rendered from the PO files first.
+      - name: Render the maintained locales
+        run: |
+          for l in ar cs de es fr he id it ja ko ms pl pt ro th tl uk; do
+            python3 translation/v2/render.py --locale "$l"
+          done
 
       # Full corpus lint of the 17 MAINTAINED locales. Deliberately not
       # --all-locales: the 9 German dialects are kept but unmaintained and
@@ -39,7 +48,7 @@ jobs:
       # under it — which is exactly how a fence-count mismatch reached main.
       # ~15 min, which is fine once a day. Non-blocking: this workflow's job is
       # to report drift, not to gate, and a red daily run would mask the
-      # freshness reporting below it.
+      # staleness reporting below it.
       - name: Lint all maintained translations
         continue-on-error: true
         run: python3 translation/scripts/lint-translation.py --main-locales
@@ -55,46 +64,50 @@ jobs:
       - name: Refresh CONTRIBUTING-NOW.md
         run: python3 translation/scripts/contributing-status.py --write
 
-      - name: Commit status + EN manifest if changed
+      - name: Commit status if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add translation/STATUS.md translation/en-passage-hashes.json \
-                  CONTRIBUTING-NOW.md
+          git add translation/STATUS.md CONTRIBUTING-NOW.md
           # Group commit+push so they ONLY run when there are staged changes.
           # Without the braces, `||` and `&&` are equal-precedence/left-assoc, so
           # `diff --quiet || commit && push` runs `push` even on a clean tree
           # (empty diff → diff exits 0 → || short-circuits → && push still fires).
           if ! git diff --cached --quiet; then
-            git commit -m "Update STATUS.md + en-passage-hashes + CONTRIBUTING-NOW [ci skip]"
+            git commit -m "Update STATUS.md + CONTRIBUTING-NOW [ci skip]"
             git push
           fi
 
-      - name: Check translation freshness
+      # Staleness in v2 is a property of PO entries, not files: after an
+      # English sync, msgmerge marks changed segments fuzzy and new ones
+      # untranslated, and a new upstream page has no PO at all. This runs the
+      # merge against the current English and reports the per-locale worklist,
+      # then discards the merged POs — the merge is committed by the sync
+      # procedure in translation/v2/README.md, not by a report.
+      - name: Check for untranslated or fuzzy segments
         id: check
         run: |
           set +e
-          python3 translation/scripts/check-translation-freshness.py --all-locales 2>&1 | tee freshness-report.txt
-          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          python3 translation/v2/extract.py > /dev/null 2>&1
+          : > staleness-report.txt
+          for l in ar cs de es fr he id it ja ko ms pl pt ro th tl uk; do
+            python3 translation/v2/update.py --locale "$l" 2>/dev/null | grep -E "^$l:" | tee -a staleness-report.txt
+          done
+          git checkout -- i18n translation/v2/pot
+          rc=0
+          if grep -vE ' 0 fuzzy, 0 untranslated .*; 0 page\(s\) without a PO' staleness-report.txt | grep -q .; then
+            rc=1
+          fi
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
         continue-on-error: true
 
-      - name: Check per-paragraph EN drift
-        id: drift
-        run: |
-          set +e
-          python3 translation/scripts/validate-translation.py --check-drift --drift-summary 2>&1 | tee drift-report.txt
-          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
-        continue-on-error: true
-
-      - name: Create or update issue if critical
-        if: steps.check.outputs.exit_code == '1' || steps.drift.outputs.exit_code == '1'
+      - name: Create or update issue if stale
+        if: steps.check.outputs.exit_code == '1'
         uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
-            const fullReport = fs.readFileSync('freshness-report.txt', 'utf8');
-            const driftReport = fs.existsSync('drift-report.txt')
-              ? fs.readFileSync('drift-report.txt', 'utf8') : '';
+            const report = fs.readFileSync('staleness-report.txt', 'utf8').trim();
             const title = 'Stale translations detected';
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -102,71 +115,20 @@ jobs:
               state: 'open',
               labels: 'translation-freshness',
             });
-            // GitHub issue body limit is 65536 chars. Summarize per-locale counts and
-            // include only the first chunk of detail; full report is in the workflow logs.
-            const lines = fullReport.split('\n');
-            const counts = {};
-            for (const line of lines) {
-              const m = line.match(/^(CRITICAL|STALE)\s+(\S+)/);
-              if (!m) continue;
-              const key = `${m[1]} ${m[2]}`;
-              counts[key] = (counts[key] || 0) + 1;
-            }
-            const summary = Object.entries(counts).sort().map(
-              ([k, v]) => `${k.padEnd(16)} ${v}`
-            ).join('\n');
-            // Include first ~50000 chars of detail (leaves room for headers/footers under 65536 limit)
-            const MAX_DETAIL = 50000;
-            const truncated = fullReport.length > MAX_DETAIL;
-            const detail = truncated
-              ? fullReport.slice(0, MAX_DETAIL) + `\n\n... (truncated; ${fullReport.length - MAX_DETAIL} more chars in workflow logs)`
-              : fullReport;
-            // Drift report: summarize event counts per locale and include
-            // the first ~10000 chars of detail. Always trimmed to leave the
-            // freshness section room under GitHub's 65536 char body limit.
-            const MAX_DRIFT_DETAIL = 10000;
-            const driftTrimmed = driftReport.length > MAX_DRIFT_DETAIL;
-            const driftSection = driftReport
-              ? driftReport.slice(0, MAX_DRIFT_DETAIL) +
-                (driftTrimmed
-                  ? `\n\n... (truncated; ${driftReport.length - MAX_DRIFT_DETAIL} more chars in workflow logs)`
-                  : '')
-              : '(no drift report)';
-
             const body = [
-              '## Translation Freshness Report',
+              '## Translation staleness report',
               '',
-              '### Summary (file-level freshness)',
-              '```',
-              summary,
-              '```',
-              '',
-              '### Per-paragraph EN drift',
-              '',
-              'Each event = one paragraph hash added or removed in the EN source',
-              'since the translation was promoted. A modified paragraph shows up',
-              'as one removed + one added.',
+              'Per locale, after `msgmerge` against the current English:',
+              'fuzzy = the English of that segment changed since it was translated,',
+              'untranslated = a new segment, "without a PO" = a new upstream page.',
               '',
               '```',
-              driftSection,
+              report,
               '```',
               '',
-              '### File-level detail',
-              '```',
-              detail,
-              '```',
-              '',
-              'CRITICAL = missing imports or components (features broken on locale sites)',
-              'STALE = EN source changed since translation (content outdated)',
-              'DRIFT = paragraph-level changes in EN since promote (see drift section above)',
-              '',
-              'To fix freshness: propagate EN changes to affected files, then run:',
-              '```bash',
-              'python translation/scripts/check-translation-freshness.py --stamp --all-locales',
-              '```',
-              '',
-              'To clear drift: re-translate the changed paragraphs, then re-promote',
-              '(promote-drafts.py refreshes the baseline automatically).',
+              'To fix, run the sync procedure in `translation/v2/README.md` for each',
+              'locale listed (update → prepare → translate-locale workflow → apply →',
+              'render → gates) and commit the PO files.',
               '',
               '_Auto-generated by check-translations workflow_',
             ].join('\n');
