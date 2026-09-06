@@ -43,7 +43,7 @@ MAIN_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
     "ms", "id", "th", "ko", "pl", "ro", "cs",
 ]
-DIALECTS = ["swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut"]
+DIALECTS: list[str] = []   # the 9 German dialect locales were removed 2026-09-05
 
 SECTIONS = ["tutorials/", "guides/", "learning/courses/", "learning/modules/"]
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
@@ -232,7 +232,7 @@ def main():
     ap.add_argument("--min-lines", type=int, default=40,
                     help="skip stubs shorter than this (default 40)")
     ap.add_argument("--include-dialects", action="store_true",
-                    help="also sample the 9 German dialects (default: main 17 only)")
+                    help="also sample non-main locales (none at present)")
     ap.add_argument("--sections", default=None,
                     help="comma-separated section prefixes to restrict to "
                          "(e.g. 'learning/courses/,learning/modules/')")

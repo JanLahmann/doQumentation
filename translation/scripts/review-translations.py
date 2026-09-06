@@ -61,7 +61,6 @@ _common = _import_module("_common", "_common.py")
 ALL_LOCALES = [
     "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
     "ms", "id", "th", "ko", "pl", "ro", "cs",
-    "swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut",
 ]
 
 # Priority order for linguistic review
@@ -73,7 +72,6 @@ LOCALE_PRIORITY = [
     # Phase 3: 7 untouched main locales — non-Latin first, then Slavic, then MS/ID
     "ko", "th", "pl", "cs", "ro", "ms", "id",
     # Dialect locales last
-    "ksh", "nds", "gsw", "sax", "bln", "aut", "swg", "bad", "bar",
 ]
 
 SECTION_PRIORITY = [
