@@ -14,7 +14,6 @@ Usage:
     python translation/scripts/translation-status.py --json                   # JSON output
     python translation/scripts/translation-status.py --update-contributing    # update CONTRIBUTING table
     python translation/scripts/translation-status.py --write-status           # write translation/STATUS.md
-    python translation/scripts/translation-status.py --all                    # include dialect locales
 """
 
 import argparse
@@ -40,16 +39,13 @@ STATUS_MD = REPO_ROOT / "translation" / "STATUS.md"
 FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 
 MAIN_LOCALES = ["de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he", "ms", "id", "th", "ko", "pl", "ro", "cs"]
-DIALECT_LOCALES = ["swg", "bad", "bar", "ksh", "nds", "gsw", "sax", "bln", "aut"]
+DIALECT_LOCALES: list[str] = []   # the 9 German dialect locales were removed 2026-09-05
 ALL_LOCALES = MAIN_LOCALES + DIALECT_LOCALES
 
 LOCALE_NAMES = {
     "de": "German", "es": "Spanish", "uk": "Ukrainian", "ja": "Japanese",
     "fr": "French", "it": "Italian", "pt": "Portuguese", "tl": "Tagalog",
     "ar": "Arabic", "he": "Hebrew",
-    "swg": "Swabian", "bad": "Badisch", "bar": "Bavarian", "ksh": "Kölsch",
-    "nds": "Low German", "gsw": "Swiss German", "sax": "Saxon",
-    "bln": "Berlinerisch", "aut": "Austrian",
     "ms": "Malay", "id": "Indonesian", "th": "Thai",
     "ko": "Korean", "pl": "Polish", "ro": "Romanian", "cs": "Czech",
 }
@@ -729,7 +725,7 @@ def main():
     parser.add_argument("--locale",
                         help="Show detail for a single locale")
     parser.add_argument("--all", action="store_true",
-                        help="Include dialect locales (KSH, NDS, etc.)")
+                        help="Include non-main locales (none at present)")
     parser.add_argument("--backlog", action="store_true",
                         help="Show prioritized untranslated files (requires --locale)")
     parser.add_argument("--limit", type=int, default=0,

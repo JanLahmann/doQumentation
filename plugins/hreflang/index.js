@@ -45,24 +45,10 @@ const FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}";
 // Mirrors robots.txt Disallow and Docusaurus' generated utility pages.
 const EXCLUDE_PATHS = new Set(["/admin", "/404", "/search"]);
 
-// hreflang values must be BCP-47. Map a few of our internal locale codes to
+// hreflang values must be BCP-47. Map internal locale codes that differ to
 // valid tags; everything else is passed through unchanged (de, es, fr, ...).
-// German regional dialects have no standard 2-letter tag, so we tag them as
-// German regional variants where ISO 639-3 / BCP-47 has a code, else fall back
-// to `de` (better than emitting an invalid tag Google will ignore).
 const HREFLANG_OVERRIDES = {
   tl: "fil", // Filipino
-  // German dialects → closest valid BCP-47 / ISO 639-3 tag
-  swg: "swg", // Swabian (ISO 639-3, valid)
-  gsw: "gsw", // Swiss German (ISO 639-2/3, valid)
-  nds: "nds", // Low German (ISO 639-2, valid)
-  bar: "bar", // Bavarian (ISO 639-3, valid)
-  ksh: "ksh", // Kölsch (ISO 639-3, valid)
-  // No standard code — fall back to generic German so the alternate is still valid:
-  bad: "de",
-  sax: "de",
-  bln: "de",
-  aut: "de-AT",
 };
 
 function toHreflang(locale) {

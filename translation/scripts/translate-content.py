@@ -88,60 +88,6 @@ BANNER_TEMPLATES = {
         "התוכן מוצג באנגלית.\n"
         ":::\n"
     ),
-    "swg": (
-        "\n:::note[No net ibersetzt]\n"
-        "Die Seid isch no net ibersetzt worda. "
-        "Se gucket die englische Originalversion.\n"
-        ":::\n"
-    ),
-    "bad": (
-        "\n:::note[Nonig ibersetzt]\n"
-        "Die Siite isch nonig ibersetzt worre. "
-        "Ihr luege d englischi Originalversion aa.\n"
-        ":::\n"
-    ),
-    "bar": (
-        "\n:::note[No ned ibersetzt]\n"
-        "De Seitn is no ned ibersetzt worn. "
-        "Sie schaung de englische Originalversion o.\n"
-        ":::\n"
-    ),
-    "ksh": (
-        "\n:::note[Noch nit övversatz]\n"
-        "Die Sigg es noch nit övversatz. "
-        "Ehr luurt üch de änglesche Originalversion aan.\n"
-        ":::\n"
-    ),
-    "nds": (
-        "\n:::note[Noch nich översett]\n"
-        "Disse Sied is noch nich översett. "
-        "Se kiekt de engelsche Originalversion an.\n"
-        ":::\n"
-    ),
-    "gsw": (
-        "\n:::note[Nonig übersetzt]\n"
-        "Di Siite isch nonig übersetzt worde. "
-        "Dir luege d englischi Originalversion aa.\n"
-        ":::\n"
-    ),
-    "sax": (
-        "\n:::note[Noch nich ibersetzt]\n"
-        "Die Seide is noch nich ibersetzt worn. "
-        "Se guggen de englsche Originalversion.\n"
-        ":::\n"
-    ),
-    "bln": (
-        "\n:::note[Noch nich übersetzt]\n"
-        "Die Seite is noch nich übersetzt. "
-        "Se kieken die englische Originalversion.\n"
-        ":::\n"
-    ),
-    "aut": (
-        "\n:::note[Noch nicht übersetzt]\n"
-        "Diese Seite wurde noch nicht übersetzt. "
-        "Sie sehen die englische Originalversion.\n"
-        ":::\n"
-    ),
     "ms": (
         "\n:::note[Belum diterjemahkan]\n"
         "Halaman ini belum diterjemahkan. "

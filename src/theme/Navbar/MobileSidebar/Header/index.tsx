@@ -42,8 +42,6 @@ function MobileLocaleSelector() {
     return () => document.removeEventListener('click', handleClick);
   }, [open]);
 
-  const dialectLocales = new Set(['swg', 'bad', 'bar', 'ksh', 'nds', 'gsw', 'sax', 'bln', 'aut']);
-
   // Filter to visibleLocales (always include current locale)
   const visibleLocales = siteConfig.customFields?.visibleLocales as string[] | undefined;
   const filteredLocales = visibleLocales
@@ -77,14 +75,8 @@ function MobileLocaleSelector() {
       </button>
       {open && (
         <ul className="dq-mobile-locale__dropdown">
-          {filteredLocales.map((locale, i) => (
+          {filteredLocales.map((locale) => (
             <React.Fragment key={locale}>
-              {dialectLocales.has(locale) &&
-                (i === 0 || !dialectLocales.has(filteredLocales[i - 1])) && (
-                  <li className="dq-mobile-locale__separator">
-                    {translate({id: 'navbar.mobile.germanDialects', message: 'German Dialects'})}
-                  </li>
-                )}
               <li>
                 <button
                   type="button"
