@@ -1,6 +1,6 @@
 export const meta = {
   name: 'fix-misleading-translations',
-  description: 'Strategy B: targeted per-file fixes for the genuinely-misleading translation errors found by the Opus deep-review (semantic inversions, wrong terms, injected content). One Sonnet agent per file, lint-gated. NOTE (since v2, 2026-09-06): edits the rendered pages, which are regenerated from the PO files at the next render — record findings only until this is ported to PO entries; see translation/v2/README.md.',
+  description: 'Strategy B: targeted per-file fixes for the genuinely-misleading translation errors found by the Opus deep-review (semantic inversions, wrong terms, injected content). One Sonnet agent per file, lint-gated. SUPERSEDED (2026-09-07): edits rendered pages, which are regenerated from the PO files at the next render. Use translation/v2/fix.py --prepare + the translate-locale workflow (manifest-fix.json) + fix.py --apply instead; see CONTRIBUTING-REVIEWS.md step 6.',
   phases: [
     { title: 'Fix', detail: 'one Sonnet agent per misleading file', model: 'sonnet' },
   ],

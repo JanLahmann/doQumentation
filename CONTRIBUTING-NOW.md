@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-06 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-07 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -29,10 +29,21 @@ that go stale.
 
 ---
 
+## Who is working on what
+
+A claim is one open issue labelled `translation-claim` (template:
+*Claim a locale*). Open one before you start and close it when you
+stop; it is the only reservation there is. List them any time with
+`gh issue list --repo JanLahmann/doQumentation --label translation-claim`.
+
+*No open claims right now — every locale is free.*
+
+---
+
 ## Pick a locale
 
-Every locale below still has unreviewed pages. Claim one with the
-maintainer so two people don't review the same one, then follow
+Every locale below still has unreviewed pages. Pick one that is not
+claimed above, open your claim issue, then follow
 `CONTRIBUTING-REVIEWS.md`.
 
 `--max-leaks` controls how many capitalized-English leaks a file may
@@ -40,27 +51,30 @@ contain and still be eligible. Tighter is better quality-per-round; the
 value shown is the **tightest threshold that still leaves a workable
 pool** (at least 25 files). Use it as the starting point.
 
+| Locale | Unreviewed pool | Use | Reviewed so far |
+|---|---|---|---|
+| `he` | **38** | `--max-leaks 12` | 232/428 (54%) |
+| `de` | **35** | `--max-leaks 12` | 171/428 (39%) |
+| `id` | **34** | `--max-leaks 12` | 233/428 (54%) |
+| `ko` | **34** | `--max-leaks 6` | 245/428 (57%) |
+| `th` | **32** | `--max-leaks 12` | 219/428 (51%) |
+| `ro` | **25** | `--max-leaks 8` | 289/428 (67%) |
+
 **Nearly exhausted** (fewer than 25 eligible even at
 `--max-leaks 12`) — still worth a short round, but expect
 to widen further or re-sweep files that already carry a verdict:
 
-- `ar` — 0 left at `--max-leaks 12` (356/428 reviewed)
-- `cs` — 0 left at `--max-leaks 12` (270/428 reviewed)
-- `de` — 0 left at `--max-leaks 12` (171/428 reviewed)
-- `es` — 0 left at `--max-leaks 12` (360/428 reviewed)
-- `fr` — 0 left at `--max-leaks 12` (361/428 reviewed)
-- `he` — 0 left at `--max-leaks 12` (232/428 reviewed)
-- `id` — 0 left at `--max-leaks 12` (233/428 reviewed)
-- `it` — 0 left at `--max-leaks 12` (359/428 reviewed)
-- `ja` — 0 left at `--max-leaks 12` (347/428 reviewed)
-- `ko` — 0 left at `--max-leaks 12` (245/428 reviewed)
-- `ms` — 0 left at `--max-leaks 12` (286/428 reviewed)
-- `pl` — 0 left at `--max-leaks 12` (297/428 reviewed)
-- `pt` — 0 left at `--max-leaks 12` (359/428 reviewed)
-- `ro` — 0 left at `--max-leaks 12` (289/428 reviewed)
-- `th` — 0 left at `--max-leaks 12` (219/428 reviewed)
-- `tl` — 0 left at `--max-leaks 12` (362/428 reviewed)
-- `uk` — 0 left at `--max-leaks 12` (348/428 reviewed)
+- `ms` — 23 left at `--max-leaks 12` (286/428 reviewed)
+- `pl` — 23 left at `--max-leaks 12` (297/428 reviewed)
+- `cs` — 22 left at `--max-leaks 12` (270/428 reviewed)
+- `ar` — 6 left at `--max-leaks 12` (356/428 reviewed)
+- `es` — 6 left at `--max-leaks 12` (360/428 reviewed)
+- `fr` — 6 left at `--max-leaks 12` (361/428 reviewed)
+- `it` — 6 left at `--max-leaks 12` (359/428 reviewed)
+- `pt` — 6 left at `--max-leaks 12` (359/428 reviewed)
+- `tl` — 5 left at `--max-leaks 12` (362/428 reviewed)
+- `uk` — 5 left at `--max-leaks 12` (348/428 reviewed)
+- `ja` — 4 left at `--max-leaks 12` (347/428 reviewed)
 
 ---
 

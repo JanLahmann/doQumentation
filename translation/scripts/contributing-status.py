@@ -24,6 +24,9 @@ import argparse
 import importlib.util
 import json
 import re
+import os
+import subprocess
+import urllib.request
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -33,6 +36,14 @@ SCRIPTS = Path(__file__).resolve().parent
 OUT = REPO / "CONTRIBUTING-NOW.md"
 REVIEWS = REPO / "translation" / "reviews"
 
+# Claims: one open GitHub issue per person-and-locale, labelled
+# translation-claim (template: .github/ISSUE_TEMPLATE/translation-claim.yml).
+# Listing them here answers "who is working on what" without a PR; the
+# issue is the reservation, this file is its mirror.
+CLAIM_REPO = "JanLahmann/doQumentation"
+CLAIM_LABEL = "translation-claim"
+CLAIM_TITLE_RE = re.compile(r"claim:\s*([a-z]{2})\b(?:.*?\b(review|translat\w*))?", re.I)
+
 # Thresholds the guide quotes, widest-first. A locale is reported at the
 # tightest threshold that still leaves it workable, which is the same order a
 # round should try them in.
@@ -40,6 +51,67 @@ LADDER = [2, 4, 6, 8, 12]
 
 # Below this a locale cannot support a useful round at that threshold.
 WORKABLE = 25
+
+
+def fetch_claims() -> list[dict] | None:
+    """Open claim issues as [{locale, track, who, number, since}], or None when
+    neither `gh` nor the public API answered (offline, rate-limited)."""
+    raw = None
+    try:
+        out = subprocess.run(
+            ["gh", "issue", "list", "--repo", CLAIM_REPO, "--label", CLAIM_LABEL, "--state", "open",
+             "--limit", "100", "--json", "number,title,body,assignees,author,createdAt"],
+            capture_output=True, text=True, timeout=30)
+        if out.returncode == 0:
+            raw = json.loads(out.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        raw = None
+    if raw is None:
+        url = f"https://api.github.com/repos/{CLAIM_REPO}/issues?labels={CLAIM_LABEL}&state=open&per_page=100"
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                                   "User-Agent": "doqumentation-contributing-status"})
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = json.loads(r.read().decode("utf-8"))
+        except Exception:
+            return None
+        raw = [i for i in raw if "pull_request" not in i]
+        for i in raw:
+            i["createdAt"] = i.get("created_at", "")
+            i["author"] = i.get("user") or {}
+    claims = []
+    for i in raw:
+        title = i.get("title") or ""
+        body = i.get("body") or ""
+        m = CLAIM_TITLE_RE.search(title)
+        locale = m.group(1).lower() if m else None
+        track = (m.group(2) or "").lower() if m else ""
+        # the issue form writes "### Locale\n\nde" / "### What you will do\n\nreview (...)"
+        fm = re.search(r"###\s*Locale\s*\n+\s*([a-z]{2})\b", body, re.I)
+        if fm:
+            locale = fm.group(1).lower()
+        ft = re.search(r"###\s*What you will do\s*\n+\s*(review|translate)", body, re.I)
+        if ft:
+            track = ft.group(1).lower()
+        track = "translate" if track.startswith("translat") else ("review" if track else "?")
+        who = ", ".join("@" + a["login"] for a in (i.get("assignees") or []) if a.get("login")) \
+            or ("@" + (i.get("author") or {}).get("login", "?"))
+        claims.append({"locale": locale or "?", "track": track, "who": who,
+                       "number": i.get("number"), "since": (i.get("createdAt") or "")[:10]})
+    return sorted(claims, key=lambda c: (c["locale"], c["since"]))
+
+
+def rendered_counts(sdr, status) -> dict[str, int]:
+    """{locale: rendered pages on disk}. The rendered pages are derived and
+    not in git; a locale that is not rendered has a pool of 0 for the wrong
+    reason, and the file must say so instead of printing the 0."""
+    out = {}
+    for loc in sdr.MAIN_LOCALES:
+        out[loc] = sum(1 for rel in status.get(loc, {}) if sdr._tr_path(loc, rel).exists())
+    return out
 
 
 def _load_sampler():
@@ -100,10 +172,12 @@ def reviewed_counts(status, locales) -> dict[str, tuple[int, int]]:
     return out
 
 
-def render(sdr, status) -> str:
+def render(sdr, status, claims: list[dict] | None = None) -> str:
     pools = pools_by_threshold(sdr, status)
     done = reviewed_counts(status, sdr.MAIN_LOCALES)
     rounds = recent_rounds()
+    rendered = rendered_counts(sdr, status)
+    unrendered = [l for l in sdr.MAIN_LOCALES if rendered[l] < max(10, len(status.get(l, {})) // 4)]
 
     # For each locale, the tightest threshold that still leaves a workable pool.
     rec: dict[str, tuple[int, int] | None] = {}
@@ -119,11 +193,11 @@ def render(sdr, status) -> str:
             rec[loc] = (widest, pools[widest].get(loc, 0))
 
     ready = sorted(
-        [l for l in sdr.MAIN_LOCALES if rec[l][1] >= WORKABLE],
+        [l for l in sdr.MAIN_LOCALES if rec[l][1] >= WORKABLE and l not in unrendered],
         key=lambda l: (-rec[l][1], l),
     )
     thin = sorted(
-        [l for l in sdr.MAIN_LOCALES if rec[l][1] < WORKABLE],
+        [l for l in sdr.MAIN_LOCALES if rec[l][1] < WORKABLE and l not in unrendered],
         key=lambda l: (-rec[l][1], l),
     )
 
@@ -161,12 +235,40 @@ def render(sdr, status) -> str:
     A("")
     A("---")
     A("")
+    A("## Who is working on what")
+    A("")
+    A("A claim is one open issue labelled `translation-claim` (template:")
+    A("*Claim a locale*). Open one before you start and close it when you")
+    A("stop; it is the only reservation there is. List them any time with")
+    A("`gh issue list --repo JanLahmann/doQumentation --label translation-claim`.")
+    A("")
+    if claims is None:
+        A("*(Could not reach GitHub while generating this file — check the")
+        A(f"[open claims](https://github.com/{CLAIM_REPO}/issues?q=is%3Aissue+is%3Aopen+label%3A{CLAIM_LABEL}) directly.)*")
+    elif not claims:
+        A("*No open claims right now — every locale is free.*")
+    else:
+        A("| Locale | Who | Doing | Since | Issue |")
+        A("|---|---|---|---|---|")
+        for c in claims:
+            A(f"| `{c['locale']}` | {c['who']} | {c['track']} | {c['since']} | "
+              f"[#{c['number']}](https://github.com/{CLAIM_REPO}/issues/{c['number']}) |")
+    A("")
+    A("---")
+    A("")
     A("## Pick a locale")
     A("")
-    A("Every locale below still has unreviewed pages. Claim one with the")
-    A("maintainer so two people don't review the same one, then follow")
+    A("Every locale below still has unreviewed pages. Pick one that is not")
+    A("claimed above, open your claim issue, then follow")
     A("`CONTRIBUTING-REVIEWS.md`.")
     A("")
+    if unrendered:
+        A(f"> ⚠ {len(unrendered)} locale(s) were not rendered when this file was")
+        A("> generated, so their pools are unknown here (not zero):")
+        A(f"> `{'`, `'.join(unrendered)}`. Render one with")
+        A("> `python3 translation/v2/render.py --locale <locale>` and run the")
+        A("> sampler yourself. The daily CI run renders all of them.")
+        A("")
     A("`--max-leaks` controls how many capitalized-English leaks a file may")
     A("contain and still be eligible. Tighter is better quality-per-round; the")
     A("value shown is the **tightest threshold that still leaves a workable")
@@ -236,11 +338,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--write", action="store_true",
                     help=f"write {OUT.name} (default: print to stdout)")
+    ap.add_argument("--no-claims", action="store_true",
+                    help="skip the GitHub lookup of open claim issues (offline runs)")
     args = ap.parse_args()
 
     sdr = _load_sampler()
     status = json.load(open(sdr.STATUS_FILE, encoding="utf-8"))
-    text = render(sdr, status)
+    claims = None if args.no_claims else fetch_claims()
+    text = render(sdr, status, claims)
 
     if args.write:
         prev = OUT.read_text(encoding="utf-8") if OUT.exists() else None
