@@ -15,9 +15,12 @@ run out mid-round.
 
 ## For the human: how to start
 
-You need a **Claude Max subscription** (the review model is Opus) and
-`git`, `python3`, and the [`gh` CLI](https://cli.github.com/). You do
-**not** need Node, npm, or a site build.
+You need a **Claude Max subscription** (the review model is Opus),
+`git`, `python3` (3.11+), the [`gh` CLI](https://cli.github.com/), and the
+tools that render a locale from its PO files: **po4a ≥ 0.74, GNU gettext
+and the `polib` package** (`brew install po4a gettext` or
+`apt-get install po4a gettext`, then `pip install polib`). You do **not**
+need Node, npm, or a site build.
 
 1. Fork <https://github.com/JanLahmann/doQumentation> on GitHub.
 2. Clone your fork and `cd` into it.
@@ -35,17 +38,26 @@ You need a **Claude Max subscription** (the review model is Opus) and
    See [`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md) after syncing — it is
    regenerated daily and tells you what is actually left.
 
-4. Ask the maintainer which **locale** to take, so two people don't review
-   the same one.
-5. Open Claude Code in the repo and paste:
+4. **Claim a locale.** Look at the open claims
+   (`gh issue list --repo JanLahmann/doQumentation --label translation-claim`,
+   also listed in [`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md)), pick a
+   locale nobody holds, and open an issue with the **Claim a locale**
+   template. That issue is the reservation; close it when you stop.
+5. Open Claude Code in the repo and say what you want, in your own words:
 
-   > Read `CONTRIBUTING-REVIEWS.md` and run one review round for locale
-   > `<LOCALE>`, about `<N>` files. **Use a workflow** for the review and
-   > fix waves.
+   > I want to help with reviews. What should I do?
 
-The words **"use a workflow"** matter — they authorize Claude to fan out
-parallel sub-agents, which is what makes a round finish in one sitting
-rather than ten.
+   or, if you already know the locale and how much you can spend:
+
+   > Review the `<LOCALE>` translation, about `<N>` files. Use a workflow.
+
+   The repo's `CLAUDE.md` routes either sentence here. Claude will ask for
+   whatever is missing (locale, file count, your GitHub handle) and check
+   your fork, the claim and the toolchain before it starts.
+
+If Claude asks whether it may **"use a workflow"**, say yes — that
+authorizes it to fan out parallel sub-agents, which is what makes a round
+finish in one sitting rather than ten.
 
 Everything below is addressed to Claude.
 
@@ -69,6 +81,11 @@ Confirm with the user, or take from their prompt:
   round that completes beats a large one that dies.
 - **`HANDLE`** — the user's GitHub username. It namespaces their output
   file so concurrent contributors never collide.
+- **The claim.** `gh issue list --repo JanLahmann/doQumentation --label translation-claim`
+  must show an open claim for `LOCALE` by this user. If another person
+  holds it, stop and say so. If nobody does, open one for the user (the
+  *Claim a locale* issue template; title `claim: <LOCALE> (review)`)
+  before drawing a sample.
 
 Pick a **`SEED`** no one has used: `<YYYYMMDD><two digits of your choosing>`,
 e.g. `2026072041`. Check `translation/reviews/` for existing filenames and
@@ -77,13 +94,15 @@ avoid a collision.
 ### 1. Verify setup
 
 ```bash
-python3 --version                      # 3.10+
+python3 --version                      # 3.11+
 git remote -v                          # should show the user's fork
+po4a --version && msgmerge --version | head -1 && python3 -c "import polib"
 python3 translation/scripts/translation-status.py --locale <LOCALE>
 ```
 
 If `translation/status.json` is missing, the clone is incomplete — stop and
-say so. There is nothing else to install.
+say so. If po4a, gettext or polib is missing, stop and tell the user what
+to install (see the top of this file); nothing below works without them.
 
 **Then check the fork is current, before drawing any sample:**
 
@@ -98,6 +117,18 @@ If that count is not `0`, **stop and sync before continuing**:
 ```bash
 git checkout main && git merge --ff-only upstream/main
 ```
+
+**Then render the locale.** The pages the review reads live under
+`i18n/<LOCALE>/docusaurus-plugin-content-docs/current/`; they are derived
+from the PO files at build time and are **not in git**, so on a fresh clone
+that directory is empty and the sampler reports no eligible files:
+
+```bash
+python3 translation/v2/render.py --locale <LOCALE>     # ~1 min, 433 pages
+```
+
+Re-run it after every fix wave, so lint and the gauge read what the PO
+files now say.
 
 Do not "work around" a behind-fork by drawing the sample anyway. Eligibility
 comes from `status.json`, which every merged round rewrites; on a stale copy
@@ -175,14 +206,21 @@ label.
 
 ### 6. Run the fix wave
 
+Fixes go through the **PO files**, never into a rendered page (a rendered
+page is regenerated from the PO at the next build, so an edit there is
+lost). The path reuses the translation pipeline: one batch per page, the
+same `translate-locale` workflow, the same checker gate.
+
 Build a fix spec — a JSON array, one entry per file worth fixing (surviving
-FAILs, plus MINORs with concrete line-level examples):
+FAILs, plus MINORs with concrete line-level examples). The raw `records`
+from step 3 are accepted as-is (PASS records are skipped), or write the
+trimmed form:
 
 ```json
-[{"locale": "<LOCALE>", "rel": "guides/foo.mdx", "locale_name": "French",
+[{"rel": "guides/foo.mdx",
   "note": "<the reviewer's editor_note>",
-  "examples": [{"type": "wrong-term", "line_approx": "~120",
-                "source": "<EN>", "translation": "<current>",
+  "examples": [{"type": "wrong-term",
+                "source": "<EN quote>", "translation": "<current>",
                 "why": "<what a learner gets wrong>",
                 "suggested": "<correction>"}]}]
 ```
@@ -190,11 +228,34 @@ FAILs, plus MINORs with concrete line-level examples):
 Then:
 
 ```bash
-python3 translation/scripts/make-fix-run.py \
-  --fixes /tmp/fixes-<SEED>.json --out /tmp/fix-<SEED>-wf.js
+python3 translation/v2/fix.py --locale <LOCALE> \
+  --fixes translation/v2/work/fixes-<SEED>.json --prepare
 ```
 
-and run it with the `Workflow` tool. Sonnet agents apply one file each.
+It writes `translation/v2/work/<LOCALE>/fix-NNN-sonnet.json` (every
+translated entry of the page, with a `review` field on the entries the
+examples point at) and `manifest-fix.json`. Fill the batches with the
+`Workflow` tool:
+
+```
+Workflow({ scriptPath: ".claude/workflows/translate-locale.js",
+           args: <the parsed contents of translation/v2/work/<LOCALE>/manifest-fix.json,
+                  plus "agentType": "translator"> })
+```
+
+One Sonnet agent per page corrects the flagged entries and copies the rest
+back verbatim. Then write the results into the PO files, through the gate:
+
+```bash
+python3 translation/v2/fix.py --locale <LOCALE> --apply
+python3 translation/v2/render.py --locale <LOCALE>
+```
+
+`--apply` writes only the entries that changed and pass `check.py` (code
+spans, URLs, math, tags, anchors, length), stamps each with
+`doq: fixed after review <date>`, and rejects the rest with a reason. A
+rejected entry is redone in a second, smaller wave or left with its verdict
+on record; never hand-edit the PO to force it.
 
 ### 7. Gate the result
 
@@ -206,13 +267,10 @@ python3 translation/scripts/check-known-mistranslations.py --locale <LOCALE>
 python3 translation/scripts/check-wrong-language.py --locale <LOCALE>
 ```
 
-> ⚠️ The rendered pages under `i18n/<LOCALE>/…/current/` are derived
-> from the PO files and are not in git (`translation/v2/README.md`). An
-> in-place fix to a rendered page is lost at the next render; until the
-> fix path is ported to PO entries, record findings (FAIL/MINOR with a
-> precise note) rather than editing pages. If a fix agent edited a
-> `{/* doqumentation-source-hash: … */}` marker — revert
-that file and redo it.
+> The rendered pages under `i18n/<LOCALE>/…/current/` are derived from
+> the PO files and are not in git (`translation/v2/README.md`). Run the
+> gate on a fresh `render.py` output, and if anything edited a rendered
+> page directly, discard it: the PO files are the only thing that ships.
 
 `lint-translation.py` has one known false positive: "unmatched code fence"
 on a line like `` ```from scipy.optimize import minimize``` `` that opens
@@ -235,14 +293,15 @@ That's the raw `records` array from step 3, verbatim.
 ```bash
 git checkout -b review/<LOCALE>-<SEED>
 git add translation/reviews/opus-<SEED>-<HANDLE>.json
-git add -f i18n/<LOCALE>/          # i18n/ is gitignored — the -f is required
+git add i18n/<LOCALE>/po           # the PO files only; nothing under …/current/
+git status --short                 # exactly those two paths, nothing else
 git commit && gh pr create --repo JanLahmann/doQumentation
 ```
 
 **Do not commit `translation/status.json`.** The maintainer banks your
 verdicts into it with `review-translations.py --record-opus` after merge.
 This is the whole reason contributor PRs never conflict: you touch only a
-brand-new review file and your own locale's subtree.
+brand-new review file and your own locale's PO tree.
 
 PR description should state: locale, seed, file count, the verdict tally,
 the gauge result, and which files you changed.
@@ -252,16 +311,18 @@ the gauge result, and which files you changed.
 - **Never** edit `translation/status.json` — that's the maintainer's merge step.
 - **Never** edit `docs/` — that's the English source of truth.
 - **Never** edit a locale other than the one assigned.
-- **Never** touch a `{/* doqumentation-source-hash: … */}` marker.
+- **Never** hand-edit a rendered page or a `.po` file; `fix.py --apply`
+  is the only way a fix reaches the translation.
 - Fix only the identified defect. Do not restyle passages that are already
   correct, and do not touch code blocks, math, JSX, image paths, or heading
   anchors.
 
 ### If you run out of budget mid-round
 
-Expected, and safe. Both workflows batch 7 agents at a time, so at most 7
-are lost; every completed batch is preserved, and fix-agent edits are
-already on disk.
+Expected, and safe. The review workflow batches 7 agents at a time and
+the fix workflow runs a sliding pool of 5, so at most a handful are lost;
+every completed review record and every filled `fix-*.out.json` is
+preserved on disk, and nothing reaches a PO file until `fix.py --apply`.
 
 To resume in the **same session**: call `Workflow` again with the same
 `scriptPath` plus `resumeFromRunId: "<the runId from the first call>"` —
@@ -271,6 +332,8 @@ Across sessions the cache is gone. Recover the completed verdicts from the
 workflow's `journal.jsonl` (last-wins per `locale`+`file`), write them to
 the reviews file, commit that as a safety net, and either ship the partial
 round or draw a fresh sample with `--exclude-reviewed` to pick up the rest.
-**Revert any partial edit a killed fix-agent left behind before redoing it.**
+A killed fix agent leaves at most an incomplete `fix-*.out.json`, which
+`--apply` rejects as a whole (count mismatch); delete it and rerun that
+batch.
 
 A partial round is a perfectly good contribution. Ship what completed.

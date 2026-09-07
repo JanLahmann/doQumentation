@@ -51,6 +51,7 @@ to notebook output can never make a translation stale.
 | `update.py --locale X --json …` | after every sync | `msgmerge --previous` every PO against the new POT, then prints the worklist: fuzzy (near-identical English, old msgid kept as `#\| msgid`) and untranslated entries. |
 | `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 4,000 English words and ≤ 18k estimated tokens as the Read tool presents it; one id-less item per line, with a word diff and the previous translation for real fuzzy matches) plus a `.ids.json` sidecar per batch and `manifest.json`, which also carries the instructions text for inlining into prompts. |
 | `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch from a sliding pool (`concurrency` in the args, default 5; the Polish run used 15), each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
+| `fix.py --locale X --fixes F --prepare` / `--apply` | after a review round | The review fix path. Takes the round's records (or a trimmed fix spec), builds one batch per flagged page — every translated entry as `{msgid, prev_msgstr}`, a `review` field on the entries the reviewer quoted — and `manifest-fix.json` (`task: "fix"`), which the same `translate-locale.js` fills: the agent corrects the flagged entries and copies the rest back. `--apply` is `translate.apply(prefix="fix")`: only entries that changed and pass `check.py` are written, stamped `doq: fixed after review <date>`. |
 | `translate.py --locale X --apply` | after the batches are filled | Pairs each `.out.json` with its `.ids.json` by position (a count mismatch rejects that batch), runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
 | `render.py --locale X [--out-dir D]` | at build time, or to preview | POT + PO → locale MDX, with the v1 freshness marker so v1 tools keep working during the migration. |
 | `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
@@ -279,12 +280,11 @@ Every one of the 17 main locales has been through one v2 sync (English
   and the review scripts (`review-translations.py`, `review-prefilter.py`,
   `sample-deep-review.py`) work on the rendered pages and on `status.json`,
   whose `source_hash` / `validated_against` / review fields are unchanged.
-  They keep working because the workflows render before they run. What does
-  not work any more is *fixing* a rendered page in place (the glossary,
-  consistency and misleading-translation fix workflows in `.claude/`): such
-  an edit is lost at the next render. Porting the fix path to PO entries —
-  and the Opus rubric to per-entry verdicts stored as translator comments —
-  is the remaining migration work.
+  They keep working because the workflows render before they run.   *Fixing* a rendered page in place (the glossary and consistency
+  workflows in `.claude/`) does not work any more: such an edit is lost at
+  the next render. Review fixes go through `fix.py` instead (below); the
+  glossary/consistency sweeps and the Opus rubric as per-entry verdicts
+  stored as translator comments are the remaining migration work.
 - Review verdicts from `status.json` were copied into each PO header
   (`X-Doq-Review-Tier3`, `X-Doq-Review-Opus`) at bootstrap so they are not lost.
 

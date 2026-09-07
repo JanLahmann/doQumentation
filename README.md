@@ -167,8 +167,15 @@ useful, and it is designed to be run **by Claude Code** rather than by hand.
 - **[CONTRIBUTING-TRANSLATIONS.md](CONTRIBUTING-TRANSLATIONS.md)** — for
   translating newly-synced English content.
 
-You need a Claude Max subscription, `git`, `python3` and the `gh` CLI. Claim
-a locale with the maintainer first so two people don't review the same one.
+The shortest path: fork the repo, clone your fork, open Claude Code in it
+and say **"I want to help with reviews. What should I do?"** The repo's
+`CLAUDE.md` routes that to the recipe, checks your setup and asks for what
+is missing. You need a Claude Max subscription, `git`, `python3`, the `gh`
+CLI, and po4a + gettext + `polib` to render a locale locally.
+
+Claim a locale first so two people don't review the same one: open an
+issue with the **Claim a locale** template (label `translation-claim`);
+the open claims are listed in `CONTRIBUTING-NOW.md`.
 
 **Sync your fork with upstream `main` before every session** — not just on
 the first clone. Which pages still need work is read from a status file that

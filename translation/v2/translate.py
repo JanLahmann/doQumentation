@@ -649,12 +649,22 @@ def sweep(locale: str) -> int:
     return 0
 
 
-def apply(locale: str) -> int:
+def apply(locale: str, prefix: str = "batch", note: str | None = None) -> int:
+    """Write the filled batches into the PO files, through check.py.
+
+    prefix selects the batch family: "batch" (translate.py --prepare) or
+    "fix" (fix.py --prepare, review fixes). An entry whose returned msgstr
+    equals what the PO already holds is left untouched — the fix batches
+    carry a whole page and the agent copies the unflagged entries back, so
+    this is what keeps a review fix from rewriting (and re-stamping) every
+    entry on the page. note, when given, is the translator comment stamped
+    on every entry that did change."""
     outdir = io.WORK_DIR / locale
-    accepted = rejected = skipped = 0
+    name_re = BATCH_NAME if prefix == "batch" else re.compile(rf"^{re.escape(prefix)}-\d+-[a-z]+\.json$")
+    accepted = rejected = skipped = unchanged = 0
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
-    for bpath in sorted(p for p in outdir.glob("batch-*.json") if BATCH_NAME.match(p.name)):
+    for bpath in sorted(p for p in outdir.glob(f"{prefix}-*.json") if name_re.match(p.name)):
         pairs, reason = read_results(bpath)
         if reason:
             rejected += 1
@@ -685,15 +695,26 @@ def apply(locale: str) -> int:
             by_page.setdefault(page, []).append((int(idx), msgstr))
     for page, fills in by_page.items():
         po = cache[page]
+        changed = False
         for idx, msgstr in fills:
             e = po[idx]
-            e.msgstr = match_trailing_newline(e.msgid, msgstr)
+            final = match_trailing_newline(e.msgid, msgstr)
+            if final == e.msgstr and "fuzzy" not in e.flags:
+                unchanged += 1
+                continue
+            e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
-            e.tcomment = "doq: kept in English by the translator (name or code)" if msgstr.strip() == e.msgid.strip() else ""
+            if msgstr.strip() == e.msgid.strip():
+                e.tcomment = "doq: kept in English by the translator (name or code)"
+            else:
+                e.tcomment = note or ""
             accepted += 1
-        po.save(str(io.po_path(locale, page)))
-    print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}")
+            changed = True
+        if changed:
+            po.save(str(io.po_path(locale, page)))
+    print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}"
+          + (f", unchanged {unchanged}" if unchanged else ""))
     return 1 if rejected else 0
 
 

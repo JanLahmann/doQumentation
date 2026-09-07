@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-09-06 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-09-07 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -11,23 +11,23 @@ python translation/scripts/translation-status.py --write-status
 
 | Locale | Code | Tutorials | Guides | Courses | Modules | Total |
 |--------|------|-----------|--------|---------|---------|-------|
-| German | `de` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Spanish | `es` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Ukrainian | `uk` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Japanese | `ja` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| French | `fr` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Italian | `it` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Portuguese | `pt` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Tagalog | `tl` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Arabic | `ar` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Hebrew | `he` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Malay | `ms` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Indonesian | `id` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Thai | `th` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Korean | `ko` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Polish | `pl` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Romanian | `ro` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
-| Czech | `cs` | 0/53 | 0/186 | 0/158 | 0/15 | 1/433 |
+| German | `de` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Spanish | `es` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Ukrainian | `uk` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Japanese | `ja` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| French | `fr` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Italian | `it` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Portuguese | `pt` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Tagalog | `tl` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Arabic | `ar` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Hebrew | `he` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Malay | `ms` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Indonesian | `id` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Thai | `th` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Korean | `ko` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Polish | `pl` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Romanian | `ro` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
+| Czech | `cs` | 53/53 | 186/186 | 158/158 | 15/15 | 433/433 |
 
 ## Per-Locale Detail
 
@@ -35,11 +35,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -481,11 +481,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -927,11 +927,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -1373,11 +1373,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -1819,11 +1819,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -2265,11 +2265,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -2711,11 +2711,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -3157,11 +3157,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -3603,11 +3603,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -4049,11 +4049,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -4495,11 +4495,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -4941,11 +4941,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -5387,11 +5387,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -5833,11 +5833,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -6279,11 +6279,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -6725,11 +6725,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>
@@ -7171,11 +7171,11 @@ python translation/scripts/translation-status.py --write-status
 
 | Section | Translated | Drafts | PASS | FAIL | Remaining |
 |---------|-----------|--------|------|------|-----------|
-| Tutorials | 0/53 | 0 | 45 | — | 53 |
-| Guides | 0/186 | 0 | 182 | — | 186 |
-| Courses | 0/158 | 0 | 165 | — | 158 |
-| Modules | 0/15 | 0 | 15 | — | 15 |
-| **Total** | **0/412** | **0** | **407** | **—** | **412** |
+| Tutorials | 53/53 | 0 | 45 | — | 0 |
+| Guides | 186/186 | 0 | 182 | — | 0 |
+| Courses | 158/158 | 0 | 165 | — | 0 |
+| Modules | 15/15 | 0 | 15 | — | 0 |
+| **Total** | **412/412** | **0** | **407** | **—** | **0** |
 
 <details>
 <summary>Pipeline history (428 files in status.json)</summary>

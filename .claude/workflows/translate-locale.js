@@ -17,6 +17,10 @@ export const meta = {
 // afterwards with `translate.py --locale X --apply`.
 
 const { locale, instructions, instructions_text, batches } = args
+// task "fix" (manifest-fix.json from translation/v2/fix.py): the same batch
+// shape, but every item already carries its current translation and the
+// agent's job is to correct the flagged ones and copy the rest back.
+const TASK = (args && args.task) || 'translate'
 const CONCURRENCY = (args && args.concurrency) || 5
 // On every locale run (pt, ja, ko, uk, cs, ro, id: 7 runs of 33-39 batches)
 // one to three agents replied as if no prompt had reached them ("I don't
@@ -55,14 +59,20 @@ function prompt(b, attempt) {
   const retry = attempt > 1
     ? `\n\nThis is attempt ${attempt} for this batch: the previous run returned without doing the work, or with the wrong number of strings. Do the task above now. The list must contain exactly ${b.items} strings, one per item, in the batch's order; never merge or skip an item.`
     : ''
-  return `You are a technical translator for doQumentation (locale "${locale}").
+  const step2 = TASK === 'fix'
+    ? `2. For EVERY item decide its corrected "msgstr": fix the items that carry a "review" field (and the same defect anywhere else on the page), following the rules above; copy every other item's "prev_msgstr" back verbatim.`
+    : `2. Translate EVERY item's "msgid" following the rules above. If an item is code or a proper name that must stay in English, its translation is the msgid unchanged.`
+  const pageNote = TASK === 'fix' && b.note
+    ? `\n\nReviewer's note for this page (${b.page || 'see items'}; ${b.flagged || 0} item(s) carry a "review" field):\n${b.note}`
+    : ''
+  return `You are a technical ${TASK === 'fix' ? 'editor' : 'translator'} for doQumentation (locale "${locale}").
 
-${RULES}
+${RULES}${pageNote}
 
 Do exactly this, in this order, with no other tool calls:
 1. Read ${b.file} (once). It is a JSON list of ${b.items} items, one per line.
-2. Translate EVERY item's "msgid" following the rules above. If an item is code or a proper name that must stay in English, its translation is the msgid unchanged.
-3. Write ${outFile(b)} with ONE Write call: a JSON list of exactly ${b.items} strings, the translation of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.
+${step2}
+3. Write ${outFile(b)} with ONE Write call: a JSON list of exactly ${b.items} strings, the ${TASK === 'fix' ? 'corrected translation' : 'translation'} of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.
 4. Reply with exactly one line and nothing else: done <count>/${b.items}
 
 Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the translation is the work.${retry}`
@@ -88,6 +98,7 @@ function run(b, attempt) {
 }
 
 phase('Translate')
+if (TASK === 'fix') log(`review-fix mode: ${batches.length} page batch(es), ${batches.reduce((s, b) => s + (b.flagged || 0), 0)} flagged item(s)`)
 // A sliding pool, not waves: as soon as one agent finishes the next batch
 // starts, so CONCURRENCY agents are running at any time (a wave of 15 would
 // idle down to 1 while its slowest batch finished).

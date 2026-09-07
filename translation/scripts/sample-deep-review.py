@@ -275,6 +275,23 @@ def main():
             sys.exit(1)
         locales = [l for l in locales if l in set(args.locale)]
     sections = tuple(s for s in (args.sections or "").split(",") if s) or None
+
+    # The rendered pages are derived from the PO files and not in git
+    # (translation/v2/README.md). On a fresh clone nothing is under
+    # i18n/<locale>/…/current/, and the pool would silently come back empty.
+    # Say so, and say what to run, instead of reporting "0 eligible".
+    def _rendered(loc: str) -> bool:
+        rels = list(status.get(loc, {}))
+        have = sum(1 for rel in rels if _tr_path(loc, rel).exists())
+        # index.mdx alone (a hand-kept page) is not a rendered locale
+        return have >= max(10, len(rels) // 4)
+    unrendered = [loc for loc in locales if not _rendered(loc)]
+    if unrendered:
+        for loc in unrendered:
+            print(f"no rendered pages for {loc} under i18n/{loc}/docusaurus-plugin-content-docs/current/ — "
+                  f"run: python3 translation/v2/render.py --locale {loc}", file=sys.stderr)
+        sys.exit(2)
+
     # --leak-clean is exactly --max-leaks 0; an explicit --max-leaks relaxes it.
     max_leaks = 0 if args.leak_clean else args.max_leaks
     pool = build_pool(status, locales, args.min_lines, sections=sections,

@@ -38,49 +38,37 @@ pipeline, its tools and the sync procedure are documented in
 
 ## Onboarding a new contributor (for maintainers)
 
-Assign each person one or more **locales** (the unit of ownership).
-Send them this message verbatim, filling in `<LOCALE>`:
+Send them this, filling in `<LOCALE>`:
 
-> You're translating the **`<LOCALE>`** locale of doQumentation. It's
-> yours exclusively — no one else will touch it, so you cannot cause
-> merge conflicts.
->
-> 1. In your worktree of the repo, read **`CONTRIBUTING-TRANSLATIONS.md`**
->    (repo root) — it is the whole contract: setup, the batch→PR loop,
->    and the hard rules.
-> 2. Follow **Running a sync** in `translation/v2/README.md` exactly.
->    Use `--locale <LOCALE>` everywhere.
-> 3. Add yourself to the ownership table at the bottom of
->    `CONTRIBUTING-TRANSLATIONS.md` in your first PR.
->
-> Do not translate any locale other than `<LOCALE>`. Do not run git or
-> the pipeline scripts from inside a translation sub-agent. One branch →
-> one PR per ~20-file batch.
-
-Suggested split of the unclaimed locales (~240–360 stale files each;
-hand out 1–3 per person by fluency/interest):
-
-| Highest backlog | Mid | Lower |
-|---|---|---|
-| tl, th, he, id | ms, ja, ro, ar | cs, pt, pl, ko |
+> Fork <https://github.com/JanLahmann/doQumentation>, clone your fork,
+> open Claude Code in it and say: **"I want to help translating
+> `<LOCALE>`. What should I do?"** The repo's `CLAUDE.md` takes it from
+> there: it checks your fork, your claim and your toolchain, then runs
+> the sync for that one locale.
 
 For AI-assisted contributors, emphasize verbally that the sub-agent
 **scope + no-git** rule is the one that caused the worst incident here
 (a 309-file manual recovery) — it is non-negotiable.
 
+**When is there work?** A locale has translation work only after an
+upstream English sync lands (a merged "sync: upstream content" PR).
+Between syncs every locale is current and `translate.py --prepare` reports
+nothing to do; that is the moment to do a review round instead
+(`CONTRIBUTING-REVIEWS.md`). `CONTRIBUTING-NOW.md` says which it is today.
+
 ## The one rule that prevents all collisions: own whole locales
 
 **Each contributor owns one or more locales, exclusively. Never touch a
 locale someone else owns.** Every PR then modifies only a disjoint
-`i18n/<your-locale>/` subtree → zero merge conflicts, no coordination
+`i18n/<your-locale>/po/` subtree → zero merge conflicts, no coordination
 beyond claiming.
 
-- Claim by adding yourself to the table at the bottom in your first PR.
-- `translation/manifests/<locale>.json` is the source of truth for what
-  is already finalized in a locale. No manifest = not started = free.
-- **Owned / in progress:** `de` (complete), `es`, `fr`, `it`, `uk`.
-  **Free to claim** (~240–360 stale files each): `ja, pt, ko, pl, cs,
-  ro, tl, he, th, id, ms, ar`.
+- **Claim = one open GitHub issue** labelled `translation-claim`, opened
+  with the *Claim a locale* template (`gh issue list --repo
+  JanLahmann/doQumentation --label translation-claim` lists them; so does
+  `CONTRIBUTING-NOW.md`). Close it when you stop.
+- No claim = free. The locale's own state (what is translated, what is
+  fuzzy) is in its PO files; `update.py --locale X` prints the worklist.
 
 ## Setup (once)
 
@@ -88,7 +76,7 @@ beyond claiming.
 # point at upstream once, so `git pull` can never mean "my own stale fork"
 git remote add upstream https://github.com/JanLahmann/doQumentation.git
 git worktree add ../doq-<locale> -b i18n/<locale>-wip && cd ../doq-<locale>
-python3 scripts/sync-content.py        # populates docs/ (EN, gitignored) if empty
+# docs/ (the English) is tracked in git; nothing to generate for it.
 ```
 Node 20+, Python 3.11+, and for the v2 pipeline po4a ≥ 0.74, GNU gettext
 and the `polib` package (`brew install po4a gettext` / `apt-get install
@@ -166,10 +154,7 @@ linguistic spot-checks use
 
 ## Contributor / locale ownership
 
-Add yourself here in your first PR so others see the locale is taken.
-
-| Locale | Owner | Status |
-|--------|-------|--------|
-| de | core | complete |
-| es, fr, it, uk | core | in progress |
-| ja, pt, ko, pl, cs, ro, tl, he, th, id, ms, ar | *unclaimed* | not started |
+Ownership is not recorded in this file (a table here went stale within
+weeks and told people `de` was complete while it was 38% reviewed). The
+open claim issues are the record; `CONTRIBUTING-NOW.md` mirrors them
+daily.

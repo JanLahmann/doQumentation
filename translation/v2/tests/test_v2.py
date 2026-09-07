@@ -6,6 +6,7 @@ gettext) and the polib package. Tests that need them skip otherwise.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -334,3 +335,119 @@ def test_sweep_po_empties_only_failing_entries():
     assert [i for i, _ in emptied] == [1, 2, 5] and po[5].msgstr == "Kein Zeilenumbruch."
     assert po[0].msgstr and not po[1].msgstr and not po[2].msgstr and po[3].msgstr == "Wrong `x`.\n"
     assert po[1].tcomment == "note" and "inline code mismatch" in emptied[0][1][0]
+
+
+# ── fix.py: review fixes through the PO gate ──
+
+def _fix_module():
+    import importlib
+    return importlib.import_module("fix")
+
+
+def _make_po(path: Path, pairs: list[tuple[str, str]]) -> None:
+    import polib
+    po = polib.POFile(wrapwidth=0)
+    po.metadata = {"Content-Type": "text/plain; charset=UTF-8", "Language": "de"}
+    for msgid, msgstr in pairs:
+        po.append(polib.POEntry(msgid=msgid, msgstr=msgstr, flags=["no-wrap"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    po.save(str(path))
+
+
+@pytest.fixture
+def fix_env(monkeypatch, tmp_path):
+    """A throwaway i18n/ + work/ so fix.py and translate.apply touch nothing real."""
+    import translate as tr
+    fix = _fix_module()
+    monkeypatch.setattr(io, "I18N", tmp_path / "i18n")
+    monkeypatch.setattr(io, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(io, "REPO", tmp_path)
+    pairs = [
+        ("Get started with the noise learning helper.", "Einstieg in den Noise-Learning-Helfer."),
+        ("The circuit is `transpiled` before it runs.", "Die Circuit wird `transpiled`, bevor sie läuft."),
+        ("Run the cell.", "Führe die Zelle aus."),
+        ("```python\nx = 1\n```", "```python\nx = 1\n```"),          # copy-only: never in a batch
+    ]
+    _make_po(io.po_path("de", "guides/noise.mdx"), pairs)
+    return fix, tr, pairs
+
+
+def test_fix_prepare_pins_examples_and_skips_code(fix_env):
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "stiff term",
+             "examples": [{"source": "circuit is transpiled before it runs",
+                           "why": "calque", "suggested": "Der Schaltkreis"}]}]
+    summary = fix.prepare("de", spec)
+    assert summary["pages"] == 1 and summary["batches"] == 1
+    assert summary["flagged"] == 1 and summary["unmatched_examples"] == 0
+    manifest = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())
+    assert manifest["task"] == "fix"
+    b = manifest["batches"][0]
+    assert b["page"] == "guides/noise.mdx" and b["note"] == "stiff term" and b["flagged"] == 1
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    assert len(items) == 3                                  # the code block stayed out
+    assert all("prev_msgstr" in it for it in items)
+    flagged = [it for it in items if "review" in it]
+    assert len(flagged) == 1 and flagged[0]["msgid"].startswith("The circuit")
+    assert "Suggested: Der Schaltkreis" in flagged[0]["review"]
+    ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+    assert ids == ["guides/noise.mdx#0", "guides/noise.mdx#1", "guides/noise.mdx#2"]
+
+
+def test_fix_load_accepts_review_records_and_drops_pass(tmp_path):
+    fix = _fix_module()
+    p = tmp_path / "opus.json"
+    p.write_text(json.dumps([
+        {"locale": "de", "file": "a.mdx", "verdict": "PASS", "editor_note": "fine", "examples": []},
+        {"locale": "de", "file": "b.mdx", "verdict": "FAIL", "editor_note": "inverted", "examples": [{"source": "x"}]},
+    ]))
+    out = fix.load_fixes(p)
+    assert [f["rel"] for f in out] == ["b.mdx"]
+    assert out[0]["note"] == "inverted"
+
+
+def test_fix_apply_writes_only_changed_entries_with_note(fix_env):
+    import polib
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "n", "examples": []}]
+    fix.prepare("de", spec)
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[1] = "Der Schaltkreis wird `transpiled`, bevor er läuft."     # one real fix
+    Path(io.REPO / b["out"]).write_text("[\n" + ",\n".join(json.dumps(s, ensure_ascii=False) for s in out) + "\n]\n")
+    rc = tr.apply("de", prefix="fix", note="doq: fixed after review T")
+    assert rc == 0
+    po = polib.pofile(str(io.po_path("de", "guides/noise.mdx")))
+    assert po[1].msgstr.startswith("Der Schaltkreis") and po[1].tcomment == "doq: fixed after review T"
+    assert po[0].msgstr == pairs[0][1] and po[0].tcomment == ""       # untouched, not re-stamped
+    assert po[2].msgstr == pairs[2][1] and po[2].tcomment == ""
+
+
+def test_fix_apply_rejects_checker_violation(fix_env):
+    import polib
+    fix, tr, pairs = fix_env
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[1] = "Der Schaltkreis wird transpiliert, bevor er läuft."      # dropped the code span
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    rc = tr.apply("de", prefix="fix", note="x")
+    assert rc == 1
+    po = polib.pofile(str(io.po_path("de", "guides/noise.mdx")))
+    assert po[1].msgstr == pairs[1][1]                                  # rejected → unchanged
+
+
+def test_translate_apply_ignores_fix_batches(fix_env):
+    """translate.py --apply must not pick up fix-* files and vice versa."""
+    fix, tr, pairs = fix_env
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[2] = "GEÄNDERT"
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de") == 0                                          # default prefix: nothing to do
+    import polib
+    assert polib.pofile(str(io.po_path("de", "guides/noise.mdx")))[2].msgstr == pairs[2][1]
