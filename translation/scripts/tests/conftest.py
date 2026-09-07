@@ -21,6 +21,18 @@ def _load(name: str, filename: str):
     return mod
 
 
+REPO_ROOT = SCRIPTS_DIR.parent.parent
+
+
+@pytest.fixture(scope="session")
+def sync_content():
+    """scripts/sync-content.py (the EN converter); pure helpers only."""
+    spec = importlib.util.spec_from_file_location("sync_content", REPO_ROOT / "scripts" / "sync-content.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @pytest.fixture(scope="session")
 def common():
     return _load("_common", "_common.py")

@@ -199,6 +199,34 @@ def parse_frontmatter(content: str) -> dict[str, str]:
     return fm
 
 
+def is_fence(stripped: str, in_block: bool) -> bool:
+    """CommonMark-correct fence detector.
+
+    A line toggles fenced-code state only if it is a real fence delimiter:
+      - it must start with ``` (after lstrip), AND
+      - a CLOSING fence (in_block=True) must be BARE: only backticks and
+        optional trailing whitespace. A line that starts with ``` but
+        carries an info string (e.g. ```python{{ .Response }}) is NOT a
+        valid closing fence — per CommonMark it's content of the open
+        block, not a delimiter.
+    An OPENING fence (in_block=False) may carry an info string.
+
+    Root-cause fix (2026-05-17): the old `stripped.startswith('```')`
+    toggled on ANY ```-prefixed line. guides/qiskit-code-assistant.mdx
+    embeds a Modelfile example whose body contains the indented line
+    ```python{{ .Response }} INSIDE an already-open code block; the naive
+    toggle closed the block there and mis-paired every subsequent block,
+    producing phantom "N code blocks differ" failures on correctly
+    translated files. Gating the CLOSING side on a bare fence fixes the
+    whole class without special-casing the file.
+    """
+    if not stripped.startswith('```'):
+        return False
+    if not in_block:
+        return True  # opening fence — info string allowed
+    return stripped.strip().rstrip('`').strip() == ''  # closing fence must be bare
+
+
 def extract_code_blocks(content: str) -> list[tuple[int, str]]:
     """Extract fenced code blocks. Returns [(line_number, full_block_content)]."""
     lines = content.split('\n')
@@ -209,7 +237,7 @@ def extract_code_blocks(content: str) -> list[tuple[int, str]]:
 
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith('```'):
+        if is_fence(stripped, in_block):
             if not in_block:
                 in_block = True
                 block_start = i
@@ -232,7 +260,7 @@ def extract_headings(content: str) -> list[tuple[int, str, str]]:
     in_code = False
 
     for i, line in enumerate(lines):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -252,7 +280,7 @@ def extract_image_paths(content: str) -> list[tuple[int, str]]:
     img_re = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 
     for i, line in enumerate(lines):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -274,7 +302,7 @@ def extract_link_urls(content: str) -> list[tuple[int, str]]:
 
     # First pass: extract JSX href URLs line by line (respecting code blocks)
     for i, line in enumerate(lines):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -289,7 +317,7 @@ def extract_link_urls(content: str) -> list[tuple[int, str]]:
     stripped = []
     in_code = False
     for line in lines:
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             stripped.append('')
             continue
@@ -316,7 +344,7 @@ def count_jsx_tags(content: str) -> dict[str, int]:
     counts = {}
     in_code = False
     for line in content.split('\n'):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -334,7 +362,7 @@ def count_latex_display(content: str) -> int:
     count = 0
     in_code = False
     for line in content.split('\n'):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -349,7 +377,7 @@ def count_latex_inline(content: str) -> int:
     count = 0
     in_code = False
     for line in content.split('\n'):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -391,7 +419,7 @@ def extract_prose_paragraphs(content: str) -> list[tuple[int, str]]:
             continue
 
         # Track code blocks
-        if stripped.startswith('```'):
+        if is_fence(stripped, in_code):
             if current_para:
                 paragraphs.append((para_start + 1, ' '.join(current_para)))
                 current_para = []
@@ -464,12 +492,14 @@ CODE_BLOCK_SKIP = {
     "guides/qiskit-code-assistant-local.mdx",
     # Same Modelfile pathology as its -local sibling: an indented ```
     # block embeds a TEMPLATE """...""" whose body literally contains
-    # ```python{{ .Response }} and PARAMETER stop "```". Any fence-pairing
-    # heuristic that handles this file regresses others (verified: a
-    # bare-close rule breaks custom-backend; an indent rule breaks
-    # stretch). The structural fence-content check can't disambiguate a
-    # ``` that is a delimiter from one that is string data — that is
-    # exactly what this skip set is for. Linguistic/other checks still run.
+    # ```python{{ .Response }} and PARAMETER stop "```". is_fence() now
+    # pairs this file correctly in EN (a non-bare ``` inside an open block
+    # is content). The earlier finding that "a bare-close rule breaks
+    # custom-backend" was a symptom of sync-content.py emitting ```json as
+    # a CLOSING fence there (fixed 2026-09-07), not of the rule. The skip
+    # stays until a rendered-locale run confirms the count matches; the
+    # PARAMETER stop "```" line still defeats any line-based pairing.
+    # Linguistic/other checks still run.
     "guides/qiskit-code-assistant.mdx",
     "learning/courses/quantum-chem-with-vqe/classical-optimizers.mdx",
 }
@@ -536,7 +566,7 @@ def count_tables(content: str) -> int:
     count = 0
     in_code = False
     for line in content.split('\n'):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -596,7 +626,7 @@ def check_indented_headings(tr_content: str, en_content: str = "") -> CheckResul
         result = []
         in_code = False
         for line in content.split('\n'):
-            if line.strip().startswith('```'):
+            if is_fence(line.strip(), in_code):
                 in_code = not in_code
                 continue
             if in_code:
@@ -613,7 +643,7 @@ def check_indented_headings(tr_content: str, en_content: str = "") -> CheckResul
     tr_heading_idx = 0
 
     for i, line in enumerate(tr_content.split('\n')):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -644,7 +674,7 @@ def check_heading_count(en_content: str, tr_content: str) -> CheckResult:
     en_all_indented: list[bool] = []
     in_code = False
     for line in en_content.split('\n'):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -661,7 +691,7 @@ def check_heading_count(en_content: str, tr_content: str) -> CheckResult:
         headings = []
         _in_code = False
         for i, ln in enumerate(lines):
-            if ln.strip().startswith('```'):
+            if is_fence(ln.strip(), _in_code):
                 _in_code = not _in_code
                 continue
             if _in_code:
@@ -710,7 +740,7 @@ def jsx_container_line_set(content: str) -> set[int]:
     depth = 0
     in_code = False
     for i, line in enumerate(content.split('\n')):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -879,7 +909,7 @@ def check_invalid_anchors(tr_content: str) -> CheckResult:
     in_code = False
 
     for i, line in enumerate(lines):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:
@@ -905,7 +935,7 @@ def check_duplicate_anchors(tr_content: str) -> CheckResult:
     in_code = False
 
     for i, line in enumerate(lines):
-        if line.strip().startswith('```'):
+        if is_fence(line.strip(), in_code):
             in_code = not in_code
             continue
         if in_code:

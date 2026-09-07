@@ -347,25 +347,59 @@ def escape_mdx_outside_code(content: str) -> str:
 
 
 def _tag_untagged_code_blocks(content: str) -> str:
-    """Add language tags to untagged code fences based on content heuristics."""
-    def _replace_block(m):
-        code = m.group(1)
-        # Skip false matches that span across LaTeX math output boundaries
-        # (regex matches closing fence of one block across bare $$...$$ to
-        # the opening fence of the next block)
-        if '$$' in code:
-            return m.group(0)
-        first_line = code.strip().split('\n')[0] if code.strip() else ''
+    """Add language tags to untagged code fences based on content heuristics.
+
+    Walks the document line by line with CommonMark fence semantics: any
+    ``` line opens a block (its info string may be anything), and while a
+    block is open only a BARE ``` line closes it. Only a bare OPENING fence
+    is ever rewritten; the language comes from the first non-blank line of
+    that block's body.
+
+    The previous implementation was one regex, ```\n(.*?)```, which could
+    start its match at the bare CLOSING fence of one block and run through
+    the prose to the OPENING fence of the next. When that prose began with
+    `{` (an MDX comment) or `$` (inline math) it rewrote the closing fence to
+    ```json / ```bash. That is not a valid closing fence, so MDX kept the
+    block open and swallowed the following sections into it (live on
+    guides/custom-backend, guides/get-started-with-estimator and
+    learning/.../qvc-qnn until 2026-09-07).
+    """
+    def _lang_for(first_line: str) -> str | None:
         if (first_line.startswith('$') and not first_line.startswith('$$')) or first_line.startswith('%'):
-            return f'```bash\n{code}```'
+            return 'bash'
         if any(first_line.startswith(kw) for kw in ('import ', 'from ', 'def ', 'class ', 'print(')):
-            return f'```python\n{code}```'
+            return 'python'
         if first_line.startswith('{'):
-            return f'```json\n{code}```'
+            return 'json'
         if first_line.startswith('pip ') or first_line.startswith('pip3 '):
-            return f'```bash\n{code}```'
-        return m.group(0)
-    return re.sub(r'```\n(.*?)```', _replace_block, content, flags=re.DOTALL)
+            return 'bash'
+        return None
+
+    lines = content.split('\n')
+    in_block = False
+    open_idx = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith('```'):
+            continue
+        if in_block:
+            if stripped.rstrip('`').strip() != '':
+                continue  # non-bare fence inside a block is content, not a delimiter
+            in_block = False
+            if lines[open_idx].strip() != '```':
+                continue  # opening fence already carried a language tag
+            body = lines[open_idx + 1:i]
+            if any('$$' in b for b in body):
+                continue  # math output: leave untagged (parity with the old heuristic)
+            first_line = next((b.strip() for b in body if b.strip()), '')
+            lang = _lang_for(first_line)
+            if lang:
+                indent = lines[open_idx][:len(lines[open_idx]) - len(lines[open_idx].lstrip())]
+                lines[open_idx] = f'{indent}```{lang}'
+            continue
+        in_block = True
+        open_idx = i
+    return '\n'.join(lines)
 
 
 def cell_source(cell: dict) -> str:
