@@ -56,3 +56,8 @@ def passage_units():
 @pytest.fixture(scope="session")
 def sampler():
     return _load("sample_deep_review", "sample-deep-review.py")
+
+
+@pytest.fixture(scope="session")
+def drift():
+    return _load("find_positional_drift", "find-positional-drift.py")
