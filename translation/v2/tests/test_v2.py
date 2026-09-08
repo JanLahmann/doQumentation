@@ -439,6 +439,67 @@ def test_fix_apply_rejects_checker_violation(fix_env):
     assert po[1].msgstr == pairs[1][1]                                  # rejected → unchanged
 
 
+def _mark_fuzzy(page: str, idx: int, prev_msgid: str) -> None:
+    import polib
+    po = polib.pofile(str(io.po_path("de", page)), wrapwidth=0)
+    po[idx].flags.append("fuzzy")
+    po[idx].previous_msgid = prev_msgid
+    po.save(str(io.po_path("de", page)))
+
+
+def test_fix_apply_keeps_fuzzy_when_the_agent_copied_it_back(fix_env):
+    """A fuzzy entry the fix agent did not touch must STAY fuzzy.
+
+    fuzzy means msgmerge saw the English change and kept the old translation
+    pending confirmation; po4a renders English until the flag clears. The
+    review-fix prompt tells the agent to copy unflagged entries back verbatim,
+    so an unchanged string is not a confirmation — clearing the flag would
+    publish a translation of the PREVIOUS English."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]                    # everything copied back verbatim
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de", prefix="fix", note="x") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" in e.flags and e.msgstr == pairs[2][1]
+
+
+def test_fix_apply_clears_fuzzy_when_the_agent_retranslated_it(fix_env):
+    """But a fuzzy entry the agent actually rewrote is confirmed, so it ships."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[2] = "Führe die Zelle aus, dann prüfe das Ergebnis."
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de", prefix="fix", note="x") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" not in e.flags and e.msgstr.startswith("Führe die Zelle aus, dann")
+
+
+def test_translate_apply_still_confirms_an_unchanged_fuzzy_entry(fix_env):
+    """The translate path is the opposite case: there the agent was shown the
+    entry and asked to translate it, so returning the same string confirms it."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "batch-000-sonnet.ids.json").write_text(json.dumps(["guides/noise.mdx#2"]))
+    (d / "batch-000-sonnet.json").write_text(json.dumps([{"en": "Run the cell."}]))
+    (d / "batch-000-sonnet.out.json").write_text(json.dumps([pairs[2][1]], ensure_ascii=False))
+    assert tr.apply("de") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" not in e.flags
+
+
 def test_translate_apply_ignores_fix_batches(fix_env):
     """translate.py --apply must not pick up fix-* files and vice versa."""
     fix, tr, pairs = fix_env

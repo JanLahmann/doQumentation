@@ -18,6 +18,30 @@ import json
 import re
 from pathlib import Path
 
+# ── v2: the rendered locale pages are build output, not source ──
+
+RENDERED_PAGES_ARE_DERIVED = """\
+Since the v2 pipeline (translation/v2/README.md) the pages under
+i18n/<locale>/docusaurus-plugin-content-docs/current/ are RENDERED from
+the PO files by render.py at build time. They are not tracked in git, and
+any edit written there is silently discarded at the next render.
+"""
+
+
+def refuse_rendered_page_write(tool: str, instead: str) -> None:
+    """Abort a legacy in-place fixer that would write a rendered locale page.
+
+    These tools predate v2, when the rendered pages WERE the source. Leaving
+    them runnable is worse than removing them: they report success, the site
+    never changes, and the operator believes the defect is fixed.
+    """
+    import sys as _sys
+    print(f"{tool}: refusing to write rendered locale pages.\n\n"
+          f"{RENDERED_PAGES_ARE_DERIVED}\n"
+          f"Do this instead:\n  {instead}\n", file=_sys.stderr)
+    _sys.exit(2)
+
+
 # ── Paths ──
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent

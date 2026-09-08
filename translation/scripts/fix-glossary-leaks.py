@@ -37,6 +37,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import refuse_rendered_page_write  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -214,6 +217,13 @@ def main():
     ap.add_argument("--all", action="store_true", help="all flagged files")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    if not args.dry_run:
+        refuse_rendered_page_write(
+            "fix-glossary-leaks.py",
+            "Record the leaks (--dry-run) and route the corrections through the PO\n"
+            "  files: translation/v2/fix.py --prepare / translate-locale / --apply.\n"
+            "  --dry-run still reports what would change.")
 
     glossary = _chk.load_glossary(args.locale)
     if glossary is None:
