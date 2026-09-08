@@ -114,8 +114,12 @@ Rules, each enforced by an automatic checker:
 - Keep byte-for-byte: inline code in backticks (including placeholders like
   `<per sub-job overhead>`, and even when the code looks wrong, such as
   `PassManagers` or `batch.details() method`), URLs, image paths, JSX/HTML
-  tags and every attribute other than title=, heading anchors like
+  tags and every attribute EXCEPT title=, heading anchors like
   {{#some-anchor}}, MDX comments {{/* ... */}}.
+- title= is the exception because it is prose the reader sees (video and
+  image captions): TRANSLATE it. Leaving the English title= in place is a
+  silent regression — title= is the one attribute the checker does not
+  compare byte-for-byte, so nothing will catch it.
 - Backticked code spans must be copied EXACTLY as in the English, never
   translated, never merged with surrounding text, and none may be added:
   the checker rejects the whole entry if the set of backtick spans differs

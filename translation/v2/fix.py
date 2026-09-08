@@ -76,8 +76,13 @@ Register: {register or 'informal, as the existing translations use'}.
 
 Rules, each enforced by an automatic checker (a violation rejects the entry):
 - Keep byte-for-byte: inline code in backticks, URLs, image paths, JSX/HTML
-  tags and every attribute other than title=, heading anchors like
+  tags and every attribute EXCEPT title=, heading anchors like
   {{#some-anchor}}, MDX comments {{/* ... */}}, every $...$ and $$...$$ span.
+- title= is the exception because it is prose the reader sees (video and
+  image captions): TRANSLATE it. Never copy the English title= out of the
+  msgid — a translated caption replaced by the English one is a silent
+  regression that no checker can catch, since title= is the one attribute
+  not compared byte-for-byte.
 - Keep these terms in English: Qiskit, Qubit, Gate, Circuit, Backend,
   Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU.
 - Every msgstr is a complete translation of its whole msgid, never a
