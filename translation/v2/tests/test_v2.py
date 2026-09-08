@@ -622,3 +622,50 @@ def test_translate_apply_ignores_fix_batches(fix_env):
     assert tr.apply("de") == 0                                          # default prefix: nothing to do
     import polib
     assert polib.pofile(str(io.po_path("de", "guides/noise.mdx")))[2].msgstr == pairs[2][1]
+
+
+# ── match_example: a reviewer's quote must reach the entry they meant ──────
+# Regression guard for a silent misdirection. `match_example` accepted
+# containment in BOTH directions, so a long quote that happened to contain a
+# short entry's words was pinned to that short entry. The flag then reached
+# the wrong entry, the real defect was left untouched, and `prepare` reported
+# "0 examples not matched" — because it had matched something.
+
+import polib  # noqa: E402
+import fix as fx  # noqa: E402
+
+
+def _entries(*msgids):
+    return [(i, polib.POEntry(msgid=m, msgstr="x")) for i, m in enumerate(msgids)]
+
+
+DENSITY = ("What we may do instead is turn to the notion of a *density matrix,* "
+           "which is discussed in the *General formulation of quantum information* "
+           "course. Density matrices provide us with a meaningful way to define "
+           "reduced quantum states.")
+
+
+def test_short_entry_does_not_hijack_a_long_quote():
+    """The real case: a two-word heading swallowed a 200-character quote."""
+    entries = _entries("Quantum information", DENSITY)
+    assert fx.match_example({"source": DENSITY}, entries) == 1
+
+
+def test_quote_inside_an_entry_still_matches():
+    """The intended direction: reviewers quote an excerpt of a long entry."""
+    entries = _entries("Quantum information", DENSITY)
+    excerpt = "turn to the notion of a density matrix"
+    assert fx.match_example({"source": excerpt}, entries) == 1
+
+
+def test_entry_inside_a_quote_matches_when_it_dominates():
+    """`target in q` is still useful when the entry IS most of the quote —
+    a reviewer who pasted the entry plus a few words of context."""
+    entry = "Density matrices provide a meaningful way to define reduced states."
+    entries = _entries("Quantum information", entry)
+    assert fx.match_example({"source": "As noted above, " + entry}, entries) == 1
+
+
+def test_no_match_returns_none_rather_than_a_wrong_index():
+    entries = _entries("Quantum information", "Partial measurements")
+    assert fx.match_example({"source": DENSITY}, entries) is None

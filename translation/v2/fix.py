@@ -45,6 +45,10 @@ import po4a_io as io  # noqa: E402
 import translate as tr  # noqa: E402
 
 MATCH_MIN = 0.55        # difflib ratio from which a quoted example is pinned to an entry
+# When a whole entry sits inside the reviewer's quote, the entry must make up
+# at least this share of it. Below that the "containment" is a coincidence of
+# common words, not a reference to that entry.
+CONTAINS_MIN_SHARE = 0.5
 
 
 def fix_instructions(locale: str) -> str:
@@ -98,7 +102,19 @@ def match_example(example: dict, entries: list[tuple[int, polib.POEntry]]) -> in
     Tries the English quote against msgid first, then the quoted translation
     against msgstr: containment wins, otherwise the best difflib ratio above
     MATCH_MIN. Quotes are short excerpts, so compare against a window of the
-    entry rather than the whole thing."""
+    entry rather than the whole thing.
+
+    The two containment directions are NOT symmetric. `q in target` — the
+    reviewer quoted part of an entry — is the intended case and always wins.
+    `target in q` — a whole entry sits inside the quote — is only meaningful
+    when the entry makes up most of the quote; otherwise any short entry
+    whose words happen to appear in a long quote hijacks the match. That is
+    not hypothetical: a 300-character quote about density matrices, which
+    contains the phrase "General formulation of quantum information", was
+    pinned to a two-word heading entry "Quantum information", so the flag
+    reached the wrong entry and the real defect was reported as fixed
+    without being touched. `prepare` cannot notice — it counts examples that
+    matched *something*, and this matched something."""
     best: tuple[float, int | None] = (0.0, None)
     for quote, attr in ((example.get("source"), "msgid"), (example.get("translation"), "msgstr")):
         q = _norm(quote)
@@ -108,7 +124,7 @@ def match_example(example: dict, entries: list[tuple[int, polib.POEntry]]) -> in
             target = _norm(getattr(e, attr))
             if not target:
                 continue
-            if q in target or target in q:
+            if q in target or (target in q and len(target) >= CONTAINS_MIN_SHARE * len(q)):
                 return idx
             window = target[: max(len(q) * 2, 200)]
             ratio = difflib.SequenceMatcher(None, q, window).ratio()
