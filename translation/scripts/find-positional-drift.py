@@ -48,6 +48,9 @@ Usage:
 
     # human-readable, for reading rather than piping
     python translation/scripts/find-positional-drift.py --locale de --print
+
+    # which pages to sweep first: those every locale flags at once
+    python translation/scripts/find-positional-drift.py --all --rank-pages --print
 """
 
 import argparse
@@ -208,6 +211,29 @@ def scan_locale(locale: str) -> list[dict]:
     return found
 
 
+def rank_pages(findings: list[dict]) -> list[dict]:
+    """Rank pages by how many locales flag them.
+
+    A positional slip starts from a dropped entry, and an entry is dropped
+    because of something in the *English* page — a table-row or math count
+    that no translation could match. So the same page slips in every locale
+    at once, and the number of locales flagging a page is independent
+    corroboration that the page really is broken rather than that one
+    locale's translator was loose. A page flagged in 16 of 17 locales is
+    not seventeen coincidences.
+    """
+    by_page: dict[str, set[str]] = {}
+    counts: dict[str, int] = {}
+    for c in findings:
+        by_page.setdefault(c["file"], set()).add(c["locale"])
+        counts[c["file"]] = counts.get(c["file"], 0) + 1
+    ranked = [{"page": p, "locales": len(locs), "candidates": counts[p],
+               "flagged_by": sorted(locs)}
+              for p, locs in by_page.items()]
+    ranked.sort(key=lambda r: (-r["locales"], -r["candidates"], r["page"]))
+    return ranked
+
+
 def report(findings: list[dict]) -> None:
     for c in findings:
         print("=" * 100)
@@ -227,6 +253,11 @@ def main() -> int:
     ap.add_argument("--out", help="write JSON here instead of stdout")
     ap.add_argument("--print", dest="human", action="store_true",
                     help="human-readable report instead of JSON")
+    ap.add_argument("--rank-pages", action="store_true",
+                    help="emit pages ranked by how many locales flag them, "
+                         "rather than the candidates themselves. Only "
+                         "meaningful with --all: agreement across locales is "
+                         "the corroboration that a page is really broken.")
     args = ap.parse_args()
 
     locales = ALL_LOCALES if args.all else [args.locale]
@@ -245,6 +276,13 @@ def main() -> int:
         print(f"  {n:3d}  {name}", file=sys.stderr)
     print("\nThese are candidates, not verdicts — gauge them before fixing.",
           file=sys.stderr)
+
+    if args.rank_pages:
+        findings = rank_pages(findings)
+        if args.human:
+            for r in findings:
+                print(f"{r['locales']:3d} locales  {r['candidates']:4d} cand.  {r['page']}")
+            return 0
 
     if args.human:
         report(findings)

@@ -167,6 +167,44 @@ per locale.** It is regenerated daily, so
 trust it over any number written into this file — pool sizes move every
 time a round lands.
 
+#### Or: sweep for misaligned pairings instead
+
+There is a second way to fill a round, aimed at one specific defect:
+
+```bash
+python3 translation/scripts/find-positional-drift.py --locale <LOCALE> \
+  --out /tmp/drift-<LOCALE>.json
+```
+
+`bootstrap` seeded the PO files from the old rendered pages by pairing
+source and translation **by position** (those entries carry a
+`# doq-bootstrap: positional` comment). Where an entry was dropped
+mid-page, everything after it shifted, so a run of entries carries the
+*neighbouring paragraph's* translation.
+
+This is the one defect class that survives every automatic gate we have.
+The page renders, the prose is fluent, and `check.py` passes it, because a
+well-formed translation of the wrong paragraph breaks no structural
+invariant — no code span, URL, tag or math is out of place. Only the
+meaning is wrong, which is exactly what a fluent reader is for.
+
+The output is a **candidate list, not a verdict** — on `de` about two in
+five held up. Gauge them (step 5) before building a fix spec, and in the
+spec say plainly that the stored translation belongs to a different
+paragraph and must be discarded rather than repaired, or the fixer will
+try to polish text that was never about this source.
+
+To choose *which* pages to sweep, run it across every locale:
+
+```bash
+python3 translation/scripts/find-positional-drift.py --all --rank-pages --print
+```
+
+A slip starts from a dropped entry, and entries are dropped because of
+something in the **English** page — so the same page slips in every locale
+at once. A page flagged in 16 of 17 locales is not seventeen coincidences;
+those pages are where the defect really lives.
+
 ### 3. Run the review wave
 
 Bake the sample into a runnable workflow, then execute it:
