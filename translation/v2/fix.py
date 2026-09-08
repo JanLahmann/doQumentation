@@ -226,12 +226,197 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet") -> dict:
     return summary
 
 
+
+# ── deterministic glossary-leak pass (the PO port of
+#    translation/scripts/fix-glossary-leaks.py, which wrote rendered pages) ──
+
+def _leak_rules():
+    """SAFE_DETERMINERS and the prose projection come from the v1 script; the
+    transformation itself is reimplemented here because the v1 decapitalisation
+    had no proper-noun or link-text guard (it turned "la fonction IBM Circuit"
+    into "IBM circuit" and "[Qubit initialization]" — an English page title —
+    into "[qubit initialization]"). Both were invisible to lint AND to check.py,
+    since neither is a code span, URL, tag or math."""
+    import importlib.util
+    root = Path(__file__).resolve().parent.parent
+    out = {}
+    for key, rel in (("leak", "scripts/fix-glossary-leaks.py"),
+                     ("chk", "scripts/check-glossary-consistency.py")):
+        spec = importlib.util.spec_from_file_location(f"_{key}", root / rel)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        out[key] = m
+    return out["leak"].SAFE_DETERMINERS, out["chk"]
+
+
+_LINK_TEXT = re.compile(r"\[[^\]]*\]")
+_EMPHASIS = re.compile(r"\*\*[^*\n]+\*\*|\*[^*\n]+\*|_[^_\n]+_")
+
+
+def _protected_spans(text: str) -> list[tuple[int, int]]:
+    """Spans whose capitalisation belongs to something other than running prose,
+    all observed as false positives on real fr content:
+
+    - markdown link text — usually quotes an English page title verbatim;
+    - emphasis — used here for cited lesson/section titles and UI labels
+      (*Circuits quantiques*, **Fonctions de Circuit**);
+    - markdown table rows and HTML <td>/<th> cells — header and label cells
+      are capitalised by convention (`| Exemple | Qubits | Ansatz |`, and
+      "menu deroulant Qubit" naming a UI control).
+    """
+    spans = [(m.start(), m.end()) for m in _LINK_TEXT.finditer(text)]
+    spans += [(m.start(), m.end()) for m in _EMPHASIS.finditer(text)]
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("|") or "<td" in line or "<th" in line:
+            spans.append((pos, pos + len(line)))   # table cell: a label, not prose
+        pos += len(line)
+    return spans
+
+
+def _decapitalise(text: str, terms: list[str], determiners: set[str]) -> tuple[str, list[str]]:
+    """Lowercase a wrongly-capitalised common noun, skipping: the start of the
+    entry, the start of a sentence, markdown link text, and any position whose
+    preceding word is itself capitalised (a proper name such as "IBM Circuit")."""
+    hits: list[str] = []
+    for kw in terms:
+        cap = kw[0].upper() + kw[1:]
+
+        def _sub(m, kw=kw):
+            start = m.start()
+            for a, b in _protected_spans(text):
+                if a <= start < b:
+                    return m.group(0)                        # inside link text
+            prefix = text[:start].rstrip()
+            if prefix == "" or prefix.endswith((".", ":", "!", "?", "\u2022", "-", ">", '"')):
+                return m.group(0)                            # legitimate capital
+            # Walk back to the last word character: stripping "(" off "(CLOPS"
+            # used to leave an empty token and disable this guard, which let
+            # "CLOPS (Circuit Layer Operations Per Second)" through.
+            words = re.findall(r"[^\W\d_]+", prefix, re.UNICODE)
+            prev = words[-1] if words else ""
+            if prev and prev[0].isupper() and prev.lower() not in determiners:
+                return m.group(0)                            # "IBM Circuit": a name
+            after = re.match(r"\s+([^\W\d_]+)", text[m.end():], re.UNICODE)
+            if after and after.group(1)[0].isupper():
+                return m.group(0)                            # "Circuit CHSH", an expansion
+            hits.append(f"{m.group(0)} -> {kw}{m.group(0)[len(kw):]}")
+            return kw + m.group(0)[len(kw):]
+
+        text = re.sub(rf"\b{re.escape(cap)}(s?)\b", _sub, text)
+    return text, hits
+
+
+def leak_fix_text(msgstr: str, glossary: dict, case_only: bool = False) -> tuple[str, list[str], int]:
+    """Return (new_msgstr, applied, manual_count) for one PO entry."""
+    determiners, chk = _leak_rules()
+    prose = chk.to_prose(msgstr)
+    if not prose.strip():
+        return msgstr, [], 0                                  # nothing but code/math/tags
+    new, hits = _decapitalise(msgstr, list(glossary.get("keep_lowercase", [])), determiners)
+    manual = 0
+    if not case_only:
+        for _concept, spec in (glossary.get("translate") or {}).items():
+            pref = spec["preferred"]
+            for en in spec.get("leaked_en", []):
+                if en.lower() in chk.API_IDENTIFIERS:
+                    continue
+                target = pref + ("s" if en.endswith("s") else "")
+
+                def _sub(m, en=en, target=target):
+                    nonlocal manual
+                    start = m.start()
+                    for a, b in _protected_spans(new):
+                        if a <= start < b:
+                            manual += 1
+                            return m.group(0)
+                    before = new[:start].rstrip().split()
+                    prev = before[-1].lower().strip('"\u201c\u201d*_') if before else ""
+                    if prev not in determiners:
+                        manual += 1
+                        return m.group(0)
+                    if re.match(r'\s+(Hadamard|NOT|PHASE|CNOT|"|\u201c)', new[m.end():m.end() + 15]):
+                        manual += 1
+                        return m.group(0)
+                    hits.append(f"{m.group(0)} -> {target}")
+                    return target
+
+                new = re.sub(rf"\b{re.escape(en)}\b", _sub, new)
+    return new, hits, manual
+
+
+def load_glossary(locale: str) -> dict | None:
+    # Resolved per call: the glossary is DATA under io.REPO, which tests repoint.
+    # Binding it at import time silently reads the real repo's glossary instead.
+    p = io.REPO / "translation" / "glossary" / f"{locale}.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def leaks(locale: str, dry_run: bool = True, note: str | None = None,
+          case_only: bool = False) -> dict:
+    """Apply the safe subset of glossary-leak fixes to the PO msgstrs.
+
+    Deterministic: no model. Every changed entry still goes through check.py,
+    so an edit that lands inside a code span, a URL, math or a tag is rejected
+    rather than written. Fuzzy entries are skipped — their English has changed
+    and they are not live until a translator confirms them.
+    """
+    glossary = load_glossary(locale)
+    if glossary is None:
+        print(f"No glossary for {locale} (translation/glossary/{locale}.json).", file=sys.stderr)
+        return {"pages": 0, "applied": 0, "manual": 0, "rejected": 0}
+    note = note or f"doq: glossary leak fixed {date.today().isoformat()}"
+    applied = manual = rejected = pages = 0
+    for po_path in sorted((io.I18N / locale / "po").rglob("*.po")):
+        po = polib.pofile(str(po_path), wrapwidth=0)
+        changed = False
+        for e in po:
+            if e.obsolete or not e.msgstr.strip() or "fuzzy" in e.flags:
+                continue
+            if tr.is_copy_only(e.msgid):
+                continue
+            if _entry_type(e).startswith("Title"):
+                continue          # a heading: its capital is correct by definition
+            new, got, man = leak_fix_text(e.msgstr, glossary, case_only=case_only)
+            manual += man
+            if new == e.msgstr or not got:
+                continue
+            problems = tr.check_entry(e.msgid, new)
+            if problems:
+                rejected += 1
+                print(f"REJECT {po_path.name}: {'; '.join(problems)}")
+                continue
+            applied += len(got)
+            if not dry_run:
+                e.msgstr = new
+                e.tcomment = note
+            changed = True
+            for h in got[:3]:
+                print(f"  {'[dry] ' if dry_run else ''}{po_path.stem}: {h}")
+        if changed:
+            pages += 1
+            if not dry_run:
+                po.save(str(po_path))
+    verb = "would apply" if dry_run else "applied"
+    print(f"{locale}: {verb} {applied} fix(es) across {pages} page(s), "
+          f"{manual} left for review, {rejected} rejected by check.py")
+    return {"pages": pages, "applied": applied, "manual": manual, "rejected": rejected}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--locale", required=True)
     ap.add_argument("--fixes", help="fix spec or review records JSON (required with --prepare)")
     ap.add_argument("--prepare", action="store_true")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--leaks", action="store_true",
+                    help="deterministic glossary-leak pass over the PO msgstrs "
+                         "(no model); writes only with --write")
+    ap.add_argument("--write", action="store_true",
+                    help="with --leaks: actually write (default is a dry run)")
+    ap.add_argument("--case-only", action="store_true",
+                    help="with --leaks: apply only the keep_lowercase "
+                         "decapitalisations, skip the glossary translate rules")
     ap.add_argument("--model", default="sonnet", choices=("sonnet", "opus", "haiku"))
     ap.add_argument("--note", default=None,
                     help="provenance comment written on every changed entry "
@@ -239,6 +424,9 @@ def main() -> int:
     a = ap.parse_args()
     if a.locale not in io.MAIN_LOCALES:
         ap.error(f"unknown locale {a.locale}")
+    if a.leaks:
+        leaks(a.locale, dry_run=not a.write, note=a.note, case_only=a.case_only)
+        return 0
     if a.prepare:
         if not a.fixes:
             ap.error("--prepare needs --fixes")
@@ -247,7 +435,7 @@ def main() -> int:
     if a.apply:
         note = a.note or f"doq: fixed after review {date.today().isoformat()}"
         return tr.apply(a.locale, prefix="fix", note=note)
-    ap.error("choose --prepare or --apply")
+    ap.error("choose --prepare, --apply or --leaks")
     return 2
 
 

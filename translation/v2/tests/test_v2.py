@@ -500,6 +500,80 @@ def test_translate_apply_still_confirms_an_unchanged_fuzzy_entry(fix_env):
     assert "fuzzy" not in e.flags
 
 
+def _glossary(tmp_path, data):
+    import json as _json
+    d = tmp_path / "translation" / "glossary"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "de.json").write_text(_json.dumps(data), encoding="utf-8")
+
+
+def test_leaks_decapitalises_and_gates_on_check(fix_env, tmp_path):
+    """The PO port of fix-glossary-leaks.py: deterministic, check.py-gated."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [
+        ("Qubit counts matter.", "Qubit-Zahlen zählen."),          # entry start: legit capital
+        ("Use the Qubit here.", "Nutze das Qubit hier."),          # mid-sentence: decapitalise
+        ("Set the `Qubit` in code.", "Nutze den `Qubit` im Code."),  # code span: check.py stops it
+    ])
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    out = fix.leaks("de", dry_run=False)
+    po = polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)
+    assert po[0].msgstr == "Qubit-Zahlen zählen."                   # entry start untouched
+    assert po[1].msgstr == "Nutze das qubit hier."                  # decapitalised
+    assert po[1].tcomment.startswith("doq: glossary leak fixed")
+    assert po[2].msgstr == "Nutze den `Qubit` im Code."             # check.py rejected the edit
+    assert out["applied"] == 1 and out["rejected"] == 1
+
+
+def test_leaks_guards_proper_names_and_link_text(fix_env, tmp_path):
+    """Two false positives the v1 page-based fixer produced on real fr content,
+    invisible to lint and to check.py because neither is code, math, a tag or
+    a URL: a product name ("la fonction IBM Circuit") and markdown link text
+    quoting an English page title ("[Qubit initialization]")."""
+    fix, tr, pairs = fix_env
+    g = {"translate": {}, "keep_lowercase": ["circuit", "qubit"]}
+    keep_name = "la fonction IBM Circuit est prête."
+    keep_link = "voir [Qubit initialization](/guides/x) pour plus"
+    assert fix.leak_fix_text(keep_name, g, case_only=True)[0] == keep_name
+    assert fix.leak_fix_text(keep_link, g, case_only=True)[0] == keep_link
+    # …while an ordinary mid-sentence common noun is still fixed
+    got, hits, _ = fix.leak_fix_text("Nous utilisons le Circuit ici.", g, case_only=True)
+    assert got == "Nous utilisons le circuit ici." and hits
+
+
+def test_leaks_dry_run_writes_nothing(fix_env, tmp_path):
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Qubit here.", "Nutze das Qubit hier.")])
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    assert fix.leaks("de", dry_run=True)["applied"] == 1
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Qubit hier."
+
+
+def test_leaks_case_only_skips_the_translate_rules(fix_env, tmp_path):
+    """Gate -> porte is a house-style call that conflicts with translate.py's
+    keep-in-English list, so --case-only must leave it alone."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Gate here.", "Nutze das Gate hier.")])
+    _glossary(tmp_path, {"translate": {"gate": {"preferred": "Tor", "leaked_en": ["Gate"]}},
+                         "keep_lowercase": []})
+    assert fix.leaks("de", dry_run=False, case_only=True)["applied"] == 0
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Gate hier."
+
+
+def test_leaks_skips_fuzzy_entries(fix_env, tmp_path):
+    """A fuzzy entry is not live and its English has changed — leave it."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Qubit here.", "Nutze das Qubit hier.")])
+    _mark_fuzzy("guides/leak.mdx", 0, "Use the Qubit there.")
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    assert fix.leaks("de", dry_run=False)["applied"] == 0
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Qubit hier."
+
+
 def test_translate_apply_ignores_fix_batches(fix_env):
     """translate.py --apply must not pick up fix-* files and vice versa."""
     fix, tr, pairs = fix_env
