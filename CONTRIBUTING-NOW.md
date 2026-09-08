@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-07 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-08 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -36,7 +36,13 @@ A claim is one open issue labelled `translation-claim` (template:
 stop; it is the only reservation there is. List them any time with
 `gh issue list --repo JanLahmann/doQumentation --label translation-claim`.
 
-*No open claims right now — every locale is free.*
+| Locale | Who | Doing | Since | Issue |
+|---|---|---|---|---|
+| `cs` | @JanLahmann | review | 2026-09-08 | [#503](https://github.com/JanLahmann/doQumentation/issues/503) |
+| `de` | @JanLahmann | review | 2026-09-07 | [#500](https://github.com/JanLahmann/doQumentation/issues/500) |
+| `es` | @JanLahmann | review | 2026-09-08 | [#502](https://github.com/JanLahmann/doQumentation/issues/502) |
+| `fr` | @JanLahmann | review | 2026-09-08 | [#504](https://github.com/JanLahmann/doQumentation/issues/504) |
+| `he` | @JanLahmann | review | 2026-09-07 | [#501](https://github.com/JanLahmann/doQumentation/issues/501) |
 
 ---
 
