@@ -344,6 +344,42 @@ def _fix_module():
     return importlib.import_module("fix")
 
 
+def _entry(msgid: str, msgstr: str = "x", comment: str = "type: Plain text"):
+    import polib
+    return polib.POEntry(msgid=msgid, msgstr=msgstr, comment=comment)
+
+
+# po4a merges a closing tag with the paragraph after it when no blank line
+# separates them, so "is this translatable?" cannot be decided from the first
+# character. Judging it that way hid 231 German prose entries from the
+# worklist; 28 of them were fuzzy, i.e. rendering English on the live site
+# with a real translation sitting unused in the PO and no pipeline step able
+# to see it (update.py reported "0 fuzzy").
+@pytest.mark.parametrize("msgid", [
+    "</AccordionItem>\n</Accordion>\nNow, Alice can measure qubits A and Q, and she cannot control the result.",
+    "</AccordionItem> </Accordion> This guide focuses on how to add and update job tags, as well as how to use them.",
+    "<Admonition type=\"note\"> You can only invite users who are already members of the account you administer.",
+])
+def test_translatable_sees_prose_behind_a_leading_tag(msgid):
+    assert io.translatable(_entry(msgid))
+
+
+@pytest.mark.parametrize("msgid", [
+    "<Accordion>",
+    "</AccordionItem>\n</Accordion>",
+    '<span className="content-stats__label">Tutorials</span>',
+    '<img src="/docs/images/x.avif" alt="a" />',
+    "<Admonition type=\"note\">",
+])
+def test_translatable_still_rejects_bare_markup(msgid):
+    assert not io.translatable(_entry(msgid))
+
+
+def test_translatable_still_rejects_comments_and_fences():
+    assert not io.translatable(_entry("{/* cspell:ignore Abluemix, apikey */}"))
+    assert not io.translatable(_entry("```bash\ncurl -X POST 'https://iam.cloud.ibm.com/identity/token'\n```"))
+
+
 def _make_po(path: Path, pairs: list[tuple[str, str]]) -> None:
     import polib
     po = polib.POFile(wrapwidth=0)
@@ -437,6 +473,141 @@ def test_fix_apply_rejects_checker_violation(fix_env):
     assert rc == 1
     po = polib.pofile(str(io.po_path("de", "guides/noise.mdx")))
     assert po[1].msgstr == pairs[1][1]                                  # rejected → unchanged
+
+
+def _mark_fuzzy(page: str, idx: int, prev_msgid: str) -> None:
+    import polib
+    po = polib.pofile(str(io.po_path("de", page)), wrapwidth=0)
+    po[idx].flags.append("fuzzy")
+    po[idx].previous_msgid = prev_msgid
+    po.save(str(io.po_path("de", page)))
+
+
+def test_fix_apply_keeps_fuzzy_when_the_agent_copied_it_back(fix_env):
+    """A fuzzy entry the fix agent did not touch must STAY fuzzy.
+
+    fuzzy means msgmerge saw the English change and kept the old translation
+    pending confirmation; po4a renders English until the flag clears. The
+    review-fix prompt tells the agent to copy unflagged entries back verbatim,
+    so an unchanged string is not a confirmation — clearing the flag would
+    publish a translation of the PREVIOUS English."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]                    # everything copied back verbatim
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de", prefix="fix", note="x") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" in e.flags and e.msgstr == pairs[2][1]
+
+
+def test_fix_apply_clears_fuzzy_when_the_agent_retranslated_it(fix_env):
+    """But a fuzzy entry the agent actually rewrote is confirmed, so it ships."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[2] = "Führe die Zelle aus, dann prüfe das Ergebnis."
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de", prefix="fix", note="x") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" not in e.flags and e.msgstr.startswith("Führe die Zelle aus, dann")
+
+
+def test_translate_apply_still_confirms_an_unchanged_fuzzy_entry(fix_env):
+    """The translate path is the opposite case: there the agent was shown the
+    entry and asked to translate it, so returning the same string confirms it."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "batch-000-sonnet.ids.json").write_text(json.dumps(["guides/noise.mdx#2"]))
+    (d / "batch-000-sonnet.json").write_text(json.dumps([{"en": "Run the cell."}]))
+    (d / "batch-000-sonnet.out.json").write_text(json.dumps([pairs[2][1]], ensure_ascii=False))
+    assert tr.apply("de") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" not in e.flags
+
+
+def _glossary(tmp_path, data):
+    import json as _json
+    d = tmp_path / "translation" / "glossary"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "de.json").write_text(_json.dumps(data), encoding="utf-8")
+
+
+def test_leaks_decapitalises_and_gates_on_check(fix_env, tmp_path):
+    """The PO port of fix-glossary-leaks.py: deterministic, check.py-gated."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [
+        ("Qubit counts matter.", "Qubit-Zahlen zählen."),          # entry start: legit capital
+        ("Use the Qubit here.", "Nutze das Qubit hier."),          # mid-sentence: decapitalise
+        ("Set the `Qubit` in code.", "Nutze den `Qubit` im Code."),  # code span: check.py stops it
+    ])
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    out = fix.leaks("de", dry_run=False)
+    po = polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)
+    assert po[0].msgstr == "Qubit-Zahlen zählen."                   # entry start untouched
+    assert po[1].msgstr == "Nutze das qubit hier."                  # decapitalised
+    assert po[1].tcomment.startswith("doq: glossary leak fixed")
+    assert po[2].msgstr == "Nutze den `Qubit` im Code."             # check.py rejected the edit
+    assert out["applied"] == 1 and out["rejected"] == 1
+
+
+def test_leaks_guards_proper_names_and_link_text(fix_env, tmp_path):
+    """Two false positives the v1 page-based fixer produced on real fr content,
+    invisible to lint and to check.py because neither is code, math, a tag or
+    a URL: a product name ("la fonction IBM Circuit") and markdown link text
+    quoting an English page title ("[Qubit initialization]")."""
+    fix, tr, pairs = fix_env
+    g = {"translate": {}, "keep_lowercase": ["circuit", "qubit"]}
+    keep_name = "la fonction IBM Circuit est prête."
+    keep_link = "voir [Qubit initialization](/guides/x) pour plus"
+    assert fix.leak_fix_text(keep_name, g, case_only=True)[0] == keep_name
+    assert fix.leak_fix_text(keep_link, g, case_only=True)[0] == keep_link
+    # …while an ordinary mid-sentence common noun is still fixed
+    got, hits, _ = fix.leak_fix_text("Nous utilisons le Circuit ici.", g, case_only=True)
+    assert got == "Nous utilisons le circuit ici." and hits
+
+
+def test_leaks_dry_run_writes_nothing(fix_env, tmp_path):
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Qubit here.", "Nutze das Qubit hier.")])
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    assert fix.leaks("de", dry_run=True)["applied"] == 1
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Qubit hier."
+
+
+def test_leaks_case_only_skips_the_translate_rules(fix_env, tmp_path):
+    """Gate -> porte is a house-style call that conflicts with translate.py's
+    keep-in-English list, so --case-only must leave it alone."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Gate here.", "Nutze das Gate hier.")])
+    _glossary(tmp_path, {"translate": {"gate": {"preferred": "Tor", "leaked_en": ["Gate"]}},
+                         "keep_lowercase": []})
+    assert fix.leaks("de", dry_run=False, case_only=True)["applied"] == 0
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Gate hier."
+
+
+def test_leaks_skips_fuzzy_entries(fix_env, tmp_path):
+    """A fuzzy entry is not live and its English has changed — leave it."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Qubit here.", "Nutze das Qubit hier.")])
+    _mark_fuzzy("guides/leak.mdx", 0, "Use the Qubit there.")
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    assert fix.leaks("de", dry_run=False)["applied"] == 0
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Qubit hier."
 
 
 def test_translate_apply_ignores_fix_batches(fix_env):

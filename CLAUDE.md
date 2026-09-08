@@ -35,8 +35,8 @@ Before either, in this order:
 
 - Never hand-edit a rendered page under `i18n/<locale>/docusaurus-plugin-content-docs/current/`
   or a `.po` file. Only `translation/v2/translate.py --apply` and
-  `translation/v2/fix.py --apply` write a translation; they run every entry
-  through `translation/v2/check.py`.
+  `translation/v2/fix.py --apply` / `--leaks --write` write a translation;
+  they run every entry through `translation/v2/check.py`.
 - Never edit `docs/` (generated English), `translation/status.json`
   (the maintainer banks verdicts there after merge), or any locale but the
   one claimed.

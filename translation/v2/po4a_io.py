@@ -265,6 +265,22 @@ def entry_type(e: polib.POEntry) -> str:
     return c[len("type: "):] if c.startswith("type: ") else "?"
 
 
+_LEADING_TAGS = re.compile(r"^(?:\s*</?[A-Za-z][\w.]*(?:\s[^<>]*)?/?>\s*)+")
+_TAG = re.compile(r"</?[A-Za-z][\w.]*(?:\s[^<>]*)?/?>")
+# 8 words is comfortably longer than any label or stat caption in the corpus
+# and shorter than the paragraphs this is meant to recover.
+_PROSE_MIN_WORDS = 8
+
+
+def _prose_behind_tags(s: str) -> bool:
+    """True when a leading run of tags is followed by real running text."""
+    rest = _LEADING_TAGS.sub("", s, count=1).strip()
+    if not rest or not rest[0].isalpha():
+        return False
+    words = [w for w in _TAG.sub(" ", rest).split() if any(c.isalpha() for c in w)]
+    return len(words) >= _PROSE_MIN_WORDS
+
+
 def translatable(e: polib.POEntry) -> bool:
     """Which entries a translator (human or model) should ever see."""
     if is_code_entry(e) or is_import_entry(e):
@@ -273,7 +289,14 @@ def translatable(e: polib.POEntry) -> bool:
     if s.startswith("{/*") and s.endswith("*/}"):
         return False
     if s.startswith("<") and not re.search(r'\b(title|label|description|summary)="', s):
-        return False              # bare JSX/HTML with no text prop
+        # po4a merges a closing tag with the paragraph that follows it when no
+        # blank line separates them, so an entry can be a full prose paragraph
+        # wearing a tag prefix (`</AccordionItem></Accordion>Now, Alice can
+        # measure…`). Judging it by its first character hid 77 German
+        # paragraphs from the worklist; when such an entry went fuzzy it
+        # rendered English forever and no pipeline step could see it.
+        if not _prose_behind_tags(s):
+            return False          # bare JSX/HTML with no text prop
     if s.startswith("```"):
         return False              # a fence chunk inside a list item, handed over as prose
     return True

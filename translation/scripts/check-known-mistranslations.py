@@ -21,6 +21,9 @@ Usage:
 import argparse, re, sys, subprocess
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import refuse_rendered_page_write  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent.parent
 I18N = REPO / "i18n"
 DOC_SUB = "docusaurus-plugin-content-docs/current"
@@ -335,8 +338,17 @@ def fix_file(path: Path, rules) -> int:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--locale")
-    ap.add_argument("--fix", action="store_true")
+    ap.add_argument("--fix", action="store_true",
+                    help="DISABLED since v2: rendered pages are derived from the PO files")
     a = ap.parse_args()
+
+    if a.fix:
+        refuse_rendered_page_write(
+            "check-known-mistranslations.py --fix",
+            "python3 translation/v2/fix.py --locale <LOCALE> --fixes <spec.json> --prepare\n"
+            "  # fill the batches with .claude/workflows/translate-locale.js, then\n"
+            "  python3 translation/v2/fix.py --locale <LOCALE> --apply\n"
+            "  # see CONTRIBUTING-REVIEWS.md step 6")
 
     total_hits = 0
     fixed_files = 0

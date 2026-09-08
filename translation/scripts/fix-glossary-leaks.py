@@ -2,6 +2,11 @@
 """
 Auto-fix the SAFE subset of glossary leaks found by check-glossary-consistency.py.
 
+PORTED (2026-09-08): the writing half now lives in `translation/v2/fix.py --leaks`,
+which applies this module's `fix_text` to the PO msgstrs and gates every change
+with check.py. This script keeps the transformation and its --dry-run report;
+its write path is disabled because rendered pages are derived under v2.
+
 Scope (deliberately conservative — high precision over high recall):
   - keep_lowercase terms wrongly capitalized → decapitalize (Qubit→qubit). Pure
     case change, zero agreement risk. Skips sentence-start capitalization.
@@ -36,6 +41,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import refuse_rendered_page_write  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -214,6 +222,13 @@ def main():
     ap.add_argument("--all", action="store_true", help="all flagged files")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    if not args.dry_run:
+        refuse_rendered_page_write(
+            "fix-glossary-leaks.py",
+            "python3 translation/v2/fix.py --locale <LOCALE> --leaks [--case-only]\n"
+            "  # same transformation, applied to the PO msgstrs and gated by check.py;\n"
+            "  # add --write to apply. This script's --dry-run still reports.")
 
     glossary = _chk.load_glossary(args.locale)
     if glossary is None:

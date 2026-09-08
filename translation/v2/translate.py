@@ -96,6 +96,12 @@ def language_info(locale: str) -> tuple[str, str]:
 
 def instructions(locale: str) -> str:
     lang, register = language_info(locale)
+    # One shared list, so these instructions and the deep-review leak filter
+    # cannot disagree about what is kept in English (they did: the filter
+    # counted every kept term as a leak and hid the page from review).
+    sys.path.insert(0, str(io.REPO / "translation" / "scripts"))
+    from _common import KEEP_ENGLISH_TERMS
+    keep_english = ", ".join(KEEP_ENGLISH_TERMS)
     return f"""# Translation instructions — {lang} ({locale})
 
 Each batch is a JSON list of segments from doQumentation, a {lang} mirror of
@@ -117,8 +123,7 @@ Rules, each enforced by an automatic checker:
 - Math: keep every $...$ span and every $$...$$ block exactly, including the
   number of $$ delimiters (an entry may start or end inside a block; copy
   that part unchanged). Only words inside \\text{{...}} may be translated.
-- Keep these terms in English: Qiskit, Qubit, Gate, Circuit, Backend,
-  Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU.
+- Keep these terms in English: {keep_english}.
 - An item without `type` is plain text. A `type` of "Title ##" is a
   heading: translate the text, keep the anchor. A `type` starting with
   "Yaml Front Matter" is page metadata: plain text.
@@ -649,7 +654,8 @@ def sweep(locale: str) -> int:
     return 0
 
 
-def apply(locale: str, prefix: str = "batch", note: str | None = None) -> int:
+def apply(locale: str, prefix: str = "batch", note: str | None = None,
+          confirm_fuzzy: bool | None = None) -> int:
     """Write the filled batches into the PO files, through check.py.
 
     prefix selects the batch family: "batch" (translate.py --prepare) or
@@ -661,6 +667,11 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None) -> int:
     on every entry that did change."""
     outdir = io.WORK_DIR / locale
     name_re = BATCH_NAME if prefix == "batch" else re.compile(rf"^{re.escape(prefix)}-\d+-[a-z]+\.json$")
+    # Inferred from the prefix rather than left to the caller: every review-fix
+    # caller would otherwise have to remember it, and forgetting it silently
+    # publishes stale translations (see the fuzzy note below).
+    if confirm_fuzzy is None:
+        confirm_fuzzy = prefix != "fix"
     accepted = rejected = skipped = unchanged = 0
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
@@ -699,7 +710,15 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None) -> int:
         for idx, msgstr in fills:
             e = po[idx]
             final = match_trailing_newline(e.msgid, msgstr)
-            if final == e.msgstr and "fuzzy" not in e.flags:
+            # A fuzzy entry means msgmerge saw the English change and kept the
+            # old translation pending confirmation; po4a renders English until
+            # the flag clears. In the translate path the agent was shown that
+            # entry and asked to translate it, so returning the same string IS
+            # the confirmation and the flag may go. In the review-fix path the
+            # agent is told to copy unflagged entries back verbatim, so an
+            # unchanged string means "not looked at" — clearing the flag there
+            # would publish a translation of the PREVIOUS English.
+            if final == e.msgstr and ("fuzzy" not in e.flags or not confirm_fuzzy):
                 unchanged += 1
                 continue
             e.msgstr = final

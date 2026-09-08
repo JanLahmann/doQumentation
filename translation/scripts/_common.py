@@ -18,6 +18,50 @@ import json
 import re
 from pathlib import Path
 
+# ── House style: terms kept in English in every locale ──
+
+# Settled 2026-09-08 by the maintainer: these stay English in prose. The list is
+# shared so the translator instructions (translation/v2/translate.py) and the
+# deep-review leak filter (sample-deep-review.py) cannot drift apart — before
+# this, translate.py told translators to KEEP these terms while the sampler
+# counted every one of them as a "leak" and excluded the page from review
+# (154 de / 92 he / 70 cs pages).
+KEEP_ENGLISH_TERMS = (
+    "Qiskit", "Qubit", "Gate", "Circuit", "Backend",
+    "Transpiler", "Session", "Sampler", "Estimator", "PUB", "IBM Quantum", "QPU",
+)
+
+
+def is_kept_english(word: str) -> bool:
+    """True for a term the house style keeps in English (any case, any plural)."""
+    w = word.strip().rstrip("s").casefold()
+    return any(w == t.rstrip("s").casefold() for t in KEEP_ENGLISH_TERMS)
+
+
+# ── v2: the rendered locale pages are build output, not source ──
+
+RENDERED_PAGES_ARE_DERIVED = """\
+Since the v2 pipeline (translation/v2/README.md) the pages under
+i18n/<locale>/docusaurus-plugin-content-docs/current/ are RENDERED from
+the PO files by render.py at build time. They are not tracked in git, and
+any edit written there is silently discarded at the next render.
+"""
+
+
+def refuse_rendered_page_write(tool: str, instead: str) -> None:
+    """Abort a legacy in-place fixer that would write a rendered locale page.
+
+    These tools predate v2, when the rendered pages WERE the source. Leaving
+    them runnable is worse than removing them: they report success, the site
+    never changes, and the operator believes the defect is fixed.
+    """
+    import sys as _sys
+    print(f"{tool}: refusing to write rendered locale pages.\n\n"
+          f"{RENDERED_PAGES_ARE_DERIVED}\n"
+          f"Do this instead:\n  {instead}\n", file=_sys.stderr)
+    _sys.exit(2)
+
+
 # ── Paths ──
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
