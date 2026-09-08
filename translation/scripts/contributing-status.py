@@ -179,6 +179,13 @@ def render(sdr, status, claims: list[dict] | None = None) -> str:
     rendered = rendered_counts(sdr, status)
     unrendered = [l for l in sdr.MAIN_LOCALES if rendered[l] < max(10, len(status.get(l, {})) // 4)]
 
+    # Does the leak filter still bind anywhere? A leak is what a locale's
+    # glossary records, minus the terms the house style keeps in English, so
+    # with no glossary entries every file scores 0 and --max-leaks is inert.
+    # Advertising a threshold then is worse than saying nothing: it reads as a
+    # quality knob that does something.
+    leaky = any(sdr._leak_terms(loc) for loc in sdr.MAIN_LOCALES)
+
     # For each locale, the tightest threshold that still leaves a workable pool.
     rec: dict[str, tuple[int, int] | None] = {}
     for loc in sdr.MAIN_LOCALES:
@@ -269,29 +276,41 @@ def render(sdr, status, claims: list[dict] | None = None) -> str:
         A("> `python3 translation/v2/render.py --locale <locale>` and run the")
         A("> sampler yourself. The daily CI run renders all of them.")
         A("")
-    A("`--max-leaks` controls how many capitalized-English leaks a file may")
-    A("contain and still be eligible. Tighter is better quality-per-round; the")
-    A("value shown is the **tightest threshold that still leaves a workable")
-    A(f"pool** (at least {WORKABLE} files). Use it as the starting point.")
+    if leaky:
+        A("`--max-leaks` controls how many recorded glossary leaks a file may")
+        A("contain and still be eligible. Tighter is better quality-per-round;")
+        A("the value shown is the **tightest threshold that still leaves a")
+        A(f"workable pool** (at least {WORKABLE} files). Use it as a start.")
+    else:
+        A("**`--max-leaks` currently filters nothing, and that is expected.** A")
+        A("leak is a term the locale's `translation/glossary/<loc>.json` records")
+        A("as wrongly left in English — *not* any capitalized English word. The")
+        A("terms the house style keeps in English (Qiskit, Qubit, Gate, Circuit,")
+        A("Backend, Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum,")
+        A("QPU) do not count, and no locale currently records anything else, so")
+        A("every file scores 0. What limits a pool today is pages already")
+        A("reviewed and stubs under 40 lines, not leakage.")
     A("")
     if ready:
-        A("| Locale | Unreviewed pool | Use | Reviewed so far |")
-        A("|---|---|---|---|")
+        A("| Locale | Unreviewed pool | Reviewed so far |" if not leaky
+          else "| Locale | Unreviewed pool | Use | Reviewed so far |")
+        A("|---|---|---|" if not leaky else "|---|---|---|---|")
         for loc in ready:
             leaks, n = rec[loc]
             d, tot = done[loc]
             pct = f"{100 * d // tot}%" if tot else "—"
-            A(f"| `{loc}` | **{n}** | `--max-leaks {leaks}` | {d}/{tot} ({pct}) |")
+            A(f"| `{loc}` | **{n}** | {d}/{tot} ({pct}) |" if not leaky
+              else f"| `{loc}` | **{n}** | `--max-leaks {leaks}` | {d}/{tot} ({pct}) |")
         A("")
     if thin:
-        A(f"**Nearly exhausted** (fewer than {WORKABLE} eligible even at")
-        A(f"`--max-leaks {LADDER[-1]}`) — still worth a short round, but expect")
-        A("to widen further or re-sweep files that already carry a verdict:")
+        A(f"**Nearly exhausted** (fewer than {WORKABLE} eligible) — still worth")
+        A("a short round, but expect to re-sweep files that already carry a")
+        A("verdict, or to accept a round smaller than 25:")
         A("")
         for loc in thin:
-            leaks, n = rec[loc]
+            _leaks, n = rec[loc]
             d, tot = done[loc]
-            A(f"- `{loc}` — {n} left at `--max-leaks {leaks}` ({d}/{tot} reviewed)")
+            A(f"- `{loc}` — {n} left ({d}/{tot} reviewed)")
         A("")
     A("---")
     A("")

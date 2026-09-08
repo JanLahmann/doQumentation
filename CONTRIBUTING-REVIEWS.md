@@ -148,9 +148,10 @@ python3 translation/scripts/sample-deep-review.py \
 It prints the eligible pool size. `--exclude-reviewed` skips files that
 already carry a verdict, so rounds never re-tread ground.
 
-If the pool is smaller than `N`, that locale has drained at the threshold
-you picked. Raise it (`--max-leaks 4`, then `6`, `8`, `12`) to reopen the
-pool rather than shrinking the round.
+If the pool is smaller than `N`, that locale is genuinely drained: take the
+short round rather than shrinking `N` on a locale that still has work. (The
+`--max-leaks` ladder used to reopen a pool here; it no longer does — see the
+note below.)
 
 > **A "leak" is what the locale's glossary records, not any English word.**
 > Since 2026-09-08 the terms the house style keeps in English — Qiskit,
@@ -162,7 +163,7 @@ pool rather than shrinking the round.
 > filter it at all; that is expected, not a broken sampler.
 
 **[`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md) lists the current pool size
-per locale and the threshold to start from.** It is regenerated daily, so
+per locale.** It is regenerated daily, so
 trust it over any number written into this file — pool sizes move every
 time a round lands.
 
