@@ -344,6 +344,42 @@ def _fix_module():
     return importlib.import_module("fix")
 
 
+def _entry(msgid: str, msgstr: str = "x", comment: str = "type: Plain text"):
+    import polib
+    return polib.POEntry(msgid=msgid, msgstr=msgstr, comment=comment)
+
+
+# po4a merges a closing tag with the paragraph after it when no blank line
+# separates them, so "is this translatable?" cannot be decided from the first
+# character. Judging it that way hid 231 German prose entries from the
+# worklist; 28 of them were fuzzy, i.e. rendering English on the live site
+# with a real translation sitting unused in the PO and no pipeline step able
+# to see it (update.py reported "0 fuzzy").
+@pytest.mark.parametrize("msgid", [
+    "</AccordionItem>\n</Accordion>\nNow, Alice can measure qubits A and Q, and she cannot control the result.",
+    "</AccordionItem> </Accordion> This guide focuses on how to add and update job tags, as well as how to use them.",
+    "<Admonition type=\"note\"> You can only invite users who are already members of the account you administer.",
+])
+def test_translatable_sees_prose_behind_a_leading_tag(msgid):
+    assert io.translatable(_entry(msgid))
+
+
+@pytest.mark.parametrize("msgid", [
+    "<Accordion>",
+    "</AccordionItem>\n</Accordion>",
+    '<span className="content-stats__label">Tutorials</span>',
+    '<img src="/docs/images/x.avif" alt="a" />',
+    "<Admonition type=\"note\">",
+])
+def test_translatable_still_rejects_bare_markup(msgid):
+    assert not io.translatable(_entry(msgid))
+
+
+def test_translatable_still_rejects_comments_and_fences():
+    assert not io.translatable(_entry("{/* cspell:ignore Abluemix, apikey */}"))
+    assert not io.translatable(_entry("```bash\ncurl -X POST 'https://iam.cloud.ibm.com/identity/token'\n```"))
+
+
 def _make_po(path: Path, pairs: list[tuple[str, str]]) -> None:
     import polib
     po = polib.POFile(wrapwidth=0)
