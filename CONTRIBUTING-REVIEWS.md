@@ -176,11 +176,14 @@ python3 translation/scripts/find-positional-drift.py --locale <LOCALE> \
   --out /tmp/drift-<LOCALE>.json
 ```
 
-`bootstrap` seeded the PO files from the old rendered pages by pairing
-source and translation **by position** (those entries carry a
-`# doq-bootstrap: positional` comment). Where an entry was dropped
-mid-page, everything after it shifted, so a run of entries carries the
-*neighbouring paragraph's* translation.
+`bootstrap` seeded the PO files from the old rendered pages. Where po4a
+refused to pair the two files exactly it fell back to matching their po4a
+*type* sequences with difflib, and adopted the runs that matched (those
+entries carry a `# doq-bootstrap: positional` comment). On a page that is
+mostly `Plain text`, difflib has no content to place an insertion or
+deletion with, so it puts it at an arbitrary point in the run and every
+entry between there and the true position carries its neighbour's
+translation.
 
 This is the one defect class that survives every automatic gate we have.
 The page renders, the prose is fluent, and `check.py` passes it, because a
@@ -188,11 +191,30 @@ well-formed translation of the wrong paragraph breaks no structural
 invariant — no code span, URL, tag or math is out of place. Only the
 meaning is wrong, which is exactly what a fluent reader is for.
 
-The output is a **candidate list, not a verdict** — on `de` about two in
-five held up. Gauge them (step 5) before building a fix spec, and in the
-spec say plainly that the stored translation belongs to a different
+**Treat the output as a list of suspect PAGES, not of suspect entries.**
+The detector only fires when a better-fitting neighbour lies within eight
+entries and the pair carries enough anchors to score, so it cannot see a
+misaligned heading or a run longer than its window. On `it` it found 14
+entries; sweeping those pages in full found 26, including seven
+consecutive headings in `learning/modules/computer-science/vqe.mdx` each
+holding the previous heading's text. Gauge the candidates (step 5) to
+decide which pages are really affected, then build the fix spec so the
+fixer re-checks **every** entry on those pages, not only the flagged ones.
+
+In the spec, say plainly that a flagged translation belongs to a different
 paragraph and must be discarded rather than repaired, or the fixer will
 try to polish text that was never about this source.
+
+Two more things this defect is not:
+
+- It is **not** inherited identically across locales. The same pages break
+  everywhere, because the fragility is in the English structure, but the
+  entries differ: only 2 of ~34 confirmed entries coincided between `de`
+  and `pt`. You cannot reuse one locale's entry list for another.
+- The correct translation usually **cannot** be recovered from the old
+  rendered page by content matching. Tried on `de`: 0 of 11 right, with
+  confidence scores of 0.94-1.00 on entirely wrong paragraphs. Anchor-free
+  prose gives absolute matching nothing to work with. Retranslate instead.
 
 To choose *which* pages to sweep, run it across every locale:
 
@@ -304,6 +326,34 @@ spans, URLs, math, tags, anchors, length), stamps each with
 `doq: fixed after review <date>`, and rejects the rest with a reason. A
 rejected entry is redone in a second, smaller wave or left with its verdict
 on record; never hand-edit the PO to force it.
+
+Two things to check before you go on, neither of which any tool reports:
+
+**Count the applied entries against the flagged ones.** `--apply` prints
+how many it accepted. If that is fewer than you flagged, some flags did not
+reach the fixer or the fixer declined them; if it is more, the fixer
+changed entries nobody reviewed. Both happen, and both matter.
+
+**Diff every applied change against your flagged set, not just the flagged
+ones.** Confirming your flagged entries landed is a *different* check from
+confirming nothing else moved, and only the second one catches a bad
+unflagged change. Twice a fix wave replaced a translated `<IBMVideo
+title="…">` caption with the English original — invisible to every gate,
+because `title=` is the one attribute `check.py` does not compare
+byte-for-byte (it must change under translation) and lint reads an English
+caption as prose that may legitimately be English. Both were found only by
+this diff.
+
+Unflagged changes are not automatically wrong: on a drift round the fixer
+reading a whole page often repairs more of a shifted run than the detector
+saw, which is the point. Read them and decide; do not assume either way.
+
+A batch that returns one translation too few is discarded whole by
+`--apply` — correctly, since a dropped item shifts every later one and
+would manufacture the very defect you are fixing. Expect this: it happened
+on 2 of ~24 batches. Redo those in a second wave. Note that
+`translate-locale.js` will still report such a batch as fully filled, since
+it parses the agent's own count and has no filesystem access to check.
 
 ### 7. Gate the result
 
