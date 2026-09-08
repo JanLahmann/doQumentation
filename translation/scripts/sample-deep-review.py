@@ -33,6 +33,7 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # importable as well as runnable
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
 STATUS_FILE = REPO_ROOT / "translation" / "status.json"
@@ -116,11 +117,36 @@ def section_of(rel: str) -> str:
 # a per-locale glossary. (Non-Latin scripts won't render these — for ja/ko/ar/
 # he/th the count is ~0, so --leak-clean simply doesn't exclude them, which is
 # the safe default.)
-_LEAK_PROXY = re.compile(r"\b(Gate|Gates|Circuit|Circuits|Qubit|Qubits)\b")
+# Settled 2026-09-08: Qubit/Gate/Circuit are KEPT in English (see
+# _common.KEEP_ENGLISH_TERMS and the same list in the translator instructions),
+# so they are not leaks and must not exclude a page from review. Counting them
+# had been holding 154 de / 92 he / 70 cs pages out of the deep review for
+# following the house style. What remains a leak is per-locale and recorded in
+# translation/glossary/<loc>.json; a locale with nothing recorded has a leak
+# count of 0, which is the honest answer rather than a proxy guess.
+_LEAK_PROXY = None
 
 
-def _leak_count(text: str) -> int:
-    """Capitalized-English-leak count in prose (uses the detector's prose strip)."""
+def _leak_terms(locale: str) -> list[str]:
+    """The English forms this locale still counts as leaks: whatever its
+    glossary records, minus anything the house style keeps in English."""
+    import json as _json
+    from _common import is_kept_english
+    p = REPO_ROOT / "translation" / "glossary" / f"{locale}.json"
+    if not p.exists():
+        return []
+    g = _json.loads(p.read_text(encoding="utf-8"))
+    terms = []
+    for spec in (g.get("translate") or {}).values():
+        terms += [t for t in spec.get("leaked_en", []) if not is_kept_english(t)]
+    return sorted(set(terms))
+
+
+def _leak_count(text: str, locale: str) -> int:
+    """Leak count in prose for one locale (uses the detector's prose strip)."""
+    terms = _leak_terms(locale)
+    if not terms:
+        return 0
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
@@ -130,7 +156,8 @@ def _leak_count(text: str) -> int:
         prose = chk.to_prose(text)
     except Exception:
         prose = text
-    return len(_LEAK_PROXY.findall(prose))
+    pat = re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b")
+    return len(pat.findall(prose))
 
 
 def build_pool(status: dict, locales: list[str], min_lines: int,
@@ -172,7 +199,7 @@ def build_pool(status: dict, locales: list[str], min_lines: int,
                 continue
             if not is_fresh(loc, rel):
                 continue
-            if max_leaks is not None and _leak_count(text) > max_leaks:
+            if max_leaks is not None and _leak_count(text, loc) > max_leaks:
                 continue
             eligible.append((rel, section_of(rel), lines))
         if eligible:

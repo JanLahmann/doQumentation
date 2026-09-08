@@ -18,6 +18,26 @@ import json
 import re
 from pathlib import Path
 
+# ── House style: terms kept in English in every locale ──
+
+# Settled 2026-09-08 by the maintainer: these stay English in prose. The list is
+# shared so the translator instructions (translation/v2/translate.py) and the
+# deep-review leak filter (sample-deep-review.py) cannot drift apart — before
+# this, translate.py told translators to KEEP these terms while the sampler
+# counted every one of them as a "leak" and excluded the page from review
+# (154 de / 92 he / 70 cs pages).
+KEEP_ENGLISH_TERMS = (
+    "Qiskit", "Qubit", "Gate", "Circuit", "Backend",
+    "Transpiler", "Session", "Sampler", "Estimator", "PUB", "IBM Quantum", "QPU",
+)
+
+
+def is_kept_english(word: str) -> bool:
+    """True for a term the house style keeps in English (any case, any plural)."""
+    w = word.strip().rstrip("s").casefold()
+    return any(w == t.rstrip("s").casefold() for t in KEEP_ENGLISH_TERMS)
+
+
 # ── v2: the rendered locale pages are build output, not source ──
 
 RENDERED_PAGES_ARE_DERIVED = """\

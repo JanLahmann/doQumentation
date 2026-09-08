@@ -96,6 +96,12 @@ def language_info(locale: str) -> tuple[str, str]:
 
 def instructions(locale: str) -> str:
     lang, register = language_info(locale)
+    # One shared list, so these instructions and the deep-review leak filter
+    # cannot disagree about what is kept in English (they did: the filter
+    # counted every kept term as a leak and hid the page from review).
+    sys.path.insert(0, str(io.REPO / "translation" / "scripts"))
+    from _common import KEEP_ENGLISH_TERMS
+    keep_english = ", ".join(KEEP_ENGLISH_TERMS)
     return f"""# Translation instructions — {lang} ({locale})
 
 Each batch is a JSON list of segments from doQumentation, a {lang} mirror of
@@ -117,8 +123,7 @@ Rules, each enforced by an automatic checker:
 - Math: keep every $...$ span and every $$...$$ block exactly, including the
   number of $$ delimiters (an entry may start or end inside a block; copy
   that part unchanged). Only words inside \\text{{...}} may be translated.
-- Keep these terms in English: Qiskit, Qubit, Gate, Circuit, Backend,
-  Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU.
+- Keep these terms in English: {keep_english}.
 - An item without `type` is plain text. A `type` of "Title ##" is a
   heading: translate the text, keep the anchor. A `type` starting with
   "Yaml Front Matter" is page metadata: plain text.

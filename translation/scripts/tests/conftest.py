@@ -51,3 +51,8 @@ def lint():
 @pytest.fixture(scope="session")
 def passage_units():
     return _load("passage_units", "passage_units.py")
+
+
+@pytest.fixture(scope="session")
+def sampler():
+    return _load("sample_deep_review", "sample-deep-review.py")
