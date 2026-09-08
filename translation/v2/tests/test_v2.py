@@ -669,3 +669,52 @@ def test_entry_inside_a_quote_matches_when_it_dominates():
 def test_no_match_returns_none_rather_than_a_wrong_index():
     entries = _entries("Quantum information", "Partial measurements")
     assert fx.match_example({"source": DENSITY}, entries) is None
+
+
+# ── apply() must notice a translation replaced by its English source ───────
+# Regression guard: on the cs drift round a fix wave returned the English
+# msgid verbatim for an entry that already had a good Czech translation. The
+# instructions forbid it, but nothing objected: check.py cannot reject
+# msgstr == msgid (legitimate for names and code) and the entry was simply
+# stamped "kept in English by the translator". Only apply() knows what the
+# entry said before, so only apply() can tell a deliberate keep from a
+# destroyed translation.
+
+def _apply_one(tmp_path, monkeypatch, msgid, prev, returned):
+    import translate as tr
+    work = tmp_path / "work"; (work / "xx").mkdir(parents=True)
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid=msgid, msgstr=prev))
+    po.save(str(po_dir / "p.po"))
+    (work / "xx" / "fix-000-sonnet.json").write_text(json.dumps([{"msgid": msgid}]), encoding="utf-8")
+    (work / "xx" / "fix-000-sonnet.ids.json").write_text(json.dumps(["p.mdx#0"]), encoding="utf-8")
+    (work / "xx" / "fix-000-sonnet.out.json").write_text(json.dumps([returned]), encoding="utf-8")
+    monkeypatch.setattr(tr.io, "WORK_DIR", work)
+    monkeypatch.setattr(tr.io, "po_path", lambda loc, rel: po_dir / "p.po")
+    return tr, po_dir / "p.po"
+
+
+EN = "Press the button to reveal the answer to the question posed above."
+CS = "Stiskni tlačítko pro zobrazení odpovědi na výše položenou otázku."
+
+
+def test_apply_warns_when_a_translation_becomes_english(tmp_path, monkeypatch, capsys):
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "REPLACED BY ENGLISH 1" in out
+    assert "translation replaced by the English source" in out
+
+
+def test_apply_is_quiet_when_english_was_already_there(tmp_path, monkeypatch, capsys):
+    """A name or code entry that was English and stays English is not a loss."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, EN, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+def test_apply_is_quiet_on_an_ordinary_correction(tmp_path, monkeypatch, capsys):
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, "stara verze", CS)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out

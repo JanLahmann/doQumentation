@@ -676,7 +676,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
     # publishes stale translations (see the fuzzy note below).
     if confirm_fuzzy is None:
         confirm_fuzzy = prefix != "fix"
-    accepted = rejected = skipped = unchanged = 0
+    accepted = rejected = skipped = unchanged = english = 0
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
     for bpath in sorted(p for p in outdir.glob(f"{prefix}-*.json") if name_re.match(p.name)):
@@ -725,6 +725,8 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             if final == e.msgstr and ("fuzzy" not in e.flags or not confirm_fuzzy):
                 unchanged += 1
                 continue
+            became_english = (msgstr.strip() == e.msgid.strip()
+                              and e.msgstr.strip() != e.msgid.strip())
             e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
@@ -732,12 +734,25 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
                 e.tcomment = "doq: kept in English by the translator (name or code)"
             else:
                 e.tcomment = note or ""
+            if became_english:
+                # An entry that HAD a translation and now equals its English is
+                # almost always an agent dropping the translation rather than a
+                # deliberate "keep this in English": the instructions forbid it,
+                # and check.py cannot object, since msgstr == msgid is legitimate
+                # for names and code. Only apply knows what the entry said
+                # before, so only apply can tell the two apart. Warn rather than
+                # reject — the English source can genuinely become a proper noun —
+                # but never let it pass silently.
+                english += 1
+                print(f"WARNING {ident}: translation replaced by the English source "
+                      f"— check this is intended: {e.msgid[:60]!r}")
             accepted += 1
             changed = True
         if changed:
             po.save(str(io.po_path(locale, page)))
     print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}"
-          + (f", unchanged {unchanged}" if unchanged else ""))
+          + (f", unchanged {unchanged}" if unchanged else "")
+          + (f", REPLACED BY ENGLISH {english}" if english else ""))
     return 1 if rejected else 0
 
 
