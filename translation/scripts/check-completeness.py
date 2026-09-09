@@ -23,23 +23,29 @@ read for meaning. Every subcheck below was scored against
 measurements, not taste. `tests/test_completeness.py` re-scores them, so a
 tightening that quietly destroys recall fails CI.
 
-    subcheck              recall on 314   fires on 64,149 faithful
-    line-shape                 33.8%              0.44%
-    numbers                    28.3%              0.44%
+    subcheck              recall on 314   fires on 75,455 faithful
+    line-shape                 33.8%              0.43%
+    numbers                    28.3%              0.43%
     list-items                  4.1%              0.02%
-    title-untranslated          2.2%              0.14%
+    title-untranslated          2.2%              0.16%
+    question-mark              15.0%              0.10%
+    length-outlier             27.1%              0.72%
     ------------------------------------------------------------------
-    union of the four          53.8%              ~1.0%
+    union of the six           70.1%              1.83%
+    (union of the first four   53.8%              1.02%)
 
     neighbour-duplicate         1.7%              0.05%   (needs file context;
                                                            not in the union above)
 
 The 314 are the independently selected positives (the drift rounds). The set
-holds 1,147 after #517 and #524 were merged in, but the other 833 were chosen
-FROM this sieve's findings by the gauge rounds, so recall on them (82%) is
-circular and the scorer excludes them. The noise column did move: the
-negatives now cover all 17 locales, and line-shape fires more on ja/ko/th,
-where a translator legitimately re-breaks a paragraph.
+holds 1,417 after #517, #524 and #527 were merged in, but the other 1,103 were
+chosen FROM this sieve's findings by the gauge rounds, so recall on them is
+circular and the scorer excludes them. What those rows ARE good for is finding
+the next subcheck: `question-mark` and `length-outlier` were chosen by scoring
+candidates against the 483 of them the first four subchecks missed (14% and
+20% of those, respectively), then admitted on the independent rows above.
+Corpus-wide the six flag 7,452 entries (1.65% of 451,652); the two new ones
+add 2,534 of those.
 
 What it looks like on the real corpus (measured 2026-09-09)
 ----------------------------------------------------------
@@ -83,6 +89,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import math
 import hashlib
 import json
 import re
@@ -128,6 +135,56 @@ DUPLICATE_MIN_CHARS = 40
 DUPLICATE_WINDOW = 2
 
 
+# A question that became a statement, or the reverse. The question/answer
+# slots of the course quizzes are where positional drift bites hardest — an
+# answer entry holding the neighbouring question passes every shape check
+# because both are one sentence of prose — and the terminal punctuation is
+# the one shape they do not share. Measured on the labelled set: fires on
+# 14% of the defects the four older subchecks miss, on 0.15% of faithful
+# entries, and half of THOSE turned out to be unrepaired defects when read.
+QUESTION_MARKS = ("?", "？", "؟")
+_TRAILING_NOISE = " \t\n\"'*_)»«”“’‘」』）"
+
+
+def _is_question(text: str) -> bool:
+    return text.rstrip(_TRAILING_NOISE).endswith(QUESTION_MARKS)
+
+
+# A translation far shorter than its source, judged against how long that
+# locale's translations usually run. The ratio is a poor absolute signal
+# (check.py's 0.3x-2.5x bound is deliberately loose: ja runs at ~0.6x the
+# source, tl at ~1.1x) but a good relative one: below 2.5 standard deviations
+# under the locale's own median, 18% of labelled defects and 0.7% of faithful
+# entries sit. Fixed constants rather than a live calibration so the ratchet
+# baseline stays stable: (median, sd) of log(len(msgstr)/len(msgid)) over the
+# eval set's 75k faithful entries with a source of >= 40 chars, 2026-09-09.
+# Rebuild after a large re-translation of a locale:
+#   python3 -c "import gzip,json,math,statistics as st,collections; d=json.load(gzip.open(
+#   'translation/eval/completeness-eval.json.gz')); b=collections.defaultdict(list)
+#   [b[n['locale']].append(math.log(len(n['msgstr'])/len(n['msgid']))) for n in d['negatives'] if len(n['msgid'])>=40]
+#   print({l:(round(st.median(v),2),round(st.pstdev(v),2)) for l,v in sorted(b.items())})"
+LENGTH_STATS = {
+    "ar": (-0.13, 0.13), "cs": (-0.02, 0.08), "de": (0.07, 0.09), "es": (0.07, 0.08),
+    "fr": (0.09, 0.09), "he": (-0.18, 0.13), "id": (0.02, 0.08), "it": (0.07, 0.08),
+    "ja": (-0.53, 0.34), "ko": (-0.47, 0.30), "ms": (0.04, 0.08), "pl": (0.00, 0.09),
+    "pt": (0.03, 0.07), "ro": (0.03, 0.08), "th": (-0.08, 0.12), "tl": (0.11, 0.10),
+    "uk": (0.00, 0.11),
+}
+LENGTH_MIN_SOURCE = 40
+LENGTH_Z = -2.5
+
+
+def _length_problem(msgid: str, msgstr: str, locale: str | None) -> str | None:
+    if not locale or locale not in LENGTH_STATS or len(msgid) < LENGTH_MIN_SOURCE:
+        return None
+    median, sd = LENGTH_STATS[locale]
+    z = (math.log(max(1, len(msgstr)) / len(msgid)) - median) / sd
+    if z >= LENGTH_Z:
+        return None
+    return (f"translation is {len(msgstr) / len(msgid):.0%} the length of its source; "
+            f"{locale} runs at ~{math.exp(median):.0%} (z={z:.1f})")
+
+
 def _nonempty_lines(text: str) -> int:
     return len([ln for ln in text.split("\n") if ln.strip()])
 
@@ -154,8 +211,12 @@ def _number_problem(msgid: str, msgstr: str) -> str | None:
     return "; ".join(parts) or None
 
 
-def check_pair(msgid: str, msgstr: str) -> list[dict]:
-    """Subchecks that need only the entry itself. Pure: string in, findings out."""
+def check_pair(msgid: str, msgstr: str, locale: str | None = None) -> list[dict]:
+    """Subchecks that need only the entry itself. Pure: string in, findings out.
+
+    `locale` is optional and only feeds `length-outlier`, which is judged
+    against that locale's usual source-to-translation ratio; without it the
+    subcheck stays silent."""
     findings: list[dict] = []
     if not msgstr.strip():
         return findings
@@ -208,6 +269,18 @@ def check_pair(msgid: str, msgstr: str) -> list[dict]:
             "detail": f"source has {la} list item(s), translation {lb}",
         })
 
+    qa, qb = _is_question(msgid), _is_question(msgstr)
+    if qa != qb:
+        findings.append({
+            "check": "question-mark",
+            "detail": ("source is a question, translation is not" if qa
+                       else "translation is a question, source is not"),
+        })
+
+    lp = _length_problem(msgid, msgstr, locale)
+    if lp:
+        findings.append({"check": "length-outlier", "detail": lp})
+
     return findings
 
 
@@ -217,9 +290,14 @@ def check_file(path: Path) -> list[dict]:
     live = [e for e in po if not e.obsolete and e.msgstr.strip()]
     rel = str(path.relative_to(REPO_ROOT)) if path.is_relative_to(REPO_ROOT) else path.name
 
+    # i18n/<locale>/po/... — the locale feeds the length subcheck. A file
+    # outside that layout (a test fixture) simply gets no length verdict.
+    parts = path.resolve().parts
+    locale = parts[parts.index("i18n") + 1] if "i18n" in parts and parts.index("i18n") + 1 < len(parts) else None
+
     findings: list[dict] = []
     for i, e in enumerate(live):
-        rows = check_pair(e.msgid, e.msgstr)
+        rows = check_pair(e.msgid, e.msgstr, locale)
 
         # Positional drift often leaves one paragraph's translation sitting on
         # two adjacent entries. Neither copy breaks any structural rule, so

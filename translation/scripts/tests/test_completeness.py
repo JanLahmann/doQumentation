@@ -133,6 +133,59 @@ def test_neighbour_duplicate_ignores_short_repeats(completeness, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# question-mark
+
+
+def test_question_flags_an_answer_sitting_in_a_question_slot(completeness):
+    # cs qft.mdx: the entry for the question held the next entry's answer.
+    assert "question-mark" in checks(
+        completeness,
+        "What computational state superposition would correspond to a QFT with peaks on every odd binary number?\n",
+        "Kdybys aplikoval/a QFT na stav $\\psi$, uviděl/a bys vrcholy na každém lichém binárně číslovaném stavu.\n",
+    )
+
+
+def test_question_accepts_arabic_and_fullwidth_marks(completeness):
+    assert "question-mark" not in checks(completeness, "Which one?\n", "أيهما؟\n")
+    assert "question-mark" not in checks(completeness, "Which one?\n", "どちらですか？\n")
+
+
+def test_question_ignores_trailing_emphasis_and_quotes(completeness):
+    assert "question-mark" not in checks(completeness, "**Why?**\n", "**Warum?**\n")
+    assert "question-mark" not in checks(completeness, 'He asked "why?"\n', 'Er fragte „warum?“\n')
+
+
+def test_question_quiet_on_matching_statements(completeness):
+    assert "question-mark" not in checks(completeness, "Run the cell.\n", "Führe die Zelle aus.\n")
+
+
+# --------------------------------------------------------------------------
+# length-outlier
+
+
+LONG_EN = ("We start with a graph, which consists of a collection of vertices (or nodes), "
+           "some of which are connected by edges, and ask for the cut of maximum weight.\n")
+
+
+def test_length_flags_a_translation_far_below_the_locale_norm(completeness):
+    rows = completeness.check_pair(LONG_EN, "Маємо граф.\n", "uk")
+    assert "length-outlier" in {r["check"] for r in rows}
+
+
+def test_length_is_judged_per_locale(completeness):
+    # A Japanese translation runs at ~60% of its source; the same ratio in
+    # Tagalog, which runs at ~110%, is an outlier.
+    short = "グラフから始め、最大重みのカットを求めます。ある頂点は辺で結ばれています。頂点の集合です。\n"
+    assert "length-outlier" not in {r["check"] for r in completeness.check_pair(LONG_EN, short, "ja")}
+    assert "length-outlier" in {r["check"] for r in completeness.check_pair(LONG_EN, short, "tl")}
+
+
+def test_length_is_silent_without_a_locale_or_on_short_sources(completeness):
+    assert "length-outlier" not in checks(completeness, LONG_EN, "Маємо граф.\n")
+    assert "length-outlier" not in {r["check"] for r in completeness.check_pair("Short source.\n", "X\n", "uk")}
+
+
+# --------------------------------------------------------------------------
 # scored regression against the labelled set
 
 
@@ -182,15 +235,25 @@ def independent_positives(labelled):
 # from 14,311 entries on 8 Latin/Cyrillic-script locales to 64,149 on all 17:
 # measured 0.44%, almost all of it on ja/ko/th, where a translator legitimately
 # re-breaks a paragraph. The union ceiling was set from the same measurement.
-FLOORS = {"line-shape": 0.30, "numbers": 0.24, "list-items": 0.03, "title-untranslated": 0.015}
-CEILINGS = {"line-shape": 0.006, "numbers": 0.012, "list-items": 0.002, "title-untranslated": 0.004}
-UNION_RECALL_FLOOR = 0.48
-UNION_NOISE_CEILING = 0.020
+#
+# `question-mark` and `length-outlier` were admitted 2026-09-09 after scoring
+# against the 483 labelled defects the four older subchecks missed: 14% and
+# 20% of those respectively, at 0.15% and 0.70% on the 75k faithful entries.
+FLOORS = {"line-shape": 0.30, "numbers": 0.24, "list-items": 0.03, "title-untranslated": 0.015,
+          "question-mark": 0.10, "length-outlier": 0.10}
+CEILINGS = {"line-shape": 0.006, "numbers": 0.012, "list-items": 0.002, "title-untranslated": 0.004,
+            "question-mark": 0.003, "length-outlier": 0.010}
+UNION_RECALL_FLOOR = 0.55
+UNION_NOISE_CEILING = 0.025
+
+
+def _checks_of(completeness, row, msgstr):
+    return {f["check"] for f in completeness.check_pair(row["msgid"], msgstr, row.get("locale"))}
 
 
 def _score(completeness, labelled):
-    pos = [checks(completeness, p["msgid"], p["defective"]) for p in independent_positives(labelled)]
-    neg = [checks(completeness, n["msgid"], n["msgstr"]) for n in labelled["negatives"]]
+    pos = [_checks_of(completeness, p, p["defective"]) for p in independent_positives(labelled)]
+    neg = [_checks_of(completeness, n, n["msgstr"]) for n in labelled["negatives"]]
     return pos, neg
 
 
