@@ -304,8 +304,25 @@ python3 translation/v2/fix.py --locale <LOCALE> \
 
 It writes `translation/v2/work/<LOCALE>/fix-NNN-sonnet.json` (every
 translated entry of the page, with a `review` field on the entries the
-examples point at) and `manifest-fix.json`. Fill the batches with the
-`Workflow` tool:
+examples point at) and `manifest-fix.json`.
+
+> **`--prepare` wipes the work directory first.** It deletes every
+> `fix-*.json` under `work/<LOCALE>/` before writing new ones, so running it
+> while a wave is still filling destroys the batches that wave is reading.
+> The agents then find nothing and return empty — on `ro` this cost 11
+> batches and 33 agent runs. Finish and `--apply` the outstanding wave
+> before preparing anything else for the same locale.
+
+> **If you write your own instruction text, build it ON
+> `fix_instructions(locale)` — do not replace it.** That function
+> interpolates the locale's register from `language_info()`, among other
+> things. Hand-writing the text and omitting a field is silent: on `ro` the
+> `Register:` line went missing and a wave came back addressing the reader
+> as *dumneavoastră* instead of *tu*. Nothing checks register — not
+> `check.py`, not lint, not `mdxcheck` — so it renders perfectly and reads
+> wrong. Append your extra guidance to `fix_instructions(locale)` instead.
+
+Fill the batches with the `Workflow` tool:
 
 ```
 Workflow({ scriptPath: ".claude/workflows/translate-locale.js",
