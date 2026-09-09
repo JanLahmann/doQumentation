@@ -267,6 +267,16 @@ Repairs then go through `fix.py --fixes` → `translate-locale.js` → `--apply`
 the same path as any review round, so they still pass `check.py` and still land
 with a provenance comment.
 
+**What the corpus actually looks like** (6,800 blind entries, 400 per locale,
+measured 2026-09-09): the unflagged defect rate is **0.49%** pooled, 95% CI
+[0.35%, 0.68%] — per locale from 0.00% (`ms`) to 1.00% (`th`, `ar`, `ja`,
+`pl`). Over 451,652 translated entries that is ~2,190 defects the sieve does
+not flag, against roughly 1,780 it does (5,775 flags at the 30.8% precision
+measured on `ro`). So the sieve reaches something like **45%** of the total —
+an estimate from the corpus, independent of the 53.8% recall measured on the
+labelled set, and close enough to it to trust both. Total load: ~4,000 entries,
+about 0.9% of the corpus.
+
 Three things worth knowing before you trust a number from this layer:
 
 - **The gauge is blind on purpose.** Batch items carry only `msgid` and

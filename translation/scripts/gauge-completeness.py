@@ -58,15 +58,24 @@ unlabelled:
     known-faithful      1/314 called defective     false alarm   0.3%
 
 So it discriminates; it is not agreeing with whatever it is shown. That is what
-makes a calibration result readable. On `ro` (543 entries, sonnet): 44 of 143
-sieve flags were real (precision 30.8%) and 0 of 400 unflagged entries were
-defective.
+makes a calibration result readable.
 
-Do not read that 0 as "ro is clean". It bounds the RATE, not the count: 0/400
-puts the 95% upper bound near 0.75%, and ro has ~26,000 translated entries, so
-up to ~200 defects could still sit outside the sieve's reach against the 44
-inside it. `ro` had also been swept twice already. A bigger sample is the only
-way to tighten that.
+What the corpus looks like (6,800 blind entries, 400 per locale)
+----------------------------------------------------------------
+    unflagged defect rate, pooled   0.49%   95% CI [0.35%, 0.68%]
+    per locale                      0.00% (ms) to 1.00% (th, ar, ja, pl)
+
+Extrapolated over 451,652 translated entries: **~2,190 defects that the sieve
+does not flag** [1,560, 3,080].
+
+Against that, the sieve's own yield: 5,775 flags corpus-wide at the 30.8%
+precision measured on `ro` is roughly 1,780 real defects. So the sieve finds
+something like 45% of the total — an estimate arrived at from the corpus, and
+independent of the 53.8% recall measured on the labelled set. That the two
+agree is the main reason to trust either.
+
+Total defect load is therefore around 4,000 entries, ~0.9% of the corpus, of
+which a bit under half is reachable without a model.
 
 One more caveat on the 88.9%: the labelled defects are positional drift, where
 the translation is visibly about another topic. That is the easy end of this
