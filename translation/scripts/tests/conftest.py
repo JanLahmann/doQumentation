@@ -61,3 +61,8 @@ def sampler():
 @pytest.fixture(scope="session")
 def drift():
     return _load("find_positional_drift", "find-positional-drift.py")
+
+
+@pytest.fixture(scope="session")
+def completeness():
+    return _load("check_completeness", "check-completeness.py")

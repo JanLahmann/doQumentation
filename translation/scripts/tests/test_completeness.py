@@ -1,0 +1,217 @@
+"""Unit tests and a scored regression for the completeness sieve.
+
+The behaviour tests below pin what each subcheck means. The scored tests at the
+bottom are the ones that matter: they replay `check-completeness.py` over the
+labelled set `build-eval-set.py` extracts from the review branches and assert
+floors on recall and ceilings on noise.
+
+Without them a subcheck can be "tightened" into uselessness and every unit test
+still passes — which is exactly how the title= check lost 5 of its 6 real hits
+during development, to a copy-only guard that looked obviously correct.
+"""
+
+import gzip
+import json
+
+import pytest
+
+from pathlib import Path
+
+EVAL_SET = Path(__file__).resolve().parent.parent.parent / "eval" / "completeness-eval.json.gz"
+
+
+def checks(mod, msgid, msgstr):
+    return {f["check"] for f in mod.check_pair(msgid, msgstr)}
+
+
+# --------------------------------------------------------------------------
+# line-shape
+
+
+def test_line_shape_flags_a_dropped_paragraph(completeness):
+    msgid = "The ansatz is a variational circuit.\nIn this lesson you will learn\n- how to build one\n"
+    msgstr = "Der Ansatz ist eine variationelle Schaltung.\n"
+    assert "line-shape" in checks(completeness, msgid, msgstr)
+
+
+def test_line_shape_ignores_trailing_blank_lines(completeness):
+    assert "line-shape" not in checks(completeness, "One line.\n", "Eine Zeile.\n\n")
+
+
+def test_line_shape_quiet_on_a_faithful_pair(completeness):
+    assert checks(completeness, "A sentence about qubits.\n", "Ein Satz über Qubits.\n") == set()
+
+
+# --------------------------------------------------------------------------
+# numbers
+
+
+def test_numbers_flags_a_lost_figure(completeness):
+    assert "numbers" in checks(
+        completeness, "IBM has deployed 20+ quantum computers.\n", "IBM hat Quantencomputer bereitgestellt.\n"
+    )
+
+
+def test_numbers_tolerates_locale_grouping(completeness):
+    assert "numbers" not in checks(
+        completeness, "a userbase of 600,000+\n", "eine Nutzerbasis von 600.000+\n"
+    )
+
+
+def test_numbers_normalises_eastern_digits(completeness):
+    assert "numbers" not in checks(completeness, "3 qubits\n", "٣ كيوبت\n")
+
+
+# --------------------------------------------------------------------------
+# list-items
+
+
+def test_list_items_flags_a_lost_bullet(completeness):
+    msgid = "Goals:\n- one\n- two\n- three\n"
+    msgstr = "Ziele:\n- eins\n- zwei\n"
+    assert "list-items" in checks(completeness, msgid, msgstr)
+
+
+# --------------------------------------------------------------------------
+# title-untranslated
+#
+# This is the subcheck the copy-only guard silently broke. An entry that is
+# nothing but a tag is byte-identical to its source EXACTLY when its caption
+# was never translated, so the guard must not run before this check.
+
+
+def test_title_flags_an_untranslated_caption(completeness):
+    tag = '<IBMVideo id="1" title="Katie McCormick explores Bell\'s theorem using a real quantum computer."/>\n'
+    assert "title-untranslated" in checks(completeness, tag, tag)
+
+
+def test_title_quiet_when_the_caption_is_translated(completeness):
+    msgid = '<IBMVideo id="1" title="Katie McCormick explores Bell\'s theorem here."/>\n'
+    msgstr = '<IBMVideo id="1" title="Katie McCormick erforscht hier das Bellsche Theorem."/>\n'
+    assert "title-untranslated" not in checks(completeness, msgid, msgstr)
+
+
+def test_title_ignores_short_labels(completeness):
+    # "Answer" or a product name repeated verbatim is not evidence of anything.
+    tag = '<AccordionItem title="Qiskit">\n'
+    assert "title-untranslated" not in checks(completeness, tag, tag)
+
+
+def test_copy_only_entry_is_not_prose_checked(completeness):
+    # A proper name po4a hands over as prose is legitimately left in English;
+    # the prose subchecks must stay silent rather than compare it to itself.
+    assert checks(completeness, "IBM Quantum Network", "IBM Quantum Network") == set()
+
+
+# --------------------------------------------------------------------------
+# neighbour-duplicate (needs file context, so it goes through check_file)
+
+
+def test_neighbour_duplicate_flags_a_copied_paragraph(completeness, tmp_path):
+    shared = "Eine hinreichend lange übersetzte Passage, die zweimal auftaucht."
+    po = tmp_path / "x.po"
+    po.write_text(
+        'msgid ""\nmsgstr "Content-Type: text/plain; charset=UTF-8\\n"\n\n'
+        f'msgid "First source paragraph."\nmsgstr "{shared}"\n\n'
+        f'msgid "A different second source paragraph."\nmsgstr "{shared}"\n',
+        encoding="utf-8",
+    )
+    found = {f["check"] for f in completeness.check_file(po)}
+    assert "neighbour-duplicate" in found
+
+
+def test_neighbour_duplicate_ignores_short_repeats(completeness, tmp_path):
+    po = tmp_path / "y.po"
+    po.write_text(
+        'msgid ""\nmsgstr "Content-Type: text/plain; charset=UTF-8\\n"\n\n'
+        'msgid "Note"\nmsgstr "Hinweis"\n\n'
+        'msgid "Note about something else"\nmsgstr "Hinweis"\n',
+        encoding="utf-8",
+    )
+    found = {f["check"] for f in completeness.check_file(po)}
+    assert "neighbour-duplicate" not in found
+
+
+# --------------------------------------------------------------------------
+# scored regression against the labelled set
+
+
+@pytest.fixture(scope="module")
+def labelled():
+    if not EVAL_SET.exists():
+        pytest.skip(
+            f"{EVAL_SET} missing — run translation/scripts/build-eval-set.py "
+            "on a branch carrying merged review fixes"
+        )
+    with gzip.open(EVAL_SET, "rt", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not data["positives"]:
+        pytest.skip("eval set has no positives")
+    return data
+
+
+# Floors and ceilings, not exact values: the set grows every review round, so
+# pinning exact counts would make every round fail this file. These are set a
+# few points below the measured figures recorded in the script's docstring.
+#
+# `numbers` was deliberately lowered from 0.34 to 0.24 (measured 38.5% -> 28.3%)
+# when the check stopped counting an ADDED small integer as a defect. English
+# spells small numbers as words where ja and ko write the digit, so the old rule
+# reported ~3,400 findings in those two locales alone, none of them real. A
+# check nobody can use in a third of the corpus is worse than one that misses
+# 5 points of recall. Lower a floor only with a reason of that kind, recorded
+# here — never to make this file go green.
+FLOORS = {"line-shape": 0.30, "numbers": 0.24, "list-items": 0.03, "title-untranslated": 0.015}
+CEILINGS = {"line-shape": 0.004, "numbers": 0.012, "list-items": 0.002, "title-untranslated": 0.004}
+UNION_RECALL_FLOOR = 0.48
+UNION_NOISE_CEILING = 0.020
+
+
+def _score(completeness, labelled):
+    pos = [checks(completeness, p["msgid"], p["defective"]) for p in labelled["positives"]]
+    neg = [checks(completeness, n["msgid"], n["msgstr"]) for n in labelled["negatives"]]
+    return pos, neg
+
+
+def test_each_subcheck_holds_its_recall_floor(completeness, labelled):
+    pos, _ = _score(completeness, labelled)
+    for name, floor in FLOORS.items():
+        got = sum(name in h for h in pos) / len(pos)
+        assert got >= floor, f"{name} recall fell to {got:.1%}, floor {floor:.1%}"
+
+
+def test_each_subcheck_stays_under_its_noise_ceiling(completeness, labelled):
+    _, neg = _score(completeness, labelled)
+    for name, ceiling in CEILINGS.items():
+        got = sum(name in h for h in neg) / len(neg)
+        assert got <= ceiling, f"{name} noise rose to {got:.2%}, ceiling {ceiling:.2%}"
+
+
+def test_the_union_is_worth_running(completeness, labelled):
+    pos, neg = _score(completeness, labelled)
+    recall = sum(1 for h in pos if h) / len(pos)
+    noise = sum(1 for h in neg if h) / len(neg)
+    assert recall >= UNION_RECALL_FLOOR, f"union recall fell to {recall:.1%}"
+    assert noise <= UNION_NOISE_CEILING, f"union noise rose to {noise:.2%}"
+
+
+def test_the_sieve_beats_the_markup_gate_it_supplements(completeness, labelled):
+    """The premise of the whole script: check.py cannot see this defect class."""
+    import sys
+
+    sys.path.insert(0, str(EVAL_SET.parent.parent / "v2"))
+    import check as markup_gate
+
+    pos = labelled["positives"]
+    markup_hits = sum(1 for p in pos if markup_gate.check_entry(p["msgid"], p["defective"]))
+    sieve_hits = sum(1 for p in pos if completeness.check_pair(p["msgid"], p["defective"]))
+    assert markup_hits / len(pos) < 0.05
+    assert sieve_hits > 10 * markup_hits
+
+
+def test_a_repaired_translation_is_mostly_left_alone(completeness, labelled):
+    """Firing on the reviewer-approved repair is the worst failure mode: it
+    would send a correct translation back for another pass."""
+    pos = labelled["positives"]
+    fires = sum(1 for p in pos if completeness.check_pair(p["msgid"], p["repaired"]))
+    assert fires / len(pos) <= 0.05, f"fires on {fires}/{len(pos)} repaired translations"
