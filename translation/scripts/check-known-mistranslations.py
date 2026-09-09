@@ -269,10 +269,37 @@ def locale_dirs(only: str | None):
             yield loc, base
 
 
+def english_lines(path: Path) -> set[str]:
+    """The English source's lines, for recognising untranslated fallback.
+
+    po4a renders the ENGLISH for any entry whose translation is empty or
+    fuzzy, so a rendered locale page contains English prose wherever the
+    translation is missing. Translation rules must not fire on it: the text
+    is not a translation, and "correcting" it would edit English that the
+    next render regenerates anyway. Worse, it sends a contributor to fix a
+    defect that is not there — the real defect is that the entry is
+    untranslated.
+
+    Seen on fr guides/changelog-quantum-compute-service.mdx:373, where the
+    rule "French initialisms take no plural -s" fired on QPUs inside an
+    untranslated English sentence.
+    """
+    try:
+        rel = path.as_posix().split(DOC_SUB + "/", 1)[1]
+    except IndexError:
+        return set()
+    en = REPO / "docs" / rel
+    if not en.is_file():
+        return set()
+    return {l.strip() for l in en.read_text(encoding="utf-8").splitlines() if l.strip()}
+
+
 def scan_file(path: Path, rules) -> list[tuple[int, str, str, str]]:
-    """Return (lineno, match, good, note) hits. Skips fenced code, inline code, anchors."""
+    """Return (lineno, match, good, note) hits. Skips fenced code, inline code,
+    anchors, YAML frontmatter and lines left in English by po4a."""
     hits = []
     in_fence = False
+    en_lines = english_lines(path)
     # YAML frontmatter is machine-readable, not prose: notebook_path, slug and
     # friends must match EN byte-for-byte or code execution breaks. A rule like
     # "French initialisms take no plural -s" firing on
@@ -290,6 +317,11 @@ def scan_file(path: Path, rules) -> list[tuple[int, str, str, str]]:
             in_fence = not in_fence
             continue
         if in_fence:
+            continue
+        # Identical to a line of the English source: untranslated fallback, or
+        # a line deliberately kept in English. Either way it is not a
+        # translation, so translation rules do not apply.
+        if line.strip() in en_lines:
             continue
         spans = _protected(line)
         for pat, good, note, expand in rules:
