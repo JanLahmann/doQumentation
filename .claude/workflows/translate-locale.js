@@ -42,6 +42,12 @@ const RULES = instructions_text || `Follow the rules in ${instructions} (read it
 // that loses it silently rewrites a whole page into the wrong register — which
 // no checker catches. Keyed by locale so the text is carried once, not per batch.
 const RULES_BY_LOCALE = (args && args.instructions_by_locale) || {}
+// A gauge manifest names its own verdict vocabulary (gauge-completeness.py
+// writes it per --mode). Hard-coding the completeness set here made the
+// untranslated-mode run answer in the wrong vocabulary: the rules said
+// KEEP/TRANSLATE, the output format said COMPLETE/MISSING, and the agents
+// followed the format.
+const VERDICTS = (args && args.verdicts) || ['COMPLETE', 'MISSING', 'EXTRA', 'DIFFERENT', 'UNSURE']
 
 // No output schema: a StructuredOutput call is one more turn per agent, and a
 // turn costs ~15k tokens of fixed context. The agent's final text is parsed.
@@ -84,7 +90,7 @@ Do exactly this, in this order, with no other tool calls:
 1. Read ${b.file} (once). It is a JSON list of ${b.items} items, one per line.
 ${step2}
 3. Write ${outFile(b)} with ONE Write call: ${TASK === 'gauge'
-    ? `a JSON list of exactly ${b.items} objects, one per item in the batch's order, each {"n": <the item's own "n" value, copied>, "verdict": "COMPLETE"|"MISSING"|"EXTRA"|"DIFFERENT"|"UNSURE", "note": "<a few words, empty for COMPLETE and UNSURE>"}. Copy each item's "n" exactly — it is how your verdict is matched back to its item. It must be a valid JSON array: objects separated by COMMAS, opened with [ and closed with ]. Nothing else in the file; no comments.`
+    ? `a JSON list of exactly ${b.items} objects, one per item in the batch's order, each {"n": <the item's own "n" value, copied>, "verdict": ${VERDICTS.map(v => `"${v}"`).join('|')}, "note": "<a few words; empty unless the rules ask for one>"}. Copy each item's "n" exactly — it is how your verdict is matched back to its item. It must be a valid JSON array: objects separated by COMMAS, opened with [ and closed with ]. Nothing else in the file; no comments.`
     : `a JSON list of exactly ${b.items} strings, the ${TASK === 'fix' ? 'corrected translation' : 'translation'} of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.`}
 4. Reply with exactly one line and nothing else: done <count>/${b.items}
 

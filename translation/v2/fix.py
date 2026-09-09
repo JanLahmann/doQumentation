@@ -179,7 +179,41 @@ def load_fixes(path: Path) -> list[dict]:
     return out
 
 
-def prepare(locale: str, fixes: list[dict], model: str = "sonnet") -> dict:
+def _write_batches(outdir: Path, model: str, n: int, items: list[dict], page: str,
+                   note: str, manifest: list[dict]) -> int:
+    """Split `items` into batch files fix-NNN-<model>.json (+ .ids.json) and
+    append their manifest rows; returns the next batch number."""
+    pos = 0
+    public = [{k: v for k, v in it.items() if not k.startswith("_")} for it in items]
+    for batch in tr.split_batches(public):
+        ids = [it["_id"] for it in items[pos:pos + len(batch)]]
+        pos += len(batch)
+        name = f"fix-{n:03d}-{model}.json"
+        text = tr.dump_batch(batch)
+        (outdir / name).write_text(text, encoding="utf-8")
+        (outdir / f"fix-{n:03d}-{model}.ids.json").write_text(json.dumps(ids, indent=0), encoding="utf-8")
+        manifest.append({
+            "file": str((outdir / name).relative_to(io.REPO)),
+            "out": str((outdir / f"fix-{n:03d}-{model}.out.json").relative_to(io.REPO)),
+            "model": model, "items": len(batch),
+            "words": sum(len(it["msgid"].split()) for it in batch),
+            "tokens": round(tr.estimate_tokens(text)),
+            "page": page,
+            "flagged": sum(1 for it in batch if "review" in it),
+            "note": note,
+        })
+        n += 1
+    return n
+
+
+def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
+            flagged_only: bool = False) -> dict:
+    """Build the fix batches. By default every translated entry of a flagged
+    page travels, so the fixer can repair drift it was not pointed at and
+    must copy the rest back verbatim. `flagged_only` sends the pinned entries
+    alone: right when the defect is entry-local and the flags are many — the
+    untranslated-prose wave had 2,031 entries on ~880 pages, which as whole
+    pages is ~1,400 batches and as flagged entries ~25."""
     outdir = io.WORK_DIR / locale
     outdir.mkdir(parents=True, exist_ok=True)
     for old in outdir.glob("fix-*.json"):
@@ -191,6 +225,7 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet") -> dict:
     n_items = n_flagged = 0
     missing: list[str] = []
     unmatched = 0
+    pending: list[dict] = []
     for fx in fixes:
         rel = fx["rel"]
         po_file = io.po_path(locale, rel)
@@ -216,7 +251,7 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet") -> dict:
                 unmatched += 1
                 continue
             reviews.setdefault(idx, []).append(_review_text(ex))
-        by_index = dict(entries)
+        by_index = {} if flagged_only else dict(entries)
         for idx in reviews:                      # a flagged copy-only entry joins the batch
             if idx not in by_index:
                 by_index[idx] = po[idx]
@@ -232,25 +267,19 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet") -> dict:
             items.append(it)
         n_items += len(items)
         n_flagged += len(reviews)
-        pos = 0
-        for batch in tr.split_batches([{k: v for k, v in it.items() if k != "_id"} for it in items]):
-            ids = [it["_id"] for it in items[pos:pos + len(batch)]]
-            pos += len(batch)
-            name = f"fix-{n:03d}-{model}.json"
-            text = tr.dump_batch(batch)
-            (outdir / name).write_text(text, encoding="utf-8")
-            (outdir / f"fix-{n:03d}-{model}.ids.json").write_text(json.dumps(ids, indent=0), encoding="utf-8")
-            manifest.append({
-                "file": str((outdir / name).relative_to(io.REPO)),
-                "out": str((outdir / f"fix-{n:03d}-{model}.out.json").relative_to(io.REPO)),
-                "model": model, "items": len(batch),
-                "words": sum(len(it["msgid"].split()) for it in batch),
-                "tokens": round(tr.estimate_tokens(text)),
-                "page": rel,
-                "flagged": sum(1 for it in batch if "review" in it),
-                "note": fx["note"],
-            })
-            n += 1
+        if flagged_only:
+            # Pinned entries from every page are packed together below: a
+            # batch per page would cost a whole agent call for two entries.
+            # apply() pairs each string with its id, so a batch may span pages.
+            for it in items:
+                it["_note"] = fx["note"]
+            pending.extend(items)
+            continue
+        n = _write_batches(outdir, model, n, items, rel, fx["note"], manifest)
+    if pending:
+        notes = list(dict.fromkeys(it["_note"] for it in pending))
+        n = _write_batches(outdir, model, n, pending, "(pinned entries across pages)",
+                           " ".join(notes), manifest)
     (outdir / "manifest-fix.json").write_text(json.dumps({
         "locale": locale,
         "task": "fix",
@@ -450,6 +479,9 @@ def main() -> int:
     ap.add_argument("--locale", required=True)
     ap.add_argument("--fixes", help="fix spec or review records JSON (required with --prepare)")
     ap.add_argument("--prepare", action="store_true")
+    ap.add_argument("--flagged-only", action="store_true",
+                    help="with --prepare: batch only the entries an example pins, not the whole page "
+                         "(for entry-local defects with many flags, e.g. untranslated entries)")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--leaks", action="store_true",
                     help="deterministic glossary-leak pass over the PO msgstrs "
@@ -472,7 +504,7 @@ def main() -> int:
     if a.prepare:
         if not a.fixes:
             ap.error("--prepare needs --fixes")
-        prepare(a.locale, load_fixes(Path(a.fixes)), a.model)
+        prepare(a.locale, load_fixes(Path(a.fixes)), a.model, a.flagged_only)
         return 0
     if a.apply:
         note = a.note or f"doq: fixed after review {date.today().isoformat()}"

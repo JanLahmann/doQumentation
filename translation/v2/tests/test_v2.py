@@ -424,6 +424,35 @@ def test_fix_match_example_takes_a_short_quote_only_when_it_is_the_whole_entry()
     assert fix.match_example({"source": "Hence:"}, entries) is None      # not on the page
 
 
+def test_fix_prepare_flagged_only_sends_just_the_pinned_entries(fix_env):
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "untranslated",
+             "examples": [{"source": "Run the cell.", "why": "still English"}]}]
+    summary = fix.prepare("de", spec, flagged_only=True)
+    assert summary["flagged"] == 1 and summary["items"] == 1
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    assert [it["msgid"] for it in items] == ["Run the cell."] and "review" in items[0]
+    ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+    assert ids == ["guides/noise.mdx#2"]                    # apply still knows where it goes
+
+
+def test_fix_prepare_flagged_only_packs_pages_into_one_batch(fix_env):
+    """835 one-page batches for 2,031 pinned entries would have cost an agent
+    call per two entries. Pinned entries from different pages share a batch;
+    the ids file keeps each one addressed to its page."""
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/other.mdx"), [("Solving:", "Solving:"), ("Thus:", "Thus:")])
+    spec = [{"rel": "guides/noise.mdx", "note": "n1", "examples": [{"source": "Run the cell."}]},
+            {"rel": "guides/other.mdx", "note": "n2", "examples": [{"source": "Solving:"}, {"source": "Thus:"}]}]
+    summary = fix.prepare("de", spec, flagged_only=True)
+    assert summary["batches"] == 1 and summary["flagged"] == 3
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+    assert ids == ["guides/noise.mdx#2", "guides/other.mdx#0", "guides/other.mdx#1"]
+    assert b["note"] == "n1 n2" and b["items"] == 3
+
+
 def test_fix_prepare_pins_examples_and_skips_code(fix_env):
     fix, tr, pairs = fix_env
     spec = [{"rel": "guides/noise.mdx", "note": "stiff term",
