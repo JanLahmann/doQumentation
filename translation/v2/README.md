@@ -58,7 +58,7 @@ to notebook output can never make a translation stale.
 | `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
 | `mdxcheck.mjs` | after render, before commit | Compiles every rendered page with MDX 3 + math + GFM + directives the way Docusaurus does (front matter stripped, heading anchors escaped) and lists the pages acorn rejects. The only check that asks the real parser; the German run needed it twice. |
 | `po4a_io.py` | library | Everything above calls into it. Pre-rules, po4a wrappers, PO hygiene. |
-| `translation/scripts/check-completeness.py` | any time; free | The **meaning sieve**. Deterministic, whole-corpus, no model: line-shape, number preservation, list-item count, untranslated `title=` captions, and a msgstr duplicated onto a neighbouring entry. Scored against the labelled set below: 53.8% recall on known drift defects at 0.89% on known-faithful ones; 5,775 findings corpus-wide (1.3% of 451,652 translated entries). |
+| `translation/scripts/check-completeness.py` | any time; free | The **meaning sieve**. Deterministic, whole-corpus, no model: line-shape, number preservation, list-item count, untranslated `title=` captions, a question that became a statement (or the reverse), a translation far shorter than the locale's norm, and a msgstr duplicated onto a neighbouring entry. Scored against the labelled set below: 70.1% recall on known drift defects at 1.32% on known-faithful ones; 5,539 findings corpus-wide (1.23% of 451,652 translated entries). |
 | `translation/scripts/gauge-completeness.py` | after the sieve | The **meaning gauge**, layer 2. `--prepare` builds batches of `{msgid, msgstr}` under `work/gauge/<locale>/`; `translate-locale.js` with `task: "gauge"` fills them with a verdict per entry (COMPLETE / MISSING / EXTRA / DIFFERENT / UNSURE); `--collect` reports, `--emit-fixes` writes a `fix.py --fixes` file. **Read-only** — it never writes a msgstr; repairs go through `fix.py` like every other review fix. |
 | `translation/scripts/build-eval-set.py` | once per review branch | Turns a finished review round into a labelled set: every msgstr that changed is a known defect, every msgstr an agent read and copied back is known-faithful. This is what makes a completeness check measurable instead of a hunch. Committed, not regenerated — after the branch merges, the diff that produced it is empty. |
 
@@ -253,8 +253,12 @@ the nine positional-drift review rounds repaired, `check.py` flags **2**.
 Two layers close it, cheap first:
 
 1. **The sieve** (`check-completeness.py`) — deterministic, free, corpus-wide.
-   Five subchecks, each scored against the labelled set before it was allowed
-   in. It selects entries worth reading; it does not judge them.
+   Seven subchecks, each scored against the labelled set before it was allowed
+   in. It selects entries worth reading; it does not judge them. The two
+   newest (`question-mark`, `length-outlier`) were found by scoring candidates
+   against the labelled defects the first five missed — the gauge rounds'
+   repairs, useless for measuring the sieve, are exactly the right material
+   for extending it.
 2. **The gauge** (`gauge-completeness.py`) — a model reads `(msgid, msgstr)`
    and returns one verdict. It is the only thing here that can actually read
    for meaning, so the sieve exists to keep its input small. Measured against
@@ -282,8 +286,9 @@ the gauge, so one sample yields the whole table:
 
 Gauging all 5,507 sieve flags across the 17 locales then found **748 real
 defects — 13.6% precision** [12.7%, 14.5%], inside the interval this sample
-predicted. The 53.8% recall measured on the labelled eval set overstates: every
-positive there is drift-class, the sieve's best case.
+predicted. The 70.1% recall measured on the labelled eval set (53.8% before the
+two subchecks added 2026-09-09) overstates: every positive there is
+drift-class, the sieve's best case.
 
 > **A correction, recorded because the wrong numbers were quoted for half a
 > day.** An earlier calibration passed no `--findings`, so the "unflagged

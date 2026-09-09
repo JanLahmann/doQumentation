@@ -408,6 +408,22 @@ def fix_env(monkeypatch, tmp_path):
     return fix, tr, pairs
 
 
+def test_fix_match_example_takes_a_short_quote_only_when_it_is_the_whole_entry():
+    """Quotes under 12 characters cannot be matched by containment or ratio,
+    but a reviewer quoting a short entry in full ("Thus:") means that entry.
+    Ambiguous short quotes — two entries with the same text — still match
+    nothing rather than the wrong one."""
+    import polib
+    fix = _fix_module()
+    entries = [(0, polib.POEntry(msgid="Thus:\n", msgstr="Thus:\n")),
+               (1, polib.POEntry(msgid="Using standard Gaussian integral results:\n", msgstr="Korzystając…\n")),
+               (2, polib.POEntry(msgid="Using:\n", msgstr="Using:\n")),
+               (3, polib.POEntry(msgid="Using:\n", msgstr="Using:\n"))]
+    assert fix.match_example({"source": "Thus:"}, entries) == 0
+    assert fix.match_example({"source": "Using:"}, entries) is None      # two candidates: refuse
+    assert fix.match_example({"source": "Hence:"}, entries) is None      # not on the page
+
+
 def test_fix_prepare_pins_examples_and_skips_code(fix_env):
     fix, tr, pairs = fix_env
     spec = [{"rel": "guides/noise.mdx", "note": "stiff term",
