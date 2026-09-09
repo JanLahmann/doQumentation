@@ -75,7 +75,7 @@ Do exactly this, in this order, with no other tool calls:
 1. Read ${b.file} (once). It is a JSON list of ${b.items} items, one per line.
 ${step2}
 3. Write ${outFile(b)} with ONE Write call: ${TASK === 'gauge'
-    ? `a JSON list of exactly ${b.items} objects, one per item in the batch's order, each {"n": <the item's own "n" value, copied>, "verdict": "COMPLETE"|"MISSING"|"EXTRA"|"DIFFERENT"|"UNSURE", "note": "<a few words, empty for COMPLETE and UNSURE>"}. Copy each item's "n" exactly — it is how your verdict is matched back to its item. One object per line. Nothing else in the file; no comments.`
+    ? `a JSON list of exactly ${b.items} objects, one per item in the batch's order, each {"n": <the item's own "n" value, copied>, "verdict": "COMPLETE"|"MISSING"|"EXTRA"|"DIFFERENT"|"UNSURE", "note": "<a few words, empty for COMPLETE and UNSURE>"}. Copy each item's "n" exactly — it is how your verdict is matched back to its item. It must be a valid JSON array: objects separated by COMMAS, opened with [ and closed with ]. Nothing else in the file; no comments.`
     : `a JSON list of exactly ${b.items} strings, the ${TASK === 'fix' ? 'corrected translation' : 'translation'} of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.`}
 4. Reply with exactly one line and nothing else: done <count>/${b.items}
 

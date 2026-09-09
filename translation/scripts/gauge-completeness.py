@@ -150,6 +150,37 @@ def load_findings(path: Path, locale: str) -> dict[str, set[int]]:
     return out
 
 
+def eval_set_items(path: Path, locale: str | None, seed: int) -> list[dict]:
+    """Batch items from the labelled set, for measuring the GAUGE itself.
+
+    The sieve is scored against this set directly; the gauge cannot be, because
+    it is a model and has to be asked. So present it both versions of every
+    labelled entry — the msgstr a reviewer judged defective and the one they
+    repaired — shuffled together and unlabelled, and see what it says.
+
+    That is the only check on the gauge's own sensitivity. Without it a
+    calibration run reporting "0% defective" is unreadable: it means either a
+    clean locale or a gauge that says COMPLETE to everything, and nothing in
+    the run itself distinguishes those.
+    """
+    import gzip
+
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    items = []
+    for p in data["positives"]:
+        if locale and p["locale"] != locale:
+            continue
+        items.append({"_id": f"eval:{p['file']}#defective", "_flagged": True,
+                      "_truth": "defective", "msgid": p["msgid"], "msgstr": p["defective"]})
+        items.append({"_id": f"eval:{p['file']}#repaired", "_flagged": False,
+                      "_truth": "faithful", "msgid": p["msgid"], "msgstr": p["repaired"]})
+    random.Random(seed).shuffle(items)
+    return items
+
+
 def collect_items(locale: str, flagged: dict[str, set[int]], sample: int,
                   seed: int) -> list[dict]:
     """Flagged entries plus a random calibration sample, shuffled together so
@@ -192,9 +223,12 @@ def split_batches(items: list[dict]) -> list[list[dict]]:
 
 
 def prepare(locale: str, findings: Path | None, sample: int, seed: int,
-            model: str) -> int:
-    flagged = load_findings(findings, locale) if findings else {}
-    items = collect_items(locale, flagged, sample, seed)
+            model: str, eval_set: Path | None = None) -> int:
+    if eval_set:
+        items = eval_set_items(eval_set, locale if locale != "all" else None, seed)
+    else:
+        flagged = load_findings(findings, locale) if findings else {}
+        items = collect_items(locale, flagged, sample, seed)
     if not items:
         print(f"{locale}: nothing to gauge", file=sys.stderr)
         return 1
@@ -220,7 +254,9 @@ def prepare(locale: str, findings: Path | None, sample: int, seed: int,
             "[\n" + ",\n".join(json.dumps(b, ensure_ascii=False) for b in body) + "\n]\n",
             encoding="utf-8")
         (outdir / f"gauge-{n:03d}-{model}.ids.json").write_text(
-            json.dumps([{"id": it["_id"], "flagged": it["_flagged"]} for it in batch], indent=0),
+            json.dumps([{"id": it["_id"], "flagged": it["_flagged"],
+                         **({"truth": it["_truth"]} if "_truth" in it else {})}
+                        for it in batch], indent=0),
             encoding="utf-8")
         manifest.append({
             "file": rel(outdir / name),
@@ -243,6 +279,30 @@ def prepare(locale: str, findings: Path | None, sample: int, seed: int,
           f"in {len(manifest)} batch(es)")
     print(f"manifest: {rel(outdir / 'manifest-gauge.json')}")
     return 0
+
+
+def _load_list(text: str):
+    """Parse a verdict file, tolerating the comma-less form.
+
+    "One object per line" in the prompt reliably produces a bracketed list of
+    newline-separated objects with no commas between them — 12 of 19 batches on
+    the first ro run. The judgements in it are perfectly good, so recover them
+    rather than throwing away the work; the ordinals make the recovery safe.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    rows = []
+    for line in text.splitlines():
+        line = line.strip().rstrip(",")
+        if not line or line in ("[", "]"):
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            return None            # something else is wrong; let the caller report it
+    return rows or None
 
 
 def _verdict_of(v) -> tuple[str, str]:
@@ -270,13 +330,9 @@ def read_verdicts(outdir: Path) -> tuple[list[dict], list[str]]:
         if not out_path.exists():
             problems.append(f"{out_path.name}: not filled")
             continue
-        try:
-            got = json.loads(out_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            problems.append(f"{out_path.name}: unparseable ({exc})")
-            continue
+        got = _load_list(out_path.read_text(encoding="utf-8"))
         if not isinstance(got, list):
-            problems.append(f"{out_path.name}: not a JSON list — discarded")
+            problems.append(f"{out_path.name}: unparseable — discarded")
             continue
 
         by_n = {}
@@ -322,6 +378,25 @@ def collect(locale: str, out_path: Path | None) -> int:
     if not rows:
         print(f"{locale}: no verdicts read", file=sys.stderr)
         return 1
+
+    truth = [r for r in rows if "truth" in r]
+    if truth:
+        d = [r for r in truth if r["truth"] == "defective"]
+        f = [r for r in truth if r["truth"] == "faithful"]
+        print(f"{locale}: gauge validation against {len(truth)} labelled entries")
+        if d:
+            hit = sum(1 for r in d if r["verdict"] in DEFECTIVE)
+            per = collections.Counter(r["verdict"] for r in d)
+            print(f"  known-defective  " + ", ".join(f"{v} {per[v]}" for v in VERDICTS if per[v]))
+            print(f"    → sensitivity {hit}/{len(d)} = {hit / len(d):.1%} "
+                  "(known defects it calls defective)")
+        if f:
+            fp = sum(1 for r in f if r["verdict"] in DEFECTIVE)
+            per = collections.Counter(r["verdict"] for r in f)
+            print(f"  known-faithful   " + ", ".join(f"{v} {per[v]}" for v in VERDICTS if per[v]))
+            print(f"    → false-alarm {fp}/{len(f)} = {fp / len(f):.1%} "
+                  "(reviewer-approved repairs it calls defective)")
+        return 0
 
     flagged = [r for r in rows if r["flagged"]]
     calib = [r for r in rows if not r["flagged"]]
@@ -431,6 +506,9 @@ def main() -> int:
                     help="calibration entries the sieve did NOT flag, mixed in blind")
     ap.add_argument("--seed", type=int, default=20260909)
     ap.add_argument("--model", default="sonnet", choices=("sonnet", "opus", "haiku"))
+    ap.add_argument("--eval-set", type=Path, metavar="PATH",
+                    help="with --prepare: build batches from build-eval-set.py's labelled "
+                         "set instead of the corpus, to measure the gauge itself")
     ap.add_argument("--prepare", action="store_true")
     ap.add_argument("--collect", action="store_true")
     ap.add_argument("--emit-fixes", type=Path, metavar="PATH",
@@ -439,9 +517,10 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.prepare:
-        if not args.findings and args.sample <= 0:
-            ap.error("--prepare needs --findings and/or --sample")
-        return prepare(args.locale, args.findings, args.sample, args.seed, args.model)
+        if not args.findings and args.sample <= 0 and not args.eval_set:
+            ap.error("--prepare needs --findings, --sample and/or --eval-set")
+        return prepare(args.locale, args.findings, args.sample, args.seed, args.model,
+                       args.eval_set)
     if args.emit_fixes:
         return emit_fixes(args.locale, args.emit_fixes)
     if args.collect:

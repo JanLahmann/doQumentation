@@ -213,3 +213,84 @@ def test_mismatched_length_without_ordinals_still_discards(gauge, tmp_path):
     rows, problems = gauge.read_verdicts(tmp_path)
     assert rows == []
     assert any("discarded" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# comma-less output
+#
+# "One object per line" in the prompt reliably produced a bracketed list of
+# newline-separated objects with NO commas — 12 of 19 batches on the first real
+# ro run. The judgements were fine; only the separators were missing, so they
+# are recovered rather than thrown away.
+
+
+def test_commaless_object_list_is_recovered(gauge, tmp_path):
+    _pair_with_ordinals(tmp_path, 3, [])
+    (tmp_path / "gauge-000-sonnet.out.json").write_text(
+        '[\n{"n": 0, "verdict": "COMPLETE", "note": ""}\n'
+        '{"n": 1, "verdict": "MISSING", "note": "lost a clause"}\n'
+        '{"n": 2, "verdict": "COMPLETE", "note": ""}\n]\n',
+        encoding="utf-8")
+    rows, problems = gauge.read_verdicts(tmp_path)
+    assert [r["verdict"] for r in rows] == ["COMPLETE", "MISSING", "COMPLETE"]
+    assert problems == []
+
+
+def test_trailing_commas_are_tolerated(gauge, tmp_path):
+    _pair_with_ordinals(tmp_path, 2, [])
+    (tmp_path / "gauge-000-sonnet.out.json").write_text(
+        '[\n{"n": 0, "verdict": "COMPLETE"},\n{"n": 1, "verdict": "EXTRA"},\n]\n',
+        encoding="utf-8")
+    rows, _ = gauge.read_verdicts(tmp_path)
+    assert [r["verdict"] for r in rows] == ["COMPLETE", "EXTRA"]
+
+
+def test_genuine_garbage_is_still_reported(gauge, tmp_path):
+    _pair_with_ordinals(tmp_path, 1, [])
+    (tmp_path / "gauge-000-sonnet.out.json").write_text(
+        "I could not complete this task.", encoding="utf-8")
+    rows, problems = gauge.read_verdicts(tmp_path)
+    assert rows == []
+    assert problems and "unparseable" in problems[0]
+
+
+# --------------------------------------------------------------------------
+# gauge validation mode
+#
+# The sieve is scored against the labelled set directly. The gauge is a model,
+# so it has to be asked — show it both the defective and the repaired msgstr of
+# every labelled entry, unlabelled, and see what it says. Without this a
+# calibration run reporting 0% defective is unreadable: clean locale, or a
+# gauge that says COMPLETE to everything?
+
+
+def test_eval_set_mode_presents_both_versions_unlabelled(gauge, tmp_path):
+    import gzip
+
+    path = tmp_path / "set.json.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        json.dump({"positives": [
+            {"locale": "de", "file": "i18n/de/po/a.po", "msgid": "Source.",
+             "defective": "Falsch.", "repaired": "Richtig."},
+        ], "negatives": []}, fh)
+
+    items = gauge.eval_set_items(path, None, 0)
+    assert len(items) == 2
+    assert {it["_truth"] for it in items} == {"defective", "faithful"}
+    assert {it["msgstr"] for it in items} == {"Falsch.", "Richtig."}
+    # the model sees neither the truth label nor the flag
+    assert all(set(it) == {"_id", "_flagged", "_truth", "msgid", "msgstr"} for it in items)
+
+
+def test_eval_set_mode_can_narrow_to_one_locale(gauge, tmp_path):
+    import gzip
+
+    path = tmp_path / "set.json.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        json.dump({"positives": [
+            {"locale": "de", "file": "a.po", "msgid": "s", "defective": "x", "repaired": "y"},
+            {"locale": "ro", "file": "b.po", "msgid": "s", "defective": "x", "repaired": "y"},
+        ], "negatives": []}, fh)
+
+    assert len(gauge.eval_set_items(path, "de", 0)) == 2
+    assert len(gauge.eval_set_items(path, None, 0)) == 4
