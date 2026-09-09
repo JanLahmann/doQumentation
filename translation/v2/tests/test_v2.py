@@ -778,3 +778,23 @@ def test_prepare_still_omits_unflagged_copy_only_entries(tmp_path, monkeypatch):
     fx2.prepare("xx", [{"rel": "p.mdx", "note": "n", "examples": []}])
     batch = json.loads(next((work / "xx").glob("fix-000-*.json")).read_text())
     assert all(it["msgid"] != MATH for it in batch)
+
+
+def test_apply_names_the_right_entry_in_the_english_warning(tmp_path, monkeypatch, capsys):
+    """The warning lives in apply's second loop, where `ident` is a stale
+    leftover from the first. On ar it named krylov.mdx#112 for a defect in
+    guides/primitive-input-output.mdx#3."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "p.mdx#0" in out, out
+
+
+def test_apply_does_not_warn_for_an_mdx_comment(tmp_path, monkeypatch, capsys):
+    """An MDX comment renders nothing, so English inside one is correct. Seen on
+    ar guides/primitive-input-output#3, whose translation had drifted to
+    unrelated prose; returning the comment verbatim IS the repair."""
+    comment = "{/*\n  DO NOT EDIT THIS CELL!!!\n  Generated automatically by a script.\n*/}\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, comment, "نص عربي منجرف هنا تماما", comment)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out

@@ -729,10 +729,17 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             # translate, so a msgstr equal to it is correct. Those turn up here
             # when a fix wave strips spillover that had been appended to such an
             # entry — a repair, not a loss — so they must not be warned about.
+            # An MDX comment renders nothing, so English inside one is correct.
+            # Narrowed here rather than in is_copy_only on purpose: widening that
+            # would drop such entries from fix batches entirely, and their msgstr
+            # CAN be wrong — ar guides/primitive-input-output#3 was an MDX comment
+            # whose translation had drifted to unrelated prose, and repairing it
+            # is exactly what produced this warning.
+            visible = re.sub(r"\{/\*.*?\*/\}", "", e.msgid, flags=re.S)
             became_english = (msgstr.strip() == e.msgid.strip()
                               and e.msgstr.strip() != e.msgid.strip()
                               and not is_copy_only(e.msgid)
-                              and re.search(r"[A-Za-z]{3}", re.sub(r"<[^>]+>", "", e.msgid)))
+                              and re.search(r"[A-Za-z]{3}", re.sub(r"<[^>]+>", "", visible)))
             e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
@@ -750,8 +757,10 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
                 # reject — the English source can genuinely become a proper noun —
                 # but never let it pass silently.
                 english += 1
-                print(f"WARNING {ident}: translation replaced by the English source "
-                      f"— check this is intended: {e.msgid[:60]!r}")
+                # `ident` belongs to the loop above and is stale here; build the
+                # identifier from this loop's own page and index.
+                print(f"WARNING {page}#{idx}: translation replaced by the English "
+                      f"source — check this is intended: {e.msgid[:60]!r}")
             accepted += 1
             changed = True
         if changed:
