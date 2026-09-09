@@ -238,7 +238,9 @@ def independent_positives(labelled):
 #
 # `question-mark` and `length-outlier` were admitted 2026-09-09 after scoring
 # against the 483 labelled defects the four older subchecks missed: 14% and
-# 20% of those respectively, at 0.15% and 0.70% on the 75k faithful entries.
+# 20% of those respectively. length-outlier's cut was then tightened from
+# z<-2.5 to z<-3.5 on a blind corpus read (3.4% precision at -2.5, 11.6% at
+# -3.5): 23.6% recall on the independent rows at 0.20% noise.
 FLOORS = {"line-shape": 0.30, "numbers": 0.24, "list-items": 0.03, "title-untranslated": 0.015,
           "question-mark": 0.10, "length-outlier": 0.10}
 CEILINGS = {"line-shape": 0.006, "numbers": 0.012, "list-items": 0.002, "title-untranslated": 0.004,

@@ -29,9 +29,9 @@ tightening that quietly destroys recall fails CI.
     list-items                  4.1%              0.02%
     title-untranslated          2.2%              0.16%
     question-mark              15.0%              0.10%
-    length-outlier             27.1%              0.72%
+    length-outlier             23.6%              0.20%
     ------------------------------------------------------------------
-    union of the six           70.1%              1.83%
+    union of the six           70.1%              1.32%
     (union of the first four   53.8%              1.02%)
 
     neighbour-duplicate         1.7%              0.05%   (needs file context;
@@ -44,8 +44,11 @@ circular and the scorer excludes them. What those rows ARE good for is finding
 the next subcheck: `question-mark` and `length-outlier` were chosen by scoring
 candidates against the 483 of them the first four subchecks missed (14% and
 20% of those, respectively), then admitted on the independent rows above.
-Corpus-wide the six flag 7,452 entries (1.65% of 451,652); the two new ones
-add 2,534 of those.
+Corpus-wide the six flag 5,539 entries (1.23% of 451,652); the two new ones
+add 621 of those. A blind gauge read of the new flags (at the looser first
+cut of the length check) confirmed 104 defects: question-mark 21 of 108
+(19%), length-outlier 83 of 2,426 (3.4%, hence the tighter cut recorded at
+LENGTH_STATS).
 
 What it looks like on the real corpus (measured 2026-09-09)
 ----------------------------------------------------------
@@ -153,11 +156,20 @@ def _is_question(text: str) -> bool:
 # A translation far shorter than its source, judged against how long that
 # locale's translations usually run. The ratio is a poor absolute signal
 # (check.py's 0.3x-2.5x bound is deliberately loose: ja runs at ~0.6x the
-# source, tl at ~1.1x) but a good relative one: below 2.5 standard deviations
-# under the locale's own median, 18% of labelled defects and 0.7% of faithful
-# entries sit. Fixed constants rather than a live calibration so the ratchet
-# baseline stays stable: (median, sd) of log(len(msgstr)/len(msgid)) over the
-# eval set's 75k faithful entries with a source of >= 40 chars, 2026-09-09.
+# source, tl at ~1.1x) but a good relative one. The threshold was set by
+# reading the corpus, not the eval set: at 2.5 sd under the locale's median
+# the labelled set promised 0.7% noise, but a blind gauge over all 2,426
+# corpus flags confirmed only 83 (3.4%) — the "faithful" negatives are just
+# less compressed than the corpus at large. Precision by band:
+#     z < -4.0        253 flags   46 real   18.2%
+#     -4.0 .. -3.5    228 flags   10 real    4.4%
+#     -3.5 .. -3.0    478 flags   11 real    2.3%
+#     -3.0 .. -2.5  1,467 flags   16 real    1.1%
+# So the cut is -3.5: 481 flags at 11.6%, in line with the other subchecks,
+# keeping 56 of the 83. Fixed constants rather than a live calibration so
+# the ratchet baseline stays stable: (median, sd) of log(len(msgstr)/
+# len(msgid)) over the eval set's 75k faithful entries with a source of
+# >= 40 chars, 2026-09-09.
 # Rebuild after a large re-translation of a locale:
 #   python3 -c "import gzip,json,math,statistics as st,collections; d=json.load(gzip.open(
 #   'translation/eval/completeness-eval.json.gz')); b=collections.defaultdict(list)
@@ -171,7 +183,7 @@ LENGTH_STATS = {
     "uk": (0.00, 0.11),
 }
 LENGTH_MIN_SOURCE = 40
-LENGTH_Z = -2.5
+LENGTH_Z = -3.5
 
 
 def _length_problem(msgid: str, msgstr: str, locale: str | None) -> str | None:

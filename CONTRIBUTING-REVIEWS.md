@@ -250,7 +250,7 @@ This is a deterministic sieve, no model, seconds over the whole corpus. It
 compares line shape, numbers, list items, `title=` captions, whether a
 question stayed a question, whether the translation is far shorter than the
 locale's norm, and looks for a msgstr copied onto a neighbouring entry.
-Corpus-wide it flags 1.65% of entries.
+Corpus-wide it flags 1.23% of entries.
 
 **Every subcheck in it is measured, not guessed.** `build-eval-set.py` turns
 the finished review rounds into a labelled set — every msgstr a round changed
