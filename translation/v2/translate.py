@@ -736,10 +736,18 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             # whose translation had drifted to unrelated prose, and repairing it
             # is exactly what produced this warning.
             visible = re.sub(r"\{/\*.*?\*/\}", "", e.msgid, flags=re.S)
+            # A tag is stripped, but the prose inside its title= / alt= is
+            # visible on the page and IS translated. Stripping the whole tag
+            # made this warning blind to exactly the class it was for: on ja
+            # and id a fix wave copied `<AccordionItem title="**Strategy**">`
+            # over 戦略 / Strategi and apply said nothing, because after the
+            # tag was removed no letters were left to see.
+            visible = re.sub(r"<[^>]+>", lambda m: " ".join(
+                v for k, v in ATTR_RE.findall(m.group(0)) if k in ("title", "alt")), visible)
             became_english = (msgstr.strip() == e.msgid.strip()
                               and e.msgstr.strip() != e.msgid.strip()
                               and not is_copy_only(e.msgid)
-                              and re.search(r"[A-Za-z]{3}", re.sub(r"<[^>]+>", "", visible)))
+                              and re.search(r"[A-Za-z]{3}", visible))
             e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None

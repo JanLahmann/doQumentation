@@ -801,6 +801,28 @@ def test_apply_names_the_right_entry_in_the_english_warning(tmp_path, monkeypatc
     assert "p.mdx#0" in out, out
 
 
+def test_apply_warns_when_a_title_caption_reverts_to_english(tmp_path, monkeypatch, capsys):
+    """The tag is markup, but its title= is prose the reader sees. On ja and id
+    a drift-sweep wave copied the English `<AccordionItem title="**Strategy**">`
+    over the translated caption on how-to-become-quantum-ready, and apply was
+    silent: it stripped the whole tag before looking for letters. The audit
+    diff caught it; apply must too."""
+    tag = '<AccordionItem title="**Strategy**">\n'
+    tr, path = _apply_one(tmp_path, monkeypatch, tag, '<AccordionItem title="**戦略**">\n', tag)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "REPLACED BY ENGLISH 1" in out, out
+
+
+def test_apply_stays_quiet_for_a_bare_closing_tag(tmp_path, monkeypatch, capsys):
+    """No attribute prose, nothing to lose: the pl qft#75 repair case again,
+    now that attribute values survive tag stripping."""
+    tag = "</AccordionItem>\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, tag, tag + "Tekst, który tu nie należy.", tag)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
 def test_apply_does_not_warn_for_an_mdx_comment(tmp_path, monkeypatch, capsys):
     """An MDX comment renders nothing, so English inside one is correct. Seen on
     ar guides/primitive-input-output#3, whose translation had drifted to
