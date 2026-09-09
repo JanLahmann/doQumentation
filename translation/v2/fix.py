@@ -190,17 +190,30 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet") -> dict:
             missing.append(rel)
             continue
         po = polib.pofile(str(po_file), wrapwidth=0)
-        entries = [(i, e) for i, e in enumerate(po)
-                   if e.msgstr.strip() and not e.obsolete and not tr.is_copy_only(e.msgid)]
+        translated = [(i, e) for i, e in enumerate(po)
+                      if e.msgstr.strip() and not e.obsolete]
+        # Copy-only entries (bare math, code, an image) are normally left out:
+        # there is nothing for a translator to do with them. But their msgstr
+        # can still be WRONG — a drifted entry may carry prose prepended to the
+        # math it should hold, which check.py passes, since both sides then have
+        # the same $$ blocks. Excluding them from matching as well as from the
+        # batch meant a reviewer could flag an entry that no fix wave was
+        # capable of reaching. Match against everything, and carry a copy-only
+        # entry into the batch when — and only when — a reviewer pointed at it.
+        entries = [(i, e) for i, e in translated if not tr.is_copy_only(e.msgid)]
         reviews: dict[int, list[str]] = {}
         for ex in fx["examples"]:
-            idx = match_example(ex, entries)
+            idx = match_example(ex, translated)
             if idx is None:
                 unmatched += 1
                 continue
             reviews.setdefault(idx, []).append(_review_text(ex))
+        by_index = dict(entries)
+        for idx in reviews:                      # a flagged copy-only entry joins the batch
+            if idx not in by_index:
+                by_index[idx] = po[idx]
         items = []
-        for idx, e in entries:
+        for idx, e in sorted(by_index.items()):
             it = {"msgid": tr.shrink_data_uris(e.msgid), "prev_msgstr": tr.shrink_data_uris(e.msgstr)}
             t = _entry_type(e)
             if t != "Plain text":

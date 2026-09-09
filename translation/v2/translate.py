@@ -725,8 +725,14 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             if final == e.msgstr and ("fuzzy" not in e.flags or not confirm_fuzzy):
                 unchanged += 1
                 continue
+            # A copy-only msgid (bare markup, math, an image) has nothing to
+            # translate, so a msgstr equal to it is correct. Those turn up here
+            # when a fix wave strips spillover that had been appended to such an
+            # entry — a repair, not a loss — so they must not be warned about.
             became_english = (msgstr.strip() == e.msgid.strip()
-                              and e.msgstr.strip() != e.msgid.strip())
+                              and e.msgstr.strip() != e.msgid.strip()
+                              and not is_copy_only(e.msgid)
+                              and re.search(r"[A-Za-z]{3}", re.sub(r"<[^>]+>", "", e.msgid)))
             e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None

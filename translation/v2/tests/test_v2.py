@@ -718,3 +718,63 @@ def test_apply_is_quiet_on_an_ordinary_correction(tmp_path, monkeypatch, capsys)
     tr, path = _apply_one(tmp_path, monkeypatch, EN, "stara verze", CS)
     tr.apply("xx", prefix="fix", note="n")
     assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+def test_apply_does_not_warn_when_the_msgid_has_nothing_to_translate(tmp_path, monkeypatch, capsys):
+    """A markup-only entry whose msgstr had spillover appended, now stripped
+    back to the markup, equals its msgid legitimately — that is the repair,
+    not a destroyed translation. Seen on pl qft.mdx#75."""
+    markup = "</AccordionItem>\n</Accordion>\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, markup,
+                          markup + "Jaka superpozycja stanow obliczeniowych...", markup)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+# ── prepare() must be able to deliver an entry a reviewer flagged ──────────
+# Copy-only entries (bare math, code, an image) are excluded from fix batches
+# because there is nothing to translate in them. But their msgstr can still be
+# wrong: on pl a drifted entry carried prose PREPENDED to the math block it
+# should hold, which check.py passes because both sides then have the same $$
+# blocks. Excluding such entries from matching as well as from the batch meant
+# a reviewer could flag an entry no fix wave was capable of reaching.
+
+MATH = "$$\n\\begin{array}{cc}\nZ & Z\n\\end{array}\n$$\n"
+
+
+def test_prepare_carries_a_flagged_copy_only_entry_into_the_batch(tmp_path, monkeypatch):
+    import fix as fx2
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid="Some ordinary prose to translate here.", msgstr="Proza."))
+    po.append(polib.POEntry(msgid=MATH, msgstr="Drifted prose prepended.\n" + MATH))
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po.save(str(po_dir / "p.po"))
+    work = tmp_path / "work"; work.mkdir()
+    monkeypatch.setattr(fx2.io, "WORK_DIR", work)
+    monkeypatch.setattr(fx2.io, "REPO", tmp_path)
+    monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
+
+    fx2.prepare("xx", [{"rel": "p.mdx", "note": "drift",
+                        "examples": [{"source": MATH, "why": "holds prose"}]}])
+    batch = json.loads(next((work / "xx").glob("fix-000-*.json")).read_text())
+    flagged = [it for it in batch if "review" in it]
+    assert len(flagged) == 1, "the flagged copy-only entry must reach the batch"
+    assert flagged[0]["msgid"] == MATH
+
+
+def test_prepare_still_omits_unflagged_copy_only_entries(tmp_path, monkeypatch):
+    """They are excluded for a reason: there is nothing to translate."""
+    import fix as fx2
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid="Some ordinary prose to translate here.", msgstr="Proza."))
+    po.append(polib.POEntry(msgid=MATH, msgstr=MATH))
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po.save(str(po_dir / "p.po"))
+    work = tmp_path / "work"; work.mkdir()
+    monkeypatch.setattr(fx2.io, "WORK_DIR", work)
+    monkeypatch.setattr(fx2.io, "REPO", tmp_path)
+    monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
+
+    fx2.prepare("xx", [{"rel": "p.mdx", "note": "n", "examples": []}])
+    batch = json.loads(next((work / "xx").glob("fix-000-*.json")).read_text())
+    assert all(it["msgid"] != MATH for it in batch)
