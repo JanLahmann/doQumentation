@@ -37,6 +37,11 @@ const AGENT_TYPE = (args && args.agentType) || 'general-purpose'
 // of roughly 15k tokens per turn, one turn less per batch matters more than
 // anything in the prompt text.
 const RULES = instructions_text || `Follow the rules in ${instructions} (read it once first).`
+// A multi-locale run needs per-locale rules, not one shared block: the register
+// line ("tu" vs "dumneavoastră", "du" vs "Sie") lives in them, and a fix wave
+// that loses it silently rewrites a whole page into the wrong register — which
+// no checker catches. Keyed by locale so the text is carried once, not per batch.
+const RULES_BY_LOCALE = (_a && _a.instructions_by_locale) || {}
 
 // No output schema: a StructuredOutput call is one more turn per agent, and a
 // turn costs ~15k tokens of fixed context. The agent's final text is parsed.
@@ -73,7 +78,7 @@ function prompt(b, attempt) {
   const loc = b.locale || locale
   return `You are a technical ${TASK === 'gauge' ? 'reviewer' : TASK === 'fix' ? 'editor' : 'translator'} for doQumentation (locale "${loc}").
 
-${RULES}${pageNote}
+${RULES_BY_LOCALE[loc] || RULES}${pageNote}
 
 Do exactly this, in this order, with no other tool calls:
 1. Read ${b.file} (once). It is a JSON list of ${b.items} items, one per line.
