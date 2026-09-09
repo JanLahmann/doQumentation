@@ -49,18 +49,11 @@ const config: Config = {
       tagName: 'link',
       attributes: { rel: 'preconnect', href: 'https://cdn.jsdelivr.net' },
     },
-    // Umami Analytics — privacy-friendly, cookie-free, GDPR-compliant
+    // Umami Analytics preconnect — the tracking script itself is registered once in
+    // `scripts` below (shared Fun with Quantum family property).
     {
       tagName: 'link',
       attributes: { rel: 'preconnect', href: 'https://cloud.umami.is' },
-    },
-    {
-      tagName: 'script',
-      attributes: {
-        defer: 'true',
-        'data-website-id': '96e0365a-1146-4908-8707-7e0a06ef728a',
-        src: 'https://cloud.umami.is/script.js',
-      },
     },
     // Robots meta — max-snippet:-1 recommended for AI search
     {
