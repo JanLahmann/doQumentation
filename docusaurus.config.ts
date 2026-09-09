@@ -1,6 +1,7 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import {familyFooterColumn} from './family-footer';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 
@@ -400,35 +401,7 @@ const config: Config = {
             },
           ],
         },
-        {
-          title: 'Fun with Quantum family',
-          items: [
-            {
-              label: 'Fun with Quantum',
-              href: 'https://fun-with-quantum.org',
-            },
-            {
-              label: 'RasQberry Two',
-              href: 'https://rasqberry.org',
-            },
-            {
-              label: 'RasQberry One',
-              href: 'https://rasqberry.one',
-            },
-            {
-              label: 'Quantego',
-              href: 'https://quantego.org',
-            },
-            {
-              label: 'Qutie',
-              href: 'https://qutie.org',
-            },
-            {
-              label: 'Qoffee-Maker',
-              href: 'https://qoffee-maker.org',
-            },
-          ],
-        },
+        // + "Fun with Quantum family" column, appended by createConfig() below from the shared manifest.
       ],
       copyright: `<a href="https://github.com/Qiskit/documentation">Qiskit documentation</a> content © IBM Corp. Code is licensed under Apache 2.0; content (tutorials, courses, media) under CC BY-SA 4.0.<br/>IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation.<br/>doQumentation is part of the <a href="https://rasqberry.org/">RasQberry</a> project and is not affiliated with, endorsed by, or sponsored by IBM Corporation.`,
     },
@@ -456,4 +429,10 @@ const config: Config = {
   } satisfies Preset.ThemeConfig,
 };
 
-export default config;
+// Async config: the family footer column comes from the shared manifest at build time
+// (family/family.json in JanLahmann/Fun-with-Quantum; vendored fallback ./fwq-family.json).
+export default async function createConfig(): Promise<Config> {
+  const themeConfig = config.themeConfig as {footer: {links: unknown[]}};
+  themeConfig.footer.links.push(await familyFooterColumn('doqumentation'));
+  return config;
+}
