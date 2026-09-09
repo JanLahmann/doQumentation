@@ -118,6 +118,15 @@ if (TASK === 'gauge') log(`completeness-gauge mode: ${batches.length} batch(es),
 // A sliding pool, not waves: as soon as one agent finishes the next batch
 // starts, so CONCURRENCY agents are running at any time (a wave of 15 would
 // idle down to 1 while its slowest batch finished).
+//
+// BUT the harness caps a single workflow at about 4 agents in flight no
+// matter what CONCURRENCY says (measured 2026-09-09: 20 requested, journal
+// showed 74 started / 70 done = 4 running). Raising this number past ~4
+// does nothing. Real parallelism comes from running SEVERAL workflows at
+// once — each gets its own allocation — so split a big manifest into
+// shards of ~15-40 batches and launch them together: 6 shards reached 21
+// agents in flight against 4 for one workflow, and 46 batches that had been
+// crawling at 2/min finished in minutes.
 const done = new Array(batches.length)
 let next = 0
 async function worker() {
