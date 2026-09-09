@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-08 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-09 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -38,11 +38,7 @@ stop; it is the only reservation there is. List them any time with
 
 | Locale | Who | Doing | Since | Issue |
 |---|---|---|---|---|
-| `cs` | @JanLahmann | review | 2026-09-08 | [#503](https://github.com/JanLahmann/doQumentation/issues/503) |
-| `de` | @JanLahmann | review | 2026-09-07 | [#500](https://github.com/JanLahmann/doQumentation/issues/500) |
-| `es` | @JanLahmann | review | 2026-09-08 | [#502](https://github.com/JanLahmann/doQumentation/issues/502) |
-| `fr` | @JanLahmann | review | 2026-09-08 | [#504](https://github.com/JanLahmann/doQumentation/issues/504) |
-| `he` | @JanLahmann | review | 2026-09-07 | [#501](https://github.com/JanLahmann/doQumentation/issues/501) |
+| `?` | @JanLahmann | ? | 2026-09-09 | [#522](https://github.com/JanLahmann/doQumentation/issues/522) |
 
 ---
 
@@ -63,28 +59,28 @@ reviewed and stubs under 40 lines, not leakage.
 
 | Locale | Unreviewed pool | Reviewed so far |
 |---|---|---|
-| `de` | **189** | 171/428 (39%) |
-| `th` | **142** | 219/428 (51%) |
-| `he` | **130** | 232/428 (54%) |
-| `id` | **129** | 233/428 (54%) |
-| `ko` | **118** | 245/428 (57%) |
-| `cs` | **91** | 270/428 (63%) |
-| `ms` | **75** | 286/428 (66%) |
-| `ro` | **75** | 289/428 (67%) |
-| `pl` | **63** | 297/428 (69%) |
+| `th` | **145** | 219/428 (51%) |
+| `de` | **139** | 224/428 (52%) |
+| `id` | **131** | 233/428 (54%) |
+| `ko` | **120** | 245/428 (57%) |
+| `he` | **108** | 257/428 (60%) |
+| `ms` | **78** | 286/428 (66%) |
+| `ro` | **77** | 289/428 (67%) |
+| `cs` | **72** | 292/428 (68%) |
+| `pl` | **66** | 297/428 (69%) |
 
 **Nearly exhausted** (fewer than 25 eligible) — still worth
 a short round, but expect to re-sweep files that already carry a
 verdict, or to accept a round smaller than 25:
 
-- `ja` — 17 left (347/428 reviewed)
-- `uk` — 16 left (348/428 reviewed)
-- `ar` — 10 left (356/428 reviewed)
+- `uk` — 19 left (348/428 reviewed)
+- `ja` — 18 left (347/428 reviewed)
+- `ar` — 11 left (356/428 reviewed)
+- `it` — 8 left (359/428 reviewed)
 - `pt` — 8 left (359/428 reviewed)
-- `it` — 7 left (359/428 reviewed)
-- `es` — 6 left (360/428 reviewed)
-- `fr` — 6 left (361/428 reviewed)
 - `tl` — 5 left (362/428 reviewed)
+- `es` — 0 left (366/428 reviewed)
+- `fr` — 0 left (367/428 reviewed)
 
 ---
 
@@ -92,14 +88,14 @@ verdict, or to accept a round smaller than 25:
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `2026090801-JanLahmann` | 6 | 0 | 0.0% |
-| `2026090802-JanLahmann` | 22 | 3 | 13.6% |
-| `2026090803-JanLahmann` | 6 | 0 | 0.0% |
-| `2026090702-JanLahmann` | 25 | 4 | 16.0% |
-| `2026090701-JanLahmann` | 25 | 2 | 8.0% |
-| `20260901` | 136 | 14 | 10.3% |
+| `2026090906-JanLahmann` | 9 | 0 | 0.0% |
+| `2026090903-JanLahmann` | 21 | 0 | 0.0% |
+| `2026090905-JanLahmann` | 14 | 0 | 0.0% |
+| `2026090904-JanLahmann` | 10 | 0 | 0.0% |
+| `2026090901-JanLahmann` | 18 | 0 | 0.0% |
+| `2026090907-JanLahmann` | 4 | 0 | 0.0% |
 
-Typical FAIL rate is around **10%**. If your round comes
+Typical FAIL rate is around **0%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 
