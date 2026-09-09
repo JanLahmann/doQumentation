@@ -66,3 +66,8 @@ def drift():
 @pytest.fixture(scope="session")
 def completeness():
     return _load("check_completeness", "check-completeness.py")
+
+
+@pytest.fixture(scope="session")
+def gauge():
+    return _load("gauge_completeness", "gauge-completeness.py")

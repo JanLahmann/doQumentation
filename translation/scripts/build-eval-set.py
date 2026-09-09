@@ -163,7 +163,9 @@ def main() -> int:
         args.out.write_text(blob, encoding="utf-8")
 
     pos, neg = data["positives"], data["negatives"]
-    print(f"{args.out.relative_to(REPO_ROOT)}: {len(pos)} positive(s), {len(neg)} negative(s)")
+    shown = (args.out.relative_to(REPO_ROOT)
+             if args.out.is_relative_to(REPO_ROOT) else args.out)
+    print(f"{shown}: {len(pos)} positive(s), {len(neg)} negative(s)")
     if args.stats:
         per = collections.Counter(p["locale"] for p in pos)
         print("  positives per locale: " + ", ".join(f"{k} {v}" for k, v in sorted(per.items())))

@@ -227,6 +227,66 @@ something in the **English** page — so the same page slips in every locale
 at once. A page flagged in 16 of 17 locales is not seventeen coincidences;
 those pages are where the defect really lives.
 
+#### Or: sweep for incomplete translations
+
+The drift detector looks for one defect. A broader and cheaper sweep asks a
+blunter question — does the translation carry what the source carries?
+
+```bash
+python3 translation/scripts/check-completeness.py --locale <LOCALE> \
+  --json /tmp/sieve-<LOCALE>.json
+```
+
+This is a deterministic sieve, no model, seconds over the whole corpus. It
+compares line shape, numbers, list items, `title=` captions, and looks for a
+msgstr copied onto a neighbouring entry. Corpus-wide it flags 1.3% of
+entries.
+
+**Every subcheck in it is measured, not guessed.** `build-eval-set.py` turns
+the finished review rounds into a labelled set — every msgstr a round changed
+is a known defect, every msgstr an agent read and copied back is known
+faithful — and `tests/test_completeness.py` re-scores the sieve against it, so
+a threshold that quietly destroys recall fails CI. If you change a subcheck,
+run those tests and record the reason next to any floor you move. Two
+findings from building it, both of which cost real recall before they were
+caught:
+
+- An entry that is nothing but `<IBMVideo title="..."/>` is byte-identical to
+  its source **exactly when** its caption was never translated. A copy-only
+  guard in front of the `title=` check therefore hides the defect it exists to
+  find.
+- English spells small numbers as words where `ja` and `ko` write the digit
+  ("three kinds" → 3種類). Counting an *added* small integer as a lost figure
+  produced ~3,400 findings in those two locales, none of them real.
+
+Then let a model read the survivors:
+
+```bash
+python3 translation/scripts/gauge-completeness.py --locale <LOCALE> \
+  --findings /tmp/sieve-<LOCALE>.json --sample 400 --prepare
+# fill work/gauge/<LOCALE>/manifest-gauge.json with translate-locale.js
+python3 translation/scripts/gauge-completeness.py --locale <LOCALE> --collect
+python3 translation/scripts/gauge-completeness.py --locale <LOCALE> \
+  --emit-fixes /tmp/fixes-<LOCALE>-gauge.json
+```
+
+The gauge returns one verdict per entry — COMPLETE, MISSING, EXTRA,
+DIFFERENT or UNSURE — and never writes a msgstr; `--emit-fixes` produces an
+ordinary `fix.py --fixes` file, so repairs take the same path as any review
+round.
+
+`--sample N` is not optional dressing. It mixes in N entries the sieve did
+**not** flag, and the batches carry only `msgid` and `msgstr` — the gauge is
+never told which is which. That is what makes `--collect`'s two numbers mean
+anything:
+
+- **precision** — how many of the sieve's flags a reader agrees with;
+- **miss rate** — how many entries it passed are defective anyway, which is
+  the only honest estimate of the locale's real defect load.
+
+Skip the sample and you learn nothing except that the gauge agrees with the
+sieve, which it will.
+
 ### 3. Run the review wave
 
 Bake the sample into a runnable workflow, then execute it:
