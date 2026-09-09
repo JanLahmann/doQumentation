@@ -40,7 +40,7 @@ export async function familyFooterColumn(selfId: string) {
     items: m.members
       .filter((x) => x.footer && x.id !== selfId)
       .map((x) => ({
-        html: `<a class="footer__link-item fwq-member" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.name)}${x.short ? `<small>${esc(x.short)}</small>` : ''}</a>`,
+        html: `<a class="footer__link-item fwq-member" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" data-umami-event="family-footer" data-umami-event-to="${esc(x.id)}">${esc(x.name)}${x.short ? `<small>${esc(x.short)}</small>` : ''}</a>`,
       })),
   };
 }
