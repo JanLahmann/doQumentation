@@ -215,3 +215,39 @@ def test_a_repaired_translation_is_mostly_left_alone(completeness, labelled):
     pos = labelled["positives"]
     fires = sum(1 for p in pos if completeness.check_pair(p["msgid"], p["repaired"]))
     assert fires / len(pos) <= 0.05, f"fires on {fires}/{len(pos)} repaired translations"
+
+
+# --------------------------------------------------------------------------
+# the ratchet
+#
+# The sieve's measured precision on an unbiased corpus sample is ~12%, so it
+# must never be a cleanliness gate — failing CI on its 5,700 findings would
+# demand ~5,000 non-fixes. The baseline turns it into a ratchet: new findings
+# fail, known ones do not.
+
+
+def test_finding_key_ignores_the_entry_index(completeness):
+    """Inserting a paragraph upstream renumbers every entry below it. If the
+    key included the index, that would present the whole tail of the file as
+    new findings and the ratchet would cry wolf on every real edit."""
+    a = {"file": "i18n/de/po/a.po", "check": "line-shape", "msgid": "Source.", "index": 3}
+    b = {**a, "index": 91}
+    assert completeness.finding_key(a) == completeness.finding_key(b)
+
+
+def test_finding_key_separates_check_file_and_msgid(completeness):
+    base = {"file": "i18n/de/po/a.po", "check": "line-shape", "msgid": "Source."}
+    keys = {
+        completeness.finding_key(base),
+        completeness.finding_key({**base, "check": "numbers"}),
+        completeness.finding_key({**base, "file": "i18n/fr/po/a.po"}),
+        completeness.finding_key({**base, "msgid": "Other source."}),
+    }
+    assert len(keys) == 4
+
+
+def test_finding_key_cannot_be_confused_by_field_concatenation(completeness):
+    # A naive "a" + "b" + "c" key would collide these two.
+    x = {"file": "i18n/de/po/a.po", "check": "line", "msgid": "shape"}
+    y = {"file": "i18n/de/po/a.po", "check": "lineshape", "msgid": ""}
+    assert completeness.finding_key(x) != completeness.finding_key(y)

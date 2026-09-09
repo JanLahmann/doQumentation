@@ -34,30 +34,49 @@ tightening that quietly destroys recall fails CI.
     neighbour-duplicate         1.7%              0.05%   (needs file context;
                                                            not in the union above)
 
-Corpus-wide the sieve flags 5,775 of 451,652 translated entries — 1.3% — of
-which 830 are untranslated `title=` captions, the cleanest signal it has. The
-noise rate above was measured on drift-affected pages and does not carry over
-unchanged, which is why the corpus number is the one to plan against.
+What it looks like on the real corpus (measured 2026-09-09)
+----------------------------------------------------------
+The table above is measured on the labelled set, whose positives are all
+positional drift — the sieve's best case. On an unbiased sample of 6,797
+entries scored by BOTH the sieve and the gauge, it does considerably worse:
 
-Read those numbers honestly. The positives are defects the drift sweeps found,
-so 53.8% is recall on *that* class. A fluent, complete, plausible
-mistranslation of a technical claim has the right shape, the right numbers and
-the right length, and nothing here will ever see it.
+                        gauge: defective   gauge: fine
+      sieve flags                     11            81
+      sieve passes                    22         6,683
 
-Two subchecks are clean enough to be gates rather than hints —
-`title-untranslated` and `neighbour-duplicate` fire almost only on real
-defects. The rest are advisory: they select entries worth a second read.
+    corpus defect rate    0.49%   95% CI [0.35%, 0.68%]   (~2,200 entries)
+    sieve precision      11.96%   95% CI [6.8%, 20.2%]
+    sieve recall         33.33%   95% CI [19.8%, 50.4%]
+
+So roughly one flag in eight is a real defect, and the sieve sees about a
+third of what is out there. Both numbers are worse than the labelled set
+suggests, for the reason given above: that set asks an easier question.
+
+**This is why the sieve must not be a hard gate.** At 12% precision, failing
+CI on its 5,730 corpus findings would demand ~5,000 non-fixes. Use
+`--baseline` instead: a ratchet that fails only on findings a change ADDS.
+An earlier version of this docstring claimed `title-untranslated` and
+`neighbour-duplicate` were clean enough to gate on; the unbiased sample does
+not support that, and the claim is withdrawn.
+
+Read the recall honestly too. A fluent, complete, plausible mistranslation of
+a technical claim has the right shape, the right numbers and the right length,
+and nothing here will ever see it.
 
 Usage:
     python translation/scripts/check-completeness.py --locale de
     python translation/scripts/check-completeness.py --all --json out.json
     python translation/scripts/check-completeness.py --locale de --check title-untranslated
+    # the CI ratchet: fails only on findings a change ADDS
+    python translation/scripts/check-completeness.py --all \
+        --baseline translation/eval/completeness-baseline.json
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import re
 import sys
@@ -222,6 +241,18 @@ def check_file(path: Path) -> list[dict]:
     return findings
 
 
+def finding_key(row: dict) -> str:
+    """A finding's identity, stable across edits elsewhere in the file.
+
+    NOT the entry index: inserting a paragraph upstream renumbers every entry
+    below it and would present the whole tail as new. The msgid is the stable
+    handle — it is the source text, and it changes only when the English does.
+    """
+    return hashlib.sha1(
+        "\x00".join((row["file"], row["check"], row["msgid"])).encode("utf-8")
+    ).hexdigest()[:16]
+
+
 def locale_files(locale: str) -> list[Path]:
     return sorted((I18N / locale / "po").rglob("*.po"))
 
@@ -238,6 +269,10 @@ def main() -> int:
                     help="restrict to one subcheck (repeatable): line-shape, numbers, "
                          "list-items, title-untranslated, neighbour-duplicate")
     ap.add_argument("--json", type=Path, help="write the findings to this file")
+    ap.add_argument("--write-baseline", type=Path, metavar="PATH",
+                    help="record the current findings as the accepted baseline")
+    ap.add_argument("--baseline", type=Path, metavar="PATH",
+                    help="exit 1 on any finding NOT in this baseline (the CI ratchet)")
     ap.add_argument("--limit", type=int, default=40, help="findings to print per locale (0 = all)")
     args = ap.parse_args()
 
@@ -283,6 +318,40 @@ def main() -> int:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(out, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         print(f"\nwrote {len(out)} finding(s) to {args.json}")
+
+    if args.write_baseline:
+        args.write_baseline.parent.mkdir(parents=True, exist_ok=True)
+        args.write_baseline.write_text(json.dumps({
+            "note": ("Findings accepted as pre-existing. This file is a RATCHET, not a "
+                     "target: the sieve's measured precision is ~12%, so most of these are "
+                     "fine and demanding they be cleared would be wrong. It exists so a "
+                     "change cannot ADD a finding unnoticed. Shrink it by fixing real "
+                     "defects and re-running --write-baseline; never by loosening a "
+                     "subcheck — tests/test_completeness.py scores every subcheck against "
+                     "the labelled set for exactly that reason."),
+            "count": len(out),
+            "keys": sorted({finding_key(r) for r in out}),
+        }, indent=1) + "\n", encoding="utf-8")
+        print(f"\nbaseline: {len(out)} finding(s) → {args.write_baseline}")
+        return 0
+
+    if args.baseline:
+        known = set(json.loads(args.baseline.read_text(encoding="utf-8"))["keys"])
+        new_rows = [r for r in out if finding_key(r) not in known]
+        if not new_rows:
+            print(f"\nratchet: no new findings ({len(out)} known, baseline {len(known)})")
+            return 0
+        print(f"\nratchet: {len(new_rows)} NEW finding(s) not in the baseline:")
+        for r in new_rows[:25]:
+            page = r["file"].split("/po/", 1)[-1]
+            print(f"  {r['locale']} {r['check']:20s} {page}#{r['index']}: {r['detail']}")
+            print(f"      EN {r['msgid'][:90]!r}")
+            print(f"      TR {r['msgstr'][:90]!r}")
+        if len(new_rows) > 25:
+            print(f"  … {len(new_rows) - 25} more")
+        print("\nIf these are real, fix them. If they are the sieve being wrong (it is "
+              "right about 12% of the time), re-run with --write-baseline to accept them.")
+        return 1
     return 0
 
 
