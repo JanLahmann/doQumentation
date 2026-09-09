@@ -215,6 +215,15 @@ Two more things this defect is not:
   rendered page by content matching. Tried on `de`: 0 of 11 right, with
   confidence scores of 0.94-1.00 on entirely wrong paragraphs. Anchor-free
   prose gives absolute matching nothing to work with. Retranslate instead.
+- It is **not** usable as a page list on `ja` or `ko` without a second
+  opinion. The fit score needs shared tokens, and CJK prose shares almost
+  none with its English, so the detector fires on fluent, correct entries:
+  read blind by the completeness gauge, 18 of 286 `ja` candidates and 7 of
+  145 `ko` candidates were real (2026-09-09). Gauge the candidates first
+  (`gauge-completeness.py --findings`, with the drift output rewritten to
+  the sieve's `i18n/<locale>/po/…` file paths) and sweep only the confirmed
+  pages — 24 pages instead of 158. On Latin- and Cyrillic-script locales
+  the flagged pages can be swept directly.
 
 To choose *which* pages to sweep, run it across every locale:
 
