@@ -48,6 +48,31 @@ UNSURE is a first-class answer, not a failure: an entry that is a bare heading
 or half a sentence often cannot be judged alone, and a gauge pushed to guess
 produces confident noise.
 
+How well it actually reads (measured 2026-09-09)
+------------------------------------------------
+`--eval-set` showed the gauge both msgstrs of all 314 labelled entries — the
+one a reviewer judged defective and the one they repaired — shuffled and
+unlabelled:
+
+    known-defective   279/314 called defective     sensitivity 88.9%
+    known-faithful      1/314 called defective     false alarm   0.3%
+
+So it discriminates; it is not agreeing with whatever it is shown. That is what
+makes a calibration result readable. On `ro` (543 entries, sonnet): 44 of 143
+sieve flags were real (precision 30.8%) and 0 of 400 unflagged entries were
+defective.
+
+Do not read that 0 as "ro is clean". It bounds the RATE, not the count: 0/400
+puts the 95% upper bound near 0.75%, and ro has ~26,000 translated entries, so
+up to ~200 defects could still sit outside the sieve's reach against the 44
+inside it. `ro` had also been swept twice already. A bigger sample is the only
+way to tighten that.
+
+One more caveat on the 88.9%: the labelled defects are positional drift, where
+the translation is visibly about another topic. That is the easy end of this
+problem. A fluent, complete, plausible mistranslation of a technical claim is
+not in the set, and nothing here would catch it.
+
 Usage:
     python translation/scripts/check-completeness.py --locale de --json de.json
     python translation/scripts/gauge-completeness.py --locale de --findings de.json \
@@ -422,11 +447,11 @@ def collect(locale: str, out_path: Path | None) -> int:
         for r in rows:
             if r["verdict"] not in DEFECTIVE:
                 continue
-            rel, idx = r["id"].rsplit("#", 1)
-            by_file[rel].append({"idx": int(idx), "verdict": r["verdict"], "note": r["note"]})
+            po_rel, idx = r["id"].rsplit("#", 1)
+            by_file[po_rel].append({"idx": int(idx), "verdict": r["verdict"], "note": r["note"]})
         fixes = []
-        for rel, hits in sorted(by_file.items()):
-            page = rel.split("/po/", 1)[-1].replace(".po", ".mdx")
+        for po_rel, hits in sorted(by_file.items()):
+            page = po_rel.split("/po/", 1)[-1].replace(".po", ".mdx")
             fixes.append({
                 "rel": page,
                 "note": (
@@ -457,12 +482,12 @@ def emit_fixes(locale: str, out_path: Path) -> int:
     by_file: dict[str, list[dict]] = collections.defaultdict(list)
     for r in rows:
         if r["verdict"] in DEFECTIVE:
-            rel, idx = r["id"].rsplit("#", 1)
-            by_file[rel].append({"idx": int(idx), "verdict": r["verdict"], "note": r["note"]})
+            po_rel, idx = r["id"].rsplit("#", 1)
+            by_file[po_rel].append({"idx": int(idx), "verdict": r["verdict"], "note": r["note"]})
 
     fixes = []
-    for rel, hits in sorted(by_file.items()):
-        path = REPO_ROOT / rel
+    for po_rel, hits in sorted(by_file.items()):
+        path = REPO_ROOT / po_rel
         if not path.exists():
             continue
         live = [e for e in polib.pofile(str(path)) if not e.obsolete and e.msgstr.strip()]
@@ -479,7 +504,7 @@ def emit_fixes(locale: str, out_path: Path) -> int:
         if not examples:
             continue
         fixes.append({
-            "rel": rel.split("/po/", 1)[-1].replace(".po", ".mdx"),
+            "rel": po_rel.split("/po/", 1)[-1].replace(".po", ".mdx"),
             "note": (
                 f"Completeness gauge: {len(examples)} entr(y/ies) on this page were read against "
                 "their English source and judged not to carry the same content — the `review` "

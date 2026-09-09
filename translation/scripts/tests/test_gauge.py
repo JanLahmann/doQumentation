@@ -294,3 +294,50 @@ def test_eval_set_mode_can_narrow_to_one_locale(gauge, tmp_path):
 
     assert len(gauge.eval_set_items(path, "de", 0)) == 2
     assert len(gauge.eval_set_items(path, None, 0)) == 4
+
+
+# --------------------------------------------------------------------------
+# emit-fixes
+#
+# The last link in the chain: gauge verdicts -> a fix.py --fixes file. It broke
+# on first use because a loop variable named `rel` shadowed the module's rel()
+# helper, so nothing exercised the summary line until a real run hit it.
+
+
+def test_emit_fixes_writes_a_fix_py_shaped_file(gauge, tmp_path, monkeypatch, capsys):
+    po_dir = tmp_path / "i18n" / "xx" / "po"
+    po_dir.mkdir(parents=True)
+    (po_dir / "a.po").write_text(
+        'msgid ""\nmsgstr "Content-Type: text/plain; charset=UTF-8\\n"\n\n'
+        'msgid "The source sentence."\nmsgstr "Eine falsche Übersetzung."\n\n'
+        'msgid "Another source sentence."\nmsgstr "Eine gute Übersetzung."\n',
+        encoding="utf-8")
+
+    work = tmp_path / "work"
+    (work / "xx").mkdir(parents=True)
+    (work / "xx" / "gauge-000-sonnet.ids.json").write_text(json.dumps([
+        {"id": "i18n/xx/po/a.po#0", "flagged": True},
+        {"id": "i18n/xx/po/a.po#1", "flagged": True},
+    ]), encoding="utf-8")
+    (work / "xx" / "gauge-000-sonnet.out.json").write_text(json.dumps([
+        {"n": 0, "verdict": "DIFFERENT", "note": "about the next paragraph"},
+        {"n": 1, "verdict": "COMPLETE", "note": ""},
+    ]), encoding="utf-8")
+
+    monkeypatch.setattr(gauge, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(gauge, "GAUGE_WORK", work)
+
+    out = tmp_path / "fixes.json"
+    assert gauge.emit_fixes("xx", out) == 0          # must not raise
+    fixes = json.loads(out.read_text(encoding="utf-8"))
+
+    assert len(fixes) == 1
+    assert set(fixes[0]) == {"rel", "note", "examples"}
+    assert fixes[0]["rel"] == "a.mdx"
+    # only the DIFFERENT entry becomes a finding; COMPLETE is left alone
+    assert len(fixes[0]["examples"]) == 1
+    ex = fixes[0]["examples"][0]
+    assert set(ex) == {"source", "translation", "why"}
+    assert ex["source"] == "The source sentence."
+    assert ex["translation"] == "Eine falsche Übersetzung."
+    assert "DIFFERENT" in ex["why"] and "next paragraph" in ex["why"]

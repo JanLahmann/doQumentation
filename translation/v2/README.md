@@ -257,7 +257,11 @@ Two layers close it, cheap first:
    in. It selects entries worth reading; it does not judge them.
 2. **The gauge** (`gauge-completeness.py`) — a model reads `(msgid, msgstr)`
    and returns one verdict. It is the only thing here that can actually read
-   for meaning, so the sieve exists to keep its input small.
+   for meaning, so the sieve exists to keep its input small. Measured against
+   the labelled set with `--eval-set` (both msgstrs of every entry, shuffled
+   and unlabelled): **88.9% sensitivity, 0.3% false alarm**. It discriminates
+   rather than agreeing with what it is shown — which is what makes any
+   calibration number from it worth quoting.
 
 Repairs then go through `fix.py --fixes` → `translate-locale.js` → `--apply`,
 the same path as any review round, so they still pass `check.py` and still land
