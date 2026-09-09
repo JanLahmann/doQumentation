@@ -41,7 +41,7 @@ const RULES = instructions_text || `Follow the rules in ${instructions} (read it
 // line ("tu" vs "dumneavoastră", "du" vs "Sie") lives in them, and a fix wave
 // that loses it silently rewrites a whole page into the wrong register — which
 // no checker catches. Keyed by locale so the text is carried once, not per batch.
-const RULES_BY_LOCALE = (_a && _a.instructions_by_locale) || {}
+const RULES_BY_LOCALE = (args && args.instructions_by_locale) || {}
 
 // No output schema: a StructuredOutput call is one more turn per agent, and a
 // turn costs ~15k tokens of fixed context. The agent's final text is parsed.

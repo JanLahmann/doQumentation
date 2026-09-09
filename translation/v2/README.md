@@ -304,6 +304,14 @@ Three things worth knowing before you trust a number from this layer:
   positives are defects a *previous* method already found, which is a much
   friendlier question than "what is wrong out there". The calibration sample is
   the honest estimate.
+- **A gauge round's repairs cannot score the sieve.** The set is extended
+  after every merged review PR (`build-eval-set.py --extend`, 1,147 positives
+  and 64,149 negatives as of #524), but a round that read the sieve's own
+  flags finds only what the sieve flagged: 82% "recall" on those rows means
+  nothing. `--selection sieve` records this in the set, and the scorer counts
+  recall on the 314 independently selected rows only. What those rows are good
+  for is the next check: one with different blind spots can be scored on the
+  whole set.
 - **Neither layer sees a fluent, complete, plausible mistranslation.** Right
   shape, right numbers, right length, wrong claim. That still needs a
   domain-competent reader.
