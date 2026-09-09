@@ -49,9 +49,27 @@ function getLocale(): string {
   return parts.length > 2 ? parts[0] : 'en';
 }
 
+/**
+ * Fun with Quantum family taxonomy (Fun-with-Quantum/family/EVENTS.md): the launch and download
+ * actions are reported under the family-wide event names and properties so one Umami report covers
+ * every family site. Site-specific events (Run Code, feedback) keep their names.
+ */
+const FAMILY_EVENTS: Partial<Record<AnalyticsEvent, { name: string; props: Record<string, string> }>> = {
+  'Binder Launch': { name: 'launch', props: { target: 'binder' } },
+  'Colab Open': { name: 'launch', props: { target: 'colab' } },
+  'Notebook Download': { name: 'download', props: { kind: 'ipynb' } },
+};
+
 export function trackEvent(event: AnalyticsEvent, props?: EventProps): void {
   if (!isTrackingEnabled()) return;
   const data = { locale: getLocale(), ...props } as Record<string, string>;
+  const family = FAMILY_EVENTS[event];
+  if (family) {
+    const mapped = { ...family.props, ...data };
+    if (family.name === 'download' && data.notebook) mapped.file = data.notebook;
+    window.umami?.track(family.name, mapped);
+    return;
+  }
   window.umami?.track(event, data);
 }
 
@@ -128,9 +146,8 @@ export function trackOutbound(href: string): void {
   const host = parsed.hostname;
   if (!isTrackedOutboundHost(host)) return;
   const category = categorizeOutboundUrl(host, parsed.pathname);
-  // Keep the IBM-specific event for backward compatibility with existing
-  // dashboards; also fire the unified "Outbound" event so non-IBM links
-  // (GitHub, etc.) show up alongside IBM ones in a single view.
+  // Family-wide `outbound` event (host + category; the IBM buckets live in `category`,
+  // so the former separate "Outbound IBM" event is no longer needed — filter category ibm-* / quantum-*).
   const props = {
     locale: getLocale(),
     category,
@@ -139,10 +156,7 @@ export function trackOutbound(href: string): void {
     url: parsed.origin + parsed.pathname,
     from: window.location.pathname,
   };
-  window.umami?.track('Outbound', props);
-  if (isIBMHost(host)) {
-    window.umami?.track('Outbound IBM', props);
-  }
+  window.umami?.track('outbound', props);
 }
 
 /** @deprecated use trackOutbound — kept so older callers still compile. */
