@@ -56,3 +56,18 @@ def passage_units():
 @pytest.fixture(scope="session")
 def sampler():
     return _load("sample_deep_review", "sample-deep-review.py")
+
+
+@pytest.fixture(scope="session")
+def drift():
+    return _load("find_positional_drift", "find-positional-drift.py")
+
+
+@pytest.fixture(scope="session")
+def completeness():
+    return _load("check_completeness", "check-completeness.py")
+
+
+@pytest.fixture(scope="session")
+def gauge():
+    return _load("gauge_completeness", "gauge-completeness.py")

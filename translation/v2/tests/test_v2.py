@@ -622,3 +622,179 @@ def test_translate_apply_ignores_fix_batches(fix_env):
     assert tr.apply("de") == 0                                          # default prefix: nothing to do
     import polib
     assert polib.pofile(str(io.po_path("de", "guides/noise.mdx")))[2].msgstr == pairs[2][1]
+
+
+# ── match_example: a reviewer's quote must reach the entry they meant ──────
+# Regression guard for a silent misdirection. `match_example` accepted
+# containment in BOTH directions, so a long quote that happened to contain a
+# short entry's words was pinned to that short entry. The flag then reached
+# the wrong entry, the real defect was left untouched, and `prepare` reported
+# "0 examples not matched" — because it had matched something.
+
+import polib  # noqa: E402
+import fix as fx  # noqa: E402
+
+
+def _entries(*msgids):
+    return [(i, polib.POEntry(msgid=m, msgstr="x")) for i, m in enumerate(msgids)]
+
+
+DENSITY = ("What we may do instead is turn to the notion of a *density matrix,* "
+           "which is discussed in the *General formulation of quantum information* "
+           "course. Density matrices provide us with a meaningful way to define "
+           "reduced quantum states.")
+
+
+def test_short_entry_does_not_hijack_a_long_quote():
+    """The real case: a two-word heading swallowed a 200-character quote."""
+    entries = _entries("Quantum information", DENSITY)
+    assert fx.match_example({"source": DENSITY}, entries) == 1
+
+
+def test_quote_inside_an_entry_still_matches():
+    """The intended direction: reviewers quote an excerpt of a long entry."""
+    entries = _entries("Quantum information", DENSITY)
+    excerpt = "turn to the notion of a density matrix"
+    assert fx.match_example({"source": excerpt}, entries) == 1
+
+
+def test_entry_inside_a_quote_matches_when_it_dominates():
+    """`target in q` is still useful when the entry IS most of the quote —
+    a reviewer who pasted the entry plus a few words of context."""
+    entry = "Density matrices provide a meaningful way to define reduced states."
+    entries = _entries("Quantum information", entry)
+    assert fx.match_example({"source": "As noted above, " + entry}, entries) == 1
+
+
+def test_no_match_returns_none_rather_than_a_wrong_index():
+    entries = _entries("Quantum information", "Partial measurements")
+    assert fx.match_example({"source": DENSITY}, entries) is None
+
+
+# ── apply() must notice a translation replaced by its English source ───────
+# Regression guard: on the cs drift round a fix wave returned the English
+# msgid verbatim for an entry that already had a good Czech translation. The
+# instructions forbid it, but nothing objected: check.py cannot reject
+# msgstr == msgid (legitimate for names and code) and the entry was simply
+# stamped "kept in English by the translator". Only apply() knows what the
+# entry said before, so only apply() can tell a deliberate keep from a
+# destroyed translation.
+
+def _apply_one(tmp_path, monkeypatch, msgid, prev, returned):
+    import translate as tr
+    work = tmp_path / "work"; (work / "xx").mkdir(parents=True)
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid=msgid, msgstr=prev))
+    po.save(str(po_dir / "p.po"))
+    (work / "xx" / "fix-000-sonnet.json").write_text(json.dumps([{"msgid": msgid}]), encoding="utf-8")
+    (work / "xx" / "fix-000-sonnet.ids.json").write_text(json.dumps(["p.mdx#0"]), encoding="utf-8")
+    (work / "xx" / "fix-000-sonnet.out.json").write_text(json.dumps([returned]), encoding="utf-8")
+    monkeypatch.setattr(tr.io, "WORK_DIR", work)
+    monkeypatch.setattr(tr.io, "po_path", lambda loc, rel: po_dir / "p.po")
+    return tr, po_dir / "p.po"
+
+
+EN = "Press the button to reveal the answer to the question posed above."
+CS = "Stiskni tlačítko pro zobrazení odpovědi na výše položenou otázku."
+
+
+def test_apply_warns_when_a_translation_becomes_english(tmp_path, monkeypatch, capsys):
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "REPLACED BY ENGLISH 1" in out
+    assert "translation replaced by the English source" in out
+
+
+def test_apply_is_quiet_when_english_was_already_there(tmp_path, monkeypatch, capsys):
+    """A name or code entry that was English and stays English is not a loss."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, EN, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+def test_apply_is_quiet_on_an_ordinary_correction(tmp_path, monkeypatch, capsys):
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, "stara verze", CS)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+def test_apply_does_not_warn_when_the_msgid_has_nothing_to_translate(tmp_path, monkeypatch, capsys):
+    """A markup-only entry whose msgstr had spillover appended, now stripped
+    back to the markup, equals its msgid legitimately — that is the repair,
+    not a destroyed translation. Seen on pl qft.mdx#75."""
+    markup = "</AccordionItem>\n</Accordion>\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, markup,
+                          markup + "Jaka superpozycja stanow obliczeniowych...", markup)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+# ── prepare() must be able to deliver an entry a reviewer flagged ──────────
+# Copy-only entries (bare math, code, an image) are excluded from fix batches
+# because there is nothing to translate in them. But their msgstr can still be
+# wrong: on pl a drifted entry carried prose PREPENDED to the math block it
+# should hold, which check.py passes because both sides then have the same $$
+# blocks. Excluding such entries from matching as well as from the batch meant
+# a reviewer could flag an entry no fix wave was capable of reaching.
+
+MATH = "$$\n\\begin{array}{cc}\nZ & Z\n\\end{array}\n$$\n"
+
+
+def test_prepare_carries_a_flagged_copy_only_entry_into_the_batch(tmp_path, monkeypatch):
+    import fix as fx2
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid="Some ordinary prose to translate here.", msgstr="Proza."))
+    po.append(polib.POEntry(msgid=MATH, msgstr="Drifted prose prepended.\n" + MATH))
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po.save(str(po_dir / "p.po"))
+    work = tmp_path / "work"; work.mkdir()
+    monkeypatch.setattr(fx2.io, "WORK_DIR", work)
+    monkeypatch.setattr(fx2.io, "REPO", tmp_path)
+    monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
+
+    fx2.prepare("xx", [{"rel": "p.mdx", "note": "drift",
+                        "examples": [{"source": MATH, "why": "holds prose"}]}])
+    batch = json.loads(next((work / "xx").glob("fix-000-*.json")).read_text())
+    flagged = [it for it in batch if "review" in it]
+    assert len(flagged) == 1, "the flagged copy-only entry must reach the batch"
+    assert flagged[0]["msgid"] == MATH
+
+
+def test_prepare_still_omits_unflagged_copy_only_entries(tmp_path, monkeypatch):
+    """They are excluded for a reason: there is nothing to translate."""
+    import fix as fx2
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid="Some ordinary prose to translate here.", msgstr="Proza."))
+    po.append(polib.POEntry(msgid=MATH, msgstr=MATH))
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po.save(str(po_dir / "p.po"))
+    work = tmp_path / "work"; work.mkdir()
+    monkeypatch.setattr(fx2.io, "WORK_DIR", work)
+    monkeypatch.setattr(fx2.io, "REPO", tmp_path)
+    monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
+
+    fx2.prepare("xx", [{"rel": "p.mdx", "note": "n", "examples": []}])
+    batch = json.loads(next((work / "xx").glob("fix-000-*.json")).read_text())
+    assert all(it["msgid"] != MATH for it in batch)
+
+
+def test_apply_names_the_right_entry_in_the_english_warning(tmp_path, monkeypatch, capsys):
+    """The warning lives in apply's second loop, where `ident` is a stale
+    leftover from the first. On ar it named krylov.mdx#112 for a defect in
+    guides/primitive-input-output.mdx#3."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "p.mdx#0" in out, out
+
+
+def test_apply_does_not_warn_for_an_mdx_comment(tmp_path, monkeypatch, capsys):
+    """An MDX comment renders nothing, so English inside one is correct. Seen on
+    ar guides/primitive-input-output#3, whose translation had drifted to
+    unrelated prose; returning the comment verbatim IS the repair."""
+    comment = "{/*\n  DO NOT EDIT THIS CELL!!!\n  Generated automatically by a script.\n*/}\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, comment, "نص عربي منجرف هنا تماما", comment)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out

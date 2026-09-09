@@ -114,8 +114,12 @@ Rules, each enforced by an automatic checker:
 - Keep byte-for-byte: inline code in backticks (including placeholders like
   `<per sub-job overhead>`, and even when the code looks wrong, such as
   `PassManagers` or `batch.details() method`), URLs, image paths, JSX/HTML
-  tags and every attribute other than title=, heading anchors like
+  tags and every attribute EXCEPT title=, heading anchors like
   {{#some-anchor}}, MDX comments {{/* ... */}}.
+- title= is the exception because it is prose the reader sees (video and
+  image captions): TRANSLATE it. Leaving the English title= in place is a
+  silent regression — title= is the one attribute the checker does not
+  compare byte-for-byte, so nothing will catch it.
 - Backticked code spans must be copied EXACTLY as in the English, never
   translated, never merged with surrounding text, and none may be added:
   the checker rejects the whole entry if the set of backtick spans differs
@@ -672,7 +676,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
     # publishes stale translations (see the fuzzy note below).
     if confirm_fuzzy is None:
         confirm_fuzzy = prefix != "fix"
-    accepted = rejected = skipped = unchanged = 0
+    accepted = rejected = skipped = unchanged = english = 0
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
     for bpath in sorted(p for p in outdir.glob(f"{prefix}-*.json") if name_re.match(p.name)):
@@ -721,6 +725,21 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             if final == e.msgstr and ("fuzzy" not in e.flags or not confirm_fuzzy):
                 unchanged += 1
                 continue
+            # A copy-only msgid (bare markup, math, an image) has nothing to
+            # translate, so a msgstr equal to it is correct. Those turn up here
+            # when a fix wave strips spillover that had been appended to such an
+            # entry — a repair, not a loss — so they must not be warned about.
+            # An MDX comment renders nothing, so English inside one is correct.
+            # Narrowed here rather than in is_copy_only on purpose: widening that
+            # would drop such entries from fix batches entirely, and their msgstr
+            # CAN be wrong — ar guides/primitive-input-output#3 was an MDX comment
+            # whose translation had drifted to unrelated prose, and repairing it
+            # is exactly what produced this warning.
+            visible = re.sub(r"\{/\*.*?\*/\}", "", e.msgid, flags=re.S)
+            became_english = (msgstr.strip() == e.msgid.strip()
+                              and e.msgstr.strip() != e.msgid.strip()
+                              and not is_copy_only(e.msgid)
+                              and re.search(r"[A-Za-z]{3}", re.sub(r"<[^>]+>", "", visible)))
             e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
@@ -728,12 +747,27 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
                 e.tcomment = "doq: kept in English by the translator (name or code)"
             else:
                 e.tcomment = note or ""
+            if became_english:
+                # An entry that HAD a translation and now equals its English is
+                # almost always an agent dropping the translation rather than a
+                # deliberate "keep this in English": the instructions forbid it,
+                # and check.py cannot object, since msgstr == msgid is legitimate
+                # for names and code. Only apply knows what the entry said
+                # before, so only apply can tell the two apart. Warn rather than
+                # reject — the English source can genuinely become a proper noun —
+                # but never let it pass silently.
+                english += 1
+                # `ident` belongs to the loop above and is stale here; build the
+                # identifier from this loop's own page and index.
+                print(f"WARNING {page}#{idx}: translation replaced by the English "
+                      f"source — check this is intended: {e.msgid[:60]!r}")
             accepted += 1
             changed = True
         if changed:
             po.save(str(io.po_path(locale, page)))
     print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}"
-          + (f", unchanged {unchanged}" if unchanged else ""))
+          + (f", unchanged {unchanged}" if unchanged else "")
+          + (f", REPLACED BY ENGLISH {english}" if english else ""))
     return 1 if rejected else 0
 
 

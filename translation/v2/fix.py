@@ -45,6 +45,10 @@ import po4a_io as io  # noqa: E402
 import translate as tr  # noqa: E402
 
 MATCH_MIN = 0.55        # difflib ratio from which a quoted example is pinned to an entry
+# When a whole entry sits inside the reviewer's quote, the entry must make up
+# at least this share of it. Below that the "containment" is a coincidence of
+# common words, not a reference to that entry.
+CONTAINS_MIN_SHARE = 0.5
 
 
 def fix_instructions(locale: str) -> str:
@@ -72,8 +76,13 @@ Register: {register or 'informal, as the existing translations use'}.
 
 Rules, each enforced by an automatic checker (a violation rejects the entry):
 - Keep byte-for-byte: inline code in backticks, URLs, image paths, JSX/HTML
-  tags and every attribute other than title=, heading anchors like
+  tags and every attribute EXCEPT title=, heading anchors like
   {{#some-anchor}}, MDX comments {{/* ... */}}, every $...$ and $$...$$ span.
+- title= is the exception because it is prose the reader sees (video and
+  image captions): TRANSLATE it. Never copy the English title= out of the
+  msgid — a translated caption replaced by the English one is a silent
+  regression that no checker can catch, since title= is the one attribute
+  not compared byte-for-byte.
 - Keep these terms in English: Qiskit, Qubit, Gate, Circuit, Backend,
   Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU.
 - Every msgstr is a complete translation of its whole msgid, never a
@@ -98,7 +107,19 @@ def match_example(example: dict, entries: list[tuple[int, polib.POEntry]]) -> in
     Tries the English quote against msgid first, then the quoted translation
     against msgstr: containment wins, otherwise the best difflib ratio above
     MATCH_MIN. Quotes are short excerpts, so compare against a window of the
-    entry rather than the whole thing."""
+    entry rather than the whole thing.
+
+    The two containment directions are NOT symmetric. `q in target` — the
+    reviewer quoted part of an entry — is the intended case and always wins.
+    `target in q` — a whole entry sits inside the quote — is only meaningful
+    when the entry makes up most of the quote; otherwise any short entry
+    whose words happen to appear in a long quote hijacks the match. That is
+    not hypothetical: a 300-character quote about density matrices, which
+    contains the phrase "General formulation of quantum information", was
+    pinned to a two-word heading entry "Quantum information", so the flag
+    reached the wrong entry and the real defect was reported as fixed
+    without being touched. `prepare` cannot notice — it counts examples that
+    matched *something*, and this matched something."""
     best: tuple[float, int | None] = (0.0, None)
     for quote, attr in ((example.get("source"), "msgid"), (example.get("translation"), "msgstr")):
         q = _norm(quote)
@@ -108,7 +129,7 @@ def match_example(example: dict, entries: list[tuple[int, polib.POEntry]]) -> in
             target = _norm(getattr(e, attr))
             if not target:
                 continue
-            if q in target or target in q:
+            if q in target or (target in q and len(target) >= CONTAINS_MIN_SHARE * len(q)):
                 return idx
             window = target[: max(len(q) * 2, 200)]
             ratio = difflib.SequenceMatcher(None, q, window).ratio()
@@ -169,17 +190,30 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet") -> dict:
             missing.append(rel)
             continue
         po = polib.pofile(str(po_file), wrapwidth=0)
-        entries = [(i, e) for i, e in enumerate(po)
-                   if e.msgstr.strip() and not e.obsolete and not tr.is_copy_only(e.msgid)]
+        translated = [(i, e) for i, e in enumerate(po)
+                      if e.msgstr.strip() and not e.obsolete]
+        # Copy-only entries (bare math, code, an image) are normally left out:
+        # there is nothing for a translator to do with them. But their msgstr
+        # can still be WRONG — a drifted entry may carry prose prepended to the
+        # math it should hold, which check.py passes, since both sides then have
+        # the same $$ blocks. Excluding them from matching as well as from the
+        # batch meant a reviewer could flag an entry that no fix wave was
+        # capable of reaching. Match against everything, and carry a copy-only
+        # entry into the batch when — and only when — a reviewer pointed at it.
+        entries = [(i, e) for i, e in translated if not tr.is_copy_only(e.msgid)]
         reviews: dict[int, list[str]] = {}
         for ex in fx["examples"]:
-            idx = match_example(ex, entries)
+            idx = match_example(ex, translated)
             if idx is None:
                 unmatched += 1
                 continue
             reviews.setdefault(idx, []).append(_review_text(ex))
+        by_index = dict(entries)
+        for idx in reviews:                      # a flagged copy-only entry joins the batch
+            if idx not in by_index:
+                by_index[idx] = po[idx]
         items = []
-        for idx, e in entries:
+        for idx, e in sorted(by_index.items()):
             it = {"msgid": tr.shrink_data_uris(e.msgid), "prev_msgstr": tr.shrink_data_uris(e.msgstr)}
             t = _entry_type(e)
             if t != "Plain text":
