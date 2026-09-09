@@ -267,15 +267,31 @@ Repairs then go through `fix.py --fixes` → `translate-locale.js` → `--apply`
 the same path as any review round, so they still pass `check.py` and still land
 with a provenance comment.
 
-**What the corpus actually looks like** (6,800 blind entries, 400 per locale,
-measured 2026-09-09): the unflagged defect rate is **0.49%** pooled, 95% CI
-[0.35%, 0.68%] — per locale from 0.00% (`ms`) to 1.00% (`th`, `ar`, `ja`,
-`pl`). Over 451,652 translated entries that is ~2,190 defects the sieve does
-not flag, against roughly 1,780 it does (5,775 flags at the 30.8% precision
-measured on `ro`). So the sieve reaches something like **45%** of the total —
-an estimate from the corpus, independent of the 53.8% recall measured on the
-labelled set, and close enough to it to trust both. Total load: ~4,000 entries,
-about 0.9% of the corpus.
+**What the corpus actually looks like** (6,797 entries, 400 per locale,
+measured 2026-09-09). Every sampled entry was scored by *both* the sieve and
+the gauge, so one sample yields the whole table:
+
+| | gauge: defective | gauge: fine |
+|---|---|---|
+| **sieve flags** | 11 | 81 |
+| **sieve passes** | 22 | 6,683 |
+
+- corpus defect rate **0.49%** [0.35%, 0.68%] → **~2,200 entries**
+- sieve precision **12.0%** [6.8%, 20.2%]
+- sieve recall **33.3%** [19.8%, 50.4%]
+
+Gauging all 5,507 sieve flags across the 17 locales then found **748 real
+defects — 13.6% precision** [12.7%, 14.5%], inside the interval this sample
+predicted. The 53.8% recall measured on the labelled eval set overstates: every
+positive there is drift-class, the sieve's best case.
+
+> **A correction, recorded because the wrong numbers were quoted for half a
+> day.** An earlier calibration passed no `--findings`, so the "unflagged
+> sample" was in fact drawn from *all* entries — making 0.49% the overall
+> defect rate, not the miss rate. A "sieve reaches 45%" figure was then derived
+> from a 30.8% precision measured on `ro` alone. Both were wrong. Pass
+> `--findings` when you want the miss rate, and prefer the 2×2: one sample,
+> both numbers, nothing to combine.
 
 Three things worth knowing before you trust a number from this layer:
 
