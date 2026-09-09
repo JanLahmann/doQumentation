@@ -67,7 +67,11 @@ function prompt(b, attempt) {
   const pageNote = TASK === 'fix' && b.note
     ? `\n\nReviewer's note for this page (${b.page || 'see items'}; ${b.flagged || 0} item(s) carry a "review" field):\n${b.note}`
     : ''
-  return `You are a technical ${TASK === 'gauge' ? 'reviewer' : TASK === 'fix' ? 'editor' : 'translator'} for doQumentation (locale "${locale}").
+  // A gauge run can span locales in one pass (the judgement is the same task in
+  // every language), so a batch may name its own; everything else inherits the
+  // manifest's single locale.
+  const loc = b.locale || locale
+  return `You are a technical ${TASK === 'gauge' ? 'reviewer' : TASK === 'fix' ? 'editor' : 'translator'} for doQumentation (locale "${loc}").
 
 ${RULES}${pageNote}
 
