@@ -124,6 +124,14 @@ def match_example(example: dict, entries: list[tuple[int, polib.POEntry]]) -> in
     for quote, attr in ((example.get("source"), "msgid"), (example.get("translation"), "msgstr")):
         q = _norm(quote)
         if len(q) < 12:
+            # Too short to match by containment or ratio ("Thus:" is inside
+            # half the corpus), but a reviewer who quotes a short entry IN
+            # FULL means that entry. Take it when exactly one entry equals
+            # the quote; the pl vqe page had four such connectives left in
+            # English that no example could reach otherwise.
+            exact = [idx for idx, e in entries if _norm(getattr(e, attr)) == q]
+            if len(exact) == 1:
+                return exact[0]
             continue
         for idx, e in entries:
             target = _norm(getattr(e, attr))
