@@ -208,11 +208,17 @@ def main() -> int:
                          "check-completeness.py (a gauge round), 'independent' otherwise (a drift "
                          "sweep, a full-page review). Sieve-selected positives cannot measure the "
                          "sieve's recall — it found them by construction — so the scorer excludes them.")
+    ap.add_argument("--no-negatives", action="store_true",
+                    help="keep only the positives of this round. Required for a round run with "
+                         "fix.py --flagged-only: nobody read the other entries on those pages, so "
+                         "'unchanged' there is not evidence of 'faithful'.")
     ap.add_argument("--stats", action="store_true", help="print the per-locale breakdown")
     args = ap.parse_args()
 
     base = args.base or merge_base(args.head)
     data = build(base, args.head)
+    if args.no_negatives:
+        data["negatives"] = []
     data["selection"] = args.selection
     data["sources"] = [{"base": base, "head": data["head"], "selection": args.selection}]
     for row in data["positives"] + data["negatives"]:
