@@ -131,8 +131,10 @@ def rel(path: Path) -> str:
     return str(path.relative_to(REPO_ROOT)) if path.is_relative_to(REPO_ROOT) else str(path)
 
 
-VERDICTS = ("COMPLETE", "MISSING", "EXTRA", "DIFFERENT", "UNSURE")
-DEFECTIVE = ("MISSING", "EXTRA", "DIFFERENT")
+VERDICTS = ("COMPLETE", "MISSING", "EXTRA", "DIFFERENT", "UNSURE",
+            # --mode untranslated
+            "KEEP", "TRANSLATE")
+DEFECTIVE = ("MISSING", "EXTRA", "DIFFERENT", "TRANSLATE")
 
 BATCH_ITEMS = 30
 # Long entries are the ones worth reading and the ones that blow a batch's
@@ -179,8 +181,51 @@ actually about. Ten words is plenty. For COMPLETE and UNSURE leave `note` empty.
 """
 
 
-def instructions(locale: str) -> str:
-    return INSTRUCTIONS.format(locale=locale)
+# The completeness question cannot see an untranslated entry: a msgstr that
+# is byte-for-byte its English "says what the source says". 11,133 live
+# prose entries (>= 3 words, not copy-only) were identical to their source
+# on 2026-09-09, and a page re-read on pl found "Thus:", "Solving:",
+# "**Differentiate**" among them. So this mode asks the other question —
+# should this be in English at all?
+INSTRUCTIONS_UNTRANSLATED = """\
+# Untranslated-text gauge — {locale}
+
+Each batch is a JSON list of segments from doQumentation, a {locale} mirror of
+IBM Quantum's Qiskit documentation. Every item has the English `msgid` and the
+current `msgstr`, and in EVERY item the two are identical: nothing was
+translated. Your ONLY question, for each item: **should a {locale} reader see
+this in English, or should it have been translated?**
+
+Answer with one verdict per item:
+
+- `KEEP`      — correct as English: a proper name or product name, a code or
+                API identifier, a command, a file name, a URL, a bibliographic
+                citation (author, paper title, venue), a table row or label
+                made only of such things, or a term this project keeps in
+                English (Qiskit, Qubit, Gate, Circuit, Backend, Transpiler,
+                Session, Sampler, Estimator, PUB, IBM Quantum, QPU).
+- `TRANSLATE` — prose a reader expects in {locale}: a sentence or clause, a
+                heading, a connective ("Thus:", "we get:", "Solving:"), a
+                quiz question or answer label, a bold lead-in
+                ("**Differentiate**"), an image caption or a `title=` /
+                `description=` / `alt=` text, a table header or cell of
+                ordinary words, a list item.
+- `UNSURE`    — you cannot tell from the item alone.
+
+Judge ONLY the item in front of you. A mixed item (a name inside a sentence)
+is TRANSLATE: the sentence around the name should be {locale}. Do not mark
+UNSURE to be safe; use it when the item genuinely cannot be judged alone.
+
+For TRANSLATE add a short `note` saying what kind of text it is ("heading",
+"connective", "caption", "sentence"). Five words is plenty. For KEEP and
+UNSURE leave `note` empty.
+"""
+
+MODES = {"complete": INSTRUCTIONS, "untranslated": INSTRUCTIONS_UNTRANSLATED}
+
+
+def instructions(locale: str, mode: str = "complete") -> str:
+    return MODES[mode].format(locale=locale)
 
 
 def po_files(locale: str) -> list[Path]:
@@ -271,7 +316,7 @@ def split_batches(items: list[dict]) -> list[list[dict]]:
 
 
 def prepare(locale: str, findings: Path | None, sample: int, seed: int,
-            model: str, eval_set: Path | None = None) -> int:
+            model: str, eval_set: Path | None = None, mode: str = "complete") -> int:
     if eval_set:
         items = eval_set_items(eval_set, locale if locale != "all" else None, seed)
     else:
@@ -285,7 +330,7 @@ def prepare(locale: str, findings: Path | None, sample: int, seed: int,
     outdir.mkdir(parents=True, exist_ok=True)
     for old in list(outdir.glob("gauge-*.json")) + list(outdir.glob("manifest-gauge.json")):
         old.unlink()
-    (outdir / "instructions-gauge.md").write_text(instructions(locale), encoding="utf-8")
+    (outdir / "instructions-gauge.md").write_text(instructions(locale, mode), encoding="utf-8")
 
     manifest = []
     for n, batch in enumerate(split_batches(items)):
@@ -318,7 +363,8 @@ def prepare(locale: str, findings: Path | None, sample: int, seed: int,
         "locale": locale,
         "task": "gauge",
         "instructions": rel(outdir / "instructions-gauge.md"),
-        "instructions_text": instructions(locale),
+        "instructions_text": instructions(locale, mode),
+        "mode": mode,
         "batches": manifest,
     }, indent=1, ensure_ascii=False), encoding="utf-8")
 
@@ -554,6 +600,9 @@ def main() -> int:
                     help="calibration entries the sieve did NOT flag, mixed in blind")
     ap.add_argument("--seed", type=int, default=20260909)
     ap.add_argument("--model", default="sonnet", choices=("sonnet", "opus", "haiku"))
+    ap.add_argument("--mode", default="complete", choices=tuple(MODES),
+                    help="'complete': does the translation say what the source says (default); "
+                         "'untranslated': for entries identical to their English — should they be?")
     ap.add_argument("--eval-set", type=Path, metavar="PATH",
                     help="with --prepare: build batches from build-eval-set.py's labelled "
                          "set instead of the corpus, to measure the gauge itself")
@@ -568,7 +617,7 @@ def main() -> int:
         if not args.findings and args.sample <= 0 and not args.eval_set:
             ap.error("--prepare needs --findings, --sample and/or --eval-set")
         return prepare(args.locale, args.findings, args.sample, args.seed, args.model,
-                       args.eval_set)
+                       args.eval_set, args.mode)
     if args.emit_fixes:
         return emit_fixes(args.locale, args.emit_fixes)
     if args.collect:

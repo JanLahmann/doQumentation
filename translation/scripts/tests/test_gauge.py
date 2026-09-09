@@ -341,3 +341,20 @@ def test_emit_fixes_writes_a_fix_py_shaped_file(gauge, tmp_path, monkeypatch, ca
     assert ex["source"] == "The source sentence."
     assert ex["translation"] == "Eine falsche Übersetzung."
     assert "DIFFERENT" in ex["why"] and "next paragraph" in ex["why"]
+
+
+# --------------------------------------------------------------------------
+# --mode untranslated
+
+
+def test_untranslated_mode_asks_the_other_question(gauge):
+    text = gauge.instructions("de", "untranslated")
+    assert "KEEP" in text and "TRANSLATE" in text and "de" in text
+    assert "does the translation say what the source says" not in text
+    assert gauge.instructions("de") == gauge.instructions("de", "complete")
+
+
+def test_untranslated_verdicts_are_recognised_and_translate_is_defective(gauge):
+    assert gauge._verdict_of({"verdict": "translate", "note": "heading"}) == ("TRANSLATE", "heading")
+    assert gauge._verdict_of({"verdict": "KEEP"}) == ("KEEP", "")
+    assert "TRANSLATE" in gauge.DEFECTIVE and "KEEP" not in gauge.DEFECTIVE
