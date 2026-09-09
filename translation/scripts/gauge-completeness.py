@@ -222,6 +222,8 @@ UNSURE leave `note` empty.
 """
 
 MODES = {"complete": INSTRUCTIONS, "untranslated": INSTRUCTIONS_UNTRANSLATED}
+MODE_VERDICTS = {"complete": ["COMPLETE", "MISSING", "EXTRA", "DIFFERENT", "UNSURE"],
+                 "untranslated": ["KEEP", "TRANSLATE", "UNSURE"]}
 
 
 def instructions(locale: str, mode: str = "complete") -> str:
@@ -365,6 +367,9 @@ def prepare(locale: str, findings: Path | None, sample: int, seed: int,
         "instructions": rel(outdir / "instructions-gauge.md"),
         "instructions_text": instructions(locale, mode),
         "mode": mode,
+        # The workflow prints these in its output-format line; without them
+        # it falls back to the completeness set and the agents answer in it.
+        "verdicts": MODE_VERDICTS[mode],
         "batches": manifest,
     }, indent=1, ensure_ascii=False), encoding="utf-8")
 
