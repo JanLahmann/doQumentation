@@ -742,6 +742,17 @@ def test_apply_does_not_warn_when_the_msgid_has_nothing_to_translate(tmp_path, m
 MATH = "$$\n\\begin{array}{cc}\nZ & Z\n\\end{array}\n$$\n"
 
 
+def _batch_file(outdir):
+    """The first batch, and only the batch.
+
+    `glob("fix-000-*.json")` also matches `fix-000-sonnet.ids.json`, and
+    Path.glob yields filesystem order: APFS happened to return the batch
+    first, ext4 in CI returned the ids sidecar — a list of strings — first.
+    """
+    return next(p for p in sorted(outdir.glob("fix-000-*.json"))
+                if not p.name.endswith(".ids.json"))
+
+
 def test_prepare_carries_a_flagged_copy_only_entry_into_the_batch(tmp_path, monkeypatch):
     import fix as fx2
     po = polib.POFile()
@@ -756,7 +767,7 @@ def test_prepare_carries_a_flagged_copy_only_entry_into_the_batch(tmp_path, monk
 
     fx2.prepare("xx", [{"rel": "p.mdx", "note": "drift",
                         "examples": [{"source": MATH, "why": "holds prose"}]}])
-    batch = json.loads(next((work / "xx").glob("fix-000-*.json")).read_text())
+    batch = json.loads(_batch_file(work / "xx").read_text())
     flagged = [it for it in batch if "review" in it]
     assert len(flagged) == 1, "the flagged copy-only entry must reach the batch"
     assert flagged[0]["msgid"] == MATH
@@ -776,7 +787,7 @@ def test_prepare_still_omits_unflagged_copy_only_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
 
     fx2.prepare("xx", [{"rel": "p.mdx", "note": "n", "examples": []}])
-    batch = json.loads(next((work / "xx").glob("fix-000-*.json")).read_text())
+    batch = json.loads(_batch_file(work / "xx").read_text())
     assert all(it["msgid"] != MATH for it in batch)
 
 

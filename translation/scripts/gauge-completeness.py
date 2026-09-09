@@ -60,22 +60,36 @@ unlabelled:
 So it discriminates; it is not agreeing with whatever it is shown. That is what
 makes a calibration result readable.
 
-What the corpus looks like (6,800 blind entries, 400 per locale)
-----------------------------------------------------------------
-    unflagged defect rate, pooled   0.49%   95% CI [0.35%, 0.68%]
-    per locale                      0.00% (ms) to 1.00% (th, ar, ja, pl)
+What the corpus looks like (6,797 entries, 400 per locale)
+----------------------------------------------------------
+Scored by BOTH the sieve and the gauge, so this one sample gives the whole
+2x2 rather than a rate that has to be combined with a number from elsewhere:
 
-Extrapolated over 451,652 translated entries: **~2,190 defects that the sieve
-does not flag** [1,560, 3,080].
+                        gauge: defective   gauge: fine
+      sieve flags                     11            81
+      sieve passes                    22          6683
 
-Against that, the sieve's own yield: 5,775 flags corpus-wide at the 30.8%
-precision measured on `ro` is roughly 1,780 real defects. So the sieve finds
-something like 45% of the total — an estimate arrived at from the corpus, and
-independent of the 53.8% recall measured on the labelled set. That the two
-agree is the main reason to trust either.
+    corpus defect rate    0.49%   95% CI [0.35%, 0.68%]  -> ~2,200 entries
+    sieve precision      12.0%   95% CI [ 6.8%, 20.2%]
+    sieve recall         33.3%   95% CI [19.8%, 50.4%]
+    sieve miss rate       0.33%  95% CI [ 0.22%, 0.50%]
 
-Total defect load is therefore around 4,000 entries, ~0.9% of the corpus, of
-which a bit under half is reachable without a model.
+A CORRECTION worth keeping, because the wrong numbers were quoted for half a
+day: an earlier run of this calibration passed no `--findings`, so `flagged`
+was empty and the "unflagged sample" was drawn from ALL entries. That made
+0.49% the overall defect rate rather than the miss rate, and a "sieve reaches
+45%" figure was then derived from a 30.8% precision measured on `ro` alone.
+Both were wrong. Always pass `--findings` when you want the miss rate, and
+prefer the 2x2 above: one sample, both numbers, nothing to combine.
+
+Confirmed independently: gauging all 5,507 sieve flags across 17 locales found
+748 real defects — 13.6% precision [12.7%, 14.5%], sitting inside the 12.0%
+[6.8%, 20.2%] this sample predicted. The 53.8% recall measured on the labelled
+eval set overstates, because every positive there is drift-class, which is the
+sieve's best case.
+
+So: ~2,200 defects corpus-wide, the sieve reaches about a third of them, and
+its flags are right about one time in eight.
 
 One more caveat on the 88.9%: the labelled defects are positional drift, where
 the translation is visibly about another topic. That is the easy end of this

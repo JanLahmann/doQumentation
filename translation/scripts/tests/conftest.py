@@ -71,3 +71,8 @@ def completeness():
 @pytest.fixture(scope="session")
 def gauge():
     return _load("gauge_completeness", "gauge-completeness.py")
+
+
+@pytest.fixture(scope="session")
+def audit_check_py():
+    return _load("audit_check_py", "audit-check-py.py")

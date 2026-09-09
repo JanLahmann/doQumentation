@@ -50,7 +50,7 @@ to notebook output can never make a translation stale.
 | `bootstrap.py --locale X [--verify]` | once per locale, **before** the next English sync | Builds `i18n/X/po/` from the existing translations. `exact` strategy is `po4a-gettextize`; `positional` is our fallback for pages po4a refuses (pairs the type sequences with difflib, adopts matching runs only). Writes `work/bootstrap-X.json`. |
 | `update.py --locale X --json …` | after every sync | `msgmerge --previous` every PO against the new POT, then prints the worklist: fuzzy (near-identical English, old msgid kept as `#\| msgid`) and untranslated entries. |
 | `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 4,000 English words and ≤ 18k estimated tokens as the Read tool presents it; one id-less item per line, with a word diff and the previous translation for real fuzzy matches) plus a `.ids.json` sidecar per batch and `manifest.json`, which also carries the instructions text for inlining into prompts. |
-| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch from a sliding pool (`concurrency` in the args, default 5; the Polish run used 15), each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
+| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch from a sliding pool (`concurrency` in the args, default 5 — but **the harness caps one workflow at ~4 agents in flight whatever you ask for**; measured 2026-09-09 with 20 requested. For real parallelism split the manifest into shards of ~15-40 batches and launch several workflows at once: 6 shards ran 21 agents where one ran 4), each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
 | `fix.py --locale X --fixes F --prepare` / `--apply` | after a review round | The review fix path. Takes the round's records (or a trimmed fix spec), builds one batch per flagged page — every translated entry as `{msgid, prev_msgstr}`, a `review` field on the entries the reviewer quoted — and `manifest-fix.json` (`task: "fix"`), which the same `translate-locale.js` fills: the agent corrects the flagged entries and copies the rest back. `--apply` is `translate.apply(prefix="fix")`: only entries that changed and pass `check.py` are written, stamped `doq: fixed after review <date>`. A fuzzy entry copied back unchanged by a fix agent **keeps** its fuzzy flag (`apply` infers `confirm_fuzzy=False` from the `fix` prefix): the fix prompt says to copy unflagged entries back verbatim, so an unchanged string is not a confirmation, and clearing the flag would publish a translation of the previous English. |
 | `fix.py --locale X --leaks [--case-only] [--write]` | rarely; needs a curated glossary | The PO port of `scripts/fix-glossary-leaks.py`. Deterministic, no model: decapitalises a wrongly-capitalised common noun (`keep_lowercase`) and, without `--case-only`, applies the glossary `translate` rules after a safe determiner. Dry-run unless `--write`; every change goes through `check.py`. Skips fuzzy entries and `Title` entries, and protects link text, emphasis, table cells, proper names (`IBM Circuit`) and acronym expansions (`CLOPS (Circuit Layer Operations Per Second)`) — each of those was a real false positive from the page-based version. **Review its output before `--write`:** the residue still contains title-like strings, and the glossary `translate` rules currently disagree with the "keep these terms in English" list in `translate.py`. |
 | `translate.py --locale X --apply` | after the batches are filled | Pairs each `.out.json` with its `.ids.json` by position (a count mismatch rejects that batch), runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
@@ -267,15 +267,31 @@ Repairs then go through `fix.py --fixes` → `translate-locale.js` → `--apply`
 the same path as any review round, so they still pass `check.py` and still land
 with a provenance comment.
 
-**What the corpus actually looks like** (6,800 blind entries, 400 per locale,
-measured 2026-09-09): the unflagged defect rate is **0.49%** pooled, 95% CI
-[0.35%, 0.68%] — per locale from 0.00% (`ms`) to 1.00% (`th`, `ar`, `ja`,
-`pl`). Over 451,652 translated entries that is ~2,190 defects the sieve does
-not flag, against roughly 1,780 it does (5,775 flags at the 30.8% precision
-measured on `ro`). So the sieve reaches something like **45%** of the total —
-an estimate from the corpus, independent of the 53.8% recall measured on the
-labelled set, and close enough to it to trust both. Total load: ~4,000 entries,
-about 0.9% of the corpus.
+**What the corpus actually looks like** (6,797 entries, 400 per locale,
+measured 2026-09-09). Every sampled entry was scored by *both* the sieve and
+the gauge, so one sample yields the whole table:
+
+| | gauge: defective | gauge: fine |
+|---|---|---|
+| **sieve flags** | 11 | 81 |
+| **sieve passes** | 22 | 6,683 |
+
+- corpus defect rate **0.49%** [0.35%, 0.68%] → **~2,200 entries**
+- sieve precision **12.0%** [6.8%, 20.2%]
+- sieve recall **33.3%** [19.8%, 50.4%]
+
+Gauging all 5,507 sieve flags across the 17 locales then found **748 real
+defects — 13.6% precision** [12.7%, 14.5%], inside the interval this sample
+predicted. The 53.8% recall measured on the labelled eval set overstates: every
+positive there is drift-class, the sieve's best case.
+
+> **A correction, recorded because the wrong numbers were quoted for half a
+> day.** An earlier calibration passed no `--findings`, so the "unflagged
+> sample" was in fact drawn from *all* entries — making 0.49% the overall
+> defect rate, not the miss rate. A "sieve reaches 45%" figure was then derived
+> from a 30.8% precision measured on `ro` alone. Both were wrong. Pass
+> `--findings` when you want the miss rate, and prefer the 2×2: one sample,
+> both numbers, nothing to combine.
 
 Three things worth knowing before you trust a number from this layer:
 

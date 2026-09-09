@@ -414,16 +414,27 @@ changed entries nobody reviewed. Both happen, and both matter.
 **Diff every applied change against your flagged set, not just the flagged
 ones.** Confirming your flagged entries landed is a *different* check from
 confirming nothing else moved, and only the second one catches a bad
-unflagged change. Twice a fix wave replaced a translated `<IBMVideo
-title="…">` caption with the English original — invisible to every gate,
-because `title=` is the one attribute `check.py` does not compare
-byte-for-byte (it must change under translation) and lint reads an English
-caption as prose that may legitimately be English. Both were found only by
-this diff.
+unflagged change.
 
-Unflagged changes are not automatically wrong: on a drift round the fixer
-reading a whole page often repairs more of a shifted run than the detector
-saw, which is the point. Read them and decide; do not assume either way.
+> **Standing hazard — English reversion inside `title=` and table cells.**
+> A fix wave *will* sometimes overwrite a translated string with its English
+> source, and it does so precisely where no gate can see it: `title="…"`
+> attributes (video, card and accordion captions) and table cells. `title=`
+> is the one attribute `check.py` does not compare byte-for-byte, because it
+> must change under translation; table cells are prose to every checker;
+> and lint reads an English caption as prose that may legitimately be
+> English. This is not bad luck — it has happened in **three separate rounds**
+> (a `pt` caption, a `pt` accordion title, then six at once across `he`/`th`/`tl`:
+> `**Estratehiya**` → `**Strategy**`, `**ตัวอย่าง**` → `**Example**`, …).
+> Only this diff catches it. Look specifically for any changed entry whose
+> new msgstr equals its msgid; then check each one, because a filename or a
+> citation *should* equal its source — three of nine such hits in one round
+> were correct.
+
+An entry the fixer changed that nobody flagged is not automatically wrong:
+on a drift round the fixer reading a whole page often repairs more of a
+shifted run than the detector saw, which is the point. Read them and decide;
+do not assume either way.
 
 A batch that returns one translation too few is discarded whole by
 `--apply` — correctly, since a dropped item shifts every later one and
