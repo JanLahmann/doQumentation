@@ -76,3 +76,8 @@ def gauge():
 @pytest.fixture(scope="session")
 def audit_check_py():
     return _load("audit_check_py", "audit-check-py.py")
+
+
+@pytest.fixture(scope="session")
+def eval_set_builder():
+    return _load("build_eval_set", "build-eval-set.py")

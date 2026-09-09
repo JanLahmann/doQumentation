@@ -41,11 +41,21 @@ Caveats a reader of the numbers must keep in mind
 - "Faithful" means an agent read it and let it stand. That is good evidence,
   not proof: the `title=` subcheck fires on 15 negatives and all 15 turned out
   to be genuine untranslated captions nobody had noticed.
+- A round that read what the SIEVE flagged cannot measure the sieve. The
+  gauge rounds (#517's ro round, all of #524) chose their candidates from
+  `check-completeness.py`'s findings, so the sieve "finds" 82% of their
+  repairs by construction. `--extend --selection sieve` records that in
+  `sources[]`, and the scorer counts recall on independently selected rows
+  only. Their negatives are still good negatives, and the rows themselves are
+  what a future check with different blind spots should be scored on.
 
 Usage:
     python translation/scripts/build-eval-set.py
     python translation/scripts/build-eval-set.py --base main --head HEAD
     python translation/scripts/build-eval-set.py --out translation/eval/set.json
+    # after another review PR merges, add its labels to the committed set:
+    python translation/scripts/build-eval-set.py --base <merge>^1 --head <merge> \
+        --extend --selection independent   # or: sieve, for a gauge round
 """
 
 from __future__ import annotations
@@ -141,16 +151,80 @@ def build(base: str, head: str) -> dict:
     }
 
 
+def extend(existing: dict, new: dict) -> dict:
+    """Union a freshly built set into an existing one.
+
+    Each review round labels a different slice of the corpus, and a set built
+    from one round measures recall on that round's defect class only (the
+    module docstring says so). Merging rounds is how the set stops being a
+    ruler for one method: the drift sweeps contributed misaligned paragraphs,
+    the gauge rounds contributed dropped sentences and stray additions, the
+    check.py-to-zero wave contributed broken markup.
+
+    Positives dedupe on (file, msgid, defective). An entry judged faithful in
+    one round and repaired in a later one was defective all along, so any
+    (file, msgid) that is a positive anywhere is dropped from the negatives.
+    Every row keeps a `src` (the head it was extracted from) so a scorer can
+    still break recall down by round."""
+    pos: dict[tuple, dict] = {}
+    for p in existing["positives"] + new["positives"]:
+        pos.setdefault((p["file"], p["msgid"], p["defective"]), p)
+    defective = {(p["file"], p["msgid"]) for p in pos.values()}
+    neg: dict[tuple, dict] = {}
+    for n in existing["negatives"] + new["negatives"]:
+        key = (n["file"], n["msgid"])
+        if key not in defective:
+            neg.setdefault(key, n)
+    sources = list(existing.get("sources") or [
+        # The original set predates the `selection` field. It came from the
+        # positional-drift rounds, whose candidates were chosen by a detector
+        # that knows nothing of the sieve.
+        {"base": existing["base"], "head": existing["head"], "selection": "independent"}])
+    sources.append({"base": new["base"], "head": new["head"], "selection": new["selection"]})
+    return {
+        **existing,
+        "head": new["head"],
+        "sources": sources,
+        "positives": list(pos.values()),
+        "negatives": list(neg.values()),
+    }
+
+
+def load(path: Path) -> dict:
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--base", help="revision to diff from (default: merge base with main)")
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--extend", action="store_true",
+                    help="union the new labels into the set already at --out instead of replacing it")
+    ap.add_argument("--selection", choices=("independent", "sieve"), default="independent",
+                    help="how this round chose what to read: 'sieve' if the candidates came from "
+                         "check-completeness.py (a gauge round), 'independent' otherwise (a drift "
+                         "sweep, a full-page review). Sieve-selected positives cannot measure the "
+                         "sieve's recall — it found them by construction — so the scorer excludes them.")
     ap.add_argument("--stats", action="store_true", help="print the per-locale breakdown")
     args = ap.parse_args()
 
     base = args.base or merge_base(args.head)
     data = build(base, args.head)
+    data["selection"] = args.selection
+    data["sources"] = [{"base": base, "head": data["head"], "selection": args.selection}]
+    for row in data["positives"] + data["negatives"]:
+        row["src"] = data["head"][:12]
+    if args.extend and args.out.exists():
+        existing = load(args.out)
+        for row in existing["positives"] + existing["negatives"]:
+            row.setdefault("src", existing["head"][:12])
+        fresh = len(data["positives"])
+        data = extend(existing, data)
+        print(f"extended: {fresh} positive(s) from {base[:12]}..{data['head'][:12]} "
+              f"merged into {len(existing['positives'])} existing")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     blob = json.dumps(data, ensure_ascii=False, indent=1) + "\n"

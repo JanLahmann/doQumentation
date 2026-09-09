@@ -150,6 +150,22 @@ def labelled():
     return data
 
 
+def independent_positives(labelled):
+    """The positives that can measure the sieve's recall.
+
+    The set is a union of review rounds (`build-eval-set.py --extend`), and
+    the gauge rounds chose what to read FROM the sieve's own findings. A defect
+    repaired in one of those rounds is a defect the sieve flagged, by
+    construction — scoring recall on it says 82% and means nothing. Only rounds
+    whose candidates came from elsewhere (the positional-drift detector, a
+    full-page review) count. `sources[].selection` says which is which."""
+    sieve_heads = {s["head"][:12] for s in labelled.get("sources", []) if s.get("selection") == "sieve"}
+    rows = [p for p in labelled["positives"] if p.get("src", "")[:12] not in sieve_heads]
+    if not rows:
+        pytest.skip("eval set has no independently selected positives")
+    return rows
+
+
 # Floors and ceilings, not exact values: the set grows every review round, so
 # pinning exact counts would make every round fail this file. These are set a
 # few points below the measured figures recorded in the script's docstring.
@@ -161,14 +177,19 @@ def labelled():
 # check nobody can use in a third of the corpus is worse than one that misses
 # 5 points of recall. Lower a floor only with a reason of that kind, recorded
 # here — never to make this file go green.
+#
+# `line-shape`'s ceiling was raised from 0.004 to 0.006 when the negatives grew
+# from 14,311 entries on 8 Latin/Cyrillic-script locales to 64,149 on all 17:
+# measured 0.44%, almost all of it on ja/ko/th, where a translator legitimately
+# re-breaks a paragraph. The union ceiling was set from the same measurement.
 FLOORS = {"line-shape": 0.30, "numbers": 0.24, "list-items": 0.03, "title-untranslated": 0.015}
-CEILINGS = {"line-shape": 0.004, "numbers": 0.012, "list-items": 0.002, "title-untranslated": 0.004}
+CEILINGS = {"line-shape": 0.006, "numbers": 0.012, "list-items": 0.002, "title-untranslated": 0.004}
 UNION_RECALL_FLOOR = 0.48
 UNION_NOISE_CEILING = 0.020
 
 
 def _score(completeness, labelled):
-    pos = [checks(completeness, p["msgid"], p["defective"]) for p in labelled["positives"]]
+    pos = [checks(completeness, p["msgid"], p["defective"]) for p in independent_positives(labelled)]
     neg = [checks(completeness, n["msgid"], n["msgstr"]) for n in labelled["negatives"]]
     return pos, neg
 
@@ -195,14 +216,29 @@ def test_the_union_is_worth_running(completeness, labelled):
     assert noise <= UNION_NOISE_CEILING, f"union noise rose to {noise:.2%}"
 
 
+def test_sieve_selected_rounds_are_excluded_from_recall(labelled):
+    """Guards the scorer itself: if a gauge round's rows ever count towards
+    recall, the floors become self-fulfilling and stop meaning anything."""
+    sieve_heads = {s["head"][:12] for s in labelled.get("sources", []) if s.get("selection") == "sieve"}
+    if not sieve_heads:
+        pytest.skip("no sieve-selected round in the set yet")
+    counted = {p.get("src", "")[:12] for p in independent_positives(labelled)}
+    assert not (counted & sieve_heads)
+    assert len(independent_positives(labelled)) < len(labelled["positives"])
+
+
 def test_the_sieve_beats_the_markup_gate_it_supplements(completeness, labelled):
-    """The premise of the whole script: check.py cannot see this defect class."""
+    """The premise of the whole script: check.py cannot see this defect class.
+
+    Scored on the independently selected rows only. The rest of the set
+    includes the check.py-to-zero wave (#524), whose 87 repairs are markup
+    defects by definition and would say nothing about meaning."""
     import sys
 
     sys.path.insert(0, str(EVAL_SET.parent.parent / "v2"))
     import check as markup_gate
 
-    pos = labelled["positives"]
+    pos = independent_positives(labelled)
     markup_hits = sum(1 for p in pos if markup_gate.check_entry(p["msgid"], p["defective"]))
     sieve_hits = sum(1 for p in pos if completeness.check_pair(p["msgid"], p["defective"]))
     assert markup_hits / len(pos) < 0.05

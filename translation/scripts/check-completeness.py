@@ -23,16 +23,23 @@ read for meaning. Every subcheck below was scored against
 measurements, not taste. `tests/test_completeness.py` re-scores them, so a
 tightening that quietly destroys recall fails CI.
 
-    subcheck              recall on 314   fires on 14,311 faithful
-    line-shape                 33.8%              0.17%
-    numbers                    28.3%              0.62%
-    list-items                  4.1%              0.01%
-    title-untranslated          2.2%              0.10%   (all 14 real defects)
+    subcheck              recall on 314   fires on 64,149 faithful
+    line-shape                 33.8%              0.44%
+    numbers                    28.3%              0.44%
+    list-items                  4.1%              0.02%
+    title-untranslated          2.2%              0.14%
     ------------------------------------------------------------------
-    union of the four          53.8%              0.89%
+    union of the four          53.8%              ~1.0%
 
     neighbour-duplicate         1.7%              0.05%   (needs file context;
                                                            not in the union above)
+
+The 314 are the independently selected positives (the drift rounds). The set
+holds 1,147 after #517 and #524 were merged in, but the other 833 were chosen
+FROM this sieve's findings by the gauge rounds, so recall on them (82%) is
+circular and the scorer excludes them. The noise column did move: the
+negatives now cover all 17 locales, and line-shape fires more on ja/ko/th,
+where a translator legitimately re-breaks a paragraph.
 
 What it looks like on the real corpus (measured 2026-09-09)
 ----------------------------------------------------------
