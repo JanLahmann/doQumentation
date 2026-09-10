@@ -27,7 +27,7 @@ tightening that quietly destroys recall fails CI.
     line-shape                 33.8%              0.43%
     numbers                    28.3%              0.43%
     list-items                  4.1%              0.02%
-    title-untranslated          2.2%              0.16%
+    title-untranslated          2.2%              0.16%   (title=, description=, alt=)
     question-mark              15.0%              0.10%
     length-outlier             23.6%              0.20%
     ------------------------------------------------------------------
@@ -126,7 +126,11 @@ SPELLED_OUT_MAX = 12
 
 NUMBER_RE = re.compile(r"\d[\d,. ]*")
 LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+")
-TITLE_RE = re.compile(r'title="([^"]*)"')
+# title= was the original target; description= and alt= carry reader-visible
+# prose too (OpenInLabBanner's description, image alt text) and check.py
+# exempts them the same way. Widening cost +1 labelled positive, +15 of
+# 77,955 negatives (0.14% -> 0.16%) and 56 corpus flags, 2026-09-10.
+TITLE_RE = re.compile(r'(?:title|description|alt)="([^"]*)"')
 
 # A title= of fewer than this many words is usually a label or a proper name
 # ("Answer" is caught by other means; "Qiskit" must not be flagged at all).

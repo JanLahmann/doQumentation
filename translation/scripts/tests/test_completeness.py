@@ -85,6 +85,17 @@ def test_title_flags_an_untranslated_caption(completeness):
     assert "title-untranslated" in checks(completeness, tag, tag)
 
 
+def test_title_covers_description_and_alt_captions(completeness):
+    # de hello-world: the banner's description= sat in English while every
+    # other locale had translated it; title= was the only attribute checked.
+    en = '<OpenInLabBanner notebookPath="hello-world.ipynb" description="This tutorial was created for doQumentation." />\n'
+    assert "title-untranslated" in checks(completeness, en, en)
+    de = '<OpenInLabBanner notebookPath="hello-world.ipynb" description="Dieses Tutorial wurde für doQumentation erstellt." />\n'
+    assert "title-untranslated" not in checks(completeness, en, de)
+    img = '<img src="x.png" alt="The circuit after the second Hadamard gate" />'
+    assert "title-untranslated" in checks(completeness, img, img)
+
+
 def test_title_quiet_when_the_caption_is_translated(completeness):
     msgid = '<IBMVideo id="1" title="Katie McCormick explores Bell\'s theorem here."/>\n'
     msgstr = '<IBMVideo id="1" title="Katie McCormick erforscht hier das Bellsche Theorem."/>\n'
