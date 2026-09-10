@@ -149,10 +149,20 @@ python3 translation/scripts/sample-deep-review.py \
 ```
 
 It prints the eligible pool size. A page is eligible when it is rendered,
-is not an English fallback, is at least 40 lines, has no entry left fuzzy
-or empty by an English sync (the page would render English there), and —
-with `--exclude-reviewed` — carries no verdict yet. Rounds therefore never
-re-tread ground.
+is not an English fallback, and has no entry left fuzzy or empty by an
+English sync (the page would render English there). With
+`--exclude-reviewed` it enters the sample in one of two modes:
+
+- **full** — no verdict yet: the reviewer reads the whole page.
+- **delta** — a verdict stands, but a model has written entries since it (a
+  fix wave's repairs, a sync's retranslations) that no reviewer has read.
+  The reviewer gets the page for context and those entries to judge; the
+  sample row carries them as `delta_entries`. This is how every repair and
+  every retranslation gets an Opus read, at a fraction of a full page.
+
+A page whose verdict stands with nothing written since is skipped, so rounds
+never re-tread ground. There is no minimum page length any more: the short
+index and landing pages are where the Card captions live.
 
 If the pool is smaller than `N`, that locale is genuinely drained: take the
 short round rather than shrinking `N` on a locale that still has work.
@@ -361,8 +371,12 @@ python3 translation/scripts/review-translations.py --record-opus \
 
 It writes `X-Doq-Review-Opus: <VERDICT> <date>` into the header of every
 page the round read (PASS, MINOR_ISSUES or FAIL alike) and refuses records
-for any other locale. The header change ships in your PR with the fixes;
-there is no maintainer step after merge.
+for any other locale. It also marks every model-written entry stamped
+*before* the round's date as verified — the reader saw it. The repairs your
+own fix wave just wrote are stamped with today's date and stay pending, so
+the next round on this locale picks those pages up in delta mode and reads
+the repairs. The header change ships in your PR with the fixes; there is no
+maintainer step after merge.
 
 ```bash
 git checkout -b review/<LOCALE>-<SEED>

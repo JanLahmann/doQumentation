@@ -395,8 +395,12 @@ Every one of the 17 main locales has been through one v2 sync (English
   PR as the fixes and there is no banking step after merge.
   `sample-deep-review.py` (eligibility) and `contributing-status.py`
   (CONTRIBUTING-NOW.md) read the same headers; a page is eligible when it is
-  rendered, not a stub, has no fuzzy or empty entry, and — with
-  `--exclude-reviewed` — carries no verdict. Only page reads (PASS,
+  rendered, has no fuzzy or empty entry, and — with `--exclude-reviewed` —
+  either carries no verdict (a full read) or carries one plus entries a model
+  wrote since it that no reviewer has read (a delta read of just those). Every
+  msgstr a model writes is stamped with a date (`doq: fixed after review D`,
+  `doq: translated after an English change D`); recording a verdict dated
+  later appends `· verified D` to the stamp. Only page reads (PASS,
   MINOR_ISSUES, FAIL) are recorded; a repair round's FIXED records are not.
   `X-Doq-Review-Tier3` is the v1 Haiku verdict copied at bootstrap, context only.
 

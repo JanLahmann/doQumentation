@@ -125,7 +125,7 @@ def pools_by_threshold(sdr, cats) -> dict[int, dict[str, int]]:
     out = {}
     for leaks in LADDER:
         pool = sdr.build_pool(
-            cats, min_lines=40,
+            cats, min_lines=1,
             max_leaks=leaks, exclude_reviewed=True,
         )
         out[leaks] = {loc: len(files) for loc, files in pool.items()}
@@ -162,7 +162,7 @@ def recent_rounds(limit: int = 6) -> list[tuple[str, int, int]]:
     return rows
 
 
-def reviewed_counts(cats, min_lines: int = 40) -> dict[str, tuple[int, int]]:
+def reviewed_counts(cats, min_lines: int = 1) -> dict[str, tuple[int, int]]:
     """{locale: (reviewed, reviewable)} — how far each locale has been walked.
     Reviewable = rendered, not an English fallback, not a stub; a page that is
     mid-update (fuzzy entries) still counts here, it is only held back from
@@ -292,7 +292,7 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
         A("Backend, Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum,")
         A("QPU) do not count, and no locale currently records anything else, so")
         A("every file scores 0. What limits a pool today is pages already")
-        A("reviewed and stubs under 40 lines, not leakage.")
+        A("reviewed with nothing written since, not leakage.")
     A("")
     if ready:
         A("| Locale | Unreviewed pool | Reviewed so far |" if not leaky
