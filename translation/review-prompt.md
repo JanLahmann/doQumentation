@@ -9,8 +9,7 @@ Use this prompt AFTER running `translation/scripts/validate-translation.py` (whi
    --locale {LOCALE}`. Only review a locale whose
    `python3 translation/v2/update.py --locale {LOCALE}` reports 0 fuzzy and
    0 untranslated; a segment still in English is stale, not mistranslated.
-   (The `review-translations.py --next-chunk` orchestrator holds back pages
-   whose English moved since the render unless you pass `--include-stale`.)
+   (`sample-deep-review.py` holds such pages back for the same reason.)
 1. Run structural validation: `python translation/scripts/validate-translation.py --locale {LOCALE} --file {FILE}`
 2. Run MDX lint: `python translation/scripts/lint-translation.py --file {FILE} --en-file {EN_FILE}`
 3. If all pass, paste the prompt below into the review model with both files

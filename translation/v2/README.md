@@ -52,7 +52,7 @@ to notebook output can never make a translation stale.
 | `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 4,000 English words and ≤ 18k estimated tokens as the Read tool presents it; one id-less item per line, with a word diff and the previous translation for real fuzzy matches) plus a `.ids.json` sidecar per batch and `manifest.json`, which also carries the instructions text for inlining into prompts. |
 | `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch from a sliding pool (`concurrency` in the args, default 5 — but **the harness caps one workflow at ~4 agents in flight whatever you ask for**; measured 2026-09-09 with 20 requested. For real parallelism split the manifest into shards of ~15-40 batches and launch several workflows at once: 6 shards ran 21 agents where one ran 4; at 14 shards the API 429'd about half of all agent turns, so ~8 is the useful ceiling — and a batch reported "failed" after a rate-limited *final* turn has usually already written its `.out.json`, so check the output files before re-running anything), each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
 | `fix.py --locale X --fixes F --prepare` / `--apply` | after a review round | The review fix path. Takes the round's records (or a trimmed fix spec), builds one batch per flagged page — every translated entry as `{msgid, prev_msgstr}`, a `review` field on the entries the reviewer quoted — and `manifest-fix.json` (`task: "fix"`), which the same `translate-locale.js` fills: the agent corrects the flagged entries and copies the rest back. `--apply` is `translate.apply(prefix="fix")`: only entries that changed and pass `check.py` are written, stamped `doq: fixed after review <date>`. A fuzzy entry copied back unchanged by a fix agent **keeps** its fuzzy flag (`apply` infers `confirm_fuzzy=False` from the `fix` prefix): the fix prompt says to copy unflagged entries back verbatim, so an unchanged string is not a confirmation, and clearing the flag would publish a translation of the previous English. |
-| `fix.py --locale X --leaks [--case-only] [--write]` | rarely; needs a curated glossary | The PO port of `scripts/fix-glossary-leaks.py`. Deterministic, no model: decapitalises a wrongly-capitalised common noun (`keep_lowercase`) and, without `--case-only`, applies the glossary `translate` rules after a safe determiner. Dry-run unless `--write`; every change goes through `check.py`. Skips fuzzy entries and `Title` entries, and protects link text, emphasis, table cells, proper names (`IBM Circuit`) and acronym expansions (`CLOPS (Circuit Layer Operations Per Second)`) — each of those was a real false positive from the page-based version. **Review its output before `--write`:** the residue still contains title-like strings, and the glossary `translate` rules currently disagree with the "keep these terms in English" list in `translate.py`. |
+| `fix.py --locale X --leaks [--case-only] [--write]` | rarely; needs a curated glossary | Deterministic, no model (the v1 page-editing fixer it replaced was deleted 2026-09-10): decapitalises a wrongly-capitalised common noun (`keep_lowercase`) and, without `--case-only`, applies the glossary `translate` rules after a safe determiner. Dry-run unless `--write`; every change goes through `check.py`. Skips fuzzy entries and `Title` entries, and protects link text, emphasis, table cells, proper names (`IBM Circuit`) and acronym expansions (`CLOPS (Circuit Layer Operations Per Second)`) — each of those was a real false positive from the page-based version. **Review its output before `--write`:** the residue still contains title-like strings, and the glossary `translate` rules currently disagree with the "keep these terms in English" list in `translate.py`. |
 | `translate.py --locale X --apply` | after the batches are filled | Pairs each `.out.json` with its `.ids.json` by position (a count mismatch rejects that batch), runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
 | `render.py --locale X [--out-dir D]` | at build time, or to preview | POT + PO → locale MDX, with the v1 freshness marker so v1 tools keep working during the migration. |
 | `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
@@ -367,17 +367,26 @@ Every one of the 17 main locales has been through one v2 sync (English
   and the records `baseline-hashes.json` and `en-passage-hashes.json`. The
   hash helpers the review scripts used from the freshness checker live in
   `translation/scripts/_common.py`.
-- **Still v1, deliberately**: `lint-translation.py`, `validate-translation.py`
-  and the review scripts (`review-translations.py`, `review-prefilter.py`,
-  `sample-deep-review.py`) work on the rendered pages and on `status.json`,
-  whose `source_hash` / `validated_against` / review fields are unchanged.
-  They keep working because the workflows render before they run.   *Fixing* a rendered page in place (the glossary and consistency
-  workflows in `.claude/`) does not work any more: such an edit is lost at
-  the next render. Review fixes go through `fix.py` instead (below); the
-  glossary/consistency sweeps and the Opus rubric as per-entry verdicts
-  stored as translator comments are the remaining migration work.
-- Review verdicts from `status.json` were copied into each PO header
-  (`X-Doq-Review-Tier3`, `X-Doq-Review-Opus`) at bootstrap so they are not lost.
+- **Still v1, deliberately**: `lint-translation.py` and
+  `validate-translation.py` work on the rendered pages; they keep working
+  because the workflows render before they run. `translation/status.json`
+  is frozen: its provenance fields feed the page-dates plugin and
+  `STATUS.md`, nothing else reads it, and nothing writes it.   *Fixing* a rendered page in place does not work any more: such an edit
+  is lost at the next render. The v1 page-editing workflows and fixers were
+  deleted on 2026-09-10; every fix goes through `fix.py` (`--fixes` for a
+  review finding, `--leaks` for the deterministic glossary pass). The review
+  side moved on 2026-09-10: a page's deep-review verdict is the
+  `X-Doq-Review-Opus` field of its PO header (below).
+- **A page's review verdict lives in its PO header.** `X-Doq-Review-Opus:
+  PASS 2026-07-05` is written by `translation/scripts/review-translations.py
+  --record-opus` when a review round ships, so the verdict lands in the same
+  PR as the fixes and there is no banking step after merge.
+  `sample-deep-review.py` (eligibility) and `contributing-status.py`
+  (CONTRIBUTING-NOW.md) read the same headers; a page is eligible when it is
+  rendered, not a stub, has no fuzzy or empty entry, and — with
+  `--exclude-reviewed` — carries no verdict. Only page reads (PASS,
+  MINOR_ISSUES, FAIL) are recorded; a repair round's FIXED records are not.
+  `X-Doq-Review-Tier3` is the v1 Haiku verdict copied at bootstrap, context only.
 
 ## Dependencies
 

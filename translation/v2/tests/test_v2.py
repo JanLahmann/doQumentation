@@ -589,7 +589,7 @@ def _glossary(tmp_path, data):
 
 
 def test_leaks_decapitalises_and_gates_on_check(fix_env, tmp_path):
-    """The PO port of fix-glossary-leaks.py: deterministic, check.py-gated."""
+    """The deterministic glossary-leak pass: no model, check.py-gated."""
     import polib
     fix, tr, pairs = fix_env
     _make_po(io.po_path("de", "guides/leak.mdx"), [

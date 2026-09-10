@@ -1,710 +1,179 @@
 #!/usr/bin/env python3
 """
-Orchestrate systematic review of all existing translations.
+Record page-level review verdicts in the PO files, and report review progress.
 
-Manages three tiers of review:
-  1. Structural validation (validate-translation.py --record)
-  2. MDX lint (lint-translation.py --record)
-  3. Linguistic review (manual, tracked via --record-review)
+Since 2026-09-10 a page's deep-review verdict lives in the header of its PO
+file (`X-Doq-Review-Opus: PASS 2026-07-05`), next to the translation it judges.
+It is written by the review round itself, before the PR is opened, so the
+verdict ships with the fixes and there is no maintainer step after merge.
+`translation/status.json` is no longer read or written here; the sampler
+(`sample-deep-review.py`) and the contributor overview
+(`contributing-status.py`) read the same headers.
 
 Usage:
-    # Run automated checks (Tier 1 + 2) for all locales
-    python translation/scripts/review-translations.py --auto-check
+    # A finished round: record its verdicts into the locale's PO headers
+    python translation/scripts/review-translations.py --record-opus \
+        --from-json translation/reviews/opus-<seed>-<handle>.json [--locale de]
 
-    # Show review progress dashboard
-    python translation/scripts/review-translations.py --progress
+    # Progress per locale (reviewed / reviewable pages, pages mid-update)
+    python translation/scripts/review-translations.py --progress [--locale de]
 
-    # Get next chunk of files needing linguistic review
-    # (STALE/UNKNOWN files are held back by default — refresh them first;
-    #  use --include-stale to override)
-    python translation/scripts/review-translations.py --next-chunk [--size 20]
+    # One-time migration (2026-09-10): copy the verdicts status.json still
+    # held into the PO headers that lack them
+    python translation/scripts/review-translations.py --import-status
 
-    # Record linguistic review results
-    python translation/scripts/review-translations.py --record-review --locale de --file guides/foo.mdx --verdict PASS
-    python translation/scripts/review-translations.py --record-review --from-json results.json
-
-    # Prune status.json entries for files no longer on disk (dashboard hygiene)
-    python translation/scripts/review-translations.py --prune-orphans --dry-run
-    python translation/scripts/review-translations.py --prune-orphans
+A record is `{locale, file, verdict, ...}` as the opus-deep-review workflow
+returns it. Only page reads count: PASS, MINOR_ISSUES and FAIL are recorded;
+FIXED (a repair round's record — the fixer corrected entries, nobody read the
+page for meaning) is skipped, so a repaired page stays eligible for review.
 """
+
+from __future__ import annotations
 
 import argparse
 import importlib.util
 import json
-import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+import polib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
-STATUS_FILE = REPO_ROOT / "translation" / "status.json"
-DOCS_DIR = REPO_ROOT / "docs"
 I18N_DIR = REPO_ROOT / "i18n"
+STATUS_FILE = REPO_ROOT / "translation" / "status.json"
+
+REVIEW_HEADER = "X-Doq-Review-Opus"
+PAGE_VERDICTS = ("PASS", "MINOR_ISSUES", "FAIL")
+SKIPPED_VERDICTS = ("FIXED", "SKIPPED")
 
 
-def _import_module(name: str, filename: str):
-    """Import a sibling script by path (handles hyphenated filenames)."""
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / filename)
+def _sampler():
+    spec = importlib.util.spec_from_file_location("sample_deep_review", SCRIPTS_DIR / "sample-deep-review.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-# Source-hash helpers, so we never queue a page whose English moved since it was rendered.
-_common = _import_module("_common", "_common.py")
-
-ALL_LOCALES = [
-    "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
-    "ms", "id", "th", "ko", "pl", "ro", "cs",
-]
-
-# Priority order for linguistic review
-LOCALE_PRIORITY = [
-    # Phase 1: top up the mostly-done main locales
-    "de", "es", "fr", "ja", "uk", "it", "pt", "tl", "ar",
-    # Phase 2: finish HE (started but mostly unreviewed)
-    "he",
-    # Phase 3: 7 untouched main locales — non-Latin first, then Slavic, then MS/ID
-    "ko", "th", "pl", "cs", "ro", "ms", "id",
-    # Dialect locales last
-]
-
-SECTION_PRIORITY = [
-    "tutorials/",
-    "guides/",
-    "learning/courses/",
-    "learning/modules/",
-]
-
-SKIP_LOCALES = set()  # AR re-translated and passing validation as of Mar 2026
-
-FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
-
-VALID_VERDICTS = {"PASS", "MINOR_ISSUES", "FAIL", "SKIPPED", "FIXED"}
-
-# ---------------------------------------------------------------------------
-# Status I/O
-# ---------------------------------------------------------------------------
+def po_path(locale: str, rel: str) -> Path:
+    rel = rel[:-4] if rel.endswith(".mdx") else rel
+    return I18N_DIR / locale / "po" / (rel + ".po")
 
 
-def load_status() -> dict:
-    """Load translation/status.json."""
-    if STATUS_FILE.exists():
-        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    return {}
+def record_verdict(locale: str, rel: str, verdict: str, when: str,
+                   overwrite: bool = True) -> str:
+    """Write `X-Doq-Review-Opus: <verdict> <date>` into one PO header.
+    Returns 'written', 'kept' (header present and overwrite=False) or 'no-po'."""
+    p = po_path(locale, rel)
+    if not p.exists():
+        return "no-po"
+    po = polib.pofile(str(p), wrapwidth=0)
+    if po.metadata.get(REVIEW_HEADER) and not overwrite:
+        return "kept"
+    po.metadata[REVIEW_HEADER] = f"{verdict} {when}".strip()
+    po.save(str(p))
+    return "written"
 
 
-def save_status(status: dict) -> None:
-    """Write translation/status.json with sorted keys."""
-    STATUS_FILE.write_text(
-        json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def count_genuine(locale: str) -> int:
-    """Count genuine (non-fallback) translations for a locale."""
-    locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
-    if not locale_dir.exists():
-        return 0
-    count = 0
-    for p in locale_dir.rglob("*.mdx"):
-        content = p.read_text(encoding="utf-8")
-        if FALLBACK_MARKER not in content:
-            count += 1
-    return count
-
-
-def get_file_line_count(locale: str, rel_path: str) -> int:
-    """Get the line count of a translated file."""
-    p = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current" / rel_path
-    if p.exists():
-        return len(p.read_text(encoding="utf-8").splitlines())
-    return 0
-
-
-def is_fresh(locale: str, rel_path: str) -> bool:
-    """True if the translation's embedded source-hash matches current EN.
-
-    Files without an embedded hash (UNKNOWN) or whose EN source has drifted
-    (STALE) return False — reviewing them wastes effort, since the prose may
-    not match the current English. Refresh/re-stamp them first.
-    """
-    en_path = DOCS_DIR / rel_path
-    tr_path = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current" / rel_path
-    if not (en_path.exists() and tr_path.exists()):
-        return False
-    embedded = _common.extract_embedded_hash(tr_path.read_text(encoding="utf-8"))
-    if embedded is None:
-        return False
-    return embedded == _common.compute_source_hash(en_path.read_text(encoding="utf-8"))
-
-
-def get_section(rel_path: str) -> str:
-    """Get the section prefix for a file path."""
-    for sec in SECTION_PRIORITY:
-        if rel_path.startswith(sec):
-            return sec
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# --auto-check: Run Tier 1 + Tier 2 automated checks
-# ---------------------------------------------------------------------------
-
-
-def auto_check(locales: list[str]) -> None:
-    """Run validate-translation.py --record and lint-translation.py --record."""
-    validate_script = SCRIPTS_DIR / "validate-translation.py"
-    lint_script = SCRIPTS_DIR / "lint-translation.py"
-
-    print("=" * 60)
-    print("Phase 1: Structural validation (validate-translation.py)")
-    print("=" * 60)
-
-    for locale in locales:
-        print(f"\n--- Validating {locale} ---")
-        result = subprocess.run(
-            [sys.executable, str(validate_script),
-             "--locale", locale, "--record"],
-            cwd=str(REPO_ROOT),
-        )
-        if result.returncode not in (0, 1):
-            print(f"  WARNING: validate-translation.py exited with {result.returncode}")
-
-    print("\n" + "=" * 60)
-    print("Phase 2: MDX lint (lint-translation.py)")
-    print("=" * 60)
-
-    lint_args = [sys.executable, str(lint_script), "--all-locales", "--record"]
-    if len(locales) == 1:
-        lint_args = [sys.executable, str(lint_script),
-                     "--locale", locales[0], "--record"]
-    subprocess.run(lint_args, cwd=str(REPO_ROOT))
-
-    # Mark AR files as review=SKIPPED
-    status = load_status()
-    today = date.today().isoformat()
-    for locale in SKIP_LOCALES:
-        if locale in status:
-            for rel, entry in status[locale].items():
-                if "review" not in entry:
-                    entry["review"] = "SKIPPED"
-                    entry["reviewed"] = today
-                    entry["review_notes"] = "structural failures — needs re-translation"
-    save_status(status)
-
-    print("\n" + "=" * 60)
-    print("Done. Run --progress to see results.")
-    print("=" * 60)
-
-
-# ---------------------------------------------------------------------------
-# --progress: Review progress dashboard
-# ---------------------------------------------------------------------------
-
-
-def show_progress(locale_filter: str | None = None) -> None:
-    """Show review progress across all tiers."""
-    status = load_status()
-
-    locales = [locale_filter] if locale_filter else ALL_LOCALES
-
-    # Header
-    print(f"{'Locale':<6} {'Files':>5}  {'Struct':>12}  {'Lint':>12}  {'Review':>16}")
-    print("-" * 60)
-
-    grand_files = 0
-    grand_val_pass = 0
-    grand_lint_clean = 0
-    grand_reviewed = 0
-    grand_reviewable = 0
-
-    for locale in locales:
-        entries = status.get(locale, {})
-        genuine = count_genuine(locale)
-        n_tracked = len(entries)
-
-        # Structural validation
-        val_pass = sum(1 for e in entries.values() if e.get("validation") == "PASS")
-        val_fail = sum(1 for e in entries.values() if e.get("validation") == "FAIL")
-        val_none = n_tracked - val_pass - val_fail
-
-        # Lint
-        lint_clean = sum(1 for e in entries.values() if e.get("lint") == "CLEAN")
-        lint_warn = sum(1 for e in entries.values() if e.get("lint") == "WARNINGS")
-        lint_err = sum(1 for e in entries.values() if e.get("lint") == "ERRORS")
-
-        # Review. STALE_REFRESH = a prior verdict invalidated by re-translation;
-        # it is NOT current review coverage, so don't count it as reviewed.
-        reviewed = sum(
-            1 for e in entries.values()
-            if e.get("review") not in (None, "STALE_REFRESH")
-        )
-        reviewable = sum(
-            1 for e in entries.values()
-            if e.get("validation") == "PASS"
-            and e.get("lint") in ("CLEAN", "WARNINGS")
-            and e.get("review") is None
-        )
-
-        skip = " (skip)" if locale in SKIP_LOCALES else ""
-
-        if genuine == 0 and n_tracked == 0:
+def record_opus_from_json(json_path: str, only_locale: str | None = None,
+                          when: str | None = None) -> dict:
+    """Record a round's page verdicts. With `only_locale`, records for any
+    other locale are refused (a contributor's PR touches one locale)."""
+    raw = sys.stdin.read() if json_path == "-" else Path(json_path).read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if isinstance(data, dict) and "records" in data:
+        data = data["records"]
+    if not isinstance(data, list):
+        sys.exit("Error: JSON must be an array of {locale, file, verdict, ...}")
+    when = when or date.today().isoformat()
+    counts = {"written": 0, "skipped": 0, "refused": 0, "no-po": 0, "invalid": 0}
+    for item in data:
+        locale, rel, verdict = item.get("locale"), item.get("file"), item.get("verdict")
+        if verdict in SKIPPED_VERDICTS:
+            counts["skipped"] += 1
             continue
+        if verdict not in PAGE_VERDICTS or not locale or not rel:
+            counts["invalid"] += 1
+            print(f"  invalid record: {item!r}"[:200])
+            continue
+        if only_locale and locale != only_locale:
+            counts["refused"] += 1
+            continue
+        res = record_verdict(locale, rel, verdict, when)
+        if res == "no-po":
+            counts["no-po"] += 1
+            print(f"  no PO for {locale}/{rel}")
+        else:
+            counts["written"] += 1
+            print(f"  {locale}/{rel} → {verdict}")
+    print(f"\nRecorded {counts['written']} verdict(s) into PO headers"
+          + (f"; skipped {counts['skipped']} repair record(s) (FIXED: not a page read)" if counts["skipped"] else "")
+          + (f"; refused {counts['refused']} record(s) outside --locale {only_locale}" if counts["refused"] else "")
+          + (f"; {counts['no-po']} without a PO" if counts["no-po"] else "")
+          + (f"; {counts['invalid']} invalid" if counts["invalid"] else ""))
+    return counts
 
-        # Use genuine count if we haven't tracked all files yet
-        file_count = max(genuine, n_tracked)
 
-        val_str = f"{val_pass} PASS" if val_pass else "—"
-        if val_fail:
-            val_str += f" {val_fail} FAIL"
-        if val_none and n_tracked < genuine:
-            val_str = f"{val_pass}P/{val_fail}F/{genuine - n_tracked}?"
+def import_status() -> dict:
+    """One-time: copy `review_opus` / `reviewed_opus` from status.json into
+    every PO header that has no verdict yet. Headers already set are kept
+    (the bootstrap copied the same data)."""
+    if not STATUS_FILE.exists():
+        sys.exit("status.json not found")
+    status = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    counts = {"written": 0, "kept": 0, "no-po": 0}
+    for locale, entries in status.items():
+        if not isinstance(entries, dict) or len(locale) != 2:
+            continue
+        for rel, e in entries.items():
+            v = e.get("review_opus")
+            if v not in PAGE_VERDICTS:
+                continue
+            res = record_verdict(locale, rel, v, e.get("reviewed_opus", ""), overwrite=False)
+            counts[res] += 1
+    print(f"imported {counts['written']} verdict(s); {counts['kept']} already in headers; "
+          f"{counts['no-po']} status entries without a PO")
+    return counts
 
-        lint_str = f"{lint_clean} CLEAN" if lint_clean else "—"
-        if lint_err:
-            lint_str += f" {lint_err} ERR"
 
-        rev_str = f"{reviewed}/{val_pass} reviewed"
-        if reviewable:
-            rev_str += f" ({reviewable} todo)"
-
-        print(f"{locale}{skip:<6} {file_count:>5}  {val_str:>12}  {lint_str:>12}  {rev_str:>16}")
-
-        grand_files += file_count
-        grand_val_pass += val_pass
-        grand_lint_clean += lint_clean
-        grand_reviewed += reviewed
-        grand_reviewable += reviewable
-
-        print("-" * 60)
-    print(f"{'Total':<6} {grand_files:>5}  {grand_val_pass:>5} PASS    {grand_lint_clean:>5} CLEAN   {grand_reviewed}/{grand_val_pass} reviewed")
-    if grand_reviewable:
-        print(f"  → {grand_reviewable} files ready for linguistic review")
-
-    # Tier-4 Opus deep-review coverage (spot-check; annotates, never overwrites)
-    opus_total = 0
-    opus_verdicts: dict[str, int] = {}
-    opus_disagree: list[str] = []
-    rank = {"PASS": 0, "MINOR_ISSUES": 1, "FIXED": 1, "FAIL": 2}
+def show_progress(only_locale: str | None = None, min_lines: int = 40) -> None:
+    sdr = _sampler()
+    locales = [only_locale] if only_locale else sdr.MAIN_LOCALES
+    print(f"{'locale':7} {'reviewed':>9} {'reviewable':>11} {'pct':>5} {'mid-update':>11} {'rendered':>9}")
     for loc in locales:
-        for rel, entry in status.get(loc, {}).items():
-            ov = entry.get("review_opus")
-            if not ov:
-                continue
-            opus_total += 1
-            opus_verdicts[ov] = opus_verdicts.get(ov, 0) + 1
-            t3 = entry.get("review")
-            if t3 in rank and ov in rank and rank[ov] > rank[t3]:
-                opus_disagree.append(f"{loc}/{rel} (tier3={t3}→opus={ov})")
-    if opus_total:
-        print(f"\n  Tier-4 Opus deep-review: {opus_total} file(s) spot-checked — "
-              + ", ".join(f"{v}={c}" for v, c in sorted(opus_verdicts.items())))
-        if opus_disagree:
-            print(f"  ⚠ {len(opus_disagree)} Opus-harsher-than-Tier-3 disagreement(s):")
-            for d in opus_disagree[:15]:
-                print(f"      {d}")
-            if len(opus_disagree) > 15:
-                print(f"      … and {len(opus_disagree) - 15} more")
-
-    # Show per-review-verdict breakdown if any reviews exist
-    if grand_reviewed > 0:
-        verdicts: dict[str, int] = {}
-        for locale_entries in status.values():
-            for entry in locale_entries.values():
-                v = entry.get("review")
-                if v:
-                    verdicts[v] = verdicts.get(v, 0) + 1
-        print(f"\n  Review verdicts: " + ", ".join(
-            f"{v}={c}" for v, c in sorted(verdicts.items())
-        ))
-
-
-# ---------------------------------------------------------------------------
-# --next-chunk: Get next batch for linguistic review
-# ---------------------------------------------------------------------------
-
-
-def next_chunk(size: int = 20, locale_filter: str | None = None,
-               include_stale: bool = False) -> None:
-    """Print the next chunk of files needing linguistic review."""
-    status = load_status()
-
-    candidates: list[tuple[str, str, int]] = []  # (locale, rel_path, line_count)
-    skipped_stale = 0
-
-    locales = [locale_filter] if locale_filter else LOCALE_PRIORITY
-
-    for locale in locales:
-        if locale in SKIP_LOCALES and not locale_filter:
-            continue
-
-        entries = status.get(locale, {})
-
-        for rel, entry in entries.items():
-            # Only files that pass structural + lint
-            if entry.get("validation") != "PASS":
-                continue
-            if entry.get("lint") not in ("CLEAN", "WARNINGS"):
-                continue
-            # Not already reviewed. STALE_REFRESH means a prior verdict was
-            # invalidated when the file was re-translated by the v1
-            # update-translations.py --finalize (deleted 2026-09-06; the v2
-            # pipeline does not set it yet — see PROJECT_HANDOFF.md, Active
-            # TODO) — treat it as needing review, same as never-reviewed.
-            if entry.get("review") not in (None, "STALE_REFRESH"):
-                continue
-            # Don't queue STALE/UNKNOWN files — refresh + re-stamp them first
-            # (reviewing prose that doesn't match current EN wastes effort).
-            if not include_stale and not is_fresh(locale, rel):
-                skipped_stale += 1
-                continue
-
-            lines = get_file_line_count(locale, rel)
-            candidates.append((locale, rel, lines))
-
-    if not candidates:
-        print("No files pending linguistic review.")
-        if skipped_stale:
-            print(f"  ({skipped_stale} reviewable file(s) skipped as STALE/UNKNOWN — "
-                  f"refresh + re-stamp first, or pass --include-stale)")
-        if not locale_filter:
-            # Check if there are unvalidated files
-            total_genuine = sum(count_genuine(loc) for loc in ALL_LOCALES)
-            total_tracked = sum(len(status.get(loc, {})) for loc in ALL_LOCALES)
-            if total_tracked < total_genuine:
-                print(f"  ({total_genuine - total_tracked} files not yet auto-checked — run --auto-check first)")
-        return
-
-    # Sort by: locale priority, then section priority, then line count (ascending)
-    locale_order = {loc: i for i, loc in enumerate(LOCALE_PRIORITY)}
-
-    def sort_key(item: tuple[str, str, int]) -> tuple[int, int, int]:
-        locale, rel, lines = item
-        loc_idx = locale_order.get(locale, 99)
-        sec_idx = next(
-            (i for i, sec in enumerate(SECTION_PRIORITY) if rel.startswith(sec)),
-            99
-        )
-        return (loc_idx, sec_idx, lines)
-
-    candidates.sort(key=sort_key)
-
-    chunk = candidates[:size]
-
-    print(f"Next {len(chunk)} files for linguistic review:\n")
-    current_locale = None
-    for i, (locale, rel, lines) in enumerate(chunk, 1):
-        if locale != current_locale:
-            if current_locale is not None:
-                print()
-            current_locale = locale
-            print(f"  [{locale.upper()}]")
-        print(f"  {i:3d}. {rel} ({lines} lines)")
-
-    remaining = len(candidates) - len(chunk)
-    if remaining > 0:
-        print(f"\n  ... {remaining} more files pending after this chunk")
-    if skipped_stale:
-        print(f"  ({skipped_stale} fresh-but-stale/unknown file(s) held back — "
-              f"refresh + re-stamp first, or pass --include-stale)")
-
-    # Print summary of what to do
-    print(f"\n  Review each file for: register, word salad, verbosity, accuracy")
-    print(f"  Record: --record-review --locale XX --file PATH --verdict PASS|MINOR_ISSUES|FAIL")
-
-
-# ---------------------------------------------------------------------------
-# --record-review: Record linguistic review results
-# ---------------------------------------------------------------------------
-
-
-def record_review(locale: str, file_path: str, verdict: str,
-                  issues: int = 0, notes: str = "") -> None:
-    """Record a single linguistic review result."""
-    if verdict not in VALID_VERDICTS:
-        print(f"Error: Invalid verdict '{verdict}'. Use: {', '.join(sorted(VALID_VERDICTS))}")
-        sys.exit(2)
-
-    status = load_status()
-    if locale not in status:
-        status[locale] = {}
-
-    entry = status[locale].get(file_path, {})
-    entry["reviewed"] = date.today().isoformat()
-    entry["review"] = verdict
-    entry["review_issues"] = issues
-    if notes:
-        entry["review_notes"] = notes
-    elif "review_notes" in entry:
-        del entry["review_notes"]
-
-    if "status" not in entry:
-        entry["status"] = "promoted"
-
-    status[locale][file_path] = entry
-    save_status(status)
-
-    print(f"Recorded: {locale}/{file_path} → {verdict}")
-
-
-def record_opus_from_json(json_path: str) -> None:
-    """Record Tier-4 (Opus deep-review) verdicts from a JSON file or stdin.
-
-    Opus deep-review ANNOTATES — it never overwrites the Tier-3 `review`
-    verdict. Results land in separate keys (`review_opus`, `review_opus_issues`,
-    `review_opus_note`, `reviewed_opus`) so a Haiku-PASS / Opus-FAIL
-    disagreement stays visible instead of being silently overwritten. Accepts
-    the workflow's output objects: {locale, file, verdict, issues?, editor_note?}.
-    """
-    if json_path == "-":
-        data = json.loads(sys.stdin.read())
-    else:
-        data = json.loads(Path(json_path).read_text(encoding="utf-8"))
-
-    if not isinstance(data, list):
-        print("Error: JSON must be an array of {locale, file, verdict, ...}")
-        sys.exit(2)
-
-    status = load_status()
-    today = date.today().isoformat()
-    disagreements: list[tuple[str, str, str, str]] = []  # loc, file, tier3, opus
-
-    for item in data:
-        locale = item["locale"]
-        file_path = item["file"]
-        verdict = item["verdict"]
-
-        if verdict not in VALID_VERDICTS:
-            print(f"  Error: Invalid verdict '{verdict}' for {locale}/{file_path}")
-            continue
-
-        if locale not in status:
-            status[locale] = {}
-        entry = status[locale].get(file_path, {})
-
-        tier3 = entry.get("review")
-        entry["review_opus"] = verdict
-        entry["review_opus_issues"] = item.get("issues", 0)
-        if item.get("editor_note") or item.get("notes"):
-            entry["review_opus_note"] = item.get("editor_note") or item.get("notes")
-        entry["reviewed_opus"] = today
-        if "status" not in entry:
-            entry["status"] = "promoted"
-
-        status[locale][file_path] = entry
-
-        # A disagreement is worth surfacing: Opus is harsher than the prior
-        # automated verdict (the spot-check's reason to exist).
-        rank = {"PASS": 0, "MINOR_ISSUES": 1, "FIXED": 1, "FAIL": 2}
-        if tier3 in rank and verdict in rank and rank[verdict] > rank[tier3]:
-            disagreements.append((locale, file_path, tier3, verdict))
-
-        print(f"  {locale}/{file_path} → opus={verdict} (tier3={tier3})")
-
-    save_status(status)
-    print(f"\nRecorded {len(data)} Opus deep-review result(s).")
-    if disagreements:
-        print(f"\n  ⚠ {len(disagreements)} disagreement(s) — Opus harsher than Tier-3:")
-        for loc, fp, t3, op in disagreements:
-            print(f"    {loc}/{fp}: tier3={t3} → opus={op}")
-        print("  → Consider re-queueing these for fix/retranslation.")
-
-
-def record_review_from_json(json_path: str) -> None:
-    """Record multiple review results from a JSON file or stdin."""
-    if json_path == "-":
-        data = json.loads(sys.stdin.read())
-    else:
-        data = json.loads(Path(json_path).read_text(encoding="utf-8"))
-
-    if not isinstance(data, list):
-        print("Error: JSON must be an array of {locale, file, verdict, issues?, notes?}")
-        sys.exit(2)
-
-    status = load_status()
-    today = date.today().isoformat()
-
-    for item in data:
-        locale = item["locale"]
-        file_path = item["file"]
-        verdict = item["verdict"]
-
-        if verdict not in VALID_VERDICTS:
-            print(f"  Error: Invalid verdict '{verdict}' for {locale}/{file_path}")
-            continue
-
-        if locale not in status:
-            status[locale] = {}
-
-        entry = status[locale].get(file_path, {})
-        entry["reviewed"] = today
-        entry["review"] = verdict
-        entry["review_issues"] = item.get("issues", 0)
-        if item.get("notes"):
-            entry["review_notes"] = item["notes"]
-        elif "review_notes" in entry:
-            del entry["review_notes"]
-
-        if "status" not in entry:
-            entry["status"] = "promoted"
-
-        status[locale][file_path] = entry
-        print(f"  {locale}/{file_path} → {verdict}")
-
-    save_status(status)
-    print(f"\nRecorded {len(data)} review result(s)")
-
-
-# ---------------------------------------------------------------------------
-# --prune-orphans: Drop status.json entries for files no longer on disk
-# ---------------------------------------------------------------------------
-
-
-def prune_orphans(dry_run: bool = False) -> None:
-    """Remove status.json entries whose translation file no longer exists.
-
-    When EN docs are restructured/removed upstream, the matching translation
-    files are deleted but their status.json records linger — inflating FAIL
-    counts and skewing the review dashboard. Only locale entries are touched;
-    non-locale top-level keys (e.g. "reviews") are left alone.
-    """
-    status = load_status()
-    per_locale: dict[str, int] = {}
-    fail_pruned = 0
-    total = 0
-
-    for locale in ALL_LOCALES:
-        entries = status.get(locale)
-        if not entries:
-            continue
-        base = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
-        orphans = [rel for rel in entries if not (base / rel).exists()]
-        if not orphans:
-            continue
-        per_locale[locale] = len(orphans)
-        total += len(orphans)
-        fail_pruned += sum(1 for rel in orphans
-                           if entries[rel].get("validation") == "FAIL")
-        if not dry_run:
-            for rel in orphans:
-                del entries[rel]
-
-    verb = "Would prune" if dry_run else "Pruned"
-    print(f"{verb} {total} orphaned entr{'y' if total == 1 else 'ies'} "
-          f"({fail_pruned} recorded as validation=FAIL):")
-    for loc, n in sorted(per_locale.items(), key=lambda x: -x[1]):
-        print(f"  {loc:5} {n}")
-    if not per_locale:
-        print("  (none — status.json is clean)")
-
-    if total and not dry_run:
-        save_status(status)
-        print("\nSaved translation/status.json. Run --progress to verify.")
-    elif dry_run:
-        print("\nDry run — no changes written.")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+        cat = sdr.catalogue(loc)
+        rendered = sum(1 for i in cat.values() if i["rendered"])
+        reviewable = [i for i in cat.values()
+                      if i["rendered"] and not i["fallback"] and i["lines"] >= min_lines]
+        done = sum(1 for i in reviewable if i["verdict"])
+        pending = sum(1 for i in cat.values() if i["pending"])
+        pct = f"{100 * done // len(reviewable)}%" if reviewable else "—"
+        note = "" if sdr.is_rendered(cat) else "  (not rendered: run render.py first)"
+        print(f"{loc:7} {done:9} {len(reviewable):11} {pct:>5} {pending:11} {rendered:9}{note}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Orchestrate systematic review of all translations"
-    )
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--record-opus", action="store_true",
+                   help="record a round's page verdicts into the PO headers (--from-json)")
+    g.add_argument("--progress", action="store_true", help="reviewed / reviewable pages per locale")
+    g.add_argument("--import-status", action="store_true",
+                   help="one-time: copy status.json's review_opus verdicts into PO headers lacking one")
+    ap.add_argument("--from-json", metavar="PATH", help="records file (or - for stdin)")
+    ap.add_argument("--locale", help="restrict to one locale; --record-opus refuses records for others")
+    ap.add_argument("--date", help="date to stamp instead of today (YYYY-MM-DD)")
+    args = ap.parse_args()
 
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--auto-check", action="store_true",
-        help="Run structural validation + MDX lint for all locales"
-    )
-    group.add_argument(
-        "--progress", action="store_true",
-        help="Show review progress dashboard"
-    )
-    group.add_argument(
-        "--next-chunk", action="store_true",
-        help="Get next batch of files for linguistic review"
-    )
-    group.add_argument(
-        "--record-review", action="store_true",
-        help="Record linguistic review result"
-    )
-    group.add_argument(
-        "--record-opus", action="store_true",
-        help="Record Tier-4 Opus deep-review verdicts (--from-json); annotates "
-             "review_opus* keys, never overwrites the Tier-3 review verdict"
-    )
-    group.add_argument(
-        "--prune-orphans", action="store_true",
-        help="Drop status.json entries whose translation file no longer exists"
-    )
-
-    parser.add_argument("--locale", help="Filter to a single locale")
-    parser.add_argument(
-        "--size", type=int, default=20,
-        help="Chunk size for --next-chunk (default: 20)"
-    )
-    parser.add_argument(
-        "--include-stale", action="store_true",
-        help="For --next-chunk: also queue STALE/UNKNOWN files "
-             "(default: skip them — refresh before reviewing)"
-    )
-    parser.add_argument("--file", help="File path for --record-review")
-    parser.add_argument(
-        "--verdict",
-        help="Review verdict: PASS, MINOR_ISSUES, FAIL, SKIPPED"
-    )
-    parser.add_argument("--issues", type=int, default=0, help="Issue count")
-    parser.add_argument("--notes", default="", help="Review notes")
-    parser.add_argument(
-        "--from-json", metavar="PATH",
-        help="Record reviews from JSON file (or - for stdin)"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="For --prune-orphans: preview without writing"
-    )
-
-    args = parser.parse_args()
-
-    if args.auto_check:
-        locales = [args.locale] if args.locale else ALL_LOCALES
-        auto_check(locales)
-
+    if args.record_opus:
+        if not args.from_json:
+            ap.error("--record-opus requires --from-json PATH (or -)")
+        record_opus_from_json(args.from_json, args.locale, args.date)
     elif args.progress:
         show_progress(args.locale)
-
-    elif args.next_chunk:
-        next_chunk(size=args.size, locale_filter=args.locale,
-                   include_stale=args.include_stale)
-
-    elif args.record_opus:
-        if not args.from_json:
-            parser.error("--record-opus requires --from-json PATH (or -)")
-        record_opus_from_json(args.from_json)
-
-    elif args.record_review:
-        if args.from_json:
-            record_review_from_json(args.from_json)
-        elif args.locale and args.file and args.verdict:
-            record_review(args.locale, args.file, args.verdict,
-                          args.issues, args.notes)
-        else:
-            parser.error(
-                "--record-review requires (--locale + --file + --verdict) or --from-json"
-            )
-
-    elif args.prune_orphans:
-        prune_orphans(dry_run=args.dry_run)
+    elif args.import_status:
+        import_status()
 
 
 if __name__ == "__main__":

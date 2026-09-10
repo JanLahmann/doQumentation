@@ -6,8 +6,8 @@ complete, self-contained recipe for running one **review round**: sample
 some translated pages, have Claude read them against the English source,
 fix what genuinely misleads a learner, and open a PR.
 
-A round is **budget-shaped**: you tell it how many files to review, and it
-costs roughly that many × 40k tokens. It's designed to soak up whatever is
+A round is **budget-shaped**: you tell it how many pages to review, and it
+costs roughly that many × 40k tokens. It is designed to soak up whatever is
 left of a weekly Claude Max budget and stop cleanly — nothing breaks if you
 run out mid-round.
 
@@ -31,10 +31,11 @@ need Node, npm, or a site build.
    git checkout main && git pull
    ```
 
-   This is not housekeeping. Which files are eligible for review is read
-   from `translation/status.json`, and every merged round updates it. On a
-   fork that is even a few days old, Claude will re-review pages someone
-   already did, and your PR will conflict with what has landed since.
+   This is not housekeeping. Which pages are still unreviewed is read from
+   the PO files themselves (each reviewed page carries its verdict in its
+   PO header), and every merged round changes them. On a fork that is even
+   a few days old, Claude will re-review pages someone already did, and
+   your PR will conflict with what has landed since.
    See [`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md) after syncing — it is
    regenerated daily and tells you what is actually left.
 
@@ -49,10 +50,10 @@ need Node, npm, or a site build.
 
    or, if you already know the locale and how much you can spend:
 
-   > Review the `<LOCALE>` translation, about `<N>` files. Use a workflow.
+   > Review the `<LOCALE>` translation, about `<N>` pages. Use a workflow.
 
    The repo's `CLAUDE.md` routes either sentence here. Claude will ask for
-   whatever is missing (locale, file count, your GitHub handle) and check
+   whatever is missing (locale, page count, your GitHub handle) and check
    your fork, the claim and the toolchain before it starts.
 
 If Claude asks whether it may **"use a workflow"**, say yes — that
@@ -74,10 +75,10 @@ Confirm with the user, or take from their prompt:
 
 - **`LOCALE`** — see **[`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md)** for
   which locales still have unreviewed pages and how much is left in each.
-  All 17 main locales are in scope (`de es uk ja fr it pt tl ar he ms id
-  th ko pl ro cs`); none is finished.
-- **`N`** — how many files to review this round. Budget ≈ **40k tokens per
-  file**, so 25 files ≈ 1M, 60 files ≈ 2.4M. When in doubt pick 25; a small
+  All 17 locales are in scope (`de es uk ja fr it pt tl ar he ms id th ko
+  pl ro cs`); none is finished.
+- **`N`** — how many pages to review this round. Budget ≈ **40k tokens per
+  page**, so 25 pages ≈ 1M, 60 pages ≈ 2.4M. When in doubt pick 25; a small
   round that completes beats a large one that dies.
 - **`HANDLE`** — the user's GitHub username. It namespaces their output
   file so concurrent contributors never collide.
@@ -97,12 +98,12 @@ avoid a collision.
 python3 --version                      # 3.11+
 git remote -v                          # should show the user's fork
 po4a --version && msgmerge --version | head -1 && python3 -c "import polib"
-python3 translation/scripts/translation-status.py --locale <LOCALE>
+ls i18n/<LOCALE>/po | head -3          # the locale's translation: one PO per page
 ```
 
-If `translation/status.json` is missing, the clone is incomplete — stop and
-say so. If po4a, gettext or polib is missing, stop and tell the user what
-to install (see the top of this file); nothing below works without them.
+If `i18n/<LOCALE>/po/` is missing, the clone is incomplete — stop and say
+so. If po4a, gettext or polib is missing, stop and tell the user what to
+install (see the top of this file); nothing below works without them.
 
 **Then check the fork is current, before drawing any sample:**
 
@@ -118,184 +119,62 @@ If that count is not `0`, **stop and sync before continuing**:
 git checkout main && git merge --ff-only upstream/main
 ```
 
+Do not "work around" a behind-fork by drawing the sample anyway. A page's
+verdict is in its PO header, and every merged round writes new ones; on a
+stale copy `--exclude-reviewed` filters against an old verdict set, so you
+will re-review pages that already have verdicts and open a PR that
+conflicts with what has landed. Say plainly that the fork was behind and
+that you synced.
+
 **Then render the locale.** The pages the review reads live under
 `i18n/<LOCALE>/docusaurus-plugin-content-docs/current/`; they are derived
 from the PO files at build time and are **not in git**, so on a fresh clone
-that directory is empty and the sampler reports no eligible files:
+that directory is empty and the sampler reports no eligible pages:
 
 ```bash
 python3 translation/v2/render.py --locale <LOCALE>     # ~1 min, 433 pages
+python3 translation/scripts/review-translations.py --progress --locale <LOCALE>
 ```
 
-Re-run it after every fix wave, so lint and the gauge read what the PO
-files now say.
-
-Do not "work around" a behind-fork by drawing the sample anyway. Eligibility
-comes from `status.json`, which every merged round rewrites; on a stale copy
-`--exclude-reviewed` silently filters against an old verdict set, so you will
-re-review pages that already have verdicts and open a PR that conflicts with
-what has landed. Say plainly that the fork was behind and that you synced.
+Re-run the render after every fix wave, so lint reads what the PO files
+now say.
 
 ### 2. Draw the sample
 
 ```bash
 python3 translation/scripts/sample-deep-review.py \
   --locale <LOCALE> --per-locale <N> --seed <SEED> \
-  --max-leaks <THRESHOLD> --drift-focus --exclude-reviewed \
+  --drift-focus --exclude-reviewed \
   --out /tmp/round-<SEED>.json
 ```
 
-It prints the eligible pool size. `--exclude-reviewed` skips files that
-already carry a verdict, so rounds never re-tread ground.
+It prints the eligible pool size. A page is eligible when it is rendered,
+is not an English fallback, is at least 40 lines, has no entry left fuzzy
+or empty by an English sync (the page would render English there), and —
+with `--exclude-reviewed` — carries no verdict yet. Rounds therefore never
+re-tread ground.
 
 If the pool is smaller than `N`, that locale is genuinely drained: take the
-short round rather than shrinking `N` on a locale that still has work. (The
-`--max-leaks` ladder used to reopen a pool here; it no longer does — see the
-note below.)
+short round rather than shrinking `N` on a locale that still has work.
 
-> **A "leak" is what the locale's glossary records, not any English word.**
-> Since 2026-09-08 the terms the house style keeps in English — Qiskit,
-> Qubit, Gate, Circuit, Backend, Transpiler, Session, Sampler, Estimator,
-> PUB, IBM Quantum, QPU (`_common.KEEP_ENGLISH_TERMS`) — are **not** counted.
-> They used to be, which held 154 de / 92 he / 70 cs pages out of review for
-> following the house style. A locale whose `translation/glossary/<loc>.json`
-> records nothing therefore has a leak count of 0 and `--max-leaks` does not
-> filter it at all; that is expected, not a broken sampler.
+> **`--max-leaks` filters nothing today, and that is expected.** A leak is
+> a term the locale's `translation/glossary/<loc>.json` records as wrongly
+> left in English — not any English word. The terms the house style keeps
+> in English (Qiskit, Qubit, Gate, Circuit, Backend, Transpiler, Session,
+> Sampler, Estimator, PUB, IBM Quantum, QPU; `_common.KEEP_ENGLISH_TERMS`)
+> never count, and no locale currently records anything else.
 
 **[`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md) lists the current pool size
-per locale.** It is regenerated daily, so
-trust it over any number written into this file — pool sizes move every
-time a round lands.
+per locale.** It is regenerated daily from the same PO headers, so trust it
+over any number written into this file.
 
-#### Or: sweep for misaligned pairings instead
-
-There is a second way to fill a round, aimed at one specific defect:
-
-```bash
-python3 translation/scripts/find-positional-drift.py --locale <LOCALE> \
-  --out /tmp/drift-<LOCALE>.json
-```
-
-`bootstrap` seeded the PO files from the old rendered pages. Where po4a
-refused to pair the two files exactly it fell back to matching their po4a
-*type* sequences with difflib, and adopted the runs that matched (those
-entries carry a `# doq-bootstrap: positional` comment). On a page that is
-mostly `Plain text`, difflib has no content to place an insertion or
-deletion with, so it puts it at an arbitrary point in the run and every
-entry between there and the true position carries its neighbour's
-translation.
-
-This is the one defect class that survives every automatic gate we have.
-The page renders, the prose is fluent, and `check.py` passes it, because a
-well-formed translation of the wrong paragraph breaks no structural
-invariant — no code span, URL, tag or math is out of place. Only the
-meaning is wrong, which is exactly what a fluent reader is for.
-
-**Treat the output as a list of suspect PAGES, not of suspect entries.**
-The detector only fires when a better-fitting neighbour lies within eight
-entries and the pair carries enough anchors to score, so it cannot see a
-misaligned heading or a run longer than its window. On `it` it found 14
-entries; sweeping those pages in full found 26, including seven
-consecutive headings in `learning/modules/computer-science/vqe.mdx` each
-holding the previous heading's text. Gauge the candidates (step 5) to
-decide which pages are really affected, then build the fix spec so the
-fixer re-checks **every** entry on those pages, not only the flagged ones.
-
-In the spec, say plainly that a flagged translation belongs to a different
-paragraph and must be discarded rather than repaired, or the fixer will
-try to polish text that was never about this source.
-
-Two more things this defect is not:
-
-- It is **not** inherited identically across locales. The same pages break
-  everywhere, because the fragility is in the English structure, but the
-  entries differ: only 2 of ~34 confirmed entries coincided between `de`
-  and `pt`. You cannot reuse one locale's entry list for another.
-- The correct translation usually **cannot** be recovered from the old
-  rendered page by content matching. Tried on `de`: 0 of 11 right, with
-  confidence scores of 0.94-1.00 on entirely wrong paragraphs. Anchor-free
-  prose gives absolute matching nothing to work with. Retranslate instead.
-- It is **not** usable as a page list on `ja` or `ko` without a second
-  opinion. The fit score needs shared tokens, and CJK prose shares almost
-  none with its English, so the detector fires on fluent, correct entries:
-  read blind by the completeness gauge, 18 of 286 `ja` candidates and 7 of
-  145 `ko` candidates were real (2026-09-09). Gauge the candidates first
-  (`gauge-completeness.py --findings`, with the drift output rewritten to
-  the sieve's `i18n/<locale>/po/…` file paths) and sweep only the confirmed
-  pages — 24 pages instead of 158. On Latin- and Cyrillic-script locales
-  the flagged pages can be swept directly.
-
-To choose *which* pages to sweep, run it across every locale:
-
-```bash
-python3 translation/scripts/find-positional-drift.py --all --rank-pages --print
-```
-
-A slip starts from a dropped entry, and entries are dropped because of
-something in the **English** page — so the same page slips in every locale
-at once. A page flagged in 16 of 17 locales is not seventeen coincidences;
-those pages are where the defect really lives.
-
-#### Or: sweep for incomplete translations
-
-The drift detector looks for one defect. A broader and cheaper sweep asks a
-blunter question — does the translation carry what the source carries?
-
-```bash
-python3 translation/scripts/check-completeness.py --locale <LOCALE> \
-  --json /tmp/sieve-<LOCALE>.json
-```
-
-This is a deterministic sieve, no model, seconds over the whole corpus. It
-compares line shape, numbers, list items, `title=` captions, whether a
-question stayed a question, whether the translation is far shorter than the
-locale's norm, and looks for a msgstr copied onto a neighbouring entry.
-Corpus-wide it flags 1.23% of entries.
-
-**Every subcheck in it is measured, not guessed.** `build-eval-set.py` turns
-the finished review rounds into a labelled set — every msgstr a round changed
-is a known defect, every msgstr an agent read and copied back is known
-faithful — and `tests/test_completeness.py` re-scores the sieve against it, so
-a threshold that quietly destroys recall fails CI. If you change a subcheck,
-run those tests and record the reason next to any floor you move. Two
-findings from building it, both of which cost real recall before they were
-caught:
-
-- An entry that is nothing but `<IBMVideo title="..."/>` is byte-identical to
-  its source **exactly when** its caption was never translated. A copy-only
-  guard in front of the `title=` check therefore hides the defect it exists to
-  find.
-- English spells small numbers as words where `ja` and `ko` write the digit
-  ("three kinds" → 3種類). Counting an *added* small integer as a lost figure
-  produced ~3,400 findings in those two locales, none of them real.
-
-Then let a model read the survivors:
-
-```bash
-python3 translation/scripts/gauge-completeness.py --locale <LOCALE> \
-  --findings /tmp/sieve-<LOCALE>.json --sample 400 --prepare
-# fill work/gauge/<LOCALE>/manifest-gauge.json with translate-locale.js
-python3 translation/scripts/gauge-completeness.py --locale <LOCALE> --collect
-python3 translation/scripts/gauge-completeness.py --locale <LOCALE> \
-  --emit-fixes /tmp/fixes-<LOCALE>-gauge.json
-```
-
-The gauge returns one verdict per entry — COMPLETE, MISSING, EXTRA,
-DIFFERENT or UNSURE — and never writes a msgstr; `--emit-fixes` produces an
-ordinary `fix.py --fixes` file, so repairs take the same path as any review
-round.
-
-`--sample N` is not optional dressing. It mixes in N entries the sieve did
-**not** flag, and the batches carry only `msgid` and `msgstr` — the gauge is
-never told which is which. That is what makes `--collect`'s two numbers mean
-anything:
-
-- **precision** — how many of the sieve's flags a reader agrees with;
-- **miss rate** — how many entries it passed are defective anyway, which is
-  the only honest estimate of the locale's real defect load.
-
-Skip the sample and you learn nothing except that the gauge agrees with the
-sieve, which it will.
+> **Other instruments exist, and they are not this recipe.** The
+> deterministic completeness sieve, the model gauge and the positional-drift
+> detector (`translation/v2/README.md`, *The meaning-and-completeness
+> layer*) select *entries* rather than pages and have been run over every
+> locale by the maintainer. What they cannot see — a fluent, complete,
+> plausible mistranslation — is exactly what a page read is for. Stay on
+> the page read.
 
 ### 3. Run the review wave
 
@@ -322,7 +201,7 @@ learner?**
   throughout. One misleading sentence is a FAIL.
 - **MINOR_ISSUES** — no, but a native technical editor would still change
   something: a calque, stiff phrasing, an imperfect-but-recognizable term,
-  inconsistent terminology within the file, a dropped qualifier.
+  inconsistent terminology within the page, a dropped qualifier.
 - **PASS** — no, and nothing an editor would change.
 
 Expect roughly **1–3% FAIL** and a large MINOR share. If a round comes back
@@ -344,6 +223,13 @@ Report the gauge result to the user. Findings are usually real even when
 the severity label is too harsh — remediate on the **finding**, not the
 label.
 
+**When two or more pages are flagged for the same sentence, check the
+same sentence in the other locales before fixing.** Sampling finds
+instances; comparing one span everywhere finds the class (a "software
+development kit" rendered as "a programming language" turned out to be
+eight locales, not three). Report it; the maintainer runs the cross-locale
+sweep, since your PR touches one locale.
+
 ### 6. Run the fix wave
 
 Fixes go through the **PO files**, never into a rendered page (a rendered
@@ -351,7 +237,7 @@ page is regenerated from the PO at the next build, so an edit there is
 lost). The path reuses the translation pipeline: one batch per page, the
 same `translate-locale` workflow, the same checker gate.
 
-Build a fix spec — a JSON array, one entry per file worth fixing (surviving
+Build a fix spec — a JSON array, one entry per page worth fixing (surviving
 FAILs, plus MINORs with concrete line-level examples). The raw `records`
 from step 3 are accepted as-is (PASS records are skipped), or write the
 trimmed form:
@@ -374,14 +260,15 @@ python3 translation/v2/fix.py --locale <LOCALE> \
 
 It writes `translation/v2/work/<LOCALE>/fix-NNN-sonnet.json` (every
 translated entry of the page, with a `review` field on the entries the
-examples point at) and `manifest-fix.json`.
+examples point at) and `manifest-fix.json`. Add `--flagged-only` when the
+examples pin every defect and the rest of the page need not be re-read; it
+packs the pinned entries across pages into a few batches.
 
 > **`--prepare` wipes the work directory first.** It deletes every
 > `fix-*.json` under `work/<LOCALE>/` before writing new ones, so running it
 > while a wave is still filling destroys the batches that wave is reading.
-> The agents then find nothing and return empty — on `ro` this cost 11
-> batches and 33 agent runs. Finish and `--apply` the outstanding wave
-> before preparing anything else for the same locale.
+> Finish and `--apply` the outstanding wave before preparing anything else
+> for the same locale.
 
 > **If you write your own instruction text, build it ON
 > `fix_instructions(locale)` — do not replace it.** That function
@@ -412,61 +299,41 @@ python3 translation/v2/render.py --locale <LOCALE>
 spans, URLs, math, tags, anchors, length), stamps each with
 `doq: fixed after review <date>`, and rejects the rest with a reason. A
 rejected entry is redone in a second, smaller wave or left with its verdict
-on record; never hand-edit the PO to force it.
+on record; never hand-edit the PO to force it. A batch that returns one
+translation too few is discarded whole — correctly, since a dropped item
+shifts every later one; redo it.
 
-Two things to check before you go on, neither of which any tool reports:
+Read what `--apply` prints before going on:
 
-**Count the applied entries against the flagged ones.** `--apply` prints
-how many it accepted. If that is fewer than you flagged, some flags did not
-reach the fixer or the fixer declined them; if it is more, the fixer
-changed entries nobody reviewed. Both happen, and both matter.
-
-**Diff every applied change against your flagged set, not just the flagged
-ones.** Confirming your flagged entries landed is a *different* check from
-confirming nothing else moved, and only the second one catches a bad
-unflagged change.
-
-> **Standing hazard — English reversion inside `title=` and table cells.**
-> A fix wave *will* sometimes overwrite a translated string with its English
-> source, and it does so precisely where no gate can see it: `title="…"`
-> attributes (video, card and accordion captions) and table cells. `title=`
-> is the one attribute `check.py` does not compare byte-for-byte, because it
-> must change under translation; table cells are prose to every checker;
-> and lint reads an English caption as prose that may legitimately be
-> English. This is not bad luck — it has happened in **three separate rounds**
-> (a `pt` caption, a `pt` accordion title, then six at once across `he`/`th`/`tl`:
-> `**Estratehiya**` → `**Strategy**`, `**ตัวอย่าง**` → `**Example**`, …).
-> Only this diff catches it. Look specifically for any changed entry whose
-> new msgstr equals its msgid; then check each one, because a filename or a
-> citation *should* equal its source — three of nine such hits in one round
-> were correct.
-
-An entry the fixer changed that nobody flagged is not automatically wrong:
-on a drift round the fixer reading a whole page often repairs more of a
-shifted run than the detector saw, which is the point. Read them and decide;
-do not assume either way.
-
-A batch that returns one translation too few is discarded whole by
-`--apply` — correctly, since a dropped item shifts every later one and
-would manufacture the very defect you are fixing. Expect this: it happened
-on 2 of ~24 batches. Redo those in a second wave. Note that
-`translate-locale.js` will still report such a batch as fully filled, since
-it parses the agent's own count and has no filesystem access to check.
+- **The accepted count against the flagged count.** Fewer means flags did
+  not reach the fixer or it declined them; more means it changed entries
+  nobody reviewed. On a whole-page wave the second is often the fixer
+  repairing more of a defect than the reviewer quoted; read them and decide.
+- **Every `REPLACED BY ENGLISH` warning.** A fix wave sometimes overwrites a
+  translated string with its English source, and it does so where no
+  structural check can object: `title=`, `description=` and `alt=` captions
+  and table cells. `--apply` names each such entry; the completeness
+  ratchet in step 7 flags the captions again. A filename or a citation
+  *should* equal its source; anything else is a regression — redo that
+  entry with a note saying what must stay English.
 
 ### 7. Gate the result
 
-All three must pass before you commit:
+All of these must pass before you commit:
 
 ```bash
 python3 translation/scripts/lint-translation.py --locale <LOCALE>
 python3 translation/scripts/check-known-mistranslations.py --locale <LOCALE>
 python3 translation/scripts/check-wrong-language.py --locale <LOCALE>
+python3 translation/scripts/audit-check-py.py --locale <LOCALE>
+python3 translation/scripts/check-completeness.py --locale <LOCALE> --limit 0 \
+  --baseline translation/eval/completeness-baseline.json
 ```
 
-> The rendered pages under `i18n/<LOCALE>/…/current/` are derived from
-> the PO files and are not in git (`translation/v2/README.md`). Run the
-> gate on a fresh `render.py` output, and if anything edited a rendered
-> page directly, discard it: the PO files are the only thing that ships.
+The rendered pages under `i18n/<LOCALE>/…/current/` are derived from the
+PO files and not in git. Run the gate on a fresh `render.py` output, and if
+anything edited a rendered page directly, discard it: the PO files are the
+only thing that ships.
 
 `lint-translation.py` has one known false positive: "unmatched code fence"
 on a line like `` ```from scipy.optimize import minimize``` `` that opens
@@ -484,7 +351,18 @@ existing one:
 translation/reviews/opus-<SEED>-<HANDLE>.json
 ```
 
-That's the raw `records` array from step 3, verbatim.
+That's the raw `records` array from step 3, verbatim. Then record the
+verdicts where eligibility reads them — each reviewed page's PO header:
+
+```bash
+python3 translation/scripts/review-translations.py --record-opus \
+  --from-json translation/reviews/opus-<SEED>-<HANDLE>.json --locale <LOCALE>
+```
+
+It writes `X-Doq-Review-Opus: <VERDICT> <date>` into the header of every
+page the round read (PASS, MINOR_ISSUES or FAIL alike) and refuses records
+for any other locale. The header change ships in your PR with the fixes;
+there is no maintainer step after merge.
 
 ```bash
 git checkout -b review/<LOCALE>-<SEED>
@@ -494,21 +372,21 @@ git status --short                 # exactly those two paths, nothing else
 git commit && gh pr create --repo JanLahmann/doQumentation
 ```
 
-**Do not commit `translation/status.json`.** The maintainer banks your
-verdicts into it with `review-translations.py --record-opus` after merge.
 This is the whole reason contributor PRs never conflict: you touch only a
 brand-new review file and your own locale's PO tree.
 
-PR description should state: locale, seed, file count, the verdict tally,
-the gauge result, and which files you changed.
+PR description should state: locale, seed, page count, the verdict tally,
+the gauge result, and which pages you changed.
 
 ### Hard rules
 
-- **Never** edit `translation/status.json` — that's the maintainer's merge step.
 - **Never** edit `docs/` — that's the English source of truth.
 - **Never** edit a locale other than the one assigned.
 - **Never** hand-edit a rendered page or a `.po` file; `fix.py --apply`
-  is the only way a fix reaches the translation.
+  writes translations and `review-translations.py --record-opus` writes
+  verdicts. Nothing else touches a PO.
+- **Never** edit `translation/status.json`. It is a frozen v1 record;
+  nothing in this recipe reads it.
 - Fix only the identified defect. Do not restyle passages that are already
   correct, and do not touch code blocks, math, JSX, image paths, or heading
   anchors.

@@ -21,8 +21,8 @@ complete recipe addressed to you.
 Before either, in this order:
 
 1. **Sync the fork** with `JanLahmann/doQumentation` main. Which pages need
-   work is read from `translation/status.json`, which every merged round
-   rewrites; a stale fork re-does finished work.
+   work is read from the PO files' headers under `i18n/<locale>/po/`, which
+   every merged round changes; a stale fork re-does finished work.
 2. **Check the claims**, then claim: `gh issue list --repo JanLahmann/doQumentation --label translation-claim`
    shows who holds which locale. Pick a free one (`CONTRIBUTING-NOW.md`
    lists what is left per locale) and open a claim issue with the
@@ -37,9 +37,9 @@ Before either, in this order:
   or a `.po` file. Only `translation/v2/translate.py --apply` and
   `translation/v2/fix.py --apply` / `--leaks --write` write a translation;
   they run every entry through `translation/v2/check.py`.
-- Never edit `docs/` (generated English), `translation/status.json`
-  (the maintainer banks verdicts there after merge), or any locale but the
-  one claimed.
+- Never edit `docs/` (generated English) or any locale but the one claimed.
+  `translation/status.json` is a frozen v1 record: nothing in the review
+  path reads or writes it.
 - Sub-agents only read and write the batch file they were given. They
   never run git, scripts or shell. Commits are the orchestrator's.
 - Stage exactly the intended set (`i18n/<locale>/po/`, a new file under

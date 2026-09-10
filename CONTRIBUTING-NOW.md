@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-09 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-10 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -10,7 +10,7 @@ python3 translation/scripts/contributing-status.py --write
 > **Sync your fork before you trust any of this.** These counts
 > describe upstream `main` on the date above. A fork is stale the
 > moment anyone else's round merges, and eligibility is read from
-> `translation/status.json` — which every merged round rewrites. Work
+> the PO files' headers — which every merged round changes. Work
 > from a behind-fork and `--exclude-reviewed` filters against an old
 > verdict set, so you re-review pages that are already done and your
 > PR conflicts with what has landed.
@@ -36,9 +36,7 @@ A claim is one open issue labelled `translation-claim` (template:
 stop; it is the only reservation there is. List them any time with
 `gh issue list --repo JanLahmann/doQumentation --label translation-claim`.
 
-| Locale | Who | Doing | Since | Issue |
-|---|---|---|---|---|
-| `?` | @JanLahmann | ? | 2026-09-09 | [#522](https://github.com/JanLahmann/doQumentation/issues/522) |
+*No open claims right now — every locale is free.*
 
 ---
 
@@ -59,45 +57,34 @@ reviewed and stubs under 40 lines, not leakage.
 
 | Locale | Unreviewed pool | Reviewed so far |
 |---|---|---|
-| `th` | **145** | 219/428 (51%) |
-| `de` | **139** | 224/428 (52%) |
-| `id` | **131** | 233/428 (54%) |
-| `ko` | **120** | 245/428 (57%) |
-| `he` | **108** | 257/428 (60%) |
-| `ms` | **78** | 286/428 (66%) |
-| `ro` | **77** | 289/428 (67%) |
-| `cs` | **72** | 292/428 (68%) |
-| `pl` | **66** | 297/428 (69%) |
+| `th` | **164** | 209/373 (56%) |
+| `de` | **158** | 214/372 (57%) |
+| `id` | **150** | 223/373 (59%) |
+| `he` | **127** | 246/373 (65%) |
+| `ko` | **119** | 253/372 (68%) |
+| `ms` | **97** | 276/373 (73%) |
+| `ro` | **96** | 277/373 (74%) |
+| `cs` | **91** | 282/373 (75%) |
+| `pl` | **85** | 287/372 (77%) |
+| `uk` | **38** | 335/373 (89%) |
+| `ja` | **37** | 335/372 (90%) |
+| `ar` | **30** | 343/373 (91%) |
+| `it` | **27** | 346/373 (92%) |
+| `pt` | **27** | 346/373 (92%) |
 
 **Nearly exhausted** (fewer than 25 eligible) — still worth
 a short round, but expect to re-sweep files that already carry a
 verdict, or to accept a round smaller than 25:
 
-- `uk` — 19 left (348/428 reviewed)
-- `ja` — 18 left (347/428 reviewed)
-- `ar` — 11 left (356/428 reviewed)
-- `it` — 8 left (359/428 reviewed)
-- `pt` — 8 left (359/428 reviewed)
-- `tl` — 5 left (362/428 reviewed)
-- `es` — 0 left (366/428 reviewed)
-- `fr` — 0 left (367/428 reviewed)
+- `es` — 19 left (353/372 reviewed)
+- `fr` — 19 left (354/373 reviewed)
+- `tl` — 19 left (354/373 reviewed)
 
 ---
 
 ## What recent rounds found
 
-| Round (seed) | Files | FAIL | Rate |
-|---|---|---|---|
-| `2026090906-JanLahmann` | 9 | 0 | 0.0% |
-| `2026090903-JanLahmann` | 21 | 0 | 0.0% |
-| `2026090905-JanLahmann` | 14 | 0 | 0.0% |
-| `2026090904-JanLahmann` | 10 | 0 | 0.0% |
-| `2026090901-JanLahmann` | 18 | 0 | 0.0% |
-| `2026090907-JanLahmann` | 4 | 0 | 0.0% |
-
-Typical FAIL rate is around **0%**. If your round comes
-in far above that, stop and tell the maintainer before fixing — it
-usually means the rubric drifted, not that the locale collapsed.
+*(No review files found yet.)*
 
 ---
 
