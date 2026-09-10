@@ -51,9 +51,11 @@ For AI-assisted contributors, emphasize verbally that the sub-agent
 (a 309-file manual recovery) — it is non-negotiable.
 
 **When is there work?** A locale has translation work only after an
-upstream English sync lands (a merged "sync: upstream content" PR).
-Between syncs every locale is current and `translate.py --prepare` reports
-nothing to do; that is the moment to do a review round instead
+upstream English sync (the weekly "sync: upstream content" PR). Since
+2026-09-10 the maintainer runs that sync for all 17 locales in one loop
+(`translation/v2/sync.py`, see *Running a sync* in the README), so between
+syncs every locale is current and `translate.py --prepare` reports nothing
+to do; that is the moment to do a review round instead
 (`CONTRIBUTING-REVIEWS.md`). `CONTRIBUTING-NOW.md` says which it is today.
 
 ## The one rule that prevents all collisions: own whole locales
