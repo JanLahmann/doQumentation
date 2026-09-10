@@ -433,13 +433,23 @@ def prepare(locale: str, worklist: Path) -> dict:
         old.unlink()
     (outdir / "instructions.md").write_text(instructions(locale), encoding="utf-8")
 
-    tiers: dict[str, list] = {"copy": [], "mechanical": [], "haiku": [], "sonnet": []}
+    tiers: dict[str, list] = {"copy": [], "split": [], "mechanical": [], "haiku": [], "sonnet": []}
     direct: dict[str, list[tuple[int, str, str]]] = {}
     for it in items:
         page, idx = it["id"].rsplit("#", 1)
         if is_copy_only(it["msgid"]):
             tiers["copy"].append(it)
             direct.setdefault(page, []).append((int(idx), it["msgid"], "doq: copied, nothing translatable"))
+            continue
+        # update.py found this entry's English as one line of a paragraph the
+        # English split apart, with a translation of the same shape: carry that
+        # line over, checker-verified, no model. Anything the checker rejects
+        # falls through with the line as a hint.
+        if (it.get("transfer") == "split-block" and it.get("previous_msgstr", "").strip()
+                and not check_entry(it["msgid"], it["previous_msgstr"])):
+            tiers["split"].append(it)
+            direct.setdefault(page, []).append(
+                (int(idx), it["previous_msgstr"], "doq: carried over from the paragraph the English split"))
             continue
         sim = similarity(it["previous_msgid"], it["msgid"]) if it.get("previous_msgid") else 0.0
         if sim >= HAIKU_MIN:
@@ -490,7 +500,8 @@ def prepare(locale: str, worklist: Path) -> dict:
     summary = {k: len(v) for k, v in tiers.items()}
     summary["batches"] = len(manifest)
     summary["words_to_model"] = sum(b["words"] for b in manifest)
-    print(f"{locale}: copy {summary['copy']}, mechanical {summary['mechanical']} (written directly: {n_direct}); "
+    print(f"{locale}: copy {summary['copy']}, split-block {summary['split']}, mechanical {summary['mechanical']} "
+          f"(written directly: {n_direct}); "
           f"haiku {summary['haiku']}, sonnet {summary['sonnet']} in {len(manifest)} batch(es), "
           f"{summary['words_to_model']} English words to a model")
     print(f"manifest: {(outdir / 'manifest.json').relative_to(io.REPO)}")
@@ -502,6 +513,8 @@ def prepare(locale: str, worklist: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 BATCH_NAME = re.compile(r"^batch-\d+-[a-z]+\.json$")
+REVIEW_HEADER = "X-Doq-Review-Opus"          # the page's deep-review verdict (sample-deep-review.py)
+REVIEW_HEADER_PRIOR = "X-Doq-Review-Opus-Prior"
 
 
 def repair_inner_quotes(text: str, limit: int = 50) -> tuple[str, int]:
@@ -676,7 +689,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
     # publishes stale translations (see the fuzzy note below).
     if confirm_fuzzy is None:
         confirm_fuzzy = prefix != "fix"
-    accepted = rejected = skipped = unchanged = english = 0
+    accepted = rejected = skipped = unchanged = english = withdrawn = 0
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
     for bpath in sorted(p for p in outdir.glob(f"{prefix}-*.json") if name_re.match(p.name)):
@@ -711,8 +724,10 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
     for page, fills in by_page.items():
         po = cache[page]
         changed = False
+        retranslated = False
         for idx, msgstr in fills:
             e = po[idx]
+            was_pending = "fuzzy" in e.flags or not e.msgstr.strip()
             final = match_trailing_newline(e.msgid, msgstr)
             # A fuzzy entry means msgmerge saw the English change and kept the
             # old translation pending confirmation; po4a renders English until
@@ -771,11 +786,28 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
                       f"source — check this is intended: {e.msgid[:60]!r}")
             accepted += 1
             changed = True
+            if was_pending and prefix == "batch":
+                retranslated = True
         if changed:
+            # A page's review verdict judged the translation against the
+            # English of its day. An entry the translate path wrote because
+            # msgmerge had marked it fuzzy or empty — a retranslation, a new
+            # paragraph, or the old wording confirmed against changed English —
+            # is prose no reviewer has read against the source it now faces, so
+            # the verdict is withdrawn and the page returns to the review pool;
+            # the old value is kept as history. Copy, split-block and mechanical
+            # carry-overs never come through here, and a review fix (prefix
+            # "fix") is a read by construction.
+            if retranslated and po.metadata.get(REVIEW_HEADER):
+                po.metadata[REVIEW_HEADER_PRIOR] = po.metadata.pop(REVIEW_HEADER)
+                withdrawn += 1
+                print(f"NOTE {page}: review verdict withdrawn (entries retranslated after an "
+                      f"English change); the page is eligible for review again")
             po.save(str(io.po_path(locale, page)))
     print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}"
           + (f", unchanged {unchanged}" if unchanged else "")
-          + (f", REPLACED BY ENGLISH {english}" if english else ""))
+          + (f", REPLACED BY ENGLISH {english}" if english else "")
+          + (f", review verdicts withdrawn {withdrawn}" if withdrawn else ""))
     return 1 if rejected else 0
 
 
