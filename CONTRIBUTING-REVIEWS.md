@@ -385,8 +385,6 @@ the gauge result, and which pages you changed.
 - **Never** hand-edit a rendered page or a `.po` file; `fix.py --apply`
   writes translations and `review-translations.py --record-opus` writes
   verdicts. Nothing else touches a PO.
-- **Never** edit `translation/status.json`. It is a frozen v1 record;
-  nothing in this recipe reads it.
 - Fix only the identified defect. Do not restyle passages that are already
   correct, and do not touch code blocks, math, JSX, image paths, or heading
   anchors.

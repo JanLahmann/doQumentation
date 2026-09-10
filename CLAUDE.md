@@ -38,8 +38,6 @@ Before either, in this order:
   `translation/v2/fix.py --apply` / `--leaks --write` write a translation;
   they run every entry through `translation/v2/check.py`.
 - Never edit `docs/` (generated English) or any locale but the one claimed.
-  `translation/status.json` is a frozen v1 record: nothing in the review
-  path reads or writes it.
 - Sub-agents only read and write the batch file they were given. They
   never run git, scripts or shell. Commits are the orchestrator's.
 - Stage exactly the intended set (`i18n/<locale>/po/`, a new file under

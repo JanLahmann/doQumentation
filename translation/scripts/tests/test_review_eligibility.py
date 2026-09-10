@@ -118,23 +118,6 @@ def test_record_opus_writes_header_and_skips_repairs(recorder, sampler, corpus, 
     assert [e.msgstr for e in po] == ["Hallo Welt", "Zweiter Absatz hier"]
 
 
-def test_import_status_fills_only_missing_headers(recorder, sampler, corpus, monkeypatch):
-    monkeypatch.setattr(recorder, "I18N_DIR", corpus / "i18n")
-    st = corpus / "status.json"
-    st.write_text(json.dumps({"xx": {
-        "guides/fresh.mdx": {"review_opus": "PASS", "reviewed_opus": "2026-06-01"},
-        "guides/reviewed.mdx": {"review_opus": "FAIL", "reviewed_opus": "2026-06-01"},   # header exists: kept
-        "guides/stub.mdx": {"review": "PASS"},                                          # no opus verdict
-        "guides/gone.mdx": {"review_opus": "PASS"},
-    }, "reviews": {"legacy": {}}}), encoding="utf-8")
-    monkeypatch.setattr(recorder, "STATUS_FILE", st)
-    counts = recorder.import_status()
-    assert counts == {"written": 1, "kept": 1, "no-po": 1}
-    cat = sampler.catalogue("xx")
-    assert cat["guides/fresh.mdx"]["verdict"] == "PASS"
-    assert cat["guides/reviewed.mdx"]["verdict"] == "PASS"       # bootstrap copy kept
-
-
 def test_contributing_status_counts_from_catalogue(contributing_status, sampler, corpus):
     cats = {"xx": sampler.catalogue("xx")}
     assert contributing_status.reviewed_counts(cats) == {"xx": (1, 4)}   # reviewed, fresh, mid-update, untranslated

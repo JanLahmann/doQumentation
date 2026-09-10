@@ -369,9 +369,10 @@ Every one of the 17 main locales has been through one v2 sync (English
   `translation/scripts/_common.py`.
 - **Still v1, deliberately**: `lint-translation.py` and
   `validate-translation.py` work on the rendered pages; they keep working
-  because the workflows render before they run. `translation/status.json`
-  is frozen: its provenance fields feed the page-dates plugin and
-  `STATUS.md`, nothing else reads it, and nothing writes it.   *Fixing* a rendered page in place does not work any more: such an edit
+  because the workflows render before they run. The v1 `translation/status.json`
+  was deleted on 2026-09-10 once its last readers (the page-dates plugin, the
+  sync PR's freshness report, `STATUS.md`) were moved to the PO files or
+  dropped.   *Fixing* a rendered page in place does not work any more: such an edit
   is lost at the next render. The v1 page-editing workflows and fixers were
   deleted on 2026-09-10; every fix goes through `fix.py` (`--fixes` for a
   review finding, `--leaks` for the deterministic glossary pass). The review

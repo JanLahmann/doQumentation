@@ -73,21 +73,6 @@ def test_tag_in_code_fence_does_not_false_flag(common):
 
 # ── validate + lint agree by construction (the whole point of the de-drift) ──
 
-# ── status.json helpers (shared load/save) ──
-
-def test_load_status_missing_returns_empty(common, tmp_path, monkeypatch):
-    # Point STATUS_FILE at a non-existent path → {} (not a crash).
-    monkeypatch.setattr(common, "STATUS_FILE", tmp_path / "nope.json")
-    assert common.load_status() == {}
-
-
-def test_save_then_load_roundtrips(common, tmp_path, monkeypatch):
-    monkeypatch.setattr(common, "STATUS_FILE", tmp_path / "status.json")
-    data = {"de": {"guides/x.mdx": {"validation": "PASS"}}}
-    common.save_status(data)
-    assert common.load_status() == data
-
-
 def test_validate_and_lint_agree(common, validate, lint):
     samples = [
         "<details>x</details>",                  # balanced

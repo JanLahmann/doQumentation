@@ -2772,7 +2772,7 @@ def main():
     parser.add_argument("--freshness-report", type=str, metavar="PATH",
                         help="Write a markdown freshness report to PATH and "
                              "exit. Reads only src/config/upstreamFileMeta.json "
-                             "and translation/status.json; does not touch "
+                             "; does not touch "
                              "content or the upstream-docs submodule.")
     args = parser.parse_args()
 
@@ -3116,14 +3116,13 @@ def write_page_dates_manifest():
 
 def write_freshness_report(out_path: Path) -> None:
     """Write a markdown freshness report. Reads only
-    src/config/upstreamFileMeta.json and translation/status.json; does not
-    touch the upstream-docs submodule or generate any content. Intended for
+    src/config/upstreamFileMeta.json; does not touch the upstream-docs
+    submodule or generate any content. Intended for
     auto-PR bodies and ad-hoc CLI inspection.
     """
     from datetime import datetime, timezone
 
     meta_path = PROJECT_ROOT / "src" / "config" / "upstreamFileMeta.json"
-    status_path = PROJECT_ROOT / "translation" / "status.json"
 
     if not meta_path.exists():
         out_path.write_text("_No `upstreamFileMeta.json` found — skipping freshness report._\n")
@@ -3138,33 +3137,6 @@ def write_freshness_report(out_path: Path) -> None:
         if en and up and up > en:
             en_behind.append((rel, en, up))
     en_behind.sort(key=lambda t: (t[2], t[1]), reverse=True)
-
-    locale_stale: dict[str, int] = {}
-    locale_total: dict[str, int] = {}
-    if status_path.exists():
-        try:
-            status = json.loads(status_path.read_text())
-        except json.JSONDecodeError:
-            status = {}
-        for locale, entries in status.items():
-            if not isinstance(entries, dict):
-                continue
-            stale = 0
-            total = 0
-            for rel, info in entries.items():
-                if not isinstance(info, dict):
-                    continue
-                if info.get("status") != "promoted":
-                    continue
-                base = info.get("en_base_commit_date", "")
-                en_date = files.get(rel, {}).get("en_date", "")
-                if not base or not en_date:
-                    continue
-                total += 1
-                if base < en_date:
-                    stale += 1
-            locale_total[locale] = total
-            locale_stale[locale] = stale
 
     upstream_repo = meta.get("_upstream_repo", "Qiskit/documentation")
     submodule_sha = ""
@@ -3195,21 +3167,13 @@ def write_freshness_report(out_path: Path) -> None:
         lines.append("_All EN pages are caught up with upstream._")
     lines.append("")
 
-    lines.append("### Per-locale staleness (promoted entries with `en_base_commit_date < en_date`)")
-    if locale_total:
-        lines.append("")
-        lines.append("| Locale | Stale | Promoted | % stale |")
-        lines.append("|---|---:|---:|---:|")
-        for locale in sorted(locale_total):
-            tot = locale_total[locale]
-            st = locale_stale[locale]
-            pct = f"{(100 * st / tot):.0f}%" if tot else "—"
-            lines.append(f"| `{locale}` | {st} | {tot} | {pct} |")
-    else:
-        lines.append("")
-        lines.append("_No translation status found._")
+    lines.append("### Translations")
     lines.append("")
-
+    lines.append("Each locale's translation is its PO tree under `i18n/<locale>/po/`; after this")
+    lines.append("merges, `translation/v2/update.py --locale X` lists what the new English")
+    lines.append("leaves fuzzy or untranslated there, and the daily `check-translations.yml`")
+    lines.append("run reports it per locale in the open `translation-freshness` issue.")
+    lines.append("")
     lines.append("### Snapshot")
     lines.append("")
     lines.append(f"- Upstream repo: [`{upstream_repo}`](https://github.com/{upstream_repo})")

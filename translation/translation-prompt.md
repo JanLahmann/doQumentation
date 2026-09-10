@@ -50,12 +50,11 @@ If missing, run: `git submodule update --init && python scripts/sync-content.py`
 ## Step 2 — Discover
 
 ```bash
-python translation/scripts/translation-status.py --locale {LOCALE} --backlog
+python translation/v2/update.py --locale {LOCALE}
 ```
 
-Add `--limit N` to cap the number of files per session.
-
-This lists untranslated files in priority order: tutorials → guides → courses → modules → other.
+This prints what the current English leaves fuzzy or untranslated in the
+locale's PO files (`translation/v2/README.md`, *Running a sync*).
 
 Source paths (courses and modules are nested — not top-level):
 - `docs/tutorials/{file}.mdx`
