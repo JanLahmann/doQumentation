@@ -859,6 +859,20 @@ def test_apply_warns_when_a_title_caption_reverts_to_english(tmp_path, monkeypat
     assert "REPLACED BY ENGLISH 1" in out, out
 
 
+def test_apply_warns_when_a_card_description_reverts_to_english(tmp_path, monkeypatch, capsys):
+    """A Card's description= and linkText= are prose too. On the first real
+    sync every locale's agent copied the renamed Qiskit Fermions Card back
+    whole, and apply only saw title= — a product name that IS English — so it
+    would have been silent had the tag also lost its translated description."""
+    card = ('<Card\n  title="Qiskit Fermions"\n  description="Work with fermionic systems."\n'
+            '  href="/x"\n  linkText="Browse documentation"\n/>\n')
+    prev = ('<Card\n  title="Qiskit Fermions"\n  description="Arbeite mit fermionischen Systemen."\n'
+            '  href="/x"\n  linkText="Dokumentation durchsuchen"\n/>\n')
+    tr, path = _apply_one(tmp_path, monkeypatch, card, prev, card)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH 1" in capsys.readouterr().out
+
+
 def test_apply_stays_quiet_for_a_bare_closing_tag(tmp_path, monkeypatch, capsys):
     """No attribute prose, nothing to lose: the pl qft#75 repair case again,
     now that attribute values survive tag stripping."""
