@@ -228,6 +228,10 @@ def split_batches(items: list[dict], max_items: int = BATCH_ITEMS, max_tokens: f
     return batches
 
 
+def is_table(msgid: str) -> bool:
+    return msgid.lstrip().startswith("|")
+
+
 def is_copy_only(msgid: str) -> bool:
     """Nothing a translator could change: math, code, citations, images."""
     s = msgid.strip()
@@ -475,7 +479,11 @@ def prepare(locale: str, worklist: Path) -> dict:
             slim["changes"] = word_changes(shrink_data_uris(it["previous_msgid"]), slim["msgid"])
             slim["prev_msgstr"] = shrink_data_uris(it["previous_msgstr"])
         slim["_id"] = it["id"]          # stripped before writing; kept in the .ids.json sidecar
-        tiers["haiku" if prev_ok and sim >= HAIKU_MIN else "sonnet"].append(slim)
+        # A markdown table is a fuzzy match like any other, but Haiku, asked
+        # for a JSON list of strings, twice wrote the translated table itself
+        # into the output file (pl, th, 2026-09-10); Sonnet did not.
+        haiku = prev_ok and sim >= HAIKU_MIN and not is_table(it["msgid"])
+        tiers["haiku" if haiku else "sonnet"].append(slim)
 
     n_direct = _write_direct(locale, direct)
 

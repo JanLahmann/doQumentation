@@ -57,34 +57,40 @@ reviewed and stubs under 40 lines, not leakage.
 
 | Locale | Unreviewed pool | Reviewed so far |
 |---|---|---|
-| `th` | **164** | 209/373 (56%) |
+| `th` | **175** | 198/373 (53%) |
+| `id` | **160** | 213/373 (57%) |
 | `de` | **158** | 214/372 (57%) |
-| `id` | **150** | 223/373 (59%) |
-| `he` | **127** | 246/373 (65%) |
-| `ko` | **119** | 253/372 (68%) |
-| `ms` | **97** | 276/373 (73%) |
-| `ro` | **96** | 277/373 (74%) |
-| `cs` | **91** | 282/373 (75%) |
-| `pl` | **85** | 287/372 (77%) |
-| `uk` | **38** | 335/373 (89%) |
-| `ja` | **37** | 335/372 (90%) |
-| `ar` | **30** | 343/373 (91%) |
-| `it` | **27** | 346/373 (92%) |
-| `pt` | **27** | 346/373 (92%) |
-
-**Nearly exhausted** (fewer than 25 eligible) — still worth
-a short round, but expect to re-sweep files that already carry a
-verdict, or to accept a round smaller than 25:
-
-- `es` — 19 left (353/372 reviewed)
-- `fr` — 19 left (354/373 reviewed)
-- `tl` — 19 left (354/373 reviewed)
+| `he` | **149** | 224/373 (60%) |
+| `ko` | **135** | 237/372 (63%) |
+| `ro` | **115** | 258/373 (69%) |
+| `ms` | **110** | 263/373 (70%) |
+| `pl` | **105** | 267/372 (71%) |
+| `cs` | **101** | 272/373 (72%) |
+| `uk` | **62** | 311/373 (83%) |
+| `ja` | **60** | 312/372 (83%) |
+| `ar` | **54** | 319/373 (85%) |
+| `it` | **50** | 323/373 (86%) |
+| `pt` | **50** | 323/373 (86%) |
+| `tl` | **43** | 330/373 (88%) |
+| `es` | **42** | 330/372 (88%) |
+| `fr` | **42** | 331/373 (88%) |
 
 ---
 
 ## What recent rounds found
 
-*(No review files found yet.)*
+| Round (seed) | Files | FAIL | Rate |
+|---|---|---|---|
+| `2026090802-JanLahmann` | 22 | 3 | 13.6% |
+| `2026090803-JanLahmann` | 6 | 0 | 0.0% |
+| `2026090804-JanLahmann` | 25 | 3 | 12.0% |
+| `2026090801-JanLahmann` | 6 | 0 | 0.0% |
+| `2026090701-JanLahmann` | 25 | 2 | 8.0% |
+| `2026090741-clahmann694` | 25 | 2 | 8.0% |
+
+Typical FAIL rate is around **9%**. If your round comes
+in far above that, stop and tell the maintainer before fixing — it
+usually means the rubric drifted, not that the locale collapsed.
 
 ---
 

@@ -1016,3 +1016,54 @@ def test_translate_apply_withdraws_the_review_verdict_on_retranslation(fix_env):
     assert tr.apply("de") == 0
     meta = polib.pofile(str(path)).metadata
     assert "X-Doq-Review-Opus" not in meta and meta["X-Doq-Review-Opus-Prior"] == "PASS 2026-07-05"
+
+
+def test_prepare_never_sends_a_table_to_haiku(monkeypatch):
+    """Two Haiku table batches (pl, th, 2026-09-10) came back as the translated
+    table written into the output file instead of a JSON list. A table with a
+    good fuzzy hint is still Sonnet's."""
+    import translate
+    d = io.WORK_DIR / "_pytest_table"
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    monkeypatch.setattr(io, "WORK_DIR", d)
+    monkeypatch.setattr(translate, "_write_direct", lambda locale, direct: 0)
+    table = "| Name | Use |\n|---|---|\n| Foo | Runs the thing on the backend |\n"
+    items = [{"id": "guides/t.mdx#0", "type": "Plain text", "msgid": table,
+              "previous_msgid": table.replace("backend", "device"),
+              "previous_msgstr": "| Name | Nutzung |\n|---|---|\n| Foo | Führt das Ding auf dem Gerät aus |\n"},
+             {"id": "guides/t.mdx#1", "type": "Plain text",
+              "msgid": "Paragraph 1 explains how the transpiler maps a circuit onto the backend.",
+              "previous_msgid": "Paragraph 1 explains how the transpiler maps a circuit onto hardware.",
+              "previous_msgstr": "Absatz 1 erklärt, wie der Transpiler einen Circuit auf die Hardware abbildet."}]
+    wl = d / "worklist-zz.json"
+    wl.write_text(json.dumps({"items": items}), encoding="utf-8")
+    summary = translate.prepare("zz", wl)
+    assert summary["haiku"] == 1 and summary["sonnet"] == 1
+    manifest = json.loads((d / "zz" / "manifest.json").read_text(encoding="utf-8"))
+    sonnet = next(b for b in manifest["batches"] if b["model"] == "sonnet")
+    assert json.loads((io.REPO / sonnet["file"]).read_text(encoding="utf-8"))[0]["msgid"].startswith("|")
+    shutil.rmtree(d)
+
+
+def test_sync_status_names_every_bad_output(tmp_path, monkeypatch):
+    import sync
+    monkeypatch.setattr(sync.io, "REPO", tmp_path)
+    w = tmp_path / "w"; w.mkdir()
+    manifest = {"batches": [
+        {"file": "w/b0.json", "out": "w/b0.out.json", "items": 2},
+        {"file": "w/b1.json", "out": "w/b1.out.json", "items": 2},
+        {"file": "w/b2.json", "out": "w/b2.out.json", "items": 2},
+        {"file": "w/b3.json", "out": "w/b3.out.json", "items": 2},
+        {"file": "w/b4.json", "out": "w/b4.out.json", "items": 2},
+    ]}
+    (w / "b0.out.json").write_text('["a", "b"]', encoding="utf-8")            # fine
+    (w / "b1.out.json").write_text('| Nazwa | Dostawca |\n|---|---|\n', encoding="utf-8")   # raw text
+    (w / "b2.out.json").write_text('["a"]', encoding="utf-8")                 # short
+    (w / "b3.out.json").write_text('[{"msgstr": "a"}, "b"]', encoding="utf-8")  # wrong shape
+    problems = sync.check_outputs(manifest)
+    assert len(problems) == 4
+    assert problems[0].startswith("b1.out.json: not valid JSON")
+    assert "1 strings for 2 items" in problems[1]
+    assert problems[2].startswith("b3.out.json: not a list of strings")
+    assert problems[3] == "b4.out.json: not filled"
