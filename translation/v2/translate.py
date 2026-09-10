@@ -114,12 +114,16 @@ Rules, each enforced by an automatic checker:
 - Keep byte-for-byte: inline code in backticks (including placeholders like
   `<per sub-job overhead>`, and even when the code looks wrong, such as
   `PassManagers` or `batch.details() method`), URLs, image paths, JSX/HTML
-  tags and every attribute EXCEPT title=, heading anchors like
-  {{#some-anchor}}, MDX comments {{/* ... */}}.
-- title= is the exception because it is prose the reader sees (video and
-  image captions): TRANSLATE it. Leaving the English title= in place is a
-  silent regression — title= is the one attribute the checker does not
-  compare byte-for-byte, so nothing will catch it.
+  tags and every attribute EXCEPT the prose ones (title=, description=,
+  alt=, linkText=), heading anchors like {{#some-anchor}}, MDX comments
+  {{/* ... */}}.
+- title=, description=, alt= and linkText= are the exception because they
+  are prose the reader sees (video and image captions, Card descriptions
+  and link labels): TRANSLATE them, and keep a product name in a title=
+  as it is. Leaving such an attribute in English is a silent regression —
+  they are the attributes the checker does not compare byte-for-byte, so
+  nothing will catch it. Never copy a whole Card or tag back in English
+  because its English changed: translate its prose attributes afresh.
 - Backticked code spans must be copied EXACTLY as in the English, never
   translated, never merged with surrounding text, and none may be added:
   the checker rejects the whole entry if the set of backtick spans differs
@@ -131,7 +135,8 @@ Rules, each enforced by an automatic checker:
 - An item without `type` is plain text. A `type` of "Title ##" is a
   heading: translate the text, keep the anchor. A `type` starting with
   "Yaml Front Matter" is page metadata: plain text.
-- A JSX tag item with title="...": translate only the title value.
+- A JSX tag item: translate only the prose attribute values (title=,
+  description=, alt=, linkText=); everything else in the tag stays.
 - `prev_msgstr`, when present, is the {lang} of an earlier version of this
   msgid and `changes` shows how the English changed since, as
   [-removed-]{{+added+}} with a few words of context: reuse the previous
@@ -513,6 +518,12 @@ def prepare(locale: str, worklist: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 BATCH_NAME = re.compile(r"^batch-\d+-[a-z]+\.json$")
+# Tag attributes whose value is prose the reader sees, translated like any
+# paragraph and therefore where an agent's English copy hides: the video and
+# image captions, and — on the first real sync, in every locale at once — a
+# Card's description= and linkText= copied back whole because its English
+# had changed.
+PROSE_ATTRS = ("title", "alt", "description", "linkText")
 REVIEW_HEADER = "X-Doq-Review-Opus"          # the page's deep-review verdict (sample-deep-review.py)
 REVIEW_HEADER_PRIOR = "X-Doq-Review-Opus-Prior"
 
@@ -758,7 +769,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             # over 戦略 / Strategi and apply said nothing, because after the
             # tag was removed no letters were left to see.
             visible = re.sub(r"<[^>]+>", lambda m: " ".join(
-                v for k, v in ATTR_RE.findall(m.group(0)) if k in ("title", "alt")), visible)
+                v for k, v in ATTR_RE.findall(m.group(0)) if k in PROSE_ATTRS), visible)
             became_english = (msgstr.strip() == e.msgid.strip()
                               and e.msgstr.strip() != e.msgid.strip()
                               and not is_copy_only(e.msgid)
