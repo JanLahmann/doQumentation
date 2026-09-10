@@ -214,20 +214,27 @@ def labelled():
     return data
 
 
-def independent_positives(labelled):
-    """The positives that can measure the sieve's recall.
-
-    The set is a union of review rounds (`build-eval-set.py --extend`), and
-    the gauge rounds chose what to read FROM the sieve's own findings. A defect
-    repaired in one of those rounds is a defect the sieve flagged, by
-    construction — scoring recall on it says 82% and means nothing. Only rounds
-    whose candidates came from elsewhere (the positional-drift detector, a
-    full-page review) count. `sources[].selection` says which is which."""
-    sieve_heads = {s["head"][:12] for s in labelled.get("sources", []) if s.get("selection") == "sieve"}
-    rows = [p for p in labelled["positives"] if p.get("src", "")[:12] not in sieve_heads]
+def positives_by_selection(labelled, selections):
+    """The positives from rounds whose `sources[].selection` is in `selections`."""
+    heads = {s["head"][:12]: s.get("selection", "independent") for s in labelled.get("sources", [])}
+    rows = [p for p in labelled["positives"] if heads.get(p.get("src", "")[:12], "independent") in selections]
     if not rows:
-        pytest.skip("eval set has no independently selected positives")
+        pytest.skip(f"eval set has no positives from {selections} rounds")
     return rows
+
+
+def independent_positives(labelled):
+    """The positives that can measure the sieve's recall on its own class.
+
+    The set is a union of review rounds (`build-eval-set.py --extend`). Gauge
+    rounds chose what to read FROM the sieve's own findings, so their repairs
+    are defects the sieve flagged by construction (scoring recall on them says
+    82% and means nothing). Whole-page Opus reads (`selection: review`) repair
+    mostly wording and terminology, a class the sieve was never built to see;
+    their recall is reported by its own test below. Only rounds whose
+    candidates came from another detector — the positional-drift sweeps —
+    measure the sieve on the completeness class it exists for."""
+    return positives_by_selection(labelled, ("independent",))
 
 
 # Floors and ceilings, not exact values: the set grows every review round, so
@@ -290,6 +297,23 @@ def test_the_union_is_worth_running(completeness, labelled):
     noise = sum(1 for h in neg if h) / len(neg)
     assert recall >= UNION_RECALL_FLOOR, f"union recall fell to {recall:.1%}"
     assert noise <= UNION_NOISE_CEILING, f"union noise rose to {noise:.2%}"
+
+
+# The whole-page review rounds (de and he, 2026-09-10: 2,047 repairs) measured
+# 2.1% union recall — the sieve sees one in fifty of the wording, terminology
+# and dropped-qualifier repairs an Opus reader makes, against 70.1% on the
+# drift class it was built for. That is the honest size of the hole the README
+# describes ("neither layer sees a fluent, complete, plausible mistranslation"),
+# recorded here so a later change cannot claim to have closed it by accident.
+# The floor is a tripwire against a regression to nothing, not a target.
+REVIEW_CLASS_RECALL_FLOOR = 0.01
+
+
+def test_review_class_recall_is_reported(completeness, labelled):
+    rows = positives_by_selection(labelled, ("review",))
+    pos = [_checks_of(completeness, p, p["defective"]) for p in rows]
+    recall = sum(1 for h in pos if h) / len(pos)
+    assert recall >= REVIEW_CLASS_RECALL_FLOOR, f"review-class recall fell to {recall:.1%}"
 
 
 def test_sieve_selected_rounds_are_excluded_from_recall(labelled):

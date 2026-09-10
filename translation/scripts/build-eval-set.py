@@ -55,7 +55,7 @@ Usage:
     python translation/scripts/build-eval-set.py --out translation/eval/set.json
     # after another review PR merges, add its labels to the committed set:
     python translation/scripts/build-eval-set.py --base <merge>^1 --head <merge> \
-        --extend --selection independent   # or: sieve, for a gauge round
+        --extend --selection independent   # sieve for a gauge round, review for a page-read round
 """
 
 from __future__ import annotations
@@ -203,11 +203,14 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--extend", action="store_true",
                     help="union the new labels into the set already at --out instead of replacing it")
-    ap.add_argument("--selection", choices=("independent", "sieve"), default="independent",
-                    help="how this round chose what to read: 'sieve' if the candidates came from "
-                         "check-completeness.py (a gauge round), 'independent' otherwise (a drift "
-                         "sweep, a full-page review). Sieve-selected positives cannot measure the "
-                         "sieve's recall — it found them by construction — so the scorer excludes them.")
+    ap.add_argument("--selection", choices=("independent", "sieve", "review"), default="independent",
+                    help="how this round chose what to read and what it repaired: 'sieve' if the "
+                         "candidates came from check-completeness.py (a gauge round); 'independent' "
+                         "for a drift sweep or any other detector the sieve knows nothing of; 'review' "
+                         "for a whole-page Opus read, whose repairs are mostly wording and terminology. "
+                         "Sieve-selected positives cannot measure the sieve's recall (it found them by "
+                         "construction); review-round positives measure it on a class it was never built "
+                         "for, so the scorer reports them separately from the drift-class floors.")
     ap.add_argument("--no-negatives", action="store_true",
                     help="keep only the positives of this round. Required for a round run with "
                          "fix.py --flagged-only: nobody read the other entries on those pages, so "
