@@ -79,7 +79,18 @@ reviewed and stubs under 40 lines, not leakage.
 
 ## What recent rounds found
 
-*(No review files found yet.)*
+| Round (seed) | Files | FAIL | Rate |
+|---|---|---|---|
+| `2026090802-JanLahmann` | 22 | 3 | 13.6% |
+| `2026090803-JanLahmann` | 6 | 0 | 0.0% |
+| `2026090804-JanLahmann` | 25 | 3 | 12.0% |
+| `2026090801-JanLahmann` | 6 | 0 | 0.0% |
+| `2026090701-JanLahmann` | 25 | 2 | 8.0% |
+| `2026090741-clahmann694` | 25 | 2 | 8.0% |
+
+Typical FAIL rate is around **9%**. If your round comes
+in far above that, stop and tell the maintainer before fixing — it
+usually means the rubric drifted, not that the locale collapsed.
 
 ---
 

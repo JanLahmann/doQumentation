@@ -146,7 +146,9 @@ def recent_rounds(limit: int = 6) -> list[tuple[str, int, int]]:
         return (1, m.group(1)) if m else (0, f.stem)
 
     files = sorted(REVIEWS.glob("opus-*.json"), key=seed_key, reverse=True)
-    for p in files[:limit]:
+    for p in files:
+        if len(rows) >= limit:
+            break
         try:
             recs = json.load(open(p, encoding="utf-8"))
         except Exception:
