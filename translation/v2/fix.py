@@ -298,26 +298,77 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
 
 
 
-# ── deterministic glossary-leak pass (the PO port of
-#    translation/scripts/fix-glossary-leaks.py, which wrote rendered pages) ──
+# ── deterministic glossary-leak pass ──────────────────────────────────────
+# Ported from the v1 fix-glossary-leaks.py (deleted 2026-09-10: it wrote rendered
+# pages, which are derived now). The determiner list is the v1 one; the
+# transformation is reimplemented here because the v1 decapitalisation had no
+# proper-noun or link-text guard (it turned "la fonction IBM Circuit" into
+# "IBM circuit" and "[Qubit initialization]" — an English page title — into
+# "[qubit initialization]"). Both were invisible to lint AND to check.py, since
+# neither is a code span, URL, tag or math. The prose projection and the API
+# identifier list still come from the read-only check-glossary-consistency.py.
+
+# Determiners that, when preceding a leaked noun, mean the surrounding prose
+# already carries the gender — so a bare noun swap is safe. (gender-agnostic set
+# kept simple: we only swap the noun, not the determiner.)
+SAFE_DETERMINERS = {
+    # Spanish
+    "un", "una", "unos", "unas", "el", "la", "los", "las", "del", "al",
+    "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas",
+    "nuestro", "nuestra", "nuestros", "nuestras", "cada", "esta", "dicha",
+    "su", "sus", "mismo", "misma", "otro", "otra", "otros", "otras",
+    "varios", "varias", "algún", "alguna", "ningún", "ninguna",
+    # French
+    "le", "les", "des", "une", "du", "au", "aux",
+    "ce", "cet", "cette", "ces", "mon", "ton", "son", "notre", "votre", "leur",
+    "mes", "tes", "ses", "nos", "vos", "leurs",
+    "chaque", "aucun", "aucune", "plusieurs", "certains", "certaines",
+    "de",
+    # Italian
+    "il", "lo", "gli", "i", "uno", "della", "dello", "delle", "degli",
+    "questa", "questo", "queste", "questi", "quella", "quello", "ogni",
+    "nostra", "nostro", "vostra", "vostro", "sua", "suo",
+    # Portuguese
+    "o", "os", "as", "um", "uns", "umas", "uma", "do", "da", "dos", "das",
+    "no", "na", "nas", "este", "esta", "estes", "estas", "esse", "essa",
+    "nosso", "nossa", "seu", "qualquer",
+    # Ukrainian (articleless; demonstratives/quantifiers precede)
+    "цей", "ця", "це", "ці", "той", "та", "те", "ті", "кожен", "кожна",
+    "наш", "наша", "ваш", "ваша", "його", "її", "один", "одна", "одне",
+    # Polish
+    "ten", "ta", "to", "te", "ci", "tej", "tego", "tych", "każdy", "każda",
+    "nasz", "nasza", "wasz", "jego", "jej", "jeden", "jedna", "jedno", "danej",
+    # Czech
+    "této", "tohoto", "těchto", "každý", "každá",
+    "náš", "naše", "váš", "jeho", "její", "jeden", "jedna", "jedno", "dané",
+    # Romanian (enclitic articles, but determiners precede)
+    "niște", "acest", "această", "aceste", "acești", "acel",
+    "fiecare", "nostru", "noastră", "vostru", "său",
+    # Indonesian / Malay (no articles; demonstratives/quantifiers)
+    "sebuah", "suatu", "setiap", "ini", "itu", "satu", "beberapa",
+    # Arabic (no articles; definite article الـ attaches; prepositions + iDafa head nouns precede)
+    # Definite article variants (the ـ lam connector appears separate before Latin words)
+    "الـ", "لـ", "للـ", "والـ", "فالـ", "بالـ",
+    # Common prepositions and quantifiers preceding technical English nouns
+    "من", "في", "على", "إلى", "عن", "مع", "بعد", "قبل", "حول", "خلال",
+    "كل", "بكل", "لكل", "وكل", "هذه", "هذا", "هذه", "تلك", "ذلك", "تلك",
+    "بعض", "أي", "أحد", "كلا", "جميع", "مختلف", "معظم",
+    # Common iDafa head-nouns (noun-of-X construct: safe to translate X)
+    "عمق", "عدد", "تشغيل", "بناء", "توسيع", "أخطاء", "دقة", "أداء",
+    "حالات", "نتائج", "مخطط", "مخططات", "تحليل", "تصميم", "إنشاء",
+    "حجم", "نوع", "أنواع", "مجموعة", "قائمة", "عملية", "تنفيذ",
+    "معلمات", "سمات", "خصائص", "مكونات", "بنية", "مستوى", "طبقة",
+    "إخراج", "مدخل", "إدخال", "ناتج", "نموذج", "معيار", "مثال",
+}
+
 
 def _leak_rules():
-    """SAFE_DETERMINERS and the prose projection come from the v1 script; the
-    transformation itself is reimplemented here because the v1 decapitalisation
-    had no proper-noun or link-text guard (it turned "la fonction IBM Circuit"
-    into "IBM circuit" and "[Qubit initialization]" — an English page title —
-    into "[qubit initialization]"). Both were invisible to lint AND to check.py,
-    since neither is a code span, URL, tag or math."""
     import importlib.util
-    root = Path(__file__).resolve().parent.parent
-    out = {}
-    for key, rel in (("leak", "scripts/fix-glossary-leaks.py"),
-                     ("chk", "scripts/check-glossary-consistency.py")):
-        spec = importlib.util.spec_from_file_location(f"_{key}", root / rel)
-        m = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(m)
-        out[key] = m
-    return out["leak"].SAFE_DETERMINERS, out["chk"]
+    rel = Path(__file__).resolve().parent.parent / "scripts" / "check-glossary-consistency.py"
+    spec = importlib.util.spec_from_file_location("_chk", rel)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return SAFE_DETERMINERS, m
 
 
 _LINK_TEXT = re.compile(r"\[[^\]]*\]")
