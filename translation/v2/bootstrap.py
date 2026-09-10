@@ -15,9 +15,9 @@ translation was made from. Two strategies, in order:
              match; entries inside an insertion or replacement stay
              untranslated. The page renders with English for those.
 
-Every PO records how it was made (X-Doq-Bootstrap: exact|positional) and, when
-translation/status.json has verdicts for the page, the v1 review verdicts, so
-nothing that was reviewed has to be reviewed again.
+Every PO records how it was made (X-Doq-Bootstrap: exact|positional). (The
+2026-09 bootstrap also copied the v1 review verdicts into the headers; that
+source, translation/status.json, is gone since 2026-09-10.)
 
 The report at translation/v2/work/bootstrap-<locale>.json lists every page
 with its strategy, entry counts and, for failures, where the structures
@@ -39,9 +39,6 @@ import polib
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po4a_io as io  # noqa: E402
 
-STATUS = io.REPO / "translation" / "status.json"
-
-
 def positional(rel: str, translated: Path) -> tuple[polib.POFile, int, int]:
     """Pair prose entries by type sequence. Returns (po, paired, total)."""
     en = io.entries_of((io.DOCS / rel).read_text(encoding="utf-8"))
@@ -61,16 +58,6 @@ def positional(rel: str, translated: Path) -> tuple[polib.POFile, int, int]:
     return io.adopt(po), paired, len(en)
 
 
-def review_meta(locale: str, rel: str, status: dict) -> dict[str, str]:
-    e = status.get(locale, {}).get(rel, {})
-    out = {}
-    if e.get("review"):
-        out["Review-Tier3"] = f"{e['review']} {e.get('reviewed', '')}".strip()
-    if e.get("review_opus"):
-        out["Review-Opus"] = f"{e['review_opus']} {e.get('reviewed_opus', '')}".strip()
-    return out
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--locale", required=True)
@@ -81,7 +68,6 @@ def main() -> int:
                     help="POTs are already current (extract.py ran); lets locales bootstrap in parallel")
     args = ap.parse_args()
 
-    status = json.loads(STATUS.read_text(encoding="utf-8")) if STATUS.exists() else {}
     pages = [args.page] if args.page else io.all_pages()
     report: dict[str, dict] = {}
     counts = {"exact": 0, "positional": 0, "failed": 0, "skipped": 0}
@@ -115,8 +101,7 @@ def main() -> int:
                 report[rel] = {"strategy": "failed", "reason": io.diagnose(rel, tr)}
                 counts["failed"] += 1
                 continue
-        io.set_header(po, rel, args.locale, Bootstrap=strategy,
-                      **review_meta(args.locale, rel, status))
+        io.set_header(po, rel, args.locale, Bootstrap=strategy)
         out = io.po_path(args.locale, rel)
         out.parent.mkdir(parents=True, exist_ok=True)
         po.save(str(out))

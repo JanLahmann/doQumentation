@@ -6,7 +6,7 @@ Since 2026-09-10 a page's deep-review verdict lives in the header of its PO
 file (`X-Doq-Review-Opus: PASS 2026-07-05`), next to the translation it judges.
 It is written by the review round itself, before the PR is opened, so the
 verdict ships with the fixes and there is no maintainer step after merge.
-`translation/status.json` is no longer read or written here; the sampler
+The v1 `translation/status.json` was retired on 2026-09-10; the sampler
 (`sample-deep-review.py`) and the contributor overview
 (`contributing-status.py`) read the same headers.
 
@@ -17,10 +17,6 @@ Usage:
 
     # Progress per locale (reviewed / reviewable pages, pages mid-update)
     python translation/scripts/review-translations.py --progress [--locale de]
-
-    # One-time migration (2026-09-10): copy the verdicts status.json still
-    # held into the PO headers that lack them
-    python translation/scripts/review-translations.py --import-status
 
 A record is `{locale, file, verdict, ...}` as the opus-deep-review workflow
 returns it. Only page reads count: PASS, MINOR_ISSUES and FAIL are recorded;
@@ -42,7 +38,6 @@ import polib
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
 I18N_DIR = REPO_ROOT / "i18n"
-STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
 REVIEW_HEADER = "X-Doq-Review-Opus"
 PAGE_VERDICTS = ("PASS", "MINOR_ISSUES", "FAIL")
@@ -115,28 +110,6 @@ def record_opus_from_json(json_path: str, only_locale: str | None = None,
     return counts
 
 
-def import_status() -> dict:
-    """One-time: copy `review_opus` / `reviewed_opus` from status.json into
-    every PO header that has no verdict yet. Headers already set are kept
-    (the bootstrap copied the same data)."""
-    if not STATUS_FILE.exists():
-        sys.exit("status.json not found")
-    status = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    counts = {"written": 0, "kept": 0, "no-po": 0}
-    for locale, entries in status.items():
-        if not isinstance(entries, dict) or len(locale) != 2:
-            continue
-        for rel, e in entries.items():
-            v = e.get("review_opus")
-            if v not in PAGE_VERDICTS:
-                continue
-            res = record_verdict(locale, rel, v, e.get("reviewed_opus", ""), overwrite=False)
-            counts[res] += 1
-    print(f"imported {counts['written']} verdict(s); {counts['kept']} already in headers; "
-          f"{counts['no-po']} status entries without a PO")
-    return counts
-
-
 def show_progress(only_locale: str | None = None, min_lines: int = 40) -> None:
     sdr = _sampler()
     locales = [only_locale] if only_locale else sdr.MAIN_LOCALES
@@ -159,8 +132,6 @@ def main():
     g.add_argument("--record-opus", action="store_true",
                    help="record a round's page verdicts into the PO headers (--from-json)")
     g.add_argument("--progress", action="store_true", help="reviewed / reviewable pages per locale")
-    g.add_argument("--import-status", action="store_true",
-                   help="one-time: copy status.json's review_opus verdicts into PO headers lacking one")
     ap.add_argument("--from-json", metavar="PATH", help="records file (or - for stdin)")
     ap.add_argument("--locale", help="restrict to one locale; --record-opus refuses records for others")
     ap.add_argument("--date", help="date to stamp instead of today (YYYY-MM-DD)")
@@ -172,8 +143,6 @@ def main():
         record_opus_from_json(args.from_json, args.locale, args.date)
     elif args.progress:
         show_progress(args.locale)
-    elif args.import_status:
-        import_status()
 
 
 if __name__ == "__main__":

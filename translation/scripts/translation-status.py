@@ -1,814 +1,190 @@
 #!/usr/bin/env python3
 """
-Translation status dashboard.
+Translation status from the PO files: what each locale has, what the current
+English leaves untranslated, and how much of it has been reviewed.
 
-Combines on-the-fly file scanning with persistent status.json data to show
-a complete picture of translation progress across all locales.
+    python3 translation/scripts/translation-status.py                 # overview
+    python3 translation/scripts/translation-status.py --locale de     # per-section detail
+    python3 translation/scripts/translation-status.py --json          # machine-readable
+    python3 translation/scripts/translation-status.py --write-status  # write translation/STATUS.md
 
-Usage:
-    python translation/scripts/translation-status.py                          # overview
-    python translation/scripts/translation-status.py --locale de              # single locale
-    python translation/scripts/translation-status.py --locale de --backlog    # prioritized backlog
-    python translation/scripts/translation-status.py --validate               # run + record validation
-    python translation/scripts/translation-status.py --markdown               # markdown table
-    python translation/scripts/translation-status.py --json                   # JSON output
-    python translation/scripts/translation-status.py --update-contributing    # update CONTRIBUTING table
-    python translation/scripts/translation-status.py --write-status           # write translation/STATUS.md
+Everything here is read from i18n/<locale>/po/ (one PO per page: entries and
+their fuzzy/empty state, the X-Doq-Review-Opus header) and docs/ (the pages
+that exist in English). Nothing is cached: the v1 status.json this script
+used to read was retired on 2026-09-10.
 """
 
+from __future__ import annotations
+
 import argparse
-import hashlib
-import re
+import importlib.util
 import json
 import sys
+from collections import Counter
 from datetime import date
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+import polib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS_DIR = REPO_ROOT / "docs"
 I18N_DIR = REPO_ROOT / "i18n"
-DRAFTS_DIR = REPO_ROOT / "translation" / "drafts"
-STATUS_FILE = REPO_ROOT / "translation" / "status.json"
-CONTRIBUTING_FILE = REPO_ROOT / "CONTRIBUTING-TRANSLATIONS.md"
 STATUS_MD = REPO_ROOT / "translation" / "STATUS.md"
 
-FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
-
-MAIN_LOCALES = ["de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he", "ms", "id", "th", "ko", "pl", "ro", "cs"]
-DIALECT_LOCALES: list[str] = []   # the 9 German dialect locales were removed 2026-09-05
-ALL_LOCALES = MAIN_LOCALES + DIALECT_LOCALES
-
+MAIN_LOCALES = [
+    "de", "es", "uk", "ja", "fr", "it", "pt", "tl", "ar", "he",
+    "ms", "id", "th", "ko", "pl", "ro", "cs",
+]
 LOCALE_NAMES = {
     "de": "German", "es": "Spanish", "uk": "Ukrainian", "ja": "Japanese",
     "fr": "French", "it": "Italian", "pt": "Portuguese", "tl": "Tagalog",
-    "ar": "Arabic", "he": "Hebrew",
-    "ms": "Malay", "id": "Indonesian", "th": "Thai",
-    "ko": "Korean", "pl": "Polish", "ro": "Romanian", "cs": "Czech",
+    "ar": "Arabic", "he": "Hebrew", "ms": "Malay", "id": "Indonesian",
+    "th": "Thai", "ko": "Korean", "pl": "Polish", "ro": "Romanian", "cs": "Czech",
 }
-
-# Sections in priority order for backlog
-SECTIONS = [
-    ("tutorials", "Tutorials", "tutorials"),
-    ("guides", "Guides", "guides"),
-    ("courses", "Courses", "learning/courses"),
-    ("modules", "Modules", "learning/modules"),
-]
-
-# ---------------------------------------------------------------------------
-# Status I/O
-# ---------------------------------------------------------------------------
+SECTIONS = [("Tutorials", "tutorials/"), ("Guides", "guides/"),
+            ("Courses", "learning/courses/"), ("Modules", "learning/modules/")]
+REVIEW_HEADER = "X-Doq-Review-Opus"
 
 
-def load_status() -> dict:
-    """Load translation/status.json."""
-    if STATUS_FILE.exists():
-        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
-def save_status(status: dict) -> None:
-    """Write translation/status.json with sorted keys."""
-    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATUS_FILE.write_text(
-        json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def compute_source_hash(content: str) -> str:
-    """Return first 8 hex chars of SHA-256 of content."""
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-# ---------------------------------------------------------------------------
-# File scanning
-# ---------------------------------------------------------------------------
-
-
-def get_en_files() -> dict[str, list[str]]:
-    """Get English source files grouped by section.
-
-    Returns {section_key: [rel_paths]} where rel_paths are relative to docs/.
-    """
-    result = {"tutorials": [], "guides": [], "courses": [], "modules": [], "other": []}
-
-    if not DOCS_DIR.exists():
-        return result
-
-    for mdx in sorted(DOCS_DIR.rglob("*.mdx")):
-        rel = str(mdx.relative_to(DOCS_DIR))
-        if rel.startswith("tutorials/"):
-            result["tutorials"].append(rel)
-        elif rel.startswith("guides/"):
-            result["guides"].append(rel)
-        elif rel.startswith("learning/courses/"):
-            result["courses"].append(rel)
-        elif rel.startswith("learning/modules/"):
-            result["modules"].append(rel)
-        else:
-            result["other"].append(rel)
-
-    return result
-
-
-def get_locale_translations(locale: str) -> dict[str, list[str]]:
-    """Get genuine (non-fallback) translations for a locale, grouped by section."""
-    result = {"tutorials": [], "guides": [], "courses": [], "modules": [], "other": []}
-    locale_dir = I18N_DIR / locale / "docusaurus-plugin-content-docs" / "current"
-
-    if not locale_dir.exists():
-        return result
-
-    for mdx in sorted(locale_dir.rglob("*.mdx")):
-        content = mdx.read_text(encoding="utf-8")
-        if FALLBACK_MARKER in content:
-            continue
-        rel = str(mdx.relative_to(locale_dir))
-        if rel.startswith("tutorials/"):
-            result["tutorials"].append(rel)
-        elif rel.startswith("guides/"):
-            result["guides"].append(rel)
-        elif rel.startswith("learning/courses/"):
-            result["courses"].append(rel)
-        elif rel.startswith("learning/modules/"):
-            result["modules"].append(rel)
-        else:
-            result["other"].append(rel)
-
-    return result
-
-
-def get_locale_drafts(locale: str) -> dict[str, list[str]]:
-    """Get draft files for a locale, grouped by section. Excludes part files."""
-    result = {"tutorials": [], "guides": [], "courses": [], "modules": [], "other": []}
-    locale_dir = DRAFTS_DIR / locale
-
-    if not locale_dir.exists():
-        return result
-
-    for mdx in sorted(locale_dir.rglob("*.mdx")):
-        if mdx.name.startswith("_"):
-            continue
-        # Skip unconcatenated chunk part files (e.g. foo-part1.mdx)
-        if re.search(r'-part\d+\.mdx$', mdx.name):
-            continue
-        content = mdx.read_text(encoding="utf-8")
-        if FALLBACK_MARKER in content:
-            continue
-        rel = str(mdx.relative_to(locale_dir))
-        if rel.startswith("tutorials/"):
-            result["tutorials"].append(rel)
-        elif rel.startswith("guides/"):
-            result["guides"].append(rel)
-        elif rel.startswith("learning/courses/"):
-            result["courses"].append(rel)
-        elif rel.startswith("learning/modules/"):
-            result["modules"].append(rel)
-        else:
-            result["other"].append(rel)
-
-    return result
-
-
-def get_locale_part_files(locale: str) -> int:
-    """Count unconcatenated chunk part files for a locale."""
-    locale_dir = DRAFTS_DIR / locale
-    if not locale_dir.exists():
-        return 0
-    return sum(1 for mdx in locale_dir.rglob("*.mdx")
-               if re.search(r'-part\d+\.mdx$', mdx.name))
-
-
-def get_validation_summary(locale: str, status: dict) -> tuple[int, int]:
-    """Get PASS/FAIL counts from status.json for a locale.
-
-    Returns (pass_count, fail_count) or (-1, -1) if no data.
-    """
-    locale_data = status.get(locale, {})
-    if not locale_data:
-        return -1, -1
-    passed = sum(1 for e in locale_data.values()
-                 if e.get("validation") == "PASS")
-    failed = sum(1 for e in locale_data.values()
-                 if e.get("validation") == "FAIL")
-    return passed, failed
-
-
-# ---------------------------------------------------------------------------
-# Validation (optional, slow)
-# ---------------------------------------------------------------------------
-
-
-def run_validation_for_locale(locale: str, status: dict) -> tuple[int, int]:
-    """Run structural validation on all genuine translations for a locale.
-
-    Updates status dict in-place. Returns (pass_count, fail_count).
-    """
-    # Import validation functions
-    import importlib.util
-    script = Path(__file__).resolve().parent / "validate-translation.py"
-    spec = importlib.util.spec_from_file_location("validate_translation", script)
+def _po4a_io():
+    spec = importlib.util.spec_from_file_location("po4a_io", REPO_ROOT / "translation" / "v2" / "po4a_io.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
 
-    pairs = mod.find_genuine_translations(locale)
-    if not pairs:
-        return 0, 0
 
-    if locale not in status:
-        status[locale] = {}
+_io = _po4a_io()
 
-    today = date.today().isoformat()
-    passed = 0
-    failed = 0
 
-    for en_path, tr_path in pairs:
-        report = mod.validate_file(en_path, tr_path, locale)
-        rel = report.rel_path
+def section_of(rel: str) -> str:
+    for name, prefix in SECTIONS:
+        if rel.startswith(prefix):
+            return name
+    return "Other"
 
-        entry = status[locale].get(rel, {})
-        entry["validation"] = "PASS" if report.passed else "FAIL"
-        entry["validated"] = today
-        if report.passed:
-            passed += 1
-            entry.pop("failures", None)
-        else:
-            failed += 1
-            entry["failures"] = [c.name for c in report.checks if not c.passed]
 
-        # Set status if not already tracked
-        if "status" not in entry:
-            entry["status"] = "promoted"
+def en_pages() -> list[str]:
+    return sorted(str(p.relative_to(DOCS_DIR)) for p in DOCS_DIR.rglob("*.mdx"))
 
-        # Record which EN this file was VALIDATED against — NOT its provenance.
-        # These are different facts and conflating them created a real defect:
-        # validation is structural (line counts, LaTeX, JSX) and says nothing
-        # about whether the content tracks EN's meaning, so writing
-        # `source_hash` here silently promoted "we ran the validator" into
-        # "this was translated from that EN". `run_stamp` then trusted it and
-        # stamped the file fresh. That is how guides/job-limits.mdx kept a
-        # pre-sync paragraph in six locales under a current hash: commit
-        # aedf014a1 ("refresh 2 stale translations (ko, ro)") advanced es's
-        # source_hash without touching the es file at all.
-        # Provenance is written only by the translate/refresh/promote path.
-        en_content = en_path.read_text(encoding="utf-8")
-        entry["validated_against"] = compute_source_hash(en_content)
 
-        status[locale][rel] = entry
-
-    return passed, failed
-
-
-# ---------------------------------------------------------------------------
-# Output formatters
-# ---------------------------------------------------------------------------
-
-
-def format_overview(en_files: dict, locales: list[str], status: dict,
-                    validation_results: dict = None) -> str:
-    """Format the overview table."""
-    lines = []
-    today = date.today().isoformat()
-    lines.append(f"Translation Status — {today}")
-    lines.append("")
-
-    totals = {
-        "tutorials": len(en_files["tutorials"]),
-        "guides": len(en_files["guides"]),
-        "courses": len(en_files["courses"]),
-        "modules": len(en_files["modules"]),
-    }
-    total_all = sum(totals.values()) + len(en_files["other"])
-
-    # Header
-    has_val = validation_results is not None
-    header = f"{'Locale':<8} {'Tutorials':>10} {'Guides':>10} {'Courses':>10} {'Modules':>10} {'Total':>10} {'Drafts':>8}"
-    if has_val:
-        header += f"  {'Validated':>12}"
-    lines.append(header)
-    lines.append("─" * len(header))
-
-    for locale in locales:
-        trans = get_locale_translations(locale)
-        drafts = get_locale_drafts(locale)
-
-        t_tut = len(trans["tutorials"])
-        t_gui = len(trans["guides"])
-        t_crs = len(trans["courses"])
-        t_mod = len(trans["modules"])
-        t_oth = len(trans["other"])
-        t_total = t_tut + t_gui + t_crs + t_mod + t_oth
-
-        d_total = sum(len(v) for v in drafts.values())
-        parts = get_locale_part_files(locale)
-
-        def frac(n, d):
-            return f"{n}/{d}"
-
-        drafts_col = str(d_total)
-        if parts:
-            drafts_col += f"+{parts}p"
-
-        row = (f"{locale.upper():<8} "
-               f"{frac(t_tut, totals['tutorials']):>10} "
-               f"{frac(t_gui, totals['guides']):>10} "
-               f"{frac(t_crs, totals['courses']):>10} "
-               f"{frac(t_mod, totals['modules']):>10} "
-               f"{frac(t_total, total_all):>10} "
-               f"{drafts_col:>8}")
-
-        if has_val:
-            p, f_ = validation_results.get(locale, (-1, -1))
-            if p >= 0:
-                row += f"  {p:>4}✓ {f_}✗"
-            else:
-                row += f"  {'—':>12}"
-        lines.append(row)
-
-    lines.append("─" * len(header))
-
-    if validation_results is None:
-        lines.append("")
-        lines.append('Validation column: run with --validate to populate (slow)')
-    lines.append("")
-    return "\n".join(lines)
-
-
-def format_locale_detail(locale: str, en_files: dict, status: dict) -> str:
-    """Format detailed view for a single locale."""
-    lines = []
-    name = LOCALE_NAMES.get(locale, locale)
-    lines.append(f"Translation Status — {locale.upper()} ({name})")
-    lines.append("")
-
-    trans = get_locale_translations(locale)
-    drafts = get_locale_drafts(locale)
-    locale_status = status.get(locale, {})
-
-    header = f"{'Section':<12} {'Translated':>12} {'Drafts':>6} {'PASS':>6} {'FAIL':>6} {'Remaining':>10}"
-    lines.append(header)
-    lines.append("─" * len(header))
-
-    grand_trans = 0
-    grand_drafts = 0
-    grand_pass = 0
-    grand_fail = 0
-    grand_remaining = 0
-    grand_total = 0
-
-    section_keys = [("tutorials", "Tutorials"), ("guides", "Guides"),
-                    ("courses", "Courses"), ("modules", "Modules"),
-                    ("other", "Other")]
-
-    for key, label in section_keys:
-        en_count = len(en_files.get(key, []))
-        if en_count == 0:
-            continue
-
-        t_count = len(trans.get(key, []))
-        d_count = len(drafts.get(key, []))
-
-        # Count PASS/FAIL from status.json for this section
-        p_count = 0
-        f_count = 0
-        for rel in trans.get(key, []):
-            entry = locale_status.get(rel, {})
-            if entry.get("validation") == "PASS":
-                p_count += 1
-            elif entry.get("validation") == "FAIL":
-                f_count += 1
-
-        remaining = en_count - t_count - d_count
-
-        p_str = str(p_count) if (p_count or f_count) else "—"
-        f_str = str(f_count) if (p_count or f_count) else "—"
-        frac = f"{t_count}/{en_count}"
-
-        row = (f"{label:<12} "
-               f"{frac:>12} "
-               f"{d_count:>6} "
-               f"{p_str:>6} "
-               f"{f_str:>6} "
-               f"{remaining:>10}")
-        lines.append(row)
-
-        grand_trans += t_count
-        grand_drafts += d_count
-        grand_pass += p_count
-        grand_fail += f_count
-        grand_remaining += remaining
-        grand_total += en_count
-
-    lines.append("─" * len(header))
-
-    gp_str = str(grand_pass) if (grand_pass or grand_fail) else "—"
-    gf_str = str(grand_fail) if (grand_pass or grand_fail) else "—"
-    grand_frac = f"{grand_trans}/{grand_total}"
-    lines.append(f"{'Total':<12} "
-                 f"{grand_frac:>12} "
-                 f"{grand_drafts:>6} "
-                 f"{gp_str:>6} "
-                 f"{gf_str:>6} "
-                 f"{grand_remaining:>10}")
-
-    # Pipeline history from status.json
-    if locale_status:
-        lines.append("")
-        lines.append("Pipeline history (from status.json):")
-        for rel in sorted(locale_status.keys()):
-            entry = locale_status[rel]
-            s = entry.get("status", "?")
-            v = entry.get("validation", "?")
-            d = entry.get("promoted") or entry.get("validated") or "?"
-            lines.append(f"  {rel:<50} {s:<12} {v:<6} {d}")
-
-    lines.append("")
-    return "\n".join(lines)
-
-
-def format_backlog(locale: str, en_files: dict, limit: int = 0) -> str:
-    """Format prioritized backlog for a locale. If limit > 0, show at most that many files."""
-    trans = get_locale_translations(locale)
-    drafts = get_locale_drafts(locale)
-
-    lines = []
-    name = LOCALE_NAMES.get(locale, locale)
-
-    total_remaining = 0
-    shown = 0
-
-    # Priority order: Tutorials → Guides → Courses → Modules → Other
-    priority = [
-        ("tutorials", "Tutorials"),
-        ("guides", "Guides"),
-        ("courses", "Courses"),
-        ("modules", "Modules"),
-        ("other", "Other"),
-    ]
-
-    sections_output = []
-    for key, label in priority:
-        en_set = set(en_files.get(key, []))
-        tr_set = set(trans.get(key, []))
-        dr_set = set(drafts.get(key, []))
-        remaining = sorted(en_set - tr_set - dr_set)
-        total_remaining += len(remaining)
-
-        if remaining:
-            if limit and shown >= limit:
-                sections_output.append(f"{label} ({len(remaining)} remaining): ... (use --limit 0 to see all)")
-                continue
-            section_lines = [f"{label} ({len(remaining)} remaining):"]
-            for rel in remaining:
-                if limit and shown >= limit:
-                    section_lines.append(f"  ... and {len(remaining) - (shown - (shown - len(section_lines) + 1))} more")
-                    break
-                section_lines.append(f"  {rel}")
-                shown += 1
-            sections_output.append("\n".join(section_lines))
-
-    lines.append(f"Backlog for {locale.upper()} ({name}) — {total_remaining} untranslated pages")
-    lines.append("Priority: Tutorials → Guides → Courses → Modules → Other")
-    if limit:
-        lines.append(f"Showing first {min(limit, total_remaining)} files (--limit {limit})")
-    lines.append("")
-
-    if sections_output:
-        lines.append("\n\n".join(sections_output))
-    else:
-        lines.append("All pages translated!")
-
-    lines.append("")
-    return "\n".join(lines)
-
-
-def format_markdown(en_files: dict, locales: list[str]) -> str:
-    """Format markdown table for CONTRIBUTING-TRANSLATIONS.md."""
-    lines = []
-
-    totals = {
-        "tutorials": len(en_files["tutorials"]),
-        "guides": len(en_files["guides"]),
-        "courses": len(en_files["courses"]),
-        "modules": len(en_files["modules"]),
-    }
-    total_all = sum(totals.values()) + len(en_files["other"])
-
-    lines.append("| Locale | Code | Tutorials | Guides | Courses | Modules | Total |")
-    lines.append("|--------|------|-----------|--------|---------|---------|-------|")
-
-    for locale in locales:
-        trans = get_locale_translations(locale)
-        t_tut = len(trans["tutorials"])
-        t_gui = len(trans["guides"])
-        t_crs = len(trans["courses"])
-        t_mod = len(trans["modules"])
-        t_oth = len(trans["other"])
-        t_total = t_tut + t_gui + t_crs + t_mod + t_oth
-
-        name = LOCALE_NAMES.get(locale, locale)
-        lines.append(
-            f"| {name} | `{locale}` "
-            f"| {t_tut}/{totals['tutorials']} "
-            f"| {t_gui}/{totals['guides']} "
-            f"| {t_crs}/{totals['courses']} "
-            f"| {t_mod}/{totals['modules']} "
-            f"| {t_total}/{total_all} |"
-        )
-
-    return "\n".join(lines)
-
-
-def format_json_output(en_files: dict, locales: list[str],
-                       status: dict) -> str:
-    """Format JSON output."""
-    totals = {
-        "tutorials": len(en_files["tutorials"]),
-        "guides": len(en_files["guides"]),
-        "courses": len(en_files["courses"]),
-        "modules": len(en_files["modules"]),
-        "other": len(en_files["other"]),
-    }
-    total_all = sum(totals.values())
-
-    data = {
-        "date": date.today().isoformat(),
-        "totals": {**totals, "all": total_all},
-        "locales": {},
-    }
-
-    for locale in locales:
-        trans = get_locale_translations(locale)
-        drafts = get_locale_drafts(locale)
-        locale_status = status.get(locale, {})
-
-        translated = {}
-        draft_counts = {}
-        for key in ["tutorials", "guides", "courses", "modules", "other"]:
-            translated[key] = len(trans.get(key, []))
-            draft_counts[key] = len(drafts.get(key, []))
-
-        translated["all"] = sum(translated.values())
-        draft_counts["all"] = sum(draft_counts.values())
-
-        # Validation from status.json
-        p = sum(1 for e in locale_status.values()
-                if e.get("validation") == "PASS")
-        f_ = sum(1 for e in locale_status.values()
-                 if e.get("validation") == "FAIL")
-
-        data["locales"][locale] = {
-            "name": LOCALE_NAMES.get(locale, locale),
-            "translated": translated,
-            "drafts": draft_counts,
-            "validation": {"pass": p, "fail": f_} if locale_status else None,
-            "status_entries": len(locale_status),
+def locale_pages(locale: str) -> dict[str, dict]:
+    """{rel: {entries, fuzzy, untranslated, reviewed}} for every PO of a locale."""
+    base = I18N_DIR / locale / "po"
+    out: dict[str, dict] = {}
+    if not base.is_dir():
+        return out
+    for p in sorted(base.rglob("*.po")):
+        rel = str(p.relative_to(base))[:-3] + ".mdx"
+        po = polib.pofile(str(p), wrapwidth=0)
+        entries = [e for e in po if _io.translatable(e)]
+        out[rel] = {
+            "entries": len(entries),
+            "fuzzy": sum(1 for e in entries if e.fuzzy),
+            "untranslated": sum(1 for e in entries if not e.fuzzy and not e.msgstr.strip()),
+            "reviewed": bool(po.metadata.get(REVIEW_HEADER)),
         }
-
-    return json.dumps(data, indent=2, ensure_ascii=False)
-
-
-def update_contributing(en_files: dict, locales: list[str]) -> bool:
-    """Update the status table in CONTRIBUTING-TRANSLATIONS.md.
-
-    Returns True if file was updated, False if markers not found.
-    """
-    START_MARKER = "<!-- translation-status-start -->"
-    END_MARKER = "<!-- translation-status-end -->"
-
-    content = CONTRIBUTING_FILE.read_text(encoding="utf-8")
-    start_idx = content.find(START_MARKER)
-    end_idx = content.find(END_MARKER)
-
-    if start_idx == -1 or end_idx == -1:
-        return False
-
-    table = format_markdown(en_files, locales)
-    new_content = (
-        content[:start_idx + len(START_MARKER)]
-        + "\n"
-        + table
-        + "\n"
-        + content[end_idx:]
-    )
-
-    CONTRIBUTING_FILE.write_text(new_content, encoding="utf-8")
-    return True
+    return out
 
 
-def write_status_file(en_files: dict, status: dict) -> None:
-    """Write translation/STATUS.md with overview + per-locale detail."""
-    today = date.today().isoformat()
-    lines = [
-        f"# Translation Status",
-        f"",
-        f"*Auto-generated on {today} by `translation-status.py --write-status`.*",
-        f"*Do not edit manually — regenerate with:*",
-        f"",
-        f"```bash",
-        f"python translation/scripts/translation-status.py --write-status",
-        f"```",
-        f"",
-    ]
-
-    # --- Overview table ---
-    lines.append("## Overview")
-    lines.append("")
-    lines.append(format_markdown(en_files, ALL_LOCALES))
-    lines.append("")
-
-    # --- Per-locale detail ---
-    lines.append("## Per-Locale Detail")
-    lines.append("")
-
-    for locale in ALL_LOCALES:
-        lines.append(f"### {LOCALE_NAMES.get(locale, locale)} (`{locale}`)")
-        lines.append("")
-
-        trans = get_locale_translations(locale)
-        drafts = get_locale_drafts(locale)
-        locale_status = status.get(locale, {})
-
-        totals = {k: len(en_files.get(k, [])) for k in
-                  ["tutorials", "guides", "courses", "modules", "other"]}
-
-        section_keys = [("tutorials", "Tutorials"), ("guides", "Guides"),
-                        ("courses", "Courses"), ("modules", "Modules")]
-
-        lines.append("| Section | Translated | Drafts | PASS | FAIL | Remaining |")
-        lines.append("|---------|-----------|--------|------|------|-----------|")
-
-        grand = {"trans": 0, "drafts": 0, "pass": 0, "fail": 0,
-                 "remaining": 0, "total": 0}
-
-        for key, label in section_keys:
-            en_count = totals.get(key, 0)
-            t_count = len(trans.get(key, []))
-            d_count = len(drafts.get(key, []))
-            remaining = en_count - t_count
-
-            # Count PASS/FAIL from status.json for this section
-            p_count = f_count = 0
-            for rel_path, entry in locale_status.items():
-                in_section = False
-                if key == "tutorials" and rel_path.startswith("tutorials/"):
-                    in_section = True
-                elif key == "guides" and rel_path.startswith("guides/"):
-                    in_section = True
-                elif key == "courses" and rel_path.startswith("learning/courses/"):
-                    in_section = True
-                elif key == "modules" and rel_path.startswith("learning/modules/"):
-                    in_section = True
-                if in_section:
-                    v = entry.get("validation")
-                    if v == "PASS":
-                        p_count += 1
-                    elif v == "FAIL":
-                        f_count += 1
-
-            p_str = str(p_count) if p_count else "—"
-            f_str = str(f_count) if f_count else "—"
-
-            lines.append(
-                f"| {label} | {t_count}/{en_count} | {d_count} "
-                f"| {p_str} | {f_str} | {remaining} |"
-            )
-
-            grand["trans"] += t_count
-            grand["drafts"] += d_count
-            grand["pass"] += p_count
-            grand["fail"] += f_count
-            grand["remaining"] += remaining
-            grand["total"] += en_count
-
-        gp = str(grand["pass"]) if grand["pass"] else "—"
-        gf = str(grand["fail"]) if grand["fail"] else "—"
-        lines.append(
-            f"| **Total** | **{grand['trans']}/{grand['total']}** "
-            f"| **{grand['drafts']}** | **{gp}** | **{gf}** "
-            f"| **{grand['remaining']}** |"
-        )
-        lines.append("")
-
-        # Pipeline history from status.json
-        if locale_status:
-            lines.append("<details>")
-            lines.append(f"<summary>Pipeline history ({len(locale_status)} files in status.json)</summary>")
-            lines.append("")
-            lines.append("| File | Status | Validation | Date |")
-            lines.append("|------|--------|------------|------|")
-            for rel_path in sorted(locale_status.keys()):
-                entry = locale_status[rel_path]
-                s = entry.get("status", "—")
-                v = entry.get("validation", "—")
-                d = entry.get("promoted") or entry.get("validated") or "—"
-                lines.append(f"| `{rel_path}` | {s} | {v} | {d} |")
-            lines.append("")
-            lines.append("</details>")
-            lines.append("")
-
-    STATUS_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def summarize(locale: str, pages: dict[str, dict], en: list[str]) -> dict:
+    en_set = set(en)
+    by_section: dict[str, Counter] = {}
+    for rel, info in pages.items():
+        c = by_section.setdefault(section_of(rel), Counter())
+        c["pages"] += 1
+        c["entries"] += info["entries"]
+        c["fuzzy"] += info["fuzzy"]
+        c["untranslated"] += info["untranslated"]
+        c["pending_pages"] += 1 if (info["fuzzy"] or info["untranslated"]) else 0
+        c["reviewed"] += 1 if info["reviewed"] else 0
+    for rel in en:
+        by_section.setdefault(section_of(rel), Counter())["en_pages"] += 1
+    total = Counter()
+    for c in by_section.values():
+        total.update(c)
+    total["missing_pages"] = len([r for r in en if r not in pages])
+    total["orphan_pages"] = len([r for r in pages if r not in en_set])
+    return {"locale": locale, "name": LOCALE_NAMES.get(locale, locale),
+            "sections": {k: dict(v) for k, v in by_section.items()}, "total": dict(total)}
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+def overview_table(rows: list[dict]) -> list[str]:
+    L = ["| Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |",
+         "|--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|"]
+    for r in rows:
+        t = r["total"]
+        L.append(f"| {r['name']} | `{r['locale']}` | {t.get('pages', 0)}/{t.get('en_pages', 0)} | "
+                 f"{t.get('entries', 0)} | {t.get('fuzzy', 0)} | {t.get('untranslated', 0)} | "
+                 f"{t.get('pending_pages', 0)} | {t.get('reviewed', 0)} |")
+    return L
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Translation status dashboard")
-    parser.add_argument("--locale",
-                        help="Show detail for a single locale")
-    parser.add_argument("--all", action="store_true",
-                        help="Include non-main locales (none at present)")
-    parser.add_argument("--backlog", action="store_true",
-                        help="Show prioritized untranslated files (requires --locale)")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="Limit backlog output to N files (0 = unlimited)")
-    parser.add_argument("--validate", action="store_true",
-                        help="Run structural validation and record results (slow)")
-    parser.add_argument("--markdown", action="store_true",
-                        help="Output markdown table")
-    parser.add_argument("--json", action="store_true",
-                        help="Output JSON")
-    parser.add_argument("--update-contributing", action="store_true",
-                        help="Update the table in CONTRIBUTING-TRANSLATIONS.md")
-    parser.add_argument("--write-status", action="store_true",
-                        help="Write translation/STATUS.md with full report")
-    args = parser.parse_args()
+def detail_table(r: dict) -> list[str]:
+    L = ["| Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |",
+         "|---------|------:|--------:|------:|-------------:|---------------:|"]
+    for name, _ in SECTIONS + [("Other", "")]:
+        c = r["sections"].get(name)
+        if not c:
+            continue
+        L.append(f"| {name} | {c.get('pages', 0)}/{c.get('en_pages', 0)} | {c.get('entries', 0)} | "
+                 f"{c.get('fuzzy', 0)} | {c.get('untranslated', 0)} | {c.get('reviewed', 0)} |")
+    return L
 
-    # Check docs/ exists
-    if not DOCS_DIR.exists():
-        print("Error: docs/ directory not found. Run: python scripts/sync-content.py",
-              file=sys.stderr)
-        sys.exit(1)
 
-    en_files = get_en_files()
-    status = load_status()
+def write_status_md(rows: list[dict]) -> None:
+    L = ["# Translation Status", "",
+         f"*Auto-generated on {date.today().isoformat()} by `translation-status.py --write-status`.*",
+         "*Do not edit manually — regenerate with:*", "", "```bash",
+         "python3 translation/scripts/translation-status.py --write-status", "```", "",
+         "Read from the PO files under `i18n/<locale>/po/`: a page is translated when",
+         "its PO exists; an entry is *fuzzy* when its English changed since it was",
+         "translated and *untranslated* when it is new — both render in English until",
+         "the locale's next sync (`translation/v2/README.md`). *Reviewed pages* carry a",
+         "deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).", "",
+         "## Overview", ""]
+    L += overview_table(rows)
+    L += ["", "## Per-Locale Detail", ""]
+    for r in rows:
+        L += [f"### {r['name']} (`{r['locale']}`)", ""]
+        L += detail_table(r)
+        t = r["total"]
+        notes = []
+        if t.get("missing_pages"):
+            notes.append(f"{t['missing_pages']} English page(s) without a PO (rendered in English)")
+        if t.get("orphan_pages"):
+            notes.append(f"{t['orphan_pages']} PO(s) for pages no longer in English")
+        if notes:
+            L += ["", "- " + "; ".join(notes)]
+        L.append("")
+    STATUS_MD.write_text("\n".join(L), encoding="utf-8")
+    print(f"Written {STATUS_MD.relative_to(REPO_ROOT)}")
 
-    # Determine locale list
-    if args.locale:
-        if args.locale not in ALL_LOCALES:
-            print(f"Error: Unknown locale '{args.locale}'. "
-                  f"Available: {', '.join(ALL_LOCALES)}", file=sys.stderr)
-            sys.exit(2)
-        locales = [args.locale]
-    elif args.all:
-        locales = ALL_LOCALES
-    else:
-        locales = MAIN_LOCALES
 
-    # Run validation if requested
-    validation_results = None
-    if args.validate:
-        validation_results = {}
-        for locale in locales:
-            print(f"Validating {locale.upper()}...", file=sys.stderr)
-            p, f_ = run_validation_for_locale(locale, status)
-            validation_results[locale] = (p, f_)
-        save_status(status)
-        print("", file=sys.stderr)
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--locale", help="one locale: per-section detail")
+    ap.add_argument("--json", action="store_true", help="print the summaries as JSON")
+    ap.add_argument("--write-status", action="store_true", help="write translation/STATUS.md")
+    args = ap.parse_args()
 
-    # Output
+    en = en_pages()
+    locales = [args.locale] if args.locale else MAIN_LOCALES
+    rows = [summarize(loc, locale_pages(loc), en) for loc in locales]
+
     if args.json:
-        print(format_json_output(en_files, locales, status))
-    elif args.markdown:
-        print(format_markdown(en_files, locales))
-    elif args.update_contributing:
-        if update_contributing(en_files, ALL_LOCALES):
-            print(f"Updated {CONTRIBUTING_FILE}")
-        else:
-            print("Error: Marker comments not found in CONTRIBUTING-TRANSLATIONS.md")
-            print("Add <!-- translation-status-start --> and <!-- translation-status-end -->")
-            sys.exit(1)
-    elif args.write_status:
-        write_status_file(en_files, status)
-        print(f"Written {STATUS_MD}")
-    elif args.backlog:
-        if not args.locale:
-            print("Error: --backlog requires --locale", file=sys.stderr)
-            sys.exit(2)
-        print(format_backlog(args.locale, en_files, limit=args.limit))
-    elif args.locale:
-        print(format_locale_detail(args.locale, en_files, status))
+        print(json.dumps(rows, indent=1, ensure_ascii=False))
+        return 0
+    if args.write_status:
+        write_status_md(rows)
+        return 0
+    if args.locale:
+        r = rows[0]
+        print(f"{r['name']} ({r['locale']})")
+        print("\n".join(detail_table(r)))
     else:
-        # Check if status.json has validation data (even without --validate)
-        if not args.validate:
-            # Show cached validation from status.json
-            validation_results = {}
-            for locale in locales:
-                p, f_ = get_validation_summary(locale, status)
-                if p >= 0:
-                    validation_results[locale] = (p, f_)
-            if not validation_results:
-                validation_results = None
-        print(format_overview(en_files, locales, status, validation_results))
+        print("\n".join(overview_table(rows)))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -6,9 +6,8 @@ which existed in both validate-translation.py and lint-translation.py and had
 DRIFTED (the two gates disagreed on the exact check that gates every translation
 PR). Centralizing the primitive here makes them agree by construction.
 
-Also provides the canonical status.json path + load/save helpers and the repo
-root, which were re-declared (sometimes twice) in ~7 scripts. New code should
-import these; existing scripts can migrate incrementally.
+Also provides the repo root and the rendered-page helpers the review scripts
+share.
 """
 
 from __future__ import annotations
@@ -65,7 +64,6 @@ def refuse_rendered_page_write(tool: str, instead: str) -> None:
 # ── Paths ──
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
 # A rendered translation carries the hash of the English it was rendered
 # from (translation/v2/render.py writes it; populate-locale marks English
@@ -84,24 +82,6 @@ def extract_embedded_hash(content: str) -> str | None:
     """The source hash a rendered translation carries, or None."""
     m = HASH_PATTERN.search(content)
     return m.group(1) if m else None
-
-
-# ── status.json IO ──
-
-def load_status() -> dict:
-    """Load translation/status.json (empty dict if absent)."""
-    if STATUS_FILE.exists():
-        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
-def save_status(status: dict) -> None:
-    """Write translation/status.json with sorted keys + trailing newline."""
-    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATUS_FILE.write_text(
-        json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 # ── JSX tag balance (the de-drifted primitive) ──
