@@ -81,3 +81,13 @@ def audit_check_py():
 @pytest.fixture(scope="session")
 def eval_set_builder():
     return _load("build_eval_set", "build-eval-set.py")
+
+
+@pytest.fixture(scope="session")
+def recorder():
+    return _load("review_translations", "review-translations.py")
+
+
+@pytest.fixture(scope="session")
+def contributing_status():
+    return _load("contributing_status", "contributing-status.py")

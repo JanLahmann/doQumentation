@@ -367,18 +367,26 @@ Every one of the 17 main locales has been through one v2 sync (English
   and the records `baseline-hashes.json` and `en-passage-hashes.json`. The
   hash helpers the review scripts used from the freshness checker live in
   `translation/scripts/_common.py`.
-- **Still v1, deliberately**: `lint-translation.py`, `validate-translation.py`
-  and the review scripts (`review-translations.py`, `review-prefilter.py`,
-  `sample-deep-review.py`) work on the rendered pages and on `status.json`,
-  whose `source_hash` / `validated_against` / review fields are unchanged.
-  They keep working because the workflows render before they run.   *Fixing* a rendered page in place does not work any more: such an edit
+- **Still v1, deliberately**: `lint-translation.py` and
+  `validate-translation.py` work on the rendered pages; they keep working
+  because the workflows render before they run. `translation/status.json`
+  is frozen: its provenance fields feed the page-dates plugin and
+  `STATUS.md`, nothing else reads it, and nothing writes it.   *Fixing* a rendered page in place does not work any more: such an edit
   is lost at the next render. The v1 page-editing workflows and fixers were
   deleted on 2026-09-10; every fix goes through `fix.py` (`--fixes` for a
-  review finding, `--leaks` for the deterministic glossary pass). Moving the
-  review verdicts from `status.json` into the PO files is the remaining
-  migration work.
-- Review verdicts from `status.json` were copied into each PO header
-  (`X-Doq-Review-Tier3`, `X-Doq-Review-Opus`) at bootstrap so they are not lost.
+  review finding, `--leaks` for the deterministic glossary pass). The review
+  side moved on 2026-09-10: a page's deep-review verdict is the
+  `X-Doq-Review-Opus` field of its PO header (below).
+- **A page's review verdict lives in its PO header.** `X-Doq-Review-Opus:
+  PASS 2026-07-05` is written by `translation/scripts/review-translations.py
+  --record-opus` when a review round ships, so the verdict lands in the same
+  PR as the fixes and there is no banking step after merge.
+  `sample-deep-review.py` (eligibility) and `contributing-status.py`
+  (CONTRIBUTING-NOW.md) read the same headers; a page is eligible when it is
+  rendered, not a stub, has no fuzzy or empty entry, and — with
+  `--exclude-reviewed` — carries no verdict. Only page reads (PASS,
+  MINOR_ISSUES, FAIL) are recorded; a repair round's FIXED records are not.
+  `X-Doq-Review-Tier3` is the v1 Haiku verdict copied at bootstrap, context only.
 
 ## Dependencies
 

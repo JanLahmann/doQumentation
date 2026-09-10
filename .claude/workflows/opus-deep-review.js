@@ -44,7 +44,7 @@ const SCHEMA = {
     verdict: { enum: ['PASS', 'MINOR_ISSUES', 'FAIL'] },
     issues: { type: 'integer' },
     // minLength catches one-word placeholders; a concise PASS proof-of-read
-    // sentence clears 40 while keeping the 80%-PASS output (and status.json /
+    // sentence clears 40 while keeping the 80%-PASS output (and the reviews file /
     // notification) small. FAIL/MINOR carry the detail in the note + examples.
     editor_note: { type: 'string', minLength: 40 },
     examples: {
@@ -235,6 +235,7 @@ return {
   disagreements,
   // Persist this array, then record it:
   //   write to translation/reviews/opus-<seed>.json, then
-  //   python3 translation/scripts/review-translations.py --record-opus --from-json translation/reviews/opus-<seed>.json
+  //   python3 translation/scripts/review-translations.py --record-opus --from-json translation/reviews/opus-<seed>.json --locale <LOCALE>
+  //   (writes X-Doq-Review-Opus into each reviewed page's PO header; commit it with the PO tree)
   records,
 }

@@ -13,9 +13,9 @@ check-translations.yml workflow does it automatically):
 
     python3 translation/scripts/contributing-status.py --write
 
-Eligibility is not reimplemented — it imports build_pool() from
-sample-deep-review.py, so a contributor who runs the sampler sees exactly the
-numbers this file quotes.
+Eligibility is not reimplemented — it imports catalogue() and build_pool()
+from sample-deep-review.py, which read the PO files and their headers, so a
+contributor who runs the sampler sees exactly the numbers this file quotes.
 """
 
 from __future__ import annotations
@@ -104,14 +104,11 @@ def fetch_claims() -> list[dict] | None:
     return sorted(claims, key=lambda c: (c["locale"], c["since"]))
 
 
-def rendered_counts(sdr, status) -> dict[str, int]:
+def rendered_counts(cats) -> dict[str, int]:
     """{locale: rendered pages on disk}. The rendered pages are derived and
     not in git; a locale that is not rendered has a pool of 0 for the wrong
     reason, and the file must say so instead of printing the 0."""
-    out = {}
-    for loc in sdr.MAIN_LOCALES:
-        out[loc] = sum(1 for rel in status.get(loc, {}) if sdr._tr_path(loc, rel).exists())
-    return out
+    return {loc: sum(1 for i in cat.values() if i["rendered"]) for loc, cat in cats.items()}
 
 
 def _load_sampler():
@@ -124,11 +121,11 @@ def _load_sampler():
     return mod
 
 
-def pools_by_threshold(sdr, status) -> dict[int, dict[str, int]]:
+def pools_by_threshold(sdr, cats) -> dict[int, dict[str, int]]:
     out = {}
     for leaks in LADDER:
         pool = sdr.build_pool(
-            status, sdr.MAIN_LOCALES, min_lines=40,
+            cats, min_lines=40,
             max_leaks=leaks, exclude_reviewed=True,
         )
         out[leaks] = {loc: len(files) for loc, files in pool.items()}
@@ -157,27 +154,31 @@ def recent_rounds(limit: int = 6) -> list[tuple[str, int, int]]:
         if not isinstance(recs, list) or not recs:
             continue
         tally = Counter(r.get("verdict") for r in recs)
+        if tally.get("FIXED"):
+            continue   # a repair round (drift/gauge/sync fixes): nobody read pages for meaning
         rows.append((p.stem.replace("opus-", ""), len(recs), tally.get("FAIL", 0)))
     return rows
 
 
-def reviewed_counts(status, locales) -> dict[str, tuple[int, int]]:
-    """{locale: (reviewed, eligible_total)} — how far each locale has been walked."""
+def reviewed_counts(cats, min_lines: int = 40) -> dict[str, tuple[int, int]]:
+    """{locale: (reviewed, reviewable)} — how far each locale has been walked.
+    Reviewable = rendered, not an English fallback, not a stub; a page that is
+    mid-update (fuzzy entries) still counts here, it is only held back from
+    the pool until its sync lands."""
     out = {}
-    for loc in locales:
-        entries = status.get(loc, {})
-        total = sum(1 for e in entries.values() if e.get("validation") == "PASS")
-        done = sum(1 for e in entries.values() if e.get("review_opus"))
-        out[loc] = (done, total)
+    for loc, cat in cats.items():
+        pages = [i for i in cat.values()
+                 if i["rendered"] and not i["fallback"] and i["lines"] >= min_lines]
+        out[loc] = (sum(1 for i in pages if i["verdict"]), len(pages))
     return out
 
 
-def render(sdr, status, claims: list[dict] | None = None) -> str:
-    pools = pools_by_threshold(sdr, status)
-    done = reviewed_counts(status, sdr.MAIN_LOCALES)
+def render(sdr, cats, claims: list[dict] | None = None) -> str:
+    pools = pools_by_threshold(sdr, cats)
+    done = reviewed_counts(cats)
     rounds = recent_rounds()
-    rendered = rendered_counts(sdr, status)
-    unrendered = [l for l in sdr.MAIN_LOCALES if rendered[l] < max(10, len(status.get(l, {})) // 4)]
+    rendered = rendered_counts(cats)
+    unrendered = [l for l in sdr.MAIN_LOCALES if not sdr.is_rendered(cats[l])]
 
     # Does the leak filter still bind anywhere? A leak is what a locale's
     # glossary records, minus the terms the house style keeps in English, so
@@ -223,7 +224,7 @@ def render(sdr, status, claims: list[dict] | None = None) -> str:
     A("> **Sync your fork before you trust any of this.** These counts")
     A("> describe upstream `main` on the date above. A fork is stale the")
     A("> moment anyone else's round merges, and eligibility is read from")
-    A("> `translation/status.json` — which every merged round rewrites. Work")
+    A("> the PO files' headers — which every merged round changes. Work")
     A("> from a behind-fork and `--exclude-reviewed` filters against an old")
     A("> verdict set, so you re-review pages that are already done and your")
     A("> PR conflicts with what has landed.")
@@ -362,9 +363,9 @@ def main():
     args = ap.parse_args()
 
     sdr = _load_sampler()
-    status = json.load(open(sdr.STATUS_FILE, encoding="utf-8"))
+    cats = {loc: sdr.catalogue(loc) for loc in sdr.MAIN_LOCALES}
     claims = None if args.no_claims else fetch_claims()
-    text = render(sdr, status, claims)
+    text = render(sdr, cats, claims)
 
     if args.write:
         prev = OUT.read_text(encoding="utf-8") if OUT.exists() else None
