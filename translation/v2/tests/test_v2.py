@@ -876,3 +876,129 @@ def test_apply_does_not_warn_for_an_mdx_comment(tmp_path, monkeypatch, capsys):
     tr, path = _apply_one(tmp_path, monkeypatch, comment, "نص عربي منجرف هنا تماما", comment)
     tr.apply("xx", prefix="fix", note="n")
     assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# update.py / translate.py: a paragraph the English split apart keeps its
+# translation; a retranslation withdraws the page's review verdict
+# ---------------------------------------------------------------------------
+
+def _update_module():
+    import importlib
+    return importlib.import_module("update")
+
+
+def test_split_block_hint_finds_the_line_and_refuses_ambiguity():
+    up = _update_module()
+    old = [("After this tutorial you understand:\n- How to run it.\n- How to stop it.\n",
+            "Nach diesem Tutorial verstehst du:\n- Wie man es startet.\n- Wie man es stoppt.\n"),
+           ("Single line entry.\n", "Einzeiliger Eintrag.\n")]
+    assert up.split_block_hint("How to stop it.\n", old) == ("- How to stop it.", "Wie man es stoppt.")
+    assert up.split_block_hint("After this tutorial you understand:\n", old) == (
+        "After this tutorial you understand:", "Nach diesem Tutorial verstehst du:")
+    assert up.split_block_hint("Something else.\n", old) is None
+    # the translation lost a line: line i no longer answers line i
+    short = [("Intro:\n- A thing.\n- B thing.\n", "Einleitung:\n- Ein Ding.\n")]
+    assert up.split_block_hint("A thing.\n", short) is None
+    # the same line in two blocks with different translations: refuse
+    two = old + [("Also:\n- How to stop it.\n- More.\n", "Auch:\n- Wie man es anhält.\n- Mehr.\n")]
+    assert up.split_block_hint("How to stop it.\n", two) is None
+
+
+def test_worklist_hints_split_blocks_after_msgmerge(monkeypatch, tmp_path):
+    """Real msgmerge: the old block is dropped, the new bullets come back
+    empty, and each carries the matching line of the old translation."""
+    import polib
+    up = _update_module()
+    monkeypatch.setattr(io, "I18N", tmp_path / "i18n")
+    monkeypatch.setattr(io, "POT_DIR", tmp_path / "pot")
+    rel = "guides/split.mdx"
+    old = polib.POFile(wrapwidth=0)
+    old.metadata = {"Content-Type": "text/plain; charset=UTF-8", "Language": "de"}
+    old.append(polib.POEntry(msgid="Intro:\n- How to run it.\n- How to stop it.\n",
+                             msgstr="Einleitung:\n- Wie man es startet.\n- Wie man es stoppt.\n",
+                             comment="type: Plain text", flags=["no-wrap"]))
+    old.append(polib.POEntry(msgid="Unchanged paragraph.\n", msgstr="Unveränderter Absatz.\n",
+                             comment="type: Plain text", flags=["no-wrap"]))
+    io.po_path("de", rel).parent.mkdir(parents=True)
+    old.save(str(io.po_path("de", rel)))
+    pot = polib.POFile(wrapwidth=0)
+    pot.metadata = {"Content-Type": "text/plain; charset=UTF-8"}
+    for msgid, typ in (("Intro:\n", "Plain text"), ("How to run it.\n", "Bullet: '- '"),
+                       ("How to stop it.\n", "Bullet: '- '"), ("Unchanged paragraph.\n", "Plain text"),
+                       ("Brand new sentence.\n", "Plain text")):
+        pot.append(polib.POEntry(msgid=msgid, comment=f"type: {typ}", flags=["no-wrap"]))
+    io.pot_path(rel).parent.mkdir(parents=True)
+    pot.save(str(io.pot_path(rel)))
+    items, counts, _ = up.worklist("de", [rel])
+    by = {i["msgid"]: i for i in items}
+    assert set(by) == {"Intro:\n", "How to run it.\n", "How to stop it.\n", "Brand new sentence.\n"}
+    assert by["How to stop it.\n"]["transfer"] == "split-block"
+    assert by["How to stop it.\n"]["previous_msgstr"] == "Wie man es stoppt."
+    assert by["Intro:\n"]["previous_msgstr"] == "Einleitung:"
+    assert "transfer" not in by["Brand new sentence.\n"]
+    assert counts["split-block hints"] == 3
+
+
+def test_prepare_carries_split_blocks_over_without_a_model(fix_env, monkeypatch):
+    import polib
+    fix, tr, pairs = fix_env
+    monkeypatch.setattr(tr, "instructions", lambda locale: "rules")     # io.REPO is a tmp dir here
+    d = io.WORK_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    items = [
+        {"id": "guides/noise.mdx#0", "type": "Bullet: '- '", "msgid": "Get started with the noise learning helper.",
+         "previous_msgid": "- Get started with the noise learning helper.",
+         "previous_msgstr": "Einstieg in den Noise-Learning-Helfer.", "transfer": "split-block"},
+        # a carried line that fails the checker (code span translated) is not written; it becomes a hint
+        {"id": "guides/noise.mdx#1", "type": "Bullet: '- '", "msgid": "The circuit is `transpiled` before it runs.",
+         "previous_msgid": "- The circuit is `transpiled` before it runs.",
+         "previous_msgstr": "Die Circuit wird `transpiliert`, bevor sie läuft.", "transfer": "split-block"},
+    ]
+    wl = d / "worklist-de.json"
+    wl.write_text(json.dumps({"items": items}, ensure_ascii=False), encoding="utf-8")
+    summary = tr.prepare("de", wl)
+    assert summary["split"] == 1 and summary["sonnet"] == 1 and summary["haiku"] == 0
+    po = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)
+    assert po[0].msgstr == "Einstieg in den Noise-Learning-Helfer."
+    assert po[0].tcomment.startswith("doq: carried over from the paragraph")
+
+
+def test_translate_apply_withdraws_the_review_verdict_on_retranslation(fix_env):
+    """A page verdict judged the translation against the English of its day.
+    Once msgmerge marked an entry fuzzy the English moved, and whatever the
+    translate path then writes there — a retranslation or a confirmation of
+    the old wording — is prose no reviewer has read against the new source:
+    the verdict moves to X-Doq-Review-Opus-Prior and the page is eligible
+    again. A review fix (prefix "fix") is a read by construction and leaves it."""
+    import polib
+    fix, tr, pairs = fix_env
+    path = io.po_path("de", "guides/noise.mdx")
+    po = polib.pofile(str(path), wrapwidth=0)
+    po.metadata["X-Doq-Review-Opus"] = "PASS 2026-07-05"
+    po.save(str(path))
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+
+    def batch(name, ident, out):
+        (d / f"{name}.ids.json").write_text(json.dumps([ident]))
+        (d / f"{name}.json").write_text(json.dumps([{"en": "x"}]))
+        (d / f"{name}.out.json").write_text(json.dumps([out], ensure_ascii=False))
+
+    # a review fix on a translated entry: the verdict stands
+    batch("fix-000-sonnet", "guides/noise.mdx#0", "Einstieg in den Noise-Learning-Helfer (neu).")
+    assert tr.apply("de", prefix="fix", note="doq: fixed") == 0
+    assert polib.pofile(str(path)).metadata.get("X-Doq-Review-Opus") == "PASS 2026-07-05"
+    # the English moved and the agent confirmed the old wording: withdrawn, kept as prior
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    batch("batch-000-sonnet", "guides/noise.mdx#2", pairs[2][1])
+    assert tr.apply("de") == 0
+    meta = polib.pofile(str(path)).metadata
+    assert "X-Doq-Review-Opus" not in meta
+    assert meta["X-Doq-Review-Opus-Prior"] == "PASS 2026-07-05"
+    # a later retranslation on a page without a verdict changes nothing in the header
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell thrice.")
+    batch("batch-000-sonnet", "guides/noise.mdx#2", "Führe die Zelle jetzt aus.")
+    assert tr.apply("de") == 0
+    meta = polib.pofile(str(path)).metadata
+    assert "X-Doq-Review-Opus" not in meta and meta["X-Doq-Review-Opus-Prior"] == "PASS 2026-07-05"
