@@ -84,7 +84,14 @@ paragraph against paragraph, especially the last 40%. Naturalness and
 terminology-consistency slips are still worth reporting, but in this mode they
 are MINOR_ISSUES at most — they must never drive a FAIL on their own. Apply the
 VERDICT rubric below exactly as written; this focus note does not override it.` : ''
-  return `You are a senior native-speaker technical editor for ${f.locale_name} (${f.locale}), reviewing Qiskit / quantum-computing documentation in the doQumentation repo (root: the current working directory).${driftFocus}
+  // Delta mode: the page already carries a verdict; only the entries a model
+  // wrote since (a fix wave's repairs, a sync's retranslations) are unread.
+  const delta = f.mode === 'delta' && Array.isArray(f.delta_entries) && f.delta_entries.length ? `
+
+DELTA READ: this page was already reviewed and its verdict stands for everything EXCEPT the ${f.delta_entries.length} entr${f.delta_entries.length === 1 ? 'y' : 'ies'} below, which a model rewrote since (the date is when). Read the whole page for context, but JUDGE ONLY THESE against their English; your verdict and examples are about them, not the rest of the page.
+${f.delta_entries.map((d, i) => `--- entry ${d.index} (written ${d.since})\nEN: ${d.en}\n${f.locale.toUpperCase()}: ${d.tr}`).join('\n')}
+--- end of entries` : ''
+  return `You are a senior native-speaker technical editor for ${f.locale_name} (${f.locale}), reviewing Qiskit / quantum-computing documentation in the doQumentation repo (root: the current working directory).${driftFocus}${delta}
 
 Read BOTH files in full:
   English source:  docs/${f.rel}
@@ -162,7 +169,8 @@ for (let i = 0; i < files.length; i += BATCH) {
       phase: 'Deep review',
       model: 'opus',
       schema: SCHEMA,
-    }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict } : null))
+    }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict, mode: f.mode || 'full',
+                           ...(f.mode === 'delta' ? { delta_indices: f.delta_entries.map((d) => d.index) } : {}) } : null))
   ))
   verdicts.push(...v)
 }
@@ -187,7 +195,8 @@ if (needNote.length) {
       phase: 'Deep review',
       model: 'opus',
       schema: SCHEMA,
-    }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict } : null))
+    }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict, mode: f.mode || 'full',
+                           ...(f.mode === 'delta' ? { delta_indices: f.delta_entries.map((d) => d.index) } : {}) } : null))
   }))
   // Replace originals with any successful redo that now has a real note.
   const fixedByKey = new Map()

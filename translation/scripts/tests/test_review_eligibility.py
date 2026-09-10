@@ -120,5 +120,62 @@ def test_record_opus_writes_header_and_skips_repairs(recorder, sampler, corpus, 
 
 def test_contributing_status_counts_from_catalogue(contributing_status, sampler, corpus):
     cats = {"xx": sampler.catalogue("xx")}
-    assert contributing_status.reviewed_counts(cats) == {"xx": (1, 4)}   # reviewed, fresh, mid-update, untranslated
+    assert contributing_status.reviewed_counts(cats) == {"xx": (1, 5)}   # reviewed, fresh, mid-update, untranslated, stub (no length cutoff)
     assert contributing_status.rendered_counts(cats) == {"xx": 6}
+
+
+# ── delta review: entries a model wrote since the verdict ──────────────────
+
+def _po_with(root, rel, entries, header=""):
+    return _write_po(root, rel, entries, header)
+
+
+def _stamp(root, rel, idx, comment):
+    p = root / "i18n" / "xx" / "po" / (rel[:-4] + ".po")
+    po = polib.pofile(str(p), wrapwidth=0)
+    po[idx].tcomment = comment
+    po.save(str(p))
+
+
+def test_catalogue_lists_unverified_entries_and_delta_mode(sampler, corpus):
+    # reviewed on 2026-07-05; one entry fixed after that, one fixed and already verified
+    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: fixed after review 2026-09-01")
+    _stamp(corpus, "guides/reviewed.mdx", 1, "doq: fixed after review 2026-08-01 · verified 2026-08-15")
+    cat = sampler.catalogue("xx")
+    r = cat["guides/reviewed.mdx"]
+    assert [u["index"] for u in r["unverified"]] == [0]
+    assert r["unverified"][0]["since"] == "2026-09-01"
+    assert sampler.review_mode(r, 1, exclude_reviewed=True) == "delta"
+    assert sampler.review_mode(cat["guides/fresh.mdx"], 1, exclude_reviewed=True) == "full"
+    # a sync retranslation stamp counts too
+    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: translated after an English change 2026-09-10")
+    assert sampler.catalogue("xx")["guides/reviewed.mdx"]["unverified"][0]["since"] == "2026-09-10"
+
+
+def test_pool_and_draw_carry_delta_entries(sampler, corpus):
+    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: fixed after review 2026-09-01")
+    cat = sampler.catalogue("xx")
+    pool = sampler.build_pool({"xx": cat}, min_lines=1, exclude_reviewed=True)
+    rows = {r[0]: r for r in pool["xx"]}
+    assert rows["guides/reviewed.mdx"][4] == "delta" and rows["guides/fresh.mdx"][4] == "full"
+    sample = sampler.draw(pool, per_locale=10, seed=1)
+    by = {r["rel"]: r for r in sample}
+    assert by["guides/reviewed.mdx"]["mode"] == "delta"
+    assert by["guides/reviewed.mdx"]["delta_entries"] == [
+        {"index": 0, "since": "2026-09-01", "en": "Hello world", "tr": "Hallo Welt"}]
+    assert by["guides/fresh.mdx"]["mode"] == "full" and "delta_entries" not in by["guides/fresh.mdx"]
+    # the stub is in the pool now: no 40-line cutoff
+    assert "guides/stub.mdx" in rows
+
+
+def test_recording_a_verdict_verifies_entries_written_before_it(recorder, sampler, corpus, monkeypatch):
+    monkeypatch.setattr(recorder, "I18N_DIR", corpus / "i18n")
+    _stamp(corpus, "guides/fresh.mdx", 0, "doq: fixed after review 2026-09-01")      # before the read
+    _stamp(corpus, "guides/fresh.mdx", 1, "doq: fixed after review 2026-09-10")      # the round's own repair, same day
+    assert recorder.record_verdict("xx", "guides/fresh.mdx", "MINOR_ISSUES", "2026-09-10") == "written"
+    po = polib.pofile(str(corpus / "i18n/xx/po/guides/fresh.po"))
+    assert po[0].tcomment == "doq: fixed after review 2026-09-01 · verified 2026-09-10"
+    assert po[1].tcomment == "doq: fixed after review 2026-09-10"                     # still pending
+    cat = sampler.catalogue("xx")
+    assert [u["index"] for u in cat["guides/fresh.mdx"]["unverified"]] == [1]
+    assert sampler.review_mode(cat["guides/fresh.mdx"], 1, exclude_reviewed=True) == "delta"

@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+from datetime import date
 import itertools
 import json
 import re
@@ -788,7 +789,9 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
             if msgstr.strip() == e.msgid.strip():
                 e.tcomment = "doq: kept in English by the translator (name or code)"
             else:
-                e.tcomment = note or ""
+                # Dated, so a reviewer can later be pointed at exactly the entries
+                # a model wrote since the page's verdict (delta review).
+                e.tcomment = note or f"doq: translated after an English change {date.today().isoformat()}"
             if became_english:
                 # An entry that HAD a translation and now equals its English is
                 # almost always an agent dropping the translation rather than a

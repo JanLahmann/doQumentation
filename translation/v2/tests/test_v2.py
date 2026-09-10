@@ -1067,3 +1067,23 @@ def test_sync_status_names_every_bad_output(tmp_path, monkeypatch):
     assert "1 strings for 2 items" in problems[1]
     assert problems[2].startswith("b3.out.json: not a list of strings")
     assert problems[3] == "b4.out.json: not filled"
+
+
+def test_translate_apply_stamps_a_retranslation_with_the_date(fix_env):
+    """A sync retranslation is model prose nobody has read: it carries a dated
+    stamp so the delta review can find it; a review fix keeps its own note."""
+    import polib
+    from datetime import date
+    fix, tr, pairs = fix_env
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    (d / "batch-000-sonnet.ids.json").write_text(json.dumps(["guides/noise.mdx#2"]))
+    (d / "batch-000-sonnet.json").write_text(json.dumps([{"en": "x"}]))
+    (d / "batch-000-sonnet.out.json").write_text(json.dumps(["Führe die Zelle jetzt aus."]), encoding="utf-8")
+    assert tr.apply("de") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert e.tcomment == f"doq: translated after an English change {date.today().isoformat()}"
+    assert io.pending_since(e) == date.today().isoformat()
+    io.mark_verified(e, "2026-12-01")
+    assert io.pending_since(e) is None

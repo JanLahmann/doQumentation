@@ -44,6 +44,16 @@ PAGE_VERDICTS = ("PASS", "MINOR_ISSUES", "FAIL")
 SKIPPED_VERDICTS = ("FIXED", "SKIPPED")
 
 
+def _po4a_io():
+    spec = importlib.util.spec_from_file_location("po4a_io", REPO_ROOT / "translation" / "v2" / "po4a_io.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_io = _po4a_io()
+
+
 def _sampler():
     spec = importlib.util.spec_from_file_location("sample_deep_review", SCRIPTS_DIR / "sample-deep-review.py")
     mod = importlib.util.module_from_spec(spec)
@@ -58,7 +68,10 @@ def po_path(locale: str, rel: str) -> Path:
 
 def record_verdict(locale: str, rel: str, verdict: str, when: str,
                    overwrite: bool = True) -> str:
-    """Write `X-Doq-Review-Opus: <verdict> <date>` into one PO header.
+    """Write `X-Doq-Review-Opus: <verdict> <date>` into one PO header, and mark
+    every model-written entry stamped BEFORE that date as verified: the reader
+    saw it. Entries stamped on the same day — a round's own repairs, applied
+    after the read — stay pending for the next delta read.
     Returns 'written', 'kept' (header present and overwrite=False) or 'no-po'."""
     p = po_path(locale, rel)
     if not p.exists():
@@ -67,6 +80,10 @@ def record_verdict(locale: str, rel: str, verdict: str, when: str,
     if po.metadata.get(REVIEW_HEADER) and not overwrite:
         return "kept"
     po.metadata[REVIEW_HEADER] = f"{verdict} {when}".strip()
+    for e in po:
+        since = _io.pending_since(e)
+        if since and when and since < when:
+            _io.mark_verified(e, when)
     po.save(str(p))
     return "written"
 
@@ -110,10 +127,10 @@ def record_opus_from_json(json_path: str, only_locale: str | None = None,
     return counts
 
 
-def show_progress(only_locale: str | None = None, min_lines: int = 40) -> None:
+def show_progress(only_locale: str | None = None, min_lines: int = 1) -> None:
     sdr = _sampler()
     locales = [only_locale] if only_locale else sdr.MAIN_LOCALES
-    print(f"{'locale':7} {'reviewed':>9} {'reviewable':>11} {'pct':>5} {'mid-update':>11} {'rendered':>9}")
+    print(f"{'locale':7} {'reviewed':>9} {'reviewable':>11} {'pct':>5} {'mid-update':>11} {'delta pages':>11} {'unverified':>11} {'rendered':>9}")
     for loc in locales:
         cat = sdr.catalogue(loc)
         rendered = sum(1 for i in cat.values() if i["rendered"])
@@ -121,9 +138,11 @@ def show_progress(only_locale: str | None = None, min_lines: int = 40) -> None:
                       if i["rendered"] and not i["fallback"] and i["lines"] >= min_lines]
         done = sum(1 for i in reviewable if i["verdict"])
         pending = sum(1 for i in cat.values() if i["pending"])
+        delta = sum(1 for i in reviewable if i["verdict"] and i["unverified"])
+        unverified = sum(len(i["unverified"]) for i in cat.values())
         pct = f"{100 * done // len(reviewable)}%" if reviewable else "—"
         note = "" if sdr.is_rendered(cat) else "  (not rendered: run render.py first)"
-        print(f"{loc:7} {done:9} {len(reviewable):11} {pct:>5} {pending:11} {rendered:9}{note}")
+        print(f"{loc:7} {done:9} {len(reviewable):11} {pct:>5} {pending:11} {delta:11} {unverified:11} {rendered:9}{note}")
 
 
 def main():

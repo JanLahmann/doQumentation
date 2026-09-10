@@ -355,6 +355,30 @@ def _check(msgid: str, msgstr: str) -> list[str]:
     return check_entry(msgid, msgstr)
 
 
+# Every msgstr a model writes carries a dated stamp in its translator comment
+# (fix.py --apply: "fixed after review", translate.py --apply on a fuzzy or new
+# entry: "translated after an English change"). Until a reviewer has read that
+# entry against the English it is PENDING VERIFICATION; recording a page verdict
+# dated later than the stamp appends " · verified <date>". sample-deep-review.py
+# puts a page with pending entries into the review pool in delta mode.
+PENDING_STAMP_RE = re.compile(r"doq: (?:fixed after review|translated after an English change) (\d{4}-\d{2}-\d{2})")
+VERIFIED_RE = re.compile(r"verified (\d{4}-\d{2}-\d{2})")
+
+
+def pending_since(e: polib.POEntry) -> str | None:
+    """The stamp date of an entry a model wrote that no reviewer has read since,
+    or None."""
+    c = e.tcomment or ""
+    m = PENDING_STAMP_RE.search(c)
+    if not m or VERIFIED_RE.search(c):
+        return None
+    return m.group(1)
+
+
+def mark_verified(e: polib.POEntry, when: str) -> None:
+    e.tcomment = f"{e.tcomment} · verified {when}"
+
+
 def set_header(po: polib.POFile, rel: str, locale: str | None, **extra: str) -> None:
     po.metadata.update({
         "Project-Id-Version": "doQumentation",

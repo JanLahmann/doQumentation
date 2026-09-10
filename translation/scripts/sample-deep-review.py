@@ -22,8 +22,13 @@ Where the facts come from (since 2026-09-10, no `status.json`):
 Eligibility:
   - has a PO and a rendered page that is not an untranslated fallback
   - no fuzzy or empty translatable entry (the page would render English there)
-  - not a tiny stub/index page (>= --min-lines, default 40)
-  - with --exclude-reviewed: no Opus verdict in the PO header yet
+  - at least --min-lines rendered lines (default 1: every page with prose;
+    the old 40-line stub cutoff hid the index and landing pages whose Card
+    captions turned out to be where English reversions hide)
+  - with --exclude-reviewed: either no Opus verdict in the PO header yet
+    (a FULL read), or a verdict plus entries a model wrote since it — a
+    fix wave's repairs, a sync's retranslations — that no reviewer has read
+    (a DELTA read: the page for context, judgement on those entries only)
 
 Usage:
     python translation/scripts/sample-deep-review.py \
@@ -143,6 +148,8 @@ def catalogue(locale: str) -> dict[str, dict]:
     tier3               the v1 Haiku verdict copied at bootstrap (context only)
     pending             translatable entries that are fuzzy or empty: the page
                         is mid-update and renders English there
+    unverified          entries a model wrote (dated stamp) that no reviewer
+                        has read since: [{index, since, msgid, msgstr}]
     rendered / lines / fallback
                         from the rendered page when it exists
     """
@@ -155,10 +162,19 @@ def catalogue(locale: str) -> dict[str, dict]:
         po = polib.pofile(str(p), wrapwidth=0)
         verdict, reviewed = split_verdict(po.metadata.get(REVIEW_HEADER))
         tier3, _ = split_verdict(po.metadata.get(TIER3_HEADER))
-        pending = sum(1 for e in po
-                      if _po4a_io.translatable(e) and (e.fuzzy or not e.msgstr.strip()))
+        pending = 0
+        unverified = []
+        for idx, e in enumerate(po):
+            if not _po4a_io.translatable(e):
+                continue
+            if e.fuzzy or not e.msgstr.strip():
+                pending += 1
+            since = _po4a_io.pending_since(e)
+            if since:
+                unverified.append({"index": idx, "since": since, "msgid": e.msgid, "msgstr": e.msgstr})
         info = {"rel": rel, "section": section_of(rel), "verdict": verdict,
                 "reviewed": reviewed, "tier3": tier3, "pending": pending,
+                "unverified": unverified,
                 "rendered": False, "lines": 0, "fallback": False}
         tr = _tr_path(locale, rel)
         if tr.exists():
@@ -209,23 +225,31 @@ def _leak_count(text: str, locale: str) -> int:
     return len(pat.findall(prose))
 
 
-def eligible(info: dict, min_lines: int, exclude_reviewed: bool) -> bool:
+def review_mode(info: dict, min_lines: int, exclude_reviewed: bool) -> str | None:
+    """'full' (read the whole page), 'delta' (a verdict stands; judge only the
+    entries written since it), or None when the page is not eligible."""
     if not info["rendered"] or info["fallback"]:
-        return False
+        return None
     if info["lines"] < min_lines:
-        return False
+        return None
     if info["pending"]:
-        return False
-    if exclude_reviewed and info["verdict"]:
-        return False
-    return True
+        return None
+    if not info["verdict"]:
+        return "full"
+    if info["unverified"]:
+        return "delta"
+    return None if exclude_reviewed else "full"
+
+
+def eligible(info: dict, min_lines: int, exclude_reviewed: bool) -> bool:
+    return review_mode(info, min_lines, exclude_reviewed) is not None
 
 
 def build_pool(catalogues: dict[str, dict], min_lines: int,
                sections: tuple[str, ...] | None = None,
                max_leaks: int | None = None,
                exclude_reviewed: bool = False) -> dict:
-    """{locale: [(rel, section, lines, tier3), ...]} of eligible pages.
+    """{locale: [(rel, section, lines, tier3, mode, unverified), ...]} of eligible pages.
 
       catalogues        {locale: catalogue(locale)}
       sections          only these section prefixes (e.g. course+module)
@@ -239,13 +263,15 @@ def build_pool(catalogues: dict[str, dict], min_lines: int,
         for rel, info in cat.items():
             if sections and not rel.startswith(sections):
                 continue
-            if not eligible(info, min_lines, exclude_reviewed):
+            mode = review_mode(info, min_lines, exclude_reviewed)
+            if mode is None:
                 continue
             if max_leaks is not None:
                 text = _tr_path(loc, rel).read_text(encoding="utf-8")
                 if _leak_count(text, loc) > max_leaks:
                     continue
-            rows.append((rel, info["section"], info["lines"], info["tier3"] or "?"))
+            rows.append((rel, info["section"], info["lines"], info["tier3"] or "?", mode,
+                         info["unverified"] if mode == "delta" else []))
         if rows:
             pool[loc] = rows
     return pool
@@ -270,7 +296,7 @@ def draw(pool: dict, per_locale: int, seed: int, focus: str | None = None) -> li
             if buckets[sec]:
                 picked.append(buckets[sec].pop())
             i += 1
-        for rel, sec, lines, tier3 in picked:
+        for rel, sec, lines, tier3, mode, unverified in picked:
             rec = {
                 "locale": loc,
                 "rel": rel,
@@ -279,7 +305,13 @@ def draw(pool: dict, per_locale: int, seed: int, focus: str | None = None) -> li
                 "locale_name": LOCALE_NAME.get(loc, loc),
                 "register": REGISTER.get(loc, "informal register"),
                 "tier3_verdict": tier3,
+                "mode": mode,
             }
+            if mode == "delta":
+                # The reviewer gets the page for context and these entries to
+                # judge; text is capped so a sample file stays a prompt, not a corpus.
+                rec["delta_entries"] = [{"index": u["index"], "since": u["since"],
+                                         "en": u["msgid"][:1500], "tr": u["msgstr"][:1500]} for u in unverified]
             if focus:
                 rec["focus"] = focus
             sample.append(rec)
@@ -292,8 +324,8 @@ def main():
                     help="pages per locale (default 5)")
     ap.add_argument("--seed", type=int, required=True,
                     help="PRNG seed (reproducible; rotate for a fresh sample)")
-    ap.add_argument("--min-lines", type=int, default=40,
-                    help="skip stubs shorter than this (default 40)")
+    ap.add_argument("--min-lines", type=int, default=1,
+                    help="skip rendered pages shorter than this (default 1: every page with prose)")
     ap.add_argument("--include-dialects", action="store_true",
                     help="also sample non-main locales (none at present)")
     ap.add_argument("--sections", default=None,
@@ -309,7 +341,8 @@ def main():
                          "--leak-clean (tells the agent to ignore kept-English "
                          "leaks and hunt semantic drift). Implied by --leak-clean.")
     ap.add_argument("--exclude-reviewed", action="store_true",
-                    help="skip pages already carrying an Opus verdict in their PO header")
+                    help="skip pages whose verdict stands with nothing written since; pages with a "
+                         "verdict AND unverified model-written entries stay in, as delta reads")
     ap.add_argument("--locale", action="append", metavar="LOCALE",
                     help="restrict the sample to this locale (repeatable). "
                          "Lets an external contributor own one locale outright, "
@@ -367,12 +400,15 @@ def main():
     else:
         mode = "general"
 
+    n_delta = sum(1 for f in sample if f["mode"] == "delta")
     payload = {
         "seed": args.seed,
         "per_locale": args.per_locale,
         "mode": mode,
         "eligible_total": eligible_total,
         "sample_size": len(sample),
+        "delta_pages": n_delta,
+        "delta_entries": sum(len(f.get("delta_entries", [])) for f in sample),
         "files": sample,
     }
 
@@ -380,7 +416,8 @@ def main():
         Path(args.out).write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
-        print(f"Wrote {len(sample)} pages (seed={args.seed}) → {args.out}")
+        print(f"Wrote {len(sample)} pages (seed={args.seed}) → {args.out}"
+              + (f" — {n_delta} in delta mode ({payload['delta_entries']} entries to judge)" if n_delta else ""))
         print(f"  eligible pool: {eligible_total} pages across {len(pool)} locales")
 
     if args.do_print or not args.out:
