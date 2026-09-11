@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-10 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-11 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -53,27 +53,27 @@ terms the house style keeps in English (Qiskit, Qubit, Gate, Circuit,
 Backend, Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum,
 QPU) do not count, and no locale currently records anything else, so
 every file scores 0. What limits a pool today is pages already
-reviewed and stubs under 40 lines, not leakage.
+reviewed with nothing written since, not leakage.
 
 | Locale | Unreviewed pool | Reviewed so far |
 |---|---|---|
-| `th` | **175** | 198/373 (53%) |
-| `id` | **160** | 213/373 (57%) |
-| `de` | **158** | 214/372 (57%) |
-| `he` | **149** | 224/373 (60%) |
-| `ko` | **135** | 237/372 (63%) |
-| `ro` | **115** | 258/373 (69%) |
-| `ms` | **110** | 263/373 (70%) |
-| `pl` | **105** | 267/372 (71%) |
-| `cs` | **101** | 272/373 (72%) |
-| `uk` | **62** | 311/373 (83%) |
-| `ja` | **60** | 312/372 (83%) |
-| `ar` | **54** | 319/373 (85%) |
-| `it` | **50** | 323/373 (86%) |
-| `pt` | **50** | 323/373 (86%) |
-| `tl` | **43** | 330/373 (88%) |
-| `es` | **42** | 330/372 (88%) |
-| `fr` | **42** | 331/373 (88%) |
+| `th` | **309** | 198/433 (45%) |
+| `de` | **291** | 372/433 (85%) |
+| `he` | **266** | 373/433 (86%) |
+| `id` | **264** | 213/433 (49%) |
+| `ko` | **250** | 237/433 (54%) |
+| `cs` | **240** | 272/433 (62%) |
+| `pl` | **232** | 267/433 (61%) |
+| `ro` | **222** | 258/433 (59%) |
+| `ms` | **211** | 263/433 (60%) |
+| `tl` | **211** | 384/433 (88%) |
+| `ja` | **198** | 312/433 (72%) |
+| `uk` | **181** | 311/433 (71%) |
+| `ar` | **180** | 319/433 (73%) |
+| `it` | **163** | 323/433 (74%) |
+| `pt` | **149** | 323/433 (74%) |
+| `es` | **148** | 330/433 (76%) |
+| `fr` | **139** | 331/433 (76%) |
 
 ---
 
@@ -81,14 +81,14 @@ reviewed and stubs under 40 lines, not leakage.
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
+| `2026091001-JanLahmann` | 158 | 12 | 7.6% |
+| `2026091002-JanLahmann` | 149 | 27 | 18.1% |
 | `2026090802-JanLahmann` | 22 | 3 | 13.6% |
+| `2026090801-JanLahmann` | 6 | 0 | 0.0% |
 | `2026090803-JanLahmann` | 6 | 0 | 0.0% |
 | `2026090804-JanLahmann` | 25 | 3 | 12.0% |
-| `2026090801-JanLahmann` | 6 | 0 | 0.0% |
-| `2026090701-JanLahmann` | 25 | 2 | 8.0% |
-| `2026090741-clahmann694` | 25 | 2 | 8.0% |
 
-Typical FAIL rate is around **9%**. If your round comes
+Typical FAIL rate is around **12%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 

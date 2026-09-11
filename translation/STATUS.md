@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-09-10 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-09-11 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -17,7 +17,7 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |
 |--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|
-| German | `de` | 433/433 | 25704 | 0 | 0 | 0 | 214 |
+| German | `de` | 433/433 | 25704 | 0 | 0 | 0 | 372 |
 | Spanish | `es` | 433/433 | 25704 | 0 | 0 | 0 | 330 |
 | Ukrainian | `uk` | 433/433 | 25704 | 0 | 0 | 0 | 311 |
 | Japanese | `ja` | 433/433 | 25704 | 0 | 0 | 0 | 312 |
@@ -26,7 +26,7 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 | Portuguese | `pt` | 433/433 | 25704 | 0 | 0 | 0 | 323 |
 | Tagalog | `tl` | 433/433 | 25704 | 0 | 0 | 0 | 384 |
 | Arabic | `ar` | 433/433 | 25704 | 0 | 0 | 0 | 319 |
-| Hebrew | `he` | 433/433 | 25704 | 0 | 0 | 0 | 224 |
+| Hebrew | `he` | 433/433 | 25704 | 0 | 0 | 0 | 373 |
 | Malay | `ms` | 433/433 | 25704 | 0 | 0 | 0 | 263 |
 | Indonesian | `id` | 433/433 | 25704 | 0 | 0 | 0 | 213 |
 | Thai | `th` | 433/433 | 25704 | 0 | 0 | 0 | 198 |
@@ -41,11 +41,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 53/53 | 4120 | 0 | 0 | 22 |
-| Guides | 186/186 | 7570 | 0 | 0 | 114 |
-| Courses | 158/158 | 10432 | 0 | 0 | 53 |
-| Modules | 15/15 | 2295 | 0 | 0 | 10 |
-| Other | 21/21 | 1287 | 0 | 0 | 15 |
+| Tutorials | 53/53 | 4120 | 0 | 0 | 53 |
+| Guides | 186/186 | 7570 | 0 | 0 | 170 |
+| Courses | 158/158 | 10432 | 0 | 0 | 117 |
+| Modules | 15/15 | 2295 | 0 | 0 | 12 |
+| Other | 21/21 | 1287 | 0 | 0 | 20 |
 
 ### Spanish (`es`)
 
@@ -131,11 +131,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 53/53 | 4120 | 0 | 0 | 21 |
-| Guides | 186/186 | 7570 | 0 | 0 | 119 |
-| Courses | 158/158 | 10432 | 0 | 0 | 69 |
-| Modules | 15/15 | 2295 | 0 | 0 | 5 |
-| Other | 21/21 | 1287 | 0 | 0 | 10 |
+| Tutorials | 53/53 | 4120 | 0 | 0 | 53 |
+| Guides | 186/186 | 7570 | 0 | 0 | 170 |
+| Courses | 158/158 | 10432 | 0 | 0 | 118 |
+| Modules | 15/15 | 2295 | 0 | 0 | 12 |
+| Other | 21/21 | 1287 | 0 | 0 | 20 |
 
 ### Malay (`ms`)
 
