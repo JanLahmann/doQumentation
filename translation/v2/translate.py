@@ -710,6 +710,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
     if confirm_fuzzy is None:
         confirm_fuzzy = prefix != "fix"
     accepted = rejected = skipped = unchanged = english = withdrawn = 0
+    reversions: dict[str, list[dict]] = {}
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
     for bpath in sorted(p for p in outdir.glob(f"{prefix}-*.json") if name_re.match(p.name)):
@@ -783,6 +784,7 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
                               and e.msgstr.strip() != e.msgid.strip()
                               and not is_copy_only(e.msgid)
                               and re.search(r"[A-Za-z]{3}", visible))
+            before = e.msgstr
             e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
@@ -806,6 +808,13 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
                 # identifier from this loop's own page and index.
                 print(f"WARNING {page}#{idx}: translation replaced by the English "
                       f"source — check this is intended: {e.msgid[:60]!r}")
+                reversions.setdefault(page, []).append({
+                    "entry": idx, "type": "Reverted to English", "source": e.msgid,
+                    "translation": final, "suggested": before,
+                    "why": "The fix wave replaced this entry with its English source. Restore the "
+                           "translation: use the Suggested text exactly (it is the earlier translation), "
+                           "keeping every {#anchor}, code span, JSX tag and table cell verbatim — unless "
+                           "the English is a proper name or code, in which case leave it."})
             accepted += 1
             changed = True
             if was_pending and prefix == "batch":
@@ -830,6 +839,21 @@ def apply(locale: str, prefix: str = "batch", note: str | None = None,
           + (f", unchanged {unchanged}" if unchanged else "")
           + (f", REPLACED BY ENGLISH {english}" if english else "")
           + (f", review verdicts withdrawn {withdrawn}" if withdrawn else ""))
+    if reversions:
+        # Every warning above, as a ready fix spec pinned by entry number with
+        # the previous translation as the suggestion. Reviewing the warnings
+        # used to end in a hand-built spec each round (ko 10, th 38, id 25:
+        # headings, captions, a table row — every one a real reversion).
+        spec_path = outdir / "reversions.json"
+        spec_path.write_text(json.dumps([
+            {"rel": page, "verdict": "REVERTED",
+             "note": "Entries this page's fix wave reverted to English; restore the Suggested "
+                     "translation of each flagged entry verbatim and return every other entry unchanged.",
+             "examples": exs} for page, exs in reversions.items()],
+            ensure_ascii=False, indent=1), encoding="utf-8")
+        shown = spec_path.relative_to(io.REPO) if spec_path.is_relative_to(io.REPO) else spec_path
+        print(f"→ {english} reversion(s) written as a fix spec: python3 translation/v2/fix.py --locale {locale} "
+              f"--fixes {shown} --prepare --mode flagged   (drop the entries that should stay English first)")
     return 1 if rejected else 0
 
 

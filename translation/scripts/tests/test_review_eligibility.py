@@ -179,3 +179,40 @@ def test_recording_a_verdict_verifies_entries_written_before_it(recorder, sample
     cat = sampler.catalogue("xx")
     assert [u["index"] for u in cat["guides/fresh.mdx"]["unverified"]] == [1]
     assert sampler.review_mode(cat["guides/fresh.mdx"], 1, exclude_reviewed=True) == "delta"
+
+
+def test_write_pair_numbers_prose_entries_and_skips_code(sampler, corpus, tmp_path):
+    """The reviewer reads one paired file instead of two full pages: every
+    prose entry numbered by PO index, EN then translation, no code."""
+    _write_po(corpus, "guides/pair.mdx", [
+        ("Intro sentence.", "Satz eins.", False),
+        ("```python\\nx = 1\\n```", "```python\\nx = 1\\n```", False),
+        ("Second sentence.", "Satz zwei.", False),
+    ])
+    path, n, words = sampler.write_pair("xx", "guides/pair.mdx")
+    text = path.read_text()
+    assert path == tmp_path / "translation" / "v2" / "work" / "review" / "xx" / "guides" / "pair.md"
+    assert n == 2 and words == 4
+    assert "[0]\nEN: Intro sentence.\nXX: Satz eins." in text and "[2]\nEN: Second sentence." in text
+    assert "x = 1" not in text
+
+
+def test_collect_opus_run_reads_journals_and_adds_the_mode(tmp_path):
+    import subprocess, sys
+    from pathlib import Path
+    root = tmp_path / "projects" / "p" / "s" / "subagents" / "workflows" / "wf_1"
+    root.mkdir(parents=True)
+    lines = [json.dumps({"type": "started", "key": "k"}),
+             json.dumps({"type": "result", "result": {"locale": "xx", "file": "a.mdx", "verdict": "PASS", "editor_note": "n"}}),
+             json.dumps({"type": "result", "result": {"locale": "xx", "file": "a.mdx", "verdict": "FAIL", "editor_note": "later wins"}}),
+             json.dumps({"type": "result", "result": "not a record"})]
+    (root / "journal.jsonl").write_text("\n".join(lines))
+    sample = tmp_path / "s.json"
+    sample.write_text(json.dumps({"files": [{"rel": "a.mdx", "mode": "delta", "delta_entries": [{"index": 4}]}]}))
+    out = tmp_path / "out.json"
+    script = Path(__file__).resolve().parent.parent / "collect-opus-run.py"
+    r = subprocess.run([sys.executable, str(script), "--run", "wf_1", "--sample", str(sample), "--out", str(out),
+                        "--journal-root", str(tmp_path / "projects")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    recs = json.loads(out.read_text())
+    assert len(recs) == 1 and recs[0]["verdict"] == "FAIL" and recs[0]["delta_indices"] == [4]

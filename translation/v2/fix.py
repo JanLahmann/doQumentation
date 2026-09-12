@@ -123,6 +123,19 @@ def match_example(example: dict, entries: list[tuple[int, polib.POEntry]]) -> in
     reached the wrong entry and the real defect was reported as fixed
     without being touched. `prepare` cannot notice — it counts examples that
     matched *something*, and this matched something."""
+    # A reviewer who read the paired prose file (sample-deep-review.py writes
+    # one per page, entries numbered by PO index) cites the number directly.
+    # Trust it when the quoted English is in that entry — a wrong number is
+    # worse than no pin, since apply would write the fix onto the wrong text.
+    ent = example.get("entry")
+    if isinstance(ent, int) and ent >= 0:
+        for idx, e in entries:
+            if idx == ent:
+                q = _norm(example.get("source"))
+                if not q or q[:40] in _norm(e.msgid) or difflib.SequenceMatcher(
+                        None, q, _norm(e.msgid)[: max(len(q) * 2, 200)]).ratio() >= MATCH_MIN:
+                    return idx
+                break
     best: tuple[float, int | None] = (0.0, None)
     for quote, attr in ((example.get("source"), "msgid"), (example.get("translation"), "msgstr")):
         q = _norm(quote)
@@ -177,6 +190,7 @@ def load_fixes(path: Path) -> list[dict]:
         out.append({
             "rel": rel,
             "note": f.get("note") or f.get("editor_note") or "",
+            "verdict": f.get("verdict") or "",
             "examples": [ex for ex in (f.get("examples") or []) if isinstance(ex, dict)],
         })
     return out
@@ -209,14 +223,56 @@ def _write_batches(outdir: Path, model: str, n: int, items: list[dict], page: st
     return n
 
 
+WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+# A page smaller than this in targeted mode is packed with other small pages:
+# an agent call has a fixed cost of ~15k tokens a turn, and a two-entry batch
+# would spend it all on the prompt.
+PACK_BELOW = 15
+# Example types whose defect is page-wide by nature — the same wrong term or
+# the wrong pronoun recurs — versus entry-local ones (a dropped qualifier).
+SWEEP_TYPES = {"terminology", "register"}
+
+
+def sweep_terms(examples: list[dict]) -> set[str]:
+    """Words the reviewer's correction REMOVED from a quoted translation: the
+    wrong rendering. Only from page-wide example types, and never a word the
+    English also contains (a kept product name is not a defect)."""
+    out: set[str] = set()
+    for ex in examples:
+        if (ex.get("type") or "").lower() not in SWEEP_TYPES or not ex.get("suggested"):
+            continue
+        bad = {w.lower() for w in WORD_RE.findall(ex.get("translation") or "")}
+        bad -= {w.lower() for w in WORD_RE.findall(ex["suggested"])}
+        bad -= {w.lower() for w in WORD_RE.findall(ex.get("source") or "")}
+        out |= bad
+    return out
+
+
 def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
-            flagged_only: bool = False) -> dict:
-    """Build the fix batches. By default every translated entry of a flagged
-    page travels, so the fixer can repair drift it was not pointed at and
-    must copy the rest back verbatim. `flagged_only` sends the pinned entries
-    alone: right when the defect is entry-local and the flags are many — the
-    untranslated-prose wave had 2,031 entries on ~880 pages, which as whole
-    pages is ~1,400 batches and as flagged entries ~25."""
+            flagged_only: bool = False, mode: str | None = None) -> dict:
+    """Build the fix batches.
+
+    mode "page": every translated entry of a flagged page travels, so the
+    fixer can repair drift it was not pointed at and must copy the rest back
+    verbatim. Measured on th and id (2026-09-12): 1,056 / 972 accepted changes
+    out of 19,972 / 16,637 entries sent — 93% of every batch was copied back,
+    and the copying was 87% of the wave's output tokens.
+
+    mode "targeted" (default): a page with a FAIL verdict still travels whole;
+    any other page sends the pinned entries plus every entry that contains a
+    word the reviewer's Terminology/Register corrections removed (the wrong
+    term, the wrong pronoun — the defects that recur across a page). On th/id
+    that is 27-41% of the entries and catches 73-90% of the changes the page
+    mode made outside the pinned entries. Small pages are packed together.
+
+    mode "flagged": the pinned entries alone, packed across pages: right when
+    the defect is entry-local and the flags are many — the untranslated-prose
+    wave had 2,031 entries on ~880 pages, which as whole pages is ~1,400
+    batches and as flagged entries ~25. (`flagged_only=True` is this mode.)"""
+    mode = "flagged" if flagged_only else (mode or "targeted")
+    if mode not in ("page", "targeted", "flagged"):
+        raise ValueError(f"unknown mode {mode!r}")
+    flagged_only = mode == "flagged"
     outdir = io.WORK_DIR / locale
     outdir.mkdir(parents=True, exist_ok=True)
     for old in outdir.glob("fix-*.json"):
@@ -225,7 +281,7 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
 
     manifest: list[dict] = []
     n = 0
-    n_items = n_flagged = 0
+    n_items = n_flagged = n_swept = 0
     missing: list[str] = []
     unmatched = 0
     pending: list[dict] = []
@@ -254,7 +310,20 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
                 unmatched += 1
                 continue
             reviews.setdefault(idx, []).append(_review_text(ex))
-        by_index = {} if flagged_only else dict(entries)
+        whole = mode == "page" or (mode == "targeted" and fx.get("verdict") == "FAIL")
+        by_index = dict(entries) if whole else {}
+        swept: dict[int, str] = {}
+        if mode == "targeted" and not whole:
+            terms = sweep_terms(fx["examples"])
+            for idx, e in entries:
+                if idx in reviews:
+                    continue
+                for t in terms:
+                    m = re.search(rf"\b{re.escape(t)}\b", e.msgstr, re.IGNORECASE)
+                    if m:
+                        swept[idx] = m.group(0)
+                        by_index[idx] = e
+                        break
         for idx in reviews:                      # a flagged copy-only entry joins the batch
             if idx not in by_index:
                 by_index[idx] = po[idx]
@@ -266,10 +335,22 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
                 it["type"] = t
             if idx in reviews:
                 it["review"] = " | ".join(r for r in reviews[idx] if r) or "flagged by the reviewer"
+            elif idx in swept:
+                it["review"] = (f"Not quoted by the reviewer, but it contains '{swept[idx]}', a rendering "
+                                f"the reviewer corrected elsewhere on this page (see the page note): apply "
+                                f"the same correction here if the defect recurs, otherwise copy prev_msgstr back verbatim.")
             it["_id"] = f"{rel}#{idx}"
             items.append(it)
         n_items += len(items)
         n_flagged += len(reviews)
+        n_swept += len(swept)
+        if mode == "targeted" and not whole and len(items) < PACK_BELOW:
+            # A small targeted page shares a batch with other small pages;
+            # each note is prefixed with its page so the fixer can tell them apart.
+            for it in items:
+                it["_note"] = f"[{rel}] {fx['note']}"
+            pending.extend(items)
+            continue
         if flagged_only:
             # Pinned entries from every page are packed together below: a
             # batch per page would cost a whole agent call for two entries.
@@ -280,9 +361,15 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
             continue
         n = _write_batches(outdir, model, n, items, rel, fx["note"], manifest)
     if pending:
-        notes = list(dict.fromkeys(it["_note"] for it in pending))
-        n = _write_batches(outdir, model, n, pending, "(pinned entries across pages)",
-                           " ".join(notes), manifest)
+        # Packed across pages in page order, split into batches of ordinary
+        # size; a batch's note is the notes of the pages it holds.
+        pos = 0
+        while pos < len(pending):
+            chunk = pending[pos:pos + tr.BATCH_ITEMS]
+            pos += len(chunk)
+            notes = list(dict.fromkeys(it["_note"] for it in chunk))
+            n = _write_batches(outdir, model, n, chunk, "(pinned entries across pages)",
+                               " ".join(notes), manifest)
     (outdir / "manifest-fix.json").write_text(json.dumps({
         "locale": locale,
         "task": "fix",
@@ -290,10 +377,12 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
         "instructions_text": fix_instructions(locale),
         "batches": manifest}, indent=1, ensure_ascii=False), encoding="utf-8")
     summary = {"pages": len(fixes) - len(missing), "items": n_items, "flagged": n_flagged,
+               "swept": n_swept, "mode": mode,
                "unmatched_examples": unmatched, "batches": len(manifest), "missing_pages": missing}
-    print(f"{locale}: {summary['pages']} page(s), {n_items} entries in {len(manifest)} batch(es), "
-          f"{n_flagged} entries pinned to a reviewer example, {unmatched} example(s) not matched "
-          f"(the page note still travels with every batch)")
+    print(f"{locale}: {summary['pages']} page(s), {n_items} entries in {len(manifest)} batch(es) [mode {mode}], "
+          f"{n_flagged} entries pinned to a reviewer example"
+          + (f", {n_swept} swept in for a term the reviewer corrected" if mode == "targeted" else "")
+          + f", {unmatched} example(s) not matched (the page note still travels with every batch)")
     for rel in missing:
         print(f"WARNING no PO for {rel}: skipped")
     print(f"manifest: {(outdir / 'manifest-fix.json').relative_to(io.REPO)}")
@@ -533,9 +622,12 @@ def main() -> int:
     ap.add_argument("--locale", required=True)
     ap.add_argument("--fixes", help="fix spec or review records JSON (required with --prepare)")
     ap.add_argument("--prepare", action="store_true")
+    ap.add_argument("--mode", choices=("page", "targeted", "flagged"), default=None,
+                    help="with --prepare: what travels per page. targeted (default): a FAIL page whole, "
+                         "any other page its pinned entries plus the entries carrying a term the reviewer "
+                         "corrected; page: every entry of every page; flagged: pinned entries only")
     ap.add_argument("--flagged-only", action="store_true",
-                    help="with --prepare: batch only the entries an example pins, not the whole page "
-                         "(for entry-local defects with many flags, e.g. untranslated entries)")
+                    help="with --prepare: same as --mode flagged")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--leaks", action="store_true",
                     help="deterministic glossary-leak pass over the PO msgstrs "
@@ -558,7 +650,7 @@ def main() -> int:
     if a.prepare:
         if not a.fixes:
             ap.error("--prepare needs --fixes")
-        prepare(a.locale, load_fixes(Path(a.fixes)), a.model, a.flagged_only)
+        prepare(a.locale, load_fixes(Path(a.fixes)), a.model, a.flagged_only, mode=a.mode)
         return 0
     if a.apply:
         note = a.note or f"doq: fixed after review {date.today().isoformat()}"
