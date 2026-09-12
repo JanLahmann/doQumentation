@@ -53,6 +53,7 @@ const SCHEMA = {
         type: 'object',
         additionalProperties: false,
         properties: {
+          entry: { type: 'integer' },
           line_approx: { type: 'string' },
           type: { enum: ['Naturalness', 'Terminology', 'Drift', 'Pedagogy', 'Register'] },
           source: { type: 'string' },
@@ -88,14 +89,24 @@ VERDICT rubric below exactly as written; this focus note does not override it.` 
   // wrote since (a fix wave's repairs, a sync's retranslations) are unread.
   const delta = f.mode === 'delta' && Array.isArray(f.delta_entries) && f.delta_entries.length ? `
 
-DELTA READ: this page was already reviewed and its verdict stands for everything EXCEPT the ${f.delta_entries.length} entr${f.delta_entries.length === 1 ? 'y' : 'ies'} below, which a model rewrote since (the date is when). Read the whole page for context, but JUDGE ONLY THESE against their English; your verdict and examples are about them, not the rest of the page.
+DELTA READ: this page was already reviewed and its verdict stands for everything EXCEPT the ${f.delta_entries.length} entr${f.delta_entries.length === 1 ? 'y' : 'ies'} below, which a model rewrote since (the date is when). Read the page for context, but JUDGE ONLY THESE against their English; your verdict and examples are about them, not the rest of the page.
 ${f.delta_entries.map((d, i) => `--- entry ${d.index} (written ${d.since})\nEN: ${d.en}\n${f.locale.toUpperCase()}: ${d.tr}`).join('\n')}
 --- end of entries` : ''
-  return `You are a senior native-speaker technical editor for ${f.locale_name} (${f.locale}), reviewing Qiskit / quantum-computing documentation in the doQumentation repo (root: the current working directory).${driftFocus}${delta}
+  // One Read of the paired prose file instead of two Reads of the full pages:
+  // every prose entry numbered, EN then translation, no code or outputs. An
+  // Opus read of the full pages cost ~380k tokens (2026-09-12), two-thirds of
+  // it the pages re-sent on every later turn; the pair is a fraction of the
+  // bytes and lets the reviewer cite entries by number, which pins a fix
+  // exactly. Samples drawn before the pair existed fall back to the pages.
+  const read = f.pair ? `
+
+Read ONE file, in full: ${f.pair}
+It holds every prose entry of the page, numbered [n] by its PO index, each as the English (EN:) followed by the ${f.locale_name} (${f.locale.toUpperCase()}:). Code, math, outputs and markup-only entries are omitted because they are never translated — judge ONLY the prose you are given, entry against entry. Do not read any other file and do not run anything. In every example you report, set "entry" to the [n] of the entry you are quoting.` : `
 
 Read BOTH files in full:
   English source:  docs/${f.rel}
-  ${f.locale_name} translation:  i18n/${f.locale}/docusaurus-plugin-content-docs/current/${f.rel}
+  ${f.locale_name} translation:  i18n/${f.locale}/docusaurus-plugin-content-docs/current/${f.rel}`
+  return `You are a senior native-speaker technical editor for ${f.locale_name} (${f.locale}), reviewing Qiskit / quantum-computing documentation in the doQumentation repo (root: the current working directory).${driftFocus}${delta}${read}
 
 A fast automated pass already checked register, word-salad, verbosity, and basic accuracy — assume those mechanical checks passed (its verdict was: ${f.tier3_verdict}). Your job is the DEEPER editorial judgment a checklist cannot make. Compare paragraph by paragraph. Ignore code blocks, math, JSX, URLs, image paths, and heading anchors — judge ONLY the prose.
 
@@ -159,19 +170,34 @@ phase('Deep review')
 // batch is preserved (resume re-runs only the failures). Opus reads are large,
 // so a big fan-out exhausts the window fast — keep the live set small.
 const BATCH = 7
+// A quota error ("You've hit your session limit · resets 8am") is not
+// transient: every agent started after it dies the same way, after reading
+// its page. On 2026-09-12 a 222-page round launched into one burned 15M
+// tokens for 28 records. Stop starting agents the moment one reports it;
+// resume the run later with resumeFromRunId and only the unread pages run.
+const QUOTA_RE = /hit your (session|usage|weekly) limit|usage limit reached|resets? \d/i
+let aborted = null
+const AGENT_TYPE = input.agentType || undefined
 const verdicts = []
-for (let i = 0; i < files.length; i += BATCH) {
+for (let i = 0; i < files.length && !aborted; i += BATCH) {
   const slice = files.slice(i, i + BATCH)
   log(`Deep-review batch ${Math.floor(i / BATCH) + 1}: files ${i + 1}-${i + slice.length} of ${files.length}`)
-  const v = await parallel(slice.map((f) => () =>
-    agent(promptFor(f), {
+  const v = await parallel(slice.map((f) => () => {
+    if (aborted) return Promise.resolve(null)
+    return agent(promptFor(f), {
       label: `opus:${f.locale}/${f.rel.split('/').pop()}`,
       phase: 'Deep review',
       model: 'opus',
       schema: SCHEMA,
+      ...(AGENT_TYPE ? { agentType: AGENT_TYPE } : {}),
     }).then((v) => (v ? { ...v, _tier3: f.tier3_verdict, mode: f.mode || 'full',
                            ...(f.mode === 'delta' ? { delta_indices: f.delta_entries.map((d) => d.index) } : {}) } : null))
-  ))
+      .catch((e) => {
+        const msg = String(e && e.message || e)
+        if (QUOTA_RE.test(msg) && !aborted) { aborted = msg.slice(0, 120); log(`⛔ quota: ${aborted} — not starting any more readers`) }
+        return null
+      })
+  }))
   verdicts.push(...v)
 }
 
@@ -232,19 +258,23 @@ if (disagreements.length) {
   disagreements.forEach((d) => log(`   ${d}`))
 }
 
-// Strip the internal _tier3 marker from the records the user will persist.
-const records = results.map(({ _tier3, ...rest }) => rest)
+if (aborted) log(`⛔ stopped early on a quota error after ${results.length}/${files.length}: resume with resumeFromRunId once the window resets`)
 
+// The records are NOT returned: every agent's verdict is already in this
+// run's journal.jsonl, and returning ~100k characters of them per shard only
+// inflated the orchestrator's context (68 notifications averaged 11k
+// characters on 2026-09-12). Collect them from the journal:
+//   python3 translation/scripts/collect-opus-run.py --run <runId> [--run …] \
+//       --sample <the sample .json> --out translation/reviews/opus-<seed>-<handle>.json
+// then record them:
+//   python3 translation/scripts/review-translations.py --record-opus --from-json <that file> --locale <LOCALE>
 return {
   seed,
   reviewed: results.length,
   requested: files.length,
   tally,
   fails,
-  disagreements,
-  // Persist this array, then record it:
-  //   write to translation/reviews/opus-<seed>.json, then
-  //   python3 translation/scripts/review-translations.py --record-opus --from-json translation/reviews/opus-<seed>.json --locale <LOCALE>
-  //   (writes X-Doq-Review-Opus into each reviewed page's PO header; commit it with the PO tree)
-  records,
+  disagreements: disagreements.length,
+  ...(aborted ? { aborted } : {}),
+  records: 'in journal.jsonl — collect-opus-run.py',
 }

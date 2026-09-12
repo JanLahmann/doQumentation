@@ -458,7 +458,7 @@ def test_fix_prepare_pins_examples_and_skips_code(fix_env):
     spec = [{"rel": "guides/noise.mdx", "note": "stiff term",
              "examples": [{"source": "circuit is transpiled before it runs",
                            "why": "calque", "suggested": "Der Schaltkreis"}]}]
-    summary = fix.prepare("de", spec)
+    summary = fix.prepare("de", spec, mode="page")
     assert summary["pages"] == 1 and summary["batches"] == 1
     assert summary["flagged"] == 1 and summary["unmatched_examples"] == 0
     manifest = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())
@@ -491,7 +491,7 @@ def test_fix_apply_writes_only_changed_entries_with_note(fix_env):
     import polib
     fix, tr, pairs = fix_env
     spec = [{"rel": "guides/noise.mdx", "note": "n", "examples": []}]
-    fix.prepare("de", spec)
+    fix.prepare("de", spec, mode="page")
     b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
     items = json.loads(Path(io.REPO / b["file"]).read_text())
     out = [it["prev_msgstr"] for it in items]
@@ -508,7 +508,7 @@ def test_fix_apply_writes_only_changed_entries_with_note(fix_env):
 def test_fix_apply_rejects_checker_violation(fix_env):
     import polib
     fix, tr, pairs = fix_env
-    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
     b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
     items = json.loads(Path(io.REPO / b["file"]).read_text())
     out = [it["prev_msgstr"] for it in items]
@@ -539,7 +539,7 @@ def test_fix_apply_keeps_fuzzy_when_the_agent_copied_it_back(fix_env):
     import polib
     fix, tr, pairs = fix_env
     _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
-    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
     b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
     items = json.loads(Path(io.REPO / b["file"]).read_text())
     out = [it["prev_msgstr"] for it in items]                    # everything copied back verbatim
@@ -554,7 +554,7 @@ def test_fix_apply_clears_fuzzy_when_the_agent_retranslated_it(fix_env):
     import polib
     fix, tr, pairs = fix_env
     _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
-    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
     b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
     items = json.loads(Path(io.REPO / b["file"]).read_text())
     out = [it["prev_msgstr"] for it in items]
@@ -658,7 +658,7 @@ def test_leaks_skips_fuzzy_entries(fix_env, tmp_path):
 def test_translate_apply_ignores_fix_batches(fix_env):
     """translate.py --apply must not pick up fix-* files and vice versa."""
     fix, tr, pairs = fix_env
-    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}])
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
     b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
     items = json.loads(Path(io.REPO / b["file"]).read_text())
     out = [it["prev_msgstr"] for it in items]
@@ -831,7 +831,7 @@ def test_prepare_still_omits_unflagged_copy_only_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(fx2.io, "REPO", tmp_path)
     monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
 
-    fx2.prepare("xx", [{"rel": "p.mdx", "note": "n", "examples": []}])
+    fx2.prepare("xx", [{"rel": "p.mdx", "note": "n", "examples": []}], mode="page")
     batch = json.loads(_batch_file(work / "xx").read_text())
     assert all(it["msgid"] != MATH for it in batch)
 
@@ -1087,3 +1087,78 @@ def test_translate_apply_stamps_a_retranslation_with_the_date(fix_env):
     assert io.pending_since(e) == date.today().isoformat()
     io.mark_verified(e, "2026-12-01")
     assert io.pending_since(e) is None
+
+
+# ---------------------------------------------------------------------------
+# fix.py targeted mode, entry pinning; apply's reversion spec (2026-09-12)
+# ---------------------------------------------------------------------------
+
+def test_fix_prepare_targeted_sweeps_the_corrected_term_and_sends_fail_pages_whole(fix_env):
+    """Measured on th/id: a whole-page wave copies 93% of its entries back
+    unchanged, and 73-90% of the changes it makes outside the pinned entries
+    are the same wrong term or pronoun recurring. Targeted mode sends the
+    pinned entries plus every entry carrying a word the reviewer's
+    Terminology/Register correction removed; a FAIL page still goes whole."""
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/reg.mdx"), [
+        ("As you can see, it works.", "Wie Sie sehen, funktioniert es."),
+        ("You should run it.", "Sie sollten es ausführen."),
+        ("The gate is applied.", "Das Gate wird angewendet."),
+        ("Now measure.", "Jetzt messen."),
+    ] + [(f"Filler sentence number {i}.", f"Füllsatz Nummer {i}.") for i in range(12)])
+    spec = [{"rel": "guides/reg.mdx", "note": "formal register", "verdict": "MINOR_ISSUES",
+             "examples": [{"type": "Register", "source": "As you can see, it works.",
+                           "translation": "Wie Sie sehen, funktioniert es.",
+                           "suggested": "Wie du siehst, funktioniert es.", "why": "Sie, not du"}]},
+            {"rel": "guides/noise.mdx", "note": "misleading", "verdict": "FAIL",
+             "examples": [{"type": "Drift", "source": "Run the cell.", "why": "inverted"}]}]
+    summary = fix.prepare("de", spec)
+    assert summary["mode"] == "targeted" and summary["flagged"] == 2 and summary["swept"] == 1
+    m = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"]
+    sent = {}
+    for b in m:
+        ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+        items = json.loads(Path(io.REPO / b["file"]).read_text())
+        sent.update(zip(ids, items))
+    # reg.mdx: the pinned entry, the swept "Sie" entry, nothing else
+    assert sorted(k for k in sent if k.startswith("guides/reg")) == ["guides/reg.mdx#0", "guides/reg.mdx#1"]
+    assert "Sie" in sent["guides/reg.mdx#1"]["review"] and "copy prev_msgstr back" in sent["guides/reg.mdx#1"]["review"]
+    # noise.mdx is a FAIL: every prose entry travels (the code block never does)
+    assert sorted(k for k in sent if k.startswith("guides/noise")) == ["guides/noise.mdx#0", "guides/noise.mdx#1", "guides/noise.mdx#2"]
+    # the small targeted page was packed, its note prefixed with the page
+    packed = [b for b in m if b["page"].startswith("(pinned")]
+    assert len(packed) == 1 and packed[0]["note"].startswith("[guides/reg.mdx] formal register")
+
+
+def test_fix_prepare_targeted_ignores_entry_local_example_types(fix_env):
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "n", "verdict": "MINOR_ISSUES",
+             "examples": [{"type": "Naturalness", "source": "Run the cell.", "translation": "Führe die Zelle aus.",
+                           "suggested": "Führ die Zelle aus.", "why": "stiff"}]}]
+    summary = fix.prepare("de", spec)
+    assert summary["flagged"] == 1 and summary["swept"] == 0 and summary["items"] == 1
+
+
+def test_fix_match_example_trusts_the_entry_number_when_the_quote_is_there():
+    import polib
+    fix = _fix_module()
+    entries = [(0, polib.POEntry(msgid="Alpha beta gamma delta.", msgstr="A")),
+               (1, polib.POEntry(msgid="Alpha beta gamma epsilon.", msgstr="B")),
+               (2, polib.POEntry(msgid="Something else entirely here.", msgstr="C"))]
+    # the number wins over the (ambiguous) quote…
+    assert fix.match_example({"entry": 1, "source": "Alpha beta gamma"}, entries) == 1
+    # …but not when the quoted English is not in that entry: fall back to matching
+    assert fix.match_example({"entry": 2, "source": "Alpha beta gamma delta."}, entries) == 0
+
+
+def test_translate_apply_writes_a_reversion_spec(tmp_path, monkeypatch, capsys):
+    """Every REPLACED-BY-ENGLISH warning becomes an entry-pinned fix spec with
+    the previous translation as the suggestion (ko 10, th 38, id 25 of them
+    were built by hand, one round after another)."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "REPLACED BY ENGLISH 1" in out and "--mode flagged" in out
+    spec = json.loads((tr.io.WORK_DIR / "xx" / "reversions.json").read_text())
+    assert spec[0]["rel"] == "p.mdx" and spec[0]["examples"][0]["entry"] == 0
+    assert spec[0]["examples"][0]["suggested"] == CS and spec[0]["examples"][0]["translation"] == EN

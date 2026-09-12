@@ -164,6 +164,14 @@ A page whose verdict stands with nothing written since is skipped, so rounds
 never re-tread ground. There is no minimum page length any more: the short
 index and landing pages are where the Card captions live.
 
+For every sampled page the sampler also writes a **paired prose file** under
+`translation/v2/work/review/<LOCALE>/<page>.md`: every prose entry of the
+PO, numbered `[n]` by its index, English then translation, with code, math
+and outputs left out because they are never translated. That file is what
+the reader reads — one Read instead of two full pages — and the number is
+what the reader cites, which pins a fix to the exact entry. The sample row
+carries its path as `pair`.
+
 If the pool is smaller than `N`, that locale is genuinely drained: take the
 short round rather than shrinking `N` on a locale that still has work.
 
@@ -196,10 +204,31 @@ python3 translation/scripts/make-opus-run.py \
 ```
 
 Then call the `Workflow` tool with `{scriptPath: "/tmp/round-<SEED>-wf.js"}`.
-It runs Opus agents in batches of 7 and returns a `records` array.
+It runs Opus agents in batches of 7 and returns only the tally, the FAIL
+list and the run id. The records themselves stay in the run's journal —
+returning them inflated the orchestrator's context by ~11k characters per
+shard for nothing — so collect them from there:
+
+```bash
+python3 translation/scripts/collect-opus-run.py --run <runId> [--run <runId> …] \
+  --sample /tmp/round-<SEED>.json --out translation/reviews/opus-<SEED>-<HANDLE>.json
+```
+
+(last verdict per page wins; `--sample` adds each page's `mode` and delta
+entries). Commit that file at once as a safety net.
 
 **Copy the baked `.js` and the sample somewhere outside `/tmp` first** —
 `/tmp` gets reaped, and you will want them if you have to resume.
+
+If a reader dies on a **quota error** ("You've hit your session limit ·
+resets …"), the workflow stops starting readers and says so in its result
+(`aborted`). Nothing is retried into the wall; resume with
+`resumeFromRunId` once the window has reset and only the unread pages run.
+The fix workflow does the same.
+
+A sample of ~300 pages is best run as several shards (split the sample's
+`files` and bake each): the harness runs about four agents per workflow,
+so parallelism comes from workflows, not from a bigger batch.
 
 ### 4. The rubric (know it, so you can sanity-check the output)
 
@@ -224,10 +253,22 @@ clean."** Don't describe it as clean in your summary.
 
 ### 5. Gauge before fixing
 
-Do not fix on trust. For each FAIL, spawn 3 short sub-agents prompted to
-**refute** the finding (default to "refuted" when uncertain), and keep the
-finding only if a majority fail to refute it. With ≤3 FAILs, do this
-inline; with more, add it as a workflow stage.
+Do not fix on trust. Bake the round's FAILs into the refutation workflow
+and run it:
+
+```bash
+python3 translation/scripts/make-gauge-run.py \
+  --records translation/reviews/opus-<SEED>-<HANDLE>.json --locale <LOCALE> \
+  --out /tmp/gauge-<SEED>-wf.js
+```
+
+Then `Workflow({scriptPath: "/tmp/gauge-<SEED>-wf.js"})`. Two independent
+Opus readers per FAIL try to **refute** it (default "refuted" when
+uncertain) from the cited entries with two neighbours on each side, inline
+in the prompt — not from the full pages; a third reads only when the two
+disagree. A FAIL stands when the majority cannot refute it. The result
+lists `stands` and `refuted`; on 2026-09-12 it reproduced the three-reader
+gauge's verdicts on id at a third of the cost.
 
 Report the gauge result to the user. Findings are usually real even when
 the severity label is too harsh — remediate on the **finding**, not the
@@ -268,11 +309,24 @@ python3 translation/v2/fix.py --locale <LOCALE> \
   --fixes translation/v2/work/fixes-<SEED>.json --prepare
 ```
 
-It writes `translation/v2/work/<LOCALE>/fix-NNN-sonnet.json` (every
-translated entry of the page, with a `review` field on the entries the
-examples point at) and `manifest-fix.json`. Add `--flagged-only` when the
-examples pin every defect and the rest of the page need not be re-read; it
-packs the pinned entries across pages into a few batches.
+It writes `translation/v2/work/<LOCALE>/fix-NNN-sonnet.json` and
+`manifest-fix.json`. What travels per page is the `--mode`:
+
+- **`targeted`** (default): a page with a FAIL verdict goes whole; any other
+  page sends the entries the examples pin plus every entry that contains a
+  word the reviewer's Terminology/Register corrections removed — the wrong
+  term or pronoun that recurs across a page. Measured on th and id
+  (2026-09-12): a whole-page wave copied 93% of its entries back unchanged,
+  and this mode keeps 73–90% of the changes made outside the pinned entries
+  at 23–40% of the entries (th: 3,489 entries in 98 batches instead of
+  15,438 in 328). Small pages are packed together, each note prefixed with
+  its page.
+- **`page`**: every translated entry of every flagged page, the fixer
+  copies the rest back verbatim. Use it when a locale's FAIL rate is high.
+- **`flagged`**: the pinned entries alone, packed across pages, for
+  entry-local defects with many flags (untranslated entries, reversions).
+
+Every entry carries a `review` field saying why it is there.
 
 > **`--prepare` wipes the work directory first.** It deletes every
 > `fix-*.json` under `work/<LOCALE>/` before writing new ones, so running it
@@ -321,11 +375,19 @@ Read what `--apply` prints before going on:
   repairing more of a defect than the reviewer quoted; read them and decide.
 - **Every `REPLACED BY ENGLISH` warning.** A fix wave sometimes overwrites a
   translated string with its English source, and it does so where no
-  structural check can object: `title=`, `description=` and `alt=` captions
-  and table cells. `--apply` names each such entry; the completeness
-  ratchet in step 7 flags the captions again. A filename or a citation
-  *should* equal its source; anything else is a regression — redo that
-  entry with a note saying what must stay English.
+  structural check can object: headings, `title=`, `description=` and
+  `alt=` captions and table cells. `--apply` names each such entry and
+  writes them all as a ready fix spec,
+  `translation/v2/work/<LOCALE>/reversions.json`, pinned by entry with the
+  previous translation as the suggestion. A filename or a citation
+  *should* equal its source — delete those from the spec; everything else
+  is a regression (ko 10, th 38, id 25: every one), so restore it:
+
+  ```bash
+  python3 translation/v2/fix.py --locale <LOCALE> \
+    --fixes translation/v2/work/<LOCALE>/reversions.json --prepare --mode flagged
+  # fill with the Workflow tool as above, then --apply again
+  ```
 
 ### 7. Gate the result
 
@@ -361,7 +423,7 @@ existing one:
 translation/reviews/opus-<SEED>-<HANDLE>.json
 ```
 
-That's the raw `records` array from step 3, verbatim. Then record the
+That's the file `collect-opus-run.py` wrote in step 3. Then record the
 verdicts where eligibility reads them — each reviewed page's PO header:
 
 ```bash
@@ -414,10 +476,11 @@ To resume in the **same session**: call `Workflow` again with the same
 `scriptPath` plus `resumeFromRunId: "<the runId from the first call>"` —
 completed agents replay from cache instantly and only the lost ones re-run.
 
-Across sessions the cache is gone. Recover the completed verdicts from the
-workflow's `journal.jsonl` (last-wins per `locale`+`file`), write them to
-the reviews file, commit that as a safety net, and either ship the partial
-round or draw a fresh sample with `--exclude-reviewed` to pick up the rest.
+Across sessions the cache is gone. Recover the completed verdicts with
+`collect-opus-run.py --run <runId>` (it reads the journal, last-wins per
+`locale`+`file`), commit the reviews file as a safety net, and either ship
+the partial round or draw a fresh sample with `--exclude-reviewed` to pick
+up the rest.
 A killed fix agent leaves at most an incomplete `fix-*.out.json`, which
 `--apply` rejects as a whole (count mismatch); delete it and rerun that
 batch.

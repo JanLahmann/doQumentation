@@ -26,9 +26,18 @@ def main():
     ap = argparse.ArgumentParser(description="Bake a sample into a runnable opus-deep-review copy")
     ap.add_argument("--sample", required=True, help="sample JSON from sample-deep-review.py")
     ap.add_argument("--out", required=True, help="output runnable .js path")
+    ap.add_argument("--agent", default=None, metavar="TYPE",
+                    help="custom agent type for the readers, e.g. 'reviewer' (.claude/agents/reviewer.md: "
+                         "Read only, Opus). Custom agents register at session start, so pass it only "
+                         "from a session that started after the file existed; default is the harness agent")
     args = ap.parse_args()
 
     sample = json.loads(Path(args.sample).read_text(encoding="utf-8"))
+    if args.agent:
+        sample["agentType"] = args.agent
+    missing = [f["rel"] for f in sample.get("files", []) if f.get("pair") and not (REPO_ROOT / f["pair"]).exists()]
+    if missing:
+        raise SystemExit(f"{len(missing)} paired prose file(s) missing (re-run sample-deep-review.py): {missing[:3]}")
     template = TEMPLATE.read_text(encoding="utf-8")
     if NEEDLE not in template:
         raise SystemExit(f"template marker not found: {NEEDLE!r} in {TEMPLATE}")

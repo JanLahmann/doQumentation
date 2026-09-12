@@ -133,10 +133,18 @@ if (TASK === 'gauge') log(`completeness-gauge mode: ${batches.length} batch(es),
 // shards of ~15-40 batches and launch them together: 6 shards reached 21
 // agents in flight against 4 for one workflow, and 46 batches that had been
 // crawling at 2/min finished in minutes.
+// A quota error ("You've hit your session limit · resets 3am") is not
+// transient, and retrying it three times per batch is how a th fix wave
+// burned 6.8M tokens for nothing on 2026-09-12. One such error stops the
+// pool: the batch is not retried, the workers take no more batches, and the
+// untouched batches are reported as skipped. Resume with resumeFromRunId
+// once the window has reset — only the unfilled batches run.
+const QUOTA_RE = /hit your (session|usage|weekly) limit|usage limit reached|resets? \d/i
+let aborted = null
 const done = new Array(batches.length)
 let next = 0
 async function worker() {
-  while (next < batches.length) {
+  while (next < batches.length && !aborted) {
     const i = next++
     const b = batches[i]
     const name = b.file.split('/').pop()
@@ -145,8 +153,13 @@ async function worker() {
       try {
         res = { ...parseDone(await run(b, attempt), b), model: b.model, attempts: attempt }
       } catch (e) {
-        if (/is not registered in this session/.test(String(e && e.message || e))) throw e
-        res = { file: b.file, filled: 0, total: b.items, model: b.model, failed: true, attempts: attempt, raw: String(e && e.message || e).slice(0, 200) }
+        const msg = String(e && e.message || e)
+        if (/is not registered in this session/.test(msg)) throw e
+        res = { file: b.file, filled: 0, total: b.items, model: b.model, failed: true, attempts: attempt, raw: msg.slice(0, 200) }
+        if (QUOTA_RE.test(msg)) {
+          if (!aborted) { aborted = msg.slice(0, 120); log(`⛔ quota: ${aborted} — stopping the pool, no retries`) }
+          break
+        }
       }
       if (!res.failed && res.filled >= res.total) break
       if (attempt < MAX_ATTEMPTS)
@@ -160,6 +173,18 @@ async function worker() {
   }
 }
 await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker))
-const failed = done.filter(r => r.failed || r.filled < r.total)
-if (failed.length) log(`${failed.length} batch(es) incomplete: ${failed.map(f => f.file.split('/').pop()).join(', ')} — rerun with resumeFromRunId after fixing`)
-return { locale, batches: done, incomplete: failed.map(f => f.file) }
+for (let i = 0; i < batches.length; i++)
+  if (!done[i]) done[i] = { file: batches[i].file, filled: 0, total: batches[i].items, model: batches[i].model, skipped: true }
+const failed = done.filter(r => r.failed || r.skipped || r.filled < r.total)
+if (failed.length) log(`${failed.length} batch(es) incomplete: ${failed.map(f => f.file.split('/').pop()).join(', ')} — rerun with resumeFromRunId${aborted ? ' once the quota window resets' : ' after fixing'}`)
+// Compact on purpose: the per-batch detail is on disk (the .out.json files;
+// sync.py status / check_outputs read them), and a 40-batch listing per shard
+// is orchestrator context spent on nothing.
+return {
+  locale,
+  batches: batches.length,
+  filled: done.reduce((s, r) => s + (r.filled || 0), 0),
+  total: done.reduce((s, r) => s + r.total, 0),
+  ...(aborted ? { aborted } : {}),
+  incomplete: failed.map(f => f.file),
+}

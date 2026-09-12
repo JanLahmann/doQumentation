@@ -114,6 +114,7 @@ def _import_by_path(name: str, path: Path):
 
 _common = _import_by_path("_common", SCRIPTS_DIR / "_common.py")
 _po4a_io = _import_by_path("po4a_io", REPO_ROOT / "translation" / "v2" / "po4a_io.py")
+_v2_translate = _import_by_path("translate", REPO_ROOT / "translation" / "v2" / "translate.py")
 
 
 def _tr_path(locale: str, rel: str) -> Path:
@@ -277,6 +278,38 @@ def build_pool(catalogues: dict[str, dict], min_lines: int,
     return pool
 
 
+def pair_path(locale: str, rel: str) -> Path:
+    """Where write_pair puts a page's paired prose file (under the ignored
+    work tree; resolved per call so a test can repoint REPO_ROOT)."""
+    return REPO_ROOT / "translation" / "v2" / "work" / "review" / locale / (rel[:-4] + ".md")
+
+
+def write_pair(locale: str, rel: str) -> tuple[Path, int, int]:
+    """Write the page as a reviewer reads it cheapest: every prose entry of the
+    PO, numbered by its index, English then translation, nothing else. Code,
+    math, markup-only entries and cell outputs are omitted — they are never
+    translated, and on a notebook page they are most of the bytes. One Read
+    of this file replaces two Reads of the full pages (2026-09-12: an Opus
+    page read cost ~380k tokens, two-thirds of it re-sending those pages on
+    every later turn). Returns (path, entries, words)."""
+    po = polib.pofile(str(po_dir(locale) / (rel[:-4] + ".po")), wrapwidth=0)
+    loc = locale.upper()
+    lines = [f"# {rel} — {LOCALE_NAME.get(locale, locale)} ({locale}) paired with the English source",
+             f"# Every prose entry of the page, numbered [n] by its PO index; code, math and",
+             f"# markup-only entries are omitted because they are never translated.", ""]
+    n = words = 0
+    for idx, e in enumerate(po):
+        if not _po4a_io.translatable(e) or _v2_translate.is_copy_only(e.msgid) or not e.msgstr.strip():
+            continue
+        n += 1
+        words += len(e.msgid.split())
+        lines += [f"[{idx}]", f"EN: {e.msgid.rstrip()}", f"{loc}: {e.msgstr.rstrip()}", ""]
+    out = pair_path(locale, rel)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return out, n, words
+
+
 def draw(pool: dict, per_locale: int, seed: int, focus: str | None = None) -> list[dict]:
     """Stratified within locale: round-robin across sections, seeded-random
     within each section bucket. Reproducible for a given (pool, seed)."""
@@ -314,6 +347,10 @@ def draw(pool: dict, per_locale: int, seed: int, focus: str | None = None) -> li
                                          "en": u["msgid"][:1500], "tr": u["msgstr"][:1500]} for u in unverified]
             if focus:
                 rec["focus"] = focus
+            pair, n_entries, n_words = write_pair(loc, rel)
+            rec["pair"] = str(pair.relative_to(REPO_ROOT))
+            rec["entries"] = n_entries
+            rec["words"] = n_words
             sample.append(rec)
     return sample
 
