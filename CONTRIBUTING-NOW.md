@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-11 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-12 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
