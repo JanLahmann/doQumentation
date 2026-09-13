@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-12 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-13 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -57,17 +57,17 @@ reviewed with nothing written since, not leakage.
 
 | Locale | Unreviewed pool | Reviewed so far |
 |---|---|---|
-| `th` | **309** | 198/433 (45%) |
 | `de` | **291** | 372/433 (85%) |
 | `he` | **266** | 373/433 (86%) |
-| `id` | **264** | 213/433 (49%) |
-| `ko` | **250** | 237/433 (54%) |
+| `th` | **262** | 433/433 (100%) |
 | `cs` | **240** | 272/433 (62%) |
+| `id` | **236** | 433/433 (100%) |
 | `pl` | **232** | 267/433 (61%) |
 | `ro` | **222** | 258/433 (59%) |
 | `ms` | **211** | 263/433 (60%) |
 | `tl` | **211** | 384/433 (88%) |
 | `ja` | **198** | 312/433 (72%) |
+| `ko` | **197** | 433/433 (100%) |
 | `uk` | **181** | 311/433 (71%) |
 | `ar` | **180** | 319/433 (73%) |
 | `it` | **163** | 323/433 (74%) |
@@ -81,14 +81,14 @@ reviewed with nothing written since, not leakage.
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
+| `2026091101-JanLahmann` | 309 | 16 | 5.2% |
+| `2026091103-JanLahmann` | 28 | 0 | 0.0% |
+| `2026091102-JanLahmann` | 264 | 4 | 1.5% |
+| `2026091003-JanLahmann` | 250 | 11 | 4.4% |
 | `2026091001-JanLahmann` | 158 | 12 | 7.6% |
 | `2026091002-JanLahmann` | 149 | 27 | 18.1% |
-| `2026090802-JanLahmann` | 22 | 3 | 13.6% |
-| `2026090801-JanLahmann` | 6 | 0 | 0.0% |
-| `2026090803-JanLahmann` | 6 | 0 | 0.0% |
-| `2026090804-JanLahmann` | 25 | 3 | 12.0% |
 
-Typical FAIL rate is around **12%**. If your round comes
+Typical FAIL rate is around **6%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 

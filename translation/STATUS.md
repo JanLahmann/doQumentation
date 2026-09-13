@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-09-12 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-09-13 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -28,9 +28,9 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 | Arabic | `ar` | 433/433 | 25704 | 0 | 0 | 0 | 319 |
 | Hebrew | `he` | 433/433 | 25704 | 0 | 0 | 0 | 373 |
 | Malay | `ms` | 433/433 | 25704 | 0 | 0 | 0 | 263 |
-| Indonesian | `id` | 433/433 | 25704 | 0 | 0 | 0 | 213 |
-| Thai | `th` | 433/433 | 25704 | 0 | 0 | 0 | 198 |
-| Korean | `ko` | 433/433 | 25704 | 0 | 0 | 0 | 237 |
+| Indonesian | `id` | 433/433 | 25704 | 0 | 0 | 0 | 433 |
+| Thai | `th` | 433/433 | 25704 | 0 | 0 | 0 | 433 |
+| Korean | `ko` | 433/433 | 25704 | 0 | 0 | 0 | 433 |
 | Polish | `pl` | 433/433 | 25704 | 0 | 0 | 0 | 267 |
 | Romanian | `ro` | 433/433 | 25704 | 0 | 0 | 0 | 258 |
 | Czech | `cs` | 433/433 | 25704 | 0 | 0 | 0 | 272 |
@@ -151,31 +151,31 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 53/53 | 4120 | 0 | 0 | 16 |
-| Guides | 186/186 | 7570 | 0 | 0 | 108 |
-| Courses | 158/158 | 10432 | 0 | 0 | 75 |
-| Modules | 15/15 | 2295 | 0 | 0 | 7 |
-| Other | 21/21 | 1287 | 0 | 0 | 7 |
+| Tutorials | 53/53 | 4120 | 0 | 0 | 53 |
+| Guides | 186/186 | 7570 | 0 | 0 | 186 |
+| Courses | 158/158 | 10432 | 0 | 0 | 158 |
+| Modules | 15/15 | 2295 | 0 | 0 | 15 |
+| Other | 21/21 | 1287 | 0 | 0 | 21 |
 
 ### Thai (`th`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 53/53 | 4120 | 0 | 0 | 14 |
-| Guides | 186/186 | 7570 | 0 | 0 | 108 |
-| Courses | 158/158 | 10432 | 0 | 0 | 64 |
-| Modules | 15/15 | 2295 | 0 | 0 | 4 |
-| Other | 21/21 | 1287 | 0 | 0 | 8 |
+| Tutorials | 53/53 | 4120 | 0 | 0 | 53 |
+| Guides | 186/186 | 7570 | 0 | 0 | 186 |
+| Courses | 158/158 | 10432 | 0 | 0 | 158 |
+| Modules | 15/15 | 2295 | 0 | 0 | 15 |
+| Other | 21/21 | 1287 | 0 | 0 | 21 |
 
 ### Korean (`ko`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 53/53 | 4120 | 0 | 0 | 17 |
-| Guides | 186/186 | 7570 | 0 | 0 | 111 |
-| Courses | 158/158 | 10432 | 0 | 0 | 84 |
-| Modules | 15/15 | 2295 | 0 | 0 | 10 |
-| Other | 21/21 | 1287 | 0 | 0 | 15 |
+| Tutorials | 53/53 | 4120 | 0 | 0 | 53 |
+| Guides | 186/186 | 7570 | 0 | 0 | 186 |
+| Courses | 158/158 | 10432 | 0 | 0 | 158 |
+| Modules | 15/15 | 2295 | 0 | 0 | 15 |
+| Other | 21/21 | 1287 | 0 | 0 | 21 |
 
 ### Polish (`pl`)
 
