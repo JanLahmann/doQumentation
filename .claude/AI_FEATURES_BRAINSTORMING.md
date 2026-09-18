@@ -6,6 +6,7 @@
 > **Deferred for now**: Interactive Quantum Circuit Debugger
 > **Note**: Single canonical AI-ideation doc for the *capability/infrastructure layer* (search, RAG, metadata, runtime tiers, NotebookLM). The older `AI_INTEGRATION_IDEAS.md` (2026-03-08) was merged into the section at the bottom of this file on 2026-05-17 and deleted (original in git history).
 > **2026-07-18**: A second ideation round lives in [`BUILD_TIME_AI_IDEAS.md`](./BUILD_TIME_AI_IDEAS.md) — learner-facing *products* built on the build-time-AI factory pattern (Certification Studio, Advocate Launchpad, Family Quest Layer, Compiled Tutor, telemetry flywheel). It assumes 2A (metadata) from this file as foundation and absorbs/upgrades 2E (quizzes) and L1 (exercises).
+> **2026-09-18**: A third round lives in [`RUNTIME_AI_IDEAS.md`](./RUNTIME_AI_IDEAS.md) — what near-time (Claude Routines, Bob headless) and runtime AI (precomputed, in-browser, on-Pi, BYO-assistant) can do with a Max subscription and 500 Bobcoins/month and no API tokens. It supersedes the Code-Engine-function-based runtime tiers (R2, D2, F) in this file with a batched-routine pattern and a layered recommendation design.
 
 ---
 
