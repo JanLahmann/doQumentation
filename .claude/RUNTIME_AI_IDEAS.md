@@ -96,6 +96,8 @@ Wire it like the Jupyter endpoint: an `aiEndpoint` resolved by the existing runt
 
 ### 3.4 Source D — the learner's own assistant ("BYO-assistant")
 
+> **Deep dive (2026-09-18):** [`BYO_ASSISTANT_AND_MCP.md`](./BYO_ASSISTANT_AND_MCP.md) — grounding layer, entry points, the MCP server design, distribution per client, the executable-tutor skill, and sequencing.
+
 The cheapest runtime AI is the one the learner already pays for. Make doQumentation the best *grounding source* for it:
 
 - **`llms.txt` + `llms-full.txt` + per-page Markdown/`.ipynb`** — the notebooks are already published under `static/notebooks/`; add page-level Markdown and an index so any assistant can fetch clean content. (The config already sets `max-snippet:-1` "for AI search"; this finishes the thought.)
