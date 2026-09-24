@@ -7,7 +7,13 @@ Host driver for the notebook sweep (runs OUTSIDE the container).
   python3 sweep.py B          # Pass B only (graphviz subset)
 
 Pass A: every EN notebook in the unmodified production image
-        ghcr.io/qubins/images:2.3-xl  -> what users actually hit.
+        (the site's DEFAULT_QISKIT_TAG) -> what users actually hit.
+
+The notebooks are read from NB_ROOT (default: the gitignored notebooks/
+tree sync-content.py writes). That tree is only as fresh as the last local
+sync; for what the live site serves, export the published branch first:
+    git archive origin/notebooks tutorials guides learning | tar -x -C DIR
+and run with DOQ_NB_ROOT=DIR. DOQ_IMG overrides the image.
 Pass B: only Graphviz-plotting notebooks, in a throwaway
         graphviz-patched image -> failures *behind* finding F1.
 
@@ -18,6 +24,7 @@ each handed a contiguous batch. 4 CPU / 8 GB VM -> PAR=3.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -26,7 +33,19 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SHIM_DIR = REPO / "scripts" / "notebook-sweep"
 OUT = REPO / ".sweep-out"
-STOCK_IMG = "ghcr.io/qubins/images:2.3-xl"
+
+
+def default_image() -> str:
+    """The QuBins tag the site defaults to (src/config/jupyter.ts), so the
+    sweep follows image bumps instead of hard-coding one (it sat on 2.3-xl
+    after the site moved to 2.5-xl)."""
+    ts = (REPO / "src" / "config" / "jupyter.ts").read_text(encoding="utf-8")
+    m = re.search(r"DEFAULT_QISKIT_TAG\b[^=]*=\s*'([^']+)'", ts)
+    return f"ghcr.io/qubins/images:{m.group(1) if m else '2.5-xl'}"
+
+
+STOCK_IMG = os.environ.get("DOQ_IMG") or default_image()
+NB_ROOT = Path(os.environ.get("DOQ_NB_ROOT") or REPO / "notebooks").resolve()
 PATCH_IMG = "doq-sweep-depspatch:local"
 PAR = int(os.environ.get("DOQ_PAR", "3"))
 CELL_TIMEOUT = os.environ.get("DOQ_CELL_TIMEOUT", "300")
@@ -35,10 +54,10 @@ CELL_TIMEOUT = os.environ.get("DOQ_CELL_TIMEOUT", "300")
 def discover_all() -> list[str]:
     out = []
     for root in ("tutorials", "guides", "learning"):
-        for p in sorted((REPO / root).rglob("*.ipynb")):
+        for p in sorted((NB_ROOT / root).rglob("*.ipynb")):
             if ".ipynb_checkpoints" in p.parts:
                 continue
-            out.append(str(p.relative_to(REPO)))
+            out.append(str(p.relative_to(NB_ROOT)))
     return out
 
 
@@ -49,7 +68,7 @@ def discover_passB() -> list[str]:
     f2 = ("qiskit_ibm_transpiler", "qiskit-ibm-transpiler")
     hits = set()
     for nb in discover_all():
-        txt = (REPO / nb).read_text(errors="ignore")
+        txt = (NB_ROOT / nb).read_text(errors="ignore")
         if any(p in txt for p in f1) or any(p in txt for p in f2):
             hits.add(nb)
     return sorted(hits)
@@ -76,7 +95,7 @@ def run_pass(label: str, image: str, sub: str, nbs: list[str]) -> None:
         logf = open(pass_out / f"batch-{b}.log", "w")
         cmd = [
             "podman", "run", "--rm",
-            "-v", f"{REPO}:/repo:ro",
+            "-v", f"{NB_ROOT}:/repo:ro",
             "-v", f"{SHIM_DIR}:/shim:ro",
             "-v", f"{pass_out}:/out",
             "-e", f"DOQ_CELL_TIMEOUT={CELL_TIMEOUT}",
@@ -110,7 +129,7 @@ def main() -> int:
     if "B" in mode:
         print(">>> Building graphviz-patched image for Pass B")
         rc = subprocess.run(
-            ["podman", "build", "-t", PATCH_IMG,
+            ["podman", "build", "-t", PATCH_IMG, "--build-arg", f"BASE={STOCK_IMG}",
              "-f", str(SHIM_DIR / "Dockerfile.depspatch"), str(SHIM_DIR)],
         ).returncode
         if rc != 0:
