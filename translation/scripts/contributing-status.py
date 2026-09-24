@@ -121,14 +121,20 @@ def _load_sampler():
     return mod
 
 
-def pools_by_threshold(sdr, cats) -> dict[int, dict[str, int]]:
+def pools_by_threshold(sdr, cats) -> dict[int, dict[str, tuple[int, int]]]:
+    """{leaks: {locale: (never read, delta)}}. A delta page already carries a
+    verdict and only has entries a model wrote since it (a sync); one column
+    summing both showed th/id/ko with 262/236/197 "unreviewed" while 100%
+    reviewed."""
     out = {}
     for leaks in LADDER:
         pool = sdr.build_pool(
             cats, min_lines=1,
             max_leaks=leaks, exclude_reviewed=True,
         )
-        out[leaks] = {loc: len(files) for loc, files in pool.items()}
+        out[leaks] = {loc: (sum(1 for f in files if f[4] == "full"),
+                            sum(1 for f in files if f[4] == "delta"))
+                      for loc, files in pool.items()}
     return out
 
 
@@ -194,13 +200,13 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
     for loc in sdr.MAIN_LOCALES:
         rec[loc] = None
         for leaks in LADDER:
-            n = pools[leaks].get(loc, 0)
+            n = sum(pools[leaks].get(loc, (0, 0)))
             if n >= WORKABLE:
                 rec[loc] = (leaks, n)
                 break
         if rec[loc] is None:
             widest = LADDER[-1]
-            rec[loc] = (widest, pools[widest].get(loc, 0))
+            rec[loc] = (widest, sum(pools[widest].get(loc, (0, 0))))
 
     ready = sorted(
         [l for l in sdr.MAIN_LOCALES if rec[l][1] >= WORKABLE and l not in unrendered],
@@ -295,15 +301,21 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
         A("reviewed with nothing written since, not leakage.")
     A("")
     if ready:
-        A("| Locale | Unreviewed pool | Reviewed so far |" if not leaky
-          else "| Locale | Unreviewed pool | Use | Reviewed so far |")
-        A("|---|---|---|" if not leaky else "|---|---|---|---|")
+        A("*Never read* pages have no verdict yet: a full read. *Delta* pages")
+        A("were reviewed, and a sync has since written new entries on them: the")
+        A("reviewer judges only those entries. A locale can be 100% reviewed and")
+        A("still have a delta pool.")
+        A("")
+        A("| Locale | Never read | Delta | Reviewed so far |" if not leaky
+          else "| Locale | Never read | Delta | Use | Reviewed so far |")
+        A("|---|---|---|---|" if not leaky else "|---|---|---|---|---|")
         for loc in ready:
-            leaks, n = rec[loc]
+            leaks, _n = rec[loc]
+            full, delta = pools[leaks].get(loc, (0, 0))
             d, tot = done[loc]
             pct = f"{100 * d // tot}%" if tot else "—"
-            A(f"| `{loc}` | **{n}** | {d}/{tot} ({pct}) |" if not leaky
-              else f"| `{loc}` | **{n}** | `--max-leaks {leaks}` | {d}/{tot} ({pct}) |")
+            A(f"| `{loc}` | **{full}** | {delta} | {d}/{tot} ({pct}) |" if not leaky
+              else f"| `{loc}` | **{full}** | {delta} | `--max-leaks {leaks}` | {d}/{tot} ({pct}) |")
         A("")
     if thin:
         A(f"**Nearly exhausted** (fewer than {WORKABLE} eligible) — still worth")
@@ -311,9 +323,10 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
         A("verdict, or to accept a round smaller than 25:")
         A("")
         for loc in thin:
-            _leaks, n = rec[loc]
+            leaks, _n = rec[loc]
+            full, delta = pools[leaks].get(loc, (0, 0))
             d, tot = done[loc]
-            A(f"- `{loc}` — {n} left ({d}/{tot} reviewed)")
+            A(f"- `{loc}` — {full} never read, {delta} delta ({d}/{tot} reviewed)")
         A("")
     A("---")
     A("")

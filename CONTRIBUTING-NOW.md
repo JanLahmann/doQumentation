@@ -55,25 +55,30 @@ QPU) do not count, and no locale currently records anything else, so
 every file scores 0. What limits a pool today is pages already
 reviewed with nothing written since, not leakage.
 
-| Locale | Unreviewed pool | Reviewed so far |
-|---|---|---|
-| `de` | **291** | 372/433 (85%) |
-| `he` | **266** | 373/433 (86%) |
-| `th` | **262** | 433/433 (100%) |
-| `cs` | **240** | 272/433 (62%) |
-| `id` | **236** | 433/433 (100%) |
-| `pl` | **232** | 267/433 (61%) |
-| `ro` | **222** | 258/433 (59%) |
-| `ms` | **211** | 263/433 (60%) |
-| `tl` | **211** | 384/433 (88%) |
-| `ja` | **198** | 312/433 (72%) |
-| `ko` | **197** | 433/433 (100%) |
-| `uk` | **181** | 311/433 (71%) |
-| `ar` | **180** | 319/433 (73%) |
-| `it` | **163** | 323/433 (74%) |
-| `pt` | **149** | 323/433 (74%) |
-| `es` | **148** | 330/433 (76%) |
-| `fr` | **139** | 331/433 (76%) |
+*Never read* pages have no verdict yet: a full read. *Delta* pages
+were reviewed, and a sync has since written new entries on them: the
+reviewer judges only those entries. A locale can be 100% reviewed and
+still have a delta pool.
+
+| Locale | Never read | Delta | Reviewed so far |
+|---|---|---|---|
+| `de` | **78** | 220 | 355/433 (81%) |
+| `he` | **77** | 194 | 356/433 (82%) |
+| `th` | **17** | 252 | 416/433 (96%) |
+| `cs` | **171** | 76 | 262/433 (60%) |
+| `id` | **17** | 224 | 416/433 (96%) |
+| `pl` | **176** | 62 | 257/433 (59%) |
+| `ro` | **184** | 46 | 249/433 (57%) |
+| `tl` | **60** | 158 | 373/433 (86%) |
+| `ms` | **179** | 38 | 254/433 (58%) |
+| `ja` | **131** | 74 | 302/433 (69%) |
+| `ko` | **17** | 186 | 416/433 (96%) |
+| `ar` | **124** | 65 | 309/433 (71%) |
+| `uk` | **131** | 57 | 302/433 (69%) |
+| `it` | **120** | 51 | 313/433 (72%) |
+| `es` | **114** | 44 | 319/433 (73%) |
+| `pt` | **120** | 38 | 313/433 (72%) |
+| `fr` | **113** | 35 | 320/433 (73%) |
 
 ---
 
@@ -81,12 +86,12 @@ reviewed with nothing written since, not leakage.
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `2026091101-JanLahmann` | 309 | 16 | 5.2% |
-| `2026091103-JanLahmann` | 28 | 0 | 0.0% |
 | `2026091102-JanLahmann` | 264 | 4 | 1.5% |
+| `2026091103-JanLahmann` | 28 | 0 | 0.0% |
+| `2026091101-JanLahmann` | 309 | 16 | 5.2% |
+| `2026091002-JanLahmann` | 149 | 27 | 18.1% |
 | `2026091003-JanLahmann` | 250 | 11 | 4.4% |
 | `2026091001-JanLahmann` | 158 | 12 | 7.6% |
-| `2026091002-JanLahmann` | 149 | 27 | 18.1% |
 
 Typical FAIL rate is around **6%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
