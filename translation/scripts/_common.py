@@ -31,10 +31,38 @@ KEEP_ENGLISH_TERMS = (
 )
 
 
-def is_kept_english(word: str) -> bool:
+# Names that are English in every locale. The rest of KEEP_ENGLISH_TERMS are
+# ordinary nouns (gate, circuit, backend, ...) that some locales translate:
+# which ones each locale keeps is measured from its own corpus by
+# measure-kept-english.py into KEPT_ENGLISH_JSON (2026-09-24, after the
+# shared list made new es pages say "gate"/"circuit" where the rest of the
+# Spanish site says "puerta"/"circuito").
+ALWAYS_ENGLISH = ("Qiskit", "PUB", "IBM Quantum", "QPU")
+KEPT_ENGLISH_JSON = Path(__file__).resolve().parents[1] / "v2" / "kept-english.json"
+
+
+def kept_english_terms(locale: str | None = None) -> tuple[str, ...]:
+    """The terms `locale` keeps in English; the full shared list when the
+    locale (or the measurement file) is unknown."""
+    if locale:
+        try:
+            spec = json.loads(KEPT_ENGLISH_JSON.read_text(encoding="utf-8"))["locales"][locale]
+        except (OSError, KeyError, ValueError):
+            return KEEP_ENGLISH_TERMS
+        return ALWAYS_ENGLISH + tuple(t for t in KEEP_ENGLISH_TERMS if t in spec["keep"])
+    return KEEP_ENGLISH_TERMS
+
+
+def translated_terms(locale: str) -> tuple[str, ...]:
+    """House-style terms `locale` translates rather than keeping in English."""
+    keep = kept_english_terms(locale)
+    return tuple(t for t in KEEP_ENGLISH_TERMS if t not in keep)
+
+
+def is_kept_english(word: str, locale: str | None = None) -> bool:
     """True for a term the house style keeps in English (any case, any plural)."""
     w = word.strip().rstrip("s").casefold()
-    return any(w == t.rstrip("s").casefold() for t in KEEP_ENGLISH_TERMS)
+    return any(w == t.rstrip("s").casefold() for t in kept_english_terms(locale))
 
 
 # ── v2: the rendered locale pages are build output, not source ──

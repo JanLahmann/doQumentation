@@ -46,3 +46,13 @@ def test_leak_count_counts_a_real_leak(sampler, tmp_path, monkeypatch):
     (d / "xx.json").write_text(json.dumps({"translate": {
         "workflow": {"preferred": "flux", "leaked_en": ["Workflow"]}}}), encoding="utf-8")
     assert sampler._leak_count("Le Workflow ici. Un Workflow là. Un Circuit.", "xx") == 2
+
+
+def test_kept_english_is_per_locale(common):
+    # es translates gate/circuit (measured into kept-english.json); names stay
+    # English everywhere; an unknown locale falls back to the shared list.
+    assert common.is_kept_english("Qiskit", "es")
+    assert not common.is_kept_english("gate", "es")
+    assert "Gate" in common.translated_terms("es")
+    assert common.is_kept_english("gate", "tl")
+    assert common.kept_english_terms("xx") == common.KEEP_ENGLISH_TERMS

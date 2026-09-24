@@ -97,12 +97,18 @@ def language_info(locale: str) -> tuple[str, str]:
 
 def instructions(locale: str) -> str:
     lang, register = language_info(locale)
-    # One shared list, so these instructions and the deep-review leak filter
-    # cannot disagree about what is kept in English (they did: the filter
-    # counted every kept term as a leak and hid the page from review).
+    # One source (_common, per locale), so these instructions and the
+    # deep-review leak filter cannot disagree about what is kept in English
+    # (they did: the filter counted every kept term as a leak and hid the
+    # page from review). Per locale because the corpora differ: es translates
+    # "gate" 92% of the time, tl keeps it 99%.
     sys.path.insert(0, str(io.REPO / "translation" / "scripts"))
-    from _common import KEEP_ENGLISH_TERMS
-    keep_english = ", ".join(KEEP_ENGLISH_TERMS)
+    from _common import kept_english_terms, translated_terms
+    keep_english = ", ".join(kept_english_terms(locale))
+    translate_terms = translated_terms(locale)
+    translate_line = (f"\n- Translate {', '.join(translate_terms)} with the usual {lang} word(s)"
+                      f" the rest of the site uses; they are not kept in English in {lang}."
+                      if translate_terms else "")
     return f"""# Translation instructions — {lang} ({locale})
 
 Each batch is a JSON list of segments from doQumentation, a {lang} mirror of
@@ -132,7 +138,7 @@ Rules, each enforced by an automatic checker:
 - Math: keep every $...$ span and every $$...$$ block exactly, including the
   number of $$ delimiters (an entry may start or end inside a block; copy
   that part unchanged). Only words inside \\text{{...}} may be translated.
-- Keep these terms in English: {keep_english}.
+- Keep these terms in English: {keep_english}.{translate_line}
 - An item without `type` is plain text. A `type` of "Title ##" is a
   heading: translate the text, keep the anchor. A `type` starting with
   "Yaml Front Matter" is page metadata: plain text.

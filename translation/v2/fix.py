@@ -53,6 +53,14 @@ CONTAINS_MIN_SHARE = 0.5
 
 def fix_instructions(locale: str) -> str:
     lang, register = tr.language_info(locale)
+    # Same per-locale list as translate.instructions (via _common).
+    sys.path.insert(0, str(io.REPO / "translation" / "scripts"))
+    from _common import kept_english_terms, translated_terms
+    keep_english = ", ".join(kept_english_terms(locale))
+    translate_terms = translated_terms(locale)
+    translate_line = (f"\n- Translate {', '.join(translate_terms)} with the usual {lang} word(s)"
+                      f" the rest of the site uses; they are not kept in English in {lang}."
+                      if translate_terms else "")
     return f"""# Review-fix instructions — {lang} ({locale})
 
 Each batch is one page of doQumentation, a {lang} mirror of IBM Quantum's
@@ -86,8 +94,7 @@ Rules, each enforced by an automatic checker (a violation rejects the entry):
   translated caption replaced by the English one is a silent regression
   that no checker can catch, since these are the attributes not compared
   byte-for-byte.
-- Keep these terms in English: Qiskit, Qubit, Gate, Circuit, Backend,
-  Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU.
+- Keep these terms in English: {keep_english}.{translate_line}
 - Every msgstr is a complete translation of its whole msgid, never a
   fragment.
 """
