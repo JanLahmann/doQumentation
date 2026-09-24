@@ -216,3 +216,19 @@ def test_collect_opus_run_reads_journals_and_adds_the_mode(tmp_path):
     assert r.returncode == 0, r.stderr
     recs = json.loads(out.read_text())
     assert len(recs) == 1 and recs[0]["verdict"] == "FAIL" and recs[0]["delta_indices"] == [4]
+
+
+def test_make_opus_run_defaults_to_the_reviewer_agent(tmp_path):
+    """Contributors never pass --agent: the bakers default to the Read-only
+    reviewer agent, and 'none' opts out."""
+    import json, subprocess, sys
+    from pathlib import Path
+    sample = tmp_path / "s.json"
+    sample.write_text(json.dumps({"seed": 1, "files": [{"locale": "xx", "rel": "a.mdx"}]}))
+    script = Path(__file__).resolve().parent.parent / "make-opus-run.py"
+    for extra, want in (([], True), (["--agent", "none"], False)):
+        out = tmp_path / "wf.js"
+        r = subprocess.run([sys.executable, str(script), "--sample", str(sample), "--out", str(out), *extra],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        assert ('"agentType": "reviewer"' in out.read_text()) is want

@@ -6,10 +6,9 @@ complete, self-contained recipe for running one **review round**: sample
 some translated pages, have Claude read them against the English source,
 fix what genuinely misleads a learner, and open a PR.
 
-A round is **budget-shaped**: you tell it how many pages to review, and it
-costs roughly that many × 40k tokens. It is designed to soak up whatever is
-left of a weekly Claude Max budget and stop cleanly — nothing breaks if you
-run out mid-round.
+A round is **budget-shaped**: you tell it how many pages to review (40 is
+the default for a first round), and it stops cleanly if you run out of
+usage mid-round — nothing breaks, and it resumes where it stopped.
 
 ---
 
@@ -44,17 +43,16 @@ need Node, npm, or a site build.
    also listed in [`CONTRIBUTING-NOW.md`](CONTRIBUTING-NOW.md)), pick a
    locale nobody holds, and open an issue with the **Claim a locale**
    template. That issue is the reservation; close it when you stop.
-5. Open Claude Code in the repo and say what you want, in your own words:
+5. Open a **new** Claude Code session in the repo (after pulling — the
+   review agent it needs is read at session start) and say, in any
+   language:
 
-   > I want to help with reviews. What should I do?
+   > Help with translation reviews on doQumentation, locale `<LOCALE>`.
 
-   or, if you already know the locale and how much you can spend:
-
-   > Review the `<LOCALE>` translation, about `<N>` pages. Use a workflow.
-
-   The repo's `CLAUDE.md` routes either sentence here. Claude will ask for
-   whatever is missing (locale, page count, your GitHub handle) and check
-   your fork, the claim and the toolchain before it starts.
+   That is the whole prompt. The repo's `CLAUDE.md` routes it here; Claude
+   checks your fork, the toolchain and the claim (and opens the claim if
+   you have not), runs a 40-page round, explains each step to you in your
+   language and asks before anything this recipe does not cover.
 
 If Claude asks whether it may **"use a workflow"**, say yes — that
 authorizes it to fan out parallel sub-agents, which is what makes a round
@@ -69,6 +67,12 @@ Everything below is addressed to Claude.
 You are running a Tier-4 deep review of one locale of a translated
 documentation corpus. Work only in the repo root.
 
+**Talk to the user in the language they wrote in.** Say briefly what each
+step does before running it and what it found after; report token use at
+the end of each workflow. Follow this recipe as written and **ask before
+doing anything it does not describe** — a contributor cannot judge an
+improvised step, and every past surprise came from one.
+
 ### 0. Establish scope before doing anything
 
 Confirm with the user, or take from their prompt:
@@ -77,9 +81,11 @@ Confirm with the user, or take from their prompt:
   which locales still have unreviewed pages and how much is left in each.
   All 17 locales are in scope (`de es uk ja fr it pt tl ar he ms id th ko
   pl ro cs`); none is finished.
-- **`N`** — how many pages to review this round. Budget ≈ **40k tokens per
-  page**, so 25 pages ≈ 1M, 60 pages ≈ 2.4M. When in doubt pick 25; a small
-  round that completes beats a large one that dies.
+- **`N`** — how many pages to review this round. **Default 40** unless the
+  user names a number. Measured all-in (read, gauge, fix wave; most of it
+  cached context) at roughly 0.3–0.4M tokens per page, so 40 pages ≈ 15M,
+  which fits in one usage window. A small round that completes beats a
+  large one that dies; a partial round is a complete contribution.
 - **`HANDLE`** — the user's GitHub username. It namespaces their output
   file so concurrent contributors never collide.
 - **The claim.** `gh issue list --repo JanLahmann/doQumentation --label translation-claim`
@@ -102,8 +108,16 @@ ls i18n/<LOCALE>/po | head -3          # the locale's translation: one PO per pa
 ```
 
 If `i18n/<LOCALE>/po/` is missing, the clone is incomplete — stop and say
-so. If po4a, gettext or polib is missing, stop and tell the user what to
-install (see the top of this file); nothing below works without them.
+so. If po4a, gettext or polib is missing, install them if you can (`brew
+install po4a gettext` / `apt-get install po4a gettext`, `pip install
+polib`), otherwise tell the user what to install; nothing below works
+without them.
+
+**The po4a version must be 0.74 or newer** — check the number `po4a
+--version` printed. Older releases render some pages differently, and every
+gate after that reports noise. Linux distributions often ship an older
+one: then install the current release from CPAN (`cpanm Locale::Po4a`) or
+from <https://github.com/mquinson/po4a/releases>, and check again.
 
 **Then check the fork is current, before drawing any sample:**
 
@@ -148,7 +162,9 @@ python3 translation/scripts/sample-deep-review.py \
   --out /tmp/round-<SEED>.json
 ```
 
-It prints the eligible pool size. A page is eligible when it is rendered,
+It prints the eligible pool size and how many sampled pages are **delta**
+reads; tell the user both numbers (full reads and delta reads) before
+running anything. A page is eligible when it is rendered,
 is not an English fallback, and has no entry left fuzzy or empty by an
 English sync (the page would render English there). With
 `--exclude-reviewed` it enters the sample in one of two modes:
@@ -203,6 +219,13 @@ python3 translation/scripts/make-opus-run.py \
   --sample /tmp/round-<SEED>.json --out /tmp/round-<SEED>-wf.js
 ```
 
+The readers run as the `reviewer` agent (`.claude/agents/reviewer.md`: Read
+only, Opus), the default of both bakers. It is registered when the session
+starts, so a session opened before the file existed does not have it: the
+workflow then stops at once with `aborted: agent type 'reviewer' is not
+available`. Tell the user to start a new session and resume there; do not
+switch to another agent type.
+
 Then call the `Workflow` tool with `{scriptPath: "/tmp/round-<SEED>-wf.js"}`.
 It runs Opus agents in batches of 7 and returns only the tally, the FAIL
 list and the run id. The records themselves stay in the run's journal —
@@ -222,9 +245,10 @@ entries). Commit that file at once as a safety net.
 
 If a reader dies on a **quota error** ("You've hit your session limit ·
 resets …"), the workflow stops starting readers and says so in its result
-(`aborted`). Nothing is retried into the wall; resume with
-`resumeFromRunId` once the window has reset and only the unread pages run.
-The fix workflow does the same.
+(`aborted`). Nothing is retried into the wall. Stop there, give the user
+the run IDs and the paths of the baked `.js` files, and resume with
+`resumeFromRunId` once the window has reset — only the unread pages run.
+The fix workflow and the gauge do the same.
 
 A sample of ~300 pages is best run as several shards (split the sample's
 `files` and bake each): the harness runs about four agents per workflow,
@@ -404,6 +428,25 @@ python3 translation/scripts/check-completeness.py --locale <LOCALE> --limit 0 \
   --baseline translation/eval/completeness-baseline.json
 ```
 
+The last one, the **completeness ratchet**, fails on any finding that is
+not in the baseline. Read each one it prints, against the entry's English:
+
+- **A real loss** — a sentence the fix wave dropped, a question turned into
+  an instruction, a caption back in English: repair it through `fix.py`
+  (a spec with that entry and the previous translation as `suggested`,
+  `--mode flagged`), apply, re-render, run the gates again.
+- **A false alarm** — a line re-wrapped, a number the translation writes
+  differently, a gloss the sieve miscounted: accept it into the baseline,
+  then run the ratchet once more; it must say "no new findings".
+
+```bash
+python3 translation/scripts/check-completeness.py --all \
+  --write-baseline translation/eval/completeness-baseline.json
+```
+
+Tell the user which findings you accepted and why. In the rounds of
+2026-09-11/12 each locale had two or three: about half real.
+
 The rendered pages under `i18n/<LOCALE>/…/current/` are derived from the
 PO files and not in git. Run the gate on a fresh `render.py` output, and if
 anything edited a rendered page directly, discard it: the PO files are the
@@ -446,9 +489,17 @@ maintainer step after merge.
 git checkout -b review/<LOCALE>-<SEED>
 git add translation/reviews/opus-<SEED>-<HANDLE>.json
 git add i18n/<LOCALE>/po           # the PO files only; nothing under …/current/
-git status --short                 # exactly those two paths, nothing else
+git status --short                 # exactly those paths, nothing else
 git commit && gh pr create --repo JanLahmann/doQumentation
 ```
+
+Show the user the `git status --short` output before committing. If the
+completeness ratchet in step 7 needed `--write-baseline` for re-wrapped
+lines, `translation/eval/completeness-baseline.json` is staged too; nothing
+else ever is. Never `git add -f i18n/`.
+
+When the user stops contributing to this locale — not after every round if
+they plan another — close their claim issue, so the locale shows as free.
 
 This is the whole reason contributor PRs never conflict: you touch only a
 brand-new review file and your own locale's PO tree.

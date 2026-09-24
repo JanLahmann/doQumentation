@@ -59,6 +59,7 @@ Return the structured object: file="${f.file}", refuted (true if NO cited passag
 const QUOTA_RE = /hit your (session|usage|weekly) limit|usage limit reached|resets? \d/i
 let aborted = null
 const AGENT_TYPE = input.agentType || undefined
+const AGENT_RE = /agent type .* not found|not registered|unknown agent type/i
 function refute(f, k) {
   if (aborted) return Promise.resolve({ file: f.file, refuted: null, reason: 'skipped: ' + aborted, k })
   return agent(prompt(f, k), { label: `refute ${f.file.split('/').pop()} #${k}`, phase: 'Refute', model: 'opus',
@@ -67,6 +68,7 @@ function refute(f, k) {
     .catch((e) => {
       const msg = String(e && e.message || e)
       if (QUOTA_RE.test(msg) && !aborted) { aborted = msg.slice(0, 120); log(`⛔ quota: ${aborted}`) }
+      if (AGENT_RE.test(msg) && !aborted) { aborted = `agent type '${AGENT_TYPE}' is not available in this session — start a new Claude Code session in the repo and resume with resumeFromRunId`; log(`⛔ ${aborted}`) }
       return { file: f.file, refuted: null, reason: msg.slice(0, 200), k }
     })
 }
