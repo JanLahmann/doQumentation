@@ -66,7 +66,8 @@ def main() -> int:
     ap.add_argument("--records", required=True, help="the round's records file (opus-<seed>-<handle>.json)")
     ap.add_argument("--locale", required=True)
     ap.add_argument("--out", required=True, help="runnable workflow .js")
-    ap.add_argument("--agent", default=None, help="custom agent type for the refuters (e.g. reviewer)")
+    ap.add_argument("--agent", default="reviewer", metavar="TYPE",
+                    help="agent type for the refuters (default: reviewer; 'none' uses the harness's default agent)")
     a = ap.parse_args()
     data = json.loads(Path(a.records).read_text(encoding="utf-8"))
     if isinstance(data, dict) and "records" in data:
@@ -86,7 +87,7 @@ def main() -> int:
     if not fails:
         raise SystemExit(f"no FAIL records for {a.locale} in {a.records}")
     payload = {"locale": a.locale, "locale_name": _sampler.LOCALE_NAME.get(a.locale, a.locale), "fails": fails}
-    if a.agent:
+    if a.agent and a.agent != "none":
         payload["agentType"] = a.agent
     tpl = TEMPLATE.read_text(encoding="utf-8")
     assert NEEDLE in tpl

@@ -1,0 +1,396 @@
+---
+title: "Solve the market split problem with the ParityQC Parity Twine Optimizer"
+sidebar_label: "Solve the market split problem with the ParityQC Parity Twine Optimizer"
+description: "Learn how to solve the market split problem by using the Parity Twine Optimizer."
+notebook_path: "tutorials/parity-twine-optimizer-ms.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/parity-twine-optimizer-ms.ipynb" />
+
+
+
+{/* cspell:ignore parityqc QOBLIB marketsplit independentset */}
+*Usage estimate: 10 seconds on a Nighthawk r2 processor. (NOTE: This is an estimate only. Your runtime may vary.)*
+## Learning outcomes
+
+- Obtain and format the Market Split problem from the [QOBLIB - Quantum Optimization Benchmarking Library](https://github.com/ZIB-AOPT/QOBLIB).
+- Set up and use the Parity Twine Optimizer to solve a Market Split instance.
+- Learn how to choose options for the Parity Twine Optimizer and what results are output.
+## Background
+
+This tutorial demonstrates how to solve the Market Split problem using the ParityQC Parity Twine Optimizer.
+
+The problem instance is obtained from the [QOBLIB - Quantum Optimization Benchmarking Library](https://github.com/ZIB-AOPT/QOBLIB).
+
+### Market split problem
+
+The market split problem is a real-world, NP-hard resource allocation problem and has become a benchmark for quantum optimization algorithms.
+It represents a high-stakes logistical challenge: how to partition a complex landscape of customers and products into manageable, equalized territories.
+
+The goal is to divide $n$ markets into two balanced sales regions such that each region receives exactly half the total demand for $m$ products.
+The solution is the specific configuration that achieves the most even distribution of product demand possible, allowing a company to implement a logistics and staffing strategy where both regions are balanced,
+minimizing the risks such as localized product shortages or warehouse overflows.
+
+As the number of markets and products increases, the number of possible permutations grows exponentially, making it challenging to find the best split using traditional exhaustive searches.
+
+### Mathematical formulation
+
+Let $A$ be an $m \times n$ matrix representing the demand of products across markets, where $A_{ij}$ is the demand for product $i$ in market $j$.
+
+A binary assignment vector, $x = [x_1, x_2, \dots, x_n]^T \in \{0, 1\}^n$, is defined where:
+* $x_j = 1$ assigns market $j$ to Region A.
+* $x_j = 0$ assigns market $j$ to Region B.
+
+Let $d = [d_1, d_2, \dots, d_m]^T$ be the total demand vector for each product, calculated as $d = A \cdot \mathbf{1}$. The target sales volume per region for product $i$ is exactly $\frac{d_i}{2}$.
+
+The optimization or feasibility constraint requires that the total sales allocated to Region A perfectly matches half the total demand for every product:
+
+$$A x = \frac{1}{2} A \mathbf{1} = b.$$
+
+In practice, because exact division is rarely possible, the problem is formulated to minimize the squared constraint violation (the cost function):
+
+$$\min_{x} \left\Vert{} A x - b \right\Vert{}^2 = \sum_{i=1}^{m} \left( \sum_{j=1}^{n} A_{ij} x_j - b\right)^2.$$
+
+Expanding this gives a form that is equivalent to a quadratic unconstrained binary optimization (QUBO) problem.
+
+Upon solving, the solution vector $x$ dictates to which region the market is assigned. This is the configuration that achieves the most balanced distribution of product demand possible.
+## Requirements
+
+Before starting this tutorial, ensure the following are installed:
+
+- Qiskit Functions Catalog IBM Client (`pip install qiskit-ibm-catalog`)
+- Qiskit addon Optimization Mapper (`pip install qiskit_addon_opt_mapper`)
+- NumPy (`pip install numpy`)
+
+You also need permission to access the ParityQC Twine Optimizer function. To request access, complete this [form](https://parityqc.com/products/parity-twine-optimizer/free-trial).
+## Setup
+
+(This code assumes you've already [saved your account](/guides/functions-get-started#install-qiskit-functions-catalog-client) to your local environment.)
+
+First, import all required packages for this tutorial.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit-addon-opt-mapper qiskit-ibm-catalog requests
+```
+
+```python
+import tempfile
+
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy as np
+import requests
+
+from qiskit_addon_opt_mapper import OptimizationProblem
+from qiskit_addon_opt_mapper.converters import OptimizationProblemToQubo
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+```
+
+Load the Parity Twine Optimizer from the Qiskit Functions catalog:
+
+```python
+catalog = QiskitFunctionsCatalog(channel="ibm_quantum_platform")
+function = catalog.load("parityqc/parity-twine-optimizer")
+```
+
+### Step 1: Define the problem as an objective function
+
+Obtain a market split problem instance from the [QOBLIB - Quantum Optimization Benchmarking Library](https://github.com/ZIB-AOPT/QOBLIB) as follows.
+
+The `load_market_split_problem` function retrieves a given problem from QOBLIB and converts it into a QUBO problem.
+
+```python
+def load_market_split_problem(instance_name: str) -> OptimizationProblem:
+    """Load and formulate a market split optimization problem from an QOBLIB instance.
+
+    The QOBLIB library can be found here:
+    https://github.com/ZIB-AOPT/QOBLIB.
+
+    Args:
+        instance_name: Name of the market split instance to load as specified by the .dat file
+            in the QOBLIB repo.
+
+    Returns:
+        The output OptimizationProblem containing the loaded market split problem.
+    """
+
+    problem_matrix, problem_vector = fetch_and_parse(
+        instance_name, "01-marketsplit", parse_marketsplit_dat
+    )
+
+    # Create optimization problem
+    optimization_problem = OptimizationProblem(instance_name)
+
+    # Add binary variables (one for each market)
+    optimization_problem.binary_var_list(problem_matrix.shape[1])
+
+    # Add equality constraints (one for each product)
+    for idx, rhs in enumerate(problem_vector):
+        optimization_problem.linear_constraint(
+            problem_matrix[idx, :], sense="==", rhs=rhs
+        )
+
+    # Convert to QUBO with penalty parameter
+    return OptimizationProblemToQubo(penalty=1).convert(optimization_problem)
+```
+
+The `load_market_split_problem` function requires the following parser functions to retrieve and process the market split problem data from QOBLIB.
+
+```python
+def fetch_and_parse(instance_name: str, problem: str, parse_func: Callable):
+    """Generic function to fetch and parse data from QOBLIB repository.
+
+    Args:
+        instance_name: Name of the instance to fetch.
+        problem: Category of the problem (e.g., '01-marketsplit', '07-independentset').
+        parse_func: Function used to parse the downloaded file
+            (e.g., parse_marketsplit_dat, parse_gph_file).
+
+    Returns:
+        Result of `parse_func` - either (np.ndarray, np.ndarray) for marketsplit
+        or nx.Graph for MIS.
+    """
+    base_url = (
+        "https://raw.githubusercontent.com/ZIB-AOPT/QOBLIB/refs/heads/main/"
+    )
+    url = (
+        base_url
+        + problem
+        + "/instances/"
+        + instance_name
+        + (".dat" if problem == "01-marketsplit" else ".gph")
+    )
+
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".dat" if problem == "01-marketsplit" else ".gph",
+            delete=False,
+            encoding="utf-8",
+        ) as temp_file:
+            temp_file.write(response.text)
+            temp_file_path = temp_file.name
+
+        try:
+            return parse_func(temp_file_path)
+        finally:
+            Path(temp_file_path).unlink(missing_ok=True)
+
+    except requests.RequestException as e:
+        print(f"Error fetching data from repository: {e}")
+    except (ValueError, OSError) as e:
+        print(f"Error processing data: {e}")
+        return None
+
+def parse_marketsplit_dat(filename: str) -> tuple[np.ndarray, np.ndarray]:
+    """Parse a market split problem from a .dat file format.
+
+    Args:
+        filename: Path to the .dat file.
+
+    Returns:
+        Tuple of (A, b) where:
+            - A: (m, n) array of coefficients.
+            - b: (m,) array of target values.
+
+    Raises:
+        ValueError: If file format is invalid or file is empty.
+    """
+    with Path(filename).open(encoding="utf-8") as f:
+        lines = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.startswith("#")
+        ]
+
+    if not lines:
+        raise ValueError("Empty or invalid .dat file")
+
+    # First line: m n (number of products and markets)
+    try:
+        m, n = map(int, lines[0].split())
+    except (ValueError, IndexError) as e:
+        raise ValueError(
+            "Invalid file format: first line must contain 'm n' integers"
+        ) from e
+
+    if len(lines) < m + 1:
+        raise ValueError(
+            f"File contains {len(lines)} lines but expected {m + 1} lines"
+        )
+
+    # Next m lines: each row of A followed by corresponding element of b
+    mat_a = []
+    vec_b = []
+
+    for i in range(1, m + 1):
+        try:
+            values = list(map(int, lines[i].split()))
+        except ValueError as e:
+            raise ValueError(f"Invalid integer values in line {i + 1}") from e
+
+        if len(values) != n + 1:
+            raise ValueError(
+                f"Line {i + 1} contains {len(values)} values but expected {n + 1}"
+            )
+
+        mat_a.append(values[:-1])  # First n values: product sales per market
+        vec_b.append(values[-1])  # Last value: target sales for this product
+
+    return np.array(mat_a), np.array(vec_b)
+```
+
+Once defined, `load_marketsplit_problem` can be used to load a specific problem instance from the library:
+
+```python
+ms_instance = "ms_04_050_001"
+
+ms_problem = load_market_split_problem(ms_instance)
+```
+
+### Step 2: Convert to JSON format
+
+In the first step, you obtained the QUBO form of the problem.  Now, convert it to JSON format for the optimizer function:
+
+```python
+def optimization_problem_to_json(
+    problem: OptimizationProblem,
+) -> dict[str, float]:
+    """
+    Converts an unconstrained quadratic OptimizationProblem in terms of binary or spin variables
+    to the JSON input format of the Parity Twine Qiskit Function.
+
+    Args:
+        problem: The optimization problem to convert to JSON.
+
+    Returns:
+        The JSON input format of the given problem.
+    """
+    ising, constant = problem.to_ising()
+    output = {"()": float(constant)}
+    for op, coefficient in zip(ising.paulis, ising.coeffs, strict=True):
+        # Invert the label strings because Qiskit has opposite convention
+        qubits = tuple(
+            num
+            for num, pauli in enumerate(op.to_label()[::-1])
+            if pauli == "Z"
+        )
+        output[str(qubits)] = float(coefficient)
+    return output
+```
+
+The QUBO instance of the Market Split problem is now converted to JSON format as:
+
+```python
+json_ms_problem = optimization_problem_to_json(ms_problem)
+```
+
+### Step 3: Solve the problem using the Parity Twine Optimizer
+
+Now that you have obtained the market split problem and converted it into the correct form, you can find a solution by using the Twine Optimizer and a chosen IBM&reg; backend.
+
+To run the function, choose a suitable backend device; for example, `ibm_phoenix`.
+
+You can use `options` for (optional) additional control over the submission:
+
+```python
+options = {
+    "shots": 100000,
+    "postprocessing_level": 1,
+    "transpile_only": False,
+    "job_tags": ["market_split"],
+}
+```
+
+where `shots` is an integer that specifies the number of circuit executions, `postprocessing_level` determines if post-processing is applied to the result, `transpile_only`
+specifies whether the problem is only transpiled to a circuit (and not solved), and `job_tags` is the label used to identify job on IBM Quantum&reg; Platform.
+
+Run the optimizer:
+
+```python
+function_job = function.run(
+    problem=json_ms_problem,
+    variable_type="spin",
+    backend_name="ibm_phoenix",
+    options=options,
+)
+print(f"Job ID: {function_job.job_id}")
+```
+
+Check the job status:
+
+```python
+# Monitor the job status
+function_job.status()
+```
+
+Retrieve results:
+
+```python
+# Retrieve the job result if the status is DONE
+result = function_job.result()
+
+result
+```
+
+The result is of form:
+
+```json
+{
+    'solution': {'0': 1, '1': -1, '10': 1, ... },
+    'objective_value':  1.0,
+    'solution_bitstring': '010000011101111011001001110010',
+    'metadata': {
+        'circuit_metrics': {
+            'depth': 309,
+            'gate_count': 3880,
+            'two_qubit_gate_depth': 116,
+            'two_qubit_gate_count': 899,
+            'num_qubits': 30,
+            'operations': {'sx': 1244, 'rz': 1227, 'cz': 899, 'delay': 473, 'measure': 30, 'x': 7},
+        },
+        'solver_info': {
+            'variable_mapping': {'0': 0, '1': 1, '10': 2, ... },
+            'bitstring_distributions': {
+                'before_postprocessing': {'011101110010110111001110011000': 1, ...},
+                'after_postprocessing': {'011011110000110101001111011000': 1, ...}
+            },
+            'best_parameters': {
+                'beta': [-0.18054534155552715],
+                'gamma': [1.4141236348317905]
+            }
+        },
+        'resource_usage': {
+            'RUNNING: MAPPING': {'CPU_TIME': 172.936},
+            'RUNNING: OPTIMIZING_FOR_HARDWARE': {'CPU_TIME': 0.272},
+            'RUNNING: WAITING_FOR_QPU': {'CPU_TIME': 7.798},
+            'RUNNING: EXECUTING_QPU': {'QPU_TIME': 30.0},
+            'RUNNING: POST_PROCESSING': {'CPU_TIME': 31.613},
+        },
+    }
+}
+```
+
+where the `solution` dictionary corresponds to the qubits defined in the problem and gives their optimized spin values.
+`metadata` gives information on the transpilation (two-qubit gates counts/depth, gates used, active qubits), and various runtimes.
+
+In the context of the market split problem, the solution bitstring represents a binary assignment vector used to partition markets into two separate regions. A value of 1 assigns that
+specific market to Region A while a value of 0 assigns it to Region B. For the optimal solution, the combination balances the split, meaning both regions receive exactly half of the total company
+demand for every product.
+## Next steps
+<Admonition type="tip" title="Recommendations">
+- Request access to the function by completing this [form](https://parityqc.com/products/parity-twine-optimizer/free-trial).
+- Visit the [API reference](https://docs.quantum.ibm.com/api/functions/parity-twine-optimizer) for this Qiskit Function.
+- Read the [guide](/guides/parity-twine-optimizer).
+- Try the [tutorial](/tutorials/parity-twine-optimizer-sk) for applying the Parity Twine Optimizer to the Sherrington-Kirkpatrick model.
+- Review the [Connectivity-aware Synthesis of Quantum Algorithms, Drier et al. (2025)](https://arxiv.org/abs/2501.14020) ArXiv preprint.
+</Admonition>
+
+<TutorialFeedback />

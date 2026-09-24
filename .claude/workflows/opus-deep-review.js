@@ -178,6 +178,7 @@ const BATCH = 7
 const QUOTA_RE = /hit your (session|usage|weekly) limit|usage limit reached|resets? \d/i
 let aborted = null
 const AGENT_TYPE = input.agentType || undefined
+const AGENT_RE = /agent type .* not found|not registered|unknown agent type/i
 const verdicts = []
 for (let i = 0; i < files.length && !aborted; i += BATCH) {
   const slice = files.slice(i, i + BATCH)
@@ -195,6 +196,10 @@ for (let i = 0; i < files.length && !aborted; i += BATCH) {
       .catch((e) => {
         const msg = String(e && e.message || e)
         if (QUOTA_RE.test(msg) && !aborted) { aborted = msg.slice(0, 120); log(`⛔ quota: ${aborted} — not starting any more readers`) }
+        // The reviewer agent registers at session start; a session opened
+        // before .claude/agents/reviewer.md existed (or after a /login) does
+        // not have it. Every reader would fail the same way, so stop at once.
+        if (AGENT_RE.test(msg) && !aborted) { aborted = `agent type '${AGENT_TYPE}' is not available in this session — start a new Claude Code session in the repo and resume with resumeFromRunId`; log(`⛔ ${aborted}`) }
         return null
       })
   }))
