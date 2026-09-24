@@ -243,10 +243,12 @@ learner?**
   inconsistent terminology within the page, a dropped qualifier.
 - **PASS** — no, and nothing an editor would change.
 
-Expect roughly **1–3% FAIL** and a large MINOR share. If a round comes back
-with 15%+ FAIL, the rubric is being misread — stop and report it rather
-than launching a large fix wave. (This exact failure happened once; see
-`.claude/PROJECT_HANDOFF.md`.)
+Expect roughly **1.5–8% FAIL** (measured 1.5–7.6% across the de, ko, th and
+id rounds) and a large MINOR share. If a round comes back with 15%+ FAIL,
+the rubric is being misread — stop and report it rather than launching a
+large fix wave. (This exact failure happened once: a he round came back at
+18% because the rubric was misread, not because the translation was worse;
+see `.claude/PROJECT_HANDOFF.md`.)
 
 **PASS means "screened, no misleading defect found" — not "certified
 clean."** Don't describe it as clean in your summary.
