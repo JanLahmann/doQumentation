@@ -86,11 +86,11 @@ still have a delta pool.
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `2026091102-JanLahmann` | 264 | 4 | 1.5% |
 | `2026091103-JanLahmann` | 28 | 0 | 0.0% |
+| `2026091102-JanLahmann` | 264 | 4 | 1.5% |
 | `2026091101-JanLahmann` | 309 | 16 | 5.2% |
-| `2026091002-JanLahmann` | 149 | 27 | 18.1% |
 | `2026091003-JanLahmann` | 250 | 11 | 4.4% |
+| `2026091002-JanLahmann` | 149 | 27 | 18.1% |
 | `2026091001-JanLahmann` | 158 | 12 | 7.6% |
 
 Typical FAIL rate is around **6%**. If your round comes

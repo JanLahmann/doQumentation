@@ -146,10 +146,13 @@ def recent_rounds(limit: int = 6) -> list[tuple[str, int, int]]:
     # "Brereview") above every dated seed; mtime looks right locally but is
     # useless in CI, where a fresh checkout stamps every file with the same
     # time — which is exactly how the legacy names reappeared in the first
-    # generated copy of this table. Undated legacy seeds sort last.
+    # generated copy of this table. Undated legacy seeds sort last. The digits
+    # after the date are the round number within that day (2026091103 is the
+    # 3rd round of 2026-09-11); keying on the date alone left same-day rounds
+    # tied, in whatever order the file system listed them.
     def seed_key(f: Path):
-        m = re.search(r"(20\d{6})", f.stem)
-        return (1, m.group(1)) if m else (0, f.stem)
+        m = re.search(r"(20\d{6})(\d*)", f.stem)
+        return (1, m.group(1), int(m.group(2) or 0), f.stem) if m else (0, "", 0, f.stem)
 
     files = sorted(REVIEWS.glob("opus-*.json"), key=seed_key, reverse=True)
     for p in files:
