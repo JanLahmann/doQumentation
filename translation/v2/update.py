@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -29,6 +30,49 @@ import polib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po4a_io as io  # noqa: E402
+
+
+BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
+def _norm_line(s: str) -> str:
+    return BULLET_RE.sub("", s.strip())
+
+
+def split_block_hint(msgid: str, old: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """The translation a new entry already has when its English was one line
+    of a paragraph that upstream split apart.
+
+    Measured on the first real sync (de, 2026-09-10): 121 of 127 "untranslated"
+    entries were bullets that had been lines of an intro-plus-list paragraph;
+    msgmerge matches whole entries, so the old block was dropped and every
+    bullet came back as new work, though its German sat in the dropped msgstr.
+
+    Returns (old_line, translated_line) when the old block's translation has
+    the same number of lines as its English (so line i answers line i) and
+    the line is found in exactly one way; None otherwise. A bullet marker
+    the old line carried is removed from the translation too, since po4a's
+    Bullet entries carry the text without it."""
+    key = _norm_line(msgid)
+    if not key:
+        return None
+    found = None
+    for old_id, old_str in old:
+        id_lines = [l for l in old_id.splitlines() if l.strip()]
+        if len(id_lines) < 2:
+            continue
+        str_lines = [l for l in old_str.splitlines() if l.strip()]
+        if len(str_lines) != len(id_lines):
+            continue
+        for i, line in enumerate(id_lines):
+            if _norm_line(line) != key:
+                continue
+            tr = str_lines[i]
+            cand = (line.strip(), _norm_line(tr) if BULLET_RE.match(line) else tr.strip())
+            if found is not None and found != cand:
+                return None          # the line occurs in two blocks with different translations
+            found = cand
+    return found
 
 
 def worklist(locale: str, pages: list[str], init_missing: bool = False) -> tuple[list[dict], Counter, list[str]]:
@@ -52,6 +96,12 @@ def worklist(locale: str, pages: list[str], init_missing: bool = False) -> tuple
             po.parent.mkdir(parents=True, exist_ok=True)
             seed.save(str(po))
             counts["pages seeded"] += 1
+        # What the page said before the merge: msgmerge drops an entry whose
+        # English is gone, and a paragraph upstream split into bullets is gone
+        # as a whole even though every line of it is still on the page.
+        before = polib.pofile(str(po), wrapwidth=0)
+        old_pairs = [(e.msgid, e.msgstr) for e in before
+                     if e.msgstr.strip() and not e.fuzzy and io.translatable(e)]
         io.msgmerge(po, pot)
         p = polib.pofile(str(po), wrapwidth=0)
         for idx, e in enumerate(p):
@@ -65,7 +115,7 @@ def worklist(locale: str, pages: list[str], init_missing: bool = False) -> tuple
             else:
                 counts["translated"] += 1
                 continue
-            items.append({
+            item = {
                 "id": f"{rel}#{idx}",
                 "page": rel,
                 "type": io.entry_type(e),
@@ -74,7 +124,14 @@ def worklist(locale: str, pages: list[str], init_missing: bool = False) -> tuple
                 "previous_msgstr": e.msgstr if e.fuzzy else "",
                 "context_before": p[idx - 1].msgid if idx > 0 else "",
                 "context_after": p[idx + 1].msgid if idx + 1 < len(p) else "",
-            })
+            }
+            if not e.fuzzy and old_pairs:
+                hint = split_block_hint(e.msgid, old_pairs)
+                if hint:
+                    item["previous_msgid"], item["previous_msgstr"] = hint
+                    item["transfer"] = "split-block"
+                    counts["split-block hints"] += 1
+            items.append(item)
     return items, counts, no_po
 
 
@@ -100,7 +157,9 @@ def main() -> int:
           f"{counts['pages without PO']} page(s) without a PO, {counts['pages seeded']} seeded")
     pages_touched = len({i['page'] for i in items})
     words = sum(len(i["msgid"].split()) for i in items)
-    print(f"worklist: {len(items)} entries on {pages_touched} page(s), {words} English words")
+    print(f"worklist: {len(items)} entries on {pages_touched} page(s), {words} English words"
+          + (f"; {counts['split-block hints']} carry a translation from a paragraph the English split"
+             if counts["split-block hints"] else ""))
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps({"locale": args.locale, "items": items, "pages_without_po": no_po},

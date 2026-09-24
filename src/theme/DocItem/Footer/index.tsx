@@ -17,8 +17,6 @@ type PageEntry = {
   upstreamPath: string;
   upstreamDate: string;
   enDate: string;
-  translationBaseDate?: string;
-  translationBaseSource?: string;
 };
 
 type PageDatesData = {
@@ -77,11 +75,9 @@ function PageDates({entry, locale, currentPath}: {
 
   const upstreamDate = formatDate(entry.upstreamDate, locale);
   const enDate = formatDate(entry.enDate, locale);
-  const baseDate = formatDate(entry.translationBaseDate || '', locale);
-  const isApprox = entry.translationBaseSource === 'promoted-fallback';
 
   // Nothing to show — bail
-  if (!upstreamDate && !enDate && !baseDate) return null;
+  if (!upstreamDate && !enDate) return null;
 
   return (
     <div className="dq-page-dates">
@@ -151,31 +147,6 @@ function PageDates({entry, locale, currentPath}: {
         </div>
       )}
 
-      {baseDate && locale !== 'en' && (
-        <div className="dq-page-dates__row dq-page-dates__row--translation">
-          {isApprox ? (
-            <Translate
-              id="pageDates.translationBaseApprox"
-              description="Translation freshness line, approximate (the EN base revision is unknown, fell back to the promote date)"
-              values={{
-                date: <span className="dq-page-dates__date">{baseDate}</span>,
-              }}
-            >
-              {'This translation based on the English version of approx. {date}'}
-            </Translate>
-          ) : (
-            <Translate
-              id="pageDates.translationBase"
-              description="Translation freshness line: 'This translation is based on the English version of <date>'"
-              values={{
-                date: <span className="dq-page-dates__date">{baseDate}</span>,
-              }}
-            >
-              {'This translation based on the English version of {date}'}
-            </Translate>
-          )}
-        </div>
-      )}
     </div>
   );
 }

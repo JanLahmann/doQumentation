@@ -265,6 +265,22 @@ def entry_type(e: polib.POEntry) -> str:
     return c[len("type: "):] if c.startswith("type: ") else "?"
 
 
+_LEADING_TAGS = re.compile(r"^(?:\s*</?[A-Za-z][\w.]*(?:\s[^<>]*)?/?>\s*)+")
+_TAG = re.compile(r"</?[A-Za-z][\w.]*(?:\s[^<>]*)?/?>")
+# 8 words is comfortably longer than any label or stat caption in the corpus
+# and shorter than the paragraphs this is meant to recover.
+_PROSE_MIN_WORDS = 8
+
+
+def _prose_behind_tags(s: str) -> bool:
+    """True when a leading run of tags is followed by real running text."""
+    rest = _LEADING_TAGS.sub("", s, count=1).strip()
+    if not rest or not rest[0].isalpha():
+        return False
+    words = [w for w in _TAG.sub(" ", rest).split() if any(c.isalpha() for c in w)]
+    return len(words) >= _PROSE_MIN_WORDS
+
+
 def translatable(e: polib.POEntry) -> bool:
     """Which entries a translator (human or model) should ever see."""
     if is_code_entry(e) or is_import_entry(e):
@@ -273,7 +289,14 @@ def translatable(e: polib.POEntry) -> bool:
     if s.startswith("{/*") and s.endswith("*/}"):
         return False
     if s.startswith("<") and not re.search(r'\b(title|label|description|summary)="', s):
-        return False              # bare JSX/HTML with no text prop
+        # po4a merges a closing tag with the paragraph that follows it when no
+        # blank line separates them, so an entry can be a full prose paragraph
+        # wearing a tag prefix (`</AccordionItem></Accordion>Now, Alice can
+        # measure…`). Judging it by its first character hid 77 German
+        # paragraphs from the worklist; when such an entry went fuzzy it
+        # rendered English forever and no pipeline step could see it.
+        if not _prose_behind_tags(s):
+            return False          # bare JSX/HTML with no text prop
     if s.startswith("```"):
         return False              # a fence chunk inside a list item, handed over as prose
     return True
@@ -330,6 +353,30 @@ def adopt(po: polib.POFile) -> polib.POFile:
 def _check(msgid: str, msgstr: str) -> list[str]:
     from check import check_entry
     return check_entry(msgid, msgstr)
+
+
+# Every msgstr a model writes carries a dated stamp in its translator comment
+# (fix.py --apply: "fixed after review", translate.py --apply on a fuzzy or new
+# entry: "translated after an English change"). Until a reviewer has read that
+# entry against the English it is PENDING VERIFICATION; recording a page verdict
+# dated later than the stamp appends " · verified <date>". sample-deep-review.py
+# puts a page with pending entries into the review pool in delta mode.
+PENDING_STAMP_RE = re.compile(r"doq: (?:fixed after review|translated after an English change) (\d{4}-\d{2}-\d{2})")
+VERIFIED_RE = re.compile(r"verified (\d{4}-\d{2}-\d{2})")
+
+
+def pending_since(e: polib.POEntry) -> str | None:
+    """The stamp date of an entry a model wrote that no reviewer has read since,
+    or None."""
+    c = e.tcomment or ""
+    m = PENDING_STAMP_RE.search(c)
+    if not m or VERIFIED_RE.search(c):
+        return None
+    return m.group(1)
+
+
+def mark_verified(e: polib.POEntry, when: str) -> None:
+    e.tcomment = f"{e.tcomment} · verified {when}"
 
 
 def set_header(po: polib.POFile, rel: str, locale: str | None, **extra: str) -> None:

@@ -167,8 +167,15 @@ useful, and it is designed to be run **by Claude Code** rather than by hand.
 - **[CONTRIBUTING-TRANSLATIONS.md](CONTRIBUTING-TRANSLATIONS.md)** — for
   translating newly-synced English content.
 
-You need a Claude Max subscription, `git`, `python3` and the `gh` CLI. Claim
-a locale with the maintainer first so two people don't review the same one.
+The shortest path: fork the repo, clone your fork, open Claude Code in it
+and say **"I want to help with reviews. What should I do?"** The repo's
+`CLAUDE.md` routes that to the recipe, checks your setup and asks for what
+is missing. You need a Claude Max subscription, `git`, `python3`, the `gh`
+CLI, and po4a + gettext + `polib` to render a locale locally.
+
+Claim a locale first so two people don't review the same one: open an
+issue with the **Claim a locale** template (label `translation-claim`);
+the open claims are listed in `CONTRIBUTING-NOW.md`.
 
 **Sync your fork with upstream `main` before every session** — not just on
 the first clone. Which pages still need work is read from a status file that
@@ -200,8 +207,10 @@ Upstream content from [Qiskit/documentation](https://github.com/Qiskit/documenta
 [Qiskit documentation](https://github.com/Qiskit/documentation) content © IBM Corp. Code is licensed under [Apache 2.0](LICENSE); content (tutorials, courses, media, translations) under [CC BY-SA 4.0](LICENSE-DOCS). See [NOTICE](NOTICE) for full attribution.
 IBM, IBM Quantum, and Qiskit are trademarks of IBM Corporation. doQumentation is part of the [RasQberry](https://rasqberry.org/) project and is not affiliated with, endorsed by, or sponsored by IBM Corporation.
 
+<!-- FWQ-FAMILY:START format=list — generated from family.json in JanLahmann/Fun-with-Quantum, do not edit by hand -->
 ## Part of the Fun with Quantum family
 
-[Fun with Quantum](https://fun-with-quantum.org) · [RasQberry Two](https://rasqberry.org) · [RasQberry One](https://rasqberry.one) · [Quantego](https://quantego.org) · [Qutie](https://qutie.org) · [Qoffee-Maker](https://qoffee-maker.org)
+This project is part of [**Fun with Quantum**](https://fun-with-quantum.org), a family of open-source quantum outreach projects: [Fun with Quantum](https://fun-with-quantum.org) · [RasQberry Two](https://rasqberry.org) · [RasQberry One](https://rasqberry.one) · [Quantego](https://quantego.org) · [Qutie](https://qutie.org) · [Qoffee-Maker](https://qoffee-maker.org) · [Entangible](https://entangible.org) · [CertiQ](https://certiq.dev) · [QuBins](https://qubins.org) · [QAMPoser](https://qamposer.org).
 
 *God does play dice. Come play, build, learn.*
+<!-- FWQ-FAMILY:END -->

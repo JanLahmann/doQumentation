@@ -347,25 +347,59 @@ def escape_mdx_outside_code(content: str) -> str:
 
 
 def _tag_untagged_code_blocks(content: str) -> str:
-    """Add language tags to untagged code fences based on content heuristics."""
-    def _replace_block(m):
-        code = m.group(1)
-        # Skip false matches that span across LaTeX math output boundaries
-        # (regex matches closing fence of one block across bare $$...$$ to
-        # the opening fence of the next block)
-        if '$$' in code:
-            return m.group(0)
-        first_line = code.strip().split('\n')[0] if code.strip() else ''
+    """Add language tags to untagged code fences based on content heuristics.
+
+    Walks the document line by line with CommonMark fence semantics: any
+    ``` line opens a block (its info string may be anything), and while a
+    block is open only a BARE ``` line closes it. Only a bare OPENING fence
+    is ever rewritten; the language comes from the first non-blank line of
+    that block's body.
+
+    The previous implementation was one regex, ```\n(.*?)```, which could
+    start its match at the bare CLOSING fence of one block and run through
+    the prose to the OPENING fence of the next. When that prose began with
+    `{` (an MDX comment) or `$` (inline math) it rewrote the closing fence to
+    ```json / ```bash. That is not a valid closing fence, so MDX kept the
+    block open and swallowed the following sections into it (live on
+    guides/custom-backend, guides/get-started-with-estimator and
+    learning/.../qvc-qnn until 2026-09-07).
+    """
+    def _lang_for(first_line: str) -> str | None:
         if (first_line.startswith('$') and not first_line.startswith('$$')) or first_line.startswith('%'):
-            return f'```bash\n{code}```'
+            return 'bash'
         if any(first_line.startswith(kw) for kw in ('import ', 'from ', 'def ', 'class ', 'print(')):
-            return f'```python\n{code}```'
+            return 'python'
         if first_line.startswith('{'):
-            return f'```json\n{code}```'
+            return 'json'
         if first_line.startswith('pip ') or first_line.startswith('pip3 '):
-            return f'```bash\n{code}```'
-        return m.group(0)
-    return re.sub(r'```\n(.*?)```', _replace_block, content, flags=re.DOTALL)
+            return 'bash'
+        return None
+
+    lines = content.split('\n')
+    in_block = False
+    open_idx = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith('```'):
+            continue
+        if in_block:
+            if stripped.rstrip('`').strip() != '':
+                continue  # non-bare fence inside a block is content, not a delimiter
+            in_block = False
+            if lines[open_idx].strip() != '```':
+                continue  # opening fence already carried a language tag
+            body = lines[open_idx + 1:i]
+            if any('$$' in b for b in body):
+                continue  # math output: leave untagged (parity with the old heuristic)
+            first_line = next((b.strip() for b in body if b.strip()), '')
+            lang = _lang_for(first_line)
+            if lang:
+                indent = lines[open_idx][:len(lines[open_idx]) - len(lines[open_idx].lstrip())]
+                lines[open_idx] = f'{indent}```{lang}'
+            continue
+        in_block = True
+        open_idx = i
+    return '\n'.join(lines)
 
 
 def cell_source(cell: dict) -> str:
@@ -2738,7 +2772,7 @@ def main():
     parser.add_argument("--freshness-report", type=str, metavar="PATH",
                         help="Write a markdown freshness report to PATH and "
                              "exit. Reads only src/config/upstreamFileMeta.json "
-                             "and translation/status.json; does not touch "
+                             "; does not touch "
                              "content or the upstream-docs submodule.")
     args = parser.parse_args()
 
@@ -3082,14 +3116,13 @@ def write_page_dates_manifest():
 
 def write_freshness_report(out_path: Path) -> None:
     """Write a markdown freshness report. Reads only
-    src/config/upstreamFileMeta.json and translation/status.json; does not
-    touch the upstream-docs submodule or generate any content. Intended for
+    src/config/upstreamFileMeta.json; does not touch the upstream-docs
+    submodule or generate any content. Intended for
     auto-PR bodies and ad-hoc CLI inspection.
     """
     from datetime import datetime, timezone
 
     meta_path = PROJECT_ROOT / "src" / "config" / "upstreamFileMeta.json"
-    status_path = PROJECT_ROOT / "translation" / "status.json"
 
     if not meta_path.exists():
         out_path.write_text("_No `upstreamFileMeta.json` found — skipping freshness report._\n")
@@ -3104,33 +3137,6 @@ def write_freshness_report(out_path: Path) -> None:
         if en and up and up > en:
             en_behind.append((rel, en, up))
     en_behind.sort(key=lambda t: (t[2], t[1]), reverse=True)
-
-    locale_stale: dict[str, int] = {}
-    locale_total: dict[str, int] = {}
-    if status_path.exists():
-        try:
-            status = json.loads(status_path.read_text())
-        except json.JSONDecodeError:
-            status = {}
-        for locale, entries in status.items():
-            if not isinstance(entries, dict):
-                continue
-            stale = 0
-            total = 0
-            for rel, info in entries.items():
-                if not isinstance(info, dict):
-                    continue
-                if info.get("status") != "promoted":
-                    continue
-                base = info.get("en_base_commit_date", "")
-                en_date = files.get(rel, {}).get("en_date", "")
-                if not base or not en_date:
-                    continue
-                total += 1
-                if base < en_date:
-                    stale += 1
-            locale_total[locale] = total
-            locale_stale[locale] = stale
 
     upstream_repo = meta.get("_upstream_repo", "Qiskit/documentation")
     submodule_sha = ""
@@ -3161,21 +3167,13 @@ def write_freshness_report(out_path: Path) -> None:
         lines.append("_All EN pages are caught up with upstream._")
     lines.append("")
 
-    lines.append("### Per-locale staleness (promoted entries with `en_base_commit_date < en_date`)")
-    if locale_total:
-        lines.append("")
-        lines.append("| Locale | Stale | Promoted | % stale |")
-        lines.append("|---|---:|---:|---:|")
-        for locale in sorted(locale_total):
-            tot = locale_total[locale]
-            st = locale_stale[locale]
-            pct = f"{(100 * st / tot):.0f}%" if tot else "—"
-            lines.append(f"| `{locale}` | {st} | {tot} | {pct} |")
-    else:
-        lines.append("")
-        lines.append("_No translation status found._")
+    lines.append("### Translations")
     lines.append("")
-
+    lines.append("Each locale's translation is its PO tree under `i18n/<locale>/po/`; after this")
+    lines.append("merges, `translation/v2/update.py --locale X` lists what the new English")
+    lines.append("leaves fuzzy or untranslated there, and the daily `check-translations.yml`")
+    lines.append("run reports it per locale in the open `translation-freshness` issue.")
+    lines.append("")
     lines.append("### Snapshot")
     lines.append("")
     lines.append(f"- Upstream repo: [`{upstream_repo}`](https://github.com/{upstream_repo})")

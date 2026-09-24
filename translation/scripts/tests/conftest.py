@@ -21,6 +21,18 @@ def _load(name: str, filename: str):
     return mod
 
 
+REPO_ROOT = SCRIPTS_DIR.parent.parent
+
+
+@pytest.fixture(scope="session")
+def sync_content():
+    """scripts/sync-content.py (the EN converter); pure helpers only."""
+    spec = importlib.util.spec_from_file_location("sync_content", REPO_ROOT / "scripts" / "sync-content.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @pytest.fixture(scope="session")
 def common():
     return _load("_common", "_common.py")
@@ -39,3 +51,43 @@ def lint():
 @pytest.fixture(scope="session")
 def passage_units():
     return _load("passage_units", "passage_units.py")
+
+
+@pytest.fixture(scope="session")
+def sampler():
+    return _load("sample_deep_review", "sample-deep-review.py")
+
+
+@pytest.fixture(scope="session")
+def drift():
+    return _load("find_positional_drift", "find-positional-drift.py")
+
+
+@pytest.fixture(scope="session")
+def completeness():
+    return _load("check_completeness", "check-completeness.py")
+
+
+@pytest.fixture(scope="session")
+def gauge():
+    return _load("gauge_completeness", "gauge-completeness.py")
+
+
+@pytest.fixture(scope="session")
+def audit_check_py():
+    return _load("audit_check_py", "audit-check-py.py")
+
+
+@pytest.fixture(scope="session")
+def eval_set_builder():
+    return _load("build_eval_set", "build-eval-set.py")
+
+
+@pytest.fixture(scope="session")
+def recorder():
+    return _load("review_translations", "review-translations.py")
+
+
+@pytest.fixture(scope="session")
+def contributing_status():
+    return _load("contributing_status", "contributing-status.py")
