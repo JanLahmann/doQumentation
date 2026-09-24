@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-06 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-24 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -10,7 +10,7 @@ python3 translation/scripts/contributing-status.py --write
 > **Sync your fork before you trust any of this.** These counts
 > describe upstream `main` on the date above. A fork is stale the
 > moment anyone else's round merges, and eligibility is read from
-> `translation/status.json` — which every merged round rewrites. Work
+> the PO files' headers — which every merged round changes. Work
 > from a behind-fork and `--exclude-reviewed` filters against an old
 > verdict set, so you re-review pages that are already done and your
 > PR conflicts with what has landed.
@@ -29,38 +29,56 @@ that go stale.
 
 ---
 
+## Who is working on what
+
+A claim is one open issue labelled `translation-claim` (template:
+*Claim a locale*). Open one before you start and close it when you
+stop; it is the only reservation there is. List them any time with
+`gh issue list --repo JanLahmann/doQumentation --label translation-claim`.
+
+*No open claims right now — every locale is free.*
+
+---
+
 ## Pick a locale
 
-Every locale below still has unreviewed pages. Claim one with the
-maintainer so two people don't review the same one, then follow
+Every locale below still has unreviewed pages. Pick one that is not
+claimed above, open your claim issue, then follow
 `CONTRIBUTING-REVIEWS.md`.
 
-`--max-leaks` controls how many capitalized-English leaks a file may
-contain and still be eligible. Tighter is better quality-per-round; the
-value shown is the **tightest threshold that still leaves a workable
-pool** (at least 25 files). Use it as the starting point.
+**`--max-leaks` currently filters nothing, and that is expected.** A
+leak is a term the locale's `translation/glossary/<loc>.json` records
+as wrongly left in English — *not* any capitalized English word. The
+terms the house style keeps in English (Qiskit, Qubit, Gate, Circuit,
+Backend, Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum,
+QPU) do not count, and no locale currently records anything else, so
+every file scores 0. What limits a pool today is pages already
+reviewed with nothing written since, not leakage.
 
-**Nearly exhausted** (fewer than 25 eligible even at
-`--max-leaks 12`) — still worth a short round, but expect
-to widen further or re-sweep files that already carry a verdict:
+*Never read* pages have no verdict yet: a full read. *Delta* pages
+were reviewed, and a sync has since written new entries on them: the
+reviewer judges only those entries. A locale can be 100% reviewed and
+still have a delta pool.
 
-- `ar` — 0 left at `--max-leaks 12` (356/428 reviewed)
-- `cs` — 0 left at `--max-leaks 12` (270/428 reviewed)
-- `de` — 0 left at `--max-leaks 12` (171/428 reviewed)
-- `es` — 0 left at `--max-leaks 12` (360/428 reviewed)
-- `fr` — 0 left at `--max-leaks 12` (361/428 reviewed)
-- `he` — 0 left at `--max-leaks 12` (232/428 reviewed)
-- `id` — 0 left at `--max-leaks 12` (233/428 reviewed)
-- `it` — 0 left at `--max-leaks 12` (359/428 reviewed)
-- `ja` — 0 left at `--max-leaks 12` (347/428 reviewed)
-- `ko` — 0 left at `--max-leaks 12` (245/428 reviewed)
-- `ms` — 0 left at `--max-leaks 12` (286/428 reviewed)
-- `pl` — 0 left at `--max-leaks 12` (297/428 reviewed)
-- `pt` — 0 left at `--max-leaks 12` (359/428 reviewed)
-- `ro` — 0 left at `--max-leaks 12` (289/428 reviewed)
-- `th` — 0 left at `--max-leaks 12` (219/428 reviewed)
-- `tl` — 0 left at `--max-leaks 12` (362/428 reviewed)
-- `uk` — 0 left at `--max-leaks 12` (348/428 reviewed)
+| Locale | Never read | Delta | Reviewed so far |
+|---|---|---|---|
+| `de` | **78** | 220 | 355/433 (81%) |
+| `he` | **77** | 194 | 356/433 (82%) |
+| `th` | **17** | 252 | 416/433 (96%) |
+| `cs` | **171** | 76 | 262/433 (60%) |
+| `id` | **17** | 224 | 416/433 (96%) |
+| `pl` | **176** | 62 | 257/433 (59%) |
+| `ro` | **184** | 46 | 249/433 (57%) |
+| `tl` | **60** | 158 | 373/433 (86%) |
+| `ms` | **179** | 38 | 254/433 (58%) |
+| `ja` | **131** | 74 | 302/433 (69%) |
+| `ko` | **17** | 186 | 416/433 (96%) |
+| `ar` | **124** | 65 | 309/433 (71%) |
+| `uk` | **131** | 57 | 302/433 (69%) |
+| `it` | **120** | 51 | 313/433 (72%) |
+| `es` | **114** | 44 | 319/433 (73%) |
+| `pt` | **120** | 38 | 313/433 (72%) |
+| `fr` | **113** | 35 | 320/433 (73%) |
 
 ---
 
@@ -68,14 +86,14 @@ to widen further or re-sweep files that already carry a verdict:
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `20260901` | 136 | 14 | 10.3% |
-| `20260831` | 126 | 11 | 8.7% |
-| `20260830` | 133 | 13 | 9.8% |
-| `20260829` | 131 | 12 | 9.2% |
-| `20260828` | 134 | 9 | 6.7% |
-| `20260827` | 49 | 1 | 2.0% |
+| `2026091102-JanLahmann` | 264 | 4 | 1.5% |
+| `2026091103-JanLahmann` | 28 | 0 | 0.0% |
+| `2026091101-JanLahmann` | 309 | 16 | 5.2% |
+| `2026091002-JanLahmann` | 149 | 27 | 18.1% |
+| `2026091003-JanLahmann` | 250 | 11 | 4.4% |
+| `2026091001-JanLahmann` | 158 | 12 | 7.6% |
 
-Typical FAIL rate is around **8%**. If your round comes
+Typical FAIL rate is around **6%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 

@@ -37,6 +37,9 @@ import argparse
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import refuse_rendered_page_write  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 DOCS = REPO / "docs"
 I18N = REPO / "i18n"
@@ -121,6 +124,13 @@ def main() -> int:
     a = ap.parse_args()
     if not a.all_locales and not a.locale:
         ap.error("need --locale or --all-locales")
+
+    if a.apply:
+        refuse_rendered_page_write(
+            "fix-tutorialfeedback-import.py --apply",
+            "A misplaced import comes from the English skeleton, so it must be fixed\n"
+            "  upstream in scripts/sync-content.py / docs/, not in a rendered locale\n"
+            "  page. Run without --apply to see what is affected.")
 
     changed = skipped = errors = 0
     for loc, rel, en_path, tr_path in iter_targets(a.locale, a.all_locales, a.file):
