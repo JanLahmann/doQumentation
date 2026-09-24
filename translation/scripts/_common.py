@@ -6,9 +6,8 @@ which existed in both validate-translation.py and lint-translation.py and had
 DRIFTED (the two gates disagreed on the exact check that gates every translation
 PR). Centralizing the primitive here makes them agree by construction.
 
-Also provides the canonical status.json path + load/save helpers and the repo
-root, which were re-declared (sometimes twice) in ~7 scripts. New code should
-import these; existing scripts can migrate incrementally.
+Also provides the repo root and the rendered-page helpers the review scripts
+share.
 """
 
 from __future__ import annotations
@@ -18,10 +17,53 @@ import json
 import re
 from pathlib import Path
 
+# ── House style: terms kept in English in every locale ──
+
+# Settled 2026-09-08 by the maintainer: these stay English in prose. The list is
+# shared so the translator instructions (translation/v2/translate.py) and the
+# deep-review leak filter (sample-deep-review.py) cannot drift apart — before
+# this, translate.py told translators to KEEP these terms while the sampler
+# counted every one of them as a "leak" and excluded the page from review
+# (154 de / 92 he / 70 cs pages).
+KEEP_ENGLISH_TERMS = (
+    "Qiskit", "Qubit", "Gate", "Circuit", "Backend",
+    "Transpiler", "Session", "Sampler", "Estimator", "PUB", "IBM Quantum", "QPU",
+)
+
+
+def is_kept_english(word: str) -> bool:
+    """True for a term the house style keeps in English (any case, any plural)."""
+    w = word.strip().rstrip("s").casefold()
+    return any(w == t.rstrip("s").casefold() for t in KEEP_ENGLISH_TERMS)
+
+
+# ── v2: the rendered locale pages are build output, not source ──
+
+RENDERED_PAGES_ARE_DERIVED = """\
+Since the v2 pipeline (translation/v2/README.md) the pages under
+i18n/<locale>/docusaurus-plugin-content-docs/current/ are RENDERED from
+the PO files by render.py at build time. They are not tracked in git, and
+any edit written there is silently discarded at the next render.
+"""
+
+
+def refuse_rendered_page_write(tool: str, instead: str) -> None:
+    """Abort a legacy in-place fixer that would write a rendered locale page.
+
+    These tools predate v2, when the rendered pages WERE the source. Leaving
+    them runnable is worse than removing them: they report success, the site
+    never changes, and the operator believes the defect is fixed.
+    """
+    import sys as _sys
+    print(f"{tool}: refusing to write rendered locale pages.\n\n"
+          f"{RENDERED_PAGES_ARE_DERIVED}\n"
+          f"Do this instead:\n  {instead}\n", file=_sys.stderr)
+    _sys.exit(2)
+
+
 # ── Paths ──
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-STATUS_FILE = REPO_ROOT / "translation" / "status.json"
 
 # A rendered translation carries the hash of the English it was rendered
 # from (translation/v2/render.py writes it; populate-locale marks English
@@ -40,24 +82,6 @@ def extract_embedded_hash(content: str) -> str | None:
     """The source hash a rendered translation carries, or None."""
     m = HASH_PATTERN.search(content)
     return m.group(1) if m else None
-
-
-# ── status.json IO ──
-
-def load_status() -> dict:
-    """Load translation/status.json (empty dict if absent)."""
-    if STATUS_FILE.exists():
-        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
-def save_status(status: dict) -> None:
-    """Write translation/status.json with sorted keys + trailing newline."""
-    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATUS_FILE.write_text(
-        json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 # ── JSX tag balance (the de-drifted primitive) ──

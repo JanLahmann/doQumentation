@@ -1,0 +1,383 @@
+---
+title: "Solve the Sherrington-Kirkpatrick model with the ParityQC Parity Twine Optimizer"
+sidebar_label: "Solve the Sherrington-Kirkpatrick model with the ParityQC Parity Twine Optimizer"
+description: "Tutorial to solve the Sherrington-Kirkpatrick model with the Parity Twine Optimizer"
+notebook_path: "tutorials/parity-twine-optimizer-sk.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/parity-twine-optimizer-sk.ipynb" />
+
+
+
+{/* cspell:ignore parityqc QOBLIB marketsplit independentset */}
+*Usage estimate: 10 seconds on a Nighthawk r2 processor. (NOTE: This is an estimate only. Your runtime may vary.)*
+## Learning outcomes
+
+- Use the Parity Twine Optimizer to solve the Sherrington-Kirkpatrick model.
+- Learn which options for the Parity Twine Optimizer are available and what results are output.
+## Background
+
+This tutorial demonstrates how to solve the Sherrington-Kirkpatrick model using the ParityQC Parity Twine Optimizer.
+
+It provides code to formulate the problem entirely locally in a form that can interface with the Parity Twine Optimizer.
+
+### The Sherrington-Kirkpatrick model
+
+The Sherrington-Kirkpatrick (SK) model is a foundational model in statistical mechanics, specifically within the study of spin glasses. Unlike the standard Ising model, where interactions are usually
+limited to nearest neighbors, the SK model is an infinite-range model, meaning every spin interacts with every other spin in the system. This leads to a highly complex, "rugged", energy landscape characterized by
+many local minima, which is the hallmark of glassy behavior.
+
+The core feature of the SK model lies in frustration. In the model, interaction strengths $J_ij$ between spins are randomly distributed between positive and negative values. This leads to situations (for
+example, in triangular arrangements) where spins cannot be arranged to minimize all interactions simultaneously. In the SK model, because every spin interacts with every other spin, this frustration is compounded
+globally, leading to a web of conflicting constraints.
+
+### Mathematical formulation
+
+The state of the system is defined by a set of $N$ Ising spins, $s_i \in \{+1, -1 \} $. The energy of a specific configuration is given by the Hamiltonian:
+
+$$ H = - \sum_{1 \leq i \leq j \leq N} J_{ij} s_i s_j $$
+
+where $J_{ij}$ is the coupling strength between spin $i$ and spin $j$.
+
+In the SK model, the couplings $J_{ij}$ are independent and identically distributed random variables. To ensure that the energy remains extensive (proportional to $N$) as
+$N \rightarrow \infty$, the variance of the couplings must scale with the number of particles:
+
+$$ J_{ij} \sim \mathcal{N} \left( 0, \frac{J^2}{N} \right)  $$
+
+The ground state for a given $H$ is the specific configuration of spins ($s_1, s_2, ...s_n$), which minimizes the energy. Finding the ground state is an NP-hard optimization problem.
+## Requirements
+
+Before starting this tutorial, ensure the following are installed:
+
+- Qiskit Functions Catalog IBM Client (`pip install qiskit-ibm-catalog`)
+- Qiskit addon Optimization Mapper (`pip install qiskit_addon_opt_mapper`)
+- NumPy (`pip install numpy`)
+
+You also need permission to access the ParityQC Twine Optimizer function. To request access, complete this [form](https://parityqc.com/products/parity-twine-optimizer/free-trial).
+## Setup
+
+(This code assumes you've already [saved your account](/guides/functions-get-started#install-qiskit-functions-catalog-client) to your local environment.)
+
+First, import all required packages for this tutorial.
+
+```python
+# Added by doQumentation — required packages for this notebook
+!pip install -q numpy qiskit-ibm-catalog
+```
+
+```python
+import numpy as np
+
+from qiskit_ibm_catalog import QiskitFunctionsCatalog
+```
+
+Load the Parity Twine Optimizer from the Qiskit Functions catalog:
+
+```python
+catalog = QiskitFunctionsCatalog(channel="ibm_quantum_platform")
+function = catalog.load("parityqc/parity-twine-optimizer")
+```
+
+### Step 1: Define the problem as an objective function
+
+Instead of obtaining the SK problem from a library as we do for the [Market Split problem](/tutorials/parity-twine-optimizer-ms), you formulate it directly.
+
+The `generate_sk_problem` function formulates the SK problem directly in the required dictionary format. The only input required is `n`, the number of spins in the model.
+
+```python
+def generate_sk_problem(
+    n: int,
+    coupling_mean: float = 0.0,
+    coupling_std: float = 1.0,
+    local_fields_mean: float = 0.0,
+    local_fields_std: float = 0.0,
+    edge_density: float = 1.0,
+    ensure_extensivity: bool = False,
+    seed: int | None = None,
+) -> dict:
+    """Generate the Sherrington-Kirkpatrick (SK) model with varying
+     edge density.
+
+    Samples couplings and local fields via :func:`generate_couplings_sk_model`
+    and assembles the corresponding Ising Hamiltonian
+
+        H = -∑_{i<j} J_ij z_i z_j - ∑_i h_i z_i,
+
+    where z_i ∈ {-1, +1}.
+
+    Args:
+        n: Number of spins (>= 2).
+        coupling_mean: Mean coupling before optional SK scaling.
+        coupling_std: Coupling std before optional SK scaling.
+        local_fields_mean: Mean longitudinal field.
+        local_fields_std: Std of the longitudinal fields.
+        edge_density: Fraction of non-zero couplings, in ``[2/n, 1]``.
+        ensure_extensivity: Whether to apply the SK 1/n scaling.
+        seed: random number generator seed.
+
+    Returns:
+        A ``ProblemRepresentation`` encoding the SK Hamiltonian.
+
+    Raises:
+        ValueError: If ``n < 2``, ``coupling_std < 0``, ``local_fields_std < 0``,
+            or ``edge_density`` is outside ``[2/n, 1]``.
+    """
+    couplings, local_fields = _generate_couplings_sk_model(
+        n=n,
+        coupling_mean=coupling_mean,
+        coupling_std=coupling_std,
+        local_fields_mean=local_fields_mean,
+        local_fields_std=local_fields_std,
+        edge_density=edge_density,
+        ensure_extensivity=ensure_extensivity,
+        seed=seed,
+    )
+
+    # Handle quadratic terms: coupling[i, j] * zj[i] * zj[j]
+    # Only iterate over the upper triangle (i < j)
+    sk_problem = {
+        str((i, j)): float(couplings[i, j])
+        for i in range(n)
+        for j in range(i + 1, n)
+        if couplings[i, j] != 0
+    }
+
+    # Handle linear terms: local_fields[i] * zj[i]
+    sk_problem.update(
+        {
+            str((i,)): float(local_fields[i])
+            for i in range(n)
+            if local_fields[i] != 0
+        }
+    )
+
+    return sk_problem
+```
+
+Use the function `_generate_couplings_sk_model` to calculate the random coupling terms in the SK model. For more control over the couplings, you can use optional arguments, which are explained in the function's docstring.
+
+```python
+def _generate_couplings_sk_model(
+    n: int,
+    coupling_mean: float = 0.0,
+    coupling_std: float = 1.0,
+    local_fields_mean: float = 0.0,
+    local_fields_std: float = 0.0,
+    edge_density: float = 1.0,
+    ensure_extensivity: bool = False,
+    seed: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generate random couplings and local fields for an Ising / SK model.
+
+    Couplings are Gaussian. With ``ensure_extensivity=True`` they follow the
+    Sherrington-Kirkpatrick scaling ``J_ij ~ N(coupling_mean/n, coupling_std^2/n)``
+    (extensive energy, O(n)); otherwise ``J_ij ~ N(coupling_mean, coupling_std^2)``
+    (energy O(n^2)). Fields are ``h_i ~ N(local_fields_mean, local_fields_std^2)``.
+
+    ``edge_density`` sets the fraction of the ``n*(n-1)/2`` possible couplings that
+    are non-zero (1 = fully dense). The kept edges always include a random spanning
+    tree, so the interaction graph is guaranteed connected. This requires at least
+    ``n-1`` edges, so ``edge_density`` must be at least ``2/n``.
+
+    Args:
+        n: Number of spins (>= 2).
+        coupling_mean: Mean coupling before optional SK scaling.
+        coupling_std: Coupling std before optional SK scaling.
+        local_fields_mean: Mean longitudinal field.
+        local_fields_std: Std of the longitudinal fields.
+        edge_density: Fraction of non-zero couplings, in ``[2/n, 1]``.
+        ensure_extensivity: Whether to apply the SK 1/n scaling.
+        seed: random number generator seed.
+
+    Returns:
+        Tuple ``(couplings, fields)``: a symmetric ``(n, n)`` matrix with zero
+        diagonal, and an ``(n,)`` field vector.
+
+    Raises:
+        ValueError: If ``n < 2``, ``coupling_std < 0``, ``local_fields_std < 0``,
+            or ``edge_density`` is outside ``[2/n, 1]``.
+    """
+    if n < 2:
+        raise ValueError(f"n must be >= 2, got {n}")
+    if coupling_std < 0 or local_fields_std < 0:
+        raise ValueError(
+            "coupling_std and local_fields_std must be non-negative"
+        )
+
+    # A connected graph on n nodes needs at least n-1 of the n*(n-1)/2 possible
+    # edges, so edge_density has a hard lower bound of 2/n.
+    min_edge_density = 2.0 / n
+    if not min_edge_density <= edge_density <= 1.0:
+        raise ValueError(
+            f"edge_density must be in [{min_edge_density:.4g}, 1] for n={n} "
+            f"(at least n-1 edges are needed to keep the graph connected), "
+            f"got {edge_density}"
+        )
+
+    rng = np.random.default_rng(seed)
+
+    j_loc, j_scale = (
+        (coupling_mean / n, coupling_std / np.sqrt(n))
+        if ensure_extensivity
+        else (coupling_mean, coupling_std)
+    )
+
+    upper_idx = np.triu_indices(n, k=1)
+    n_edges = len(upper_idx[0])
+
+    # Select which edges are present.
+    if edge_density < 1.0:
+        n_keep = int(round(edge_density * n_edges))
+        # Map each (i, j) node pair to its position in the flat upper-triangle list.
+        pair_to_flat = {
+            (int(i), int(j)): idx
+            for idx, (i, j) in enumerate(
+                zip(upper_idx[0], upper_idx[1], strict=False)
+            )
+        }
+
+        # Random spanning tree: node perm[k] links to a random earlier node.
+        perm = rng.permutation(n)
+        keep = np.zeros(n_edges, dtype=bool)
+        for k in range(1, n):
+            child, parent = perm[k], perm[rng.integers(0, k)]
+            i, j = min(child, parent), max(child, parent)
+            keep[pair_to_flat[(int(i), int(j))]] = True
+
+        # Fill the remaining budget with random non-tree edges.
+        remaining = n_keep - (n - 1)
+        if remaining > 0:
+            keep[
+                rng.choice(
+                    np.flatnonzero(~keep), size=remaining, replace=False
+                )
+            ] = True
+    else:
+        keep = np.ones(n_edges, dtype=bool)
+
+    n_present = int(keep.sum())
+    if j_scale == 0.0:
+        vals = np.full(n_present, j_loc)
+    else:
+        vals = rng.normal(loc=j_loc, scale=j_scale, size=n_present)
+
+    couplings = np.zeros((n, n))
+    couplings[upper_idx[0][keep], upper_idx[1][keep]] = vals
+    couplings += couplings.T  # symmetrize; diagonal stays zero
+
+    fields = (
+        np.full(n, local_fields_mean)
+        if local_fields_std == 0.0
+        else rng.normal(loc=local_fields_mean, scale=local_fields_std, size=n)
+    )
+
+    return couplings, fields
+```
+
+### Step 2: Solve the problem using the Parity Twine Optimizer
+
+With the functions above, you can set up the SK problem and a find solution by using the Twine Optimizer and a chosen IBM Quantum&reg; backend.
+
+To run the function, choose a suitable backend; for example, ibm_phoenix.
+
+Optionally, use options for additional control over the submission:
+
+```python
+options = {
+    "shots": 100000,
+    "postprocessing_level": 1,
+    "transpile_only": False,
+    "job_tags": ["sk"],
+}
+```
+
+where `shots` is an integer that specifies the number of circuit executions, `postprocessing_level` determines if post-processing is applied to the result,
+`transpile_only` chooses if the problem is only transpiled to a circuit (and not solved), and `job_tags` is label to identify the job on IBM Quantum Platform.
+
+The size of the SK model is defined by $N$, the number of interacting spins. Once you choose $N$, the code above generates the problem for `n_spins`.
+
+Run the optimizer:
+
+```python
+n_spins = 50
+sk_problem = generate_sk_problem(n_spins)
+
+function_job = function.run(
+    problem=sk_problem,
+    variable_type="spin",
+    backend_name="ibm_phoenix",
+    options=options,
+)
+print(f"Job ID: {function_job.job_id}")
+```
+
+Check the job status:
+
+```python
+# Monitor the job status
+function_job.status()
+```
+
+Retrieve results:
+
+```python
+result = function_job.result()
+
+result
+```
+
+The result is of form:
+
+```json
+{
+    'solution': {'0': 1, '1': 1, '10': 1, '11': 1, ... },
+    'objective_value':  -240.5425312543882,
+    'solution_bitstring': '00001101110100100111001110101001101111111011001110',
+    'metadata': {
+        'circuit_metrics': {
+            'depth': 523,
+            'gate_count': 10118,
+            'two_qubit_gate_depth': 196,
+            'two_qubit_gate_count': 2499,
+            'num_qubits': 50,
+            'operations': {'sx': 3353, 'rz': 3320, 'cz': 2499, 'delay': 894, 'measure': 50, 'x': 2},
+        },
+        'solver_info': {
+            'variable_mapping': {'0': 0, '1': 1, '10': 2, '11': 3, ... },
+            'bitstring_distributions': {
+                'before_postprocessing': {'011101110010110111001110011000': 1, ... },
+                'after_postprocessing': {'011011110000110101001111011000': 1, ... }
+            },
+            'best_parameters': {
+                'beta': [-0.4602084830507902],
+                'gamma': [1.8500357096574955]
+            }
+        },
+        'resource_usage': {
+            'RUNNING: MAPPING': {'CPU_TIME': 290.272},
+            'RUNNING: OPTIMIZING_FOR_HARDWARE': {'CPU_TIME': 0.494},
+            'RUNNING: WAITING_FOR_QPU': {'CPU_TIME': 8.775},
+            'RUNNING: EXECUTING_QPU': {'QPU_TIME': 31.0},
+            'RUNNING: POST_PROCESSING': {'CPU_TIME': 162.96},
+        },
+    }
+}
+```
+
+where the `solution` dictionary corresponds to the qubits defined in the problem and gives their optimized spin values for the SK model Hamiltonian.
+This specific sequence of spins in the optimal solution represents the configuration that minimizes the total system energy based on the given random interaction strengths.
+In the SK model, this can be regarded as the lowest energy state of a disordered magnetic system.
+
+`metadata` gives information on the transpilation (two qubit gates counts/depth, gates used, active qubits) and various runtimes.
+## Next steps
+<Admonition type="tip" title="Recommendations">
+- Request access to the function by completing this [form](https://parityqc.com/products/parity-twine-optimizer/free-trial).
+- Visit the [API reference](https://docs.quantum.ibm.com/api/functions/parity-twine-optimizer) for this Qiskit Function.
+- Read the [guide](/guides/parity-twine-optimizer).
+- Try the [tutorial](/tutorials/parity-twine-optimizer-ms) for applying the Parity Twine Optimizer to the Market Split problem.
+- Review the [Connectivity-aware Synthesis of Quantum Algorithms, Drier et al. (2025)](https://arxiv.org/abs/2501.14020) ArXiv preprint.
+</Admonition>
+
+<TutorialFeedback />

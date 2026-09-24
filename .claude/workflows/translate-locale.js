@@ -17,6 +17,10 @@ export const meta = {
 // afterwards with `translate.py --locale X --apply`.
 
 const { locale, instructions, instructions_text, batches } = args
+// task "fix" (manifest-fix.json from translation/v2/fix.py): the same batch
+// shape, but every item already carries its current translation and the
+// agent's job is to correct the flagged ones and copy the rest back.
+const TASK = (args && args.task) || 'translate'
 const CONCURRENCY = (args && args.concurrency) || 5
 // On every locale run (pt, ja, ko, uk, cs, ro, id: 7 runs of 33-39 batches)
 // one to three agents replied as if no prompt had reached them ("I don't
@@ -33,6 +37,17 @@ const AGENT_TYPE = (args && args.agentType) || 'general-purpose'
 // of roughly 15k tokens per turn, one turn less per batch matters more than
 // anything in the prompt text.
 const RULES = instructions_text || `Follow the rules in ${instructions} (read it once first).`
+// A multi-locale run needs per-locale rules, not one shared block: the register
+// line ("tu" vs "dumneavoastră", "du" vs "Sie") lives in them, and a fix wave
+// that loses it silently rewrites a whole page into the wrong register — which
+// no checker catches. Keyed by locale so the text is carried once, not per batch.
+const RULES_BY_LOCALE = (args && args.instructions_by_locale) || {}
+// A gauge manifest names its own verdict vocabulary (gauge-completeness.py
+// writes it per --mode). Hard-coding the completeness set here made the
+// untranslated-mode run answer in the wrong vocabulary: the rules said
+// KEEP/TRANSLATE, the output format said COMPLETE/MISSING, and the agents
+// followed the format.
+const VERDICTS = (args && args.verdicts) || ['COMPLETE', 'MISSING', 'EXTRA', 'DIFFERENT', 'UNSURE']
 
 // No output schema: a StructuredOutput call is one more turn per agent, and a
 // turn costs ~15k tokens of fixed context. The agent's final text is parsed.
@@ -53,19 +68,33 @@ function outFile(b) {
 
 function prompt(b, attempt) {
   const retry = attempt > 1
-    ? `\n\nThis is attempt ${attempt} for this batch: the previous run returned without doing the work, or with the wrong number of strings. Do the task above now. The list must contain exactly ${b.items} strings, one per item, in the batch's order; never merge or skip an item.`
+    ? `\n\nThis is attempt ${attempt} for this batch: the previous run returned without doing the work, or with the wrong number of entries. Do the task above now. The list must contain exactly ${b.items} ${TASK === 'gauge' ? 'objects' : 'strings'}, one per item, in the batch's order; never merge or skip an item.`
     : ''
-  return `You are a technical translator for doQumentation (locale "${locale}").
+  const step2 = TASK === 'gauge'
+    ? `2. For EVERY item decide whether its "msgstr" says what its "msgid" says, following the rules above. Judge only; do not rewrite anything.`
+    : TASK === 'fix'
+    ? `2. For EVERY item decide its corrected "msgstr": fix the items that carry a "review" field (and the same defect anywhere else on the page), following the rules above; copy every other item's "prev_msgstr" back verbatim.`
+    : `2. Translate EVERY item's "msgid" following the rules above. If an item is code or a proper name that must stay in English, its translation is the msgid unchanged.`
+  const pageNote = TASK === 'fix' && b.note
+    ? `\n\nReviewer's note for this page (${b.page || 'see items'}; ${b.flagged || 0} item(s) carry a "review" field):\n${b.note}`
+    : ''
+  // A gauge run can span locales in one pass (the judgement is the same task in
+  // every language), so a batch may name its own; everything else inherits the
+  // manifest's single locale.
+  const loc = b.locale || locale
+  return `You are a technical ${TASK === 'gauge' ? 'reviewer' : TASK === 'fix' ? 'editor' : 'translator'} for doQumentation (locale "${loc}").
 
-${RULES}
+${RULES_BY_LOCALE[loc] || RULES}${pageNote}
 
 Do exactly this, in this order, with no other tool calls:
 1. Read ${b.file} (once). It is a JSON list of ${b.items} items, one per line.
-2. Translate EVERY item's "msgid" following the rules above. If an item is code or a proper name that must stay in English, its translation is the msgid unchanged.
-3. Write ${outFile(b)} with ONE Write call: a JSON list of exactly ${b.items} strings, the translation of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.
+${step2}
+3. Write ${outFile(b)} with ONE Write call: ${TASK === 'gauge'
+    ? `a JSON list of exactly ${b.items} objects, one per item in the batch's order, each {"n": <the item's own "n" value, copied>, "verdict": ${VERDICTS.map(v => `"${v}"`).join('|')}, "note": "<a few words; empty unless the rules ask for one>"}. Copy each item's "n" exactly — it is how your verdict is matched back to its item. It must be a valid JSON array: objects separated by COMMAS, opened with [ and closed with ]. Nothing else in the file; no comments.`
+    : `a JSON list of exactly ${b.items} strings, the ${TASK === 'fix' ? 'corrected translation' : 'translation'} of each item in the same order as the batch, one string per line. Nothing else in the file; no keys, no ids, no comments.`}
 4. Reply with exactly one line and nothing else: done <count>/${b.items}
 
-Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the translation is the work.${retry}`
+Do not read any other file, do not run scripts or shell, do not verify by re-reading, do not write partial files. Keep reasoning to a minimum; the ${TASK === 'gauge' ? 'judgement' : 'translation'} is the work.${retry}`
 }
 
 // A custom agent type registers only at session start and is dropped again
@@ -88,13 +117,34 @@ function run(b, attempt) {
 }
 
 phase('Translate')
+if (TASK === 'fix') log(`review-fix mode: ${batches.length} page batch(es), ${batches.reduce((s, b) => s + (b.flagged || 0), 0)} flagged item(s)`)
+// The gauge is read-only: it returns verdicts, never a msgstr. Repairs go
+// through fix.py like every other review fix.
+if (TASK === 'gauge') log(`completeness-gauge mode: ${batches.length} batch(es), ${batches.reduce((s, b) => s + b.items, 0)} item(s) to judge`)
 // A sliding pool, not waves: as soon as one agent finishes the next batch
 // starts, so CONCURRENCY agents are running at any time (a wave of 15 would
 // idle down to 1 while its slowest batch finished).
+//
+// BUT the harness caps a single workflow at about 4 agents in flight no
+// matter what CONCURRENCY says (measured 2026-09-09: 20 requested, journal
+// showed 74 started / 70 done = 4 running). Raising this number past ~4
+// does nothing. Real parallelism comes from running SEVERAL workflows at
+// once — each gets its own allocation — so split a big manifest into
+// shards of ~15-40 batches and launch them together: 6 shards reached 21
+// agents in flight against 4 for one workflow, and 46 batches that had been
+// crawling at 2/min finished in minutes.
+// A quota error ("You've hit your session limit · resets 3am") is not
+// transient, and retrying it three times per batch is how a th fix wave
+// burned 6.8M tokens for nothing on 2026-09-12. One such error stops the
+// pool: the batch is not retried, the workers take no more batches, and the
+// untouched batches are reported as skipped. Resume with resumeFromRunId
+// once the window has reset — only the unfilled batches run.
+const QUOTA_RE = /hit your (session|usage|weekly) limit|usage limit reached|resets? \d/i
+let aborted = null
 const done = new Array(batches.length)
 let next = 0
 async function worker() {
-  while (next < batches.length) {
+  while (next < batches.length && !aborted) {
     const i = next++
     const b = batches[i]
     const name = b.file.split('/').pop()
@@ -103,8 +153,13 @@ async function worker() {
       try {
         res = { ...parseDone(await run(b, attempt), b), model: b.model, attempts: attempt }
       } catch (e) {
-        if (/is not registered in this session/.test(String(e && e.message || e))) throw e
-        res = { file: b.file, filled: 0, total: b.items, model: b.model, failed: true, attempts: attempt, raw: String(e && e.message || e).slice(0, 200) }
+        const msg = String(e && e.message || e)
+        if (/is not registered in this session/.test(msg)) throw e
+        res = { file: b.file, filled: 0, total: b.items, model: b.model, failed: true, attempts: attempt, raw: msg.slice(0, 200) }
+        if (QUOTA_RE.test(msg)) {
+          if (!aborted) { aborted = msg.slice(0, 120); log(`⛔ quota: ${aborted} — stopping the pool, no retries`) }
+          break
+        }
       }
       if (!res.failed && res.filled >= res.total) break
       if (attempt < MAX_ATTEMPTS)
@@ -118,6 +173,18 @@ async function worker() {
   }
 }
 await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker))
-const failed = done.filter(r => r.failed || r.filled < r.total)
-if (failed.length) log(`${failed.length} batch(es) incomplete: ${failed.map(f => f.file.split('/').pop()).join(', ')} — rerun with resumeFromRunId after fixing`)
-return { locale, batches: done, incomplete: failed.map(f => f.file) }
+for (let i = 0; i < batches.length; i++)
+  if (!done[i]) done[i] = { file: batches[i].file, filled: 0, total: batches[i].items, model: batches[i].model, skipped: true }
+const failed = done.filter(r => r.failed || r.skipped || r.filled < r.total)
+if (failed.length) log(`${failed.length} batch(es) incomplete: ${failed.map(f => f.file.split('/').pop()).join(', ')} — rerun with resumeFromRunId${aborted ? ' once the quota window resets' : ' after fixing'}`)
+// Compact on purpose: the per-batch detail is on disk (the .out.json files;
+// sync.py status / check_outputs read them), and a 40-batch listing per shard
+// is orchestrator context spent on nothing.
+return {
+  locale,
+  batches: batches.length,
+  filled: done.reduce((s, r) => s + (r.filled || 0), 0),
+  total: done.reduce((s, r) => s + r.total, 0),
+  ...(aborted ? { aborted } : {}),
+  incomplete: failed.map(f => f.file),
+}

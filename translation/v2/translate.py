@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+from datetime import date
 import itertools
 import json
 import re
@@ -96,6 +97,12 @@ def language_info(locale: str) -> tuple[str, str]:
 
 def instructions(locale: str) -> str:
     lang, register = language_info(locale)
+    # One shared list, so these instructions and the deep-review leak filter
+    # cannot disagree about what is kept in English (they did: the filter
+    # counted every kept term as a leak and hid the page from review).
+    sys.path.insert(0, str(io.REPO / "translation" / "scripts"))
+    from _common import KEEP_ENGLISH_TERMS
+    keep_english = ", ".join(KEEP_ENGLISH_TERMS)
     return f"""# Translation instructions — {lang} ({locale})
 
 Each batch is a JSON list of segments from doQumentation, a {lang} mirror of
@@ -108,8 +115,16 @@ Rules, each enforced by an automatic checker:
 - Keep byte-for-byte: inline code in backticks (including placeholders like
   `<per sub-job overhead>`, and even when the code looks wrong, such as
   `PassManagers` or `batch.details() method`), URLs, image paths, JSX/HTML
-  tags and every attribute other than title=, heading anchors like
-  {{#some-anchor}}, MDX comments {{/* ... */}}.
+  tags and every attribute EXCEPT the prose ones (title=, description=,
+  alt=, linkText=), heading anchors like {{#some-anchor}}, MDX comments
+  {{/* ... */}}.
+- title=, description=, alt= and linkText= are the exception because they
+  are prose the reader sees (video and image captions, Card descriptions
+  and link labels): TRANSLATE them, and keep a product name in a title=
+  as it is. Leaving such an attribute in English is a silent regression —
+  they are the attributes the checker does not compare byte-for-byte, so
+  nothing will catch it. Never copy a whole Card or tag back in English
+  because its English changed: translate its prose attributes afresh.
 - Backticked code spans must be copied EXACTLY as in the English, never
   translated, never merged with surrounding text, and none may be added:
   the checker rejects the whole entry if the set of backtick spans differs
@@ -117,12 +132,12 @@ Rules, each enforced by an automatic checker:
 - Math: keep every $...$ span and every $$...$$ block exactly, including the
   number of $$ delimiters (an entry may start or end inside a block; copy
   that part unchanged). Only words inside \\text{{...}} may be translated.
-- Keep these terms in English: Qiskit, Qubit, Gate, Circuit, Backend,
-  Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU.
+- Keep these terms in English: {keep_english}.
 - An item without `type` is plain text. A `type` of "Title ##" is a
   heading: translate the text, keep the anchor. A `type` starting with
   "Yaml Front Matter" is page metadata: plain text.
-- A JSX tag item with title="...": translate only the title value.
+- A JSX tag item: translate only the prose attribute values (title=,
+  description=, alt=, linkText=); everything else in the tag stays.
 - `prev_msgstr`, when present, is the {lang} of an earlier version of this
   msgid and `changes` shows how the English changed since, as
   [-removed-]{{+added+}} with a few words of context: reuse the previous
@@ -212,6 +227,10 @@ def split_batches(items: list[dict], max_items: int = BATCH_ITEMS, max_tokens: f
     if batch:
         batches.append(batch)
     return batches
+
+
+def is_table(msgid: str) -> bool:
+    return msgid.lstrip().startswith("|")
 
 
 def is_copy_only(msgid: str) -> bool:
@@ -424,13 +443,23 @@ def prepare(locale: str, worklist: Path) -> dict:
         old.unlink()
     (outdir / "instructions.md").write_text(instructions(locale), encoding="utf-8")
 
-    tiers: dict[str, list] = {"copy": [], "mechanical": [], "haiku": [], "sonnet": []}
+    tiers: dict[str, list] = {"copy": [], "split": [], "mechanical": [], "haiku": [], "sonnet": []}
     direct: dict[str, list[tuple[int, str, str]]] = {}
     for it in items:
         page, idx = it["id"].rsplit("#", 1)
         if is_copy_only(it["msgid"]):
             tiers["copy"].append(it)
             direct.setdefault(page, []).append((int(idx), it["msgid"], "doq: copied, nothing translatable"))
+            continue
+        # update.py found this entry's English as one line of a paragraph the
+        # English split apart, with a translation of the same shape: carry that
+        # line over, checker-verified, no model. Anything the checker rejects
+        # falls through with the line as a hint.
+        if (it.get("transfer") == "split-block" and it.get("previous_msgstr", "").strip()
+                and not check_entry(it["msgid"], it["previous_msgstr"])):
+            tiers["split"].append(it)
+            direct.setdefault(page, []).append(
+                (int(idx), it["previous_msgstr"], "doq: carried over from the paragraph the English split"))
             continue
         sim = similarity(it["previous_msgid"], it["msgid"]) if it.get("previous_msgid") else 0.0
         if sim >= HAIKU_MIN:
@@ -451,7 +480,11 @@ def prepare(locale: str, worklist: Path) -> dict:
             slim["changes"] = word_changes(shrink_data_uris(it["previous_msgid"]), slim["msgid"])
             slim["prev_msgstr"] = shrink_data_uris(it["previous_msgstr"])
         slim["_id"] = it["id"]          # stripped before writing; kept in the .ids.json sidecar
-        tiers["haiku" if prev_ok and sim >= HAIKU_MIN else "sonnet"].append(slim)
+        # A markdown table is a fuzzy match like any other, but Haiku, asked
+        # for a JSON list of strings, twice wrote the translated table itself
+        # into the output file (pl, th, 2026-09-10); Sonnet did not.
+        haiku = prev_ok and sim >= HAIKU_MIN and not is_table(it["msgid"])
+        tiers["haiku" if haiku else "sonnet"].append(slim)
 
     n_direct = _write_direct(locale, direct)
 
@@ -481,7 +514,8 @@ def prepare(locale: str, worklist: Path) -> dict:
     summary = {k: len(v) for k, v in tiers.items()}
     summary["batches"] = len(manifest)
     summary["words_to_model"] = sum(b["words"] for b in manifest)
-    print(f"{locale}: copy {summary['copy']}, mechanical {summary['mechanical']} (written directly: {n_direct}); "
+    print(f"{locale}: copy {summary['copy']}, split-block {summary['split']}, mechanical {summary['mechanical']} "
+          f"(written directly: {n_direct}); "
           f"haiku {summary['haiku']}, sonnet {summary['sonnet']} in {len(manifest)} batch(es), "
           f"{summary['words_to_model']} English words to a model")
     print(f"manifest: {(outdir / 'manifest.json').relative_to(io.REPO)}")
@@ -493,6 +527,14 @@ def prepare(locale: str, worklist: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 BATCH_NAME = re.compile(r"^batch-\d+-[a-z]+\.json$")
+# Tag attributes whose value is prose the reader sees, translated like any
+# paragraph and therefore where an agent's English copy hides: the video and
+# image captions, and — on the first real sync, in every locale at once — a
+# Card's description= and linkText= copied back whole because its English
+# had changed.
+PROSE_ATTRS = ("title", "alt", "description", "linkText")
+REVIEW_HEADER = "X-Doq-Review-Opus"          # the page's deep-review verdict (sample-deep-review.py)
+REVIEW_HEADER_PRIOR = "X-Doq-Review-Opus-Prior"
 
 
 def repair_inner_quotes(text: str, limit: int = 50) -> tuple[str, int]:
@@ -649,12 +691,29 @@ def sweep(locale: str) -> int:
     return 0
 
 
-def apply(locale: str) -> int:
+def apply(locale: str, prefix: str = "batch", note: str | None = None,
+          confirm_fuzzy: bool | None = None) -> int:
+    """Write the filled batches into the PO files, through check.py.
+
+    prefix selects the batch family: "batch" (translate.py --prepare) or
+    "fix" (fix.py --prepare, review fixes). An entry whose returned msgstr
+    equals what the PO already holds is left untouched — the fix batches
+    carry a whole page and the agent copies the unflagged entries back, so
+    this is what keeps a review fix from rewriting (and re-stamping) every
+    entry on the page. note, when given, is the translator comment stamped
+    on every entry that did change."""
     outdir = io.WORK_DIR / locale
-    accepted = rejected = skipped = 0
+    name_re = BATCH_NAME if prefix == "batch" else re.compile(rf"^{re.escape(prefix)}-\d+-[a-z]+\.json$")
+    # Inferred from the prefix rather than left to the caller: every review-fix
+    # caller would otherwise have to remember it, and forgetting it silently
+    # publishes stale translations (see the fuzzy note below).
+    if confirm_fuzzy is None:
+        confirm_fuzzy = prefix != "fix"
+    accepted = rejected = skipped = unchanged = english = withdrawn = 0
+    reversions: dict[str, list[dict]] = {}
     by_page: dict[str, list[tuple[int, str]]] = {}
     cache: dict[str, polib.POFile] = {}
-    for bpath in sorted(p for p in outdir.glob("batch-*.json") if BATCH_NAME.match(p.name)):
+    for bpath in sorted(p for p in outdir.glob(f"{prefix}-*.json") if name_re.match(p.name)):
         pairs, reason = read_results(bpath)
         if reason:
             rejected += 1
@@ -685,15 +744,116 @@ def apply(locale: str) -> int:
             by_page.setdefault(page, []).append((int(idx), msgstr))
     for page, fills in by_page.items():
         po = cache[page]
+        changed = False
+        retranslated = False
         for idx, msgstr in fills:
             e = po[idx]
-            e.msgstr = match_trailing_newline(e.msgid, msgstr)
+            was_pending = "fuzzy" in e.flags or not e.msgstr.strip()
+            final = match_trailing_newline(e.msgid, msgstr)
+            # A fuzzy entry means msgmerge saw the English change and kept the
+            # old translation pending confirmation; po4a renders English until
+            # the flag clears. In the translate path the agent was shown that
+            # entry and asked to translate it, so returning the same string IS
+            # the confirmation and the flag may go. In the review-fix path the
+            # agent is told to copy unflagged entries back verbatim, so an
+            # unchanged string means "not looked at" — clearing the flag there
+            # would publish a translation of the PREVIOUS English.
+            if final == e.msgstr and ("fuzzy" not in e.flags or not confirm_fuzzy):
+                unchanged += 1
+                continue
+            # A copy-only msgid (bare markup, math, an image) has nothing to
+            # translate, so a msgstr equal to it is correct. Those turn up here
+            # when a fix wave strips spillover that had been appended to such an
+            # entry — a repair, not a loss — so they must not be warned about.
+            # An MDX comment renders nothing, so English inside one is correct.
+            # Narrowed here rather than in is_copy_only on purpose: widening that
+            # would drop such entries from fix batches entirely, and their msgstr
+            # CAN be wrong — ar guides/primitive-input-output#3 was an MDX comment
+            # whose translation had drifted to unrelated prose, and repairing it
+            # is exactly what produced this warning.
+            visible = re.sub(r"\{/\*.*?\*/\}", "", e.msgid, flags=re.S)
+            # A tag is stripped, but the prose inside its title= / alt= is
+            # visible on the page and IS translated. Stripping the whole tag
+            # made this warning blind to exactly the class it was for: on ja
+            # and id a fix wave copied `<AccordionItem title="**Strategy**">`
+            # over 戦略 / Strategi and apply said nothing, because after the
+            # tag was removed no letters were left to see.
+            visible = re.sub(r"<[^>]+>", lambda m: " ".join(
+                v for k, v in ATTR_RE.findall(m.group(0)) if k in PROSE_ATTRS), visible)
+            became_english = (msgstr.strip() == e.msgid.strip()
+                              and e.msgstr.strip() != e.msgid.strip()
+                              and not is_copy_only(e.msgid)
+                              and re.search(r"[A-Za-z]{3}", visible))
+            before = e.msgstr
+            e.msgstr = final
             e.flags = [f for f in e.flags if f != "fuzzy"]
             e.previous_msgid = None
-            e.tcomment = "doq: kept in English by the translator (name or code)" if msgstr.strip() == e.msgid.strip() else ""
+            if msgstr.strip() == e.msgid.strip():
+                e.tcomment = "doq: kept in English by the translator (name or code)"
+            else:
+                # Dated, so a reviewer can later be pointed at exactly the entries
+                # a model wrote since the page's verdict (delta review).
+                e.tcomment = note or f"doq: translated after an English change {date.today().isoformat()}"
+            if became_english:
+                # An entry that HAD a translation and now equals its English is
+                # almost always an agent dropping the translation rather than a
+                # deliberate "keep this in English": the instructions forbid it,
+                # and check.py cannot object, since msgstr == msgid is legitimate
+                # for names and code. Only apply knows what the entry said
+                # before, so only apply can tell the two apart. Warn rather than
+                # reject — the English source can genuinely become a proper noun —
+                # but never let it pass silently.
+                english += 1
+                # `ident` belongs to the loop above and is stale here; build the
+                # identifier from this loop's own page and index.
+                print(f"WARNING {page}#{idx}: translation replaced by the English "
+                      f"source — check this is intended: {e.msgid[:60]!r}")
+                reversions.setdefault(page, []).append({
+                    "entry": idx, "type": "Reverted to English", "source": e.msgid,
+                    "translation": final, "suggested": before,
+                    "why": "The fix wave replaced this entry with its English source. Restore the "
+                           "translation: use the Suggested text exactly (it is the earlier translation), "
+                           "keeping every {#anchor}, code span, JSX tag and table cell verbatim — unless "
+                           "the English is a proper name or code, in which case leave it."})
             accepted += 1
-        po.save(str(io.po_path(locale, page)))
-    print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}")
+            changed = True
+            if was_pending and prefix == "batch":
+                retranslated = True
+        if changed:
+            # A page's review verdict judged the translation against the
+            # English of its day. An entry the translate path wrote because
+            # msgmerge had marked it fuzzy or empty — a retranslation, a new
+            # paragraph, or the old wording confirmed against changed English —
+            # is prose no reviewer has read against the source it now faces, so
+            # the verdict is withdrawn and the page returns to the review pool;
+            # the old value is kept as history. Copy, split-block and mechanical
+            # carry-overs never come through here, and a review fix (prefix
+            # "fix") is a read by construction.
+            if retranslated and po.metadata.get(REVIEW_HEADER):
+                po.metadata[REVIEW_HEADER_PRIOR] = po.metadata.pop(REVIEW_HEADER)
+                withdrawn += 1
+                print(f"NOTE {page}: review verdict withdrawn (entries retranslated after an "
+                      f"English change); the page is eligible for review again")
+            po.save(str(io.po_path(locale, page)))
+    print(f"{locale}: accepted {accepted}, rejected {rejected}, unfilled {skipped}"
+          + (f", unchanged {unchanged}" if unchanged else "")
+          + (f", REPLACED BY ENGLISH {english}" if english else "")
+          + (f", review verdicts withdrawn {withdrawn}" if withdrawn else ""))
+    if reversions:
+        # Every warning above, as a ready fix spec pinned by entry number with
+        # the previous translation as the suggestion. Reviewing the warnings
+        # used to end in a hand-built spec each round (ko 10, th 38, id 25:
+        # headings, captions, a table row — every one a real reversion).
+        spec_path = outdir / "reversions.json"
+        spec_path.write_text(json.dumps([
+            {"rel": page, "verdict": "REVERTED",
+             "note": "Entries this page's fix wave reverted to English; restore the Suggested "
+                     "translation of each flagged entry verbatim and return every other entry unchanged.",
+             "examples": exs} for page, exs in reversions.items()],
+            ensure_ascii=False, indent=1), encoding="utf-8")
+        shown = spec_path.relative_to(io.REPO) if spec_path.is_relative_to(io.REPO) else spec_path
+        print(f"→ {english} reversion(s) written as a fix spec: python3 translation/v2/fix.py --locale {locale} "
+              f"--fixes {shown} --prepare --mode flagged   (drop the entries that should stay English first)")
     return 1 if rejected else 0
 
 
