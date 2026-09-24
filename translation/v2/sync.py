@@ -82,7 +82,11 @@ def start_branch(from_branch: str | None) -> str:
 
 def prepare_locale(locale: str) -> dict:
     wl = io.WORK_DIR / f"worklist-{locale}.json"
-    up = sh([PY, str(V2 / "update.py"), "--locale", locale, "--json", str(wl)], check=False)
+    # --init-missing: a page upstream ADDED has no PO yet. Without it update.py
+    # only counts such pages, and the 2026-09-24 sync (#554) shipped 10 new
+    # pages in English in every locale while every gate passed.
+    up = sh([PY, str(V2 / "update.py"), "--locale", locale, "--json", str(wl), "--init-missing"],
+            check=False)
     pr = sh([PY, str(V2 / "translate.py"), "--locale", locale, "--prepare"], check=False)
     out = {"locale": locale, "ok": up.returncode == 0 and pr.returncode == 0,
            "update": up.stdout + up.stderr, "prepare": pr.stdout + pr.stderr}
@@ -192,6 +196,11 @@ def apply_locale(locale: str) -> dict:
     up = sh([PY, str(V2 / "update.py"), "--locale", locale], check=False)
     m = re.search(rf"^{locale}: \d+ translated, (\d+) fuzzy, (\d+) untranslated", up.stdout, re.M)
     left = (int(m.group(1)) + int(m.group(2))) if m else -1
+    # A page with no PO has no entries to count, so "0 left" said nothing
+    # about it; count every such page as unfinished work.
+    m = re.search(r"(\d+) page\(s\) without a PO", up.stdout)
+    if left >= 0 and m:
+        left += int(m.group(1))
     return {"locale": locale, "accepted": acc, "rejected": rej, "unfilled": unf, "left": left,
             "withdrawn": int(withdrawn.group(1)) if withdrawn else 0, "warnings": warnings, "log": text}
 
