@@ -10,6 +10,10 @@ Two places encode the Qiskit version, and they drifted once (Binder stayed on
 
 This check fails the build if their X.Y don't match, so the next dep-sync PR that
 bumps the pin can't silently leave the public Binder backend on an older Qiskit.
+
+It also fails when a hard-coded QuBins tag elsewhere differs from the default:
+the daily Binder warm-up kept 2.3-xl hot (and the admin page linked to it) long
+after the site had moved to 2.5-xl, because "bump in lockstep" was a comment.
 Run by CI (ci.yml). Exit 0 = in lockstep, exit 1 = drift.
 """
 import re
@@ -19,6 +23,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REQ = ROOT / "binder" / "jupyter-requirements.txt"
 JUP = ROOT / "src" / "config" / "jupyter.ts"
+# Files that name the default QuBins tag literally; every tag they name must be it.
+TAG_USERS = [
+    ROOT / ".github" / "workflows" / "binder-warmup.yml",
+    ROOT / "src" / "pages" / "admin.tsx",
+]
 
 
 def fail(msg: str) -> "None":
@@ -49,6 +58,14 @@ def main() -> None:
             f"   A matching QuBins image must exist: "
             f"https://github.com/QuBins/qiskit-images (branch '{req_minor}-xl')."
         )
+
+    default = f"{tag_minor}-xl"
+    for f in TAG_USERS:
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for tag in re.findall(r"QuBins/qiskit-images/(\d+\.\d+-\w+)", line):
+                if tag != default:
+                    fail(f"{f.relative_to(ROOT)}:{n} names QuBins tag '{tag}' but "
+                         f"DEFAULT_QISKIT_TAG is '{default}'. Point it at '{default}'.")
 
     print(f"✅ qiskit-lockstep: Binder default '{tag_minor}-xl' matches "
           f"qiskit[all]~={req_minor}.x")
