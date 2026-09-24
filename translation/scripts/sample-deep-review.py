@@ -194,7 +194,8 @@ def is_rendered(cat: dict[str, dict]) -> bool:
 
 
 # Leaks: what a locale's glossary records as wrongly left in English, minus
-# the terms the house style keeps in English (_common.KEEP_ENGLISH_TERMS).
+# the terms the house style keeps in English for that locale
+# (_common.kept_english_terms, measured per locale since 2026-09-24).
 # Settled 2026-09-08: Qubit/Gate/Circuit are KEPT, so they are not leaks and
 # must not exclude a page from review — counting them had held 154 de / 92 he
 # / 70 cs pages out of the deep review for following the house style. A locale
@@ -208,7 +209,7 @@ def _leak_terms(locale: str) -> list[str]:
     g = json.loads(p.read_text(encoding="utf-8"))
     terms = []
     for spec in (g.get("translate") or {}).values():
-        terms += [t for t in spec.get("leaked_en", []) if not is_kept_english(t)]
+        terms += [t for t in spec.get("leaked_en", []) if not is_kept_english(t, locale)]
     return sorted(set(terms))
 
 
