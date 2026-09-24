@@ -26,14 +26,14 @@ def main():
     ap = argparse.ArgumentParser(description="Bake a sample into a runnable opus-deep-review copy")
     ap.add_argument("--sample", required=True, help="sample JSON from sample-deep-review.py")
     ap.add_argument("--out", required=True, help="output runnable .js path")
-    ap.add_argument("--agent", default=None, metavar="TYPE",
-                    help="custom agent type for the readers, e.g. 'reviewer' (.claude/agents/reviewer.md: "
-                         "Read only, Opus). Custom agents register at session start, so pass it only "
-                         "from a session that started after the file existed; default is the harness agent")
+    ap.add_argument("--agent", default="reviewer", metavar="TYPE",
+                    help="agent type for the readers (default: reviewer, .claude/agents/reviewer.md — "
+                         "Read only, Opus). It registers at session start: if the workflow reports it "
+                         "missing, start a new session. 'none' uses the harness's default agent")
     args = ap.parse_args()
 
     sample = json.loads(Path(args.sample).read_text(encoding="utf-8"))
-    if args.agent:
+    if args.agent and args.agent != "none":
         sample["agentType"] = args.agent
     missing = [f["rel"] for f in sample.get("files", []) if f.get("pair") and not (REPO_ROOT / f["pair"]).exists()]
     if missing:
