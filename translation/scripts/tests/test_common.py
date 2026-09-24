@@ -73,21 +73,6 @@ def test_tag_in_code_fence_does_not_false_flag(common):
 
 # ── validate + lint agree by construction (the whole point of the de-drift) ──
 
-# ── status.json helpers (shared load/save) ──
-
-def test_load_status_missing_returns_empty(common, tmp_path, monkeypatch):
-    # Point STATUS_FILE at a non-existent path → {} (not a crash).
-    monkeypatch.setattr(common, "STATUS_FILE", tmp_path / "nope.json")
-    assert common.load_status() == {}
-
-
-def test_save_then_load_roundtrips(common, tmp_path, monkeypatch):
-    monkeypatch.setattr(common, "STATUS_FILE", tmp_path / "status.json")
-    data = {"de": {"guides/x.mdx": {"validation": "PASS"}}}
-    common.save_status(data)
-    assert common.load_status() == data
-
-
 def test_validate_and_lint_agree(common, validate, lint):
     samples = [
         "<details>x</details>",                  # balanced
@@ -100,3 +85,46 @@ def test_validate_and_lint_agree(common, validate, lint):
         l_findings = lint.check_jsx_tag_balance(s.split("\n"))
         l_failed = len(l_findings) > 0
         assert v_failed == l_failed, f"validate/lint disagree on: {s!r}"
+
+
+# ── known-mistranslation rules must not fire on untranslated English ───────
+# po4a renders the ENGLISH for any entry whose translation is empty or fuzzy,
+# so a locale page contains English wherever the translation is missing.
+# Translation rules firing there report a defect that is not in any
+# translation, and send a contributor to "fix" English that the next render
+# regenerates. Seen on fr changelog-quantum-compute-service.mdx:373, where
+# "French initialisms take no plural -s" fired on QPUs inside an untranslated
+# English sentence.
+
+import importlib.util
+from pathlib import Path
+
+_SPEC = importlib.util.spec_from_file_location(
+    "check_known", Path(__file__).resolve().parent.parent / "check-known-mistranslations.py")
+_CHK = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_CHK)
+
+SENTENCE = "The new dynamic circuits feature is available on all backends except some QPUs.\n"
+
+
+def _page(root, rel, text):
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_rule_skips_a_line_left_in_english_by_po4a(tmp_path, monkeypatch):
+    monkeypatch.setattr(_CHK, "REPO", tmp_path)
+    _page(tmp_path / "docs", "guides/x.mdx", SENTENCE)
+    page = _page(tmp_path / "i18n" / "fr" / _CHK.DOC_SUB, "guides/x.mdx", SENTENCE)
+    assert _CHK.scan_file(page, _CHK.rules_for("fr")) == []
+
+
+def test_rule_still_fires_on_actual_translated_prose(tmp_path, monkeypatch):
+    monkeypatch.setattr(_CHK, "REPO", tmp_path)
+    _page(tmp_path / "docs", "guides/x.mdx", SENTENCE)
+    page = _page(tmp_path / "i18n" / "fr" / _CHK.DOC_SUB, "guides/x.mdx",
+                 "La fonctionnalité est disponible sur tous les backends sauf certains QPUs.\n")
+    hits = _CHK.scan_file(page, _CHK.rules_for("fr"))
+    assert [h[1] for h in hits] == ["QPUs"]

@@ -47,15 +47,21 @@ to notebook output can never make a translation stale.
 | Tool | When | What it does |
 |---|---|---|
 | `extract.py [--check]` | after every sync, and by bootstrap | `docs/` → `pot/`. `--check` renders each POT untranslated and requires the result to equal the source (modulo blank lines and front-matter quoting). All 424 pages pass. |
-| `bootstrap.py --locale X [--verify]` | once per locale, **before** the next English sync | Builds `i18n/X/po/` from the existing translations. `exact` strategy is `po4a-gettextize`; `positional` is our fallback for pages po4a refuses (pairs the type sequences with difflib, adopts matching runs only). Writes `work/bootstrap-X.json`. |
-| `update.py --locale X --json …` | after every sync | `msgmerge --previous` every PO against the new POT, then prints the worklist: fuzzy (near-identical English, old msgid kept as `#\| msgid`) and untranslated entries. |
-| `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 4,000 English words and ≤ 18k estimated tokens as the Read tool presents it; one id-less item per line, with a word diff and the previous translation for real fuzzy matches) plus a `.ids.json` sidecar per batch and `manifest.json`, which also carries the instructions text for inlining into prompts. |
-| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch from a sliding pool (`concurrency` in the args, default 5; the Polish run used 15), each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
-| `translate.py --locale X --apply` | after the batches are filled | Pairs each `.out.json` with its `.ids.json` by position (a count mismatch rejects that batch), runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. |
+| `sync.py prepare / status / finish` | every English sync | The whole loop for every locale (above): branch with the bot's commit, POTs, worklists and batches; validate the filled batches; apply, gate, commit. |
+| `bootstrap.py --locale X [--verify]` | once per locale (done for all 17 on 2026-09-05/06) | Builds `i18n/X/po/` from the existing translations. `exact` strategy is `po4a-gettextize`; `positional` is our fallback for pages po4a refuses (pairs the type sequences with difflib, adopts matching runs only). Writes `work/bootstrap-X.json`. |
+| `update.py --locale X --json …` | after every sync | `msgmerge --previous` every PO against the new POT, then prints the worklist: fuzzy (near-identical English, old msgid kept as `#\| msgid`) and untranslated entries. A new entry whose English was one line of a paragraph upstream split apart (an intro sentence and its bullets becoming separate entries — 121 of the 127 new de entries on the first real sync) gets that line of the dropped block's translation as a `split-block` hint. |
+| `translate.py --locale X --prepare` | after update | Sorts the worklist into tiers: **copy** (pure math, code, images: msgid copied, no model), **split-block** (the hint above, written when it passes the checker, no model), **mechanical** (English changed only punctuation placement or emphasis markers: the same edit applied to the previous translation, checker-verified, no model), **haiku** (fuzzy, similarity ≥ 0.9) and **sonnet** (the rest). The model tiers become `work/X/batch-NNN-<model>.json` (≤ 120 items, ≤ 4,000 English words and ≤ 18k estimated tokens as the Read tool presents it; one id-less item per line, with a word diff and the previous translation for real fuzzy matches) plus a `.ids.json` sidecar per batch and `manifest.json`, which also carries the instructions text for inlining into prompts. |
+| `.claude/workflows/translate-locale.js` | to fill the batches | One agent per batch from a sliding pool (`concurrency` in the args, default 5 — but **the harness caps one workflow at ~4 agents in flight whatever you ask for**; measured 2026-09-09 with 20 requested. For real parallelism split the manifest into shards of ~15-40 batches and launch several workflows at once: 6 shards ran 21 agents where one ran 4; at 14 shards the API 429'd about half of all agent turns, so ~8 is the useful ceiling — and a batch reported "failed" after a rate-limited *final* turn has usually already written its `.out.json`, so check the output files before re-running anything), each allowed exactly one Read, one Write (`batch-NNN-<model>.out.json`: a list of strings in item order) and a one-line reply. Run with `Workflow({scriptPath, args: <manifest.json contents>})`; add `"agentType": "translator"` to the args in a session started after `.claude/agents/translator.md` existed (custom agents register at startup). Incomplete batches are listed and rerun with `resumeFromRunId`. |
+| `fix.py --locale X --fixes F --prepare [--mode targeted\|page\|flagged]` / `--apply` | after a review round | The review fix path. Takes the round's records (or a trimmed fix spec) and builds batches of `{msgid, prev_msgstr}` with a `review` field on the entries that need attention, plus `manifest-fix.json` (`task: "fix"`), which the same `translate-locale.js` fills: the agent corrects the flagged entries and copies the rest back. Examples are pinned by their `entry` number when the reviewer cited one (the paired prose file), else by quote matching. `--mode targeted` (default) sends a FAIL page whole and every other page only its pinned entries plus the entries carrying a word the reviewer's Terminology/Register corrections removed — measured on th/id a whole-page wave copied 93% of its entries back unchanged, and targeted keeps 73–90% of the off-pin changes at 23–40% of the entries; `page` is the whole-page wave; `flagged` the pinned entries alone, packed across pages. `--apply` is `translate.apply(prefix="fix")`: only entries that changed and pass `check.py` are written, stamped `doq: fixed after review <date>`; every REPLACED-BY-ENGLISH warning is also written to `work/X/reversions.json`, a fix spec (`--mode flagged`) with the previous translation as the suggestion. A fuzzy entry copied back unchanged by a fix agent **keeps** its fuzzy flag (`apply` infers `confirm_fuzzy=False` from the `fix` prefix): the fix prompt says to copy unflagged entries back verbatim, so an unchanged string is not a confirmation, and clearing the flag would publish a translation of the previous English. |
+| `fix.py --locale X --leaks [--case-only] [--write]` | rarely; needs a curated glossary | Deterministic, no model (the v1 page-editing fixer it replaced was deleted 2026-09-10): decapitalises a wrongly-capitalised common noun (`keep_lowercase`) and, without `--case-only`, applies the glossary `translate` rules after a safe determiner. Dry-run unless `--write`; every change goes through `check.py`. Skips fuzzy entries and `Title` entries, and protects link text, emphasis, table cells, proper names (`IBM Circuit`) and acronym expansions (`CLOPS (Circuit Layer Operations Per Second)`) — each of those was a real false positive from the page-based version. **Review its output before `--write`:** the residue still contains title-like strings, and the glossary `translate` rules currently disagree with the "keep these terms in English" list in `translate.py`. |
+| `translate.py --locale X --apply` | after the batches are filled | Pairs each `.out.json` with its `.ids.json` by position (a count mismatch rejects that batch), runs `check.py` on every item, writes accepted ones into the PO, lists rejected ones with the reason. Nothing partial is ever written. A page on which the translate path wrote an entry msgmerge had marked fuzzy or empty — retranslated, new, or the old wording confirmed against changed English — loses its `X-Doq-Review-Opus` verdict (kept as `…-Prior`): nobody has read that prose against the English it now faces, so the page is eligible for review again. Copy, split-block and mechanical carry-overs, and review fixes, leave the verdict standing. |
 | `render.py --locale X [--out-dir D]` | at build time, or to preview | POT + PO → locale MDX, with the v1 freshness marker so v1 tools keep working during the migration. |
 | `check.py` | inside apply and bootstrap | Everything that must survive translation, per entry: inline code, URLs, image paths, inline math (one merge/split tolerated), display math (delimiter count and normalised block content), JSX/HTML tags, table rows, fence lines, `{#anchors}`, MDX comments, and a length ratio that catches fragments. |
 | `mdxcheck.mjs` | after render, before commit | Compiles every rendered page with MDX 3 + math + GFM + directives the way Docusaurus does (front matter stripped, heading anchors escaped) and lists the pages acorn rejects. The only check that asks the real parser; the German run needed it twice. |
 | `po4a_io.py` | library | Everything above calls into it. Pre-rules, po4a wrappers, PO hygiene. |
+| `translation/scripts/check-completeness.py` | any time; free | The **meaning sieve**. Deterministic, whole-corpus, no model: line-shape, number preservation, list-item count, untranslated `title=` captions, a question that became a statement (or the reverse), a translation far shorter than the locale's norm, and a msgstr duplicated onto a neighbouring entry. Scored against the labelled set below: 70.1% recall on known drift defects at 1.32% on known-faithful ones — and **2.1%** on the 2,047 wording and terminology repairs the first two whole-page Opus rounds made (2026-09-10), which is the class only a reader sees; 5,539 findings corpus-wide (1.23% of 451,652 translated entries). |
+| `translation/scripts/gauge-completeness.py` | after the sieve | The **meaning gauge**, layer 2. `--prepare` builds batches of `{msgid, msgstr}` under `work/gauge/<locale>/`; `translate-locale.js` with `task: "gauge"` fills them with a verdict per entry (COMPLETE / MISSING / EXTRA / DIFFERENT / UNSURE); `--collect` reports, `--emit-fixes` writes a `fix.py --fixes` file. **Read-only** — it never writes a msgstr; repairs go through `fix.py` like every other review fix. |
+| `translation/scripts/build-eval-set.py` | once per review branch | Turns a finished review round into a labelled set: every msgstr that changed is a known defect, every msgstr an agent read and copied back is known-faithful. This is what makes a completeness check measurable instead of a hunch. Committed, not regenerated — after the branch merges, the diff that produced it is empty. |
 
 ### The pre-rules (read `po4a_io.py`'s docstring, they matter)
 
@@ -107,30 +113,42 @@ says why. Three classes, all intended:
 
 ## Running a sync (the whole procedure)
 
+`sync-upstream.yml` runs every Monday (and on demand) and opens a
+"sync: upstream content" PR with the new English. **That PR is not merged
+by itself**: it carries no CI checks (a workflow-token PR cannot trigger
+them), and merging the English alone would render every changed segment in
+English across all 17 locales. `sync.py` takes its commit onto a branch
+together with every locale's update, and that PR is what merges:
+
 ```bash
-# 0. Bootstrap every locale you have not bootstrapped yet — BEFORE merging the sync.
-python3 translation/v2/bootstrap.py --locale fr --verify
-
-# 1. Merge the "sync: upstream content" PR. docs/ now has the new English.
-python3 translation/v2/extract.py --check
-
-# 2. Per locale: merge, worklist, batches.
-python3 translation/v2/update.py --locale fr --json translation/v2/work/worklist-fr.json
-python3 translation/v2/translate.py --locale fr --prepare      # tiers; prints how many need a model
-#    fill work/fr/batch-*.json: Workflow translate-locale.js with work/fr/manifest.json as args
-#    (or any agent/API/human that fills "msgstr" in the JSON)
-python3 translation/v2/translate.py --locale fr --apply       # rejects go back on the worklist
-
-# 3. Render, gate, commit the PO files (never the rendered MDX by hand).
-python3 translation/v2/render.py --locale fr
-find i18n/fr/docusaurus-plugin-content-docs/current -name '*.mdx' -print0 | xargs -0 node translation/v2/mdxcheck.mjs
-python3 translation/scripts/lint-translation.py --locale fr
-git add i18n/fr/po translation/v2/pot && git commit
+python3 translation/v2/sync.py prepare --from sync/upstream-content
+#   → branch sync/english-<sha> from origin/main with the bot's commit, extract --check,
+#     then per locale (4 at a time): update.py + translate.py --prepare. Prints, per locale,
+#     how many entries need a model; copy / split-block / mechanical carry-overs are already written.
+#   fill work/<locale>/batch-*.out.json: one translate-locale.js run per locale (args = the
+#     locale's manifest.json plus "agentType": "translator"), or one translator agent per batch
+python3 translation/v2/sync.py status      # every batch: filled? a JSON list? the right length?
+python3 translation/v2/sync.py finish      # apply through check.py, assert every worklist empty,
+#                                            render + all gates (4 at a time), commit POT + PO trees
+git push -u origin HEAD && gh pr create --repo JanLahmann/doQumentation --base main
 ```
 
-Order matters in step 0: `po4a-gettextize` aligns a translation with the
-English it was made from. Bootstrapping after the sync would pair the old
-German with new English and fail on every changed page.
+`finish` stops without committing when a batch was rejected or unfilled, when
+a worklist is not empty, or when a gate fails. It also stops when `--apply`
+printed a REPLACED-BY-ENGLISH warning until you have read them: an entry that
+now equals its English is right for code and names and a lost translation for
+anything else — `--apply` writes them as `work/<locale>/reversions.json`;
+drop the ones that should stay English and repair the rest through
+`fix.py --fixes work/<locale>/reversions.json --prepare --mode flagged`, then run
+`finish --accept-warnings`. Measured on the sync of 2026-09-10 (46 English
+pages): 164 entries per locale, ~120 carried over, ~45 to a model, two
+batches; the whole 17-locale loop in under two hours with the one systematic
+defect (a renamed Card copied back in English) named by the warnings.
+
+For one locale by hand, the pieces are the same: `update.py --locale X --json
+…`, `translate.py --locale X --prepare`, fill, `--apply`, `render.py`,
+the gates in `CONTRIBUTING-REVIEWS.md` step 7, `git add i18n/X/po
+translation/v2/pot`.
 
 ## Token cost, and why the batches look the way they do
 
@@ -233,6 +251,94 @@ Still by hand, in order of frequency: a code span the agent translated
 paragraph, and an upstream `{/* */}` comment moved. Expect two to six
 entries per locale after the redo round; the batch files show exactly which.
 
+## The meaning-and-completeness layer
+
+Everything else in this pipeline checks **markup**. `check.py` compares code
+spans, math, URLs, tags, anchors, table rows and fence lines byte-for-byte and
+bounds length at 0.3x–2.5x; lint, mdxcheck, `check-wrong-language` and
+`check-known-mistranslations` work at the same level. None of them asks whether
+a translation says what its source says — and a fluent translation of the
+*wrong* paragraph breaks none of the structural invariants.
+
+The size of that hole, measured rather than guessed: against the 314 defects
+the nine positional-drift review rounds repaired, `check.py` flags **2**.
+
+Two layers close it, cheap first:
+
+1. **The sieve** (`check-completeness.py`) — deterministic, free, corpus-wide.
+   Seven subchecks, each scored against the labelled set before it was allowed
+   in. It selects entries worth reading; it does not judge them. The two
+   newest (`question-mark`, `length-outlier`) were found by scoring candidates
+   against the labelled defects the first five missed — the gauge rounds'
+   repairs, useless for measuring the sieve, are exactly the right material
+   for extending it.
+2. **The gauge** (`gauge-completeness.py`) — a model reads `(msgid, msgstr)`
+   and returns one verdict. It is the only thing here that can actually read
+   for meaning, so the sieve exists to keep its input small. Measured against
+   the labelled set with `--eval-set` (both msgstrs of every entry, shuffled
+   and unlabelled): **88.9% sensitivity, 0.3% false alarm**. It discriminates
+   rather than agreeing with what it is shown — which is what makes any
+   calibration number from it worth quoting.
+
+Repairs then go through `fix.py --fixes` → `translate-locale.js` → `--apply`,
+the same path as any review round, so they still pass `check.py` and still land
+with a provenance comment.
+
+**What the corpus actually looks like** (6,797 entries, 400 per locale,
+measured 2026-09-09). Every sampled entry was scored by *both* the sieve and
+the gauge, so one sample yields the whole table:
+
+| | gauge: defective | gauge: fine |
+|---|---|---|
+| **sieve flags** | 11 | 81 |
+| **sieve passes** | 22 | 6,683 |
+
+- corpus defect rate **0.49%** [0.35%, 0.68%] → **~2,200 entries**
+- sieve precision **12.0%** [6.8%, 20.2%]
+- sieve recall **33.3%** [19.8%, 50.4%]
+
+Gauging all 5,507 sieve flags across the 17 locales then found **748 real
+defects — 13.6% precision** [12.7%, 14.5%], inside the interval this sample
+predicted. The 70.1% recall measured on the labelled eval set (53.8% before the
+two subchecks added 2026-09-09) overstates: every positive there is
+drift-class, the sieve's best case.
+
+> **A correction, recorded because the wrong numbers were quoted for half a
+> day.** An earlier calibration passed no `--findings`, so the "unflagged
+> sample" was in fact drawn from *all* entries — making 0.49% the overall
+> defect rate, not the miss rate. A "sieve reaches 45%" figure was then derived
+> from a 30.8% precision measured on `ro` alone. Both were wrong. Pass
+> `--findings` when you want the miss rate, and prefer the 2×2: one sample,
+> both numbers, nothing to combine.
+
+Three things worth knowing before you trust a number from this layer:
+
+- **The gauge is blind on purpose.** Batch items carry only `msgid` and
+  `msgstr` — never which subcheck fired, never whether the entry was flagged at
+  all. `--sample N` mixes in entries the sieve passed. Tell the gauge what the
+  sieve thought and it will agree with it, and both the sieve's precision and
+  its miss rate stop meaning anything.
+- **Recall on the eval set is not recall on the corpus.** The labelled
+  positives are defects a *previous* method already found, which is a much
+  friendlier question than "what is wrong out there". The calibration sample is
+  the honest estimate.
+- **A gauge round's repairs cannot score the sieve.** The set is extended
+  after every merged review PR (`build-eval-set.py --extend`; 5,751 positives
+  and 98,231 negatives as of the de and he rounds of 2026-09-10), but a round
+  that read the sieve's own flags finds only what the sieve flagged: 82%
+  "recall" on those rows means nothing. `--selection sieve` records this in
+  the set, and the drift-class floors count the 314 `independent` rows only.
+  Whole-page Opus rounds are tagged `--selection review`: their 2,047 repairs
+  are a different class (wording, terminology, dropped qualifiers), on which
+  the sieve measures 2.1% — reported by its own test, not a floor to chase.
+- **Neither layer sees a fluent, complete, plausible mistranslation.** Right
+  shape, right numbers, right length, wrong claim. That still needs a
+  domain-competent reader.
+
+Gauge batches live in `work/gauge/<locale>/`, deliberately not in
+`work/<locale>/`: `fix.py --prepare` deletes `fix-*.json` there and would take
+an outstanding gauge run with it.
+
 ## Hard rules
 
 - **Only `translate.py --apply` writes a `msgstr`.** No script, hook or agent
@@ -275,18 +381,31 @@ Every one of the 17 main locales has been through one v2 sync (English
   and the records `baseline-hashes.json` and `en-passage-hashes.json`. The
   hash helpers the review scripts used from the freshness checker live in
   `translation/scripts/_common.py`.
-- **Still v1, deliberately**: `lint-translation.py`, `validate-translation.py`
-  and the review scripts (`review-translations.py`, `review-prefilter.py`,
-  `sample-deep-review.py`) work on the rendered pages and on `status.json`,
-  whose `source_hash` / `validated_against` / review fields are unchanged.
-  They keep working because the workflows render before they run. What does
-  not work any more is *fixing* a rendered page in place (the glossary,
-  consistency and misleading-translation fix workflows in `.claude/`): such
-  an edit is lost at the next render. Porting the fix path to PO entries —
-  and the Opus rubric to per-entry verdicts stored as translator comments —
-  is the remaining migration work.
-- Review verdicts from `status.json` were copied into each PO header
-  (`X-Doq-Review-Tier3`, `X-Doq-Review-Opus`) at bootstrap so they are not lost.
+- **Still v1, deliberately**: `lint-translation.py` and
+  `validate-translation.py` work on the rendered pages; they keep working
+  because the workflows render before they run. The v1 `translation/status.json`
+  was deleted on 2026-09-10 once its last readers (the page-dates plugin, the
+  sync PR's freshness report, `STATUS.md`) were moved to the PO files or
+  dropped.   *Fixing* a rendered page in place does not work any more: such an edit
+  is lost at the next render. The v1 page-editing workflows and fixers were
+  deleted on 2026-09-10; every fix goes through `fix.py` (`--fixes` for a
+  review finding, `--leaks` for the deterministic glossary pass). The review
+  side moved on 2026-09-10: a page's deep-review verdict is the
+  `X-Doq-Review-Opus` field of its PO header (below).
+- **A page's review verdict lives in its PO header.** `X-Doq-Review-Opus:
+  PASS 2026-07-05` is written by `translation/scripts/review-translations.py
+  --record-opus` when a review round ships, so the verdict lands in the same
+  PR as the fixes and there is no banking step after merge.
+  `sample-deep-review.py` (eligibility) and `contributing-status.py`
+  (CONTRIBUTING-NOW.md) read the same headers; a page is eligible when it is
+  rendered, has no fuzzy or empty entry, and — with `--exclude-reviewed` —
+  either carries no verdict (a full read) or carries one plus entries a model
+  wrote since it that no reviewer has read (a delta read of just those). Every
+  msgstr a model writes is stamped with a date (`doq: fixed after review D`,
+  `doq: translated after an English change D`); recording a verdict dated
+  later appends `· verified D` to the stamp. Only page reads (PASS,
+  MINOR_ISSUES, FAIL) are recorded; a repair round's FIXED records are not.
+  `X-Doq-Review-Tier3` is the v1 Haiku verdict copied at bootstrap, context only.
 
 ## Dependencies
 

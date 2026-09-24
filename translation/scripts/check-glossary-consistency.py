@@ -79,7 +79,7 @@ _PATH_TOKEN = re.compile(r"/?(?:docs|guides|tutorials|learning|api|images)/\S*")
 
 def _blank_keep_newlines(m) -> str:
     """Replace a matched span with a space, but PRESERVE its newlines so line
-    numbers stay aligned (critical: fix-glossary-leaks.py zips raw vs prose
+    numbers stay aligned (critical: fix.py --leaks zips raw vs prose
     lines, so any span that collapses newlines would shift every line below it
     and skip valid prose — the multi-line-HTML-tag misalignment bug)."""
     return " " + "\n" * m.group(0).count("\n")
