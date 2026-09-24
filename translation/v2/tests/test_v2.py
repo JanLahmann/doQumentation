@@ -6,6 +6,7 @@ gettext) and the polib package. Tests that need them skip otherwise.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -334,3 +335,830 @@ def test_sweep_po_empties_only_failing_entries():
     assert [i for i, _ in emptied] == [1, 2, 5] and po[5].msgstr == "Kein Zeilenumbruch."
     assert po[0].msgstr and not po[1].msgstr and not po[2].msgstr and po[3].msgstr == "Wrong `x`.\n"
     assert po[1].tcomment == "note" and "inline code mismatch" in emptied[0][1][0]
+
+
+# ── fix.py: review fixes through the PO gate ──
+
+def _fix_module():
+    import importlib
+    return importlib.import_module("fix")
+
+
+def _entry(msgid: str, msgstr: str = "x", comment: str = "type: Plain text"):
+    import polib
+    return polib.POEntry(msgid=msgid, msgstr=msgstr, comment=comment)
+
+
+# po4a merges a closing tag with the paragraph after it when no blank line
+# separates them, so "is this translatable?" cannot be decided from the first
+# character. Judging it that way hid 231 German prose entries from the
+# worklist; 28 of them were fuzzy, i.e. rendering English on the live site
+# with a real translation sitting unused in the PO and no pipeline step able
+# to see it (update.py reported "0 fuzzy").
+@pytest.mark.parametrize("msgid", [
+    "</AccordionItem>\n</Accordion>\nNow, Alice can measure qubits A and Q, and she cannot control the result.",
+    "</AccordionItem> </Accordion> This guide focuses on how to add and update job tags, as well as how to use them.",
+    "<Admonition type=\"note\"> You can only invite users who are already members of the account you administer.",
+])
+def test_translatable_sees_prose_behind_a_leading_tag(msgid):
+    assert io.translatable(_entry(msgid))
+
+
+@pytest.mark.parametrize("msgid", [
+    "<Accordion>",
+    "</AccordionItem>\n</Accordion>",
+    '<span className="content-stats__label">Tutorials</span>',
+    '<img src="/docs/images/x.avif" alt="a" />',
+    "<Admonition type=\"note\">",
+])
+def test_translatable_still_rejects_bare_markup(msgid):
+    assert not io.translatable(_entry(msgid))
+
+
+def test_translatable_still_rejects_comments_and_fences():
+    assert not io.translatable(_entry("{/* cspell:ignore Abluemix, apikey */}"))
+    assert not io.translatable(_entry("```bash\ncurl -X POST 'https://iam.cloud.ibm.com/identity/token'\n```"))
+
+
+def _make_po(path: Path, pairs: list[tuple[str, str]]) -> None:
+    import polib
+    po = polib.POFile(wrapwidth=0)
+    po.metadata = {"Content-Type": "text/plain; charset=UTF-8", "Language": "de"}
+    for msgid, msgstr in pairs:
+        po.append(polib.POEntry(msgid=msgid, msgstr=msgstr, flags=["no-wrap"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    po.save(str(path))
+
+
+@pytest.fixture
+def fix_env(monkeypatch, tmp_path):
+    """A throwaway i18n/ + work/ so fix.py and translate.apply touch nothing real."""
+    import translate as tr
+    fix = _fix_module()
+    monkeypatch.setattr(io, "I18N", tmp_path / "i18n")
+    monkeypatch.setattr(io, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(io, "REPO", tmp_path)
+    pairs = [
+        ("Get started with the noise learning helper.", "Einstieg in den Noise-Learning-Helfer."),
+        ("The circuit is `transpiled` before it runs.", "Die Circuit wird `transpiled`, bevor sie läuft."),
+        ("Run the cell.", "Führe die Zelle aus."),
+        ("```python\nx = 1\n```", "```python\nx = 1\n```"),          # copy-only: never in a batch
+    ]
+    _make_po(io.po_path("de", "guides/noise.mdx"), pairs)
+    return fix, tr, pairs
+
+
+def test_fix_match_example_takes_a_short_quote_only_when_it_is_the_whole_entry():
+    """Quotes under 12 characters cannot be matched by containment or ratio,
+    but a reviewer quoting a short entry in full ("Thus:") means that entry.
+    Ambiguous short quotes — two entries with the same text — still match
+    nothing rather than the wrong one."""
+    import polib
+    fix = _fix_module()
+    entries = [(0, polib.POEntry(msgid="Thus:\n", msgstr="Thus:\n")),
+               (1, polib.POEntry(msgid="Using standard Gaussian integral results:\n", msgstr="Korzystając…\n")),
+               (2, polib.POEntry(msgid="Using:\n", msgstr="Using:\n")),
+               (3, polib.POEntry(msgid="Using:\n", msgstr="Using:\n"))]
+    assert fix.match_example({"source": "Thus:"}, entries) == 0
+    assert fix.match_example({"source": "Using:"}, entries) is None      # two candidates: refuse
+    assert fix.match_example({"source": "Hence:"}, entries) is None      # not on the page
+
+
+def test_fix_prepare_flagged_only_sends_just_the_pinned_entries(fix_env):
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "untranslated",
+             "examples": [{"source": "Run the cell.", "why": "still English"}]}]
+    summary = fix.prepare("de", spec, flagged_only=True)
+    assert summary["flagged"] == 1 and summary["items"] == 1
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    assert [it["msgid"] for it in items] == ["Run the cell."] and "review" in items[0]
+    ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+    assert ids == ["guides/noise.mdx#2"]                    # apply still knows where it goes
+
+
+def test_fix_prepare_flagged_only_packs_pages_into_one_batch(fix_env):
+    """835 one-page batches for 2,031 pinned entries would have cost an agent
+    call per two entries. Pinned entries from different pages share a batch;
+    the ids file keeps each one addressed to its page."""
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/other.mdx"), [("Solving:", "Solving:"), ("Thus:", "Thus:")])
+    spec = [{"rel": "guides/noise.mdx", "note": "n1", "examples": [{"source": "Run the cell."}]},
+            {"rel": "guides/other.mdx", "note": "n2", "examples": [{"source": "Solving:"}, {"source": "Thus:"}]}]
+    summary = fix.prepare("de", spec, flagged_only=True)
+    assert summary["batches"] == 1 and summary["flagged"] == 3
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+    assert ids == ["guides/noise.mdx#2", "guides/other.mdx#0", "guides/other.mdx#1"]
+    assert b["note"] == "n1 n2" and b["items"] == 3
+
+
+def test_fix_prepare_pins_examples_and_skips_code(fix_env):
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "stiff term",
+             "examples": [{"source": "circuit is transpiled before it runs",
+                           "why": "calque", "suggested": "Der Schaltkreis"}]}]
+    summary = fix.prepare("de", spec, mode="page")
+    assert summary["pages"] == 1 and summary["batches"] == 1
+    assert summary["flagged"] == 1 and summary["unmatched_examples"] == 0
+    manifest = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())
+    assert manifest["task"] == "fix"
+    b = manifest["batches"][0]
+    assert b["page"] == "guides/noise.mdx" and b["note"] == "stiff term" and b["flagged"] == 1
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    assert len(items) == 3                                  # the code block stayed out
+    assert all("prev_msgstr" in it for it in items)
+    flagged = [it for it in items if "review" in it]
+    assert len(flagged) == 1 and flagged[0]["msgid"].startswith("The circuit")
+    assert "Suggested: Der Schaltkreis" in flagged[0]["review"]
+    ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+    assert ids == ["guides/noise.mdx#0", "guides/noise.mdx#1", "guides/noise.mdx#2"]
+
+
+def test_fix_load_accepts_review_records_and_drops_pass(tmp_path):
+    fix = _fix_module()
+    p = tmp_path / "opus.json"
+    p.write_text(json.dumps([
+        {"locale": "de", "file": "a.mdx", "verdict": "PASS", "editor_note": "fine", "examples": []},
+        {"locale": "de", "file": "b.mdx", "verdict": "FAIL", "editor_note": "inverted", "examples": [{"source": "x"}]},
+    ]))
+    out = fix.load_fixes(p)
+    assert [f["rel"] for f in out] == ["b.mdx"]
+    assert out[0]["note"] == "inverted"
+
+
+def test_fix_apply_writes_only_changed_entries_with_note(fix_env):
+    import polib
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "n", "examples": []}]
+    fix.prepare("de", spec, mode="page")
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[1] = "Der Schaltkreis wird `transpiled`, bevor er läuft."     # one real fix
+    Path(io.REPO / b["out"]).write_text("[\n" + ",\n".join(json.dumps(s, ensure_ascii=False) for s in out) + "\n]\n")
+    rc = tr.apply("de", prefix="fix", note="doq: fixed after review T")
+    assert rc == 0
+    po = polib.pofile(str(io.po_path("de", "guides/noise.mdx")))
+    assert po[1].msgstr.startswith("Der Schaltkreis") and po[1].tcomment == "doq: fixed after review T"
+    assert po[0].msgstr == pairs[0][1] and po[0].tcomment == ""       # untouched, not re-stamped
+    assert po[2].msgstr == pairs[2][1] and po[2].tcomment == ""
+
+
+def test_fix_apply_rejects_checker_violation(fix_env):
+    import polib
+    fix, tr, pairs = fix_env
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[1] = "Der Schaltkreis wird transpiliert, bevor er läuft."      # dropped the code span
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    rc = tr.apply("de", prefix="fix", note="x")
+    assert rc == 1
+    po = polib.pofile(str(io.po_path("de", "guides/noise.mdx")))
+    assert po[1].msgstr == pairs[1][1]                                  # rejected → unchanged
+
+
+def _mark_fuzzy(page: str, idx: int, prev_msgid: str) -> None:
+    import polib
+    po = polib.pofile(str(io.po_path("de", page)), wrapwidth=0)
+    po[idx].flags.append("fuzzy")
+    po[idx].previous_msgid = prev_msgid
+    po.save(str(io.po_path("de", page)))
+
+
+def test_fix_apply_keeps_fuzzy_when_the_agent_copied_it_back(fix_env):
+    """A fuzzy entry the fix agent did not touch must STAY fuzzy.
+
+    fuzzy means msgmerge saw the English change and kept the old translation
+    pending confirmation; po4a renders English until the flag clears. The
+    review-fix prompt tells the agent to copy unflagged entries back verbatim,
+    so an unchanged string is not a confirmation — clearing the flag would
+    publish a translation of the PREVIOUS English."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]                    # everything copied back verbatim
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de", prefix="fix", note="x") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" in e.flags and e.msgstr == pairs[2][1]
+
+
+def test_fix_apply_clears_fuzzy_when_the_agent_retranslated_it(fix_env):
+    """But a fuzzy entry the agent actually rewrote is confirmed, so it ships."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[2] = "Führe die Zelle aus, dann prüfe das Ergebnis."
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de", prefix="fix", note="x") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" not in e.flags and e.msgstr.startswith("Führe die Zelle aus, dann")
+
+
+def test_translate_apply_still_confirms_an_unchanged_fuzzy_entry(fix_env):
+    """The translate path is the opposite case: there the agent was shown the
+    entry and asked to translate it, so returning the same string confirms it."""
+    import polib
+    fix, tr, pairs = fix_env
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "batch-000-sonnet.ids.json").write_text(json.dumps(["guides/noise.mdx#2"]))
+    (d / "batch-000-sonnet.json").write_text(json.dumps([{"en": "Run the cell."}]))
+    (d / "batch-000-sonnet.out.json").write_text(json.dumps([pairs[2][1]], ensure_ascii=False))
+    assert tr.apply("de") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert "fuzzy" not in e.flags
+
+
+def _glossary(tmp_path, data):
+    import json as _json
+    d = tmp_path / "translation" / "glossary"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "de.json").write_text(_json.dumps(data), encoding="utf-8")
+
+
+def test_leaks_decapitalises_and_gates_on_check(fix_env, tmp_path):
+    """The deterministic glossary-leak pass: no model, check.py-gated."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [
+        ("Qubit counts matter.", "Qubit-Zahlen zählen."),          # entry start: legit capital
+        ("Use the Qubit here.", "Nutze das Qubit hier."),          # mid-sentence: decapitalise
+        ("Set the `Qubit` in code.", "Nutze den `Qubit` im Code."),  # code span: check.py stops it
+    ])
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    out = fix.leaks("de", dry_run=False)
+    po = polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)
+    assert po[0].msgstr == "Qubit-Zahlen zählen."                   # entry start untouched
+    assert po[1].msgstr == "Nutze das qubit hier."                  # decapitalised
+    assert po[1].tcomment.startswith("doq: glossary leak fixed")
+    assert po[2].msgstr == "Nutze den `Qubit` im Code."             # check.py rejected the edit
+    assert out["applied"] == 1 and out["rejected"] == 1
+
+
+def test_leaks_guards_proper_names_and_link_text(fix_env, tmp_path):
+    """Two false positives the v1 page-based fixer produced on real fr content,
+    invisible to lint and to check.py because neither is code, math, a tag or
+    a URL: a product name ("la fonction IBM Circuit") and markdown link text
+    quoting an English page title ("[Qubit initialization]")."""
+    fix, tr, pairs = fix_env
+    g = {"translate": {}, "keep_lowercase": ["circuit", "qubit"]}
+    keep_name = "la fonction IBM Circuit est prête."
+    keep_link = "voir [Qubit initialization](/guides/x) pour plus"
+    assert fix.leak_fix_text(keep_name, g, case_only=True)[0] == keep_name
+    assert fix.leak_fix_text(keep_link, g, case_only=True)[0] == keep_link
+    # …while an ordinary mid-sentence common noun is still fixed
+    got, hits, _ = fix.leak_fix_text("Nous utilisons le Circuit ici.", g, case_only=True)
+    assert got == "Nous utilisons le circuit ici." and hits
+
+
+def test_leaks_dry_run_writes_nothing(fix_env, tmp_path):
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Qubit here.", "Nutze das Qubit hier.")])
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    assert fix.leaks("de", dry_run=True)["applied"] == 1
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Qubit hier."
+
+
+def test_leaks_case_only_skips_the_translate_rules(fix_env, tmp_path):
+    """Gate -> porte is a house-style call that conflicts with translate.py's
+    keep-in-English list, so --case-only must leave it alone."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Gate here.", "Nutze das Gate hier.")])
+    _glossary(tmp_path, {"translate": {"gate": {"preferred": "Tor", "leaked_en": ["Gate"]}},
+                         "keep_lowercase": []})
+    assert fix.leaks("de", dry_run=False, case_only=True)["applied"] == 0
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Gate hier."
+
+
+def test_leaks_skips_fuzzy_entries(fix_env, tmp_path):
+    """A fuzzy entry is not live and its English has changed — leave it."""
+    import polib
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/leak.mdx"), [("Use the Qubit here.", "Nutze das Qubit hier.")])
+    _mark_fuzzy("guides/leak.mdx", 0, "Use the Qubit there.")
+    _glossary(tmp_path, {"translate": {}, "keep_lowercase": ["qubit"]})
+    assert fix.leaks("de", dry_run=False)["applied"] == 0
+    assert polib.pofile(str(io.po_path("de", "guides/leak.mdx")), wrapwidth=0)[0].msgstr == "Nutze das Qubit hier."
+
+
+def test_translate_apply_ignores_fix_batches(fix_env):
+    """translate.py --apply must not pick up fix-* files and vice versa."""
+    fix, tr, pairs = fix_env
+    fix.prepare("de", [{"rel": "guides/noise.mdx", "note": "n", "examples": []}], mode="page")
+    b = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"][0]
+    items = json.loads(Path(io.REPO / b["file"]).read_text())
+    out = [it["prev_msgstr"] for it in items]
+    out[2] = "GEÄNDERT"
+    Path(io.REPO / b["out"]).write_text(json.dumps(out, ensure_ascii=False))
+    assert tr.apply("de") == 0                                          # default prefix: nothing to do
+    import polib
+    assert polib.pofile(str(io.po_path("de", "guides/noise.mdx")))[2].msgstr == pairs[2][1]
+
+
+# ── match_example: a reviewer's quote must reach the entry they meant ──────
+# Regression guard for a silent misdirection. `match_example` accepted
+# containment in BOTH directions, so a long quote that happened to contain a
+# short entry's words was pinned to that short entry. The flag then reached
+# the wrong entry, the real defect was left untouched, and `prepare` reported
+# "0 examples not matched" — because it had matched something.
+
+import polib  # noqa: E402
+import fix as fx  # noqa: E402
+
+
+def _entries(*msgids):
+    return [(i, polib.POEntry(msgid=m, msgstr="x")) for i, m in enumerate(msgids)]
+
+
+DENSITY = ("What we may do instead is turn to the notion of a *density matrix,* "
+           "which is discussed in the *General formulation of quantum information* "
+           "course. Density matrices provide us with a meaningful way to define "
+           "reduced quantum states.")
+
+
+def test_short_entry_does_not_hijack_a_long_quote():
+    """The real case: a two-word heading swallowed a 200-character quote."""
+    entries = _entries("Quantum information", DENSITY)
+    assert fx.match_example({"source": DENSITY}, entries) == 1
+
+
+def test_quote_inside_an_entry_still_matches():
+    """The intended direction: reviewers quote an excerpt of a long entry."""
+    entries = _entries("Quantum information", DENSITY)
+    excerpt = "turn to the notion of a density matrix"
+    assert fx.match_example({"source": excerpt}, entries) == 1
+
+
+def test_entry_inside_a_quote_matches_when_it_dominates():
+    """`target in q` is still useful when the entry IS most of the quote —
+    a reviewer who pasted the entry plus a few words of context."""
+    entry = "Density matrices provide a meaningful way to define reduced states."
+    entries = _entries("Quantum information", entry)
+    assert fx.match_example({"source": "As noted above, " + entry}, entries) == 1
+
+
+def test_no_match_returns_none_rather_than_a_wrong_index():
+    entries = _entries("Quantum information", "Partial measurements")
+    assert fx.match_example({"source": DENSITY}, entries) is None
+
+
+# ── apply() must notice a translation replaced by its English source ───────
+# Regression guard: on the cs drift round a fix wave returned the English
+# msgid verbatim for an entry that already had a good Czech translation. The
+# instructions forbid it, but nothing objected: check.py cannot reject
+# msgstr == msgid (legitimate for names and code) and the entry was simply
+# stamped "kept in English by the translator". Only apply() knows what the
+# entry said before, so only apply() can tell a deliberate keep from a
+# destroyed translation.
+
+def _apply_one(tmp_path, monkeypatch, msgid, prev, returned):
+    import translate as tr
+    work = tmp_path / "work"; (work / "xx").mkdir(parents=True)
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid=msgid, msgstr=prev))
+    po.save(str(po_dir / "p.po"))
+    (work / "xx" / "fix-000-sonnet.json").write_text(json.dumps([{"msgid": msgid}]), encoding="utf-8")
+    (work / "xx" / "fix-000-sonnet.ids.json").write_text(json.dumps(["p.mdx#0"]), encoding="utf-8")
+    (work / "xx" / "fix-000-sonnet.out.json").write_text(json.dumps([returned]), encoding="utf-8")
+    monkeypatch.setattr(tr.io, "WORK_DIR", work)
+    monkeypatch.setattr(tr.io, "po_path", lambda loc, rel: po_dir / "p.po")
+    return tr, po_dir / "p.po"
+
+
+EN = "Press the button to reveal the answer to the question posed above."
+CS = "Stiskni tlačítko pro zobrazení odpovědi na výše položenou otázku."
+
+
+def test_apply_warns_when_a_translation_becomes_english(tmp_path, monkeypatch, capsys):
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "REPLACED BY ENGLISH 1" in out
+    assert "translation replaced by the English source" in out
+
+
+def test_apply_is_quiet_when_english_was_already_there(tmp_path, monkeypatch, capsys):
+    """A name or code entry that was English and stays English is not a loss."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, EN, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+def test_apply_is_quiet_on_an_ordinary_correction(tmp_path, monkeypatch, capsys):
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, "stara verze", CS)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+def test_apply_does_not_warn_when_the_msgid_has_nothing_to_translate(tmp_path, monkeypatch, capsys):
+    """A markup-only entry whose msgstr had spillover appended, now stripped
+    back to the markup, equals its msgid legitimately — that is the repair,
+    not a destroyed translation. Seen on pl qft.mdx#75."""
+    markup = "</AccordionItem>\n</Accordion>\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, markup,
+                          markup + "Jaka superpozycja stanow obliczeniowych...", markup)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+# ── prepare() must be able to deliver an entry a reviewer flagged ──────────
+# Copy-only entries (bare math, code, an image) are excluded from fix batches
+# because there is nothing to translate in them. But their msgstr can still be
+# wrong: on pl a drifted entry carried prose PREPENDED to the math block it
+# should hold, which check.py passes because both sides then have the same $$
+# blocks. Excluding such entries from matching as well as from the batch meant
+# a reviewer could flag an entry no fix wave was capable of reaching.
+
+MATH = "$$\n\\begin{array}{cc}\nZ & Z\n\\end{array}\n$$\n"
+
+
+def _batch_file(outdir):
+    """The first batch, and only the batch.
+
+    `glob("fix-000-*.json")` also matches `fix-000-sonnet.ids.json`, and
+    Path.glob yields filesystem order: APFS happened to return the batch
+    first, ext4 in CI returned the ids sidecar — a list of strings — first.
+    """
+    return next(p for p in sorted(outdir.glob("fix-000-*.json"))
+                if not p.name.endswith(".ids.json"))
+
+
+def test_prepare_carries_a_flagged_copy_only_entry_into_the_batch(tmp_path, monkeypatch):
+    import fix as fx2
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid="Some ordinary prose to translate here.", msgstr="Proza."))
+    po.append(polib.POEntry(msgid=MATH, msgstr="Drifted prose prepended.\n" + MATH))
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po.save(str(po_dir / "p.po"))
+    work = tmp_path / "work"; work.mkdir()
+    monkeypatch.setattr(fx2.io, "WORK_DIR", work)
+    monkeypatch.setattr(fx2.io, "REPO", tmp_path)
+    monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
+
+    fx2.prepare("xx", [{"rel": "p.mdx", "note": "drift",
+                        "examples": [{"source": MATH, "why": "holds prose"}]}])
+    batch = json.loads(_batch_file(work / "xx").read_text())
+    flagged = [it for it in batch if "review" in it]
+    assert len(flagged) == 1, "the flagged copy-only entry must reach the batch"
+    assert flagged[0]["msgid"] == MATH
+
+
+def test_prepare_still_omits_unflagged_copy_only_entries(tmp_path, monkeypatch):
+    """They are excluded for a reason: there is nothing to translate."""
+    import fix as fx2
+    po = polib.POFile()
+    po.append(polib.POEntry(msgid="Some ordinary prose to translate here.", msgstr="Proza."))
+    po.append(polib.POEntry(msgid=MATH, msgstr=MATH))
+    po_dir = tmp_path / "i18n" / "xx" / "po"; po_dir.mkdir(parents=True)
+    po.save(str(po_dir / "p.po"))
+    work = tmp_path / "work"; work.mkdir()
+    monkeypatch.setattr(fx2.io, "WORK_DIR", work)
+    monkeypatch.setattr(fx2.io, "REPO", tmp_path)
+    monkeypatch.setattr(fx2.io, "po_path", lambda loc, rel: po_dir / "p.po")
+
+    fx2.prepare("xx", [{"rel": "p.mdx", "note": "n", "examples": []}], mode="page")
+    batch = json.loads(_batch_file(work / "xx").read_text())
+    assert all(it["msgid"] != MATH for it in batch)
+
+
+def test_apply_names_the_right_entry_in_the_english_warning(tmp_path, monkeypatch, capsys):
+    """The warning lives in apply's second loop, where `ident` is a stale
+    leftover from the first. On ar it named krylov.mdx#112 for a defect in
+    guides/primitive-input-output.mdx#3."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "p.mdx#0" in out, out
+
+
+def test_apply_warns_when_a_title_caption_reverts_to_english(tmp_path, monkeypatch, capsys):
+    """The tag is markup, but its title= is prose the reader sees. On ja and id
+    a drift-sweep wave copied the English `<AccordionItem title="**Strategy**">`
+    over the translated caption on how-to-become-quantum-ready, and apply was
+    silent: it stripped the whole tag before looking for letters. The audit
+    diff caught it; apply must too."""
+    tag = '<AccordionItem title="**Strategy**">\n'
+    tr, path = _apply_one(tmp_path, monkeypatch, tag, '<AccordionItem title="**戦略**">\n', tag)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "REPLACED BY ENGLISH 1" in out, out
+
+
+def test_apply_warns_when_a_card_description_reverts_to_english(tmp_path, monkeypatch, capsys):
+    """A Card's description= and linkText= are prose too. On the first real
+    sync every locale's agent copied the renamed Qiskit Fermions Card back
+    whole, and apply only saw title= — a product name that IS English — so it
+    would have been silent had the tag also lost its translated description."""
+    card = ('<Card\n  title="Qiskit Fermions"\n  description="Work with fermionic systems."\n'
+            '  href="/x"\n  linkText="Browse documentation"\n/>\n')
+    prev = ('<Card\n  title="Qiskit Fermions"\n  description="Arbeite mit fermionischen Systemen."\n'
+            '  href="/x"\n  linkText="Dokumentation durchsuchen"\n/>\n')
+    tr, path = _apply_one(tmp_path, monkeypatch, card, prev, card)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH 1" in capsys.readouterr().out
+
+
+def test_apply_stays_quiet_for_a_bare_closing_tag(tmp_path, monkeypatch, capsys):
+    """No attribute prose, nothing to lose: the pl qft#75 repair case again,
+    now that attribute values survive tag stripping."""
+    tag = "</AccordionItem>\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, tag, tag + "Tekst, który tu nie należy.", tag)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+def test_apply_does_not_warn_for_an_mdx_comment(tmp_path, monkeypatch, capsys):
+    """An MDX comment renders nothing, so English inside one is correct. Seen on
+    ar guides/primitive-input-output#3, whose translation had drifted to
+    unrelated prose; returning the comment verbatim IS the repair."""
+    comment = "{/*\n  DO NOT EDIT THIS CELL!!!\n  Generated automatically by a script.\n*/}\n"
+    tr, path = _apply_one(tmp_path, monkeypatch, comment, "نص عربي منجرف هنا تماما", comment)
+    tr.apply("xx", prefix="fix", note="n")
+    assert "REPLACED BY ENGLISH" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# update.py / translate.py: a paragraph the English split apart keeps its
+# translation; a retranslation withdraws the page's review verdict
+# ---------------------------------------------------------------------------
+
+def _update_module():
+    import importlib
+    return importlib.import_module("update")
+
+
+def test_split_block_hint_finds_the_line_and_refuses_ambiguity():
+    up = _update_module()
+    old = [("After this tutorial you understand:\n- How to run it.\n- How to stop it.\n",
+            "Nach diesem Tutorial verstehst du:\n- Wie man es startet.\n- Wie man es stoppt.\n"),
+           ("Single line entry.\n", "Einzeiliger Eintrag.\n")]
+    assert up.split_block_hint("How to stop it.\n", old) == ("- How to stop it.", "Wie man es stoppt.")
+    assert up.split_block_hint("After this tutorial you understand:\n", old) == (
+        "After this tutorial you understand:", "Nach diesem Tutorial verstehst du:")
+    assert up.split_block_hint("Something else.\n", old) is None
+    # the translation lost a line: line i no longer answers line i
+    short = [("Intro:\n- A thing.\n- B thing.\n", "Einleitung:\n- Ein Ding.\n")]
+    assert up.split_block_hint("A thing.\n", short) is None
+    # the same line in two blocks with different translations: refuse
+    two = old + [("Also:\n- How to stop it.\n- More.\n", "Auch:\n- Wie man es anhält.\n- Mehr.\n")]
+    assert up.split_block_hint("How to stop it.\n", two) is None
+
+
+def test_worklist_hints_split_blocks_after_msgmerge(monkeypatch, tmp_path):
+    """Real msgmerge: the old block is dropped, the new bullets come back
+    empty, and each carries the matching line of the old translation."""
+    import polib
+    up = _update_module()
+    monkeypatch.setattr(io, "I18N", tmp_path / "i18n")
+    monkeypatch.setattr(io, "POT_DIR", tmp_path / "pot")
+    rel = "guides/split.mdx"
+    old = polib.POFile(wrapwidth=0)
+    old.metadata = {"Content-Type": "text/plain; charset=UTF-8", "Language": "de"}
+    old.append(polib.POEntry(msgid="Intro:\n- How to run it.\n- How to stop it.\n",
+                             msgstr="Einleitung:\n- Wie man es startet.\n- Wie man es stoppt.\n",
+                             comment="type: Plain text", flags=["no-wrap"]))
+    old.append(polib.POEntry(msgid="Unchanged paragraph.\n", msgstr="Unveränderter Absatz.\n",
+                             comment="type: Plain text", flags=["no-wrap"]))
+    io.po_path("de", rel).parent.mkdir(parents=True)
+    old.save(str(io.po_path("de", rel)))
+    pot = polib.POFile(wrapwidth=0)
+    pot.metadata = {"Content-Type": "text/plain; charset=UTF-8"}
+    for msgid, typ in (("Intro:\n", "Plain text"), ("How to run it.\n", "Bullet: '- '"),
+                       ("How to stop it.\n", "Bullet: '- '"), ("Unchanged paragraph.\n", "Plain text"),
+                       ("Brand new sentence.\n", "Plain text")):
+        pot.append(polib.POEntry(msgid=msgid, comment=f"type: {typ}", flags=["no-wrap"]))
+    io.pot_path(rel).parent.mkdir(parents=True)
+    pot.save(str(io.pot_path(rel)))
+    items, counts, _ = up.worklist("de", [rel])
+    by = {i["msgid"]: i for i in items}
+    assert set(by) == {"Intro:\n", "How to run it.\n", "How to stop it.\n", "Brand new sentence.\n"}
+    assert by["How to stop it.\n"]["transfer"] == "split-block"
+    assert by["How to stop it.\n"]["previous_msgstr"] == "Wie man es stoppt."
+    assert by["Intro:\n"]["previous_msgstr"] == "Einleitung:"
+    assert "transfer" not in by["Brand new sentence.\n"]
+    assert counts["split-block hints"] == 3
+
+
+def test_prepare_carries_split_blocks_over_without_a_model(fix_env, monkeypatch):
+    import polib
+    fix, tr, pairs = fix_env
+    monkeypatch.setattr(tr, "instructions", lambda locale: "rules")     # io.REPO is a tmp dir here
+    d = io.WORK_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    items = [
+        {"id": "guides/noise.mdx#0", "type": "Bullet: '- '", "msgid": "Get started with the noise learning helper.",
+         "previous_msgid": "- Get started with the noise learning helper.",
+         "previous_msgstr": "Einstieg in den Noise-Learning-Helfer.", "transfer": "split-block"},
+        # a carried line that fails the checker (code span translated) is not written; it becomes a hint
+        {"id": "guides/noise.mdx#1", "type": "Bullet: '- '", "msgid": "The circuit is `transpiled` before it runs.",
+         "previous_msgid": "- The circuit is `transpiled` before it runs.",
+         "previous_msgstr": "Die Circuit wird `transpiliert`, bevor sie läuft.", "transfer": "split-block"},
+    ]
+    wl = d / "worklist-de.json"
+    wl.write_text(json.dumps({"items": items}, ensure_ascii=False), encoding="utf-8")
+    summary = tr.prepare("de", wl)
+    assert summary["split"] == 1 and summary["sonnet"] == 1 and summary["haiku"] == 0
+    po = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)
+    assert po[0].msgstr == "Einstieg in den Noise-Learning-Helfer."
+    assert po[0].tcomment.startswith("doq: carried over from the paragraph")
+
+
+def test_translate_apply_withdraws_the_review_verdict_on_retranslation(fix_env):
+    """A page verdict judged the translation against the English of its day.
+    Once msgmerge marked an entry fuzzy the English moved, and whatever the
+    translate path then writes there — a retranslation or a confirmation of
+    the old wording — is prose no reviewer has read against the new source:
+    the verdict moves to X-Doq-Review-Opus-Prior and the page is eligible
+    again. A review fix (prefix "fix") is a read by construction and leaves it."""
+    import polib
+    fix, tr, pairs = fix_env
+    path = io.po_path("de", "guides/noise.mdx")
+    po = polib.pofile(str(path), wrapwidth=0)
+    po.metadata["X-Doq-Review-Opus"] = "PASS 2026-07-05"
+    po.save(str(path))
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+
+    def batch(name, ident, out):
+        (d / f"{name}.ids.json").write_text(json.dumps([ident]))
+        (d / f"{name}.json").write_text(json.dumps([{"en": "x"}]))
+        (d / f"{name}.out.json").write_text(json.dumps([out], ensure_ascii=False))
+
+    # a review fix on a translated entry: the verdict stands
+    batch("fix-000-sonnet", "guides/noise.mdx#0", "Einstieg in den Noise-Learning-Helfer (neu).")
+    assert tr.apply("de", prefix="fix", note="doq: fixed") == 0
+    assert polib.pofile(str(path)).metadata.get("X-Doq-Review-Opus") == "PASS 2026-07-05"
+    # the English moved and the agent confirmed the old wording: withdrawn, kept as prior
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    batch("batch-000-sonnet", "guides/noise.mdx#2", pairs[2][1])
+    assert tr.apply("de") == 0
+    meta = polib.pofile(str(path)).metadata
+    assert "X-Doq-Review-Opus" not in meta
+    assert meta["X-Doq-Review-Opus-Prior"] == "PASS 2026-07-05"
+    # a later retranslation on a page without a verdict changes nothing in the header
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell thrice.")
+    batch("batch-000-sonnet", "guides/noise.mdx#2", "Führe die Zelle jetzt aus.")
+    assert tr.apply("de") == 0
+    meta = polib.pofile(str(path)).metadata
+    assert "X-Doq-Review-Opus" not in meta and meta["X-Doq-Review-Opus-Prior"] == "PASS 2026-07-05"
+
+
+def test_prepare_never_sends_a_table_to_haiku(monkeypatch):
+    """Two Haiku table batches (pl, th, 2026-09-10) came back as the translated
+    table written into the output file instead of a JSON list. A table with a
+    good fuzzy hint is still Sonnet's."""
+    import translate
+    d = io.WORK_DIR / "_pytest_table"
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    monkeypatch.setattr(io, "WORK_DIR", d)
+    monkeypatch.setattr(translate, "_write_direct", lambda locale, direct: 0)
+    table = "| Name | Use |\n|---|---|\n| Foo | Runs the thing on the backend |\n"
+    items = [{"id": "guides/t.mdx#0", "type": "Plain text", "msgid": table,
+              "previous_msgid": table.replace("backend", "device"),
+              "previous_msgstr": "| Name | Nutzung |\n|---|---|\n| Foo | Führt das Ding auf dem Gerät aus |\n"},
+             {"id": "guides/t.mdx#1", "type": "Plain text",
+              "msgid": "Paragraph 1 explains how the transpiler maps a circuit onto the backend.",
+              "previous_msgid": "Paragraph 1 explains how the transpiler maps a circuit onto hardware.",
+              "previous_msgstr": "Absatz 1 erklärt, wie der Transpiler einen Circuit auf die Hardware abbildet."}]
+    wl = d / "worklist-zz.json"
+    wl.write_text(json.dumps({"items": items}), encoding="utf-8")
+    summary = translate.prepare("zz", wl)
+    assert summary["haiku"] == 1 and summary["sonnet"] == 1
+    manifest = json.loads((d / "zz" / "manifest.json").read_text(encoding="utf-8"))
+    sonnet = next(b for b in manifest["batches"] if b["model"] == "sonnet")
+    assert json.loads((io.REPO / sonnet["file"]).read_text(encoding="utf-8"))[0]["msgid"].startswith("|")
+    shutil.rmtree(d)
+
+
+def test_sync_status_names_every_bad_output(tmp_path, monkeypatch):
+    import sync
+    monkeypatch.setattr(sync.io, "REPO", tmp_path)
+    w = tmp_path / "w"; w.mkdir()
+    manifest = {"batches": [
+        {"file": "w/b0.json", "out": "w/b0.out.json", "items": 2},
+        {"file": "w/b1.json", "out": "w/b1.out.json", "items": 2},
+        {"file": "w/b2.json", "out": "w/b2.out.json", "items": 2},
+        {"file": "w/b3.json", "out": "w/b3.out.json", "items": 2},
+        {"file": "w/b4.json", "out": "w/b4.out.json", "items": 2},
+    ]}
+    (w / "b0.out.json").write_text('["a", "b"]', encoding="utf-8")            # fine
+    (w / "b1.out.json").write_text('| Nazwa | Dostawca |\n|---|---|\n', encoding="utf-8")   # raw text
+    (w / "b2.out.json").write_text('["a"]', encoding="utf-8")                 # short
+    (w / "b3.out.json").write_text('[{"msgstr": "a"}, "b"]', encoding="utf-8")  # wrong shape
+    problems = sync.check_outputs(manifest)
+    assert len(problems) == 4
+    assert problems[0].startswith("b1.out.json: not valid JSON")
+    assert "1 strings for 2 items" in problems[1]
+    assert problems[2].startswith("b3.out.json: not a list of strings")
+    assert problems[3] == "b4.out.json: not filled"
+
+
+def test_translate_apply_stamps_a_retranslation_with_the_date(fix_env):
+    """A sync retranslation is model prose nobody has read: it carries a dated
+    stamp so the delta review can find it; a review fix keeps its own note."""
+    import polib
+    from datetime import date
+    fix, tr, pairs = fix_env
+    d = io.WORK_DIR / "de"
+    d.mkdir(parents=True, exist_ok=True)
+    _mark_fuzzy("guides/noise.mdx", 2, "Run the cell twice.")
+    (d / "batch-000-sonnet.ids.json").write_text(json.dumps(["guides/noise.mdx#2"]))
+    (d / "batch-000-sonnet.json").write_text(json.dumps([{"en": "x"}]))
+    (d / "batch-000-sonnet.out.json").write_text(json.dumps(["Führe die Zelle jetzt aus."]), encoding="utf-8")
+    assert tr.apply("de") == 0
+    e = polib.pofile(str(io.po_path("de", "guides/noise.mdx")), wrapwidth=0)[2]
+    assert e.tcomment == f"doq: translated after an English change {date.today().isoformat()}"
+    assert io.pending_since(e) == date.today().isoformat()
+    io.mark_verified(e, "2026-12-01")
+    assert io.pending_since(e) is None
+
+
+# ---------------------------------------------------------------------------
+# fix.py targeted mode, entry pinning; apply's reversion spec (2026-09-12)
+# ---------------------------------------------------------------------------
+
+def test_fix_prepare_targeted_sweeps_the_corrected_term_and_sends_fail_pages_whole(fix_env):
+    """Measured on th/id: a whole-page wave copies 93% of its entries back
+    unchanged, and 73-90% of the changes it makes outside the pinned entries
+    are the same wrong term or pronoun recurring. Targeted mode sends the
+    pinned entries plus every entry carrying a word the reviewer's
+    Terminology/Register correction removed; a FAIL page still goes whole."""
+    fix, tr, pairs = fix_env
+    _make_po(io.po_path("de", "guides/reg.mdx"), [
+        ("As you can see, it works.", "Wie Sie sehen, funktioniert es."),
+        ("You should run it.", "Sie sollten es ausführen."),
+        ("The gate is applied.", "Das Gate wird angewendet."),
+        ("Now measure.", "Jetzt messen."),
+    ] + [(f"Filler sentence number {i}.", f"Füllsatz Nummer {i}.") for i in range(12)])
+    spec = [{"rel": "guides/reg.mdx", "note": "formal register", "verdict": "MINOR_ISSUES",
+             "examples": [{"type": "Register", "source": "As you can see, it works.",
+                           "translation": "Wie Sie sehen, funktioniert es.",
+                           "suggested": "Wie du siehst, funktioniert es.", "why": "Sie, not du"}]},
+            {"rel": "guides/noise.mdx", "note": "misleading", "verdict": "FAIL",
+             "examples": [{"type": "Drift", "source": "Run the cell.", "why": "inverted"}]}]
+    summary = fix.prepare("de", spec)
+    assert summary["mode"] == "targeted" and summary["flagged"] == 2 and summary["swept"] == 1
+    m = json.loads((io.WORK_DIR / "de" / "manifest-fix.json").read_text())["batches"]
+    sent = {}
+    for b in m:
+        ids = json.loads(Path(io.REPO / b["file"].replace(".json", ".ids.json")).read_text())
+        items = json.loads(Path(io.REPO / b["file"]).read_text())
+        sent.update(zip(ids, items))
+    # reg.mdx: the pinned entry, the swept "Sie" entry, nothing else
+    assert sorted(k for k in sent if k.startswith("guides/reg")) == ["guides/reg.mdx#0", "guides/reg.mdx#1"]
+    assert "Sie" in sent["guides/reg.mdx#1"]["review"] and "copy prev_msgstr back" in sent["guides/reg.mdx#1"]["review"]
+    # noise.mdx is a FAIL: every prose entry travels (the code block never does)
+    assert sorted(k for k in sent if k.startswith("guides/noise")) == ["guides/noise.mdx#0", "guides/noise.mdx#1", "guides/noise.mdx#2"]
+    # the small targeted page was packed, its note prefixed with the page
+    packed = [b for b in m if b["page"].startswith("(pinned")]
+    assert len(packed) == 1 and packed[0]["note"].startswith("[guides/reg.mdx] formal register")
+
+
+def test_fix_prepare_targeted_ignores_entry_local_example_types(fix_env):
+    fix, tr, pairs = fix_env
+    spec = [{"rel": "guides/noise.mdx", "note": "n", "verdict": "MINOR_ISSUES",
+             "examples": [{"type": "Naturalness", "source": "Run the cell.", "translation": "Führe die Zelle aus.",
+                           "suggested": "Führ die Zelle aus.", "why": "stiff"}]}]
+    summary = fix.prepare("de", spec)
+    assert summary["flagged"] == 1 and summary["swept"] == 0 and summary["items"] == 1
+
+
+def test_fix_match_example_trusts_the_entry_number_when_the_quote_is_there():
+    import polib
+    fix = _fix_module()
+    entries = [(0, polib.POEntry(msgid="Alpha beta gamma delta.", msgstr="A")),
+               (1, polib.POEntry(msgid="Alpha beta gamma epsilon.", msgstr="B")),
+               (2, polib.POEntry(msgid="Something else entirely here.", msgstr="C"))]
+    # the number wins over the (ambiguous) quote…
+    assert fix.match_example({"entry": 1, "source": "Alpha beta gamma"}, entries) == 1
+    # …but not when the quoted English is not in that entry: fall back to matching
+    assert fix.match_example({"entry": 2, "source": "Alpha beta gamma delta."}, entries) == 0
+
+
+def test_translate_apply_writes_a_reversion_spec(tmp_path, monkeypatch, capsys):
+    """Every REPLACED-BY-ENGLISH warning becomes an entry-pinned fix spec with
+    the previous translation as the suggestion (ko 10, th 38, id 25 of them
+    were built by hand, one round after another)."""
+    tr, path = _apply_one(tmp_path, monkeypatch, EN, CS, EN)
+    tr.apply("xx", prefix="fix", note="n")
+    out = capsys.readouterr().out
+    assert "REPLACED BY ENGLISH 1" in out and "--mode flagged" in out
+    spec = json.loads((tr.io.WORK_DIR / "xx" / "reversions.json").read_text())
+    assert spec[0]["rel"] == "p.mdx" and spec[0]["examples"][0]["entry"] == 0
+    assert spec[0]["examples"][0]["suggested"] == CS and spec[0]["examples"][0]["translation"] == EN

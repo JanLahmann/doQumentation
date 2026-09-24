@@ -1,7 +1,7 @@
 # Tier-4 deep review — Opus rubric (spot-check, NOT the bulk pass)
 
-This is a **deliberately different task** from the Tier-3 Haiku review
-(`review-prompt.md` / `review-tier3-rubric.md`). Read this section before
+This is a **deliberately different task** from the per-page linguistic
+review in `review-prompt.md`. Read this section before
 using it, or you will waste Opus tokens duplicating a cheaper pass.
 
 ## When this applies — and when it does NOT
@@ -122,7 +122,7 @@ must stand alone, readable without the examples):
   min length and re-runs any agent that returns such a note — run-2 had 9.)
 
 The JSON object is the deliverable. Do NOT edit the file. Do NOT touch git or
-status.json. After the JSON, reply with ONE line: "<LOCALE>/<REL>: <VERDICT>
+any PO file. After the JSON, reply with ONE line: "<LOCALE>/<REL>: <VERDICT>
 (<n> issues)".
 ```
 
@@ -154,7 +154,9 @@ Reuse the per-language register table from `review-prompt.md`. One-liners:
 
 The `opus-deep-review` workflow writes all verdicts to
 `translation/reviews/opus-<seed>.json` and prints a `--record-review` recipe.
-Recording stores them under **separate** `review_opus`, `review_opus_issues`,
-`review_opus_note`, `reviewed_opus` keys in `status.json` — the Tier-3 `review`
-field is left untouched. Disagreements (Tier-3 PASS vs Opus FAIL) are listed
-explicitly in the workflow's final summary as the actionable output.
+Recording (`review-translations.py --record-opus --from-json … --locale X`)
+writes `X-Doq-Review-Opus: <VERDICT> <date>` into each reviewed page's PO
+header, which is what the sampler's `--exclude-reviewed` reads; the v1
+`X-Doq-Review-Tier3` header is left untouched. Disagreements (Tier-3 PASS vs
+Opus FAIL) are listed explicitly in the workflow's final summary as the
+actionable output.
