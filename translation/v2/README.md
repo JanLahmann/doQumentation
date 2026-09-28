@@ -421,7 +421,11 @@ skip when it is missing).
   but such entries carry tags the translator must keep; `check.py` enforces it.
 - A bare JSX line such as `<OpenInLabBanner … />` is an entry too. It is not
   translatable and is skipped by `translatable()`; it stays in the PO so
-  entry indices are stable.
+  entry indices are stable. Once such an entry goes fuzzy, though, it renders
+  as English, so `update.py` lists every fuzzy entry whatever
+  `translatable()` says, and counts the ones it rejects separately
+  ("N fuzzy (M outside translatable())"). A code-fence chunk inside a list
+  item lands in `translate.py`'s copy tier unless prose follows its fence.
 - Duplicate paragraphs on one page share one entry (gettext semantics). Two
   different translations of the same English sentence on one page are not
   possible; at bootstrap the first one is kept and the entry is annotated.

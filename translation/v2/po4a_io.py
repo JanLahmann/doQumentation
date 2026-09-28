@@ -270,12 +270,19 @@ _TAG = re.compile(r"</?[A-Za-z][\w.]*(?:\s[^<>]*)?/?>")
 # 8 words is comfortably longer than any label or stat caption in the corpus
 # and shorter than the paragraphs this is meant to recover.
 _PROSE_MIN_WORDS = 8
+# Running text may open with inline markup rather than a letter: a code span
+# (`NoiseLearner` only works with…), a link or footnote ([Exact simulation…](…),
+# [\[1\]](#ref)), emphasis (**Protect your API key!**) or a list marker
+# (- The new…, 1. If you…, <li>– Ability…). Requiring a letter hid all of
+# these; when one went fuzzy it rendered English and update.py said "0 fuzzy".
+# Not a fence (```) and not an MDX comment ({/*), which stay non-prose.
+_PROSE_OPENER = re.compile(r"(?!```)(?:`|\\?\[|\*|_|[-+–]\s|\d+[.)]\s)")
 
 
 def _prose_behind_tags(s: str) -> bool:
     """True when a leading run of tags is followed by real running text."""
     rest = _LEADING_TAGS.sub("", s, count=1).strip()
-    if not rest or not rest[0].isalpha():
+    if not rest or not (rest[0].isalpha() or _PROSE_OPENER.match(rest)):
         return False
     words = [w for w in _TAG.sub(" ", rest).split() if any(c.isalpha() for c in w)]
     return len(words) >= _PROSE_MIN_WORDS
