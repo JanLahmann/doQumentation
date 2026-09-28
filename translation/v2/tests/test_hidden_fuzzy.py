@@ -157,3 +157,19 @@ def test_translatable_sees_prose_after_a_fence(msgid):
 ])
 def test_translatable_still_rejects_code_and_closers_after_a_fence(msgid):
     assert not io.translatable(_entry(msgid))
+
+
+def test_update_summary_keeps_the_shape_sync_py_parses(monkeypatch, tmp_path, capsys):
+    """sync.py finish reads "<n> fuzzy, <n> untranslated" off update.py's
+    summary line; a note wedged between them made it read -1 entries left."""
+    import re
+    up = importlib.import_module("update")
+    from collections import Counter
+    monkeypatch.setattr(up, "worklist", lambda *a, **k: ([], Counter({"fuzzy": 4, "hidden fuzzy": 3, "untranslated": 9,
+                                                                      "translated": 1, "entries": 14}), []))
+    monkeypatch.setattr(sys, "argv", ["update.py", "--locale", "de", "--page", "guides/x.mdx"])
+    up.main()
+    out = capsys.readouterr().out
+    m = re.search(r"^de: \d+ translated, (\d+) fuzzy, (\d+) untranslated", out, re.M)
+    assert m and m.groups() == ("4", "9")
+    assert "3 of the fuzzy outside translatable()" in out

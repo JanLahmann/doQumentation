@@ -424,7 +424,7 @@ skip when it is missing).
   entry indices are stable. Once such an entry goes fuzzy, though, it renders
   as English, so `update.py` lists every fuzzy entry whatever
   `translatable()` says, and counts the ones it rejects separately
-  ("N fuzzy (M outside translatable())"). A code-fence chunk inside a list
+  ("…; M of the fuzzy outside translatable()"). A code-fence chunk inside a list
   item is translatable only when at least three words of prose follow its
   fence (po4a keeps the item's text in the same entry); a fuzzy one without
   them lands in `translate.py`'s copy tier.

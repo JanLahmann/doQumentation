@@ -163,10 +163,11 @@ def main() -> int:
                 stale.unlink()
                 print(f"removed memory for deleted page: {stale.relative_to(io.I18N / args.locale / 'po')}")
     items, counts, no_po = worklist(args.locale, pages, args.init_missing)
-    hidden = f" ({counts['hidden fuzzy']} outside translatable())" if counts["hidden fuzzy"] else ""
-    print(f"{args.locale}: {counts['translated']} translated, {counts['fuzzy']} fuzzy{hidden}, "
+    # sync.py parses "<n> fuzzy, <n> untranslated" from this line: keep that shape.
+    print(f"{args.locale}: {counts['translated']} translated, {counts['fuzzy']} fuzzy, "
           f"{counts['untranslated']} untranslated of {counts['entries']} entries; "
-          f"{counts['pages without PO']} page(s) without a PO, {counts['pages seeded']} seeded")
+          f"{counts['pages without PO']} page(s) without a PO, {counts['pages seeded']} seeded"
+          + (f"; {counts['hidden fuzzy']} of the fuzzy outside translatable()" if counts["hidden fuzzy"] else ""))
     pages_touched = len({i['page'] for i in items})
     words = sum(len(i["msgid"].split()) for i in items)
     print(f"worklist: {len(items)} entries on {pages_touched} page(s), {words} English words"
