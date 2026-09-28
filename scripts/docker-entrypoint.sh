@@ -118,6 +118,20 @@ PYEOF
 sed -i "s|# __JUPYTER_AUTH__|proxy_set_header Authorization \"token ${JUPYTER_TOKEN}\";|g" \
   /etc/nginx/sites-enabled/default
 
+# ── Mirror the CORS_ORIGIN allowlist into nginx ──
+# The token injected above makes Jupyter skip its own Origin check, so nginx
+# enforces it (see the maps at the top of nginx.conf): same-origin requests
+# on a LAN host pass, and so does every origin listed here. The entries were
+# validated above (http(s)://host[:port], safe characters only).
+CORS_ORIGIN="$CORS_ORIGIN" python3 - <<'NGINX' || exit 1
+import os
+path = "/etc/nginx/sites-enabled/default"
+origins = [o.strip().lower() for o in os.environ["CORS_ORIGIN"].split(",") if o.strip()]
+conf = open(path).read()
+entries = "".join(f'    "{o}" 1;\n' for o in origins)
+open(path, "w").write(conf.replace("    # __CORS_ORIGIN_MAP__\n", entries, 1))
+NGINX
+
 # ── Print token for users ──
 echo ""
 echo "========================================"

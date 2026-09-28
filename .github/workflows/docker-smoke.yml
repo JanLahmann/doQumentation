@@ -95,4 +95,34 @@ jobs:
             /etc/nginx/sites-enabled/default
           echo "PASS: container serves and the entrypoint completed (nginx sed ok)"
 
+          # The proxy adds the token, which makes Jupyter skip its own Origin
+          # check, so nginx must refuse cross-site and DNS-rebinding requests
+          # while any same-origin LAN address (a classroom Pi) gets through.
+          ready=0
+          for i in $(seq 1 60); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/status)" = "200" ]; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            docker logs smoke || true
+            echo "::error::Jupyter did not answer through the proxy"
+            docker rm -f smoke >/dev/null 2>&1 || true
+            exit 1
+          fi
+
+          fail=0
+          expect() {  # expect <code> <path> <description> <curl args...>
+            want="$1"; path="$2"; desc="$3"; shift 3
+            got=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:8080$path" \
+              -H 'Content-Type: application/json' -d '{"type":"notebook"}' "$@")
+            if [ "$got" = "$want" ]; then echo "PASS: $desc ($got)"; else echo "::error::$desc: got $got, want $want"; fail=1; fi
+          }
+          expect 201 /api/contents  "same-origin localhost"      -H 'Host: localhost:8080'       -H 'Origin: http://localhost:8080'
+          expect 201 /api/contents  "same-origin LAN IP"         -H 'Host: 192.168.1.23:8080'    -H 'Origin: http://192.168.1.23:8080'
+          expect 201 /api/contents  "same-origin .local name"    -H 'Host: rasqberry.local:8080' -H 'Origin: http://rasqberry.local:8080'
+          expect 403 /api/contents  "cross-site page"            -H 'Host: localhost:8080'       -H 'Origin: https://evil.example'
+          expect 403 /api/contents  "DNS rebinding"              -H 'Host: evil.example:8080'    -H 'Origin: http://evil.example:8080'
+          expect 403 /api/terminals "cross-site terminal create" -H 'Host: localhost:8080'       -H 'Origin: https://evil.example'
+
           docker rm -f smoke >/dev/null 2>&1 || true
+          [ "$fail" = "0" ] || exit 1
