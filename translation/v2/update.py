@@ -13,8 +13,10 @@ For each page with a PO, `msgmerge --previous` against the new POT:
 Pages with no PO yet (new upstream pages) are reported; render shows them in
 English until they are translated.
 
-The worklist is what translate.py consumes: every fuzzy or empty entry that
-a translator should see (code, imports and bare JSX are never listed).
+The worklist is what translate.py consumes: every fuzzy entry, and every
+empty entry that a translator should see (empty code, imports and bare JSX
+are never listed). A fuzzy entry renders as English, so it is listed even
+when po4a_io.translatable() rejects it.
 """
 
 from __future__ import annotations
@@ -105,8 +107,17 @@ def worklist(locale: str, pages: list[str], init_missing: bool = False) -> tuple
         io.msgmerge(po, pot)
         p = polib.pofile(str(po), wrapwidth=0)
         for idx, e in enumerate(p):
+            # A fuzzy entry renders as English whatever it holds, so every one
+            # is listed, also those translatable() rejects: a code-fence chunk
+            # inside a list item (```text host lists, a ```bash curl block),
+            # which translate.py's copy tier fills when nothing around the
+            # fence is prose, or tag-wrapped text the prose test misses. The
+            # English sync to cda70faec left 80 such entries fuzzy across the
+            # 17 locales while this printed "0 fuzzy".
             if not io.translatable(e):
-                continue
+                if not e.fuzzy:
+                    continue
+                counts["hidden fuzzy"] += 1
             counts["entries"] += 1
             if e.fuzzy:
                 counts["fuzzy"] += 1
@@ -152,9 +163,11 @@ def main() -> int:
                 stale.unlink()
                 print(f"removed memory for deleted page: {stale.relative_to(io.I18N / args.locale / 'po')}")
     items, counts, no_po = worklist(args.locale, pages, args.init_missing)
+    # sync.py parses "<n> fuzzy, <n> untranslated" from this line: keep that shape.
     print(f"{args.locale}: {counts['translated']} translated, {counts['fuzzy']} fuzzy, "
           f"{counts['untranslated']} untranslated of {counts['entries']} entries; "
-          f"{counts['pages without PO']} page(s) without a PO, {counts['pages seeded']} seeded")
+          f"{counts['pages without PO']} page(s) without a PO, {counts['pages seeded']} seeded"
+          + (f"; {counts['hidden fuzzy']} of the fuzzy outside translatable()" if counts["hidden fuzzy"] else ""))
     pages_touched = len({i['page'] for i in items})
     words = sum(len(i["msgid"].split()) for i in items)
     print(f"worklist: {len(items)} entries on {pages_touched} page(s), {words} English words"
