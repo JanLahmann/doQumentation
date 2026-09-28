@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-27 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-28 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -62,23 +62,23 @@ still have a delta pool.
 
 | Locale | Never read | Delta | Reviewed so far |
 |---|---|---|---|
-| `de` | **88** | 220 | 355/443 (80%) |
-| `he` | **87** | 194 | 356/443 (80%) |
-| `th` | **27** | 252 | 416/443 (93%) |
+| `de` | **80** | 220 | 363/443 (81%) |
+| `he` | **78** | 199 | 365/443 (82%) |
+| `th` | **21** | 249 | 422/443 (95%) |
 | `cs` | **181** | 76 | 262/443 (59%) |
-| `id` | **27** | 224 | 416/443 (93%) |
 | `pl` | **186** | 62 | 257/443 (58%) |
+| `id` | **21** | 221 | 422/443 (95%) |
 | `ro` | **194** | 46 | 249/443 (56%) |
-| `tl` | **70** | 158 | 373/443 (84%) |
 | `ms` | **189** | 38 | 254/443 (57%) |
 | `ja` | **141** | 74 | 302/443 (68%) |
-| `ko` | **27** | 186 | 416/443 (93%) |
+| `tl` | **58** | 155 | 385/443 (86%) |
+| `ko` | **23** | 178 | 420/443 (94%) |
 | `ar` | **134** | 65 | 309/443 (69%) |
 | `uk` | **141** | 57 | 302/443 (68%) |
 | `it` | **130** | 51 | 313/443 (70%) |
 | `es` | **124** | 44 | 319/443 (72%) |
 | `pt` | **130** | 38 | 313/443 (70%) |
-| `fr` | **123** | 35 | 320/443 (72%) |
+| `fr` | **95** | 49 | 348/443 (78%) |
 
 ---
 
@@ -86,14 +86,14 @@ still have a delta pool.
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `2026091103-JanLahmann` | 28 | 0 | 0.0% |
-| `2026091102-JanLahmann` | 264 | 4 | 1.5% |
-| `2026091101-JanLahmann` | 309 | 16 | 5.2% |
-| `2026091003-JanLahmann` | 250 | 11 | 4.4% |
-| `2026091002-JanLahmann` | 149 | 27 | 18.1% |
-| `2026091001-JanLahmann` | 158 | 12 | 7.6% |
+| `2026092877-JanLahmann` | 40 | 1 | 2.5% |
+| `2026092876-JanLahmann` | 40 | 0 | 0.0% |
+| `2026092875-JanLahmann` | 40 | 0 | 0.0% |
+| `2026092874-JanLahmann` | 40 | 0 | 0.0% |
+| `2026092873-JanLahmann` | 40 | 0 | 0.0% |
+| `2026092872-JanLahmann` | 40 | 0 | 0.0% |
 
-Typical FAIL rate is around **6%**. If your round comes
+Typical FAIL rate is around **0%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 

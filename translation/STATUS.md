@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-09-27 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-09-28 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -17,20 +17,20 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |
 |--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|
-| German | `de` | 443/443 | 26490 | 0 | 0 | 0 | 355 |
+| German | `de` | 443/443 | 26490 | 0 | 0 | 0 | 363 |
 | Spanish | `es` | 443/443 | 26490 | 0 | 0 | 0 | 319 |
 | Ukrainian | `uk` | 443/443 | 26490 | 0 | 0 | 0 | 302 |
 | Japanese | `ja` | 443/443 | 26490 | 0 | 0 | 0 | 302 |
-| French | `fr` | 443/443 | 26490 | 0 | 0 | 0 | 320 |
+| French | `fr` | 443/443 | 26490 | 0 | 0 | 0 | 348 |
 | Italian | `it` | 443/443 | 26490 | 0 | 0 | 0 | 313 |
 | Portuguese | `pt` | 443/443 | 26490 | 0 | 0 | 0 | 313 |
-| Tagalog | `tl` | 443/443 | 26490 | 0 | 0 | 0 | 373 |
+| Tagalog | `tl` | 443/443 | 26490 | 0 | 0 | 0 | 385 |
 | Arabic | `ar` | 443/443 | 26490 | 0 | 0 | 0 | 309 |
-| Hebrew | `he` | 443/443 | 26490 | 0 | 0 | 0 | 356 |
+| Hebrew | `he` | 443/443 | 26490 | 0 | 0 | 0 | 365 |
 | Malay | `ms` | 443/443 | 26490 | 0 | 0 | 0 | 254 |
-| Indonesian | `id` | 443/443 | 26490 | 0 | 0 | 0 | 416 |
-| Thai | `th` | 443/443 | 26490 | 0 | 0 | 0 | 416 |
-| Korean | `ko` | 443/443 | 26490 | 0 | 0 | 0 | 416 |
+| Indonesian | `id` | 443/443 | 26490 | 0 | 0 | 0 | 422 |
+| Thai | `th` | 443/443 | 26490 | 0 | 0 | 0 | 422 |
+| Korean | `ko` | 443/443 | 26490 | 0 | 0 | 0 | 420 |
 | Polish | `pl` | 443/443 | 26490 | 0 | 0 | 0 | 257 |
 | Romanian | `ro` | 443/443 | 26490 | 0 | 0 | 0 | 249 |
 | Czech | `cs` | 443/443 | 26490 | 0 | 0 | 0 | 262 |
@@ -41,11 +41,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 45 |
-| Guides | 188/188 | 7705 | 0 | 0 | 166 |
-| Courses | 161/161 | 10744 | 0 | 0 | 114 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 19 |
+| Tutorials | 58/58 | 4454 | 0 | 0 | 46 |
+| Guides | 188/188 | 7705 | 0 | 0 | 168 |
+| Courses | 161/161 | 10744 | 0 | 0 | 115 |
+| Modules | 15/15 | 2299 | 0 | 0 | 14 |
+| Other | 21/21 | 1288 | 0 | 0 | 20 |
 
 ### Spanish (`es`)
 
@@ -81,11 +81,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 22 |
-| Guides | 188/188 | 7705 | 0 | 0 | 153 |
-| Courses | 161/161 | 10744 | 0 | 0 | 115 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 19 |
+| Tutorials | 58/58 | 4454 | 0 | 0 | 31 |
+| Guides | 188/188 | 7705 | 0 | 0 | 160 |
+| Courses | 161/161 | 10744 | 0 | 0 | 121 |
+| Modules | 15/15 | 2299 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Italian (`it`)
 
@@ -111,11 +111,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 21 |
-| Guides | 188/188 | 7705 | 0 | 0 | 165 |
-| Courses | 161/161 | 10744 | 0 | 0 | 153 |
+| Tutorials | 58/58 | 4454 | 0 | 0 | 27 |
+| Guides | 188/188 | 7705 | 0 | 0 | 169 |
+| Courses | 161/161 | 10744 | 0 | 0 | 154 |
 | Modules | 15/15 | 2299 | 0 | 0 | 14 |
-| Other | 21/21 | 1288 | 0 | 0 | 20 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Arabic (`ar`)
 
@@ -131,11 +131,11 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 45 |
-| Guides | 188/188 | 7705 | 0 | 0 | 166 |
-| Courses | 161/161 | 10744 | 0 | 0 | 115 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 19 |
+| Tutorials | 58/58 | 4454 | 0 | 0 | 47 |
+| Guides | 188/188 | 7705 | 0 | 0 | 168 |
+| Courses | 161/161 | 10744 | 0 | 0 | 117 |
+| Modules | 15/15 | 2299 | 0 | 0 | 12 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Malay (`ms`)
 
@@ -151,31 +151,31 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 45 |
+| Tutorials | 58/58 | 4454 | 0 | 0 | 48 |
 | Guides | 188/188 | 7705 | 0 | 0 | 182 |
-| Courses | 161/161 | 10744 | 0 | 0 | 155 |
-| Modules | 15/15 | 2299 | 0 | 0 | 14 |
-| Other | 21/21 | 1288 | 0 | 0 | 20 |
+| Courses | 161/161 | 10744 | 0 | 0 | 156 |
+| Modules | 15/15 | 2299 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Thai (`th`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 45 |
-| Guides | 188/188 | 7705 | 0 | 0 | 182 |
-| Courses | 161/161 | 10744 | 0 | 0 | 155 |
+| Tutorials | 58/58 | 4454 | 0 | 0 | 48 |
+| Guides | 188/188 | 7705 | 0 | 0 | 183 |
+| Courses | 161/161 | 10744 | 0 | 0 | 156 |
 | Modules | 15/15 | 2299 | 0 | 0 | 14 |
-| Other | 21/21 | 1288 | 0 | 0 | 20 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Korean (`ko`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 45 |
+| Tutorials | 58/58 | 4454 | 0 | 0 | 47 |
 | Guides | 188/188 | 7705 | 0 | 0 | 182 |
 | Courses | 161/161 | 10744 | 0 | 0 | 155 |
-| Modules | 15/15 | 2299 | 0 | 0 | 14 |
-| Other | 21/21 | 1288 | 0 | 0 | 20 |
+| Modules | 15/15 | 2299 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Polish (`pl`)
 
