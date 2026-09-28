@@ -174,7 +174,10 @@ English sync (the page would render English there). With
   fix wave's repairs, a sync's retranslations) that no reviewer has read.
   The reviewer gets the page for context and those entries to judge; the
   sample row carries them as `delta_entries`. This is how every repair and
-  every retranslation gets an Opus read, at a fraction of a full page.
+  every retranslation gets an Opus read, at a fraction of a full page. A
+  verdict a sync withdrew (`X-Doq-Review-Opus-Prior`, written by
+  `translate.py --apply` when it retranslates entries of a reviewed page)
+  counts the same way: the retranslated entries are the delta.
 
 A page whose verdict stands with nothing written since is skipped, so rounds
 never re-tread ground. There is no minimum page length any more: the short

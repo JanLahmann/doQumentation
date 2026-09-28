@@ -232,3 +232,24 @@ def test_make_opus_run_defaults_to_the_reviewer_agent(tmp_path):
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
         assert ('"agentType": "reviewer"' in out.read_text()) is want
+
+
+def test_a_withdrawn_verdict_brings_the_page_back_as_a_delta_read(sampler, corpus):
+    """translate.py --apply moves a page's verdict to X-Doq-Review-Opus-Prior
+    when a sync retranslates entries of it. The page was read; only the
+    retranslated entries were not, so they are what the next round judges."""
+    _write_po(corpus, "guides/resynced.mdx",
+              [("Hello world", "Hallo Welt", False), ("Second paragraph here", "Zweiter Absatz hier", False)],
+              '"X-Doq-Review-Opus-Prior: PASS 2026-07-05\\n"')
+    _render(corpus, "guides/resynced.mdx", 60)
+    _stamp(corpus, "guides/resynced.mdx", 1, "doq: translated after an English change 2026-09-28")
+    cat = sampler.catalogue("xx")
+    r = cat["guides/resynced.mdx"]
+    assert r["verdict"] is None and r["prior"] == "PASS"
+    assert sampler.review_mode(r, 1, exclude_reviewed=True) == "delta"
+    by = {s["rel"]: s for s in sampler.draw(sampler.build_pool({"xx": cat}, min_lines=1, exclude_reviewed=True),
+                                             per_locale=10, seed=1)}
+    assert [d["index"] for d in by["guides/resynced.mdx"]["delta_entries"]] == [1]
+    # a withdrawn verdict with nothing unread (no stamp) is an ordinary unread page
+    _stamp(corpus, "guides/resynced.mdx", 1, "")
+    assert sampler.review_mode(sampler.catalogue("xx")["guides/resynced.mdx"], 1, exclude_reviewed=True) == "full"

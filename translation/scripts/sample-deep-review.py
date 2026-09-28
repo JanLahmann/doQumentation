@@ -71,6 +71,10 @@ FALLBACK_MARKER = "{/* doqumentation-untranslated-fallback */}"
 # longer written; Opus is the page-level deep-review verdict and the only
 # field eligibility reads.
 REVIEW_HEADER = "X-Doq-Review-Opus"
+# Where translate.py --apply moves a verdict when a sync retranslates entries
+# of a reviewed page. The page was read in full once; what no reviewer has
+# read is the retranslated entries, so it comes back as a delta read of those.
+PRIOR_HEADER = "X-Doq-Review-Opus-Prior"
 TIER3_HEADER = "X-Doq-Review-Tier3"
 PAGE_VERDICTS = ("PASS", "MINOR_ISSUES", "FAIL")
 
@@ -146,6 +150,8 @@ def catalogue(locale: str) -> dict[str, dict]:
 
     verdict / reviewed  the page-level Opus verdict and its date from the PO
                         header, None when the page was never read
+    prior               the verdict a sync withdrew (X-Doq-Review-Opus-Prior),
+                        None when there is none
     tier3               the v1 Haiku verdict copied at bootstrap (context only)
     pending             translatable entries that are fuzzy or empty: the page
                         is mid-update and renders English there
@@ -163,6 +169,7 @@ def catalogue(locale: str) -> dict[str, dict]:
         po = polib.pofile(str(p), wrapwidth=0)
         verdict, reviewed = split_verdict(po.metadata.get(REVIEW_HEADER))
         tier3, _ = split_verdict(po.metadata.get(TIER3_HEADER))
+        prior, _ = split_verdict(po.metadata.get(PRIOR_HEADER))
         pending = 0
         unverified = []
         for idx, e in enumerate(po):
@@ -174,7 +181,7 @@ def catalogue(locale: str) -> dict[str, dict]:
             if since:
                 unverified.append({"index": idx, "since": since, "msgid": e.msgid, "msgstr": e.msgstr})
         info = {"rel": rel, "section": section_of(rel), "verdict": verdict,
-                "reviewed": reviewed, "tier3": tier3, "pending": pending,
+                "reviewed": reviewed, "prior": prior, "tier3": tier3, "pending": pending,
                 "unverified": unverified,
                 "rendered": False, "lines": 0, "fallback": False}
         tr = _tr_path(locale, rel)
@@ -237,7 +244,10 @@ def review_mode(info: dict, min_lines: int, exclude_reviewed: bool) -> str | Non
     if info["pending"]:
         return None
     if not info["verdict"]:
-        return "full"
+        # A verdict a sync withdrew: the page was read, the retranslated
+        # entries were not. A full re-read of every such page cost ~0.35M
+        # tokens each for the 1-5 entries that changed (52 pages after #587).
+        return "delta" if info.get("prior") and info["unverified"] else "full"
     if info["unverified"]:
         return "delta"
     return None if exclude_reviewed else "full"
