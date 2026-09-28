@@ -51,6 +51,8 @@ Access at `http://localhost:8080`. Using Docker instead? Just replace `podman` w
 
 **Jupyter token:** The full-stack container generates a random authentication token at startup (printed in the container logs). Code execution through the website on port 8080 is transparent — no token needed. Direct JupyterLab access on port 8888 requires the token. To set a fixed token: `JUPYTER_TOKEN=mytoken podman run ...`
 
+**Classroom use:** one container can serve a whole room. Participants on the same network open `http://<host-ip>:8080` (or `http://<hostname>.local:8080`) and can run code; no configuration is needed. Code execution is accepted only from the site itself when it is reached by a local-network address (loopback, private IP, `.local` or single-label name), so other websites a participant has open cannot use the server. To let a site at another address use it too (for example a copy of the site you host yourself), list that address: `-e CORS_ORIGIN=https://docs.example.org`. `CORS_ORIGIN` takes a comma-separated list; plain `http://` is accepted only for local-network hosts.
+
 ### Deploy to RasQberry
 
 > **Note:** RasQberry deployment is under development. Instructions will be provided soon.
