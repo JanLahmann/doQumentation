@@ -425,7 +425,9 @@ skip when it is missing).
   as English, so `update.py` lists every fuzzy entry whatever
   `translatable()` says, and counts the ones it rejects separately
   ("N fuzzy (M outside translatable())"). A code-fence chunk inside a list
-  item lands in `translate.py`'s copy tier unless prose follows its fence.
+  item is translatable only when at least three words of prose follow its
+  fence (po4a keeps the item's text in the same entry); a fuzzy one without
+  them lands in `translate.py`'s copy tier.
 - Duplicate paragraphs on one page share one entry (gettext semantics). Two
   different translations of the same English sentence on one page are not
   possible; at bootstrap the first one is kept and the entry is annotated.

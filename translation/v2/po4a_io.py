@@ -305,8 +305,33 @@ def translatable(e: polib.POEntry) -> bool:
         if not _prose_behind_tags(s):
             return False          # bare JSX/HTML with no text prop
     if s.startswith("```"):
-        return False              # a fence chunk inside a list item, handed over as prose
+        # A fence chunk inside a list item, handed over as prose. Usually code
+        # and JSX closers only, but po4a keeps the list item's text after the
+        # fence in the same entry (the curl block in guides/cloud-setup-untrusted
+        # ends with "Copy and save the returned bearer token…"). Hiding those
+        # left the text English in th, cs, id and pl with nothing to list it.
+        return _prose_after_fence(s)
     return True
+
+
+FENCED_RE = re.compile(r"^[ \t]*```.*?^[ \t]*```[ \t]*$", re.S | re.M)
+OPEN_FENCE_RE = re.compile(r"^[ \t]*```.*\Z", re.S | re.M)
+# Three words: "Then open your notebook as follows:" is the shortest real
+# sentence behind a fence in the corpus; a closer such as
+# `</TabItem>\n<TabItem value="package-table-cfg" label="setup.cfg">` has none
+# once its tags are removed.
+_FENCE_PROSE_MIN_WORDS = 3
+
+
+def outside_fences(s: str) -> str:
+    """The text of an entry with its fenced blocks removed; a fence left open
+    runs to the end of the entry."""
+    return OPEN_FENCE_RE.sub("", FENCED_RE.sub("", s))
+
+
+def _prose_after_fence(s: str) -> bool:
+    visible = _TAG.sub(" ", outside_fences(s))
+    return len(re.findall(r"[A-Za-z]{3,}", visible)) >= _FENCE_PROSE_MIN_WORDS
 
 
 def prune(po: polib.POFile) -> polib.POFile:

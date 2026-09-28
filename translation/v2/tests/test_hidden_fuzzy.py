@@ -135,3 +135,25 @@ def test_prepare_copies_a_fuzzy_fence_chunk_without_a_model(monkeypatch, tmp_pat
     assert summary["copy"] == 1 and summary["haiku"] == 0 and summary["sonnet"] == 0
     e = polib.pofile(str(io.po_path("de", rel)), wrapwidth=0)[0]
     assert e.msgstr == FENCE_NEW and not e.fuzzy
+
+
+# A fence chunk keeps the list item's text after the fence in the same entry.
+# When that text is prose, the entry is a translator's, however it begins.
+@pytest.mark.parametrize("msgid", [
+    "    ```bash\n    curl -X POST 'https://iam.cloud.ibm.com/identity/token'\n    ```\n"
+    "    Copy and save the returned bearer token.\n",
+    "    ```text\n    quantum.cloud.ibm.com\n    ```\n- IBM Quantum Compute Service - region eu-de:\n",
+    "```python\nprint(result)\n```\nThen open your notebook as follows:\n",
+])
+def test_translatable_sees_prose_after_a_fence(msgid):
+    assert io.translatable(_entry(msgid))
+
+
+@pytest.mark.parametrize("msgid", [
+    FENCE_NEW,
+    "```python\nx = 1\n```\n</TabItem>\n</Tabs>\n",
+    '```toml\n[x]\n```\n</TabItem>\n  <TabItem value="package-table-cfg" label="setup.cfg">\n',
+    "```python\n# an open fence: the rest is code, whatever it says in comments\nx = 1\n",
+])
+def test_translatable_still_rejects_code_and_closers_after_a_fence(msgid):
+    assert not io.translatable(_entry(msgid))

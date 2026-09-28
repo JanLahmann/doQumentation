@@ -239,10 +239,6 @@ def is_table(msgid: str) -> bool:
     return msgid.lstrip().startswith("|")
 
 
-FENCED_RE = re.compile(r"^[ \t]*```.*?^[ \t]*```[ \t]*$", re.S | re.M)
-OPEN_FENCE_RE = re.compile(r"^[ \t]*```.*\Z", re.S | re.M)
-
-
 def is_copy_only(msgid: str) -> bool:
     """Nothing a translator could change: math, code, citations, images."""
     s = msgid.strip()
@@ -254,8 +250,7 @@ def is_copy_only(msgid: str) -> bool:
     # block) is code however many words it holds; text after its closing
     # fence (a paragraph, a label="…") still counts. A fence left open runs
     # to the end of the entry.
-    stripped = FENCED_RE.sub("", s)
-    stripped = OPEN_FENCE_RE.sub("", stripped)
+    stripped = io.outside_fences(s)
     stripped = re.sub(r"\$\$.*?\$\$", "", stripped, flags=re.S)
     stripped = re.sub(r"\$[^$\n]+\$", "", stripped)
     stripped = re.sub(r"`[^`\n]+`", "", stripped)
