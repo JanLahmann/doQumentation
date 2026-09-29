@@ -191,6 +191,14 @@ the reader reads — one Read instead of two full pages — and the number is
 what the reader cites, which pins a fix to the exact entry. The sample row
 carries its path as `pair`.
 
+Entries stamped on the round's own date are left out of the delta reads
+(`--as-of`, default today): the recorder marks an entry read only when it
+was written *before* the verdict date, so a same-day entry would stay
+pending however carefully it was read. A page with nothing older to judge
+waits for a later round. For a round over a known set of pages, such as the
+pages a sync withdrew verdicts on, pass `--pages <file>` with one
+`<locale> <page>` (or just `<page>`) per line.
+
 If the pool is smaller than `N`, that locale is genuinely drained: take the
 short round rather than shrinking `N` on a locale that still has work.
 
@@ -372,13 +380,20 @@ Every entry carries a `review` field saying why it is there.
 > `check.py`, not lint, not `mdxcheck` — so it renders perfectly and reads
 > wrong. Append your extra guidance to `fix_instructions(locale)` instead.
 
-Fill the batches with the `Workflow` tool:
+Bake the manifest into a runnable workflow and fill the batches with the
+`Workflow` tool, as for the review wave (a large `args` payload is not
+reliably passed through by scriptPath):
 
+```bash
+python3 translation/scripts/make-fix-run.py \
+  --manifest translation/v2/work/<LOCALE>/manifest-fix.json --out /tmp/fix-<SEED>-wf.js
 ```
-Workflow({ scriptPath: ".claude/workflows/translate-locale.js",
-           args: <the parsed contents of translation/v2/work/<LOCALE>/manifest-fix.json,
-                  plus "agentType": "translator"> })
-```
+
+Then `Workflow({scriptPath: "/tmp/fix-<SEED>-wf.js"})`. `--per-workflow N`
+splits a large wave into several runs; a repeated `--manifest` bakes a wave
+over several locales, each keeping its own rules. Re-running the baker after
+an interrupted wave leaves out the batches already filled, so only the lost
+ones run again.
 
 One Sonnet agent per page corrects the flagged entries and copies the rest
 back verbatim. Then write the results into the PO files, through the gate:
