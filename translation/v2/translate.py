@@ -251,14 +251,29 @@ def is_copy_only(msgid: str) -> bool:
     # fence (a paragraph, a label="…") still counts. A fence left open runs
     # to the end of the entry.
     stripped = io.outside_fences(s)
+    # A JSX/HTML tag is markup, not words: `</TabItem>\n</Tabs>` after a
+    # fence counted "TabItem" and "Tabs" and sent the chunk to a model. A tag
+    # carrying text a reader sees (title=, alt=, description=, linkText=, and
+    # label=, which the locales translate on TabItems) is never copy-only,
+    # however short: `<Admonition type="tip" title="Recommendations">` is one
+    # word and still a translation.
+    if any(re.search(r"[A-Za-z]", v) for tag in io._TAG.findall(stripped)
+           for k, v in ATTR_RE.findall(tag) if k in PROSE_ATTRS + ("label",)):
+        return False
     stripped = re.sub(r"\$\$.*?\$\$", "", stripped, flags=re.S)
     stripped = re.sub(r"\$[^$\n]+\$", "", stripped)
     stripped = re.sub(r"`[^`\n]+`", "", stripped)
     stripped = re.sub(r"\\[A-Za-z]+", "", stripped)
     if s.count("$$") % 2 == 1:          # an entry that opens or closes inside a block
         stripped = re.sub(r"\$\$.*$", "", stripped, flags=re.S) if s.find("$$") > 0 else ""
+    # Tags go last, after math and code, so a `<` inside $...$ is never taken
+    # for one. Removing them may only make an entry copy-only when nothing is
+    # left: the one-word allowance would otherwise take `**Default**: `False`
+    # </AccordionItem>`, whose "Default" 150 entries across the locales translate.
+    had_tags = bool(io._TAG.search(stripped))
+    stripped = io._TAG.sub(" ", stripped)
     words = re.findall(r"[A-Za-z]{3,}", stripped)
-    return len(words) <= 1
+    return len(words) == 0 if had_tags else len(words) <= 1
 
 
 ATTR_RE = re.compile(r'\b([A-Za-z][\w:-]*)="([^"\n]*)"')

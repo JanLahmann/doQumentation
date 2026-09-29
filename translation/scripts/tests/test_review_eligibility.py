@@ -253,3 +253,45 @@ def test_a_withdrawn_verdict_brings_the_page_back_as_a_delta_read(sampler, corpu
     # a withdrawn verdict with nothing unread (no stamp) is an ordinary unread page
     _stamp(corpus, "guides/resynced.mdx", 1, "")
     assert sampler.review_mode(sampler.catalogue("xx")["guides/resynced.mdx"], 1, exclude_reviewed=True) == "full"
+
+
+def test_same_day_entries_are_held_back(sampler, corpus):
+    """The recorder verifies only entries stamped BEFORE the verdict date, so an
+    entry stamped on the round's own date cannot be cleared by it. The sampler
+    leaves such entries out; a page with nothing else unread drops out."""
+    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: fixed after review 2026-09-29")
+    cat = {"xx": sampler.catalogue("xx")}
+    assert sampler.hold_back_same_day(cat, "2026-09-29") == 1
+    r = cat["xx"]["guides/reviewed.mdx"]
+    assert r["unverified"] == [] and r["held_back"] == 1
+    assert sampler.review_mode(r, 1, exclude_reviewed=True) is None
+    # the day after, the same entry is a delta read
+    cat = {"xx": sampler.catalogue("xx")}
+    assert sampler.hold_back_same_day(cat, "2026-09-30") == 0
+    assert sampler.review_mode(cat["xx"]["guides/reviewed.mdx"], 1, exclude_reviewed=True) == "delta"
+
+
+def test_a_withdrawn_verdict_with_only_same_day_entries_is_not_a_full_read(sampler, corpus):
+    """Before the hold-back, such a page fell through to a full read: the most
+    expensive read of a page whose only news no read today could clear."""
+    _write_po(corpus, "guides/resynced.mdx",
+              [("Hello world", "Hallo Welt", False), ("Second paragraph here", "Zweiter Absatz hier", False)],
+              '"X-Doq-Review-Opus-Prior: PASS 2026-07-05\\n"')
+    _render(corpus, "guides/resynced.mdx", 60)
+    _stamp(corpus, "guides/resynced.mdx", 1, "doq: translated after an English change 2026-09-29")
+    cat = {"xx": sampler.catalogue("xx")}
+    sampler.hold_back_same_day(cat, "2026-09-29")
+    assert sampler.review_mode(cat["xx"]["guides/resynced.mdx"], 1, exclude_reviewed=True) is None
+
+
+def test_pages_file_restricts_the_pool(sampler, corpus):
+    cat = {"xx": sampler.catalogue("xx"), "yy": {"guides/fresh.mdx": {}}}
+    out, unmatched = sampler.restrict_to_pages(cat, [
+        "# the pages a sync touched",
+        "xx guides/fresh.po",            # suffix .po accepted
+        "guides/reviewed",               # no locale: every locale; no suffix
+        "xx guides/gone.mdx",
+        ""])
+    assert set(out["xx"]) == {"guides/fresh.mdx", "guides/reviewed.mdx"}
+    assert out["yy"] == {}               # yy has no guides/reviewed.mdx, and fresh was named for xx only
+    assert unmatched == ["xx guides/gone.mdx"]

@@ -48,6 +48,7 @@ import json
 import random
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 import polib
@@ -247,10 +248,56 @@ def review_mode(info: dict, min_lines: int, exclude_reviewed: bool) -> str | Non
         # A verdict a sync withdrew: the page was read, the retranslated
         # entries were not. A full re-read of every such page cost ~0.35M
         # tokens each for the 1-5 entries that changed (52 pages after #587).
-        return "delta" if info.get("prior") and info["unverified"] else "full"
+        if info.get("prior"):
+            if info["unverified"]:
+                return "delta"
+            if info.get("held_back"):
+                return None       # only same-day entries unread: a read today could not clear them
+        return "full"
     if info["unverified"]:
         return "delta"
     return None if exclude_reviewed else "full"
+
+
+def hold_back_same_day(catalogues: dict[str, dict], as_of: str) -> int:
+    """Drop from each page's unverified list the entries stamped on or after
+    `as_of`, the date the round's verdicts will carry. The recorder marks an
+    entry verified only when it was stamped BEFORE the verdict date (a
+    round's own repairs stay pending), so reading a same-day entry spends a
+    reviewer on something the round cannot clear: on 2026-09-29 seven th
+    pages had nothing else unread. Returns the number of pages affected."""
+    pages = 0
+    for cat in catalogues.values():
+        for info in cat.values():
+            keep = [u for u in info["unverified"] if u["since"] < as_of]
+            info["held_back"] = len(info["unverified"]) - len(keep)
+            if info["held_back"]:
+                pages += 1
+            info["unverified"] = keep
+    return pages
+
+
+def restrict_to_pages(catalogues: dict[str, dict], lines: list[str]) -> tuple[dict[str, dict], list[str]]:
+    """Keep only the pages a --pages file names: one per line, `<locale> <page>`
+    or just `<page>` for every locale; a page may be written with .mdx, .po
+    or no suffix. Blank lines and #-comments are skipped. Returns the
+    restricted catalogues and the lines that matched no page."""
+    def norm(rel: str) -> str:
+        rel = re.sub(r"\.(mdx|po)$", "", rel.strip())
+        return rel + ".mdx"
+    want: set[tuple[str | None, str]] = set()
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        want.add((parts[0], norm(parts[1])) if len(parts) == 2 else (None, norm(parts[0])))
+    out = {loc: {rel: info for rel, info in cat.items()
+                 if (loc, rel) in want or (None, rel) in want}
+           for loc, cat in catalogues.items()}
+    seen = {(loc, rel) for loc, cat in out.items() for rel in cat} | {(None, rel) for cat in out.values() for rel in cat}
+    unmatched = [f"{l} {r}" if l else r for l, r in sorted(want, key=str) if (l, r) not in seen]
+    return out, unmatched
 
 
 def eligible(info: dict, min_lines: int, exclude_reviewed: bool) -> bool:
@@ -396,6 +443,14 @@ def main():
                          "Lets an external contributor own one locale outright, "
                          "so their fixes touch a disjoint i18n/ subtree and can "
                          "never conflict with another round.")
+    ap.add_argument("--pages", metavar="FILE",
+                    help="restrict the pool to the pages this file lists, one per line: "
+                         "'<locale> <page>' or '<page>' (every locale). For a round over a "
+                         "known set, e.g. the pages a sync withdrew verdicts on")
+    ap.add_argument("--as-of", default=date.today().isoformat(), metavar="YYYY-MM-DD",
+                    help="the date this round's verdicts will carry (default: today). Entries "
+                         "stamped on or after it are not judged: the recorder could not mark "
+                         "them verified, so the next round would read them again")
     ap.add_argument("--out", help="write sample JSON here")
     ap.add_argument("--print", action="store_true", dest="do_print",
                     help="print the sample to stdout")
@@ -428,6 +483,16 @@ def main():
             print(f"no rendered pages for {loc} under i18n/{loc}/docusaurus-plugin-content-docs/current/ — "
                   f"run: python3 translation/v2/render.py --locale {loc}", file=sys.stderr)
         sys.exit(2)
+
+    if args.pages:
+        catalogues, unmatched = restrict_to_pages(
+            catalogues, Path(args.pages).read_text(encoding="utf-8").splitlines())
+        for line in unmatched:
+            print(f"--pages: no such page: {line}", file=sys.stderr)
+    held = hold_back_same_day(catalogues, args.as_of)
+    if held:
+        print(f"  held back: {held} page(s) have entries stamped on or after {args.as_of}, "
+              f"which a verdict dated {args.as_of} could not clear")
 
     # --leak-clean is exactly --max-leaks 0; an explicit --max-leaks relaxes it.
     max_leaks = 0 if args.leak_clean else args.max_leaks
