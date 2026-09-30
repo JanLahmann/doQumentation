@@ -1,10 +1,9 @@
 /**
  * Docusaurus Client Module — Outbound Link Tracker
  *
- * Fires a Umami "Outbound" event whenever a user clicks a link to
- * an external host. IBM links additionally fire "Outbound IBM" for
- * backward compatibility with the existing dashboard. Categorization
- * happens in analytics.ts (IBM gets fine-grained buckets, GitHub is
+ * Fires a Umami "doQumentation: outbound click" event whenever a user
+ * clicks a link to an external host. Categorization happens in
+ * analytics.ts (IBM gets fine-grained buckets, GitHub is
  * its own category, everything else is "external-other").
  *
  * Listens on mousedown + auxclick so middle-click and cmd/ctrl-click

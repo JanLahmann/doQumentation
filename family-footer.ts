@@ -8,7 +8,7 @@
  */
 import vendored from './fwq-family.json';
 
-interface Member { id: string; name: string; url: string; short?: string; footer: boolean }
+interface Member { id: string; name: string; label?: string; url: string; short?: string; footer: boolean }
 interface Manifest { version: number; updated: string; brand: { id: string; name: string; footer_lead: string }; members: Member[] }
 
 const MANIFEST_URL = 'https://raw.githubusercontent.com/JanLahmann/Fun-with-Quantum/master/family/family.json';
@@ -35,12 +35,16 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 /** A Docusaurus footer column: every visible member except this site, name + short description. */
 export async function familyFooterColumn(selfId: string) {
   const m = await loadFamily();
+  // Family event naming v2 (Fun-with-Quantum/family/EVENTS.md): `<Site>: <what happened>`,
+  // where <Site> is this member's manifest `label`, defaulting to its `name`.
+  const self = m.members.find((x) => x.id === selfId);
+  const event = `${self?.label ?? self?.name ?? selfId}: family footer click`;
   return {
     title: `${m.brand.name} family`,
     items: m.members
       .filter((x) => x.footer && x.id !== selfId)
       .map((x) => ({
-        html: `<a class="footer__link-item fwq-member" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" data-umami-event="family-footer" data-umami-event-to="${esc(x.id)}">${esc(x.name)}${x.short ? `<small>${esc(x.short)}</small>` : ''}</a>`,
+        html: `<a class="footer__link-item fwq-member" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" data-umami-event="${esc(event)}" data-umami-event-to="${esc(x.id)}">${esc(x.name)}${x.short ? `<small>${esc(x.short)}</small>` : ''}</a>`,
       })),
   };
 }
