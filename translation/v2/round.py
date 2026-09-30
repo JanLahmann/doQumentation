@@ -288,8 +288,38 @@ def bake_review(st: dict, locale: str, wt: Path, sample_file: Path) -> list[str]
     return out
 
 
+SEED_IN_RECORD = re.compile(r"opus-(\d{8,})-")
+
+
+def used_seeds() -> set[str]:
+    """Every seed a round has used: review records on origin/main and in
+    this checkout, and local round state. The old default (today's date plus
+    pid % 100) collided three times on 2026-09-30: 2026093024, 2026093027
+    and 2026093035 each named an earlier round and a new one."""
+    names = run(["git", "ls-tree", "-r", "--name-only", "-z", "origin/main", "translation/reviews"],
+                REPO, check=False).stdout.split("\0")
+    names += [p.name for p in (REPO / "translation" / "reviews").glob("opus-*.json")]
+    seeds = {m.group(1) for n in names if (m := SEED_IN_RECORD.search(n))}
+    if ROUNDS.is_dir():
+        seeds |= {p.name for p in ROUNDS.iterdir() if p.is_dir()}
+    return seeds
+
+
+def new_seed(day: str, used: set[str], start: int) -> str:
+    """`day` plus the first two-digit suffix from `start` (wrapping) that no
+    round has used; three digits once all hundred are taken."""
+    for width in (2, 3):
+        n = 10 ** width
+        for k in range(n):
+            s = f"{day}{(start + k) % n:0{width}d}"
+            if s not in used:
+                return s
+    sys.exit(f"no free seed for {day}; pass --seed")
+
+
 def cmd_start(a) -> int:
-    seed = a.seed or date.today().strftime("%Y%m%d") + f"{os.getpid() % 100:02d}"
+    run(["git", "fetch", "-q", "origin", "main"], REPO)
+    seed = a.seed or new_seed(date.today().strftime("%Y%m%d"), used_seeds(), os.getpid() % 100)
     if (state_dir(seed) / "state.json").exists():
         sys.exit(f"round {seed} exists; pick another --seed")
     wt_root = Path(a.worktrees or Path(tempfile.gettempdir()) / "doq-rounds")
