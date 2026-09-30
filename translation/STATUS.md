@@ -1,6 +1,6 @@
 # Translation Status
 
-*Auto-generated on 2026-09-28 by `translation-status.py --write-status`.*
+*Auto-generated on 2026-09-30 by `translation-status.py --write-status`.*
 *Do not edit manually — regenerate with:*
 
 ```bash
@@ -17,23 +17,23 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Locale | Code | Pages | Entries | Fuzzy | Untranslated | Pages mid-update | Reviewed pages |
 |--------|------|------:|--------:|------:|-------------:|-----------------:|---------------:|
-| German | `de` | 443/443 | 26490 | 0 | 0 | 0 | 363 |
-| Spanish | `es` | 443/443 | 26490 | 0 | 0 | 0 | 319 |
-| Ukrainian | `uk` | 443/443 | 26490 | 0 | 0 | 0 | 302 |
-| Japanese | `ja` | 443/443 | 26490 | 0 | 0 | 0 | 302 |
-| French | `fr` | 443/443 | 26490 | 0 | 0 | 0 | 348 |
-| Italian | `it` | 443/443 | 26490 | 0 | 0 | 0 | 313 |
-| Portuguese | `pt` | 443/443 | 26490 | 0 | 0 | 0 | 313 |
-| Tagalog | `tl` | 443/443 | 26490 | 0 | 0 | 0 | 385 |
-| Arabic | `ar` | 443/443 | 26490 | 0 | 0 | 0 | 309 |
-| Hebrew | `he` | 443/443 | 26490 | 0 | 0 | 0 | 365 |
-| Malay | `ms` | 443/443 | 26490 | 0 | 0 | 0 | 254 |
-| Indonesian | `id` | 443/443 | 26490 | 0 | 0 | 0 | 422 |
-| Thai | `th` | 443/443 | 26490 | 0 | 0 | 0 | 422 |
-| Korean | `ko` | 443/443 | 26490 | 0 | 0 | 0 | 420 |
-| Polish | `pl` | 443/443 | 26490 | 0 | 0 | 0 | 257 |
-| Romanian | `ro` | 443/443 | 26490 | 0 | 0 | 0 | 249 |
-| Czech | `cs` | 443/443 | 26490 | 0 | 0 | 0 | 262 |
+| German | `de` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Spanish | `es` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Ukrainian | `uk` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Japanese | `ja` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| French | `fr` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Italian | `it` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Portuguese | `pt` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Tagalog | `tl` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Arabic | `ar` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Hebrew | `he` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Malay | `ms` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Indonesian | `id` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Thai | `th` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Korean | `ko` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Polish | `pl` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Romanian | `ro` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
+| Czech | `cs` | 449/449 | 27074 | 0 | 0 | 0 | 449 |
 
 ## Per-Locale Detail
 
@@ -41,168 +41,168 @@ deep-review verdict in their PO header (`CONTRIBUTING-REVIEWS.md`).
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 46 |
-| Guides | 188/188 | 7705 | 0 | 0 | 168 |
-| Courses | 161/161 | 10744 | 0 | 0 | 115 |
-| Modules | 15/15 | 2299 | 0 | 0 | 14 |
-| Other | 21/21 | 1288 | 0 | 0 | 20 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Spanish (`es`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 22 |
-| Guides | 188/188 | 7705 | 0 | 0 | 153 |
-| Courses | 161/161 | 10744 | 0 | 0 | 114 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 19 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Ukrainian (`uk`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 21 |
-| Guides | 188/188 | 7705 | 0 | 0 | 149 |
-| Courses | 161/161 | 10744 | 0 | 0 | 111 |
-| Modules | 15/15 | 2299 | 0 | 0 | 9 |
-| Other | 21/21 | 1288 | 0 | 0 | 12 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Japanese (`ja`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 21 |
-| Guides | 188/188 | 7705 | 0 | 0 | 150 |
-| Courses | 161/161 | 10744 | 0 | 0 | 107 |
-| Modules | 15/15 | 2299 | 0 | 0 | 8 |
-| Other | 21/21 | 1288 | 0 | 0 | 16 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### French (`fr`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 31 |
-| Guides | 188/188 | 7705 | 0 | 0 | 160 |
-| Courses | 161/161 | 10744 | 0 | 0 | 121 |
-| Modules | 15/15 | 2299 | 0 | 0 | 15 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Italian (`it`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 22 |
-| Guides | 188/188 | 7705 | 0 | 0 | 149 |
-| Courses | 161/161 | 10744 | 0 | 0 | 113 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 18 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Portuguese (`pt`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 22 |
-| Guides | 188/188 | 7705 | 0 | 0 | 148 |
-| Courses | 161/161 | 10744 | 0 | 0 | 113 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 19 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Tagalog (`tl`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 27 |
-| Guides | 188/188 | 7705 | 0 | 0 | 169 |
-| Courses | 161/161 | 10744 | 0 | 0 | 154 |
-| Modules | 15/15 | 2299 | 0 | 0 | 14 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Arabic (`ar`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 21 |
-| Guides | 188/188 | 7705 | 0 | 0 | 149 |
-| Courses | 161/161 | 10744 | 0 | 0 | 113 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 15 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Hebrew (`he`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 47 |
-| Guides | 188/188 | 7705 | 0 | 0 | 168 |
-| Courses | 161/161 | 10744 | 0 | 0 | 117 |
-| Modules | 15/15 | 2299 | 0 | 0 | 12 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Malay (`ms`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 14 |
-| Guides | 188/188 | 7705 | 0 | 0 | 123 |
-| Courses | 161/161 | 10744 | 0 | 0 | 96 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 10 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Indonesian (`id`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 48 |
-| Guides | 188/188 | 7705 | 0 | 0 | 182 |
-| Courses | 161/161 | 10744 | 0 | 0 | 156 |
-| Modules | 15/15 | 2299 | 0 | 0 | 15 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Thai (`th`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 48 |
-| Guides | 188/188 | 7705 | 0 | 0 | 183 |
-| Courses | 161/161 | 10744 | 0 | 0 | 156 |
-| Modules | 15/15 | 2299 | 0 | 0 | 14 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Korean (`ko`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 47 |
-| Guides | 188/188 | 7705 | 0 | 0 | 182 |
-| Courses | 161/161 | 10744 | 0 | 0 | 155 |
-| Modules | 15/15 | 2299 | 0 | 0 | 15 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
 | Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Polish (`pl`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 21 |
-| Guides | 188/188 | 7705 | 0 | 0 | 114 |
-| Courses | 161/161 | 10744 | 0 | 0 | 102 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 9 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Romanian (`ro`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 21 |
-| Guides | 188/188 | 7705 | 0 | 0 | 118 |
-| Courses | 161/161 | 10744 | 0 | 0 | 89 |
-| Modules | 15/15 | 2299 | 0 | 0 | 8 |
-| Other | 21/21 | 1288 | 0 | 0 | 13 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
 
 ### Czech (`cs`)
 
 | Section | Pages | Entries | Fuzzy | Untranslated | Reviewed pages |
 |---------|------:|--------:|------:|-------------:|---------------:|
-| Tutorials | 58/58 | 4454 | 0 | 0 | 14 |
-| Guides | 188/188 | 7705 | 0 | 0 | 123 |
-| Courses | 161/161 | 10744 | 0 | 0 | 104 |
-| Modules | 15/15 | 2299 | 0 | 0 | 11 |
-| Other | 21/21 | 1288 | 0 | 0 | 10 |
+| Tutorials | 60/60 | 4739 | 0 | 0 | 60 |
+| Guides | 191/191 | 7830 | 0 | 0 | 191 |
+| Courses | 162/162 | 10917 | 0 | 0 | 162 |
+| Modules | 15/15 | 2300 | 0 | 0 | 15 |
+| Other | 21/21 | 1288 | 0 | 0 | 21 |
