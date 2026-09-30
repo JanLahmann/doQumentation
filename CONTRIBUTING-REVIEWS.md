@@ -73,6 +73,28 @@ the end of each workflow. Follow this recipe as written and **ask before
 doing anything it does not describe** — a contributor cannot judge an
 improvised step, and every past surprise came from one.
 
+**Steps 2 to 8 are one command each in `translation/v2/round.py`.** It
+runs every step in a git worktree of its own for each locale, on a branch
+from origin/main, so a stale checkout or another round's unmerged work can
+never leak into this round's PR. It keeps the round's state in one file
+(`translation/v2/work/rounds/<SEED>/state.json`), refuses steps out of
+order, and builds the commit message and PR body from the records:
+
+```bash
+python3 translation/v2/round.py start --locales <LOCALE> --per-locale <N> --order risk \
+    --handle <HANDLE> --claim <ISSUE>            # prints the review Workflow(s) to run
+python3 translation/v2/round.py collect --seed <SEED> --locale <LOCALE> --run <runId> [--run …]
+python3 translation/v2/round.py gauge   --seed <SEED> --locale <LOCALE> --result gauge.json  # if FAILs
+python3 translation/v2/round.py prepare --seed <SEED> --locale <LOCALE>   # prints the fill Workflow
+python3 translation/v2/round.py finish  --seed <SEED> --locale <LOCALE>   # apply, render, every gate
+python3 translation/v2/round.py accept  --seed <SEED> --locale <LOCALE> --note "<why>"   # sieve FPs, after reading them
+python3 translation/v2/round.py verify  --seed <SEED> --locale <LOCALE>   # re-read the FAIL pages' fixes
+python3 translation/v2/round.py ship    --seed <SEED> --locale <LOCALE>   # commit, push, PR body file
+```
+
+The sections below describe what each step does and what to tell the user;
+they stay the reference for judging its output.
+
 ### 0. Establish scope before doing anything
 
 Confirm with the user, or take from their prompt:
