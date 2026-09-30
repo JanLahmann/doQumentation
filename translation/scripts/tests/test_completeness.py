@@ -440,3 +440,16 @@ def test_line_shape_forgives_a_rewrap_but_not_a_short_translation(completeness):
     assert "line-shape" in {f["check"] for f in completeness.check_pair(src, dropped, "cs")}
     # without a locale the plain line count still applies
     assert "line-shape" in {f["check"] for f in completeness.check_pair(src, rewrap)}
+
+
+@pytest.mark.parametrize("extra", [[], ["--baseline", "translation/eval/completeness-baseline.json"]])
+def test_accept_new_refuses_without_a_baseline_directory(extra):
+    # A bare --accept-new once printed the findings, accepted nothing and
+    # exited 0, which read as success.
+    import subprocess, sys
+    root = Path(__file__).resolve().parents[3]
+    r = subprocess.run([sys.executable, "translation/scripts/check-completeness.py",
+                        "--locale", "cs", "--accept-new", *extra],
+                       cwd=root, capture_output=True, text=True)
+    assert r.returncode == 2
+    assert "--accept-new needs" in r.stderr
