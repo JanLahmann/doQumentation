@@ -239,6 +239,14 @@ def is_table(msgid: str) -> bool:
     return msgid.lstrip().startswith("|")
 
 
+def has_display_math(msgid: str) -> bool:
+    """A $$ block or a LaTeX environment. Haiku rewrote a multi-line aligned
+    block (merged lines, dropped \\right., reordered terms) in 4 of 17 locales
+    on the 2026-09-30 sync; check.py rejected every one and the batches had
+    to be redone. Sonnet copied it byte for byte."""
+    return "$$" in msgid or "\\begin{" in msgid
+
+
 def is_copy_only(msgid: str) -> bool:
     """Nothing a translator could change: math, code, citations, images."""
     s = msgid.strip()
@@ -509,7 +517,8 @@ def prepare(locale: str, worklist: Path) -> dict:
         # A markdown table is a fuzzy match like any other, but Haiku, asked
         # for a JSON list of strings, twice wrote the translated table itself
         # into the output file (pl, th, 2026-09-10); Sonnet did not.
-        haiku = prev_ok and sim >= HAIKU_MIN and not is_table(it["msgid"])
+        haiku = (prev_ok and sim >= HAIKU_MIN and not is_table(it["msgid"])
+                 and not has_display_math(it["msgid"]))
         tiers["haiku" if haiku else "sonnet"].append(slim)
 
     n_direct = _write_direct(locale, direct)

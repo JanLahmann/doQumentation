@@ -1063,7 +1063,7 @@ def test_sync_status_names_every_bad_output(tmp_path, monkeypatch):
     (w / "b3.out.json").write_text('[{"msgstr": "a"}, "b"]', encoding="utf-8")  # wrong shape
     problems = sync.check_outputs(manifest)
     assert len(problems) == 4
-    assert problems[0].startswith("b1.out.json: not valid JSON")
+    assert problems[0].startswith("b1.out.json: not a list of strings, nor one string per line")
     assert "1 strings for 2 items" in problems[1]
     assert problems[2].startswith("b3.out.json: not a list of strings")
     assert problems[3] == "b4.out.json: not filled"

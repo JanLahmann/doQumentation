@@ -129,11 +129,20 @@ python3 translation/v2/sync.py prepare --from sync/upstream-content
 #     how many entries need a model; copy / split-block / mechanical carry-overs are already written.
 #   fill work/<locale>/batch-*.out.json: one translate-locale.js run per locale (args = the
 #     locale's manifest.json plus "agentType": "translator"), or one translator agent per batch
-python3 translation/v2/sync.py status      # every batch: filled? a JSON list? the right length?
+python3 translation/v2/sync.py bake        # one translate-locale workflow for every unfilled batch of every
+#                                            locale (work/sync-fill-wf.js); run it with the Workflow tool
+python3 translation/v2/sync.py status      # every batch: filled? readable as apply reads it? the right length?
 python3 translation/v2/sync.py finish      # apply through check.py, assert every worklist empty,
 #                                            render + all gates (4 at a time), commit POT + PO trees
 git push -u origin HEAD && gh pr create --repo JanLahmann/doQumentation --base main
 ```
+
+After a STOP for rejected entries, `sync.py redo --locales <those>` recomputes
+the worklist from the PO files and batches only what is still pending (the
+accepted entries are already written); `translate.py --prepare` alone reuses
+the worklist from prepare time and sends every entry again. Entries with
+display math (`$$`, `\begin{`) always go to Sonnet: on the 2026-09-30 sync
+Haiku rewrote an aligned block in 4 of 17 locales.
 
 `finish` stops without committing when a batch was rejected or unfilled, when
 a worklist is not empty, or when a gate fails. It also stops when `--apply`

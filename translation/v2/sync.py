@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po4a_io as io  # noqa: E402
+import translate  # noqa: E402  (its batch-output parser only; writes stay in translate.py --apply)
 
 V2 = Path(__file__).resolve().parent
 SCRIPTS = io.REPO / "translation" / "scripts"
@@ -99,6 +100,51 @@ def prepare_locale(locale: str) -> dict:
     return out
 
 
+def cmd_redo(args) -> int:
+    """After a STOP: recompute each locale's worklist from its PO files and
+    batch only the entries still fuzzy or empty. On 2026-09-30 one rejected
+    math entry in each of four locales was redone by running translate.py
+    --prepare directly; it read the worklist written at prepare time and sent
+    all 40 entries per locale to a model again, 39 of them already accepted."""
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        rows = list(pool.map(prepare_locale, args.locales))
+    for r in rows:
+        print(f"{r['locale']}: {r['model']} entr(ies) to a model in {r['batches']} batch(es)"
+              + ("" if r["ok"] else "   FAILED"))
+    return 0 if all(r["ok"] for r in rows) else 1
+
+
+def cmd_bake(args) -> int:
+    """One translate-locale workflow for every locale with batches, the
+    manifests inlined (a Workflow script cannot read files) and each batch
+    tagged with its locale, so one run fills the whole sync."""
+    src = (io.REPO / ".claude" / "workflows" / "translate-locale.js").read_text(encoding="utf-8")
+    batches, rules = [], {}
+    for loc in args.locales:
+        mf = io.WORK_DIR / loc / "manifest.json"
+        if not mf.exists():
+            continue
+        m = json.loads(mf.read_text(encoding="utf-8"))
+        rules[loc] = m["instructions_text"]
+        for b in m["batches"]:
+            out = io.REPO / (b.get("out") or b["file"].replace(".json", ".out.json"))
+            if out.exists() and not args.all:
+                continue                      # already filled; --all re-bakes it too
+            b = dict(b, locale=loc, file=str(io.REPO / b["file"]), out=str(out))
+            batches.append(b)
+    baked = {"locale": "multi", "instructions_text": "", "instructions_by_locale": rules,
+             "batches": batches, "agentType": "translator", "concurrency": args.concurrency}
+    meta_end = src.index("\n", src.index("\n}\n", src.index("export const meta")) + 1)
+    body = re.sub(r"(?<![\w.])args(?![\w])", "BAKED_ARGS", src[meta_end + 1:])
+    out = Path(args.out).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(src[:meta_end + 1] + "\nconst BAKED_ARGS = " + json.dumps(baked, ensure_ascii=False) + "\n" + body,
+                   encoding="utf-8")
+    print(f"{out}: {len(batches)} batch(es), {sum(b['items'] for b in batches)} item(s) in {len(rules)} locale(s)\n"
+          f"run Workflow({{ scriptPath: \"{out}\" }}), then `sync.py status`")
+    return 0
+
+
 def cmd_prepare(args) -> int:
     start_branch(args.from_branch)
     ex = sh([PY, str(V2 / "extract.py"), "--check"], check=False)
@@ -139,13 +185,13 @@ def check_outputs(manifest: dict) -> list[str]:
         if not out.exists():
             problems.append(f"{out.name}: not filled")
             continue
-        try:
-            data = json.loads(out.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            problems.append(f"{out.name}: not valid JSON ({str(e)[:60]}) — the agent wrote text instead of a list; redo it")
-            continue
-        if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
-            problems.append(f"{out.name}: not a list of strings")
+        # The parser apply uses: a JSON list, or one JSON string per line, with
+        # unescaped inner quotes repaired. 9 of 34 Haiku batches on 2026-09-30
+        # wrote one string per line; status rejected all 9 although apply would
+        # have read them. The count check below still guards against shifts.
+        data, _ = translate.parse_string_lines(out.read_text(encoding="utf-8"))
+        if data is None:
+            problems.append(f"{out.name}: not a list of strings, nor one string per line — redo it")
         elif len(data) != b["items"]:
             problems.append(f"{out.name}: {len(data)} strings for {b['items']} items — apply would reject the batch; redo it")
     return problems
@@ -250,7 +296,10 @@ def cmd_finish(args) -> int:
         for w in a["warnings"]:
             print(f"    {w[:160]}")
     if stop:
-        print("\nFix the locales marked STOP (redo the batch, or repair through fix.py) and run finish again. Nothing committed.")
+        print("\nFix the locales marked STOP and run finish again. Nothing committed.\n"
+              "Accepted entries are already in the PO files: `sync.py redo --locales <those locales>` batches\n"
+              "only what is still pending (running translate.py --prepare alone reuses the stale worklist\n"
+              "and sends every entry again), then fill, `status`, `finish`.")
         return 1
     if any(a["warnings"] for a in applied):
         print("\nRead every WARNING above: an entry that now equals its English source is right for code and names,"
@@ -271,7 +320,7 @@ def cmd_finish(args) -> int:
         bad |= bool(g["failed"])
     # render.py overwrites the few tracked pages under current/ (index.mdx and
     # friends); they are derived and must not ride along.
-    tracked = git("ls-files", *[f"i18n/{l}/{io.DOC_SUB}" for l in args.locales]).split()
+    tracked = [p for p in git("ls-files", "-z", *[f"i18n/{l}/{io.DOC_SUB}" for l in args.locales]).split("\0") if p]
     if tracked:
         git("checkout", "--", *tracked)
     if bad:
@@ -282,7 +331,9 @@ def cmd_finish(args) -> int:
 
     paths = ["translation/v2/pot"] + [f"i18n/{l}/po" for l in args.locales]
     git("add", "--", *paths)
-    staged = git("diff", "--cached", "--name-only").split()
+    # -z: a page name with a space ("… 101 Hands-on_solution.po") split into two
+    # "stray" paths under .split() (same fix as round.py ship).
+    staged = [p for p in git("diff", "--cached", "--name-only", "-z").split("\0") if p]
     stray = [p for p in staged if not (p.startswith("translation/v2/pot/") or
                                        any(p.startswith(f"i18n/{l}/po/") for l in args.locales))]
     if stray:
@@ -310,7 +361,7 @@ def cmd_finish(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("prepare", "status", "finish"):
+    for name in ("prepare", "redo", "bake", "status", "finish"):
         p = sub.add_parser(name)
         p.add_argument("--locales", nargs="*", default=io.MAIN_LOCALES, help="default: every locale")
         p.add_argument("-j", "--jobs", type=int, default=4)
@@ -319,9 +370,14 @@ def main() -> int:
     sub.choices["finish"].add_argument("--accept-warnings", action="store_true",
                                        help="commit although apply printed REPLACED-BY-ENGLISH warnings (after checking them)")
     sub.choices["finish"].add_argument("--no-commit", action="store_true")
+    sub.choices["bake"].add_argument("--out", default=str(io.WORK_DIR / "sync-fill-wf.js"),
+                                     help="where to write the workflow script (under the repo, so Workflow accepts it)")
+    sub.choices["bake"].add_argument("--all", action="store_true", help="include batches already filled")
+    sub.choices["bake"].add_argument("--concurrency", type=int, default=10)
     sub.choices["finish"].add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
-    return {"prepare": cmd_prepare, "status": cmd_status, "finish": cmd_finish}[args.cmd](args)
+    return {"prepare": cmd_prepare, "redo": cmd_redo, "bake": cmd_bake, "status": cmd_status,
+            "finish": cmd_finish}[args.cmd](args)
 
 
 if __name__ == "__main__":
