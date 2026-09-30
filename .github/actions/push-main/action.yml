@@ -20,18 +20,31 @@ runs:
         DEPLOY_KEY: ${{ inputs.deploy-key }}
       run: |
         set -euo pipefail
-        if [ -z "$DEPLOY_KEY" ]; then
+        if [ -n "$DEPLOY_KEY" ]; then
+          # Only this push uses the key: the checkout (and its submodules) keep
+          # the token, since a deploy key opens this repository and no other.
+          KEY="$RUNNER_TEMP/main_deploy_key"
+          install -m 600 /dev/null "$KEY"
+          printf '%s\n' "$DEPLOY_KEY" > "$KEY"
+          trap 'rm -f "$KEY"' EXIT
+          mkdir -p ~/.ssh
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+          push() { GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes" \
+                     git push "git@github.com:${GITHUB_REPOSITORY}.git" HEAD:main; }
+        else
           echo "MAIN_DEPLOY_KEY is not set; pushing with the checkout token."
-          git push
-          exit 0
+          push() { git push origin HEAD:main; }
         fi
-        # Only this push uses the key: the checkout (and its submodules) keep
-        # the token, since a deploy key opens this repository and no other.
-        KEY="$RUNNER_TEMP/main_deploy_key"
-        install -m 600 /dev/null "$KEY"
-        printf '%s\n' "$DEPLOY_KEY" > "$KEY"
-        mkdir -p ~/.ssh
-        ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
-        GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes" \
-          git push "git@github.com:${GITHUB_REPOSITORY}.git" HEAD:main
-        rm -f "$KEY"
+        # The callers run for up to half an hour, and a PR merged meanwhile
+        # made the push fail with "rejected (fetch first)". Replay the bot
+        # commit onto the current main first. Its files are generated, so on a
+        # conflict the freshly generated side wins (-X theirs is the commit
+        # being replayed); the next run regenerates them from the new main.
+        for attempt in 1 2 3; do
+          git fetch --quiet origin main
+          git rebase --quiet -X theirs origin/main
+          if push; then exit 0; fi
+          echo "push attempt $attempt failed; retrying on a fresh main"
+          sleep $((attempt * 5))
+        done
+        exit 1
