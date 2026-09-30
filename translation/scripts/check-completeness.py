@@ -85,7 +85,10 @@ Usage:
     python translation/scripts/check-completeness.py --locale de --check title-untranslated
     # the CI ratchet: fails only on findings a change ADDS
     python translation/scripts/check-completeness.py --all \
-        --baseline translation/eval/completeness-baseline.json
+        --baseline translation/eval/completeness-baseline
+    # accept one locale's new findings after reading them (writes only <loc>.txt)
+    python translation/scripts/check-completeness.py --locale de \
+        --baseline translation/eval/completeness-baseline --accept-new
 """
 
 from __future__ import annotations
@@ -362,6 +365,36 @@ def all_locales() -> list[str]:
     return sorted(p.parent.name for p in I18N.glob("*/po") if p.is_dir())
 
 
+BASELINE_NOTE = (
+    "# Completeness findings accepted as pre-existing for one locale, one key per\n"
+    "# line (check-completeness.py finding_key). A RATCHET, not a target: the\n"
+    "# sieve's measured precision is ~12%, so most of these are fine. A change may\n"
+    "# not ADD a finding unnoticed. Shrink it by fixing real defects; add to it\n"
+    "# with --accept-new after reading each new finding. One file per locale, so\n"
+    "# rounds on different locales never conflict here.\n"
+)
+
+
+def load_baseline(path: Path) -> set[str]:
+    """Accepted keys from a per-locale baseline directory (<loc>.txt files),
+    or from the legacy single JSON file."""
+    if path.is_dir():
+        return set().union(*(load_baseline_file(f) for f in sorted(path.glob("*.txt"))))
+    return set(json.loads(path.read_text(encoding="utf-8"))["keys"])
+
+
+def load_baseline_file(f: Path) -> set[str]:
+    return {l.strip() for l in f.read_text(encoding="utf-8").splitlines()
+            if l.strip() and not l.strip().startswith("#")}
+
+
+def write_locale_baseline(directory: Path, locale: str, keys: set[str]) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    f = directory / f"{locale}.txt"
+    f.write_text(BASELINE_NOTE + "".join(k + "\n" for k in sorted(keys)), encoding="utf-8")
+    return f
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--locale", help="one locale, e.g. de")
@@ -370,10 +403,15 @@ def main() -> int:
                     help="restrict to one subcheck (repeatable): line-shape, numbers, "
                          "list-items, title-untranslated, neighbour-duplicate")
     ap.add_argument("--json", type=Path, help="write the findings to this file")
-    ap.add_argument("--write-baseline", type=Path, metavar="PATH",
-                    help="record the current findings as the accepted baseline")
+    ap.add_argument("--write-baseline", type=Path, metavar="DIR",
+                    help="record the current findings of each scanned locale as its accepted "
+                         "baseline (DIR/<locale>.txt); other locales' files are left alone")
     ap.add_argument("--baseline", type=Path, metavar="PATH",
-                    help="exit 1 on any finding NOT in this baseline (the CI ratchet)")
+                    help="exit 1 on any finding NOT in this baseline (the CI ratchet): a "
+                         "per-locale directory, or the legacy single JSON file")
+    ap.add_argument("--accept-new", action="store_true",
+                    help="with a --baseline directory: add every new finding's key to its "
+                         "locale's file instead of failing. Read the findings first.")
     ap.add_argument("--limit", type=int, default=40, help="findings to print per locale (0 = all)")
     args = ap.parse_args()
 
@@ -421,24 +459,32 @@ def main() -> int:
         print(f"\nwrote {len(out)} finding(s) to {args.json}")
 
     if args.write_baseline:
-        args.write_baseline.parent.mkdir(parents=True, exist_ok=True)
-        args.write_baseline.write_text(json.dumps({
-            "note": ("Findings accepted as pre-existing. This file is a RATCHET, not a "
-                     "target: the sieve's measured precision is ~12%, so most of these are "
-                     "fine and demanding they be cleared would be wrong. It exists so a "
-                     "change cannot ADD a finding unnoticed. Shrink it by fixing real "
-                     "defects and re-running --write-baseline; never by loosening a "
-                     "subcheck — tests/test_completeness.py scores every subcheck against "
-                     "the labelled set for exactly that reason."),
-            "count": len(out),
-            "keys": sorted({finding_key(r) for r in out}),
-        }, indent=1) + "\n", encoding="utf-8")
-        print(f"\nbaseline: {len(out)} finding(s) → {args.write_baseline}")
+        if args.write_baseline.suffix == ".json":
+            ap.error("--write-baseline takes the per-locale directory "
+                     "(translation/eval/completeness-baseline), not a .json file")
+        for loc in locales:
+            keys = {finding_key(r) for r in out if r["locale"] == loc}
+            f = write_locale_baseline(args.write_baseline, loc, keys)
+            print(f"baseline: {len(keys)} key(s) → {f}")
         return 0
 
     if args.baseline:
-        known = set(json.loads(args.baseline.read_text(encoding="utf-8"))["keys"])
+        known = load_baseline(args.baseline)
         new_rows = [r for r in out if finding_key(r) not in known]
+        if new_rows and args.accept_new:
+            if not args.baseline.is_dir():
+                ap.error("--accept-new needs the per-locale baseline directory")
+            for loc in sorted({r["locale"] for r in new_rows}):
+                f = args.baseline / f"{loc}.txt"
+                have = load_baseline_file(f) if f.exists() else set()
+                add = {finding_key(r) for r in new_rows if r["locale"] == loc}
+                write_locale_baseline(args.baseline, loc, have | add)
+                print(f"\naccepted {len(add - have)} new key(s) for {loc} → {f}")
+                for r in new_rows:
+                    if r["locale"] == loc:
+                        page = r["file"].split("/po/", 1)[-1]
+                        print(f"  {r['check']:20s} {page}#{r['index']}: {r['detail']}")
+            return 0
         if not new_rows:
             print(f"\nratchet: no new findings ({len(out)} known, baseline {len(known)})")
             return 0
@@ -451,7 +497,8 @@ def main() -> int:
         if len(new_rows) > 25:
             print(f"  … {len(new_rows) - 25} more")
         print("\nIf these are real, fix them. If they are the sieve being wrong (it is "
-              "right about 12% of the time), re-run with --write-baseline to accept them.")
+              "right about 12% of the time), re-run with --accept-new to accept them "
+              "(it writes only the affected locales' files).")
         return 1
     return 0
 

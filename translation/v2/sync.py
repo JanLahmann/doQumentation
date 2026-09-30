@@ -182,7 +182,7 @@ GATES = [
     ("wrong-language", [PY, str(SCRIPTS / "check-wrong-language.py"), "--locale", "{loc}"]),
     ("check.py audit", [PY, str(SCRIPTS / "audit-check-py.py"), "--locale", "{loc}"]),
     ("completeness ratchet", [PY, str(SCRIPTS / "check-completeness.py"), "--locale", "{loc}", "--limit", "0",
-                              "--baseline", str(io.REPO / "translation" / "eval" / "completeness-baseline.json")]),
+                              "--baseline", str(io.REPO / "translation" / "eval" / "completeness-baseline")]),
 ]
 
 
