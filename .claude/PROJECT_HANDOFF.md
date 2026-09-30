@@ -181,7 +181,11 @@ Data flow:
 - **`docker.yml`** — multi-arch → ghcr.io (EN only, `--locale en`). `Dockerfile.jupyter --target jupyter-local`. Push trigger disabled — `workflow_dispatch` only.
 - **`sync-deps.yml`** — weekly auto-PR. `scripts/sync-deps.py` fetches from upstream `nb-tester/requirements.txt`, drops `sys.platform` markers, splits architecture-specific packages (`gem-suite`, `qiskit-ibm-transpiler[ai-local-mode]`, `qiskit-addon-aqc-tensor[quimb-jax]` → `jupyter-requirements-amd64.txt`), adds `EXTRA_CROSS_PLATFORM` (`pylatexenc`, `pandas`). Both files marked "DO NOT EDIT MANUALLY". `jupyter-requirements-security.txt` is manual (CVE pins, Trivy-enforced for CE).
 - **`check-translations.yml`** — daily: renders the 17 main locales from their PO files, lints them, updates `STATUS.md` + `CONTRIBUTING-NOW.md`, then reports fuzzy/untranslated PO entries per locale (`translation/v2/update.py`) as the `translation-freshness` issue.
-- **`refresh-page-dates.yml`** — daily 07:00 UTC, `sync-content.py --meta-only`.
+- **`refresh-page-dates.yml`** — daily 07:00 UTC, `sync-content.py --meta-only`; its commit says `[skip ci]`.
+- **`main` is protected by a ruleset** (`.github/rulesets/main.json`, 2026-09-30): no deletion or force-push; changes through PRs (0 approvals, merge commits only); required checks `typecheck-and-build` (ci.yml) and `locales-ok` (build-locales-pr.yml). Bypass: repository admins and deploy keys. Auto-merge is on — open PRs with it.
+- **Bot pushes to main** (the two jobs above) go through `.github/actions/push-main`: the `MAIN_DEPLOY_KEY` secret (a write deploy key, a ruleset bypass actor), a rebase onto the current main in a separate worktree, three attempts. `GITHUB_TOKEN` is not a bypass actor and cannot push to main.
+- **`build-locales-pr.yml`** runs on every PR (no paths filter): `pick-locales` builds only the locales a PR touches (all 17 for docs/src/pipeline changes), and `locales-ok` is the one required check it contributes — it passes when builds succeed or are skipped.
+- **Weekly English sync** — `sync-upstream.yml` (Mon 06:00 UTC) opens "sync: upstream content" (English only, no CI: never merge it alone). `sync-plan.yml` then runs `translation/v2/sync.py prepare` without any API key, comments the per-locale plan on that PR, @-mentions and assigns the repository owner. The model step runs in Claude Code: `/weekly-sync` (`.claude/commands/weekly-sync.md`) fills, gates, commits and opens the PR that supersedes the bot's.
 - **`binder.yml`** — daily cache-warming for 3 federation members (2i2c, BIDS, GESIS) + on push to `notebooks` + `workflow_dispatch`.
 - **Workshop lifecycle** — `workshop-start.yml` (resize + token + warm, ~2 min, `instance_count` for multi-pod), `workshop-monitor.yml` (continuous `/stats` polling + sparklines + cost estimate, 30m–6h, `workflow_call`-able), `workshop-close.yml` (capture stats, optional cancel monitor, resize down, rotate token).
 - **`ce-monitor.yml`** — every 2h alerts on running/oversized; daily 06:00 UTC full summary.
@@ -428,9 +432,24 @@ Rounds 9-15 (2026-09-22..30, claim #725) reviewed every locale; 7,632 of
   recurring wrong terms from the review records; vetted ones become
   `check-known-mistranslations.py` rules after their occurrences are fixed.
 - **Auto-merge** is enabled on the repo: open review PRs with auto-merge on.
+- **A review fix counts as read** (#907): only entries retranslated after an
+  English change (`doq: translated after an English change`) are unread, so
+  the delta pool is exactly the sync's retranslations. A re-read of all 174
+  FAIL pages' fixes found 0 FAIL. `sample-deep-review.py --include-fixes`
+  (used by `round.py verify`) still counts fixes. Entries stamped today are
+  held back until tomorrow: review a sync's retranslations the day after.
+- **Sync pipeline** (#910): display math always goes to Sonnet; `sync.py
+  status` reads outputs as `apply` does; `sync.py redo --locales X` re-batches
+  only what is still pending after a STOP; `sync.py bake` writes one fill
+  workflow for every locale. `round.py` picks an unused seed (#911).
+- **Consistency sweeps done**: product/category/mode names English (#882),
+  untranslated title=/alt= attributes (#912, 514 → 57; the rest are technique
+  names with acronyms), and one "Changelog" heading term per locale (#912).
 
 Where outside help matters most now: fluent human spot checks of ar, ja and
-ko (the most FAIL history), since model review is near saturation.
+ko (the most FAIL history), since model review is near saturation. Routine
+model review is now: the weekly sync's retranslations (the day after the
+sync), plus an occasional `--order risk` round.
 
 ### Recently Resolved
 
