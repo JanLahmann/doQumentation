@@ -55,4 +55,11 @@ def test_kept_english_is_per_locale(common):
     assert not common.is_kept_english("gate", "es")
     assert "Gate" in common.translated_terms("es")
     assert common.is_kept_english("gate", "tl")
-    assert common.kept_english_terms("xx") == common.KEEP_ENGLISH_TERMS
+    assert common.kept_english_terms("xx") == common.KEEP_ENGLISH_TERMS + common.ALWAYS_ENGLISH_NAMES
+
+
+def test_product_category_and_mode_names_are_kept_in_every_locale(common):
+    for loc in ("es", "tl", "ar", None):
+        terms = common.kept_english_terms(loc)
+        for name in ("Qiskit Functions", "Circuit functions", "batch mode"):
+            assert name in terms, (loc, name)
