@@ -282,7 +282,9 @@ def cmd_finish(args) -> int:
 
     paths = ["translation/v2/pot"] + [f"i18n/{l}/po" for l in args.locales]
     git("add", "--", *paths)
-    staged = git("diff", "--cached", "--name-only").split()
+    # -z: a page name with a space ("… 101 Hands-on_solution.po") split into two
+    # "stray" paths under .split() (same fix as round.py ship).
+    staged = [p for p in git("diff", "--cached", "--name-only", "-z").split("\0") if p]
     stray = [p for p in staged if not (p.startswith("translation/v2/pot/") or
                                        any(p.startswith(f"i18n/{l}/po/") for l in args.locales))]
     if stray:
