@@ -444,6 +444,12 @@ def main() -> int:
 
     if not args.locale and not args.all:
         ap.error("pass --locale <loc> or --all")
+    # Without a baseline there is nothing to accept into, and the run used to
+    # print its findings and exit 0 as if it had accepted them.
+    if args.accept_new and not args.baseline:
+        ap.error("--accept-new needs --baseline translation/eval/completeness-baseline")
+    if args.accept_new and not args.baseline.is_dir():
+        ap.error("--accept-new needs the per-locale baseline directory, not the legacy JSON file")
     locales = all_locales() if args.all else [args.locale]
 
     out: list[dict] = []
@@ -499,8 +505,6 @@ def main() -> int:
         known = load_baseline(args.baseline)
         new_rows = [r for r in out if finding_key(r) not in known]
         if new_rows and args.accept_new:
-            if not args.baseline.is_dir():
-                ap.error("--accept-new needs the per-locale baseline directory")
             for loc in sorted({r["locale"] for r in new_rows}):
                 f = args.baseline / f"{loc}.txt"
                 have = load_baseline_file(f) if f.exists() else set()
