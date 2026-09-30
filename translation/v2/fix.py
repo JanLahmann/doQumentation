@@ -31,6 +31,7 @@ rules).
 from __future__ import annotations
 
 import argparse
+import collections
 import difflib
 import json
 import re
@@ -194,13 +195,41 @@ def load_fixes(path: Path) -> list[dict]:
             continue
         if f.get("verdict") == "PASS":
             continue
+        verdict = f.get("verdict") or ""
+        # A FAIL the refutation gauge refuted is fixed as MINOR_ISSUES: it must
+        # not send its whole page to the fixer. Measured on pl round 2026093171:
+        # a refuted FAIL's page sent 114 entries and changed none of them.
+        if verdict == "FAIL" and f.get("gauge") == "refuted":
+            verdict = "MINOR_ISSUES"
         out.append({
             "rel": rel,
             "note": f.get("note") or f.get("editor_note") or "",
-            "verdict": f.get("verdict") or "",
+            "verdict": verdict,
             "examples": [ex for ex in (f.get("examples") or []) if isinstance(ex, dict)],
         })
     return out
+
+
+# Example types that change what a reader understands. A Naturalness note does
+# not, on its own: 56% of 2,515 examples in rounds 2026-09-29/30 were
+# Naturalness, and a lone stylistic nit rewritten is churn and risk (every
+# rewrite can drop a code span or double a phrase) for little reader gain.
+SUBSTANTIVE_TYPES = {"drift", "terminology", "register", "pedagogy", "mistranslation"}
+NATURALNESS_MIN = 3
+
+
+def select_examples(fx: dict, naturalness_min: int = NATURALNESS_MIN) -> list[dict]:
+    """The examples a fix wave acts on. Every substantive example; Naturalness
+    examples only when the page has a substantive issue too, or at least
+    `naturalness_min` Naturalness notes (a pattern, not a nit). The page's
+    verdict is recorded either way; this only decides what gets rewritten."""
+    exs = fx["examples"]
+    types = [(ex.get("type") or "").lower() for ex in exs]
+    substantive = any(t in SUBSTANTIVE_TYPES for t in types)
+    n_nat = sum(t == "naturalness" for t in types)
+    if substantive or fx.get("verdict") == "FAIL" or n_nat >= naturalness_min:
+        return exs
+    return [ex for ex, t in zip(exs, types) if t != "naturalness"]
 
 
 def _write_batches(outdir: Path, model: str, n: int, items: list[dict], page: str,
@@ -240,23 +269,57 @@ PACK_BELOW = 15
 SWEEP_TYPES = {"terminology", "register"}
 
 
-def sweep_terms(examples: list[dict]) -> set[str]:
-    """Words the reviewer's correction REMOVED from a quoted translation: the
-    wrong rendering. Only from page-wide example types, and never a word the
-    English also contains (a kept product name is not a defect)."""
+# A swept word that occurs in more than this share of the page's entries is a
+# common word caught in a restructured sentence, not the wrong term.
+SWEEP_MAX_SHARE = 0.15
+
+
+def sweep_terms(examples: list[dict], page_msgstrs: list[str] | None = None) -> set[str]:
+    """The wrong renderings a reviewer's Terminology/Register correction
+    replaced, to find where else on the page they recur.
+
+    Only genuine term swaps count: a run of at most two words replaced by at
+    most three (difflib over the word sequences), so a suggestion that
+    rewrites the whole sentence contributes nothing. Never a word the English
+    also contains (a kept product name is not a defect). For Terminology,
+    also never a word shorter than four letters or one that occurs in more
+    than SWEEP_MAX_SHARE of the page's entries. Register corrections are
+    exempt from both: the wrong pronoun ("Sie", "vous") is short and recurs
+    across the page by nature, and every occurrence needs the fix.
+
+    The earlier rule took every word the correction removed. Measured on the
+    pl/ar rounds of 2026-09-30 it swept 313 entries of which 214 (68%) came
+    back unchanged; this rule avoids ~85-90% of those copies. The changes it
+    gives up were mostly driven by the page note, which still travels with
+    every batch."""
+    share: dict[str, float] = {}
+    if page_msgstrs:
+        counts = collections.Counter(
+            w for m in page_msgstrs for w in {x.lower() for x in WORD_RE.findall(m)})
+        share = {w: c / len(page_msgstrs) for w, c in counts.items()}
     out: set[str] = set()
     for ex in examples:
-        if (ex.get("type") or "").lower() not in SWEEP_TYPES or not ex.get("suggested"):
+        kind = (ex.get("type") or "").lower()
+        if kind not in SWEEP_TYPES or not ex.get("suggested"):
             continue
-        bad = {w.lower() for w in WORD_RE.findall(ex.get("translation") or "")}
-        bad -= {w.lower() for w in WORD_RE.findall(ex["suggested"])}
-        bad -= {w.lower() for w in WORD_RE.findall(ex.get("source") or "")}
-        out |= bad
+        before = [w.lower() for w in WORD_RE.findall(ex.get("translation") or "")]
+        after = [w.lower() for w in WORD_RE.findall(ex["suggested"])]
+        source = {w.lower() for w in WORD_RE.findall(ex.get("source") or "")}
+        ops = difflib.SequenceMatcher(a=before, b=after, autojunk=False).get_opcodes()
+        for op, i1, i2, j1, j2 in ops:
+            if op != "replace" or i2 - i1 > 2 or not 1 <= j2 - j1 <= 3:
+                continue
+            for w in before[i1:i2]:
+                if w in source:
+                    continue
+                if kind == "register" or (len(w) >= 4 and share.get(w, 0) <= SWEEP_MAX_SHARE):
+                    out.add(w)
     return out
 
 
 def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
-            flagged_only: bool = False, mode: str | None = None) -> dict:
+            flagged_only: bool = False, mode: str | None = None,
+            naturalness_min: int = NATURALNESS_MIN) -> dict:
     """Build the fix batches.
 
     mode "page": every translated entry of a flagged page travels, so the
@@ -289,6 +352,7 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
     manifest: list[dict] = []
     n = 0
     n_items = n_flagged = n_swept = 0
+    skipped_nits = 0
     missing: list[str] = []
     unmatched = 0
     pending: list[dict] = []
@@ -311,7 +375,11 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
         # entry into the batch when — and only when — a reviewer pointed at it.
         entries = [(i, e) for i, e in translated if not tr.is_copy_only(e.msgid)]
         reviews: dict[int, list[str]] = {}
-        for ex in fx["examples"]:
+        examples = select_examples(fx, naturalness_min)
+        if fx["examples"] and not examples:
+            skipped_nits += 1
+            continue
+        for ex in examples:
             idx = match_example(ex, translated)
             if idx is None:
                 unmatched += 1
@@ -321,7 +389,7 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
         by_index = dict(entries) if whole else {}
         swept: dict[int, str] = {}
         if mode == "targeted" and not whole:
-            terms = sweep_terms(fx["examples"])
+            terms = sweep_terms(examples, [e.msgstr for _, e in entries])
             for idx, e in entries:
                 if idx in reviews:
                     continue
@@ -384,12 +452,14 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
         "instructions_text": fix_instructions(locale),
         "batches": manifest}, indent=1, ensure_ascii=False), encoding="utf-8")
     summary = {"pages": len(fixes) - len(missing), "items": n_items, "flagged": n_flagged,
-               "swept": n_swept, "mode": mode,
+               "swept": n_swept, "mode": mode, "skipped_nit_pages": skipped_nits,
                "unmatched_examples": unmatched, "batches": len(manifest), "missing_pages": missing}
     print(f"{locale}: {summary['pages']} page(s), {n_items} entries in {len(manifest)} batch(es) [mode {mode}], "
           f"{n_flagged} entries pinned to a reviewer example"
           + (f", {n_swept} swept in for a term the reviewer corrected" if mode == "targeted" else "")
-          + f", {unmatched} example(s) not matched (the page note still travels with every batch)")
+          + f", {unmatched} example(s) not matched (the page note still travels with every batch)"
+          + (f"; {skipped_nits} page(s) with only {naturalness_min - 1} or fewer Naturalness notes "
+             f"not rewritten (verdict still recorded)" if skipped_nits else ""))
     for rel in missing:
         print(f"WARNING no PO for {rel}: skipped")
     print(f"manifest: {(outdir / 'manifest-fix.json').relative_to(io.REPO)}")
@@ -645,6 +715,9 @@ def main() -> int:
                     help="with --leaks: apply only the keep_lowercase "
                          "decapitalisations, skip the glossary translate rules")
     ap.add_argument("--model", default="sonnet", choices=("sonnet", "opus", "haiku"))
+    ap.add_argument("--naturalness-min", type=int, default=NATURALNESS_MIN,
+                    help="rewrite a page's Naturalness-only notes when it has at least this "
+                         f"many (default {NATURALNESS_MIN}); 1 fixes every note")
     ap.add_argument("--note", default=None,
                     help="provenance comment written on every changed entry "
                          "(default: 'doq: fixed after review <today>')")
@@ -657,7 +730,8 @@ def main() -> int:
     if a.prepare:
         if not a.fixes:
             ap.error("--prepare needs --fixes")
-        prepare(a.locale, load_fixes(Path(a.fixes)), a.model, a.flagged_only, mode=a.mode)
+        prepare(a.locale, load_fixes(Path(a.fixes)), a.model, a.flagged_only, mode=a.mode,
+                naturalness_min=a.naturalness_min)
         return 0
     if a.apply:
         note = a.note or f"doq: fixed after review {date.today().isoformat()}"
