@@ -625,7 +625,9 @@ def cmd_ship(a) -> int:
     run(["git", "add", "-f", "--", rel_records], wt)
     if ls.get("accepted_findings"):
         run(["git", "add", "--", base_rel], wt)
-    staged = run(["git", "diff", "--cached", "--name-only"], wt).stdout.split()
+    # -z: a page name with a space ("… 101 Hands-on.po") split into two "stray"
+    # paths under .split(), and git quotes non-ASCII names without it.
+    staged = [p for p in run(["git", "diff", "--cached", "--name-only", "-z"], wt).stdout.split("\0") if p]
     stray = [p for p in staged if not (p.startswith(f"i18n/{a.locale}/po/") or p in (rel_records, base_rel))]
     if stray:
         run(["git", "reset", "-q"], wt)
