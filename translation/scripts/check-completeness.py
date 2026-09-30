@@ -24,8 +24,8 @@ measurements, not taste. `tests/test_completeness.py` re-scores them, so a
 tightening that quietly destroys recall fails CI.
 
     subcheck              recall on 314   fires on 75,455 faithful
-    line-shape                 33.8%              0.43%
-    numbers                    28.3%              0.43%
+    line-shape                 30.9%              0.19%   (was 33.8% / 0.43%, see REWRAP_Z)
+    numbers                    28.3%              0.30%   (was 0.43%, see NUMBER_RE)
     list-items                  4.1%              0.02%
     title-untranslated          2.2%              0.16%   (title=, description=, alt=)
     question-mark              15.0%              0.10%
@@ -127,7 +127,14 @@ FOREIGN_DIGITS = str.maketrans(
 # ~3,400 spurious ja/ko findings corpus-wide.)
 SPELLED_OUT_MAX = 12
 
-NUMBER_RE = re.compile(r"\d[\d,. ]*")
+# A grouping separator continues a number only before exactly three digits (a
+# thousands group); a decimal separator only before digits. The older
+# r"\d[\d,. ]*" ran straight through ", ": "in 2023, 1,386 qubits" became the
+# single number 20231386 and "May 30, 2024" became 302024, so a translation
+# writing "30. Mai 2024" was reported as missing a number. Measured
+# 2026-09-30: recall unchanged (28.3%), noise 0.41% -> 0.30%, corpus
+# findings 1,393 -> 1,027.
+NUMBER_RE = re.compile(r"\d+(?:[,. ]\d{3})*(?:[.,]\d+)?")
 LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+")
 # title= was the original target; description= and alt= carry reader-visible
 # prose too (OpenInLabBanner's description, image alt text) and check.py
@@ -204,6 +211,26 @@ def _length_problem(msgid: str, msgstr: str, locale: str | None) -> str | None:
             f"{locale} runs at ~{math.exp(median):.0%} (z={z:.1f})")
 
 
+# Course pages put one sentence per line, so a line the translation lacks is
+# usually a sentence it lacks — but a translator also legitimately joins two
+# short lines into one sentence. The two differ in length: a dropped sentence
+# leaves the translation short for its locale, a re-wrap does not. So fewer
+# lines than the source is reported only when the translation is also shorter
+# than this many sd under its locale's usual ratio. More lines than the
+# source, and any entry without a locale, keep the plain line count.
+# Measured 2026-09-30 on the labelled set: recall 33.8% -> 30.9%, noise
+# 0.44% -> 0.19%; corpus findings 3,387 -> 1,340.
+REWRAP_Z = -0.5
+
+
+def _rewrapped(msgid: str, msgstr: str, a: int, b: int, locale: str | None) -> bool:
+    if b > a or not locale or locale not in LENGTH_STATS or not msgid:
+        return False
+    median, sd = LENGTH_STATS[locale]
+    z = (math.log(max(1, len(msgstr)) / len(msgid)) - median) / sd
+    return z >= REWRAP_Z
+
+
 def _nonempty_lines(text: str) -> int:
     return len([ln for ln in text.split("\n") if ln.strip()])
 
@@ -271,7 +298,7 @@ def check_pair(msgid: str, msgstr: str, locale: str | None = None) -> list[dict]
         return findings
 
     a, b = _nonempty_lines(msgid), _nonempty_lines(msgstr)
-    if a != b:
+    if a != b and not _rewrapped(msgid, msgstr, a, b, locale):
         findings.append({
             "check": "line-shape",
             "detail": f"source has {a} non-empty line(s), translation {b}",
