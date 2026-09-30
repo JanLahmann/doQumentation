@@ -38,7 +38,7 @@ stop; it is the only reservation there is. List them any time with
 
 | Locale | Who | Doing | Since | Issue |
 |---|---|---|---|---|
-| `?` | @JanLahmann | review | 2026-09-29 | [#725](https://github.com/JanLahmann/doQumentation/issues/725) |
+| `all` | @JanLahmann | review | 2026-09-29 | [#725](https://github.com/JanLahmann/doQumentation/issues/725) |
 
 ---
 
@@ -53,16 +53,6 @@ pages whose last verdict was FAIL first (the first column here).
 
 | Locale | Last verdict FAIL | Never read | Oldest verdict |
 |---|---|---|---|
-| `ja` | **22** | 0 | 2026-09-28 |
-| `ko` | **17** | 0 | 2026-09-11 |
-| `uk` | **15** | 0 | 2026-09-29 |
-| `tl` | **15** | 0 | 2026-09-29 |
-| `he` | **15** | 0 | 2026-09-29 |
-| `cs` | **14** | 0 | 2026-09-29 |
-| `pt` | **11** | 0 | 2026-07-05 |
-| `th` | **10** | 0 | 2026-09-29 |
-| `ro` | **10** | 0 | 2026-09-29 |
-| `es` | **9** | 0 | 2026-06-26 |
 | `ms` | **9** | 0 | 2026-09-29 |
 | `fr` | **8** | 0 | 2026-07-05 |
 | `id` | **6** | 0 | 2026-09-12 |
@@ -70,6 +60,16 @@ pages whose last verdict was FAIL first (the first column here).
 | `de` | **4** | 0 | 2026-09-29 |
 | `ar` | **2** | 0 | 2026-08-29 |
 | `pl` | **1** | 0 | 2026-06-28 |
+| `es` | **0** | 0 | 2026-06-26 |
+| `pt` | **0** | 0 | 2026-07-05 |
+| `ja` | **0** | 0 | 2026-09-28 |
+| `ko` | **0** | 0 | 2026-09-28 |
+| `uk` | **0** | 0 | 2026-09-29 |
+| `tl` | **0** | 0 | 2026-09-29 |
+| `he` | **0** | 0 | 2026-09-29 |
+| `th` | **0** | 0 | 2026-09-29 |
+| `ro` | **0** | 0 | 2026-09-29 |
+| `cs` | **0** | 0 | 2026-09-29 |
 
 **`--max-leaks` currently filters nothing, and that is expected.** A
 leak is a term the locale's `translation/glossary/<loc>.json` records
@@ -80,28 +80,30 @@ every file scores 0. What limits a pool today is pages already
 reviewed with nothing written since, not leakage.
 
 *Never read* pages have no verdict yet: a full read. *Delta* pages
-were reviewed, and a sync has since written new entries on them: the
-reviewer judges only those entries. A locale can be 100% reviewed and
-still have a delta pool.
+were reviewed, and entries were written on them after that: almost
+always a round's own fix wave (a fix carries the verdict's date, and
+only entries stamped before a verdict count as read), sometimes an
+English sync. The reviewer judges only those entries. A locale can be
+100% reviewed and still have a delta pool.
 
 | Locale | Never read | Delta | Reviewed so far |
 |---|---|---|---|
-| `he` | **0** | 416 | 449/449 (100%) |
+| `he` | **0** | 411 | 449/449 (100%) |
 | `ms` | **0** | 397 | 449/449 (100%) |
-| `ro` | **0** | 386 | 449/449 (100%) |
-| `cs` | **0** | 380 | 449/449 (100%) |
-| `uk` | **0** | 379 | 449/449 (100%) |
+| `ro` | **0** | 381 | 449/449 (100%) |
+| `cs` | **0** | 375 | 449/449 (100%) |
 | `de` | **0** | 374 | 449/449 (100%) |
 | `ar` | **0** | 373 | 449/449 (100%) |
-| `ko` | **0** | 368 | 449/449 (100%) |
-| `th` | **0** | 365 | 449/449 (100%) |
-| `ja` | **0** | 352 | 449/449 (100%) |
+| `uk` | **0** | 367 | 449/449 (100%) |
+| `ko` | **0** | 365 | 449/449 (100%) |
+| `th` | **0** | 360 | 449/449 (100%) |
 | `it` | **0** | 348 | 449/449 (100%) |
-| `es` | **0** | 347 | 449/449 (100%) |
 | `fr` | **0** | 347 | 449/449 (100%) |
-| `pt` | **0** | 342 | 449/449 (100%) |
+| `ja` | **0** | 345 | 449/449 (100%) |
+| `es` | **0** | 342 | 449/449 (100%) |
 | `id` | **0** | 339 | 449/449 (100%) |
-| `tl` | **0** | 310 | 449/449 (100%) |
+| `pt` | **0** | 337 | 449/449 (100%) |
+| `tl` | **0** | 303 | 449/449 (100%) |
 | `pl` | **0** | 281 | 449/449 (100%) |
 
 ---
