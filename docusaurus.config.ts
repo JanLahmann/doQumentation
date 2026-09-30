@@ -427,5 +427,19 @@ const config: Config = {
 export default async function createConfig(): Promise<Config> {
   const themeConfig = config.themeConfig as {footer: {links: unknown[]}};
   themeConfig.footer.links.push(await familyFooterColumn('doqumentation'));
+
+  // Umami only tracks hostnames listed in data-domains (exact match). Derive the list from the
+  // locale configs so every locale site (de.doqumentation.org, ja.…) is tracked, and a new locale
+  // is picked up automatically. Local and preview builds stay excluded.
+  const localeHosts = Object.values(config.i18n?.localeConfigs ?? {})
+    .map((c) => (c as {url?: string}).url)
+    .filter((u): u is string => Boolean(u))
+    .map((u) => new URL(u).hostname);
+  const umamiDomains = [...new Set(['doqumentation.org', ...localeHosts])].join(',');
+  for (const script of config.scripts ?? []) {
+    if (typeof script === 'object' && script['data-website-id'] === '97f347ac-e7ba-4be3-b26f-ab4b328bdbf2') {
+      script['data-domains'] = umamiDomains;
+    }
+  }
   return config;
 }
