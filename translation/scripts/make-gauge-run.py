@@ -10,6 +10,10 @@ refuters read passages, not pages. Usage:
     python3 translation/scripts/make-gauge-run.py --records translation/reviews/opus-<SEED>-<HANDLE>.json \\
         --locale <LOCALE> --out /tmp/gauge-<SEED>-wf.js
     # then:  Workflow({ scriptPath: "/tmp/gauge-<SEED>-wf.js" })
+    # and record its outcome on the records (fix.py fixes a refuted FAIL as
+    # MINOR_ISSUES instead of sending its whole page):
+    python3 translation/scripts/make-gauge-run.py --records translation/reviews/opus-<SEED>-<HANDLE>.json \
+        --locale <LOCALE> --record-result /tmp/gauge-<SEED>-result.json
 """
 
 from __future__ import annotations
@@ -61,14 +65,45 @@ def passages(locale: str, rel: str, examples: list[dict]) -> tuple[list[dict], i
     return out, len(cited)
 
 
+def record_result(records_path: Path, locale: str, result: dict) -> dict[str, str]:
+    """Stamp the gauge outcome on the round's FAIL records: "gauge": "upheld"
+    or "refuted". `result` is the workflow's return value ({stands, refuted}).
+    The verdict itself is left as the reviewer wrote it."""
+    def norm(f: str) -> str:
+        return f[:-4] if f.endswith(".mdx") else f
+    outcome = {norm(f): "upheld" for f in result.get("stands") or []}
+    outcome.update({norm(f): "refuted" for f in result.get("refuted") or []})
+    raw = json.loads(records_path.read_text(encoding="utf-8"))
+    data = raw["records"] if isinstance(raw, dict) and "records" in raw else raw
+    done: dict[str, str] = {}
+    for r in data:
+        if r.get("verdict") == "FAIL" and r.get("locale", locale) == locale and norm(r["file"]) in outcome:
+            r["gauge"] = done[r["file"]] = outcome[norm(r["file"])]
+    missing = set(outcome) - {norm(f) for f in done}
+    if missing:
+        raise SystemExit(f"gauge result names pages with no FAIL record here: {sorted(missing)}")
+    records_path.write_text(json.dumps(raw, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return done
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--records", required=True, help="the round's records file (opus-<seed>-<handle>.json)")
     ap.add_argument("--locale", required=True)
-    ap.add_argument("--out", required=True, help="runnable workflow .js")
+    ap.add_argument("--out", help="runnable workflow .js")
+    ap.add_argument("--record-result", metavar="JSON",
+                    help="instead of baking: stamp this gauge result ({stands, refuted}) on the records")
     ap.add_argument("--agent", default="reviewer", metavar="TYPE",
                     help="agent type for the refuters (default: reviewer; 'none' uses the harness's default agent)")
     a = ap.parse_args()
+    if a.record_result:
+        done = record_result(Path(a.records), a.locale,
+                             json.loads(Path(a.record_result).read_text(encoding="utf-8")))
+        for f, g in sorted(done.items()):
+            print(f"  {f}: {g}")
+        return 0
+    if not a.out:
+        ap.error("--out is required unless --record-result is given")
     data = json.loads(Path(a.records).read_text(encoding="utf-8"))
     if isinstance(data, dict) and "records" in data:
         data = data["records"]

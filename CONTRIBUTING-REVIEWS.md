@@ -183,6 +183,15 @@ A page whose verdict stands with nothing written since is skipped, so rounds
 never re-tread ground. There is no minimum page length any more: the short
 index and landing pages are where the Card captions live.
 
+When `--exclude-reviewed` leaves too few pages (every page of the locale has
+a standing verdict), drop it and add `--order risk` instead. That takes the
+pages where a read is most likely to find something, in this order: pages
+whose last verdict was FAIL (fixed since, but never re-read), pages never
+read, pages with unread model-written entries, then the oldest verdicts.
+Across the rounds of late September, 87% of reads came back MINOR_ISSUES and
+FAILs clustered in a few locales, so a random re-read mostly re-confirms
+pages that were fine.
+
 For every sampled page the sampler also writes a **paired prose file** under
 `translation/v2/work/review/<LOCALE>/<page>.md`: every prose entry of the
 PO, numbered `[n]` by its index, English then translation, with code, math
@@ -306,6 +315,19 @@ in the prompt — not from the full pages; a third reads only when the two
 disagree. A FAIL stands when the majority cannot refute it. The result
 lists `stands` and `refuted`; on 2026-09-12 it reproduced the three-reader
 gauge's verdicts on id at a third of the cost.
+
+Save the workflow's result to a file and record it on the records:
+
+```bash
+python3 translation/scripts/make-gauge-run.py \
+  --records translation/reviews/opus-<SEED>-<HANDLE>.json --locale <LOCALE> \
+  --record-result /tmp/gauge-<SEED>-result.json
+```
+
+This stamps `"gauge": "upheld"` or `"refuted"` on each FAIL record. The fix
+wave then fixes a refuted FAIL like a MINOR_ISSUES page, from its examples,
+instead of sending the whole page (a refuted FAIL's whole page is almost
+all copied back unchanged). The verdict itself stays as the reviewer wrote it.
 
 Report the gauge result to the user. Findings are usually real even when
 the severity label is too harsh — remediate on the **finding**, not the

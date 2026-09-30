@@ -1135,8 +1135,11 @@ def test_fix_prepare_targeted_ignores_entry_local_example_types(fix_env):
     spec = [{"rel": "guides/noise.mdx", "note": "n", "verdict": "MINOR_ISSUES",
              "examples": [{"type": "Naturalness", "source": "Run the cell.", "translation": "Führe die Zelle aus.",
                            "suggested": "Führ die Zelle aus.", "why": "stiff"}]}]
-    summary = fix.prepare("de", spec)
+    summary = fix.prepare("de", spec, naturalness_min=1)
     assert summary["flagged"] == 1 and summary["swept"] == 0 and summary["items"] == 1
+    # by default a lone Naturalness nit is recorded but not rewritten
+    summary = fix.prepare("de", spec)
+    assert summary["items"] == 0 and summary["skipped_nit_pages"] == 1
 
 
 def test_fix_match_example_trusts_the_entry_number_when_the_quote_is_there():
@@ -1162,3 +1165,45 @@ def test_translate_apply_writes_a_reversion_spec(tmp_path, monkeypatch, capsys):
     spec = json.loads((tr.io.WORK_DIR / "xx" / "reversions.json").read_text())
     assert spec[0]["rel"] == "p.mdx" and spec[0]["examples"][0]["entry"] == 0
     assert spec[0]["examples"][0]["suggested"] == CS and spec[0]["examples"][0]["translation"] == EN
+
+
+def test_fix_load_treats_a_refuted_fail_as_minor(tmp_path):
+    """A FAIL the refutation gauge refuted must not send its whole page."""
+    fix = _fix_module()
+    p = tmp_path / "opus.json"
+    p.write_text(json.dumps([
+        {"file": "a.mdx", "verdict": "FAIL", "gauge": "refuted", "examples": [{"source": "x"}]},
+        {"file": "b.mdx", "verdict": "FAIL", "gauge": "upheld", "examples": [{"source": "y"}]},
+    ]))
+    out = {f["rel"]: f["verdict"] for f in fix.load_fixes(p)}
+    assert out == {"a.mdx": "MINOR_ISSUES", "b.mdx": "FAIL"}
+
+
+def test_sweep_takes_the_swapped_term_not_a_restructured_sentence():
+    fix = _fix_module()
+    swap = {"type": "Terminology", "source": "the shots", "translation": "liczba snímků pomiarów",
+            "suggested": "liczba shotów pomiarów"}
+    rewrite = {"type": "Terminology", "source": "the result", "translation": "wynik jest zapisany tutaj teraz",
+               "suggested": "zapisujemy końcowy rezultat obliczenia w tym miejscu"}
+    assert fix.sweep_terms([swap]) == {"snímků"}
+    assert fix.sweep_terms([rewrite]) == set()
+
+
+def test_sweep_skips_a_word_common_across_the_page():
+    fix = _fix_module()
+    ex = {"type": "Terminology", "source": "x", "translation": "same kwantowy wynik",
+          "suggested": "same kwantowe wynik"}
+    page = ["kwantowy układ"] * 5 + ["inny tekst"] * 5          # in 50% of entries
+    assert fix.sweep_terms([ex], page) == set()
+    assert fix.sweep_terms([ex], ["kwantowy układ"] + ["inny tekst"] * 9) == {"kwantowy"}
+
+
+def test_select_examples_drops_lone_naturalness_nits_only():
+    fix = _fix_module()
+    nat = {"type": "Naturalness"}
+    term = {"type": "Terminology"}
+    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, nat]}) == []
+    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, nat, nat]}) == [nat, nat, nat]
+    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, term]}) == [nat, term]
+    assert fix.select_examples({"verdict": "FAIL", "examples": [nat]}) == [nat]
+    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat]}, naturalness_min=1) == [nat]

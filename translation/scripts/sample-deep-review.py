@@ -368,25 +368,55 @@ def write_pair(locale: str, rel: str) -> tuple[Path, int, int]:
     return out, n, words
 
 
-def draw(pool: dict, per_locale: int, seed: int, focus: str | None = None) -> list[dict]:
+def risk_key(info: dict) -> tuple:
+    """Where a read is most likely to find something, most likely first:
+    a page whose last verdict was FAIL (fixed since, never re-read), then a
+    page never read, then one with model-written entries no reviewer has seen,
+    then the oldest verdict; longer pages first within a tier.
+
+    Measured over the rounds of 2026-09-22..30: 87% of reads come back
+    MINOR_ISSUES and FAILs cluster (ar 43, ja 22, de 3), so an age-only
+    rotation spends most of a round re-confirming pages that were fine."""
+    if info.get("verdict") == "FAIL":
+        tier = 0
+    elif not info.get("verdict"):
+        tier = 1
+    elif info.get("unverified"):
+        tier = 2
+    else:
+        tier = 3
+    return (tier, info.get("reviewed") or "", -(info.get("lines") or 0), info.get("rel", ""))
+
+
+def pick_by_risk(rows: list, per_locale: int, cat: dict[str, dict]) -> list:
+    """The per_locale rows with the lowest risk_key. Deterministic."""
+    return sorted(rows, key=lambda row: risk_key(cat.get(row[0], {"rel": row[0]})))[:per_locale]
+
+
+def draw(pool: dict, per_locale: int, seed: int, focus: str | None = None,
+         catalogues: dict[str, dict] | None = None, order: str = "random") -> list[dict]:
     """Stratified within locale: round-robin across sections, seeded-random
-    within each section bucket. Reproducible for a given (pool, seed)."""
+    within each section bucket. Reproducible for a given (pool, seed).
+    With order="risk" (needs catalogues), the riskiest pages instead: see risk_key."""
     rng = random.Random(seed)
     sample = []
     for loc in sorted(pool):  # sorted → deterministic locale order
-        buckets: dict[str, list] = {}
-        for row in pool[loc]:
-            buckets.setdefault(row[1], []).append(row)
-        for sec in buckets:
-            rng.shuffle(buckets[sec])
-        order = sorted(buckets)  # deterministic section order
-        picked = []
-        i = 0
-        while len(picked) < per_locale and any(buckets[s] for s in order):
-            sec = order[i % len(order)]
-            if buckets[sec]:
-                picked.append(buckets[sec].pop())
-            i += 1
+        if order == "risk":
+            picked = pick_by_risk(pool[loc], per_locale, (catalogues or {}).get(loc, {}))
+        else:
+            buckets: dict[str, list] = {}
+            for row in pool[loc]:
+                buckets.setdefault(row[1], []).append(row)
+            for sec in buckets:
+                rng.shuffle(buckets[sec])
+            sections_in_order = sorted(buckets)  # deterministic section order
+            picked = []
+            i = 0
+            while len(picked) < per_locale and any(buckets[s] for s in sections_in_order):
+                sec = sections_in_order[i % len(sections_in_order)]
+                if buckets[sec]:
+                    picked.append(buckets[sec].pop())
+                i += 1
         for rel, sec, lines, tier3, mode, unverified in picked:
             rec = {
                 "locale": loc,
@@ -451,6 +481,10 @@ def main():
                     help="the date this round's verdicts will carry (default: today). Entries "
                          "stamped on or after it are not judged: the recorder could not mark "
                          "them verified, so the next round would read them again")
+    ap.add_argument("--order", choices=("random", "risk"), default="random",
+                    help="random: stratified seeded draw (default). risk: the riskiest pages "
+                         "first - last verdict FAIL, never read, unread model-written "
+                         "entries, then oldest verdict")
     ap.add_argument("--out", help="write sample JSON here")
     ap.add_argument("--print", action="store_true", dest="do_print",
                     help="print the sample to stdout")
@@ -504,7 +538,8 @@ def main():
     # Drift focus tells the agent to spend its read on the irreducible class
     # (semantic drift + hallucination) and ignore kept-English leaks.
     focus = "drift" if (args.leak_clean or args.drift_focus) else None
-    sample = draw(pool, args.per_locale, args.seed, focus=focus)
+    sample = draw(pool, args.per_locale, args.seed, focus=focus,
+                  catalogues=catalogues, order=args.order)
 
     if args.leak_clean:
         mode = "leak-clean-drift"
