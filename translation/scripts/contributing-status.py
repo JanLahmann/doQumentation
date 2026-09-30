@@ -26,6 +26,7 @@ import json
 import re
 import os
 import subprocess
+import sys
 import urllib.request
 from collections import Counter
 from datetime import date
@@ -184,6 +185,25 @@ def reviewed_counts(cats, min_lines: int = 1) -> dict[str, tuple[int, int]]:
     return out
 
 
+def risk_counts(cats) -> dict[str, tuple[int, int, str]]:
+    """Per locale: pages whose last verdict is FAIL (fixed since, never re-read),
+    pages never read, and the oldest verdict date. What `--order risk` reads first."""
+    out = {}
+    for loc, cat in cats.items():
+        fails = sum(1 for i in cat.values() if i.get("verdict") == "FAIL")
+        never = sum(1 for i in cat.values() if not i.get("verdict") and i.get("rendered"))
+        dates = [i["reviewed"] for i in cat.values() if i.get("reviewed")]
+        out[loc] = (fails, never, min(dates) if dates else "—")
+    return out
+
+
+def _kept_english_list() -> str:
+    sys.path.insert(0, str(SCRIPTS))
+    from _common import ALWAYS_ENGLISH, ALWAYS_ENGLISH_NAMES, KEEP_ENGLISH_TERMS
+    terms = list(dict.fromkeys(KEEP_ENGLISH_TERMS + ALWAYS_ENGLISH + ALWAYS_ENGLISH_NAMES))
+    return ", ".join(terms)
+
+
 def render(sdr, cats, claims: list[dict] | None = None) -> str:
     pools = pools_by_threshold(sdr, cats)
     done = reviewed_counts(cats)
@@ -277,9 +297,24 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
     A("")
     A("## Pick a locale")
     A("")
-    A("Every locale below still has unreviewed pages. Pick one that is not")
-    A("claimed above, open your claim issue, then follow")
-    A("`CONTRIBUTING-REVIEWS.md`.")
+    risk = risk_counts(cats)
+    if ready:
+        A("Every locale below still has unreviewed pages. Pick one that is not")
+        A("claimed above, open your claim issue, then follow")
+        A("`CONTRIBUTING-REVIEWS.md`.")
+    else:
+        A("Nearly every page of every locale now carries a review verdict, so the")
+        A("work is **re-reading where a read is most likely to find something**.")
+        A("Sample with `--order risk` (and without `--exclude-reviewed`): it takes")
+        A("pages whose last verdict was FAIL first (they were fixed but never")
+        A("re-read), then pages never read, then the oldest verdicts.")
+        A("`translation/v2/round.py start --order risk` does this for you.")
+    A("")
+    A("| Locale | Last verdict FAIL | Never read | Oldest verdict |")
+    A("|---|---|---|---|")
+    for loc in sorted(risk, key=lambda l: (-risk[l][0], -risk[l][1], risk[l][2])):
+        f, n, oldest = risk[loc]
+        A(f"| `{loc}` | **{f}** | {n} | {oldest} |")
     A("")
     if unrendered:
         A(f"> ⚠ {len(unrendered)} locale(s) were not rendered when this file was")
@@ -297,9 +332,8 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
         A("**`--max-leaks` currently filters nothing, and that is expected.** A")
         A("leak is a term the locale's `translation/glossary/<loc>.json` records")
         A("as wrongly left in English — *not* any capitalized English word. The")
-        A("terms the house style keeps in English (Qiskit, Qubit, Gate, Circuit,")
-        A("Backend, Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum,")
-        A("QPU) do not count, and no locale currently records anything else, so")
+        A(f"terms the house style keeps in English ({_kept_english_list()})")
+        A("do not count, and no locale currently records anything else, so")
         A("every file scores 0. What limits a pool today is pages already")
         A("reviewed with nothing written since, not leakage.")
     A("")
@@ -352,8 +386,17 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
     A("")
     A("## The highest-value thing you can do")
     A("")
-    A("**When two or more locales are flagged for the same sentence, check the")
-    A("other fifteen before fixing.**")
+    A("**If you read one of these languages fluently: spot-check pages as a")
+    A("human.** Model review is close to saturation: most reads come back")
+    A("MINOR_ISSUES, mostly style. A fluent reader going through 10-20 pages")
+    A("catches what the model reviewers miss, and tells us whether their")
+    A("Naturalness notes matter to a real reader. Open an issue with what you")
+    A("found (page, sentence, what it should say); you do not need the")
+    A("pipeline for this. The locales with the most FAIL history in the table")
+    A("above benefit most.")
+    A("")
+    A("**Otherwise, when two or more locales are flagged for the same sentence,")
+    A("check the other fifteen before fixing.**")
     A("")
     A("Sampling finds instances; comparing one span across all locales finds")
     A("the class. A recent round flagged three locales for rendering *\"a")

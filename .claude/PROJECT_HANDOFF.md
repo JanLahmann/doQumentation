@@ -403,6 +403,35 @@ Each language gets its own subdomain via satellite GitHub repos. Wildcard DNS CN
 - **i18n PNG deduplication** — translations under `i18n/<loc>/.../qiskit-addons/` still duplicate ~660 PNGs (~3–5 MB) per locale. Git dedupes blobs internally, but working tree grows linearly with locales. If size matters, build plugin or static-routes config to resolve `./output_N.png` from `docs/` when missing from locale.
 - **Locale build: 62 MDX compilation failures from missing `static/docs/images/`** — Observed running `npm run build -- --locale de` (May 9 2026): 62 errors of the form `Markdown image with URL '/docs/images/guides/<page>/extracted-outputs/<uuid>.svg' couldn't be resolved`. Pattern is identical across `guides/qiskit-addons-aqc.mdx`, `guides/DAG-representation.mdx`, `guides/build-noise-models.mdx`, `guides/algorithmiq-tem.mdx`, etc. **Pre-existing and unrelated to any recent migration**. **Root cause**: `static/docs/` is gitignored (`.gitignore:42`); `sync_upstream_images()` in `scripts/sync-content.py` populates it from `upstream-docs/public/docs/images/{tutorials,guides}/`. In environments where the `upstream-docs/` submodule has never been initialized AND `sync-content.py` has not been run, those images are absent and the locale build aborts. CI deploy workflows (`deploy.yml`, `deploy-locales.yml`) run sync first so this does not affect production. **Action items**: (a) make `npm run build` fail-fast with a clearer message ("run `python scripts/sync-content.py` first") when `static/docs/images/` is missing, e.g. via a Docusaurus plugin's `loadContent` precondition or a `prebuild` npm script that probes for the dir; (b) consider letting `onBrokenMarkdownImages: 'warn'` apply to locale builds the same way `onBrokenLinks: 'warn'` already does, so a partial local build still completes for review; (c) document the dependency in the README's Development section ("First-time: `git submodule update --init && python scripts/sync-content.py`"). Won't be visible until the next time someone builds locales without a prior sync, but makes onboarding less confusing.
 
+### Translation review procedures (changed 2026-09-30)
+
+Rounds 9-15 (2026-09-22..30, claim #725) reviewed every locale; 7,632 of
+7,633 page translations carry an Opus verdict. What changed in how rounds run:
+
+- **Round driver** `translation/v2/round.py` (#878): a git worktree per
+  locale from origin/main, one state file per round, messages built from the
+  records, a delta re-read of upheld FAIL pages before shipping. A round no
+  longer waits on another round's merge.
+- **Per-locale completeness baseline** `translation/eval/completeness-baseline/<locale>.txt`
+  (#876) replaces the single JSON: review PRs on different locales no longer
+  conflict. Accept read false positives with `check-completeness.py --accept-new`.
+  The sieve's numbers and line-shape checks were tightened in the same PR.
+- **Fix waves** (#875): term sweeps take only genuine term swaps, a FAIL the
+  gauge refuted is fixed as MINOR (record it with `make-gauge-run.py
+  --record-result`), lone Naturalness nits are recorded but not rewritten.
+  Sample with `--order risk` once a locale has no unread pages.
+- **Naming policy** (#877): product, Qiskit Functions category and
+  execution-mode names stay English everywhere (`ALWAYS_ENGLISH_NAMES`); a
+  separate fix.py sweep converts the ~1,400 existing entries that translated
+  them (claude/english-names-sweep).
+- **Known mistranslations** (#879): `mine-known-mistranslations.py` proposes
+  recurring wrong terms from the review records; vetted ones become
+  `check-known-mistranslations.py` rules after their occurrences are fixed.
+- **Auto-merge** is enabled on the repo: open review PRs with auto-merge on.
+
+Where outside help matters most now: fluent human spot checks of ar, ja and
+ko (the most FAIL history), since model review is near saturation.
+
 ### Recently Resolved
 
 Moved to [`PROJECT_HANDOFF_ARCHIVE.md`](./PROJECT_HANDOFF_ARCHIVE.md) to keep this doc focused on current state + open items. The archive carries the full dated log (June 2026 sync `47abf7714` + 17-locale refresh + pipeline hardening; the May structural-FAIL backlog clear; Apr/Feb–Mar history). Add new resolved entries to the archive; keep only live TODOs above.

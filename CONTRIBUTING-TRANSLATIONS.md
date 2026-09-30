@@ -113,8 +113,17 @@ python3 translation/v2/render.py --locale $LOC
 find i18n/$LOC/docusaurus-plugin-content-docs/current -name '*.mdx' -print0 \
   | xargs -0 node translation/v2/mdxcheck.mjs
 python3 translation/scripts/lint-translation.py --locale $LOC
+python3 translation/scripts/check-known-mistranslations.py --locale $LOC   # 0 hits
+python3 translation/scripts/check-completeness.py --locale $LOC --limit 0 \
+  --baseline translation/eval/completeness-baseline                # the CI ratchet
 git add i18n/$LOC/po && git commit                               # PO files only
 ```
+
+The completeness ratchet fails on any finding not in the baseline. Read
+each one against its English: a real loss is repaired (redo that entry);
+a sieve false alarm (a re-wrapped line, a number written as a word) is
+accepted with `--accept-new` added to the same command, which writes only
+`translation/eval/completeness-baseline/$LOC.txt`. Stage that file too.
 
 `--apply` is the gate: an entry is written only when it passes every
 check in `translation/v2/check.py` (code spans, URLs, math, tags, anchors,
@@ -142,6 +151,13 @@ second round or by hand. Nothing partial is ever written.
 - **Mirror EN structure exactly:** same headings (every one carries an
   English-derived `{#anchor}`), same image count/paths, no extra `# H1`
   the EN lacks.
+- **Names that stay English in every locale:** IBM Quantum Platform,
+  Qiskit Runtime, Qiskit Functions, the Qiskit Functions categories
+  (Circuit functions, Application functions, Catalog Functions, Custom
+  Functions) and the execution modes (job mode, session mode, batch
+  mode). The translator instructions list them (`ALWAYS_ENGLISH_NAMES` in
+  `translation/scripts/_common.py`); keep them even where a translation
+  reads more naturally.
 - **Informal register** per your locale — see the Language Table in
   `translation/translation-prompt.md` (don't restate it here; it drifts).
 - **One locale per contributor.** This is what makes parallel work
