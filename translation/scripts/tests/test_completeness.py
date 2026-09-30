@@ -259,7 +259,13 @@ def independent_positives(labelled):
 # 20% of those respectively. length-outlier's cut was then tightened from
 # z<-2.5 to z<-3.5 on a blind corpus read (3.4% precision at -2.5, 11.6% at
 # -3.5): 23.6% recall on the independent rows at 0.20% noise.
-FLOORS = {"line-shape": 0.30, "numbers": 0.24, "list-items": 0.03, "title-untranslated": 0.015,
+# `line-shape` was lowered from 0.30 to 0.28 (measured 33.8% -> 30.9%) when a
+# translation with FEWER lines than its source started needing to be short
+# for its locale too (REWRAP_Z): a re-wrap of one-sentence-per-line prose
+# into fewer lines was the commonest false alarm the ratchet raised in the
+# rounds of 2026-09-29/30, and the change cut the check's noise from 0.44% to
+# 0.19% and its corpus findings from 3,387 to 1,340.
+FLOORS = {"line-shape": 0.28, "numbers": 0.24, "list-items": 0.03, "title-untranslated": 0.015,
           "question-mark": 0.10, "length-outlier": 0.10}
 CEILINGS = {"line-shape": 0.006, "numbers": 0.012, "list-items": 0.002, "title-untranslated": 0.004,
             "question-mark": 0.003, "length-outlier": 0.010}
@@ -387,3 +393,50 @@ def test_finding_key_cannot_be_confused_by_field_concatenation(completeness):
     x = {"file": "i18n/de/po/a.po", "check": "line", "msgid": "shape"}
     y = {"file": "i18n/de/po/a.po", "check": "lineshape", "msgid": ""}
     assert completeness.finding_key(x) != completeness.finding_key(y)
+
+
+# --------------------------------------------------------------------------
+# the per-locale baseline
+#
+# One file per locale, so two review rounds on different locales never touch
+# the same file. Writing is scoped to the locales scanned: a contributor whose
+# checkout holds stale PO files for other locales cannot reset their keys.
+
+
+def test_baseline_directory_is_the_union_of_its_locale_files(completeness, tmp_path):
+    completeness.write_locale_baseline(tmp_path, "de", {"aaaa", "bbbb"})
+    completeness.write_locale_baseline(tmp_path, "fr", {"cccc"})
+    assert completeness.load_baseline(tmp_path) == {"aaaa", "bbbb", "cccc"}
+
+
+def test_baseline_file_ignores_comments_and_blank_lines(completeness, tmp_path):
+    f = completeness.write_locale_baseline(tmp_path, "de", {"bbbb", "aaaa"})
+    text = f.read_text(encoding="utf-8")
+    assert text.startswith("#")
+    assert text.rstrip("\n").splitlines()[-2:] == ["aaaa", "bbbb"]  # sorted, one per line
+    assert completeness.load_baseline_file(f) == {"aaaa", "bbbb"}
+
+
+def test_legacy_json_baseline_still_loads(completeness, tmp_path):
+    f = tmp_path / "old.json"
+    f.write_text(json.dumps({"count": 2, "keys": ["aaaa", "bbbb"]}), encoding="utf-8")
+    assert completeness.load_baseline(f) == {"aaaa", "bbbb"}
+
+
+def test_numbers_do_not_run_across_a_comma_and_a_space(completeness):
+    # "in 2023, 1,386 qubits" was one number 20231386; "May 30, 2024" was 302024
+    assert completeness._number_problem("reached in 2023, 1,386 qubits in 2024",
+                                        "alcanzado en 2023, 1386 qubits en 2024") is None
+    assert completeness._number_problem("Yukio Kawashima (May 30, 2024)", "Yukio Kawashima (30. Mai 2024)") is None
+    assert completeness._number_problem("600,000 shots", "600.000 Shots") is None
+    assert completeness._number_problem("3.14 and 2", "3,14") == "missing 2"
+
+
+def test_line_shape_forgives_a_rewrap_but_not_a_short_translation(completeness):
+    src = "Set the runtime version in\n`project.dependencies` to match the build.\n"
+    rewrap = "Nastavte verzi běhového prostředí v `project.dependencies` tak, aby odpovídala sestavení.\n"
+    dropped = "Nastavte verzi.\n"
+    assert "line-shape" not in {f["check"] for f in completeness.check_pair(src, rewrap, "cs")}
+    assert "line-shape" in {f["check"] for f in completeness.check_pair(src, dropped, "cs")}
+    # without a locale the plain line count still applies
+    assert "line-shape" in {f["check"] for f in completeness.check_pair(src, rewrap)}

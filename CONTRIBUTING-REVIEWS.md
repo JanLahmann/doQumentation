@@ -465,7 +465,7 @@ python3 translation/scripts/check-known-mistranslations.py --locale <LOCALE>
 python3 translation/scripts/check-wrong-language.py --locale <LOCALE>
 python3 translation/scripts/audit-check-py.py --locale <LOCALE>
 python3 translation/scripts/check-completeness.py --locale <LOCALE> --limit 0 \
-  --baseline translation/eval/completeness-baseline.json
+  --baseline translation/eval/completeness-baseline
 ```
 
 The last one, the **completeness ratchet**, fails on any finding that is
@@ -480,9 +480,13 @@ not in the baseline. Read each one it prints, against the entry's English:
   then run the ratchet once more; it must say "no new findings".
 
 ```bash
-python3 translation/scripts/check-completeness.py --all \
-  --write-baseline translation/eval/completeness-baseline.json
+python3 translation/scripts/check-completeness.py --locale <LOCALE> --limit 0 \
+  --baseline translation/eval/completeness-baseline --accept-new
 ```
+
+This adds the new keys to `translation/eval/completeness-baseline/<LOCALE>.txt`
+and touches no other locale's file. Only accept after you have handled
+every real loss the ratchet printed: `--accept-new` accepts all of them.
 
 Tell the user which findings you accepted and why. In the rounds of
 2026-09-11/12 each locale had two or three: about half real.
@@ -534,9 +538,9 @@ git commit && gh pr create --repo JanLahmann/doQumentation
 ```
 
 Show the user the `git status --short` output before committing. If the
-completeness ratchet in step 7 needed `--write-baseline` for re-wrapped
-lines, `translation/eval/completeness-baseline.json` is staged too; nothing
-else ever is. Never `git add -f i18n/`.
+completeness ratchet in step 7 needed `--accept-new` for re-wrapped
+lines, `translation/eval/completeness-baseline/<LOCALE>.txt` is staged too;
+nothing else ever is. Never `git add -f i18n/`.
 
 When the user stops contributing to this locale — not after every round if
 they plan another — close their claim issue, so the locale shows as free.
