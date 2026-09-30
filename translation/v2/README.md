@@ -115,6 +115,12 @@ says why. Three classes, all intended:
 
 ## Running a sync (the whole procedure)
 
+Short version: after the Monday PR opens, `sync-plan.yml` runs `prepare` in
+Actions (no API key) and comments the per-locale plan on it; in Claude Code,
+`/weekly-sync` (`.claude/commands/weekly-sync.md`) runs the loop below and
+opens the PR. The model step stays in Claude Code; everything else is
+deterministic.
+
 `sync-upstream.yml` runs every Monday (and on demand) and opens a
 "sync: upstream content" PR with the new English. **That PR is not merged
 by itself**: it carries no CI checks (a workflow-token PR cannot trigger

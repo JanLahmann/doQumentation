@@ -1,0 +1,93 @@
+name: Sync plan
+
+# After sync-upstream.yml opens its "sync: upstream content" PR, work out
+# what the locale sync will need and say so on that PR. No API key: this runs
+# only the deterministic half of translation/v2/sync.py (prepare: the English
+# onto a branch, every locale's worklist, the model batches). Filling the
+# batches needs a model and runs in Claude Code (`/weekly-sync`, see
+# .claude/commands/weekly-sync.md), which then commits and opens the real PR.
+# Nothing is pushed from here.
+
+on:
+  workflow_run:
+    workflows: ["Sync Upstream Content"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: sync-plan
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Find the open sync PR
+        id: pr
+        run: |
+          n=$(gh pr list --repo "$GITHUB_REPOSITORY" --head sync/upstream-content --state open --json number -q '.[0].number')
+          echo "number=${n}" >> "$GITHUB_OUTPUT"
+          [ -n "$n" ] || echo "::notice::no open sync/upstream-content PR; nothing to plan"
+
+      - uses: actions/checkout@v7
+        if: steps.pr.outputs.number != ''
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        if: steps.pr.outputs.number != ''
+        with:
+          python-version: '3.12'
+
+      - name: Set up po4a
+        if: steps.pr.outputs.number != ''
+        uses: ./.github/actions/setup-po4a
+
+      - name: Prepare the locale sync
+        id: prepare
+        if: steps.pr.outputs.number != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          set +e
+          python3 translation/v2/sync.py prepare --from sync/upstream-content > /tmp/prepare.log 2>&1
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          cat /tmp/prepare.log
+
+      - name: Comment the plan on the sync PR
+        if: steps.pr.outputs.number != ''
+        run: |
+          {
+            echo "### Locale sync plan"
+            echo ""
+            if [ "${{ steps.prepare.outputs.rc }}" != "0" ]; then
+              echo "\`sync.py prepare\` failed (exit ${{ steps.prepare.outputs.rc }}); see the [run log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). Tail:"
+              echo ""
+              echo '```'
+              tail -30 /tmp/prepare.log
+              echo '```'
+            else
+              echo '```'
+              sed -n '/^locale /,/^total:/p' /tmp/prepare.log
+              echo '```'
+              echo ""
+              if grep -q "Nothing needs a model" /tmp/prepare.log; then
+                echo "Nothing needs a model this week: \`/weekly-sync\` only runs \`finish\` and opens the PR."
+              else
+                echo "Next: open Claude Code in this repository and run \`/weekly-sync\`. It fills the batches,"
+                echo "runs every locale's gates, and opens the PR that supersedes this one."
+              fi
+            fi
+            echo ""
+            echo "_Posted by \`sync-plan.yml\`. Nothing was pushed._"
+          } > /tmp/plan.md
+          gh pr comment "${{ steps.pr.outputs.number }}" --repo "$GITHUB_REPOSITORY" --body-file /tmp/plan.md
