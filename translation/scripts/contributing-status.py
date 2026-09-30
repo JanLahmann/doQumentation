@@ -299,9 +299,12 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
     A("")
     risk = risk_counts(cats)
     if ready:
-        A("Every locale below still has unreviewed pages. Pick one that is not")
-        A("claimed above, open your claim issue, then follow")
-        A("`CONTRIBUTING-REVIEWS.md`.")
+        A("Every locale below has pages waiting for a read: pages never read, or")
+        A("*delta* pages whose model-written entries no reviewer has seen yet (the")
+        A("pool table further down). Pick one that is not claimed above, open")
+        A("your claim issue, then follow `CONTRIBUTING-REVIEWS.md`. When a")
+        A("locale's pool runs dry, sample with `--order risk`: it re-reads the")
+        A("pages whose last verdict was FAIL first (the first column here).")
     else:
         A("Nearly every page of every locale now carries a review verdict, so the")
         A("work is **re-reading where a read is most likely to find something**.")
