@@ -54,6 +54,35 @@ LADDER = [2, 4, 6, 8, 12]
 WORKABLE = 25
 
 
+def _known_locales() -> set[str]:
+    return {p.parent.name for p in (REPO / "i18n").glob("*/po")}
+
+
+def parse_claim(title: str, body: str) -> tuple[str, str]:
+    """(locale, track) of one claim issue. The Locale field of the issue form
+    takes one code ("de"); a claim spanning locales writes "all" or a list,
+    which a single-code match showed as `?` (#725, "all 17 (ar cs de ...)").
+    A list comes back as "ar, de", every maintained locale as "all"."""
+    m = CLAIM_TITLE_RE.search(title)
+    locale = m.group(1).lower() if m else None
+    track = (m.group(2) or "").lower() if m else ""
+    # the issue form writes "### Locale\n\nde" / "### What you will do\n\nreview (...)"
+    fm = re.search(r"###\s*Locale\s*\n+(.*?)(?:\n###|\Z)", body, re.I | re.S)
+    if fm:
+        field = fm.group(1).strip()
+        known = _known_locales()
+        codes = sorted({c.lower() for c in re.findall(r"\b([a-z]{2})\b", field, re.I)} & known)
+        if re.match(r"all\b", field, re.I) or (known and set(codes) >= known):
+            locale = "all"
+        elif codes:
+            locale = ", ".join(codes)
+    ft = re.search(r"###\s*What you will do\s*\n+\s*(review|translate)", body, re.I)
+    if ft:
+        track = ft.group(1).lower()
+    track = "translate" if track.startswith("translat") else ("review" if track else "?")
+    return locale or "?", track
+
+
 def fetch_claims() -> list[dict] | None:
     """Open claim issues as [{locale, track, who, number, since}], or None when
     neither `gh` nor the public API answered (offline, rate-limited)."""
@@ -85,22 +114,10 @@ def fetch_claims() -> list[dict] | None:
             i["author"] = i.get("user") or {}
     claims = []
     for i in raw:
-        title = i.get("title") or ""
-        body = i.get("body") or ""
-        m = CLAIM_TITLE_RE.search(title)
-        locale = m.group(1).lower() if m else None
-        track = (m.group(2) or "").lower() if m else ""
-        # the issue form writes "### Locale\n\nde" / "### What you will do\n\nreview (...)"
-        fm = re.search(r"###\s*Locale\s*\n+\s*([a-z]{2})\b", body, re.I)
-        if fm:
-            locale = fm.group(1).lower()
-        ft = re.search(r"###\s*What you will do\s*\n+\s*(review|translate)", body, re.I)
-        if ft:
-            track = ft.group(1).lower()
-        track = "translate" if track.startswith("translat") else ("review" if track else "?")
+        locale, track = parse_claim(i.get("title") or "", i.get("body") or "")
         who = ", ".join("@" + a["login"] for a in (i.get("assignees") or []) if a.get("login")) \
             or ("@" + (i.get("author") or {}).get("login", "?"))
-        claims.append({"locale": locale or "?", "track": track, "who": who,
+        claims.append({"locale": locale, "track": track, "who": who,
                        "number": i.get("number"), "since": (i.get("createdAt") or "")[:10]})
     return sorted(claims, key=lambda c: (c["locale"], c["since"]))
 
@@ -342,9 +359,11 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
     A("")
     if ready:
         A("*Never read* pages have no verdict yet: a full read. *Delta* pages")
-        A("were reviewed, and a sync has since written new entries on them: the")
-        A("reviewer judges only those entries. A locale can be 100% reviewed and")
-        A("still have a delta pool.")
+        A("were reviewed, and entries were written on them after that: almost")
+        A("always a round's own fix wave (a fix carries the verdict's date, and")
+        A("only entries stamped before a verdict count as read), sometimes an")
+        A("English sync. The reviewer judges only those entries. A locale can be")
+        A("100% reviewed and still have a delta pool.")
         A("")
         A("| Locale | Never read | Delta | Reviewed so far |" if not leaky
           else "| Locale | Never read | Delta | Use | Reviewed so far |")
