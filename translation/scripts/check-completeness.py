@@ -145,6 +145,18 @@ TITLE_RE = re.compile(r'(?:title|description|alt)="([^"]*)"')
 # A title= of fewer than this many words is usually a label or a proper name
 # ("Answer" is caught by other means; "Qiskit" must not be flagged at all).
 TITLE_MIN_WORDS = 4
+# Captions left in English on purpose, which the #912 sweep's fix agents kept
+# and which made up 44 of the 56 findings still flagged after it, hiding the
+# real misses among them:
+# - a technique named with its acronym, "Probabilistic error cancellation
+#   (PEC)", "Matrix-free Measurement Mitigation (M3)" (27);
+# - a caption that is one code span, "`cannot open file 'qiskit.h'`" (17).
+NAME_WITH_ACRONYM_RE = re.compile(r"^[A-Z][\w\-’' ]+ \([A-Z][A-Za-z0-9\-]{1,9}\)$")
+CODE_SPAN_RE = re.compile(r"^`[^`]+`$")
+# A translation may spell out an <Admonition>'s default label as its title=
+# ("ヒント" for type="tip"): the page reads the same, so such an added title
+# is not a count mismatch (6 ja/ko findings of the 56).
+ADMONITION_TITLE_RE = re.compile(r'(<Admonition\b[^>]*?) title="[^"]*"')
 # Below this length two neighbouring entries sharing a msgstr is ordinary
 # repetition ("Note", "Example"), not a copied paragraph.
 DUPLICATE_MIN_CHARS = 40
@@ -268,6 +280,9 @@ def check_pair(msgid: str, msgstr: str, locale: str | None = None) -> list[dict]
         return findings
 
     ta, tb = TITLE_RE.findall(msgid), TITLE_RE.findall(msgstr)
+    if len(tb) > len(ta):
+        ta = TITLE_RE.findall(ADMONITION_TITLE_RE.sub(r"\1", msgid))
+        tb = TITLE_RE.findall(ADMONITION_TITLE_RE.sub(r"\1", msgstr))
     if len(ta) != len(tb):
         findings.append({
             "check": "title-untranslated",
@@ -284,7 +299,8 @@ def check_pair(msgid: str, msgstr: str, locale: str | None = None) -> list[dict]
         # to its source precisely WHEN the caption was never translated. Guard
         # it as a copy and the check flags nothing (measured: recall 6 -> 1).
         for x, y in zip(ta, tb):
-            if x == y and len(x.split()) >= TITLE_MIN_WORDS:
+            if (x == y and len(x.split()) >= TITLE_MIN_WORDS
+                    and not NAME_WITH_ACRONYM_RE.match(x) and not CODE_SPAN_RE.match(x)):
                 findings.append({
                     "check": "title-untranslated",
                     "detail": f"caption still in the source language: {x[:60]!r}",
