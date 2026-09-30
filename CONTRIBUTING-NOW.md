@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-28 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-09-30 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -36,22 +36,46 @@ A claim is one open issue labelled `translation-claim` (template:
 stop; it is the only reservation there is. List them any time with
 `gh issue list --repo JanLahmann/doQumentation --label translation-claim`.
 
-*No open claims right now — every locale is free.*
+| Locale | Who | Doing | Since | Issue |
+|---|---|---|---|---|
+| `?` | @JanLahmann | review | 2026-09-29 | [#725](https://github.com/JanLahmann/doQumentation/issues/725) |
 
 ---
 
 ## Pick a locale
 
-Every locale below still has unreviewed pages. Pick one that is not
-claimed above, open your claim issue, then follow
-`CONTRIBUTING-REVIEWS.md`.
+Every locale below has pages waiting for a read: pages never read, or
+*delta* pages whose model-written entries no reviewer has seen yet (the
+pool table further down). Pick one that is not claimed above, open
+your claim issue, then follow `CONTRIBUTING-REVIEWS.md`. When a
+locale's pool runs dry, sample with `--order risk`: it re-reads the
+pages whose last verdict was FAIL first (the first column here).
+
+| Locale | Last verdict FAIL | Never read | Oldest verdict |
+|---|---|---|---|
+| `ja` | **22** | 0 | 2026-09-28 |
+| `ko` | **17** | 0 | 2026-09-11 |
+| `uk` | **15** | 0 | 2026-09-29 |
+| `tl` | **15** | 0 | 2026-09-29 |
+| `he` | **15** | 0 | 2026-09-29 |
+| `cs` | **14** | 0 | 2026-09-29 |
+| `pt` | **11** | 0 | 2026-07-05 |
+| `th` | **10** | 0 | 2026-09-29 |
+| `ro` | **10** | 0 | 2026-09-29 |
+| `es` | **9** | 0 | 2026-06-26 |
+| `ms` | **9** | 0 | 2026-09-29 |
+| `fr` | **8** | 0 | 2026-07-05 |
+| `id` | **6** | 0 | 2026-09-12 |
+| `it` | **6** | 0 | 2026-09-28 |
+| `de` | **4** | 0 | 2026-09-29 |
+| `ar` | **2** | 0 | 2026-08-29 |
+| `pl` | **1** | 0 | 2026-06-28 |
 
 **`--max-leaks` currently filters nothing, and that is expected.** A
 leak is a term the locale's `translation/glossary/<loc>.json` records
 as wrongly left in English — *not* any capitalized English word. The
-terms the house style keeps in English (Qiskit, Qubit, Gate, Circuit,
-Backend, Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum,
-QPU) do not count, and no locale currently records anything else, so
+terms the house style keeps in English (Qiskit, Qubit, Gate, Circuit, Backend, Transpiler, Session, Sampler, Estimator, PUB, IBM Quantum, QPU, IBM Quantum Platform, Qiskit Runtime, Qiskit Functions, Circuit functions, Application functions, Catalog Functions, Custom Functions, job mode, session mode, batch mode)
+do not count, and no locale currently records anything else, so
 every file scores 0. What limits a pool today is pages already
 reviewed with nothing written since, not leakage.
 
@@ -62,23 +86,23 @@ still have a delta pool.
 
 | Locale | Never read | Delta | Reviewed so far |
 |---|---|---|---|
-| `de` | **80** | 220 | 363/443 (81%) |
-| `he` | **78** | 199 | 365/443 (82%) |
-| `th` | **21** | 249 | 422/443 (95%) |
-| `cs` | **181** | 76 | 262/443 (59%) |
-| `pl` | **186** | 62 | 257/443 (58%) |
-| `id` | **21** | 221 | 422/443 (95%) |
-| `ro` | **194** | 46 | 249/443 (56%) |
-| `ms` | **189** | 38 | 254/443 (57%) |
-| `ja` | **141** | 74 | 302/443 (68%) |
-| `tl` | **58** | 155 | 385/443 (86%) |
-| `ko` | **23** | 178 | 420/443 (94%) |
-| `ar` | **134** | 65 | 309/443 (69%) |
-| `uk` | **141** | 57 | 302/443 (68%) |
-| `it` | **130** | 51 | 313/443 (70%) |
-| `es` | **124** | 44 | 319/443 (72%) |
-| `pt` | **130** | 38 | 313/443 (70%) |
-| `fr` | **95** | 49 | 348/443 (78%) |
+| `he` | **0** | 411 | 449/449 (100%) |
+| `ms` | **0** | 390 | 449/449 (100%) |
+| `cs` | **0** | 378 | 449/449 (100%) |
+| `ro` | **0** | 375 | 449/449 (100%) |
+| `de` | **0** | 371 | 449/449 (100%) |
+| `uk` | **0** | 370 | 449/449 (100%) |
+| `ar` | **0** | 365 | 449/449 (100%) |
+| `ko` | **0** | 365 | 449/449 (100%) |
+| `th` | **0** | 365 | 449/449 (100%) |
+| `ja` | **0** | 344 | 449/449 (100%) |
+| `it` | **0** | 342 | 449/449 (100%) |
+| `fr` | **0** | 337 | 449/449 (100%) |
+| `id` | **0** | 337 | 449/449 (100%) |
+| `pt` | **0** | 335 | 449/449 (100%) |
+| `es` | **0** | 333 | 449/449 (100%) |
+| `tl` | **0** | 309 | 449/449 (100%) |
+| `pl` | **0** | 267 | 449/449 (100%) |
 
 ---
 
@@ -86,14 +110,14 @@ still have a delta pool.
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `2026092877-JanLahmann` | 40 | 1 | 2.5% |
-| `2026092876-JanLahmann` | 40 | 0 | 0.0% |
-| `2026092875-JanLahmann` | 40 | 0 | 0.0% |
-| `2026092874-JanLahmann` | 40 | 0 | 0.0% |
-| `2026092873-JanLahmann` | 40 | 0 | 0.0% |
-| `2026092872-JanLahmann` | 40 | 0 | 0.0% |
+| `2026093171-pl-JanLahmann` | 80 | 1 | 1.2% |
+| `2026093170-ar-JanLahmann` | 78 | 2 | 2.6% |
+| `2026093169-uk-JanLahmann` | 40 | 0 | 0.0% |
+| `2026093168-tl-JanLahmann` | 40 | 1 | 2.5% |
+| `2026093167-th-JanLahmann` | 40 | 0 | 0.0% |
+| `2026093166-ro-JanLahmann` | 40 | 0 | 0.0% |
 
-Typical FAIL rate is around **0%**. If your round comes
+Typical FAIL rate is around **1%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 
@@ -101,8 +125,17 @@ usually means the rubric drifted, not that the locale collapsed.
 
 ## The highest-value thing you can do
 
-**When two or more locales are flagged for the same sentence, check the
-other fifteen before fixing.**
+**If you read one of these languages fluently: spot-check pages as a
+human.** Model review is close to saturation: most reads come back
+MINOR_ISSUES, mostly style. A fluent reader going through 10-20 pages
+catches what the model reviewers miss, and tells us whether their
+Naturalness notes matter to a real reader. Open an issue with what you
+found (page, sentence, what it should say); you do not need the
+pipeline for this. The locales with the most FAIL history in the table
+above benefit most.
+
+**Otherwise, when two or more locales are flagged for the same sentence,
+check the other fifteen before fixing.**
 
 Sampling finds instances; comparing one span across all locales finds
 the class. A recent round flagged three locales for rendering *"a

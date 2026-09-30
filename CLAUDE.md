@@ -27,7 +27,10 @@ Before either, in this order:
    shows who holds which locale. Pick a free one (`CONTRIBUTING-NOW.md`
    lists what is left per locale) and open a claim issue with the
    "Claim a locale" template before starting. One locale per person.
-3. **Render the locale** before any review or lint: `python3 translation/v2/render.py --locale <locale>`
+3. **Run a review round through `translation/v2/round.py`** (see
+   `CONTRIBUTING-REVIEWS.md`): it works in a git worktree per locale, keeps
+   the round's state in one file and builds the commit message from the
+   records. Render the locale before any manual review or lint: `python3 translation/v2/render.py --locale <locale>`
    (needs po4a ≥ 0.74, GNU gettext and `pip install polib`). Nothing under
    `i18n/<locale>/…/current/` exists until then.
 
@@ -41,7 +44,12 @@ Before either, in this order:
 - Sub-agents only read and write the batch file they were given. They
   never run git, scripts or shell. Commits are the orchestrator's.
 - Stage exactly the intended set (`i18n/<locale>/po/`, a new file under
-  `translation/reviews/`) and assert it before committing. Never `git add -f i18n/`.
+  `translation/reviews/`, and `translation/eval/completeness-baseline/<locale>.txt`
+  when the ratchet's new findings were read and accepted with `--accept-new`)
+  and assert it before committing. Never `git add -f i18n/`.
+- Product, Qiskit Functions category and execution-mode names stay English
+  in every locale (`ALWAYS_ENGLISH_NAMES` in `translation/scripts/_common.py`).
+  Do not translate them, and do not accept a review that asks to.
 - Never build all 17 locales on one machine. Build one with
   `npx docusaurus build --locale <locale>`, or let CI do it.
 
