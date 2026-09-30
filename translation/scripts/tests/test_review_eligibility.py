@@ -138,22 +138,32 @@ def _stamp(root, rel, idx, comment):
 
 
 def test_catalogue_lists_unverified_entries_and_delta_mode(sampler, corpus):
-    # reviewed on 2026-07-05; one entry fixed after that, one fixed and already verified
-    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: fixed after review 2026-09-01")
-    _stamp(corpus, "guides/reviewed.mdx", 1, "doq: fixed after review 2026-08-01 · verified 2026-08-15")
+    # reviewed on 2026-07-05; one entry retranslated after that, one retranslated and already verified
+    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: translated after an English change 2026-09-01")
+    _stamp(corpus, "guides/reviewed.mdx", 1, "doq: translated after an English change 2026-08-01 · verified 2026-08-15")
     cat = sampler.catalogue("xx")
     r = cat["guides/reviewed.mdx"]
     assert [u["index"] for u in r["unverified"]] == [0]
     assert r["unverified"][0]["since"] == "2026-09-01"
     assert sampler.review_mode(r, 1, exclude_reviewed=True) == "delta"
     assert sampler.review_mode(cat["guides/fresh.mdx"], 1, exclude_reviewed=True) == "full"
-    # a sync retranslation stamp counts too
     _stamp(corpus, "guides/reviewed.mdx", 0, "doq: translated after an English change 2026-09-10")
     assert sampler.catalogue("xx")["guides/reviewed.mdx"]["unverified"][0]["since"] == "2026-09-10"
 
 
-def test_pool_and_draw_carry_delta_entries(sampler, corpus):
+def test_review_fixes_are_read_unless_asked_for(sampler, corpus):
+    """Since 2026-09-30 a review fix is not unread: re-reading 243 pages of
+    fix-wave output found 0 FAIL. round.py verify still asks for them."""
     _stamp(corpus, "guides/reviewed.mdx", 0, "doq: fixed after review 2026-09-01")
+    r = sampler.catalogue("xx")["guides/reviewed.mdx"]
+    assert r["unverified"] == [] and sampler.review_mode(r, 1, exclude_reviewed=True) is None
+    r = sampler.catalogue("xx", include_fixes=True)["guides/reviewed.mdx"]
+    assert [u["index"] for u in r["unverified"]] == [0]
+    assert sampler.review_mode(r, 1, exclude_reviewed=True) == "delta"
+
+
+def test_pool_and_draw_carry_delta_entries(sampler, corpus):
+    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: translated after an English change 2026-09-01")
     cat = sampler.catalogue("xx")
     pool = sampler.build_pool({"xx": cat}, min_lines=1, exclude_reviewed=True)
     rows = {r[0]: r for r in pool["xx"]}
@@ -176,7 +186,7 @@ def test_recording_a_verdict_verifies_entries_written_before_it(recorder, sample
     po = polib.pofile(str(corpus / "i18n/xx/po/guides/fresh.po"))
     assert po[0].tcomment == "doq: fixed after review 2026-09-01 · verified 2026-09-10"
     assert po[1].tcomment == "doq: fixed after review 2026-09-10"                     # still pending
-    cat = sampler.catalogue("xx")
+    cat = sampler.catalogue("xx", include_fixes=True)
     assert [u["index"] for u in cat["guides/fresh.mdx"]["unverified"]] == [1]
     assert sampler.review_mode(cat["guides/fresh.mdx"], 1, exclude_reviewed=True) == "delta"
 
@@ -259,7 +269,7 @@ def test_same_day_entries_are_held_back(sampler, corpus):
     """The recorder verifies only entries stamped BEFORE the verdict date, so an
     entry stamped on the round's own date cannot be cleared by it. The sampler
     leaves such entries out; a page with nothing else unread drops out."""
-    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: fixed after review 2026-09-29")
+    _stamp(corpus, "guides/reviewed.mdx", 0, "doq: translated after an English change 2026-09-29")
     cat = {"xx": sampler.catalogue("xx")}
     assert sampler.hold_back_same_day(cat, "2026-09-29") == 1
     r = cat["xx"]["guides/reviewed.mdx"]

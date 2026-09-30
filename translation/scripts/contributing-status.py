@@ -317,7 +317,7 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
     risk = risk_counts(cats)
     if ready:
         A("Every locale below has pages waiting for a read: pages never read, or")
-        A("*delta* pages whose model-written entries no reviewer has seen yet (the")
+        A("*delta* pages whose retranslated entries no reviewer has seen yet (the")
         A("pool table further down). Pick one that is not claimed above, open")
         A("your claim issue, then follow `CONTRIBUTING-REVIEWS.md`. When a")
         A("locale's pool runs dry, sample with `--order risk`: it re-reads the")
@@ -359,11 +359,10 @@ def render(sdr, cats, claims: list[dict] | None = None) -> str:
     A("")
     if ready:
         A("*Never read* pages have no verdict yet: a full read. *Delta* pages")
-        A("were reviewed, and entries were written on them after that: almost")
-        A("always a round's own fix wave (a fix carries the verdict's date, and")
-        A("only entries stamped before a verdict count as read), sometimes an")
-        A("English sync. The reviewer judges only those entries. A locale can be")
-        A("100% reviewed and still have a delta pool.")
+        A("were reviewed, and an English sync has since retranslated entries on")
+        A("them. The reviewer judges only those entries. A review's own fixes do")
+        A("not count as unread. A locale can be 100% reviewed and still have a")
+        A("delta pool.")
         A("")
         A("| Locale | Never read | Delta | Reviewed so far |" if not leaky
           else "| Locale | Never read | Delta | Use | Reviewed so far |")

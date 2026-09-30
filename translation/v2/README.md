@@ -405,7 +405,11 @@ Every one of the 17 main locales has been through one v2 sync (English
   wrote since it that no reviewer has read (a delta read of just those). Every
   msgstr a model writes is stamped with a date (`doq: fixed after review D`,
   `doq: translated after an English change D`); recording a verdict dated
-  later appends `· verified D` to the stamp. Only page reads (PASS,
+  later appends `· verified D` to the stamp. Only the English-change stamp
+  makes an entry unread (since 2026-09-30): a review fix is the correction a
+  reviewer asked for, passed `check.py`, and a re-read of 243 pages of fixes
+  found 0 FAIL. `sample-deep-review.py --include-fixes` counts fixes too;
+  `round.py verify` uses it to re-read a FAIL page's fixes. Only page reads (PASS,
   MINOR_ISSUES, FAIL) are recorded; a repair round's FIXED records are not.
   `X-Doq-Review-Tier3` is the v1 Haiku verdict copied at bootstrap, context only.
 
