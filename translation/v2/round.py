@@ -456,7 +456,7 @@ def gate(wt: Path, locale: str, baseline: Path) -> tuple[list[str], list[str], d
              "--baseline", str(baseline)], wt, check=False)
     new = parse_ratchet(r.stdout, locale)
     log["ratchet"] = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
-    tracked = run(["git", "ls-files", f"i18n/{locale}/docusaurus-plugin-content-docs"], wt).stdout.split()
+    tracked = [p for p in run(["git", "ls-files", "-z", f"i18n/{locale}/docusaurus-plugin-content-docs"], wt).stdout.split("\0") if p]
     if tracked:
         run(["git", "checkout", "--", *tracked], wt)
     return failed, new, log

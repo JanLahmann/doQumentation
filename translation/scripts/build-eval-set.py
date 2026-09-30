@@ -97,8 +97,10 @@ def merge_base(head: str) -> str:
 
 
 def changed_po_files(base: str, head: str) -> list[str]:
-    out = git("diff", "--name-only", base, head, "--", "i18n")
-    return [p for p in out.split("\n") if p.endswith(".po")]
+    # -z: without it git quotes a non-ASCII path, and the quoted name never
+    # ends in .po
+    out = git("diff", "--name-only", "-z", base, head, "--", "i18n")
+    return [p for p in out.split("\0") if p.endswith(".po")]
 
 
 def entries_at(rev: str, path: str) -> dict[tuple[str, str | None], str] | None:
