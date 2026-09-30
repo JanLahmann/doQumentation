@@ -81,7 +81,7 @@ def record_verdict(locale: str, rel: str, verdict: str, when: str,
         return "kept"
     po.metadata[REVIEW_HEADER] = f"{verdict} {when}".strip()
     for e in po:
-        since = _io.pending_since(e)
+        since = _io.pending_since(e, include_fixes=True)   # a verify read clears fixes too
         if since and when and since < when:
             _io.mark_verified(e, when)
     po.save(str(p))

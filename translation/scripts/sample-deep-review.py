@@ -145,7 +145,7 @@ def split_verdict(value: str | None) -> tuple[str | None, str | None]:
     return parts[0], (parts[1] if len(parts) > 1 else None)
 
 
-def catalogue(locale: str) -> dict[str, dict]:
+def catalogue(locale: str, include_fixes: bool = False) -> dict[str, dict]:
     """Every page of a locale as the review programme sees it, keyed by the
     English path (`guides/foo.mdx`).
 
@@ -178,7 +178,7 @@ def catalogue(locale: str) -> dict[str, dict]:
                 continue
             if e.fuzzy or not e.msgstr.strip():
                 pending += 1
-            since = _po4a_io.pending_since(e)
+            since = _po4a_io.pending_since(e, include_fixes)
             if since:
                 unverified.append({"index": idx, "since": since, "msgid": e.msgid, "msgstr": e.msgstr})
         info = {"rel": rel, "section": section_of(rel), "verdict": verdict,
@@ -477,6 +477,9 @@ def main():
                     help="restrict the pool to the pages this file lists, one per line: "
                          "'<locale> <page>' or '<page>' (every locale). For a round over a "
                          "known set, e.g. the pages a sync withdrew verdicts on")
+    ap.add_argument("--include-fixes", action="store_true",
+                    help="count entries a review fix wave wrote as unread (they are not by "
+                         "default since 2026-09-30); round.py verify uses it")
     ap.add_argument("--as-of", default=date.today().isoformat(), metavar="YYYY-MM-DD",
                     help="the date this round's verdicts will carry (default: today). Entries "
                          "stamped on or after it are not judged: the recorder could not mark "
@@ -500,7 +503,7 @@ def main():
         locales = [l for l in locales if l in set(args.locale)]
     sections = tuple(s for s in (args.sections or "").split(",") if s) or None
 
-    catalogues = {loc: catalogue(loc) for loc in locales}
+    catalogues = {loc: catalogue(loc, args.include_fixes) for loc in locales}
     missing = [loc for loc, cat in catalogues.items() if not cat]
     if missing:
         for loc in missing:

@@ -584,7 +584,7 @@ def cmd_verify(a) -> int:
         tomorrow = (date.today() + timedelta(days=1)).isoformat()   # count today's fixes as unread
         run([PY, script(wt, "translation/scripts/sample-deep-review.py"), "--locale", a.locale,
              "--per-locale", str(len(pages)), "--seed", st["seed"], "--drift-focus", "--pages", str(pf),
-             "--as-of", tomorrow, "--out", str(sample)], wt)
+             "--as-of", tomorrow, "--include-fixes", "--out", str(sample)], wt)
         absolutize_file(sample, wt)
         wf = d / f"verify-{a.locale}-wf.js"
         run([PY, script(wt, "translation/scripts/make-opus-run.py"), "--sample", str(sample), "--out", str(wf)], wt)

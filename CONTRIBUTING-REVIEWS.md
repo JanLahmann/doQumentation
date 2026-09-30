@@ -192,11 +192,14 @@ English sync (the page would render English there). With
 `--exclude-reviewed` it enters the sample in one of two modes:
 
 - **full** — no verdict yet: the reviewer reads the whole page.
-- **delta** — a verdict stands, but a model has written entries since it (a
-  fix wave's repairs, a sync's retranslations) that no reviewer has read.
-  The reviewer gets the page for context and those entries to judge; the
-  sample row carries them as `delta_entries`. This is how every repair and
-  every retranslation gets an Opus read, at a fraction of a full page. A
+- **delta** — a verdict stands, but an English sync has retranslated entries
+  since it that no reviewer has read. The reviewer gets the page for context
+  and those entries to judge; the sample row carries them as `delta_entries`.
+  This is how every retranslation gets an Opus read, at a fraction of a full
+  page. A fix wave's repairs do not count (since 2026-09-30): they are the
+  change a reviewer asked for and have passed `check.py`, and re-reading 243
+  pages of them found no FAIL. `round.py verify` still re-reads a FAIL
+  page's repairs before shipping (`sample-deep-review.py --include-fixes`). A
   verdict a sync withdrew (`X-Doq-Review-Opus-Prior`, written by
   `translate.py --apply` when it retranslates entries of a reviewed page)
   counts the same way: the retranslated entries are the delta.
@@ -209,7 +212,7 @@ When `--exclude-reviewed` leaves too few pages (every page of the locale has
 a standing verdict), drop it and add `--order risk` instead. That takes the
 pages where a read is most likely to find something, in this order: pages
 whose last verdict was FAIL (fixed since, but never re-read), pages never
-read, pages with unread model-written entries, then the oldest verdicts.
+read, pages with unread retranslated entries, then the oldest verdicts.
 Across the rounds of late September, 87% of reads came back MINOR_ISSUES and
 FAILs clustered in a few locales, so a random re-read mostly re-confirms
 pages that were fine.
@@ -546,9 +549,9 @@ It writes `X-Doq-Review-Opus: <VERDICT> <date>` into the header of every
 page the round read (PASS, MINOR_ISSUES or FAIL alike) and refuses records
 for any other locale. It also marks every model-written entry stamped
 *before* the round's date as verified — the reader saw it. The repairs your
-own fix wave just wrote are stamped with today's date and stay pending, so
-the next round on this locale picks those pages up in delta mode and reads
-the repairs. The header change ships in your PR with the fixes; there is no
+own fix wave just wrote are stamped with today's date; they do not put the
+page back in the pool (a fix counts as read), so the next round moves on to
+other pages. The header change ships in your PR with the fixes; there is no
 maintainer step after merge.
 
 ```bash

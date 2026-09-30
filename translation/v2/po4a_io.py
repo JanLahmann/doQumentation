@@ -389,19 +389,28 @@ def _check(msgid: str, msgstr: str) -> list[str]:
 
 # Every msgstr a model writes carries a dated stamp in its translator comment
 # (fix.py --apply: "fixed after review", translate.py --apply on a fuzzy or new
-# entry: "translated after an English change"). Until a reviewer has read that
-# entry against the English it is PENDING VERIFICATION; recording a page verdict
+# entry: "translated after an English change"). An English-change entry stays
+# PENDING VERIFICATION until a reviewer has read it; recording a page verdict
 # dated later than the stamp appends " · verified <date>". sample-deep-review.py
 # puts a page with pending entries into the review pool in delta mode.
+#
+# A review fix is not pending by default (2026-09-30). It is the correction a
+# reviewer asked for, and check.py has passed it. Re-reading them all (174
+# pages whose last verdict was FAIL, 243 pages in all, rounds 2026093024/27/35)
+# found 0 FAIL but minor notes on ~80% of pages, the same rate as a full read
+# of any page: rereads polished wording, not correctness, and 94% of the delta
+# pool (26,951 entries) was fix-wave output. Pass include_fixes=True to count
+# them anyway (round.py verify re-reads a FAIL page's fixes before shipping).
 PENDING_STAMP_RE = re.compile(r"doq: (?:fixed after review|translated after an English change) (\d{4}-\d{2}-\d{2})")
+SYNC_STAMP_RE = re.compile(r"doq: translated after an English change (\d{4}-\d{2}-\d{2})")
 VERIFIED_RE = re.compile(r"verified (\d{4}-\d{2}-\d{2})")
 
 
-def pending_since(e: polib.POEntry) -> str | None:
-    """The stamp date of an entry a model wrote that no reviewer has read since,
-    or None."""
+def pending_since(e: polib.POEntry, include_fixes: bool = False) -> str | None:
+    """The stamp date of an English-change entry no reviewer has read since, or
+    None. With include_fixes, a review fix's stamp counts too."""
     c = e.tcomment or ""
-    m = PENDING_STAMP_RE.search(c)
+    m = (PENDING_STAMP_RE if include_fixes else SYNC_STAMP_RE).search(c)
     if not m or VERIFIED_RE.search(c):
         return None
     return m.group(1)
