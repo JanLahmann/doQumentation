@@ -87,3 +87,12 @@ def test_absolutize_baked_rewrites_the_inlined_payload(rnd, tmp_path):
     text = js.read_text()
     assert f'"pair": "{tmp_path / "wt"}/translation/v2/work/review/de/a.md"' in text
     assert '"file": "guides/a.mdx"' in text                          # the page name stays
+
+
+def test_new_seed_skips_every_used_seed(rnd):
+    used = {"2026093024", "2026093025"}
+    assert rnd.new_seed("20260930", used, 24) == "2026093026"
+    assert rnd.new_seed("20260930", set(), 99) == "2026093099"
+    assert rnd.new_seed("20260930", {"2026093099"}, 99) == "2026093000"          # wraps
+    full = {f"20260930{n:02d}" for n in range(100)}
+    assert rnd.new_seed("20260930", full, 7) == "20260930007"                    # three digits
