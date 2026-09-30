@@ -31,7 +31,7 @@ function TranslationBanner(): React.JSX.Element | null {
     trackEvent('Translation Feedback', {
       page: window.location.pathname,
       locale: currentLocale,
-      notebook: rating, // reusing the notebook field for the rating value
+      rating,
     });
     setState('thanks');
     setTimeout(() => {

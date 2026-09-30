@@ -18,7 +18,7 @@ function FeedbackWidgetClient(): React.JSX.Element {
   const handleFeedback = (rating: 'helpful' | 'not_helpful') => {
     trackEvent('Tutorial Feedback', {
       page: window.location.pathname,
-      notebook: rating,
+      rating,
     });
     setSubmitted(true);
   };

@@ -2,8 +2,9 @@
  * Umami Analytics integration for doQumentation.
  *
  * Privacy-friendly, cookie-free tracking. Auto-disabled on localhost/Docker.
- * Custom events for code execution actions.
- * Locale automatically derived from hostname (e.g. de.doqumentation.org → "de").
+ * Page views are Umami's automatic ones (the locale shows as the hostname, e.g. de.doqumentation.org);
+ * custom events follow the family naming below. Events also carry a `locale` property derived
+ * from the hostname (de.doqumentation.org → "de").
  */
 
 type AnalyticsEvent =
@@ -13,13 +14,12 @@ type AnalyticsEvent =
   | 'Colab Open'
   | 'Tutorial Feedback'
   | 'Translation Feedback'
-  | 'Notebook Download'
-  | 'Outbound'
-  | 'Outbound IBM';
+  | 'Notebook Download';
 
 interface EventProps {
   page?: string;
   notebook?: string;
+  rating?: string;
   locale?: string;
   category?: string;
   host?: string;
@@ -50,38 +50,29 @@ function getLocale(): string {
 }
 
 /**
- * Fun with Quantum family taxonomy (Fun-with-Quantum/family/EVENTS.md): the launch and download
- * actions are reported under the family-wide event names and properties so one Umami report covers
- * every family site. Site-specific events (Run Code, feedback) keep their names.
+ * Fun with Quantum family taxonomy v2 (Fun-with-Quantum/family/EVENTS.md): every family site
+ * reports to one Umami website, so event names are `<Site>: <what happened>` (lower case after
+ * the colon) and details go in properties. Call sites keep the short internal names below; this
+ * table is the only place the reported names live.
  */
-const FAMILY_EVENTS: Partial<Record<AnalyticsEvent, { name: string; props: Record<string, string> }>> = {
-  'Binder Launch': { name: 'launch', props: { target: 'binder' } },
-  'Colab Open': { name: 'launch', props: { target: 'colab' } },
-  'Notebook Download': { name: 'download', props: { kind: 'ipynb' } },
+const SITE = 'doQumentation';
+
+const EVENTS: Record<AnalyticsEvent, { name: string; props?: Record<string, string> }> = {
+  'Run Code': { name: `${SITE}: code run` },
+  'Run All': { name: `${SITE}: run all` },
+  'Binder Launch': { name: `${SITE}: notebook launch`, props: { target: 'binder' } },
+  'Colab Open': { name: `${SITE}: notebook launch`, props: { target: 'colab' } },
+  'Notebook Download': { name: `${SITE}: notebook download` },
+  'Tutorial Feedback': { name: `${SITE}: tutorial feedback` },
+  'Translation Feedback': { name: `${SITE}: translation feedback` },
 };
+
+const OUTBOUND_EVENT = `${SITE}: outbound click`;
 
 export function trackEvent(event: AnalyticsEvent, props?: EventProps): void {
   if (!isTrackingEnabled()) return;
-  const data = { locale: getLocale(), ...props } as Record<string, string>;
-  const family = FAMILY_EVENTS[event];
-  if (family) {
-    const mapped = { ...family.props, ...data };
-    if (family.name === 'download' && data.notebook) mapped.file = data.notebook;
-    window.umami?.track(family.name, mapped);
-    return;
-  }
-  window.umami?.track(event, data);
-}
-
-/**
- * Track a pageview with locale metadata.
- * Call once on page load (e.g. from a client module).
- */
-export function trackPageview(): void {
-  if (!isTrackingEnabled()) return;
-  // Umami auto-tracks pageviews via its script, but we send a custom
-  // "Pageview" event with locale to enable locale breakdown in dashboard.
-  window.umami?.track('Pageview', { locale: getLocale(), page: window.location.pathname });
+  const { name, props: fixed } = EVENTS[event];
+  window.umami?.track(name, { locale: getLocale(), ...fixed, ...props } as Record<string, string>);
 }
 
 /**
@@ -146,8 +137,7 @@ export function trackOutbound(href: string): void {
   const host = parsed.hostname;
   if (!isTrackedOutboundHost(host)) return;
   const category = categorizeOutboundUrl(host, parsed.pathname);
-  // Family-wide `outbound` event (host + category; the IBM buckets live in `category`,
-  // so the former separate "Outbound IBM" event is no longer needed — filter category ibm-* / quantum-*).
+  // One outbound event for every host; the IBM buckets live in `category` (filter ibm-* / quantum-*).
   const props = {
     locale: getLocale(),
     category,
@@ -156,10 +146,5 @@ export function trackOutbound(href: string): void {
     url: parsed.origin + parsed.pathname,
     from: window.location.pathname,
   };
-  window.umami?.track('outbound', props);
-}
-
-/** @deprecated use trackOutbound — kept so older callers still compile. */
-export function trackOutboundIBM(href: string): void {
-  trackOutbound(href);
+  window.umami?.track(OUTBOUND_EVENT, props);
 }
