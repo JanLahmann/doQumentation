@@ -108,6 +108,27 @@ def test_title_ignores_short_labels(completeness):
     assert "title-untranslated" not in checks(completeness, tag, tag)
 
 
+def test_title_keeps_names_with_acronyms_and_code_spans(completeness):
+    # Left in English on purpose by the #912 sweep; the real misses sat among them.
+    for caption in ["Probabilistic error cancellation (PEC)",
+                    "Matrix-free Measurement Mitigation (M3)",
+                    "`cannot open file 'qiskit.h'`"]:
+        tag = f'<AccordionItem title="{caption}">\n'
+        assert "title-untranslated" not in checks(completeness, tag, tag)
+    # A table header that merely contains an acronym is still prose.
+    tag = '<AccordionItem title="Median 2Q error (Heron: CZ, Eagle: ECR)">\n'
+    assert "title-untranslated" in checks(completeness, tag, tag)
+
+
+def test_title_allows_a_spelled_out_admonition_label(completeness):
+    msgid = '<Admonition type="tip">\nThis example is a flat dependency structure.\n</Admonition>\n'
+    msgstr = '<Admonition type="tip" title="ヒント">\nこの例はフラットな依存関係構造です。\n</Admonition>\n'
+    assert "title-untranslated" not in checks(completeness, msgid, msgstr)
+    # A caption dropped from anything else is still a mismatch.
+    msgid = '<Card title="Run a circuit on hardware today"/>\n'
+    assert "title-untranslated" in checks(completeness, msgid, "<Card/>\n")
+
+
 def test_copy_only_entry_is_not_prose_checked(completeness):
     # A proper name po4a hands over as prose is legitimately left in English;
     # the prose subchecks must stay silent rather than compare it to itself.
