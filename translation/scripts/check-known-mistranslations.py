@@ -44,6 +44,9 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
     ],
     "it": [
         ("traspirazione", "traspilazione", "transpile — not biological 'traspirazione'"),
+        # --- mined from the review records (mine-known-mistranslations.py) and
+        # vetted 2026-09-30 by reading every corpus occurrence against its English.
+        ("il primitivo", "la primitiva", "Qiskit 'primitive' is feminine in this corpus (la primitiva)"),
     ],
     "fr": [
         ("transpiration", "transpilation", "transpile"),
@@ -127,9 +130,6 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
     # near-miss: الالتفاف ("convolution") is a perfectly good Arabic word that
     # also begins الال — which is why this is a literal rule for the one
     # observed form and NOT a general "الال" pattern.
-    "ar": [
-        ("الالمؤثرات", "المؤثرات", "doubled definite article (find-and-replace artifact)"),
-    ],
     "tl": [
         # --- 1. malformed / non-words (regression guards; the rounds fixed the
         # occurrences that existed, these keep them from coming back) ---
@@ -192,6 +192,22 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
 # error (e.g. Polish 'variacyjn*' must be 'wariacyjn*' — Polish never spells it
 # with a leading v). locale -> list of (bad_stem, good_stem, note).
 STEMS: dict[str, list[tuple[str, str, str]]] = {
+    # --- mined from the review records (mine-known-mistranslations.py) and
+    # vetted 2026-09-30: every occurrence was read against its English, the
+    # wrong form was a defect in all of them, and a whole-word replacement was
+    # grammatical in all of them. The occurrences were repaired through fix.py.
+    "id": [
+        ("ketidaksetaraan", "pertidaksamaan", "mathematical 'inequality' (CHSH/Bell); 'ketidaksetaraan' is social inequity"),
+    ],
+    "ko": [
+        ("클래식", "고전", "'classical' in the physics/computing sense is 고전 (클래식 is music/style)"),
+    ],
+    "de": [
+        ("dynamisches Entkoppeln", "dynamische Entkopplung", "the technique 'dynamical decoupling'"),
+    ],
+    "ro": [
+        ("încurcată", "entanglată", "quantum 'entangled'; 'încurcată' is 'tangled, confused'"),
+    ],
     "pl": [
         ("variacyjn", "wariacyjn", "variational — Polish 'wariacyjny' (w, not v)"),
     ],
@@ -213,6 +229,9 @@ REGEX: dict[str, list[tuple[str, str, str]]] = {
     # class rather than literals because the first fix pass closed only the
     # bare-article form and three prefixed variants immediately survived it.
     "ar": [
+        # Was a second "ar" key above this one: a dict literal keeps only the
+        # last, so this rule had silently never run.
+        ("الالمؤثرات", "المؤثرات", "doubled definite article (find-and-replace artifact)"),
         (r"([\u0600-\u063F\u0641-\u06FF]{1,3})\u0640[ \t]+(?=[\u0600-\u06FF])",
          r"\1", "glossary prefix left detached by a tatweel (الـ دائرة -> الدائرة)"),
     ],
