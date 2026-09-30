@@ -38,6 +38,18 @@ KEEP_ENGLISH_TERMS = (
 # shared list made new es pages say "gate"/"circuit" where the rest of the
 # Spanish site says "puerta"/"circuito").
 ALWAYS_ENGLISH = ("Qiskit", "PUB", "IBM Quantum", "QPU")
+
+# Product, category and mode names kept in English in every locale. Settled
+# 2026-09-30 by the maintainer: reviewers kept flipping these headings between
+# English and a translation page by page ("Circuit functions", "Job mode",
+# "Custom Functions"), so a later review could undo an earlier one. Told to
+# translators and fixers (kept_english_terms) and to the deep reviewers
+# (.claude/workflows/opus-deep-review.js carries the same list).
+ALWAYS_ENGLISH_NAMES = (
+    "IBM Quantum Platform", "Qiskit Runtime", "Qiskit Functions",
+    "Circuit functions", "Application functions", "Catalog Functions", "Custom Functions",
+    "job mode", "session mode", "batch mode",
+)
 KEPT_ENGLISH_JSON = Path(__file__).resolve().parents[1] / "v2" / "kept-english.json"
 
 
@@ -48,9 +60,10 @@ def kept_english_terms(locale: str | None = None) -> tuple[str, ...]:
         try:
             spec = json.loads(KEPT_ENGLISH_JSON.read_text(encoding="utf-8"))["locales"][locale]
         except (OSError, KeyError, ValueError):
-            return KEEP_ENGLISH_TERMS
-        return ALWAYS_ENGLISH + tuple(t for t in KEEP_ENGLISH_TERMS if t in spec["keep"])
-    return KEEP_ENGLISH_TERMS
+            return KEEP_ENGLISH_TERMS + ALWAYS_ENGLISH_NAMES
+        return (ALWAYS_ENGLISH + tuple(t for t in KEEP_ENGLISH_TERMS if t in spec["keep"])
+                + ALWAYS_ENGLISH_NAMES)
+    return KEEP_ENGLISH_TERMS + ALWAYS_ENGLISH_NAMES
 
 
 def translated_terms(locale: str) -> tuple[str, ...]:
