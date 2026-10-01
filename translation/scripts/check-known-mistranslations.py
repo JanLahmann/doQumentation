@@ -114,6 +114,16 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
     "es": [
         ("transpiración", "transpilación", "transpile"),
         ("transpirar", "transpilar", "transpile (verb)"),
+        # --- mined and vetted 2026-10-01 (mine-known-mistranslations.py): every
+        # one of the 54 occurrences read against its English, all wrong; repaired
+        # through fix.py. Spanish attaches the prefix.
+        ("post-procesamiento", "posprocesamiento", "post-processing: prefix attached, not hyphenated"),
+    ],
+    "cs": [
+        # --- mined and vetted 2026-10-01: all 76 occurrences were the English
+        # 'circuit' with a Czech case ending (cs translates circuit as 'obvod');
+        # repaired through fix.py, which also lowercased the mid-sentence ones.
+        ("circuitu", "obvodu", "English 'circuit' + Czech ending; the Czech term is 'obvod'"),
     ],
     "pt": [
         ("transpiração", "transpilação", "transpile"),
@@ -184,6 +194,11 @@ KNOWN: dict[str, list[tuple[str, str, str]]] = {
          "register: plural/formal 'kayo' where the locale convention is casual 'ka'"),
         ("20-tanong na pagsusulit", "pagsusulit na may 20 tanong",
          "English hyphenated pre-nominal compound; Tagalog marks it postnominally"),
+    ],
+    "id": [
+        # --- mined and vetted 2026-10-01: all 99 entries read against their
+        # English ('classical' computer/bit/physics), all wrong; repaired via fix.py.
+        ("klasikal", "klasik", "'classical' in physics/computing is 'klasik'"),
     ],
 }
 
