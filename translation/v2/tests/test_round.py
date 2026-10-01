@@ -104,3 +104,58 @@ def test_sample_seed_differs_per_locale_and_is_stable(rnd):
     assert len(set(seeds.values())) == len(seeds)
     assert rnd.sample_seed("2026100104", "de") == seeds["de"]
     assert rnd.sample_seed("2026100105", "de") != seeds["de"]
+def _process(tmp_path):
+    """A fresh round.py module: one per simulated process, each with its own
+    record of what it loaded and touched."""
+    p = Path(__file__).resolve().parent.parent / "round.py"
+    spec = importlib.util.spec_from_file_location("round_driver_proc", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.ROUNDS = tmp_path
+    return mod
+
+
+def _seed_round(tmp_path, stages):
+    d = tmp_path / "2026100199"
+    d.mkdir()
+    (d / "state.json").write_text(json.dumps(
+        {"seed": "2026100199", "locales": {loc: {"stage": s} for loc, s in stages.items()}}))
+
+
+def test_concurrent_saves_for_different_locales_keep_both(tmp_path):
+    # 2026-10-01: two `finish` loops over different locales of one round ran at
+    # once; the later whole-file save reset the other's locales to 'fill'.
+    _seed_round(tmp_path, {"es": "fill", "pl": "fill"})
+    a, b = _process(tmp_path), _process(tmp_path)
+    sa, sb = a.load_state("2026100199"), b.load_state("2026100199")
+    a.locale_state(sa, "es", "fill")["stage"] = "ship"
+    b.locale_state(sb, "pl", "fill")["stage"] = "ship"
+    a.save_state(sa)
+    b.save_state(sb)                                   # saved from a stale copy of es
+    on_disk = json.loads((tmp_path / "2026100199" / "state.json").read_text())
+    assert {l: v["stage"] for l, v in on_disk["locales"].items()} == {"es": "ship", "pl": "ship"}
+
+
+def test_same_locale_moved_by_another_process_refuses_to_save(tmp_path):
+    _seed_round(tmp_path, {"es": "fill"})
+    a, b = _process(tmp_path), _process(tmp_path)
+    sa, sb = a.load_state("2026100199"), b.load_state("2026100199")
+    a.locale_state(sa, "es", "fill")["stage"] = "ship"
+    a.save_state(sa)
+    b.locale_state(sb, "es", "fill")["stage"] = "triage"
+    with pytest.raises(SystemExit, match="another round.py process"):
+        b.save_state(sb)
+    on_disk = json.loads((tmp_path / "2026100199" / "state.json").read_text())
+    assert on_disk["locales"]["es"]["stage"] == "ship"
+
+
+def test_one_process_may_save_the_same_locale_twice(tmp_path):
+    _seed_round(tmp_path, {"es": "fill"})
+    a = _process(tmp_path)
+    st = a.load_state("2026100199")
+    ls = a.locale_state(st, "es", "fill")
+    ls["stage"] = "triage"
+    a.save_state(st)
+    ls["stage"] = "ship"
+    a.save_state(st)                                   # finish saves, then saves again
+    assert json.loads((tmp_path / "2026100199" / "state.json").read_text())["locales"]["es"]["stage"] == "ship"

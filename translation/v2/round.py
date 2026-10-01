@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import json
 import os
 import re
@@ -52,6 +53,11 @@ import tempfile
 import zlib
 from datetime import date, timedelta
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: no advisory lock, the merge still applies
+    fcntl = None
 
 REPO = Path(__file__).resolve().parents[2]
 ROUNDS = REPO / "translation" / "v2" / "work" / "rounds"
@@ -80,20 +86,57 @@ def load_state(seed: str) -> dict:
     f = state_dir(seed) / "state.json"
     if not f.exists():
         sys.exit(f"no round {seed}: {f} does not exist")
-    return json.loads(f.read_text(encoding="utf-8"))
+    st = json.loads(f.read_text(encoding="utf-8"))
+    _LOADED.clear()
+    _LOADED.update({loc: ls.get("stage") for loc, ls in st["locales"].items()})
+    _TOUCHED.clear()
+    return st
+
+
+# Steps for different locales of one round may run at the same time (two
+# `finish` loops in the background did, on 2026-10-01), and each loads the
+# whole state, works for minutes, then saves. Saving the whole dict let the
+# later save wipe the other's progress. So a save takes a lock, re-reads the
+# file and writes back only the locales this process touched, and refuses
+# when one of those moved on disk since it was loaded (the same locale run twice).
+_LOADED: dict[str, str | None] = {}
+_TOUCHED: set[str] = set()
+
+
+def touch(locale: str) -> None:
+    _TOUCHED.add(locale)
+
+
+@contextlib.contextmanager
+def _state_lock(d: Path):
+    with open(d / "state.lock", "w") as fh:
+        if fcntl:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
 
 
 def save_state(st: dict) -> None:
     d = state_dir(st["seed"])
     d.mkdir(parents=True, exist_ok=True)
-    tmp = d / "state.json.tmp"
-    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    tmp.replace(d / "state.json")
+    f = d / "state.json"
+    with _state_lock(d):
+        out = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {**st, "locales": {}}
+        for loc in sorted(_TOUCHED):
+            on_disk = (out["locales"].get(loc) or {}).get("stage")
+            if on_disk != _LOADED.get(loc):
+                sys.exit(f"{loc} moved to stage '{on_disk}' in another round.py process since this one "
+                         f"loaded it at '{_LOADED.get(loc)}'; nothing saved. Run one step per locale at a time.")
+            out["locales"][loc] = st["locales"][loc]
+            _LOADED[loc] = st["locales"][loc].get("stage")
+        tmp = d / "state.json.tmp"
+        tmp.write_text(json.dumps(out, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        tmp.replace(f)
 
 
 def locale_state(st: dict, locale: str, expect: str | tuple[str, ...]) -> dict:
     if locale not in st["locales"]:
         sys.exit(f"{locale} is not in round {st['seed']} ({', '.join(st['locales'])})")
+    touch(locale)
     ls = st["locales"][locale]
     allowed = (expect,) if isinstance(expect, str) else expect
     if ls["stage"] not in allowed:
@@ -355,6 +398,7 @@ def cmd_start(a) -> int:
         print("   " + " ".join(l.strip() for l in r.stdout.splitlines() if l.startswith("Wrote")))
         absolutize_file(sample, wt)
         wfs = bake_review(st, loc, wt, sample)
+        touch(loc)
         st["locales"][loc] = {"stage": "review", "worktree": str(wt), "branch": branch,
                               "sample": str(sample), "review_workflows": wfs}
         save_state(st)
@@ -699,6 +743,7 @@ def cmd_status(a) -> int:
 def cmd_cleanup(a) -> int:
     st = load_state(a.seed)
     ls = st["locales"][a.locale]
+    touch(a.locale)
     wt = Path(ls["worktree"])
     if wt.exists():
         run(["git", "worktree", "remove", "--force", str(wt)], REPO)
