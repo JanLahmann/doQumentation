@@ -211,23 +211,27 @@ def load_fixes(path: Path) -> list[dict]:
 
 
 # Example types that change what a reader understands. A Naturalness note does
-# not, on its own: 56% of 2,515 examples in rounds 2026-09-29/30 were
-# Naturalness, and a lone stylistic nit rewritten is churn and risk (every
-# rewrite can drop a code span or double a phrase) for little reader gain.
+# not: 56% of 2,515 examples in rounds 2026-09-29/30 were Naturalness, and a
+# stylistic nit rewritten is churn and risk (every rewrite can drop a code span
+# or double a phrase) for little reader gain. Nor does rewriting them converge:
+# over 1,975 repeat full reads of a MINOR_ISSUES page the next read was MINOR
+# again 83% of the time, with +0.7 issues on average (2026-10-01), because
+# each fresh read finds different wording to prefer. So outside a FAIL page a
+# fix wave rewrites only the substantive examples; MINOR wording is done.
 SUBSTANTIVE_TYPES = {"drift", "terminology", "register", "pedagogy", "mistranslation"}
-NATURALNESS_MIN = 3
+NATURALNESS_MIN = None   # never, unless asked: --naturalness-min N
 
 
-def select_examples(fx: dict, naturalness_min: int = NATURALNESS_MIN) -> list[dict]:
-    """The examples a fix wave acts on. Every substantive example; Naturalness
-    examples only when the page has a substantive issue too, or at least
-    `naturalness_min` Naturalness notes (a pattern, not a nit). The page's
-    verdict is recorded either way; this only decides what gets rewritten."""
+def select_examples(fx: dict, naturalness_min: int | None = NATURALNESS_MIN) -> list[dict]:
+    """The examples a fix wave acts on: every example on a FAIL page, else the
+    substantive ones, plus Naturalness notes only when `naturalness_min` is
+    given and the page has at least that many (`round.py repair` passes 1 for
+    entries flagged on purpose). The page's verdict is recorded either way;
+    this only decides what gets rewritten."""
     exs = fx["examples"]
     types = [(ex.get("type") or "").lower() for ex in exs]
-    substantive = any(t in SUBSTANTIVE_TYPES for t in types)
     n_nat = sum(t == "naturalness" for t in types)
-    if substantive or fx.get("verdict") == "FAIL" or n_nat >= naturalness_min:
+    if fx.get("verdict") == "FAIL" or (naturalness_min and n_nat >= naturalness_min):
         return exs
     return [ex for ex, t in zip(exs, types) if t != "naturalness"]
 
@@ -458,8 +462,8 @@ def prepare(locale: str, fixes: list[dict], model: str = "sonnet",
           f"{n_flagged} entries pinned to a reviewer example"
           + (f", {n_swept} swept in for a term the reviewer corrected" if mode == "targeted" else "")
           + f", {unmatched} example(s) not matched (the page note still travels with every batch)"
-          + (f"; {skipped_nits} page(s) with only {naturalness_min - 1} or fewer Naturalness notes "
-             f"not rewritten (verdict still recorded)" if skipped_nits else ""))
+          + (f"; {skipped_nits} page(s) with Naturalness notes not rewritten (verdict still recorded)"
+             if skipped_nits else ""))
     for rel in missing:
         print(f"WARNING no PO for {rel}: skipped")
     print(f"manifest: {(outdir / 'manifest-fix.json').relative_to(io.REPO)}")
@@ -716,8 +720,8 @@ def main() -> int:
                          "decapitalisations, skip the glossary translate rules")
     ap.add_argument("--model", default="sonnet", choices=("sonnet", "opus", "haiku"))
     ap.add_argument("--naturalness-min", type=int, default=NATURALNESS_MIN,
-                    help="rewrite a page's Naturalness-only notes when it has at least this "
-                         f"many (default {NATURALNESS_MIN}); 1 fixes every note")
+                    help="also rewrite a page's Naturalness notes when it has at least this "
+                         "many (default: never outside a FAIL page); 1 fixes every note")
     ap.add_argument("--note", default=None,
                     help="provenance comment written on every changed entry "
                          "(default: 'doq: fixed after review <today>')")

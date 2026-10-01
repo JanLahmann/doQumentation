@@ -98,6 +98,12 @@ def test_new_seed_skips_every_used_seed(rnd):
     assert rnd.new_seed("20260930", full, 7) == "20260930007"                    # three digits
 
 
+def test_sample_seed_differs_per_locale_and_is_stable(rnd):
+    # 2026100104 drew the same 3 pages in all 17 locales from one shared seed.
+    seeds = {loc: rnd.sample_seed("2026100104", loc) for loc in ("de", "es", "fr", "ja", "ar")}
+    assert len(set(seeds.values())) == len(seeds)
+    assert rnd.sample_seed("2026100104", "de") == seeds["de"]
+    assert rnd.sample_seed("2026100105", "de") != seeds["de"]
 def _process(tmp_path):
     """A fresh round.py module: one per simulated process, each with its own
     record of what it loaded and touched."""

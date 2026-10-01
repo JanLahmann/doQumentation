@@ -1198,12 +1198,15 @@ def test_sweep_skips_a_word_common_across_the_page():
     assert fix.sweep_terms([ex], ["kwantowy układ"] + ["inny tekst"] * 9) == {"kwantowy"}
 
 
-def test_select_examples_drops_lone_naturalness_nits_only():
+def test_select_examples_rewrites_naturalness_only_on_fail_pages():
     fix = _fix_module()
     nat = {"type": "Naturalness"}
     term = {"type": "Terminology"}
+    drift = {"type": "Drift"}
     assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, nat]}) == []
-    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, nat, nat]}) == [nat, nat, nat]
-    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, term]}) == [nat, term]
-    assert fix.select_examples({"verdict": "FAIL", "examples": [nat]}) == [nat]
+    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, nat, nat, nat]}) == []
+    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, term, drift]}) == [term, drift]
+    assert fix.select_examples({"verdict": "FAIL", "examples": [nat, term]}) == [nat, term]
+    # asked for explicitly (round.py repair passes 1)
     assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat]}, naturalness_min=1) == [nat]
+    assert fix.select_examples({"verdict": "MINOR_ISSUES", "examples": [nat, nat]}, naturalness_min=3) == []
