@@ -96,3 +96,11 @@ def test_new_seed_skips_every_used_seed(rnd):
     assert rnd.new_seed("20260930", {"2026093099"}, 99) == "2026093000"          # wraps
     full = {f"20260930{n:02d}" for n in range(100)}
     assert rnd.new_seed("20260930", full, 7) == "20260930007"                    # three digits
+
+
+def test_sample_seed_differs_per_locale_and_is_stable(rnd):
+    # 2026100104 drew the same 3 pages in all 17 locales from one shared seed.
+    seeds = {loc: rnd.sample_seed("2026100104", loc) for loc in ("de", "es", "fr", "ja", "ar")}
+    assert len(set(seeds.values())) == len(seeds)
+    assert rnd.sample_seed("2026100104", "de") == seeds["de"]
+    assert rnd.sample_seed("2026100105", "de") != seeds["de"]

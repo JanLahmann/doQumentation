@@ -49,6 +49,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -305,6 +306,13 @@ def used_seeds() -> set[str]:
     return seeds
 
 
+def sample_seed(seed: str, locale: str) -> int:
+    """The sampler's seed for one locale of a round. Every locale has the same
+    page pool, so one shared seed drew the same pages everywhere: round
+    2026100104 read 3 pages 17 times, not 51 pages. Stable per (seed, locale)."""
+    return int(seed) * 1000 + zlib.crc32(locale.encode()) % 1000
+
+
 def new_seed(day: str, used: set[str], start: int) -> str:
     """`day` plus the first two-digit suffix from `start` (wrapping) that no
     round has used; three digits once all hundred are taken."""
@@ -337,7 +345,7 @@ def cmd_start(a) -> int:
         sample = state_dir(seed) / f"sample-{loc}.json"
         state_dir(seed).mkdir(parents=True, exist_ok=True)
         cmd = [PY, script(wt, "translation/scripts/sample-deep-review.py"), "--locale", loc,
-               "--per-locale", str(a.per_locale), "--seed", str(seed), "--drift-focus",
+               "--per-locale", str(a.per_locale), "--seed", str(sample_seed(seed, loc)), "--drift-focus",
                "--order", a.order, "--out", str(sample)]
         if a.exclude_reviewed:
             cmd.append("--exclude-reviewed")
