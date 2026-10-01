@@ -1,6 +1,6 @@
 # What we need right now
 
-*Auto-generated on 2026-09-30 by `translation/scripts/contributing-status.py`.*
+*Auto-generated on 2026-10-01 by `translation/scripts/contributing-status.py`.*
 *Do not edit by hand — it will be overwritten. Regenerate with:*
 
 ```bash
@@ -38,35 +38,35 @@ stop; it is the only reservation there is. List them any time with
 
 | Locale | Who | Doing | Since | Issue |
 |---|---|---|---|---|
-| `all` | @JanLahmann | review | 2026-09-29 | [#725](https://github.com/JanLahmann/doQumentation/issues/725) |
+| `all` | @JanLahmann | ? | 2026-10-01 | [#918](https://github.com/JanLahmann/doQumentation/issues/918) |
 
 ---
 
 ## Pick a locale
 
-Every locale below has pages waiting for a read: pages never read, or
-*delta* pages whose model-written entries no reviewer has seen yet (the
-pool table further down). Pick one that is not claimed above, open
-your claim issue, then follow `CONTRIBUTING-REVIEWS.md`. When a
-locale's pool runs dry, sample with `--order risk`: it re-reads the
-pages whose last verdict was FAIL first (the first column here).
+Nearly every page of every locale now carries a review verdict, so the
+work is **re-reading where a read is most likely to find something**.
+Sample with `--order risk` (and without `--exclude-reviewed`): it takes
+pages whose last verdict was FAIL first (they were fixed but never
+re-read), then pages never read, then the oldest verdicts.
+`translation/v2/round.py start --order risk` does this for you.
 
 | Locale | Last verdict FAIL | Never read | Oldest verdict |
 |---|---|---|---|
-| `ms` | **9** | 0 | 2026-09-29 |
-| `fr` | **8** | 0 | 2026-07-05 |
-| `id` | **6** | 0 | 2026-09-12 |
-| `it` | **6** | 0 | 2026-09-28 |
-| `de` | **4** | 0 | 2026-09-29 |
-| `ar` | **2** | 0 | 2026-08-29 |
-| `pl` | **1** | 0 | 2026-06-28 |
+| `fr` | **1** | 0 | 2026-07-05 |
+| `ar` | **1** | 0 | 2026-08-29 |
+| `de` | **1** | 0 | 2026-09-29 |
 | `es` | **0** | 0 | 2026-06-26 |
+| `pl` | **0** | 0 | 2026-06-28 |
 | `pt` | **0** | 0 | 2026-07-05 |
+| `id` | **0** | 0 | 2026-09-12 |
 | `ja` | **0** | 0 | 2026-09-28 |
+| `it` | **0** | 0 | 2026-09-28 |
 | `ko` | **0** | 0 | 2026-09-28 |
 | `uk` | **0** | 0 | 2026-09-29 |
 | `tl` | **0** | 0 | 2026-09-29 |
 | `he` | **0** | 0 | 2026-09-29 |
+| `ms` | **0** | 0 | 2026-09-29 |
 | `th` | **0** | 0 | 2026-09-29 |
 | `ro` | **0** | 0 | 2026-09-29 |
 | `cs` | **0** | 0 | 2026-09-29 |
@@ -79,32 +79,27 @@ do not count, and no locale currently records anything else, so
 every file scores 0. What limits a pool today is pages already
 reviewed with nothing written since, not leakage.
 
-*Never read* pages have no verdict yet: a full read. *Delta* pages
-were reviewed, and entries were written on them after that: almost
-always a round's own fix wave (a fix carries the verdict's date, and
-only entries stamped before a verdict count as read), sometimes an
-English sync. The reviewer judges only those entries. A locale can be
-100% reviewed and still have a delta pool.
+**Nearly exhausted** (fewer than 25 eligible) — still worth
+a short round, but expect to re-sweep files that already carry a
+verdict, or to accept a round smaller than 25:
 
-| Locale | Never read | Delta | Reviewed so far |
-|---|---|---|---|
-| `he` | **0** | 411 | 449/449 (100%) |
-| `ms` | **0** | 397 | 449/449 (100%) |
-| `ro` | **0** | 381 | 449/449 (100%) |
-| `cs` | **0** | 375 | 449/449 (100%) |
-| `de` | **0** | 374 | 449/449 (100%) |
-| `ar` | **0** | 373 | 449/449 (100%) |
-| `uk` | **0** | 367 | 449/449 (100%) |
-| `ko` | **0** | 365 | 449/449 (100%) |
-| `th` | **0** | 360 | 449/449 (100%) |
-| `it` | **0** | 348 | 449/449 (100%) |
-| `fr` | **0** | 347 | 449/449 (100%) |
-| `ja` | **0** | 345 | 449/449 (100%) |
-| `es` | **0** | 342 | 449/449 (100%) |
-| `id` | **0** | 339 | 449/449 (100%) |
-| `pt` | **0** | 337 | 449/449 (100%) |
-| `tl` | **0** | 303 | 449/449 (100%) |
-| `pl` | **0** | 281 | 449/449 (100%) |
+- `ar` — 0 never read, 0 delta (449/449 reviewed)
+- `cs` — 0 never read, 0 delta (449/449 reviewed)
+- `de` — 0 never read, 0 delta (449/449 reviewed)
+- `es` — 0 never read, 0 delta (449/449 reviewed)
+- `fr` — 0 never read, 0 delta (449/449 reviewed)
+- `he` — 0 never read, 0 delta (449/449 reviewed)
+- `id` — 0 never read, 0 delta (449/449 reviewed)
+- `it` — 0 never read, 0 delta (449/449 reviewed)
+- `ja` — 0 never read, 0 delta (449/449 reviewed)
+- `ko` — 0 never read, 0 delta (449/449 reviewed)
+- `ms` — 0 never read, 0 delta (449/449 reviewed)
+- `pl` — 0 never read, 0 delta (449/449 reviewed)
+- `pt` — 0 never read, 0 delta (449/449 reviewed)
+- `ro` — 0 never read, 0 delta (449/449 reviewed)
+- `th` — 0 never read, 0 delta (449/449 reviewed)
+- `tl` — 0 never read, 0 delta (449/449 reviewed)
+- `uk` — 0 never read, 0 delta (449/449 reviewed)
 
 ---
 
@@ -112,14 +107,14 @@ English sync. The reviewer judges only those entries. A locale can be
 
 | Round (seed) | Files | FAIL | Rate |
 |---|---|---|---|
-| `2026093171-pl-JanLahmann` | 80 | 1 | 1.2% |
-| `2026093170-ar-JanLahmann` | 78 | 2 | 2.6% |
-| `2026093169-uk-JanLahmann` | 40 | 0 | 0.0% |
-| `2026093168-tl-JanLahmann` | 40 | 1 | 2.5% |
-| `2026093167-th-JanLahmann` | 40 | 0 | 0.0% |
-| `2026093166-ro-JanLahmann` | 40 | 0 | 0.0% |
+| `2026100104-uk-JanLahmann` | 3 | 0 | 0.0% |
+| `2026100104-tl-JanLahmann` | 3 | 0 | 0.0% |
+| `2026100104-th-JanLahmann` | 3 | 0 | 0.0% |
+| `2026100104-ro-JanLahmann` | 3 | 0 | 0.0% |
+| `2026100104-pt-JanLahmann` | 3 | 0 | 0.0% |
+| `2026100104-pl-JanLahmann` | 3 | 0 | 0.0% |
 
-Typical FAIL rate is around **1%**. If your round comes
+Typical FAIL rate is around **0%**. If your round comes
 in far above that, stop and tell the maintainer before fixing — it
 usually means the rubric drifted, not that the locale collapsed.
 
