@@ -11,7 +11,7 @@ real IBM hardware or paid services.
 1. Checkout the chosen source:
    - `source=main`: this branch (PoC notebooks under `local-content/`).
    - `source=notebooks`: the built `notebooks` branch (all 291 English notebooks).
-2. Install `binder/jupyter-requirements.txt` + `nbmake` + `pytest-xdist`.
+2. Run in the Code Engine image (Qiskit stack from the QuBins base) and install `nbmake` + `pytest-xdist`.
 3. Set `IPYTHONDIR` to `ci/ipython_startup_dir/`, which auto-loads
    `00_patch_runtime.py` at kernel startup. The patch replaces
    `qiskit_ibm_runtime.QiskitRuntimeService` (and `SamplerV2` / `EstimatorV2` /
@@ -49,7 +49,7 @@ Inputs:
 From a checkout of the `notebooks` branch:
 
 ```bash
-pip install -r binder/jupyter-requirements.txt nbmake pytest-xdist
+pip install nbmake pytest-xdist   # inside ghcr.io/qubins/images:2.5-xl or the CE image
 IPYTHONDIR=$PWD/ci/ipython_startup_dir \
 CI_MAX_SHOTS=1024 \
   pytest --nbmake --nbmake-timeout=300 -n 2 \

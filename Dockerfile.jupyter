@@ -36,40 +36,43 @@ RUN NODE_OPTIONS="--max-old-space-size=8192" npm run build -- --locale en
 RUN rm -f build/CNAME
 
 # ── Stage: jupyter-base (shared by both targets) ─────────────────────
-FROM quay.io/jupyter/base-notebook:python-3.12 AS jupyter-base
+# The Qiskit stack comes from the QuBins image Binder already runs
+# (src/config/jupyter.ts DEFAULT_QISKIT_TAG), so Binder, Docker and Code
+# Engine share one package set instead of three hand-synced ones. QuBins
+# derives it from upstream's scripts/nb-tester/requirements.txt, resolves it
+# per arch (physics-tenpy and gem-suite only on amd64, which have no arm64
+# wheels), ships graphviz and git, and fails its build on any pip error.
+# Multi-arch index (amd64 + arm64). Pinned by digest; Dependabot proposes
+# bumps. Keep the tag in lockstep with DEFAULT_QISKIT_TAG
+# (scripts/check-qiskit-lockstep.py enforces it).
+FROM ghcr.io/qubins/images:2.5-xl@sha256:b481c89ee2e2ec52ada4494b060506ab3990bbf53e59bb74ec9ee88a8fa84988 AS jupyter-base
 
 USER root
 
-# Install nginx, supervisor, and graphviz (base image is Debian-based).
-# graphviz binaries are required by qiskit's dag_drawer() and rustworkx's
-# graphviz_draw() (the pip `graphviz` wrapper alone is not enough).
+# Install nginx and supervisor (base image is Ubuntu-based; graphviz and
+# git already come with QuBins).
 # Selectively upgrade OS packages the base digest still ships with fixed
 # CVEs the Trivy gate fails on: gpgv (CVE-2025-68973) and openssl/libssl3t64
 # (CVE-2026-45447, UAF in PKCS7_verify; fixed in 3.0.13-0ubuntu3.11).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx \
         supervisor \
-        graphviz \
     && apt-get upgrade -y gpgv openssl libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/default
-
-# Install Qiskit dependencies (single source of truth: jupyter-requirements.txt)
-COPY binder/jupyter-requirements.txt /tmp/jupyter-requirements.txt
-RUN pip install --no-cache-dir --no-compile -r /tmp/jupyter-requirements.txt && \
-    rm /tmp/jupyter-requirements.txt && \
-    find ${CONDA_DIR}/lib -type d -name tests -exec rm -rf {} + 2>/dev/null || true && \
-    find ${CONDA_DIR}/lib -type d -name test  -exec rm -rf {} + 2>/dev/null || true && \
-    find ${CONDA_DIR}/lib -name '*.pyc' -delete 2>/dev/null || true && \
-    find ${CONDA_DIR}/lib -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
-    find ${CONDA_DIR}/lib -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true && \
-    rm -rf ${CONDA_DIR}/share/{doc,man,gtk-doc} 2>/dev/null || true
 
 # Security pins for transitive dependencies with known CVEs
 COPY binder/jupyter-requirements-security.txt /tmp/jupyter-requirements-security.txt
 RUN pip install --no-cache-dir --no-compile --upgrade \
         -r /tmp/jupyter-requirements-security.txt && \
     rm /tmp/jupyter-requirements-security.txt
+
+# Fail the build if the stack the notebooks need does not import (#958: a
+# broken pip resolve used to be swallowed and shipped an image without
+# qiskit-ibm-runtime).
+RUN python -c "import qiskit, qiskit_aer, qiskit_ibm_runtime, qiskit_serverless, \
+qiskit_addon_utils, qiskit_addon_mpf, matplotlib, scipy; \
+from qiskit import QuantumCircuit; QuantumCircuit(2).measure_all()"
 
 # Pre-create Jupyter config dir so entrypoint doesn't need root
 RUN mkdir -p /home/jovyan/.jupyter && chown jovyan:users /home/jovyan/.jupyter
@@ -82,12 +85,6 @@ RUN sed -i '/^user /d' /etc/nginx/nginx.conf && \
 
 # ── Target: jupyter-local (site + Jupyter + Qiskit) ──────────────────
 FROM jupyter-base AS jupyter-local
-
-# Conditional amd64-only packages (no arm64 wheels available)
-COPY binder/jupyter-requirements-amd64.txt /tmp/jupyter-requirements-amd64.txt
-RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-      pip install --no-cache-dir --no-compile -r /tmp/jupyter-requirements-amd64.txt; \
-    fi && rm -f /tmp/jupyter-requirements-amd64.txt
 
 # nginx config — reverse proxy for Jupyter API.
 # The entrypoint runs as non-root jovyan and rewrites this file at startup
@@ -153,14 +150,13 @@ FROM jupyter-base AS jupyter-codeengine
 
 # Fetch processed notebooks from the notebooks branch so JupyterLab has content.
 # Only copy .ipynb files (tutorials, guides, courses, modules) — skip binder/ config.
-RUN apt-get update && apt-get install -y --no-install-recommends git && \
-    git clone --depth 1 --branch notebooks \
+# git comes with the QuBins base (nbgitpuller needs it at runtime), so keep it.
+RUN git clone --depth 1 --branch notebooks \
         https://github.com/JanLahmann/doQumentation.git /tmp/notebooks && \
     cd /tmp/notebooks && \
     find . -name '*.ipynb' -exec sh -c 'mkdir -p /home/jovyan/$(dirname "{}") && cp "{}" /home/jovyan/"{}"' \; && \
     chown -R 1000:100 /home/jovyan && \
-    rm -rf /tmp/notebooks && \
-    apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+    rm -rf /tmp/notebooks
 
 # nginx config — reverse proxy for Jupyter + SSE, with rate limiting
 COPY binder/nginx-codeengine.conf /etc/nginx/sites-enabled/default
