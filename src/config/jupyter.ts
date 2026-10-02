@@ -67,9 +67,9 @@ const STORAGE_KEY_QISKIT_VERSION = 'doqumentation_qiskit_version';
 export const SUPPORTED_QISKIT_TAGS = ['2.5-xl', '2.4-xl', '2.3-xl'] as const;
 export type QiskitTag = typeof SUPPORTED_QISKIT_TAGS[number];
 // Default Binder image tag = current Qiskit level. MUST stay in lockstep with
-// binder/jupyter-requirements.txt's qiskit[all] pin (e.g. ~=2.4.x ⇒ '2.4-xl').
-// A CI guard (ci.yml "qiskit-lockstep") fails the build if they diverge, so the
-// next dep-sync bump can't silently leave Binder on an older Qiskit.
+// the QuBins tag Dockerfile.jupyter builds the CE/Docker image FROM.
+// A CI guard (ci.yml "qiskit-lockstep") fails the build if they diverge, so a
+// bump of one can't silently leave the other on an older Qiskit.
 export const DEFAULT_QISKIT_TAG: QiskitTag = '2.5-xl';
 
 // Workshop pool (multiple CE instances for classroom use)
@@ -130,7 +130,7 @@ export function setBackendOverride(env: JupyterConfig['environment'] | null): vo
 /**
  * Get/set the user's chosen Qiskit version (QuBins image tag) for the Binder
  * backend. null = use DEFAULT_QISKIT_TAG (the current version, kept in lockstep
- * with binder/jupyter-requirements.txt). Validated against SUPPORTED_QISKIT_TAGS
+ * with Dockerfile.jupyter's QuBins base). Validated against SUPPORTED_QISKIT_TAGS
  * so a stale/invalid stored value can never produce a broken Binder URL.
  */
 export function getQiskitTag(): QiskitTag {
@@ -281,8 +281,8 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
         labEnabled: false,
         // QuBins pre-built image (https://github.com/QuBins/qiskit-images).
         // Tag = the user's chosen Qiskit version (Settings) or DEFAULT_QISKIT_TAG,
-        // which is kept in lockstep with binder/jupyter-requirements.txt's
-        // qiskit[all] pin (CI-enforced). getQiskitTag() validates against the
+        // which is kept in lockstep with Dockerfile.jupyter's QuBins base
+        // (CI-enforced). getQiskitTag() validates against the
         // allow-list, so this URL is always well-formed.
         binderUrl: `https://mybinder.org/v2/gh/QuBins/qiskit-images/${getQiskitTag()}`,
         environment: 'github-pages',

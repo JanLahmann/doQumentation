@@ -47,8 +47,9 @@ Examples:
 - `MissingOptionalLibraryError: 'Graphviz' library` / `FileNotFoundError: 'dot'`
   → graphviz binaries not installed in the image. Fix: add `graphviz` to the
   `apt-get install` step in `Dockerfile.jupyter`.
-- A pip dep that exists on PyPI but isn't in `binder/jupyter-requirements.txt`
-  or `binder/jupyter-requirements-amd64.txt`. (Excluding deps that are
+- A pip dep that exists on PyPI but isn't in the QuBins base image
+  (`versions/<X.Y>-xl/requirements.txt` in QuBins/qiskit-images; report it
+  there). (Excluding deps that are
   intentionally vendor-only — see `ci/notebooks-skip.txt`.)
 - Workshop notebooks **authored in this repo** (`workshop-notebooks/` on main,
   `workshop/` on the notebooks branch) with content bugs like undefined

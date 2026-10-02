@@ -135,16 +135,13 @@ doQumentation/
 │       └── MDXComponents.tsx      # IBM component stubs (Admonition, Image, etc.)
 ├── scripts/
 │   ├── sync-content.py            # Pull & transform content from upstream
-│   ├── sync-deps.py               # Sync Jupyter deps with arch exception rules
 │   └── setup-pi.sh                # Raspberry Pi setup
 ├── binder/
-│   ├── jupyter-requirements.txt       # Full Qiskit deps (cross-platform)
-│   └── jupyter-requirements-amd64.txt # amd64-only extras
+│   └── jupyter-requirements-security.txt # CVE floors on top of the QuBins base image
 ├── .github/workflows/
 │   ├── deploy.yml                 # Sync → build → deploy to GitHub Pages
-│   ├── docker.yml                 # Multi-arch Docker → ghcr.io
-│   └── sync-deps.yml              # Weekly Jupyter dependency sync auto-PR
-├── Dockerfile.jupyter             # Full stack: site + Jupyter + Qiskit (~3 GB; also serves static site)
+│   └── docker.yml                 # Multi-arch Docker → ghcr.io
+├── Dockerfile.jupyter             # Full stack: site + Jupyter + Qiskit on ghcr.io/qubins/images (~3 GB)
 ├── docker-compose.yml             # jupyter service (jupyter-local target)
 ├── nginx.conf                     # SPA routing + Jupyter proxy
 ├── docusaurus.config.ts           # Site configuration
