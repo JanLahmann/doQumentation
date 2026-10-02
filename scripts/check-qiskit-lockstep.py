@@ -53,7 +53,7 @@ def main() -> None:
             f"Binder default tag is '{default}' but Dockerfile.jupyter builds on "
             f"ghcr.io/qubins/images:{image_tag}.\n"
             f"   Move both to the same tag: DEFAULT_QISKIT_TAG in src/config/jupyter.ts "
-            f"(and SUPPORTED_QISKIT_TAGS) and the FROM line, with its digest.\n"
+            f"(and SUPPORTED_QISKIT_TAGS) and the FROM line.\n"
             f"   A matching QuBins image must exist: "
             f"https://github.com/QuBins/qiskit-images (branch '{default}')."
         )
