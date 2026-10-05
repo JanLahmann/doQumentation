@@ -721,6 +721,12 @@ export function getFakeDevice(): string {
   return getItem(STORAGE_KEY_FAKE_DEVICE) || 'FakeSherbrooke';
 }
 
+/** True when the user picked a fake device in Settings (not just the default). */
+export function isFakeDeviceChosen(): boolean {
+  if (typeof window === 'undefined') return false;
+  return !!getItem(STORAGE_KEY_FAKE_DEVICE);
+}
+
 export function setFakeDevice(name: string): void {
   if (typeof window === 'undefined') return;
   setItem(STORAGE_KEY_FAKE_DEVICE, name);
