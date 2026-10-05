@@ -1,0 +1,809 @@
+---
+title: "SqDRIFT algorithm for ground state estimation"
+sidebar_label: "SqDRIFT algorithm for ground state estimation"
+description: "SqDRIFT combines two prominent algorithms, qDRIFT and SKQD, for the problem of ground state estimation while also reducing the circuit depth."
+notebook_path: "tutorials/assets/sqdrift/sqdrift.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/assets/sqdrift/sqdrift.ipynb" />
+
+
+
+{/* cspell:ignore cisolver ECORE combinatorially multiset */}
+
+*Usage estimate: 180 seconds on a Heron r3 processor (NOTE: This is an estimate only. Your runtime might vary.)*
+## Learning outcomes
+- Learn how to create smaller depth circuits as compared to Trotterization
+- Walk through an end-to-end workflow for ground state estimation using qDRIFT and SQD
+- Learn how to use `qiskit-fermions` in tandem with other Qiskit addons to implement such a workflow
+
+This tutorial is presented as a Python notebook for teaching purposes.
+
+## Prerequisites
+- Read the [Sample-based quantum diagonalization (SQD)](https://docs.quantum.ibm.com/addons/qiskit-addon-sqd) overview
+- Read the [Sample-based Krylov Quantum Diagonalization (SKQD)](/learning/courses/quantum-diagonalization-algorithms/skqd) lesson
+
+## Background
+
+[SqDRIFT](https://arxiv.org/abs/2508.02578) is a variant of SKQD that replaces the need to choose an ansatz from which to sample bitstrings with an ensemble of time-evolution circuits constructed directly from the target Hamiltonian. This is achieved by subsampling smaller time-evolution operators from the Hamiltonian based on its coefficients, which is known as the qDRIFT Trotterization method.
+
+This tutorial makes use of [Qiskit Fermions](https://docs.quantum.ibm.com/addons/qiskit-fermions) to create the more natural fermionic circuits for the [qDRIFT](https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.123.070503) algorithm, followed by the use of fermionic layout and synthesis passes before plugging the circuits into the traditional Qiskit pipeline for hardware execution.
+
+Let the Hamiltonian be of the form:
+
+$$
+H = \sum_{i=1}^{N} c_i h_i
+$$
+
+where, without loss of generality, we require $c_i > 0$ and that the largest eigenvalue of $h_i$ be equal, in absolute value, to $1$. Any signed or complex prefactor is absorbed into $h_i$, so the coefficients $c_i$ are strictly positive weights while the $h_i$ carry the direction of each term. Here $N$ is the number of terms (or, after grouping, the number of groups) in the Hamiltonian; it is a property of the Hamiltonian and is distinct from the number of operators sampled into a single circuit, written $n$ below.
+
+The qDRIFT algorithm then realizes, for the target time $t$, some operator $V_k$, where $k$ goes from $1 \cdots K$ and signifies the $k_{th}$ SqDRIFT circuit, defined as:
+
+$$
+V_k = \prod_{j=1}^{n} e^{-i h_{k_j} \lambda t / n }
+$$
+
+Here $n$ is the number of sampled operators per circuit and $K$ is the number of circuits in the ensemble. The product runs over the $n$ draws, not over all $N$ Hamiltonian terms, and because the terms are drawn with replacement, the same $h_i$ can appear more than once in a single $V_k$.
+
+The quantity:
+
+$$
+\lambda = \sum_{i=1}^{N} c_i
+$$
+
+is the $L_1$ norm of the coefficients, so each of the $n$ steps evolves for the same duration $\lambda t / n$ regardless of which term was drawn. The uniformity of the step angle is the characteristic feature of qDRIFT: a coefficient influences the result through *how often* its term is drawn, not through how far that term is rotated. The indices are sampled from the distribution:
+
+$$
+P[k_i] = \frac{c_i}{\lambda}
+$$
+
+so the series $(k_1, \ldots, k_n)$ is a random sequence of term indices drawn from this distribution. Since the $c_i$ are positive and sum to $\lambda$, this is a normalized probability distribution, and the expectation of the resulting channel over the random draws approximates evolution under $H$, with an error that decreases as $n$ grows. Note that the approximation error depends on $\lambda$ rather than on the number of terms $N$.
+
+(The SqDRIFT paper writes the number of terms as $\mathcal{N}$ and the sequence length as $N$; we use $N$ and $n$ here to keep the two clearly distinct.)
+
+This tutorial shows how to generate an ensemble of such randomized circuits. After we have created these circuits, similar to how we create a Krylov subspace for different operators, we sample bitstrings from multiple such operators with different time parameters. This ensures a higher overlap between the ground state vectors and sampled bitstrings.
+## Requirements
+
+Before starting this tutorial, make sure you have installed
+- A Python (>=3.10) virtual environment
+- pip>=25.1
+- qiskit ~= 2.5
+- qiskit-fermions==0.1.0 (Note that the name is plural)
+- numpy
+- pyscf
+- qiskit-aer
+- qiskit-ibm-runtime
+- qiskit-addon-sqd
+
+You can install all required packages with:
+```bash
+pip install "qiskit~=2.5" "qiskit-fermions==0.1.0" qiskit-aer qiskit-ibm-runtime qiskit-addon-sqd pyscf numpy
+```
+## Setup
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"numpy": "numpy", "pyscf": "pyscf", "qiskit": "qiskit", "qiskit_addon_sqd": "qiskit-addon-sqd", "qiskit_aer": "qiskit-aer", "qiskit_fermions": "qiskit-fermions", "qiskit_ibm_runtime": "qiskit-ibm-runtime"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+# Third-party scientific computing
+import numpy as np
+
+# PySCF
+from pyscf import tools, ao2mo, fci
+
+# Qiskit core
+from qiskit import transpile
+from qiskit.primitives import BitArray
+
+# Qiskit Aer
+from qiskit_aer import AerSimulator
+
+# IBM Quantum Compute Service
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
+
+# Qiskit Fermions
+from qiskit_fermions.operators.library import FCIDump
+from qiskit_fermions.operators import FermionOperator
+from qiskit_fermions.operators.terms.filtering import filter_diagonal_terms
+from qiskit_fermions.operators.terms.grouping import (
+    group_terms_by_electronic_structure,
+)
+from qiskit_fermions.operators.terms.ordering import canonical_order
+from qiskit_fermions.circuit import FermionicCircuit
+from qiskit_fermions.circuit.library import Evolution
+from qiskit_fermions.transpiler import FermionicPassManager
+from qiskit_fermions.transpiler.presets import generate_preset_jw_pass_manager
+from qiskit_fermions.transpiler.passes import QDriftTrotterization
+from qiskit_fermions.circuit.library import InitializeModes
+
+# Qiskit addon SQD
+from qiskit_addon_sqd.fermion import (
+    diagonalize_fermionic_hamiltonian,
+    SCIResult,
+)
+```
+
+## Simulator example
+
+### Step 1: Map classical inputs to a quantum problem
+
+**Reading and Preparing the FCIDump**
+
+For this tutorial, we will load up the electronic structure Hamiltonian for nitrogen (N2). There are other ways to create fermionic operators as well.  Refer to the documentation at [`qiskit_fermions.operators.library`](https://qiskit.github.io/qiskit-fermions/stable/0.1/pydoc/qiskit_fermions.operators.library.html#module-qiskit_fermions.operators.library).
+
+**About this FCIDump.** The file `N2_sto_3g` describes a nitrogen molecule ($N_2$) in the minimal STO-3G basis at an interatomic separation of 1.09 $\AA$, the experimental equilibrium bond length. Its header declares `NORB=10`, `NELEC=14`, and `MS2=0`: 10 spatial orbitals (hence 20 spin orbitals, and 20 qubits under Jordan-Wigner), 14 electrons in a spin singlet, so seven $\alpha$ and seven $\beta$ electrons. All orbitals are given symmetry label 1, that is, no point-group symmetry is exploited. Being a full-space STO-3G dump, no orbitals are frozen and the correlation space is small enough that an exact FCI reference energy can be computed classically for comparison, as shown in the next cell.
+
+An equivalent file can be regenerated with PySCF:
+
+```python
+from pyscf import gto, scf, tools
+
+mol = gto.M(atom="N 0 0 0; N 0 0 1.09", basis="sto-3g", symmetry=False)
+mf = scf.RHF(mol).run()
+tools.fcidump.from_scf(mf, "N2_sto_3g")
+```
+
+Because the integrals depend on the converged SCF orbitals, a regenerated file might differ from the shipped one in orbital phase or ordering; the total energies are unaffected.
+
+**Obtaining the file.** Find the FCIDump in this [GitHub repository](https://github.com/Qiskit/documentation/tree/main/docs/tutorials/assets/sqdrift/fcidump_files). You can run the cell below to fetch it into the location the rest of the tutorial expects.
+
+First we use the `cisolver` provided by pyscf to get the reference energy. This is the true ground state energy of the molecule we are working with. For this we will first declare `norb` and `nelec`, which are the number of orbitals and the number of electrons, respectively. Then we declare `h1e` and `h2e`, which are the one- and two-electron integrals respectively. All of these will later be used for SQD as well.
+
+```python
+import os
+from urllib.request import urlopen
+
+# The FCIDump is stored with this tutorial in the Qiskit documentation repository.
+FCIDUMP_URL = "https://raw.githubusercontent.com/Qiskit/documentation/main/docs/tutorials/assets/sqdrift/fcidump_files/N2_sto_3g"
+FCIDUMP_PATH = "fcidump_files/N2_sto_3g"
+
+if not os.path.exists(FCIDUMP_PATH):
+    os.makedirs(os.path.dirname(FCIDUMP_PATH), exist_ok=True)
+    with urlopen(FCIDUMP_URL) as response:
+        contents = response.read()
+    with open(FCIDUMP_PATH, "wb") as f:
+        f.write(contents)
+    print(f"Downloaded FCIDump to {FCIDUMP_PATH}")
+else:
+    print(f"Using existing FCIDump at {FCIDUMP_PATH}")
+```
+
+```text
+Using existing FCIDump at assets/sqdrift/fcidump_files/N2_sto_3g
+```
+
+```python
+name = "fcidump_files/N2_sto_3g"
+
+fcidump = tools.fcidump.read(name)
+
+# Extract metadata from the FCIDump header
+norb = fcidump["NORB"]  # number of spatial orbitals
+nelec = fcidump["NELEC"]  # total number of electrons
+e_nuc = fcidump["ECORE"]  # nuclear repulsion / core energy
+ms2 = fcidump["MS2"]  # 2S (spin)
+
+num_elec_a = (nelec + ms2) // 2  # alpha electrons
+num_elec_b = (nelec - ms2) // 2  # beta  electrons
+
+# Reconstruct full 4-index ERIs from the FCIDump (stored in 8-fold symmetry)
+h1e = fcidump["H1"]  # shape (norb, norb)
+h2e = ao2mo.restore(  # shape (norb, norb, norb, norb)
+    1, fcidump["H2"], norb
+)
+
+cisolver = fci.direct_spin1.FCI()
+cisolver.max_cycle = 200
+cisolver.conv_tol = 1e-12
+
+e_fci, _ = cisolver.kernel(
+    h1e,
+    h2e,
+    norb,
+    (num_elec_a, num_elec_b),
+    ecore=e_nuc,  # adds nuclear repulsion to the final energy
+)
+
+reference_energy = e_fci
+
+print(f"Reference FCI Energy  = {reference_energy:.10f} Ha")
+
+nuclear_repulsion_energy = fcidump["ECORE"]
+print(f"Nuclear Repulsion Energy = {nuclear_repulsion_energy:.10f} Ha")
+```
+
+```text
+Parsing assets/sqdrift/fcidump_files/N2_sto_3g
+Reference FCI Energy  = -107.6481842917 Ha
+Nuclear Repulsion Energy = 23.7887003074 Ha
+```
+
+**Loading the Hamiltonian**
+
+With the necessary data ready, we read the Hamiltonian from the FCI file in a format that is compatible with `qiskit-fermions`
+
+```python
+fcidump = FCIDump.from_file(name)
+hamiltonian = FermionOperator.from_fcidump(fcidump)
+num_modes = 2 * fcidump.norb
+```
+
+**Fermionic workflows with `qiskit-fermions`**
+
+We will first map the Hamiltonian into a fermionic circuit model using `qiskit-fermions`, which provides transpiler passes and gates specific to fermionic circuits. These will later be used before Qiskit's traditional transpiler passes for this workflow.
+
+**Term grouping**
+
+To ensure the reproducibility of results, we first use `canonical_order` to sort the terms based only on their structure. The order of the operators in the `canon` list is therefore fixed. This ensures reproducibility of created operators because the `QDriftTrotterization` pass that we will use in the future samples random indices to create the qDRIFT operators.
+
+In this step, we exploit the many symmetries that are present in the electronic structure Hamiltonian by grouping related terms with identical coefficients. While doing so changes the operator coefficient distribution which the qDRIFT protocol samples from, this does not affect its convergence guarantees. Crucially, grouping terms related by symmetry results in a favorable cancellation of Pauli terms and in an overall shorter circuit depth when time-evolving a state under their action.
+
+`qiskit-fermions` provides the `group_terms_by_electronic_structure` function that does this grouping for us.
+
+Note that the `group_terms_by_electronic_structure` assumes [normal ordering](https://qiskit.github.io/qiskit-fermions/stable/0.1/stubs/qiskit_fermions.operators.FermionOperator.html#qiskit_fermions.operators.FermionOperator.normal_ordered) terms.
+
+**Filtering diagonal terms**
+
+We remove the diagonal terms from the Hamiltonian used to generate the circuits, so that the $n$ qDRIFT sampling slots are spent on terms that move population between configurations. Such terms are best filtered out of the Hamiltonian at this point, before the `Evolution` gate is constructed in the next step.
+
+The terms in question are the ones that are diagonal in the occupation-number basis, that is, the products of number operators $a^\dagger_i a_i$. Three kinds of term fall under this description:
+
+- the **constant energy offset**, a product of zero number operators, whose time evolution contributes only a global phase;
+- the **individual number operators** $n_i$, whose time evolution reduces to single-qubit $Z$ rotations;
+- the **higher-order products** such as $n_i n_j$.
+
+On their own, none of these move population between occupation-number configurations; they act only on the phases of the configurations already present. They are not inert, however: those relative phases feed into the interference generated by the excitation terms later in the circuit, so filtering them changes the evolution that is actually generated and can change the sampling distribution. This is a deliberate approximation in the circuit-generation step, made to focus sampling on excitation terms, rather than a step that leaves the sampled distribution untouched. Unlike the symmetry grouping above, which leaves the qDRIFT convergence guarantees intact, this filter changes the operator being evolved. The circuits therefore no longer approximate evolution under the full Hamiltonian, and the qDRIFT error bounds apply to the filtered operator rather than the original one. This is acceptable here because the circuits are only a sampling heuristic used to propose configurations: no term is lost from the energy estimate itself, since the filter applies only to the Hamiltonian used to build the circuits, while the classical diagonalization later uses the full Hamiltonian, diagonal terms included. SQD's accuracy depends on that classical step, which remains variational in the sampled subspace regardless of how the configurations were proposed.
+
+The `filter_diagonal_terms()` function removes such terms from an operator in place. It identifies them from their normal-ordered structure — the multiset of creation modes matching the multiset of annihilation modes — so it is only valid on an operator that is already normal-ordered. This assumption is not checked at runtime.
+
+```python
+# Apply automatic grouping
+canon = canonical_order(hamiltonian.normal_ordered().simplify(atol=1e-16))
+exit_code = group_terms_by_electronic_structure(
+    canon, num_modes, two_body_physicist_order=False
+)
+filter_diagonal_terms(canon)
+
+print(len(canon.groups))
+```
+
+```text
+5060
+```
+
+Now that we have grouped the terms in the Hamiltonian, we will decide on the following parameters to generate the ensemble of circuits:
+- The number of circuits to generate: `num_circuits`
+- The length of each circuit in terms of excitation groups: `num_exc`
+- The factor for the different evolution times: `times`
+
+**Creating fermionic circuits**
+
+We will now create fermionic circuits for each of the time-steps. Each circuit will consist of a single evolution gate, with the evolution time we declared earlier. The evolution operator is the Hamiltonian. Later we run transpiler passes on these circuits to create qDRIFT circuits.
+
+**Ansatz preparation**
+
+We prepare the Hartree-Fock state using the `InitializeModes` class. For nitrogen, the process is simply applying X gates to the first `num_elec_a` qubits and then to the `num_elec_b` qubits, both of which equal to seven for nitrogen. This state represents the seven $\alpha$ and seven $\beta$ electrons of nitrogen.
+
+```python
+# SqDRIFT parameters
+times = [1.0, 10.0]  # Total evolution times used for the subspace creation
+num_exc = 10  # Number of excitation groups per circuit
+num_circuits = 200  # Number of circuits to generate
+
+init_circuits = []
+
+hf_gate = InitializeModes.from_hartree_fock(norb, (num_elec_a, num_elec_b))
+
+for time in times:
+    evo_gate = Evolution(num_modes, canon, time)
+    circ = FermionicCircuit(num_modes)
+    circ.append(hf_gate, circ.modes)
+    circ.append(evo_gate, circ.modes)
+    init_circuits.append(circ)
+```
+
+### Step 2: Optimize problem for quantum hardware execution
+
+Now that we have our circuits, we will first use the passes available in `qiskit-fermions` to perform fermionic level optimizations, followed by transpiling our circuit for the backend of choice. Since this is a simulator experiment, we will first do this for the AerSimulator.
+**Weight calculation for each group**
+
+In this step, we perform the qDRIFT sampling of terms stochastically with probabilities proportional to their coefficients in the Hamiltonian. The qDRIFT transpiler pass does this for us. We can now create shallower circuits that can be executed on the hardware more efficiently despite limited qubit connectivity, even when the Hamiltonian contains long-range couplings and higher-than-quadratic terms.
+After term grouping, it samples the operators based on their weights. For each operator $h_i$, the weight $W_{h_i}$ is defined as follows:
+
+$$
+W_{h_i} = |c_i| / \lambda
+$$
+
+Because the terms were grouped in Step 1, each $h_i$ here is a whole group: $c_i$ is the mean absolute coefficient of the terms in group $i$, and each term in the group is evolved with its coefficient reduced to its sign.
+
+**Fermionic and hardware-native optimizations**
+
+The function `generate_preset_jw_pass_manager()` returns a `MultiStagePassManager` that takes a `FermionicCircuit` and produces an optimized final circuit that we can transpile to run on our hardware. We replace its default optimization stage with a `FermionicPassManager` containing our `QDriftTrotterization` pass:
+
+* The `QDriftTrotterization` pass uses the weight-calculation and sampling internally to generate the circuits that we will use for sampling
+* The `RelabelModes` pass is another optimization pass that can be used to permute the fermionic modes to optimize connectivity across qubits and reduce gate depth; read more in the [API reference](https://qiskit.github.io/qiskit-fermions/stable/0.1/stubs/qiskit_fermions.transpiler.passes.RelabelModes.html#qiskit_fermions.transpiler.passes.RelabelModes)
+
+The remaining stages of the `MultiStagePassManager` run automatically and handle the full fermion-to-qubit mapping:
+
+* [F2QLayout](https://qiskit.github.io/qiskit-fermions/stable/0.1/stubs/qiskit_fermions.transpiler.passes.TrivialF2QLayout.html): The preset pass manager applies the `TrivialF2QLayout` pass, which trivially maps $n$ fermionic bits to $n$ qubits.
+* [F2QSynth](https://qiskit.github.io/qiskit-fermions/stable/0.1/stubs/qiskit_fermions.transpiler.passes.F2QSynthesis.html): A transpilation pass to map fermion-based circuit instructions to qubit-based ones.
+
+```python
+qdrift = QDriftTrotterization(num_exc, rng=19)
+
+pm = generate_preset_jw_pass_manager()
+pm.optimization = FermionicPassManager([qdrift])
+
+sqdrift_circuits = []
+for circ in init_circuits:
+    sqdrift_circuits += (pm.run(circ) for _ in range(num_circuits))
+
+for circ in sqdrift_circuits:
+    circ.measure_all()
+
+print(len(sqdrift_circuits))
+```
+
+```text
+400
+```
+
+Now that we are done with the fermionic-level optimizations, we can transpile the circuits for execution on the simulator.
+
+```python
+simulator = AerSimulator()
+shots = 100
+
+transpiled_circuits = transpile(sqdrift_circuits, simulator)
+```
+
+### Step 3: Execute using Qiskit primitives
+Now that we have our circuits, we can run them using Qiskit primitives on the AerSimulator. We will combine all the counts from different circuits. We convert them to boolean vectors before finally post-processing with SQD.
+
+```python
+print(
+    f"Executing {len(transpiled_circuits)} circuits with {shots} shots each..."
+)
+
+job = simulator.run(transpiled_circuits, shots=shots)
+result = job.result()
+
+all_counts = [result.get_counts(i) for i in range(len(transpiled_circuits))]
+
+print(len(all_counts), "length before post processing")
+```
+
+```text
+Executing 400 circuits with 100 shots each...
+400 length before post processing
+```
+
+### Step 4: Post-process and return result in desired classical format
+**Using bitstrings for SQD**
+
+We can now run the diagonalization scheme on the selected bitstrings to find the lowest eigenvalue that will correspond to the ground state energy of the molecule. We create a callback function, declare initial occupancies, and set the parameters before finally running the diagonalization scheme. The callback function is used to print the current iteration and the current eigenvalue estimate at each iteration.
+
+Finally, to get the ground state estimate, we add the `nuclear_repulsion_energy` to the resultant energy.
+
+**Note**: The subspace dimension is not fixed across iterations, even on the noiseless simulator — each subsample draws a different set of configurations, and the recovery step reshapes the pool between iterations, so the reported dimension varies from one subsample to the next. Noiseless sampling does not by itself pin the selected-subspace dimension. The hardware run, however, tends to give systematically larger subspaces, because noisy shots break particle-number symmetry and configuration recovery turns them into additional basis vectors. Because of that, we will also introduce another step for pruning bitstrings in the hardware section.
+
+```python
+combined_counts = {}
+for counts in all_counts:
+    for bitstring, count in counts.items():
+        combined_counts[bitstring] = combined_counts.get(bitstring, 0) + count
+
+bit_array = BitArray.from_counts(combined_counts)
+print(bit_array.num_shots)
+
+print(f"  Alpha electrons: {num_elec_a}")
+print(f"  Beta electrons: {num_elec_b}")
+print(f"  Number of orbitals: {norb}")
+print(f"  Number of spin orbitals (qubits): {2*norb}")
+print(f"Integral shapes: h1e={h1e.shape}, h2e={h2e.shape}")
+
+# SQD parameters
+samples_per_batch = 300
+num_batches = 3
+max_iterations = 5
+
+initial_occupancies = (
+    np.array([1] * num_elec_a + [0] * (norb - num_elec_a)),  # alpha
+    np.array([1] * num_elec_b + [0] * (norb - num_elec_b)),  # beta
+)
+
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy + nuclear_repulsion_energy}")
+        print(
+            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+        )
+
+# Run SQD with configuration recovery
+print("\nRunning SQD with configuration recovery...")
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=samples_per_batch,
+    norb=norb,
+    nelec=(num_elec_a, num_elec_b),
+    num_batches=num_batches,
+    energy_tol=1e-3,
+    occupancies_tol=1e-3,
+    max_iterations=max_iterations,
+    initial_occupancies=initial_occupancies,
+    seed=42,
+    callback=callback,
+)
+
+computed_energy = result.energy + nuclear_repulsion_energy
+
+print("FINAL SQD RESULTS")
+print(f"Orbital occupancies (alpha): {result.orbital_occupancies[0]}")
+print(f"Orbital occupancies (beta): {result.orbital_occupancies[1]}")
+
+energy_error = abs(computed_energy - reference_energy)
+print(f"Reference Energy: {reference_energy:.10f} Ha")
+print(f"Computed Energy:  {computed_energy:.10f} Ha")
+print(f"Error:            {energy_error:.10e} Ha")
+```
+
+```text
+40000
+  Alpha electrons: 7
+  Beta electrons: 7
+  Number of orbitals: 10
+  Number of spin orbitals (qubits): 20
+Integral shapes: h1e=(10, 10), h2e=(10, 10, 10, 10)
+
+Running SQD with configuration recovery...
+Iteration 1
+	Subsample 0
+		Energy: -107.64767025226178
+		Subspace dimension: 5538
+	Subsample 1
+		Energy: -107.64772799119115
+		Subspace dimension: 5670
+	Subsample 2
+		Energy: -107.64765512281548
+		Subspace dimension: 5767
+Iteration 2
+	Subsample 0
+		Energy: -107.64795948524682
+		Subspace dimension: 6080
+	Subsample 1
+		Energy: -107.64806617355072
+		Subspace dimension: 6300
+	Subsample 2
+		Energy: -107.64802260640258
+		Subspace dimension: 6308
+FINAL SQD RESULTS
+Orbital occupancies (alpha): [0.99999464 0.99999643 0.99584631 0.99332984 0.96684652 0.96686712
+ 0.99301927 0.0373282  0.0373266  0.00944508]
+Orbital occupancies (beta): [0.99999462 0.99999643 0.9958261  0.99332349 0.96684268 0.96686737
+ 0.99302145 0.03733536 0.03733399 0.0094585 ]
+Reference Energy: -107.6481842917 Ha
+Computed Energy:  -107.6480661736 Ha
+Error:            1.1811817564e-04 Ha
+```
+
+## Hardware example
+
+This example uses 20 qubits (10 spatial orbitals). That choice is a convenience for a tutorial that should run quickly, not a hard ceiling on the method.
+
+The cost of the classical step is not set by the qubit count directly. SQD diagonalizes the Hamiltonian projected onto the subspace spanned by the *sampled* configurations, so what drives the classical cost is the dimension of that selected subspace — governed here by `samples_per_batch`, `num_batches`, and how many distinct configurations the circuits actually produce — together with the sparse linear algebra needed to apply the projected Hamiltonian. The full CI space grows combinatorially with orbitals and electrons, but the selected subspace is a small, tunable slice of it, and we control its size directly. Consequently, the number of qubits and the classical difficulty can be varied somewhat independently: a wider orbital space sampled into a modest subspace can be cheaper than a smaller system diagonalized over a very large one.
+
+In practice, then, the feasible system size depends on the subspace dimension you need for the accuracy you want and on the memory and cores available to the eigensolver. Larger orbital spaces typically do require a larger subspace to reach chemical accuracy, and that is what eventually motivates distributed resources — see [qiskit-addon-sqd-hpc](https://qiskit.github.io/qiskit-addon-sqd-hpc/) for scaling this step out. Rather than assuming a fixed cutoff, the practical approach is to watch the reported subspace dimension and the energy convergence across iterations and increase the subspace size until the energy stops improving or you exhaust available memory.
+
+*Note:* Due to sampling error from the noise in the hardware, the subspace created for diagonalization in the hardware run will be larger than what we get when using the simulator. While it increases the dimension of the subspace we want to diagonalize, the workflow still gives us an accurate answer due to the robustness of SQD towards noise.
+
+**Pruning of spurious strings**
+
+Here we can choose to perform an additional step. When we have all the bitstrings from the circuit executions, we can either filter out the invalid bitstrings before running SQD, or move forward without pruning. Skipping the pruning is generally preferable for hardware runs, because it leaves the symmetry-broken shots available to configuration recovery, which can repair them into valid configurations and thereby widen the subspace instead of discarding those shots outright.
+
+Since nitrogen can only have seven $\alpha$ and seven $\beta$ electrons, any bitstrings that have more or fewer than seven 1s in the first and the second half of the output can be discarded. We define a function that checks if the bitstrings are valid, and if not, discards them. Once we filter out the spurious bitstrings, the rest are sent into the diagonalization scheme. Use the `PRUNE` flag below to switch between the two behaviors.
+
+Keep in mind that pruning is only one of several choices that shape the final subspace, alongside the number of circuits, the set of evolution times, and diagonal-term filtering. Comparing a pruned run against an unpruned one is only informative if everything else is held fixed; the C++ version of [this tutorial](/tutorials/sqdrift) discusses this in more detail, since it postselects rather than recovers and also differs in those other parameters.
+
+```python
+name = "fcidump_files/N2_sto_3g"
+
+fcidump = tools.fcidump.read(name)
+
+# Extract metadata from the FCIDump header
+norb = fcidump["NORB"]  # number of spatial orbitals
+nelec = fcidump["NELEC"]  # total number of electrons
+e_nuc = fcidump["ECORE"]  # nuclear repulsion / core energy
+ms2 = fcidump["MS2"]  # 2S (spin)
+
+num_elec_a = (nelec + ms2) // 2  # alpha electrons
+num_elec_b = (nelec - ms2) // 2  # beta  electrons
+
+# Reconstruct full 4-index ERIs from the FCIDump (stored in 8-fold symmetry)
+h1e = fcidump["H1"]  # shape (norb, norb)
+h2e = ao2mo.restore(  # shape (norb, norb, norb, norb)
+    1, fcidump["H2"], norb
+)
+
+cisolver = fci.direct_spin1.FCI()
+cisolver.max_cycle = 200
+cisolver.conv_tol = 1e-12
+
+e_fci, _ = cisolver.kernel(
+    h1e,
+    h2e,
+    norb,
+    (num_elec_a, num_elec_b),
+    ecore=e_nuc,  # adds nuclear repulsion to the final energy
+)
+
+reference_energy = e_fci
+
+print(f"Reference FCI Energy  = {reference_energy:.10f} Ha")
+
+nuclear_repulsion_energy = fcidump["ECORE"]
+print(f"Nuclear Repulsion Energy = {nuclear_repulsion_energy:.10f} Ha")
+
+fcidump = FCIDump.from_file(name)
+hamiltonian = FermionOperator.from_fcidump(fcidump)
+num_modes = 2 * fcidump.norb
+
+# Apply automatic grouping
+canon = canonical_order(hamiltonian.normal_ordered().simplify(atol=1e-16))
+exit_code = group_terms_by_electronic_structure(
+    canon, num_modes, two_body_physicist_order=False
+)
+filter_diagonal_terms(canon)
+
+print(len(canon.groups))
+
+# SqDRIFT parameters
+times = [1.0, 10.0]  # Total evolution times used for the subspace creation
+num_exc = 10  # Number of excitation groups per circuit
+num_circuits = 200  # Number of circuits to generate
+
+init_circuits = []
+hf_gate = InitializeModes.from_hartree_fock(norb, (num_elec_a, num_elec_b))
+
+for time in times:
+    evo_gate = Evolution(num_modes, canon, time)
+    circ = FermionicCircuit(num_modes)
+    circ.append(hf_gate, circ.modes)
+    circ.append(evo_gate, circ.modes)
+    init_circuits.append(circ)
+
+# Calculate weights for sampling (one per group)
+qdrift = QDriftTrotterization(num_exc, rng=19)
+
+pm = generate_preset_jw_pass_manager()
+pm.optimization = FermionicPassManager([qdrift])
+
+sqdrift_circuits = []
+for circ in init_circuits:
+    sqdrift_circuits += (pm.run(circ) for _ in range(num_circuits))
+
+for circ in sqdrift_circuits:
+    circ.measure_all()
+
+print(len(sqdrift_circuits))
+
+# This example assumes you have saved your IBM Quantum Platform account locally.
+service = QiskitRuntimeService(channel="ibm_quantum_platform")
+
+# Select backend (choose based on qubit requirements)
+backend = service.least_busy(
+    operational=True,
+    simulator=False,
+    min_num_qubits=2 * norb,
+)
+
+print(f"Selected backend: {backend.name} ({backend.num_qubits} qubits)")
+
+# Transpile for hardware
+transpiled_circuits = transpile(
+    sqdrift_circuits,
+    backend=backend,
+    optimization_level=3,
+    seed_transpiler=42,
+)
+
+shots = 100
+
+sampler = Sampler(mode=backend)
+
+sampler.options.environment.job_tags = ["TUT-SqDRIFT"]
+
+job = sampler.run(transpiled_circuits, shots=shots)
+result = job.result()
+
+# Extract counts from SamplerV2 results
+all_counts = [pub_result.data.meas.get_counts() for pub_result in result]
+
+# Set to True to filter out bitstrings that violate electron-number conservation
+PRUNE = False
+
+def is_valid_bitstring(
+    bitstring: str, norb: int, nelec: tuple[int, int]
+) -> bool:
+    n_alpha, n_beta = nelec
+    return (
+        len(bitstring) == 2 * norb
+        and bitstring[norb:].count("1") == n_alpha
+        and bitstring[:norb].count("1") == n_beta
+    )
+
+if PRUNE:
+    all_counts_filtered = []
+    for counts in all_counts:
+        filtered_count = {}
+        for key in counts:
+            if not is_valid_bitstring(key, norb, (num_elec_a, num_elec_b)):
+                continue
+            elif key not in filtered_count.keys():
+                filtered_count[key] = counts[key]
+            else:
+                filtered_count[key] += counts[key]
+        all_counts_filtered.append(filtered_count)
+    all_counts = all_counts_filtered
+
+combined_counts = {}
+for counts in all_counts:
+    for bitstring, count in counts.items():
+        combined_counts[bitstring] = combined_counts.get(bitstring, 0) + count
+
+bit_array = BitArray.from_counts(combined_counts)
+print(bit_array.num_shots)
+
+print("Electron configuration:")
+print(f"  Total electrons: {nelec}")
+print(f"  Alpha electrons: {num_elec_a}")
+print(f"  Beta electrons: {num_elec_b}")
+print(f"  Number of orbitals: {norb}")
+print(f"  Number of spin orbitals (qubits): {2*norb}")
+print(f"Integral shapes: h1e={h1e.shape}, h2e={h2e.shape}")
+
+# SQD parameters
+samples_per_batch = 300
+num_batches = 3
+max_iterations = 5
+
+initial_occupancies = (
+    np.array([1] * num_elec_a + [0] * (norb - num_elec_a)),  # alpha
+    np.array([1] * num_elec_b + [0] * (norb - num_elec_b)),  # beta
+)
+
+result_history = []
+
+def callback(results: list[SCIResult]):
+    result_history.append(results)
+    iteration = len(result_history)
+    print(f"Iteration {iteration}")
+    for i, result in enumerate(results):
+        print(f"\tSubsample {i}")
+        print(f"\t\tEnergy: {result.energy + nuclear_repulsion_energy}")
+        print(
+            f"\t\tSubspace dimension: {np.prod(result.sci_state.amplitudes.shape)}"
+        )
+
+# Run SQD with configuration recovery
+print("\nRunning SQD with configuration recovery...")
+result = diagonalize_fermionic_hamiltonian(
+    h1e,
+    h2e,
+    bit_array,
+    samples_per_batch=samples_per_batch,
+    norb=norb,
+    nelec=(num_elec_a, num_elec_b),
+    num_batches=num_batches,
+    energy_tol=1e-3,
+    occupancies_tol=1e-3,
+    max_iterations=max_iterations,
+    initial_occupancies=initial_occupancies,
+    seed=42,
+    callback=callback,
+)
+
+computed_energy = result.energy + nuclear_repulsion_energy
+
+print("FINAL SQD RESULTS")
+print(f"Orbital occupancies (alpha): {result.orbital_occupancies[0]}")
+print(f"Orbital occupancies (beta): {result.orbital_occupancies[1]}")
+
+energy_error = abs(computed_energy - reference_energy)
+print(f"Reference Energy: {reference_energy:.10f} Ha")
+print(f"Computed Energy:  {computed_energy:.10f} Ha")
+print(f"Error:            {energy_error:.10e} Ha")
+```
+
+```text
+Parsing assets/sqdrift/fcidump_files/N2_sto_3g
+Reference FCI Energy  = -107.6481842917 Ha
+Nuclear Repulsion Energy = 23.7887003074 Ha
+5060
+400
+```
+
+```text
+Selected backend: ibm_aachen (156 qubits)
+40000
+Electron configuration:
+  Total electrons: 14
+  Alpha electrons: 7
+  Beta electrons: 7
+  Number of orbitals: 10
+  Number of spin orbitals (qubits): 20
+Integral shapes: h1e=(10, 10), h2e=(10, 10, 10, 10)
+
+Running SQD with configuration recovery...
+Iteration 1
+	Subsample 0
+		Energy: -107.64593072647523
+		Subspace dimension: 7221
+	Subsample 1
+		Energy: -107.6458270048177
+		Subspace dimension: 7209
+	Subsample 2
+		Energy: -107.64007673117075
+		Subspace dimension: 7138
+Iteration 2
+	Subsample 0
+		Energy: -107.64757372124944
+		Subspace dimension: 9009
+	Subsample 1
+		Energy: -107.64674060104392
+		Subspace dimension: 8245
+	Subsample 2
+		Energy: -107.64731360491942
+		Subspace dimension: 8178
+Iteration 3
+	Subsample 0
+		Energy: -107.64765518770588
+		Subspace dimension: 8835
+	Subsample 1
+		Energy: -107.64767975712016
+		Subspace dimension: 8649
+	Subsample 2
+		Energy: -107.64761634415606
+		Subspace dimension: 8648
+FINAL SQD RESULTS
+Orbital occupancies (alpha): [0.99999504 0.9999964  0.99590318 0.9932359  0.96697158 0.96696295
+ 0.99298797 0.03728154 0.03728186 0.00938359]
+Orbital occupancies (beta): [0.9999946  0.99999641 0.99590413 0.99323077 0.96697361 0.96696174
+ 0.99298424 0.03728121 0.03728169 0.00939159]
+Reference Energy: -107.6481842917 Ha
+Computed Energy:  -107.6476797571 Ha
+Error:            5.0453460619e-04 Ha
+```
+
+## Next steps
+
+<Admonition type="note" title="Recommendations">
+
+If you found this work interesting, you might be interested in the following material:
+- [Sample-based Krylov quantum diagonalization of a fermionic lattice model](/tutorials/sample-based-krylov-quantum-diagonalization) - a related tutorial using time-evolution circuits instead of a variational ansatz.
+- [Sample-based quantum diagonalization of a chemistry Hamiltonian](/tutorials/sample-based-quantum-diagonalization) - a tutorial on how to construct a local unitary cluster Jastrow (LUCJ) circuit for quantum chemistry simulation.
+- The [SqDRIFT](https://arxiv.org/abs/2508.02578) paper - the literature that this tutorial is based upon. (Note that some of the optimizations discussed in this paper are currently a work in progress, and this tutorial is subject to change in the future based on the evolution of the used libraries.)
+
+</Admonition>
+
+<TutorialFeedback />
