@@ -717,8 +717,9 @@ export function getSimulatorBackend(): SimulatorBackend {
 }
 
 /** Default device in Simulator Mode: the fake device until the user picks one,
- *  and the shape of the ideal "aer" simulator. scripts/check-simulator-mode.py reads it. */
-export const DEFAULT_FAKE_DEVICE = 'FakeSherbrooke';
+ *  and the shape of the ideal "aer" simulator. A 156-qubit Heron (CZ), the
+ *  generation the docs are written for. scripts/check-simulator-mode.py reads it. */
+export const DEFAULT_FAKE_DEVICE = 'FakeFez';
 
 export function getFakeDevice(): string {
   if (typeof window === 'undefined') return DEFAULT_FAKE_DEVICE;

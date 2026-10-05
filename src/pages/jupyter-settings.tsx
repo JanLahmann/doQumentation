@@ -45,6 +45,7 @@ import {
   setQiskitTag,
   SUPPORTED_QISKIT_TAGS,
   DEFAULT_QISKIT_TAG,
+  DEFAULT_FAKE_DEVICE,
   type QiskitTag,
   getWorkshopPool,
   saveWorkshopPool,
@@ -180,7 +181,7 @@ export default function JupyterSettings(): React.JSX.Element {
 
   // Execution mode state
   const [executionMode, setExecutionModeState] = useState<ExecutionMode>('aer');
-  const [fakeDevice, setFakeDeviceState] = useState('FakeSherbrooke');
+  const [fakeDevice, setFakeDeviceState] = useState(DEFAULT_FAKE_DEVICE);
   const [fakeBackends, setFakeBackends] = useState(FALLBACK_BACKENDS);
   const [ttlDays, setTtlDaysState] = useState(1);
 
