@@ -29,10 +29,12 @@ export function saveAccountGuardCode(): string {
   return saveAccountGuardPy;
 }
 
-/** device: a qiskit_ibm_runtime.fake_provider class name, or null for the ideal AerSimulator. */
-export function simulatorPatchCode(device: string | null, suppressWarnings: boolean): string {
-  const safe = (device ?? '').replace(/[^a-zA-Z0-9_]/g, '');
-  return `_DQ_DEVICE = ${safe ? `"${safe}"` : 'None'}
+/** device: a qiskit_ibm_runtime.fake_provider class name; noise: false for the
+ *  ideal "aer" mode, which keeps the device's shape but simulates without noise. */
+export function simulatorPatchCode(device: string, noise: boolean, suppressWarnings: boolean): string {
+  const safe = device.replace(/[^a-zA-Z0-9_]/g, '');
+  return `_DQ_DEVICE = "${safe}"
+_DQ_NOISE = ${noise ? 'True' : 'False'}
 _DQ_SUPPRESS_WARNINGS = ${suppressWarnings ? 'True' : 'False'}
 ${simulatorPatchPy}`;
 }
