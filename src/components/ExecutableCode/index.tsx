@@ -75,6 +75,10 @@ let thebelabEventsHooked = false;
 // Custom event names used to coordinate all cells on the page
 const ACTIVATE_EVENT = 'executablecode:activate';
 const STATUS_EVENT = 'executablecode:status';
+// On Binder/Code Engine the page's install cell (scripts/sync-content.py,
+// install_cell_source) is hidden; injectKernelSetup runs its code instead,
+// so packages the page needs but the image lacks still get installed.
+let pageInstallCode: string | null = null;
 const RESET_EVENT = 'executablecode:reset';
 const RESTART_EVENT = 'executablecode:restart';
 const INJECTION_EVENT = 'executablecode:injection';
@@ -1053,6 +1057,8 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
   // Every mode, including none: a placeholder save_account() must never write
   // to ~/.qiskit (a Workshop container is shared by all participants, #966).
   await executeOnKernel(kernelObj, saveAccountGuardCode());
+  // Installs only what is missing; instant when the image has everything.
+  if (pageInstallCode) await executeOnKernel(kernelObj, pageInstallCode);
 
   switch (mode) {
     case 'aer':
@@ -1820,10 +1826,17 @@ export default function ExecutableCode({
 
   const code = children.replace(/\n$/, '');
 
-  // Hide injected pip install cell on Binder/CE (packages pre-installed)
-  const isPipInstallCell = children.includes('Added by doQumentation') && children.includes('!pip install');
+  // Hide the injected install cell on Binder/CE (the image has nearly
+  // everything) and hand its code to injectKernelSetup, which runs it silently.
+  const isPipInstallCell = children.includes('Added by doQumentation') && children.includes('pip install');
   const packagesPreinstalled = jupyterConfig?.environment === 'github-pages' || jupyterConfig?.environment === 'code-engine';
-  if (isPipInstallCell && packagesPreinstalled) {
+  const runInstallOnKernel = isPipInstallCell && packagesPreinstalled;
+  useEffect(() => {
+    if (!runInstallOnKernel) return;
+    pageInstallCode = code;
+    return () => { if (pageInstallCode === code) pageInstallCode = null; };
+  }, [runInstallOnKernel, code]);
+  if (runInstallOnKernel) {
     return null;
   }
 

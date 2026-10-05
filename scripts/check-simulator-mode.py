@@ -92,7 +92,7 @@ def page_cells(page: str) -> list[str]:
         if "noexec" in meta:
             continue
         body = textwrap.dedent(body)  # blocks inside <Tabs> are indented
-        body = "\n".join("pass  # " + ln if ln.lstrip().startswith(("!", "%")) else ln
+        body = "\n".join(re.sub(r"^(\s*)([!%].*)$", r"\1pass  # \2", ln)
                          for ln in body.splitlines())
         cells.append(body)
     return cells

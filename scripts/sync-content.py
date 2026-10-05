@@ -514,21 +514,35 @@ IMPORT_TO_PIP = {
     'pysat': 'python-sat',
     'github': 'PyGithub',
     'oqs': 'liboqs-python',
+    'dotenv': 'python-dotenv',  # the "dotenv" on PyPI is a different package
 }
 
+# Requirements an import scan cannot see: optional extras a submodule needs.
+# (pattern in the code, module to check, pip package)
+EXTRA_REQUIREMENTS = [
+    (r'qiskit_addon_mpf\.backends\.tenpy', 'tenpy', 'physics-tenpy'),
+]
+
 def analyze_notebook_imports(cells: list[dict]) -> list[str]:
+    """Pip package names of notebook_requirements()."""
+    return [pip for _module, pip in notebook_requirements(cells)]
+
+
+def notebook_requirements(cells: list[dict]) -> list[tuple[str, str]]:
     """Extract all third-party imports from notebook code cells.
 
     Scans code cells for import statements, filters out:
     - Python stdlib modules
     - Packages the notebook itself installs (via !pip install / %pip install)
 
-    Returns a sorted list of pip package names (stdlib-only filtering — no
-    platform-specific baseline). This ensures the prerequisites cell is
-    complete for both Colab and Binder.
+    Returns (import module, pip package) pairs sorted by module (stdlib-only
+    filtering — no platform-specific baseline). This ensures the
+    prerequisites cell is complete for both Colab and Binder, and lets it
+    check each module before installing.
     """
     import_names: set[str] = set()
     already_installed: set[str] = set()
+    extras: list[tuple[str, str]] = []
 
     for cell in cells:
         if cell.get('cell_type') != 'code':
@@ -552,6 +566,10 @@ def analyze_notebook_imports(cells: list[dict]) -> list[str]:
                     # Normalize: both hyphens and underscores
                     already_installed.add(pkg.lower().replace('_', '-'))
 
+        for pattern, module, pip in EXTRA_REQUIREMENTS:
+            if re.search(pattern, source) and (module, pip) not in extras:
+                extras.append((module, pip))
+
         # Extract import statements
         for line in source.split('\n'):
             stripped = line.strip()
@@ -568,7 +586,7 @@ def analyze_notebook_imports(cells: list[dict]) -> list[str]:
     # Filter out stdlib
     stdlib = sys.stdlib_module_names if hasattr(sys, 'stdlib_module_names') else set()
 
-    missing: list[str] = []
+    missing: list[tuple[str, str]] = []
     for name in sorted(import_names):
         if name in stdlib:
             continue
@@ -579,9 +597,39 @@ def analyze_notebook_imports(cells: list[dict]) -> list[str]:
         # Skip if notebook already installs it
         if pip_name.lower() in already_installed or name.lower() in already_installed:
             continue
-        missing.append(pip_name)
+        missing.append((name, pip_name))
+    for module, pip in extras:
+        if pip.lower() not in already_installed and (module, pip) not in missing:
+            missing.append((module, pip))
 
     return missing
+
+
+INSTALL_CELL_MARKER = '# Added by doQumentation — installs the packages this notebook needs if they are missing'
+
+
+def install_cell_source(reqs: list[tuple[str, str]]) -> str:
+    """The install cell for (module, pip) requirements: it installs only the
+    packages whose module is missing, so it is quick where everything is
+    present (Binder, Code Engine, Docker) and complete on a fresh Colab.
+    ExecutableCode hides it on Binder/Code Engine and runs it silently on
+    the kernel instead. Keep INSTALL_CELL_MARKER as the first line: the
+    site and the translation tools recognise the cell by it.
+    """
+    needed = ', '.join(f'"{module}": "{pip}"' for module, pip in reqs)
+    return (
+        f'{INSTALL_CELL_MARKER}\n'
+        'import importlib.util\n'
+        '\n'
+        f'_needed = {{{needed}}}\n'
+        '_missing = [pip for module, pip in _needed.items()\n'
+        '            if importlib.util.find_spec(module) is None]\n'
+        '# One at a time, so a package that fails to install does not block the others\n'
+        'for _pip in _missing:\n'
+        '    %pip install -q {_pip}\n'
+        'if not _missing:\n'
+        '    print("\\u2713 All required packages are installed")'
+    )
 
 
 def convert_notebook(ipynb_path: Path, output_path: Path,
@@ -664,11 +712,10 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
             elif cell_type == 'raw':
                 body_parts.append(f'\n```\n{source}\n```\n')
 
-        # Inject %pip install cell for all third-party dependencies
-        missing_pkgs = analyze_notebook_imports(cells)
-        if missing_pkgs:
-            install_line = f'# Added by doQumentation — required packages for this notebook\n!pip install -q {" ".join(missing_pkgs)}'
-            install_block = f'\n```python\n{install_line}\n```\n'
+        # Inject the install cell for all third-party dependencies
+        reqs = notebook_requirements(cells)
+        if reqs:
+            install_block = f'\n```python\n{install_cell_source(reqs)}\n```\n'
             # Insert before the first code block
             first_code_idx = None
             for i, part in enumerate(body_parts):
@@ -1159,28 +1206,32 @@ def rewrite_notebook_image_paths(content: str, nb_rel_path: Path) -> str:
     return content
 
 
-# Base packages always needed for Colab (skipped on Binder/CE where pre-installed)
-COLAB_BASE_PKGS = ['qiskit', 'qiskit-aer', 'qiskit-ibm-runtime', 'pylatexenc']
+# Base packages always needed for Colab (present on Binder/CE)
+COLAB_BASE_REQS = [('qiskit', 'qiskit'), ('qiskit_aer', 'qiskit-aer'),
+                   ('qiskit_ibm_runtime', 'qiskit-ibm-runtime'), ('pylatexenc', 'pylatexenc')]
 
 
-def _make_prereq_cell(all_pkgs: list) -> dict:
+def notebook_prereq_reqs(cells: list[dict]) -> list[tuple[str, str]]:
+    """COLAB_BASE_REQS plus the notebook's own requirements."""
+    reqs = list(COLAB_BASE_REQS)
+    for req in notebook_requirements(cells):
+        if req[1] not in {pip for _m, pip in reqs}:
+            reqs.append(req)
+    return reqs
+
+
+def _make_prereq_cell(reqs: list[tuple[str, str]]) -> dict:
     """Build the prerequisites cell injected at top of notebook copies.
 
-    Uses importlib.util.find_spec to skip pip install when packages are
-    already present (Binder/CE). On Colab/fresh environments, installs normally.
+    Installs only the packages whose module is missing (each one checked
+    with importlib.util.find_spec), so Binder/CE skip it and Colab gets all.
     """
     return {
         "cell_type": "code",
         "execution_count": None,
         "metadata": {},
         "outputs": [],
-        "source": [
-            "# Install required packages (auto-skipped if already installed)\n",
-            "import importlib\n",
-            f"if importlib.util.find_spec('qiskit') is None:\n",
-            f"    !pip install -q {' '.join(all_pkgs)}\n",
-            "else:\n",
-            '    print("\\u2713 Packages already installed")\n',
+        "source": [line + "\n" for line in install_cell_source(reqs).split("\n")] + [
             "\n",
             "# To run on real quantum hardware, uncomment and fill in your credentials:\n",
             "# from qiskit_ibm_runtime import QiskitRuntimeService\n",
@@ -1210,13 +1261,8 @@ def copy_notebook_with_rewrite(src_path: Path, dst_path: Path, nb_rel_path: Path
     nb = json.loads(content)
     cells = nb.get('cells', [])
 
-    # Build complete package list: base + all detected third-party imports
-    all_pkgs = list(COLAB_BASE_PKGS)
-    for p in analyze_notebook_imports(cells):
-        if p not in all_pkgs:
-            all_pkgs.append(p)
-
-    prereq_cell = _make_prereq_cell(all_pkgs)
+    # Install cell: base + all detected third-party imports
+    prereq_cell = _make_prereq_cell(notebook_prereq_reqs(cells))
 
     # Strip MDX-specific syntax from markdown cells (frontmatter, JSX comments,
     # heading anchors, <Admonition> blocks) so notebooks render cleanly in
@@ -1545,12 +1591,7 @@ def generate_translated_notebook(english_ipynb_path: Path,
         cells = nb.get('cells', [])
 
         # Inject single prerequisites cell (same as copy_notebook_with_rewrite)
-        all_pkgs = list(COLAB_BASE_PKGS)
-        for p in analyze_notebook_imports(cells):
-            if p not in all_pkgs:
-                all_pkgs.append(p)
-
-        prereq_cell = _make_prereq_cell(all_pkgs)
+        prereq_cell = _make_prereq_cell(notebook_prereq_reqs(cells))
 
         nb['cells'] = [prereq_cell] + cells
 
