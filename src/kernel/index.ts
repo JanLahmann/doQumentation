@@ -29,11 +29,15 @@ export function saveAccountGuardCode(): string {
   return saveAccountGuardPy;
 }
 
-/** device: a qiskit_ibm_runtime.fake_provider class name; noise: false for the
+/** device: a qiskit_ibm_runtime.fake_provider class name; pinned: the page pins
+ *  it (pages.json), so named or larger requests get it too; noise: false for the
  *  ideal "aer" mode, which keeps the device's shape but simulates without noise. */
-export function simulatorPatchCode(device: string, noise: boolean, suppressWarnings: boolean): string {
+export function simulatorPatchCode(
+  device: string, pinned: boolean, noise: boolean, suppressWarnings: boolean,
+): string {
   const safe = device.replace(/[^a-zA-Z0-9_]/g, '');
   return `_DQ_DEVICE = "${safe}"
+_DQ_PINNED = ${pinned ? 'True' : 'False'}
 _DQ_NOISE = ${noise ? 'True' : 'False'}
 _DQ_SUPPRESS_WARNINGS = ${suppressWarnings ? 'True' : 'False'}
 ${simulatorPatchPy}`;

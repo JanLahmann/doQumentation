@@ -61,7 +61,8 @@ def site_bootstrap(nb_path: Path) -> str:
     code = [(chk.KERNEL / "save_account_guard.py").read_text()]
     if not any(chk.page_matches(page, p) for p in cfg["exempt"]):
         mode = os.environ.get("DOQ_SIM_MODE", "aer")
-        code.append(chk.simulator_patch_code(chk.device_for(page, cfg), noise=mode == "fake"))
+        code.append(chk.simulator_patch_code(chk.device_for(page, cfg), noise=mode == "fake",
+                                             pinned=chk.is_pinned(page, cfg)))
     return "\n".join(code)
 
 

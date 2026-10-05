@@ -68,10 +68,11 @@ def page_matches(path: str, page: str) -> bool:
     return p == page or p.endswith(page)
 
 
-def simulator_patch_code(device: str, noise: bool) -> str:
+def simulator_patch_code(device: str, noise: bool, pinned: bool = False) -> str:
     """Mirror of simulatorPatchCode() in src/kernel/index.ts."""
     safe = re.sub(r"[^a-zA-Z0-9_]", "", device)
     return (f'_DQ_DEVICE = "{safe}"\n'
+            f"_DQ_PINNED = {pinned}\n"
             f"_DQ_NOISE = {noise}\n"
             f"_DQ_SUPPRESS_WARNINGS = True\n"
             + (KERNEL / "simulator_patch.py").read_text())
@@ -82,6 +83,11 @@ def device_for(path: str, cfg: dict) -> str:
     the same in both modes; "aer" simulates it without noise."""
     page_device = next((d for p, d in cfg["device"].items() if page_matches(path, p)), None)
     return page_device or DEFAULT_FAKE_DEVICE
+
+
+def is_pinned(path: str, cfg: dict) -> bool:
+    """The page pins its device in pages.json (mirror of the pinned flag in index.tsx)."""
+    return any(page_matches(path, p) for p in cfg["device"])
 
 
 def page_cells(page: str) -> list[str]:
@@ -124,7 +130,8 @@ def run_page(page: str, mode: str, cfg: dict) -> list[str]:
     device = None
     if not exempt:
         device = device_for(path, cfg)
-        prelude.append(simulator_patch_code(device, noise=mode == "fake"))
+        prelude.append(simulator_patch_code(device, noise=mode == "fake",
+                                            pinned=is_pinned(path, cfg)))
     cells = page_cells(page)
     label = f"{page} [{mode}, {'exempt' if exempt else device + ('' if mode == 'fake' else ' ideal')}]"
 

@@ -88,7 +88,7 @@ type ThebeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 
 type InjectionInfo = {
   mode: 'simulator' | 'credentials' | 'none';
-  label: string;    // Badge text: "AerSimulator", "FakeSherbrooke", "IBM Quantum"
+  label: string;    // Badge text: "FakeFez (ideal)", "FakeSherbrooke", "IBM Quantum"
   message: string;  // Toast text for brief feedback
 };
 
@@ -918,7 +918,7 @@ function getSimulatorDevice(): string {
   return pageDevice ?? DEFAULT_FAKE_DEVICE;
 }
 
-/** What the badges and banner call the simulator, e.g. "FakeSherbrooke (ideal)". */
+/** What the badges and banner call the simulator, e.g. "FakeFez (ideal)". */
 function getSimulatorLabel(): string {
   const device = getSimulatorDevice();
   return getSimulatorBackend() === 'fake' ? device : `${device} (ideal)`;
@@ -1019,7 +1019,9 @@ except Exception as e:
 }
 
 function getSimulatorPatchCode(): string {
-  return simulatorPatchCode(getSimulatorDevice(), getSimulatorBackend() === 'fake', getSuppressWarnings());
+  const pinned = pageSimulatorDevice(window.location.pathname) !== null;
+  return simulatorPatchCode(
+    getSimulatorDevice(), pinned, getSimulatorBackend() === 'fake', getSuppressWarnings());
 }
 
 function getOpenPlanPatchCode(): string {
