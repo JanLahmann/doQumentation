@@ -716,9 +716,13 @@ export function getSimulatorBackend(): SimulatorBackend {
   return getExecutionMode() === 'fake' ? 'fake' : 'aer';
 }
 
+/** Default device in Simulator Mode: the fake device until the user picks one,
+ *  and the shape of the ideal "aer" simulator. scripts/check-simulator-mode.py reads it. */
+export const DEFAULT_FAKE_DEVICE = 'FakeSherbrooke';
+
 export function getFakeDevice(): string {
-  if (typeof window === 'undefined') return 'FakeSherbrooke';
-  return getItem(STORAGE_KEY_FAKE_DEVICE) || 'FakeSherbrooke';
+  if (typeof window === 'undefined') return DEFAULT_FAKE_DEVICE;
+  return getItem(STORAGE_KEY_FAKE_DEVICE) || DEFAULT_FAKE_DEVICE;
 }
 
 /** True when the user picked a fake device in Settings (not just the default). */

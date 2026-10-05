@@ -29,6 +29,7 @@ import {
   getSimulatorBackend,
   getFakeDevice,
   isFakeDeviceChosen,
+  DEFAULT_FAKE_DEVICE,
   setCachedFakeBackends,
   getSuppressWarnings,
   ensureBinderSession,
@@ -785,7 +786,7 @@ function annotateInjectedCells(): void {
 
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
-    const device = getSimulatorDevice() ?? 'AerSimulator';
+    const device = getSimulatorLabel();
 
     cells.forEach((cell) => {
       // Skip cells that already have a more specific annotation
@@ -902,15 +903,21 @@ function isSimulatorExemptPage(): boolean {
   return isSimulatorExemptPath(window.location.pathname);
 }
 
-/** Device Simulator Mode hands out on this page: a fake_provider class name,
- *  or null for the ideal AerSimulator. A page listed in src/kernel/pages.json
+/** Device Simulator Mode hands out on this page (a fake_provider class name).
+ *  "aer" mode simulates it without noise. A page listed in src/kernel/pages.json
  *  gets its small device unless the user picked a fake device in Settings. */
-function getSimulatorDevice(): string | null {
+function getSimulatorDevice(): string {
   const pageDevice = pageSimulatorDevice(window.location.pathname);
   if (getSimulatorBackend() === 'fake') {
     return pageDevice && !isFakeDeviceChosen() ? pageDevice : getFakeDevice();
   }
-  return pageDevice;
+  return pageDevice ?? DEFAULT_FAKE_DEVICE;
+}
+
+/** What the badges and banner call the simulator, e.g. "FakeSherbrooke (ideal)". */
+function getSimulatorLabel(): string {
+  const device = getSimulatorDevice();
+  return getSimulatorBackend() === 'fake' ? device : `${device} (ideal)`;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -1008,7 +1015,7 @@ except Exception as e:
 }
 
 function getSimulatorPatchCode(): string {
-  return simulatorPatchCode(getSimulatorDevice(), getSuppressWarnings());
+  return simulatorPatchCode(getSimulatorDevice(), getSimulatorBackend() === 'fake', getSuppressWarnings());
 }
 
 function getOpenPlanPatchCode(): string {
@@ -1052,7 +1059,7 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
     case 'fake': {
       const ok = await executeOnKernel(kernelObj, getSimulatorPatchCode());
       if (ok) {
-        const device = getSimulatorDevice() ?? 'AerSimulator';
+        const device = getSimulatorLabel();
         broadcastInjection({
           mode: 'simulator',
           label: device,

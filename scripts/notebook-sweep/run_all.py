@@ -41,19 +41,18 @@ SHIM_BOOTSTRAP = (
 )
 
 
-# DOQ_SHIM=site: use the site's own kernel patches (src/kernel/, mounted at
-# /kernel) instead of sim_shim, i.e. what a learner gets in Simulator Mode
-# (DOQ_SIM_MODE aer|fake). Composed by scripts/check-simulator-mode.py
-# (mounted at /kernel-check), the same code the CI check runs.
+# DOQ_SHIM=site: use the site's own kernel patches (src/kernel/) instead of
+# sim_shim, i.e. what a learner gets in Simulator Mode (DOQ_SIM_MODE
+# aer|fake). Composed by scripts/check-simulator-mode.py, the same code the
+# CI check runs; the repo's src/ and scripts/ are mounted at /src, /scripts.
 SITE_SHIM = __import__("os").environ.get("DOQ_SHIM") == "site"
 
 
 def site_bootstrap(nb_path: Path) -> str:
     import importlib.util
     import os
-    os.environ.setdefault("DOQ_KERNEL_DIR", "/kernel")
     spec = importlib.util.spec_from_file_location(
-        "check_sim", "/kernel-check/check-simulator-mode.py")
+        "check_sim", "/scripts/check-simulator-mode.py")
     chk = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(chk)
     cfg = chk.pages_config()
@@ -61,7 +60,7 @@ def site_bootstrap(nb_path: Path) -> str:
     code = [(chk.KERNEL / "save_account_guard.py").read_text()]
     if not any(chk.page_matches(page, p) for p in cfg["exempt"]):
         mode = os.environ.get("DOQ_SIM_MODE", "aer")
-        code.append(chk.simulator_patch_code(chk.device_for(mode, page, cfg)))
+        code.append(chk.simulator_patch_code(chk.device_for(page, cfg), noise=mode == "fake"))
     return "\n".join(code)
 
 

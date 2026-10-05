@@ -35,12 +35,14 @@ import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-KERNEL = Path(os.environ.get("DOQ_KERNEL_DIR") or ROOT / "src" / "kernel")  # the sweep mounts it elsewhere
+KERNEL = ROOT / "src" / "kernel"
 DOCS = ROOT / "docs"
 
 # The "Get started" pages; every page with a rule in pages.json is added too.
 PAGES = ["tutorials/chsh-inequality", "tutorials/hello-world"]
-DEFAULT_FAKE_DEVICE = "FakeSherbrooke"  # getFakeDevice() default, src/config/jupyter.ts
+DEFAULT_FAKE_DEVICE = re.search(  # Simulator Mode's default device, shared with the site
+    r"DEFAULT_FAKE_DEVICE = '([^']+)'",
+    (ROOT / "src" / "config" / "jupyter.ts").read_text()).group(1)
 CELL_TIMEOUT_S = 600
 
 RUNNER = textwrap.dedent('''
@@ -66,20 +68,20 @@ def page_matches(path: str, page: str) -> bool:
     return p == page or p.endswith(page)
 
 
-def simulator_patch_code(device: str | None) -> str:
+def simulator_patch_code(device: str, noise: bool) -> str:
     """Mirror of simulatorPatchCode() in src/kernel/index.ts."""
-    safe = re.sub(r"[^a-zA-Z0-9_]", "", device or "")
-    return (f'_DQ_DEVICE = {json.dumps(safe) if safe else "None"}\n'
+    safe = re.sub(r"[^a-zA-Z0-9_]", "", device)
+    return (f'_DQ_DEVICE = "{safe}"\n'
+            f"_DQ_NOISE = {noise}\n"
             f"_DQ_SUPPRESS_WARNINGS = True\n"
             + (KERNEL / "simulator_patch.py").read_text())
 
 
-def device_for(mode: str, path: str, cfg: dict) -> str | None:
-    """Mirror of getSimulatorDevice() for a user who never picked a device."""
+def device_for(path: str, cfg: dict) -> str:
+    """Mirror of getSimulatorDevice() for a user who never picked a device:
+    the same in both modes; "aer" simulates it without noise."""
     page_device = next((d for p, d in cfg["device"].items() if page_matches(path, p)), None)
-    if mode == "fake":
-        return page_device or DEFAULT_FAKE_DEVICE
-    return page_device
+    return page_device or DEFAULT_FAKE_DEVICE
 
 
 def page_cells(page: str) -> list[str]:
@@ -121,10 +123,10 @@ def run_page(page: str, mode: str, cfg: dict) -> list[str]:
     prelude = [(KERNEL / "save_account_guard.py").read_text()]
     device = None
     if not exempt:
-        device = device_for(mode, path, cfg)
-        prelude.append(simulator_patch_code(device))
+        device = device_for(path, cfg)
+        prelude.append(simulator_patch_code(device, noise=mode == "fake"))
     cells = page_cells(page)
-    label = f"{page} [{mode}, {'exempt' if exempt else device or 'AerSimulator'}]"
+    label = f"{page} [{mode}, {'exempt' if exempt else device + ('' if mode == 'fake' else ' ideal')}]"
 
     with tempfile.TemporaryDirectory() as home:
         cells_file = Path(home) / "cells.json"
