@@ -2,9 +2,8 @@
 """
 Host driver for the notebook sweep (runs OUTSIDE the container).
 
-  python3 sweep.py            # Pass A (all, stock image) + Pass B
+  python3 sweep.py            # Pass A + Pass S
   python3 sweep.py A          # Pass A only
-  python3 sweep.py B          # Pass B only (graphviz subset)
   python3 sweep.py S          # Pass S only (site Simulator Mode)
 
 Pass A: every EN notebook in the unmodified production image
@@ -18,8 +17,10 @@ and run with DOQ_NB_ROOT=DIR. DOQ_IMG overrides the image.
 Pass S: every EN notebook, stock image, with the site's own Simulator Mode
         kernel patch (src/kernel/, DOQ_SIM_MODE aer|fake, default aer)
         instead of sim_shim -> what a learner gets on the site.
-Pass B: only Graphviz-plotting notebooks, in a throwaway
-        graphviz-patched image -> failures *behind* finding F1.
+
+Every install line in every cell is skipped (run_all.py), so the sweep
+measures the image itself (#969). Results go to DOQ_OUT (default
+REPO/.sweep-out); give concurrent sweeps different folders.
 
 Python (not bash) on purpose: macOS ships bash 3.2 (no mapfile) and
 process orchestration is cleaner here. Parallelism = PAR containers,
@@ -36,7 +37,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SHIM_DIR = REPO / "scripts" / "notebook-sweep"
-OUT = REPO / ".sweep-out"
+OUT = Path(os.environ.get("DOQ_OUT") or REPO / ".sweep-out").resolve()
 
 
 def default_image() -> str:
@@ -50,7 +51,6 @@ def default_image() -> str:
 
 STOCK_IMG = os.environ.get("DOQ_IMG") or default_image()
 NB_ROOT = Path(os.environ.get("DOQ_NB_ROOT") or REPO / "notebooks").resolve()
-PATCH_IMG = "doq-sweep-depspatch:local"
 PAR = int(os.environ.get("DOQ_PAR", "3"))
 CELL_TIMEOUT = os.environ.get("DOQ_CELL_TIMEOUT", "300")
 
@@ -64,18 +64,6 @@ def discover_all() -> list[str]:
             out.append(str(p.relative_to(NB_ROOT)))
     return out
 
-
-def discover_passB() -> list[str]:
-    # Union of notebooks blocked by the two proven missing deps:
-    #   F1 graphviz-backed plotting, F2 qiskit-ibm-transpiler import.
-    f1 = ("plot_coupling_map", "plot_circuit_layout", "plot_gate_map")
-    f2 = ("qiskit_ibm_transpiler", "qiskit-ibm-transpiler")
-    hits = set()
-    for nb in discover_all():
-        txt = (NB_ROOT / nb).read_text(errors="ignore")
-        if any(p in txt for p in f1) or any(p in txt for p in f2):
-            hits.add(nb)
-    return sorted(hits)
 
 
 def chunk(lst: list[str], n: int) -> list[list[str]]:
@@ -126,7 +114,7 @@ def run_pass(label: str, image: str, sub: str, nbs: list[str], site: bool = Fals
 
 
 def main() -> int:
-    mode = (sys.argv[1] if len(sys.argv) > 1 else "AB").upper()
+    mode = (sys.argv[1] if len(sys.argv) > 1 else "AS").upper()
     OUT.mkdir(exist_ok=True)
 
     if "A" in mode:
@@ -139,23 +127,11 @@ def main() -> int:
         (OUT / "_all.txt").write_text("\n".join(nbs))
         run_pass("S", STOCK_IMG, f"passS-{os.environ.get('DOQ_SIM_MODE', 'aer')}", nbs, site=True)
 
-    if "B" in mode:
-        print(">>> Building graphviz-patched image for Pass B")
-        rc = subprocess.run(
-            ["podman", "build", "-t", PATCH_IMG, "--build-arg", f"BASE={STOCK_IMG}",
-             "-f", str(SHIM_DIR / "Dockerfile.depspatch"), str(SHIM_DIR)],
-        ).returncode
-        if rc != 0:
-            print("  deps-patch image build FAILED — skipping Pass B")
-        else:
-            sub = discover_passB()
-            (OUT / "_passB.txt").write_text("\n".join(sub))
-            run_pass("B", PATCH_IMG, "passB", sub)
 
     print("\nReports:")
-    print(f"  {OUT/'passA'/'report.md'}   (user reality)")
-    if "B" in mode:
-        print(f"  {OUT/'passB'/'report.md'}   (graphviz subset, deep)")
+    print(f"  {OUT/'passA'/'report.md'}   (sweep shim)")
+    if "S" in mode:
+        print(f"  {OUT/('passS-' + os.environ.get('DOQ_SIM_MODE', 'aer'))/'report.md'}   (site Simulator Mode)")
     return 0
 
 

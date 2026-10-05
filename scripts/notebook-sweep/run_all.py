@@ -17,6 +17,7 @@ Capture-only: never edits notebooks, never fixes anything.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import traceback
@@ -64,11 +65,26 @@ def site_bootstrap(nb_path: Path) -> str:
     return "\n".join(code)
 
 
-def _is_pip_install_cell(src: str) -> bool:
-    s = src.lstrip()
-    return s.startswith("# Install required packages") or (
-        "!pip install" in src and "find_spec" in src
-    )
+# Any package install in any cell (#969): the gated prerequisites cell, but
+# also a notebook's own `%pip install -U ... "qiskit_ibm_runtime<0.42"`.
+# The sweep measures what the image provides, and an install would change
+# site-packages for the rest of the container.
+INSTALL_LINE = re.compile(
+    r"^(\s*)(?:[!%]\s*(?:pip3?|uv|conda|mamba)\b.*\binstall\b"
+    r"|.*subprocess.*\bpip\b.*\binstall\b).*$")
+
+
+def neutralise_installs(source: str) -> tuple[str, int]:
+    """Replace install lines with `pass` (keeps indented blocks valid)."""
+    n = 0
+    lines = []
+    for line in source.splitlines():
+        m = INSTALL_LINE.match(line)
+        if m:
+            n += 1
+            line = f"{m.group(1)}pass  # [sweep] install skipped"
+        lines.append(line)
+    return "\n".join(lines), n
 
 
 def run_one(nb_path: Path) -> dict:
@@ -83,12 +99,14 @@ def run_one(nb_path: Path) -> dict:
     try:
         nb = nbformat.read(nb_path, as_version=4)
 
-        # Neutralise the gated pip-install cell (no network in sweep).
+        # Neutralise every install, the prerequisites cell and the
+        # notebook's own (counted: a notebook that installs is noted).
+        installs = 0
         for cell in nb.cells:
-            if cell.get("cell_type") == "code" and _is_pip_install_cell(
-                "".join(cell.get("source", ""))
-            ):
-                cell["source"] = "# [sweep] pip-install cell skipped (offline)\n"
+            if cell.get("cell_type") == "code":
+                cell["source"], n = neutralise_installs("".join(cell.get("source", "")))
+                installs += n
+        rec["install_lines_skipped"] = installs
 
         # Inject shim bootstrap as a new first code cell.
         boot = nbformat.v4.new_code_cell(
