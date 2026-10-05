@@ -1,0 +1,939 @@
+---
+title: "Quantum approximate multi-objective optimization"
+sidebar_label: "Quantum approximate multi-objective optimization"
+description: "Use a QAOA sampler to trace the risk/return/diversification Pareto front of a cardinality-constrained portfolio."
+notebook_path: "tutorials/quantum-approximate-multi-objective-optimization.ipynb"
+---
+
+import TutorialFeedback from '@site/src/components/TutorialFeedback';
+
+<OpenInLabBanner notebookPath="tutorials/quantum-approximate-multi-objective-optimization.ipynb" />
+
+
+
+*Usage estimate: 10 minutes on a Heron r2 processor (NOTE: This is an estimate only. Your runtime might vary.)*
+
+{/* cspell:ignore maximise, Kotil, moocore, hypervolume, binom, Dicke, f'Hypervolume, lightgray, steelblue, Sparsify, sparsification, sparsified, pmap, Serbyn */}
+
+## Learning outcomes
+This tutorial solves a cardinality-constrained portfolio optimization problem: given the constraint of holding exactly $K$ assets, balance risk, return, and diversification objectives to find the set of optimal portfolios.
+
+After completing this tutorial, you can expect to understand:
+
+- How to express a portfolio-selection problem with three competing objectives &mdash; low risk, high return, and good diversification &mdash; as a quantum optimization problem.
+- How a single QAOA circuit, swept over a set of objective weights, traces out a *Pareto front* of optimal trade-off portfolios.
+- How an XY mixer keeps the search inside the "choose exactly K assets" subspace, so no penalty term is needed and feasibility is enforced by post-selecting the measured bitstrings.
+- How to train the circuit's angles with a matrix-product-state simulator at a scale too large to optimize exactly, following Kotil et al. (arXiv:2503.22797).
+
+## Prerequisites
+It is recommended that you are familiar with:
+
+- The [Qiskit patterns](/guides/intro-to-patterns) workflow (map, optimize, execute, post-process).
+- The basics of [QAOA](/tutorials/quantum-approximate-optimization-algorithm).
+
+## Background
+A portfolio manager rarely optimizes a single number. They want returns to be high, risk (the variance of those returns) to be low, and the holdings spread across sectors so the portfolio is not over-exposed to any one part of the market. These goals pull against each other: the highest-return assets are often the most volatile, and concentrating in one hot sector hurts diversification.
+
+There is no single "best" portfolio. Instead there is a *Pareto front*: the set of portfolios for which you cannot improve one objective without giving up another. Our goal is to map out that front so a decision-maker can pick the trade-off they prefer.
+
+We pose the problem as choosing exactly $K$ assets out of $N$ (each asset is either in or out — one qubit per asset). Three Hamiltonians encode the three objectives. We combine them with weights $c$ that live on a simplex (they sum to one), and a QAOA sampler returns good portfolios for each weight choice. Sweeping the weights sweeps the relative importance of risk versus return versus diversification, and the union of all the sampled portfolios traces the Pareto front.
+
+We first walk through the whole workflow on a small eight-asset example we can verify by brute force, then run the identical method on a 40-asset instance sized for quantum hardware.
+
+This tutorial teaches the workflow (mapping, angle training, constrained sampling, and Pareto post-processing), rather than demonstrating quantum advantage. At the 40-asset scale used here, uniform random sampling performs about as well as the QAOA sampler, and we show that comparison explicitly.
+## Requirements
+Before starting this tutorial, be sure you have the following installed:
+
+- Qiskit SDK v2.0 or later, with [visualization](https://docs.quantum.ibm.com/api/qiskit/visualization) support
+- Qiskit Runtime v0.22 or later (`pip install qiskit-ibm-runtime`)
+- Qiskit Aer (`pip install qiskit-aer`)
+- The Optimization mapper Qiskit addon (`pip install qiskit-addon-opt-mapper`) and the QAOA training pipeline, pinned to the `v0.1.0` tag: `pip install "git+https://github.com/qiskit-community/qaoa_training_pipeline.git@v0.1.0"`
+- `moocore` for Pareto-front and hypervolume calculations (`pip install moocore`)
+## Setup
+Import the libraries used throughout the tutorial and fix a random seed for reproducibility.
+
+```python
+# Added by doQumentation — installs the packages this notebook needs if they are missing
+import importlib.util
+
+_needed = {"matplotlib": "matplotlib", "moocore": "moocore", "numpy": "numpy", "qaoa_training_pipeline": "qaoa-training-pipeline", "qiskit": "qiskit", "qiskit_addon_opt_mapper": "qiskit-addon-opt-mapper", "qiskit_aer": "qiskit-aer", "qiskit_ibm_runtime": "qiskit-ibm-runtime", "scipy": "scipy"}
+_missing = [pip for module, pip in _needed.items()
+            if importlib.util.find_spec(module) is None]
+# One at a time, so a package that fails to install does not block the others
+for _pip in _missing:
+    %pip install -q {_pip}
+if not _missing:
+    print("\u2713 All required packages are installed")
+```
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+from math import comb
+from moocore import hypervolume, filter_dominated, is_nondominated
+
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+from qiskit.circuit.library import qaoa_ansatz
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import generate_preset_pass_manager
+from qiskit_aer.primitives import SamplerV2 as AerSampler
+from qiskit_addon_opt_mapper.problems import OptimizationProblem
+from qaoa_training_pipeline.training import ScipyTrainer
+from qaoa_training_pipeline.evaluation import (
+    StatevectorEvaluator,
+    MPSAerEvaluator,
+)
+
+np.random.seed(42)
+sampler = AerSampler(seed=42)  # local simulator for the small-scale example
+print("Setup complete.")
+```
+
+```text
+Setup complete.
+```
+
+## Small-scale simulator example
+We start with eight assets drawn from six sectors and select exactly $K=4$ of them. With only eight assets there are only $\binom{8}{4}=70$ valid portfolios, so we can later check the quantum result against an exhaustive search.
+### Step 1: Map classical inputs to a quantum problem
+Each asset is one qubit; a bitstring like `10110010` is a portfolio (the 1s are the assets we hold). We need three ingredients: the market data, the three objective Hamiltonians, and a circuit that only ever proposes portfolios with exactly $K$ assets.
+
+```python
+# --- Small-scale universe: 8 assets across 6 sectors ---
+tickers = ["AAPL", "XOM", "JPM", "JNJ", "KO", "AMT", "AMZN", "SLB"]
+sectors = [
+    "Tech",
+    "Energy",
+    "Finance",
+    "Health",
+    "Staples",
+    "REIT",
+    "Tech",
+    "Energy",
+]
+n_assets = len(tickers)
+K = 4  # choose exactly K assets
+n_obj = 3  # risk, return, diversification
+
+# Annualized expected returns
+mu = np.array([0.28, 0.12, 0.22, 0.05, 0.08, 0.10, 0.32, 0.15])
+
+# Annualized covariance matrix (the "risk" model)
+sigma = np.array(
+    [
+        [0.070, 0.010, 0.020, 0.008, 0.005, 0.012, 0.045, 0.011],
+        [0.010, 0.065, 0.015, 0.006, 0.004, 0.008, 0.009, 0.050],
+        [0.020, 0.015, 0.055, 0.010, 0.007, 0.015, 0.018, 0.014],
+        [0.008, 0.006, 0.010, 0.030, 0.012, 0.009, 0.007, 0.005],
+        [0.005, 0.004, 0.007, 0.012, 0.025, 0.006, 0.004, 0.003],
+        [0.012, 0.008, 0.015, 0.009, 0.006, 0.045, 0.011, 0.007],
+        [0.045, 0.009, 0.018, 0.007, 0.004, 0.011, 0.085, 0.010],
+        [0.011, 0.050, 0.014, 0.005, 0.003, 0.007, 0.010, 0.072],
+    ]
+)
+
+# Diversification score: number of cross-sector pairs in the portfolio.
+# D[i,j] = 0.5 when assets i and j are in different sectors, so x^T D x counts
+# the cross-sector pairs. More cross-sector pairs = better diversified.
+D = np.array(
+    [
+        [1.0 if sectors[i] != sectors[j] else 0.0 for j in range(n_assets)]
+        for i in range(n_assets)
+    ]
+)
+np.fill_diagonal(D, 0.0)
+D = D / 2
+
+print(f"{n_assets} assets, choose K={K}, {n_obj} objectives")
+for t, s, m in zip(tickers, sectors, mu):
+    print(f"  {t:5s} ({s:8s})  expected return {m:5.0%}")
+```
+
+```text
+8 assets, choose K=4, 3 objectives
+  AAPL  (Tech    )  expected return   28%
+  XOM   (Energy  )  expected return   12%
+  JPM   (Finance )  expected return   22%
+  JNJ   (Health  )  expected return    5%
+  KO    (Staples )  expected return    8%
+  AMT   (REIT    )  expected return   10%
+  AMZN  (Tech    )  expected return   32%
+  SLB   (Energy  )  expected return   15%
+```
+
+```python
+# Each objective becomes a Hamiltonian whose lowest-energy bitstrings are the
+# best portfolios for that objective. The opt-mapper turns a plain
+# min/max problem over binary variables into the equivalent Ising operator.
+def build_risk_hamiltonian(sigma, n):
+    """Minimize portfolio variance x^T sigma x  (quadratic -> ZZ terms)."""
+    prob = OptimizationProblem("risk")
+    prob.binary_var_list(n)
+    prob.minimize(quadratic=sigma)
+    op, _ = prob.to_ising()
+    return op.simplify()
+
+def build_return_hamiltonian(mu, n):
+    """Maximize expected return mu . x  (linear -> Z terms)."""
+    prob = OptimizationProblem("return")
+    prob.binary_var_list(n)
+    prob.maximize(linear=mu)
+    op, _ = prob.to_ising()
+    return op.simplify()
+
+def build_diversity_hamiltonian(D, n):
+    """Maximize cross-sector pairs x^T D x  (quadratic -> ZZ terms)."""
+    prob = OptimizationProblem("diversity")
+    prob.binary_var_list(n)
+    prob.maximize(quadratic=D)
+    op, _ = prob.to_ising()
+    return op.simplify()
+
+H_risk = build_risk_hamiltonian(sigma, n_assets)
+H_return = build_return_hamiltonian(mu, n_assets)
+H_diversity = build_diversity_hamiltonian(D, n_assets)
+cost_ops = [H_risk, H_return, H_diversity]
+
+for name, op in zip(["risk", "return", "diversity"], cost_ops):
+    print(f"H_{name:10s}: {op.size} Pauli terms")
+```
+
+```text
+H_risk      : 36 Pauli terms
+H_return    : 8 Pauli terms
+H_diversity : 34 Pauli terms
+```
+
+**Enforcing "exactly K assets" without a penalty.** A common trick is to add a penalty term that punishes portfolios of the wrong size, but that couples every qubit to every other qubit, which leads to much deeper circuits after transpilation. Instead we use an **XY mixer**, which only ever moves the QAOA state *between* bitstrings of the same Hamming weight. If we start in a state that already has $K$ assets selected, every portfolio the circuit explores also has exactly $K$ assets. The constraint is built into the circuit's structure rather than enforced by a penalty term.
+
+We prepare the starting state cheaply: rotate each qubit so it is "on" with probability $K/N$. Restricted to the $K$-asset outcomes, this reproduces the ideal equal-weight (Dicke) state, so we simply keep the measured bitstrings that have exactly $K$ ones — a step called *post-selection*.
+
+```python
+def xy_mixer(n):
+    """Line XY mixer: couples neighboring qubits with XX+YY. Conserves the number
+    of selected assets (Hamming weight), so cardinality is preserved automatically.
+    Using a line (not a full ring) keeps the circuit shallow and hardware-friendly."""
+    terms = [
+        (pauli, [i, i + 1], 1) for i in range(n - 1) for pauli in ("XX", "YY")
+    ]
+    return SparsePauliOp.from_sparse_list(terms, n)
+
+def product_init(n, k):
+    """Cheap initial state: each qubit rotated so P(selected) = k/n. Zero two-qubit
+    gates. Post-selecting its weight-k outcomes reproduces the ideal Dicke state."""
+    qc = QuantumCircuit(n)
+    theta = 2 * np.arcsin(np.sqrt(k / n))
+    for q in range(n):
+        qc.ry(theta, q)
+    return qc
+
+# Combine the three objectives with weights c (bound later, at sampling time).
+p_layers = 1
+c = ParameterVector("c", n_obj)
+# Negate the objective so the sampling phase separator matches the sign the angles
+# were trained under (the trainer maximizes the negated sum); binding below keeps +gamma.
+combined_cost_op = sum(
+    -c[k] * H_k for k, H_k in enumerate(cost_ops)
+).simplify()
+
+ansatz = qaoa_ansatz(
+    combined_cost_op,
+    reps=p_layers,
+    initial_state=product_init(n_assets, K),
+    mixer_operator=xy_mixer(n_assets),
+)
+ansatz.measure_all()
+
+betas = [p for p in ansatz.parameters if p.name.startswith("β")]
+gammas = [p for p in ansatz.parameters if p.name.startswith("γ")]
+print(f"Qubits: {ansatz.num_qubits} | QAOA layers: {p_layers}")
+print(
+    f"Tunable angles: {len(betas)} beta + {len(gammas)} gamma, plus {n_obj} objective weights"
+)
+```
+
+```text
+Qubits: 8 | QAOA layers: 1
+Tunable angles: 1 beta + 1 gamma, plus 3 objective weights
+```
+
+### Step 2: Optimize problem for quantum hardware execution
+Before running, the abstract circuit is transpiled into hardware-native gates. At this small scale we only inspect the cost: how deep is the circuit and how many two-qubit gates does it use? (Two-qubit gates are the main source of noise on real devices.)
+
+```python
+# Bind dummy angle values so we can transpile and measure the circuit's size.
+dummy = {p: 0.1 for p in ansatz.parameters}
+test_pm = generate_preset_pass_manager(optimization_level=1)
+test_qc = test_pm.run(ansatz.assign_parameters(dummy))
+
+print(f"Circuit depth          : {test_qc.depth()}")
+print(
+    f"Two-qubit gate depth   : {test_qc.depth(lambda x: len(x.qubits) > 1)}"
+)
+print(f"Two-qubit gate count   : {test_qc.num_nonlocal_gates()}")
+```
+
+```text
+Circuit depth          : 25
+Two-qubit gate depth   : 23
+Two-qubit gate count   : 42
+```
+
+### Step 3: Execute using Qiskit primitives
+Two stages. First we **train** the QAOA angles once, using equal objective weights, with an exact statevector simulator to find good $\beta,\gamma$ values. Then we **sweep** many weight vectors across the simplex and sample the circuit at each, collecting candidate portfolios. Because only the objective weights change between sweeps (not the trained angles), all the weight vectors are submitted in a single batched job.
+
+```python
+# Train the angles with equal objective weights.
+# The trainer maximizes energy, so we negate the (to-be-minimized) objective sum.
+training_op = sum(-1.0 / n_obj * H_k for H_k in cost_ops).simplify()
+
+# Linear-ramp initialization (Sack and Serbyn, arXiv:2101.05742)
+dt = 0.75
+grid = np.arange(1, p_layers + 1) - 0.5
+init_params = np.concatenate((1 - grid * dt / p_layers, grid * dt / p_layers))
+
+trainer = ScipyTrainer(
+    StatevectorEvaluator(), minimize_args={"options": {"maxiter": 300}}
+)
+print("Training QAOA angles (exact statevector)...")
+result_train = trainer.train(
+    cost_op=training_op,
+    mixer=xy_mixer(n_assets),
+    initial_state=product_init(n_assets, K),
+    params0=init_params,
+)
+opt = result_train["optimized_params"]
+opt_betas, opt_gammas = opt[:p_layers], opt[p_layers:]
+print(f"Trained beta : {opt_betas}")
+print(f"Trained gamma: {opt_gammas}")
+```
+
+```text
+Training QAOA angles (exact statevector)...
+Trained beta : [3.329186967386619]
+Trained gamma: [3.4449804324291033]
+```
+
+```python
+def random_uniform_simplex(n_samples, n_obj=3):
+    """n_samples weight vectors spread uniformly over the (n_obj-1)-simplex."""
+    s = np.zeros((n_samples, n_obj + 1))
+    s[:, 1:-1] = np.random.rand(n_samples, n_obj - 1)
+    s[:, -1] = 1
+    s = np.sort(s, axis=1)
+    return np.diff(s, axis=1)
+
+# Bind the trained angles, leaving the objective weights c free for the sweep.
+param_map = {betas[i]: opt_betas[i] for i in range(p_layers)}
+param_map.update({gammas[i]: opt_gammas[i] for i in range(p_layers)})
+ansatz_bound = ansatz.assign_parameters(param_map)
+
+n_samples, shots = 200, 500
+c_vecs = random_uniform_simplex(n_samples, n_obj)
+
+print(f"Sampling {n_samples} weight vectors x {shots} shots...")
+result = sampler.run([(ansatz_bound, c_vecs)], shots=shots).result()
+
+# Collect every distinct bitstring seen across all weight vectors.
+all_bitstrings = set()
+for s in range(n_samples):
+    for bs in result[0].data.meas.get_counts(s):
+        # get_counts is little-endian; reverse so bit i = asset i
+        all_bitstrings.add(bs.replace(" ", "")[::-1])
+print(f"Distinct portfolios sampled: {len(all_bitstrings)}")
+```
+
+```text
+Sampling 200 weight vectors x 500 shots...
+Distinct portfolios sampled: 256
+```
+
+### Step 4: Post-process and return result in desired classical format
+We keep only the feasible portfolios (exactly $K$ assets from the post-selection step), score each one on all three objectives, and extract the **Pareto front**: the portfolios that are not beaten on every objective at once. The *hypervolume* is a single number summarizing how much objective space the front dominates, and bigger is better.
+
+With 100,000 shots over only 256 bitstrings, this run sees every one of the 70 valid portfolios, so at this size it is effectively a brute-force check that the pipeline is wired correctly, rather than evidence that QAOA found the front.
+
+```python
+def evaluate_portfolio(bitstring, sigma, mu, D):
+    """Score one portfolio on all three objectives (all framed as 'bigger is better')."""
+    x = np.array([int(b) for b in bitstring])
+    # negative risk, return, diversification (cross-sector pairs)
+    return np.array([-(x @ sigma @ x), x @ mu, x @ D @ x])
+
+# Post-select feasible portfolios, then score them.
+feasible = [bs for bs in all_bitstrings if bs.count("1") == K]
+fis = np.array([evaluate_portfolio(bs, sigma, mu, D) for bs in feasible])
+
+pareto_front = filter_dominated(fis, maximise=True)
+ref_point = fis.min(axis=0)
+qmoo_hv = hypervolume(fis, ref=ref_point, maximise=True)
+
+print(
+    f"Feasible portfolios found : {len(feasible)} of {comb(n_assets, K)} possible"
+)
+print(f"Pareto-front portfolios   : {len(pareto_front)}")
+print(f"Hypervolume               : {qmoo_hv:.4f}")
+```
+
+```text
+Feasible portfolios found : 70 of 70 possible
+Pareto-front portfolios   : 26
+Hypervolume               : 0.2487
+```
+
+```python
+fig = plt.figure(figsize=(8, 6))
+ax = fig.add_subplot(111, projection="3d")
+ax.scatter(
+    fis[:, 0],
+    fis[:, 1],
+    fis[:, 2],
+    c="lightgray",
+    s=12,
+    label="All feasible portfolios",
+)
+ax.scatter(
+    pareto_front[:, 0],
+    pareto_front[:, 1],
+    pareto_front[:, 2],
+    c="steelblue",
+    s=45,
+    label="Pareto front",
+)
+ax.set_xlabel("Negative risk")
+ax.set_ylabel("Return")
+ax.set_zlabel("Diversification")
+ax.set_title("Risk / return / diversification Pareto front (8 assets)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-approximate-multi-objective-optimization/extracted-outputs/9ccde65a-0.avif)
+
+## Large-scale hardware example
+Now the same workflow on **40 assets** (8 sectors × 5), choosing $K=6$. Forty qubits is too large to simulate exactly (a $2^{40}$-amplitude statevector), so the angles can't be optimized the way they were at eight assets, and a dense circuit would be too deep for current hardware. The $\binom{40}{6} \approx 3.8$M valid portfolios are still few enough to enumerate classically, which we use at the end as an exact benchmark. Several things change, and **nothing else about the method does**:
+
+1. **Train the angles with a matrix-product-state (MPS) simulator, not exact statevector.** Following the reference (Kotil et al.), we fix the objective weights to equal values, optimize a single β, γ on the MPS simulator, and reuse them for every weighting vector in the sweep. (We train at the size we run — no small-to-large angle transfer.)
+2. **Sparsify the risk model to fit hardware.** A full covariance couples all 780 asset pairs. We keep only the strongest, cheapest-to-route couplings using *importance-aware QAP truncation*, and couple each sector in a light ring for the diversity term. This keeps the objectives meaningful while holding the circuit to a hardware-friendly size.
+3. **Keep the circuit shallow and score honestly.** Routing is stochastic, so we transpile with several seeds and keep the shallowest (and no quantum time is spent). Portfolios are always **scored against the true, full objectives**. The sparsification only shapes the circuit, not how portfolios are judged.
+
+<Admonition type="note" title="Why QAP truncation?">
+Keeping each asset's largest couplings by magnitude alone can result in a circuit that is sparse but still awkward to route. QAP truncation instead keeps couplings that are both large *and* physically close on the chip, so the same gate budget buys a shallower, more hardware-friendly circuit.
+</Admonition>
+### Step 1: Map inputs (sparsified for hardware)
+
+```python
+import csv
+import urllib.request
+
+# Download the committed market-data snapshot from the repo.
+# --- 40-asset universe: 8 GICS sectors x 5 tickers (real market data) ---
+# Load the committed market-data snapshot (real annualized returns and covariance).
+# Values are stored at the precision used to train the shipped QAOA angles
+# (mu: 3 dp, sigma: 4 dp), so the pre-trained parameters in instances/ stay exactly valid.
+
+url = "https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/qmoo/market_data.csv"
+urllib.request.urlretrieve(url, "market_data.csv")
+
+with open("market_data.csv", newline="") as _f:
+    _rows = list(csv.reader(_f))
+
+# Covariance column order
+_tickers_csv = _rows[0][2:]
+# Asset tickers
+tickers_40 = [r[0] for r in _rows[1:]]
+# Annualized expected returns
+mu_40 = np.array([float(r[1]) for r in _rows[1:]])
+# Covariance (risk model)
+sigma_40 = np.array([[float(v) for v in r[2:]] for r in _rows[1:]])
+
+sectors_40 = [
+    "Tech",
+    "Tech",
+    "Tech",
+    "Tech",
+    "Tech",
+    "Energy",
+    "Energy",
+    "Energy",
+    "Energy",
+    "Energy",
+    "Finance",
+    "Finance",
+    "Finance",
+    "Finance",
+    "Finance",
+    "Health",
+    "Health",
+    "Health",
+    "Health",
+    "Health",
+    "Staples",
+    "Staples",
+    "Staples",
+    "Staples",
+    "Staples",
+    "Industrials",
+    "Industrials",
+    "Industrials",
+    "Industrials",
+    "Industrials",
+    "Utilities",
+    "Utilities",
+    "Utilities",
+    "Utilities",
+    "Utilities",
+    "REIT",
+    "REIT",
+    "REIT",
+    "REIT",
+    "REIT",
+]
+n_assets_40 = len(tickers_40)
+K_40 = 6  # choose exactly K assets
+
+sector_names_40 = list(dict.fromkeys(sectors_40))
+sect_idx_40 = np.array([sector_names_40.index(s) for s in sectors_40])
+# True cross-sector diversification matrix (used for scoring)
+D_40 = np.array(
+    [
+        [
+            0.5 if sectors_40[i] != sectors_40[j] else 0.0
+            for j in range(n_assets_40)
+        ]
+        for i in range(n_assets_40)
+    ]
+)
+np.fill_diagonal(D_40, 0.0)
+print(
+    f"{n_assets_40} assets, {len(sector_names_40)} sectors, choose K={K_40}"
+)
+```
+
+```text
+40 assets, 8 sectors, choose K=6
+```
+
+```python
+# Sparsify the covariance so the risk circuit fits on hardware. A small diagonal
+# shift (added after truncation) keeps the risk model positive semidefinite; at fixed
+# K it adds the same constant to every portfolio, so it never changes the ranking.
+# Importance-aware QAP truncation (Kotil et al. style): place the qubits on a line
+# and use a Quadratic Assignment Problem to choose the layout that keeps the
+# strongest covariance couplings within routing distance k of the swap network,
+# then drop the rest. Unlike a fixed top-k cap, it keeps couplings that are both
+# large AND cheap to route.
+from scipy.optimize import quadratic_assignment as qap
+from qiskit.transpiler.passes.routing.commuting_2q_gate_routing import (
+    SwapStrategy,
+)
+
+# Truncation level: larger k keeps more couplings (deeper circuit)
+k_truncate = 2
+_dist = np.array(
+    SwapStrategy.from_line(list(range(n_assets_40))).distance_matrix
+)
+
+def qap_truncate(Q, k):
+    w = np.abs(Q.copy())
+    np.fill_diagonal(w, 0.0)
+    mask = (_dist <= k).astype(float)
+    # Seed the QAP solver explicitly (by default it draws from NumPy's global
+    # RNG, which SciPy is deprecating) so the truncation is reproducible.
+    perm = qap(-w, mask, options={"rng": np.random.default_rng(42)}).col_ind
+    keep = mask[np.ix_(perm, perm)]
+    Qt = Q * keep
+    np.fill_diagonal(Qt, np.diag(Q))
+    return Qt
+
+sigma_sparse = qap_truncate(sigma_40, k_truncate)
+print(
+    f"QAP truncation (k={k_truncate}): risk edges kept = "
+    f"{(np.count_nonzero(sigma_sparse) - n_assets_40) // 2}"
+)
+ridge = max(0.0, -np.linalg.eigvalsh(sigma_sparse)[0]) + 1e-6
+sigma_sparse = sigma_sparse + ridge * np.eye(n_assets_40)
+
+# Diversity: couple each sector's assets in a ring (sparse stand-in for the
+# same-sector pair count). Scoring still uses the true cross-sector matrix D_40.
+def build_same_sector_hamiltonian(D_same, n):
+    prob = OptimizationProblem("diversity_sparse")
+    prob.binary_var_list(n)
+    prob.minimize(quadratic=D_same)
+    op, _ = prob.to_ising()
+    return op.simplify()
+
+D_ring = np.zeros((n_assets_40, n_assets_40))
+for s in set(sect_idx_40):
+    members = np.where(sect_idx_40 == s)[0]
+    for k in range(len(members)):
+        i, j = members[k], members[(k + 1) % len(members)]
+        D_ring[i, j] = D_ring[j, i] = 0.5
+
+H_risk_40 = build_risk_hamiltonian(sigma_sparse, n_assets_40)
+H_return_40 = build_return_hamiltonian(mu_40, n_assets_40)
+H_diversity_40 = build_same_sector_hamiltonian(D_ring, n_assets_40)
+cost_ops_40 = [H_risk_40, H_return_40, H_diversity_40]
+n_zz = sum(
+    1 for p in sum(cost_ops_40).simplify().paulis if str(p).count("Z") == 2
+)
+print(
+    f"Cost-layer interactions: {n_zz} (dense would be {n_assets_40*(n_assets_40-1)//2})"
+)
+```
+
+```text
+QAP truncation (k=2): risk edges kept = 78
+Cost-layer interactions: 102 (dense would be 780)
+```
+
+### Steps 2-3: train the angles, then build and submit the hardware job
+Forty qubits is too large to optimize the angles exactly, so we train one $\beta, \gamma$ on a
+matrix-product-state simulator at equal objective weights and reuse them across the sweep.
+The cell below loads pre-trained values from a file. The trained cost-layer angle is small
+($\gamma \approx 0.32$), so the circuit applies a gentle bias rather than a sharp projection.
+
+```python
+import json
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+
+# Pre-trained angles loaded from a file (training is slow; QDC pattern).
+# Set load_params_file = False to retrain in-notebook.
+load_params_file = True
+params_url = "https://raw.githubusercontent.com/Qiskit/documentation/main/datasets/tutorials/qmoo/qaoa_params.json"
+params_path = "qaoa_params.json"
+if load_params_file:
+    urllib.request.urlretrieve(params_url, params_path)
+    qaoa_params = json.load(open(params_path))
+    p_layers_hw = qaoa_params["p_layers"]
+    opt_betas_40, opt_gammas_40 = qaoa_params["betas"], qaoa_params["gammas"]
+else:
+    # Same workflow as the small-scale example: qaoa_training_pipeline's MPSAerEvaluator
+    # evaluates the QAOA energy on Aer's MPS simulator and supports the XY mixer.
+    # As in the small-scale example the trainer maximizes energy, so we negate the
+    # (to-be-minimized) objective sum; the 1/n_obj scaling matches the equal-weight
+    # point of the sweep, so the trained gamma transfers directly to the weighted circuits.
+    p_layers_hw = 1
+    training_op_40 = sum(-1.0 / n_obj * H_k for H_k in cost_ops_40).simplify()
+
+    dt = 0.75
+    grid = np.arange(1, p_layers_hw + 1) - 0.5
+    init_params_40 = np.concatenate(
+        (1 - grid * dt / p_layers_hw, grid * dt / p_layers_hw)
+    )
+
+    trainer_40 = ScipyTrainer(
+        MPSAerEvaluator({"matrix_product_state_max_bond_dimension": 24}),
+        minimize_args={"options": {"maxiter": 80}},
+    )
+    print("Training QAOA angles (MPS simulator)...")
+    result_train_40 = trainer_40.train(
+        cost_op=training_op_40,
+        mixer=xy_mixer(n_assets_40),
+        initial_state=product_init(n_assets_40, K_40),
+        params0=init_params_40,
+    )
+    opt_40 = result_train_40["optimized_params"]
+    opt_betas_40, opt_gammas_40 = (
+        list(opt_40[:p_layers_hw]),
+        list(opt_40[p_layers_hw:]),
+    )
+    import os
+
+    os.makedirs(os.path.dirname(params_path) or ".", exist_ok=True)
+    json.dump(
+        {
+            "p_layers": p_layers_hw,
+            "betas": opt_betas_40,
+            "gammas": opt_gammas_40,
+        },
+        open(params_path, "w"),
+        indent=2,
+    )
+    print(
+        f"Trained angles saved to {params_path} (set load_params_file=True to reuse)."
+    )
+
+c40 = ParameterVector("c", n_obj)
+# Negated to match the trained angles' sign, as in the small-scale cell; binding keeps +gamma.
+combined_cost_op_40 = sum(
+    -c40[k] * H_k for k, H_k in enumerate(cost_ops_40)
+).simplify()
+qc_40 = qaoa_ansatz(
+    combined_cost_op_40,
+    reps=p_layers_hw,
+    initial_state=product_init(n_assets_40, K_40),
+    mixer_operator=xy_mixer(n_assets_40),
+)
+qc_40.measure_all()
+b40 = [p for p in qc_40.parameters if p.name.startswith("β")]
+g40 = [p for p in qc_40.parameters if p.name.startswith("γ")]
+pmap = {b40[i]: opt_betas_40[i] for i in range(p_layers_hw)}
+pmap.update({g40[i]: opt_gammas_40[i] for i in range(p_layers_hw)})
+ansatz_qc_40 = qc_40.assign_parameters(pmap)
+
+service = QiskitRuntimeService()
+
+# only use Heron devices
+backend = service.least_busy(min_num_qubits=156)
+
+# SABRE routing is stochastic: different seeds give different depths. Transpilation
+# is classical (it costs no QPU time), so we transpile many seeds and keep only the
+# shallowest circuit -- a free reduction in two-qubit depth before anything is sent
+# to hardware. Only this single best circuit is ever executed.
+n_seeds = 24
+best = None
+depths = []
+for seed in range(n_seeds):
+    pm = generate_preset_pass_manager(
+        optimization_level=3, backend=backend, seed_transpiler=seed
+    )
+    qc = pm.run(ansatz_qc_40)
+    d2 = qc.depth(lambda x: len(x.qubits) > 1)
+    depths.append(d2)
+    if best is None or d2 < best[0]:
+        best = (d2, seed, qc)
+isa_qc = best[2]
+sd = sorted(depths)
+print(
+    f"Backend: {backend.name} | {n_seeds} seeds | two-qubit depth "
+    f"best/median/worst = {sd[0]}/{sd[len(sd)//2]}/{sd[-1]} (best seed {best[1]})"
+)
+print(
+    f"Selected circuit -> two-qubit gates: {isa_qc.num_nonlocal_gates()}, "
+    f"two-qubit depth: {isa_qc.depth(lambda x: len(x.qubits) > 1)}"
+)
+```
+
+```text
+Backend: ibm_kingston | 24 seeds | two-qubit depth best/median/worst = 220/261/300 (best seed 22)
+Selected circuit -> two-qubit gates: 787, two-qubit depth: 220
+```
+
+```python
+# Submit one batched job (job mode; a single batch needs no Session).
+# Extra shots: noise lowers the post-selection yield
+n_samples_40, shots_40 = 24, 1500
+c_vecs_40 = random_uniform_simplex(n_samples_40, n_obj)
+sampler_hw = SamplerV2(mode=backend)
+# Tag hardware jobs for tracking
+sampler_hw.options.environment.job_tags = ["TUT_QAMOO"]
+# Seconds; guard against runaway jobs
+sampler_hw.options.max_execution_time = 600
+
+# The QAOA angles are already bound; only the objective weights c remain free.
+# Assign each weight vector to get one concrete circuit per point on the simplex.
+bound_circuits_40 = [
+    isa_qc.assign_parameters({c40[k]: cv[k] for k in range(n_obj)})
+    for cv in c_vecs_40
+]
+job_hw = sampler_hw.run([(qc,) for qc in bound_circuits_40], shots=shots_40)
+print(
+    f"Submitted to {backend.name}: job id {job_hw.job_id()} ({len(bound_circuits_40)} circuits)"
+)
+```
+
+```text
+Submitted to ibm_kingston: job id darcaalvr3kc73einokg (24 circuits)
+```
+
+### Step 4: Post-process into the Pareto front and read off the optimal portfolios
+
+```python
+result_hw = job_hw.result()
+
+# Post-select feasible portfolios (exactly K assets), score on the TRUE objectives.
+feasible_40 = set()
+for s in range(n_samples_40):
+    for bs in result_hw[s].data.meas.get_counts():
+        # get_counts is little-endian; reverse so bit i = asset i
+        bs = bs.replace(" ", "")[::-1]
+        if bs.count("1") == K_40:
+            feasible_40.add(bs)
+
+def score_40(P):
+    """Score portfolios given as an (n, K) array of asset indices.
+
+    Returns an (n, 3) array of [negative risk, return, diversification], all framed
+    as 'bigger is better'. This is the single definition of the true objectives,
+    used for the hardware samples, the exact enumeration, and the random baseline.
+    Looping over the K x K index pairs keeps memory O(n) even for millions of rows.
+    """
+    risk = np.zeros(len(P))
+    div = np.zeros(len(P))
+    for a in range(P.shape[1]):
+        for b in range(P.shape[1]):
+            risk += sigma_40[P[:, a], P[:, b]]
+            div += D_40[P[:, a], P[:, b]]
+    return np.column_stack([-risk, mu_40[P].sum(1), div])
+
+def evaluate_40(bs):
+    """Score one bitstring (bit i = asset i) with score_40."""
+    idx = np.flatnonzero([b == "1" for b in bs])
+    return score_40(idx[None, :])[0]
+
+fis_40 = np.array([evaluate_40(bs) for bs in feasible_40])
+pareto_40 = filter_dominated(fis_40, maximise=True)
+print(f"Feasible portfolios collected : {len(feasible_40)}")
+print(f"Pareto-front portfolios       : {len(pareto_40)}")
+```
+
+```text
+Feasible portfolios collected : 2359
+Pareto-front portfolios       : 20
+```
+
+```python
+# --- Honest benchmark: QAOA and random vs the EXACT Pareto front ---
+# 40 choose 6 = 3,838,380 feasible portfolios -- few enough to enumerate exactly, score
+# every one on the TRUE objectives, and get the exact Pareto front. That front is an
+# absolute ceiling, and its feasible nadir is a FIXED hypervolume reference point, so the
+# numbers are comparable across runs instead of depending on what happened to be sampled.
+import itertools
+
+# Stream the combinations straight into an (n, K) index array, without first
+# building millions of Python tuples.
+combos = np.fromiter(
+    itertools.chain.from_iterable(
+        itertools.combinations(range(n_assets_40), K_40)
+    ),
+    dtype=np.int16,
+).reshape(-1, K_40)
+fis_exact = score_40(combos)
+front_exact = filter_dominated(fis_exact, maximise=True)
+
+# Fixed reference = worst value of each objective over ALL feasible portfolios (the nadir).
+ref_fixed = fis_exact.min(axis=0)
+# The hypervolume of a point set equals the hypervolume of its front.
+hv_ceiling = hypervolume(front_exact, ref=ref_fixed, maximise=True)
+hv_qaoa = hypervolume(fis_40, ref=ref_fixed, maximise=True)
+
+def random_feasible_hv(n_draw, seed):
+    """Hypervolume of n_draw uniformly-random feasible portfolios, same fixed reference."""
+    rng = np.random.default_rng(seed)
+    picks = set()
+    while len(picks) < n_draw:
+        picks.add(tuple(sorted(rng.choice(n_assets_40, K_40, replace=False))))
+    P = np.array(list(picks))
+    return hypervolume(score_40(P), ref=ref_fixed, maximise=True)
+
+hv_rand = np.array(
+    [random_feasible_hv(len(feasible_40), seed) for seed in range(20)]
+)
+
+print(f"Exact Pareto front            : {len(front_exact)} portfolios")
+print(f"Hypervolume ceiling (optimum) : {hv_ceiling:.3f}")
+print(
+    f"QAOA (hardware)               : {100 * hv_qaoa / hv_ceiling:5.1f}% of optimum"
+)
+print(
+    f"Random ({len(feasible_40)} draws, 20 seeds) : "
+    f"{100 * hv_rand.mean() / hv_ceiling:5.1f}% +/- {100 * hv_rand.std() / hv_ceiling:.1f}% of optimum"
+)
+```
+
+```text
+Exact Pareto front            : 61 portfolios
+Hypervolume ceiling (optimum) : 64.211
+QAOA (hardware)               :  85.5% of optimum
+Random (2359 draws, 20 seeds) :  84.4% +/- 1.3% of optimum
+```
+
+At this problem size, QAOA performs about as well as uniform random sampling. Both recover a large fraction of the exact optimum's hypervolume, and neither is clearly ahead. This outcome is expected for a single shallow QAOA layer with a heavily truncated cost operator on noisy hardware; the value of this example is the end-to-end multi-objective workflow (mapping, angle training, constrained sampling, and Pareto post-processing), not a quantum speed-up. Narrowing the gap to the optimum would call for deeper circuits (more QAOA layers), a gentler truncation, or lower-noise hardware.
+
+```python
+# The best trade-offs found by the sampler: no other sampled portfolio beats these
+# on every objective. They approximate the exact front computed above; a
+# decision-maker picks the trade-off they prefer.
+bs_list = list(feasible_40)
+# Boolean mask over fis_40; keep_weakly=True also keeps portfolios whose
+# objective values tie with a front point (what the strict filter would drop).
+mask = is_nondominated(fis_40, maximise=True, keep_weakly=True)
+front_bs = [b for b, m in zip(bs_list, mask) if m]
+front_f = fis_40[mask]
+order = np.argsort(-front_f[:, 1])  # show a span sorted by return
+print(
+    f"{mask.sum()} non-dominated sampled portfolios. A representative span:\n"
+)
+print(
+    f"{'tickers held':40s} {'risk':>7s} {'return':>7s} {'cross-sector':>12s}"
+)
+for idx in order[:: max(1, len(order) // 12)]:
+    held = [tickers_40[i] for i, b in enumerate(front_bs[idx]) if b == "1"]
+    print(
+        f"{', '.join(held):40s} {-front_f[idx,0]:7.3f} {front_f[idx,1]:7.2f} {int(front_f[idx,2]):12d}"
+    )
+
+fig = plt.figure(figsize=(8, 6))
+ax = fig.add_subplot(111, projection="3d")
+ax.scatter(
+    fis_40[:, 0],
+    fis_40[:, 1],
+    fis_40[:, 2],
+    c="lightgray",
+    s=8,
+    label="Sampled portfolios",
+)
+ax.scatter(
+    pareto_40[:, 0],
+    pareto_40[:, 1],
+    pareto_40[:, 2],
+    c="tomato",
+    marker="D",
+    s=40,
+    label="Pareto front",
+)
+ax.set_xlabel("Negative risk")
+ax.set_ylabel("Return")
+ax.set_zlabel("Diversification")
+ax.set_title("40-asset Pareto front (quantum hardware)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+```text
+20 non-dominated sampled portfolios. A representative span:
+
+tickers held                                risk  return cross-sector
+AAPL, NVDA, XOM, GS, BLK, CAT              1.715    2.22           13
+NVDA, GS, MS, PFE, CAT, PLD                1.772    2.20           14
+NVDA, MS, PFE, WMT, CAT, DUK               1.040    2.14           15
+NVDA, CVX, GS, JNJ, KO, WMT                0.737    2.01           14
+NVDA, COP, GS, JNJ, WMT, EQIX              1.014    1.98           15
+NVDA, ABT, WMT, CAT, AEP, EQIX             0.913    1.92           15
+NVDA, CVX, WMT, RTX, D, EQIX               0.835    1.82           15
+NVDA, XOM, GS, JNJ, DUK, EQIX              0.763    1.80           15
+AAPL, NVDA, JNJ, KO, RTX, SO               0.621    1.71           14
+NVDA, CVX, BLK, JNJ, RTX, AEP              0.719    1.71           15
+NVDA, JNJ, KO, COST, RTX, AEP              0.545    1.69           14
+NVDA, CVX, ABT, WMT, HON, AEP              0.702    1.43           15
+AAPL, GS, JNJ, PEP, AEP, EQIX              0.645    1.34           15
+MSFT, XOM, BLK, JNJ, CAT, SO               0.617    1.34           15
+MSFT, KO, WMT, RTX, SO, SPG                0.526    1.29           14
+MSFT, XOM, BLK, JNJ, WMT, DUK              0.483    1.25           15
+MSFT, CVX, JNJ, RTX, DUK, D                0.482    1.02           14
+MSFT, XOM, JNJ, KO, HON, EQIX              0.479    0.93           15
+MSFT, JNJ, PG, KO, RTX, DUK                0.423    0.86           14
+MSFT, XOM, JNJ, PEP, DUK, AMT              0.476    0.57           15
+```
+
+![Output of the previous code cell](/docs/images/tutorials/quantum-approximate-multi-objective-optimization/extracted-outputs/60f30d0b-1.avif)
+
+## Next steps
+
+<Admonition type="tip" title="Recommendations">
+If you found this tutorial interesting, consider the following:
+
+- Replace the downloaded market data (`market_data.csv`) with your own returns and covariance estimates from real price history.
+- Increase the number of QAOA layers, or train at 12–16 assets and transfer those angles, to push the hardware front closer to optimal.
+- Read Kotil et al., [*Quantum Approximate Multi-Objective Optimization*](https://arxiv.org/abs/2503.22797) (Nature Computational Science, 2025), the max-cut study this tutorial adapts to portfolios.
+</Admonition>
+## References
+
+1. Kotil et al., "Quantum Approximate Multi-Objective Optimization," *Nature Computational Science* (2025). [arXiv:2503.22797](https://arxiv.org/abs/2503.22797)
+2. S. H. Sack and M. Serbyn, "Quantum annealing initialization of the quantum approximate optimization algorithm," *Quantum* **5**, 491 (2021). [arXiv:2101.05742](https://arxiv.org/abs/2101.05742)
+
+<TutorialFeedback />
