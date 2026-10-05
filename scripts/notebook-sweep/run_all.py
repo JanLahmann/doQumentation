@@ -41,6 +41,30 @@ SHIM_BOOTSTRAP = (
 )
 
 
+# DOQ_SHIM=site: use the site's own kernel patches (src/kernel/, mounted at
+# /kernel) instead of sim_shim, i.e. what a learner gets in Simulator Mode
+# (DOQ_SIM_MODE aer|fake). Composed by scripts/check-simulator-mode.py
+# (mounted at /kernel-check), the same code the CI check runs.
+SITE_SHIM = __import__("os").environ.get("DOQ_SHIM") == "site"
+
+
+def site_bootstrap(nb_path: Path) -> str:
+    import importlib.util
+    import os
+    os.environ.setdefault("DOQ_KERNEL_DIR", "/kernel")
+    spec = importlib.util.spec_from_file_location(
+        "check_sim", "/kernel-check/check-simulator-mode.py")
+    chk = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(chk)
+    cfg = chk.pages_config()
+    page = "/" + str(nb_path.relative_to("/repo").with_suffix(""))
+    code = [(chk.KERNEL / "save_account_guard.py").read_text()]
+    if not any(chk.page_matches(page, p) for p in cfg["exempt"]):
+        mode = os.environ.get("DOQ_SIM_MODE", "aer")
+        code.append(chk.simulator_patch_code(chk.device_for(mode, page, cfg)))
+    return "\n".join(code)
+
+
 def _is_pip_install_cell(src: str) -> bool:
     s = src.lstrip()
     return s.startswith("# Install required packages") or (
@@ -68,7 +92,8 @@ def run_one(nb_path: Path) -> dict:
                 cell["source"] = "# [sweep] pip-install cell skipped (offline)\n"
 
         # Inject shim bootstrap as a new first code cell.
-        boot = nbformat.v4.new_code_cell(source=SHIM_BOOTSTRAP)
+        boot = nbformat.v4.new_code_cell(
+            source=site_bootstrap(nb_path) if SITE_SHIM else SHIM_BOOTSTRAP)
         boot.metadata["doq_injected"] = True
         nb.cells.insert(0, boot)
 

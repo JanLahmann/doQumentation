@@ -5,6 +5,7 @@ Host driver for the notebook sweep (runs OUTSIDE the container).
   python3 sweep.py            # Pass A (all, stock image) + Pass B
   python3 sweep.py A          # Pass A only
   python3 sweep.py B          # Pass B only (graphviz subset)
+  python3 sweep.py S          # Pass S only (site Simulator Mode)
 
 Pass A: every EN notebook in the unmodified production image
         (the site's DEFAULT_QISKIT_TAG) -> what users actually hit.
@@ -14,6 +15,9 @@ tree sync-content.py writes). That tree is only as fresh as the last local
 sync; for what the live site serves, export the published branch first:
     git archive origin/notebooks tutorials guides learning | tar -x -C DIR
 and run with DOQ_NB_ROOT=DIR. DOQ_IMG overrides the image.
+Pass S: every EN notebook, stock image, with the site's own Simulator Mode
+        kernel patch (src/kernel/, DOQ_SIM_MODE aer|fake, default aer)
+        instead of sim_shim -> what a learner gets on the site.
 Pass B: only Graphviz-plotting notebooks, in a throwaway
         graphviz-patched image -> failures *behind* finding F1.
 
@@ -79,7 +83,7 @@ def chunk(lst: list[str], n: int) -> list[list[str]]:
     return [lst[i:i + per] for i in range(0, len(lst), per)] or [[]]
 
 
-def run_pass(label: str, image: str, sub: str, nbs: list[str]) -> None:
+def run_pass(label: str, image: str, sub: str, nbs: list[str], site: bool = False) -> None:
     pass_out = OUT / sub
     pass_out.mkdir(parents=True, exist_ok=True)
     print(f">>> Pass {label}: {len(nbs)} notebooks, image={image}, PAR={PAR}")
@@ -99,6 +103,10 @@ def run_pass(label: str, image: str, sub: str, nbs: list[str]) -> None:
             "-v", f"{SHIM_DIR}:/shim:ro",
             "-v", f"{pass_out}:/out",
             "-e", f"DOQ_CELL_TIMEOUT={CELL_TIMEOUT}",
+            *(["-v", f"{REPO / 'src' / 'kernel'}:/kernel:ro",
+               "-v", f"{REPO / 'scripts'}:/kernel-check:ro",
+               "-e", "DOQ_SHIM=site",
+               "-e", f"DOQ_SIM_MODE={os.environ.get('DOQ_SIM_MODE', 'aer')}"] if site else []),
             "--entrypoint", "python3", image,
             "/shim/run_all.py", f"/out/batch-{b}", *cbatch,
         ]
@@ -125,6 +133,11 @@ def main() -> int:
         nbs = discover_all()
         (OUT / "_all.txt").write_text("\n".join(nbs))
         run_pass("A", STOCK_IMG, "passA", nbs)
+
+    if "S" in mode:
+        nbs = discover_all()
+        (OUT / "_all.txt").write_text("\n".join(nbs))
+        run_pass("S", STOCK_IMG, f"passS-{os.environ.get('DOQ_SIM_MODE', 'aer')}", nbs, site=True)
 
     if "B" in mode:
         print(">>> Building graphviz-patched image for Pass B")

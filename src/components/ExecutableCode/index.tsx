@@ -28,6 +28,7 @@ import {
   getExecutionMode,
   getSimulatorBackend,
   getFakeDevice,
+  isFakeDeviceChosen,
   setCachedFakeBackends,
   getSuppressWarnings,
   ensureBinderSession,
@@ -38,6 +39,12 @@ import {
   type JupyterConfig,
   type BinderSession,
 } from '../../config/jupyter';
+import {
+  isSimulatorExemptPath,
+  pageSimulatorDevice,
+  saveAccountGuardCode,
+  simulatorPatchCode,
+} from '../../kernel';
 import { markPageExecuted, isBinderHintDismissed, dismissBinderHint, getHideStaticOutputs } from '../../config/preferences';
 import { trackEvent } from '../../config/analytics';
 import InfoIcon from '../InfoIcon';
@@ -778,8 +785,7 @@ function annotateInjectedCells(): void {
 
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
-    const backend = getSimulatorBackend();
-    const device = backend === 'fake' ? getFakeDevice() : 'AerSimulator';
+    const device = getSimulatorDevice() ?? 'AerSimulator';
 
     cells.forEach((cell) => {
       // Skip cells that already have a more specific annotation
@@ -833,7 +839,7 @@ function annotatePlaceholderCells(): void {
 
   setTimeout(() => {
     const cells = document.querySelectorAll('.thebelab-cell');
-    const placeholderPattern = /your_api_key|YOUR_API_KEY|YOUR_API_TOKEN|deleteThisAndPaste|YOUR_CRN|your_crn|your_token/i;
+    const placeholderPattern = /your[-_ ]?(api[-_ ]?)?(key|token)|YOUR_TOKEN_HERE|deleteThisAndPaste|your[-_]crn|token="<[^"]*>"/i;
 
     cells.forEach((cell) => {
       if (cell.querySelector('.thebelab-cell__skip-hint')) return;
@@ -891,17 +897,20 @@ function annotatePlaceholderCells(): void {
 
 // ── Kernel injection for IBM credentials / simulator mode ──
 
-/**
- * Pages where simulator interception is disabled.
- * These pages intentionally demonstrate real hardware access.
- */
-const SIMULATOR_EXEMPT_PAGES = [
-  '/tutorials/hello-world',
-];
-
+/** Simulator Mode is off on pages that demonstrate real hardware (src/kernel/pages.json). */
 function isSimulatorExemptPage(): boolean {
-  const path = window.location.pathname.replace(/\/$/, '');
-  return SIMULATOR_EXEMPT_PAGES.some(p => path === p || path.endsWith(p));
+  return isSimulatorExemptPath(window.location.pathname);
+}
+
+/** Device Simulator Mode hands out on this page: a fake_provider class name,
+ *  or null for the ideal AerSimulator. A page listed in src/kernel/pages.json
+ *  gets its small device unless the user picked a fake device in Settings. */
+function getSimulatorDevice(): string | null {
+  const pageDevice = pageSimulatorDevice(window.location.pathname);
+  if (getSimulatorBackend() === 'fake') {
+    return pageDevice && !isFakeDeviceChosen() ? pageDevice : getFakeDevice();
+  }
+  return pageDevice;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -987,84 +996,19 @@ print("[doQumentation] Python warnings suppressed (can be changed in Settings)")
   return `${warningLine}
 from qiskit_ibm_runtime import QiskitRuntimeService
 try:
-    QiskitRuntimeService.save_account(
+    _dq_save = getattr(QiskitRuntimeService.save_account, "_dq_real", QiskitRuntimeService.save_account)
+    _dq_save(
         token="${t}",
         instance="${c}",
         overwrite=True, set_as_default=True
     )
     print("[doQumentation] IBM Quantum credentials injected from Settings")
 except Exception as e:
-    print(f"[doQumentation] Credential setup: {e}")
-
-# Guard save_account() against placeholder values so cells with mixed code
-# (save_account + actual logic) don't overwrite the injected credentials.
-# Real save_account() calls (with non-placeholder values) still work.
-_DQ_PLACEHOLDER_TOKENS = (
-    "YOUR_TOKEN_HERE", "YOUR_API_KEY", "YOUR_API_TOKEN",
-    "deleteThisAndPaste", "your_api_key", "your_token",
-    "<MY_IBM_QUANTUM_TOKEN>", "<MY_IBM_CLOUD_API_KEY>",
-)
-_DQ_PLACEHOLDER_INSTANCES = ("YOUR_CRN", "your_crn", "<MY_IBM_CLOUD_CRN>", "<MY_IBM_CLOUD_INSTANCE>")
-_DQ_real_save_account = QiskitRuntimeService.save_account
-def _dq_guarded_save_account(*args, **kwargs):
-    token_arg = kwargs.get("token", args[0] if args else "")
-    instance_arg = kwargs.get("instance", "")
-    if any(p in str(token_arg) for p in _DQ_PLACEHOLDER_TOKENS) or \\
-       any(p in str(instance_arg) for p in _DQ_PLACEHOLDER_INSTANCES):
-        print("[doQumentation] save_account() with placeholder values skipped \\u2014 using injected credentials")
-        return None
-    return _DQ_real_save_account(*args, **kwargs)
-QiskitRuntimeService.save_account = staticmethod(_dq_guarded_save_account)`;
+    print(f"[doQumentation] Credential setup: {e}")`;
 }
 
 function getSimulatorPatchCode(): string {
-  const backend = getSimulatorBackend();
-  let backendSetup: string;
-
-  if (backend === 'fake') {
-    const device = getFakeDevice();
-    const safeName = device.replace(/[^a-zA-Z0-9_]/g, '');
-    backendSetup = `from qiskit_ibm_runtime.fake_provider import ${safeName} as _DQ_Cls
-_dq_backend = _DQ_Cls()`;
-  } else {
-    backendSetup = `try:
-    from qiskit_aer import AerSimulator as _DQ_Sim
-except ImportError:
-    from qiskit.providers.basic_provider import BasicSimulator as _DQ_Sim
-_dq_backend = _DQ_Sim()`;
-  }
-
-  const suppressWarnings = getSuppressWarnings();
-  const warningLine = suppressWarnings
-    ? `import warnings; warnings.filterwarnings('ignore')
-print("[doQumentation] Python warnings suppressed (can be changed in Settings)")
-`
-    : '';
-
-  return `${warningLine}${backendSetup}
-
-class _DQ_MockService:
-    def __init__(self, *a, **kw):
-        print("[doQumentation] QiskitRuntimeService() intercepted by Simulator Mode")
-    @staticmethod
-    def save_account(*a, **kw):
-        print("[doQumentation] Simulator mode active \\u2014 save_account() skipped (no credentials needed)")
-    def least_busy(self, *a, **kw):
-        print(f"[doQumentation] Intercepted by Simulator Mode \\u2014 returning {_dq_backend}")
-        return _dq_backend
-    def backend(self, *a, **kw):
-        print(f"[doQumentation] Intercepted by Simulator Mode \\u2014 returning {_dq_backend}")
-        return _dq_backend
-    def backends(self, *a, **kw):
-        print(f"[doQumentation] Intercepted by Simulator Mode \\u2014 returning [{_dq_backend}]")
-        return [_dq_backend]
-
-import qiskit_ibm_runtime as _qir
-_qir.QiskitRuntimeService = _DQ_MockService
-import sys
-_m = sys.modules.get('qiskit_ibm_runtime')
-if _m: _m.QiskitRuntimeService = _DQ_MockService
-print(f"[doQumentation] Simulator mode — using {type(_dq_backend).__name__}")`;
+  return simulatorPatchCode(getSimulatorDevice(), getSuppressWarnings());
 }
 
 function getOpenPlanPatchCode(): string {
@@ -1099,12 +1043,16 @@ async function injectKernelSetup(kernelObj: unknown): Promise<void> {
     mode = getIBMQuantumToken() ? 'credentials' : 'none';
   }
 
+  // Every mode, including none: a placeholder save_account() must never write
+  // to ~/.qiskit (a Workshop container is shared by all participants, #966).
+  await executeOnKernel(kernelObj, saveAccountGuardCode());
+
   switch (mode) {
     case 'aer':
     case 'fake': {
       const ok = await executeOnKernel(kernelObj, getSimulatorPatchCode());
       if (ok) {
-        const device = mode === 'fake' ? getFakeDevice() : 'AerSimulator';
+        const device = getSimulatorDevice() ?? 'AerSimulator';
         broadcastInjection({
           mode: 'simulator',
           label: device,

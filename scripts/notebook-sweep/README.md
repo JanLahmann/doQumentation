@@ -1,7 +1,8 @@
 # notebook-sweep — reproduce
 
 One-shot harness that executes every EN notebook in the real production
-image (`ghcr.io/qubins/images:2.3-xl`) on simulator/fake backends only —
+image (`ghcr.io/qubins/images:<DEFAULT_QISKIT_TAG>` from `src/config/jupyter.ts`)
+on simulator/fake backends only —
 no IBM hardware, no jobs queued. Surfaces import/runtime breakage that
 users hit on doqumentation.org.
 
@@ -15,6 +16,7 @@ from the 2026-05-17 run, with the systemic F1/F2/F4 causes and action order).
 python3 scripts/notebook-sweep/sweep.py        # Pass A (all 261) + Pass B
 python3 scripts/notebook-sweep/sweep.py A      # Pass A only
 python3 scripts/notebook-sweep/sweep.py B      # Pass B only
+python3 scripts/notebook-sweep/sweep.py S      # Pass S only (DOQ_SIM_MODE=aer|fake)
 ```
 
 Output (gitignored) lands in `.sweep-out/`:
@@ -23,6 +25,9 @@ Output (gitignored) lands in `.sweep-out/`:
 - `passB/report.{json,md}` — F1/F2-affected subset in the deps-patched
   image (graphviz + qiskit-ibm-transpiler) = failures *behind* the
   missing-dep wall
+- `passS-<mode>/report.{json,md}` — every notebook with the **site's own**
+  Simulator Mode kernel patch (`src/kernel/`) instead of `sim_shim.py` =
+  what a learner gets in Simulator Mode
 - `rerun/` — written only when you re-run a hand-picked subset via
   `run_all.py` directly
 

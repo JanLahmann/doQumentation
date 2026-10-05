@@ -205,6 +205,8 @@ const config: Config = {
     // time (international SEO). Subdomain-per-locale means paths are identical
     // across locales, so each page links to the same path on every subdomain.
     './plugins/hreflang',
+    // Bundles src/kernel/*.py (kernel patches) as strings.
+    './plugins/python-source',
   ],
 
   themes: [
