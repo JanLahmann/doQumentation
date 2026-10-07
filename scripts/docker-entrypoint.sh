@@ -87,6 +87,28 @@ else:
 GEN
 )
 
+# ── Workshop switches (RasQberry Workshop Server, #963) ──
+#   LAB_ENABLED=false      hide "Open in Lab" (nginx serves no /lab; the
+#                          teacher opens JupyterLab on :8888 directly)
+#   ALLOW_TERMINALS=false  stop proxying /terminals/, so LAN participants
+#                          cannot open a shell in the container
+#   CULL_IDLE_TIMEOUT=<s>  seconds before an idle kernel is shut down
+#                          (default 600; 0 never)
+LAB_ENABLED="${LAB_ENABLED:-true}"
+ALLOW_TERMINALS="${ALLOW_TERMINALS:-true}"
+CULL_IDLE_TIMEOUT="${CULL_IDLE_TIMEOUT:-600}"
+for v in LAB_ENABLED ALLOW_TERMINALS; do
+  if [[ ! "${!v}" =~ ^(true|false)$ ]]; then
+    echo "ERROR: $v must be true or false."
+    exit 1
+  fi
+done
+if [[ ! "$CULL_IDLE_TIMEOUT" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: CULL_IDLE_TIMEOUT must be a whole number of seconds."
+  exit 1
+fi
+echo "window.__DOQ_RUNTIME__ = {labEnabled: ${LAB_ENABLED}};" > /tmp/nginx/runtime-config.js
+
 # ── Write Jupyter config with real token ──
 # Note: /home/jovyan/.jupyter is pre-created in the Dockerfile
 JUPYTER_DIR="/home/jovyan/.jupyter"
@@ -108,7 +130,7 @@ c.ServerApp.root_dir = "/home/jovyan/notebooks"
 c.ServerApp.disable_check_xsrf = True
 
 # Kernel management — cull idle kernels for stability
-c.MappingKernelManager.cull_idle_timeout = 600
+c.MappingKernelManager.cull_idle_timeout = ${CULL_IDLE_TIMEOUT}
 c.MappingKernelManager.cull_interval = 120
 c.MappingKernelManager.cull_connected = False
 PYEOF
@@ -117,6 +139,22 @@ PYEOF
 # Replace placeholder comments with real Authorization headers
 sed -i "s|# __JUPYTER_AUTH__|proxy_set_header Authorization \"token ${JUPYTER_TOKEN}\";|g" \
   /etc/nginx/sites-enabled/default
+
+if [ "$ALLOW_TERMINALS" = "false" ]; then
+  python3 - <<'TERMS' || exit 1
+import re
+path = "/etc/nginx/sites-enabled/default"
+conf = open(path).read()
+# Refuse terminals outright (not just drop the proxy: the SPA fallback would
+# then answer 200), including creating one through the REST API.
+blocked = ("    location /terminals/ { return 403; }\n"
+           "    location /api/terminals { return 403; }\n")
+conf, n = re.subn(r"    # __TERMINALS_BEGIN__.*?# __TERMINALS_END__\n", blocked, conf, flags=re.S)
+if n != 1:
+    raise SystemExit("ERROR: /terminals/ block not found in nginx config")
+open(path, "w").write(conf)
+TERMS
+fi
 
 # ── Mirror the CORS_ORIGIN allowlist into nginx ──
 # The token injected above makes Jupyter skip its own Origin check, so nginx

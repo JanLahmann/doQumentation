@@ -245,7 +245,11 @@ function detectCellError(cell: Element): { type: string; name?: string } | null 
     return { type: 'session' };
   }
 
-  if (output.querySelector('.output_error, .output_stderr, [data-mime-type="application/vnd.jupyter.stderr"]') || text.includes('Traceback')) {
+  // An exception, not merely something on stderr: a warning such as
+  // matplotlib's "... is not a writable directory" or a DeprecationWarning
+  // also renders as stderr and must not be reported as an error (#963).
+  if (output.querySelector('.output_error') || text.includes('Traceback') ||
+      /^\s*[A-Za-z_][\w.]*(Error|Exception|Interrupt):/m.test(text)) {
     return { type: 'generic' };
   }
   return null;

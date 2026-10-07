@@ -5,6 +5,10 @@ import {familyFooterColumn} from './family-footer';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 
+// Umami analytics, unless the build is for an offline image
+// (Dockerfile.jupyter sets DOQ_ANALYTICS=0 for jupyter-local).
+const ANALYTICS = process.env.DOQ_ANALYTICS !== '0';
+
 const config: Config = {
   title: 'doQumentation',
   tagline: 'Interactive IBM Quantum tutorials and courses',
@@ -45,16 +49,12 @@ const config: Config = {
         crossorigin: 'anonymous',
       },
     },
-    {
-      tagName: 'link',
-      attributes: { rel: 'preconnect', href: 'https://cdn.jsdelivr.net' },
-    },
     // Umami Analytics preconnect — the tracking script itself is registered once in
     // `scripts` below (shared Fun with Quantum family property).
-    {
+    ...(ANALYTICS ? [{
       tagName: 'link',
       attributes: { rel: 'preconnect', href: 'https://cloud.umami.is' },
-    },
+    }] : []),
     // Robots meta — max-snippet:-1 recommended for AI search
     {
       tagName: 'meta',
@@ -165,28 +165,33 @@ const config: Config = {
     adminEncryptedUmamiShareUrl: process.env.ADMIN_ENCRYPTED_UMAMI_SHARE_URL || '',
   },
 
-  // Enable Thebe for Jupyter execution (thebelab 0.4.x - battle-tested Binder integration)
   scripts: [
+    // Settings the container sets at start (docker-entrypoint.sh writes it,
+    // e.g. LAB_ENABLED=false); the site ships an empty default. Loaded
+    // synchronously, before the app reads window.__DOQ_RUNTIME__.
+    { src: '/runtime-config.js' },
+    // Thebe for Jupyter execution (thebelab 0.4.0), served from the site so
+    // an offline Pi can run code (#964); see static/vendor/README.md.
     {
-      src: 'https://unpkg.com/thebelab@0.4.0/lib/index.js',
+      src: '/vendor/thebelab/index.js',
       async: true,
     },
-    // Umami analytics — shared Fun with Quantum family property
-    {
+    // Umami analytics — shared Fun with Quantum family property. Left out of
+    // offline builds (DOQ_ANALYTICS=0, the jupyter-local image).
+    ...(ANALYTICS ? [{
       src: 'https://cloud.umami.is/script.js',
       defer: true,
       'data-website-id': '97f347ac-e7ba-4be3-b26f-ab4b328bdbf2',
       'data-domains': 'doqumentation.org',
-    },
+    }] : []),
   ],
 
-  // KaTeX CSS for math rendering
+  // KaTeX CSS for math rendering: the version rehype-katex renders with,
+  // served from the site (static/vendor/README.md).
   stylesheets: [
     {
-      href: 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css',
+      href: '/vendor/katex/katex.min.css',
       type: 'text/css',
-      integrity: 'sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV',
-      crossorigin: 'anonymous',
     },
   ],
 
