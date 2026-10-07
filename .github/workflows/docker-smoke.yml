@@ -15,6 +15,9 @@ on:
       - 'binder/jupyter-requirements-security.txt'
       - 'package.json'
       - 'package-lock.json'
+      - 'docusaurus.config.ts'
+      - 'static/vendor/**'
+      - 'static/runtime-config.js'
       - '.github/workflows/docker-smoke.yml'
   push:
     branches: [main]
@@ -124,5 +127,43 @@ jobs:
           expect 403 /api/contents  "DNS rebinding"              -H 'Host: evil.example:8080'    -H 'Origin: http://evil.example:8080'
           expect 403 /api/terminals "cross-site terminal create" -H 'Host: localhost:8080'       -H 'Origin: https://evil.example'
 
+          # Offline Pi (#964): thebelab (with its lazy chunks) and KaTeX come
+          # from the site itself, and no page loads a CDN or analytics script.
+          for path in /vendor/thebelab/index.js /vendor/thebelab/1.index.js \
+                      /vendor/katex/katex.min.css /runtime-config.js; do
+            got=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080$path")
+            if [ "$got" = "200" ]; then echo "PASS: serves $path"; else echo "::error::$path: got $got"; fail=1; fi
+          done
+          if docker exec smoke grep -rlE 'src="https://(unpkg\.com|cloud\.umami\.is)|href="https://cdn\.jsdelivr\.net' \
+               /usr/share/nginx/html --include=*.html | head -3 | grep .; then
+            echo "::error::built pages still load a CDN or analytics script"; fail=1
+          else echo "PASS: no CDN or analytics script in the built pages"; fi
+          curl -s http://localhost:8080/runtime-config.js | grep -q 'labEnabled: true' \
+            && echo "PASS: runtime-config default" || { echo "::error::runtime-config default"; fail=1; }
+
           docker rm -f smoke >/dev/null 2>&1 || true
+
+          # Workshop switches (#963).
+          docker run -d --name smoke2 -p 8081:80 -e JUPYTER_TOKEN=smoketoken1234 \
+            -e LAB_ENABLED=false -e ALLOW_TERMINALS=false -e CULL_IDLE_TIMEOUT=1800 \
+            doqumentation-jupyter:smoke
+          for i in $(seq 1 45); do
+            curl -fsS -o /dev/null http://localhost:8081/ && break; sleep 2
+          done
+          curl -s http://localhost:8081/runtime-config.js | grep -q 'labEnabled: false' \
+            && echo "PASS: LAB_ENABLED=false reaches the site" || { echo "::error::LAB_ENABLED"; fail=1; }
+          for path in /terminals/websocket/1 /api/terminals; do
+            got=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:8081$path" \
+              -H 'Host: localhost:8081' -H 'Origin: http://localhost:8081')
+            if [ "$got" = "403" ]; then echo "PASS: ALLOW_TERMINALS=false blocks $path"; else echo "::error::$path: got $got, want 403"; fail=1; fi
+          done
+          docker exec smoke2 grep -q 'cull_idle_timeout = 1800' /home/jovyan/.jupyter/jupyter_server_config.py \
+            && echo "PASS: CULL_IDLE_TIMEOUT" || { echo "::error::CULL_IDLE_TIMEOUT"; fail=1; }
+          docker exec smoke2 sh -c 'test -w "$MPLCONFIGDIR"' \
+            && echo "PASS: MPLCONFIGDIR writable" || { echo "::error::MPLCONFIGDIR not writable"; fail=1; }
+          docker rm -f smoke2 >/dev/null 2>&1 || true
+          if docker run --rm -e LAB_ENABLED=maybe doqumentation-jupyter:smoke >/dev/null 2>&1; then
+            echo "::error::an invalid LAB_ENABLED was accepted"; fail=1
+          else echo "PASS: invalid LAB_ENABLED refused"; fi
+
           [ "$fail" = "0" ] || exit 1

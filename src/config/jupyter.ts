@@ -215,6 +215,13 @@ function isLocalHostname(hostname: string): boolean {
   );
 }
 
+/** Settings a self-hosted container sets at start: docker-entrypoint.sh serves
+ *  /runtime-config.js (static/runtime-config.js is the empty default). */
+function getRuntimeConfig(): { labEnabled?: boolean } {
+  const rc = (window as unknown as { __DOQ_RUNTIME__?: { labEnabled?: boolean } }).__DOQ_RUNTIME__;
+  return rc && typeof rc === 'object' ? rc : {};
+}
+
 /**
  * Build a JupyterConfig for a specific environment, or null if that
  * environment's prerequisites are not met (e.g. credentials expired).
@@ -300,7 +307,8 @@ function buildConfigFor(env: JupyterConfig['environment']): JupyterConfig | null
         wsUrl: isDocker ? origin.replace(/^http(s?):\/\//, 'ws$1://') : `ws://${hostname}:8888`,
         token: isDocker ? '' : 'rasqberry',
         thebeEnabled: true,
-        labEnabled: true,
+        // A workshop server hides "Open in Lab" from participants (LAB_ENABLED=false).
+        labEnabled: getRuntimeConfig().labEnabled !== false,
         environment: 'rasqberry',
       };
     }
