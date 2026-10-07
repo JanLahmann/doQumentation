@@ -62,6 +62,13 @@ def start_branch(from_branch: str | None) -> str:
     if git("status", "--porcelain", "--untracked-files=no"):
         sys.exit("working tree has tracked changes; commit or discard them first")
     git("fetch", "-q", "origin", "main")
+    # This process keeps running the sync.py it started with, while the
+    # scripts it calls come from the branch it checks out. Started from an
+    # old branch on 2026-10-07, prepare ran without --init-missing (#560) and
+    # left 4 new upstream pages untranslated until finish caught it.
+    if Path(__file__).read_text(encoding="utf-8").strip() != git("show", "origin/main:translation/v2/sync.py"):
+        sys.exit("sync.py here differs from origin/main's: run prepare from an up-to-date "
+                 "main checkout (git checkout main && git pull)")
     if from_branch:
         git("fetch", "-q", "origin", from_branch)
         tip = git("rev-parse", f"origin/{from_branch}")
