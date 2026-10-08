@@ -635,7 +635,8 @@ def install_cell_source(reqs: list[tuple[str, str]]) -> str:
 def convert_notebook(ipynb_path: Path, output_path: Path,
                      notebook_path: Optional[str] = None,
                      slug: Optional[str] = None,
-                     banner_description: Optional[str] = None) -> bool:
+                     banner_description: Optional[str] = None,
+                     notebook_of: Optional[str] = None) -> bool:
     """
     Convert a Jupyter notebook to MDX by parsing the .ipynb JSON directly.
 
@@ -645,6 +646,11 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
 
     If notebook_path is provided, an OpenInLabBanner is injected after the
     frontmatter for the "Open in JupyterLab" feature.
+
+    notebook_of: the URL of the multi-language tutorial this notebook is the
+    Python version of (see companion_notebooks()). The page is then titled
+    "... (Python notebook)" and kept out of search engines and the sitemap,
+    so it does not compete with the tutorial it duplicates.
     """
     try:
         nb = json.loads(ipynb_path.read_text())
@@ -752,6 +758,9 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
         # Escape characters that break MDX: curly braces in text (not in code blocks)
         content = escape_mdx_outside_code(content)
 
+        if notebook_of and title:
+            title = f"{title} (Python notebook)"
+
         # Build frontmatter
         # Escape quotes in title for YAML
         safe_title = title.replace('"', '\\"')
@@ -775,6 +784,9 @@ def convert_notebook(ipynb_path: Path, output_path: Path,
         if notebook_path and has_code_cells:
             desc_prop = f' description="{banner_description}"' if banner_description else ''
             banner = f'\n<OpenInLabBanner notebookPath="{notebook_path}"{desc_prop} />\n'
+        if notebook_of:
+            # noindex also keeps the page out of the Docusaurus sitemap.
+            banner += '\n<head>\n  <meta name="robots" content="noindex" />\n</head>\n'
 
         # Write output.
         # Extract any import statements from content (added by transform_mdx)
@@ -835,6 +847,54 @@ description: Browse IBM Quantum tutorials — executable on RasQberry, via Binde
     print("  ✓ index.mdx (transformed)")
 
 
+COMPANION_NB_RE = re.compile(r'assets/[\w./-]+?\.ipynb')
+
+
+def companion_notebooks(section_src: Path, section: str) -> dict[str, str]:
+    """Notebooks that multi-language MDX tutorials keep their Python code in.
+
+    Upstream turned some tutorials (sqdrift, nuclear-sqd-pooled) into MDX pages
+    with Python and C++/Fortran tabs; the Python lives on as
+    assets/<name>/<name>.ipynb, which the page names ("Keep the Python code
+    blocks in sync with ...", "Download the Python notebook"). Returns
+    {"<section>/assets/.../x.ipynb": "/<section>/<page>"} for every such
+    notebook that exists, so the MDX page can offer "Open in JupyterLab" for it
+    and the notebook's own page can point back.
+    """
+    found: dict[str, str] = {}
+    for mdx in sorted(section_src.rglob('*.mdx')):
+        if 'assets' in mdx.relative_to(section_src).parts:
+            continue
+        for ref in COMPANION_NB_RE.findall(mdx.read_text()):
+            nb = (mdx.parent / ref).resolve()
+            if nb.is_file():
+                nb_rel = f"{section}/{nb.relative_to(section_src.resolve()).as_posix()}"
+                page = f"/{section}/{mdx.relative_to(section_src).with_suffix('').as_posix()}"
+                found.setdefault(nb_rel, page)
+    return found
+
+
+def add_companion_banner(content: str, notebook_path: str) -> str:
+    """Give an MDX tutorial the notebook_path frontmatter and the "Open in
+    JupyterLab" banner of its companion notebook, after its imports."""
+    lines = content.split('\n')
+    if lines and lines[0].strip() == '---':
+        end = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), None)
+        if end is not None:
+            lines.insert(end, f'notebook_path: "{notebook_path}"')
+    start = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), 0) + 1
+    last_import = None
+    for i in range(start, min(len(lines), start + 40)):
+        stripped = lines[i].strip()
+        if stripped.startswith('import ') and ' from ' in stripped:
+            last_import = i
+        elif stripped and not stripped.startswith('{/*') and last_import is not None:
+            break
+    at = (last_import + 1) if last_import is not None else start
+    lines[at:at] = ['', f'<OpenInLabBanner notebookPath="{notebook_path}" />']
+    return '\n'.join(lines)
+
+
 def process_tutorials():
     """Process all tutorial files from upstream."""
     print("\n📝 Processing tutorials...")
@@ -859,6 +919,9 @@ def process_tutorials():
     # Transform the tutorials index page separately
     transform_tutorials_index(tutorials_src, tutorials_dst)
 
+    companions = companion_notebooks(tutorials_src, "tutorials")
+    companion_of_page = {page: nb for nb, page in companions.items()}
+
     # Track statistics
     stats = {"mdx": 0, "ipynb": 0, "images": 0, "skipped": 0}
 
@@ -878,15 +941,19 @@ def process_tutorials():
             dst_path.parent.mkdir(parents=True, exist_ok=True)
             content = src_path.read_text()
             transformed = transform_mdx(content, src_path)
+            companion = companion_of_page.get(f"/tutorials/{rel_path.with_suffix('').as_posix()}")
+            if companion:
+                transformed = add_companion_banner(transformed, companion)
             dst_path.write_text(transformed)
             stats["mdx"] += 1
-            print(f"  ✓ {rel_path}")
+            print(f"  ✓ {rel_path}" + (f" (+ notebook {companion})" if companion else ""))
 
         elif src_path.suffix == '.ipynb':
             dst_path = tutorials_dst / rel_path.with_suffix('.mdx')
             # Notebook path matching the notebooks branch layout
             upstream_nb_path = f"tutorials/{rel_path}"
-            if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path):
+            if convert_notebook(src_path, dst_path, notebook_path=upstream_nb_path,
+                                notebook_of=companions.get(upstream_nb_path)):
                 stats["ipynb"] += 1
                 print(f"  ✓ {rel_path} → .mdx")
             else:
@@ -1488,7 +1555,6 @@ def generate_translated_notebook(english_ipynb_path: Path,
         # Group notebook cells into spans between code cells
         # Each span: (start_idx, end_idx) of markdown cells, followed by a code cell
         nb_code_indices = [i for i, c in enumerate(cells) if c.get('cell_type') == 'code']
-
         # Build text segments between code blocks from MDX
         # Walk segments in order, collecting text blocks between code blocks
         text_spans = []  # list of joined text for each gap between code blocks
@@ -1643,6 +1709,12 @@ def generate_locale_notebooks(locale: str):
             continue  # Not a notebook-based page
 
         notebook_path = nb_match.group(1)  # e.g. "tutorials/foo.ipynb"
+        # A multi-language MDX tutorial only names its companion notebook
+        # (companion_notebooks()); its code blocks are not the notebook's
+        # cells, so merging its text would misplace it. The notebook's own
+        # page (under assets/) produces the translated notebook.
+        if '/assets/' in notebook_path and 'assets' not in mdx_path.relative_to(i18n_dir).parts:
+            continue
 
         # Find the upstream English notebook (upstream stores under docs/)
         english_nb = UPSTREAM_DIR / "docs" / notebook_path
